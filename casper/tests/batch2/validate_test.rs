@@ -842,31 +842,21 @@ async fn repeat_deploy_validation_should_not_accept_blocks_with_a_repeated_deplo
 /// Without the exemption, validation rejects any block that re-includes a
 /// sig already present in an ancestor's `body.deploys` — including the
 /// legitimate recovery path where a deploy was rejected by a descendant
-/// merge and is re-proposed through `RejectedDeployBuffer` to land its
-/// effects in canonical state.
+/// The repeat verdict is a pure function of the block's ancestry: a
+/// node-local `rejected_in_scope` hint with NO rejection record in the
+/// ancestry must NOT exempt a re-inclusion. (The previous semantics
+/// honored the local hint, which made verdicts differ across nodes with
+/// different attach times — the run-5 one-node InvalidRepeatDeploy
+/// split.) Legal recovery requires the rejection to be recorded in an
+/// ancestor block body — see
+/// `recovery_repeat_deploy_misfire_spec::repeat_deploy_exempts_reinclusion_after_ancestry_rejection_record`.
 ///
-/// Setup models a true recovery scenario: the deploy lives ONLY in a
-/// non-canonical / non-finalized ancestor (the `rejected_in_scope` flag
-/// is what marks it as rejected during merge), so
-/// `deploy_finalization_status::resolve` for the sig returns `Pending`
-/// — not `Finalized`. Under this state, the recovery exemption is
-/// legitimate: re-inclusion is the only way to land the deploy's
-/// effects in canonical state.
-///
-/// DAG: genesis (no deploys) → block_x (body.deploys=[deploy], not
-/// finalized) → block_w (body.deploys=[deploy], the re-inclusion).
-/// LFB stays at genesis because only `genesis` is inserted with
-/// `approved=true`. The resolver's BFS from LFB visits only genesis,
-/// never block_x — so the sig has no clean canonical inclusion and the
-/// resolver returns `Pending`.
-///
-/// Companion test:
-/// `repeat_deploy_blocks_double_execution_when_finalized_and_in_rejected_in_scope`
-/// covers the symmetric case where the sig has a clean canonical
-/// inclusion (status `Finalized`) and the recovery exemption must NOT
-/// apply.
+/// DAG: genesis (no deploys) → block_x (body.deploys=[deploy]) →
+/// block_w (body.deploys=[deploy], the re-inclusion). No ancestor
+/// records the sig in `body.rejected_deploys`, so the re-inclusion is
+/// double-execution regardless of any node-local marker.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn repeat_deploy_validation_allows_recovered_deploy_from_rejected_in_scope() {
+async fn repeat_deploy_ignores_node_local_rejected_in_scope_hint() {
     use std::sync::Arc;
 
     use dashmap::DashSet;
@@ -933,18 +923,20 @@ async fn repeat_deploy_validation_allows_recovered_deploy_from_rejected_in_scope
         let dag = block_dag_storage.get_representation();
         let mut snapshot = mk_casper_snapshot(dag);
 
-        // Mark the sig as "rejected in a descendant merge within deploy_lifespan".
-        // This is the signal the block-creator and Phase D recovery pipelines use
-        // to justify re-inclusion; validation must honor it.
+        // A node-local "rejected in scope" marker with no corresponding record
+        // in the ancestry must be IGNORED: honoring it made verdicts node-local.
         let rejected: DashSet<Bytes> = DashSet::new();
         rejected.insert(deploy_sig);
         snapshot.rejected_in_scope = Arc::new(rejected);
 
         let result = Validate::repeat_deploy(&block_w, &mut snapshot, &mut block_store, 50);
-        assert_eq!(
-            result,
-            Either::Right(ValidBlock::Valid),
-            "recovery re-inclusion of a rejected-in-scope sig with status=Pending must validate; got {:?}",
+        assert!(
+            matches!(
+                result,
+                Either::Left(BlockError::Invalid(InvalidBlock::InvalidRepeatDeploy))
+            ),
+            "re-inclusion with no ancestry rejection record must be InvalidRepeatDeploy \
+             regardless of node-local rejected_in_scope hints; got {:?}",
             result,
         );
     })

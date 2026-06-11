@@ -1,21 +1,22 @@
 // Tests covering the rejected-deploy-buffer recovery exemption:
 //
-//   - Validator side (`Validate::repeat_deploy`) MUST reject a recovery block
-//     whose deploy is canonically Finalized via a different chain (the
-//     rejection in `rejected_in_scope` came from a non-canonical sibling).
-//     Re-executing such a deploy would be double-execution.
+//   - Validator side (`Validate::repeat_deploy`) computes the verdict purely
+//     from the block's own ancestry: a prior inclusion makes re-inclusion a
+//     REPEAT (invalid) unless a later-or-equal ancestor records the sig in
+//     `body.rejected_deploys` — the legal recovery re-proposal. Rejection
+//     records in a valid ancestry are themselves consensus-validated (the
+//     InvalidRejectedDeploy equality check at the recording block), so they
+//     are trustworthy inputs; node-local views (rejected_in_scope, local
+//     finalization status) are NOT consulted — they split verdicts across
+//     nodes with different attach times.
 //
-//   - Proposer side (`prepare_user_deploys`) MUST decline the exemption for
-//     the same shape, otherwise it gossips a recovery block that downstream
-//     validators correctly flag as `InvalidRepeatDeploy` — leading to
-//     mutual-slashing on FTT=0 shards.
-
-use std::sync::Arc;
+//   - Proposer side (`prepare_user_deploys`) declines recovery for deploys
+//     already resolved in its canonical view, so it does not gossip blocks
+//     that waste proposal slots.
 
 use casper::rust::block_status::{BlockError, InvalidBlock};
 use casper::rust::util::construct_deploy;
 use casper::rust::validate::Validate;
-use dashmap::DashSet;
 use models::rust::casper::protocol::casper_message::RejectedDeploy;
 use prost::bytes::Bytes;
 use rspace_plus_plus::rspace::history::Either;
@@ -66,14 +67,13 @@ fn mk_casper_snapshot(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn repeat_deploy_correctly_rejects_stale_recovery_when_d_is_finalized() {
+async fn repeat_deploy_rejects_reinclusion_without_ancestry_rejection() {
     crate::init_logger();
 
     with_storage(|mut block_store, mut block_dag_storage| async move {
         let deploy = construct_deploy::basic_processed_deploy(0, None).unwrap();
-        let deploy_sig: Bytes = deploy.deploy.sig.clone();
 
-        // Genesis (LFB) carries D — so D is canonically Finalized.
+        // Genesis carries D; no ancestor ever records D rejected.
         let genesis = create_genesis_block(
             &mut block_store,
             &mut block_dag_storage,
@@ -87,10 +87,7 @@ async fn repeat_deploy_correctly_rejects_stale_recovery_when_d_is_finalized() {
             None,
         );
 
-        // Non-canonical sibling that declares D rejected. This is the
-        // staleness shape: D's sig ends up in `rejected_in_scope` via the
-        // ancestor scan, but the rejection itself is not canonical.
-        let mut block_n = create_block(
+        let block_n = create_block(
             &mut block_store,
             &mut block_dag_storage,
             vec![genesis.block_hash.clone()],
@@ -105,14 +102,9 @@ async fn repeat_deploy_correctly_rejects_stale_recovery_when_d_is_finalized() {
             None,
             None,
         );
-        block_n.body.rejected_deploys = vec![RejectedDeploy {
-            sig: deploy_sig.clone(),
-        }];
-        block_store
-            .put(block_n.block_hash.clone(), &block_n)
-            .unwrap();
 
-        // Recovery block: parent=block_n, body.deploys=[D].
+        // Re-inclusion of D with no rejection record anywhere in the ancestry:
+        // a plain double-execution attempt.
         let block_w = create_block(
             &mut block_store,
             &mut block_dag_storage,
@@ -132,10 +124,6 @@ async fn repeat_deploy_correctly_rejects_stale_recovery_when_d_is_finalized() {
         let dag = block_dag_storage.get_representation();
         let mut snapshot = mk_casper_snapshot(dag);
 
-        let rejected: DashSet<Bytes> = DashSet::new();
-        rejected.insert(deploy_sig.clone());
-        snapshot.rejected_in_scope = Arc::new(rejected);
-
         let result = Validate::repeat_deploy(&block_w, &mut snapshot, &mut block_store, 50);
 
         assert!(
@@ -143,8 +131,104 @@ async fn repeat_deploy_correctly_rejects_stale_recovery_when_d_is_finalized() {
                 result,
                 Either::Left(BlockError::Invalid(InvalidBlock::InvalidRepeatDeploy))
             ),
-            "expected InvalidRepeatDeploy (D is canonically Finalized; rejection in \
-             block_n is non-canonical so the exemption must decline), got {:?}",
+            "expected InvalidRepeatDeploy (prior inclusion with no rejection record in \
+             the ancestry is double-execution), got {:?}",
+            result
+        );
+    })
+    .await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn repeat_deploy_exempts_reinclusion_after_ancestry_rejection_record() {
+    crate::init_logger();
+
+    with_storage(|mut block_store, mut block_dag_storage| async move {
+        let deploy = construct_deploy::basic_processed_deploy(0, None).unwrap();
+        let deploy_sig: Bytes = deploy.deploy.sig.clone();
+
+        let genesis = create_genesis_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        // D's original inclusion.
+        let block_i = create_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            vec![genesis.block_hash.clone()],
+            &genesis,
+            None,
+            None,
+            None,
+            Some(vec![deploy.clone()]),
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        // A later ancestor records D rejected (the consensus-validated record a
+        // merging block writes when cost-optimal resolution drops D's chain).
+        let mut block_n = create_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            vec![block_i.block_hash.clone()],
+            &genesis,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        block_n.body.rejected_deploys = vec![RejectedDeploy {
+            sig: deploy_sig.clone(),
+        }];
+        block_store
+            .put(block_n.block_hash.clone(), &block_n)
+            .unwrap();
+
+        // Recovery block: parent=block_n, body.deploys=[D]. The latest
+        // inclusion (block_i, #1) is covered by the rejection record
+        // (block_n, #2), so re-proposal is the legal recovery path.
+        let block_w = create_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            vec![block_n.block_hash.clone()],
+            &genesis,
+            None,
+            None,
+            None,
+            Some(vec![deploy]),
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        let dag = block_dag_storage.get_representation();
+        let mut snapshot = mk_casper_snapshot(dag);
+
+        let result = Validate::repeat_deploy(&block_w, &mut snapshot, &mut block_store, 50);
+
+        assert!(
+            matches!(result, Either::Right(_)),
+            "expected Valid (latest inclusion was rejected by a later ancestor; \
+             re-proposal is the recovery path), got {:?}",
             result
         );
     })

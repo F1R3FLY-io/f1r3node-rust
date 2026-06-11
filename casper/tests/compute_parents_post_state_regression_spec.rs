@@ -537,6 +537,11 @@ async fn run_compute_parents_post_state_missing_mergeable_regression() {
         "Expected parent mergeable entry to exist before deletion."
     );
 
+    // Force the merge to consult the store rather than a cached BlockIndex or a
+    // cached parents-post-state, so the recompute-on-demand pre-pass is exercised.
+    runtime_manager.parents_post_state_cache.clear();
+    runtime_manager.block_index_cache.clear();
+
     let latest_messages: std::collections::BTreeMap<_, _> =
         std::iter::once((validator.clone(), b2.block_hash.clone())).collect();
     let mut snapshot = mk_snapshot(
@@ -549,7 +554,7 @@ async fn run_compute_parents_post_state_missing_mergeable_regression() {
 
     let result = compute_parents_post_state(
         &block_store,
-        vec![b2, b3],
+        vec![b2.clone(), b3],
         &snapshot,
         &runtime_manager,
         &latest_messages,
@@ -558,9 +563,20 @@ async fn run_compute_parents_post_state_missing_mergeable_regression() {
     )
     .await;
 
+    // A missing-but-recomputable mergeable entry must no longer fail the merge:
+    // the pre-pass replays the source block to materialize it (the LFS-imported-
+    // without-replay / locally-rejected recovery path that makes merge validity
+    // node-uniform).
     assert!(
-        matches!(result, Err(CasperError::KvStoreError(_))),
-        "Expected compute_parents_post_state to fail when a required mergeable entry is missing; got {result:?}"
+        result.is_ok(),
+        "compute_parents_post_state should recover a missing-but-recomputable \
+         mergeable entry by replaying the source block; got {result:?}"
+    );
+    assert!(
+        runtime_manager
+            .has_mergeable_entry(&b2)
+            .expect("has_mergeable_entry query failed"),
+        "The missing mergeable entry should have been recomputed by the merge pre-pass."
     );
 }
 

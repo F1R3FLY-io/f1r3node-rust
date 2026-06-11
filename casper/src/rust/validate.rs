@@ -400,69 +400,30 @@ impl Validate {
     ///     repeat. The catchup gate (`should_admit_to_rejected_buffer`)
     ///     is the primary defense against this; the validator-side
     ///     check is the second line of defense.
+    /// Repeat-deploy validation, computed purely from the block's own ancestry.
+    ///
+    /// A deploy sig already included in an ancestor block is a REPEAT — invalid —
+    /// unless its most recent inclusion was subsequently rejected (a strictly
+    /// later-or-equal ancestor records the sig in `body.rejected_deploys`), in
+    /// which case re-inclusion is the recovery path re-proposing merge-rejected
+    /// work. Every input is an ancestor block BODY — consensus data — so every
+    /// node reaches the same verdict for the same block. (The previous form keyed
+    /// the recovery exemption on the validator's own `rejected_in_scope` snapshot
+    /// state and local finalization view, which split verdicts across nodes with
+    /// different attach times.)
     pub fn repeat_deploy(
         block: &BlockMessage,
         s: &mut CasperSnapshot,
         block_store: &KeyValueBlockStore,
         expiration_threshold: i32,
     ) -> ValidBlockProcessing {
-        use crate::rust::api::deploy_finalization_status::{
-            resolve as resolve_finalization_status, DeployFinalizationState,
-        };
-
-        let deploy_key_set: HashSet<Vec<u8>> = block
+        let checked_sigs: HashSet<prost::bytes::Bytes> = block
             .body
             .deploys
             .iter()
-            .filter(|pd| {
-                if !s.rejected_in_scope.contains(&pd.deploy.sig) {
-                    return true; // not rejected — must check
-                }
-                // Sig is in rejected_in_scope. Apply the exemption only if
-                // the sig is NOT Finalized — otherwise re-inclusion is
-                // double-execution and the repeat check must catch it.
-                match resolve_finalization_status(
-                    &s.dag,
-                    block_store,
-                    expiration_threshold as i64,
-                    &pd.deploy.sig,
-                ) {
-                    Ok(status) if status.state == DeployFinalizationState::Finalized => {
-                        let canonical_block_str = status
-                            .latest_block_hash
-                            .as_ref()
-                            .map(|h| PrettyPrinter::build_string_bytes(h))
-                            .unwrap_or_else(|| "<none>".to_string());
-                        tracing::warn!(
-                            "repeat_deploy: sig {} is in rejected_in_scope but \
-                             resolves to Finalized (clean canonical inclusion at \
-                             {}); declining the recovery exemption to prevent \
-                             double-execution",
-                            hex::encode(&pd.deploy.sig),
-                            canonical_block_str,
-                        );
-                        true // keep in check set so the ancestor scan finds the repeat
-                    }
-                    Ok(_) => false, // status != Finalized → exempt (recovery)
-                    Err(err) => {
-                        // Resolver failures are conservative-fail: keep the sig
-                        // in the check set so an inconsistency surfaces as
-                        // InvalidRepeatDeploy rather than being silently
-                        // exempted as a recovery candidate.
-                        tracing::warn!(
-                            "repeat_deploy: deploy_finalization_status::resolve \
-                             failed for sig {}: {} — keeping sig in check set \
-                             rather than granting recovery exemption",
-                            hex::encode(&pd.deploy.sig),
-                            err,
-                        );
-                        true
-                    }
-                }
-            })
-            .map(|pd| pd.deploy.sig.to_vec())
+            .map(|pd| pd.deploy.sig.clone())
             .collect();
-        if deploy_key_set.is_empty() {
+        if checked_sigs.is_empty() {
             return Either::Right(ValidBlock::Valid);
         }
 
@@ -478,53 +439,84 @@ impl Validate {
         let max_block_number = proto_util::max_block_number_metadata(&init_parents);
         let earliest_block_number = max_block_number + 1 - expiration_threshold as i64;
 
-        tracing::debug!(target: "f1r3fly.casper", "before-repeat-deploy-duplicate-block");
-        let maybe_duplicated_block_metadata = dag_ops::bf_traverse_find(
-            init_parents,
-            |block_metadata| {
-                proto_util::get_parent_metadatas_above_block_number(
-                    block_metadata,
-                    earliest_block_number,
-                    &s.dag,
-                )
-                .unwrap_or_default()
-            },
-            |block_metadata| {
-                block_store.has_any_deploy_sig_unsafe(&block_metadata.block_hash, &deploy_key_set)
-            },
-        );
+        // One traversal of the ancestry window collecting, per checked sig, the
+        // most recent prior INCLUSION (body.deploys) and the most recent
+        // REJECTION record (body.rejected_deploys).
+        tracing::debug!(target: "f1r3fly.casper", "before-repeat-deploy-ancestry-scan");
+        let visited = dag_ops::bf_traverse(init_parents, |metadata| {
+            proto_util::get_parent_metadatas_above_block_number(
+                metadata,
+                earliest_block_number,
+                &s.dag,
+            )
+            .unwrap_or_default()
+        });
 
-        tracing::debug!(target: "f1r3fly.casper", "before-repeat-deploy-duplicate-block-log");
-        let maybe_error = maybe_duplicated_block_metadata.map(|duplicated_block_metadata| {
-      let duplicated_block = block_store.get_unsafe(&duplicated_block_metadata.block_hash);
-      let current_block_hash_string = PrettyPrinter::build_string_bytes(&block.block_hash);
-      let block_hash_string = PrettyPrinter::build_string_bytes(&duplicated_block.block_hash);
+        let mut latest_inclusion: HashMap<prost::bytes::Bytes, (i64, BlockHash)> = HashMap::new();
+        let mut latest_rejection: HashMap<prost::bytes::Bytes, i64> = HashMap::new();
+        for metadata in &visited {
+            let ancestor = block_store.get_unsafe(&metadata.block_hash);
+            for pd in &ancestor.body.deploys {
+                if checked_sigs.contains(&pd.deploy.sig) {
+                    let entry = latest_inclusion
+                        .entry(pd.deploy.sig.clone())
+                        .or_insert((i64::MIN, BlockHash::default()));
+                    if metadata.block_number > entry.0 {
+                        *entry = (metadata.block_number, metadata.block_hash.clone());
+                    }
+                }
+            }
+            for rd in &ancestor.body.rejected_deploys {
+                if checked_sigs.contains(&rd.sig) {
+                    let entry = latest_rejection.entry(rd.sig.clone()).or_insert(i64::MIN);
+                    if metadata.block_number > *entry {
+                        *entry = metadata.block_number;
+                    }
+                }
+            }
+        }
 
-      let duplicated_deploys = proto_util::deploys(&duplicated_block);
-      let duplicated_deploy = duplicated_deploys
-        .iter()
-        .map(|processed_deploy| &processed_deploy.deploy)
-        .find(|deploy| deploy_key_set.contains(deploy.sig.as_ref()))
-        .expect("Duplicated deploy should exist");
+        for sig in &checked_sigs {
+            let Some((inclusion_number, inclusion_block)) = latest_inclusion.get(sig) else {
+                continue; // never included before — clean
+            };
+            // A rejection recorded at-or-above the latest inclusion height means
+            // that inclusion's effect was merged away; re-proposal is legal.
+            let rejection_number = latest_rejection.get(sig).copied().unwrap_or(i64::MIN);
+            if rejection_number >= *inclusion_number {
+                tracing::debug!(
+                    target: "f1r3fly.casper",
+                    sig = %hex::encode(&sig[..sig.len().min(16)]),
+                    inclusion_number,
+                    rejection_number,
+                    "repeat_deploy: prior inclusion was rejected in ancestry; re-proposal exempt"
+                );
+                continue;
+            }
 
-      let term = &duplicated_deploy.data.term;
-      let deployer_string = PrettyPrinter::build_string_bytes(&duplicated_deploy.pk.bytes);
-      let timestamp_string = duplicated_deploy.data.time_stamp.to_string();
+            let duplicated_block = block_store.get_unsafe(inclusion_block);
+            let duplicated_deploy = duplicated_block
+                .body
+                .deploys
+                .iter()
+                .map(|processed_deploy| &processed_deploy.deploy)
+                .find(|deploy| deploy.sig == *sig)
+                .expect("inclusion was recorded from this block's deploys above");
+            let message = format!(
+                "found deploy [{}] (user {}, millisecond timestamp {}) with the same sig in the block {} as current block {} (latest rejection at #{} < inclusion at #{})",
+                &duplicated_deploy.data.term,
+                PrettyPrinter::build_string_bytes(&duplicated_deploy.pk.bytes),
+                duplicated_deploy.data.time_stamp,
+                PrettyPrinter::build_string_bytes(&duplicated_block.block_hash),
+                PrettyPrinter::build_string_bytes(&block.block_hash),
+                rejection_number,
+                inclusion_number,
+            );
+            tracing::warn!("{}", Self::ignore(block, &message));
+            return Either::Left(BlockError::Invalid(InvalidBlock::InvalidRepeatDeploy));
+        }
 
-      let message = format!(
-        "found deploy [{}] (user {}, millisecond timestamp {})] with the same sig in the block {} as current block {}",
-        term,
-        &deployer_string,
-        timestamp_string,
-        block_hash_string,
-        current_block_hash_string
-      );
-
-      tracing::warn!("{}", Self::ignore(block, &message));
-      BlockError::Invalid(InvalidBlock::InvalidRepeatDeploy)
-    });
-
-        maybe_error.map_or(Either::Right(ValidBlock::Valid), Either::Left)
+        Either::Right(ValidBlock::Valid)
     }
 
     // This is not a slashable offence

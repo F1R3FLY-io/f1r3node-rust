@@ -1026,6 +1026,69 @@ impl RuntimeManager {
             .map_err(|e| CasperError::KvStoreError(KvStoreError::SerializationError(e.to_string())))
     }
 
+    /// True iff this node already holds the mergeable-channels entry for `block`.
+    ///
+    /// The entry is content-keyed by `(post_state_hash, creator, seq_num)`, but its
+    /// presence is a byproduct of whether this node executed/replayed the block.
+    /// Blocks imported via LFS without replay — or rejected locally and never
+    /// replayed — lack it, while the multi-parent merge requires it for every
+    /// scope block, which made merge validity node-local.
+    pub fn has_mergeable_entry(
+        &self,
+        block: &models::rust::casper::protocol::casper_message::BlockMessage,
+    ) -> Result<bool, CasperError> {
+        let key = Self::mergeable_key_bytes_for_block(block)?;
+        Ok(self.mergeable_store.contains_key(key)?)
+    }
+
+    /// Materialize the mergeable-channels entry for `block` by replaying it, unless
+    /// already present. The mergeable diffs are a deterministic function of the
+    /// block's content (pre-state + deploys + system deploys) reduced against the
+    /// static mergeable-tag registry, so a full replay reconstructs exactly the
+    /// entry the proposer stored — making mergeable presence a function of consensus
+    /// data on every node rather than of local execution history.
+    ///
+    /// `invalid_blocks` MUST be the block's *seen* invalid-block set (the set its
+    /// original validation used); otherwise the replay computes a different
+    /// post-state and the entry would be stored under the wrong key.
+    pub async fn ensure_mergeable_entry(
+        &self,
+        block: &models::rust::casper::protocol::casper_message::BlockMessage,
+        invalid_blocks: HashMap<BlockHash, Validator>,
+    ) -> Result<(), CasperError> {
+        if self.has_mergeable_entry(block)? {
+            return Ok(());
+        }
+
+        let block_data = BlockData::from_block(block);
+        let is_genesis = block.header.parents_hash_list.is_empty();
+        self.replay_compute_state(
+            &block.body.state.pre_state_hash,
+            block.body.deploys.clone(),
+            block.body.system_deploys.clone(),
+            &block_data,
+            Some(invalid_blocks),
+            is_genesis,
+        )
+        .await?;
+
+        // Fail closed: the full-replay path persists the entry. The only no-save
+        // path is an in-memory ReplayCache hit, which cannot occur for a block this
+        // node never executed (ReplayCache is populated only by local
+        // compute/propose, alongside the persistent save). If it is still absent the
+        // merge would diverge across nodes, so surface it rather than proceed.
+        if !self.has_mergeable_entry(block)? {
+            return Err(CasperError::RuntimeError(format!(
+                "mergeable entry still absent after recompute for block {} (seq={}); \
+                 replay returned without persisting mergeable channels",
+                hex::encode(&block.block_hash),
+                block.seq_num,
+            )));
+        }
+
+        Ok(())
+    }
+
     /// Look up a block's mergeable-channels entry and return its over-the-wire
     /// byte form. Returns `(key_bytes, Some(value_bytes))` if present,
     /// `(key_bytes, None)` if absent. Re-serializes via bincode at the typed

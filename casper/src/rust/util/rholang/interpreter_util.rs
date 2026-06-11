@@ -579,6 +579,64 @@ pub async fn compute_deploys_checkpoint(
 /// Build (or fetch from cache) the [`BlockIndex`] for a block — the per-block
 /// deploy-chain / mergeable index consumed by both the parent-state merge and
 /// the floor-state seal, so the two merge paths share one definition.
+/// Ensure every block in the merge `scope` has its mergeable-channels entry
+/// materialized before `dag_merger::merge` reads them through the (synchronous)
+/// `block_index_f` closure.
+///
+/// The merge requires the entry for every scope block, but its presence is a
+/// byproduct of local execution: a block imported via LFS without replay — or
+/// rejected locally and never replayed — lacks it and `load_mergeable_channels`
+/// hard-errors `KeyNotFound`. That made merge validity node-local — the same
+/// block could finalize on nodes that replayed it and be rejected on nodes
+/// that did not. Recomputing the missing entries here (a deterministic full
+/// replay) makes mergeable presence a function of block content on every node.
+/// Healthy nodes pay only a cached-presence check per scope block.
+pub(crate) async fn ensure_scope_mergeable_present(
+    block_store: &KeyValueBlockStore,
+    runtime_manager: &RuntimeManager,
+    dag: &KeyValueDagRepresentation,
+    scope: &HashSet<BlockHash>,
+) -> Result<(), CasperError> {
+    for hash in scope {
+        // Fast path: a cached BlockIndex implies load_mergeable_channels already
+        // succeeded for this block, so its (persistent) entry is present.
+        if runtime_manager.block_index_cache.contains_key(hash) {
+            continue;
+        }
+        let block = block_store.get_unsafe(hash);
+        if runtime_manager.has_mergeable_entry(&block)? {
+            continue;
+        }
+
+        // Reproduce the block's *seen* invalid-block set (the set its original
+        // validation used) so the replay reproduces its post_state_hash and the
+        // entry is stored under the correct key. `unseen_block_hashes` needs a
+        // mutable representation handle; the clone is cheap (imbl/Arc-backed)
+        // and taken only on this recompute path.
+        let mut dag_scratch = dag.clone();
+        let invalid = dag_scratch.invalid_blocks();
+        let unseen = proto_util::unseen_block_hashes(&mut dag_scratch, &block)?;
+        let invalid_blocks: HashMap<BlockHash, Validator> = invalid
+            .iter()
+            .filter(|ib| !unseen.contains(&ib.block_hash))
+            .map(|ib| (ib.block_hash.clone(), ib.sender.clone()))
+            .collect();
+
+        runtime_manager
+            .ensure_mergeable_entry(&block, invalid_blocks)
+            .await?;
+
+        tracing::info!(
+            target: "f1r3fly.casper.mergeable_recompute",
+            block_hash = %hex::encode(&hash[..hash.len().min(8)]),
+            seq_num = block.seq_num,
+            "recomputed missing mergeable entry for merge-scope block",
+        );
+    }
+
+    Ok(())
+}
+
 pub fn build_block_index(
     runtime_manager: &RuntimeManager,
     block_store: &KeyValueBlockStore,
@@ -880,6 +938,10 @@ pub async fn compute_parents_post_state(
                 straddler_blocks,
                 "multi-parent merge based on sealed floor state"
             );
+
+            // Every scope block's mergeable entry must be loadable before the
+            // merge builds indices; recompute any the node never replayed.
+            ensure_scope_mergeable_present(block_store, runtime_manager, &s.dag, &scope).await?;
 
             // Finalized decisions in the window between the floor and the
             // scope's fork-point cover are enforced, never re-litigated.

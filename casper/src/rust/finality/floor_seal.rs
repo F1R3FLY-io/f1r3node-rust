@@ -81,6 +81,17 @@ pub async fn enforcement_window(
     let mut window_sorted: Vec<BlockHash> = window.into_iter().collect();
     window_sorted.sort();
 
+    // Window blocks are finalized counterparties whose indices the merge will
+    // load; their mergeable entries must be present too.
+    let window_set: HashSet<BlockHash> = window_sorted.iter().cloned().collect();
+    crate::rust::util::rholang::interpreter_util::ensure_scope_mergeable_present(
+        block_store,
+        runtime_manager,
+        dag,
+        &window_set,
+    )
+    .await?;
+
     let rejected_sigs: HashSet<prost::bytes::Bytes> =
         base_fs.rejected_deploys.iter().cloned().collect();
     let mut accepted_chains = Vec::new();
@@ -285,6 +296,16 @@ async fn seal_floor_cut(
         scope = scope.len(),
         "sealing newly finalized cone onto FS(floor(cut))"
     );
+
+    // Every seal-scope block's mergeable entry must be loadable before the
+    // merge builds indices; recompute any this node never replayed.
+    crate::rust::util::rholang::interpreter_util::ensure_scope_mergeable_present(
+        block_store,
+        runtime_manager,
+        dag,
+        &scope,
+    )
+    .await?;
 
     // Finalized decisions made at-or-below the previous floor are enforced on
     // the seal too: scope chains may have executed before those decisions.
