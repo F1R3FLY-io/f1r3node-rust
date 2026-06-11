@@ -278,6 +278,12 @@ jobs:
     name: Launch Ephemeral Runners
     needs: lint
     runs-on: ubuntu-latest
+    # Gates every CI run on the ephemeral-launch environment so OCI_* +
+    # RELEASE_PAT secrets (which live env-scoped) flow to the job after
+    # required-reviewer approval. Applies to internal pushes/PRs and fork
+    # PRs alike — fork PRs need the environment gate for any secret access
+    # at all; the friction on internal runs is the accepted trade-off.
+    environment: ephemeral-launch
     permissions:
       actions: write  # needed for gh api ... actions/runners/registration-token
     timeout-minutes: 10

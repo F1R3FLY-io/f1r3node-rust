@@ -387,7 +387,7 @@ pub async fn block_dag_storage_from_dyn(
     > = KeyValueTypedStoreImpl::new(deploy_index_kv_store);
 
     Ok(BlockDagKeyValueStorage {
-        global_lock: Arc::new(Mutex::new(())),
+        global_lock: Arc::new(RwLock::new(())),
         block_metadata_index: Arc::new(RwLock::new(block_metadata_store)),
         deploy_index: Arc::new(RwLock::new(deploy_index_db)),
         invalid_blocks_index: invalid_blocks_db,

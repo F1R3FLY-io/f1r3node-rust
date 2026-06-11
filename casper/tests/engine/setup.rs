@@ -257,7 +257,7 @@ impl TestFixture {
         let equivocation_tracker = EquivocationTrackerStore::new(equivocation_tracker_typed_store);
 
         let block_dag_storage_unwrapped = BlockDagKeyValueStorage {
-            global_lock: Arc::new(Mutex::new(())),
+            global_lock: Arc::new(std::sync::RwLock::new(())),
             latest_messages_index: latest_messages_typed_store,
             block_metadata_index: Arc::new(std::sync::RwLock::new(block_metadata_store)),
             deploy_index: Arc::new(std::sync::RwLock::new(deploy_index_typed_store)),
@@ -315,7 +315,7 @@ impl TestFixture {
         // NOTE: NoOpsCasperEffect requires KeyValueDagRepresentation, so we get it from BlockDagKeyValueStorage
         let block_dag_representation = block_dag_storage_unwrapped.get_representation();
 
-        // Wrap RuntimeManager in Arc<Mutex<>> for shared mutable access
+        // Wrap RuntimeManager in Arc<RwLock<>> for shared mutable access
         let runtime_manager_shared = Arc::new(runtime_manager);
 
         let casper = NoOpsCasperEffect::new_with_shared_kvm(

@@ -30,7 +30,7 @@ impl IndexedBlockDagStorage {
 
     pub fn get_representation(&self) -> KeyValueDagRepresentation {
         // Use underlying's lock for consistency
-        let _lock_guard = self.underlying.global_lock.lock().unwrap();
+        let _lock_guard = self.underlying.global_lock.read().unwrap();
         self.underlying.get_representation_internal()
     }
 
@@ -41,7 +41,7 @@ impl IndexedBlockDagStorage {
         approved: bool,
     ) -> Result<KeyValueDagRepresentation, KvStoreError> {
         // Use underlying's lock for consistency
-        let _lock_guard = self.underlying.global_lock.lock().unwrap();
+        let _lock_guard = self.underlying.global_lock.write().unwrap();
         self.underlying.insert_internal(block, invalid, approved)
     }
 
@@ -53,7 +53,7 @@ impl IndexedBlockDagStorage {
     ) -> Result<BlockMessage, KvStoreError> {
         // Lock the entire operation to match Scala's lock.withPermit
         // Use underlying's lock to ensure atomicity
-        let _lock_guard = self.underlying.global_lock.lock().unwrap();
+        let _lock_guard = self.underlying.global_lock.write().unwrap();
 
         // Use internal methods to avoid re-acquiring lock
         self.underlying.insert_internal(genesis, false, true)?;
@@ -95,7 +95,7 @@ impl IndexedBlockDagStorage {
         invalid: bool,
     ) -> Result<(), KvStoreError> {
         // Use underlying's lock for consistency
-        let _lock_guard = self.underlying.global_lock.lock().unwrap();
+        let _lock_guard = self.underlying.global_lock.write().unwrap();
         self.id_to_blocks.insert(index, block.clone());
         self.underlying.insert_internal(&block, invalid, false)?;
 
