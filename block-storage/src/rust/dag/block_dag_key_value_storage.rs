@@ -456,7 +456,7 @@ impl KeyValueDagRepresentation {
 pub struct BlockDagKeyValueStorage {
     /// Global lock to ensure atomic snapshots, similar to Scala's lock.withPermit.
     /// This prevents race conditions during concurrent DAG modifications.
-    pub global_lock: Arc<std::sync::Mutex<()>>,
+    pub global_lock: Arc<std::sync::RwLock<()>>,
     pub latest_messages_index: KeyValueTypedStoreImpl<ValidatorSerde, BlockHashSerde>,
     pub block_metadata_index: Arc<RwLock<BlockMetadataStore>>,
     pub deploy_index: Arc<RwLock<KeyValueTypedStoreImpl<DeployId, BlockHashSerde>>>,
@@ -494,7 +494,7 @@ impl BlockDagKeyValueStorage {
             KeyValueTypedStoreImpl::new(deploy_index_kv_store);
 
         Ok(Self {
-            global_lock: Arc::new(std::sync::Mutex::new(())),
+            global_lock: Arc::new(std::sync::RwLock::new(())),
             block_metadata_index: Arc::new(RwLock::new(block_metadata_store)),
             deploy_index: Arc::new(RwLock::new(deploy_index_db)),
             invalid_blocks_index: invalid_blocks_db,
@@ -534,7 +534,7 @@ impl BlockDagKeyValueStorage {
     /// Matches Scala's lock.withPermit(representation).
     pub fn get_representation(&self) -> KeyValueDagRepresentation {
         // Acquire global lock to ensure atomic snapshot
-        let _lock_guard = self.global_lock.lock().unwrap();
+        let _lock_guard = self.global_lock.read().unwrap();
         self.get_representation_internal()
     }
 
@@ -600,7 +600,7 @@ impl BlockDagKeyValueStorage {
     ) -> Result<KeyValueDagRepresentation, KvStoreError> {
         let __insert_start = std::time::Instant::now();
         // Acquire global lock to ensure atomic insert operation
-        let _lock_guard = self.global_lock.lock().unwrap();
+        let _lock_guard = self.global_lock.write().unwrap();
         let result = self.insert_internal(block, invalid, approved);
         metrics::histogram!("dag.insert.time", "source" => "f1r3fly.casper.block-dag")
             .record(__insert_start.elapsed().as_secs_f64());
@@ -801,7 +801,7 @@ impl BlockDagKeyValueStorage {
         f: impl Fn(&EquivocationTrackerStore) -> Result<A, KvStoreError>,
     ) -> Result<A, KvStoreError> {
         // Acquire global lock for consistent equivocation tracker access
-        let _lock_guard = self.global_lock.lock().unwrap();
+        let _lock_guard = self.global_lock.write().unwrap();
         f(&self.equivocation_tracker_index)
     }
 
@@ -833,7 +833,7 @@ impl BlockDagKeyValueStorage {
                     .cloned()
                     .collect();
 
-                let _lock_guard = self.global_lock.lock().unwrap();
+                let _lock_guard = self.global_lock.write().unwrap();
                 let mut block_metadata_index_guard = self.block_metadata_index.write().unwrap();
                 block_metadata_index_guard.record_finalized(
                     directly_finalized_hash.clone(),
@@ -845,7 +845,7 @@ impl BlockDagKeyValueStorage {
         let mut effect_applied: HashSet<BlockHash> = HashSet::new();
         for _attempt in 0..MAX_FINALIZATION_RECONCILE_LOOPS {
             let pending_effect: HashSet<BlockHash> = {
-                let _lock_guard = self.global_lock.lock().unwrap();
+                let _lock_guard = self.global_lock.read().unwrap();
 
                 let dag = self.get_representation_internal();
                 if !dag.contains(&directly_finalized_hash) {
@@ -898,7 +898,7 @@ impl BlockDagKeyValueStorage {
     }
 
     fn propagate_ft_to_finalized_blocks(&self, ft_value: f32) -> Result<(), KvStoreError> {
-        let _lock_guard = self.global_lock.lock().unwrap();
+        let _lock_guard = self.global_lock.write().unwrap();
 
         // Update ALL finalized blocks with lower FT, not just ancestors of the
         // current LFB. In a multi-parent DAG, finalized blocks on orphaned
