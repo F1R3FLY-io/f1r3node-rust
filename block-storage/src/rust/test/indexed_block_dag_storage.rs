@@ -42,12 +42,7 @@ impl IndexedBlockDagStorage {
     ) -> Result<KeyValueDagRepresentation, KvStoreError> {
         // Use underlying's lock for consistency
         let _lock_guard = self.underlying.global_lock.lock().unwrap();
-        self.underlying.insert_internal(
-            block,
-            invalid,
-            approved,
-            models::rust::block_metadata::BlockMetadata::bonded_validators(block),
-        )
+        self.underlying.insert_internal(block, invalid, approved)
     }
 
     pub fn insert_indexed(
@@ -61,12 +56,7 @@ impl IndexedBlockDagStorage {
         let _lock_guard = self.underlying.global_lock.lock().unwrap();
 
         // Use internal methods to avoid re-acquiring lock
-        self.underlying.insert_internal(
-            genesis,
-            false,
-            true,
-            models::rust::block_metadata::BlockMetadata::bonded_validators(genesis),
-        )?;
+        self.underlying.insert_internal(genesis, false, true)?;
         let dag = self.underlying.get_representation_internal();
         let next_creator_seq_num = if block.seq_num == 0 {
             dag.latest_message(&block.sender)?
@@ -90,12 +80,8 @@ impl IndexedBlockDagStorage {
         modified_block.seq_num = next_creator_seq_num;
         modified_block.body.state = new_post_state;
 
-        self.underlying.insert_internal(
-            &modified_block,
-            invalid,
-            false,
-            models::rust::block_metadata::BlockMetadata::bonded_validators(&modified_block),
-        )?;
+        self.underlying
+            .insert_internal(&modified_block, invalid, false)?;
         self.id_to_blocks.insert(next_id, modified_block.clone());
         *current_id = next_id;
 
@@ -111,12 +97,7 @@ impl IndexedBlockDagStorage {
         // Use underlying's lock for consistency
         let _lock_guard = self.underlying.global_lock.lock().unwrap();
         self.id_to_blocks.insert(index, block.clone());
-        self.underlying.insert_internal(
-            &block,
-            invalid,
-            false,
-            models::rust::block_metadata::BlockMetadata::bonded_validators(&block),
-        )?;
+        self.underlying.insert_internal(&block, invalid, false)?;
 
         Ok(())
     }

@@ -58,55 +58,22 @@ impl CliqueOracle {
         map.insert(key, value);
     }
 
-    /// Weight map of the main parent (falls back to the message itself if no parents), restricted
-    /// to the ACTIVE (post-quarantine) validator set via `BlockMetadata::active_weight_map`.
-    ///
-    /// Finality is computed over the active validators, never over all bonded stake: a just-bonded
-    /// validator is in `bonds` but cannot vote until it leaves quarantine, so counting its stake in
-    /// the quorum denominator would let a single heavy bond stall finalization (it could never
-    /// reach the fault-tolerance threshold) until activation — which itself needs finalization to
-    /// advance. Using the active set keeps the denominator equal to the agreeing-eligible set, as
-    /// in Ethereum/Cosmos/Polkadot, and removes the need to fabricate a latest message for a
-    /// newly-bonded validator.
+    /// weight map of main parent (fallbacks to message itself if no parents)
+    /// TODO - why not use local weight map but seek for parent?
+    /// P.S. This is related to the fact that we create latest message for newly bonded validator
+    /// equal to message where bonding deploy has been submitted. So stake from validator that did not create anything is
+    /// put behind this message. So here is one more place where this logic makes things more complex.
     pub async fn get_corresponding_weight_map(
         target_msg: &M,
         dag: &KeyValueDagRepresentation,
     ) -> Result<WeightMap, KvStoreError> {
-        let meta = dag.lookup_unsafe(target_msg)?;
-        let source_meta = match meta.parents.first() {
-            Some(main_parent) => dag.lookup_unsafe(main_parent)?,
-            None => meta,
-        };
-
-        let active: WeightMap = source_meta.active_weight_map().into_iter().collect();
-
-        // Verification trace for the active-set finality fix: surface the full bonded denominator
-        // vs the active (post-quarantine) denominator the oracle actually weights by. When a
-        // just-bonded validator is still in quarantine the two diverge — `dropped` names exactly
-        // the stake excluded from the finality quorum so it cannot stall finalization.
-        if tracing::enabled!(target: "f1r3fly.casper.safety.active_weight", tracing::Level::DEBUG) {
-            let bonds_total: i64 = source_meta.weight_map.values().sum();
-            let active_total: i64 = active.values().sum();
-            if bonds_total != active_total {
-                let dropped: Vec<String> = source_meta
-                    .weight_map
-                    .keys()
-                    .filter(|v| !active.contains_key(*v))
-                    .map(|v| hex::encode(&v[..v.len().min(8)]))
-                    .collect();
-                tracing::debug!(
-                    target: "f1r3fly.casper.safety.active_weight",
-                    target_block = %hex::encode(&target_msg[..target_msg.len().min(8)]),
-                    bonds_total,
-                    active_total,
-                    dropped_stake = bonds_total - active_total,
-                    dropped_validators = ?dropped,
-                    "finality denominator restricted to active validator set"
-                );
-            }
-        }
-
-        Ok(active)
+        dag.lookup_unsafe(target_msg)
+            .and_then(|meta| match meta.parents.first() {
+                Some(main_parent) => dag
+                    .lookup_unsafe(main_parent)
+                    .map(|parent_meta| parent_meta.weight_map.into_iter().collect()),
+                None => Ok(meta.weight_map.into_iter().collect()),
+            })
     }
 
     /// If two validators will never have disagreement on target message

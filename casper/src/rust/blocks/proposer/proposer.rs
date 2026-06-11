@@ -525,7 +525,11 @@ pub fn new_proposer<T: TransportLayer + Send + Sync + 'static>(
         dummy_deploy_opt,
         ProductionCasperSnapshotProvider,
         ProductionActiveValidatorChecker,
-        ProductionStakeChecker::new(validator_arc.clone()),
+        ProductionStakeChecker::new(
+            runtime_manager.clone(),
+            block_store.clone(),
+            validator_arc.clone(),
+        ),
         ProductionHeightChecker::new(validator_arc),
         ProductionBlockCreator::new(
             deploy_storage,
@@ -576,11 +580,23 @@ impl ActiveValidatorChecker for ProductionActiveValidatorChecker {
 }
 
 pub struct ProductionStakeChecker {
+    runtime_manager: RuntimeManager,
+    block_store: KeyValueBlockStore,
     validator: Arc<ValidatorIdentity>,
 }
 
 impl ProductionStakeChecker {
-    pub fn new(validator: Arc<ValidatorIdentity>) -> Self { Self { validator } }
+    pub fn new(
+        runtime_manager: RuntimeManager,
+        block_store: KeyValueBlockStore,
+        validator: Arc<ValidatorIdentity>,
+    ) -> Self {
+        Self {
+            runtime_manager,
+            block_store,
+            validator,
+        }
+    }
 }
 
 impl StakeChecker for ProductionStakeChecker {
@@ -588,7 +604,13 @@ impl StakeChecker for ProductionStakeChecker {
         &self,
         casper_snapshot: &CasperSnapshot,
     ) -> Result<CheckProposeConstraintsResult, CasperError> {
-        synchrony_constraint_checker::check(casper_snapshot, &self.validator).await
+        synchrony_constraint_checker::check(
+            casper_snapshot,
+            &self.runtime_manager,
+            &self.block_store,
+            &self.validator,
+        )
+        .await
     }
 }
 

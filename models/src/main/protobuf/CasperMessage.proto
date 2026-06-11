@@ -123,10 +123,6 @@ message BlockMetadataInternal {
   bool directlyFinalized                     = 9; // whether the block has been last finalized block (LFB)
   bool finalized                             = 10;// whether the block is finalized
   float faultToleranceValue                  = 11;// cached normalized FT at finalization time
-  // Active (post-quarantine) validators at this block's post-state. Subset of `bonds`; the
-  // finality safety oracle weights by these, not by all bonded validators, so a just-bonded
-  // validator in quarantine cannot dilute the finalization quorum.
-  repeated bytes activeValidators            = 12 [(scalapb.field).collection_type="collection.immutable.List"];
 }
 
 message HeaderProto {

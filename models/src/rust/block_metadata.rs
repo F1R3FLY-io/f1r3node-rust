@@ -26,12 +26,6 @@ pub struct BlockMetadata {
     pub directly_finalized: bool,
     pub finalized: bool,
     pub fault_tolerance_value: f32,
-    /// Active (post-quarantine) validators at this block's post-state — a subset of the keys in
-    /// `weight_map`. The finality safety oracle weights by these (see `active_weight_map`) so a
-    /// just-bonded validator still in quarantine cannot dilute the finalization quorum. Derived
-    /// data, like `fault_tolerance_value`: excluded from `PartialEq`/`Hash` (identity is the hash).
-    #[serde(with = "shared::rust::serde_vec_bytes", default)]
-    pub active_validators: Vec<Bytes>,
 }
 
 impl PartialEq for BlockMetadata {
@@ -91,7 +85,6 @@ impl BlockMetadata {
             directly_finalized: proto.directly_finalized,
             finalized: proto.finalized,
             fault_tolerance_value: proto.fault_tolerance_value,
-            active_validators: proto.active_validators,
         }
     }
 
@@ -115,7 +108,6 @@ impl BlockMetadata {
             directly_finalized: self.directly_finalized,
             finalized: self.finalized,
             fault_tolerance_value: self.fault_tolerance_value,
-            active_validators: self.active_validators.clone(),
         }
     }
 
@@ -136,18 +128,6 @@ impl BlockMetadata {
         }
     }
 
-    /// All bonded validators from a block's state. This is the active set at genesis (no
-    /// quarantine has elapsed) and the conservative active set for test/admin inserts that do not
-    /// have the rholang runtime to query the precise post-quarantine set.
-    pub fn bonded_validators(b: &BlockMessage) -> Vec<Bytes> {
-        b.body
-            .state
-            .bonds
-            .iter()
-            .map(|bond| bond.validator.clone())
-            .collect()
-    }
-
     fn weight_map(state: &F1r3flyState) -> BTreeMap<Bytes, i64> {
         state
             .bonds
@@ -156,10 +136,6 @@ impl BlockMetadata {
             .collect()
     }
 
-    /// Builds metadata with `active_validators` defaulted to ALL bonded validators (the active set
-    /// at genesis and the conservative default elsewhere). The casper layer, which owns the rholang
-    /// runtime, overrides this with the precise post-quarantine active set when inserting a live
-    /// block (see `BlockDagKeyValueStorage::insert_with_active`).
     pub fn from_block(
         b: &BlockMessage,
         invalid: bool,
@@ -181,96 +157,6 @@ impl BlockMetadata {
             directly_finalized,
             finalized,
             fault_tolerance_value: 0.0,
-            active_validators: Self::bonded_validators(b),
         }
-    }
-
-    /// The weight map restricted to active (post-quarantine) validators — the correct denominator
-    /// for the finality safety oracle. Bonded-but-quarantined validators are excluded so they
-    /// cannot dilute the finalization quorum (a validator's stake must not be in the denominator
-    /// before it can vote). `active_validators` is always populated for blocks added through the
-    /// casper layer; the empty-set guard returns the full bonds map only to preserve liveness for
-    /// any pre-population path rather than zeroing the quorum.
-    pub fn active_weight_map(&self) -> BTreeMap<Bytes, i64> {
-        if self.active_validators.is_empty() {
-            return self.weight_map.clone();
-        }
-        let active: std::collections::HashSet<&Bytes> = self.active_validators.iter().collect();
-        self.weight_map
-            .iter()
-            .filter(|(validator, _)| active.contains(validator))
-            .map(|(validator, stake)| (validator.clone(), *stake))
-            .collect()
-    }
-
-    /// Stake of `validator` if it is active (post-quarantine), else 0 — the efficient
-    /// single-validator form of `active_weight_map` for hot finality lookups. The bonded stake of
-    /// an unlisted validator is intentionally 0 here (not a silent default): exclusion from the
-    /// recorded active set IS the datum. Mirrors the empty-set liveness guard above.
-    pub fn active_stake_of(&self, validator: &Bytes) -> i64 {
-        if !self.active_validators.is_empty() && !self.active_validators.contains(validator) {
-            return 0;
-        }
-        self.weight_map.get(validator).copied().unwrap_or(0)
-    }
-}
-
-#[cfg(test)]
-mod active_weight_tests {
-    use super::*;
-
-    fn v(n: u8) -> Bytes { Bytes::from(vec![n]) }
-
-    fn meta_with(weight_map: Vec<(Bytes, i64)>, active: Vec<Bytes>) -> BlockMetadata {
-        BlockMetadata {
-            block_hash: Bytes::from(vec![0]),
-            parents: vec![],
-            sender: Bytes::new(),
-            justifications: vec![],
-            weight_map: weight_map.into_iter().collect(),
-            block_number: 1,
-            sequence_number: 0,
-            invalid: false,
-            directly_finalized: false,
-            finalized: false,
-            fault_tolerance_value: 0.0,
-            active_validators: active,
-        }
-    }
-
-    // Regression guard for the finality quorum deadlock: a heavy just-bonded validator that is
-    // still in quarantine must NOT count toward the finality denominator. Before the active-set
-    // weighting fix the oracle used the full bonds map (total 600); the active set with v5
-    // quarantined keeps the denominator at the active 300, so the 3 active validators can still
-    // reach the fault-tolerance threshold and finalization advances.
-    #[test]
-    fn active_weight_map_excludes_quarantined_validator() {
-        let m = meta_with(
-            vec![(v(1), 100), (v(2), 100), (v(3), 100), (v(5), 300)],
-            vec![v(1), v(2), v(3)],
-        );
-        let awm = m.active_weight_map();
-        assert_eq!(
-            awm.values().sum::<i64>(),
-            300,
-            "quarantined v5 must not dilute the quorum"
-        );
-        assert!(!awm.contains_key(&v(5)));
-        assert_eq!(awm.len(), 3);
-        assert_eq!(m.active_stake_of(&v(1)), 100);
-        assert_eq!(
-            m.active_stake_of(&v(5)),
-            0,
-            "quarantined validator has 0 finality weight"
-        );
-    }
-
-    // Liveness guard: with no recorded active set (pre-population edge), fall back to full bonds
-    // rather than producing a zero quorum.
-    #[test]
-    fn empty_active_set_falls_back_to_full_bonds() {
-        let m = meta_with(vec![(v(1), 100), (v(2), 100)], vec![]);
-        assert_eq!(m.active_weight_map().values().sum::<i64>(), 200);
-        assert_eq!(m.active_stake_of(&v(1)), 100);
     }
 }

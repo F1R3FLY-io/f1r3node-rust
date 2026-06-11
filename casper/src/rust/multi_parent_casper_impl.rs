@@ -1034,17 +1034,8 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
         &self,
         block: &BlockMessage,
     ) -> Result<KeyValueDagRepresentation, CasperError> {
-        // Active (post-quarantine) validator set at this block's post-state, cached in metadata so
-        // the runtime-free finality oracle weights by the active set, not all bonds. Already cached
-        // from validation, so this is a hashmap hit on the hot path.
-        let active_validators = self
-            .runtime_manager
-            .get_active_validators(&block.body.state.post_state_hash)
-            .await?;
-        // Insert block as valid into DAG storage, caching the active set for the finality oracle.
-        let updated_dag =
-            self.block_dag_storage
-                .insert_with_active(block, false, false, active_validators)?;
+        // Insert block as valid into DAG storage
+        let updated_dag = self.block_dag_storage.insert(block, false, false)?;
         self.record_dag_cardinality_metrics(&updated_dag);
 
         // Remove user deploys from pending deploy storage as soon as the block is

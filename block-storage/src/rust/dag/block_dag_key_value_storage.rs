@@ -659,38 +659,16 @@ impl BlockDagKeyValueStorage {
         }
     }
 
-    /// Insert a block, defaulting its cached active-validator set to ALL bonded validators. Correct
-    /// for genesis (all bonded are active) and the conservative default for admin/test inserts. The
-    /// casper layer uses [`Self::insert_with_active`] for live valid blocks so finality weights by
-    /// the precise post-quarantine active set.
     pub fn insert(
         &self,
         block: &BlockMessage,
         invalid: bool,
         approved: bool,
     ) -> Result<KeyValueDagRepresentation, KvStoreError> {
-        self.insert_with_active(
-            block,
-            invalid,
-            approved,
-            BlockMetadata::bonded_validators(block),
-        )
-    }
-
-    /// Insert with an explicit post-quarantine active validator set (a subset of `bonds`), cached in
-    /// `BlockMetadata` so the runtime-free finality oracle can weight the quorum by the active set
-    /// rather than all bonded stake. See `BlockMetadata::active_weight_map`.
-    pub fn insert_with_active(
-        &self,
-        block: &BlockMessage,
-        invalid: bool,
-        approved: bool,
-        active_validators: Vec<prost::bytes::Bytes>,
-    ) -> Result<KeyValueDagRepresentation, KvStoreError> {
         let __insert_start = std::time::Instant::now();
         // Acquire global lock to ensure atomic insert operation
         let _lock_guard = self.global_lock.lock().unwrap();
-        let result = self.insert_internal(block, invalid, approved, active_validators);
+        let result = self.insert_internal(block, invalid, approved);
         metrics::histogram!("dag.insert.time", "source" => "f1r3fly.casper.block-dag")
             .record(__insert_start.elapsed().as_secs_f64());
         result
@@ -699,17 +677,11 @@ impl BlockDagKeyValueStorage {
     /// Internal method to insert without acquiring lock.
     /// Used when lock is already held by the caller.
     /// Public to allow IndexedBlockDagStorage to use it.
-    ///
-    /// `active_validators` is the post-quarantine active set at this block's post-state, computed
-    /// by the casper layer (which owns the rholang runtime) and cached in `BlockMetadata` so the
-    /// runtime-free finality oracle can weight by the active set. At genesis it is all bonded
-    /// validators.
     pub fn insert_internal(
         &self,
         block: &BlockMessage,
         invalid: bool,
         approved: bool,
-        active_validators: Vec<prost::bytes::Bytes>,
     ) -> Result<KeyValueDagRepresentation, KvStoreError> {
         let sender_is_empty = block.sender.is_empty();
         let sender_has_invalid_format =
@@ -821,8 +793,7 @@ impl BlockDagKeyValueStorage {
                 tracing::warn!("{}", log_empty_sender);
             }
 
-            let mut block_metadata = BlockMetadata::from_block(block, invalid, None, None);
-            block_metadata.active_validators = active_validators;
+            let block_metadata = BlockMetadata::from_block(block, invalid, None, None);
             let mut block_metadata_guard = self.block_metadata_index.write().unwrap();
             block_metadata_guard.add(block_metadata.clone())?;
             drop(block_metadata_guard);
