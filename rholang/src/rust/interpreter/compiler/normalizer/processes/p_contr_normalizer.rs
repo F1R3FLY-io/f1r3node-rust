@@ -17,7 +17,7 @@ use crate::rust::interpreter::util::filter_and_adjust_bitset;
 
 pub fn normalize_p_contr<'ast>(
     name: &'ast Name<'ast>,
-    formals: &rholang_parser::ast::Names<'ast>,
+    formals: &'ast rholang_parser::ast::Names<'ast>,
     body: &'ast AnnProc<'ast>,
     input: ProcVisitInputs,
     env: &HashMap<String, Par>,
@@ -36,6 +36,11 @@ pub fn normalize_p_contr<'ast>(
     let mut init_acc = (vec![], FreeMap::<VarSort>::default(), Vec::new());
 
     for name in formals.names.iter() {
+        // A contract formal is a pattern; cost syntax cannot appear there.
+        crate::rust::interpreter::compiler::normalizer::cost_accounting::pattern_guard::reject_cost_syntax_in_name_pattern(
+            name,
+        )?;
+
         let res = normalize_name(
             name,
             NameVisitInputs {

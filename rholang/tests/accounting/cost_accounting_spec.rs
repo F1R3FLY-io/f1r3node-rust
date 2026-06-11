@@ -510,3 +510,37 @@ async fn peek_with_parallel_produce_should_have_deterministic_replay_cost() {
         }
     }
 }
+
+/// Cost-accounted programs (signed terms, purses, combined-cell tokens) reduce
+/// deterministically and replay-consistently. `evaluate_and_replay` internally
+/// rigs + checks the replay log (`check_replay_data`, which panics on
+/// divergence); we additionally assert clean reduction and play/replay cost
+/// equality across the R1/R2/R3 funding shapes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cost_accounted_reduction_is_replay_deterministic() {
+    let phlo = Cost::create(
+        1_000_000_000,
+        "cost_accounting reduction determinism".to_string(),
+    );
+    for term in [
+        r#"{% @"r"!(42) %}[ s ] | s :: ()"#,
+        r#"{% @"r"!(1) %}[ a (*) b ] | a :: () | b :: ()"#,
+        r#"{% @"r"!(1) %}[ a (*) b ] | a (*) b :: ()"#,
+    ] {
+        let (play, replay) = evaluate_and_replay(phlo.clone(), term.to_string()).await;
+        assert!(
+            play.errors.is_empty(),
+            "play errors for {term}: {:?}",
+            play.errors
+        );
+        assert!(
+            replay.errors.is_empty(),
+            "replay errors for {term}: {:?}",
+            replay.errors
+        );
+        assert_eq!(
+            play.cost, replay.cost,
+            "cost must be replay-deterministic for {term}"
+        );
+    }
+}

@@ -35,6 +35,13 @@ pub fn normalize_p_match<'ast>(
             proc: case_body,
         } = case;
 
+        // Cost syntax (`{P}_s`, purses) lowers to a `for`/send and cannot be a
+        // match pattern; reject it here (process position is handled by the
+        // dispatch in `compiler::normalize`).
+        crate::rust::interpreter::compiler::normalizer::cost_accounting::pattern_guard::reject_cost_syntax_in_pattern(
+            pattern,
+        )?;
+
         let pattern_result = normalize_ann_proc(
             pattern,
             ProcVisitInputs {

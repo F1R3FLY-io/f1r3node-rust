@@ -40,6 +40,39 @@ pub fn normalize_p_input<'ast>(
         ));
     }
 
+    // Invariant: per-clause signed binds `{% y<-x %}[s]` (Greg `app:concrete`
+    // SignedBind) are intercepted by the `ForComprehension` dispatch in
+    // `normalize_ann_proc` and lowered by `cost_accounting::signed_term::
+    // lower_signed_join` (which strips them to linear binds and fuel-gates the
+    // comm). They never reach this plain receive path; the merged `| Bind::
+    // Signed` arms below are unreachable fallbacks kept only for exhaustiveness.
+    debug_assert!(
+        receipts.iter().all(|receipt| receipt
+            .binds
+            .iter()
+            .all(|bind| !matches!(bind, Bind::Signed { .. }))),
+        "signed binds must be lowered by lower_signed_join, not normalize_p_input"
+    );
+
+    // A receive-bind LHS is a pattern; cost syntax (`{P}_s`, purses) cannot
+    // appear there (it lowers to a `for`/send). Scan every bind's formals
+    // across all receipt groups before any normalization.
+    for receipt in receipts.iter() {
+        for bind in receipt.binds.iter() {
+            let lhs = match bind {
+                Bind::Linear { lhs, .. }
+                | Bind::Repeated { lhs, .. }
+                | Bind::Peek { lhs, .. }
+                | Bind::Signed { lhs, .. } => lhs,
+            };
+            for formal in lhs.names.iter() {
+                crate::rust::interpreter::compiler::normalizer::cost_accounting::pattern_guard::reject_cost_syntax_in_name_pattern(
+                    formal,
+                )?;
+            }
+        }
+    }
+
     // Multiple receipt groups (separated by `;`) are desugared into nested
     // for loops, matching Scala's PInputNormalizer behavior.
     //   for (@a <- ch1 where g1; @b <- ch2 where g2) { body }
@@ -240,7 +273,10 @@ pub fn normalize_p_input<'ast>(
         let processed_receipts: Result<Vec<_>, InterpreterError> = flat_receipts
             .iter()
             .map(|receipt| match receipt {
-                Bind::Linear { lhs, rhs } => {
+                // A per-clause signed bind `{% y <- x %}[s]` is structurally a
+                // linear receive `y <- x`; the cost-funding overlay (Axis-C join,
+                // funding the rendezvous by `s`) is applied by the cost layer.
+                Bind::Linear { lhs, rhs } | Bind::Signed { lhs, rhs, .. } => {
                     let names: Vec<_> = lhs.names.iter().collect();
                     let remainder = &lhs.remainder;
 
@@ -273,7 +309,7 @@ pub fn normalize_p_input<'ast>(
 
         // Determine bind characteristics from first receipt
         let (persistent, peek) = match head_receipt {
-            Bind::Linear { .. } => (false, false),
+            Bind::Linear { .. } | Bind::Signed { .. } => (false, false),
             Bind::Repeated { .. } => (true, false),
             Bind::Peek { .. } => (false, true),
         };

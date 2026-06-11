@@ -55,3 +55,24 @@ num-integer = "0.1"
 
 [profile.dev]
 debug = true
+
+# ─────────────────────────────────────────────────────────────────────────────
+# DEV-ONLY dependency flip — cost-accounting transpiler (REVERT BEFORE PUSH).
+#
+# Repoints the `rholang-parser` git dependency (rholang/Cargo.toml:46,
+# rev = c163755) and its two transitive crates at the local rholang-rs worktree
+# `../rholang-rs-cost-accounting-transpiler/`, which carries the new
+# cost-accounted surface syntax (Proc::SignedTerm / Proc::Purse / Signature /
+# TokenStack) that this transpiler lowers to stable Rholang.
+#
+# `[patch]` matches by the dependency's *source URL*, so all three crates pulled
+# from that git source are overridden in lock-step. The three Cargo.lock entries
+# flip git+… → path+…; keep that churn out of git with
+#     git update-index --skip-worktree Cargo.lock
+# (reverse with --no-skip-worktree). Pre-push checklist:
+# docs/cost-accounting/transpiler.md.  Tracked: pgmcp cat-dep-flip-revert.
+# ─────────────────────────────────────────────────────────────────────────────
+[patch."https://github.com/F1R3FLY-io/rholang-rs"]
+rholang-parser = { path = "../rholang-rs-cost-accounting-transpiler/rholang-parser" }
+rholang-tree-sitter = { path = "../rholang-rs-cost-accounting-transpiler/rholang-tree-sitter" }
+rholang-tree-sitter-proc-macro = { path = "../rholang-rs-cost-accounting-transpiler/rholang-tree-sitter-proc-macro" }

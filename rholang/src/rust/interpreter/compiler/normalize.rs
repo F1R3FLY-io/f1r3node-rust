@@ -397,10 +397,29 @@ pub fn normalize_ann_proc<'ast>(
             normalize_p_collect(collection, input, _env, parser)
         }
 
-        // ForComprehension - handle for-comprehensions (was Input in old AST)
-        Proc::ForComprehension { receipts, proc } => {
-            use crate::rust::interpreter::compiler::normalizer::processes::p_input_normalizer::normalize_p_input;
-            normalize_p_input(receipts, proc, input, _env, parser)
+        // ForComprehension - handle for-comprehensions (was Input in old AST).
+        // A `for` whose receipts carry per-clause signed binds `{% y<-x %}[s]`
+        // (Greg `app:concrete` SignedBind) is cost-metered: route it to the
+        // signed-join lowering, which strips the binds to plain linear binds and
+        // gates the comm by each clause's fuel (the Axis-C join). Plain `for`s
+        // take the ordinary path.
+        Proc::ForComprehension {
+            receipts,
+            proc: for_body,
+        } => {
+            use rholang_parser::ast::Bind;
+            if receipts.iter().any(|receipt| {
+                receipt
+                    .binds
+                    .iter()
+                    .any(|bind| matches!(bind, Bind::Signed { .. }))
+            }) {
+                use crate::rust::interpreter::compiler::normalizer::cost_accounting::signed_term::lower_signed_join;
+                lower_signed_join(receipts, *for_body, proc.span, input, _env, parser)
+            } else {
+                use crate::rust::interpreter::compiler::normalizer::processes::p_input_normalizer::normalize_p_input;
+                normalize_p_input(receipts, for_body, input, _env, parser)
+            }
         }
 
         // Let - handle let bindings
@@ -426,6 +445,26 @@ pub fn normalize_ann_proc<'ast>(
             Err(InterpreterError::ParserError(
                 "Select (choice) constructs not yet implemented in normalizer".to_string(),
             ))
+        }
+
+        // SignedTerm - cost-accounted `{P}_s`: lower to its fuel gate(s).
+        Proc::SignedTerm {
+            proc: signed_proc,
+            sig,
+        } => {
+            use crate::rust::interpreter::compiler::normalizer::cost_accounting::{
+                strategy, CostLoweringStrategy,
+            };
+            strategy().lower_signed_term(signed_proc, sig, input, _env, parser)
+        }
+
+        // Token stack - cost-accounted bare stack `s :: … :: ()`: lower to its
+        // send chain (Greg `app:concrete` `Stk`; no `purse(...)` wrapper).
+        Proc::TokenStack { stack } => {
+            use crate::rust::interpreter::compiler::normalizer::cost_accounting::{
+                strategy, CostLoweringStrategy,
+            };
+            strategy().lower_token_stack(stack, input, _env, parser)
         }
 
         // Bad - handle parsing errors

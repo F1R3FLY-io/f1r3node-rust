@@ -1,2 +1,3 @@
+mod cost_accounting_reduction_spec;
 mod cost_accounting_spec;
 mod non_deterministic_processes_spec;
