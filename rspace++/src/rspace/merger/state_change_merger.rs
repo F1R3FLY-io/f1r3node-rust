@@ -252,11 +252,19 @@ fn make_trie_action<C: Clone, P: Clone, A: Clone, K: Clone>(
 ) -> Result<HotStoreTrieAction<C, P, A, K>, HistoryError> {
     let init = init_value(history_pointer)?;
 
+    // Compose as (init ++ added) -- removed, as multisets. The combined changes
+    // of a merge scope can contain CHAINED writes to one channel — chain B
+    // removes the datum chain A added — so a remove may match an ADDED datum,
+    // not only a base datum. Subtracting from the base first (the previous
+    // form, multiset_diff(init, removed) ++ added) silently ignored such an
+    // unmatched remove and then stacked every add: a single-value cell grew one
+    // datum per chained write. Pooling adds with the base before subtracting
+    // cancels matched add/remove pairs exactly, leaving precisely the final
+    // value(s) of the composed sequence.
     let new_val = {
-        // Use multiset diff: remove each item in 'removed' exactly once from 'init'
-        let mut result = StateChange::multiset_diff(&init, &changes.removed);
-        result.extend(changes.added.clone());
-        result
+        let mut pool = init.clone();
+        pool.extend(changes.added.clone());
+        StateChange::multiset_diff(&pool, &changes.removed)
     };
 
     let ch_hex = hex::encode(history_pointer.bytes());
@@ -294,12 +302,16 @@ fn make_trie_action<C: Clone, P: Clone, A: Clone, K: Clone>(
         // Case 2: Items were updated - update action
         Ok(update_action(history_pointer, new_val))
     } else {
-        // Case 3: Error case - no changes
-        Err(HistoryError::MergeError(
-            "Merging logic error: empty channel change for produce or join when computing trie \
-             action."
-                .to_string(),
-        ))
+        // Case 3: the composed changes cancel out exactly (a chained write
+        // sequence that returns the channel to its base value). Emit an
+        // idempotent update — writing the identical value is a no-op on the
+        // trie — rather than failing the whole merge.
+        tracing::debug!(
+            target: "f1r3fly.merge.dag",
+            channel = %ch_hex,
+            "channel changes cancel to the base value; idempotent update"
+        );
+        Ok(update_action(history_pointer, new_val))
     }
 }
 

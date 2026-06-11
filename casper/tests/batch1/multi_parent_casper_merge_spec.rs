@@ -538,3 +538,143 @@ async fn hash_set_casper_should_produce_identical_merge_results_regardless_of_fi
     let status1 = nodes[1].process_block(merge_block.clone()).await.unwrap();
     assert_eq!(status1, Either::Right(ValidBlock::Valid));
 }
+
+/// The canonical floor-state recursion is a pure function of the cut: the
+/// sealed state for a floor must be bit-identical whether it is folded cold
+/// from genesis in one call, folded via a pre-warmed intermediate floor, or
+/// computed on a different node's storage from the same propagated DAG. This
+/// is the property whose absence (seal vs read-path folding different chains)
+/// was the verified FS path-dependence root cause in the prior experiment.
+#[tokio::test]
+async fn fs_floor_state_is_path_independent_and_cross_node_identical() {
+    use casper::rust::finality::floor::floor_of_block;
+    use casper::rust::finality::floor_seal::floor_state_get_or_compute;
+
+    const FT_THRESHOLD: f32 = 0.1;
+
+    let genesis = GenesisBuilder::new()
+        .build_genesis_with_parameters(Some(
+            GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(3)),
+        ))
+        .await
+        .expect("Failed to build genesis");
+
+    let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None, None)
+        .await
+        .unwrap();
+    let shard_id = genesis.genesis_block.shard_id.clone();
+
+    // Three rounds of divergent blocks + a merge block, with full propagation,
+    // so justification-derived floors advance well past genesis.
+    let mut last_merge_block = None;
+    for round in 0..3u32 {
+        let da = construct_deploy::source_deploy_now(
+            format!("@{}!({})", 100 + round * 10, round),
+            None,
+            None,
+            Some(shard_id.clone()),
+        )
+        .unwrap();
+        let db = construct_deploy::source_deploy_now(
+            format!("@{}!({})", 200 + round * 10, round),
+            Some(construct_deploy::DEFAULT_SEC2.clone()),
+            None,
+            Some(shard_id.clone()),
+        )
+        .unwrap();
+        let _ba = nodes[0].add_block_from_deploys(&[da]).await.unwrap();
+        let _bb = nodes[1].add_block_from_deploys(&[db]).await.unwrap();
+        let nodes_refs: Vec<&mut TestNode> = nodes.iter_mut().collect();
+        TestNode::propagate(&mut nodes_refs.into_iter().collect::<Vec<_>>())
+            .await
+            .unwrap();
+
+        let dm = construct_deploy::source_deploy_now(
+            format!("@{}!({})", 300 + round * 10, round),
+            None,
+            None,
+            Some(shard_id.clone()),
+        )
+        .unwrap();
+        let merge_block = TestNode::propagate_block_at_index(&mut nodes, 2, &[dm])
+            .await
+            .unwrap();
+        last_merge_block = Some(merge_block);
+    }
+    let tip = last_merge_block.expect("three rounds produced a merge block");
+
+    // The floor of the tip must be identical across nodes (it is derived from
+    // the tip's own justifications, not from node-local state).
+    let dag2 = nodes[2].block_dag_storage.get_representation();
+    let dag0 = nodes[0].block_dag_storage.get_representation();
+    let floor2 = floor_of_block(&dag2, &tip.block_hash, FT_THRESHOLD)
+        .await
+        .expect("floor must resolve on node2");
+    let floor0 = floor_of_block(&dag0, &tip.block_hash, FT_THRESHOLD)
+        .await
+        .expect("floor must resolve on node0");
+    assert_eq!(
+        floor2, floor0,
+        "justification-derived floor must be node-identical"
+    );
+    assert_ne!(
+        floor2.hash, genesis.genesis_block.block_hash,
+        "test needs floors past genesis; raise the round count if this fires"
+    );
+
+    // Path A (node2): cold fold, genesis up, in one call.
+    let fs_cold = floor_state_get_or_compute(
+        &dag2,
+        &nodes[2].block_store,
+        &nodes[2].runtime_manager,
+        &floor2.hash,
+        FT_THRESHOLD,
+    )
+    .await
+    .expect("cold floor-state fold must succeed");
+
+    // Path B (node0): pre-warm the intermediate floor, then resolve the target —
+    // the fold starts from a different stored base.
+    let mid = floor_of_block(&dag0, &floor0.hash, FT_THRESHOLD)
+        .await
+        .expect("intermediate floor must resolve");
+    let _fs_mid = floor_state_get_or_compute(
+        &dag0,
+        &nodes[0].block_store,
+        &nodes[0].runtime_manager,
+        &mid.hash,
+        FT_THRESHOLD,
+    )
+    .await
+    .expect("intermediate floor-state must compute");
+    let fs_warm = floor_state_get_or_compute(
+        &dag0,
+        &nodes[0].block_store,
+        &nodes[0].runtime_manager,
+        &floor0.hash,
+        FT_THRESHOLD,
+    )
+    .await
+    .expect("warm floor-state fold must succeed");
+
+    assert_eq!(
+        fs_cold.state_hash, fs_warm.state_hash,
+        "FS(floor) must be bit-identical regardless of fold path and node"
+    );
+    assert_eq!(
+        fs_cold.rejected_deploys, fs_warm.rejected_deploys,
+        "sealed rejection decisions must be identical regardless of fold path and node"
+    );
+
+    // Store hit must return the same value the fold produced.
+    let fs_again = floor_state_get_or_compute(
+        &dag2,
+        &nodes[2].block_store,
+        &nodes[2].runtime_manager,
+        &floor2.hash,
+        FT_THRESHOLD,
+    )
+    .await
+    .expect("store hit must succeed");
+    assert_eq!(fs_cold, fs_again, "store hit must equal the folded value");
+}

@@ -115,6 +115,11 @@ async fn step_block(
         .into_iter()
         .map(|d| d.deploy)
         .collect::<Vec<_>>();
+    let latest_messages: std::collections::BTreeMap<_, _> = block
+        .justifications
+        .iter()
+        .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
+        .collect();
 
     let (_, post_state_hash, processed_deploys, _, processed_system_deploys, bonds) =
         compute_deploys_checkpoint(
@@ -126,6 +131,7 @@ async fn step_block(
             runtime_manager,
             BlockData::from_block(block),
             HashMap::new(),
+            &latest_messages,
             None,
         )
         .await?;
@@ -301,6 +307,11 @@ async fn run_compute_parents_post_state_finalized_skew_regression() {
     .expect("Failed to step b3");
 
     let parents = vec![b2.clone(), b3.clone()];
+    // One fixed justification snapshot for both computations: the floor (and
+    // therefore the merge) must be a function of (parents, justifications),
+    // never of node-local finalized state.
+    let latest_messages: std::collections::BTreeMap<_, _> =
+        std::iter::once((validator.clone(), b2.block_hash.clone())).collect();
 
     let mut snapshot_without_skew = mk_snapshot(
         dag_storage.get_representation(),
@@ -316,9 +327,11 @@ async fn run_compute_parents_post_state_finalized_skew_regression() {
             parents.clone(),
             &snapshot_without_skew,
             &runtime_manager,
+            &latest_messages,
             None,
             None,
         )
+        .await
         .expect("Failed to compute parents post-state without finalized skew");
 
     runtime_manager.parents_post_state_cache.clear();
@@ -341,9 +354,11 @@ async fn run_compute_parents_post_state_finalized_skew_regression() {
         parents,
         &snapshot_with_skew,
         &runtime_manager,
+        &latest_messages,
         None,
         None,
     )
+    .await
     .expect("Failed to compute parents post-state with finalized skew");
 
     assert_eq!(
@@ -522,6 +537,8 @@ async fn run_compute_parents_post_state_missing_mergeable_regression() {
         "Expected parent mergeable entry to exist before deletion."
     );
 
+    let latest_messages: std::collections::BTreeMap<_, _> =
+        std::iter::once((validator.clone(), b2.block_hash.clone())).collect();
     let mut snapshot = mk_snapshot(
         dag_storage.get_representation(),
         validator,
@@ -535,9 +552,11 @@ async fn run_compute_parents_post_state_missing_mergeable_regression() {
         vec![b2, b3],
         &snapshot,
         &runtime_manager,
+        &latest_messages,
         None,
         None,
-    );
+    )
+    .await;
 
     assert!(
         matches!(result, Err(CasperError::KvStoreError(_))),

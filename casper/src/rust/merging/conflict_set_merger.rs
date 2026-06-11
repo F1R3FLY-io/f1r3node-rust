@@ -58,6 +58,35 @@ fn compare_branches<R: Ord>(a: &Branch<R>, b: &Branch<R>) -> std::cmp::Ordering 
     std::cmp::Ordering::Equal
 }
 
+/// Finalized counterparties for conflict resolution — the enforcement window.
+///
+/// Chains here come from already-finalized blocks whose effects (for
+/// `accepted`) are in the merge base, or were rejected by the seal (for
+/// `rejected`). They participate in conflict detection with the SAME predicate
+/// as conflict-set chains, but their diffs are never applied and they are
+/// never candidates for cost-optimal rejection — finalized decisions are
+/// enforced, not re-litigated.
+pub struct FinalSet<R> {
+    /// Seal-accepted chains: conflict counterparties. A conflict-set branch
+    /// that conflicts with any of these is force-rejected pre-cost.
+    pub accepted: Vec<R>,
+    /// Seal-rejected chains: depends-sources. A conflict-set branch that
+    /// depends on any of these executed on effects finality rejected and is
+    /// force-rejected pre-cost.
+    pub rejected: Vec<R>,
+}
+
+impl<R> FinalSet<R> {
+    pub fn empty() -> Self {
+        Self {
+            accepted: Vec::new(),
+            rejected: Vec::new(),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool { self.accepted.is_empty() && self.rejected.is_empty() }
+}
+
 /// Result of conflict resolution. Callers that need to adjust the rejection
 /// set before diffs are applied — for example, to add DAG-descendants of
 /// rejected blocks whose diffs would be stale — can do so before invoking
@@ -65,7 +94,7 @@ fn compare_branches<R: Ord>(a: &Branch<R>, b: &Branch<R>) -> std::cmp::Ordering 
 pub struct ResolvedConflicts<R: Clone + Eq + std::hash::Hash> {
     /// Branches surviving conflict resolution; their diffs will be applied.
     pub to_merge: Vec<HashableSet<R>>,
-    /// Rejected items (late set + dependents + optimal rejection).
+    /// Rejected items (late set + dependents + forced + optimal rejection).
     pub rejected: HashableSet<R>,
     // Diagnostic counters used in the summary log.
     pub late_set_size: usize,
@@ -75,6 +104,10 @@ pub struct ResolvedConflicts<R: Clone + Eq + std::hash::Hash> {
     pub optimal_rejection_count: usize,
     pub conflict_map_conflicts_count: usize,
     pub rejection_options_count: usize,
+    /// Branches force-rejected because they conflict with a finalized-accepted
+    /// chain, carry an enforced deploy sig, or depend on a finalized-rejected
+    /// chain.
+    pub force_rejected_final_count: usize,
     // Timings.
     pub branches_time: Duration,
     pub conflicts_map_time: Duration,
@@ -108,6 +141,11 @@ pub fn resolve_conflicts<R: Clone + Eq + std::hash::Hash + PartialOrd + Ord>(
         HashMap<HashableSet<R>, HashableSet<HashableSet<R>>>,
         HistoryError,
     >,
+    // Finalized counterparties (the enforcement window) and the per-chain
+    // enforced-sig predicate. Chains satisfying `carries_enforced_sig` are
+    // duplicates of finalized-accepted work and are force-rejected.
+    final_set: &FinalSet<R>,
+    carries_enforced_sig: &impl Fn(&R) -> bool,
 ) -> Result<ResolvedConflicts<R>, HistoryError> {
     // Convert to Sets for set operations, but use Vec for ordered iteration
     let actual_set: HashSet<R> = actual_seq.iter().cloned().collect();
@@ -138,14 +176,86 @@ pub fn resolve_conflicts<R: Clone + Eq + std::hash::Hash + PartialOrd + Ord>(
     )
     .record(branches_time.as_secs_f64());
 
-    let branches_set = HashableSet(branches.0.iter().cloned().collect());
-    let (conflict_map, conflicts_map_time) =
-        measure_result_time(|| compute_conflict_map(&branches_set))?;
+    // Finalized-accepted chains enter the conflict map as singleton branches:
+    // the SAME predicate detects conflictSet×finalSet and conflictSet×conflictSet
+    // pairs, so the two halves cannot disagree about what conflicts.
+    let final_branches: HashSet<HashableSet<R>> = final_set
+        .accepted
+        .iter()
+        .map(|chain| HashableSet(HashSet::from([chain.clone()])))
+        .collect();
+
+    let detection_set: HashableSet<HashableSet<R>> = HashableSet(
+        branches
+            .0
+            .iter()
+            .cloned()
+            .chain(final_branches.iter().cloned())
+            .collect(),
+    );
+    let (conflict_map_all, conflicts_map_time) =
+        measure_result_time(|| compute_conflict_map(&detection_set))?;
     metrics::histogram!(
         crate::rust::metrics_constants::DAG_MERGE_CONFLICTS_MAP_TIME_METRIC,
         "source" => crate::rust::metrics_constants::MERGING_METRICS_SOURCE
     )
     .record(conflicts_map_time.as_secs_f64());
+
+    // Force-rejection pass: finalized decisions are enforced before cost
+    // optimization ever sees the branches. A conflict-set branch is forced out
+    // if it (a) conflicts with a finalized-accepted chain, (b) carries an
+    // enforced deploy sig, or (c) depends on a finalized-rejected chain.
+    let mut forced: HashSet<HashableSet<R>> = HashSet::new();
+    if !final_set.is_empty()
+        || branches
+            .0
+            .iter()
+            .any(|b| b.0.iter().any(carries_enforced_sig))
+    {
+        for branch in branches.0.iter() {
+            let conflicts_with_final = conflict_map_all
+                .get(branch)
+                .is_some_and(|adjacent| adjacent.0.iter().any(|b| final_branches.contains(b)));
+            let enforced_sig = branch.0.iter().any(carries_enforced_sig);
+            let depends_on_rejected = branch.0.iter().any(|chain| {
+                final_set
+                    .rejected
+                    .iter()
+                    .any(|rejected| depends(chain, rejected))
+            });
+            if conflicts_with_final || enforced_sig || depends_on_rejected {
+                forced.insert(branch.clone());
+            }
+        }
+    }
+    let force_rejected_final_count = forced.len();
+
+    // Surviving conflict branches; the conflict map restricted to them. Final
+    // branches and forced branches never reach rejection-option enumeration —
+    // final ones because they are not candidates at all, forced ones because
+    // their fate is already decided.
+    let branches: HashableSet<HashableSet<R>> = HashableSet(
+        branches
+            .0
+            .into_iter()
+            .filter(|branch| !forced.contains(branch))
+            .collect(),
+    );
+    let branches_set = HashableSet(branches.0.iter().cloned().collect());
+    let conflict_map: HashMap<HashableSet<R>, HashableSet<HashableSet<R>>> = conflict_map_all
+        .into_iter()
+        .filter(|(key, _)| branches_set.0.contains(key))
+        .map(|(key, adjacent)| {
+            let restricted = HashableSet(
+                adjacent
+                    .0
+                    .into_iter()
+                    .filter(|b| branches_set.0.contains(b))
+                    .collect(),
+            );
+            (key, restricted)
+        })
+        .collect();
 
     // Compute rejection options that leave only non-conflicting branches with timing
     use rspace_plus_plus::rspace::merger::merging_logic::compute_rejection_options;
@@ -238,6 +348,11 @@ pub fn resolve_conflicts<R: Clone + Eq + std::hash::Hash + PartialOrd + Ord>(
     for item in &rejected_as_dependents {
         rejected.0.insert(item.clone());
     }
+    for branch in &forced {
+        for item in &branch.0 {
+            rejected.0.insert(item.clone());
+        }
+    }
     for item in &optimal_rejection_flattened {
         rejected.0.insert(item.clone());
     }
@@ -246,10 +361,11 @@ pub fn resolve_conflicts<R: Clone + Eq + std::hash::Hash + PartialOrd + Ord>(
     let conflict_map_conflicts_count = conflict_map.iter().filter(|(_, v)| !v.0.is_empty()).count();
     info!(
         "ConflictSetMerger rejection breakdown: lateSet={}, rejectedAsDependents={}, \
-        optimalRejection={}, total rejected={}, branches={}, toMerge={}, \
+        forcedByFinal={}, optimalRejection={}, total rejected={}, branches={}, toMerge={}, \
         conflictMap entries with conflicts={}, rejectionOptions={}, rejectionOptionsWithOverflow={}",
         late_set.len(),
         rejected_as_dependents.0.len(),
+        force_rejected_final_count,
         optimal_rejection_flattened.0.len(),
         rejected.0.len(),
         branches_set.0.len(),
@@ -269,6 +385,7 @@ pub fn resolve_conflicts<R: Clone + Eq + std::hash::Hash + PartialOrd + Ord>(
         optimal_rejection_count: optimal_rejection.0.len(),
         conflict_map_conflicts_count,
         rejection_options_count: rejection_options.0.len(),
+        force_rejected_final_count,
         branches_time,
         conflicts_map_time,
         rejection_options_time,
@@ -479,6 +596,8 @@ pub fn merge<
         &get_data,
         &compute_branches,
         &compute_conflict_map,
+        &FinalSet::empty(),
+        &|_| false,
     )?;
     let new_state = compute_merged_state(
         &resolved,
@@ -797,5 +916,92 @@ mod tests {
         assert!(result.is_ok());
         let (_new_state, rejected) = result.unwrap();
         assert!(!rejected.0.is_empty());
+    }
+
+    /// Finalized decisions are enforced before cost optimization: a conflict
+    /// branch that conflicts with a finalized-accepted chain, carries an
+    /// enforced sig, or depends on a finalized-rejected chain is force-rejected
+    /// regardless of cost, and final chains never appear in the result.
+    #[test]
+    fn resolve_conflicts_enforces_finalized_decisions() {
+        // Conflict set: 1 (conflicts with accepted-final 10), 2 (carries an
+        // enforced sig), 3 (depends on rejected-final 20), 4 (clean).
+        let actual: Vec<i32> = vec![1, 2, 3, 4];
+        let final_set = FinalSet {
+            accepted: vec![10],
+            rejected: vec![20],
+        };
+
+        let depends = |target: &i32, source: &i32| *target == 3 && *source == 20;
+        // Cost favors keeping 1 strongly: without enforcement it would survive
+        // any cost-optimal rejection.
+        let cost = |item: &i32| if *item == 1 { 1_000_000u64 } else { 1 };
+        let mergeable = |_: &i32| NumberChannelsDiff::new();
+        let get_data = |_: Blake2b256Hash| Ok(Vec::new());
+        let compute_branches = |set: &HashableSet<i32>| {
+            HashableSet(
+                set.0
+                    .iter()
+                    .map(|item| HashableSet(HashSet::from([*item])))
+                    .collect::<HashSet<_>>(),
+            )
+        };
+        let compute_conflict_map = |branches: &HashableSet<HashableSet<i32>>| {
+            let mut map: HashMap<HashableSet<i32>, HashableSet<HashableSet<i32>>> = HashMap::new();
+            for b in branches.0.iter() {
+                map.insert(b.clone(), HashableSet(HashSet::new()));
+            }
+            let one = HashableSet(HashSet::from([1]));
+            let ten = HashableSet(HashSet::from([10]));
+            if branches.0.contains(&one) && branches.0.contains(&ten) {
+                map.get_mut(&one).unwrap().0.insert(ten.clone());
+                map.get_mut(&ten).unwrap().0.insert(one.clone());
+            }
+            Ok(map)
+        };
+        let carries_enforced_sig = |item: &i32| *item == 2;
+
+        let resolved = resolve_conflicts(
+            actual,
+            Vec::new(),
+            &depends,
+            &cost,
+            &mergeable,
+            &get_data,
+            &compute_branches,
+            &compute_conflict_map,
+            &final_set,
+            &carries_enforced_sig,
+        )
+        .expect("resolve_conflicts must succeed");
+
+        assert!(
+            resolved.rejected.0.contains(&1),
+            "conflict with accepted-final must force-reject"
+        );
+        assert!(
+            resolved.rejected.0.contains(&2),
+            "enforced sig must force-reject"
+        );
+        assert!(
+            resolved.rejected.0.contains(&3),
+            "depends on rejected-final must force-reject"
+        );
+        assert!(
+            !resolved.rejected.0.contains(&4),
+            "clean chain must survive"
+        );
+        assert_eq!(resolved.force_rejected_final_count, 3);
+
+        let merged: HashSet<i32> = resolved
+            .to_merge
+            .iter()
+            .flat_map(|b| b.0.iter().copied())
+            .collect();
+        assert_eq!(merged, HashSet::from([4]), "only the clean chain merges");
+        assert!(
+            !merged.contains(&10) && !resolved.rejected.0.contains(&10),
+            "final chains are counterparties, never candidates"
+        );
     }
 }

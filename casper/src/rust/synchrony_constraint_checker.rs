@@ -5,7 +5,6 @@ use std::sync::Mutex;
 use std::time::Instant;
 
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
-use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use lazy_static::lazy_static;
 use models::rust::block_metadata::BlockMetadata;
 use models::rust::validator::Validator;
@@ -13,9 +12,7 @@ use models::rust::validator::Validator;
 use super::blocks::proposer::propose_result::CheckProposeConstraintsResult;
 use super::casper::{CasperShardConf, CasperSnapshot};
 use super::errors::CasperError;
-use super::util::rholang::runtime_manager::RuntimeManager;
 use super::validator_identity::ValidatorIdentity;
-use crate::rust::util::proto_util;
 
 #[derive(Debug)]
 struct SynchronyRecoveryState {
@@ -310,8 +307,6 @@ fn should_bypass_synchrony_constraint(
 
 pub async fn check(
     snapshot: &CasperSnapshot,
-    runtime_manager: &RuntimeManager,
-    block_store: &KeyValueBlockStore,
     validator_identity: &ValidatorIdentity,
 ) -> Result<CheckProposeConstraintsResult, CasperError> {
     let validator = validator_identity.public_key.bytes.clone();
@@ -340,22 +335,11 @@ pub async fn check(
 
                 let main_parent_meta = snapshot.dag.lookup_unsafe(&main_parent.block_hash)?;
 
-                // Loading the whole block is only needed to get post-state hash
-                let main_parent_block = block_store.get_unsafe(&main_parent_meta.block_hash);
-                let main_parent_state_hash = proto_util::post_state_hash(&main_parent_block);
-
-                // Get bonds map from PoS
-                // NOTE: It would be useful to have active validators cached in the block in the same way as bonds.
-                let active_validators = runtime_manager
-                    .get_active_validators(&main_parent_state_hash)
-                    .await?;
-
-                // Validators weight map filtered by active validators only.
-                let validator_weight_map: HashMap<Validator, i64> = main_parent_meta
-                    .weight_map
-                    .into_iter()
-                    .filter(|(validator, _)| active_validators.contains(validator))
-                    .collect();
+                // Weight map restricted to active (post-quarantine) validators, read from the
+                // active set cached on the parent's metadata at insert time. This is the same set a
+                // runtime query of the parent's post-state would return, without the async PoS read.
+                let validator_weight_map: HashMap<Validator, i64> =
+                    main_parent_meta.active_weight_map().into_iter().collect();
 
                 // Guaranteed to be present since last proposed block was present
                 let seen_senders = calculate_seen_senders_since(

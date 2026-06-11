@@ -386,6 +386,26 @@ pub async fn block_dag_storage_from_dyn(
         BlockHashSerde,
     > = KeyValueTypedStoreImpl::new(deploy_index_kv_store);
 
+    let floor_state_kv_store = kvm.store("floor-state".to_string()).await.map_err(|e| {
+        shared::rust::store::key_value_store::KvStoreError::IoError(format!(
+            "Failed to get floor-state store: {:?}",
+            e
+        ))
+    })?;
+    let floor_state_db: KeyValueTypedStoreImpl<
+        BlockHashSerde,
+        models::rust::block::floor_data::FloorData,
+    > = KeyValueTypedStoreImpl::new(floor_state_kv_store);
+
+    let floor_index_kv_store = kvm.store("floor-index".to_string()).await.map_err(|e| {
+        shared::rust::store::key_value_store::KvStoreError::IoError(format!(
+            "Failed to get floor-index store: {:?}",
+            e
+        ))
+    })?;
+    let floor_index_db: KeyValueTypedStoreImpl<BlockHashSerde, BlockHashSerde> =
+        KeyValueTypedStoreImpl::new(floor_index_kv_store);
+
     Ok(BlockDagKeyValueStorage {
         global_lock: Arc::new(Mutex::new(())),
         block_metadata_index: Arc::new(RwLock::new(block_metadata_store)),
@@ -393,6 +413,8 @@ pub async fn block_dag_storage_from_dyn(
         invalid_blocks_index: invalid_blocks_db,
         equivocation_tracker_index: equivocation_tracker_store,
         latest_messages_index: latest_messages_db,
+        floor_state_index: floor_state_db,
+        floor_index: floor_index_db,
         dag_generation: Arc::new(AtomicU64::new(0)),
     })
 }
@@ -554,6 +576,8 @@ pub fn new_key_value_dag_representation() -> KeyValueDagRepresentation {
         deploy_index: Arc::new(RwLock::new(KeyValueTypedStoreImpl::new(Arc::new(
             InMemoryKeyValueStore::new(),
         )))),
+        floor_state_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
+        floor_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
     }
 }
 

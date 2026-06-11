@@ -61,6 +61,22 @@ fn descendants_within_scope(
     result
 }
 
+/// Finalized counterparties for a merge — the enforcement window between the
+/// base floor and the fork-point cover of the conflict scope. Built by
+/// `floor_seal::enforcement_window`; empty in the common no-lag case.
+pub struct FinalContext {
+    /// Seal-accepted chains in the window: conflict counterparties whose
+    /// effects are in the base. Never merged, never re-litigated.
+    pub accepted_chains: Vec<DeployChainIndex>,
+    /// Seal-rejected chains in the window: depends-sources for force-rejection.
+    pub rejected_chains: Vec<DeployChainIndex>,
+    /// User-deploy sigs of accepted window chains: a conflict chain carrying
+    /// one is a duplicate of finalized work and is force-rejected. Deliberately
+    /// NOT the cumulative finalization-rejected set — a rejected deploy must
+    /// stay re-proposable above the floor (the recovery path).
+    pub enforce_sigs: HashSet<Bytes>,
+}
+
 pub fn merge(
     dag: &KeyValueDagRepresentation,
     lfb: &BlockHash,
@@ -70,6 +86,7 @@ pub fn merge(
     rejection_cost_f: impl Fn(&DeployChainIndex) -> u64,
     scope: Option<HashSet<BlockHash>>,
     disable_late_block_filtering: bool,
+    final_context: Option<&FinalContext>,
 ) -> Result<
     (
         Blake2b256Hash,
@@ -295,15 +312,16 @@ pub fn merge(
             .map(|deploy| deploy.deploy_id.clone())
             .collect();
 
+        // ALL chains contribute to the branch's combined event log, system-deploy
+        // chains included. CloseBlock writes the whole PoS state cell at epoch
+        // boundaries; excluding system chains here made two sibling boundary
+        // writes invisible to conflict detection, so both whole-cell deltas were
+        // applied and the single-value cell went multi-datum (then getBonds reads
+        // diverged per node -> InvalidBondsCache). RChain indexes system deploys
+        // as first-class conflict participants for the same reason.
         let combined_event_log = branch
             .0
             .iter()
-            .filter(|idx| {
-                idx.deploys_with_cost
-                    .0
-                    .iter()
-                    .all(|d| !is_system_deploy_id(&d.deploy_id))
-            })
             .map(|chain| &chain.event_log_index)
             .try_fold(
                 rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex::empty(),
@@ -550,7 +568,25 @@ pub fn merge(
             merging_logic::gather_related_sets(&depends_map)
         };
 
-    // Resolve conflicts: detect conflicts and select the cost-optimal rejection set.
+    // Enforcement inputs: finalized window chains as counterparties + the
+    // duplicate-of-finalized sig predicate.
+    let empty_final_set = conflict_set_merger::FinalSet::empty();
+    let final_set = final_context.map_or(empty_final_set, |ctx| conflict_set_merger::FinalSet {
+        accepted: ctx.accepted_chains.clone(),
+        rejected: ctx.rejected_chains.clone(),
+    });
+    let carries_enforced_sig = |chain: &DeployChainIndex| -> bool {
+        final_context.is_some_and(|ctx| {
+            !ctx.enforce_sigs.is_empty()
+                && chain.deploys_with_cost.0.iter().any(|deploy| {
+                    !is_system_deploy_id(&deploy.deploy_id)
+                        && ctx.enforce_sigs.contains(&deploy.deploy_id)
+                })
+        })
+    };
+
+    // Resolve conflicts: enforce finalized decisions, then select the
+    // cost-optimal rejection set among the survivors.
     let mut resolved = conflict_set_merger::resolve_conflicts(
         actual_seq,
         late_seq,
@@ -560,8 +596,21 @@ pub fn merge(
         &get_data_fn,
         &compute_branches_fn,
         &compute_conflict_map_fn,
+        &final_set,
+        &carries_enforced_sig,
     )
     .map_err(|e| CasperError::HistoryError(e))?;
+
+    if resolved.force_rejected_final_count > 0 {
+        tracing::info!(
+            target: "f1r3.trace.fs_floor",
+            event = "enforce_rejected",
+            forced_branches = resolved.force_rejected_final_count,
+            window_accepted = final_set.accepted.len(),
+            window_rejected = final_set.rejected.len(),
+            "finalized decisions force-rejected conflict branches"
+        );
+    }
 
     // Rejection expansion. Any chain whose source block is a DAG descendant
     // of a rejected chain's source block (within merge scope) has pre-computed

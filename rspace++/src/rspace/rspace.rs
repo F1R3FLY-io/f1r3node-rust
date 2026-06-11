@@ -78,7 +78,10 @@ where
     }
 
     pub fn set_current_deploy_sig(&self, sig: Vec<u8>) {
-        *self.current_deploy_sig.write().expect("current_deploy_sig write lock") = Some(sig);
+        *self
+            .current_deploy_sig
+            .write()
+            .expect("current_deploy_sig write lock") = Some(sig);
         self.this_exec_produces
             .write()
             .expect("this_exec_produces write lock")
@@ -86,7 +89,12 @@ where
     }
 
     pub fn current_deploy_sig_short(&self) -> String {
-        match self.current_deploy_sig.read().expect("current_deploy_sig read lock").as_ref() {
+        match self
+            .current_deploy_sig
+            .read()
+            .expect("current_deploy_sig read lock")
+            .as_ref()
+        {
             Some(sig) => {
                 let h = hex::encode(sig);
                 h[..16.min(h.len())].to_string()
@@ -966,7 +974,10 @@ where
                 .map(|d| hex::encode(d.source.hash.bytes()))
                 .collect();
             let new_hash = hex::encode(produce_ref.hash.bytes());
-            let this_exec = self.this_exec_produces.read().expect("this_exec_produces read lock");
+            let this_exec = self
+                .this_exec_produces
+                .read()
+                .expect("this_exec_produces read lock");
             let existing_provenance: Vec<&str> = existing_sources
                 .iter()
                 .map(|h| {
@@ -1018,7 +1029,9 @@ where
             .map(|consume_candidate| {
                 let ConsumeCandidate {
                     channel,
-                    datum: Datum { persist, source, .. },
+                    datum: Datum {
+                        persist, source, ..
+                    },
                     removed_datum: _,
                     datum_index,
                 } = consume_candidate;
@@ -1184,7 +1197,9 @@ where
             .map(|consume_candidate| {
                 let ConsumeCandidate {
                     channel,
-                    datum: Datum { persist, source, .. },
+                    datum: Datum {
+                        persist, source, ..
+                    },
                     removed_datum: _,
                     datum_index,
                 } = consume_candidate;

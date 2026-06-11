@@ -215,80 +215,14 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
             }
         });
 
-        // Filter to blocks with matching bond maps (required for merge compatibility)
-        // If no parent blocks exist (genesis case), use approved block as the parent
+        // If no parent blocks exist (genesis case), use approved block as the parent.
+        // Parents with differing bonds maps are NOT filtered: the floor-based
+        // merge (base = sealed FS(floor), conflict scope = closure difference)
+        // reconciles diverged-bonds siblings instead of orphaning one side.
         let unfiltered_parents = if sorted_parents_list.is_empty() {
             vec![self.approved_block.clone()]
         } else {
-            // Use the newest block as the bond-reference baseline.
-            // Relying on the first (hash-sorted near-tip) block can select an older
-            // parent and regress snapshot max_block_num when a joiner/fresh bond-map
-            // divergence is present.
-            let reference_bonds = sorted_parents_list
-                .iter()
-                .max_by(|a, b| {
-                    a.body
-                        .state
-                        .block_number
-                        .cmp(&b.body.state.block_number)
-                        .then_with(|| a.block_hash.cmp(&b.block_hash))
-                })
-                .expect("sorted_parents_list is non-empty after is_empty() check")
-                .body
-                .state
-                .bonds
-                .clone();
-
-            let (kept, dropped): (Vec<BlockMessage>, Vec<BlockMessage>) = sorted_parents_list
-                .into_iter()
-                .partition(|block| block.body.state.bonds == reference_bonds);
-            if !dropped.is_empty() {
-                let ref_str = reference_bonds
-                    .iter()
-                    .map(|v| {
-                        format!(
-                            "{}:{}",
-                            hex::encode(&v.validator[..v.validator.len().min(4)]),
-                            v.stake
-                        )
-                    })
-                    .collect::<Vec<_>>()
-                    .join(",");
-                let dropped_str = dropped
-                    .iter()
-                    .map(|b| {
-                        let bm = b
-                            .body
-                            .state
-                            .bonds
-                            .iter()
-                            .map(|v| {
-                                format!(
-                                    "{}:{}",
-                                    hex::encode(&v.validator[..v.validator.len().min(4)]),
-                                    v.stake
-                                )
-                            })
-                            .collect::<Vec<_>>()
-                            .join(",");
-                        format!(
-                            "{}@{}=[{}]",
-                            hex::encode(&b.block_hash[..b.block_hash.len().min(4)]),
-                            b.body.state.block_number,
-                            bm
-                        )
-                    })
-                    .collect::<Vec<_>>()
-                    .join(" | ");
-                tracing::info!(
-                    target: "f1r3fly.casper.parent_selection",
-                    reference_bonds = %ref_str,
-                    dropped_count = dropped.len(),
-                    dropped_parents = %dropped_str,
-                    "bonds-equality parent filter dropped differently-bonded parents",
-                );
-            }
-            kept
+            sorted_parents_list
         };
 
         let unfiltered_parents_count = unfiltered_parents.len();
@@ -1100,8 +1034,17 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
         &self,
         block: &BlockMessage,
     ) -> Result<KeyValueDagRepresentation, CasperError> {
-        // Insert block as valid into DAG storage
-        let updated_dag = self.block_dag_storage.insert(block, false, false)?;
+        // Active (post-quarantine) validator set at this block's post-state, cached in metadata so
+        // the runtime-free finality oracle weights by the active set, not all bonds. Already cached
+        // from validation, so this is a hashmap hit on the hot path.
+        let active_validators = self
+            .runtime_manager
+            .get_active_validators(&block.body.state.post_state_hash)
+            .await?;
+        // Insert block as valid into DAG storage, caching the active set for the finality oracle.
+        let updated_dag =
+            self.block_dag_storage
+                .insert_with_active(block, false, false, active_validators)?;
         self.record_dag_cardinality_metrics(&updated_dag);
 
         // Remove user deploys from pending deploy storage as soon as the block is

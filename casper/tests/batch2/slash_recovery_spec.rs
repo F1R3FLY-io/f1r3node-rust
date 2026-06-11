@@ -324,9 +324,24 @@ async fn e1c_re_issues_merge_rejected_slash() {
         .map(|p| p.block_hash.clone())
         .collect();
     sorted_parent_hashes.sort();
+    // The production cache key is (parents, justification-derived floor):
+    // derive the floor exactly as compute_parents_post_state does.
+    let latest_messages: std::collections::BTreeMap<_, _> = snapshot
+        .justifications
+        .iter()
+        .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
+        .collect();
+    let floor = casper::rust::finality::floor::finalized_floor(
+        &snapshot.dag,
+        &sorted_parent_hashes,
+        &latest_messages,
+        snapshot.on_chain_state.shard_conf.fault_tolerance_threshold,
+    )
+    .await
+    .expect("floor for cache key");
     let cache_key = ParentsPostStateCacheKey {
         sorted_parent_hashes,
-        snapshot_lfb_hash: snapshot.last_finalized_block.clone(),
+        floor_hash: floor.hash.clone(),
         disable_late_block_filtering: snapshot
             .on_chain_state
             .shard_conf
@@ -339,9 +354,11 @@ async fn e1c_re_issues_merge_rejected_slash() {
             snapshot.parents.clone(),
             &snapshot,
             &nodes[1].runtime_manager,
+            &latest_messages,
             None,
             Some(&nodes[1].rejected_deploy_buffer),
         )
+        .await
         .expect("real merge to seed cache value");
 
     let synthetic = RejectedSlash {
@@ -493,9 +510,24 @@ async fn rejected_slash_recovery_keeps_empty_proposer_alive() {
         .map(|p| p.block_hash.clone())
         .collect();
     sorted_parent_hashes.sort();
+    // The production cache key is (parents, justification-derived floor):
+    // derive the floor exactly as compute_parents_post_state does.
+    let latest_messages: std::collections::BTreeMap<_, _> = snapshot
+        .justifications
+        .iter()
+        .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
+        .collect();
+    let floor = casper::rust::finality::floor::finalized_floor(
+        &snapshot.dag,
+        &sorted_parent_hashes,
+        &latest_messages,
+        snapshot.on_chain_state.shard_conf.fault_tolerance_threshold,
+    )
+    .await
+    .expect("floor for cache key");
     let cache_key = ParentsPostStateCacheKey {
         sorted_parent_hashes,
-        snapshot_lfb_hash: snapshot.last_finalized_block.clone(),
+        floor_hash: floor.hash.clone(),
         disable_late_block_filtering: snapshot
             .on_chain_state
             .shard_conf
@@ -508,9 +540,11 @@ async fn rejected_slash_recovery_keeps_empty_proposer_alive() {
             snapshot.parents.clone(),
             &snapshot,
             &nodes[1].runtime_manager,
+            &latest_messages,
             None,
             Some(&nodes[1].rejected_deploy_buffer),
         )
+        .await
         .expect("real merge to seed cache value");
 
     let synthetic = RejectedSlash {

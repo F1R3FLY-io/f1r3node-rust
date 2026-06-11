@@ -405,6 +405,11 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
                 PrettyPrinter::build_string(CasperMessage::BlockMessage(block.clone()), true)
             );
 
+            // LFS bootstrap: the approved block's post-state has NOT been imported yet
+            // (`request_approved_state` below performs the import), so the PoS active-validator
+            // set cannot be queried here (UnknownRootError on an un-imported root). The 3-arg
+            // insert's bonded-validator default is correct at the finalized anchor; the running
+            // engine records the precise active set for later blocks (see `handle_valid_block`).
             initializing.block_dag_storage.insert(block, false, true)?;
 
             initializing.request_approved_state(approved_block).await?;
@@ -798,6 +803,9 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             );
 
             // Scala equivalent: `BlockDagStorage[F].insert(block, invalid = isInvalid)`
+            // LFS bootstrap: post-states for these synced blocks are imported by the
+            // forward-horizon pass AFTER this DAG population — do not query the PoS
+            // active set here; the bonded-validator default is the correct one.
             initializing
                 .block_dag_storage
                 .insert(block, is_invalid, false)?;

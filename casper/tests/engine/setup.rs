@@ -263,6 +263,8 @@ impl TestFixture {
             deploy_index: Arc::new(std::sync::RwLock::new(deploy_index_typed_store)),
             invalid_blocks_index: invalid_blocks_typed_store,
             equivocation_tracker_index: equivocation_tracker,
+            floor_state_index: KeyValueTypedStoreImpl::new(Arc::new(MockKeyValueStore::new())),
+            floor_index: KeyValueTypedStoreImpl::new(Arc::new(MockKeyValueStore::new())),
             dag_generation: Arc::new(AtomicU64::new(0)),
         };
 

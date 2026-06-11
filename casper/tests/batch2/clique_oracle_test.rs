@@ -736,11 +736,13 @@ async fn clique_oracle_growth_feedback_loop_stale_justification_chain() {
                 let message_weight_map = CliqueOracle::get_corresponding_weight_map(&target_hash, &dag)
                     .await
                     .expect("weight map should be available for target");
+                let latest_messages: std::collections::BTreeMap<_, _> =
+                    dag.latest_message_hashes().into_iter().collect();
                 let mut agreeing_weight_map = HashMap::new();
                 for (validator, weight) in &message_weight_map {
-                    if let Some(latest_hash) = dag.latest_message_hash(validator) {
+                    if let Some(latest_hash) = latest_messages.get(validator) {
                         let in_main_chain = dag
-                            .is_in_main_chain(&target_hash, &latest_hash)
+                            .is_in_main_chain(&target_hash, latest_hash)
                             .expect("main chain lookup should succeed");
                         if in_main_chain {
                             agreeing_weight_map.insert(validator.clone(), *weight);
@@ -752,6 +754,7 @@ async fn clique_oracle_growth_feedback_loop_stale_justification_chain() {
                     &message_weight_map,
                     &agreeing_weight_map,
                     &dag,
+                    &latest_messages,
                 )
                 .await
                 .expect("Clique oracle should compute fault tolerance");

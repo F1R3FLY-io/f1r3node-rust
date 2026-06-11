@@ -94,6 +94,15 @@ pub fn rnode_db_mapping(legacy_rspace_paths: Option<bool>) -> Vec<(Db, LmdbEnvCo
             Db::new("deploy-index".to_string(), None),
             dag_storage_env_config(),
         ),
+        // Sealed finalized state per floor cut + persisted floor cache
+        (
+            Db::new("floor-state".to_string(), None),
+            dag_storage_env_config(),
+        ),
+        (
+            Db::new("floor-index".to_string(), None),
+            dag_storage_env_config(),
+        ),
         (
             Db::new("last-finalized-block".to_string(), None),
             dag_storage_env_config(),

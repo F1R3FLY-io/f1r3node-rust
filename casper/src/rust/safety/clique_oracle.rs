@@ -22,7 +22,6 @@ const MAX_SELF_JUSTIFICATION_CACHE_ENTRIES: usize = 10_000;
 const MAX_IN_MAIN_CHAIN_CACHE_ENTRIES: usize = 10_000;
 
 pub struct CliqueOracleRunCache {
-    latest_message_cache: BTreeMap<V, Option<M>>,
     latest_justifications_cache: BTreeMap<V, BTreeMap<V, M>>,
     self_justification_cache: BTreeMap<M, Option<M>>,
     in_main_chain_cache: BTreeMap<(M, M), bool>,
@@ -35,7 +34,6 @@ pub struct CliqueOracleRunCache {
 impl CliqueOracle {
     pub fn new_run_cache() -> CliqueOracleRunCache {
         CliqueOracleRunCache {
-            latest_message_cache: BTreeMap::new(),
             latest_justifications_cache: BTreeMap::new(),
             self_justification_cache: BTreeMap::new(),
             in_main_chain_cache: BTreeMap::new(),
@@ -60,22 +58,55 @@ impl CliqueOracle {
         map.insert(key, value);
     }
 
-    /// weight map of main parent (fallbacks to message itself if no parents)
-    /// TODO - why not use local weight map but seek for parent?
-    /// P.S. This is related to the fact that we create latest message for newly bonded validator
-    /// equal to message where bonding deploy has been submitted. So stake from validator that did not create anything is
-    /// put behind this message. So here is one more place where this logic makes things more complex.
+    /// Weight map of the main parent (falls back to the message itself if no parents), restricted
+    /// to the ACTIVE (post-quarantine) validator set via `BlockMetadata::active_weight_map`.
+    ///
+    /// Finality is computed over the active validators, never over all bonded stake: a just-bonded
+    /// validator is in `bonds` but cannot vote until it leaves quarantine, so counting its stake in
+    /// the quorum denominator would let a single heavy bond stall finalization (it could never
+    /// reach the fault-tolerance threshold) until activation — which itself needs finalization to
+    /// advance. Using the active set keeps the denominator equal to the agreeing-eligible set, as
+    /// in Ethereum/Cosmos/Polkadot, and removes the need to fabricate a latest message for a
+    /// newly-bonded validator.
     pub async fn get_corresponding_weight_map(
         target_msg: &M,
         dag: &KeyValueDagRepresentation,
     ) -> Result<WeightMap, KvStoreError> {
-        dag.lookup_unsafe(target_msg)
-            .and_then(|meta| match meta.parents.first() {
-                Some(main_parent) => dag
-                    .lookup_unsafe(main_parent)
-                    .map(|parent_meta| parent_meta.weight_map.into_iter().collect()),
-                None => Ok(meta.weight_map.into_iter().collect()),
-            })
+        let meta = dag.lookup_unsafe(target_msg)?;
+        let source_meta = match meta.parents.first() {
+            Some(main_parent) => dag.lookup_unsafe(main_parent)?,
+            None => meta,
+        };
+
+        let active: WeightMap = source_meta.active_weight_map().into_iter().collect();
+
+        // Verification trace for the active-set finality fix: surface the full bonded denominator
+        // vs the active (post-quarantine) denominator the oracle actually weights by. When a
+        // just-bonded validator is still in quarantine the two diverge — `dropped` names exactly
+        // the stake excluded from the finality quorum so it cannot stall finalization.
+        if tracing::enabled!(target: "f1r3fly.casper.safety.active_weight", tracing::Level::DEBUG) {
+            let bonds_total: i64 = source_meta.weight_map.values().sum();
+            let active_total: i64 = active.values().sum();
+            if bonds_total != active_total {
+                let dropped: Vec<String> = source_meta
+                    .weight_map
+                    .keys()
+                    .filter(|v| !active.contains_key(*v))
+                    .map(|v| hex::encode(&v[..v.len().min(8)]))
+                    .collect();
+                tracing::debug!(
+                    target: "f1r3fly.casper.safety.active_weight",
+                    target_block = %hex::encode(&target_msg[..target_msg.len().min(8)]),
+                    bonds_total,
+                    active_total,
+                    dropped_stake = bonds_total - active_total,
+                    dropped_validators = ?dropped,
+                    "finality denominator restricted to active validator set"
+                );
+            }
+        }
+
+        Ok(active)
     }
 
     /// If two validators will never have disagreement on target message
@@ -218,6 +249,7 @@ impl CliqueOracle {
         agreeing_weight_map: &WeightMap,
         dag: &KeyValueDagRepresentation,
         run_cache: &mut CliqueOracleRunCache,
+        latest_messages: &BTreeMap<V, M>,
     ) -> Result<i64, KvStoreError> {
         let __compute_start = std::time::Instant::now();
         // Using tracing events for async - Span[F].traceI("compute-max-clique-weight") from Scala
@@ -228,6 +260,7 @@ impl CliqueOracle {
             agreeing_weight_map: &WeightMap,
             dag: &KeyValueDagRepresentation,
             run_cache: &mut CliqueOracleRunCache,
+            latest_messages: &BTreeMap<V, M>,
         ) -> Result<Vec<(V, V)>, KvStoreError> {
             let yield_check_interval = run_cache.yield_check_interval;
             let yield_timeslice = run_cache.yield_timeslice;
@@ -239,16 +272,10 @@ impl CliqueOracle {
             // to other agreeing validators, it cannot form an agreeing edge with anyone.
             let mut pairwise_validators: Vec<V> = Vec::new();
             for validator in agreeing_validators.iter() {
-                let latest = if let Some(cached) = run_cache.latest_message_cache.get(validator) {
-                    cached.clone()
-                } else {
-                    let value = dag.latest_message_hash(validator);
-                    run_cache
-                        .latest_message_cache
-                        .insert(validator.clone(), value.clone());
-                    value
-                };
-                let Some(latest) = latest else {
+                // Determinism lever: resolve "validator V's latest message" from the
+                // frozen snapshot, never from the live DAG (dag.latest_message_hash is
+                // the sole node-divergent input to the oracle).
+                let Some(latest) = latest_messages.get(validator).cloned() else {
                     continue;
                 };
                 pairwise_latest_messages.insert(validator.clone(), latest.clone());
@@ -354,9 +381,14 @@ impl CliqueOracle {
             Ok(result)
         }
 
-        let edges =
-            compute_agreeing_validator_pairs(target_msg, agreeing_weight_map, dag, run_cache)
-                .await?;
+        let edges = compute_agreeing_validator_pairs(
+            target_msg,
+            agreeing_weight_map,
+            dag,
+            run_cache,
+            latest_messages,
+        )
+        .await?;
         let max_weight = Clique::find_maximum_clique_by_weight(&edges, agreeing_weight_map);
 
         metrics::histogram!(
@@ -373,6 +405,7 @@ impl CliqueOracle {
         agreeing_weight_map: &WeightMap,
         dag: &KeyValueDagRepresentation,
         run_cache: &mut CliqueOracleRunCache,
+        latest_messages: &BTreeMap<V, M>,
     ) -> Result<f32, KvStoreError> {
         let total_stake = message_weight_map.values().sum::<i64>() as f32;
         assert!(
@@ -389,6 +422,7 @@ impl CliqueOracle {
                 agreeing_weight_map,
                 dag,
                 run_cache,
+                latest_messages,
             )
             .await? as f32;
 
@@ -403,6 +437,7 @@ impl CliqueOracle {
         message_weight_map: &WeightMap,
         agreeing_weight_map: &WeightMap,
         dag: &KeyValueDagRepresentation,
+        latest_messages: &BTreeMap<V, M>,
     ) -> Result<f32, KvStoreError> {
         let mut run_cache = Self::new_run_cache();
         Self::compute_output_with_cache(
@@ -411,34 +446,44 @@ impl CliqueOracle {
             agreeing_weight_map,
             dag,
             &mut run_cache,
+            latest_messages,
         )
         .await
     }
 
-    pub async fn normalized_fault_tolerance(
+    /// Deterministic fault tolerance over a FROZEN latest-message snapshot.
+    ///
+    /// Every "validator V's latest message" read is resolved from `latest_messages`
+    /// instead of the live DAG (dag.latest_message_hash is the sole node-divergent
+    /// input to the oracle). When `latest_messages` is taken from a candidate block's
+    /// signed justification set, the result is a pure function of that block's bytes
+    /// plus immutable ancestor metadata — bit-identical across honest nodes.
+    pub async fn ft_witnessed(
         target_msg: &M,
         dag: &KeyValueDagRepresentation,
+        latest_messages: &BTreeMap<V, M>,
     ) -> Result<f32, KvStoreError> {
-        // Using tracing events for async - Span[F].traceI("normalized-fault-tolerance") from Scala
-        tracing::debug!(target: "f1r3fly.casper.safety.clique_oracle", "normalized-fault-tolerance-started");
         /// weight map containing only validators that agree on the message
         async fn agreeing_weight_map_f(
             weight_map: &WeightMap,
             target_msg: &M,
             dag: &KeyValueDagRepresentation,
+            latest_messages: &BTreeMap<V, M>,
         ) -> Result<WeightMap, KvStoreError> {
             async fn agree(
                 validator: &V,
                 message: &M,
                 dag: &KeyValueDagRepresentation,
+                latest_messages: &BTreeMap<V, M>,
             ) -> Result<bool, KvStoreError> {
-                dag.latest_message_hash(validator)
-                    .map_or(Ok(false), |hash| dag.is_in_main_chain(message, &hash))
+                latest_messages
+                    .get(validator)
+                    .map_or(Ok(false), |hash| dag.is_in_main_chain(message, hash))
             }
 
             let mut agreeing_map = HashMap::new();
             for (validator, weight) in weight_map.iter() {
-                if agree(validator, target_msg, dag).await? {
+                if agree(validator, target_msg, dag, latest_messages).await? {
                     agreeing_map.insert(validator.clone(), *weight);
                 }
             }
@@ -451,12 +496,13 @@ impl CliqueOracle {
             let full_weight_map =
                 CliqueOracle::get_corresponding_weight_map(target_msg, dag).await?;
             let agreeing_weight_map =
-                agreeing_weight_map_f(&full_weight_map, target_msg, dag).await?;
+                agreeing_weight_map_f(&full_weight_map, target_msg, dag, latest_messages).await?;
             let result = CliqueOracle::compute_output(
                 target_msg,
                 &full_weight_map,
                 &agreeing_weight_map,
                 dag,
+                latest_messages,
             )
             .await?;
 
@@ -468,5 +514,19 @@ impl CliqueOracle {
             );
             Ok(MIN_FAULT_TOLERANCE)
         }
+    }
+
+    /// Live-DAG fault tolerance: snapshots the DAG's current latest messages and
+    /// delegates to [`ft_witnessed`]. Behaviour is identical to the historical
+    /// implementation — the snapshot is the same `dag.latest_message_hashes()` source
+    /// the oracle read directly before.
+    pub async fn normalized_fault_tolerance(
+        target_msg: &M,
+        dag: &KeyValueDagRepresentation,
+    ) -> Result<f32, KvStoreError> {
+        // Using tracing events for async - Span[F].traceI("normalized-fault-tolerance") from Scala
+        tracing::debug!(target: "f1r3fly.casper.safety.clique_oracle", "normalized-fault-tolerance-started");
+        let latest_messages: BTreeMap<V, M> = dag.latest_message_hashes().into_iter().collect();
+        CliqueOracle::ft_witnessed(target_msg, dag, &latest_messages).await
     }
 }

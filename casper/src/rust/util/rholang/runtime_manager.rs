@@ -77,6 +77,11 @@ pub struct RuntimeManager {
     /// Cache for merged parent post-state computation keyed by parent-set snapshot context.
     pub parents_post_state_cache: Arc<DashMap<ParentsPostStateCacheKey, ParentsPostStateCacheVal>>,
     pub parents_post_state_cache_order: Arc<Mutex<VecDeque<ParentsPostStateCacheKey>>>,
+    /// Materialized floor closures (floor hash -> ancestors-and-self), shared by
+    /// the conflict-scope computation and the floor seal. One BFS per floor
+    /// advance, amortized over every merge built on that floor.
+    pub floor_closure_cache: Arc<DashMap<BlockHash, Arc<std::collections::HashSet<BlockHash>>>>,
+    pub floor_closure_cache_order: Arc<Mutex<VecDeque<BlockHash>>>,
     /// Optional replay cache for delta replay optimization
     pub replay_cache: Option<Arc<InMemoryReplayCache>>,
     /// Optional state hash cache for skipping known replays
@@ -87,8 +92,10 @@ pub struct RuntimeManager {
 #[derive(Clone, Hash, PartialEq, Eq)]
 pub struct ParentsPostStateCacheKey {
     pub sorted_parent_hashes: Vec<BlockHash>,
-    // Snapshot LFB participates in visible-ancestor filtering, so cache key must include it.
-    pub snapshot_lfb_hash: BlockHash,
+    // The justification-derived floor is the merge base and scope boundary, so
+    // the cache key must include it: the same parent set under a different
+    // justification snapshot merges differently.
+    pub floor_hash: BlockHash,
     pub disable_late_block_filtering: bool,
 }
 
@@ -101,6 +108,9 @@ pub type ParentsPostStateCacheVal = (
 impl RuntimeManager {
     const MAX_BLOCK_INDEX_CACHE_ENTRIES: usize = 128;
     const MAX_PARENTS_POST_STATE_CACHE_ENTRIES: usize = 64;
+    // Floor closures are large (full ancestry sets) but only the current floor
+    // and its recent predecessors are live at any moment.
+    const MAX_FLOOR_CLOSURE_CACHE_ENTRIES: usize = 4;
     const MAX_ACTIVE_VALIDATORS_CACHE_ENTRIES: usize = 256;
     const MAX_BONDS_CACHE_ENTRIES: usize = 64;
     const MAX_REPLAY_CACHE_ENTRIES: usize = 192;
@@ -933,6 +943,29 @@ impl RuntimeManager {
             .set(self.parents_post_state_cache.len() as f64);
     }
 
+    pub fn get_cached_floor_closure(
+        &self,
+        floor_hash: &BlockHash,
+    ) -> Option<Arc<std::collections::HashSet<BlockHash>>> {
+        self.floor_closure_cache.get(floor_hash).map(|entry| {
+            Self::touch_cache_key(&self.floor_closure_cache_order, floor_hash);
+            entry.value().clone()
+        })
+    }
+
+    pub fn put_cached_floor_closure(
+        &self,
+        floor_hash: BlockHash,
+        closure: Arc<std::collections::HashSet<BlockHash>>,
+    ) {
+        let max_entries = Self::MAX_FLOOR_CLOSURE_CACHE_ENTRIES;
+        if self.floor_closure_cache.len() >= max_entries {
+            Self::evict_fifo_entry(&self.floor_closure_cache, &self.floor_closure_cache_order);
+        }
+        self.floor_closure_cache.insert(floor_hash.clone(), closure);
+        Self::touch_cache_key(&self.floor_closure_cache_order, &floor_hash);
+    }
+
     /**
      * Load mergeable channels from store
      */
@@ -1247,6 +1280,8 @@ impl RuntimeManager {
             bonds_cache_order: Arc::new(Mutex::new(VecDeque::new())),
             parents_post_state_cache: Arc::new(DashMap::new()),
             parents_post_state_cache_order: Arc::new(Mutex::new(VecDeque::new())),
+            floor_closure_cache: Arc::new(DashMap::new()),
+            floor_closure_cache_order: Arc::new(Mutex::new(VecDeque::new())),
             replay_cache: (replay_cache_size > 0)
                 .then(|| Arc::new(InMemoryReplayCache::new(replay_cache_size))),
             state_hash_cache: (state_hash_cache_size > 0)

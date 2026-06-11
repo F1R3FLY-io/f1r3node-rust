@@ -566,14 +566,19 @@ async fn run_block_creator_phase_split_memory_profile() {
                 ),
             }
         } else {
+            let latest_messages: std::collections::BTreeMap<_, _> =
+                snapshot.dag.latest_message_hashes().into_iter().collect();
             match compute_parents_post_state(
                 &block_store,
                 snapshot.parents.clone(),
                 &snapshot,
                 &runtime_manager,
+                &latest_messages,
                 None,
                 None,
-            ) {
+            )
+            .await
+            {
                 Ok(result) => result,
                 Err(err) => {
                     error_count += 1;

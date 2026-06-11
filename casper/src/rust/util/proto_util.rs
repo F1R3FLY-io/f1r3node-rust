@@ -136,7 +136,11 @@ pub fn min_total_validator_weight(
 ) -> Result<i64, KvStoreError> {
     dag.lookup(block_hash).map(|block_metadata_opt| {
         let block_metadata = block_metadata_opt.expect("Block metadata should exist");
-        let mut sorted_weights: Vec<i64> = block_metadata.weight_map.values().cloned().collect();
+        let mut sorted_weights: Vec<i64> = block_metadata
+            .active_weight_map()
+            .values()
+            .cloned()
+            .collect();
         sorted_weights.sort();
         sorted_weights
             .iter()
@@ -174,20 +178,12 @@ pub fn weight_from_validator_by_dag(
             let parent_metadata = dag
                 .lookup(parent_hash)?
                 .expect("Parent metadata should exist");
-            // Return validator's weight from parent or 0 if not found
-            Ok(parent_metadata
-                .weight_map
-                .get(validator)
-                .cloned()
-                .unwrap_or(0))
+            // Return validator's ACTIVE weight from parent (0 if quarantined or not bonded)
+            Ok(parent_metadata.active_stake_of(validator))
         }
         None => {
-            // No parents (genesis) - use current block's weight map
-            Ok(block_metadata
-                .weight_map
-                .get(validator)
-                .cloned()
-                .unwrap_or(0))
+            // No parents (genesis) - use current block's active weight
+            Ok(block_metadata.active_stake_of(validator))
         }
     }
 }

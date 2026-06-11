@@ -641,14 +641,24 @@ pub async fn create(
     // The merge result is cached so the downstream compute_deploys_checkpoint
     // call hits the cache.
     let __merge_pre_t = std::time::Instant::now();
+    // Floor snapshot = the proposer's justifications — exactly the set
+    // packaged into this block's header, so the floor the proposer builds on
+    // equals the floor every validator re-derives from the signed block.
+    let latest_messages: std::collections::BTreeMap<Validator, BlockHash> = casper_snapshot
+        .justifications
+        .iter()
+        .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
+        .collect();
     let merge_pre_info = interpreter_util::compute_parents_post_state(
         block_store,
         parents.clone(),
         casper_snapshot,
         runtime_manager,
+        &latest_messages,
         None,
         Some(&rejected_deploy_buffer),
-    )?;
+    )
+    .await?;
     metrics::histogram!(
         BLOCK_CREATOR_COMPUTE_PARENTS_POST_STATE_TIME_METRIC,
         "source" => CASPER_METRICS_SOURCE
@@ -748,6 +758,7 @@ pub async fn create(
         runtime_manager,
         block_data.clone(),
         invalid_blocks,
+        &latest_messages,
         Some(&rejected_deploy_buffer),
     )
     .await

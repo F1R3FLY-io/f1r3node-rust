@@ -1591,15 +1591,22 @@ impl BlockAPI {
                             "exploratoryDeploy: Computing merged state from {} parents",
                             parents.len()
                         );
+                        // Exploratory deploys read the node's CURRENT view, so
+                        // the live latest messages are the right floor snapshot
+                        // here (no consensus artifact is produced).
+                        let latest_messages: std::collections::BTreeMap<_, _> =
+                            snapshot.dag.latest_message_hashes().into_iter().collect();
                         let (merged_state_hash, _rejected, _rejected_slashes) =
                             crate::rust::util::rholang::interpreter_util::compute_parents_post_state(
                                 casper.block_store(),
                                 parents.clone(),
                                 &snapshot,
                                 &runtime_manager,
+                                &latest_messages,
                                 Some(true), // disable_late_block_filtering = true for exploratory deploy
                                 None,       // exploratory deploy: no buffer populate needed
-                            )?;
+                            )
+                            .await?;
                         merged_state_hash
                     };
 

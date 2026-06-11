@@ -164,13 +164,11 @@ impl DebruijnInterpreter {
         rand: Blake2b512Random,
     ) -> Result<(), InterpreterError> {
         {
-            let par_hash =
-                rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash::new(
-                    &par.encode_to_vec(),
-                );
-            let rand_path_hex = hex::encode(
-                &rand.path_view[..rand.path_position.min(rand.path_view.len())],
+            let par_hash = rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash::new(
+                &par.encode_to_vec(),
             );
+            let rand_path_hex =
+                hex::encode(&rand.path_view[..rand.path_position.min(rand.path_view.len())]);
             tracing::trace!(
                 target: "f1r3fly.rholang.reduce.par_eval",
                 par_hash = %hex::encode(&par_hash.bytes()[..8]),
@@ -814,7 +812,7 @@ impl DebruijnInterpreter {
             merge_chs_write.insert(chan.clone(), merge_type);
             tracing::trace!(
                 target: "f1r3fly.rholang.reduce.classify",
-                channel = %hex::encode(&chan.encode_to_vec()),
+                channel = %hex::encode(chan.encode_to_vec()),
                 merge_type = ?merge_type,
                 "mergeable channel classified by tag match",
             );
@@ -1028,7 +1026,7 @@ impl DebruijnInterpreter {
 
         tracing::trace!(
             target: "f1r3fly.rholang.reduce.send",
-            channel_hash = %hex::encode(&unbundled.encode_to_vec()),
+            channel_hash = %hex::encode(unbundled.encode_to_vec()),
             data_count = send.data.len(),
             persistent = send.persistent,
             rand_path = %hex::encode(
@@ -1038,7 +1036,7 @@ impl DebruijnInterpreter {
         );
         tracing::trace!(
             target: "f1r3fly.rholang.reduce.send",
-            channel_hash = %hex::encode(&unbundled.encode_to_vec()),
+            channel_hash = %hex::encode(unbundled.encode_to_vec()),
             data_count = send.data.len(),
             persistent = send.persistent,
             rand_path = %hex::encode(
@@ -1174,9 +1172,8 @@ impl DebruijnInterpreter {
         let target_hash = rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash::new(
             &subst_target.encode_to_vec(),
         );
-        let match_rand_path = hex::encode(
-            &rand.path_view[..rand.path_position.min(rand.path_view.len())],
-        );
+        let match_rand_path =
+            hex::encode(&rand.path_view[..rand.path_position.min(rand.path_view.len())]);
         tracing::trace!(
             target: "f1r3fly.rholang.reduce.match_entry",
             target_hash = %hex::encode(&target_hash.bytes()[..8]),
@@ -1258,9 +1255,8 @@ impl DebruijnInterpreter {
                     )
                 })
                 .unwrap_or_default();
-            let path_hex = hex::encode(
-                &rand.path_view[..rand.path_position.min(rand.path_view.len())],
-            );
+            let path_hex =
+                hex::encode(&rand.path_view[..rand.path_position.min(rand.path_view.len())]);
             tracing::trace!(
                 target: "f1r3fly.rholang.reduce.new_entry",
                 thread = ?std::thread::current().id(),

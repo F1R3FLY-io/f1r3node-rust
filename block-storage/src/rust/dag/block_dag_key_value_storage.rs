@@ -4,6 +4,7 @@ use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 
+use models::rust::block::floor_data::FloorData;
 use models::rust::block_hash::{self, BlockHash, BlockHashSerde};
 use models::rust::block_metadata::BlockMetadata;
 use models::rust::casper::pretty_printer::PrettyPrinter;
@@ -35,6 +36,13 @@ pub struct KeyValueDagRepresentation {
     pub finalized_blocks_set: imbl::HashSet<BlockHash>,
     pub block_metadata_index: Arc<RwLock<BlockMetadataStore>>,
     pub deploy_index: Arc<RwLock<KeyValueTypedStoreImpl<DeployId, BlockHashSerde>>>,
+    /// Sealed finalized state per floor cut (floor block hash -> FloorData).
+    /// Written when a floor is sealed, read as the merge base at propose/validate.
+    pub floor_state_index: KeyValueTypedStoreImpl<BlockHashSerde, FloorData>,
+    /// Persisted floor cache (block hash -> its justification-derived floor hash).
+    /// The floor is a pure function of the block, so write-through caching from
+    /// any reader is safe.
+    pub floor_index: KeyValueTypedStoreImpl<BlockHashSerde, BlockHashSerde>,
 }
 
 impl KeyValueDagRepresentation {
@@ -64,6 +72,49 @@ impl KeyValueDagRepresentation {
     }
 
     pub fn invalid_blocks(&self) -> imbl::HashSet<BlockMetadata> { self.invalid_blocks_set.clone() }
+
+    /// Sealed finalized state for a floor cut, if present. A miss is filled by
+    /// the canonical get-or-compute recursion at the call site.
+    pub fn get_floor_state(
+        &self,
+        floor_hash: &BlockHash,
+    ) -> Result<Option<FloorData>, KvStoreError> {
+        self.floor_state_index
+            .get_one(&BlockHashSerde(floor_hash.clone()))
+    }
+
+    /// Persist the sealed finalized state for a floor cut. The value is a pure
+    /// function of the floor block, so writing from the read path on a compute
+    /// miss is safe.
+    pub fn put_floor_state(
+        &self,
+        floor_hash: BlockHash,
+        value: FloorData,
+    ) -> Result<(), KvStoreError> {
+        self.floor_state_index
+            .put_one(BlockHashSerde(floor_hash), value)
+    }
+
+    /// Cached justification-derived floor of a block, if already computed.
+    pub fn get_cached_floor(
+        &self,
+        block_hash: &BlockHash,
+    ) -> Result<Option<BlockHash>, KvStoreError> {
+        Ok(self
+            .floor_index
+            .get_one(&BlockHashSerde(block_hash.clone()))?
+            .map(|serde| serde.0))
+    }
+
+    /// Cache a block's justification-derived floor (pure function of the block).
+    pub fn put_cached_floor(
+        &self,
+        block_hash: BlockHash,
+        floor_hash: BlockHash,
+    ) -> Result<(), KvStoreError> {
+        self.floor_index
+            .put_one(BlockHashSerde(block_hash), BlockHashSerde(floor_hash))
+    }
 
     pub fn last_finalized_block(&self) -> BlockHash { self.last_finalized_block_hash.clone() }
 
@@ -462,6 +513,10 @@ pub struct BlockDagKeyValueStorage {
     pub deploy_index: Arc<RwLock<KeyValueTypedStoreImpl<DeployId, BlockHashSerde>>>,
     pub invalid_blocks_index: KeyValueTypedStoreImpl<BlockHashSerde, BlockMetadata>,
     pub equivocation_tracker_index: EquivocationTrackerStore,
+    /// Sealed finalized state per floor cut (floor block hash -> FloorData).
+    pub floor_state_index: KeyValueTypedStoreImpl<BlockHashSerde, FloorData>,
+    /// Persisted floor cache (block hash -> its justification-derived floor hash).
+    pub floor_index: KeyValueTypedStoreImpl<BlockHashSerde, BlockHashSerde>,
     /// Monotonically increasing counter incremented on every successful block insert.
     /// Used by caches to detect when the DAG has changed.
     pub dag_generation: Arc<AtomicU64>,
@@ -493,6 +548,14 @@ impl BlockDagKeyValueStorage {
         let deploy_index_db: KeyValueTypedStoreImpl<DeployId, BlockHashSerde> =
             KeyValueTypedStoreImpl::new(deploy_index_kv_store);
 
+        let floor_state_kv_store = kvm.store("floor-state".to_string()).await?;
+        let floor_state_db: KeyValueTypedStoreImpl<BlockHashSerde, FloorData> =
+            KeyValueTypedStoreImpl::new(floor_state_kv_store);
+
+        let floor_index_kv_store = kvm.store("floor-index".to_string()).await?;
+        let floor_index_db: KeyValueTypedStoreImpl<BlockHashSerde, BlockHashSerde> =
+            KeyValueTypedStoreImpl::new(floor_index_kv_store);
+
         Ok(Self {
             global_lock: Arc::new(std::sync::Mutex::new(())),
             block_metadata_index: Arc::new(RwLock::new(block_metadata_store)),
@@ -500,6 +563,8 @@ impl BlockDagKeyValueStorage {
             invalid_blocks_index: invalid_blocks_db,
             equivocation_tracker_index: equivocation_tracker_store,
             latest_messages_index: latest_messages_db,
+            floor_state_index: floor_state_db,
+            floor_index: floor_index_db,
             dag_generation: Arc::new(AtomicU64::new(0)),
         })
     }
@@ -589,19 +654,43 @@ impl BlockDagKeyValueStorage {
             finalized_blocks_set: finalized_blocks,
             block_metadata_index: self.block_metadata_index.clone(),
             deploy_index: self.deploy_index.clone(),
+            floor_state_index: self.floor_state_index.clone(),
+            floor_index: self.floor_index.clone(),
         }
     }
 
+    /// Insert a block, defaulting its cached active-validator set to ALL bonded validators. Correct
+    /// for genesis (all bonded are active) and the conservative default for admin/test inserts. The
+    /// casper layer uses [`Self::insert_with_active`] for live valid blocks so finality weights by
+    /// the precise post-quarantine active set.
     pub fn insert(
         &self,
         block: &BlockMessage,
         invalid: bool,
         approved: bool,
     ) -> Result<KeyValueDagRepresentation, KvStoreError> {
+        self.insert_with_active(
+            block,
+            invalid,
+            approved,
+            BlockMetadata::bonded_validators(block),
+        )
+    }
+
+    /// Insert with an explicit post-quarantine active validator set (a subset of `bonds`), cached in
+    /// `BlockMetadata` so the runtime-free finality oracle can weight the quorum by the active set
+    /// rather than all bonded stake. See `BlockMetadata::active_weight_map`.
+    pub fn insert_with_active(
+        &self,
+        block: &BlockMessage,
+        invalid: bool,
+        approved: bool,
+        active_validators: Vec<prost::bytes::Bytes>,
+    ) -> Result<KeyValueDagRepresentation, KvStoreError> {
         let __insert_start = std::time::Instant::now();
         // Acquire global lock to ensure atomic insert operation
         let _lock_guard = self.global_lock.lock().unwrap();
-        let result = self.insert_internal(block, invalid, approved);
+        let result = self.insert_internal(block, invalid, approved, active_validators);
         metrics::histogram!("dag.insert.time", "source" => "f1r3fly.casper.block-dag")
             .record(__insert_start.elapsed().as_secs_f64());
         result
@@ -610,11 +699,17 @@ impl BlockDagKeyValueStorage {
     /// Internal method to insert without acquiring lock.
     /// Used when lock is already held by the caller.
     /// Public to allow IndexedBlockDagStorage to use it.
+    ///
+    /// `active_validators` is the post-quarantine active set at this block's post-state, computed
+    /// by the casper layer (which owns the rholang runtime) and cached in `BlockMetadata` so the
+    /// runtime-free finality oracle can weight by the active set. At genesis it is all bonded
+    /// validators.
     pub fn insert_internal(
         &self,
         block: &BlockMessage,
         invalid: bool,
         approved: bool,
+        active_validators: Vec<prost::bytes::Bytes>,
     ) -> Result<KeyValueDagRepresentation, KvStoreError> {
         let sender_is_empty = block.sender.is_empty();
         let sender_has_invalid_format =
@@ -726,7 +821,8 @@ impl BlockDagKeyValueStorage {
                 tracing::warn!("{}", log_empty_sender);
             }
 
-            let block_metadata = BlockMetadata::from_block(block, invalid, None, None);
+            let mut block_metadata = BlockMetadata::from_block(block, invalid, None, None);
+            block_metadata.active_validators = active_validators;
             let mut block_metadata_guard = self.block_metadata_index.write().unwrap();
             block_metadata_guard.add(block_metadata.clone())?;
             drop(block_metadata_guard);
