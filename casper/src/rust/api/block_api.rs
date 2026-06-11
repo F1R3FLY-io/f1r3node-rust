@@ -171,6 +171,43 @@ impl std::fmt::Display for BlockRetrievalError {
 impl std::error::Error for BlockRetrievalError {}
 
 #[derive(Debug)]
+pub struct BlockNotFoundError {
+    pub hash: String,
+}
+
+impl std::fmt::Display for BlockNotFoundError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Block not found: {}", self.hash)
+    }
+}
+
+impl std::error::Error for BlockNotFoundError {}
+
+#[derive(Debug)]
+pub struct InvalidHashError {
+    pub reason: String,
+}
+
+impl std::fmt::Display for InvalidHashError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Invalid block hash: {}", self.reason)
+    }
+}
+
+impl std::error::Error for InvalidHashError {}
+
+#[derive(Debug)]
+pub struct ExploratoryDeployReadOnlyError;
+
+impl std::fmt::Display for ExploratoryDeployReadOnlyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Exploratory deploy requires a read-only node")
+    }
+}
+
+impl std::error::Error for ExploratoryDeployReadOnlyError {}
+
+#[derive(Debug)]
 pub struct DeployExpiredError {
     pub message: String,
 }
@@ -1218,16 +1255,18 @@ impl BlockAPI {
 
         async fn casper_response(casper: &dyn MultiParentCasper, hash: &str) -> ApiErr<BlockInfo> {
             if hash.len() < 6 {
-                return Err(eyre::eyre!(
-                    "Input hash value must be at least 6 characters: {}",
-                    hash
-                ));
+                return Err(eyre::Report::new(InvalidHashError {
+                    reason: format!("must be at least 6 characters, got: {}", hash),
+                }));
             }
 
             let padded_hash = pad_hex_string(hash);
 
-            let hash_byte_string = hex::decode(&padded_hash)
-                .map_err(|_| eyre::eyre!("Input hash value is not valid hex string: {}", hash))?;
+            let hash_byte_string = hex::decode(&padded_hash).map_err(|_| {
+                eyre::Report::new(InvalidHashError {
+                    reason: format!("not a valid hex string: {}", hash),
+                })
+            })?;
 
             let get_block = async {
                 let block_hash = prost::bytes::Bytes::from(hash_byte_string);
@@ -1257,8 +1296,11 @@ impl BlockAPI {
                 find_block.await
             };
 
-            let block = block_f?
-                .ok_or_else(|| eyre::eyre!("Error: Failure to find block with hash: {}", hash))?;
+            let block = block_f?.ok_or_else(|| {
+                eyre::Report::new(BlockNotFoundError {
+                    hash: hash.to_string(),
+                })
+            })?;
 
             let dag = casper.block_dag().await?;
             if dag.contains(&block.block_hash) {
@@ -1466,8 +1508,11 @@ impl BlockAPI {
         if let Some(casper) = eng.with_casper() {
             let dag = casper.block_dag().await?;
             let padded_hash = pad_hex_string(hash);
-            let given_block_hash =
-                hex::decode(&padded_hash).map_err(|_| eyre::eyre!("Invalid hex string"))?;
+            let given_block_hash = hex::decode(&padded_hash).map_err(|_| {
+                eyre::Report::new(InvalidHashError {
+                    reason: format!("not a valid hex string: {}", hash),
+                })
+            })?;
             let result = dag.is_finalized(&given_block_hash.into());
             Ok(result)
         } else {
@@ -1616,7 +1661,9 @@ impl BlockAPI {
                     let hash_str = block_hash.as_ref().unwrap();
                     let padded_hash = pad_hex_string(hash_str);
                     let hash_byte_string = hex::decode(&padded_hash).map_err(|_| {
-                        eyre::eyre!("Input hash value is not valid hex string: {:?}", block_hash)
+                        eyre::Report::new(InvalidHashError {
+                            reason: format!("not a valid hex string: {:?}", block_hash),
+                        })
                     })?;
                     let block_opt = casper.block_store().get(&hash_byte_string.into())?;
 
@@ -1647,9 +1694,7 @@ impl BlockAPI {
                     None => Err(eyre::eyre!("Can not find block {:?}", block_hash)),
                 }
             } else {
-                Err(eyre::eyre!(
-                    "Exploratory deploy can only be executed on read-only RNode."
-                ))
+                Err(eyre::Report::new(ExploratoryDeployReadOnlyError))
             }
         } else {
             tracing::warn!("{}", error_message);

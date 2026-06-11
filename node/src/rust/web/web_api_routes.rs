@@ -1,4 +1,4 @@
-use axum::extract::{Path, Query, State};
+use axum::extract::State;
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::{get, post};
 use axum::Router;
@@ -8,7 +8,9 @@ use crate::rust::api::serde_types::block_info::BlockInfoSerde;
 use crate::rust::api::web_api::{
     DataAtNameByBlockHashRequest, DeployResponse, PrepareRequest, PrepareResponse, RhoDataResponse,
 };
-use crate::rust::web::shared_handlers::{self, AppError, AppState};
+use crate::rust::web::shared_handlers::{
+    self, ApiErrorResponse, AppError, AppJson, AppPath, AppQuery, AppState,
+};
 
 #[derive(Debug, Deserialize)]
 pub struct ViewQuery {
@@ -67,8 +69,8 @@ impl WebApiRoutes {
     get,
     path = "/api/prepare-deploy",
     responses(
-        (status = 200, description = "Prepare deploy response", body = PrepareResponse),
-        (status = 400, description = "Bad request or internal error")
+        (status = 200, description = "Next deploy sequence number. Use `seqNumber` as `validAfterBlockNumber` in your deploy", body = PrepareResponse),
+        (status = 500, description = "Node-side failure (`runtime_error`)", body = ApiErrorResponse),
     ),
     tag = "WebAPI"
 )]
@@ -84,14 +86,15 @@ pub async fn prepare_deploy_get_handler(State(app_state): State<AppState>) -> Re
     path = "/api/prepare-deploy",
     request_body = PrepareRequest,
     responses(
-        (status = 200, description = "Prepare deploy response", body = PrepareResponse),
-        (status = 400, description = "Bad request or internal error")
+        (status = 200, description = "Next deploy sequence number and pre-generated unforgeable names for the given deployer/timestamp", body = PrepareResponse),
+        (status = 400, description = "Malformed request body or invalid deployer hex (`invalid_request_body`, `invalid_hash`)", body = ApiErrorResponse),
+        (status = 500, description = "Node-side failure (`runtime_error`)", body = ApiErrorResponse),
     ),
     tag = "WebAPI"
 )]
 pub async fn prepare_deploy_post_handler(
     State(app_state): State<AppState>,
-    Json(request): Json<PrepareRequest>,
+    AppJson(request): AppJson<PrepareRequest>,
 ) -> Response {
     match app_state.web_api.prepare_deploy(Some(request)).await {
         Ok(response) => Json(response).into_response(),
@@ -104,15 +107,16 @@ pub async fn prepare_deploy_post_handler(
     path = "/api/data-at-name-by-block-hash",
     request_body = DataAtNameByBlockHashRequest,
     responses(
-        (status = 200, description = "Data at name response", body = RhoDataResponse),
-        (status = 400, description = "Bad request or invalid parameters"),
-
+        (status = 200, description = "Channel data at the given name in the specified block", body = RhoDataResponse),
+        (status = 400, description = "Malformed request body or invalid block hash (`invalid_request_body`, `invalid_hash`)", body = ApiErrorResponse),
+        (status = 404, description = "Specified block not found (`block_not_found`)", body = ApiErrorResponse),
+        (status = 500, description = "Node-side failure (`interpreter_internal_error`)", body = ApiErrorResponse),
     ),
     tag = "WebAPI"
 )]
 pub async fn data_at_name_by_block_hash_handler(
     State(app_state): State<AppState>,
-    Json(request): Json<DataAtNameByBlockHashRequest>,
+    AppJson(request): AppJson<DataAtNameByBlockHashRequest>,
 ) -> Response {
     match app_state.web_api.get_data_at_par(request).await {
         Ok(response) => Json(response).into_response(),
@@ -124,17 +128,18 @@ pub async fn data_at_name_by_block_hash_handler(
     get,
     path = "/api/last-finalized-block",
     params(
-        ("view" = Option<String>, Query, description = "Response view: 'full' (default) includes deploys, 'summary' block header only"),
+        ("view" = Option<String>, Query, description = "Response view: `full` (default) includes deploy list; `summary` returns block header only"),
     ),
     responses(
-        (status = 200, description = "Last finalized block", body = BlockInfoSerde),
-        (status = 400, description = "Bad request or block not found")
+        (status = 200, description = "The current last-finalized block", body = BlockInfoSerde),
+        (status = 400, description = "Invalid query parameter (`invalid_query_parameter`)", body = ApiErrorResponse),
+        (status = 500, description = "Node-side failure — LFB not yet available (`runtime_error`)", body = ApiErrorResponse),
     ),
     tag = "WebAPI"
 )]
 pub async fn last_finalized_block_handler(
     State(app_state): State<AppState>,
-    Query(query): Query<ViewQuery>,
+    AppQuery(query): AppQuery<ViewQuery>,
 ) -> Response {
     use crate::rust::api::web_api::ViewMode;
 
@@ -152,20 +157,21 @@ pub async fn last_finalized_block_handler(
     get,
     path = "/api/blocks/{start}/{end}",
     params(
-        ("start" = i64, Path, description = "Start block height"),
-        ("end" = i64, Path, description = "End block height"),
-        ("view" = Option<String>, Query, description = "Response view: 'summary' (default) block headers only, 'full' includes deploys"),
+        ("start" = i64, Path, description = "Start block height (inclusive)"),
+        ("end" = i64, Path, description = "End block height (inclusive); clamped to the configured maximum range"),
+        ("view" = Option<String>, Query, description = "Response view: `summary` (default) returns block headers only; `full` includes deploy list"),
     ),
     responses(
-        (status = 200, description = "Blocks by height range", body = Vec<BlockInfoSerde>),
-        (status = 400, description = "Bad request or invalid height range")
+        (status = 200, description = "Blocks in the requested height range; may be empty if no blocks exist yet", body = Vec<BlockInfoSerde>),
+        (status = 400, description = "Non-integer path segment (`invalid_path_parameter`)", body = ApiErrorResponse),
+        (status = 500, description = "Node-side failure (`runtime_error`, `history_error`)", body = ApiErrorResponse),
     ),
     tag = "WebAPI"
 )]
 pub async fn get_blocks_by_heights_handler(
     State(app_state): State<AppState>,
-    Path((start, end)): Path<(i64, i64)>,
-    Query(query): Query<ViewQuery>,
+    AppPath((start, end)): AppPath<(i64, i64)>,
+    AppQuery(query): AppQuery<ViewQuery>,
 ) -> Response {
     use crate::rust::api::web_api::ViewMode;
 
@@ -187,19 +193,20 @@ pub async fn get_blocks_by_heights_handler(
     get,
     path = "/api/blocks/{depth}",
     params(
-        ("depth" = i32, Path, description = "Block depth"),
-        ("view" = Option<String>, Query, description = "Response view: 'summary' (default) block headers only, 'full' includes deploys"),
+        ("depth" = i32, Path, description = "Number of most-recent blocks to return; clamped to the configured maximum"),
+        ("view" = Option<String>, Query, description = "Response view: `summary` (default) returns block headers only; `full` includes deploy list"),
     ),
     responses(
-        (status = 200, description = "Blocks by depth", body = Vec<BlockInfoSerde>),
-        (status = 400, description = "Bad request or invalid depth")
+        (status = 200, description = "The `depth` most-recent blocks; may be fewer if the chain is shorter", body = Vec<BlockInfoSerde>),
+        (status = 400, description = "Non-integer path segment (`invalid_path_parameter`)", body = ApiErrorResponse),
+        (status = 500, description = "Node-side failure (`runtime_error`, `history_error`)", body = ApiErrorResponse),
     ),
     tag = "WebAPI"
 )]
 pub async fn get_blocks_by_depth_handler(
     State(app_state): State<AppState>,
-    Path(depth): Path<i32>,
-    Query(query): Query<ViewQuery>,
+    AppPath(depth): AppPath<i32>,
+    AppQuery(query): AppQuery<ViewQuery>,
 ) -> Response {
     use crate::rust::api::web_api::ViewMode;
 
@@ -217,20 +224,21 @@ pub async fn get_blocks_by_depth_handler(
     get,
     path = "/api/deploy/{deploy_id}",
     params(
-        ("deploy_id" = String, Path, description = "Deploy ID"),
-        ("view" = Option<String>, Query, description = "Response view: 'full' (default) returns all fields, 'summary' returns core fields only"),
+        ("deploy_id" = String, Path, description = "Hex-encoded deploy ID"),
+        ("view" = Option<String>, Query, description = "Response view: `full` (default) returns all fields including term and transfers; `summary` returns core fields only"),
     ),
     responses(
         (status = 200, description = "Deploy information", body = DeployResponse),
-        (status = 404, description = "Deploy not found"),
-        (status = 400, description = "Bad request")
+        (status = 400, description = "Deploy ID is not valid hex (`invalid_hash`)", body = ApiErrorResponse),
+        (status = 404, description = "No deploy with this ID found in any finalized block (`deploy_not_found`)", body = ApiErrorResponse),
+        (status = 500, description = "Node-side failure (`runtime_error`)", body = ApiErrorResponse),
     ),
     tag = "WebAPI"
 )]
 pub async fn find_deploy_handler(
     State(app_state): State<AppState>,
-    Path(deploy_id): Path<String>,
-    Query(query): Query<ViewQuery>,
+    AppPath(deploy_id): AppPath<String>,
+    AppQuery(query): AppQuery<ViewQuery>,
 ) -> Response {
     use crate::rust::api::web_api::ViewMode;
 
@@ -241,15 +249,7 @@ pub async fn find_deploy_handler(
 
     match app_state.web_api.find_deploy(deploy_id, view).await {
         Ok(response) => Json(response).into_response(),
-        Err(e) => {
-            if e.downcast_ref::<casper::rust::api::block_api::DeployNotFoundError>()
-                .is_some()
-            {
-                (axum::http::StatusCode::NOT_FOUND, format!("{}", e)).into_response()
-            } else {
-                AppError(e).into_response()
-            }
-        }
+        Err(e) => AppError(e).into_response(),
     }
 }
 
@@ -257,17 +257,18 @@ pub async fn find_deploy_handler(
     get,
     path = "/api/is-finalized/{hash}",
     params(
-        ("hash" = String, Path, description = "Block hash"),
+        ("hash" = String, Path, description = "Full 64-char hex block hash to check"),
     ),
     responses(
-        (status = 200, description = "Finalization status", body = bool),
-        (status = 400, description = "Bad request or invalid hash")
+        (status = 200, description = "`true` if the block is finalized, `false` if it is known but not yet finalized", body = bool),
+        (status = 400, description = "Hash contains non-hex characters (`invalid_hash`)", body = ApiErrorResponse),
+        (status = 500, description = "Node-side failure (`runtime_error`)", body = ApiErrorResponse),
     ),
     tag = "WebAPI"
 )]
 pub async fn is_finalized_handler(
     State(app_state): State<AppState>,
-    Path(hash): Path<String>,
+    AppPath(hash): AppPath<String>,
 ) -> Response {
     match app_state.web_api.is_finalized(hash).await {
         Ok(response) => Json(response).into_response(),
@@ -283,21 +284,22 @@ use crate::rust::api::web_api::{
     get,
     path = "/api/deploy-finalization-status/{deploy_sig_hex}",
     params(
-        ("deploy_sig_hex" = String, Path, description = "Hex-encoded deploy signature"),
+        ("deploy_sig_hex" = String, Path, description = "Hex-encoded deploy signature (with or without `0x` prefix)"),
     ),
     responses(
         (
             status = 200,
-            description = "Canonical-state finalization status for the deploy",
+            description = "Canonical-state finalization status for the deploy. Prefer this over block-hash finalization polling — a block can finalize while some of its deploys' effects are dropped during merge",
             body = crate::rust::api::web_api::DeployFinalizationStatusJson
         ),
-        (status = 400, description = "Bad request or invalid hex")
+        (status = 400, description = "Signature is not valid hex (`invalid_hash`)", body = ApiErrorResponse),
+        (status = 500, description = "Node-side failure (`runtime_error`)", body = ApiErrorResponse),
     ),
     tag = "WebAPI"
 )]
 pub async fn deploy_finalization_status_handler(
     State(app_state): State<AppState>,
-    Path(deploy_sig_hex): Path<String>,
+    AppPath(deploy_sig_hex): AppPath<String>,
 ) -> Response {
     match app_state
         .web_api
@@ -313,19 +315,22 @@ pub async fn deploy_finalization_status_handler(
     get,
     path = "/api/balance/{address}",
     params(
-        ("address" = String, Path, description = "Wallet address (hex public key)"),
-        ("block_hash" = Option<String>, Query, description = "Block hash to query against (defaults to LFB)"),
+        ("address" = String, Path, description = "REV wallet address (Base58-encoded, starts with `1111`)"),
+        ("block_hash" = Option<String>, Query, description = "Block hash to query against; defaults to the last-finalized block"),
     ),
     responses(
-        (status = 200, description = "Balance for address", body = BalanceResponse),
-        (status = 400, description = "Bad request or address not found")
+        (status = 200, description = "REV balance for the address", body = BalanceResponse),
+        (status = 400, description = "Invalid block hash or node is not read-only (`invalid_hash`, `readonly_node_required`)", body = ApiErrorResponse),
+        (status = 404, description = "Specified block not found (`block_not_found`)", body = ApiErrorResponse),
+        (status = 422, description = "Exploratory deploy execution failed (`rholang_execution_error`, `out_of_phlogistons`)", body = ApiErrorResponse),
+        (status = 500, description = "Node-side failure (`interpreter_internal_error`)", body = ApiErrorResponse),
     ),
     tag = "Query"
 )]
 pub async fn balance_handler(
     State(app_state): State<AppState>,
-    Path(address): Path<String>,
-    Query(query): Query<BlockHashQuery>,
+    AppPath(address): AppPath<String>,
+    AppQuery(query): AppQuery<BlockHashQuery>,
 ) -> Response {
     match app_state
         .web_api
@@ -341,19 +346,22 @@ pub async fn balance_handler(
     get,
     path = "/api/registry/{uri}",
     params(
-        ("uri" = String, Path, description = "Registry URI (e.g. rho:id:...)"),
-        ("block_hash" = Option<String>, Query, description = "Block hash to query against (defaults to LFB)"),
+        ("uri" = String, Path, description = "Registry URI (e.g. `rho:id:...`)"),
+        ("block_hash" = Option<String>, Query, description = "Block hash to query against; defaults to the last-finalized block"),
     ),
     responses(
-        (status = 200, description = "Registry entry", body = RegistryResponse),
-        (status = 400, description = "Bad request or URI not found")
+        (status = 200, description = "Rholang value stored at the registry URI", body = RegistryResponse),
+        (status = 400, description = "Invalid block hash or node is not read-only (`invalid_hash`, `readonly_node_required`)", body = ApiErrorResponse),
+        (status = 404, description = "Specified block not found (`block_not_found`)", body = ApiErrorResponse),
+        (status = 422, description = "Exploratory deploy execution failed (`rholang_execution_error`, `out_of_phlogistons`)", body = ApiErrorResponse),
+        (status = 500, description = "Node-side failure (`interpreter_internal_error`)", body = ApiErrorResponse),
     ),
     tag = "Query"
 )]
 pub async fn registry_handler(
     State(app_state): State<AppState>,
-    Path(uri): Path<String>,
-    Query(query): Query<BlockHashQuery>,
+    AppPath(uri): AppPath<String>,
+    AppQuery(query): AppQuery<BlockHashQuery>,
 ) -> Response {
     match app_state.web_api.get_registry(uri, query.block_hash).await {
         Ok(response) => Json(response).into_response(),
@@ -365,17 +373,20 @@ pub async fn registry_handler(
     get,
     path = "/api/validators",
     params(
-        ("block_hash" = Option<String>, Query, description = "Block hash to query against (defaults to LFB)"),
+        ("block_hash" = Option<String>, Query, description = "Block hash to query against; defaults to the last-finalized block"),
     ),
     responses(
-        (status = 200, description = "Active validator set", body = ValidatorsResponse),
-        (status = 400, description = "Bad request")
+        (status = 200, description = "Active validator set with stake weights", body = ValidatorsResponse),
+        (status = 400, description = "Invalid block hash or node is not read-only (`invalid_hash`, `readonly_node_required`)", body = ApiErrorResponse),
+        (status = 404, description = "Specified block not found (`block_not_found`)", body = ApiErrorResponse),
+        (status = 422, description = "Exploratory deploy execution failed (`rholang_execution_error`)", body = ApiErrorResponse),
+        (status = 500, description = "Node-side failure (`interpreter_internal_error`)", body = ApiErrorResponse),
     ),
     tag = "Query"
 )]
 pub async fn validators_handler(
     State(app_state): State<AppState>,
-    Query(query): Query<BlockHashQuery>,
+    AppQuery(query): AppQuery<BlockHashQuery>,
 ) -> Response {
     match app_state.web_api.get_validators(query.block_hash).await {
         Ok(response) => Json(response).into_response(),
@@ -387,17 +398,19 @@ pub async fn validators_handler(
     get,
     path = "/api/epoch",
     params(
-        ("block_hash" = Option<String>, Query, description = "Block hash to query against (defaults to LFB)"),
+        ("block_hash" = Option<String>, Query, description = "Block hash to derive epoch from (defaults to LFB)"),
     ),
     responses(
-        (status = 200, description = "Current epoch info", body = EpochResponse),
-        (status = 400, description = "Bad request")
+        (status = 200, description = "Current epoch number and boundary block height", body = EpochResponse),
+        (status = 400, description = "Invalid block hash (`invalid_hash`)", body = ApiErrorResponse),
+        (status = 404, description = "Specified block not found (`block_not_found`)", body = ApiErrorResponse),
+        (status = 500, description = "Node-side failure (`runtime_error`)", body = ApiErrorResponse),
     ),
     tag = "Query"
 )]
 pub async fn epoch_handler(
     State(app_state): State<AppState>,
-    Query(query): Query<BlockHashQuery>,
+    AppQuery(query): AppQuery<BlockHashQuery>,
 ) -> Response {
     match app_state.web_api.get_epoch(query.block_hash).await {
         Ok(response) => Json(response).into_response(),
@@ -415,18 +428,21 @@ use crate::rust::api::web_api::{
     path = "/api/estimate-cost",
     request_body = SimpleExploreDeployRequest,
     params(
-        ("block_hash" = Option<String>, Query, description = "Block hash to query against (defaults to LFB)"),
+        ("block_hash" = Option<String>, Query, description = "Block hash to query against; defaults to the last-finalized block"),
     ),
     responses(
-        (status = 200, description = "Estimated phlogiston cost", body = EstimateCostResponse),
-        (status = 400, description = "Bad request or parse error")
+        (status = 200, description = "Estimated phlogiston (gas) cost for the given Rholang term", body = EstimateCostResponse),
+        (status = 400, description = "Malformed request body, invalid Rholang term, or invalid block hash (`invalid_request_body`, `rholang_bad_term`, `invalid_hash`, `readonly_node_required`)", body = ApiErrorResponse),
+        (status = 404, description = "Specified block not found (`block_not_found`)", body = ApiErrorResponse),
+        (status = 422, description = "Term is structurally valid but failed execution (`rholang_execution_error`, `out_of_phlogistons`)", body = ApiErrorResponse),
+        (status = 500, description = "Node-side failure (`interpreter_internal_error`)", body = ApiErrorResponse),
     ),
     tag = "Query"
 )]
 pub async fn estimate_cost_handler(
     State(app_state): State<AppState>,
-    Query(query): Query<BlockHashQuery>,
-    Json(request): Json<SimpleExploreDeployRequest>,
+    AppQuery(query): AppQuery<BlockHashQuery>,
+    AppJson(request): AppJson<SimpleExploreDeployRequest>,
 ) -> Response {
     match app_state
         .web_api
@@ -442,17 +458,20 @@ pub async fn estimate_cost_handler(
     get,
     path = "/api/epoch/rewards",
     params(
-        ("block_hash" = Option<String>, Query, description = "Block hash to query against (defaults to LFB)"),
+        ("block_hash" = Option<String>, Query, description = "Block hash to query against; defaults to the last-finalized block"),
     ),
     responses(
-        (status = 200, description = "Current epoch rewards", body = EpochRewardsResponse),
-        (status = 400, description = "Bad request")
+        (status = 200, description = "Per-validator reward amounts for the current epoch", body = EpochRewardsResponse),
+        (status = 400, description = "Invalid block hash or node is not read-only (`invalid_hash`, `readonly_node_required`)", body = ApiErrorResponse),
+        (status = 404, description = "Specified block not found (`block_not_found`)", body = ApiErrorResponse),
+        (status = 422, description = "Exploratory deploy execution failed, e.g. arithmetic overflow due to node desync (`rholang_execution_error`)", body = ApiErrorResponse),
+        (status = 500, description = "Node-side failure (`interpreter_internal_error`)", body = ApiErrorResponse),
     ),
     tag = "Query"
 )]
 pub async fn epoch_rewards_handler(
     State(app_state): State<AppState>,
-    Query(query): Query<BlockHashQuery>,
+    AppQuery(query): AppQuery<BlockHashQuery>,
 ) -> Response {
     match app_state.web_api.get_epoch_rewards(query.block_hash).await {
         Ok(response) => Json(response).into_response(),
@@ -464,19 +483,22 @@ pub async fn epoch_rewards_handler(
     get,
     path = "/api/validator/{pubkey}",
     params(
-        ("pubkey" = String, Path, description = "Validator public key (hex)"),
-        ("block_hash" = Option<String>, Query, description = "Block hash to query against (defaults to LFB)"),
+        ("pubkey" = String, Path, description = "Validator secp256k1 public key as a 65-byte uncompressed hex string"),
+        ("block_hash" = Option<String>, Query, description = "Block hash to query against; defaults to the last-finalized block"),
     ),
     responses(
-        (status = 200, description = "Validator status", body = ValidatorStatusResponse),
-        (status = 400, description = "Bad request")
+        (status = 200, description = "Validator bond status and stake at the given block", body = ValidatorStatusResponse),
+        (status = 400, description = "Invalid public key or block hash, or node is not read-only (`illegal_argument`, `invalid_hash`, `readonly_node_required`)", body = ApiErrorResponse),
+        (status = 404, description = "Specified block not found (`block_not_found`)", body = ApiErrorResponse),
+        (status = 422, description = "Exploratory deploy execution failed (`rholang_execution_error`)", body = ApiErrorResponse),
+        (status = 500, description = "Node-side failure (`interpreter_internal_error`)", body = ApiErrorResponse),
     ),
     tag = "Query"
 )]
 pub async fn validator_handler(
     State(app_state): State<AppState>,
-    Path(pubkey): Path<String>,
-    Query(query): Query<BlockHashQuery>,
+    AppPath(pubkey): AppPath<String>,
+    AppQuery(query): AppQuery<BlockHashQuery>,
 ) -> Response {
     match app_state
         .web_api
@@ -492,17 +514,18 @@ pub async fn validator_handler(
     get,
     path = "/api/bond-status/{pubkey}",
     params(
-        ("pubkey" = String, Path, description = "Validator public key (hex)"),
+        ("pubkey" = String, Path, description = "Validator secp256k1 public key as a 65-byte uncompressed hex string"),
     ),
     responses(
-        (status = 200, description = "Bond status", body = BondStatusResp),
-        (status = 400, description = "Bad request or invalid public key")
+        (status = 200, description = "Whether the key is currently bonded as a validator", body = BondStatusResp),
+        (status = 400, description = "Invalid public key format (`illegal_argument`)", body = ApiErrorResponse),
+        (status = 500, description = "Node-side failure (`runtime_error`)", body = ApiErrorResponse),
     ),
     tag = "Query"
 )]
 pub async fn bond_status_handler(
     State(app_state): State<AppState>,
-    Path(pubkey): Path<String>,
+    AppPath(pubkey): AppPath<String>,
 ) -> Response {
     match app_state.web_api.get_bond_status(pubkey).await {
         Ok(response) => Json(response).into_response(),
@@ -678,8 +701,8 @@ mod tests {
 
     async fn test_find_deploy_handler(
         State(web_api): State<Arc<dyn WebApi + Send + Sync>>,
-        Path(deploy_id): Path<String>,
-        Query(query): Query<ViewQuery>,
+        AppPath(deploy_id): AppPath<String>,
+        AppQuery(query): AppQuery<ViewQuery>,
     ) -> Response {
         let view = match query.view.as_deref() {
             Some("summary") => ViewMode::Summary,

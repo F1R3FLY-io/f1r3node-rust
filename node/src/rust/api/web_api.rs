@@ -5,9 +5,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use casper::rust::api::block_api::{BlockAPI, DeployNotFoundError};
+use casper::rust::api::block_api::{BlockAPI, DeployNotFoundError, InvalidHashError};
 use casper::rust::api::block_report_api::BlockReportAPI;
 use casper::rust::engine::engine_cell::EngineCell;
+use casper::rust::errors::CasperError;
 use casper::rust::ProposeFunction;
 use comm::rust::discovery::node_discovery::NodeDiscovery;
 use comm::rust::rp::connect::ConnectionsCell;
@@ -22,6 +23,7 @@ use eyre::{eyre, Result};
 use hex;
 use models::casper::LightBlockInfo;
 use models::rust::casper::protocol::casper_message::DeployData;
+use rholang::rust::interpreter::errors::InterpreterError;
 use serde::{Deserialize, Serialize};
 use tokio::time::sleep;
 use tracing::warn;
@@ -484,8 +486,11 @@ impl WebApi for WebApiImpl {
     }
 
     async fn find_deploy(&self, deploy_id: String, view: ViewMode) -> Result<DeployResponse> {
-        let deploy_id_bytes =
-            hex::decode(&deploy_id).map_err(|e| eyre!("Invalid deploy ID format: {}", e))?;
+        let deploy_id_bytes = hex::decode(&deploy_id).map_err(|e| {
+            eyre::Report::new(InvalidHashError {
+                reason: format!("invalid deploy ID hex: {}", e),
+            })
+        })?;
 
         let retry_interval_ms = find_deploy_retry_interval_ms();
         let max_attempts = find_deploy_max_attempts();
@@ -644,8 +649,11 @@ impl WebApi for WebApiImpl {
         &self,
         deploy_sig_hex: String,
     ) -> Result<DeployFinalizationStatusJson> {
-        let sig = hex::decode(deploy_sig_hex.trim_start_matches("0x"))
-            .map_err(|e| eyre!("invalid hex for deploy_sig: {}", e))?;
+        let sig = hex::decode(deploy_sig_hex.trim_start_matches("0x")).map_err(|e| {
+            eyre::Report::new(InvalidHashError {
+                reason: format!("invalid deploy signature hex: {}", e),
+            })
+        })?;
         let status = BlockAPI::deploy_finalization_status(&self.engine_cell, &sig).await?;
         Ok(DeployFinalizationStatusJson {
             state: deploy_state_json_label(status.state).to_string(),
@@ -887,7 +895,12 @@ impl WebApi for WebApiImpl {
         pubkey: String,
         block_hash: Option<String>,
     ) -> Result<ValidatorStatusResponse> {
-        crypto::rust::public_key::PublicKey::validate_secp256k1_hex(&pubkey)?;
+        PublicKey::validate_secp256k1_hex(&pubkey).map_err(|e: eyre::Error| {
+            CasperError::InterpreterError(InterpreterError::IllegalArgumentError(format!(
+                "invalid public key: {}",
+                e
+            )))
+        })?;
 
         let term = r#"new return, rl(`rho:registry:lookup`), poSCh in {
             rl!(`rho:system:pos`, *poSCh) |
@@ -930,7 +943,12 @@ impl WebApi for WebApiImpl {
     }
 
     async fn get_bond_status(&self, pubkey: String) -> Result<BondStatusResponse> {
-        let _ = crypto::rust::public_key::PublicKey::validate_secp256k1_hex(&pubkey);
+        PublicKey::validate_secp256k1_hex(&pubkey).map_err(|e: eyre::Error| {
+            CasperError::InterpreterError(InterpreterError::IllegalArgumentError(format!(
+                "invalid public key: {}",
+                e
+            )))
+        })?;
 
         let pk_bytes = hex::decode(&pubkey)?;
         let is_bonded = BlockAPI::bond_status(&self.engine_cell, &pk_bytes).await?;
