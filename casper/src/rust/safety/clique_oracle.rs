@@ -462,6 +462,13 @@ impl CliqueOracle {
             tracing::debug!("Calculating fault tolerance for {:?}.", target_msg);
             let full_weight_map =
                 CliqueOracle::get_corresponding_weight_map(target_msg, dag).await?;
+            // A weight map with no positive stake cannot witness anything.
+            // `compute_output` asserts a positive total; a block whose metadata
+            // carries zero-stake bonds must yield MIN, not panic — this path
+            // runs on arbitrary received blocks via floor derivation.
+            if full_weight_map.values().sum::<i64>() <= 0 {
+                return Ok(MIN_FAULT_TOLERANCE);
+            }
             let agreeing_weight_map =
                 agreeing_weight_map_f(&full_weight_map, target_msg, dag, latest_messages).await?;
             let result = CliqueOracle::compute_output(

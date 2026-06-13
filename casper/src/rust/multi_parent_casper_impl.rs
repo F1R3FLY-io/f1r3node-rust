@@ -613,6 +613,7 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
                         self.casper_shard_conf.max_parent_depth,
                         self.casper_shard_conf.mergeable_channels_gc_depth_buffer,
                         &self.block_store,
+                        &self.runtime_manager,
                         self.casper_shard_conf.disable_validator_progress_check,
                     )
                     .await)
@@ -658,7 +659,17 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
             let (bonds_cache_result, t3) = timed_step(
                 "bonds-cache",
                 BLOCK_VALIDATION_STEP_BONDS_CACHE_TIME_METRIC,
-                async { Ok(Validate::bonds_cache(block, &self.runtime_manager).await) },
+                async {
+                    let dag = self.block_dag_storage.get_representation();
+                    Ok(Validate::bonds_cache(
+                        block,
+                        &dag,
+                        &self.block_store,
+                        &self.runtime_manager,
+                        self.casper_shard_conf.fault_tolerance_threshold,
+                    )
+                    .await)
+                },
             )
             .await?;
             tracing::debug!(target: "f1r3fly.casper", "bonds-cache-validated");
@@ -883,6 +894,7 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
                         self.casper_shard_conf.max_parent_depth,
                         self.casper_shard_conf.mergeable_channels_gc_depth_buffer,
                         &self.block_store,
+                        &self.runtime_manager,
                         self.casper_shard_conf.disable_validator_progress_check,
                     )
                     .await)

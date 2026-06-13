@@ -780,11 +780,27 @@ async fn repeat_deploy_validation_should_return_valid_for_empty_blocks() {
         let block2 = block_dag_storage.lookup_by_id_unsafe(1);
         let dag = block_dag_storage.get_representation();
         let mut casper_snapshot = mk_casper_snapshot(dag);
+        let runtime_manager =
+            crate::util::rholang::resources::mk_runtime_manager("validate-repeat-", None).await;
 
-        let result1 = Validate::repeat_deploy(&block, &mut casper_snapshot, &mut block_store, 50);
+        let result1 = Validate::repeat_deploy(
+            &block,
+            &mut casper_snapshot,
+            &mut block_store,
+            &runtime_manager,
+            50,
+        )
+        .await;
         assert_eq!(result1, Either::Right(ValidBlock::Valid));
 
-        let result2 = Validate::repeat_deploy(&block2, &mut casper_snapshot, &mut block_store, 50);
+        let result2 = Validate::repeat_deploy(
+            &block2,
+            &mut casper_snapshot,
+            &mut block_store,
+            &runtime_manager,
+            50,
+        )
+        .await;
         assert_eq!(result2, Either::Right(ValidBlock::Valid));
     })
     .await
@@ -827,8 +843,17 @@ async fn repeat_deploy_validation_should_not_accept_blocks_with_a_repeated_deplo
 
         let dag = block_dag_storage.get_representation();
         let mut casper_snapshot = mk_casper_snapshot(dag);
+        let runtime_manager =
+            crate::util::rholang::resources::mk_runtime_manager("validate-repeat-", None).await;
 
-        let result = Validate::repeat_deploy(&block1, &mut casper_snapshot, &mut block_store, 50);
+        let result = Validate::repeat_deploy(
+            &block1,
+            &mut casper_snapshot,
+            &mut block_store,
+            &runtime_manager,
+            50,
+        )
+        .await;
         assert_eq!(
             result,
             Either::Left(BlockError::Invalid(InvalidBlock::InvalidRepeatDeploy))
@@ -928,8 +953,17 @@ async fn repeat_deploy_ignores_node_local_rejected_in_scope_hint() {
         let rejected: DashSet<Bytes> = DashSet::new();
         rejected.insert(deploy_sig);
         snapshot.rejected_in_scope = Arc::new(rejected);
+        let runtime_manager =
+            crate::util::rholang::resources::mk_runtime_manager("validate-repeat-", None).await;
 
-        let result = Validate::repeat_deploy(&block_w, &mut snapshot, &mut block_store, 50);
+        let result = Validate::repeat_deploy(
+            &block_w,
+            &mut snapshot,
+            &mut block_store,
+            &runtime_manager,
+            50,
+        )
+        .await;
         assert!(
             matches!(
                 result,
@@ -1019,8 +1053,12 @@ async fn repeat_deploy_blocks_double_execution_when_finalized_and_in_rejected_in
         let rejected: DashSet<Bytes> = DashSet::new();
         rejected.insert(deploy_sig);
         snapshot.rejected_in_scope = Arc::new(rejected);
+        let runtime_manager =
+            crate::util::rholang::resources::mk_runtime_manager("validate-repeat-", None).await;
 
-        let result = Validate::repeat_deploy(&block_w, &mut snapshot, &mut block_store, 50);
+        let result =
+            Validate::repeat_deploy(&block_w, &mut snapshot, &mut block_store, &runtime_manager, 50)
+                .await;
         assert_eq!(
             result,
             Either::Left(BlockError::Invalid(InvalidBlock::InvalidRepeatDeploy)),
@@ -1543,6 +1581,8 @@ async fn block_summary_validation_should_short_circuit_after_first_invalidity() 
         // Use unlimited parents (-1) like in Scala tests: Estimator.UnlimitedParents
         let max_number_of_parents = -1;
 
+        let runtime_manager =
+            crate::util::rholang::resources::mk_runtime_manager("validate-summary-", None).await;
         let result = Validate::block_summary(
             &signed_block,
             &get_random_block(
@@ -1568,6 +1608,7 @@ async fn block_summary_validation_should_short_circuit_after_first_invalidity() 
             i32::MAX, // max_parent_depth: disable depth check for this test
             0,        // depth_buffer: irrelevant when depth check disabled
             &mut block_store,
+            &runtime_manager,
             false,
         )
         .await;
@@ -2081,7 +2122,17 @@ async fn bonds_cache_validation_should_succeed_on_a_valid_block_and_fail_on_modi
         .await
         .unwrap();
 
-        let result_valid = Validate::bonds_cache(&genesis, &runtime_manager).await;
+        let result_valid = Validate::bonds_cache(
+            &genesis,
+            &casper_snapshot.dag,
+            &block_store,
+            &runtime_manager,
+            casper_snapshot
+                .on_chain_state
+                .shard_conf
+                .fault_tolerance_threshold,
+        )
+        .await;
         assert_eq!(result_valid, Either::Right(ValidBlock::Valid));
 
         let modified_bonds = vec![];
@@ -2095,7 +2146,17 @@ async fn bonds_cache_validation_should_succeed_on_a_valid_block_and_fail_on_modi
         let mut modified_genesis = genesis.clone();
         modified_genesis.body = modified_body;
 
-        let result_invalid = Validate::bonds_cache(&modified_genesis, &runtime_manager).await;
+        let result_invalid = Validate::bonds_cache(
+            &modified_genesis,
+            &casper_snapshot.dag,
+            &block_store,
+            &runtime_manager,
+            casper_snapshot
+                .on_chain_state
+                .shard_conf
+                .fault_tolerance_threshold,
+        )
+        .await;
         assert_eq!(
             result_invalid,
             Either::Left(BlockError::Invalid(InvalidBlock::InvalidBondsCache))

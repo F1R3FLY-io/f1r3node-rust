@@ -123,8 +123,17 @@ async fn repeat_deploy_rejects_reinclusion_without_ancestry_rejection() {
 
         let dag = block_dag_storage.get_representation();
         let mut snapshot = mk_casper_snapshot(dag);
+        let runtime_manager =
+            crate::util::rholang::resources::mk_runtime_manager("validate-repeat-", None).await;
 
-        let result = Validate::repeat_deploy(&block_w, &mut snapshot, &mut block_store, 50);
+        let result = Validate::repeat_deploy(
+            &block_w,
+            &mut snapshot,
+            &mut block_store,
+            &runtime_manager,
+            50,
+        )
+        .await;
 
         assert!(
             matches!(
@@ -222,8 +231,17 @@ async fn repeat_deploy_exempts_reinclusion_after_ancestry_rejection_record() {
 
         let dag = block_dag_storage.get_representation();
         let mut snapshot = mk_casper_snapshot(dag);
+        let runtime_manager =
+            crate::util::rholang::resources::mk_runtime_manager("validate-repeat-", None).await;
 
-        let result = Validate::repeat_deploy(&block_w, &mut snapshot, &mut block_store, 50);
+        let result = Validate::repeat_deploy(
+            &block_w,
+            &mut snapshot,
+            &mut block_store,
+            &runtime_manager,
+            50,
+        )
+        .await;
 
         assert!(
             matches!(result, Either::Right(_)),
@@ -299,6 +317,8 @@ async fn proposer_must_skip_recovery_when_deploy_is_canonically_finalized() {
             .map(|d| d.as_millis() as i64)
             .unwrap_or(0);
 
+        let runtime_manager =
+            crate::util::rholang::resources::mk_runtime_manager("validate-repeat-", None).await;
         let prepared = block_creator::prepare_user_deploys(
             &snapshot,
             10,
@@ -306,6 +326,7 @@ async fn proposer_must_skip_recovery_when_deploy_is_canonically_finalized() {
             deploy_storage.clone(),
             rejected_deploy_buffer.clone(),
             &block_store,
+            &runtime_manager,
         )
         .await
         .expect("prepare_user_deploys should not error");

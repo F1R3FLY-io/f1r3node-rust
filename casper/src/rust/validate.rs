@@ -245,6 +245,7 @@ impl Validate {
         max_parent_depth: i32,
         depth_buffer: i32,
         block_store: &KeyValueBlockStore,
+        runtime_manager: &RuntimeManager,
         disable_validator_progress_check: bool,
     ) -> ValidBlockProcessing {
         use crate::rust::metrics_constants::*;
@@ -293,7 +294,7 @@ impl Validate {
         tracing::debug!(target: "f1r3fly.casper", "before-repeat-deploy-validation");
         match __step!(
             BLOCK_VALIDATION_REPEAT_DEPLOY_TIME_METRIC,
-            Self::repeat_deploy(block, s, block_store, expiration_threshold)
+            Self::repeat_deploy(block, s, block_store, runtime_manager, expiration_threshold).await
         ) {
             Either::Left(err) => return Either::Left(err),
             Either::Right(_) => {}
@@ -411,10 +412,11 @@ impl Validate {
     /// the recovery exemption on the validator's own `rejected_in_scope` snapshot
     /// state and local finalization view, which split verdicts across nodes with
     /// different attach times.)
-    pub fn repeat_deploy(
+    pub async fn repeat_deploy(
         block: &BlockMessage,
         s: &mut CasperSnapshot,
         block_store: &KeyValueBlockStore,
+        runtime_manager: &RuntimeManager,
         expiration_threshold: i32,
     ) -> ValidBlockProcessing {
         let checked_sigs: HashSet<prost::bytes::Bytes> = block
@@ -476,10 +478,87 @@ impl Validate {
             }
         }
 
+        // Sealed-floor authority: the block's own floor is a pure function of
+        // its justifications; the stored seal at that cut is the canonical
+        // accept/reject ledger for everything inside the floor closure. A
+        // missing stored seal falls back to the record-only rule below — the
+        // proposer-side gate and the merge's enforcement window remain the
+        // defenses for that case. The floor here is the same derivation the
+        // proposer's recovery gate and block_creator A1 use, so the verdict is
+        // node-identical.
+        let fate_resolver = {
+            let ft_threshold = s.on_chain_state.shard_conf.fault_tolerance_threshold;
+            let block_latest_messages: std::collections::BTreeMap<_, _> = block
+                .justifications
+                .iter()
+                .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
+                .collect();
+            let floor = match crate::rust::finality::floor::finalized_floor(
+                &s.dag,
+                &block.header.parents_hash_list,
+                &block_latest_messages,
+                ft_threshold,
+            )
+            .await
+            {
+                Ok(floor) => floor,
+                Err(e) => return Either::Left(BlockError::BlockException(e)),
+            };
+            match s.dag.get_floor_state(&floor.hash) {
+                Ok(Some(floor_data)) => {
+                    match crate::rust::finality::floor_seal::FloorFateResolver::new(
+                        &s.dag,
+                        runtime_manager,
+                        &floor.hash,
+                        &floor_data,
+                    ) {
+                        Ok(resolver) => Some(resolver),
+                        Err(e) => return Either::Left(BlockError::BlockException(e)),
+                    }
+                }
+                Ok(None) => {
+                    tracing::debug!(
+                        target: "f1r3fly.casper",
+                        floor = %PrettyPrinter::build_string_bytes(&floor.hash),
+                        "repeat_deploy: floor state not yet sealed; record-only verdicts"
+                    );
+                    None
+                }
+                Err(e) => return Either::Left(BlockError::BlockException(CasperError::from(e))),
+            }
+        };
+
         for sig in &checked_sigs {
             let Some((inclusion_number, inclusion_block)) = latest_inclusion.get(sig) else {
                 continue; // never included before — clean
             };
+
+            // An inclusion inside the floor closure has a FINAL verdict that
+            // per-merge records cannot override in either direction.
+            if let Some(resolver) = &fate_resolver {
+                if resolver.closure_contains(inclusion_block) {
+                    if resolver.sealed_rejected_at(sig, inclusion_block) {
+                        tracing::debug!(
+                            target: "f1r3fly.casper",
+                            sig = %hex::encode(&sig[..sig.len().min(16)]),
+                            inclusion_number,
+                            "repeat_deploy: latest inclusion sealed-rejected; re-proposal exempt"
+                        );
+                        continue;
+                    }
+                    let message = format!(
+                        "deploy with sig {} re-included while its latest inclusion in block {} (#{}) \
+                         is sealed-accepted at the floor — its effects are in the finalized base; \
+                         re-execution is double-application regardless of rejection records",
+                        PrettyPrinter::build_string_bytes(sig),
+                        PrettyPrinter::build_string_bytes(inclusion_block),
+                        inclusion_number,
+                    );
+                    tracing::warn!("{}", Self::ignore(block, &message));
+                    return Either::Left(BlockError::Invalid(InvalidBlock::InvalidRepeatDeploy));
+                }
+            }
+
             // A rejection recorded at-or-above the latest inclusion height means
             // that inclusion's effect was merged away; re-proposal is legal.
             let rejection_number = latest_rejection.get(sig).copied().unwrap_or(i64::MIN);
@@ -1196,29 +1275,63 @@ impl Validate {
 
     pub async fn bonds_cache(
         b: &BlockMessage,
+        dag: &block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation,
+        block_store: &KeyValueBlockStore,
         runtime_manager: &RuntimeManager,
+        ft_threshold: f32,
     ) -> ValidBlockProcessing {
         let bonds = proto_util::bonds(b);
-        let tuplespace_hash = proto_util::post_state_hash(b);
+
+        // Finality = FS: the block's bonds FIELD must equal the bonds of the
+        // FINALIZED-floor state (the cut B builds on), exactly as the proposer
+        // set it (`BlockCreator: bonds = FS(floor)`). The post-state PoS bonds
+        // are the execution result and may legitimately differ from the field
+        // (finality delay / speculative merge), so they are NOT the validation
+        // reference — the field is validated against the finalized fringe bonds,
+        // not the post-state. Genesis has no parents: its floor is itself and
+        // FS(genesis) == its post-state by definition.
+        let reference_state = if b.header.parents_hash_list.is_empty() {
+            proto_util::post_state_hash(b)
+        } else {
+            let latest_messages: std::collections::BTreeMap<_, _> = b
+                .justifications
+                .iter()
+                .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
+                .collect();
+            let floor = match crate::rust::finality::floor::finalized_floor(
+                dag,
+                &b.header.parents_hash_list,
+                &latest_messages,
+                ft_threshold,
+            )
+            .await
+            {
+                Ok(floor) => floor,
+                Err(e) => return Either::Left(BlockError::BlockException(e)),
+            };
+            match crate::rust::finality::floor_seal::floor_state_get_or_compute(
+                dag,
+                block_store,
+                runtime_manager,
+                &floor.hash,
+                ft_threshold,
+            )
+            .await
+            {
+                Ok(fs) => fs.state_hash.0,
+                Err(e) => return Either::Left(BlockError::BlockException(e)),
+            }
+        };
 
         tracing::debug!(
             target: "f1r3fly.casper.bonds_validation",
             block = %hex::encode(&b.block_hash),
-            post_state = %hex::encode(&tuplespace_hash),
+            reference_state = %hex::encode(&reference_state),
             block_bonds_count = bonds.len(),
-            "bonds cache validate entry",
+            "bonds cache validate entry (FS floor)",
         );
-        for bond in bonds.iter() {
-            tracing::trace!(
-                target: "f1r3fly.casper.bonds_validation",
-                block = %hex::encode(&b.block_hash),
-                validator = %hex::encode(&bond.validator),
-                stake = bond.stake,
-                "bonds-cache block bond",
-            );
-        }
 
-        match runtime_manager.compute_bonds(&tuplespace_hash).await {
+        match runtime_manager.compute_bonds(&reference_state).await {
             Ok(computed_bonds) => {
                 let bonds_set: HashSet<_> = bonds
                     .iter()
@@ -1229,27 +1342,14 @@ impl Validate {
                     .map(|bond| (&bond.validator, bond.stake))
                     .collect();
 
-                tracing::debug!(
-                    target: "f1r3fly.casper.bonds_validation",
-                    block = %hex::encode(&b.block_hash),
-                    computed_bonds_count = computed_bonds.len(),
-                    "computed bonds",
-                );
                 if bonds_set == computed_bonds_set {
-                    tracing::debug!(
-                        target: "f1r3fly.casper.bonds_validation",
-                        block = %hex::encode(&b.block_hash),
-                        "bonds cache match",
-                    );
                     Either::Right(ValidBlock::Valid)
                 } else {
-                    tracing::warn!(
-                        "Bonds in proof of stake contract do not match block's bond cache."
-                    );
+                    tracing::warn!("Block bonds field does not match FS(floor) bonds.");
                     tracing::warn!(
                         target: "f1r3fly.casper.bonds_validation",
                         block = %hex::encode(&b.block_hash),
-                        post_state = %hex::encode(&tuplespace_hash),
+                        reference_state = %hex::encode(&reference_state),
                         block_count = bonds_set.len(),
                         computed_count = computed_bonds_set.len(),
                         "bonds cache mismatch (InvalidBondsCache)",
@@ -1258,13 +1358,7 @@ impl Validate {
                 }
             }
             Err(ex) => {
-                tracing::warn!("Failed to compute bonds from tuplespace hash: {}", ex);
-                tracing::warn!(
-                    target: "f1r3fly.casper.bonds_validation",
-                    block = %hex::encode(&b.block_hash),
-                    error = %ex,
-                    "compute bonds failed",
-                );
+                tracing::warn!("Failed to compute bonds from FS(floor) state: {}", ex);
                 Either::Left(BlockError::BlockException(ex))
             }
         }

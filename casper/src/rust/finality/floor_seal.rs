@@ -19,9 +19,9 @@ use std::collections::{BTreeSet, HashSet};
 
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
-use models::rust::block::floor_data::FloorData;
+use models::rust::block::floor_data::{FloorData, SealedRejection};
 use models::rust::block::state_hash::StateHashSerde;
-use models::rust::block_hash::BlockHash;
+use models::rust::block_hash::{BlockHash, BlockHashSerde};
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 
@@ -92,18 +92,24 @@ pub async fn enforcement_window(
     )
     .await?;
 
-    let rejected_sigs: HashSet<prost::bytes::Bytes> =
-        base_fs.rejected_deploys.iter().cloned().collect();
+    // Verdicts are per (sig, host): a window chain is a rejected counterparty
+    // only if ITS OWN inclusion was the one the seal rejected. A chain hosting
+    // a re-inclusion that sealed cleanly partitions accepted even though an
+    // older copy of the same sig was rejected elsewhere.
+    let rejected_pairs: HashSet<(prost::bytes::Bytes, BlockHash)> = base_fs
+        .rejected_deploys
+        .iter()
+        .map(|r| (r.sig.clone(), r.host.0.clone()))
+        .collect();
     let mut accepted_chains = Vec::new();
     let mut rejected_chains = Vec::new();
     let mut enforce_sigs: HashSet<prost::bytes::Bytes> = HashSet::new();
     for block in &window_sorted {
         for chain in build_block_index(runtime_manager, block_store, block)?.deploy_chains {
-            let seal_rejected = chain
-                .deploys_with_cost
-                .0
-                .iter()
-                .any(|deploy| rejected_sigs.contains(&deploy.deploy_id));
+            let seal_rejected = chain.deploys_with_cost.0.iter().any(|deploy| {
+                rejected_pairs
+                    .contains(&(deploy.deploy_id.clone(), chain.source_block_hash.clone()))
+            });
             if seal_rejected {
                 rejected_chains.push(chain);
             } else {
@@ -136,6 +142,101 @@ pub async fn enforcement_window(
         rejected_chains,
         enforce_sigs,
     })
+}
+
+/// A deploy's canonical fate at a sealed floor — the authority for every
+/// exactly-once decision (re-proposal admission, repeat validation).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeployFateAtFloor {
+    /// Included at-or-below the floor and absent from the sealed rejected set:
+    /// its effects are in `FS(floor)`. Re-executing it is double-application.
+    SealedAccepted,
+    /// In the sealed rejected set with no newer inclusion known: its effects
+    /// are finally absent from `FS(floor)`. Re-proposal is the recovery path.
+    SealedRejected,
+    /// No sealed verdict usable for a re-execution decision: never included,
+    /// still in flight above the floor, or sealed-rejected but already
+    /// re-included above the floor (that copy's fate is still open).
+    Unsealed,
+}
+
+/// Per-floor resolver for [`DeployFateAtFloor`] — builds the sealed rejected
+/// pair set and floor closure once, then answers per-sig queries.
+pub struct FloorFateResolver {
+    rejected_pairs: HashSet<(prost::bytes::Bytes, BlockHash)>,
+    closure: std::sync::Arc<HashSet<BlockHash>>,
+}
+
+impl FloorFateResolver {
+    pub fn new(
+        dag: &KeyValueDagRepresentation,
+        runtime_manager: &RuntimeManager,
+        floor_hash: &BlockHash,
+        floor_data: &FloorData,
+    ) -> Result<Self, CasperError> {
+        Ok(FloorFateResolver {
+            rejected_pairs: floor_data
+                .rejected_deploys
+                .iter()
+                .map(|r| (r.sig.clone(), r.host.0.clone()))
+                .collect(),
+            closure: floor_closure(dag, runtime_manager, floor_hash)?,
+        })
+    }
+
+    /// Fate of `sig` at this floor, judged on its most recent inclusion (the
+    /// deploy index maps a sig to its most recently inserted host block):
+    ///
+    /// - inclusion sealed (in closure) and ITS pair rejected → `SealedRejected`
+    ///   (recovery's re-proposal trigger);
+    /// - inclusion sealed and its pair absent → `SealedAccepted` (effects are
+    ///   in `FS(floor)` — including a recovered re-inclusion that composed);
+    /// - inclusion above the floor or unknown → `Unsealed` (in flight; never
+    ///   mistaken for a sealed effect, never authorizes another copy).
+    pub fn fate(
+        &self,
+        dag: &KeyValueDagRepresentation,
+        sig: &prost::bytes::Bytes,
+    ) -> Result<DeployFateAtFloor, CasperError> {
+        let indexed_inclusion = dag
+            .lookup_by_deploy_id(&sig.to_vec())
+            .map_err(CasperError::KvStoreError)?;
+        let __probe_indexed = indexed_inclusion.clone();
+        let __probe_any = self.rejected_pairs.iter().any(|(s, _)| s == sig);
+        let fate = match indexed_inclusion {
+            Some(block) if self.closure.contains(&block) => {
+                if self.rejected_pairs.contains(&(sig.clone(), block)) {
+                    DeployFateAtFloor::SealedRejected
+                } else {
+                    DeployFateAtFloor::SealedAccepted
+                }
+            }
+            _ => DeployFateAtFloor::Unsealed,
+        };
+        tracing::debug!(
+            target: "f1r3.trace.fateprobe",
+            sig = %hex::encode(&sig[..sig.len().min(16)]),
+            indexed = %__probe_indexed.as_ref().map(|b| hex::encode(&b[..b.len().min(4)])).unwrap_or_else(|| "none".into()),
+            in_closure = __probe_indexed.as_ref().map(|b| self.closure.contains(b)).unwrap_or(false),
+            exact_pair_rejected = __probe_indexed.as_ref().map(|b| self.rejected_pairs.contains(&(sig.clone(), b.clone()))).unwrap_or(false),
+            any_host_rejected = __probe_any,
+            fate = ?fate,
+            "FATEPROBE"
+        );
+        Ok(fate)
+    }
+
+    /// Membership of `block_hash` in `closure(floor)` — for callers that
+    /// already hold a specific inclusion block (the validator's ancestry scan)
+    /// rather than going through the deploy index.
+    pub fn closure_contains(&self, block_hash: &BlockHash) -> bool {
+        self.closure.contains(block_hash)
+    }
+
+    /// Whether the inclusion of `sig` hosted by `block` was seal-rejected.
+    pub fn sealed_rejected_at(&self, sig: &prost::bytes::Bytes, block: &BlockHash) -> bool {
+        self.rejected_pairs.contains(&(sig.clone(), block.clone()))
+    }
 }
 
 /// Materialized `closure(floor)` — the floor block with all its ancestors —
@@ -335,10 +436,13 @@ async fn seal_floor_cut(
         Some(&final_context),
     )?;
 
-    let mut rejected: BTreeSet<prost::bytes::Bytes> =
+    let mut rejected: BTreeSet<SealedRejection> =
         prev_state.rejected_deploys.iter().cloned().collect();
     let carried = rejected.len();
-    rejected.extend(rejected_user.into_iter().map(|(sig, _src)| sig));
+    rejected.extend(rejected_user.into_iter().map(|(sig, src)| SealedRejection {
+        sig,
+        host: BlockHashSerde(src),
+    }));
     let sealed_state_bytes = sealed_state.to_bytes_prost();
 
     tracing::info!(

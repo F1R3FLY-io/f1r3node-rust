@@ -2,6 +2,28 @@ use prost::bytes::Bytes;
 use serde::{Deserialize, Serialize};
 
 use crate::rust::block::state_hash::StateHashSerde;
+use crate::rust::block_hash::BlockHashSerde;
+
+/// One seal-rejection verdict: the chain hosting `sig` in block `host` was
+/// rejected when its cone was sealed. Keyed per INCLUSION, not per sig — a
+/// deploy re-included by recovery gets a fresh verdict for the new host; the
+/// old entry keeps damning only the dead copy.
+#[derive(
+    Clone,
+    Debug,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Serialize,
+    Deserialize
+)]
+pub struct SealedRejection {
+    #[serde(with = "shared::rust::serde_bytes")]
+    pub sig: Bytes,
+    pub host: BlockHashSerde,
+}
 
 /// The sealed finalized state at one floor cut, keyed (in storage) by the
 /// floor block hash.
@@ -20,11 +42,11 @@ pub struct FloorData {
     /// The sealed finalized state hash at this cut — the merge base for every
     /// block whose floor is this cut.
     pub state_hash: StateHashSerde,
-    /// Deploy signatures rejected by the seal at this cut: the enforceRejected
-    /// input. A finalization-rejected deploy cannot be resurrected above the
-    /// cut by a later merge.
-    #[serde(with = "shared::rust::serde_vec_bytes")]
-    pub rejected_deploys: Vec<Bytes>,
+    /// Per-inclusion rejection verdicts accumulated by the seals up to this
+    /// cut: the enforceRejected input. A rejected (sig, host) pair cannot be
+    /// resurrected above the cut by a later merge; a RE-inclusion of the same
+    /// sig in a new host is a fresh chain judged on its own merits.
+    pub rejected_deploys: Vec<SealedRejection>,
     /// Block number of the floor block, used for retention windowing.
     pub block_number: i64,
 }

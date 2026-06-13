@@ -59,13 +59,16 @@ pub async fn prepare_user_deploys(
         Mutex<block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer>,
     >,
     block_store: &KeyValueBlockStore,
+    runtime_manager: &RuntimeManager,
 ) -> Result<PreparedUserDeploys, CasperError> {
-    let mut deploy_storage_guard = deploy_storage
-        .lock()
-        .map_err(|e| CasperError::LockError(e.to_string()))?;
-
-    // Read all unfinalized deploys from storage
-    let unfinalized: HashSet<Signed<DeployData>> = deploy_storage_guard.read_all()?;
+    // The guard must not be held across the await points below (floor
+    // resolution); it is re-acquired for the expired-deploy removal at the end.
+    let unfinalized: HashSet<Signed<DeployData>> = {
+        let deploy_storage_guard = deploy_storage
+            .lock()
+            .map_err(|e| CasperError::LockError(e.to_string()))?;
+        deploy_storage_guard.read_all()?
+    };
 
     // Read recovered deploys from the rejected-deploy buffer. These were dropped
     // by a prior merge's conflict resolution and are now candidates for
@@ -78,6 +81,7 @@ pub async fn prepare_user_deploys(
     };
 
     let recovered_count = recovered.len();
+    let recovered_sigs: HashSet<Bytes> = recovered.iter().map(|d| d.sig.clone()).collect();
     let unfinalized: HashSet<Signed<DeployData>> = unfinalized
         .into_iter()
         .chain(recovered.into_iter())
@@ -119,81 +123,119 @@ pub async fn prepare_user_deploys(
 
     let valid_count = valid.len();
 
-    // Remove deploys that are already in scope to prevent resending.
+    // Selection gates:
     //
-    // Exception: a deploy whose sig appears in a descendant's `rejected_deploys`
-    // is eligible for re-inclusion — its state effects never made it into
-    // canonical state, so re-proposing it is correct.
+    //  - ordinary deploys: skip when already included within the ancestry
+    //    scope (the baseline duplicate guard);
     //
-    // The exemption MUST decline when the rejection is non-canonical: a sibling
-    // block can put the sig in `rejected_in_scope` (the ancestor scan unions
-    // all blocks' `rejected_deploys`) while the deploy's effects are already
-    // in canonical state via a different chain. Re-including in that case
-    // would be double-execution and the resulting block would be flagged
-    // `InvalidRepeatDeploy` by `validate.rs::repeat_deploy` — too late to
-    // avoid the slashable proposal. Mirror the validator-side gate here.
-    let exemption_candidates: HashSet<Bytes> = valid
+    //  - recovered (merge-rejected) deploys: admitted ONLY on the sealed
+    //    verdict at the upcoming proposal's floor. Per-merge rejection records
+    //    are individual merges' claims; the sealed floor state is the canonical
+    //    ledger of which effects are in the finalized base. A deploy whose fate
+    //    is not yet sealed is HELD in the buffer — never re-executed while its
+    //    first copy's outcome is still being litigated above the floor — and
+    //    one whose inclusion the seal accepted is dropped permanently (its
+    //    effects are final; re-proposal would be double-execution).
+    //
+    // The floor is derived from the same parents + justifications the block
+    // will carry, so it equals the floor block_creator embeds (A1) and the one
+    // every validator re-derives in `repeat_deploy`. Without a parent
+    // (degenerate snapshot) recoveries are HELD — the conservative verdict.
+    let has_recovery_candidates = valid
         .iter()
-        .filter(|d| {
-            casper_snapshot.deploys_in_scope.contains(&d.sig)
-                && casper_snapshot.rejected_in_scope.contains(&d.sig)
-        })
-        .map(|d| d.sig.clone())
-        .collect();
-
-    let stale_recoveries: HashSet<Bytes> = if exemption_candidates.is_empty() {
-        HashSet::new()
-    } else {
-        use crate::rust::api::deploy_finalization_status::{
-            resolve_batch, DeployFinalizationState,
+        .any(|deploy| recovered_sigs.contains(&deploy.sig));
+    let (fate_resolver, floor_number) =
+        if has_recovery_candidates && !casper_snapshot.parents.is_empty() {
+            let ft_threshold = casper_snapshot
+                .on_chain_state
+                .shard_conf
+                .fault_tolerance_threshold;
+            let parent_hashes: Vec<BlockHash> = casper_snapshot
+                .parents
+                .iter()
+                .map(|p| p.block_hash.clone())
+                .collect();
+            let latest_messages: std::collections::BTreeMap<Validator, BlockHash> = casper_snapshot
+                .justifications
+                .iter()
+                .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
+                .collect();
+            let floor = crate::rust::finality::floor::finalized_floor(
+                &casper_snapshot.dag,
+                &parent_hashes,
+                &latest_messages,
+                ft_threshold,
+            )
+            .await?;
+            let floor_data = crate::rust::finality::floor_seal::floor_state_get_or_compute(
+                &casper_snapshot.dag,
+                block_store,
+                runtime_manager,
+                &floor.hash,
+                ft_threshold,
+            )
+            .await?;
+            let resolver = crate::rust::finality::floor_seal::FloorFateResolver::new(
+                &casper_snapshot.dag,
+                runtime_manager,
+                &floor.hash,
+                &floor_data,
+            )?;
+            (Some(resolver), floor.block_number)
+        } else {
+            (None, 0)
         };
-        let lifespan = casper_snapshot.on_chain_state.shard_conf.deploy_lifespan;
-        match resolve_batch(
-            &casper_snapshot.dag,
-            block_store,
-            lifespan,
-            &exemption_candidates,
-        ) {
-            Ok(statuses) => statuses
-                .into_iter()
-                .filter_map(|(sig, st)| match st.state {
-                    DeployFinalizationState::Finalized => Some(sig),
-                    _ => None,
-                })
-                .collect(),
-            // Resolver failure: decline the exemption for all candidates
-            // rather than risk double-execution. They'll be retried next cycle.
-            Err(err) => {
-                tracing::warn!(
-                    "prepare_user_deploys: resolve_batch failed: {} — declining \
-                     recovery exemption for all {} candidate(s) this cycle",
-                    err,
-                    exemption_candidates.len()
-                );
-                exemption_candidates.clone()
-            }
-        }
-    };
 
-    let already_in_scope: Vec<Signed<DeployData>> = valid
-        .iter()
-        .filter(|deploy| {
-            let sig = &deploy.sig;
-            casper_snapshot.deploys_in_scope.contains(sig)
-                && (!casper_snapshot.rejected_in_scope.contains(sig)
-                    || stale_recoveries.contains(sig))
-        })
-        .map(|deploy| (*deploy).clone())
-        .collect();
-    let valid_unique: HashSet<Signed<DeployData>> = valid
-        .into_iter()
-        .filter(|deploy| {
-            let sig = &deploy.sig;
-            !casper_snapshot.deploys_in_scope.contains(sig)
-                || (casper_snapshot.rejected_in_scope.contains(sig)
-                    && !stale_recoveries.contains(sig))
-        })
-        .collect();
+    use crate::rust::finality::floor_seal::DeployFateAtFloor;
+    let mut valid_unique: HashSet<Signed<DeployData>> = HashSet::new();
+    let mut already_in_scope: Vec<Signed<DeployData>> = Vec::new();
+    let mut recoveries_admitted = 0usize;
+    let mut recoveries_held = 0usize;
+    let mut recoveries_sealed_accepted: Vec<Bytes> = Vec::new();
+    for deploy in valid {
+        if recovered_sigs.contains(&deploy.sig) {
+            let Some(resolver) = fate_resolver.as_ref() else {
+                recoveries_held += 1;
+                continue;
+            };
+            match resolver.fate(&casper_snapshot.dag, &deploy.sig)? {
+                DeployFateAtFloor::SealedRejected => {
+                    recoveries_admitted += 1;
+                    valid_unique.insert(deploy);
+                }
+                DeployFateAtFloor::SealedAccepted => {
+                    recoveries_sealed_accepted.push(deploy.sig.clone());
+                }
+                DeployFateAtFloor::Unsealed => {
+                    recoveries_held += 1;
+                }
+            }
+        } else if casper_snapshot.deploys_in_scope.contains(&deploy.sig) {
+            already_in_scope.push(deploy);
+        } else {
+            valid_unique.insert(deploy);
+        }
+    }
+
+    // A sealed-accepted recovery's effects are final; purge it so the buffer
+    // cannot resurrect it.
+    if !recoveries_sealed_accepted.is_empty() {
+        let mut buffer_guard = rejected_deploy_buffer
+            .lock()
+            .map_err(|e| CasperError::LockError(e.to_string()))?;
+        for sig in &recoveries_sealed_accepted {
+            buffer_guard.remove_by_sig(sig)?;
+        }
+    }
+    if has_recovery_candidates {
+        tracing::info!(
+            "Prepare user deploys: recovery gate at floor #{}: admitted={}, held={}, sealed-accepted dropped={}",
+            floor_number,
+            recoveries_admitted,
+            recoveries_held,
+            recoveries_sealed_accepted.len()
+        );
+    }
 
     let already_in_scope_count = already_in_scope.len();
 
@@ -262,7 +304,12 @@ pub async fn prepare_user_deploys(
             all_expired.len()
         );
         let expired_list: Vec<Signed<DeployData>> = all_expired.into_iter().cloned().collect();
-        deploy_storage_guard.remove(expired_list.clone())?;
+        {
+            let mut deploy_storage_guard = deploy_storage
+                .lock()
+                .map_err(|e| CasperError::LockError(e.to_string()))?;
+            deploy_storage_guard.remove(expired_list.clone())?;
+        }
 
         // Also purge expired sigs from the rejected-deploy buffer.
         // Reads above already filter expired sigs out of `valid_unique`, so
@@ -562,6 +609,7 @@ pub async fn create(
             deploy_storage.clone(),
             rejected_deploy_buffer.clone(),
             block_store,
+            runtime_manager,
         )
         .await?;
         let mut v = prepared.deploys;
@@ -797,6 +845,51 @@ pub async fn create(
         new_bonds,
     ) = checkpoint_data;
 
+    // Finality = FS: the block's bonds FIELD carries the finalized-floor bonds
+    // (the sealed cut this block builds on), not the speculative post-state
+    // bonds. This mirrors RChain's `BlockCreator: bondsMap = fringeBondsMap`:
+    // consensus weight (clique oracle) and the justification bonded-set derive
+    // from this field, so it must reflect sealed truth. `new_bonds` (the
+    // post-state PoS read) stays the execution result inside post_state_hash;
+    // only the consensus-facing field moves to FS.
+    let floor_bonds = {
+        let ft = casper_snapshot
+            .on_chain_state
+            .shard_conf
+            .fault_tolerance_threshold;
+        let parent_hashes: Vec<_> = parents.iter().map(|p| p.block_hash.clone()).collect();
+        let latest_messages: std::collections::BTreeMap<_, _> = justifications
+            .iter()
+            .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
+            .collect();
+        let floor = crate::rust::finality::floor::finalized_floor(
+            &casper_snapshot.dag,
+            &parent_hashes,
+            &latest_messages,
+            ft,
+        )
+        .await?;
+        let fs = crate::rust::finality::floor_seal::floor_state_get_or_compute(
+            &casper_snapshot.dag,
+            block_store,
+            runtime_manager,
+            &floor.hash,
+            ft,
+        )
+        .await?;
+        let fs_bonds = runtime_manager.compute_bonds(&fs.state_hash.0).await?;
+        if fs_bonds.len() != new_bonds.len() {
+            tracing::info!(
+                target: "f1r3fly.casper.bonds_validation",
+                floor_number = floor.block_number,
+                fs_bonds = fs_bonds.len(),
+                post_state_bonds = new_bonds.len(),
+                "block bonds field set from FS(floor); differs from post-state bonds (finality delay)"
+            );
+        }
+        fs_bonds
+    };
+
     let casper_version = casper_snapshot.on_chain_state.shard_conf.casper_version;
 
     // Span[F].trace(ProcessDeploysAndCreateBlockMetricsSource) from Scala
@@ -818,7 +911,7 @@ pub async fn create(
         processed_deploys,
         rejected_deploys,
         processed_system_deploys,
-        new_bonds,
+        floor_bonds,
         shard_id,
         casper_version,
     );

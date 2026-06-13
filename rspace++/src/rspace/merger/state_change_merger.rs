@@ -252,19 +252,18 @@ fn make_trie_action<C: Clone, P: Clone, A: Clone, K: Clone>(
 ) -> Result<HotStoreTrieAction<C, P, A, K>, HistoryError> {
     let init = init_value(history_pointer)?;
 
-    // Compose as (init ++ added) -- removed, as multisets. The combined changes
-    // of a merge scope can contain CHAINED writes to one channel — chain B
-    // removes the datum chain A added — so a remove may match an ADDED datum,
-    // not only a base datum. Subtracting from the base first (the previous
-    // form, multiset_diff(init, removed) ++ added) silently ignored such an
-    // unmatched remove and then stacked every add: a single-value cell grew one
-    // datum per chained write. Pooling adds with the base before subtracting
-    // cancels matched add/remove pairs exactly, leaving precisely the final
-    // value(s) of the composed sequence.
+    // Compose as (init -- removed) ++ added, as multisets — the upstream RChain
+    // StateChangeMerger form. Single-value-cell conflict detection (Check #1
+    // over system + user chains) rejects concurrent destructive writes to one
+    // cell before composition, so no two chained writes to the same cell are
+    // ever both kept; base-first subtraction is therefore sufficient and matches
+    // the merge spec. (The prior `(init ++ added) -- removed` pool form was a
+    // band-aid for a detection gap that does not exist once system deploys
+    // participate in conflict detection.)
     let new_val = {
-        let mut pool = init.clone();
-        pool.extend(changes.added.clone());
-        StateChange::multiset_diff(&pool, &changes.removed)
+        let mut result = StateChange::multiset_diff(&init, &changes.removed);
+        result.extend(changes.added.clone());
+        result
     };
 
     let ch_hex = hex::encode(history_pointer.bytes());

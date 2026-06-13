@@ -1505,7 +1505,42 @@ impl BlockAPI {
             casper.casper_shard_conf().deploy_lifespan,
             sig,
         ) {
-            Ok(status) => Ok(status),
+            Ok(status) => {
+                // Finality = FS: the resolver reports `Finalized` from
+                // block-inclusion (body.deploys minus body.rejected_deploys
+                // records). Promote that to EFFECT-finality — a deploy is truly
+                // Finalized only if its effect survived into the sealed floor
+                // state. If the sig is in the FS(LFB) rejection ledger, its
+                // effect was sealed-rejected, so downgrade to Pending (the
+                // recovery path re-proposes it). Applied ONLY here (client
+                // reporting); the shared resolver — and thus the recovery admit
+                // path that also calls it — is untouched.
+                use crate::rust::api::deploy_finalization_status::{
+                    DeployFinalizationState, DeployFinalizationStatus,
+                };
+                if status.state == DeployFinalizationState::Finalized {
+                    let ft = casper.casper_shard_conf().fault_tolerance_threshold;
+                    let lfb_hash = dag.last_finalized_block();
+                    let rm = casper.runtime_manager();
+                    let fs = crate::rust::finality::floor_seal::floor_state_get_or_compute(
+                        &dag,
+                        casper.block_store(),
+                        &rm,
+                        &lfb_hash,
+                        ft,
+                    )
+                    .await?;
+                    let sealed_rejected = fs.rejected_deploys.iter().any(|r| r.sig.as_ref() == sig);
+                    if sealed_rejected {
+                        return Ok(DeployFinalizationStatus {
+                            state: DeployFinalizationState::Pending,
+                            rejection_count: status.rejection_count,
+                            latest_block_hash: status.latest_block_hash,
+                        });
+                    }
+                }
+                Ok(status)
+            }
             Err(err) => {
                 // Convert deploy-index inconsistency to `pending_unknown`
                 // so HTTP/gRPC callers see a tractable response. The
@@ -1531,8 +1566,19 @@ impl BlockAPI {
         if let Some(casper) = eng.with_casper() {
             let last_finalized_block = casper.last_finalized_block().await?;
             let runtime_manager = casper.runtime_manager();
-            let post_state_hash = &last_finalized_block.body.state.post_state_hash;
-            let bonds = runtime_manager.compute_bonds(post_state_hash).await?;
+            let dag = casper.block_dag().await?;
+            let ft = casper.casper_shard_conf().fault_tolerance_threshold;
+            // Finality = FS: bonded status reflects the sealed finalized state at
+            // the LFB cut, not the speculative post-state.
+            let fs = crate::rust::finality::floor_seal::floor_state_get_or_compute(
+                &dag,
+                casper.block_store(),
+                &runtime_manager,
+                &last_finalized_block.block_hash,
+                ft,
+            )
+            .await?;
+            let bonds = runtime_manager.compute_bonds(&fs.state_hash.0).await?;
             let validator_bond_opt = bonds.iter().find(|bond| bond.validator == *public_key);
             Ok(validator_bond_opt.is_some())
         } else {
@@ -1564,58 +1610,27 @@ impl BlockAPI {
 
                 // When no block specified, compute merged state from all DAG tips
                 let (state_hash, target_block) = if block_hash.is_none() {
-                    let snapshot = casper.get_snapshot().await?;
                     let lfb = casper.last_finalized_block().await?;
-                    let parents = &snapshot.parents;
-
-                    tracing::warn!(
-                        "exploratoryDeploy: parents.size={}, LFB=#{} {}",
-                        parents.len(),
+                    let dag = casper.block_dag().await?;
+                    let ft = casper.casper_shard_conf().fault_tolerance_threshold;
+                    // Finality = FS: no-block exploratory reads (including
+                    // /validators) reflect the sealed finalized state at the LFB
+                    // cut — finalized truth, not the speculative tip view.
+                    let fs = crate::rust::finality::floor_seal::floor_state_get_or_compute(
+                        &dag,
+                        casper.block_store(),
+                        &runtime_manager,
+                        &lfb.block_hash,
+                        ft,
+                    )
+                    .await?;
+                    tracing::info!(
+                        "exploratoryDeploy: FS(LFB=#{} {}) state={}",
                         lfb.body.state.block_number,
-                        PrettyPrinter::build_string_bytes(&lfb.block_hash)
+                        PrettyPrinter::build_string_bytes(&lfb.block_hash),
+                        PrettyPrinter::build_string_bytes(&fs.state_hash.0)
                     );
-
-                    let merged_state = if parents.len() <= 1 {
-                        // Single parent or no parents: use LFB post-state directly
-                        let lfb_state = proto_util::post_state_hash(&lfb);
-                        tracing::warn!(
-                            "exploratoryDeploy: Using LFB post-state={} (single parent)",
-                            PrettyPrinter::build_string_bytes(&lfb_state)
-                        );
-                        lfb_state
-                    } else {
-                        // Multiple parents: compute merged state using DAG merger
-                        // For exploratory deploy (read-only queries), always disable
-                        // late block filtering to see the full merged state
-                        tracing::warn!(
-                            "exploratoryDeploy: Computing merged state from {} parents",
-                            parents.len()
-                        );
-                        // Exploratory deploys read the node's CURRENT view, so
-                        // the live latest messages are the right floor snapshot
-                        // here (no consensus artifact is produced).
-                        let latest_messages: std::collections::BTreeMap<_, _> =
-                            snapshot.dag.latest_message_hashes().into_iter().collect();
-                        let (merged_state_hash, _rejected, _rejected_slashes) =
-                            crate::rust::util::rholang::interpreter_util::compute_parents_post_state(
-                                casper.block_store(),
-                                parents.clone(),
-                                &snapshot,
-                                &runtime_manager,
-                                &latest_messages,
-                                Some(true), // disable_late_block_filtering = true for exploratory deploy
-                                None,       // exploratory deploy: no buffer populate needed
-                            )
-                            .await?;
-                        merged_state_hash
-                    };
-
-                    tracing::warn!(
-                        "exploratoryDeploy: Final state={}",
-                        PrettyPrinter::build_string_bytes(&merged_state)
-                    );
-
-                    (merged_state, Some(lfb))
+                    (fs.state_hash.0.clone(), Some(lfb))
                 } else {
                     // Specific block requested: use its post-state
                     let hash_str = block_hash.as_ref().unwrap();
