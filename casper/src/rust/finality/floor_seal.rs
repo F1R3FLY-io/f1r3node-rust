@@ -213,7 +213,7 @@ impl FloorFateResolver {
             }
             _ => DeployFateAtFloor::Unsealed,
         };
-        tracing::debug!(
+        tracing::trace!(
             target: "f1r3.trace.fateprobe",
             sig = %hex::encode(&sig[..sig.len().min(16)]),
             indexed = %__probe_indexed.as_ref().map(|b| hex::encode(&b[..b.len().min(4)])).unwrap_or_else(|| "none".into()),
@@ -319,7 +319,7 @@ pub async fn floor_state_get_or_compute(
     };
 
     if !unsealed.is_empty() {
-        tracing::info!(
+        tracing::debug!(
             target: "f1r3.trace.fs_floor",
             event = "fs_fold",
             target_floor = %PrettyPrinter::build_string_bytes(floor_hash),
@@ -445,7 +445,7 @@ async fn seal_floor_cut(
     }));
     let sealed_state_bytes = sealed_state.to_bytes_prost();
 
-    tracing::info!(
+    tracing::debug!(
         target: "f1r3.trace.fs_floor",
         event = "seal_result",
         cut = %PrettyPrinter::build_string_bytes(cut),
