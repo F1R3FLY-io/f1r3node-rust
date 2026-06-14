@@ -8,7 +8,7 @@
 //! node-local finality state participates. This is the linear-finality analog
 //! of RChain's per-message fringe: the cut the block's merge builds on.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
 use models::rust::block_hash::BlockHash;
@@ -102,10 +102,16 @@ async fn derive_floor(
         .expect("candidates is non-empty: one frontier per parent and parents is non-empty")
         .clone();
 
-    // Linear-finality invariant: all candidate cuts lie on one chain. Two
-    // incompatible finalized blocks mean consensus safety is broken.
+    // Linear-finality invariant: every candidate cut must lie in the floor's
+    // GENERAL DAG past (reachable via ANY parent path), not merely on its
+    // main-parent spine. Under multi-parent merge a lower finalized cut is
+    // routinely merged in as a secondary parent — its state is preserved, so it
+    // is compatible. Only a cut that is NOT a general ancestor is a genuinely
+    // incompatible finalized block (a fork) and breaks consensus safety.
     for candidate in &candidates {
-        if candidate.hash != floor.hash && !dag.is_in_main_chain(&candidate.hash, &floor.hash)? {
+        if candidate.hash != floor.hash
+            && !is_general_ancestor(dag, &candidate.hash, candidate.block_number, &floor.hash)?
+        {
             return Err(CasperError::Other(format!(
                 "finalized-floor safety violation: cut {} (#{}) is not an ancestor of floor {} (#{})",
                 PrettyPrinter::build_string_bytes(&candidate.hash),
@@ -126,6 +132,44 @@ async fn derive_floor(
     );
 
     Ok(floor)
+}
+
+/// True if `candidate` (at height `candidate_number`) is a general DAG ancestor
+/// of `descendant` — reachable by following ANY parent, not just the main
+/// parent. Walks up from `descendant`, pruning branches once they drop to or
+/// below the candidate's height, so the search covers only the cone between
+/// them (cheap when the floor is near the candidate, as in steady state).
+fn is_general_ancestor(
+    dag: &KeyValueDagRepresentation,
+    candidate: &BlockHash,
+    candidate_number: i64,
+    descendant: &BlockHash,
+) -> Result<bool, CasperError> {
+    if candidate == descendant {
+        return Ok(true);
+    }
+    let mut seen: HashSet<BlockHash> = HashSet::new();
+    let mut stack: Vec<BlockHash> = vec![descendant.clone()];
+    while let Some(hash) = stack.pop() {
+        if !seen.insert(hash.clone()) {
+            continue;
+        }
+        if hash == *candidate {
+            return Ok(true);
+        }
+        let meta = dag.lookup_unsafe(&hash)?;
+        // At or below the candidate's height (and not the candidate itself):
+        // every parent is strictly lower, so this branch cannot reach it.
+        if meta.block_number <= candidate_number {
+            continue;
+        }
+        for parent in meta.parents {
+            if !seen.contains(&parent) {
+                stack.push(parent);
+            }
+        }
+    }
+    Ok(false)
 }
 
 /// `floor(B)` for an already-inserted block, resolved through the persisted
