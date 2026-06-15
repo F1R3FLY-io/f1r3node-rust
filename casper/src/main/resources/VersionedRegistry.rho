@@ -6,38 +6,63 @@
 // rho:registry:lookup / insertArbitrary / insertSigned / ops URNs)
 // is not touched.
 //
-// Step 3 (this revision): adds three contracts — insertVersion,
-// deprecateVersion, approveVersion — bound to a local v1Api channel
-// and exposed via the test-only `rho:registry:v1:internal` URN. The
-// test URN goes away at Step 6 when `rho:registry:1.0.0` lands.
+// Step 3 added the mutation contracts (insertVersion, deprecateVersion,
+// approveVersion). Step 5 adds the resolver: a lookupVersion contract
+// that takes a versioned URN string, picks the highest matching
+// non-deprecated version per FIP semver rules, and returns the stored
+// code.
 //
-// Storage:
-//   _versionedRegistryStore  ↦  {"lib": Map, "serve": Map}
-//   where each namespace map is keyed by (deployerId, projectId, version)
-//   and the value is {"code": _, "deprecated": Bool, "notify": List}.
+// Store layout (refactored at Step 5 to make iteration tractable):
 //
-// Step 7 will fire the notify channels when a version is deprecated;
-// for now they are stored but not invoked. The store starts empty.
+//   _versionedRegistryStore  ↦
+//     {
+//       "lib":   Map[(deployerId, projectId) -> Map[version -> entry]],
+//       "serve": same
+//     }
+//
+// where entry = {"code": _, "deprecated": Bool, "notify": List}.
+//
+// Step 6 will replace `rho:registry:v1:internal` with the public
+// `rho:registry:1.0.0` entry point and call lookupVersion from the
+// `eval_new` URN resolver. Step 7 wires the notify-channel firing.
 
 new
   _versionedRegistryStore,
   bootstrapV1Api(`rho:registry:v1:internal`),
-  v1ApiCh
+  v1ApiCh,
+  opsV1(`rho:registry:ops:1.0.0`),
+  collectNonDeprecated
 in {
   _versionedRegistryStore!({"lib": {}, "serve": {}}) |
 
   bootstrapV1Api!(*v1ApiCh) |
 
+  // Recursive helper: walks a list of (version, entry) tuples and
+  // returns the list of versions whose entry is not deprecated.
+  contract collectNonDeprecated(@entries, @acc, ret) = {
+    match entries {
+      [] => ret!(acc)
+      [(version, entry) ...tail] => {
+        match entry.get("deprecated") {
+          true  => collectNonDeprecated!(tail, acc, *ret)
+          _     => collectNonDeprecated!(tail, acc ++ [version], *ret)
+        }
+      }
+    }
+  } |
+
   for (v1Api <- v1ApiCh) {
+
     contract v1Api(@"insertVersion", @ns, @deployerId, @projectId, @version, @code, ret) = {
       if (ns == "lib" or ns == "serve") {
         for (@store <- _versionedRegistryStore) {
-          match store.get(ns).get((deployerId, projectId, version)) {
+          match store.get(ns).getOrElse((deployerId, projectId), {}).get(version) {
             Nil => {
               _versionedRegistryStore!(
                 store.set(ns,
-                  store.get(ns).set((deployerId, projectId, version),
-                    {"code": code, "deprecated": false, "notify": []}))
+                  store.get(ns).set((deployerId, projectId),
+                    store.get(ns).getOrElse((deployerId, projectId), {}).set(version,
+                      {"code": code, "deprecated": false, "notify": []})))
               ) |
               ret!(true)
             }
@@ -55,7 +80,7 @@ in {
     contract v1Api(@"deprecateVersion", @ns, @deployerId, @projectId, @version, ret) = {
       if (ns == "lib" or ns == "serve") {
         for (@store <- _versionedRegistryStore) {
-          match store.get(ns).get((deployerId, projectId, version)) {
+          match store.get(ns).getOrElse((deployerId, projectId), {}).get(version) {
             Nil => {
               _versionedRegistryStore!(store) |
               ret!(false)
@@ -63,8 +88,9 @@ in {
             entry => {
               _versionedRegistryStore!(
                 store.set(ns,
-                  store.get(ns).set((deployerId, projectId, version),
-                    entry.set("deprecated", true)))
+                  store.get(ns).set((deployerId, projectId),
+                    store.get(ns).get((deployerId, projectId)).set(version,
+                      entry.set("deprecated", true))))
               ) |
               // Step 7: walk entry.get("notify") and emit warnings.
               ret!(true)
@@ -79,7 +105,7 @@ in {
     contract v1Api(@"approveVersion", @ns, @deployerId, @projectId, @version, ret) = {
       if (ns == "lib" or ns == "serve") {
         for (@store <- _versionedRegistryStore) {
-          match store.get(ns).get((deployerId, projectId, version)) {
+          match store.get(ns).getOrElse((deployerId, projectId), {}).get(version) {
             Nil => {
               _versionedRegistryStore!(store) |
               ret!(false)
@@ -87,8 +113,9 @@ in {
             entry => {
               _versionedRegistryStore!(
                 store.set(ns,
-                  store.get(ns).set((deployerId, projectId, version),
-                    entry.set("deprecated", false)))
+                  store.get(ns).set((deployerId, projectId),
+                    store.get(ns).get((deployerId, projectId)).set(version,
+                      entry.set("deprecated", false))))
               ) |
               ret!(true)
             }
@@ -96,6 +123,49 @@ in {
         }
       } else {
         ret!(false)
+      }
+    } |
+
+    // lookupVersion takes a versioned URN string and returns the stored
+    // `code` of the highest matching non-deprecated version, or Nil on
+    // miss / malformed input. The "registry" namespace returns Nil for
+    // now; Step 6 wires it up to the v1 API bundle.
+    contract v1Api(@"lookupVersion", @urnStr, ret) = {
+      new parsedCh in {
+        opsV1!("parseVersionedUri", urnStr, *parsedCh) |
+        for (@parsed <- parsedCh) {
+          match parsed {
+            Nil => ret!(Nil)
+            (ns, _, pk, proj, projVerPattern) => {
+              if (ns == "lib" or ns == "serve") {
+                for (@store <- _versionedRegistryStore) {
+                  _versionedRegistryStore!(store) |
+                  match store.get(ns).get((pk, proj)) {
+                    Nil => ret!(Nil)
+                    verMap => {
+                      new candidatesCh, bestCh in {
+                        collectNonDeprecated!(verMap.toList(), [], *candidatesCh) |
+                        for (@candidates <- candidatesCh) {
+                          opsV1!("selectBestVersion",
+                                 (projVerPattern, candidates), *bestCh) |
+                          for (@bestVer <- bestCh) {
+                            match bestVer {
+                              Nil => ret!(Nil)
+                              v   => ret!(verMap.get(v).get("code"))
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              } else {
+                // ns == "registry"; Step 6 wires this up.
+                ret!(Nil)
+              }
+            }
+          }
+        }
       }
     }
   }

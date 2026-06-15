@@ -34,6 +34,15 @@ const EXPECTED_TEST_NAMES: &[&str] = &[
     "opsV1_parseVersionedUri_lib",
     "opsV1_parseVersionedUri_registry",
     "opsV1_parseVersionedUri_malformed",
+    // Step 5: lookupVersion resolver
+    "resolve_exact_version",
+    "resolve_patch_wildcard",
+    "resolve_minor_wildcard",
+    "resolve_major_wildcard",
+    "resolve_prerelease_skipped",
+    "resolve_deprecated_skipped",
+    "resolve_miss_returns_nil",
+    "resolve_malformed_returns_nil",
 ];
 
 #[tokio::test]

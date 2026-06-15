@@ -31,10 +31,10 @@ use super::ollama_service::{ChatMessage, SharedOllamaService};
 use super::openai_service::SharedOpenAIService;
 use super::pretty_printer::PrettyPrinter;
 use super::registry::registry::Registry;
-use super::registry::versioned_urn;
+use super::registry::{semver, versioned_urn};
 use super::rho_runtime::RhoISpace;
 use super::rho_type::{
-    RhoBoolean, RhoByteArray, RhoDeployId, RhoDeployerId, RhoName, RhoNumber, RhoString,
+    RhoBoolean, RhoByteArray, RhoDeployId, RhoDeployerId, RhoList, RhoName, RhoNumber, RhoString,
     RhoSysAuthToken, RhoUri,
 };
 use super::util::vault_address::VaultAddress;
@@ -83,6 +83,73 @@ pub fn byte_name(b: Byte) -> Par {
     Par::default().with_unforgeables(vec![GUnforgeable {
         unf_instance: Some(GPrivateBody(GPrivate { id: vec![b] })),
     }])
+}
+
+/// Implementation of the `"matchesVersion"` op. Argument is a 2-tuple
+/// Par `(pattern_str, version_str)`; both fields are unwrapped, parsed
+/// through `semver`, and matched. Returns `false` on any malformed
+/// input so Rholang callers can safely skip non-conforming candidates
+/// rather than handling per-error states.
+fn matches_version(arg: &Par) -> bool {
+    let (pat_par, ver_par) = match unapply_tuple2(arg) {
+        Some(t) => t,
+        None => return false,
+    };
+    let (Some(pat_str), Some(ver_str)) =
+        (RhoString::unapply(&pat_par), RhoString::unapply(&ver_par))
+    else {
+        return false;
+    };
+    let (Ok(pattern), Ok(version)) = (
+        semver::parse_pattern(&pat_str),
+        semver::parse_version(&ver_str),
+    ) else {
+        return false;
+    };
+    pattern.matches(&version)
+}
+
+/// Implementation of `"selectBestVersion"`. Arg is a 2-tuple
+/// `(pattern_str, versions_list)`. Returns the highest matching
+/// version as a Rholang string, or `Nil` if none match or input is
+/// malformed.
+fn select_best_version(arg: &Par) -> Par {
+    let Some((pattern_par, versions_par)) = unapply_tuple2(arg) else {
+        return Par::default();
+    };
+    let Some(pattern_str) = RhoString::unapply(&pattern_par) else {
+        return Par::default();
+    };
+    let Ok(pattern) = semver::parse_pattern(&pattern_str) else {
+        return Par::default();
+    };
+    let Some(version_list) = RhoList::unapply(&versions_par) else {
+        return Par::default();
+    };
+
+    let mut versions = Vec::with_capacity(version_list.len());
+    for p in &version_list {
+        if let Some(s) = RhoString::unapply(p) {
+            if let Ok(v) = semver::parse_version(&s) {
+                versions.push(v);
+            }
+        }
+    }
+
+    match pattern.best_match(&versions) {
+        Some(best) => RhoString::create_par(best.to_string()),
+        None => Par::default(),
+    }
+}
+
+fn unapply_tuple2(p: &Par) -> Option<(Par, Par)> {
+    let expr = single_expr(p)?;
+    if let ExprInstance::ETupleBody(ETuple { ps, .. }) = expr.expr_instance? {
+        if ps.len() == 2 {
+            return Some((ps[0].clone(), ps[1].clone()));
+        }
+    }
+    None
 }
 
 /// Encode a parsed versioned-registry URN as a 5-tuple Par for the
@@ -709,7 +776,7 @@ impl SystemProcesses {
     }
 
     /// Handler for the versioned registry helper URN
-    /// (`rho:registry:ops:1.0.0`). Two ops:
+    /// (`rho:registry:ops:1.0.0`). Three ops:
     ///
     /// - `"buildUri"(bytes)` — identical to the legacy `rho:registry:ops`
     ///   path, exposed here so contracts that prefer the versioned form
@@ -719,6 +786,17 @@ impl SystemProcesses {
     ///   `(namespace, service_version, pub_key, project_id, project_version)`
     ///   where the trailing three are `Nil` for the `rho:registry:` shape.
     ///   Returns `Nil` (an empty Par) on malformed input.
+    /// - `"matchesVersion"((pattern, version))` — semver match. Returns
+    ///   `true` iff the version satisfies the pattern (`*`, `M.*`,
+    ///   `M.m.*`, or exact). Wildcards never match prereleases; an exact
+    ///   pattern matches whatever it spells. Returns `false` on
+    ///   malformed input rather than failing — the Rholang caller can
+    ///   then skip that candidate.
+    /// - `"selectBestVersion"((pattern, [version, …]))` — picks the
+    ///   highest matching version string from a Rholang list. Returns
+    ///   `Nil` if none match or on malformed input. Pushes the semver
+    ///   ordering into Rust so the Rholang resolver doesn't have to
+    ///   implement comparison itself.
     ///
     /// The legacy `registry_ops` handler is left untouched.
     pub async fn registry_ops_v1(
@@ -745,6 +823,10 @@ impl SystemProcesses {
                 .and_then(|s| versioned_urn::parse_urn(&s))
                 .map(parsed_urn_to_tuple)
                 .unwrap_or_default(),
+
+            Some("matchesVersion") => RhoBoolean::create_par(matches_version(argument)),
+
+            Some("selectBestVersion") => select_best_version(argument),
 
             _ => return Err(illegal_argument_error("registry_ops_v1")),
         };

@@ -163,7 +163,34 @@ Landed as `rho:registry:ops:1.0.0`, a parallel system process to the legacy `rho
 - Verified end-to-end with a deliberately wrong assertion on the parse-lib case: the Rust spec failed with a clear `left vs right` diagnostic showing the tuple shape from the host.
 - Legacy regression: `registry_spec`, `registry_ops_spec`, `multi_parent_casper_should_be_able_to_use_the_registry` all green unchanged.
 
-### Step 5 — versioned URN resolution in `eval_new` (additive)
+### Step 5 — versioned-URN resolver ✅ DONE (2026-06-15, resolver only)
+
+Step 5 split into two pieces. **The resolver mechanism is done**; the `eval_new` desugaring that lets `new x(`rho:lib:…`)` auto-call it is deferred to a Step 5b in the lead-up to Step 6, where it pairs naturally with the public `rho:registry:1.0.0` entry-point wiring.
+
+**Resolver delivered (this commit):**
+
+- `lookupVersion(@urnStr, ret)` contract added to `VersionedRegistry.rho`. Parses the URN through `rho:registry:ops:1.0.0`'s `parseVersionedUri`, scans the namespace, filters out deprecated versions via a `collectNonDeprecated` recursive helper, picks the highest matching version via `selectBestVersion`, and returns the stored `code` on `ret`. Returns `Nil` on malformed URN, unknown `(pk, project)`, or no matching non-deprecated version. The `"registry"` namespace currently returns `Nil`; Step 6 wires it to the v1 API bundle.
+- Store layout refactored from `(deployerId, projectId, version)` flat keys to `(deployerId, projectId) → Map[version → entry]` so the resolver can iterate the version map cheaply. `insertVersion` / `deprecateVersion` / `approveVersion` updated; Step 3 tests still pass unchanged.
+- Two new ops on `rho:registry:ops:1.0.0`:
+  - `"matchesVersion"((pattern, version))` — semver match via `Pattern::matches`. Returns `false` on malformed input rather than failing.
+  - `"selectBestVersion"((pattern, [version, …]))` — picks the highest matching version from a list, via `Pattern::best_match`. Pushes the semver ordering into Rust so the Rholang resolver doesn't need a comparator.
+
+**Test coverage (8 new cases, all real-verified):**
+
+- `resolve_exact_version` — exact lookup returns the stored code.
+- `resolve_patch_wildcard` — `1.0.*` across `1.0.0`/`1.0.1`/`1.0.2` returns `1.0.2`'s code.
+- `resolve_minor_wildcard` — `1.*` across `1.0.5`/`1.1.9`/`1.2.3` returns `1.2.3`'s code.
+- `resolve_major_wildcard` — `*` across `1.5.0`/`2.0.0` returns `2.0.0`'s code.
+- `resolve_prerelease_skipped` — `1.*` across `1.0.0` and `1.1.0-alpha` returns the stable `1.0.0`'s code.
+- `resolve_deprecated_skipped` — deprecating `1.0.1` makes `1.0.*` fall back to `1.0.0`'s code.
+- `resolve_miss_returns_nil` — unknown `(pk, project)` returns `Nil`.
+- `resolve_malformed_returns_nil` — garbage URN returns `Nil`.
+
+Verified end-to-end by flipping the expected value on `resolve_patch_wildcard` from `"patch2"` to `"patch0"`: the Rust spec failed with `left: "patch0"`, `right: "patch2"`.
+
+**Deferred to Step 5b (lands with Step 6):** the `eval_new` branch in `reduce.rs:1333-1346` that auto-routes versioned URNs through this resolver. Plan text retained below for reference.
+
+---
 
 Edit `rholang/src/rust/interpreter/reduce.rs:1333-1346` (the `add_urn` closure inside `eval_new`). The existing exact-match-then-injections sequence keeps its behavior for every legacy URN. We add one new branch *between* them:
 
