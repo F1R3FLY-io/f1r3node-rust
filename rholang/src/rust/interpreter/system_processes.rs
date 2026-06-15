@@ -123,6 +123,13 @@ impl FixedChannels {
 
     pub fn sys_authtoken_ops() -> Par { byte_name(18) }
 
+    // TODO(Step 6): rename to `reg_v1` and re-URN to `rho:registry:1.0.0`
+    // once the public entry point of the Versioned Registry FIP lands.
+    // Step 3 uses this byte slot as a test-only handle so RhoSpec can
+    // exercise insertVersion / deprecateVersion / approveVersion before
+    // the resolver and entry-point are wired up.
+    pub fn reg_v1_internal() -> Par { byte_name(19) }
+
     pub fn gpt4() -> Par { byte_name(20) }
 
     pub fn dalle3() -> Par { byte_name(21) }

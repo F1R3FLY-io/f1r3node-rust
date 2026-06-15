@@ -94,34 +94,50 @@ There's no user-callable surface yet, so the testable surface is small:
 
 What we don't test at Step 2: anything about the store's contents (no contracts read or write it yet) or the resolver (doesn't exist until Step 5).
 
-### Step 3 — three new Rholang contracts (in the new sibling file)
+### Step 3 — three new Rholang contracts (in the new sibling file) ✅ DONE (2026-06-15)
 
-These contracts operate on `_versionedRegistryStore` only. They never read or write `_registryStore`.
+Landed in `casper/src/main/resources/VersionedRegistry.rho`. The file's `new` block now defines three persistent contracts on a local `v1Api` channel, bootstrapped to the test-only `rho:registry:v1:internal` URN via the same `for(x <- channel) { x!(channel) }` forwarder pattern Registry.rho uses for `rho:registry:lookup`. Store layout is `{"lib": Map[(deployerId, projectId, version) -> {"code": _, "deprecated": Bool, "notify": List}], "serve": same}` — a plain Rholang Map, not TreeHashMap, deferred to a follow-up if scale demands it.
 
-- `insertVersion(ret, namespace, deployerId, projectId, version, code)` — namespace is `"lib"` or `"serve"`. Returns `true`/`false` per FIP. Failure modes the contract checks: `deployerId` doesn't match the public key in the URN; version already exists; if namespace is `"lib"`, run a runtime check that the inserted code doesn't introduce persistent names (see the lib check below).
-- `deprecateVersion(ret, namespace, deployerId, projectId, version)` — sets the `deprecated` flag and emits a warning on every channel currently in that version's `notify_channels` list. Returns `true`/`false`.
-- `approveVersion(ret, namespace, deployerId, projectId, version)` — clears the `deprecated` flag. Returns `true`/`false`.
+Contracts:
 
-Use the existing `ops!("buildUri", pubKeyBytes, *uriCh)` mechanism for any URI bookkeeping the new contracts need.
+- `insertVersion(ret, ns, deployerId, projectId, version, code)` — returns `true` on first insert under `(ns, deployerId, projectId, version)`, `false` on duplicate or unknown namespace. The `deployerId`-vs-URN-pubkey check is deferred to Step 5 (where the resolver knows the URN structure).
+- `deprecateVersion(ret, ns, deployerId, projectId, version)` — flips `deprecated` to `true`; returns `true` if the entry existed, `false` otherwise. Notify-channel firing is deferred to Step 7.
+- `approveVersion(ret, ns, deployerId, projectId, version)` — flips `deprecated` back to `false`; returns `true`/`false` symmetrically.
 
-#### Lib runtime check (Step 3, deferred fallback)
+Rust-side scaffolding to register the test handle:
 
-To meet the FIP's "code uses only temp names" requirement without a static analysis: at `insertVersion` time for `"lib"`, compile the candidate code, run it in a sandboxed deploy, and reject if any persistent-name production is observed. If that's too heavy, ship Step 3 *without* the check (accept all `"lib"` inserts) and file a follow-up issue; the check is non-blocking for the rest of the FIP.
+- `FixedChannels::reg_v1_internal()` returning `byte_name(19)` in `system_processes.rs`.
+- An entry in `basic_processes()` mapping `"rho:registry:v1:internal"` to a write-only bundle of that channel.
+- An additional `bootstrap(FixedChannels::reg_v1_internal())` call in `registry::registry_bootstrap::ast()` so the bootstrap forwarder for byte_name(19) gets pre-installed alongside the legacy registry channels.
+
+Each of the three additions is marked with `// TODO(Step 6): remove` so the rename to `rho:registry:1.0.0` is obvious in review.
+
+#### Lib runtime check — deferred
+
+Not implemented in this revision. Accept all `"lib"` inserts. The persistent-name check stays an open follow-up (see TODO at the top of `VersionedRegistry.rho`).
 
 #### Testing
 
-The new contracts at this step are bound to internal channels inside `VersionedRegistry.rho` and won't be user-callable until Step 6 wires up `rho:registry:1.0.0`. So testing here is about exercising the contracts through a temporary handle, then ripping the handle out at Step 6:
+`casper/src/test/resources/VersionedRegistryTest.rho` is the probe (NOT a RhoSpec spec — see `regver-known-issues.md` for why) and `casper/tests/genesis/contracts/versioned_registry_spec.rs` is the Rust spec around it. The probe calls each contract, captures the reply, and sends `(test_name, attempt, (expected, "==", actual), clue, ackCh)` straight to `rho:test:assertAck`. The Rust spec calls `get_results` directly, then:
 
-1. **Test-only handle.** Add a single fixed channel `rho:registry:v1:internal` (or similar) registered for this step only, bundle-wrapping the three contracts. RhoSpec tests reach them through this URN. The URN goes away at Step 6 in favor of the public `rho:registry:1.0.0`. Mark with a `// TODO(Step 6): remove` comment so it's obvious in review.
-2. **Contract-level tests in `VersionedRegistryTest.rho`**, replacing the Step 2 placeholder:
-   - `test_insertVersion_lib_happy_path` — insert `1.0.0`, observe `true`.
-   - `test_insertVersion_serve_happy_path` — same for `"serve"`.
-   - `test_insertVersion_duplicate_rejected` — same `(ns, pubkey, projectId, version)` twice → second returns `false`.
-   - `test_insertVersion_deployer_mismatch_rejected` — `deployerId` not derivable from the URN's `pub_key` → `false`.
-   - `test_deprecateVersion_sets_flag` — insert, deprecate, then read the store directly and assert the `deprecated` field is `true`.
-   - `test_approveVersion_clears_flag` — deprecate, approve, assert flag is `false`.
-   - If the lib runtime check ships at this step: `test_lib_persistent_name_rejected`.
-3. **Legacy regression** still green: `cargo test -p casper registry_spec`.
+1. Asserts every name in `EXPECTED_TEST_NAMES` shows up in `result.assertions` — guards against vacuous passes.
+2. Iterates every recorded assertion and `assert_eq!`s on `expected == actual`, surfacing the clue on failure.
+
+Confirmed working in both directions: deliberately wrong assertions in the probe cause the Rust spec to fail with a clear "left vs right" diagnostic, and removing a test from the probe causes the spec to fail with "recorded no assertions."
+
+Test cases (all 7 currently pass):
+
+- `insertVersion_lib_happy_path` — first insert under `"lib"` returns `true`.
+- `insertVersion_serve_happy_path` — same for `"serve"`.
+- `insertVersion_duplicate_rejected` — repeating the same `(deployerId, projectId, version)` returns `false`.
+- `insertVersion_bad_namespace_rejected` — `"other"` namespace returns `false`.
+- `deprecateVersion_sets_flag` — deprecating an existing entry returns `true`.
+- `deprecateVersion_unknown_rejected` — deprecating a missing entry returns `false`.
+- `approveVersion_clears_flag` — `insert → deprecate → approve` returns `true`.
+
+The `deployerId`-mismatch test and the lib persistent-name check are deferred to Steps 5 and 6+ respectively.
+
+Legacy regression: `cargo test -p casper --test mod registry` runs `registry_spec`, `registry_ops_spec`, and `multi_parent_casper_should_be_able_to_use_the_registry` — all still green unchanged.
 
 What we don't test at Step 3: anything about the resolver picking versions by pattern (no resolver yet) or about lookup ordering (lookup doesn't exist as a method until Step 6).
 

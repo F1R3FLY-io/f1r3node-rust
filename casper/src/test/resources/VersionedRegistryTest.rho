@@ -1,25 +1,82 @@
-//requires RhoSpec
+// Step 3 probe for VersionedRegistry.rho.
 //
-// Placeholder spec for the Versioned Registry FIP rollout, Step 2.
-// VersionedRegistry.rho has been embedded in genesis but exposes no
-// contracts yet, so the only thing observable at this stage is that
-// genesis loaded cleanly — covered by the test below. Later steps
-// (Step 3 onward) replace this file with the real test contracts.
+// Bypasses RhoSpec (see regver-known-issues.md item #2 — RhoSpec is
+// silently passing across the whole suite). Instead, this probe calls
+// `rho:test:assertAck` directly. Every assertion is recorded into the
+// TestResultCollector; the Rust spec asserts on both presence (no
+// vacuous passes) and success of every recorded assertion.
 
 new
-  RhoSpecCh,
-  lookup(`rho:registry:lookup`),
-  test_genesis_loaded
+  v1Api(`rho:registry:v1:internal`),
+  assert(`rho:test:assertAck`),
+
+  // sequencing channels for each test
+  ins1, ack1,
+  ins2, ack2,
+  ins3a, ins3b, ack3,
+  ins4, ack4,
+  ins5a, dep5, ack5,
+  dep6, ack6,
+  ins7a, dep7, app7, ack7
 in {
-  lookup!(`rho:id:zphjgsfy13h1k85isc8rtwtgt3t9zzt5pjd5ihykfmyapfc4wt3x5h`, *RhoSpecCh) |
-  for(@(_, RhoSpec) <- RhoSpecCh) {
-    @RhoSpec!("testSuite",
-      [
-        ("VersionedRegistry.rho deploys cleanly at genesis", *test_genesis_loaded)
-      ])
+  // 1. insertVersion under lib happy path returns true
+  v1Api!("insertVersion", "lib", "deployerA".toByteArray(), "projA", "1.0.0", "codeA", *ins1) |
+  for (@r1 <- ins1) {
+    assert!("insertVersion_lib_happy_path", 1, (true, "==", r1),
+            "First insertVersion under lib should return true", *ack1)
   } |
 
-  contract test_genesis_loaded(rhoSpec, _, ackCh) = {
-    rhoSpec!("assert", (true, "==", true), "Genesis loaded the versioned registry", *ackCh)
+  // 2. insertVersion under serve happy path returns true
+  v1Api!("insertVersion", "serve", "deployerB".toByteArray(), "projB", "1.0.0", "codeB", *ins2) |
+  for (@r2 <- ins2) {
+    assert!("insertVersion_serve_happy_path", 1, (true, "==", r2),
+            "First insertVersion under serve should return true", *ack2)
+  } |
+
+  // 3. Duplicate (ns, deployer, proj, ver) returns false on the second insert
+  v1Api!("insertVersion", "lib", "deployerDup".toByteArray(), "projDup", "1.0.0", "first", *ins3a) |
+  for (@_ <- ins3a) {
+    v1Api!("insertVersion", "lib", "deployerDup".toByteArray(), "projDup", "1.0.0", "second", *ins3b) |
+    for (@r3 <- ins3b) {
+      assert!("insertVersion_duplicate_rejected", 1, (false, "==", r3),
+              "Duplicate insertVersion should return false", *ack3)
+    }
+  } |
+
+  // 4. Non-lib/serve namespace returns false
+  v1Api!("insertVersion", "other", "deployerC".toByteArray(), "projC", "1.0.0", "code", *ins4) |
+  for (@r4 <- ins4) {
+    assert!("insertVersion_bad_namespace_rejected", 1, (false, "==", r4),
+            "Non-lib/serve namespace should return false", *ack4)
+  } |
+
+  // 5. deprecateVersion of a known entry returns true
+  v1Api!("insertVersion", "lib", "deployerDep".toByteArray(), "projDep", "1.0.0", "code", *ins5a) |
+  for (@_ <- ins5a) {
+    v1Api!("deprecateVersion", "lib", "deployerDep".toByteArray(), "projDep", "1.0.0", *dep5) |
+    for (@r5 <- dep5) {
+      assert!("deprecateVersion_sets_flag", 1, (true, "==", r5),
+              "deprecateVersion of a known entry should return true", *ack5)
+    }
+  } |
+
+  // 6. deprecateVersion of an unknown entry returns false
+  v1Api!("deprecateVersion", "lib", "ghostDeployer".toByteArray(), "ghostProj", "1.0.0", *dep6) |
+  for (@r6 <- dep6) {
+    assert!("deprecateVersion_unknown_rejected", 1, (false, "==", r6),
+            "deprecateVersion of an unknown entry should return false", *ack6)
+  } |
+
+  // 7. approveVersion of a deprecated entry returns true
+  v1Api!("insertVersion", "lib", "deployerApr".toByteArray(), "projApr", "1.0.0", "code", *ins7a) |
+  for (@_ <- ins7a) {
+    v1Api!("deprecateVersion", "lib", "deployerApr".toByteArray(), "projApr", "1.0.0", *dep7) |
+    for (@_ <- dep7) {
+      v1Api!("approveVersion", "lib", "deployerApr".toByteArray(), "projApr", "1.0.0", *app7) |
+      for (@r7 <- app7) {
+        assert!("approveVersion_clears_flag", 1, (true, "==", r7),
+                "approveVersion after deprecate should return true", *ack7)
+      }
+    }
   }
 }

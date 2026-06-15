@@ -12,6 +12,9 @@ pub fn ast() -> Par {
         bootstrap(FixedChannels::reg_lookup()),
         bootstrap(FixedChannels::reg_insert_random()),
         bootstrap(FixedChannels::reg_insert_signed()),
+        // TODO(Step 6): remove once `rho:registry:1.0.0` replaces the
+        // Step 3 test-only URN.
+        bootstrap(FixedChannels::reg_v1_internal()),
     ])
 }
 

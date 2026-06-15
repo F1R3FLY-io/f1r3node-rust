@@ -6,16 +6,97 @@
 // rho:registry:lookup / insertArbitrary / insertSigned / ops URNs)
 // is not touched.
 //
-// Step 2 (this revision): genesis-embed the file and allocate the
-// versioned store. The deploy initializes _versionedRegistryStore
-// with empty "lib" and "serve" sub-maps and exits. No contracts yet.
-// Subsequent steps wire up the surface:
-//   Step 3: insertVersion / deprecateVersion / approveVersion
-//   Step 4: rho:registry:ops:1.0.0 helper URN
-//   Step 5: versioned-URN resolver glue in eval_new
-//   Step 6: rho:registry:1.0.0 entry point
-//   Step 7: notify-channel deprecation wiring
+// Step 3 (this revision): adds three contracts — insertVersion,
+// deprecateVersion, approveVersion — bound to a local v1Api channel
+// and exposed via the test-only `rho:registry:v1:internal` URN. The
+// test URN goes away at Step 6 when `rho:registry:1.0.0` lands.
+//
+// Storage:
+//   _versionedRegistryStore  ↦  {"lib": Map, "serve": Map}
+//   where each namespace map is keyed by (deployerId, projectId, version)
+//   and the value is {"code": _, "deprecated": Bool, "notify": List}.
+//
+// Step 7 will fire the notify channels when a version is deprecated;
+// for now they are stored but not invoked. The store starts empty.
 
-new _versionedRegistryStore in {
-  _versionedRegistryStore!({"lib": {}, "serve": {}})
+new
+  _versionedRegistryStore,
+  bootstrapV1Api(`rho:registry:v1:internal`),
+  v1ApiCh
+in {
+  _versionedRegistryStore!({"lib": {}, "serve": {}}) |
+
+  bootstrapV1Api!(*v1ApiCh) |
+
+  for (v1Api <- v1ApiCh) {
+    contract v1Api(@"insertVersion", @ns, @deployerId, @projectId, @version, @code, ret) = {
+      if (ns == "lib" or ns == "serve") {
+        for (@store <- _versionedRegistryStore) {
+          match store.get(ns).get((deployerId, projectId, version)) {
+            Nil => {
+              _versionedRegistryStore!(
+                store.set(ns,
+                  store.get(ns).set((deployerId, projectId, version),
+                    {"code": code, "deprecated": false, "notify": []}))
+              ) |
+              ret!(true)
+            }
+            _ => {
+              _versionedRegistryStore!(store) |
+              ret!(false)
+            }
+          }
+        }
+      } else {
+        ret!(false)
+      }
+    } |
+
+    contract v1Api(@"deprecateVersion", @ns, @deployerId, @projectId, @version, ret) = {
+      if (ns == "lib" or ns == "serve") {
+        for (@store <- _versionedRegistryStore) {
+          match store.get(ns).get((deployerId, projectId, version)) {
+            Nil => {
+              _versionedRegistryStore!(store) |
+              ret!(false)
+            }
+            entry => {
+              _versionedRegistryStore!(
+                store.set(ns,
+                  store.get(ns).set((deployerId, projectId, version),
+                    entry.set("deprecated", true)))
+              ) |
+              // Step 7: walk entry.get("notify") and emit warnings.
+              ret!(true)
+            }
+          }
+        }
+      } else {
+        ret!(false)
+      }
+    } |
+
+    contract v1Api(@"approveVersion", @ns, @deployerId, @projectId, @version, ret) = {
+      if (ns == "lib" or ns == "serve") {
+        for (@store <- _versionedRegistryStore) {
+          match store.get(ns).get((deployerId, projectId, version)) {
+            Nil => {
+              _versionedRegistryStore!(store) |
+              ret!(false)
+            }
+            entry => {
+              _versionedRegistryStore!(
+                store.set(ns,
+                  store.get(ns).set((deployerId, projectId, version),
+                    entry.set("deprecated", false)))
+              ) |
+              ret!(true)
+            }
+          }
+        }
+      } else {
+        ret!(false)
+      }
+    }
+  }
 }
