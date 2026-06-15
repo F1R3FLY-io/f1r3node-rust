@@ -84,9 +84,7 @@ pub type SigKey = [u8; 32];
 /// re-export so callers (the D2 gate, the supply consumer) key the supply map by
 /// the same basis without reaching into `accounting/mod.rs` internals.
 #[inline]
-pub fn sig_key(sig: &Sig) -> SigKey {
-    sig.lane_hash()
-}
+pub fn sig_key(sig: &Sig) -> SigKey { sig.lane_hash() }
 
 /// The static demand analysis result for one signature `s` over a desugared
 /// `Par` (cost-accounted-rho Def 17 + Thm 20 over-approximation).
@@ -330,9 +328,7 @@ fn demand_par(par: &Par) -> DemandEntry {
 /// returned value is `Cow`-free (an owned clone) to keep the boundary a total
 /// function over `&Par`.
 #[inline]
-pub fn desugar_for_funding(par: &Par) -> Par {
-    par.clone()
-}
+pub fn desugar_for_funding(par: &Par) -> Par { par.clone() }
 
 /// The Split/Join supply closure `effectiveΣ` (cost-accounted-rho §B.1
 /// decomposition equivalence; Appendix A eq:app-st-signed-compound). Given the
@@ -450,17 +446,19 @@ pub fn effective_supply_with(
 
 /// The funding decision for one signature group (cost-accounted-rho Def 19 +
 /// Thm 20): a deploy (or canonical-order prefix of a signature group) is fundable
-/// iff the EFFECTIVE supply meets or exceeds the demand plus the safety margin.
+/// iff the EFFECTIVE supply meets or exceeds the demand — plus, for
+/// over-approximated (`unknown`) demand only, a safety margin.
 ///
 /// ```text
-/// fundable  ⇔  effective_supply_s ≥ known_lower_bound + margin
+/// fundable  ⇔  effective_supply_s ≥ known_lower_bound + (margin if unknown else 0)
 /// ```
 ///
-/// Two regimes, both captured by the single inequality above:
+/// Two regimes:
 ///   * Fully resolvable demand (`unknown == false`): `known_lower_bound` IS the
-///     exact `Δ_s`, so the check is the spec's `Σ_s ≥ Δ_s` (with the genesis
-///     `margin` as the economic safety buffer — the analogue of the legacy
-///     minimum phlo price).
+///     exact `Δ_s`, so the check is EXACTLY Def 19 `Σ_s ≥ Δ_s` — NO margin. The
+///     economic floor `min_phlo_price` is deliberately NOT folded into the
+///     resolvable-demand correctness gate (an economic surcharge is not a
+///     correctness condition; matches the Rocq model `funds n d := d ≤ n`).
 ///   * Over-approximated demand (`unknown == true`): the true demand exceeds
 ///     `known_lower_bound` by an unknown amount, so the deploy is admitted ONLY
 ///     when the supply clears the lower bound plus the margin — the conservative
@@ -477,24 +475,27 @@ pub fn effective_supply_with(
 /// gate must never wrap into acceptance).
 #[inline]
 pub fn is_funded(analysis: &DemandEntry, effective_supply_s: i64, margin: i64) -> bool {
-    let required = i128::from(analysis.known_lower_bound) + i128::from(margin);
+    // Def 19 (`Σ_s ≥ Δ_s`) for resolvable demand; the Thm 20 safety margin applies
+    // ONLY to the data-dependent over-approximation (`unknown == true`). The
+    // economic floor `min_phlo_price` is NOT folded into the resolvable-demand
+    // correctness gate (matches the verified Rocq model `funds n d := d ≤ n`,
+    // which has no margin term).
+    let applied_margin = if analysis.unknown { margin } else { 0 };
+    let required = i128::from(analysis.known_lower_bound) + i128::from(applied_margin);
     i128::from(effective_supply_s) >= required
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use models::rhoapi::expr::ExprInstance;
     use models::rhoapi::var::VarInstance;
     use models::rhoapi::{EVar, Expr, New, Par, Receive, ReceiveBind, Send, Var};
 
-    fn atom(tag: u8) -> Sig {
-        Sig::Ground(vec![tag, tag, tag, tag])
-    }
+    use super::*;
 
-    fn empty_par() -> Par {
-        Par::default()
-    }
+    fn atom(tag: u8) -> Sig { Sig::Ground(vec![tag, tag, tag, tag]) }
+
+    fn empty_par() -> Par { Par::default() }
 
     fn send_on(chan: Par) -> Send {
         Send {
@@ -695,14 +696,11 @@ mod tests {
         raw.insert(s2, 6_i64);
         raw.insert(compound, 10_i64);
 
-        let effective = effective_supply_with(
-            &raw,
-            &[Decomposition {
-                compound,
-                left: s1,
-                right: s2,
-            }],
-        );
+        let effective = effective_supply_with(&raw, &[Decomposition {
+            compound,
+            left: s1,
+            right: s2,
+        }]);
 
         assert_eq!(effective.get(&compound), Some(&14));
         assert_eq!(effective.get(&s1), Some(&14));
@@ -720,14 +718,11 @@ mod tests {
         let mut raw = BTreeMap::new();
         raw.insert(compound, 8_i64);
 
-        let effective = effective_supply_with(
-            &raw,
-            &[Decomposition {
-                compound,
-                left: s1,
-                right: s2,
-            }],
-        );
+        let effective = effective_supply_with(&raw, &[Decomposition {
+            compound,
+            left: s1,
+            right: s2,
+        }]);
 
         assert_eq!(effective.get(&compound), Some(&8));
         assert_eq!(effective.get(&s1), Some(&8));
@@ -781,16 +776,21 @@ mod tests {
     }
 
     #[test]
-    fn funded_when_supply_meets_demand_plus_margin() {
-        // Δ=8, margin=2 ⇒ need Σ ≥ 10.
-        assert!(is_funded(&resolvable(8), 10, 2));
-        assert!(is_funded(&resolvable(8), 11, 2));
+    fn resolvable_funded_at_def19_boundary_margin_inert() {
+        // F-B: for resolvable demand the gate is EXACTLY `Σ ≥ Δ` — the economic
+        // margin is NOT applied. Δ=8 ⇒ funded at Σ ≥ 8 for ANY margin.
+        assert!(is_funded(&resolvable(8), 8, 0)); // Σ = Δ
+        assert!(is_funded(&resolvable(8), 8, 2)); // Σ = Δ, margin inert
+        assert!(is_funded(&resolvable(8), 9, 2)); // was REJECTED before the F-B fix
+        assert!(is_funded(&resolvable(8), 100, 1000));
     }
 
     #[test]
-    fn rejected_just_below_demand_plus_margin() {
-        // Δ=8, margin=2, Σ=9 < 10 ⇒ rejected.
-        assert!(!is_funded(&resolvable(8), 9, 2));
+    fn resolvable_rejected_below_demand_margin_does_not_shift_boundary() {
+        // Σ < Δ ⇒ rejected; a non-zero margin must NOT raise the bar for resolvable
+        // demand (before the F-B fix it would have required Σ ≥ Δ+margin).
+        assert!(!is_funded(&resolvable(8), 7, 0)); // Σ = Δ-1
+        assert!(!is_funded(&resolvable(8), 7, 2)); // margin inert ⇒ still just Σ < Δ
     }
 
     #[test]
@@ -800,13 +800,13 @@ mod tests {
     }
 
     #[test]
-    fn unknown_demand_uses_same_lower_bound_plus_margin_gate() {
-        // The unknown flag does NOT change the inequality — it is the reason the
-        // gate must reject when the inequality fails (the safe direction). At the
-        // boundary, an unknown deploy passes iff a resolvable one with the same
-        // lower bound would, but the lower bound under-states the true demand, so
-        // only deploys with margin headroom over the KNOWN part are admitted.
-        // Δ_known=5, margin=4 ⇒ need Σ ≥ 9.
+    fn unknown_demand_applies_margin_over_known_lower_bound() {
+        // The unknown flag is EXACTLY what gates the Thm 20 margin: an
+        // over-approximated deploy is admitted ONLY when the supply clears the
+        // KNOWN lower bound PLUS the margin (the safe direction), because the
+        // lower bound under-states the true demand. (A resolvable deploy with the
+        // same lower bound is funded at Σ ≥ Δ with NO margin — see the resolvable
+        // tests above.) Δ_known=5, margin=4 ⇒ need Σ ≥ 9.
         assert!(is_funded(&unresolvable(5), 9, 4));
         assert!(!is_funded(&unresolvable(5), 8, 4));
     }
@@ -824,8 +824,11 @@ mod tests {
 
     #[test]
     fn is_funded_does_not_overflow_on_extreme_margin() {
-        // An adversarial margin near i64::MAX must not wrap into acceptance.
-        assert!(!is_funded(&resolvable(i64::MAX), i64::MAX, i64::MAX));
+        // An adversarial margin near i64::MAX must not wrap into acceptance. The
+        // margin is added ONLY for UNKNOWN demand, so the overflow guard is
+        // exercised with an unresolvable entry (`known_lower_bound + margin`
+        // computed in i128 must never wrap an i64 into acceptance).
+        assert!(!is_funded(&unresolvable(i64::MAX), i64::MAX, i64::MAX));
         // A genuinely-sufficient supply still funds a tiny demand.
         assert!(is_funded(&resolvable(1), i64::MAX, 0));
     }
@@ -846,7 +849,7 @@ mod tests {
         // §4.7: a funding slot is a fresh unforgeable `new`-created name used AS
         // a signature (`{for(y<-x)P}_{s₁ ⊸ slot}`). Under the s₀ collapse the slot
         // is just another envelope `Sig`, so Δ_s counts the deploy's COMM nodes,
-        // funding is `Σ_slot ≥ Δ_slot + margin`, an ABSENT slot pool (Σ = 0)
+        // funding is Def 19 `Σ_slot ≥ Δ_slot` (resolvable ⇒ margin inert), an ABSENT slot pool (Σ = 0)
         // rejects a positive demand (§7.6 strict reject — "checks tokens on the
         // slot"), and the slot is keyed by the SAME canonical `lane_hash`/`from_sig`
         // basis as any ground signature. This pins the funding-slot path, which
@@ -872,10 +875,10 @@ mod tests {
         assert_eq!(d_comp.known_lower_bound, d_slot.known_lower_bound);
         assert!(!d_comp.unknown);
 
-        // The funding judgment `Σ_slot ≥ Δ + margin` (the OSLF funds judgment)
-        // applies to the slot exactly as to any signature.
-        assert!(is_funded(&d_slot, k, 0)); // exactly funded
-        assert!(is_funded(&d_slot, k + 5, 2)); // funded with margin headroom
+        // The OSLF funds judgment applies to the slot exactly as to any signature:
+        // resolvable demand ⇒ Def 19 `Σ_slot ≥ Δ_slot`, margin inert.
+        assert!(is_funded(&d_slot, k, 0)); // Σ = Δ ⇒ funded
+        assert!(is_funded(&d_slot, k + 5, 2)); // funded; margin inert for resolvable
         assert!(!is_funded(&d_slot, k - 1, 0)); // under-supplied ⇒ rejected
                                                 // An ABSENT / empty slot pool (Σ = 0) with positive demand is rejected.
         assert!(!is_funded(&d_slot, 0, 0));
@@ -914,16 +917,16 @@ mod kani_funding {
             unknown: false,
         };
         if is_funded(&analysis, supply, margin) {
-            // Funded ⇒ Σ ≥ Δ + margin ≥ Δ, so the settlement write
-            // `post = Σ − Δ` is non-negative (never underflows the pool) and
-            // leaves at least `margin` headroom.
-            assert!(supply - demand >= margin);
+            // Resolvable demand (`unknown == false`) ⇒ Def 19 `Σ ≥ Δ`, so the
+            // settlement write `post = Σ − Δ` is non-negative (never underflows the
+            // pool). The margin is inert here (F-B); the `≥ margin` headroom is
+            // claimed only for UNKNOWN demand — see `unknown_demand_applies_margin`.
             assert!(supply - demand >= 0);
         }
     }
 
     #[kani::proof]
-    fn reject_below_demand_plus_margin() {
+    fn resolvable_reject_below_demand() {
         let demand: i64 = kani::any();
         let supply: i64 = kani::any();
         let margin: i64 = kani::any();
@@ -935,7 +938,33 @@ mod kani_funding {
             known_lower_bound: demand,
             unknown: false,
         };
-        // The §7.7 reject direction: Σ strictly below Δ + margin is NOT funded.
+        // Resolvable demand: Def 19 reject direction — Σ strictly below Δ is NOT
+        // funded, and the margin is inert (it does NOT raise the bar). F-B.
+        if supply < demand {
+            assert!(!is_funded(&analysis, supply, margin));
+        }
+    }
+
+    #[kani::proof]
+    fn unknown_demand_applies_margin() {
+        let demand: i64 = kani::any();
+        let supply: i64 = kani::any();
+        let margin: i64 = kani::any();
+        kani::assume(demand >= 0 && demand <= 1_000_000);
+        kani::assume(supply >= 0 && supply <= 1_000_000);
+        kani::assume(margin >= 0 && margin <= 1_000_000);
+
+        let analysis = DemandEntry {
+            known_lower_bound: demand,
+            unknown: true,
+        };
+        // Over-approximated demand (Thm 20): funded ⇒ Σ ≥ Δ + margin (the safe
+        // direction guarantees BOTH no-underflow AND the margin headroom), and
+        // Σ strictly below Δ + margin is rejected.
+        if is_funded(&analysis, supply, margin) {
+            assert!(supply - demand >= margin);
+            assert!(supply - demand >= 0);
+        }
         if supply < demand + margin {
             assert!(!is_funded(&analysis, supply, margin));
         }

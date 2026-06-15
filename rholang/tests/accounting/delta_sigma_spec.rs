@@ -44,9 +44,7 @@ use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreMana
 /// A representative envelope signature (a single ground atom). Under the s₀
 /// collapse the demand count is signature-agnostic, so any concrete `Sig` drives
 /// the same node count; we use a ground atom to mirror a single-signer deploy.
-fn envelope_sig() -> Sig {
-    Sig::Ground(b"alice-envelope".to_vec())
-}
+fn envelope_sig() -> Sig { Sig::Ground(b"alice-envelope".to_vec()) }
 
 async fn fresh_runtime() -> RhoRuntimeImpl {
     let mut kvm = InMemoryStoreManager::new();
@@ -377,14 +375,11 @@ async fn effective_supply_closure_over_real_lane_hashes() {
     raw.insert(key_s2, 6_i64);
     raw.insert(key_compound, 10_i64);
 
-    let effective = effective_supply_with(
-        &raw,
-        &[Decomposition {
-            compound: key_compound,
-            left: key_s1,
-            right: key_s2,
-        }],
-    );
+    let effective = effective_supply_with(&raw, &[Decomposition {
+        compound: key_compound,
+        left: key_s1,
+        right: key_s2,
+    }]);
 
     // effectiveΣ_{s1∘s2} = 10 + min(4,6) = 14
     // effectiveΣ_{s1}    = 4 + 10        = 14
@@ -405,19 +400,26 @@ async fn effective_supply_closure_over_real_lane_hashes() {
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[tokio::test]
-async fn is_funded_gate_at_margin_boundaries_for_real_demand() {
+async fn is_funded_gate_at_def19_boundary_for_real_demand() {
     // Analyze a real fully-reducing deploy: D3 per-COMM Δ = 8 for §7.4.
     let analysis = demand(&normalized_par(SEC_7_4_DEBIT_CREDIT), &envelope_sig());
     assert_eq!(analysis.known_lower_bound, 8);
     assert!(!analysis.unknown);
 
+    // F-B: for fully-resolvable demand the gate is EXACTLY Def 19 `Σ_s ≥ Δ_s` —
+    // the economic margin (`min_phlo_price`) is NOT folded into the correctness
+    // inequality, so a non-zero margin must NOT shift the known-demand boundary.
     let margin = 2_i64;
-    // Σ = Δ + margin - 1 = 9 ⇒ reject (one short of the margin).
-    assert!(!is_funded(&analysis, 9, margin));
-    // Σ = Δ + margin = 10 ⇒ accept.
-    assert!(is_funded(&analysis, 10, margin));
+    // Σ = Δ - 1 = 7 ⇒ reject (under the exact demand).
+    assert!(!is_funded(&analysis, 7, margin));
+    // Σ = Δ = 8 ⇒ accept (Def 19 boundary; the margin does NOT apply to known demand).
+    assert!(is_funded(&analysis, 8, margin));
+    // Σ = Δ + margin - 1 = 9 ⇒ accept (this was REJECTED before the F-B fix).
+    assert!(is_funded(&analysis, 9, margin));
     // Σ well above ⇒ accept.
     assert!(is_funded(&analysis, 100, margin));
+    // The margin is inert for known demand: identical verdict at margin 0.
+    assert_eq!(is_funded(&analysis, 8, 0), is_funded(&analysis, 8, margin));
 }
 
 #[tokio::test]

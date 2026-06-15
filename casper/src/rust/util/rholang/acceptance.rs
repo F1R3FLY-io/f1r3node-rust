@@ -602,8 +602,9 @@ where
         for candidate in group {
             if prefix_open && logic.is_funded(&candidate.demand, residual, margin) {
                 // Admit: consume the known lower bound from the residual and
-                // accumulate the debit. (`is_funded` already folded margin +
-                // the `unknown` over-approximation into the decision.)
+                // accumulate the debit. (`is_funded` already applied Def 19
+                // `Σ ≥ Δ`, plus the Thm 20 margin for over-approximated
+                // (`unknown`) demand only.)
                 residual = residual.saturating_sub(candidate.demand.known_lower_bound);
                 group_debit = group_debit.saturating_add(candidate.demand.known_lower_bound);
                 outcome.admitted.push(candidate.cosigned);
@@ -1116,23 +1117,26 @@ mod tests {
         );
     }
 
-    /// §7.4 funded / unfunded boundary: with margin `m`, a single deploy of
-    /// demand Δ is admitted iff `Σ ≥ Δ + m`. Pin the exact boundary pair
-    /// (Σ = Δ+m accepts; Σ = Δ+m−1 rejects).
+    /// §7.4 funded / unfunded boundary for RESOLVABLE demand: by Def 19 the gate
+    /// is EXACTLY `Σ ≥ Δ` — F-B: the economic margin (`min_phlo_price`) is NOT
+    /// folded into the correctness inequality for known demand. Pin the exact
+    /// boundary pair (Σ = Δ accepts; Σ = Δ−1 rejects) and prove a non-zero margin
+    /// is inert here (the four-sends demand is fully resolvable ⇒ unknown == false).
     #[tokio::test]
-    async fn funded_unfunded_boundary_at_margin() {
-        // Δ = 4 (four parallel sends), margin = 2 ⇒ need Σ ≥ 6.
+    async fn funded_unfunded_boundary_at_def19() {
+        // Δ = 4 (four parallel sends, fully resolvable). margin = 2, but it must
+        // NOT shift the boundary for resolvable demand ⇒ need only Σ ≥ Δ = 4.
         let demand = 4;
         let margin = 2;
 
-        // Σ = 6 ⇒ accepted.
+        // Σ = Δ = 4 ⇒ accepted (Def 19 boundary), even though Σ < Δ+margin.
         let d = cosigned(&n_sends(demand), b"dave", 0, 10);
         let mut reader_ok = MockSupplyReader::new();
-        reader_ok.set(b"dave", (demand as i64) + margin);
+        reader_ok.set(b"dave", demand as i64);
         let accepted = admit_by_funding(vec![d.clone()], &reader_ok, margin, false)
             .await
             .expect("gate must not error");
-        assert_eq!(accepted.admitted.len(), 1, "Σ = Δ+margin ⇒ accepted");
+        assert_eq!(accepted.admitted.len(), 1, "Σ = Δ ⇒ accepted (margin inert)");
         assert!(accepted.rejected.is_empty());
         let dave_key = delta_sigma::sig_key(&accounting::envelope_sig_single(b"dave"));
         assert_eq!(
@@ -1140,13 +1144,13 @@ mod tests {
             Some(demand as i64)
         );
 
-        // Σ = 5 (= Δ+margin−1) ⇒ rejected.
+        // Σ = Δ−1 = 3 ⇒ rejected (under the exact demand).
         let mut reader_short = MockSupplyReader::new();
-        reader_short.set(b"dave", (demand as i64) + margin - 1);
+        reader_short.set(b"dave", (demand as i64) - 1);
         let rejected = admit_by_funding(vec![d.clone()], &reader_short, margin, false)
             .await
             .expect("gate must not error");
-        assert!(rejected.admitted.is_empty(), "Σ = Δ+margin−1 ⇒ rejected");
+        assert!(rejected.admitted.is_empty(), "Σ = Δ−1 ⇒ rejected");
         assert_eq!(rejected.rejected.len(), 1);
         assert!(rejected.debits.is_empty(), "nothing admitted ⇒ no debit");
     }
@@ -1265,11 +1269,11 @@ mod tests {
     /// #13a.2 — STRICT zero-demand admit: with `strict = true`, a Δ=0 deploy
     /// (no token-consuming COMMs) on an ABSENT pool is ADMITTED with NO debit —
     /// the §7.6-step-5 carve-out (an underfunded deploy is one with Δ>0; a Δ=0
-    /// deploy demands nothing, so a zero supply funds it). The funded predicate
-    /// is `Σ ≥ Δ + margin`; with the absent pool's effective Σ=0 and Δ=0, this
-    /// is `0 ≥ margin`, so the carve-out holds at margin 0 (the buffer is a
-    /// per-deploy safety surcharge, inapplicable to a no-op deploy on a zero
-    /// pool). Pin the carve-out at margin 0.
+    /// deploy demands nothing, so a zero supply funds it). For resolvable demand
+    /// the funded predicate is Def 19 `Σ ≥ Δ` (F-B: the margin is inert for known
+    /// demand); with the absent pool's effective Σ=0 and Δ=0 this is `0 ≥ 0`, so a
+    /// no-op deploy is admitted regardless of the margin. The test pins margin 0
+    /// (the historical carve-out value); the verdict is identical at any margin.
     #[tokio::test]
     async fn strict_absent_pool_admits_zero_demand() {
         // A term with no sends/receives ⇒ Δ = 0 (Nil/new/par are not COMMs).
