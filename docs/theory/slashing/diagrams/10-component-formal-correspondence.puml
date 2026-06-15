@@ -1,0 +1,113 @@
+' Component Diagram 10 — Specification ↔ Rocq ↔ TLA+ ↔ Rust correspondence.
+'
+' Each box is a slashing-subsystem component, annotated with:
+'   - the spec section that describes it,
+'   - the Rocq module that mechanizes it,
+'   - the TLA+ module that model-checks it,
+'   - the Rust file that implements it.
+'
+' Source of truth for Figure 11.1 in slashing-specification.md, mirroring
+' the cost-accounting verification doc §11.2 traceability table style.
+'
+' Render:
+'   plantuml -tsvg docs/theory/slashing/diagrams/10-component-formal-correspondence.puml
+
+@startuml 10-component-formal-correspondence
+!theme plain
+
+skinparam componentStyle rectangle
+skinparam component {
+  BackgroundColor #FFFFFF
+  BorderColor     #333333
+}
+skinparam package {
+  BackgroundColor<<Detection>>  #FFF7EE
+  BackgroundColor<<Storage>>    #EEFAF1
+  BackgroundColor<<Proposing>>  #EEF2FF
+  BackgroundColor<<Effect>>     #F3E5F5
+  BackgroundColor<<ForkChoice>> #E3F2FD
+  BackgroundColor<<BugFix>>     #FFEBEE
+  BackgroundColor<<Theorem>>    #E8F5E9
+  BorderColor #444444
+}
+skinparam defaultFontName "monospace"
+skinparam defaultFontSize 10
+
+title Specification ↔ Rocq ↔ TLA+ ↔ Rust correspondence
+
+' Scope note: this diagram lists the formal-correspondence-bearing
+' components — those with proofs in Rocq and/or models in TLA+.
+' The architecture-only artifacts (SystemDeployUtil, Bond map data
+' artifact, Coop vault data artifact) are present in Diagram 01 but
+' omitted here because they have no separate formal counterpart;
+' they are exercised indirectly through SlashDeploy and PoS Rholang.
+'
+' Layer color legend (matches Diagram 01):
+'   detection layer  = warm peach   (#FFF7EE)
+'   storage layer    = mint         (#EEFAF1)
+'   proposing layer  = lavender     (#EEF2FF)
+'   effect layer     = violet       (#F3E5F5)
+'   fork-choice      = sky blue     (#E3F2FD)
+'   bug-fix box      = soft red     (#FFEBEE)
+'   top theorem      = soft green   (#E8F5E9)
+'
+' Edge color legend:
+'   orange (#E65100) = detection / record-creation message
+'   blue   (#1565C0) = read query
+'   teal   (#00838F) = inter-component message
+'   purple (#6A1B9A) = Rholang invocation
+
+package "Detection layer" <<Detection>> {
+  component "EquivocationDetector\n────────────────────────────\nspec  §4\nRocq  EquivocationDetector.v\nTLA+  EquivocationDetector.tla\nRust  casper/src/rust/equivocation_detector.rs"  as D #FFECB3
+  component "Validate (block)\n────────────────────────────\nspec  §3.1.1\nRocq  InvalidBlock.v\nTLA+  EquivocationDetector.tla (taxonomy)\nRust  casper/src/rust/validate.rs"  as V #FFECB3
+  component "MultiParentCasperImpl\n────────────────────────────\nspec  §3.1.3, §7\nRocq  EquivocationDetector.v + DAGState.v\nTLA+  SlashFlow.tla, ConcurrentTracker.tla\nRust  casper/src/rust/multi_parent_casper_impl.rs"  as C #FFECB3
+}
+
+package "Storage layer" <<Storage>> {
+  component "BlockDagStorage\n────────────────────────────\nspec  §3.2.1\nRocq  DAGState.v\nTLA+  SlashFlow.tla\nRust  block-storage/src/rust/dag/block_dag_key_value_storage.rs"  as DS #C8E6C9
+  component "EquivocationTrackerStore\n────────────────────────────\nspec  §3.2.2\nRocq  EquivocationRecord.v\nTLA+  ConcurrentTracker.tla\nRust  block-storage/src/rust/dag/equivocation_tracker_store.rs"  as Tk #C8E6C9
+  component "DeployStorage\n────────────────────────────\nspec  §3.2.3, §10 (fix #8)\nRocq  BugFixUnbondedProposer.v (adjacent)\nTLA+  (n/a)\nRust  block-storage/src/rust/deploy/key_value_deploy_storage.rs"  as DepS #C8E6C9
+}
+
+package "Proposing layer" <<Proposing>> {
+  component "BlockCreator\n────────────────────────────\nspec  §3.3.1\nRocq  BlockCreator.v\nTLA+  SlashFlow.tla\nRust  casper/src/rust/blocks/proposer/block_creator.rs"  as BC #B2DFDB
+  component "SlashDeploy\n────────────────────────────\nspec  §3.3.2\nRocq  SlashDeploy.v\nTLA+  SlashFlow.tla\nRust  casper/src/rust/util/rholang/costacc/slash_deploy.rs"  as SD #B2DFDB
+}
+
+package "Effect layer" <<Effect>> {
+  component "PoS Rholang contract\n────────────────────────────\nspec  §3.4.1, §5\nRocq  PoSContract.v\nTLA+  SlashFlow.tla\nRust  casper/src/main/resources/PoS.rhox:432-495"  as PoS #D1C4E9
+}
+
+package "Fork-choice layer" <<ForkChoice>> {
+  component "ForkChoice estimator\n────────────────────────────\nspec  §3.5.1\nRocq  ForkChoice.v\nTLA+  SlashFlow.tla\nRust  casper/src/rust/estimator.rs"  as FC #BBDEFB
+}
+
+package "Validator-lifetime layer" <<Effect>> {
+  component "Validator / ValidatorLifetime\n────────────────────────────\nspec  §6, §15.1\nRocq  Validator.v + ValidatorLifetime.v\nTLA+  AuthorizedSlashFlow.tla\nRust  casper/src/rust/slashing_authorization.rs\n(epoch-scoped (v, eₖ) lifetime;\n cited by Bug #13 T-9.12 and\n Bug #14 T-LivenessGap)"  as VL #D1C4E9
+}
+
+package "Bug-fix proofs" <<BugFix>> {
+  component "BugFix #1–#16\n────────────────────────────\nspec  §10 (sixteen mechanised deltas)\nRocq:\n  #1  BugFixIgnorable.v                   → T-9.1\n  #2  BugFixAtomicTracker.v               → T-9.2\n  #3  BugFixDispatcher.v                  → T-9.3\n  #4  BugFixTransferFailure.v             → T-9.4\n  #5  BugFixStakeZero.v                   → T-9.5\n  #6  BugFixSelfRegression.v              → T-9.6\n  #7  BugFixSeqNumDensity.v               → T-9.7\n  #8  BugFixUnbondedProposer.v            → T-9.8\n  #9  EquivocationDetector.v widening     → T-9.9\n  #10 BugFixWithdrawTransferFailure.v     → T-9.10 / T-9.10′ / T-9.10″\n  #11 EquivocationDetector.v totality     → T-9.11\n  #12 BugFixSlashAuthorization.v          → T-9.13 + T-Auth\n  #13 ValidatorLifetime.v                 → T-9.12\n  #14 SlashDeploy.v deploy_epoch_matches  → T-LivenessGap\n  #15 BugFixSeqArithmetic.v               → T-9.14\n  #16 BugFixDuplicateJustifications.v     → T-9.15\n  (Bisimulation.v classifies permitted deltas)\nTLA+:\n  ConcurrentTracker.tla            (#2)\n  SlashFlow.tla                    (#3, #4, #8)\n  EquivocationDetector{,Eager}.tla (#11)\n  WithdrawFlow.tla                 (#10)\n  AuthorizedSlashFlow.tla          (#12, #13, #14)\n  JustificationProjection.tla      (#16)\nRust  patched per detector / proposer /\n      validator / authorisation regressions"  as BF #FFEBEE
+}
+
+package "Top-level theorem" <<Theorem>> {
+  component "Bisimilarity Rust ~~ Scala\n────────────────────────────\nspec  §9 (and §15 for T-Auth, T-LivenessGap)\nRocq  Bisimulation.v + MainTheorem.v\n      T-9.1..T-9.15, T-Auth,\n      T-LivenessGap, T-Idem\nTLA+  composition of all six MC harnesses"  as BIS #E8F5E9
+}
+
+V -[#E65100]-> C
+D -[#E65100]-> C
+C -[#E65100]-> DS
+C -[#E65100]-> Tk
+DS -[#546E7A]-> DepS
+BC -[#1565C0]-> DS
+BC -[#1565C0]-> Tk
+BC -[#00838F]-> SD
+SD -[#6A1B9A]-> PoS
+FC -[#1565C0]-> PoS : reads bonds(v)\n(pull, not push)\nper §3.5.1, §7.2
+SD -[#00838F]-> VL : §15.1 epoch /\nbond authorisation
+VL -[#1565C0]-> PoS : current_epoch,\nactive_validators
+
+BF -[hidden]-> BIS
+VL -[hidden]-> BF
+
+@enduml

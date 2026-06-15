@@ -23,8 +23,8 @@ use crate::rust::blocks::proposer::propose_result::{
 };
 use crate::rust::casper::{Casper, CasperSnapshot};
 use crate::rust::engine::block_retriever::BlockRetriever;
+use crate::rust::engine::multi_parent_casper::created_event;
 use crate::rust::errors::CasperError;
-use crate::rust::multi_parent_casper_impl::{self};
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 use crate::rust::validator_identity::ValidatorIdentity;
 use crate::rust::{
@@ -376,10 +376,13 @@ where
             .get(&self.validator.public_key.bytes)
             .map(|seq| *seq as i64)
             .unwrap_or(0);
+        // C13 / Perf-4: HashMap iteration yields `(&K, &V)` tuples
+        // (vs DashMap's `Ref<T>`-wrapped entries); use `.values()`
+        // since the key is unused (clippy::iter_kv_map).
         let observed_max_seq = casper_snapshot
             .max_seq_nums
-            .iter()
-            .map(|entry| *entry.value())
+            .values()
+            .copied()
             .max()
             .unwrap_or(0) as i64;
         let (block_lag, seq_lag) = match casper_snapshot
@@ -509,7 +512,7 @@ pub fn new_proposer<T: TransportLayer + Send + Sync + 'static>(
     dummy_deploy_opt: Option<(PrivateKey, String)>,
     runtime_manager: RuntimeManager,
     block_store: KeyValueBlockStore,
-    deploy_storage: Arc<Mutex<KeyValueDeployStorage>>,
+    deploy_storage: Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
     rejected_deploy_buffer: Arc<Mutex<KeyValueRejectedDeployBuffer>>,
     block_retriever: BlockRetriever<T>,
     transport: Arc<T>,
@@ -632,7 +635,7 @@ impl HeightChecker for ProductionHeightChecker {
 }
 
 pub struct ProductionBlockCreator {
-    deploy_storage: Arc<Mutex<KeyValueDeployStorage>>,
+    deploy_storage: Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
     rejected_deploy_buffer: Arc<Mutex<KeyValueRejectedDeployBuffer>>,
     runtime_manager: RuntimeManager,
     block_store: KeyValueBlockStore,
@@ -640,7 +643,7 @@ pub struct ProductionBlockCreator {
 
 impl ProductionBlockCreator {
     pub fn new(
-        deploy_storage: Arc<Mutex<KeyValueDeployStorage>>,
+        deploy_storage: Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
         rejected_deploy_buffer: Arc<Mutex<KeyValueRejectedDeployBuffer>>,
         runtime_manager: RuntimeManager,
         block_store: KeyValueBlockStore,
@@ -762,7 +765,7 @@ impl<T: TransportLayer + Send + Sync + 'static> ProposeEffectHandler
     fn publish_block_created(&self, block: &BlockMessage) -> Result<(), CasperError> {
         // Publish BlockCreated event
         self.event_publisher
-            .publish(multi_parent_casper_impl::created_event(block))
-            .map_err(|e| CasperError::RuntimeError(e.to_string()))
+            .publish(created_event(block))
+            .map_err(Into::into)
     }
 }

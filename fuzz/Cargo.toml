@@ -1,0 +1,65 @@
+[package]
+name = "f1r3node-slashing-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+# Empty [workspace] is intentional: this crate is deliberately *not* part of
+# the main f1r3node-rust workspace. cargo-fuzz needs its own lockfile and
+# its own nightly toolchain flags, and including this crate in the parent
+# workspace would force `cargo build` at the repo root to pull in
+# libfuzzer-sys + arbitrary on stable, which neither tool supports.
+[workspace]
+
+[dependencies]
+arbitrary = { version = "1", features = ["derive"] }
+block-storage = { path = "../block-storage" }
+casper = { path = "../casper" }
+crypto = { path = "../crypto" }
+dashmap = "6.1"
+futures = "0.3"
+imbl = "7"
+libfuzzer-sys = { version = "0.4", features = ["arbitrary-derive"] }
+models = { path = "../models" }
+prost = "0.14"
+rspace_plus_plus = { path = "../rspace++" }
+shared = { path = "../shared" }
+
+[[bin]]
+name = "slashing_arithmetic"
+path = "fuzz_targets/slashing_arithmetic.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "slash_deploy_roundtrip"
+path = "fuzz_targets/slash_deploy_roundtrip.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "block_message_roundtrip"
+path = "fuzz_targets/block_message_roundtrip.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "slash_authorization_paths"
+path = "fuzz_targets/slash_authorization_paths.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "equivocation_detector_paths"
+path = "fuzz_targets/equivocation_detector_paths.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "slash_lifecycle_trace"
+path = "fuzz_targets/slash_lifecycle_trace.rs"
+test = false
+doc = false

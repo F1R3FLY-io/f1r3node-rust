@@ -179,7 +179,9 @@ async fn lowest_common_universal_ancestor_should_be_computed_properly() {
             block_metadata_to_block_hash(&b8),
         ]);
 
-        let dag = block_dag_storage.get_representation();
+        let dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
 
         let result = DagOperations::lowest_universal_common_ancestor(&b1, &b5, &dag)
             .await
@@ -414,7 +416,9 @@ async fn uncommon_ancestors_should_be_computed_properly() {
             None,
         );
 
-        let dag = block_dag_storage.get_representation();
+        let dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
 
         let b1_meta = to_metadata(&b1);
         let b2_meta = to_metadata(&b2);

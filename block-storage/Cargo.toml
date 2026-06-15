@@ -20,8 +20,44 @@ imbl = { workspace = true }
 rayon = "1.10.0"
 tokio = { workspace = true }
 once_cell = "1.21.1"
+parking_lot = "0.12"
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 metrics = { workspace = true }
+
+[features]
+default = []
+# P2-16: gates the three lock-free RMW bypass helpers on
+# `BlockDagKeyValueStorage` (`equivocation_records`,
+# `insert_equivocation_record`, `update_equivocation_record`).
+# Production builds MUST NOT enable this feature. Test crates that
+# need the helpers enable `test-internals` via their dev-dependency on
+# `block-storage`. See
+# `docs/theory/slashing/slashing-verification.md` §9.2 (Bug #2).
+test-internals = []
+
+[dev-dependencies]
+# Exhaustive thread-interleaving model checker for the
+# `access_equivocations_tracker` non-reentrancy contract (P2-13).
+# See block-storage/tests/loom_equivocations_tracker.rs.
+loom = "=0.7.2"
+
+# P2-16: integration tests in `tests/block_dag_storage_test.rs` call the
+# gated `equivocation_records` / `insert_equivocation_record` /
+# `update_equivocation_record` helpers. They require the
+# `test-internals` feature; `cargo test --workspace --all-features`
+# already enables it, but the per-target `required-features` makes the
+# dependency explicit and prevents `cargo test` (default features only)
+# from confusingly omitting these tests.
+[[test]]
+name = "block_dag_storage_test"
+required-features = ["test-internals"]
+
+[[test]]
+name = "mod"
+required-features = ["test-internals"]
+
+[[test]]
+name = "loom_equivocations_tracker"
 
 [build-dependencies]

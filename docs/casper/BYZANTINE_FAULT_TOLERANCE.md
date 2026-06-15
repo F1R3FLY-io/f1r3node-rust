@@ -421,7 +421,7 @@ case InvalidBlock.AdmissibleEquivocation =>
   CasperBufferStorage.remove(block.blockHash)
 ```
 
-**Code Location:** `casper/src/rust/multi_parent_casper_impl.rs`
+**Code Location:** `casper/src/rust/engine/multi_parent_casper/mod.rs`
 
 ### Stake Forfeiture
 
@@ -635,7 +635,7 @@ for {
 } yield ValidBlock
 ```
 
-**Code Location:** `casper/src/rust/multi_parent_casper_impl.rs`
+**Code Location:** `casper/src/rust/engine/multi_parent_casper/mod.rs`
 
 ### Equivocation Tracker Storage
 
@@ -924,7 +924,7 @@ When sharding is implemented:
 - `casper/src/rust/safety/clique_oracle.rs` — Clique oracle, fault tolerance calculation
 - `casper/src/rust/synchrony_constraint_checker.rs` — Synchrony constraint, recovery bypasses
 - `casper/src/rust/finality/finalizer.rs` — Finalization algorithm, work budget
-- `casper/src/rust/multi_parent_casper_impl.rs` — Core Casper implementation
+- `casper/src/rust/engine/multi_parent_casper/mod.rs` — Core Casper implementation
 
 **Scala Implementation Files (legacy reference):**
 - `casper/src/main/scala/coop/rchain/casper/EquivocationDetector.scala`

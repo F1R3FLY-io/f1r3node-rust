@@ -1,6 +1,13 @@
+// References below to `formal/{rocq,tlaplus,sage}/slashing/`,
+// `FINDINGS.md`, `slashing-search-horizon.{md,sh}`, `slashing-traceability.md`,
+// `docs/theory/slashing/methodology/`, and `.mutants.toml` point at
+// audit-corpus artifacts preserved on the `analysis/slashing` branch.
+//
 // See casper/src/main/scala/coop/rchain/casper/blocks/proposer/BlockCreator.scala
 
-use std::collections::{HashMap, HashSet};
+#[cfg(test)]
+use std::collections::HashMap;
+use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
@@ -14,6 +21,7 @@ use models::rust::casper::protocol::casper_message::{
     BlockMessage, Body, Bond, DeployData, F1r3flyState, Header, Justification, ProcessedDeploy,
     ProcessedSystemDeploy, RejectedDeploy,
 };
+#[cfg(test)]
 use models::rust::validator::Validator;
 use prost::bytes::Bytes;
 use rholang::rust::interpreter::system_processes::BlockData;
@@ -22,6 +30,7 @@ use tracing;
 use crate::rust::blocks::proposer::propose_result::BlockCreatorResult;
 use crate::rust::casper::CasperSnapshot;
 use crate::rust::errors::CasperError;
+use crate::rust::slashing_authorization::{authorized_slash_candidates, checked_next_seq};
 use crate::rust::util::rholang::costacc::close_block_deploy::CloseBlockDeploy;
 use crate::rust::util::rholang::costacc::slash_deploy::SlashDeploy;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
@@ -48,21 +57,33 @@ pub struct PreparedUserDeploys {
     pub cap_hit: bool,
 }
 
-fn deploy_selection_reserve_tail_enabled() -> bool { true }
+/// C15 / Smell-2: was previously a zero-arg `fn -> bool` returning a
+/// hard-coded `true`. Promoted to a `const` so its always-on nature
+/// is explicit and the value is folded at compile time. Kept as a
+/// named constant (rather than inlined `true`) because it is a
+/// feature-flag posture that may yet be moved into `CasperShardConf`
+/// for per-shard control — when that happens the rename target is
+/// already in place.
+const DEPLOY_SELECTION_RESERVE_TAIL_ENABLED: bool = true;
+
+/// C15 / Smell-4: extract the deploy-signature pretty-print prefix
+/// used in operator-facing log messages. Previously inlined as
+/// `deploy_sig_prefix(&d.sig)` at four
+/// sites in `log_deploy_pool_filtering`.
+fn deploy_sig_prefix(sig: &Bytes) -> String { hex::encode(&sig[..std::cmp::min(8, sig.len())]) }
 
 pub async fn prepare_user_deploys(
     casper_snapshot: &CasperSnapshot,
     block_number: i64,
     current_time_millis: i64,
-    deploy_storage: Arc<Mutex<KeyValueDeployStorage>>,
+    deploy_storage: Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
     rejected_deploy_buffer: Arc<
         Mutex<block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer>,
     >,
     block_store: &KeyValueBlockStore,
 ) -> Result<PreparedUserDeploys, CasperError> {
-    let mut deploy_storage_guard = deploy_storage
-        .lock()
-        .map_err(|e| CasperError::LockError(e.to_string()))?;
+    // Phase 9 (A-3): parking_lot::Mutex — no poison.
+    let mut deploy_storage_guard = deploy_storage.lock();
 
     // Read all unfinalized deploys from storage
     let unfinalized: HashSet<Signed<DeployData>> = deploy_storage_guard.read_all()?;
@@ -221,7 +242,7 @@ pub async fn prepare_user_deploys(
     for d in &future_deploys {
         tracing::warn!(
             "Deploy {}... FILTERED (future): validAfterBlockNumber={} >= currentBlock={}",
-            hex::encode(&d.sig[..std::cmp::min(8, d.sig.len())]),
+            deploy_sig_prefix(&d.sig),
             d.data.valid_after_block_number,
             block_number
         );
@@ -229,7 +250,7 @@ pub async fn prepare_user_deploys(
     for d in &block_expired_deploys {
         tracing::warn!(
             "Deploy {}... FILTERED (block-expired): validAfterBlockNumber={} <= earliestBlock={}",
-            hex::encode(&d.sig[..std::cmp::min(8, d.sig.len())]),
+            deploy_sig_prefix(&d.sig),
             d.data.valid_after_block_number,
             earliest_block_number
         );
@@ -237,7 +258,7 @@ pub async fn prepare_user_deploys(
     for d in &time_expired_deploys {
         tracing::warn!(
             "Deploy {}... FILTERED (time-expired): expirationTimestamp={:?} <= currentTime={}",
-            hex::encode(&d.sig[..std::cmp::min(8, d.sig.len())]),
+            deploy_sig_prefix(&d.sig),
             d.data.expiration_timestamp,
             current_time_millis
         );
@@ -245,7 +266,7 @@ pub async fn prepare_user_deploys(
     for d in &already_in_scope {
         tracing::warn!(
             "Deploy {}... FILTERED (already in scope): deploy already exists in DAG within lifespan window",
-            hex::encode(&d.sig[..std::cmp::min(8, d.sig.len())])
+            deploy_sig_prefix(&d.sig)
         );
     }
 
@@ -306,7 +327,7 @@ pub async fn prepare_user_deploys(
     // the freshest deploy when capping is active. The remaining slots still drain
     // oldest deploys first to preserve fairness.
     let (selected, selection_strategy): (HashSet<Signed<DeployData>>, &'static str) =
-        if deploy_selection_reserve_tail_enabled() {
+        if DEPLOY_SELECTION_RESERVE_TAIL_ENABLED {
             if max_user_deploys == 1 {
                 (
                     ordered.iter().last().cloned().into_iter().collect(),
@@ -399,6 +420,17 @@ fn collect_self_chain_deploy_sigs(
 /// every block until the equivocator's invalid latest message ages
 /// out of the DAG view, saved by PoS slash idempotency but inflating
 /// body and wasting execution.
+///
+/// Merge of dev (EPOCH-004) into feature/slashing: production callers
+/// of this filter were replaced by `slashing_authorization::
+/// authorized_slash_candidates`, which is the full T-9.8 conjunctive
+/// predicate (bonded-target ∧ active-validator ∧ epoch-match ∧
+/// evidence-epoch-match). This helper is retained under
+/// `#[cfg(test)]` because the test suite below pins the
+/// `bonded ∧ active` subset of T-9.8 directly — a regression catch for
+/// any future refactor of `authorized_slash_candidates` that drops one
+/// of those clauses.
+#[cfg(test)]
 fn filter_slashable_invalid_messages(
     invalid_latest_messages: HashMap<Validator, BlockHash>,
     bonds_map: &HashMap<Validator, i64>,
@@ -420,28 +452,109 @@ async fn prepare_slashing_deploys(
 ) -> Result<Vec<SlashDeploy>, CasperError> {
     let self_id = Bytes::copy_from_slice(&validator_identity.public_key.bytes);
 
-    let invalid_latest_messages = casper_snapshot.dag.invalid_latest_messages()?;
-    let slashable_invalid_messages = filter_slashable_invalid_messages(
-        invalid_latest_messages,
-        &casper_snapshot.on_chain_state.bonds_map,
-        &casper_snapshot.on_chain_state.active_validators,
+    // An unbonded proposer cannot effect a slash (the PoS contract rejects
+    // the deploy at replay time). Skip emission to avoid wasted work and to
+    // satisfy the proven-correct theorem T-9.8 — see
+    // docs/theory/slashing/design/09-bug-fixes-and-rationale.md §9.8.
+    //
+    // Symmetry note: the receive-side predicate
+    // `validate_received_slash_deploys` does NOT require the block sender to
+    // be bonded — it only checks the slash *target* is bonded (rule 6). The
+    // block-sender-bonded invariant is enforced upstream by
+    // `block_sender_has_weight` (validate.rs); this proposer-side filter is
+    // an optimization, not an authorization predicate. The two cannot
+    // diverge in a way that admits unauthorized slashes.
+    //
+    // Subsumption over dev's `filter_slashable_invalid_messages`:
+    // `authorized_slash_candidates` is the T-9.8 conjunctive predicate.
+    // Each candidate it returns already satisfies the bonded-target +
+    // active-validator conditions that dev's simpler filter checked, PLUS
+    // the epoch/evidence-epoch matches that dev's filter omitted. The
+    // proposer-side authorization here therefore strictly extends, not
+    // replaces, dev's filter.
+    let proposer_bond = casper_snapshot
+        .on_chain_state
+        .bonds_map
+        .get(&self_id)
+        .copied()
+        .unwrap_or(0);
+    if proposer_bond <= 0 {
+        return Ok(Vec::new());
+    }
+
+    let slash_candidates = authorized_slash_candidates(casper_snapshot)?;
+
+    // `authorized_slash_candidates` documents an at-most-one-per-offender
+    // invariant via its `BTreeMap<Validator, …>` accumulator
+    // (slashing_authorization.rs:253-317). Pin the contract at the boundary
+    // so a future refactor of that helper can't silently produce duplicates.
+    debug_assert!(
+        {
+            let mut offenders: Vec<&prost::bytes::Bytes> =
+                slash_candidates.iter().map(|c| &c.offender).collect();
+            offenders.sort();
+            let original_len = offenders.len();
+            offenders.dedup();
+            offenders.len() == original_len
+        },
+        "authorized_slash_candidates must produce unique offenders; got duplicates"
     );
 
+    // Slash deploys are NOT persisted in `KeyValueDeployStorage` and
+    // this is correct by design (not a TODO).
+    //
+    // (1) Structural reason: `KeyValueDeployStorage` is keyed on the
+    //     user-deploy signature `(sig → Signed<DeployData>)`. Slash
+    //     deploys are unsigned `SystemDeployEnum::Slash(SlashDeploy
+    //     { invalid_block_hash, pk, target_activation_epoch, initial_rand })` — they have no
+    //     `Signed<DeployData>` shape and cannot be inserted.
+    //
+    // (2) Determinism reason: slash deploys are pure functions of
+    //     `(authorized invalid-block evidence, validator_identity,
+    //      target_activation_epoch, seq_num,
+    //      generate_slash_deploy_random_seed)`. The invalid-block
+    //     evidence is persisted via `BlockMetadataStore`. On node
+    //     restart, `prepare_slashing_deploys` deterministically
+    //     reconstructs the same slash-deploy set.
+    //
+    // (3) Theorem citations: T-4 (record monotonicity) +
+    //     T-9.3 (catch-all dispatcher mints record per slashable
+    //     block) jointly guarantee that the set of bonded current-epoch
+    //     invalid-block evidence is exactly the input domain of
+    //     `prepare_slashing_deploys`. See
+    //     formal/rocq/slashing/theories/EquivocationRecord.v
+    //     (`record_monotone`) and
+    //     formal/rocq/slashing/theories/BugFixDispatcher.v
+    //     (`t_9_3_catchall_mints_record`).
+    //
+    // (4) Symmetric reasoning: `CloseBlockDeploy` is also a system
+    //     deploy and is not persisted in `KeyValueDeployStorage`
+    //     for the same reason. The asymmetry is intentional: user
+    //     deploys are crash-recovery state; system deploys are
+    //     deterministically replayable from the persisted DAG.
+    //
+    // See docs/theory/slashing/design/06-proposing-and-effect.md for
+    // the full rationale.
+
+    // Create SlashDeploy objects
     let mut slashing_deploys = Vec::new();
-    for (_, invalid_block_hash) in slashable_invalid_messages {
+    for slash_candidate in slash_candidates {
         let slash_deploy = SlashDeploy {
-            invalid_block_hash: invalid_block_hash.clone(),
+            invalid_block_hash: slash_candidate.invalid_block_hash.clone(),
             pk: validator_identity.public_key.clone(),
+            // Phase 10 (C-5): convert typed Epoch back to the protobuf
+            // i64 at the wire boundary.
+            target_activation_epoch: slash_candidate.target_activation_epoch.get(),
             initial_rand: system_deploy_util::generate_slash_deploy_random_seed(
                 self_id.clone(),
                 seq_num,
-                &invalid_block_hash,
+                &slash_candidate.invalid_block_hash,
             ),
         };
 
         tracing::info!(
             "Issuing slashing deploy justified by block {}",
-            pretty_printer::PrettyPrinter::build_string_bytes(&invalid_block_hash)
+            pretty_printer::PrettyPrinter::build_string_bytes(&slash_candidate.invalid_block_hash)
         );
 
         slashing_deploys.push(slash_deploy);
@@ -482,16 +595,15 @@ fn extract_deploy_sig_from_refund_failure(msg: &str) -> Option<Vec<u8>> {
 }
 
 fn quarantine_refund_failure_deploy(
-    deploy_storage: Arc<Mutex<KeyValueDeployStorage>>,
+    deploy_storage: Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
     failure_msg: &str,
 ) -> Result<bool, CasperError> {
     let Some(sig) = extract_deploy_sig_from_refund_failure(failure_msg) else {
         return Ok(false);
     };
 
-    let mut guard = deploy_storage
-        .lock()
-        .map_err(|e| CasperError::LockError(e.to_string()))?;
+    // Phase 9 (A-3): parking_lot::Mutex — no poison.
+    let mut guard = deploy_storage.lock();
     guard.remove_by_sig(&sig).map_err(CasperError::KvStoreError)
 }
 
@@ -499,7 +611,7 @@ pub async fn create(
     casper_snapshot: &CasperSnapshot,
     validator_identity: &ValidatorIdentity,
     dummy_deploy_opt: Option<(PrivateKey, String)>,
-    deploy_storage: Arc<Mutex<KeyValueDeployStorage>>,
+    deploy_storage: Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
     rejected_deploy_buffer: Arc<Mutex<block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer>>,
     runtime_manager: &RuntimeManager,
     block_store: &mut KeyValueBlockStore,
@@ -525,12 +637,32 @@ pub async fn create(
         ))
     })?;
 
+    // Sequence numbers are wire-protocol i32. Use a checked successor here
+    // rather than `+ 1` so a hostile snapshot can't roll the local validator
+    // past i32::MAX silently — overflow surfaces as a `CasperError` and the
+    // proposer refuses to mint the block. Mirrors the receiver-side
+    // `checked_base_seq` check.
     let next_seq_num = casper_snapshot
         .max_seq_nums
         .get(&validator_identity.public_key.bytes)
-        .map(|seq| *seq + 1)
-        .unwrap_or(1) as i32;
-    let next_block_num = casper_snapshot.max_block_num + 1;
+        .map(|seq| {
+            checked_next_seq(*seq).ok_or_else(|| {
+                CasperError::RuntimeError(format!("next sequence number overflows i32: {}", *seq))
+            })
+        })
+        .transpose()?
+        .unwrap_or(1);
+    // P2-9: align with T-9.14's checked-arithmetic discipline; surface
+    // overflow as an error instead of silently wrapping around.
+    let next_block_num = casper_snapshot
+        .max_block_num
+        .checked_add(1)
+        .ok_or_else(|| {
+            CasperError::RuntimeError(format!(
+                "max_block_num overflow: {} + 1 wraps i64",
+                casper_snapshot.max_block_num
+            ))
+        })?;
     let parents = &casper_snapshot.parents;
     let justifications = &casper_snapshot.justifications;
     if let Some(max_parent_ts) = parents.iter().map(|p| p.header.timestamp).max() {
@@ -661,14 +793,68 @@ pub async fn create(
     // merge-rejected slash for an equivocator already covered by
     // prepare_slashing_deploys is dropped. `filter_recoverable` also
     // collapses multiple rejected slashes for the same equivocator
-    // (e.g., from different original issuers) down to a single entry.
+    // (e.g., from different original issuers) down to a single entry,
+    // then the evidence filter drops stale or no-longer-invalid hashes.
     let own_invalid_block_hashes = slashing_deploys
         .iter()
         .map(|sd| sd.invalid_block_hash.clone());
-    let recovered_rejected_slashes = crate::rust::merging::rejected_slash::filter_recoverable(
-        rejected_slashes,
-        own_invalid_block_hashes,
-    );
+    let epoch_length = casper_snapshot.on_chain_state.shard_conf.epoch_length;
+    let candidate_recovered_rejected_slashes =
+        crate::rust::merging::rejected_slash::filter_recoverable(
+            rejected_slashes,
+            own_invalid_block_hashes,
+        );
+    let (recovered_target_activation_epoch, recovered_rejected_slashes) =
+        if candidate_recovered_rejected_slashes.is_empty() {
+            (None, Vec::new())
+        } else {
+            let recovered_target_activation_epoch =
+                crate::rust::slashing_authorization::epoch_for_block_number(
+                    next_block_num,
+                    epoch_length,
+                )
+                .map_err(|e| {
+                    CasperError::RuntimeError(format!(
+                        "Failed to compute current epoch for recovered slash deploy: {:?}",
+                        e
+                    ))
+                })?
+                .get();
+            let recovered_rejected_slashes =
+                crate::rust::merging::rejected_slash::filter_recoverable_with_evidence(
+                    candidate_recovered_rejected_slashes,
+                    Vec::<BlockHash>::new(),
+                    |invalid_block_hash| {
+                        let Some(metadata) = casper_snapshot
+                            .dag
+                            .lookup(invalid_block_hash)
+                            .map_err(CasperError::KvStoreError)?
+                        else {
+                            return Ok::<bool, CasperError>(false);
+                        };
+                        if !metadata.invalid {
+                            return Ok::<bool, CasperError>(false);
+                        }
+                        let evidence_epoch =
+                            crate::rust::slashing_authorization::epoch_for_block_number(
+                                metadata.block_number,
+                                epoch_length,
+                            )
+                            .map_err(|e| {
+                                CasperError::from(
+                                    crate::rust::slashing_authorization::SlashAuthError::from(e),
+                                )
+                            })?;
+                        Ok::<bool, CasperError>(
+                            evidence_epoch.get() == recovered_target_activation_epoch,
+                        )
+                    },
+                )?;
+            (
+                Some(recovered_target_activation_epoch),
+                recovered_rejected_slashes,
+            )
+        };
 
     // Check if we have any new work to process.
     // If empty blocks are disabled, skip closeBlock-only proposals to avoid no-op checkpoint cost.
@@ -699,23 +885,31 @@ pub async fn create(
 
     // Re-issue slashes that the merge dropped. The proposer signs these
     // under its own identity, matching the existing slashing convention.
+    // Per T-9.8, `target_activation_epoch` must equal the *current* epoch
+    // of the block carrying the slash — for recovered slashes the current
+    // epoch is the one that will be assigned to the block we are creating,
+    // i.e. `epoch_for_block_number(next_block_num, epoch_length)`.
     let self_id = Bytes::copy_from_slice(&validator_identity.public_key.bytes);
-    for rs in &recovered_rejected_slashes {
-        let slash_deploy = SlashDeploy {
-            invalid_block_hash: rs.invalid_block_hash.clone(),
-            pk: validator_identity.public_key.clone(),
-            initial_rand: system_deploy_util::generate_slash_deploy_random_seed(
-                self_id.clone(),
-                next_seq_num,
-                &rs.invalid_block_hash,
-            ),
-        };
-        tracing::info!(
-            "Recovering merge-rejected slash: invalid_block={}, original_issuer={}",
-            pretty_printer::PrettyPrinter::build_string_bytes(&rs.invalid_block_hash),
-            hex::encode(&rs.issuer_public_key.bytes)
-        );
-        system_deploys_converted.push(SystemDeployEnum::Slash(slash_deploy));
+    if let Some(recovered_target_activation_epoch) = recovered_target_activation_epoch {
+        for rs in &recovered_rejected_slashes {
+            let slash_deploy = SlashDeploy {
+                invalid_block_hash: rs.invalid_block_hash.clone(),
+                pk: validator_identity.public_key.clone(),
+                target_activation_epoch: recovered_target_activation_epoch,
+                initial_rand: system_deploy_util::generate_slash_deploy_random_seed(
+                    self_id.clone(),
+                    next_seq_num,
+                    &rs.invalid_block_hash,
+                ),
+            };
+            tracing::info!(
+                "Recovering merge-rejected slash: invalid_block={}, original_issuer={}, target_activation_epoch={}",
+                pretty_printer::PrettyPrinter::build_string_bytes(&rs.invalid_block_hash),
+                hex::encode(&rs.issuer_public_key.bytes),
+                recovered_target_activation_epoch
+            );
+            system_deploys_converted.push(SystemDeployEnum::Slash(slash_deploy));
+        }
     }
 
     // Add the actual close block deploy
@@ -801,7 +995,7 @@ pub async fn create(
     let unsigned_block = package_block(
         &block_data,
         parents.iter().map(|p| p.block_hash.clone()).collect(),
-        justifications.iter().map(|j| j.clone()).collect(),
+        justifications.iter().cloned().collect(),
         pre_state_hash,
         post_state_hash,
         processed_deploys,

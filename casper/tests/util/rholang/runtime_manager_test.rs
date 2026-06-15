@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use block_storage::rust::dag::block_dag_key_value_storage::InsertMode;
 use casper::rust::errors::CasperError;
 use casper::rust::rholang::replay_runtime::ReplayRuntimeOps;
 use casper::rust::rholang::runtime::RuntimeOps;
@@ -1775,6 +1776,8 @@ in {{
 /// empty deployId after finalization (intermittent)"
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn bridge_query_survives_multi_parent_merge() {
+    use std::collections::HashMap;
+
     use block_storage::rust::key_value_block_store::KeyValueBlockStore;
     use casper::rust::casper::{CasperShardConf, CasperSnapshot, OnChainCasperState};
     use casper::rust::genesis::genesis::Genesis;
@@ -1782,7 +1785,7 @@ async fn bridge_query_survives_multi_parent_merge() {
     use casper::rust::util::rholang::interpreter_util::{
         compute_deploys_checkpoint, compute_parents_post_state,
     };
-    use dashmap::{DashMap, DashSet};
+    use dashmap::DashSet;
     use models::rust::block_hash::BlockHash;
     use models::rust::block_implicits;
     use rholang::rust::interpreter::external_services::ExternalServices;
@@ -1810,7 +1813,7 @@ async fn bridge_query_survives_multi_parent_merge() {
     let mergeable_store = mergeable_store_from_dyn(&mut *kvm)
         .await
         .expect("mergeable store");
-    let (mut rm, _) = RuntimeManager::create_with_history(
+    let (rm, _) = RuntimeManager::create_with_history(
         rspace_store,
         mergeable_store,
         std::sync::Arc::new(Genesis::default_mergeable_tags()),
@@ -1828,7 +1831,10 @@ async fn bridge_query_survives_multi_parent_merge() {
         .put_block_message(&genesis_block)
         .expect("store genesis");
     dag_storage
-        .insert(&genesis_block, false, true)
+        .insert(
+            &genesis_block,
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved,
+        )
         .expect("dag genesis");
 
     let now_millis = || -> i64 {
@@ -1839,9 +1845,13 @@ async fn bridge_query_survives_multi_parent_merge() {
     };
 
     let mk_snapshot = |lfb: &BlockHash| -> CasperSnapshot {
-        let mut snapshot = CasperSnapshot::new(dag_storage.get_representation());
+        let mut snapshot = CasperSnapshot::new(
+            dag_storage
+                .get_representation()
+                .expect("dag representation"),
+        );
         snapshot.last_finalized_block = lfb.clone();
-        let max_seq_nums: DashMap<prost::bytes::Bytes, u64> = DashMap::new();
+        let mut max_seq_nums: HashMap<prost::bytes::Bytes, u64> = HashMap::new();
         max_seq_nums.insert(validator.clone(), 0);
         snapshot.max_seq_nums = max_seq_nums;
         let mut shard_conf = CasperShardConf::new();
@@ -1907,7 +1917,7 @@ async fn bridge_query_survives_multi_parent_merge() {
         deploys_a,
         Vec::<casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum>::new(),
         &snapshot_a,
-        &mut rm,
+        &rm,
         BlockData::from_block(&block_a_raw),
         HashMap::new(),
         None,
@@ -1927,7 +1937,12 @@ async fn bridge_query_survives_multi_parent_merge() {
     block_a.body.system_deploys = sys_pd_a;
     block_a.body.state.bonds = bonds_a;
     block_store.put_block_message(&block_a).expect("store A");
-    dag_storage.insert(&block_a, false, false).expect("dag A");
+    dag_storage
+        .insert(
+            &block_a,
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal,
+        )
+        .expect("dag A");
 
     // Verify bridge wrote data and extract queryUri
     let bridge_data = rm
@@ -1987,7 +2002,7 @@ async fn bridge_query_survives_multi_parent_merge() {
         Vec::new(),
         Vec::<casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum>::new(),
         &snapshot_b,
-        &mut rm,
+        &rm,
         BlockData::from_block(&block_b_raw),
         HashMap::new(),
         None,
@@ -2001,7 +2016,12 @@ async fn bridge_query_survives_multi_parent_merge() {
     block_b.body.system_deploys = sys_pd_b;
     block_b.body.state.bonds = bonds_b;
     block_store.put_block_message(&block_b).expect("store B");
-    dag_storage.insert(&block_b, false, false).expect("dag B");
+    dag_storage
+        .insert(
+            &block_b,
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal,
+        )
+        .expect("dag B");
 
     // --- Merge [A, B] ---
     let parents = vec![block_a.clone(), block_b.clone()];
@@ -2073,7 +2093,7 @@ in {{
         deploys_q,
         Vec::<casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum>::new(),
         &snapshot_q,
-        &mut rm,
+        &rm,
         BlockData::from_block(&query_block_raw),
         HashMap::new(),
         None,
@@ -2116,7 +2136,7 @@ async fn concurrent_registry_inserts_should_not_conflict() {
     use casper::rust::util::rholang::interpreter_util::{
         compute_deploys_checkpoint, compute_parents_post_state,
     };
-    use dashmap::{DashMap, DashSet};
+    use dashmap::DashSet;
     use models::rust::block_hash::BlockHash;
     use models::rust::block_implicits;
     use rholang::rust::interpreter::external_services::ExternalServices;
@@ -2142,7 +2162,7 @@ async fn concurrent_registry_inserts_should_not_conflict() {
     let mergeable_store = mergeable_store_from_dyn(&mut *kvm)
         .await
         .expect("mergeable store");
-    let (mut rm, _) = RuntimeManager::create_with_history(
+    let (rm, _) = RuntimeManager::create_with_history(
         rspace_store,
         mergeable_store,
         std::sync::Arc::new(Genesis::default_mergeable_tags()),
@@ -2160,7 +2180,7 @@ async fn concurrent_registry_inserts_should_not_conflict() {
         .put_block_message(&genesis_block)
         .expect("store genesis");
     dag_storage
-        .insert(&genesis_block, false, true)
+        .insert(&genesis_block, InsertMode::Approved)
         .expect("dag genesis");
 
     let now_millis = || -> i64 {
@@ -2171,9 +2191,13 @@ async fn concurrent_registry_inserts_should_not_conflict() {
     };
 
     let mk_snapshot = |lfb: &BlockHash| -> CasperSnapshot {
-        let mut snapshot = CasperSnapshot::new(dag_storage.get_representation());
+        let mut snapshot = CasperSnapshot::new(
+            dag_storage
+                .get_representation()
+                .expect("dag representation"),
+        );
         snapshot.last_finalized_block = lfb.clone();
-        let max_seq_nums: DashMap<prost::bytes::Bytes, u64> = DashMap::new();
+        let mut max_seq_nums: HashMap<prost::bytes::Bytes, u64> = HashMap::new();
         max_seq_nums.insert(validator.clone(), 0);
         snapshot.max_seq_nums = max_seq_nums;
         let mut shard_conf = CasperShardConf::new();
@@ -2243,7 +2267,7 @@ async fn concurrent_registry_inserts_should_not_conflict() {
         deploys_a,
         Vec::<casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum>::new(),
         &snapshot_a,
-        &mut rm,
+        &rm,
         BlockData::from_block(&block_a_raw),
         HashMap::new(),
         None,
@@ -2268,7 +2292,9 @@ async fn concurrent_registry_inserts_should_not_conflict() {
     block_a.body.system_deploys = sys_pd_a;
     block_a.body.state.bonds = bonds_a;
     block_store.put_block_message(&block_a).expect("store A");
-    dag_storage.insert(&block_a, false, false).expect("dag A");
+    dag_storage
+        .insert(&block_a, InsertMode::Normal)
+        .expect("dag A");
 
     // --- Block B: second bridge deploy from genesis (sibling branch, funded deployer B) ---
     let deploy_b =
@@ -2304,7 +2330,7 @@ async fn concurrent_registry_inserts_should_not_conflict() {
         deploys_b,
         Vec::<casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum>::new(),
         &snapshot_b,
-        &mut rm,
+        &rm,
         BlockData::from_block(&block_b_raw),
         HashMap::new(),
         None,
@@ -2329,7 +2355,9 @@ async fn concurrent_registry_inserts_should_not_conflict() {
     block_b.body.system_deploys = sys_pd_b;
     block_b.body.state.bonds = bonds_b;
     block_store.put_block_message(&block_b).expect("store B");
-    dag_storage.insert(&block_b, false, false).expect("dag B");
+    dag_storage
+        .insert(&block_b, InsertMode::Normal)
+        .expect("dag B");
 
     // Analyze conflict between the two deploys' event logs BEFORE merge
     {
@@ -2846,7 +2874,7 @@ async fn stale_diff_application_corrupts_merged_state() {
     use casper::rust::util::rholang::interpreter_util::{
         compute_deploys_checkpoint, compute_parents_post_state,
     };
-    use dashmap::{DashMap, DashSet};
+    use dashmap::DashSet;
     use models::rust::block_hash::BlockHash;
     use models::rust::block_implicits;
     use rholang::rust::interpreter::external_services::ExternalServices;
@@ -2872,7 +2900,7 @@ async fn stale_diff_application_corrupts_merged_state() {
     let mergeable_store = mergeable_store_from_dyn(&mut *kvm)
         .await
         .expect("mergeable store");
-    let (mut rm, _) = RuntimeManager::create_with_history(
+    let (rm, _) = RuntimeManager::create_with_history(
         rspace_store,
         mergeable_store,
         std::sync::Arc::new(Genesis::default_mergeable_tags()),
@@ -2890,7 +2918,7 @@ async fn stale_diff_application_corrupts_merged_state() {
         .put_block_message(&genesis_block)
         .expect("store genesis");
     dag_storage
-        .insert(&genesis_block, false, true)
+        .insert(&genesis_block, InsertMode::Approved)
         .expect("dag genesis");
 
     let now_millis = || -> i64 {
@@ -2901,9 +2929,13 @@ async fn stale_diff_application_corrupts_merged_state() {
     };
 
     let mk_snapshot = |lfb: &BlockHash| -> CasperSnapshot {
-        let mut snapshot = CasperSnapshot::new(dag_storage.get_representation());
+        let mut snapshot = CasperSnapshot::new(
+            dag_storage
+                .get_representation()
+                .expect("dag representation"),
+        );
         snapshot.last_finalized_block = lfb.clone();
-        let max_seq_nums: DashMap<prost::bytes::Bytes, u64> = DashMap::new();
+        let mut max_seq_nums: HashMap<prost::bytes::Bytes, u64> = HashMap::new();
         max_seq_nums.insert(validator.clone(), 0);
         snapshot.max_seq_nums = max_seq_nums;
         let mut shard_conf = CasperShardConf::new();
@@ -2981,7 +3013,7 @@ new deployId(`rho:system:deployId`) in {
             .collect(),
         Vec::<casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum>::new(),
         &mk_snapshot(&genesis_hash),
-        &mut rm,
+        &rm,
         BlockData::from_block(&block_a_raw),
         HashMap::new(),
         None,
@@ -2999,7 +3031,9 @@ new deployId(`rho:system:deployId`) in {
     block_a.body.system_deploys = sys_pd_a;
     block_a.body.state.bonds = bonds_a;
     block_store.put_block_message(&block_a).expect("store A");
-    dag_storage.insert(&block_a, false, false).expect("dag A");
+    dag_storage
+        .insert(&block_a, InsertMode::Normal)
+        .expect("dag A");
 
     // ── Block B: bridge deployed by key_b, parent = genesis (sibling of A) ──
     let deploy_b = construct_deploy::source_deploy_now_full(
@@ -3036,7 +3070,7 @@ new deployId(`rho:system:deployId`) in {
             .collect(),
         Vec::<casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum>::new(),
         &mk_snapshot(&genesis_hash),
-        &mut rm,
+        &rm,
         BlockData::from_block(&block_b_raw),
         HashMap::new(),
         None,
@@ -3054,7 +3088,9 @@ new deployId(`rho:system:deployId`) in {
     block_b.body.system_deploys = sys_pd_b;
     block_b.body.state.bonds = bonds_b;
     block_store.put_block_message(&block_b).expect("store B");
-    dag_storage.insert(&block_b, false, false).expect("dag B");
+    dag_storage
+        .insert(&block_b, InsertMode::Normal)
+        .expect("dag B");
 
     // ── Block C: trivial deploy by key_a, parent = A ──
     let deploy_c = construct_deploy::source_deploy_now_full(
@@ -3091,7 +3127,7 @@ new deployId(`rho:system:deployId`) in {
             .collect(),
         Vec::<casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum>::new(),
         &mk_snapshot(&genesis_hash),
-        &mut rm,
+        &rm,
         BlockData::from_block(&block_c_raw),
         HashMap::new(),
         None,
@@ -3109,7 +3145,9 @@ new deployId(`rho:system:deployId`) in {
     block_c.body.system_deploys = sys_pd_c;
     block_c.body.state.bonds = bonds_c;
     block_store.put_block_message(&block_c).expect("store C");
-    dag_storage.insert(&block_c, false, false).expect("dag C");
+    dag_storage
+        .insert(&block_c, InsertMode::Normal)
+        .expect("dag C");
 
     // ── Block D: trivial deploy by key_b, parent = B ──
     let deploy_d =
@@ -3140,7 +3178,7 @@ new deployId(`rho:system:deployId`) in {
             .collect(),
         Vec::<casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum>::new(),
         &mk_snapshot(&genesis_hash),
-        &mut rm,
+        &rm,
         BlockData::from_block(&block_d_raw),
         HashMap::new(),
         None,
@@ -3158,7 +3196,9 @@ new deployId(`rho:system:deployId`) in {
     block_d.body.system_deploys = sys_pd_d;
     block_d.body.state.bonds = bonds_d;
     block_store.put_block_message(&block_d).expect("store D");
-    dag_storage.insert(&block_d, false, false).expect("dag D");
+    dag_storage
+        .insert(&block_d, InsertMode::Normal)
+        .expect("dag D");
 
     // ── Merge [C, D] — simulates what a validator would compute when proposing
     //    a multi-parent block with parents [BC, BD]. LCA is genesis.

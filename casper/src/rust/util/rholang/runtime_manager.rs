@@ -175,10 +175,16 @@ impl RuntimeManager {
                         SystemDeployData::Slash {
                             invalid_block_hash,
                             issuer_public_key,
+                            target_activation_epoch,
                         } => {
                             bytes.push(0);
                             push_len_prefixed(&mut bytes, invalid_block_hash);
                             push_len_prefixed(&mut bytes, &issuer_public_key.bytes);
+                            // Little-endian is consensus-determined for this
+                            // hash-affecting encoding — every node must agree
+                            // on the bytes fed into the post-state hash. Do
+                            // not switch to big-endian or `to_be_bytes`.
+                            bytes.extend_from_slice(&target_activation_epoch.to_le_bytes());
                         }
                         SystemDeployData::CloseBlockSystemDeployData => {
                             bytes.push(1);
@@ -669,6 +675,12 @@ impl RuntimeManager {
         let pre_state_hash = Blake2b256Hash::from_bytes_prost(start_hash);
         let post_state = state_hash.to_bytes_prost();
 
+        // Phase 9 (G-1): surface persistence failure as a typed
+        // `CasperError` instead of a finalization-task panic. A panic
+        // here would crash the runtime_manager future with an
+        // unhelpful "task panicked" log; the typed Result lets the
+        // caller decide how to react (likely abort the proposal, not
+        // the whole node).
         self.save_mergeable_channels(
             state_hash.clone(),
             sender.bytes,
@@ -676,7 +688,9 @@ impl RuntimeManager {
             mergeable_chs,
             &pre_state_hash,
         )
-        .unwrap_or_else(|e| panic!("Failed to save mergeable channels: {:?}", e));
+        .map_err(|e| {
+            CasperError::RuntimeError(format!("Failed to save mergeable channels: {:?}", e))
+        })?;
 
         // Cache the result for future replays
         if let Some(ref cache) = self.state_hash_cache {

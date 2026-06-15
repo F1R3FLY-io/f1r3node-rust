@@ -86,7 +86,7 @@ async fn returns_empty_when_max_parent_depth_is_unlimited() {
         }];
         let chain = build_chain(&mut block_store, &mut block_dag_storage, 5, bonds, v0);
 
-        let dag = block_dag_storage.get_representation();
+        let dag = block_dag_storage.get_representation().expect("dag representation");
         let conf = mk_conf(i32::MAX, 0);
 
         let roots = compute_forward_horizon_roots(&dag, &block_store, &chain[4], &conf).unwrap();
@@ -109,7 +109,9 @@ async fn includes_main_chain_ancestors_within_horizon() {
         // Chain of 6 blocks. block_numbers 1..5 (genesis at 1 in test fixture).
         let chain = build_chain(&mut block_store, &mut block_dag_storage, 6, bonds, v0);
 
-        let dag = block_dag_storage.get_representation();
+        let dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
         // max_parent_depth=2, depth_buffer=1 → window from LFB.height-3 upward.
         let conf = mk_conf(2, 1);
 
@@ -142,7 +144,9 @@ async fn excludes_blocks_outside_horizon() {
         // Chain of 10 blocks, block_numbers 1..9.
         let chain = build_chain(&mut block_store, &mut block_dag_storage, 10, bonds, v0);
 
-        let dag = block_dag_storage.get_representation();
+        let dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
         // max_parent_depth=2, depth_buffer=0 → window from LFB.height-2 upward.
         let conf = mk_conf(2, 0);
 
@@ -192,7 +196,9 @@ async fn returns_lfb_only_when_horizon_at_genesis() {
         // Just genesis + 1 child. LFB.height = 1. Horizon clamped to 0.
         let chain = build_chain(&mut block_store, &mut block_dag_storage, 2, bonds, v0);
 
-        let dag = block_dag_storage.get_representation();
+        let dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
         let conf = mk_conf(100, 10);
 
         let roots = compute_forward_horizon_roots(&dag, &block_store, &chain[1], &conf).unwrap();
@@ -218,7 +224,9 @@ async fn ordered_by_descending_height() {
         }];
         let chain = build_chain(&mut block_store, &mut block_dag_storage, 6, bonds, v0);
 
-        let dag = block_dag_storage.get_representation();
+        let dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
         // max_parent_depth large enough to include the whole chain
         let conf = mk_conf(10, 0);
 
@@ -306,7 +314,9 @@ async fn pre_state_included_for_multi_parent_block() {
             None,
         );
 
-        let dag = block_dag_storage.get_representation();
+        let dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
         let conf = mk_conf(10, 0); // wide horizon — include everything
 
         let roots = compute_forward_horizon_roots(&dag, &block_store, &merged, &conf).unwrap();
@@ -346,7 +356,9 @@ async fn single_parent_pre_state_dedupes_against_parent_post_state() {
             v0.clone(),
         );
 
-        let dag = block_dag_storage.get_representation();
+        let dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
         let conf = mk_conf(10, 0); // wide window — all 4 blocks in scope
 
         let roots = compute_forward_horizon_roots(&dag, &block_store, &chain[3], &conf).unwrap();

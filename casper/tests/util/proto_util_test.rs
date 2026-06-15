@@ -73,7 +73,10 @@ async fn unseen_block_hashes_should_return_empty_for_a_single_block_dag() {
     let deploy = construct_deploy::basic_deploy_data(0, None, Some(shard_id)).unwrap();
     let signed_block = node.add_block_from_deploys(&[deploy]).await.unwrap();
 
-    let mut dag = node.block_dag_storage.get_representation();
+    let mut dag = node
+        .block_dag_storage
+        .get_representation()
+        .expect("dag representation");
 
     let unseen_block_hashes = proto_util::unseen_block_hashes(&mut dag, &signed_block).unwrap();
 
@@ -98,7 +101,10 @@ async fn unseen_block_hashes_should_return_all_but_the_first_block_when_passed_t
     let deploy1 = construct_deploy::basic_deploy_data(1, None, Some(shard_id)).unwrap();
     let block1 = node.add_block_from_deploys(&[deploy1]).await.unwrap();
 
-    let mut dag = node.block_dag_storage.get_representation();
+    let mut dag = node
+        .block_dag_storage
+        .get_representation()
+        .expect("dag representation");
 
     let unseen_block_hashes = proto_util::unseen_block_hashes(&mut dag, &block0).unwrap();
 

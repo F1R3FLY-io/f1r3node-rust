@@ -1,0 +1,102 @@
+' Methodology Diagram 03 — Scientific-method loop (activity).
+'
+' Shows the falsificationist hypothesis-experiment-refute cycle the
+' methodology runs continuously. Each iteration either expands the
+' traceability ledger, expands the mechanized arm, or expands the
+' persistent corpus. The loop never deletes evidence; it only re-classifies.
+'
+' Render:
+'   plantuml -tsvg docs/theory/slashing/methodology/diagrams/03-scientific-method-loop.puml
+
+@startuml 03-scientific-method-loop
+!theme plain
+
+skinparam ActivityBackgroundColor       #FFFFFF
+skinparam ActivityBorderColor           #333333
+skinparam ActivityDiamondBackgroundColor #FFF7EE
+skinparam ActivityDiamondBorderColor    #E65100
+skinparam NoteBackgroundColor           #FFE0B2
+skinparam NoteBorderColor               #E65100
+skinparam defaultFontName "sans-serif"
+skinparam defaultFontSize 11
+
+title Scientific-method loop — hypothesize → search → falsify → record
+
+start
+
+:Derive candidate property φ from\nmodels / spec / threat model;
+note right
+  Candidate sources:
+  • Rocq module under development
+  • TLA⁺ spec invariant
+  • Bug-fix manifest entry
+  • STRIDE / attack-tree leaf
+  • Open Sage finding
+end note
+
+:Choose tool by shape × domain × budget;
+note right
+  Decision tree:
+  • unbounded semantic → Rocq
+  • finite bounded → TLA⁺ + TLC
+  • per-function Rust → Kani
+  • byte-level / structure → libFuzzer
+  • multi-step lifecycle → Hypothesis
+  • single-step property → proptest
+  • concurrency interleaving → Loom
+  • combinatorial witness → Sage
+end note
+
+:Tool.search(φ);
+
+if (Refuted (witness w)) then (yes)
+  :Classify w under threat-model vocabulary;
+  if (Class = unexpected?) then (yes)
+    #FFEBEE:Halt — escalate audit;
+    stop
+  else (no)
+  endif
+
+  :Attempt reproduction on Rust\nproduction path;
+
+  switch (Assign traceability status)
+    case (confirmed_current_bug)
+      #FFEBEE:Fix Rust source +\nadd pre_fix_bug_N.rs +\nupdate Rocq/TLA⁺/threat docs;
+    case (confirmed_fixed_bug)
+      :Keep pre_fix_bug_N.rs;
+    case (projection_risk_guarded)
+      :Keep guard test + spec text;
+    case (assumption_counterexample)
+      :Strengthen theorem precondition;
+    case (proof_or_model_strengthening)
+      #EEF2FF:Promote to Rocq theorem\nand/or TLA⁺ invariant;
+    case (not_reproduced_in_rust)
+      :Record only;
+    case (model_boundary)
+      :Document boundary;
+    case (needs_source_audit)
+      #FFE0B2:Escalate audit;
+  endswitch
+
+  :Append ledger entry +\npersist fixture to corpus;
+  :Re-run tool;\nverify w no longer surfaces\n(or surfaces with expected\npost-fix status);
+
+else (no — bounded search exhausted)
+  if (Cost budget exhausted?) then (yes)
+    :Record "no counterexample under bounds B";
+    :Strengthen hypothesis OR\nincrease budget OR\nretire search;
+  else (no)
+    :Continue exhaustion;
+  endif
+endif
+
+:Update spec / verification doc\nif φ changed status;
+
+if (More candidate properties?) then (yes)
+  :Loop back to next iteration;
+  stop
+else (no)
+  stop
+endif
+
+@enduml

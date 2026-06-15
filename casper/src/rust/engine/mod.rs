@@ -11,4 +11,5 @@ pub mod initializing;
 pub mod lfs_block_requester;
 pub mod lfs_horizon_requester;
 pub mod lfs_tuple_space_requester;
+pub mod multi_parent_casper;
 pub mod running;

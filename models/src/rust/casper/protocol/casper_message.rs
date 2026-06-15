@@ -646,16 +646,22 @@ pub enum SystemDeployData {
     Slash {
         invalid_block_hash: ByteString,
         issuer_public_key: PublicKey,
+        target_activation_epoch: i64,
     },
     CloseBlockSystemDeployData,
     Empty,
 }
 
 impl SystemDeployData {
-    pub fn create_slash(invalid_block_hash: ByteString, issuer_public_key: PublicKey) -> Self {
+    pub fn create_slash(
+        invalid_block_hash: ByteString,
+        issuer_public_key: PublicKey,
+        target_activation_epoch: i64,
+    ) -> Self {
         Self::Slash {
             invalid_block_hash,
             issuer_public_key,
+            target_activation_epoch,
         }
     }
 
@@ -673,6 +679,7 @@ impl SystemDeployData {
                 issuer_public_key: PublicKey::from_bytes(
                     &slash_system_deploy_data_proto.issuer_public_key,
                 ),
+                target_activation_epoch: slash_system_deploy_data_proto.target_activation_epoch,
             }),
             system_deploy_data_proto::SystemDeploy::CloseBlockSystemDeploy(_) => {
                 Ok(Self::CloseBlockSystemDeployData)
@@ -685,11 +692,13 @@ impl SystemDeployData {
             Self::Slash {
                 invalid_block_hash,
                 issuer_public_key,
+                target_activation_epoch,
             } => SystemDeployDataProto {
                 system_deploy: Some(SystemDeploy::SlashSystemDeploy(
                     SlashSystemDeployDataProto {
                         invalid_block_hash,
                         issuer_public_key: issuer_public_key.bytes.into(),
+                        target_activation_epoch,
                     },
                 )),
             },

@@ -323,7 +323,10 @@ impl GenesisBuilder {
             let block_dag_storage =
                 crate::util::rholang::resources::block_dag_storage_from_dyn(&mut *kvs_manager)
                     .await?;
-            block_dag_storage.insert(&genesis, false, true)?;
+            block_dag_storage.insert(
+                &genesis,
+                block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved,
+            )?;
 
             genesis
             // ← kvs_manager drops here, closing LMDB handles

@@ -180,7 +180,7 @@ async fn test_not_advance_finalization_if_no_new_lfb_found_advance_otherwise_inv
             &genesis_justification,
         );
 
-        let dag = dag_store.get_representation();
+        let dag = dag_store.get_representation().expect("dag representation");
         let _lms: Vec<(Validator, BlockHash)> = dag
             .latest_messages()
             .unwrap()
@@ -253,7 +253,7 @@ async fn test_not_advance_finalization_if_no_new_lfb_found_advance_otherwise_inv
             ]),
         );
 
-        let dag = dag_store.get_representation();
+        let dag = dag_store.get_representation().expect("dag representation");
         let lfb = {
             let lfb_effect_invoked = lfb_effect_invoked.clone();
             Finalizer::run(
@@ -316,7 +316,7 @@ async fn test_not_advance_finalization_if_no_new_lfb_found_advance_otherwise_inv
             ]),
         );
 
-        let dag = dag_store.get_representation();
+        let dag = dag_store.get_representation().expect("dag representation");
         let lfb = {
             let lfb_store = lfb_store.clone();
             let finalised_store = finalised_store.clone();
@@ -411,7 +411,7 @@ async fn finalizer_growth_feedback_loop_stale_justification_chain() {
             latest_by_validator[creator_index] = next_block;
 
             if checkpoints.contains(&height) {
-                let dag = dag_store.get_representation();
+                let dag = dag_store.get_representation().expect("dag representation");
                 let started = Instant::now();
                 let _ = Finalizer::run(
                     &dag,

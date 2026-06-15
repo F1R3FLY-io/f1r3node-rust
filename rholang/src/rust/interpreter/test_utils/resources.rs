@@ -58,9 +58,27 @@ where
     let mut store_manager = mk_rspace_store_manager(temp_dir.path().to_path_buf(), 100 * MB);
     let rspace_store = store_manager.r_space_stores().await.unwrap();
 
+    // `ExternalServices::for_validator` constructs a `ChromaDBClient`,
+    // which builds `SBERTEmbeddings::new()`, which forces lazy-init of
+    // `rust_bert::common::resources::remote::CACHE`. That cache builds a
+    // `reqwest::blocking::Client`, which internally creates+drops a
+    // fresh current-thread `tokio::runtime::Runtime` inside
+    // `reqwest::blocking::wait::enter`. Doing that from inside our
+    // outer `#[tokio::test]` async context trips tokio's
+    // "Cannot drop a runtime in a context where blocking is not allowed"
+    // guard at `tokio::runtime::blocking::shutdown::Receiver::wait` and
+    // panics the test. `spawn_blocking` runs the construction on a
+    // blocking-pool worker so the inner Runtime never touches the outer
+    // async context. The expensive part (model download + reqwest
+    // client build) runs unchanged; the only cost is the microsecond
+    // hand-off to a blocking-pool thread, and the `lazy_static! CACHE`
+    // is warm for every subsequent test in the same process.
     #[cfg(feature = "chromadb")]
-    let external_services =
-        ExternalServices::for_validator(&OpenAIConfig::disabled(), &OllamaConfig::disabled());
+    let external_services = tokio::task::spawn_blocking(|| {
+        ExternalServices::for_validator(&OpenAIConfig::disabled(), &OllamaConfig::disabled())
+    })
+    .await
+    .expect("ExternalServices::for_validator panicked during test setup");
     #[cfg(not(feature = "chromadb"))]
     let external_services = ExternalServices::noop();
 

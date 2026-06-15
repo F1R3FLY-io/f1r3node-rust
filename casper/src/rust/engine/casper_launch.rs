@@ -33,9 +33,9 @@ use crate::rust::engine::engine::{
 use crate::rust::engine::engine_cell::EngineCell;
 use crate::rust::engine::genesis_ceremony_master::GenesisCeremonyMaster;
 use crate::rust::engine::genesis_validator::GenesisValidator;
+use crate::rust::engine::multi_parent_casper::MultiParentCasperImpl;
 use crate::rust::errors::CasperError;
 use crate::rust::estimator::Estimator;
-use crate::rust::multi_parent_casper_impl::MultiParentCasperImpl;
 use crate::rust::util::bonds_parser::BondsParser;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 use crate::rust::util::vault_parser::VaultParser;
@@ -161,6 +161,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             // all validators) are included in merged state. Prevents deploy loss during network
             // partitions or validator catchup. Default is true (disabled).
             disable_late_block_filtering: conf.disable_late_block_filtering,
+            deploy_heartbeat_wake_enabled: false,
             disable_validator_progress_check: standalone,
             enable_mergeable_channel_gc: conf.enable_mergeable_channel_gc,
             mergeable_channels_gc_depth_buffer: conf.mergeable_channels_gc_depth_buffer,
@@ -175,6 +176,12 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             native_token_name: conf.genesis_block_data.native_token_name.clone(),
             native_token_symbol: conf.genesis_block_data.native_token_symbol.clone(),
             native_token_decimals: conf.genesis_block_data.native_token_decimals,
+            // Phase 13: defaults match the previous hardcoded constants
+            // (`FINALIZER_BLOCKING_TIMEOUT = 15s`,
+            // `MAX_ACTIVE_VALIDATORS_CACHE_ENTRIES = 4096`). When CasperConf
+            // gains corresponding fields, plumb them through here.
+            finalizer_blocking_timeout: std::time::Duration::from_secs(15),
+            active_validators_cache_max_entries: 4096,
         };
 
         Self {
@@ -274,7 +281,15 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
                     // Check if block already exists in DAG
                     let dag_contains = casper.dag_contains(&hash);
 
-                    // Log error if block unexpectedly exists in DAG (database inconsistency)
+                    // Resume-time reconciliation closing the (c) drift
+                    // state from Bug #17 / T-9.20. The same purge logic
+                    // is provided as a documented helper at
+                    // `block_storage::rust::dag::buffer_dag_transition::
+                    //  reconcile_buffer_against_dag` — kept inline here
+                    // because we additionally clean up the BlockRetriever's
+                    // hash-tracking state (a launch-specific concern that
+                    // the generic recon helper doesn't know about).
+                    // See docs/theory/slashing/design/09-bug-fixes-and-rationale.md §9.20.
                     if dag_contains {
                         tracing::warn!(
                             "Pendant {} is already in DAG; purging stale CasperBuffer entry to prevent requeue loops.",

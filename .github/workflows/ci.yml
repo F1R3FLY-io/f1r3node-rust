@@ -132,12 +132,20 @@ jobs:
       - name: Link Checker
         uses: lycheeverse/lychee-action@v2
         with:
+          # 403 is accepted alongside 200..=299 and 429 because many
+          # citations in `docs/theory/slashing/methodology/references.md`
+          # are DOIs that redirect to publisher portals (ACM DL, Oxford
+          # Academic, IEEE Xplore, IACR ePrint, Medium) which 403 on
+          # unauthenticated/bot requests. A 403 response from these
+          # endpoints still proves the URL is well-formed and the
+          # resource exists; a real broken link would 404. The 429
+          # allowance for rate-limited fetches is unchanged.
           args: >-
             --no-progress
             --exclude-loopback
             --max-retries 2
             --retry-wait-time 5
-            --accept 200..=299,429
+            --accept 200..=299,403,429
             './**/*.md'
           fail: true
 
@@ -277,6 +285,14 @@ jobs:
   launch_ephemeral_runners:
     name: Launch Ephemeral Runners
     needs: lint
+    # Skip on fork PRs: secrets.OCI_* aren't exposed to workflows triggered
+    # by PRs from forks, so this job would only ever fail with malformed-
+    # config errors. The integration_tests matrix needs this job, so it'll
+    # also skip; the Integration Tests (amd64/arm64) aggregators run with
+    # if: always() and pass vacuously because the matrix has no slots to
+    # report as failed. Maintainers validate fork-PR code by re-pushing
+    # the branch into the canonical repo (e.g. staging).
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     permissions:
       actions: write  # needed for gh api ... actions/runners/registration-token
@@ -351,7 +367,18 @@ jobs:
     name: Integration Tests (${{ matrix.arch }}-${{ matrix.provider }}-${{ matrix.slot }})
     needs: [build_docker_image, launch_ephemeral_runners]
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 30
+    # The system-integration pytest suite (~47 tests, boots a full
+    # 4-node Docker shard for each scenario, 1-3 min per test) has
+    # organically grown past the prior 30-minute budget — the dev
+    # branch's recent runs were also being cancelled at 30:00. The
+    # 60-min budget covered ~89% on amd64; bumped to 120 to (a) let
+    # the suite run to completion as a data-collection baseline,
+    # and (b) cover ARM64's `--timeout-scale=2.0` per-test budget
+    # multiplier. Still caps any genuine hang at ~2× the realistic
+    # completion time.
+    timeout-minutes: 120
+    concurrency:
+      group: integration-${{ matrix.arch }}-${{ github.ref }}
     strategy:
       fail-fast: false
       matrix:
@@ -381,6 +408,16 @@ jobs:
           - { arch: arm64, provider: subprocess, slot: 4, runner: [self-hosted, linux, arm64, f1r3fly-rust-ci-ephemeral, oracle-cloud] }
           - { arch: arm64, provider: subprocess, slot: 5, runner: [self-hosted, linux, arm64, f1r3fly-rust-ci-ephemeral, oracle-cloud] }
     steps:
+      - name: Clean self-hosted runner state
+        shell: bash {0}
+        run: |
+          sudo rm -rf system-integration/integration-tests/data
+          rm -f /tmp/rust-node-docker.tar.gz /tmp/*.log
+          # Drop any stale image cached on the runner so the compose
+          # default points unambiguously at the image we're about to
+          # load. See "Import Docker Image" below.
+          docker rmi -f f1r3flyindustries/f1r3fly-rust:latest 2>/dev/null || true
+
       - name: Clone Repository
         uses: actions/checkout@v4
 
