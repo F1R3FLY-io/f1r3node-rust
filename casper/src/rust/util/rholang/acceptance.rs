@@ -67,7 +67,8 @@ use prost::bytes::Bytes;
 pub use rholang::rust::interpreter::accounting::delta_sigma::SigKey;
 use rholang::rust::interpreter::accounting::delta_sigma::{self, Decomposition, DemandEntry};
 use rholang::rust::interpreter::accounting::resource_logic::{
-    DefaultResourceLogic, GsltPresentation, OslfResourceLogic, ResourceSignature, RhoGslt,
+    ApportionmentPolicy, DefaultApportionment, DefaultResourceLogic, GroupShape, GsltPresentation,
+    OslfResourceLogic, PoolDraw, PoolResidual, ResourceSignature, RhoGslt,
 };
 use rholang::rust::interpreter::accounting::{self, Sig};
 use rholang::rust::interpreter::compiler::compiler::Compiler;
@@ -353,12 +354,16 @@ fn collect_component_channels(envelope: &Sig, component_channels: &mut BTreeMap<
 /// channels_by_key)`. Called IDENTICALLY by [`admit_by_funding`] (play) and
 /// [`recompute_settlement_debits`] (replay) — the single code path is what makes
 /// the debit map byte-identical (the fork-safety bar).
-fn compute_settlement_debits(
+fn compute_settlement_debits<P>(
     demand_by_group: &BTreeMap<SigKey, (Par, i64)>,
     decompositions: &[Decomposition],
     raw: &BTreeMap<SigKey, i64>,
     channels_by_key: &BTreeMap<SigKey, Par>,
-) -> BTreeMap<SigKey, SettlementDebit> {
+    policy: &P,
+) -> BTreeMap<SigKey, SettlementDebit>
+where
+    P: ApportionmentPolicy<RhoGslt>,
+{
     // The LIVE remaining balance of every pool (groups + components), seeded
     // from the raw pre-state balances. Absent pools are not present in `raw`
     // (read as 0). Processed in `SigKey` order via the BTreeMap, deterministic
@@ -391,40 +396,49 @@ fn compute_settlement_debits(
         if k <= 0 {
             continue;
         }
-        match decomposition_by_compound.get(group_key) {
-            Some(decomposition) => {
-                // Compound group: combined pool first, then the component pair.
-                let sigma_compound = read_residual(&residual, group_key);
-                let draw_compound = k.min(sigma_compound);
-                let remaining = k - draw_compound;
-
-                let sigma_left = read_residual(&residual, &decomposition.left);
-                let sigma_right = read_residual(&residual, &decomposition.right);
-                // ≤ min(Σ⟦s₁⟧, Σ⟦s₂⟧) by the admission bound; further bound by the
-                // LIVE residual of BOTH components for cross-group safety.
-                let draw_pair = remaining.min(sigma_left).min(sigma_right).max(0);
-
-                if draw_compound > 0 {
-                    *residual.entry(*group_key).or_insert(0) -= draw_compound;
-                    *draw_by_key.entry(*group_key).or_insert(0) += draw_compound;
-                }
-                if draw_pair > 0 {
-                    *residual.entry(decomposition.left).or_insert(0) -= draw_pair;
-                    *residual.entry(decomposition.right).or_insert(0) -= draw_pair;
-                    *draw_by_key.entry(decomposition.left).or_insert(0) += draw_pair;
-                    *draw_by_key.entry(decomposition.right).or_insert(0) += draw_pair;
-                }
+        // Build the funding shape from the LIVE residual ledger, then DELEGATE the
+        // per-pool apportionment to `policy` (default = combined-pool-first). The
+        // policy is a pure, deterministic, conservation-preserving function of
+        // `(shape, k)` (see `ApportionmentPolicy`); it never sees channels, so it
+        // cannot inject a wrong pool — the caller owns the ledger and the channel
+        // resolution below.
+        let shape = match decomposition_by_compound.get(group_key) {
+            Some(decomposition) => GroupShape::Compound {
+                // ≤ min(Σ⟦s₁⟧, Σ⟦s₂⟧) component residuals bound the pair draw (the
+                // admission bound + the LIVE cross-group residual ⇒ underflow-safe).
+                combined: PoolResidual {
+                    key: *group_key,
+                    residual: read_residual(&residual, group_key),
+                },
+                left: PoolResidual {
+                    key: decomposition.left,
+                    residual: read_residual(&residual, &decomposition.left),
+                },
+                right: PoolResidual {
+                    key: decomposition.right,
+                    residual: read_residual(&residual, &decomposition.right),
+                },
+            },
+            None => GroupShape::Single {
+                own: PoolResidual {
+                    key: *group_key,
+                    residual: read_residual(&residual, group_key),
+                },
+            },
+        };
+        // Apply each elected draw to the LIVE ledger + the per-pool accumulator.
+        // `saturating_sub` is exact for the (residual-bounded) compound draws AND
+        // reproduces the pre-#12 single-pool semantics (the own-pool debit is NOT
+        // residual-capped). A later compound sharing this pool as a component sees
+        // the reduction. Applying draws in the policy's fixed order keeps the
+        // ledger evolution deterministic on play and replay.
+        for PoolDraw { key, amount } in policy.apportion(shape, k) {
+            if amount <= 0 {
+                continue;
             }
-            None => {
-                // Single-signature group: one debit `k` on its own pool
-                // (byte-identical to the pre-#12 single-pool path — NOT residual-
-                // capped; the `checked_sub` backstop in close_block_deploy.rs is
-                // the hard underflow guard). Decrement the ledger so a later
-                // compound sharing this pool as a component sees the reduction.
-                let current = read_residual(&residual, group_key);
-                residual.insert(*group_key, current.saturating_sub(k));
-                *draw_by_key.entry(*group_key).or_insert(0) += k;
-            }
+            let current = read_residual(&residual, &key);
+            residual.insert(key, current.saturating_sub(amount));
+            *draw_by_key.entry(key).or_insert(0) += amount;
         }
     }
 
@@ -477,18 +491,21 @@ pub async fn admit_by_funding(
     strict: bool,
 ) -> Result<AdmissionOutcome, CasperError> {
     let logic = DefaultResourceLogic;
-    admit_by_funding_with_logic(deploys, supply_reader, margin, strict, &logic).await
+    let policy = DefaultApportionment;
+    admit_by_funding_with_logic(deploys, supply_reader, margin, strict, &logic, &policy).await
 }
 
-pub async fn admit_by_funding_with_logic<L>(
+pub async fn admit_by_funding_with_logic<L, P>(
     deploys: Vec<Cosigned<DeployData>>,
     supply_reader: &dyn SupplyReader,
     margin: i64,
     strict: bool,
     logic: &L,
+    policy: &P,
 ) -> Result<AdmissionOutcome, CasperError>
 where
     L: OslfResourceLogic<RhoGslt>,
+    P: ApportionmentPolicy<RhoGslt>,
 {
     // 1. Canonicalize the (nondeterministically-ordered) input.
     let mut ordered = deploys;
@@ -629,7 +646,7 @@ where
     //    residual ledger. The SAME function (over identically-derived inputs)
     //    runs on replay ⇒ byte-identical `BTreeMap<SigKey, SettlementDebit>`.
     outcome.debits =
-        compute_settlement_debits(&demand_by_group, &decompositions, &raw, &channels_by_key);
+        compute_settlement_debits(&demand_by_group, &decompositions, &raw, &channels_by_key, policy);
 
     // Re-impose canonical order on the admitted set: the per-group walk emits
     // each group's prefix in canonical order, but group iteration is by SigKey,
@@ -682,17 +699,20 @@ pub async fn recompute_settlement_debits(
     strict: bool,
 ) -> Result<BTreeMap<SigKey, SettlementDebit>, CasperError> {
     let logic = DefaultResourceLogic;
-    recompute_settlement_debits_with_logic(admitted, supply_reader, strict, &logic).await
+    let policy = DefaultApportionment;
+    recompute_settlement_debits_with_logic(admitted, supply_reader, strict, &logic, &policy).await
 }
 
-pub async fn recompute_settlement_debits_with_logic<L>(
+pub async fn recompute_settlement_debits_with_logic<L, P>(
     admitted: Vec<Cosigned<DeployData>>,
     supply_reader: &dyn SupplyReader,
     strict: bool,
     logic: &L,
+    policy: &P,
 ) -> Result<BTreeMap<SigKey, SettlementDebit>, CasperError>
 where
     L: OslfResourceLogic<RhoGslt>,
+    P: ApportionmentPolicy<RhoGslt>,
 {
     // 1. Group admitted deploys by pool, summing Δ_s, AND collect the Split/Join
     //    decompositions + every distinct channel (group + compound component) —
@@ -793,6 +813,7 @@ where
         &decompositions,
         &raw,
         &channels_by_key,
+        policy,
     ))
 }
 
@@ -978,6 +999,92 @@ mod tests {
         }
     }
 
+    /// An ALTERNATIVE payment-delegation policy proving the trait is pluggable:
+    /// draw the COMPONENT PAIR first, then the combined pool — the dual of
+    /// [`DefaultApportionment`]. Conservation of Authority makes the partition
+    /// free, so it still settles exactly `k` and overdraws no pool.
+    struct ComponentsFirstApportionment;
+    impl ApportionmentPolicy<RhoGslt> for ComponentsFirstApportionment {
+        fn apportion(&self, shape: GroupShape<SigKey>, k: i64) -> Vec<PoolDraw<SigKey>> {
+            match shape {
+                GroupShape::Single { own } => {
+                    if k > 0 {
+                        vec![PoolDraw { key: own.key, amount: k }]
+                    } else {
+                        Vec::new()
+                    }
+                }
+                GroupShape::Compound { combined, left, right } => {
+                    let draw_pair = k.min(left.residual).min(right.residual).max(0);
+                    let draw_compound = (k - draw_pair).min(combined.residual).max(0);
+                    let mut v = Vec::new();
+                    if draw_pair > 0 {
+                        v.push(PoolDraw { key: left.key, amount: draw_pair });
+                        v.push(PoolDraw { key: right.key, amount: draw_pair });
+                    }
+                    if draw_compound > 0 {
+                        v.push(PoolDraw { key: combined.key, amount: draw_compound });
+                    }
+                    v
+                }
+            }
+        }
+    }
+
+    /// The payment-delegation trait is pluggable: an alternative policy apportions
+    /// a multi-sig group's demand DIFFERENTLY than the default, yet still settles
+    /// exactly `k` units of authority (Conservation of Authority — "grouping never
+    /// changes the total") and overdraws no pool.
+    #[test]
+    fn alternative_payment_policy_conserves_but_apportions_differently() {
+        // Σ⟦compound⟧ = 1, Σ⟦a⟧ = Σ⟦b⟧ = 5, demand k = 3.
+        let fx = compound_fixture(b"alice", b"bob");
+        let mut raw = BTreeMap::new();
+        raw.insert(fx.compound_key, 1);
+        raw.insert(fx.a_key, 5);
+        raw.insert(fx.b_key, 5);
+        let mut demand = BTreeMap::new();
+        demand.insert(fx.compound_key, (fx.compound_chan.clone(), 3));
+
+        let default = compute_settlement_debits(
+            &demand, &[fx.decomposition], &raw, &fx.channels_by_key(), &DefaultApportionment,
+        );
+        let alt = compute_settlement_debits(
+            &demand, &[fx.decomposition], &raw, &fx.channels_by_key(), &ComponentsFirstApportionment,
+        );
+
+        // DEFAULT (combined-first): compound -= 1, then the pair -= 2 each.
+        assert_eq!(default.get(&fx.compound_key).map(|d| d.amount), Some(1));
+        assert_eq!(default.get(&fx.a_key).map(|d| d.amount), Some(2));
+        assert_eq!(default.get(&fx.b_key).map(|d| d.amount), Some(2));
+
+        // COMPONENTS-FIRST: the pair -= 3 each fully funds k ⇒ compound untouched.
+        assert_eq!(alt.get(&fx.compound_key).map(|d| d.amount), None);
+        assert_eq!(alt.get(&fx.a_key).map(|d| d.amount), Some(3));
+        assert_eq!(alt.get(&fx.b_key).map(|d| d.amount), Some(3));
+
+        // CONSERVATION: both settle exactly k = 3 units of group authority
+        // (compound draw counts once + the matched pair draw counts once).
+        let settled = |m: &BTreeMap<SigKey, SettlementDebit>| {
+            let c = m.get(&fx.compound_key).map(|d| d.amount).unwrap_or(0);
+            let pair = m
+                .get(&fx.a_key)
+                .map(|d| d.amount)
+                .unwrap_or(0)
+                .min(m.get(&fx.b_key).map(|d| d.amount).unwrap_or(0));
+            c + pair
+        };
+        assert_eq!(settled(&default), 3, "default conserves k");
+        assert_eq!(settled(&alt), 3, "alternative conserves k");
+
+        // NO-OVERDRAW under EITHER policy: no pool drawn past its residual.
+        for m in [&default, &alt] {
+            for (key, debit) in m {
+                assert!(debit.amount <= *raw.get(key).unwrap_or(&0), "pool overdrawn");
+            }
+        }
+    }
+
     /// Per-signature grouping + independence: two deploys SHARING a signature
     /// form ONE group whose pool funds exactly one; a third deploy with a
     /// DIFFERENT signature is an independent group, funded on its own pool.
@@ -1048,7 +1155,7 @@ mod tests {
             .await
             .expect("default gate must not error");
         let denied =
-            admit_by_funding_with_logic(vec![deploy.clone()], &reader, 0, false, &DenyLogic)
+            admit_by_funding_with_logic(vec![deploy.clone()], &reader, 0, false, &DenyLogic, &DefaultApportionment)
                 .await
                 .expect("injected gate must not error");
 
@@ -1084,6 +1191,7 @@ mod tests {
             &reader,
             false,
             &ZeroDemandLogic,
+            &DefaultApportionment,
         )
         .await
         .expect("injected recompute must not error");
@@ -1468,7 +1576,7 @@ mod tests {
         demand.insert(fx.compound_key, (fx.compound_chan.clone(), k));
 
         let debits =
-            compute_settlement_debits(&demand, &[fx.decomposition], &raw, &fx.channels_by_key());
+            compute_settlement_debits(&demand, &[fx.decomposition], &raw, &fx.channels_by_key(), &DefaultApportionment);
 
         // Components each debited k; compound NOT present (draw_compound = 0).
         assert_eq!(
@@ -1505,7 +1613,7 @@ mod tests {
         demand.insert(fx.compound_key, (fx.compound_chan.clone(), 3));
 
         let debits =
-            compute_settlement_debits(&demand, &[fx.decomposition], &raw, &fx.channels_by_key());
+            compute_settlement_debits(&demand, &[fx.decomposition], &raw, &fx.channels_by_key(), &DefaultApportionment);
 
         assert_eq!(
             debits.get(&fx.compound_key).map(|d| d.amount),
@@ -1544,7 +1652,7 @@ mod tests {
         demand.insert(fx.compound_key, (fx.compound_chan.clone(), k));
 
         let debits =
-            compute_settlement_debits(&demand, &[fx.decomposition], &raw, &fx.channels_by_key());
+            compute_settlement_debits(&demand, &[fx.decomposition], &raw, &fx.channels_by_key(), &DefaultApportionment);
 
         // draw_compound = min(5,2) = 2; draw_pair = min(3, 3, 4) = 3.
         let d_compound = debits.get(&fx.compound_key).map(|d| d.amount).unwrap_or(0);
@@ -1618,7 +1726,7 @@ mod tests {
         demand.insert(ab_key, (supply::supply_channel(&ab), 2));
         demand.insert(ac_key, (supply::supply_channel(&ac), 2));
 
-        let debits = compute_settlement_debits(&demand, &decompositions, &raw, &channels_by_key);
+        let debits = compute_settlement_debits(&demand, &decompositions, &raw, &channels_by_key, &DefaultApportionment);
 
         let a_draw = debits.get(&a_key).map(|d| d.amount).unwrap_or(0);
         assert!(
@@ -1629,7 +1737,7 @@ mod tests {
 
         // play == replay: the same function over the same inputs is deterministic.
         let debits_again =
-            compute_settlement_debits(&demand, &decompositions, &raw, &channels_by_key);
+            compute_settlement_debits(&demand, &decompositions, &raw, &channels_by_key, &DefaultApportionment);
         assert_eq!(debits, debits_again, "deterministic: play == replay");
     }
 
@@ -1651,7 +1759,7 @@ mod tests {
         demand.insert(key, (chan.clone(), k));
 
         // No decompositions ⇒ pure single-signer path.
-        let debits = compute_settlement_debits(&demand, &[], &raw, &channels_by_key);
+        let debits = compute_settlement_debits(&demand, &[], &raw, &channels_by_key, &DefaultApportionment);
 
         assert_eq!(debits.len(), 1, "exactly one debit for the single group");
         let d = debits.get(&key).expect("solo pool debited");

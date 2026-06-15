@@ -8,11 +8,13 @@
 //! underflow for an admitted deploy.
 //!
 //! Fuzzed invariants:
-//!   * NO-UNDERFLOW: if `is_funded(Δ, Σ, margin)` then `Σ − Δ ≥ margin ≥ 0`, so
-//!     the settlement debit (= Δ, the COMM count) leaves a non-negative pool.
+//!   * NO-UNDERFLOW: if `is_funded(Δ, Σ, margin)` then `Σ − Δ ≥ 0` (the settlement
+//!     debit = Δ, the COMM count, leaves a non-negative pool); for an
+//!     over-approximated (`unknown`) demand it additionally leaves `Σ − Δ ≥ margin`.
 //!   * MONOTONICITY: raising the supply can only keep a funded deploy funded;
 //!     raising the demand can only keep an unfunded deploy unfunded.
-//!   * REJECT-DIRECTION: a deploy with `Σ < Δ + margin` is NOT funded.
+//!   * REJECT-DIRECTION (F-B two-regime): a deploy with `Σ < Δ` (resolvable) — or
+//!     `Σ < Δ + margin` (over-approximated `unknown`) — is NOT funded.
 
 #![no_main]
 
@@ -50,17 +52,23 @@ fuzz_target!(|input: Input| {
     // Computed in i128 to mirror the gate and avoid wrap.
     if funded && margin >= 0 {
         let residual = i128::from(supply) - i128::from(analysis.known_lower_bound);
-        assert!(
-            residual >= i128::from(margin),
-            "funded ⇒ Σ − Δ ({residual}) ≥ margin ({margin}); settlement underflowed"
-        );
         assert!(residual >= 0, "funded ⇒ settlement debit never underflows the pool");
+        // Thm 20 headroom applies ONLY to over-approximated (`unknown`) demand
+        // (F-B: the margin is inert for resolvable demand — Def 19 `Σ ≥ Δ`).
+        if analysis.unknown {
+            assert!(
+                residual >= i128::from(margin),
+                "funded over-approximated demand ⇒ Σ − Δ ({residual}) ≥ margin ({margin})"
+            );
+        }
     }
 
-    // REJECT-DIRECTION: Σ strictly below Δ + margin must NOT be funded.
-    let required = i128::from(analysis.known_lower_bound) + i128::from(margin);
+    // REJECT-DIRECTION (F-B two-regime): resolvable ⇒ Σ < Δ rejected; over-
+    // approximated ⇒ Σ < Δ + margin rejected. Mirrors `is_funded` exactly.
+    let applied_margin = if analysis.unknown { i128::from(margin) } else { 0 };
+    let required = i128::from(analysis.known_lower_bound) + applied_margin;
     if i128::from(supply) < required {
-        assert!(!funded, "Σ < Δ + margin must be rejected by the gate");
+        assert!(!funded, "Σ below the regime threshold must be rejected by the gate");
     }
 
     // MONOTONICITY in supply: more supply cannot un-fund a funded deploy.

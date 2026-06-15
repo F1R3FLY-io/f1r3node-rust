@@ -117,6 +117,136 @@ impl OslfResourceLogic<RhoGslt> for DefaultResourceLogic {
     }
 }
 
+// ─── Multi-sig payment delegation (§"Multi-Signature Execution"; Join cost schema) ───
+//
+// A multi-sig (compound `s₁∘s₂`) deploy's settled demand `k` is drawn from the
+// PARTIES RESPONSIBLE for payment: the combined pool `Σ⟦s₁∘s₂⟧` and/or the
+// component pools `Σ⟦s₁⟧`, `Σ⟦s₂⟧`. The cost-accounted-rho **Conservation of
+// Authority** proposition (Join cost schema) fixes the TOTAL each participant
+// pays — "Grouping (along any axis) changes the bookkeeping; it never changes the
+// total" — and proves the partition/grouping FREE, while the funding-slot model
+// makes the payer OPEN ("Funding: anyone who deposits"). So WHICH pools absorb
+// `k`, and in what order, is a free but consensus-deterministic policy. This
+// trait delegates that choice; [`DefaultApportionment`] is the built-in
+// combined-pool-first policy (the historical behavior, byte-identical).
+
+/// One pool the apportionment may draw from, with its LIVE residual balance at
+/// decision time (the cross-group settlement ledger value, ≥ 0).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PoolResidual<K> {
+    pub key: K,
+    pub residual: i64,
+}
+
+/// The funding shape of one admitted signature group (mirrors the runtime's
+/// binary-at-top-level compound form; an n ≥ 3 left-assoc `∘`-fold still presents
+/// as ONE [`GroupShape::Compound`] here — nested `And` nodes carry no demand and
+/// never reach the policy).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GroupShape<K> {
+    /// Single-signature group: its own pool only.
+    Single { own: PoolResidual<K> },
+    /// Top-level compound `s₁∘s₂`: the combined pool plus the component pair.
+    Compound {
+        combined: PoolResidual<K>,
+        left: PoolResidual<K>,
+        right: PoolResidual<K>,
+    },
+}
+
+/// A single `(pool, amount)` draw the policy elects. The caller applies each to
+/// the residual ledger and accumulates it into the per-pool settlement debit. A
+/// matched component PAIR is expressed as TWO equal `PoolDraw`s (left, right):
+/// debiting both components by the same amount consumes ONE unit of the group's
+/// authority per unit (Conservation of Authority). `amount ≥ 0`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PoolDraw<K> {
+    pub key: K,
+    pub amount: i64,
+}
+
+/// Delegation of "which parties pay, and in what order" for a multi-sig
+/// process's token payment.
+///
+/// CONTRACT (both obligations are consensus-load-bearing — the settlement debit
+/// is consensus state, recomputed identically on replay):
+///   * **(D) Deterministic & pure.** [`apportion`](Self::apportion) is a pure
+///     function of `(shape, k)` — no I/O, no clock, no order-unstable iteration.
+///     Identical inputs MUST yield byte-identical output on the play and replay
+///     paths (the fork-safety bar).
+///   * **(C) Conservation.** When the pools can fund `k`, the policy MUST settle
+///     exactly `k` units of group authority: for `Compound`, `draw_combined +
+///     draw_pair == k` whenever `combined.residual + min(left.residual,
+///     right.residual) ≥ k` (the admission bound guarantees this for an admitted
+///     group); for `Single`, the sole draw is `k` (the pre-#12 non-residual-capped
+///     own-pool debit; the `checked_sub` backstop in `close_block_deploy` is the
+///     hard underflow guard).
+///   * **(NO-OVERDRAW).** The summed amount drawn from each DISTINCT key MUST be
+///     `≤ that key's residual`, so the cross-group ledger never goes negative
+///     (a component pair is two `PoolDraw`s, each bounded by its own residual).
+///
+/// Returning draws in a fixed order keeps the caller's ledger updates
+/// order-deterministic.
+pub trait ApportionmentPolicy<G: GsltPresentation> {
+    fn apportion(
+        &self,
+        shape: GroupShape<<G::Signature as ResourceSignature>::Key>,
+        k: i64,
+    ) -> Vec<PoolDraw<<G::Signature as ResourceSignature>::Key>>;
+}
+
+/// The built-in policy: **combined pool first, then the component pair equally** —
+/// byte-identical to the historical inline logic of `compute_settlement_debits`
+/// (the consensus default).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct DefaultApportionment;
+
+impl<G: GsltPresentation> ApportionmentPolicy<G> for DefaultApportionment {
+    fn apportion(
+        &self,
+        shape: GroupShape<<G::Signature as ResourceSignature>::Key>,
+        k: i64,
+    ) -> Vec<PoolDraw<<G::Signature as ResourceSignature>::Key>> {
+        let mut out = Vec::with_capacity(3);
+        match shape {
+            GroupShape::Single { own } => {
+                // Pre-#12 single-pool path: debit `k` on the own pool, NOT
+                // residual-capped (the `close_block_deploy` checked_sub is the
+                // hard underflow guard).
+                if k > 0 {
+                    out.push(PoolDraw { key: own.key, amount: k });
+                }
+            }
+            GroupShape::Compound {
+                combined,
+                left,
+                right,
+            } => {
+                let draw_compound = k.min(combined.residual);
+                let remaining = k - draw_compound;
+                let draw_pair = remaining.min(left.residual).min(right.residual).max(0);
+                if draw_compound > 0 {
+                    out.push(PoolDraw {
+                        key: combined.key,
+                        amount: draw_compound,
+                    });
+                }
+                if draw_pair > 0 {
+                    out.push(PoolDraw {
+                        key: left.key,
+                        amount: draw_pair,
+                    });
+                    out.push(PoolDraw {
+                        key: right.key,
+                        amount: draw_pair,
+                    });
+                }
+            }
+        }
+        out
+    }
+}
+
 #[cfg(test)]
 mod resource_logic_conformance {
     //! Conformance harness: the OSLF linear-logic laws (the Rocq
@@ -133,7 +263,18 @@ mod resource_logic_conformance {
         }
     }
 
-    /// Law (sound proof-checker, both directions): funded iff `Σ ≥ Δ + margin`.
+    fn unresolvable(lower: i64) -> DemandEntry {
+        DemandEntry {
+            known_lower_bound: lower,
+            unknown: true,
+        }
+    }
+
+    /// Law (sound proof-checker, BOTH regimes — F-B): for RESOLVABLE demand the
+    /// funds judgment is EXACTLY Def 19 `Σ ≥ Δ` (the economic margin is inert — it
+    /// is not folded into the resolvable-demand correctness gate); for
+    /// OVER-APPROXIMATED (`unknown`) demand the Thm 20 safety margin applies,
+    /// `Σ ≥ Δ + margin`.
     fn law_sound<G, R>(rl: &R)
     where
         G: GsltPresentation,
@@ -142,12 +283,19 @@ mod resource_logic_conformance {
         for &lower in &[0i64, 1, 5, 100] {
             for &supply in &[0i64, 1, 5, 100, 101] {
                 for &margin in &[0i64, 1, 10] {
-                    let d = resolvable(lower);
-                    let funded = rl.is_funded(&d, supply, margin);
+                    // Resolvable: Def 19 `Σ ≥ Δ` — margin NOT applied.
+                    let resolved = rl.is_funded(&resolvable(lower), supply, margin);
                     assert_eq!(
-                        funded,
+                        resolved,
+                        i128::from(supply) >= i128::from(lower),
+                        "resolvable funds judgment must be Σ ≥ Δ (lower={lower}, supply={supply}, margin={margin})"
+                    );
+                    // Over-approximated: Thm 20 `Σ ≥ Δ + margin`.
+                    let over = rl.is_funded(&unresolvable(lower), supply, margin);
+                    assert_eq!(
+                        over,
                         i128::from(supply) >= i128::from(lower) + i128::from(margin),
-                        "funds judgment must be Σ ≥ Δ + margin (lower={lower}, supply={supply}, margin={margin})"
+                        "unknown funds judgment must be Σ ≥ Δ + margin (lower={lower}, supply={supply}, margin={margin})"
                     );
                 }
             }
@@ -264,8 +412,10 @@ mod resource_logic_conformance {
         }
 
         fn is_funded(&self, analysis: &DemandEntry, effective_supply_s: i64, margin: i64) -> bool {
+            // Two-regime (F-B): the margin applies only to over-approximated demand.
+            let applied_margin = if analysis.unknown { margin } else { 0 };
             i128::from(effective_supply_s)
-                >= i128::from(analysis.known_lower_bound) + i128::from(margin)
+                >= i128::from(analysis.known_lower_bound) + i128::from(applied_margin)
         }
     }
 
@@ -325,5 +475,108 @@ mod resource_logic_conformance {
                 manifest.display()
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod apportionment_conformance {
+    //! The two `ApportionmentPolicy` contract laws — CONSERVATION (settles exactly
+    //! `k` when fundable; Conservation of Authority) and NO-OVERDRAW (no pool drawn
+    //! past its residual) — checked over a grid of `(k, Σ_compound, Σ_left,
+    //! Σ_right)` for BOTH the built-in policy and a behaviorally-different one, so
+    //! the laws are shown policy-independent (the partition is free, the total is
+    //! not).
+    use super::delta_sigma::SigKey;
+    use super::*;
+
+    const KC: SigKey = [0xC0; 32];
+    const KL: SigKey = [0x1e; 32];
+    const KR: SigKey = [0x12; 32];
+
+    fn drawn(draws: &[PoolDraw<SigKey>], key: &SigKey) -> i64 {
+        draws.iter().filter(|d| &d.key == key).map(|d| d.amount).sum()
+    }
+
+    fn check_compound_laws<P: ApportionmentPolicy<RhoGslt>>(policy: &P) {
+        for k in 0..=6i64 {
+            for sc in 0..=6i64 {
+                for sl in 0..=6i64 {
+                    for sr in 0..=6i64 {
+                        let shape = GroupShape::Compound {
+                            combined: PoolResidual { key: KC, residual: sc },
+                            left: PoolResidual { key: KL, residual: sl },
+                            right: PoolResidual { key: KR, residual: sr },
+                        };
+                        let draws = policy.apportion(shape, k);
+                        let dc = drawn(&draws, &KC);
+                        let dl = drawn(&draws, &KL);
+                        let dr = drawn(&draws, &KR);
+
+                        // NO-OVERDRAW: each pool ≤ its residual.
+                        assert!(
+                            dc <= sc && dl <= sl && dr <= sr,
+                            "overdraw: k={k} σ=({sc},{sl},{sr}) draws=({dc},{dl},{dr})"
+                        );
+                        // Matched pair: the components are debited equally (one unit
+                        // of group authority per unit consumed).
+                        assert_eq!(
+                            dl, dr,
+                            "unmatched pair: k={k} σ=({sc},{sl},{sr}) draws=({dc},{dl},{dr})"
+                        );
+                        // CONSERVATION: a compound draw counts once + the matched
+                        // pair counts once. When the pools can fund k, settle k.
+                        let settled = dc + dl; // dl == dr (matched)
+                        if sc + sl.min(sr) >= k {
+                            assert_eq!(
+                                settled, k,
+                                "not conserved: k={k} σ=({sc},{sl},{sr}) settled={settled}"
+                            );
+                        } else {
+                            assert!(settled <= sc + sl.min(sr));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn default_apportionment_conserves_and_never_overdraws() {
+        check_compound_laws(&DefaultApportionment);
+    }
+
+    /// A behaviorally-different policy (components-first) must satisfy the SAME
+    /// contract — the laws are policy-independent (Conservation of Authority).
+    struct ComponentsFirst;
+    impl ApportionmentPolicy<RhoGslt> for ComponentsFirst {
+        fn apportion(&self, shape: GroupShape<SigKey>, k: i64) -> Vec<PoolDraw<SigKey>> {
+            match shape {
+                GroupShape::Single { own } => {
+                    if k > 0 {
+                        vec![PoolDraw { key: own.key, amount: k }]
+                    } else {
+                        Vec::new()
+                    }
+                }
+                GroupShape::Compound { combined, left, right } => {
+                    let dp = k.min(left.residual).min(right.residual).max(0);
+                    let dc = (k - dp).min(combined.residual).max(0);
+                    let mut v = Vec::new();
+                    if dp > 0 {
+                        v.push(PoolDraw { key: left.key, amount: dp });
+                        v.push(PoolDraw { key: right.key, amount: dp });
+                    }
+                    if dc > 0 {
+                        v.push(PoolDraw { key: combined.key, amount: dc });
+                    }
+                    v
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn alternative_policy_satisfies_the_same_contract() {
+        check_compound_laws(&ComponentsFirst);
     }
 }

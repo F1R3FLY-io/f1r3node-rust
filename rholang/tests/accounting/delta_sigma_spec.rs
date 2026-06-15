@@ -273,7 +273,8 @@ async fn gate_demand_equals_runtime_comm_count() {
 /// deploy's per-COMM demand. With a zero safety margin and a supply that exactly
 /// meets the demand, the admitted deploy's debit equals its COMM count — so
 /// `post Σ⟦s⟧ = pre − COMM_count`. We pin this debit==COMM identity directly on
-/// the analyzer (the gate's `is_funded` admits iff `Σ ≥ Δ + margin`, and the
+/// the analyzer (the gate's `is_funded` admits iff `Σ ≥ Δ` for resolvable demand
+/// — the margin applies only to over-approximated `unknown` demand — and the
 /// debit it then subtracts is `Δ`, the COMM count).
 #[tokio::test]
 async fn settlement_debit_equals_comm_count() {
