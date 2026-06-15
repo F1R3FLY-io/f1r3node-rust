@@ -639,6 +639,24 @@ fn std_system_processes() -> Vec<Definition> {
             }),
             remainder: None,
         },
+        // Versioned-registry helper URN; see the `registry_ops_v1`
+        // handler in system_processes.rs. The legacy `rho:registry:ops`
+        // above is intentionally left untouched.
+        Definition {
+            urn: "rho:registry:ops:1.0.0".to_string(),
+            fixed_channel: FixedChannels::reg_ops_v1(),
+            arity: 3,
+            body_ref: BodyRefs::REG_OPS_V1,
+            handler: Box::new(|ctx| {
+                Box::new(move |args| {
+                    let ctx = ctx.clone();
+                    Box::pin(
+                        async move { ctx.system_processes.clone().registry_ops_v1(args).await },
+                    )
+                })
+            }),
+            remainder: None,
+        },
         Definition {
             urn: "sys:authToken:ops".to_string(),
             fixed_channel: FixedChannels::sys_authtoken_ops(),

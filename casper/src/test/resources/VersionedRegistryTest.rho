@@ -1,4 +1,4 @@
-// Step 3 probe for VersionedRegistry.rho.
+// Step 3+4 probe for VersionedRegistry.rho.
 //
 // Bypasses RhoSpec (see regver-known-issues.md item #2 — RhoSpec is
 // silently passing across the whole suite). Instead, this probe calls
@@ -8,6 +8,8 @@
 
 new
   v1Api(`rho:registry:v1:internal`),
+  legacyOps(`rho:registry:ops`),
+  opsV1(`rho:registry:ops:1.0.0`),
   assert(`rho:test:assertAck`),
 
   // sequencing channels for each test
@@ -17,7 +19,13 @@ new
   ins4, ack4,
   ins5a, dep5, ack5,
   dep6, ack6,
-  ins7a, dep7, app7, ack7
+  ins7a, dep7, app7, ack7,
+
+  // Step 4 channels
+  legacyUri, v1Uri, ack8,
+  parseLib, ack9,
+  parseReg, ack10,
+  parseBad, ack11
 in {
   // 1. insertVersion under lib happy path returns true
   v1Api!("insertVersion", "lib", "deployerA".toByteArray(), "projA", "1.0.0", "codeA", *ins1) |
@@ -78,5 +86,36 @@ in {
                 "approveVersion after deprecate should return true", *ack7)
       }
     }
+  } |
+
+  // 8. opsV1 buildUri produces the same URI as legacy ops on the same input
+  legacyOps!("buildUri", "probe-bytes".toByteArray(), *legacyUri) |
+  opsV1!("buildUri", "probe-bytes".toByteArray(), *v1Uri) |
+  for (@uLegacy <- legacyUri & @uV1 <- v1Uri) {
+    assert!("opsV1_buildUri_matches_legacy", 1, (uLegacy, "==", uV1),
+            "rho:registry:ops:1.0.0 buildUri must match legacy rho:registry:ops", *ack8)
+  } |
+
+  // 9. opsV1 parseVersionedUri on a well-formed lib URN returns the tuple
+  opsV1!("parseVersionedUri", "rho:lib:1.0.0:abc123:myproj:2.6.3", *parseLib) |
+  for (@parsed <- parseLib) {
+    assert!("opsV1_parseVersionedUri_lib", 1,
+            (("lib", "1.0.0", "abc123", "myproj", "2.6.3"), "==", parsed),
+            "Parsed lib URN should be the expected 5-tuple", *ack9)
+  } |
+
+  // 10. opsV1 parseVersionedUri on a registry URN returns the short shape
+  opsV1!("parseVersionedUri", "rho:registry:1.0.0", *parseReg) |
+  for (@parsed <- parseReg) {
+    assert!("opsV1_parseVersionedUri_registry", 1,
+            (("registry", "1.0.0", Nil, Nil, Nil), "==", parsed),
+            "Parsed registry URN should be (\"registry\", \"1.0.0\", Nil, Nil, Nil)", *ack10)
+  } |
+
+  // 11. opsV1 parseVersionedUri on malformed input returns Nil
+  opsV1!("parseVersionedUri", "not-a-versioned-urn", *parseBad) |
+  for (@parsed <- parseBad) {
+    assert!("opsV1_parseVersionedUri_malformed", 1, (Nil, "==", parsed),
+            "Malformed URN should parse to Nil", *ack11)
   }
 }

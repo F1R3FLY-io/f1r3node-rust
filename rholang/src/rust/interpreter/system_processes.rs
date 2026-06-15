@@ -15,7 +15,7 @@ use k256::ecdsa::signature::hazmat::PrehashSigner;
 use k256::ecdsa::{Signature, SigningKey};
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::g_unforgeable::UnfInstance::GPrivateBody;
-use models::rhoapi::{Bundle, Expr, GPrivate, GUnforgeable, ListParWithRandom, Par, Var};
+use models::rhoapi::{Bundle, ETuple, Expr, GPrivate, GUnforgeable, ListParWithRandom, Par, Var};
 use models::rust::casper::protocol::casper_message;
 use models::rust::casper::protocol::casper_message::BlockMessage;
 use models::rust::rholang::implicits::single_expr;
@@ -31,6 +31,7 @@ use super::ollama_service::{ChatMessage, SharedOllamaService};
 use super::openai_service::SharedOpenAIService;
 use super::pretty_printer::PrettyPrinter;
 use super::registry::registry::Registry;
+use super::registry::versioned_urn;
 use super::rho_runtime::RhoISpace;
 use super::rho_type::{
     RhoBoolean, RhoByteArray, RhoDeployId, RhoDeployerId, RhoName, RhoNumber, RhoString,
@@ -81,6 +82,25 @@ impl InvalidBlocks {
 pub fn byte_name(b: Byte) -> Par {
     Par::default().with_unforgeables(vec![GUnforgeable {
         unf_instance: Some(GPrivateBody(GPrivate { id: vec![b] })),
+    }])
+}
+
+/// Encode a parsed versioned-registry URN as a 5-tuple Par for the
+/// Rholang surface. Absent fields (`registry` shape) become `Nil`.
+fn parsed_urn_to_tuple(parsed: versioned_urn::ParsedUrn) -> Par {
+    let opt_string = |s: Option<String>| s.map(RhoString::create_par).unwrap_or_default();
+    Par::default().with_exprs(vec![Expr {
+        expr_instance: Some(ExprInstance::ETupleBody(ETuple {
+            ps: vec![
+                RhoString::create_par(parsed.namespace),
+                RhoString::create_par(parsed.service_version),
+                opt_string(parsed.pub_key),
+                opt_string(parsed.project_id),
+                opt_string(parsed.project_version),
+            ],
+            locally_free: Vec::new(),
+            connective_used: false,
+        })),
     }])
 }
 
@@ -136,6 +156,12 @@ impl FixedChannels {
 
     pub fn text_to_audio() -> Par { byte_name(22) }
 
+    /// Versioned-registry helper URN (parses `rho:lib:…` / `rho:serve:…` /
+    /// `rho:registry:…` URNs, also supports the legacy `buildUri` op).
+    /// Lives alongside `rho:registry:ops` rather than extending it so the
+    /// legacy `Registry.rho` keeps calling the same handler.
+    pub fn reg_ops_v1() -> Par { byte_name(23) }
+
     pub fn grpc_tell() -> Par { byte_name(25) }
 
     pub fn dev_null() -> Par { byte_name(26) }
@@ -179,6 +205,7 @@ impl BodyRefs {
     pub const DEPLOYER_ID_OPS: i64 = 14;
     pub const REG_OPS: i64 = 15;
     pub const SYS_AUTHTOKEN_OPS: i64 = 16;
+    pub const REG_OPS_V1: i64 = 17;
     pub const GPT4: i64 = 18;
     pub const DALLE3: i64 = 19;
     pub const TEXT_TO_AUDIO: i64 = 20;
@@ -677,6 +704,50 @@ impl SystemProcesses {
                 RhoUri::create_par(Registry::build_uri(&hash_key_bytes))
             })
             .unwrap_or_default();
+
+        produce(&[response], ack).await
+    }
+
+    /// Handler for the versioned registry helper URN
+    /// (`rho:registry:ops:1.0.0`). Two ops:
+    ///
+    /// - `"buildUri"(bytes)` — identical to the legacy `rho:registry:ops`
+    ///   path, exposed here so contracts that prefer the versioned form
+    ///   don't need to mix surfaces. Returns the `rho:id:…` URI.
+    /// - `"parseVersionedUri"(urn)` — splits a `rho:lib:…` / `rho:serve:…`
+    ///   / `rho:registry:…` URN into a 5-tuple
+    ///   `(namespace, service_version, pub_key, project_id, project_version)`
+    ///   where the trailing three are `Nil` for the `rho:registry:` shape.
+    ///   Returns `Nil` (an empty Par) on malformed input.
+    ///
+    /// The legacy `registry_ops` handler is left untouched.
+    pub async fn registry_ops_v1(
+        &self,
+        contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
+    ) -> Result<Vec<Par>, InterpreterError> {
+        let Some((produce, _, _, args)) = self.is_contract_call().unapply(contract_args) else {
+            return Err(illegal_argument_error("registry_ops_v1"));
+        };
+
+        let [first_par, argument, ack] = args.as_slice() else {
+            return Err(illegal_argument_error("registry_ops_v1"));
+        };
+
+        let response = match RhoString::unapply(first_par).as_deref() {
+            Some("buildUri") => RhoByteArray::unapply(argument)
+                .map(|ba| {
+                    let hash_key_bytes = Blake2b256::hash(ba);
+                    RhoUri::create_par(Registry::build_uri(&hash_key_bytes))
+                })
+                .unwrap_or_default(),
+
+            Some("parseVersionedUri") => RhoString::unapply(argument)
+                .and_then(|s| versioned_urn::parse_urn(&s))
+                .map(parsed_urn_to_tuple)
+                .unwrap_or_default(),
+
+            _ => return Err(illegal_argument_error("registry_ops_v1")),
+        };
 
         produce(&[response], ack).await
     }

@@ -141,22 +141,27 @@ Legacy regression: `cargo test -p casper --test mod registry` runs `registry_spe
 
 What we don't test at Step 3: anything about the resolver picking versions by pattern (no resolver yet) or about lookup ordering (lookup doesn't exist as a method until Step 6).
 
-### Step 4 — URI parsing helper, exposed via a new ops URN
+### Step 4 — URI parsing helper, exposed via a new ops URN ✅ DONE (2026-06-15)
 
-The existing `rho:registry:ops` handler (`system_processes.rs:651-675`) only accepts `"buildUri"` and is referenced by the legacy `Registry.rho`. Don't add arms to it — extending its dispatch surface would change the legacy file's call sites. Instead, register a new `rho:registry:ops:1.0.0` (with its own `FixedChannels::reg_ops_v1()` and `BodyRefs::REG_OPS_V1`) that the new contracts call. It can support the same `"buildUri"` for code that prefers the versioned form, plus the new operation:
+Landed as `rho:registry:ops:1.0.0`, a parallel system process to the legacy `rho:registry:ops`. The legacy handler is untouched.
 
-- `"parseVersionedUri"(uri_str)` — splits a `rho:lib:…` / `rho:serve:…` URN into its segments. Returns a tuple or `Nil`. Lets `insertVersion` validate the projectId/deployerId match without re-parsing in Rholang.
+- New module `rholang/src/rust/interpreter/registry/versioned_urn.rs` with a pure-Rust `parse_urn(&str) -> Option<ParsedUrn>` that splits a `rho:lib:…` / `rho:serve:…` / `rho:registry:…` URN into segments. Preserves wildcards and prerelease tags verbatim; semver semantics stay in `semver.rs`.
+- `FixedChannels::reg_ops_v1()` at `byte_name(23)` and `BodyRefs::REG_OPS_V1 = 17` in `system_processes.rs`.
+- New `registry_ops_v1` handler method that dispatches on the first arg:
+  - `"buildUri"(bytes)` — identical to the legacy path, returns a `rho:id:…` URI.
+  - `"parseVersionedUri"(urn)` — returns the 5-tuple `(namespace, service_version, pub_key, project_id, project_version)` where the trailing three are `Nil` for the `rho:registry:` shape. Returns `Nil` on malformed input.
+- `Definition` row added in `rho_runtime.rs` next to the legacy `rho:registry:ops` row.
 
-The new handler lives next to `registry_ops` in `system_processes.rs`; copy the dispatch shape (`match on the first arg`) rather than editing the existing one.
+**Verification status:**
 
-#### Testing
-
-1. **Rust unit tests on `parseVersionedUri`** in `system_processes.rs` (a `#[cfg(test)] mod tests` block at the bottom, following the pattern crypto handlers already use). Cover: well-formed `rho:lib:…` and `rho:serve:…` URNs, malformed URNs, URNs with wildcards in version segments (parse-only — the resolver decides what to do with them), empty segments. Don't go through a full runtime — call the parsing helper directly.
-2. **Rholang-level smoke** in `VersionedRegistryTest.rho`:
-   - `test_ops_v1_buildUri_matches_legacy` — call `rho:registry:ops:1.0.0` with `"buildUri"` and the legacy `rho:registry:ops` with the same byte array; assert the returned URI is identical. Proves the new handler doesn't drift from the old one on the shared op.
-   - `test_ops_v1_parseVersionedUri_lib` — round-trip parse on a known `rho:lib:1.0.0:<pk>:proj:2.6.3` URN, assert each segment matches.
-   - `test_ops_v1_parseVersionedUri_malformed` — assert `Nil` (or whatever the error sentinel is) for garbage input.
-3. **Legacy regression**: `cargo test -p casper registry_ops_spec` passes — the original `rho:registry:ops` handler is untouched.
+- `cargo test -p rholang --lib registry::versioned_urn` — 9 parser unit tests pass (lib/serve/registry happy paths, wildcards preserved, prerelease tags preserved, every rejection class).
+- `cargo test -p casper --test mod versioned_registry_spec` — 11 Rholang-level assertions pass, including:
+  - `opsV1_buildUri_matches_legacy` — `rho:registry:ops:1.0.0` and `rho:registry:ops` produce the same URI on the same input.
+  - `opsV1_parseVersionedUri_lib` — round-trips `rho:lib:1.0.0:abc123:myproj:2.6.3` to its 5-tuple.
+  - `opsV1_parseVersionedUri_registry` — `rho:registry:1.0.0` returns `("registry", "1.0.0", Nil, Nil, Nil)`.
+  - `opsV1_parseVersionedUri_malformed` — garbage returns `Nil`.
+- Verified end-to-end with a deliberately wrong assertion on the parse-lib case: the Rust spec failed with a clear `left vs right` diagnostic showing the tuple shape from the host.
+- Legacy regression: `registry_spec`, `registry_ops_spec`, `multi_parent_casper_should_be_able_to_use_the_registry` all green unchanged.
 
 ### Step 5 — versioned URN resolution in `eval_new` (additive)
 

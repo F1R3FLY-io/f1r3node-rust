@@ -29,6 +29,11 @@ const EXPECTED_TEST_NAMES: &[&str] = &[
     "deprecateVersion_sets_flag",
     "deprecateVersion_unknown_rejected",
     "approveVersion_clears_flag",
+    // Step 4: rho:registry:ops:1.0.0
+    "opsV1_buildUri_matches_legacy",
+    "opsV1_parseVersionedUri_lib",
+    "opsV1_parseVersionedUri_registry",
+    "opsV1_parseVersionedUri_malformed",
 ];
 
 #[tokio::test]
