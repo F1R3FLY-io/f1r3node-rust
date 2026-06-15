@@ -886,3 +886,260 @@ async fn orphaned_finalized_block_should_still_get_ft_updated() {
     })
     .await
 }
+
+/// RED reproduction of the equal-weight multi-parent fork wedge observed in
+/// integration run `c23aaaeb` (LFB frozen at block 12; `fault_tolerance = -1/3`
+/// for every candidate above it; the contended map never converges).
+///
+/// Three equal-weight validators each build their own block at height 1 off
+/// genesis — a symmetric 3-way fork — then each builds a height-2 block that
+/// MULTI-PARENT-MERGES all three height-1 blocks (exactly what the merge layer
+/// does). Every validator's latest message therefore has `a1` as a DAG-ancestor:
+/// `a1`'s effects are merged into all three latest states, so `a1` is genuinely
+/// committed cluster-wide.
+///
+/// The clique oracle computes agreement via `is_in_main_chain` — the SINGLE
+/// main-parent chain — so `a1` is "agreed" only by `v1`, whose height-2 block
+/// has `a1` as its main (first) parent. Agreeing weight collapses to
+/// 100/300 <= total/2 → `ft = MIN` → `a1` (and symmetrically `a2`, `a3`) can
+/// never finalize: a fork the merge has already reconciled cannot be finalized,
+/// because finalization agreement is single-parent while the DAG is
+/// multi-parent. With three equal-weight validators there is no asymmetry to
+/// break the symmetry, so the chain wedges (consensus liveness failure).
+///
+/// FIX: agreement must be DAG-reachability — `target` merged via ANY parent
+/// path — not main-parent-chain membership. Then all three validators agree on
+/// `a1` and it finalizes. This test asserts that post-fix invariant and so
+/// FAILS against the current main-chain agreement.
+#[tokio::test]
+async fn clique_oracle_finalizes_fork_reconciled_by_multiparent_merge() {
+    with_storage(|mut block_store, mut block_dag_storage| async move {
+        let v1 = generate_validator(Some("Sym V1"));
+        let v2 = generate_validator(Some("Sym V2"));
+        let v3 = generate_validator(Some("Sym V3"));
+        let bonds = vec![
+            Bond {
+                validator: v1.clone(),
+                stake: 100,
+            },
+            Bond {
+                validator: v2.clone(),
+                stake: 100,
+            },
+            Bond {
+                validator: v3.clone(),
+                stake: 100,
+            },
+        ];
+
+        let genesis = create_genesis_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            None,
+            Some(bonds.clone()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        // Height 1: symmetric 3-way fork off genesis, one block per validator,
+        // all justified only by genesis (concurrent — none saw the others yet).
+        let gj = HashMap::from([
+            (v1.clone(), genesis.block_hash.clone()),
+            (v2.clone(), genesis.block_hash.clone()),
+            (v3.clone(), genesis.block_hash.clone()),
+        ]);
+        let a1 = crate::helper::block_generator::create_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            vec![genesis.block_hash.clone()],
+            &genesis,
+            Some(v1.clone()),
+            Some(bonds.clone()),
+            Some(gj.clone()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        let a2 = crate::helper::block_generator::create_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            vec![genesis.block_hash.clone()],
+            &genesis,
+            Some(v2.clone()),
+            Some(bonds.clone()),
+            Some(gj.clone()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        let a3 = crate::helper::block_generator::create_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            vec![genesis.block_hash.clone()],
+            &genesis,
+            Some(v3.clone()),
+            Some(bonds.clone()),
+            Some(gj.clone()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        // Every validator now observes all three height-1 blocks.
+        let saw_all = HashMap::from([
+            (v1.clone(), a1.block_hash.clone()),
+            (v2.clone(), a2.block_hash.clone()),
+            (v3.clone(), a3.block_hash.clone()),
+        ]);
+
+        // Height 2: each validator MERGES all three height-1 blocks; its own
+        // height-1 block is the main (first) parent — the symmetric-fork shape.
+        let m1 = crate::helper::block_generator::create_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            vec![
+                a1.block_hash.clone(),
+                a2.block_hash.clone(),
+                a3.block_hash.clone(),
+            ],
+            &genesis,
+            Some(v1.clone()),
+            Some(bonds.clone()),
+            Some(saw_all.clone()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        let m2 = crate::helper::block_generator::create_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            vec![
+                a2.block_hash.clone(),
+                a1.block_hash.clone(),
+                a3.block_hash.clone(),
+            ],
+            &genesis,
+            Some(v2.clone()),
+            Some(bonds.clone()),
+            Some(saw_all.clone()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        let m3 = crate::helper::block_generator::create_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            vec![
+                a3.block_hash.clone(),
+                a1.block_hash.clone(),
+                a2.block_hash.clone(),
+            ],
+            &genesis,
+            Some(v3.clone()),
+            Some(bonds.clone()),
+            Some(saw_all.clone()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        // Height 3: convergence round — each validator extends its own merge
+        // block and now mutually justifies the OTHER validators' merge blocks
+        // (post-merge view). This is what lets the safety oracle witness that
+        // everyone has merged a1; without it the disagreement window still
+        // straddles the pre-merge height-1 blocks. These are the latest messages.
+        let saw_merges = HashMap::from([
+            (v1.clone(), m1.block_hash.clone()),
+            (v2.clone(), m2.block_hash.clone()),
+            (v3.clone(), m3.block_hash.clone()),
+        ]);
+        let _n1 = crate::helper::block_generator::create_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            vec![m1.block_hash.clone()],
+            &genesis,
+            Some(v1.clone()),
+            Some(bonds.clone()),
+            Some(saw_merges.clone()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        let _n2 = crate::helper::block_generator::create_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            vec![m2.block_hash.clone()],
+            &genesis,
+            Some(v2.clone()),
+            Some(bonds.clone()),
+            Some(saw_merges.clone()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        let _n3 = crate::helper::block_generator::create_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            vec![m3.block_hash.clone()],
+            &genesis,
+            Some(v3.clone()),
+            Some(bonds.clone()),
+            Some(saw_merges.clone()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        let dag = block_dag_storage.get_representation();
+        let safety_oracle = CliqueOracleImpl;
+
+        // a1 is merged into every validator's latest message (a DAG-ancestor of
+        // m1, m2, m3), so all three have committed to it and it MUST be
+        // finalizable. Under main-parent-chain agreement only v1 agrees and the
+        // fault tolerance collapses to MIN; this assertion fails until agreement
+        // is DAG-aware.
+        let ft_a1 = safety_oracle
+            .normalized_fault_tolerance(&dag, &a1.block_hash)
+            .await
+            .unwrap();
+        assert!(
+            ft_a1 > 0.1,
+            "a1 is merged into every validator's latest message (DAG-ancestor of all three \
+             height-2 blocks), so a multi-parent-correct oracle must finalize it; got ft={ft_a1}. \
+             The single-main-parent `is_in_main_chain` agreement under-counts multi-parent merges, \
+             wedging equal-weight concurrent forks (integration run c23aaaeb)."
+        );
+    })
+    .await
+}

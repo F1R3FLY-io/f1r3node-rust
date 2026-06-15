@@ -161,21 +161,31 @@ impl CliqueOracle {
                     last_yield = Instant::now();
                 }
                 idx += 1;
-                let in_main_chain_key = (target_msg.clone(), hash.clone());
-                let is_in_main_chain =
-                    if let Some(cached) = in_main_chain_cache.get(&in_main_chain_key) {
+                // DAG-ancestry (multi-parent), matching `agree`. A
+                // self-justification of b that has NOT merged `target_msg`
+                // (target is not a DAG-ancestor via any parent path) is a genuine
+                // divergence; one that merged it agrees. Under the old
+                // single-main-parent check, a merge block whose main parent was a
+                // sibling looked like a disagreement even though it had merged
+                // the target — collapsing the clique on equal-weight forks.
+                // (`in_main_chain_cache` now memoizes this DAG-ancestry result,
+                // keyed by (target, hash); for single-parent histories it is
+                // identical to the prior main-chain result.)
+                let ancestor_key = (target_msg.clone(), hash.clone());
+                let target_is_ancestor =
+                    if let Some(cached) = in_main_chain_cache.get(&ancestor_key) {
                         *cached
                     } else {
-                        let value = dag.is_in_main_chain(target_msg, &hash)?;
+                        let value = dag.is_dag_ancestor(target_msg, &hash)?;
                         CliqueOracle::bounded_cache_insert(
                             in_main_chain_cache,
-                            in_main_chain_key,
+                            ancestor_key,
                             value,
                             max_in_main_chain_cache_entries,
                         );
                         value
                     };
-                if !is_in_main_chain {
+                if !target_is_ancestor {
                     return Ok(true);
                 }
 
@@ -443,9 +453,18 @@ impl CliqueOracle {
                 dag: &KeyValueDagRepresentation,
                 latest_messages: &BTreeMap<V, M>,
             ) -> Result<bool, KvStoreError> {
+                // Multi-parent agreement: a validator agrees with `message` iff
+                // `message` is a DAG-ancestor of its latest message — i.e. the
+                // validator has MERGED `message` into its state via any parent
+                // path. The prior `is_in_main_chain` check counted only the
+                // single main-parent chain, which under-counts merges: an
+                // equal-weight concurrent fork that every validator has merged
+                // would still show <=1/2 agreeing weight and never finalize
+                // (the liveness wedge). For single-parent histories the two
+                // predicates coincide, so single-chain finality is unchanged.
                 latest_messages
                     .get(validator)
-                    .map_or(Ok(false), |hash| dag.is_in_main_chain(message, hash))
+                    .map_or(Ok(false), |hash| dag.is_dag_ancestor(message, hash))
             }
 
             let mut agreeing_map = HashMap::new();

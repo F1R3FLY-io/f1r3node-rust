@@ -405,6 +405,52 @@ impl KeyValueDagRepresentation {
         }
     }
 
+    /// True iff `ancestor` is reachable from `descendant` by following ANY
+    /// parent edge (full DAG ancestry), not only the main-parent chain.
+    ///
+    /// This is the multi-parent generalization of [`Self::is_in_main_chain`]: in
+    /// a multi-parent merge DAG, a block whose state has merged `ancestor` — via
+    /// any parent path — has committed to it, regardless of which parent is the
+    /// main one. For single-parent blocks the two predicates coincide (the only
+    /// parent IS the main parent), so this changes finalization agreement only
+    /// for merge blocks. The walk is bounded exactly like `is_in_main_chain`: it
+    /// prunes any branch once it drops to or below `ancestor`'s block height, so
+    /// cost is bounded by the blocks in the height window between the two.
+    pub fn is_dag_ancestor(
+        &self,
+        ancestor: &BlockHash,
+        descendant: &BlockHash,
+    ) -> Result<bool, KvStoreError> {
+        if ancestor == descendant {
+            return Ok(true);
+        }
+
+        let stop_height = self.block_number_unsafe(ancestor)?;
+        let mut visited: HashSet<BlockHash> = HashSet::new();
+        let mut queue: VecDeque<BlockHash> = VecDeque::new();
+        visited.insert(descendant.clone());
+        queue.push_back(descendant.clone());
+
+        while let Some(current) = queue.pop_front() {
+            if current == *ancestor {
+                return Ok(true);
+            }
+            // A block at or below the ancestor's height cannot have `ancestor`
+            // among its (strictly lower) parents; prune this branch without
+            // descending. Other branches still in the queue are unaffected.
+            if self.block_number_unsafe(&current)? <= stop_height {
+                continue;
+            }
+            for parent in self.parents_unsafe(&current)? {
+                if visited.insert(parent.clone()) {
+                    queue.push_back(parent);
+                }
+            }
+        }
+
+        Ok(false)
+    }
+
     pub fn parents_unsafe(&self, block_hash: &BlockHash) -> Result<Vec<BlockHash>, KvStoreError> {
         let metadata = self.lookup_unsafe(block_hash)?;
         Ok(metadata.parents)
