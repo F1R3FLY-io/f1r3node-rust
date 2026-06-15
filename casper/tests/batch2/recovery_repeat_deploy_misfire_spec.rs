@@ -271,7 +271,7 @@ async fn proposer_must_skip_recovery_when_deploy_is_canonically_finalized() {
         let deploy_sig: Bytes = signed_deploy.sig.clone();
 
         // Genesis (LFB) carries D — so D is canonically Finalized.
-        let _genesis = create_genesis_block(
+        let genesis = create_genesis_block(
             &mut block_store,
             &mut block_dag_storage,
             None,
@@ -327,6 +327,7 @@ async fn proposer_must_skip_recovery_when_deploy_is_canonically_finalized() {
             rejected_deploy_buffer.clone(),
             &block_store,
             &runtime_manager,
+            Some(&genesis.sender),
         )
         .await
         .expect("prepare_user_deploys should not error");

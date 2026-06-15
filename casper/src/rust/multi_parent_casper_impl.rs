@@ -200,7 +200,9 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
         sorted_parents_list.sort_by(|a, b| {
             let a_main = ghost_main_parent.as_ref() == Some(&a.block_hash);
             let b_main = ghost_main_parent.as_ref() == Some(&b.block_hash);
-            b_main.cmp(&a_main).then_with(|| a.block_hash.cmp(&b.block_hash))
+            b_main
+                .cmp(&a_main)
+                .then_with(|| a.block_hash.cmp(&b.block_hash))
         });
 
         // If no parent blocks exist (genesis case), use approved block as the parent.
@@ -1289,7 +1291,6 @@ async fn run_queued_finalizer(
     block_dag_storage: BlockDagKeyValueStorage,
     block_store: KeyValueBlockStore,
     deploy_storage: Arc<Mutex<KeyValueDeployStorage>>,
-    rejected_deploy_buffer: Arc<Mutex<KeyValueRejectedDeployBuffer>>,
     runtime_manager: Arc<RuntimeManager>,
     event_publisher: F1r3flyEvents,
     finalization_in_progress: Arc<AtomicBool>,
@@ -1309,7 +1310,6 @@ async fn run_queued_finalizer(
                 block_dag_storage.clone(),
                 block_store.clone(),
                 deploy_storage.clone(),
-                rejected_deploy_buffer.clone(),
                 runtime_manager.clone(),
                 event_publisher.clone(),
                 finalization_in_progress.clone(),
@@ -1418,7 +1418,6 @@ impl<T: TransportLayer + Send + Sync> MultiParentCasper for MultiParentCasperImp
             self.block_dag_storage.clone(),
             self.block_store.clone(),
             self.deploy_storage.clone(),
-            self.rejected_deploy_buffer.clone(),
             self.runtime_manager.clone(),
             self.event_publisher.clone(),
             self.finalization_in_progress.clone(),
@@ -1509,7 +1508,6 @@ async fn compute_last_finalized_block(
     block_dag_storage: BlockDagKeyValueStorage,
     block_store: KeyValueBlockStore,
     deploy_storage: Arc<Mutex<KeyValueDeployStorage>>,
-    rejected_deploy_buffer: Arc<Mutex<KeyValueRejectedDeployBuffer>>,
     runtime_manager: Arc<RuntimeManager>,
     event_publisher: F1r3flyEvents,
     finalization_in_progress: Arc<AtomicBool>,
@@ -1527,7 +1525,6 @@ async fn compute_last_finalized_block(
     let block_dag_storage_for_effect = block_dag_storage.clone();
     let block_store_for_effect = block_store.clone();
     let deploy_storage_for_effect = deploy_storage.clone();
-    let rejected_deploy_buffer_for_effect = rejected_deploy_buffer.clone();
     let runtime_manager_for_effect = runtime_manager.clone();
     let event_publisher_for_effect = event_publisher.clone();
     let finalization_in_progress_for_effect = finalization_in_progress.clone();
@@ -1537,7 +1534,6 @@ async fn compute_last_finalized_block(
         let block_dag_storage = block_dag_storage_for_effect.clone();
         let block_store = block_store_for_effect.clone();
         let deploy_storage = deploy_storage_for_effect.clone();
-        let rejected_deploy_buffer = rejected_deploy_buffer_for_effect.clone();
         let runtime_manager = runtime_manager_for_effect.clone();
         let event_publisher = event_publisher_for_effect.clone();
         let finalization_in_progress = finalization_in_progress_for_effect.clone();
@@ -1548,7 +1544,6 @@ async fn compute_last_finalized_block(
                     let finalized_set = finalized_set.clone();
                     let block_store = block_store.clone();
                     let deploy_storage = deploy_storage.clone();
-                    let rejected_deploy_buffer = rejected_deploy_buffer.clone();
                     let runtime_manager = runtime_manager.clone();
                     let event_publisher = event_publisher.clone();
                     let finalization_in_progress = finalization_in_progress.clone();
@@ -1571,8 +1566,6 @@ async fn compute_last_finalized_block(
 
                             // Remove block deploys from persistent store
                             let deploys_count = deploys.len();
-                            let deploy_sigs_for_buffer: Vec<Vec<u8>> =
-                                deploys.iter().map(|d| d.sig.to_vec()).collect();
                             deploy_storage
                                 .lock()
                                 .map_err(|_| {
@@ -1582,27 +1575,20 @@ async fn compute_last_finalized_block(
                                 })?
                                 .remove(deploys)?;
 
-                            // Purge the rejected-deploy buffer of any sig that
-                            // landed in a finalized block, so recovered deploys
-                            // don't linger after canonical inclusion. Also purge
-                            // any sig listed in body.rejected_deploys on this
-                            // finalized block — those are definitively lost and
-                            // should not be re-proposed from this node's buffer.
-                            {
-                                let mut buffer_guard =
-                                    rejected_deploy_buffer.lock().map_err(|_| {
-                                        KvStoreError::LockError(
-                                            "Failed to acquire rejected_deploy_buffer lock"
-                                                .to_string(),
-                                        )
-                                    })?;
-                                for sig in &deploy_sigs_for_buffer {
-                                    let _ = buffer_guard.remove_by_sig(sig);
-                                }
-                                for rd in &block.body.rejected_deploys {
-                                    let _ = buffer_guard.remove_by_sig(&rd.sig);
-                                }
-                            }
+                            // The rejected-deploy buffer is intentionally NOT
+                            // purged on finalization. A deploy present in a
+                            // finalized block's body — whether executed
+                            // (body.deploys) or rejected (body.rejected_deploys)
+                            // — has not had its canonical fate settled: under
+                            // finality-aware multi-parent merge a finalized
+                            // block's executed deploy can still be merge-rejected
+                            // downstream, and a rejected deploy is exactly a
+                            // recovery candidate. Purging here removed
+                            // still-recoverable losers ~0-2 blocks before their
+                            // rejection sealed, defeating recovery. The buffer
+                            // now drains only through the proposer's sealed-fate
+                            // gate (SealedAccepted drop) and deploy-lifespan
+                            // expiry.
 
                             let finalized_set_str = PrettyPrinter::build_string_hashes(
                                 &finalized_set.iter().map(|h| h.to_vec()).collect::<Vec<_>>(),
@@ -1749,7 +1735,6 @@ impl<T: TransportLayer + Send + Sync> MultiParentCasperImpl<T> {
             let block_dag_storage = self.block_dag_storage.clone();
             let block_store = self.block_store.clone();
             let deploy_storage = self.deploy_storage.clone();
-            let rejected_deploy_buffer = self.rejected_deploy_buffer.clone();
             let runtime_manager = self.runtime_manager.clone();
             let event_publisher = self.event_publisher.clone();
             let finalization_in_progress = self.finalization_in_progress.clone();
@@ -1764,7 +1749,6 @@ impl<T: TransportLayer + Send + Sync> MultiParentCasperImpl<T> {
                     block_dag_storage,
                     block_store,
                     deploy_storage,
-                    rejected_deploy_buffer,
                     runtime_manager,
                     event_publisher,
                     finalization_in_progress,

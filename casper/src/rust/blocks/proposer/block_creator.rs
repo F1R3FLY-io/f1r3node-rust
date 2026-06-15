@@ -60,6 +60,7 @@ pub async fn prepare_user_deploys(
     >,
     block_store: &KeyValueBlockStore,
     runtime_manager: &RuntimeManager,
+    self_validator: Option<&Bytes>,
 ) -> Result<PreparedUserDeploys, CasperError> {
     // The guard must not be held across the await points below (floor
     // resolution); it is re-acquired for the expired-deploy removal at the end.
@@ -191,9 +192,34 @@ pub async fn prepare_user_deploys(
     let mut already_in_scope: Vec<Signed<DeployData>> = Vec::new();
     let mut recoveries_admitted = 0usize;
     let mut recoveries_held = 0usize;
+    let mut recoveries_not_owned = 0usize;
     let mut recoveries_sealed_accepted: Vec<Bytes> = Vec::new();
     for deploy in valid {
         if recovered_sigs.contains(&deploy.sig) {
+            // Single-owner recovery: only the validator that proposed this
+            // deploy's indexed inclusion re-proposes it. Without this, every
+            // node holding the rejected sig would re-propose it concurrently,
+            // producing duplicate-conflict storms that re-reject the recovery.
+            let owner = match casper_snapshot
+                .dag
+                .lookup_by_deploy_id(&deploy.sig.to_vec())
+                .map_err(CasperError::KvStoreError)?
+            {
+                Some(host) => casper_snapshot
+                    .dag
+                    .lookup(&host)
+                    .map_err(CasperError::KvStoreError)?
+                    .map(|meta| meta.sender),
+                None => None,
+            };
+            let is_owner = match (self_validator, owner.as_ref()) {
+                (Some(me), Some(o)) => o == me,
+                _ => false,
+            };
+            if !is_owner {
+                recoveries_not_owned += 1;
+                continue;
+            }
             let Some(resolver) = fate_resolver.as_ref() else {
                 recoveries_held += 1;
                 continue;
@@ -201,6 +227,12 @@ pub async fn prepare_user_deploys(
             match resolver.fate(&casper_snapshot.dag, &deploy.sig)? {
                 DeployFateAtFloor::SealedRejected => {
                     recoveries_admitted += 1;
+                    tracing::debug!(
+                        target: "f1r3.trace.fateprobe",
+                        event = "recovery_admitted",
+                        sig = %hex::encode(&deploy.sig[..deploy.sig.len().min(16)]),
+                        "recovered loser admitted for re-execution"
+                    );
                     valid_unique.insert(deploy);
                 }
                 DeployFateAtFloor::SealedAccepted => {
@@ -229,10 +261,11 @@ pub async fn prepare_user_deploys(
     }
     if has_recovery_candidates {
         tracing::info!(
-            "Prepare user deploys: recovery gate at floor #{}: admitted={}, held={}, sealed-accepted dropped={}",
+            "Prepare user deploys: recovery gate at floor #{}: admitted={}, held={}, not-owned={}, sealed-accepted dropped={}",
             floor_number,
             recoveries_admitted,
             recoveries_held,
+            recoveries_not_owned,
             recoveries_sealed_accepted.len()
         );
     }
@@ -610,6 +643,7 @@ pub async fn create(
             rejected_deploy_buffer.clone(),
             block_store,
             runtime_manager,
+            Some(&validator_identity.public_key.bytes),
         )
         .await?;
         let mut v = prepared.deploys;
