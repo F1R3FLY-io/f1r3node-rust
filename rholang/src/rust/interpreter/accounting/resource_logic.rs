@@ -198,6 +198,21 @@ pub trait ApportionmentPolicy<G: GsltPresentation> {
 /// The built-in policy: **combined pool first, then the component pair equally** —
 /// byte-identical to the historical inline logic of `compute_settlement_debits`
 /// (the consensus default).
+///
+/// **Greg P8 (2026-06-15) — BALANCED across all wallets.** Greg's directive ("the
+/// tensor operator is commutative; the cost should be balanced across all wallets;
+/// the token decomposes into the balanced cost per wallet") is REALIZED by this
+/// policy, not violated by it: the component pair `(left, right)` is debited the
+/// SAME amount (`draw_pair` each), so every cosigner WALLET pays an equal share —
+/// the "balanced cost per wallet." Commutativity holds because the draw depends
+/// only on `{combined, left, right}` residuals (a set), never on source order, so
+/// `s₁∘s₂` and `s₂∘s₁` settle identically (the order-of-appearance draw the P8
+/// question worried about predates this trait, commit 8032adb6). The
+/// combined-pool-FIRST step is the ORTHOGONAL joint-funds policy — `Σ⟦s₁∘s₂⟧` is a
+/// JOINTLY owned pool (a co-signed combined-cell token), so spending it first is
+/// itself balanced (both parties co-own it), and the per-wallet split applies to
+/// the remainder. No `BalancedApportionment` replacement is needed; this IS the
+/// balanced policy.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct DefaultApportionment;
 
