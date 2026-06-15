@@ -1173,7 +1173,7 @@ where
                     }
                 })
                 .collect();
-            tracing::warn!(
+            tracing::debug!(
                 target: "f1r3fly.rspace.multidatum",
                 path = "replay",
                 thread = ?std::thread::current().id(),

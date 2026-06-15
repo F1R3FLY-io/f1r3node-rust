@@ -138,7 +138,7 @@ where
                     "trie insert",
                 );
                 if i.data.len() > 1 {
-                    tracing::warn!(
+                    tracing::debug!(
                         target: "f1r3fly.rspace.multidatum",
                         site = "trie_write",
                         channel = %hex::encode(i.hash.bytes()),

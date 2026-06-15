@@ -182,10 +182,13 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorInstance<T> {
                         }
                         Err(e) => match &e {
                             CasperError::Other(msg) if msg == "Missing dependencies" => {
-                                tracing::warn!(
+                                tracing::debug!(
                                     "Block {} delayed: missing dependencies.",
                                     block_str
                                 );
+                            }
+                            CasperError::Other(msg) if msg == "Block not of interest" => {
+                                tracing::debug!("Block {} dropped: not of interest.", block_str);
                             }
                             _ => {
                                 tracing::error!(block = %block_str, error = %e, "block processing failed");

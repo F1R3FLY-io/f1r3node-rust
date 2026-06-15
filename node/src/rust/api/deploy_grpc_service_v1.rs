@@ -31,7 +31,7 @@ use models::casper::{
 };
 use models::servicemodelapi::ServiceError;
 use tokio::time::{sleep, Duration};
-use tracing::error;
+use tracing::{debug, error};
 
 use crate::rust::web::version_info::get_version_info_str;
 
@@ -290,7 +290,11 @@ impl DeployService for DeployGrpcServiceV1Impl {
                 Self::create_success_block_response(block_info)
             }
             Err(e) => {
-                error!("Deploy service method error get_block: {}", e);
+                if e.to_string().contains("Failure to find block") {
+                    debug!("get_block query for absent block: {}", e);
+                } else {
+                    error!("Deploy service method error get_block: {}", e);
+                }
                 Self::create_error_block_response(e.into_service_error())
             }
         }

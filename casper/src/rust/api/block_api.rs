@@ -621,7 +621,7 @@ impl BlockAPI {
         if let Some(casper) = eng.with_casper() {
             casper_response(casper.as_ref(), effective_depth, listening_name).await
         } else {
-            tracing::warn!("{}", error_message);
+            tracing::debug!("{}", error_message);
             Err(eyre::eyre!("Error: {}", error_message))
         }
     }
@@ -677,7 +677,7 @@ impl BlockAPI {
         if let Some(casper) = eng.with_casper() {
             casper_response(casper.as_ref(), effective_depth, listening_names).await
         } else {
-            tracing::warn!("{}", error_message);
+            tracing::debug!("{}", error_message);
             Err(eyre::eyre!("Error: {}", error_message))
         }
     }
@@ -849,7 +849,7 @@ impl BlockAPI {
         if let Some(casper) = eng.with_casper() {
             casper_response(casper.as_ref(), effective_depth, do_it).await
         } else {
-            tracing::warn!("{}", error_message);
+            tracing::debug!("{}", error_message);
             Err(eyre::eyre!("Error: {}", error_message))
         }
     }
@@ -939,7 +939,7 @@ impl BlockAPI {
             )
             .await
         } else {
-            tracing::warn!("{}", error_message);
+            tracing::debug!("{}", error_message);
             Err(eyre::eyre!("Error: {}", error_message))
         }
     }
@@ -1000,7 +1000,7 @@ impl BlockAPI {
             )
             .await
         } else {
-            tracing::warn!("{}", error_message);
+            tracing::debug!("{}", error_message);
             Err(eyre::eyre!("Error: {}", error_message))
         }
     }
@@ -1166,7 +1166,7 @@ impl BlockAPI {
                 .await
                 .unwrap_or_else(|_| Vec::new())
         } else {
-            tracing::warn!("{}", error_message);
+            tracing::debug!("{}", error_message);
             Vec::new()
         }
     }
@@ -1452,7 +1452,7 @@ impl BlockAPI {
             )
             .await?)
         } else {
-            tracing::warn!("{}", error_message);
+            tracing::debug!("{}", error_message);
             Err(eyre::eyre!("Error: {}", error_message))
         }
     }
@@ -1469,7 +1469,7 @@ impl BlockAPI {
             let result = dag.is_finalized(&given_block_hash.into());
             Ok(result)
         } else {
-            tracing::warn!("{}", error_message);
+            tracing::debug!("{}", error_message);
             Err(eyre::eyre!("Error: {}", error_message))
         }
     }
@@ -1494,7 +1494,7 @@ impl BlockAPI {
             "Could not compute deploy finalization status, casper instance was not available yet.";
         let eng = engine_cell.get().await;
         let Some(casper) = eng.with_casper() else {
-            tracing::warn!("{}", error_message);
+            tracing::debug!("{}", error_message);
             return Err(eyre::eyre!("Error: {}", error_message));
         };
 
@@ -1582,7 +1582,7 @@ impl BlockAPI {
             let validator_bond_opt = bonds.iter().find(|bond| bond.validator == *public_key);
             Ok(validator_bond_opt.is_some())
         } else {
-            tracing::warn!("{}", error_message);
+            tracing::debug!("{}", error_message);
             Err(eyre::eyre!("Error: {}", error_message))
         }
     }
@@ -1672,7 +1672,7 @@ impl BlockAPI {
                 ))
             }
         } else {
-            tracing::warn!("{}", error_message);
+            tracing::debug!("{}", error_message);
             Err(eyre::eyre!("Error: {}", error_message))
         }
     }
@@ -1692,7 +1692,7 @@ impl BlockAPI {
                 .ok_or_else(|| eyre::eyre!("{}", LatestBlockMessageError::NoBlockMessageError))?;
             Ok(latest_message)
         } else {
-            tracing::warn!("{}", error_message);
+            tracing::debug!("{}", error_message);
             Err(eyre::eyre!("Error: {}", error_message))
         }
     }
@@ -1734,7 +1734,7 @@ impl BlockAPI {
         if let Some(casper) = eng.with_casper() {
             casper_response(casper.as_ref(), par, &block_hash).await
         } else {
-            tracing::warn!("{}", error_message);
+            tracing::debug!("{}", error_message);
             Err(eyre::eyre!("Error: {}", error_message))
         }
     }

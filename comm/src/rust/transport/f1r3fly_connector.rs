@@ -171,7 +171,7 @@ impl Service<Uri> for F1r3flyConnector {
                     }) as Box<dyn StdError + Send + Sync>
                 })?
                 .map_err(|e| {
-                    tracing::error!(addr = %addr, error = %e, "F1r3flyConnector TCP connection failed");
+                    tracing::warn!(addr = %addr, error = %e, "F1r3flyConnector TCP connection failed");
                     Box::new(F1r3flyConnectorError::TcpConnectionError(e))
                         as Box<dyn StdError + Send + Sync>
                 })?;

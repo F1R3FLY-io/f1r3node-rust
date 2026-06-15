@@ -656,7 +656,7 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
                         tracing::warn!("Casper dependency fetch failed: {}", err);
                     }
                 } else {
-                    warn!("Casper engine present but Casper not initialized yet");
+                    debug!("Casper engine present but Casper not initialized yet");
                 }
 
                 // Maintain RequestedBlocks for Casper

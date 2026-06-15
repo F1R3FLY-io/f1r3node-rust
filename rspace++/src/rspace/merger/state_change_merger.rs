@@ -281,7 +281,7 @@ fn make_trie_action<C: Clone, P: Clone, A: Clone, K: Clone>(
         let added_hashes: Vec<String> = changes.added.iter().map(hex::encode).collect();
         let removed_hashes: Vec<String> = changes.removed.iter().map(hex::encode).collect();
         let new_val_hashes: Vec<String> = new_val.iter().map(hex::encode).collect();
-        tracing::warn!(
+        tracing::debug!(
             target: "f1r3fly.rspace.multidatum",
             site = "merge",
             channel = %ch_hex,
