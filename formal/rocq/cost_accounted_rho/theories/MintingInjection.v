@@ -570,9 +570,12 @@ Qed.
    The Σ⟦v⟧ credit is therefore BOUNDED BY (in fact EQUAL to) the fees that leave
    F_v — it is BACKED, categorically distinct from a mint.
 
-   We model the per-validator fee pool [fb_fees] alongside the supply balance and
-   prove:
+   We model the per-validator client + fee + supply cell and prove:
 
+     - [fee_collect_is_client_backed] : the COLLECTION carve credits F_v by
+       exactly the amount drained from the client pool Σ⟦c⟧ — BACKED, no mint at
+       collection (the F-C/F-D fix; the prior additive collection was the inflation).
+     - [fee_collect_conserves_holding] : Σ⟦c⟧ + F_v + Σ⟦v⟧ invariant across the carve.
      - [fee_convert_credit_is_backed] : the convert credits Σ⟦v⟧ by exactly the
        drained fee amount f, and f ≤ the pre-convert F_v — the credit never
        exceeds the collected fees (no inflation).
@@ -585,18 +588,30 @@ Qed.
    Concrete (no axioms / hypotheses), so the headline lemmas are Closed under the
    global context.                                                               *)
 
-(* A per-validator fee+supply cell: the collected fee pool [fb_fees] = F_v and
-   the gate-pool balance [fb_supply] = Σ⟦v⟧. *)
+(* A per-validator client+fee+supply cell: the client pool [fb_client] = Σ⟦c⟧ the
+   fee is CARVED from, the collected fee pool [fb_fees] = F_v, and the gate-pool
+   balance [fb_supply] = Σ⟦v⟧. *)
 Record fee_balance : Type := {
-  fb_fees   : nat;   (* F_v : collected fees pending conversion *)
+  fb_client : nat;   (* Σ⟦c⟧ : the client pool the per-deploy fee is carved from *)
+  fb_fees   : nat;   (* F_v : collected fees pending conversion (c-denominated) *)
   fb_supply : nat    (* Σ⟦v⟧ : the gate pool *)
 }.
 
+(* COLLECTION (the FeeExtract carve): move [f] from the client pool into F_v — a
+   conserving transfer (Σ⟦c⟧ → F_v), NOT a mint. Well-defined for [f <= fb_client b]. *)
+Definition fb_collect (b : fee_balance) (f : nat) : fee_balance :=
+  {| fb_client := fb_client b - f;
+     fb_fees := fb_fees b + f;
+     fb_supply := fb_supply b |}.
+
 (* The 1:1 fee→v conversion on a single validator's cell: credit Σ⟦v⟧ by the
-   ENTIRE collected fee [fb_fees] and zero F_v. Mirrors the Rust post_eval
-   convert (read F_v = f; Σ⟦v⟧ += f; F_v := 0). *)
+   ENTIRE collected fee [fb_fees] and zero F_v; the client pool is carried through.
+   Under the F-C/F-D alignment (Option A) this is the contract-level market
+   Exchange(c,v), not a protocol write; the backed/conserving property is identical. *)
 Definition fb_convert (b : fee_balance) : fee_balance :=
-  {| fb_fees := 0; fb_supply := fb_supply b + fb_fees b |}.
+  {| fb_client := fb_client b;
+     fb_fees := 0;
+     fb_supply := fb_supply b + fb_fees b |}.
 
 (* [fee_convert_credit_is_backed]: the conversion credits Σ⟦v⟧ by EXACTLY the
    amount [fb_fees b] that is drained from F_v, and that credit is ≤ the
@@ -627,4 +642,27 @@ Theorem fee_convert_zero_is_noop : forall b,
   fb_supply (fb_convert b) = fb_supply b.
 Proof.
   intros b Hzero. unfold fb_convert. simpl. rewrite Hzero. lia.
+Qed.
+
+(* [fee_collect_is_client_backed]: the COLLECTION carve credits F_v by EXACTLY the
+   amount drained from the client pool — the F_v increase is BACKED by the client
+   debit, never an unbacked injection. With [fee_convert_credit_is_backed] this
+   closes the no-mint story for the WHOLE fee loop (Σ⟦c⟧ → F_v → Σ⟦v⟧): neither
+   step mints; only the epoch [AMint] produces tokens (the F-C/F-D fix — the prior
+   additive collection [F_v += count, no client debit] was the inflation). *)
+Theorem fee_collect_is_client_backed : forall b f,
+  f <= fb_client b ->
+  fb_fees (fb_collect b f) - fb_fees b = fb_client b - fb_client (fb_collect b f).
+Proof.
+  intros b f Hf. unfold fb_collect. simpl. lia.
+Qed.
+
+(* The collection carve conserves the total client+fee+supply holding (Σ⟦c⟧ → F_v,
+   nothing minted or destroyed). *)
+Theorem fee_collect_conserves_holding : forall b f,
+  f <= fb_client b ->
+  fb_client (fb_collect b f) + fb_fees (fb_collect b f) + fb_supply (fb_collect b f)
+    = fb_client b + fb_fees b + fb_supply b.
+Proof.
+  intros b f Hf. unfold fb_collect. simpl. lia.
 Qed.
