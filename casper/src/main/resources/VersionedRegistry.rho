@@ -1,0 +1,21 @@
+// VersionedRegistry.rho
+//
+// Sibling to Registry.rho. Implements the Versioned Registry FIP
+// surface (rho:lib:..., rho:serve:..., rho:registry:1.*) in stages.
+// The legacy registry (Registry.rho, _registryStore, and the
+// rho:registry:lookup / insertArbitrary / insertSigned / ops URNs)
+// is not touched.
+//
+// Step 2 (this revision): genesis-embed the file and allocate the
+// versioned store. The deploy initializes _versionedRegistryStore
+// with empty "lib" and "serve" sub-maps and exits. No contracts yet.
+// Subsequent steps wire up the surface:
+//   Step 3: insertVersion / deprecateVersion / approveVersion
+//   Step 4: rho:registry:ops:1.0.0 helper URN
+//   Step 5: versioned-URN resolver glue in eval_new
+//   Step 6: rho:registry:1.0.0 entry point
+//   Step 7: notify-channel deprecation wiring
+
+new _versionedRegistryStore in {
+  _versionedRegistryStore!({"lib": {}, "serve": {}})
+}

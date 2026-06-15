@@ -1,0 +1,25 @@
+//requires RhoSpec
+//
+// Placeholder spec for the Versioned Registry FIP rollout, Step 2.
+// VersionedRegistry.rho has been embedded in genesis but exposes no
+// contracts yet, so the only thing observable at this stage is that
+// genesis loaded cleanly — covered by the test below. Later steps
+// (Step 3 onward) replace this file with the real test contracts.
+
+new
+  RhoSpecCh,
+  lookup(`rho:registry:lookup`),
+  test_genesis_loaded
+in {
+  lookup!(`rho:id:zphjgsfy13h1k85isc8rtwtgt3t9zzt5pjd5ihykfmyapfc4wt3x5h`, *RhoSpecCh) |
+  for(@(_, RhoSpec) <- RhoSpecCh) {
+    @RhoSpec!("testSuite",
+      [
+        ("VersionedRegistry.rho deploys cleanly at genesis", *test_genesis_loaded)
+      ])
+  } |
+
+  contract test_genesis_loaded(rhoSpec, _, ackCh) = {
+    rhoSpec!("assert", (true, "==", true), "Genesis loaded the versioned registry", *ackCh)
+  }
+}

@@ -64,16 +64,24 @@ Landed in `rholang/src/rust/interpreter/registry/semver.rs` and exported from `r
 
 **Verification status:** 28 unit tests pass. Run with `cargo test -p rholang --lib registry::semver`.
 
-### Step 2 — add a new versioned store in a sibling file
+### Step 2 — add a new versioned store in a sibling file ✅ DONE (2026-06-14)
 
-Create `casper/src/main/resources/VersionedRegistry.rho`. It declares a top-level channel `_versionedRegistryStore`, initialized analogously to how `Registry.rho:483` initializes `_registryStore`. The new store is its own TreeHashMap with two top-level keys:
+Landed as a minimal placeholder. `casper/src/main/resources/VersionedRegistry.rho` allocates `_versionedRegistryStore` with empty `"lib"` and `"serve"` sub-maps and exits — no contracts yet, no fixed-channel bootstrap. The full TreeHashMap-backed store layout described above (sub-TreeHashMaps keyed by `(pub_key, project_id)` → version → `{ code, deprecated, notify_channels }`) will arrive in Step 3 once the contracts that read/write it exist; the current revision uses a plain Rholang `Map` only as a parsing-and-genesis-deploy smoke target.
 
-- `"lib"` → a sub-TreeHashMap keyed by `(pub_key, project_id)`, whose values are maps keyed by version string, whose values are `{ code, deprecated, notify_channels }`.
-- `"serve"` → mirror of `"lib"` for stateful services.
+Wiring:
 
-Embed the new file the same way `Registry.rho` is embedded: add `pub const VERSIONED_REGISTRY: &str = include_str!("../../../main/resources/VersionedRegistry.rho");` to `casper/src/rust/genesis/contracts/embedded_rho.rs` next to the existing `REGISTRY` constant, and add it to the genesis compile/deploy sequence in the same order Registry is deployed (versioned must come after the base registry only if it consumes it; otherwise either order works — both write distinct stores).
+- `casper/src/main/resources/VersionedRegistry.rho` — new file.
+- `casper/src/rust/genesis/contracts/embedded_rho.rs` — new `pub const VERSIONED_REGISTRY` constant next to `REGISTRY`.
+- `casper/src/rust/genesis/contracts/standard_deploys.rs` — new `VERSIONED_REGISTRY_PK`, `VERSIONED_REGISTRY_TIMESTAMP`, `VERSIONED_REGISTRY_PUB_KEY`, `versioned_registry()` function, plus an entry in `system_public_keys()`.
+- `casper/src/rust/genesis/genesis.rs` — `versioned_registry` is sequenced immediately after `registry` in `default_blessed_terms_with_timestamp`; `all_deploys` capacity bumped from 11 to 12.
 
 `Registry.rho` is not edited.
+
+**Verification status:**
+
+- `cargo test -p casper --test mod versioned_registry_spec` passes.
+- `cargo test -p casper --test mod standard_deploys` passes (includes the fast `versioned_registry_embedded_source_compiles` parse/normalize check).
+- `cargo test -p casper --test mod registry` passes — legacy `registry_spec`, `registry_ops_spec`, and `multi_parent_casper_should_be_able_to_use_the_registry` all green unchanged.
 
 #### Testing
 
