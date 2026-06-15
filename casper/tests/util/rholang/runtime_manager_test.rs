@@ -8,18 +8,16 @@ use casper::rust::errors::CasperError;
 use casper::rust::rholang::replay_runtime::ReplayRuntimeOps;
 use casper::rust::rholang::runtime::RuntimeOps;
 use casper::rust::util::construct_deploy;
-use casper::rust::util::rholang::acceptance;
 use casper::rust::util::rholang::costacc::check_balance::CheckBalance;
 use casper::rust::util::rholang::costacc::close_block_deploy::CloseBlockDeploy;
 use casper::rust::util::rholang::costacc::redeem_deploy::{RedeemDeploy, RedemptionOutcome};
 use casper::rust::util::rholang::costacc::slash_deploy::SlashDeploy;
 use casper::rust::util::rholang::replay_failure::ReplayFailure;
 use casper::rust::util::rholang::runtime_manager::RuntimeManager;
-use casper::rust::util::rholang::supply;
 use casper::rust::util::rholang::system_deploy::SystemDeployTrait;
 use casper::rust::util::rholang::system_deploy_result::SystemDeployResult;
 use casper::rust::util::rholang::system_deploy_user_error::SystemDeployUserError;
-use casper::rust::util::rholang::system_deploy_util;
+use casper::rust::util::rholang::{acceptance, supply, system_deploy_util};
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use crypto::rust::signatures::signed::Signed;
 use models::rhoapi::{PCost, Par};
@@ -28,6 +26,7 @@ use models::rust::casper::protocol::casper_message::{
     DeployData, ProcessedDeploy, ProcessedSystemDeploy,
 };
 use rholang::rust::interpreter::accounting::costs::Cost;
+use rholang::rust::interpreter::accounting::resource_logic::ResourceSignature;
 use rholang::rust::interpreter::accounting::{self, Sig};
 use rholang::rust::interpreter::compiler::compiler::Compiler;
 use rholang::rust::interpreter::env::Env;
@@ -663,20 +662,23 @@ async fn client_fuel_allocation_credits_sigma_c_at_genesis() {
 }
 
 /// CONSENSUS-CRITICAL play/replay determinism test for the Cost-Accounted Rho
-/// Stage-D fee collection + per-epoch fee→v conversion (the validator economic
-/// loop; spec "Fee conversion" tex:3061-3100). Plays a `CloseBlockDeploy` at an
-/// epoch boundary (block 0 ⇒ `0 % epochLength == 0`) carrying a per-block FEE
-/// credit for a genesis validator: `closeBlock` (1) COLLECTS the fee onto the
-/// proposer's carrier `F_v`, then (2) at the epoch boundary CONVERTS it 1:1 via
-/// the blessed Exchange — depositing the `@W_v` purse, recording
-/// `convertedEpochs`, publishing `(v, k)` on `feeConvertList` — and the
-/// play-side `post_eval` mirrors `k` into `Σ⟦v⟧`. It then replays the SAME block
-/// through the PRODUCTION `replay_block_system_deploy` path (with the
-/// RECOMPUTED fee credit fed in, `post_eval_replay`'s `ReplaySupplyMismatch`
+/// Stage-D conserving FEE carve + per-epoch fee→v conversion (the validator
+/// economic loop; spec "Fee conversion" tex:3061-3100). Plays a
+/// `CloseBlockDeploy` at an epoch boundary (block 0 ⇒ `0 % epochLength == 0`)
+/// carrying a `FeeCarve` that CARVES one token per admitted deploy from the
+/// client's OWN supply pool `Σ⟦c⟧` (a supply-CONSERVING transfer, NOT a mint —
+/// the F-C/F-D fix) into the proposing genesis validator's fee channel `F_v`:
+/// `closeBlock` (1) DEBITS `Σ⟦c⟧` by the carve and CREDITS the proposer's `F_v`
+/// (phase 3), then (2) at the epoch boundary CONVERTS `F_v` 1:1 into `Σ⟦v⟧`
+/// (phase 3b — UNCHANGED by F-C/F-D; the fix BACKS the convert with the carve,
+/// it does not remove it), recording `convertedEpochs`. The full conserving flow
+/// is `Σ⟦c⟧ → F_v → Σ⟦v⟧`. It then replays the SAME block through the PRODUCTION
+/// `replay_block_system_deploy` path (with the SAME `fee_carve` fed in, mirroring
+/// how the play side threads it; `post_eval_replay`'s `ReplaySupplyMismatch`
 /// readback guard active) and asserts the post-state root is BYTE-IDENTICAL —
-/// i.e. the fee credit + the fee-convert `Σ⟦v⟧` mirror are play/replay-symmetric
-/// (TM-CA-160). Non-vacuous: `Σ⟦v⟧` carries BOTH the epoch mint AND the
-/// converted fee in the play post-state.
+/// i.e. the carve + the fee-convert `Σ⟦v⟧` mirror are play/replay-symmetric
+/// (TM-CA-160). Non-vacuous: `Σ⟦c⟧` is debited by the carve AND `Σ⟦v⟧` carries
+/// BOTH the epoch mint AND the converted fee in the play post-state.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn fee_collection_and_convert_is_play_replay_deterministic() {
     with_runtime_manager(
@@ -689,12 +691,57 @@ async fn fee_collection_and_convert_is_play_replay_deterministic() {
                 sender: sender.clone(),
                 seq_num: 0,
             };
-            // A flat fee of 3 tokens (the spec's FeeExtract for a 3-deploy block),
-            // collected to the proposing genesis validator's F_v.
+            // A carve of 3 tokens (the spec's FeeExtract for a 3-deploy block),
+            // CARVED from the client's own Σ⟦c⟧ into the proposing genesis
+            // validator's F_v (conserving: Σ⟦c⟧ debited == F_v credited, no mint).
             let fee_amount: i64 = 3;
-            let fee_credits = Some(casper::rust::util::rholang::acceptance::FeeCredit {
+
+            // ---- SEED: a fresh CLIENT pool Σ⟦c⟧ = 10 in a SHARED pre-state ----
+            // The carve draws `fee_amount` from this pool; seeding it once (before
+            // the play/replay split, into a checkpoint reused as the pre-state for
+            // BOTH paths) is what makes the conserving Σ⟦c⟧ → F_v → Σ⟦v⟧ flow
+            // exercisable and play/replay-symmetric. Any deterministic
+            // `random_state` works (a one-time pre-state seed); we reuse the
+            // settlement test's `mint_random_state` shape.
+            let client_pk: Vec<u8> = vec![0xC1u8; 32];
+            let client_sig = Sig::Ground(client_pk.clone());
+            let client_chan = supply::supply_channel(&client_sig);
+            const CLIENT_SEED: i64 = 10;
+            let seed_runtime = runtime_manager.spawn_runtime().await;
+            let mut seed_ops = RuntimeOps::new(seed_runtime);
+            seed_ops
+                .runtime
+                .reset(&Blake2b256Hash::from_bytes_prost(&start_state))
+                .await
+                .unwrap();
+            supply::produce_balance(
+                &mut seed_ops,
+                &client_chan,
+                CLIENT_SEED,
+                supply::mint_random_state(&Blake2b512Random::create_from_bytes(&[0xC1u8; 1]), 0),
+            )
+            .await
+            .unwrap();
+            let seeded_state = seed_ops
+                .runtime
+                .create_checkpoint()
+                .await
+                .root
+                .to_bytes_prost();
+
+            // The conserving FeeCarve: carve `fee_amount` from the client's own
+            // Σ⟦c⟧ into the proposer's F_v (the play side threads it; replay feeds
+            // the SAME carve below — there is no `recompute_fee_credits` anymore,
+            // the per-client amounts ride the recompute-from-block discipline).
+            let fee_carve = Some(casper::rust::util::rholang::acceptance::FeeCarve {
                 recipient_pk: sender.bytes.to_vec(),
-                amount: fee_amount,
+                debits: std::collections::BTreeMap::from([(
+                    client_sig.key(),
+                    casper::rust::util::rholang::acceptance::SettlementDebit {
+                        channel: client_chan.clone(),
+                        amount: fee_amount,
+                    },
+                )]),
             });
 
             // ---- PLAY ----
@@ -708,12 +755,12 @@ async fn fee_collection_and_convert_is_play_replay_deterministic() {
                     block_data.seq_num,
                 ),
                 settlement_debits: std::collections::BTreeMap::new(),
-                fee_credits: fee_credits.clone(),
+                fee_carve: fee_carve.clone(),
                 // #13b: no genesis client funding slots in this fixture.
                 client_fuel_allocations: Vec::new(),
             };
             let play_result = play_ops
-                .play_system_deploy(&start_state, &mut play_close)
+                .play_system_deploy(&seeded_state, &mut play_close)
                 .await
                 .unwrap();
 
@@ -746,35 +793,40 @@ async fn fee_collection_and_convert_is_play_replay_deterministic() {
                 play_balance
             );
 
-            // ---- REPLAY (production path, with the RECOMPUTED fee credit) ----
+            // Conservation (the F-C/F-D carve, NOT a mint): the client's Σ⟦c⟧ was
+            // DEBITED by exactly `fee_amount` (10 − 3 = 7) — the source half of the
+            // conserving Σ⟦c⟧ → F_v → Σ⟦v⟧ flow.
+            let play_client_balance = supply::read_balance(&play_ops, &client_chan).await;
+            assert_eq!(
+                play_client_balance,
+                CLIENT_SEED - fee_amount,
+                "play: the fee carve must DEBIT Σ⟦c⟧ by the carved amount (10 − 3 = 7)"
+            );
+
+            // ---- REPLAY (production path, fed the SAME conserving fee carve) ----
             let replay_runtime = runtime_manager.spawn_replay_runtime().await;
             replay_runtime.set_block_data(block_data.clone()).await;
             let mut replay_ops = ReplayRuntimeOps::new_from_runtime(replay_runtime);
             replay_ops
                 .runtime_ops
                 .runtime
-                .reset(&Blake2b256Hash::from_bytes_prost(&start_state))
+                .reset(&Blake2b256Hash::from_bytes_prost(&seeded_state))
                 .await
                 .unwrap();
 
-            // The recomputed fee credit: count would be `terms.len()` on the real
-            // replay path; here we feed the SAME amount the play side carried (the
-            // recompute identity `terms.len() == block.body.deploys.len()`).
-            let replay_fee_credit = casper::rust::util::rholang::acceptance::recompute_fee_credits(
-                fee_amount as usize,
-                sender.bytes.to_vec(),
-            );
-            assert_eq!(
-                replay_fee_credit, fee_credits,
-                "recompute_fee_credits must reproduce the play-side fee credit"
-            );
-
+            // The replay path is fed the SAME `fee_carve` the play side threaded
+            // (mirroring how this test fed `fee_credits` before the F-C/F-D
+            // refactor). On the real replay path the per-client carve amounts are
+            // RECOMPUTED from `block.body.deploys` via
+            // `recompute_settlement_debits(...).fee` (the recompute-from-block
+            // discipline, exercised by the WD-D2 settlement test); here, feeding
+            // the identical carve isolates the convert's play/replay byte-identity.
             replay_ops
                 .replay_block_system_deploy(
                     &block_data,
                     &processed_system_deploy,
                     &std::collections::BTreeMap::new(),
-                    &replay_fee_credit,
+                    &fee_carve,
                     // #13b: no genesis client funding slots in this fixture.
                     &[],
                 )
@@ -846,9 +898,47 @@ async fn fee_convert_converted_epochs_idempotent_deterministic() {
                 sender: sender.clone(),
                 seq_num: 0,
             };
-            let fee_credits = Some(casper::rust::util::rholang::acceptance::FeeCredit {
+
+            // SEED a fresh CLIENT pool Σ⟦c⟧ = 10 in a SHARED pre-state so the
+            // conserving carve (Σ⟦c⟧ → F_v → Σ⟦v⟧) has a funded source; both
+            // independent plays run from this identical seeded pre-state.
+            let client_pk: Vec<u8> = vec![0xC1u8; 32];
+            let client_sig = Sig::Ground(client_pk.clone());
+            let client_chan = supply::supply_channel(&client_sig);
+            const CLIENT_SEED: i64 = 10;
+            let seed_runtime = runtime_manager.spawn_runtime().await;
+            let mut seed_ops = RuntimeOps::new(seed_runtime);
+            seed_ops
+                .runtime
+                .reset(&Blake2b256Hash::from_bytes_prost(&start_state))
+                .await
+                .unwrap();
+            supply::produce_balance(
+                &mut seed_ops,
+                &client_chan,
+                CLIENT_SEED,
+                supply::mint_random_state(&Blake2b512Random::create_from_bytes(&[0xC1u8; 1]), 0),
+            )
+            .await
+            .unwrap();
+            let seeded_state = seed_ops
+                .runtime
+                .create_checkpoint()
+                .await
+                .root
+                .to_bytes_prost();
+
+            // The conserving FeeCarve: carve 5 tokens from the client's own Σ⟦c⟧
+            // into the proposer's F_v (then the epoch convert mirrors F_v → Σ⟦v⟧).
+            let fee_carve = Some(casper::rust::util::rholang::acceptance::FeeCarve {
                 recipient_pk: sender.bytes.to_vec(),
-                amount: 5,
+                debits: std::collections::BTreeMap::from([(
+                    client_sig.key(),
+                    casper::rust::util::rholang::acceptance::SettlementDebit {
+                        channel: client_chan.clone(),
+                        amount: 5,
+                    },
+                )]),
             });
 
             // PLAY the SAME epoch close twice, INDEPENDENTLY from the same
@@ -859,7 +949,7 @@ async fn fee_convert_converted_epochs_idempotent_deterministic() {
                 from_state: &StateHash,
                 block_data: &BlockData,
                 sender: &crypto::rust::public_key::PublicKey,
-                fee_credits: &Option<casper::rust::util::rholang::acceptance::FeeCredit>,
+                fee_carve: &Option<casper::rust::util::rholang::acceptance::FeeCarve>,
             ) -> StateHash {
                 let rt = runtime_manager.spawn_runtime().await;
                 rt.set_block_data(block_data.clone()).await;
@@ -870,7 +960,7 @@ async fn fee_convert_converted_epochs_idempotent_deterministic() {
                         block_data.seq_num,
                     ),
                     settlement_debits: std::collections::BTreeMap::new(),
-                    fee_credits: fee_credits.clone(),
+                    fee_carve: fee_carve.clone(),
                     // #13b: no genesis client funding slots in this fixture.
                     client_fuel_allocations: Vec::new(),
                 };
@@ -890,18 +980,18 @@ async fn fee_convert_converted_epochs_idempotent_deterministic() {
 
             let post_a = play_close(
                 &runtime_manager,
-                &start_state,
+                &seeded_state,
                 &block_data,
                 &sender,
-                &fee_credits,
+                &fee_carve,
             )
             .await;
             let post_b = play_close(
                 &runtime_manager,
-                &start_state,
+                &seeded_state,
                 &block_data,
                 &sender,
-                &fee_credits,
+                &fee_carve,
             )
             .await;
 
@@ -1718,9 +1808,13 @@ async fn gate_decision_replay_determinism() {
             )
             .await
             .unwrap();
-            // (a) the recomputed map EQUALS the gate's play-side map.
+            // (a) the recomputed COST settlement map EQUALS the gate's play-side
+            // map (`recompute_settlement_debits` now returns `RecomputedDebits`
+            // with `.settlement` (cost) and `.fee` (carve) — this test exercises
+            // the cost debit; the fee carve is `.fee`, empty here as no fee carve
+            // is threaded).
             assert_eq!(
-                recomputed, outcome.debits,
+                recomputed.settlement, outcome.debits,
                 "replay-recomputed debit map must equal the play-side gate map"
             );
 
@@ -1730,7 +1824,7 @@ async fn gate_decision_replay_determinism() {
                     &mut replay_ops.runtime_ops,
                     &block_data,
                     &seeded_state,
-                    &recomputed,
+                    &recomputed.settlement,
                 )
                 .await
                 .unwrap();
@@ -2309,9 +2403,7 @@ async fn compute_state_should_be_replayed_by_replay_compute_state() {
 async fn compute_state_should_charge_deploys_separately() {
     with_runtime_manager(
         |runtime_manager, genesis_context, genesis_block| async move {
-            fn deploy_cost(p: &[ProcessedDeploy]) -> u64 {
-                p.iter().map(|d| d.cost.cost).sum()
-            }
+            fn deploy_cost(p: &[ProcessedDeploy]) -> u64 { p.iter().map(|d| d.cost.cost).sum() }
 
             let deploy0 = construct_deploy::source_deploy(
                 r#"for(@x <- @"w") { @"z"!("Got x") } "#.to_string(),
@@ -4908,13 +5000,9 @@ impl SystemDeployTrait for MintPhlogistonDeploy {
         Either::Right(value)
     }
 
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
+    fn as_any(&self) -> &dyn std::any::Any { self }
 
-    fn rand(&self) -> Blake2b512Random {
-        self.rand.clone()
-    }
+    fn rand(&self) -> Blake2b512Random { self.rand.clone() }
 
     fn env(&mut self) -> HashMap<String, Par> {
         let mut env = HashMap::new();

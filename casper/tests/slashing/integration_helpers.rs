@@ -172,23 +172,21 @@ pub async fn equivocate_block(
     // System deploys: just CloseBlock. No SlashDeploys (this is the
     // Byzantine validator's first-equivocation block — it would not
     // self-slash).
-    // Cost-Accounted Rho Stage D: this helper replicates `block_creator::create`'s
-    // close deploy MANUALLY, so it must ALSO set `fee_credits` to the value replay
-    // recomputes from the block (`recompute_fee_credits(block.body.deploys.len(),
-    // sender)`), else the play-side close (no collection) would diverge from the
-    // replay-side close (which collects), failing validation as InvalidTransaction.
-    // The proposed block's `body.deploys` == `alt_deploys` here (no dummy deploys).
-    let close_fee_credits = casper::rust::util::rholang::acceptance::recompute_fee_credits(
-        alt_deploys.len(),
-        validator_identity.public_key.bytes.to_vec(),
-    );
+    // Cost-Accounted Rho Stage D (F-D carve): this helper replicates
+    // `block_creator::create`'s close deploy MANUALLY. The conserving FeeExtract is
+    // now a per-CLIENT carve from each funded client's `Σ⟦c⟧` (not a mint), which
+    // replay RECOMPUTES from the block's admitted client deploys. These slashing
+    // fixtures provision NO funded cost-accounted client pools for `alt_deploys`
+    // (they exercise the slash path), so the recomputed carve is empty ⇒ `None` on
+    // BOTH play and replay — byte-identical (no fee write at closeBlock).
+    let close_fee_carve: Option<casper::rust::util::rholang::acceptance::FeeCarve> = None;
     let system_deploys = vec![SystemDeployEnum::Close(CloseBlockDeploy {
         initial_rand: system_deploy_util::generate_close_deploy_random_seed_from_pk(
             validator_identity.public_key.clone(),
             next_seq_num,
         ),
         settlement_debits: Default::default(),
-        fee_credits: close_fee_credits,
+        fee_carve: close_fee_carve,
         // Task #13b: slashing-flow test fixtures provision no genesis client
         // funding slots (these helpers exercise the slash path, not block 1).
         client_fuel_allocations: Vec::new(),
@@ -328,23 +326,21 @@ pub async fn propose_with_explicit_justifications(
         seq_num: next_seq_num,
     };
 
-    // Cost-Accounted Rho Stage D: this helper replicates `block_creator::create`'s
-    // close deploy MANUALLY, so it must ALSO set `fee_credits` to the value replay
-    // recomputes from the block (`recompute_fee_credits(block.body.deploys.len(),
-    // sender)`), else the play-side close (no collection) would diverge from the
-    // replay-side close (which collects), failing validation as InvalidTransaction.
-    // The proposed block's `body.deploys` == `alt_deploys` here (no dummy deploys).
-    let close_fee_credits = casper::rust::util::rholang::acceptance::recompute_fee_credits(
-        alt_deploys.len(),
-        validator_identity.public_key.bytes.to_vec(),
-    );
+    // Cost-Accounted Rho Stage D (F-D carve): this helper replicates
+    // `block_creator::create`'s close deploy MANUALLY. The conserving FeeExtract is
+    // now a per-CLIENT carve from each funded client's `Σ⟦c⟧` (not a mint), which
+    // replay RECOMPUTES from the block's admitted client deploys. These slashing
+    // fixtures provision NO funded cost-accounted client pools for `alt_deploys`
+    // (they exercise the slash path), so the recomputed carve is empty ⇒ `None` on
+    // BOTH play and replay — byte-identical (no fee write at closeBlock).
+    let close_fee_carve: Option<casper::rust::util::rholang::acceptance::FeeCarve> = None;
     let system_deploys = vec![SystemDeployEnum::Close(CloseBlockDeploy {
         initial_rand: system_deploy_util::generate_close_deploy_random_seed_from_pk(
             validator_identity.public_key.clone(),
             next_seq_num,
         ),
         settlement_debits: Default::default(),
-        fee_credits: close_fee_credits,
+        fee_carve: close_fee_carve,
         // Task #13b: slashing-flow test fixtures provision no genesis client
         // funding slots (these helpers exercise the slash path, not block 1).
         client_fuel_allocations: Vec::new(),
@@ -516,23 +512,21 @@ pub async fn propose_with_block_mutation(
         seq_num: next_seq_num,
     };
 
-    // Cost-Accounted Rho Stage D: this helper replicates `block_creator::create`'s
-    // close deploy MANUALLY, so it must ALSO set `fee_credits` to the value replay
-    // recomputes from the block (`recompute_fee_credits(block.body.deploys.len(),
-    // sender)`), else the play-side close (no collection) would diverge from the
-    // replay-side close (which collects), failing validation as InvalidTransaction.
-    // The proposed block's `body.deploys` == `alt_deploys` here (no dummy deploys).
-    let close_fee_credits = casper::rust::util::rholang::acceptance::recompute_fee_credits(
-        alt_deploys.len(),
-        validator_identity.public_key.bytes.to_vec(),
-    );
+    // Cost-Accounted Rho Stage D (F-D carve): this helper replicates
+    // `block_creator::create`'s close deploy MANUALLY. The conserving FeeExtract is
+    // now a per-CLIENT carve from each funded client's `Σ⟦c⟧` (not a mint), which
+    // replay RECOMPUTES from the block's admitted client deploys. These slashing
+    // fixtures provision NO funded cost-accounted client pools for `alt_deploys`
+    // (they exercise the slash path), so the recomputed carve is empty ⇒ `None` on
+    // BOTH play and replay — byte-identical (no fee write at closeBlock).
+    let close_fee_carve: Option<casper::rust::util::rholang::acceptance::FeeCarve> = None;
     let system_deploys = vec![SystemDeployEnum::Close(CloseBlockDeploy {
         initial_rand: system_deploy_util::generate_close_deploy_random_seed_from_pk(
             validator_identity.public_key.clone(),
             next_seq_num,
         ),
         settlement_debits: Default::default(),
-        fee_credits: close_fee_credits,
+        fee_carve: close_fee_carve,
         // Task #13b: slashing-flow test fixtures provision no genesis client
         // funding slots (these helpers exercise the slash path, not block 1).
         client_fuel_allocations: Vec::new(),
@@ -679,23 +673,21 @@ pub async fn propose_neglecting_block(
     // `prepare_slashing_deploys`. The receiver's
     // `is_neglected_equivocation_detected_with_update` will see
     // the missing slash and classify NeglectedEquivocation.
-    // Cost-Accounted Rho Stage D: this helper replicates `block_creator::create`'s
-    // close deploy MANUALLY, so it must ALSO set `fee_credits` to the value replay
-    // recomputes from the block (`recompute_fee_credits(block.body.deploys.len(),
-    // sender)`), else the play-side close (no collection) would diverge from the
-    // replay-side close (which collects), failing validation as InvalidTransaction.
-    // The proposed block's `body.deploys` == `alt_deploys` here (no dummy deploys).
-    let close_fee_credits = casper::rust::util::rholang::acceptance::recompute_fee_credits(
-        alt_deploys.len(),
-        validator_identity.public_key.bytes.to_vec(),
-    );
+    // Cost-Accounted Rho Stage D (F-D carve): this helper replicates
+    // `block_creator::create`'s close deploy MANUALLY. The conserving FeeExtract is
+    // now a per-CLIENT carve from each funded client's `Σ⟦c⟧` (not a mint), which
+    // replay RECOMPUTES from the block's admitted client deploys. These slashing
+    // fixtures provision NO funded cost-accounted client pools for `alt_deploys`
+    // (they exercise the slash path), so the recomputed carve is empty ⇒ `None` on
+    // BOTH play and replay — byte-identical (no fee write at closeBlock).
+    let close_fee_carve: Option<casper::rust::util::rholang::acceptance::FeeCarve> = None;
     let system_deploys = vec![SystemDeployEnum::Close(CloseBlockDeploy {
         initial_rand: system_deploy_util::generate_close_deploy_random_seed_from_pk(
             validator_identity.public_key.clone(),
             next_seq_num,
         ),
         settlement_debits: Default::default(),
-        fee_credits: close_fee_credits,
+        fee_carve: close_fee_carve,
         // Task #13b: slashing-flow test fixtures provision no genesis client
         // funding slots (these helpers exercise the slash path, not block 1).
         client_fuel_allocations: Vec::new(),

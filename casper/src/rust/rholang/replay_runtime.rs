@@ -47,9 +47,7 @@ pub struct ReplayRuntimeOps {
 }
 
 impl ReplayRuntimeOps {
-    pub fn new(runtime_ops: RuntimeOps) -> Self {
-        Self { runtime_ops }
-    }
+    pub fn new(runtime_ops: RuntimeOps) -> Self { Self { runtime_ops } }
 
     pub fn new_from_runtime(runtime: RhoRuntimeImpl) -> Self {
         Self {
@@ -164,30 +162,28 @@ impl ReplayRuntimeOps {
         // re-derived here (rejected-deploy bodies are not in the block, only
         // sigs) — a wrongly-rejected fundable deploy changes the admitted set and
         // is caught by the post-state root check (wd-d2 §D2.4(b)).
-        let replay_debits = if with_cost_accounting {
-            self.recompute_and_verify_admission(&terms, strict_funding_enforcement)
-                .await?
-        } else {
-            // Genesis / non-cost-accounted replay: no acceptance gate ran on the
-            // play side, so there is nothing to recompute or debit.
-            std::collections::BTreeMap::new()
-        };
-
-        // Cost-Accounted Rho Stage D: RECOMPUTE the per-block fee credit from the
-        // block alone — count = `terms.len()` (= `block.body.deploys`, INCLUDING
-        // failed + dummy deploys, every fed deploy is a recorded ProcessedDeploy)
-        // and recipient = the proposing validator (`block_data.sender`). Same
-        // recompute-from-block discipline as `replay_debits`; fed to
-        // `replay_block_system_deploy` so the closeBlock F_v credit is
-        // byte-identical to the play side (the fee amount is NOT serialized into
-        // the block). Empty / non-cost-accounted blocks recompute to `None`.
-        let replay_fee_credit = if with_cost_accounting {
-            crate::rust::util::rholang::acceptance::recompute_fee_credits(
-                terms.len(),
+        // Cost-Accounted Rho WD-D2 + Stage D: RECOMPUTE the per-client COST debits
+        // AND the conserving FEE carve from the block alone — a single
+        // `recompute_and_verify_admission` pass over `terms` (= `block.body.deploys`,
+        // the ADMITTED set) that re-verifies admission. The COST debits feed the
+        // close-block settlement; the FEE debits (per-client, against each post-cost
+        // `Σ⟦c⟧`) build the FeeExtract carve credited to the proposing validator
+        // (`block_data.sender`). ONLY admitted CLIENT deploys are charged — the
+        // proposer's gate-exempt dummies carve no fee. Neither is serialized into
+        // the block; recomputing them here makes the closeBlock settlement debit +
+        // F_v carve byte-identical to the play side. Genesis / non-cost-accounted
+        // replay: no gate ran ⇒ empty debits, no carve.
+        let (replay_debits, replay_fee_carve) = if with_cost_accounting {
+            let recomputed = self
+                .recompute_and_verify_admission(&terms, strict_funding_enforcement)
+                .await?;
+            let fee_carve = crate::rust::util::rholang::acceptance::fee_carve(
                 block_data.sender.bytes.to_vec(),
-            )
+                recomputed.fee,
+            );
+            (recomputed.settlement, fee_carve)
         } else {
-            None
+            (std::collections::BTreeMap::new(), None)
         };
 
         // Time user deploys phase
@@ -209,7 +205,7 @@ impl ReplayRuntimeOps {
                     block_data,
                     &system_deploy,
                     &replay_debits,
-                    &replay_fee_credit,
+                    &replay_fee_carve,
                     client_fuel_allocations,
                 )
                 .await?;
@@ -246,19 +242,14 @@ impl ReplayRuntimeOps {
     /// fails this check with a [`ReplayFailure::ReplayAdmissionMismatch`] — the
     /// replay-side counterpart of the play-side in-pass residual.
     ///
-    /// Returns the recomputed debit map, fed to `post_eval_replay` so the
-    /// close-block settlement debit is byte-identical to the play side.
+    /// Returns the recomputed COST + FEE debits (a [`RecomputedDebits`]), fed to
+    /// `post_eval_replay` so the close-block settlement debit AND the conserving
+    /// FeeExtract carve are byte-identical to the play side.
     async fn recompute_and_verify_admission(
         &self,
         terms: &[ProcessedDeploy],
         strict_funding_enforcement: bool,
-    ) -> Result<
-        std::collections::BTreeMap<
-            crate::rust::util::rholang::acceptance::SigKey,
-            crate::rust::util::rholang::acceptance::SettlementDebit,
-        >,
-        CasperError,
-    > {
+    ) -> Result<crate::rust::util::rholang::acceptance::RecomputedDebits, CasperError> {
         // Reconstruct the admitted envelopes (canonical pk-ascending per signer,
         // identical to the play-side reconstruction and the runtime install).
         let mut admitted = Vec::with_capacity(terms.len());
@@ -273,7 +264,7 @@ impl ReplayRuntimeOps {
         // play side) into the recompute. Under `strict`, the recompute ALSO
         // re-verifies that no admitted `Δ > 0` deploy targets an absent pool
         // (a proposer that bypassed the spec-strict gate ⇒ invalid block).
-        let debits = crate::rust::util::rholang::acceptance::recompute_settlement_debits(
+        let recomputed = crate::rust::util::rholang::acceptance::recompute_settlement_debits(
             admitted,
             &reader,
             strict_funding_enforcement,
@@ -286,7 +277,7 @@ impl ReplayRuntimeOps {
         // before the close-block settlement debit's `checked_sub` would (clearer
         // diagnostic + fails the block at the gate boundary, not deep in
         // closeBlock).
-        for (sig_key, debit) in &debits {
+        for (sig_key, debit) in &recomputed.settlement {
             let balance =
                 crate::rust::util::rholang::supply::read_balance(&self.runtime_ops, &debit.channel)
                     .await;
@@ -309,7 +300,7 @@ impl ReplayRuntimeOps {
             }
         }
 
-        Ok(debits)
+        Ok(recomputed)
     }
 
     /**
@@ -490,7 +481,7 @@ impl ReplayRuntimeOps {
             crate::rust::util::rholang::acceptance::SigKey,
             crate::rust::util::rholang::acceptance::SettlementDebit,
         >,
-        fee_credit: &Option<crate::rust::util::rholang::acceptance::FeeCredit>,
+        fee_carve: &Option<crate::rust::util::rholang::acceptance::FeeCarve>,
         // Task #13b: the genesis client funding-slot allocations
         // `[(client_pk_bytes, amount)]` reconstructed from the shard-genesis conf
         // (the SAME constant the play-side proposer used), threaded onto the
@@ -580,13 +571,13 @@ impl ReplayRuntimeOps {
                     // `post_eval_replay` (WD-D2, replay symmetry). The struct
                     // field is left empty here.
                     settlement_debits: Default::default(),
-                    // Cost-Accounted Rho Stage D: the per-block fee credit
-                    // RECOMPUTED in `replay_deploys` from `block.body.deploys`
-                    // (count = `terms.len()`) + the proposing validator
-                    // (`block_data.sender`). Threaded here so `seed_fee_count`
-                    // seeds the SAME `(sender, count)` datum the play side did,
-                    // making the closeBlock F_v credit byte-identical play↔replay.
-                    fee_credits: fee_credit.clone(),
+                    // Cost-Accounted Rho Stage D: the conserving FeeExtract carve
+                    // RECOMPUTED in `replay_deploys` from `block.body.deploys` (the
+                    // per-client fee debits against each post-cost `Σ⟦c⟧`) + the
+                    // proposing validator (`block_data.sender`) as the recipient.
+                    // Threaded here so the closeBlock carve (client `Σ⟦c⟧` → `F_v`)
+                    // is byte-identical play↔replay.
+                    fee_carve: fee_carve.clone(),
                     // Task #13b: the genesis client funding-slot allocations,
                     // reconstructed from the shard-genesis conf (the SAME constant
                     // the play-side proposer read). `dual_write_supply` credits
@@ -606,12 +597,12 @@ impl ReplayRuntimeOps {
 
                 self.rig_system_deploy(processed_system_deploy).await?;
 
-                // (Stage D: the `fee_credits` set on `close_block_deploy` above —
+                // (Stage D: the `fee_carve` set on `close_block_deploy` above —
                 // RECOMPUTED from `block.body.deploys` — is read by `post_eval_replay`
-                // below for the byte-identical FeeExtract collection credit to the
-                // proposer's Rust fee pool `F_v`; the convert mirror reads the
-                // closeBlock-published eligible list from the store. No pre-eval
-                // Rholang seeding is involved.)
+                // below for the byte-identical conserving FeeExtract carve: each
+                // client's post-cost `Σ⟦c⟧` is debited and the total credited to the
+                // proposer's Rust fee pool `F_v`. No pre-eval Rholang seeding is
+                // involved. The protocol fee→`Σ⟦v⟧` conversion is removed (F-C).)
                 let mut close_block_deploy_mut = close_block_deploy.clone();
                 let (_, eval_result) = self
                     .replay_system_deploy_internal(&mut close_block_deploy_mut, &None)

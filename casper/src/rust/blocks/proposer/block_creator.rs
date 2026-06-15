@@ -70,9 +70,7 @@ const DEPLOY_SELECTION_RESERVE_TAIL_ENABLED: bool = true;
 /// used in operator-facing log messages. Previously inlined as
 /// `deploy_sig_prefix(&d.sig)` at four
 /// sites in `log_deploy_pool_filtering`.
-fn deploy_sig_prefix(sig: &Bytes) -> String {
-    hex::encode(&sig[..std::cmp::min(8, sig.len())])
-}
+fn deploy_sig_prefix(sig: &Bytes) -> String { hex::encode(&sig[..std::cmp::min(8, sig.len())]) }
 
 pub async fn prepare_user_deploys(
     casper_snapshot: &CasperSnapshot,
@@ -925,6 +923,11 @@ pub async fn create(
     };
     let gate_rejected_sigs: Vec<Bytes> = gate_outcome.rejected.clone();
     let settlement_debits = gate_outcome.debits.clone();
+    // Cost-Accounted Rho Stage D (F-D conserving carve): the per-client FEE
+    // debits computed by the gate against each client's POST-COST `Σ⟦c⟧` (one
+    // token per admitted deploy, apportioned across compound components by the
+    // same policy as the cost). Captured before `gate_outcome.admitted` is moved.
+    let fee_debits = gate_outcome.fee_debits.clone();
     let admitted_user_cosigned = gate_outcome.admitted;
     // Whether there is any user work surviving the gate (drives the post-gate
     // empty-block skip below).
@@ -1072,17 +1075,19 @@ pub async fn create(
     // from `block.body.deploys` — they are NOT serialized into the block — so the
     // play-side map is purely a play-path optimization.
     //
-    // Cost-Accounted Rho Stage D: it ALSO carries the per-block FEE credit (the
-    // spec's flat FeeExtract — one token per processed deploy, tex:2509-2521)
-    // for the PROPOSING validator. The fee count is `block.body.deploys.len()` =
-    // the admitted client deploys (`gate_outcome.admitted_client_count`) PLUS the
-    // proposer's own gate-exempt dummy deploys (both land in `body.deploys`); on
-    // replay the SAME count is recomputed from `terms.len()`. cost ≠ fee (D.0):
-    // this is a TRANSFERRED token, distinct from the burned settlement debit.
-    let fee_deploy_count = admitted_user_cosigned.len() + dummy_deploys.len();
-    let fee_credits = crate::rust::util::rholang::acceptance::recompute_fee_credits(
-        fee_deploy_count,
+    // Cost-Accounted Rho Stage D (F-D conserving carve): it ALSO carries the
+    // FeeExtract carve (cost-accounted-rho.tex:3637 "one client token consumed as
+    // fee") for the PROPOSING validator. The fee is CARVED from each admitted
+    // client's OWN post-cost `Σ⟦c⟧` (a supply-conserving transfer, NOT a mint)
+    // and credited to the proposer's `F_v`. The per-client amounts come from the
+    // gate (`fee_debits`), so ONLY admitted CLIENT deploys are charged — the
+    // proposer's own gate-exempt dummy deploys carve NO fee (they have no client
+    // pool). On replay the SAME carve is RECOMPUTED from `block.body.deploys`.
+    // cost ≠ fee (D.0): a TRANSFERRED token, distinct from the burned cost debit.
+    // `None` when nothing was carved (empty block) ⇒ no fee write at closeBlock.
+    let fee_carve = crate::rust::util::rholang::acceptance::fee_carve(
         validator_identity.public_key.bytes.to_vec(),
+        fee_debits,
     );
     // Task #13b: thread the genesis client funding-slot allocations onto the
     // close deploy from the shard-genesis conf (the SAME constant replay reads).
@@ -1103,7 +1108,7 @@ pub async fn create(
             next_seq_num,
         ),
         settlement_debits,
-        fee_credits,
+        fee_carve,
         client_fuel_allocations,
     }));
 
@@ -1324,13 +1329,9 @@ fn not_future_deploy(current_block_number: i64, deploy_data: &DeployData) -> boo
 mod tests {
     use super::*;
 
-    fn validator(byte: u8) -> Validator {
-        Bytes::from(vec![byte; 32])
-    }
+    fn validator(byte: u8) -> Validator { Bytes::from(vec![byte; 32]) }
 
-    fn invalid_block_hash(byte: u8) -> BlockHash {
-        Bytes::from(vec![byte; 32])
-    }
+    fn invalid_block_hash(byte: u8) -> BlockHash { Bytes::from(vec![byte; 32]) }
 
     /// A bonded validator that PoS still considers active is slashable
     /// when their latest message is invalid. Baseline behavior.

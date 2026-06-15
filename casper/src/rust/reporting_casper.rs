@@ -178,9 +178,9 @@ impl RhoReporterCasper {
             crate::rust::util::rholang::acceptance::SigKey,
             crate::rust::util::rholang::acceptance::SettlementDebit,
         > = std::collections::BTreeMap::new();
-        // Stage D: likewise no fee credit on the reporting path (the fee-convert
-        // Σ⟦v⟧ mirror is a bare supply write with no reduction events).
-        let fee_credit: Option<crate::rust::util::rholang::acceptance::FeeCredit> = None;
+        // Stage D: likewise no fee carve on the reporting path (the FeeExtract
+        // carve is a bare supply write with no reduction events to report).
+        let fee_carve: Option<crate::rust::util::rholang::acceptance::FeeCarve> = None;
 
         let mut deploy_results = Vec::new();
         for (idx, term) in terms.iter().enumerate() {
@@ -225,7 +225,7 @@ impl RhoReporterCasper {
                 // Task #13b: this is the reporting-LOCAL wrapper (4 args); it
                 // forwards to the `ReplayRuntimeOps` method below, which passes
                 // empty client allocations (a bare supply write, no report events).
-                .replay_block_system_deploy(block_data, system_deploy, &settlement_debits, &fee_credit)
+                .replay_block_system_deploy(block_data, system_deploy, &settlement_debits, &fee_carve)
                 .await;
 
             let events = match replay_result {
@@ -264,9 +264,7 @@ impl RhoReporterCasper {
 }
 
 /// Factory function to create noop reporting casper
-pub fn noop() -> Arc<dyn ReportingCasper> {
-    Arc::new(NoopReportingCasper)
-}
+pub fn noop() -> Arc<dyn ReportingCasper> { Arc::new(NoopReportingCasper) }
 
 /// Factory function to create rho reporter with real reporting capability
 pub fn rho_reporter(
@@ -357,7 +355,7 @@ impl ReportingRuntime {
             crate::rust::util::rholang::acceptance::SigKey,
             crate::rust::util::rholang::acceptance::SettlementDebit,
         >,
-        fee_credit: &Option<crate::rust::util::rholang::acceptance::FeeCredit>,
+        fee_carve: &Option<crate::rust::util::rholang::acceptance::FeeCarve>,
     ) -> Result<(), crate::rust::errors::CasperError> {
         use crate::rust::rholang::replay_runtime::ReplayRuntimeOps;
 
@@ -375,7 +373,7 @@ impl ReportingRuntime {
             // with no reduction events (faithfully applied + verified only on the
             // consensus replay path), so the reporting path passes empty
             // allocations — same rationale as the threaded debit/fee above.
-            .replay_block_system_deploy(block_data, processed_system_deploy, settlement_debits, fee_credit, &[])
+            .replay_block_system_deploy(block_data, processed_system_deploy, settlement_debits, fee_carve, &[])
             .await?;
 
         // Update the runtime from replay_ops

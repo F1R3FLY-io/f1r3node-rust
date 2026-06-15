@@ -60,16 +60,19 @@ pub struct CloseBlockDeploy {
         crate::rust::util::rholang::acceptance::SigKey,
         crate::rust::util::rholang::acceptance::SettlementDebit,
     >,
-    /// Cost-Accounted Rho Stage D: the per-block FEE credit (the spec's
-    /// `FeeExtract` — flat one token per processed deploy, tex:2509-2521),
-    /// collected into the PROPOSING validator's fee channel `F_v`. `None` for
-    /// genesis / replay-reconstructed / slashing-test close deploys (no fee);
-    /// populated by the block proposer's `create()` and RECOMPUTED on replay
-    /// from `block.body.deploys` (the amount is NOT serialized into the block —
-    /// it rides the same recompute-from-block discipline as `settlement_debits`).
-    /// SIBLING of `settlement_debits`: the fee (a transferred token) is DISTINCT
-    /// from the cost (the burned settlement debit) — cost ≠ fee (D.0).
-    pub fee_credits: Option<crate::rust::util::rholang::acceptance::FeeCredit>,
+    /// Cost-Accounted Rho Stage D: the conserving FEE carve (the spec's
+    /// `FeeExtract`, cost-accounted-rho.tex:3637 "one client token consumed as
+    /// fee"). ONE token per admitted deploy is CARVED from the client's OWN
+    /// `Σ⟦c⟧` (a supply-conserving TRANSFER, NOT a mint) and credited to the
+    /// PROPOSING validator's fee channel `F_v`. `None` for genesis /
+    /// replay-reconstructed / slashing-test close deploys (no fee); populated by
+    /// the block proposer's `create()` and RECOMPUTED on replay from
+    /// `block.body.deploys` (the per-client debit amounts are NOT serialized into
+    /// the block — it rides the same recompute-from-block discipline as
+    /// `settlement_debits`). SIBLING of `settlement_debits`: the fee (a
+    /// TRANSFERRED token: client `Σ⟦c⟧` → `F_v`) is DISTINCT from the cost (the
+    /// BURNED settlement debit) — cost ≠ fee (D.0).
+    pub fee_carve: Option<crate::rust::util::rholang::acceptance::FeeCarve>,
     /// Cost-Accounted Rho task #13b: the genesis CLIENT funding-slot allocations
     /// `[(client_pk_bytes, amount)]` — the §5.7/§7.5 genesis/system write that
     /// SEEDS each client supply pool `Σ⟦c⟧ = from_sig(Ground(client_pk))` so a
@@ -101,7 +104,7 @@ impl CloseBlockDeploy {
         Self {
             initial_rand,
             settlement_debits: std::collections::BTreeMap::new(),
-            fee_credits: None,
+            fee_carve: None,
             // #13b: default EMPTY — only `block_creator::create` (play) and
             // `replay_block_system_deploy` (replay) populate this from the shard
             // conf. Every other construction site (genesis, slashing/merging test
@@ -280,24 +283,70 @@ impl CloseBlockDeploy {
             }
         }
 
-        // ── Stage D fee COLLECTION (phase 3a), AFTER mint + debit ─────────────
-        // The spec's FeeExtract (tex:2509-2521): credit the proposing validator's
-        // FEE pool `F_v = fee_collection_channel(pk)` by the per-block deploy count
-        // (one token per processed deploy). `F_v` is a Rust-nameable,
+        // ── Stage D conserving FEE carve (phase 3), AFTER mint + cost debit ───
+        // The spec's FeeExtract (cost-accounted-rho.tex:3637 "one client token
+        // consumed as fee"): CARVE one token per admitted deploy from the
+        // client's OWN post-cost `Σ⟦c⟧` (a supply-CONSERVING transfer, NOT a
+        // mint) and credit the carved total to the proposing validator's FEE pool
+        // `F_v = fee_collection_channel(recipient_pk)`. `F_v` is a Rust-nameable,
         // content-addressed, reducer-unwritable pool (DR-13) — DISTINCT from
         // `Σ⟦v⟧` (gate pool) and `@W_v` (draw). cost ≠ fee (D.0): the fee is a
-        // SEPARATE token TRANSFERRED to the validator, never the burned settlement
-        // debit. Play: `fee_credits` threaded by the proposer (`block.body.deploys`
-        // count); replay: RECOMPUTED from `terms.len()` (= `block.body.deploys`),
-        // byte-identical — the same recompute-from-block discipline as
-        // `settlement_debits`. Disjoint `fee_collect_random_state` path; readback
-        // guard (TM-CA-160 fee-credit play/replay divergence).
-        if let Some(fee) = &self.fee_credits {
-            if fee.amount > 0 {
-                let chan = supply::fee_collection_channel(&fee.recipient_pk);
+        // SEPARATE token TRANSFERRED to the validator, never the burned cost
+        // settlement debit. The gate admits a deploy only when `Σ⟦c⟧ ≥ cost + fee`
+        // (acceptance.rs charges cost+fee against the prefix), so each carve
+        // `checked_sub` is gate-guaranteed non-negative. Play: `fee_carve`
+        // threaded by the proposer; replay: RECOMPUTED from `block.body.deploys`
+        // (the per-client amounts are NOT serialized) — byte-identical, the same
+        // recompute-from-block discipline as `settlement_debits`. Disjoint
+        // `fee_carve_random_state` (per-client `Σ⟦c⟧` debit) + `fee_collect_random_state`
+        // (the single `F_v` credit) paths; readback guards (TM-CA-160 fee
+        // play/replay divergence). NO protocol fee→`Σ⟦v⟧` conversion (Option A):
+        // the carved fee is the validator's REVENUE in `F_v`, swapped to gate fuel
+        // via the contract-level market `Exchange(c,v)`; validators bootstrap
+        // `Σ⟦v⟧` from the epoch mint, not from an unbacked protocol conversion.
+        if let Some(carve) = &self.fee_carve {
+            let mut carved_total: i64 = 0;
+            // Iterate the carve map in deterministic BTreeMap order (by SigKey) so
+            // the per-client `random_state` index is identical on play and replay.
+            for (index, (sig_key, debit)) in carve.debits.iter().enumerate() {
+                if debit.amount <= 0 {
+                    // No fee carved on this pool (no admitted demand) — skip so the
+                    // channel datum is untouched.
+                    continue;
+                }
+                let old_c = supply::read_balance(runtime_ops, &debit.channel).await;
+                let new_c = old_c.checked_sub(debit.amount).expect(
+                    "phlogiston supply underflow on FeeExtract carve — gate invariant \
+                     violated (admitted Σ⟦c⟧ < cost + fee)",
+                );
+                let carve_rand = supply::fee_carve_random_state(&close_rand, index as i64);
+                supply::produce_balance(runtime_ops, &debit.channel, new_c, carve_rand).await?;
+                carved_total = carved_total
+                    .checked_add(debit.amount)
+                    .expect("fee carve total overflow");
+
+                if is_replay {
+                    let readback = supply::read_balance(runtime_ops, &debit.channel).await;
+                    if readback != new_c {
+                        return Err(CasperError::ReplayFailure(
+                            ReplayFailure::replay_supply_mismatch(
+                                format!("feeCarve:{}", hex::encode(sig_key)),
+                                new_c,
+                                readback,
+                            ),
+                        ));
+                    }
+                }
+            }
+
+            // Credit the proposing validator's `F_v` by the carved total — the
+            // conserving counterpart of the per-client debits (clients debited ==
+            // `F_v` credited; no mint).
+            if carved_total > 0 {
+                let chan = supply::fee_collection_channel(&carve.recipient_pk);
                 let old_n = supply::read_balance(runtime_ops, &chan).await;
                 let new_n = old_n
-                    .checked_add(fee.amount)
+                    .checked_add(carved_total)
                     .expect("fee supply overflow on FeeExtract collection credit");
                 let random_state = supply::fee_collect_random_state(&close_rand);
                 supply::produce_balance(runtime_ops, &chan, new_n, random_state).await?;
@@ -307,7 +356,7 @@ impl CloseBlockDeploy {
                     if readback != new_n {
                         return Err(CasperError::ReplayFailure(
                             ReplayFailure::replay_supply_mismatch(
-                                format!("feeCollect:{}", hex::encode(&fee.recipient_pk)),
+                                format!("feeCollect:{}", hex::encode(&carve.recipient_pk)),
                                 new_n,
                                 readback,
                             ),
@@ -317,22 +366,27 @@ impl CloseBlockDeploy {
             }
         }
 
-        // ── Stage D fee→v CONVERSION Σ⟦v⟧ mirror (phase 3b), AFTER collection ──
-        // Read the per-epoch ELIGIBLE list `[(pk, epochIdx)]` that closeBlock's
-        // `convertFeesToValidators` fold published (validators that are
-        // active ∧ ¬halted ∧ ¬convertedEpochs; the `convertedEpochs` record is
-        // done Rholang-side in the fold). For each eligible `pk`, read its FEE
-        // pool `F_v` count `f`; when `f > 0`, 1:1-convert it into the reducer-
-        // unwritable gate pool `Σ⟦v⟧` (`produce_balance(Σ⟦v⟧, old + f)`) and ZERO
-        // `F_v`. DR-4: `f == 0` ⇒ NO Σ⟦v⟧ credit (no one-sided mint). Conserves:
-        // the `Σ⟦v⟧ += f` credit is EXACTLY the `f` fees that leave `F_v` (Rocq
-        // `fee_convert_credit_is_backed` / `fee_collection_conserves`).
+        // ── Stage D fee→v CONVERSION Σ⟦v⟧ mirror (phase 3b), AFTER the carve ──
+        // The F-C fix is NOT "remove the convert" — it is "BACK the convert with
+        // the carve." Phase 3 (above) added the missing c-side: the fee is CARVED
+        // from the client's own `Σ⟦c⟧` into `F_v` (a conserving transfer), so this
+        // 1:1 `F_v → Σ⟦v⟧` convert is no longer a one-directional system mint — it
+        // is the second leg of a fully-backed transfer `Σ⟦c⟧ → F_v → Σ⟦v⟧`
+        // (Rocq `TokenConservation.fee_collect_then_convert_conserves`,
+        // `MintingInjection.fee_convert_credit_is_backed`). In the one-consumable
+        // model (Greg 2026-06-15: c and v are the SAME token, distinct only by
+        // signature/pool) this convert is a same-token revenue→gate move, NOT a
+        // priced exchange — the `Exchange(c,v)` market prices trades BETWEEN
+        // principals, a separate contract-level concern.
         //
-        // Replay symmetry: the eligible list is recomputed identically by the
-        // Rholang fold from the SAME pre-state PoS state (active/halted/converted
-        // ledgers), and each `f` is read from the SAME pre-state `F_v` pool — so
-        // the convert writes are byte-identical play↔replay. Sorted by pk so the
-        // per-credit `random_state` index is fold-order-independent.
+        // Read the per-epoch ELIGIBLE list `[(pk, epochIdx)]` that closeBlock's
+        // `convertFeesToValidators` fold published (validators active ∧ ¬halted ∧
+        // ¬convertedEpochs). For each eligible `pk`, read its `F_v` count `f`;
+        // when `f > 0`, move it 1:1 into the reducer-unwritable gate pool `Σ⟦v⟧`
+        // and ZERO `F_v`. DR-4: `f == 0` ⇒ NO credit. Replay symmetry: the eligible
+        // list is recomputed identically by the SAME PoS fold from the SAME
+        // pre-state; each `f` is read from the SAME pre-state `F_v`; sorted by pk so
+        // the per-credit `random_state` index is fold-order-independent.
         let fee_list_chan = self.fee_convert_list_channel();
         let fee_published = runtime_ops.get_data_par(&fee_list_chan).await;
         let mut eligible = match fee_published.iter().rev().find_map(|p| RhoList::unapply(p)) {
@@ -518,13 +572,9 @@ impl SystemDeployTrait for CloseBlockDeploy {
         }
     }
 
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
+    fn as_any(&self) -> &dyn std::any::Any { self }
 
-    fn rand(&self) -> Blake2b512Random {
-        self.initial_rand.clone()
-    }
+    fn rand(&self) -> Blake2b512Random { self.initial_rand.clone() }
 
     fn env(&mut self) -> HashMap<String, Par> {
         let mut env = HashMap::new();

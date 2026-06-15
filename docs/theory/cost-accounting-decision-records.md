@@ -122,9 +122,10 @@ does (it requires both inputs); would also raise consensus weight over time (con
    discipline as the StageB mint. The 1:1 peg makes the Rust credit and the Exchange swap semantically
    identical; the Rocq `fee_convert_credit_is_backed` proves the `Σ⟦v⟧` credit is BACKED by (equal to) the
    drained fees, never a mint (DR-4: empty `F_v` ⇒ no credit).
-3. **fee ≠ cost:** the `F_v` collection (the spec's flat `FeeExtract`, one transferred token per processed
-   deploy) is SEPARATE from the WD-D2 settlement debit (the burned COST). The committed D2 gate/settlement is
-   unchanged by StageD. PoS owns only the conversion ELIGIBILITY (`active ∧ ¬mintingHalted ∧
+3. **fee ≠ cost:** the `F_v` carve (the spec's flat `FeeExtract`, one client token per admitted deploy,
+   realized under F-C/F-D as a supply-CONSERVING carve from the client's own `Σ⟦c⟧` into `F_v` — NOT a mint)
+   is SEPARATE from the WD-D2 settlement debit (the burned COST). PoS owns only the conversion ELIGIBILITY
+   (`active ∧ ¬mintingHalted ∧
    ¬convertedEpochs`) + `convertedEpochs` idempotency, publishing the eligible list on
    `sys:casper:feeConvertList`. **Settled (DR-14, user-ratified): the OD-4 `@W_v` mirror is unnecessary; `Σ⟦v⟧`-only is the permanent,
    spec-complete fee realization** — the convert credits the consensus pool `Σ⟦v⟧` only (the released form of
@@ -347,15 +348,20 @@ as the StageB mint, with a THIRD per-validator content-addressed pool: `F_v =
 supply::fee_collection_channel(pk)` (a `(TOKEN_TAG, n)` balance keyed by `Blake2b256(FEE_COLLECTION_DOMAIN ‖
 pk)` — domain-separated from `Σ⟦v⟧` and from `@W_v`, all three DISTINCT). Like `Σ⟦v⟧`, `F_v` is
 reducer-unwritable and written ONLY by Rust `produce_balance`. `CloseBlockDeploy::post_eval`/`post_eval_replay`
-gain two phases after the mint + settlement: (3a) COLLECTION — credit `F_v(proposer) += count` (the flat
-`FeeExtract`, `count = block.body.deploys.len()`, threaded play-side via `fee_credits`, recomputed replay-side
-from `terms.len()` by `recompute_fee_credits` — same recompute-from-block discipline as the settlement debit);
-(3b) CONVERSION — read the eligible `[(v, epochIdx)]` list PoS published on `sys:casper:feeConvertList`, and
+gain two phases after the mint + settlement: (3) CONSERVING CARVE (F-C/F-D) — for each admitted client pool,
+CARVE the flat `FeeExtract` (one token per admitted deploy) from the client's OWN post-cost `Σ⟦c⟧`
+(`Σ⟦c⟧ -= fee`) and credit the carved total to `F_v(proposer) += Σ fee` (a supply-conserving transfer, NOT a
+mint — clients debited == `F_v` credited, Rocq `fee_collect_conserves`). The per-client carve is threaded
+play-side via `fee_carve` (`AdmissionOutcome.fee_debits`) and recomputed replay-side from the block by
+`recompute_settlement_debits(block.body.deploys, …).fee` — the SAME recompute-from-block discipline +
+`compute_settlement_debits` apportionment as the cost settlement debit; (3b) CONVERSION — read the eligible
+`[(v, epochIdx)]` list PoS published on `sys:casper:feeConvertList`, and
 for each eligible `v` credit `Σ⟦v⟧ += f` and zero `F_v` (`f = read F_v(v)`; `f ≤ 0 ⇒ skip`, DR-4). Disjoint
-replay-stable `random_state` paths (`fee_collect_random_state` `-0x2e`, `fee_convert_random_state` `-0x2d`,
-disjoint from mint `lo≥0` / debit `-0x2b` / slash `-0x2c` / mint-list `0x2a`) + the `ReplaySupplyMismatch`
-readback guard on every fee write. The cost ≠ fee separation holds: the fee is a transferred token on `F_v`,
-the cost is the burned settlement debit on `Σ⟦s⟧`. Play/replay symmetry exercised by
+replay-stable `random_state` paths (`fee_carve_random_state` `-0x30`, `fee_collect_random_state` `-0x2e`,
+`fee_convert_random_state` `-0x2d`, disjoint from mint `lo≥0` / debit `-0x2b` / slash `-0x2c` / mint-list
+`0x2a`) + the `ReplaySupplyMismatch` readback guard on every fee write. The cost ≠ fee separation holds: the
+fee is a transferred token (`Σ⟦c⟧ → F_v`, conserving), the cost is the burned settlement debit on `Σ⟦s⟧`.
+Play/replay symmetry exercised by
 `fee_collection_and_convert_is_play_replay_deterministic` + `fee_convert_converted_epochs_idempotent_deterministic`.
 
 **Alternatives considered.** (a) literal nested-send messages, one per token — rejected (O(n) gate-read
@@ -1023,3 +1029,90 @@ context`); the correspondence row and verification §4.2.1; this DR.
 **Cross-refs.** DR-21 (the native four-sort grammar + the conditional-SN finding this contrasts with), DR-22
 (the abstract §6–§9 category-theory layer; `Lambda_ciGSLT` is a second object under `CostCI`), DR-24 (the
 generic GSLT/OSLF boundary and the MeTTaIL adapter — DR-25 is the formal λ instance of that genericity).
+
+---
+
+## DR-26 — Behavioral alignment via compile-time shapes; external-proof certificates are optional assurance (supersedes DR-12 enforcement)
+
+**Status.** Done (prover gates relaxed). 2026-06-15.
+
+**Decision.** Per the project lead's directive: validator behavioral alignment is supplied by the **compile-time
+type discipline (shapes)** — the OSLF spatial+modal usage types of the cost-accounted calculus — so external-proof
+**CERTIFICATES** (Rocq / Lean / TLA+ / Sage) are **NOT a required gate** on the Rust implementation. The four
+prover gates `scripts/check-cost-accounted-rho-{proofs,lean,sage,tla-invariants}.sh` are now **ADVISORY by
+default** (report posture, exit 0) with **`CA_ENFORCE_PROOFS=1`** opt-in strict (the full compile + `rocqchk` +
+axiom-free `Print Assumptions` path is preserved verbatim). This **supersedes the *enforcement* posture of DR-12**
+(the validator behavioral contract proven in three provers + gated by the script): the proofs remain valuable as
+**optional assurance**, but they are not certificates the implementation must carry to be correct.
+
+**Spec basis.** The OSLF type discipline IS the checkable behavioral alignment
+(`continued-gslt-cost-v2.tex` §1400–1471: *"the type system is not new machinery; it is the logic OSLF already
+generates"*; opt-in, per-term). Shapes-at-compile-time deliver the alignment DR-12 pursued via external certificates.
+
+**Consequence.** TM-CA-161 and UC-CA-159 (the `validator_contract_*` rows) are reframed: those proofs are optional
+assurance, not the enforced gate; the gate scripts are advisory. Formal verification stays welcome and LOCAL-ONLY
+(never CI — standing policy); run it with `CA_ENFORCE_PROOFS=1`. DR-12's *content* (the contract obligations
+S1–S4 / P1–P3 and their proofs) is retained and unchanged; only its *enforcement-as-certificate* role is dropped.
+
+**Cross-refs.** DR-12 (enforcement superseded; content retained), DR-18 (axiom-gating), DR-25, the W2 typed-token
+compile-time discipline in the plan; `feedback_formal_verification_is_local_only_not_ci`.
+
+---
+
+## DR-27 — Token-source model realigned to the papers (spectral phlogiston + typed value); implementation divergences + mortality
+
+**Status.** Findings recorded + remediations decided; code remediations tracked (pgmcp work item #481). 2026-06-15.
+
+**Decision (token sources).** A clean-slate re-reading of the `publications/*.tex` establishes the intended model:
+**ONE species — phlogiston as signature-indexed first-class token stacks `s:S`** (the old homogeneous phlo is the
+degenerate `s₀`-collapse), **plus a typed-value `Pay(τ)`** layer (`TypedCurrency/typed_value.tex`) metering
+*transfer* (rivalrous, contraction-rejected) while phlogiston meters *computation*. **Stake** is a distinct
+locked-token *role* (consensus weight, slashable; *"phlogiston is not drawn from stake — a separate resource"*,
+cost-accounted-rho.tex:3024). **There is NO "REV" species in any paper.** OFF-MODEL artifacts (in zero papers):
+the **REV value ledger** (`wallets.txt`→`SystemVault`), the **`client_fuel_allocations`** config, and the
+**`sysAuthToken` mint-monopoly**. Minting is FIRST-CLASS (construct a token stack + send it on a signature channel;
+*"no privileged runtime hook"*), gated by **object-capability** (the unforgeable channel name) + the **usage type**;
+protocol/epoch minting is **uniform** with user minting, not privileged. Genesis/initial supply is **unspecified**
+by the papers (implementation-defined; fill with the uniform mint-onto-channel primitive).
+
+**Remediation direction (docs now; code = W3 in the plan).** Retire the REV-as-distinct-token-ledger framing in the
+docs (keep STAKE as a role; value = purse + `Pay(τ)`); replace the `sysAuthToken` monopoly with capability+type-gated
+first-class minting that keeps protocol pools **unforgeable** (the unforgeability mechanism, not the monopoly, is
+the safety lever — DR-13's unforgeability half stays; its system-monopoly half is superseded here).
+
+**Implementation divergences vs the calculus papers (cross-check 2026-06-15; tracked in pgmcp #481), with decided remediations:**
+- **F-A (CONSENSUS, EXTRA):** 6 LL signature connectives (`Threshold/Plus/With/Bang/WhyNot/Lolly`) ride the
+  consensus wire (`CasperMessage.proto` `sig_algebra` field 17; `accounting/mod.rs`) but are in NEITHER calculus
+  paper (signature grammar = `g | #P | s∘s`; ⊕/&/!/?/⊸ are the VALUE type-logic in `typed_value.tex`, not
+  funding-signature formers; Rocq verifies only `And`). **Remediation:** treat the extra variants as an
+  undocumented Phase-3 extension — **gate them off the consensus wire (reject at decode)** pending a spec addendum
+  legitimizing a richer signature algebra; the funding `Sig` is `g|#P|s∘s`. (Protocol change → needs Greg's
+  ratification before the wire edit; the *decided default* is gate-off/reject.)
+- **F-B (CONSENSUS, INCORRECT):** the acceptance gate folds `min_phlo_price` margin into the correctness inequality
+  `Σ_s ≥ Δ_s` for EVERY deploy (`delta_sigma.rs:475`; `block_creator.rs:896`); Def 19 has no margin (the Thm-20
+  margin is ONLY the data-dependent `unknown` branch). **Remediation:** restrict the margin to the `unknown==true`
+  branch; update the Kani proof `reject_below_demand_plus_margin`.
+- **F-C / F-D (CONSENSUS — RESOLVED, conserving carve landed):** the per-block `FeeExtract` previously credited
+  an additive 1-token/deploy mint (and the formal model "collected" `F_v += f` from outside the ledger).
+  **Remediation (LANDED, aligned to the paper):** the fee is now a supply-CONSERVING CARVE from the client's OWN
+  `Σ⟦c⟧` into `F_v` (`Σ⟦c⟧ -= fee`, `F_v += Σ fee`; clients debited == `F_v` credited, no mint) — the full flow
+  `Σ⟦c⟧ → F_v → Σ⟦v⟧` is conserving (Rocq `fee_collect_conserves` / `fee_collect_then_convert_conserves`). The
+  per-epoch fee→`Σ⟦v⟧` convert is KEPT (UNCHANGED) but is now BACKED by the carve rather than being an
+  unbacked mint (the F-C fix was to BACK the convert, not remove it; `MintingInjection.fee_collect_is_client_backed`).
+  Play-side `AdmissionOutcome.fee_debits` (`fee_carve`), replay-side `recompute_settlement_debits(...).fee` — the
+  same recompute-from-block discipline as the cost debit. (The removed `FeeCredit`/`recompute_fee_credits` API and
+  the additive 1-token/deploy mint no longer exist.)
+
+**Sanctioned `s₀` simplifications (no change):** located stacks `S(I,·)` / `near(I,J)` and first-class token TERMS
+are not realized (Remark 11). **Cosmetic:** Rocq `ca_rule4`/`ca_rule5` token-shape labels are transposed vs the
+paper's Rule-4/5 (rule SET faithful).
+
+**Mortality lifetime split.** Ratified: compute-funding is fixed at acceptance (*"over-charge, never under-fund"*);
+storage solvency drifts over time (rent + the refund-flag lifetime declaration). "Unfunded residual never fires"
+is sanctioned (germ/soma/Weismann), but mission-critical residuals must be **germ-line-pinned** (unevictable
+on-chain backing) — the pin MECHANISM is unspecified (W4). The rent paper's `phloLimit×phloPrice` precharge is
+legacy (DR-9 removed it); rebase rent funding to a located-`Σ`-purse debit (headline numbers survive).
+
+**Cross-refs.** DR-9 (per-COMM cost; escrow removed), DR-13 (system-only minting — monopoly half superseded, the
+unforgeability half retained), DR-24 (generic GSLT/OSLF boundary), DR-25; the plan's W3 (token-source + minting)
+and W4 (rent/economics) workstreams; pgmcp work item #481.

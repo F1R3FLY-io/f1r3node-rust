@@ -101,36 +101,62 @@ pub struct AdmissionOutcome {
     /// The PRIMARY signatures of gate-rejected deploys, unioned into the
     /// block's `rejected_deploys` at packaging.
     pub rejected: Vec<Bytes>,
-    /// The per-pool settlement debit, keyed by `SigKey` (= `Sig::lane_hash`).
-    /// Threaded to `CloseBlockDeploy.settlement_debits` on the play path;
-    /// RECOMPUTED identically from `block.body.deploys` on replay.
+    /// The per-pool settlement debit (the COST, BURNED from `Σ⟦c⟧`), keyed by
+    /// `SigKey` (= `Sig::lane_hash`). Threaded to
+    /// `CloseBlockDeploy.settlement_debits` on the play path; RECOMPUTED
+    /// identically from `block.body.deploys` on replay.
     pub debits: BTreeMap<SigKey, SettlementDebit>,
-    /// Cost-Accounted Rho Stage D: the count of GATE-ADMITTED client deploy
-    /// envelopes (= `admitted.len()`). The per-block fee (the spec's flat
-    /// `FeeExtract` — ONE token per admitted client deploy, tex:2509-2521) is
-    /// credited to the proposing validator's fee channel `F_v`. The proposer
-    /// ADDS its own (gate-exempt) dummy-deploy count to this to obtain the
-    /// total fee = `block.body.deploys.len()`, which is what [`recompute_fee_credits`]
-    /// derives identically on replay from `terms.len()` (= `block.body.deploys`).
-    /// This count does NOT affect the D2 gate decision (it is read-only metadata
-    /// computed from the already-decided admitted set).
+    /// Cost-Accounted Rho Stage D FEE carve (the spec's `FeeExtract`,
+    /// cost-accounted-rho.tex:3637 "one client token consumed as fee"): the
+    /// per-pool CLIENT debit — ONE token per admitted deploy, CARVED from the
+    /// client's own `Σ⟦c⟧` (a conserving TRANSFER, NOT a mint), keyed by `SigKey`.
+    /// The total (Σ over `fee_debits`) is TRANSFERRED to the proposing validator's
+    /// fee channel `F_v`. Computed AFTER the cost debit against the post-cost
+    /// residual (the gate admits only if `Σ⟦c⟧ ≥ cost + fee`); RECOMPUTED
+    /// identically on replay by [`recompute_fee_debits`].
+    pub fee_debits: BTreeMap<SigKey, SettlementDebit>,
+    /// The count of GATE-ADMITTED client deploy envelopes (= `admitted.len()`).
+    /// Read-only metadata (does NOT affect the gate decision); the fee itself is
+    /// the conserving carve in `fee_debits`, not derived from this count.
     pub admitted_client_count: usize,
 }
 
-/// Cost-Accounted Rho Stage D fee credit (the spec's `FeeExtract`): a flat ONE
-/// token per admitted deploy in the block, collected into the PROPOSING
-/// validator's fee channel `F_v`. Distinct from the COST (the D2
-/// `SettlementDebit`, which burns from the signer's own `Σ⟦s⟧`): the fee is a
-/// SEPARATE token TRANSFERRED to the validator (§7 funding model). Carries the
-/// consensus-deterministic recipient (`block_data.sender`) and the amount.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct FeeCredit {
+/// Cost-Accounted Rho Stage D FEE carve (the spec's `FeeExtract`,
+/// cost-accounted-rho.tex:3637 "one client token consumed as fee"): ONE client
+/// token per admitted deploy, CARVED from the client's own `Σ⟦c⟧` (a conserving
+/// TRANSFER, NOT a mint) and credited to the PROPOSING validator's fee channel
+/// `F_v`. Distinct from the COST (the `SettlementDebit`, BURNED from `Σ⟦c⟧`):
+/// cost ≠ fee. Carries the per-client debits + the consensus-deterministic
+/// recipient (`block_data.sender`). Computed after the cost debit against the
+/// post-cost residual; RECOMPUTED identically on replay from `block.body.deploys`.
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct FeeCarve {
     /// The proposing validator's public-key bytes (`block_data.sender.bytes`) —
-    /// the fee recipient. Used by `CloseBlockDeploy` to credit `F_v` for this pk.
+    /// the fee RECIPIENT: `F_v` for this pk is CREDITED by the carved total.
     pub recipient_pk: Vec<u8>,
-    /// The fee amount = `block.body.deploys.len() × 1` (flat 1-token per admitted
-    /// deploy). Recomputed identically on replay from `terms.len()`.
-    pub amount: i64,
+    /// The per-CLIENT fee debit: each client's own `Σ⟦c⟧` is DEBITED `amount`
+    /// (= its admitted-deploy count, apportioned across compound components by the
+    /// same policy as the cost), keyed by `SigKey`. Their sum is what `F_v`
+    /// receives — conserving (no mint).
+    pub debits: BTreeMap<SigKey, SettlementDebit>,
+}
+
+impl FeeCarve {
+    /// Total carved fee = Σ of the per-client debits — the amount credited to the
+    /// proposer's `F_v` (conservation: clients debited == `F_v` credited).
+    pub fn total(&self) -> i64 {
+        self.debits.values().map(|d| d.amount).sum()
+    }
+}
+
+/// The replay-recomputed debits: the COST settlement (burned) and the FEE carve
+/// (transferred to `F_v`), both recomputed from `block.body.deploys` by
+/// [`recompute_settlement_debits`] — byte-identical to the play-side
+/// `AdmissionOutcome.{debits, fee_debits}` for a valid block.
+#[derive(Clone, Debug, Default)]
+pub struct RecomputedDebits {
+    pub settlement: BTreeMap<SigKey, SettlementDebit>,
+    pub fee: BTreeMap<SigKey, SettlementDebit>,
 }
 
 /// An async per-channel supply-balance reader returning PRESENCE: `Some(n)` iff
@@ -578,6 +604,11 @@ where
     //    ledger — #12) is computed AFTER the walk by [`compute_settlement_debits`],
     //    the SINGLE shared function replay also runs (byte-identity).
     let mut demand_by_group: BTreeMap<SigKey, (Par, i64)> = BTreeMap::new();
+    // The FEE carve (Stage D FeeExtract): per-group fee amount (1 per admitted
+    // deploy), CARVED from the client `Σ⟦c⟧` into `F_v` — accumulated alongside
+    // the cost demand and settled by a SECOND `compute_settlement_debits` pass
+    // (against the post-cost residual) below.
+    let mut fee_by_group: BTreeMap<SigKey, (Par, i64)> = BTreeMap::new();
     for (sig_key, group) in groups {
         let channel = group.first().map(|c| c.channel.clone()).unwrap_or_default();
 
@@ -614,20 +645,36 @@ where
         // the per-pool debit underflow-safe).
         let mut residual: i64 = *effective.get(&sig_key).unwrap_or(&0);
 
-        let mut group_debit: i64 = 0;
+        // FeeExtract (cost-accounted-rho.tex:3637): ONE client token per admitted
+        // deploy, CARVED from the client's own `Σ⟦c⟧` (conserving) IN ADDITION to
+        // the burned per-COMM cost Δ — so an admitted deploy needs `Σ⟦c⟧ ≥ Δ + 1`.
+        // The admission demand folds the +1 fee into the known lower bound (the
+        // Thm-20 margin still rides ONLY the `unknown` flag — F-B coordination).
+        const FEE_PER_DEPLOY: i64 = 1;
+        let mut group_debit: i64 = 0; // COST (Σ Δ): burned from Σ⟦c⟧
+        let mut group_fee: i64 = 0; // FEE (1 per admitted deploy): carved to F_v
         let mut prefix_open = true;
         for candidate in group {
-            if prefix_open && logic.is_funded(&candidate.demand, residual, margin) {
-                // Admit: consume the known lower bound from the residual and
-                // accumulate the debit. (`is_funded` already applied Def 19
-                // `Σ ≥ Δ`, plus the Thm 20 margin for over-approximated
-                // (`unknown`) demand only.)
-                residual = residual.saturating_sub(candidate.demand.known_lower_bound);
+            // Admission demand = cost + fee (the client must afford BOTH).
+            let cost_plus_fee = DemandEntry {
+                known_lower_bound: candidate
+                    .demand
+                    .known_lower_bound
+                    .saturating_add(FEE_PER_DEPLOY),
+                unknown: candidate.demand.unknown,
+            };
+            if prefix_open && logic.is_funded(&cost_plus_fee, residual, margin) {
+                // Admit: consume cost + fee from the residual; accumulate the cost
+                // (burned) and the fee (carved to F_v) separately.
+                residual = residual
+                    .saturating_sub(candidate.demand.known_lower_bound)
+                    .saturating_sub(FEE_PER_DEPLOY);
                 group_debit = group_debit.saturating_add(candidate.demand.known_lower_bound);
+                group_fee = group_fee.saturating_add(FEE_PER_DEPLOY);
                 outcome.admitted.push(candidate.cosigned);
             } else {
-                // §7.7 reject-both: the FIRST unfunded candidate and ALL after
-                // it in the group are rejected.
+                // §7.7 reject-both: the FIRST candidate that cannot afford cost +
+                // fee, and ALL after it in the group, are rejected.
                 prefix_open = false;
                 outcome
                     .rejected
@@ -636,7 +683,10 @@ where
         }
 
         if group_debit > 0 {
-            demand_by_group.insert(sig_key, (channel, group_debit));
+            demand_by_group.insert(sig_key, (channel.clone(), group_debit));
+        }
+        if group_fee > 0 {
+            fee_by_group.insert(sig_key, (channel, group_fee));
         }
     }
 
@@ -647,6 +697,29 @@ where
     //    runs on replay ⇒ byte-identical `BTreeMap<SigKey, SettlementDebit>`.
     outcome.debits =
         compute_settlement_debits(&demand_by_group, &decompositions, &raw, &channels_by_key, policy);
+
+    // FEE carve (Stage D): the per-pool fee debit is computed AFTER the cost
+    // debit, against the POST-COST residual (raw − cost draws), reusing the SAME
+    // apportionment policy + compound split-join so a compound deploy's fee is
+    // apportioned exactly like its cost. The carved total is TRANSFERRED to F_v
+    // (conserving — TokenConservation.fee_collect_conserves). The gate admitted
+    // only deploys with Σ⟦c⟧ ≥ cost + fee, so this pass never underflows; the same
+    // function over identically-derived inputs runs on replay ⇒ byte-identical.
+    let raw_after_cost: BTreeMap<SigKey, i64> = channels_by_key
+        .keys()
+        .map(|k| {
+            let post = raw.get(k).copied().unwrap_or(0)
+                - outcome.debits.get(k).map(|d| d.amount).unwrap_or(0);
+            (*k, post)
+        })
+        .collect();
+    outcome.fee_debits = compute_settlement_debits(
+        &fee_by_group,
+        &decompositions,
+        &raw_after_cost,
+        &channels_by_key,
+        policy,
+    );
 
     // Re-impose canonical order on the admitted set: the per-group walk emits
     // each group's prefix in canonical order, but group iteration is by SigKey,
@@ -697,7 +770,7 @@ pub async fn recompute_settlement_debits(
     admitted: Vec<Cosigned<DeployData>>,
     supply_reader: &dyn SupplyReader,
     strict: bool,
-) -> Result<BTreeMap<SigKey, SettlementDebit>, CasperError> {
+) -> Result<RecomputedDebits, CasperError> {
     let logic = DefaultResourceLogic;
     let policy = DefaultApportionment;
     recompute_settlement_debits_with_logic(admitted, supply_reader, strict, &logic, &policy).await
@@ -709,7 +782,7 @@ pub async fn recompute_settlement_debits_with_logic<L, P>(
     strict: bool,
     logic: &L,
     policy: &P,
-) -> Result<BTreeMap<SigKey, SettlementDebit>, CasperError>
+) -> Result<RecomputedDebits, CasperError>
 where
     L: OslfResourceLogic<RhoGslt>,
     P: ApportionmentPolicy<RhoGslt>,
@@ -723,6 +796,11 @@ where
     //    block (the proposer never admits a malformed deploy), but is treated
     //    defensively as zero demand so the recompute is total.
     let mut demand_by_group: BTreeMap<SigKey, (Par, i64)> = BTreeMap::new();
+    // FEE carve (Stage D): per-group fee = count of admitted deploys (1 each),
+    // accumulated alongside the cost demand. `block.body.deploys` IS the
+    // play-admitted set, so this count mirrors the play-side gate's per-group
+    // `group_fee` exactly; settled by the post-cost fee pass below.
+    let mut fee_by_group: BTreeMap<SigKey, (Par, i64)> = BTreeMap::new();
     let mut decompositions: Vec<Decomposition> = Vec::new();
     let mut channels_by_key: BTreeMap<SigKey, Par> = BTreeMap::new();
     let mut group_envelopes: BTreeMap<SigKey, Sig> = BTreeMap::new();
@@ -743,6 +821,11 @@ where
             .entry(candidate.sig_key)
             .or_insert_with(|| (candidate.channel.clone(), 0));
         entry.1 = entry.1.saturating_add(candidate.demand.known_lower_bound);
+        // One fee token per admitted deploy in this group (the FeeExtract carve).
+        let fee_entry = fee_by_group
+            .entry(candidate.sig_key)
+            .or_insert_with(|| (candidate.channel.clone(), 0));
+        fee_entry.1 = fee_entry.1.saturating_add(1);
     }
     for envelope in group_envelopes.values() {
         collect_decompositions(envelope, &mut decompositions, &mut channels_by_key);
@@ -804,17 +887,36 @@ where
         .into_iter()
         .filter(|(key, (_chan, amount))| *amount > 0 && present.contains(key))
         .collect();
+    let fee_by_group: BTreeMap<SigKey, (Par, i64)> = fee_by_group
+        .into_iter()
+        .filter(|(key, (_chan, amount))| *amount > 0 && present.contains(key))
+        .collect();
 
-    // 3. Settle the per-pool debit via the SAME shared function the play side
+    // 3. Settle the per-pool COST debit via the SAME shared function the play side
     //    runs (combined-pool-first split + shared-component residual ledger).
     //    Same inputs + same function ⇒ a BYTE-IDENTICAL debit map (fork safety).
-    Ok(compute_settlement_debits(
-        &demand_by_group,
+    let settlement =
+        compute_settlement_debits(&demand_by_group, &decompositions, &raw, &channels_by_key, policy);
+
+    // 4. Settle the FEE carve AFTER the cost, against the post-cost residual
+    //    (raw − cost draws) — mirrors the play-side fee pass exactly ⇒ byte-identical.
+    let raw_after_cost: BTreeMap<SigKey, i64> = channels_by_key
+        .keys()
+        .map(|k| {
+            let post = raw.get(k).copied().unwrap_or(0)
+                - settlement.get(k).map(|d| d.amount).unwrap_or(0);
+            (*k, post)
+        })
+        .collect();
+    let fee = compute_settlement_debits(
+        &fee_by_group,
         &decompositions,
-        &raw,
+        &raw_after_cost,
         &channels_by_key,
         policy,
-    ))
+    );
+
+    Ok(RecomputedDebits { settlement, fee })
 }
 
 /// Cost-Accounted Rho Stage D: REPLAY recompute of the per-block fee credit from
@@ -837,17 +939,18 @@ where
 /// Returns `None` for an empty block (no deploys ⇒ no fee), so callers thread no
 /// fee credit through closeBlock in that case (a genesis / heartbeat-only block).
 /// `recipient_pk` is the consensus-deterministic `block_data.sender.bytes`.
-pub fn recompute_fee_credits(deploy_count: usize, recipient_pk: Vec<u8>) -> Option<FeeCredit> {
-    if deploy_count == 0 {
+pub fn fee_carve(
+    recipient_pk: Vec<u8>,
+    debits: BTreeMap<SigKey, SettlementDebit>,
+) -> Option<FeeCarve> {
+    // The conserving FeeExtract carve = the per-client fee-debit map (the gate's
+    // `AdmissionOutcome.fee_debits` on play, `RecomputedDebits.fee` on replay).
+    // `None` when nothing was carved (empty block / no present client pools) ⇒ no
+    // fee write at closeBlock. The carved total is what `F_v` receives.
+    if debits.values().all(|d| d.amount <= 0) {
         return None;
     }
-    // Flat ONE token per admitted deploy (the spec's `c:()` FeeExtract; NO
-    // configurable rate — spec-literal). `deploy_count` is bounded by the
-    // block's deploy slot, far below i64::MAX, so the cast is exact.
-    Some(FeeCredit {
-        recipient_pk,
-        amount: deploy_count as i64,
-    })
+    Some(FeeCarve { recipient_pk, debits })
 }
 
 #[cfg(test)]
@@ -1090,15 +1193,21 @@ mod tests {
     /// DIFFERENT signature is an independent group, funded on its own pool.
     #[tokio::test]
     async fn per_signature_group_gate() {
-        // Group A (sig = "alice"): two deploys, each Δ=3; pool funds exactly 3.
-        // Group B (sig = "bob"):   one deploy,  Δ=2; pool funds 2.
+        // Group A (sig = "alice"): two deploys, each Δ=3; pool funds exactly one.
+        // Group B (sig = "bob"):   one deploy,  Δ=2; pool funds it.
+        // F-C/F-D: each admitted deploy now also carves a +1 FeeExtract token, so
+        // admission requires `Σ⟦c⟧ ≥ Δ + 1` per deploy. The pools are sized at
+        // `Δ + 1` (4 for one alice deploy; 3 for bob) so the grouping/reject-both
+        // INTENT is unchanged: exactly one alice deploy fits (the second needs a
+        // further 4 ⇒ rejected), bob fits independently. The COST debits below are
+        // still the cost-only Δ (alice 3, bob 2); the +1 fee lands in `fee_debits`.
         let a0 = cosigned(&n_sends(3), b"alice", 0, 10);
         let a1 = cosigned(&n_sends(3), b"alice", 0, 20);
         let b0 = cosigned(&n_sends(2), b"bob", 0, 30);
 
         let mut reader = MockSupplyReader::new();
-        reader.set(b"alice", 3); // exactly one Δ=3 deploy fits
-        reader.set(b"bob", 2); // the Δ=2 deploy fits
+        reader.set(b"alice", 4); // exactly one Δ=3 deploy fits (cost 3 + fee 1)
+        reader.set(b"bob", 3); // the Δ=2 deploy fits (cost 2 + fee 1)
 
         let outcome = admit_by_funding(vec![a1.clone(), b0.clone(), a0.clone()], &reader, 0, false)
             .await
@@ -1121,11 +1230,16 @@ mod tests {
         );
         assert_eq!(outcome.admitted.len(), 2, "a0 + b0 admitted");
         assert_eq!(outcome.rejected.len(), 1, "a1 rejected (pool exhausted)");
-        // Debits: alice pool -= 3, bob pool -= 2.
+        // COST debits (burned from Σ⟦c⟧): alice pool -= 3, bob pool -= 2.
         let alice_key = delta_sigma::sig_key(&accounting::envelope_sig_single(b"alice"));
         let bob_key = delta_sigma::sig_key(&accounting::envelope_sig_single(b"bob"));
         assert_eq!(outcome.debits.get(&alice_key).map(|d| d.amount), Some(3));
         assert_eq!(outcome.debits.get(&bob_key).map(|d| d.amount), Some(2));
+        // FEE carve (one token per ADMITTED deploy, carved to F_v): one admitted
+        // deploy per present group ⇒ 1 each. cost ≠ fee: this is the separate
+        // FeeExtract, not the burned cost above.
+        assert_eq!(outcome.fee_debits.get(&alice_key).map(|d| d.amount), Some(1));
+        assert_eq!(outcome.fee_debits.get(&bob_key).map(|d| d.amount), Some(1));
     }
 
     struct DenyLogic;
@@ -1196,8 +1310,8 @@ mod tests {
         .await
         .expect("injected recompute must not error");
 
-        assert_eq!(default.get(&key).map(|debit| debit.amount), Some(2));
-        assert!(injected.is_empty());
+        assert_eq!(default.settlement.get(&key).map(|debit| debit.amount), Some(2));
+        assert!(injected.settlement.is_empty());
     }
 
     /// §7.7 reject-both / no-partial: when the FIRST candidate in a group does
@@ -1225,42 +1339,62 @@ mod tests {
         );
     }
 
-    /// §7.4 funded / unfunded boundary for RESOLVABLE demand: by Def 19 the gate
-    /// is EXACTLY `Σ ≥ Δ` — F-B: the economic margin (`min_phlo_price`) is NOT
-    /// folded into the correctness inequality for known demand. Pin the exact
-    /// boundary pair (Σ = Δ accepts; Σ = Δ−1 rejects) and prove a non-zero margin
-    /// is inert here (the four-sends demand is fully resolvable ⇒ unknown == false).
+    /// §7.4 funded / unfunded boundary for RESOLVABLE demand: by Def 19 the
+    /// correctness inequality for the COST is EXACTLY `Σ ≥ Δ` — F-B: the economic
+    /// margin (`min_phlo_price`) is NOT folded into it for known demand. F-C/F-D:
+    /// admission ALSO charges the +1 FeeExtract carve, so the gate's full
+    /// admission boundary is `Σ ≥ Δ + fee` (cost + fee, NOT cost + margin). Pin
+    /// the exact boundary pair (Σ = Δ+fee accepts; Σ = Δ+fee−1 rejects) and prove
+    /// a non-zero margin is STILL inert here (the four-sends demand is fully
+    /// resolvable ⇒ unknown == false ⇒ margin rides only the unknown branch).
     #[tokio::test]
     async fn funded_unfunded_boundary_at_def19() {
         // Δ = 4 (four parallel sends, fully resolvable). margin = 2, but it must
-        // NOT shift the boundary for resolvable demand ⇒ need only Σ ≥ Δ = 4.
+        // NOT shift the boundary for resolvable demand ⇒ need only Σ ≥ Δ + fee = 5
+        // (the +1 is the FeeExtract carve, not the margin).
         let demand = 4;
         let margin = 2;
+        const FEE: i64 = 1; // the per-deploy FeeExtract carve folded into admission
 
-        // Σ = Δ = 4 ⇒ accepted (Def 19 boundary), even though Σ < Δ+margin.
+        // Σ = Δ + fee = 5 ⇒ accepted (cost-Def-19 boundary + fee carve), even
+        // though Σ < Δ + fee + margin = 7 ⇒ the margin is inert (rides `unknown`).
         let d = cosigned(&n_sends(demand), b"dave", 0, 10);
         let mut reader_ok = MockSupplyReader::new();
-        reader_ok.set(b"dave", demand as i64);
+        reader_ok.set(b"dave", demand as i64 + FEE);
         let accepted = admit_by_funding(vec![d.clone()], &reader_ok, margin, false)
             .await
             .expect("gate must not error");
-        assert_eq!(accepted.admitted.len(), 1, "Σ = Δ ⇒ accepted (margin inert)");
+        assert_eq!(
+            accepted.admitted.len(),
+            1,
+            "Σ = Δ + fee ⇒ accepted (margin inert)"
+        );
         assert!(accepted.rejected.is_empty());
         let dave_key = delta_sigma::sig_key(&accounting::envelope_sig_single(b"dave"));
+        // COST debit is still the cost-only Δ (the fee is carved separately).
         assert_eq!(
             accepted.debits.get(&dave_key).map(|x| x.amount),
             Some(demand as i64)
         );
+        assert_eq!(
+            accepted.fee_debits.get(&dave_key).map(|x| x.amount),
+            Some(FEE),
+            "the admitted deploy carves exactly one FeeExtract token"
+        );
 
-        // Σ = Δ−1 = 3 ⇒ rejected (under the exact demand).
+        // Σ = Δ + fee − 1 = 4 ⇒ rejected (one below the cost+fee admission boundary).
         let mut reader_short = MockSupplyReader::new();
-        reader_short.set(b"dave", (demand as i64) - 1);
+        reader_short.set(b"dave", demand as i64 + FEE - 1);
         let rejected = admit_by_funding(vec![d.clone()], &reader_short, margin, false)
             .await
             .expect("gate must not error");
-        assert!(rejected.admitted.is_empty(), "Σ = Δ−1 ⇒ rejected");
+        assert!(rejected.admitted.is_empty(), "Σ = Δ + fee − 1 ⇒ rejected");
         assert_eq!(rejected.rejected.len(), 1);
         assert!(rejected.debits.is_empty(), "nothing admitted ⇒ no debit");
+        assert!(
+            rejected.fee_debits.is_empty(),
+            "nothing admitted ⇒ no fee carve"
+        );
     }
 
     /// A malformed term (one that fails to parse) is rejected outright — the
@@ -1374,36 +1508,69 @@ mod tests {
         );
     }
 
-    /// #13a.2 — STRICT zero-demand admit: with `strict = true`, a Δ=0 deploy
-    /// (no token-consuming COMMs) on an ABSENT pool is ADMITTED with NO debit —
-    /// the §7.6-step-5 carve-out (an underfunded deploy is one with Δ>0; a Δ=0
-    /// deploy demands nothing, so a zero supply funds it). For resolvable demand
-    /// the funded predicate is Def 19 `Σ ≥ Δ` (F-B: the margin is inert for known
-    /// demand); with the absent pool's effective Σ=0 and Δ=0 this is `0 ≥ 0`, so a
-    /// no-op deploy is admitted regardless of the margin. The test pins margin 0
-    /// (the historical carve-out value); the verdict is identical at any margin.
+    /// #13a.2 — STRICT zero-demand handling under the F-C/F-D FeeExtract carve.
+    /// A Δ=0 deploy (no token-consuming COMMs) STILL owes the spec's flat
+    /// FeeExtract (one client token per PROCESSED deploy, tex:2509-2521/3637),
+    /// which F-C/F-D folds into the admission demand: an admitted deploy needs
+    /// `Σ⟦c⟧ ≥ Δ + fee = 0 + 1 = 1`. So the §7.6-step-5 zero-demand carve-out is
+    /// now FEE-GATED — it admits only when the pool can afford the one-token fee:
+    ///   * ABSENT (or drained) pool ⇒ effective Σ = 0 < 1 ⇒ REJECTED (it cannot
+    ///     pay the FeeExtract; no execution, no debit, no carve);
+    ///   * PRESENT pool with Σ ≥ 1 ⇒ ADMITTED with a ZERO COST debit (Δ=0) and a
+    ///     fee carve of exactly 1 (the FeeExtract, carved to F_v).
+    /// This is the cost ≠ fee split at the zero-cost boundary; the COST funding
+    /// predicate is still Def 19 `Σ ≥ Δ` (margin inert for resolvable demand),
+    /// the +1 is the fee, not the margin.
     #[tokio::test]
-    async fn strict_absent_pool_admits_zero_demand() {
-        // A term with no sends/receives ⇒ Δ = 0 (Nil/new/par are not COMMs).
-        let z = cosigned("Nil", b"zoe", 0, 10);
-        let reader = MockSupplyReader::new(); // "zoe" pool absent
-        let outcome = admit_by_funding(
-            vec![z],
-            &reader,
+    async fn strict_zero_demand_is_fee_gated() {
+        let zoe_key = delta_sigma::sig_key(&accounting::envelope_sig_single(b"zoe"));
+
+        // (a) ABSENT pool: Δ=0 but the FeeExtract needs Σ≥1 ⇒ effective 0 ⇒ rejected.
+        let z_absent = cosigned("Nil", b"zoe", 0, 10);
+        let reader_absent = MockSupplyReader::new(); // "zoe" pool absent
+        let absent = admit_by_funding(
+            vec![z_absent],
+            &reader_absent,
+            /* margin */ 0,
+            /* strict */ true,
+        )
+        .await
+        .expect("gate must not error");
+        assert!(
+            absent.admitted.is_empty(),
+            "strict + absent pool + Δ=0 ⇒ rejected (cannot pay the +1 FeeExtract)"
+        );
+        assert_eq!(absent.rejected.len(), 1, "the un-fee-fundable deploy is rejected");
+        assert!(absent.debits.is_empty(), "rejected ⇒ no cost debit");
+        assert!(absent.fee_debits.is_empty(), "rejected ⇒ no fee carve");
+
+        // (b) PRESENT pool with Σ=1: the Δ=0 deploy can pay the one-token fee ⇒
+        // admitted, ZERO cost debit, fee carve of 1.
+        let z_funded = cosigned("Nil", b"zoe", 0, 10);
+        let mut reader_funded = MockSupplyReader::new();
+        reader_funded.set(b"zoe", 1); // exactly the FeeExtract token, no cost
+        let funded = admit_by_funding(
+            vec![z_funded],
+            &reader_funded,
             /* margin */ 0,
             /* strict */ true,
         )
         .await
         .expect("gate must not error");
         assert_eq!(
-            outcome.admitted.len(),
+            funded.admitted.len(),
             1,
-            "strict + absent pool + Δ=0 ⇒ admitted (demands nothing)"
+            "strict + present pool (Σ=1) + Δ=0 ⇒ admitted (affords the FeeExtract)"
         );
-        assert!(outcome.rejected.is_empty(), "Δ=0 ⇒ never rejected");
+        assert!(funded.rejected.is_empty(), "fee-fundable Δ=0 ⇒ not rejected");
         assert!(
-            outcome.debits.is_empty(),
-            "Δ=0 ⇒ zero settlement debit on the (absent) pool"
+            funded.debits.get(&zoe_key).is_none(),
+            "Δ=0 ⇒ zero COST settlement debit"
+        );
+        assert_eq!(
+            funded.fee_debits.get(&zoe_key).map(|d| d.amount),
+            Some(1),
+            "the admitted Δ=0 deploy still carves one FeeExtract token to F_v"
         );
     }
 
@@ -1535,19 +1702,21 @@ mod tests {
                 .await
                 .expect("strict replay recompute must not reject a funded client");
 
-        // play == replay: the debit map is byte-identical (the consensus bar).
+        // play == replay: the COST settlement map is byte-identical (the
+        // consensus bar). `recompute_settlement_debits` returns `RecomputedDebits`
+        // with `.settlement` (cost) and `.fee` (carve); this test asserts the cost.
         assert_eq!(
-            recomputed.len(),
+            recomputed.settlement.len(),
             play.debits.len(),
             "replay recomputed the same number of pool debits as play"
         );
         assert_eq!(
-            recomputed.get(&client_key).map(|d| d.amount),
+            recomputed.settlement.get(&client_key).map(|d| d.amount),
             play.debits.get(&client_key).map(|d| d.amount),
             "strict replay recompute is byte-identical to the play-side client debit"
         );
         assert_eq!(
-            recomputed.get(&client_key).map(|d| d.amount),
+            recomputed.settlement.get(&client_key).map(|d| d.amount),
             Some(DEMAND as i64),
             "replayed client debit equals its demand"
         );
@@ -1849,9 +2018,10 @@ mod tests {
             .await
             .expect("recompute must not error");
 
-        // THE BAR: byte-identical debit maps.
+        // THE BAR: byte-identical debit maps (the COST settlement; `recomputed`
+        // is `RecomputedDebits`, `.settlement` is the cost half).
         assert_eq!(
-            outcome.debits, recomputed,
+            outcome.debits, recomputed.settlement,
             "play-side debit map must equal the replay recompute byte-for-byte"
         );
 
@@ -1908,7 +2078,7 @@ mod tests {
             .await
             .expect("recompute must not error");
         assert_eq!(
-            outcome.debits, recomputed,
+            outcome.debits, recomputed.settlement,
             "play == replay byte-identical (pair-only regime)"
         );
 

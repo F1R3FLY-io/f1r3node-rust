@@ -44,9 +44,7 @@ pub const TOKEN_TAG: &str = "phlo";
 /// (handoff Decision 1). The g/#P axis collapses at the channel (DR-1: equal
 /// atom bytes ⇒ equal channel) and compounds are permutation-invariant via
 /// `ParSortMatcher::sort_match` (accounting/mod.rs:1544-1612).
-pub fn supply_channel(sig: &Sig) -> Par {
-    SignatureChannel::from_sig(sig).par
-}
+pub fn supply_channel(sig: &Sig) -> Par { SignatureChannel::from_sig(sig).par }
 
 /// Stage-D fee-collection domain: domain-separates the per-validator FEE pool
 /// `F_v` from the supply pool `Σ⟦v⟧` (both are content-addressed `GPrivate`s
@@ -393,18 +391,51 @@ pub fn client_alloc_random_state(
         .to_bytes()
 }
 
+/// Deterministic per-CLIENT `random_state` for the Cost-Accounted Rho Stage-D
+/// FEE CARVE (the spec's FeeExtract, cost-accounted-rho.tex:3637 "one client
+/// token consumed as fee"): the supply-CONSERVING per-client `Σ⟦c⟧` DEBIT that
+/// carves one token per admitted deploy from the client's OWN post-cost pool
+/// ([`CloseBlockDeploy::post_eval`] phase 3, before the `F_v` collect credit). On
+/// a RNG path DISJOINT from the mint (`lo ∈ [0,127]`), the WD-D2 COST settlement
+/// debit ([`debit_random_state`], `-0x2b`), the slash zero (`-0x2c`), fee-convert
+/// (`-0x2d`), fee-collect (`-0x2e`), client-alloc (`-0x2f`), and the mint-list
+/// channel (`0x2a`). A client's `Σ⟦c⟧` is hit by BOTH the cost debit and the fee
+/// carve in the SAME close block; routing the carve through this distinct fixed
+/// `FEE_CARVE_RNG_PATH` prefix split before the per-index splits guarantees the
+/// cost debit and the fee carve produce DISTINCT datum identities on the same
+/// channel — so the read-modify-replace leaves a single, deterministic datum and
+/// the post-state trie root is byte-identical on play and replay.
+///
+/// Anchored to the same close-block deploy `initial_rand` the mint uses
+/// (`generate_close_deploy_random_seed_from_*`, identical on play and replay) and
+/// advanced by the client's position in the SORTED (SigKey-ascending) fee-carve
+/// map — so the derivation is independent of iteration order and byte-identical
+/// play/replay.
+pub fn fee_carve_random_state(
+    close_rand: &crypto::rust::hash::blake2b512_random::Blake2b512Random,
+    index: i64,
+) -> Vec<u8> {
+    const FEE_CARVE_RNG_PATH: i8 = -0x30;
+    let lo = (index & 0x7f) as i8;
+    let hi = ((index >> 7) & 0x7f) as i8;
+    close_rand
+        .split_byte(FEE_CARVE_RNG_PATH)
+        .split_byte(lo)
+        .split_byte(hi)
+        .to_bytes()
+}
+
 /// Read the pre-state hash the supply read/write operate against. The supply
 /// channel read/write target the LIVE hot store, which for `post_eval` is the
 /// post-closeBlock state; the `pre_state_hash` is carried only for diagnostics
 /// / the `ReplaySupplyMismatch` cross-check context.
-pub fn pre_state_hash_hex(pre_state_hash: &StateHash) -> String {
-    hex::encode(pre_state_hash)
-}
+pub fn pre_state_hash_hex(pre_state_hash: &StateHash) -> String { hex::encode(pre_state_hash) }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use rholang::rust::interpreter::accounting::Sig;
+
+    use super::*;
 
     /// The shared-basis integration invariant (handoff Coordination, Stage B
     /// Decision 5): `supply_channel(s)` is exactly `SignatureChannel::from_sig`
