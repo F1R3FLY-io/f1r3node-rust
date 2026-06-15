@@ -253,6 +253,33 @@ pub fn conflicts(a: &EventLogIndex, b: &EventLogIndex) -> HashableSet<Blake2b256
             .cloned()
             .collect();
 
+        // DIAG: channels both branches touched on the same datum that were
+        // EXEMPTED from conflict because they're mergeable. Cross-referenced
+        // with the dispatcher's in_mergeable_chs flag, this reveals a channel
+        // that is conflict-exempt (mergeable in the event log) yet NOT folded
+        // by the dispatcher (absent from number_chs) — the gap that lets two
+        // identical produces land raw as multi-value.
+        {
+            let exempt_p: Vec<String> = shared_produces
+                .0
+                .intersection(&mergeable_produces.0)
+                .map(|p| hex::encode(p.channel_hash.bytes()))
+                .collect();
+            let exempt_c: Vec<String> = shared_consumes
+                .0
+                .intersection(&mergeable_consumes.0)
+                .flat_map(|c| c.channel_hashes.iter().map(|h| hex::encode(h.bytes())))
+                .collect();
+            if !exempt_p.is_empty() || !exempt_c.is_empty() {
+                tracing::debug!(
+                    target: "f1r3fly.merge.mergeable_exempt",
+                    exempt_produce_channels = %exempt_p.join(","),
+                    exempt_consume_channels = %exempt_c.join(","),
+                    "conflict exempted as mergeable"
+                );
+            }
+        }
+
         let mut result = HashSet::new();
         for consume in consume_races {
             result.extend(consume.channel_hashes.iter().cloned());

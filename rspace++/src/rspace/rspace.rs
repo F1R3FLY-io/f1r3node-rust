@@ -1000,6 +1000,8 @@ where
                 new_produce_hash = %new_hash,
                 existing_produce_hashes = ?existing_sources,
                 existing_provenance = ?existing_provenance,
+                channel_par = ?channel,
+                value = ?data,
                 "multi-datum transition on channel",
             );
         }

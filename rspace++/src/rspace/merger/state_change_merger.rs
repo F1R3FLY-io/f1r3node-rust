@@ -162,6 +162,8 @@ pub fn compute_trie_actions<C: Clone, P: Clone, A: Clone, K: Clone>(
                                 ),
                             )
                         },
+                        // datums path: enforce the single-value-cell stale-consume backstop
+                        true,
                     )
                 })
             })
@@ -230,6 +232,10 @@ pub fn compute_trie_actions<C: Clone, P: Clone, A: Clone, K: Clone>(
                         },
                     ))
                 },
+                // joins path: the stale-consume backstop is single-value-cell
+                // specific (datums); joins remove/add legitimately track consume
+                // lifecycle, so it does not apply here.
+                false,
             )
         })
         .collect::<Result<Vec<_>, _>>()?;
@@ -249,8 +255,35 @@ fn make_trie_action<C: Clone, P: Clone, A: Clone, K: Clone>(
     changes: &ChannelChange<ByteVector>,
     remove_action: impl Fn(&Blake2b256Hash) -> HotStoreTrieAction<C, P, A, K>,
     update_action: impl Fn(&Blake2b256Hash, Vec<ByteVector>) -> HotStoreTrieAction<C, P, A, K>,
+    reject_stale_removes: bool,
 ) -> Result<HotStoreTrieAction<C, P, A, K>, HistoryError> {
     let init = init_value(history_pointer)?;
+
+    // Single-value-cell stale-consume backstop (datums path only). A `removed`
+    // datum that is neither present in the base nor re-added by this combined
+    // change is a stale consume: a chain whose diff was computed against a base
+    // it did not execute on (a sibling already rewrote the cell). Base-first
+    // composition would silently leave the un-removed base value alongside the
+    // new one — a single-value cell going multi-value. Such chains are rejected
+    // upstream in DagMerger; reaching here means one slipped past, so fail the
+    // merge loudly rather than corrupt the cell. The `!added.contains` clause
+    // exempts an in-branch produced-then-consumed datum (it lives in both
+    // `added` and `removed` after ChannelChange::combine).
+    if reject_stale_removes {
+        if let Some(stale) = changes
+            .removed
+            .iter()
+            .find(|d| !init.contains(d) && !changes.added.contains(d))
+        {
+            return Err(HistoryError::MergeError(format!(
+                "stale-consume on channel {}: removed datum {} absent from base and from added; \
+                 chain rebased onto a divergent base (single-value-cell race) — must be rejected \
+                 upstream, not composed",
+                hex::encode(history_pointer.bytes()),
+                hex::encode(&stale[..std::cmp::min(8, stale.len())]),
+            )));
+        }
+    }
 
     // Compose as (init -- removed) ++ added, as multisets — the upstream RChain
     // StateChangeMerger form. Single-value-cell conflict detection (Check #1
@@ -437,6 +470,109 @@ mod tests {
             )) => {
                 assert_eq!(insert.hash, channel_hash);
                 assert_eq!(insert.data, vec![datum_b]);
+            }
+            other => panic!("expected TrieInsertBinaryProduce, got {:?}", other),
+        }
+    }
+
+    /// RED reproduction of the cross-branch re-base stale-consume verified in
+    /// run 8686406b. A surviving chain's `removed` datum O is neither in the
+    /// base (I, the main parent's close-block value) nor produced by any
+    /// sibling chain, so base-first composition `(init -- removed) ++
+    /// added` leaves `[I, A]`: a single-value cell silently goes
+    /// multi-value. The merge must surface this as an error rather than
+    /// corrupt the cell. (The stale chain is rejected upstream in
+    /// dag_merger; this asserts the defense-in-depth backstop so a missed
+    /// stale fails loudly instead of composing to garbage.)
+    #[test]
+    fn compute_trie_actions_rejects_stale_removed_on_single_value_cell() {
+        let datum_i: Vec<u8> = vec![0x11; 32]; // base value (winner, already in base)
+        let datum_o: Vec<u8> = vec![0x00; 32]; // value the stale chain consumed (lost the race)
+        let datum_a: Vec<u8> = vec![0xaa; 32]; // stale chain's new value
+        let channel_hash = Blake2b256Hash::from_bytes(vec![0x01; 32]);
+
+        let base_reader: Box<dyn HistoryReader<Blake2b256Hash, (), (), (), ()>> =
+            Box::new(StubHistoryReaderBinary {
+                data_map: HashMap::from([(channel_hash.clone(), vec![datum_i.clone()])]),
+            });
+
+        // One chain: removed=[O], added=[A], with O absent from base=[I] and from
+        // added. This is the exact verified shape (removed != init, added != init,
+        // new_val distinct).
+        let datums_changes = DashMap::new();
+        datums_changes.insert(channel_hash.clone(), ChannelChange {
+            added: vec![datum_a.clone()],
+            removed: vec![datum_o.clone()],
+        });
+        let change = StateChange {
+            datums_changes,
+            cont_changes: DashMap::new(),
+            consume_channels_to_join_serialized_map: DashMap::new(),
+        };
+
+        let mergeable_chs: NumberChannelsDiff = BTreeMap::new(); // non-foldable channel
+        let no_override =
+            |_: &Blake2b256Hash,
+             _: &ChannelChange<Vec<u8>>,
+             _: &NumberChannelsDiff|
+             -> Result<Option<HotStoreTrieAction<(), (), (), ()>>, HistoryError> {
+                Ok(None)
+            };
+
+        let result = compute_trie_actions(&change, &base_reader, &mergeable_chs, no_override);
+
+        assert!(
+            result.is_err(),
+            "stale-consume (a removed datum absent from base AND from added) must surface as a \
+             merge error, not silently compose a single-value cell to multi-value; got Ok with \
+             {:?} action(s)",
+            result.as_ref().map(|a| a.len()),
+        );
+    }
+
+    /// Negative guard against over-rejection: a normal single-value rewrite —
+    /// `removed` equals the base value — must NOT be flagged as stale. This is
+    /// the common, correct case (consume the current cell value, produce the
+    /// next) and must keep composing to a single value.
+    #[test]
+    fn compute_trie_actions_allows_normal_rewrite_removing_base_value() {
+        let datum_base: Vec<u8> = vec![0x22; 32];
+        let datum_next: Vec<u8> = vec![0x33; 32];
+        let channel_hash = Blake2b256Hash::from_bytes(vec![0x02; 32]);
+
+        let base_reader: Box<dyn HistoryReader<Blake2b256Hash, (), (), (), ()>> =
+            Box::new(StubHistoryReaderBinary {
+                data_map: HashMap::from([(channel_hash.clone(), vec![datum_base.clone()])]),
+            });
+
+        let datums_changes = DashMap::new();
+        datums_changes.insert(channel_hash.clone(), ChannelChange {
+            added: vec![datum_next.clone()],
+            removed: vec![datum_base.clone()], // removed == base: legitimate rewrite
+        });
+        let change = StateChange {
+            datums_changes,
+            cont_changes: DashMap::new(),
+            consume_channels_to_join_serialized_map: DashMap::new(),
+        };
+
+        let mergeable_chs: NumberChannelsDiff = BTreeMap::new();
+        let no_override =
+            |_: &Blake2b256Hash,
+             _: &ChannelChange<Vec<u8>>,
+             _: &NumberChannelsDiff|
+             -> Result<Option<HotStoreTrieAction<(), (), (), ()>>, HistoryError> {
+                Ok(None)
+            };
+
+        let actions = compute_trie_actions(&change, &base_reader, &mergeable_chs, no_override)
+            .expect("a normal rewrite (removed == base) must not be rejected as stale");
+        assert_eq!(actions.len(), 1, "expected exactly one trie action");
+        match &actions[0] {
+            HotStoreTrieAction::TrieInsertAction(TrieInsertAction::TrieInsertBinaryProduce(
+                insert,
+            )) => {
+                assert_eq!(insert.data, vec![datum_next], "must compose to the single next value");
             }
             other => panic!("expected TrieInsertBinaryProduce, got {:?}", other),
         }

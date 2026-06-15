@@ -983,6 +983,14 @@ pub async fn compute_parents_post_state(
                 rejected_slash_count = rejected_slash_pairs.len(),
                 "multi-parent merge result",
             );
+            tracing::info!(
+                target: "f1r3.trace.merge_verdict",
+                floor_number = floor.block_number,
+                parents = parent_hashes.len(),
+                parent_hashes = ?parent_hashes.iter().map(|h| hex::encode(&h[..h.len().min(6)])).collect::<Vec<_>>(),
+                rejected_sigs = ?rejected_user_pairs.iter().map(|(s, _)| hex::encode(&s[..s.len().min(8)])).collect::<Vec<_>>(),
+                "MERGE_VERDICT",
+            );
 
             // Populate the rejected-deploy buffer from (sig, source_block_hash) pairs.
             // Looking up the `Signed<DeployData>` from the block store lets the block

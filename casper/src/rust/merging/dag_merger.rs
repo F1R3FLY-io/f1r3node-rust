@@ -457,6 +457,29 @@ pub fn merge(
                             channel = %ch_hex,
                             "merge dispatcher fallback path"
                         );
+                        // DIAG: identify the non-mergeable channel by decoding its
+                        // base value(s) — numeric (a vault/number cell) vs a Par
+                        // (a coordination/lock channel).
+                        if let Ok(base) = reader.get_data(hash) {
+                            let vals: Vec<String> = base
+                                .iter()
+                                .map(
+                                    |d| match RholangMergingLogic::try_get_number_with_rnd(&d.a) {
+                                        Some((n, _)) => format!("num:{}", n),
+                                        None => "par".to_string(),
+                                    },
+                                )
+                                .collect();
+                            tracing::debug!(
+                                target: "f1r3fly.merge.channel_id",
+                                channel = %ch_hex,
+                                base_count = base.len(),
+                                base_values = %vals.join(","),
+                                added = channel_changes.added.len(),
+                                removed = channel_changes.removed.len(),
+                                "non-mergeable channel base values"
+                            );
+                        }
                         Ok(None)
                     }
                 },
@@ -612,6 +635,143 @@ pub fn merge(
         );
     }
 
+    // Stale-consume rejection: single-value-cell race. A surviving branch whose
+    // diff consumes (removes) a datum on a NON-foldable channel that is neither
+    // present in the merge base nor produced within the branch itself was
+    // rebased onto a base it did not execute on — a sibling already rewrote that
+    // single-value cell. Base-first composition would leave the base value
+    // alongside the new one (the cell goes multi-value), which then cascades
+    // through replay as non-determinism. Reject the whole branch: its user
+    // deploys recover (re-proposed and re-executed against the updated base);
+    // its system close-block effects are re-derived by the next block's
+    // close-block. This is the explicit, deterministic form of the
+    // serialization the premature finalize-purge performed silently before it
+    // was removed. Foldable (mergeable number) channels are exempt — they
+    // compose via the dispatcher fold and never reach the raw datums path.
+    {
+        // Channels folded as mergeable number channels anywhere in the surviving
+        // set: build the exemption from ALL surviving chains so a channel that
+        // is foldable in any branch is never stale-checked (over-exemption is
+        // safe; under-exemption would over-reject a composable cell).
+        let mut foldable: HashSet<Blake2b256Hash> = HashSet::new();
+        for branch in resolved.to_merge.iter() {
+            for chain in branch.0.iter() {
+                for (ch, _) in chain.event_log_index.number_channels_data.iter() {
+                    foldable.insert(ch.clone());
+                }
+            }
+        }
+
+        let mut base_cache: HashMap<Blake2b256Hash, Vec<Vec<u8>>> = HashMap::new();
+        let mut stale_indices: HashSet<usize> = HashSet::new();
+
+        for (bi, branch) in resolved.to_merge.iter().enumerate() {
+            // Datums produced within this branch (the in-scope exemption: a datum
+            // produced then consumed inside the branch is a legitimate chained
+            // write, not a lost race).
+            let mut branch_added: HashMap<Blake2b256Hash, HashSet<Vec<u8>>> = HashMap::new();
+            for chain in branch.0.iter() {
+                for e in chain.state_changes.datums_changes.iter() {
+                    let entry = branch_added.entry(e.key().clone()).or_default();
+                    for d in e.value().added.iter() {
+                        entry.insert(d.clone());
+                    }
+                }
+            }
+
+            // On a stale hit, capture (channel_hex, base_count, removed_hash) so
+            // the trace pins WHICH cell raced and how the base differs from the
+            // chain's consumed datum. The tracing span (create_block vs the seal
+            // span) distinguishes construction-merge from seal-merge context.
+            let mut stale_detail: Option<(String, usize, String)> = None;
+            'scan: for chain in branch.0.iter() {
+                for e in chain.state_changes.datums_changes.iter() {
+                    let ch = e.key();
+                    if foldable.contains(ch) {
+                        continue;
+                    }
+                    let removed = &e.value().removed;
+                    if removed.is_empty() {
+                        continue;
+                    }
+                    let base = if let Some(b) = base_cache.get(ch) {
+                        b.clone()
+                    } else {
+                        let b = history_reader
+                            .get_data_proj_binary(ch)
+                            .map_err(CasperError::HistoryError)?;
+                        base_cache.insert(ch.clone(), b.clone());
+                        b
+                    };
+                    let added_here = branch_added.get(ch);
+                    for d in removed.iter() {
+                        let in_base = base.contains(d);
+                        let in_branch = added_here.is_some_and(|s| s.contains(d));
+                        if !in_base && !in_branch {
+                            stale_detail = Some((
+                                hex::encode(ch.bytes()),
+                                base.len(),
+                                hex::encode(&d[..d.len().min(8)]),
+                            ));
+                            break 'scan;
+                        }
+                    }
+                }
+            }
+            if let Some((ch_hex, base_count, removed_hash)) = stale_detail {
+                let sigs: Vec<String> = branch
+                    .0
+                    .iter()
+                    .flat_map(|c| c.deploys_with_cost.0.iter())
+                    .filter(|dp| !is_system_deploy_id(&dp.deploy_id))
+                    .map(|dp| hex::encode(&dp.deploy_id[..dp.deploy_id.len().min(8)]))
+                    .collect();
+                let has_system = branch
+                    .0
+                    .iter()
+                    .flat_map(|c| c.deploys_with_cost.0.iter())
+                    .any(|dp| is_system_deploy_id(&dp.deploy_id));
+                tracing::info!(
+                    target: "f1r3.trace.fs_floor",
+                    event = "stale_consume_branch",
+                    channel = %ch_hex,
+                    base_count,
+                    removed_hash = %removed_hash,
+                    has_system,
+                    sigs = %sigs.join(","),
+                    "stale-consume rejecting branch: removed datum absent from base+branch (single-value race)"
+                );
+                stale_indices.insert(bi);
+            }
+        }
+
+        if !stale_indices.is_empty() {
+            let pre = resolved.to_merge.len();
+            let mut kept: Vec<HashableSet<DeployChainIndex>> = Vec::new();
+            for (bi, branch) in std::mem::take(&mut resolved.to_merge)
+                .into_iter()
+                .enumerate()
+            {
+                if stale_indices.contains(&bi) {
+                    for chain in branch.0 {
+                        resolved.rejected.0.insert(chain);
+                    }
+                } else {
+                    kept.push(branch);
+                }
+            }
+            resolved.to_merge = kept;
+            tracing::info!(
+                target: "f1r3.trace.fs_floor",
+                event = "stale_consume_rejected",
+                branches = stale_indices.len(),
+                kept = resolved.to_merge.len(),
+                of = pre,
+                "rejected branches consuming a datum absent from base and branch (single-value-cell race)"
+            );
+        }
+    }
+
     // Rejection expansion. Any chain whose source block is a DAG descendant
     // of a rejected chain's source block (within merge scope) has pre-computed
     // diffs against a pre-state that the merge is about to drop. Expand the
@@ -761,9 +921,11 @@ pub fn merge(
             .map(|(sig, _)| hex::encode(&sig[..std::cmp::min(8, sig.len())]))
             .collect();
         tracing::info!(
-            "DagMerger rejected {} user deploys: {}",
-            rejected_user_deploys.len(),
-            rejected_str.join(", ")
+            target: "f1r3.trace.fs_floor",
+            event = "merge_rejected_user",
+            count = rejected_user_deploys.len(),
+            sigs = %rejected_str.join(","),
+            "DagMerger rejected user deploys (span distinguishes construction vs seal merge)"
         );
     }
     if !rejected_slashes.is_empty() {
