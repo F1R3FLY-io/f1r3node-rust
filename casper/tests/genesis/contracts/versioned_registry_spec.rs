@@ -46,6 +46,10 @@ const EXPECTED_TEST_NAMES: &[&str] = &[
     // Step 6: public rho:registry:1.0.0 entry point
     "public_v1_returns_v1Api_bundle",
     "public_v1_insert_then_lookup",
+    // Step 7: deprecation notify wiring
+    "notify_fires_to_one_listener",
+    "notify_fires_to_many_listeners",
+    "approve_then_deprecate_refires",
 ];
 
 #[tokio::test]

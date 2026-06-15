@@ -319,7 +319,36 @@ This is the step where the temporary internal-channel handle from Step 3 goes aw
 4. **Legacy URN coexistence** — `rho:registry:lookup` (legacy) and `rho:registry:1.*` (new) can both be `new`-bound in the same `.rho` file without conflict. Add `test_legacy_and_v1_coexist` covering this.
 5. **Full regression** — `cargo test -p rholang -p casper`.
 
-### Step 7 — deprecation notify wiring
+### Step 7 — deprecation notify wiring ✅ DONE (2026-06-15)
+
+Deprecation notifications are end-to-end: clients pass a notify channel at lookup time, deprecation fires `("deprecated", deployerId, projectId, version)` on every recorded channel.
+
+**Delivered:**
+
+- New recursive helper `fireNotifications(@notifyList, @msg, done)` in `VersionedRegistry.rho` — walks a list of stored notify channels and emits `msg` on each.
+- `lookupVersion` signature changed from `(urn, ret)` to `(urn, notifyCh, ret)`. When `notifyCh` is `Nil` the entry is unchanged; otherwise the channel is appended to the resolved entry's `notify` list.
+- `deprecateVersion` flips `deprecated: true` and then calls `fireNotifications` on the entry's `notify` list before returning `true`. The list stays in the entry after firing, so repeated `deprecateVersion` calls re-fire (idempotent at the contract level; clients dedupe).
+- Notify channels are stored per-resolution. Two `lookupVersion` calls produce two independent entries, both fire on a single `deprecateVersion`.
+
+**Scope notes:**
+
+- All existing Step 5 / Step 6 test cases were updated to pass `Nil` for the new notify slot (no behavior change).
+- The public URN's `_notify` (from `getReg!?(*notify)`) is still captured but unused; there is no registry-level deprecation list yet. The FIP example imports a versioned library, which already works through the per-`lookupVersion` notify slot. Registry-level notification (deprecating `rho:registry:1.0.0` in favor of `rho:registry:2.0.0`) is a follow-up when `rho:registry:2.0.0` actually ships.
+- Channel layout: notify channels are stored as the dereferenced process. Callers pass `*myNotify` and the contract appends that process to the list. `fireNotifications` quotes each list element with `@` to send.
+
+**Test coverage (3 new cases, all real-verified):**
+
+- `notify_fires_to_one_listener` — single lookup with notify, deprecate, expect one `("deprecated", deployerId, projectId, version)` on the notify channel.
+- `notify_fires_to_many_listeners` — three independent `lookupVersion` calls register three notify channels; a single `deprecateVersion` fires all three with identical payloads.
+- `approve_then_deprecate_refires` — insert, lookup with notify, deprecate (fire 1), approve, deprecate again (fire 2). Verifies the per-resolution list survives the approve→deprecate cycle and re-fires.
+
+Verified by flipping the expected tag in `notify_fires_to_one_listener` from `"deprecated"` to `"WRONG_TAG"` — the Rust spec failed with `left: "(\"WRONG_TAG\", \"alice\", \"p22\", \"1.0.0\")"`, `right: "(\"deprecated\", \"alice\", \"p22\", \"1.0.0\")"`, proving the full chain (lookup → notify recording → deprecate → fire → receive) executes.
+
+Total tests in `versioned_registry_spec`: 24, all passing. Legacy regression suite unchanged.
+
+---
+
+Original Step 7 plan text:
 
 Two pieces:
 

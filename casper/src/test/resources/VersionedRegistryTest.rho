@@ -39,7 +39,12 @@ new
 
   // Step 6 channels — public rho:registry:1.0.0 import
   getReg(`rho:registry:1.0.0`), notify20, reg20Ch, ins20, ack20,
-  getReg21(`rho:registry:1.0.0`), notify21, reg21Ch, ins21, lk21, ack21
+  getReg21(`rho:registry:1.0.0`), notify21, reg21Ch, ins21, lk21, ack21,
+
+  // Step 7 channels — deprecation notify wiring
+  ins22, lk22, notify22, dep22, ack22,
+  ins23, lk23a, lk23b, lk23c, n23a, n23b, n23c, dep23, ack23,
+  ins24, lk24, dep24, app24, redep24, n24, ack24
 in {
   // 1. insertVersion under lib happy path returns true
   v1Api!("insertVersion", "lib", "deployerA".toByteArray(), "projA", "1.0.0", "codeA", *ins1) |
@@ -142,7 +147,7 @@ in {
   // 12. exact-version lookup returns the inserted code
   v1Api!("insertVersion", "lib", "alice", "p12", "1.0.0", "code12", *lk12a) |
   for (@_ <- lk12a) {
-    v1Api!("lookupVersion", "rho:lib:1.0.0:alice:p12:1.0.0", *lk12b) |
+    v1Api!("lookupVersion", "rho:lib:1.0.0:alice:p12:1.0.0", Nil, *lk12b) |
     for (@code <- lk12b) {
       assert!("resolve_exact_version", 1, ("code12", "==", code),
               "Exact version lookup should return the stored code", *ack12)
@@ -156,7 +161,7 @@ in {
     for (@_ <- lk13b) {
       v1Api!("insertVersion", "lib", "alice", "p13", "1.0.2", "patch2", *lk13c) |
       for (@_ <- lk13c) {
-        v1Api!("lookupVersion", "rho:lib:1.*:alice:p13:1.0.*", *lk13d) |
+        v1Api!("lookupVersion", "rho:lib:1.*:alice:p13:1.0.*", Nil, *lk13d) |
         for (@code <- lk13d) {
           assert!("resolve_patch_wildcard", 1, ("patch2", "==", code),
                   "1.0.* should resolve to highest patch (1.0.2)", *ack13)
@@ -172,7 +177,7 @@ in {
     for (@_ <- lk14b) {
       v1Api!("insertVersion", "lib", "alice", "p14", "1.1.9", "minor11x", *lk14c) |
       for (@_ <- lk14c) {
-        v1Api!("lookupVersion", "rho:lib:1.*:alice:p14:1.*", *lk14d) |
+        v1Api!("lookupVersion", "rho:lib:1.*:alice:p14:1.*", Nil, *lk14d) |
         for (@code <- lk14d) {
           assert!("resolve_minor_wildcard", 1, ("minor12x", "==", code),
                   "1.* should resolve to the highest minor.patch (1.2.3)", *ack14)
@@ -186,7 +191,7 @@ in {
   for (@_ <- lk15a) {
     v1Api!("insertVersion", "lib", "alice", "p15", "2.0.0", "major2", *lk15b) |
     for (@_ <- lk15b) {
-      v1Api!("lookupVersion", "rho:lib:1.*:alice:p15:*", *lk15c) |
+      v1Api!("lookupVersion", "rho:lib:1.*:alice:p15:*", Nil, *lk15c) |
       for (@code <- lk15c) {
         assert!("resolve_major_wildcard", 1, ("major2", "==", code),
                 "* should resolve to the highest version (2.0.0)", *ack15)
@@ -199,7 +204,7 @@ in {
   for (@_ <- lk16a) {
     v1Api!("insertVersion", "lib", "alice", "p16", "1.1.0-alpha", "prerelease", *lk16b) |
     for (@_ <- lk16b) {
-      v1Api!("lookupVersion", "rho:lib:1.*:alice:p16:1.*", *lk16c) |
+      v1Api!("lookupVersion", "rho:lib:1.*:alice:p16:1.*", Nil, *lk16c) |
       for (@code <- lk16c) {
         assert!("resolve_prerelease_skipped", 1, ("stable", "==", code),
                 "1.* should resolve to 1.0.0 stable, skipping 1.1.0-alpha", *ack16)
@@ -214,7 +219,7 @@ in {
     for (@_ <- lk17b) {
       v1Api!("deprecateVersion", "lib", "alice", "p17", "1.0.1", *lk17c) |
       for (@_ <- lk17c) {
-        v1Api!("lookupVersion", "rho:lib:1.*:alice:p17:1.0.*", *lk17d) |
+        v1Api!("lookupVersion", "rho:lib:1.*:alice:p17:1.0.*", Nil, *lk17d) |
         for (@code <- lk17d) {
           assert!("resolve_deprecated_skipped", 1, ("old", "==", code),
                   "Deprecating 1.0.1 should make 1.0.* fall back to 1.0.0", *ack17)
@@ -224,14 +229,14 @@ in {
   } |
 
   // 18. no matching (pk, project) returns Nil
-  v1Api!("lookupVersion", "rho:lib:1.0.0:nobody:nothing:1.0.0", *lk18) |
+  v1Api!("lookupVersion", "rho:lib:1.0.0:nobody:nothing:1.0.0", Nil, *lk18) |
   for (@code <- lk18) {
     assert!("resolve_miss_returns_nil", 1, (Nil, "==", code),
             "Lookup of an unknown (pk, project) should return Nil", *ack18)
   } |
 
   // 19. malformed URN returns Nil
-  v1Api!("lookupVersion", "not-a-versioned-urn", *lk19) |
+  v1Api!("lookupVersion", "not-a-versioned-urn", Nil, *lk19) |
   for (@code <- lk19) {
     assert!("resolve_malformed_returns_nil", 1, (Nil, "==", code),
             "Malformed URN should return Nil", *ack19)
@@ -261,10 +266,73 @@ in {
   for (@reg <- reg21Ch) {
     @reg!("insertVersion", "lib", "alice", "p21", "1.0.0", "publicCode", *ins21) |
     for (@_ <- ins21) {
-      @reg!("lookupVersion", "rho:lib:1.0.0:alice:p21:1.0.0", *lk21) |
+      @reg!("lookupVersion", "rho:lib:1.0.0:alice:p21:1.0.0", Nil, *lk21) |
       for (@code <- lk21) {
         assert!("public_v1_insert_then_lookup", 1, ("publicCode", "==", code),
                 "insertVersion then lookupVersion through the public URN should round-trip", *ack21)
+      }
+    }
+  } |
+
+  // ─── Step 7: deprecation notify wiring ───────────────────────────────
+  //
+  // lookupVersion records the caller's notify channel on the resolved
+  // entry; deprecateVersion fires
+  //   ("deprecated", deployerId, projectId, version)
+  // on each recorded channel. Channels are per-resolution, so each
+  // lookupVersion call adds an independent listener.
+
+  // 22. Single notify channel: lookup with notify, deprecate, observe.
+  v1Api!("insertVersion", "lib", "alice", "p22", "1.0.0", "code22", *ins22) |
+  for (@_ <- ins22) {
+    v1Api!("lookupVersion", "rho:lib:1.0.0:alice:p22:1.0.0", *notify22, *lk22) |
+    for (@_ <- lk22) {
+      v1Api!("deprecateVersion", "lib", "alice", "p22", "1.0.0", *dep22) |
+      for (@_ <- dep22 & @msg <- notify22) {
+        assert!("notify_fires_to_one_listener", 1,
+                (("deprecated", "alice", "p22", "1.0.0"), "==", msg),
+                "Deprecation should fire a single recorded notify", *ack22)
+      }
+    }
+  } |
+
+  // 23. Multiple notify channels from independent lookups all fire.
+  v1Api!("insertVersion", "lib", "alice", "p23", "1.0.0", "code23", *ins23) |
+  for (@_ <- ins23) {
+    v1Api!("lookupVersion", "rho:lib:1.0.0:alice:p23:1.0.0", *n23a, *lk23a) |
+    v1Api!("lookupVersion", "rho:lib:1.0.0:alice:p23:1.0.0", *n23b, *lk23b) |
+    v1Api!("lookupVersion", "rho:lib:1.0.0:alice:p23:1.0.0", *n23c, *lk23c) |
+    for (@_ <- lk23a & @_ <- lk23b & @_ <- lk23c) {
+      v1Api!("deprecateVersion", "lib", "alice", "p23", "1.0.0", *dep23) |
+      for (@_ <- dep23 & @ma <- n23a & @mb <- n23b & @mc <- n23c) {
+        assert!("notify_fires_to_many_listeners", 1,
+                ((ma, mb, mc), "==",
+                 (("deprecated", "alice", "p23", "1.0.0"),
+                  ("deprecated", "alice", "p23", "1.0.0"),
+                  ("deprecated", "alice", "p23", "1.0.0"))),
+                "All three recorded notifies should fire on a single deprecate", *ack23)
+      }
+    }
+  } |
+
+  // 24. approve then deprecate re-fires the warning.
+  v1Api!("insertVersion", "lib", "alice", "p24", "1.0.0", "code24", *ins24) |
+  for (@_ <- ins24) {
+    v1Api!("lookupVersion", "rho:lib:1.0.0:alice:p24:1.0.0", *n24, *lk24) |
+    for (@_ <- lk24) {
+      v1Api!("deprecateVersion", "lib", "alice", "p24", "1.0.0", *dep24) |
+      for (@_ <- dep24 & @firstFire <- n24) {
+        v1Api!("approveVersion", "lib", "alice", "p24", "1.0.0", *app24) |
+        for (@_ <- app24) {
+          v1Api!("deprecateVersion", "lib", "alice", "p24", "1.0.0", *redep24) |
+          for (@_ <- redep24 & @secondFire <- n24) {
+            assert!("approve_then_deprecate_refires", 1,
+                    ((firstFire, secondFire), "==",
+                     (("deprecated", "alice", "p24", "1.0.0"),
+                      ("deprecated", "alice", "p24", "1.0.0"))),
+                    "Both deprecations should fire the notify", *ack24)
+          }
+        }
       }
     }
   }
