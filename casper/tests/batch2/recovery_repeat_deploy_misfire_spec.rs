@@ -129,7 +129,9 @@ async fn repeat_deploy_correctly_rejects_stale_recovery_when_d_is_finalized() {
             None,
         );
 
-        let dag = block_dag_storage.get_representation();
+        let dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
         let mut snapshot = mk_casper_snapshot(dag);
 
         let rejected: DashSet<Bytes> = DashSet::new();
@@ -183,7 +185,7 @@ async fn proposer_must_skip_recovery_when_deploy_is_canonically_finalized() {
         );
 
         let mut aux_kvm = InMemoryStoreManager::new();
-        let deploy_storage = std::sync::Arc::new(StdMutex::new(
+        let deploy_storage = std::sync::Arc::new(parking_lot::Mutex::new(
             KeyValueDeployStorage::new(&mut aux_kvm)
                 .await
                 .expect("Failed to create deploy storage"),
@@ -202,10 +204,13 @@ async fn proposer_must_skip_recovery_when_deploy_is_canonically_finalized() {
                 .expect("Failed to add deploy to buffer");
         }
 
-        let dag = block_dag_storage.get_representation();
+        let dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
         let mut snapshot = mk_casper_snapshot(dag);
         snapshot.last_finalized_block = block_dag_storage
             .get_representation()
+            .expect("dag representation")
             .last_finalized_block();
         snapshot.deploys_in_scope.insert(deploy_sig.clone());
         snapshot.rejected_in_scope.insert(deploy_sig.clone());

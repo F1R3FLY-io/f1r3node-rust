@@ -303,7 +303,7 @@ impl NoOpsCasperEffect {
 
             // Add block metadata to the metadata store
             let block_metadata = BlockMetadata::from_block(&block, false, None, None);
-            let mut metadata_guard = self.block_dag_storage.block_metadata_index.write().unwrap();
+            let mut metadata_guard = self.block_dag_storage.block_metadata_index.write();
             match metadata_guard.add(block_metadata) {
                 Ok(_) => {
                     tracing::debug!(
@@ -326,7 +326,7 @@ impl NoOpsCasperEffect {
                 .into_iter()
                 .map(|deploy_id| (deploy_id, BlockHashSerde(block.block_hash.clone())))
                 .collect();
-            let deploy_index_guard = self.block_dag_storage.deploy_index.write().unwrap();
+            let deploy_index_guard = self.block_dag_storage.deploy_index.write();
             if let Err(e) = deploy_index_guard.put(deploy_entries) {
                 tracing::error!("Failed to add deploy mappings to DAG storage: {:?}", e);
             }

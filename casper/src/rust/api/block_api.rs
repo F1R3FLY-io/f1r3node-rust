@@ -1242,7 +1242,7 @@ impl BlockAPI {
                     .block_dag()
                     .await
                     .map_err(|e| eyre::eyre!(e.to_string()))?;
-                match dag.find(hash) {
+                match dag.find(hash).map_err(|e| eyre::eyre!(e.to_string()))? {
                     Some(block_hash) => casper
                         .block_store()
                         .get(&block_hash)

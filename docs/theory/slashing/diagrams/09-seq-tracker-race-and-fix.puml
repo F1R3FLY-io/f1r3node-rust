@@ -1,0 +1,156 @@
+' Sequence Diagram 09 — Tracker race condition and the locking fix.
+'
+' Demonstrates the Rust-introduced regression at multi_parent_casper_impl.rs:1046-1075
+' where two threads concurrently process AdmissibleEquivocation for the same
+' (validator, seqNum-1) pair.  The lock-free direct method calls allow both
+' threads to observe "record absent" and both insert, overwriting accumulated
+' equivocationDetectedBlockHashes.  Bug fix #2 (T-9.2)
+' re-locks the read-modify-write window via access_equivocations_tracker.
+'
+' Source of truth for Figure 10.2 in slashing-specification.md.
+'
+' Color palette: see Diagram 02 header for the legend.
+'
+' Render:
+'   plantuml -tsvg docs/theory/slashing/diagrams/09-seq-tracker-race-and-fix.puml
+
+@startuml 09-seq-tracker-race-and-fix
+!theme plain
+
+title Tracker race & locking fix (Bug #2 / T-9.2)
+
+skinparam sequence {
+  ArrowColor              #444444
+  LifeLineBorderColor     #666666
+  ParticipantBorderColor  #333333
+  NoteBorderColor         #666666
+  NoteBackgroundColor     #FFF8E1
+  DividerBackgroundColor  #ECEFF1
+}
+skinparam defaultFontName "sans-serif"
+skinparam defaultFontSize 11
+
+autonumber
+
+participant "Thread T1\nhandle_invalid_block(b1)" as T1 #FFECB3
+participant "Thread T2\nhandle_invalid_block(b2)" as T2 #FFECB3
+participant "EquivocationTrackerStore" as Tk #C8E6C9
+database    "KV store\n((Validator, SeqNum) →\n Set[BlockHash])" as KV #C8E6C9
+
+note over T1, KV #ECEFF1
+  **Preconditions**
+  • Validator A signed b1 and b2 — both at sequence number sn — by the
+    same sender, with b1.hash ≠ b2.hash (an equivocation).
+  • Both b1 and b2 propagate to the local node concurrently and trigger
+    two `handle_invalid_block(...)` invocations on different worker threads.
+  • Both threads independently observe "AdmissibleEquivocation" and
+    eventually reach the neglect-detection path
+    `update_equivocation_records_after_neglect_check(...)` where each
+    accumulates evidence at key (A, sn − 1).
+  • The KV store starts with NO record at (A, sn − 1).
+
+  **Color legend**
+  red = adversarial / regression  ·  orange = detection verdict / slash effect
+  green = honest write / Valid    ·  blue = read query
+  purple = Rholang invocation     ·  teal = block gossip   ·  gray = internal
+end note
+
+== Pre-fix Phase a — handle_invalid_block: both threads insert ∅ ==
+
+note over T1, T2 #ECEFF1
+  Both threads enter handle_invalid_block on the
+  AdmissibleEquivocation verdict and idempotently
+  insert an empty record at (A, sn − 1). This
+  step is NOT the source of the race — both
+  threads write the same value. The race begins
+  in Phase b.
+end note
+T1 -[#2E7D32]> Tk : insert_equivocation_record(A, sn−1, ∅)
+Tk -[#2E7D32]> KV : put((A, sn−1), ∅)
+T2 -[#2E7D32]> Tk : insert_equivocation_record(A, sn−1, ∅)
+Tk -[#2E7D32]> KV : put((A, sn−1), ∅)\n(idempotent — same value)
+
+== Pre-fix Phase b — update_equivocation_record: lossy RMW (Rust regression) ==
+
+T1 -[#1565C0]> Tk : equivocation_records()
+Tk -[#1565C0]> KV : toMap → records_view_T1\n(record at (A, sn−1) = ∅)
+Tk -[#1565C0]-> T1 : records_view_T1
+
+T2 -[#1565C0]> Tk : equivocation_records()
+Tk -[#1565C0]> KV : toMap → records_view_T2\n(record at (A, sn−1) STILL = ∅ —\nT1 has not yet written its update)
+Tk -[#1565C0]-> T2 : records_view_T2
+note over T1, T2 #FFCDD2
+  Both threads have computed
+  newSet := records_view[(A, sn−1)] ∪ {b_i.hash}
+  from the SAME pre-image (∅), so each will write
+  back a single-element set. Lock-free: there is
+  no synchronization preventing the interleaved
+  put-after-put below.
+end note
+
+T1 -[#2E7D32]> Tk : update_equivocation_record(A, sn−1,\n  newSet = {b1.hash})
+Tk -[#2E7D32]> KV : put((A, sn−1), {b1.hash})
+
+T2 -[#C62828]> Tk : update_equivocation_record(A, sn−1,\n  newSet = {b2.hash})
+note right of Tk #FFCDD2
+  ⚠ T2's write was computed from the stale view
+  (∅) it read in Phase b, so newSet = {b2.hash}
+  — NOT {b1.hash, b2.hash}. The put overwrites
+  T1's write, losing b1's evidence.
+end note
+Tk -[#C62828]> KV : put((A, sn−1), {b2.hash})\n← final state holds only b2.hash
+
+|||
+== Post-fix (T-9.2): access_equivocations_tracker holds the lock ==
+|||
+
+note over T1, KV #C8E6C9
+  ✓ **COMMITTED** — Bug #2 / T-9.2 landed.
+  Production: `EquivocationsAccess::access_equivocations_tracker`
+  at block-storage/src/rust/dag/equivocations_access.rs:38-43,
+  implemented in
+  block_dag_key_value_storage.rs:766-779 with
+  `self.global_lock.lock()`. Call sites:
+  multi_parent_casper_impl.rs:1058 (record_evidence)
+  and equivocation_detector.rs:116
+  (is_neglected_equivocation_detected_with_update).
+  Atomicity proven in
+  formal/rocq/slashing/theories/BugFixAtomicTracker.v
+  (t_9_2_atomic_no_overwrite,
+   t_9_2_atomic_n_threads_arbitrary).
+  Loom exhaustive interleavings:
+  casper/tests/slashing/loom_t_9_2_atomic_record.rs,
+  loom_t_9_2_n_threads_3.rs, loom_t_9_2_n_threads_4.rs
+  (plus the pre-fix witness pre_fix_bug_2.rs).
+end note
+
+T1 -[#6A1B9A]> Tk ++ : access_equivocations_tracker { f }\nacquires global semaphore
+note right of T1
+  The closure f runs as one atomic step.
+  Read-modify-write is serialized.
+end note
+Tk -[#1565C0]> KV : toMap → records_view_T1 (∅)
+Tk -[#2E7D32]> KV : put((A, sn−1), {b1.hash})\n(update_equivocation_record under lock)
+Tk -[#2E7D32]-> T1 -- : ok\nlock RELEASED
+
+note over T2 #FFF8E1
+  T2 was waiting for the lock during
+  T1's critical section. Now T2 acquires it.
+end note
+
+T2 -[#6A1B9A]> Tk ++ : access_equivocations_tracker { f' }\nacquires global semaphore
+Tk -[#1565C0]> KV : toMap → records_view_T2\n(record (A, sn−1) NOW present\nwith {b1.hash})
+Tk -[#2E7D32]> KV : update_equivocation_record\n  newSet = {b1.hash} ∪ {b2.hash}\n  put((A, sn−1), {b1.hash, b2.hash})
+Tk -[#2E7D32]-> T2 -- : ok\nlock RELEASED
+
+note over T1, KV #C8E6C9
+  Result of fix: monotone accumulation of
+  equivocationDetectedBlockHashes is preserved.
+  The post-fix final-state set is the UNION of
+  every thread's contribution, regardless of
+  scheduling. Proven in Rocq as
+  t_9_2_atomic_no_overwrite (single step) and
+  t_9_2_atomic_n_threads_arbitrary (n-thread).
+end note
+
+@enduml

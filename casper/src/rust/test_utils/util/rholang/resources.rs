@@ -2,21 +2,22 @@
 // Moved from casper/tests/util/rholang/resources.rs to casper/src/rust/test_utils/util/rholang/resources.rs
 // All imports fixed for library crate context
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicU64;
-use std::sync::{Arc, Mutex, OnceLock, RwLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::{fs, io};
 
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
 use block_storage::rust::dag::block_metadata_store::BlockMetadataStore;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
-use dashmap::{DashMap, DashSet};
+use dashmap::DashSet;
 use lazy_static::lazy_static;
 use models::rhoapi::Par;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::BlockMessage;
+use parking_lot::RwLock;
 use prost::bytes::Bytes;
 use rholang::rust::interpreter::rho_runtime::RhoHistoryRepository;
 use rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
@@ -268,7 +269,10 @@ pub async fn mk_test_rnode_store_manager_with_shared_rspace(
     let new_dag_storage = block_dag_storage_from_dyn(&mut *new_kvm)
         .await
         .map_err(|e| CasperError::RuntimeError(format!("Failed to create DAG storage: {:?}", e)))?;
-    new_dag_storage.insert(&genesis_context.genesis_block, false, true)?;
+    new_dag_storage.insert(
+        &genesis_context.genesis_block,
+        block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved,
+    )?;
 
     Ok(new_kvm)
 }
@@ -320,7 +324,7 @@ pub async fn block_dag_storage_from_dyn(
     shared::rust::store::key_value_store::KvStoreError,
 > {
     use std::collections::BTreeSet;
-    use std::sync::{Arc, RwLock};
+    use std::sync::Arc;
 
     use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
     use block_storage::rust::dag::block_metadata_store::BlockMetadataStore;
@@ -329,6 +333,7 @@ pub async fn block_dag_storage_from_dyn(
     use models::rust::block_metadata::BlockMetadata;
     use models::rust::equivocation_record::SequenceNumber;
     use models::rust::validator::ValidatorSerde;
+    use parking_lot::RwLock;
     use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
 
     let block_metadata_kv_store = kvm.store("block-metadata".to_string()).await.map_err(|e| {
@@ -388,15 +393,15 @@ pub async fn block_dag_storage_from_dyn(
         BlockHashSerde,
     > = KeyValueTypedStoreImpl::new(deploy_index_kv_store);
 
-    Ok(BlockDagKeyValueStorage {
-        global_lock: Arc::new(std::sync::Mutex::new(())),
-        block_metadata_index: Arc::new(RwLock::new(block_metadata_store)),
-        deploy_index: Arc::new(RwLock::new(deploy_index_db)),
-        invalid_blocks_index: invalid_blocks_db,
-        equivocation_tracker_index: equivocation_tracker_store,
-        latest_messages_index: latest_messages_db,
-        dag_generation: Arc::new(AtomicU64::new(0)),
-    })
+    Ok(BlockDagKeyValueStorage::from_parts(
+        Arc::new(RwLock::new(())),
+        latest_messages_db,
+        Arc::new(RwLock::new(block_metadata_store)),
+        Arc::new(RwLock::new(deploy_index_db)),
+        invalid_blocks_db,
+        equivocation_tracker_store,
+        Arc::new(AtomicU64::new(0)),
+    ))
 }
 
 pub async fn key_value_deploy_storage_from_dyn(
@@ -605,12 +610,12 @@ pub fn mk_dummy_casper_snapshot() -> CasperSnapshot {
         lca: Bytes::new(),
         tips: Vec::new(),
         parents: Vec::new(),
-        justifications: DashSet::new(),
+        justifications: HashSet::new(),
         invalid_blocks: HashMap::new(),
         deploys_in_scope: Arc::new(DashSet::new()),
         rejected_in_scope: Arc::new(DashSet::new()),
         max_block_num: 0,
-        max_seq_nums: DashMap::new(),
+        max_seq_nums: HashMap::new(),
         on_chain_state: OnChainCasperState {
             shard_conf: CasperShardConf::new(),
             bonds_map: HashMap::new(),

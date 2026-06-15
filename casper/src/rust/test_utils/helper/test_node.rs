@@ -27,6 +27,8 @@ use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::{
     ApprovedBlock, ApprovedBlockCandidate, BlockMessage, DeployData,
 };
+// Phase 9 (A-3): deploy_storage uses parking_lot::Mutex.
+use parking_lot::Mutex as PlMutex;
 use prost::bytes::Bytes;
 use rholang::rust::interpreter::rho_runtime::RhoHistoryRepository;
 use rspace_plus_plus::rspace::history::Either;
@@ -43,10 +45,10 @@ use crate::rust::casper::{Casper, CasperShardConf, MultiParentCasper};
 use crate::rust::engine::block_retriever::{BlockRetriever, RequestState, RequestedBlocks};
 use crate::rust::engine::engine_cell::EngineCell;
 use crate::rust::engine::engine_with_casper::EngineWithCasper;
+use crate::rust::engine::multi_parent_casper::MultiParentCasperImpl;
 use crate::rust::errors::CasperError;
 use crate::rust::estimator::Estimator;
 use crate::rust::genesis::genesis::Genesis;
-use crate::rust::multi_parent_casper_impl::MultiParentCasperImpl;
 use crate::rust::safety_oracle::{CliqueOracleImpl, SafetyOracle};
 use crate::rust::test_utils::util::comm::transport_layer_test_impl::test_network::TestNetwork;
 use crate::rust::test_utils::util::comm::transport_layer_test_impl::{
@@ -84,7 +86,7 @@ pub struct TestNode {
     pub block_processor: BlockProcessor<TransportLayerTestImpl>,
     pub block_store: KeyValueBlockStore,
     pub block_dag_storage: BlockDagKeyValueStorage,
-    pub deploy_storage: Arc<Mutex<KeyValueDeployStorage>>,
+    pub deploy_storage: Arc<PlMutex<KeyValueDeployStorage>>,
     pub rejected_deploy_buffer: Arc<
         Mutex<block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer>,
     >,
@@ -1019,9 +1021,12 @@ impl TestNode {
 
         // Store genesis block in DAG storage - required for DAG operations
         block_dag_storage
-            .insert(&genesis, false, true)
+            .insert(
+                &genesis,
+                block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved,
+            )
             .expect("Failed to insert genesis block into DAG storage in TestNode");
-        let deploy_storage = Arc::new(Mutex::new(
+        let deploy_storage = Arc::new(PlMutex::new(
             KeyValueDeployStorage::new(&mut kvm).await.unwrap(),
         ));
 
@@ -1143,6 +1148,7 @@ impl TestNode {
             quarantine_length: 20000,
             min_phlo_price: 1,
             disable_late_block_filtering: true,
+            deploy_heartbeat_wake_enabled: false,
             disable_validator_progress_check: false,
             enable_mergeable_channel_gc: false,
             mergeable_channels_gc_depth_buffer: 10,
@@ -1168,7 +1174,7 @@ impl TestNode {
             finalizer_task_in_progress: Arc::new(AtomicBool::new(false)),
             finalizer_task_queued: Arc::new(AtomicBool::new(false)),
             heartbeat_signal_ref: crate::rust::heartbeat_signal::new_heartbeat_signal_ref(),
-            deploys_in_scope_cache: Arc::new(std::sync::Mutex::new(
+            deploys_in_scope_cache: Arc::new(parking_lot::Mutex::new(
                 None::<(u64, BlockHash, Arc<DashSet<Bytes>>, Arc<DashSet<Bytes>>)>,
             )),
             active_validators_cache: Arc::new(tokio::sync::Mutex::new(HashMap::new())),

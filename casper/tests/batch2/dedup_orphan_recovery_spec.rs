@@ -28,6 +28,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use block_storage::rust::dag::block_dag_key_value_storage::InsertMode;
 use block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use casper::rust::casper::{CasperShardConf, CasperSnapshot, OnChainCasperState};
@@ -38,7 +39,7 @@ use casper::rust::util::rholang::interpreter_util::{
 use casper::rust::util::rholang::runtime_manager::RuntimeManager;
 use casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum;
 use casper::rust::util::{construct_deploy, proto_util};
-use dashmap::{DashMap, DashSet};
+use dashmap::DashSet;
 use models::rust::block::state_hash::StateHash;
 use models::rust::block_hash::BlockHash;
 use models::rust::block_implicits;
@@ -97,7 +98,7 @@ async fn dedup_orphan_lands_in_rejected_deploy_buffer() {
         .put_block_message(&genesis_block)
         .expect("store genesis");
     dag_storage
-        .insert(&genesis_block, false, true)
+        .insert(&genesis_block, InsertMode::Approved)
         .expect("dag genesis");
 
     let now_millis = || -> i64 {
@@ -108,9 +109,13 @@ async fn dedup_orphan_lands_in_rejected_deploy_buffer() {
     };
 
     let mk_snapshot = |lfb: &BlockHash| -> CasperSnapshot {
-        let mut snapshot = CasperSnapshot::new(dag_storage.get_representation());
+        let mut snapshot = CasperSnapshot::new(
+            dag_storage
+                .get_representation()
+                .expect("dag representation"),
+        );
         snapshot.last_finalized_block = lfb.clone();
-        let max_seq_nums: DashMap<prost::bytes::Bytes, u64> = DashMap::new();
+        let mut max_seq_nums: HashMap<prost::bytes::Bytes, u64> = HashMap::new();
         max_seq_nums.insert(validator.clone(), 0);
         snapshot.max_seq_nums = max_seq_nums;
         let mut shard_conf = CasperShardConf::new();
@@ -239,7 +244,9 @@ for(@_v <- @"dedup-orphan-shared") { Nil }
     block_a.body.system_deploys = sys_pd_a;
     block_a.body.state.bonds = bonds_a;
     block_store.put_block_message(&block_a).expect("store A");
-    dag_storage.insert(&block_a, false, false).expect("dag A");
+    dag_storage
+        .insert(&block_a, InsertMode::Normal)
+        .expect("dag A");
 
     // ── block_b: body.deploys = [X, W] ──
     let block_b_raw = block_implicits::get_random_block(
@@ -291,7 +298,9 @@ for(@_v <- @"dedup-orphan-shared") { Nil }
     block_b.body.system_deploys = sys_pd_b;
     block_b.body.state.bonds = bonds_b;
     block_store.put_block_message(&block_b).expect("store B");
-    dag_storage.insert(&block_b, false, false).expect("dag B");
+    dag_storage
+        .insert(&block_b, InsertMode::Normal)
+        .expect("dag B");
 
     assert_ne!(
         block_a.block_hash, block_b.block_hash,

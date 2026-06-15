@@ -68,10 +68,7 @@ pub fn source_deploy_now(
     valid_after_block_number: Option<i64>,
     shard_id: Option<String>,
 ) -> Result<Signed<DeployData>, CasperError> {
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|e| CasperError::RuntimeError(e.to_string()))?
-        .as_millis() as i64;
+    let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as i64;
 
     source_deploy(
         source,
@@ -93,10 +90,7 @@ pub fn source_deploy_now_full(
     shard_id: Option<String>,
 ) -> Result<Signed<DeployData>, CasperError> {
     let phlo_limit = phlo_limit.unwrap_or(1000000);
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|e| CasperError::RuntimeError(e.to_string()))?
-        .as_millis() as i64;
+    let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as i64;
 
     source_deploy(
         source,

@@ -331,6 +331,7 @@ async fn recovery_cycle_rejected_deploy_is_buffered_and_re_proposed() {
         nodes[0]
             .block_dag_storage
             .get_representation()
+            .expect("dag representation")
             .lookup_by_deploy_id(&surviving_sig.to_vec())
             .ok()
             .flatten()

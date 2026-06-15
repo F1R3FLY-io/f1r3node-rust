@@ -23,7 +23,7 @@ use crypto::rust::private_key::PrivateKey;
 use crypto::rust::signatures::secp256k1::Secp256k1;
 use crypto::rust::signatures::signatures_alg::SignaturesAlg;
 use crypto::rust::signatures::signed::Signed;
-use dashmap::{DashMap, DashSet};
+use dashmap::DashSet;
 use models::rust::casper::protocol::casper_message::{DeployData, Justification};
 use models::rust::validator::Validator;
 use prost::bytes::Bytes;
@@ -101,7 +101,7 @@ fn create_snapshot_with_parent(
         latest_block_hash: parent.block_hash.clone(),
     });
 
-    let max_seq_nums: DashMap<Validator, u64> = DashMap::new();
+    let mut max_seq_nums: HashMap<Validator, u64> = HashMap::new();
     max_seq_nums.insert(validator.clone(), parent.seq_num as u64);
     snapshot.max_seq_nums = max_seq_nums;
 
@@ -161,7 +161,7 @@ async fn run_block_creator_create_memory_profile() {
     let shard_name = "test-shard".to_string();
 
     let mut kvm = InMemoryStoreManager::new();
-    let deploy_storage = Arc::new(Mutex::new(
+    let deploy_storage = Arc::new(parking_lot::Mutex::new(
         KeyValueDeployStorage::new(&mut kvm)
             .await
             .expect("Failed to create deploy storage"),
@@ -228,11 +228,16 @@ async fn run_block_creator_create_memory_profile() {
         .put_block_message(&parent)
         .expect("Failed to store parent block");
     dag_storage
-        .insert(&parent, false, true)
+        .insert(
+            &parent,
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved,
+        )
         .expect("Failed to insert parent block in DAG");
 
     let snapshot = create_snapshot_with_parent(
-        dag_storage.get_representation(),
+        dag_storage
+            .get_representation()
+            .expect("dag representation"),
         parent,
         validator.clone(),
         shard_name.clone(),
@@ -257,7 +262,7 @@ async fn run_block_creator_create_memory_profile() {
     for i in 1..=iterations {
         let deploy = create_deploy(i, &validator_sk, &shard_name);
         {
-            let mut ds = deploy_storage.lock().unwrap();
+            let mut ds = deploy_storage.lock();
             ds.add(vec![deploy]).expect("Failed to add deploy");
         }
 
@@ -299,7 +304,7 @@ async fn run_block_creator_create_memory_profile() {
         };
 
         {
-            let mut ds = deploy_storage.lock().unwrap();
+            let mut ds = deploy_storage.lock();
             let all = ds.read_all().expect("Failed to read deploy pool");
             if !all.is_empty() {
                 ds.remove(all.into_iter().collect())
@@ -466,11 +471,16 @@ async fn run_block_creator_phase_split_memory_profile() {
         .put_block_message(&parent)
         .expect("Failed to store parent block");
     dag_storage
-        .insert(&parent, false, true)
+        .insert(
+            &parent,
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved,
+        )
         .expect("Failed to insert parent block in DAG");
 
     let snapshot = create_snapshot_with_parent(
-        dag_storage.get_representation(),
+        dag_storage
+            .get_representation()
+            .expect("dag representation"),
         parent,
         validator.clone(),
         shard_name.clone(),

@@ -1,2 +1,3 @@
 mod multi_parent_casper_add_block_spec;
+mod multi_parent_casper_atomic_admit_test;
 pub mod proposer_spec;

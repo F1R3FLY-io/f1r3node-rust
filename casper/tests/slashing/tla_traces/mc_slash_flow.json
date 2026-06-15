@@ -1,0 +1,18 @@
+{
+  "spec": "MC_SlashFlow",
+  "validators": 3,
+  "stake_per_validator": 100,
+  "schedule": [
+    { "action": "SignHonest",       "args": { "v": "v0", "s": 1 } },
+    { "action": "SignEquivocating", "args": { "v": "v0", "s": 2 } },
+    { "action": "ExecuteSlash",     "args": { "o": "v0" } }
+  ],
+  "expected_final": {
+    "slashed": ["v0"],
+    "active": ["v1", "v2"],
+    "coop_vault": 100,
+    "records": [
+      { "validator": "v0", "base_seq": 1 }
+    ]
+  }
+}
