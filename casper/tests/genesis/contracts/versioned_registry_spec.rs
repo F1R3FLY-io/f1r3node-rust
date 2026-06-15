@@ -43,6 +43,9 @@ const EXPECTED_TEST_NAMES: &[&str] = &[
     "resolve_deprecated_skipped",
     "resolve_miss_returns_nil",
     "resolve_malformed_returns_nil",
+    // Step 6: public rho:registry:1.0.0 entry point
+    "public_v1_returns_v1Api_bundle",
+    "public_v1_insert_then_lookup",
 ];
 
 #[tokio::test]

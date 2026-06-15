@@ -30,12 +30,15 @@ new
   _versionedRegistryStore,
   bootstrapV1Api(`rho:registry:v1:internal`),
   v1ApiCh,
+  bootstrapPublicV1(`rho:registry:1.0.0`),
+  publicV1Ch,
   opsV1(`rho:registry:ops:1.0.0`),
   collectNonDeprecated
 in {
   _versionedRegistryStore!({"lib": {}, "serve": {}}) |
 
   bootstrapV1Api!(*v1ApiCh) |
+  bootstrapPublicV1!(*publicV1Ch) |
 
   // Recursive helper: walks a list of (version, entry) tuples and
   // returns the list of versions whose entry is not deprecated.
@@ -52,6 +55,18 @@ in {
   } |
 
   for (v1Api <- v1ApiCh) {
+
+    // Public entry-point handler for `rho:registry:1.0.0`. The legacy
+    // bootstrap forwarder for byte_name(24) has already published the
+    // fixed channel onto publicV1Ch; once we receive it we install a
+    // persistent contract that responds to `getReg!?(*notify)` with
+    // a `bundle+{*v1Api}` of the v1 API surface. The notify channel
+    // is captured for Step 7's deprecation broadcast; ignored for now.
+    for (publicV1 <- publicV1Ch) {
+      contract publicV1(ret, _notify) = {
+        ret!(bundle+{*v1Api})
+      }
+    } |
 
     contract v1Api(@"insertVersion", @ns, @deployerId, @projectId, @version, @code, ret) = {
       if (ns == "lib" or ns == "serve") {

@@ -245,7 +245,48 @@ Storage logic stays in Rholang; the Rust side just routes. Legacy `_registryStor
    - `test_resolve_miss_errors` — look up `7.*` with nothing matching; assert the deploy errors out (rather than silently binding `Nil`).
 4. **Legacy URN regression**: `cargo test -p rholang` (covers `eval_new`) plus the casper registry suites — all green without modification.
 
-### Step 6 — the `rho:registry:1.*` entry point
+### Step 6 — the `rho:registry:1.0.0` entry point ✅ DONE (2026-06-15)
+
+Wired up the public versioned-registry entry point. Clients now import the v1 API surface via the canonical FIP shape:
+
+```
+new getReg(`rho:registry:1.0.0`), notify in {
+  for (reg <- getReg!?(*notify)) {
+    reg!("insertVersion", "lib", deployerId, projectId, version, code, *ackCh) |
+    ...
+  }
+}
+```
+
+**Delivered:**
+
+- `FixedChannels::reg_v1()` at `byte_name(24)`.
+- `basic_processes()` entry mapping `"rho:registry:1.0.0"` to a write-only bundle of that channel.
+- Bootstrap forwarder added to `registry_bootstrap::ast()` so the byte_name(24) channel has the one-time `for(x <- ch){x!(ch)}` pre-installed.
+- VersionedRegistry.rho declares `bootstrapPublicV1(`rho:registry:1.0.0`)` + `publicV1Ch`, runs the bootstrap inside the inner `for (v1Api <- v1ApiCh) { ... }` block so the handler has access to the resolved `v1Api` channel, and installs the persistent listener:
+
+  ```
+  contract publicV1(ret, _notify) = {
+    ret!(bundle+{*v1Api})
+  }
+  ```
+
+  The `_notify` channel is captured here for Step 7's deprecation broadcast; currently unused.
+
+- The test-only `rho:registry:v1:internal` URN stays in place (cleanup deferred). Its TODOs are repointed to reference a cleanup commit instead of Step 6 directly.
+
+**Test coverage (2 new cases, both real-verified):**
+
+- `public_v1_returns_v1Api_bundle` — `getReg!(*reg, *notify)` then `reg!("insertVersion", ...)` returns `true`.
+- `public_v1_insert_then_lookup` — insert via the public URN's bundle then `lookupVersion` via the same bundle; the inserted code round-trips.
+
+Verified end-to-end by flipping the expected `"publicCode"` value on the round-trip case: the Rust spec failed with `left: "WRONG"`, `right: "publicCode"`, proving the full chain (public URN → v1Api bundle → insertVersion → lookupVersion → response) executes.
+
+**Step 5b status:** the `eval_new` desugaring for parametric `rho:lib:…` / `rho:serve:…` URNs is still deferred. With the public registry URN now usable through the FIP-canonical shape, the deferral cost is just that clients of `lib`/`serve` packages have to call `reg!("lookupVersion", urn, *ret)` explicitly instead of writing `new getLib(`rho:lib:…`)`. Not blocking for Step 7 (notify wiring).
+
+---
+
+Original Step 6 plan text:
 
 Register a new `Definition` row in `rho_runtime.rs:511-715`:
 

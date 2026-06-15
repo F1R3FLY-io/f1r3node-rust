@@ -1058,15 +1058,26 @@ fn basic_processes() -> HashMap<String, Par> {
         }]),
     );
 
-    // TODO(Step 6): drop this entry once the public `rho:registry:1.0.0`
-    // URN is wired through the versioned-URN resolver. It exists at
-    // Step 3 as a test-only handle for RhoSpec to reach the new
-    // insertVersion / deprecateVersion / approveVersion contracts
-    // before the resolver/entry-point land.
+    // TODO(cleanup): drop this entry once Step 5b lands the eval_new
+    // desugaring for rho:lib:... URNs and the test surface migrates
+    // to the public rho:registry:1.0.0 URN below. Kept for now so the
+    // Step 3-5 tests keep passing while the public URN ships beside it.
     map.insert(
         "rho:registry:v1:internal".to_string(),
         Par::default().with_bundles(vec![Bundle {
             body: Some(FixedChannels::reg_v1_internal()),
+            write_flag: true,
+            read_flag: false,
+        }]),
+    );
+
+    // Public versioned-registry entry point. Clients use
+    // `new getReg(`rho:registry:1.0.0`), notify in { ... getReg!?(*notify) ... }`
+    // to obtain a `bundle+{v1Api}` carrying the v1 API surface.
+    map.insert(
+        "rho:registry:1.0.0".to_string(),
+        Par::default().with_bundles(vec![Bundle {
+            body: Some(FixedChannels::reg_v1()),
             write_flag: true,
             read_flag: false,
         }]),

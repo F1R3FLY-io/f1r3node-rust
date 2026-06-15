@@ -35,7 +35,11 @@ new
   lk16a, lk16b, lk16c, ack16,
   lk17a, lk17b, lk17c, lk17d, ack17,
   lk18, ack18,
-  lk19, ack19
+  lk19, ack19,
+
+  // Step 6 channels — public rho:registry:1.0.0 import
+  getReg(`rho:registry:1.0.0`), notify20, reg20Ch, ins20, ack20,
+  getReg21(`rho:registry:1.0.0`), notify21, reg21Ch, ins21, lk21, ack21
 in {
   // 1. insertVersion under lib happy path returns true
   v1Api!("insertVersion", "lib", "deployerA".toByteArray(), "projA", "1.0.0", "codeA", *ins1) |
@@ -231,5 +235,37 @@ in {
   for (@code <- lk19) {
     assert!("resolve_malformed_returns_nil", 1, (Nil, "==", code),
             "Malformed URN should return Nil", *ack19)
+  } |
+
+  // ─── Step 6: public rho:registry:1.0.0 entry point ───────────────────
+  //
+  // The FIP-canonical import shape is
+  //   for (reg <- getReg!?(*notify)) { reg!(...) ... }
+  // After Step 6 this works against the public URN.
+
+  // 20. getReg!?(*notify) returns a usable v1 API bundle.
+  //     We exercise the bundle by calling insertVersion and asserting
+  //     the call lands and returns `true`.
+  getReg!(*reg20Ch, *notify20) |
+  for (@reg <- reg20Ch) {
+    @reg!("insertVersion", "lib", "alice", "p20", "1.0.0", "code20", *ins20) |
+    for (@r <- ins20) {
+      assert!("public_v1_returns_v1Api_bundle", 1, (true, "==", r),
+              "Calling insertVersion via the public rho:registry:1.0.0 bundle should return true", *ack20)
+    }
+  } |
+
+  // 21. The public URN composes with lookupVersion end-to-end:
+  //     insert via the public bundle, then look up via the same bundle.
+  getReg21!(*reg21Ch, *notify21) |
+  for (@reg <- reg21Ch) {
+    @reg!("insertVersion", "lib", "alice", "p21", "1.0.0", "publicCode", *ins21) |
+    for (@_ <- ins21) {
+      @reg!("lookupVersion", "rho:lib:1.0.0:alice:p21:1.0.0", *lk21) |
+      for (@code <- lk21) {
+        assert!("public_v1_insert_then_lookup", 1, ("publicCode", "==", code),
+                "insertVersion then lookupVersion through the public URN should round-trip", *ack21)
+      }
+    }
   }
 }

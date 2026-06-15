@@ -229,6 +229,15 @@ impl FixedChannels {
     /// legacy `Registry.rho` keeps calling the same handler.
     pub fn reg_ops_v1() -> Par { byte_name(23) }
 
+    /// Public versioned-registry entry point (`rho:registry:1.0.0`).
+    /// The Rholang-side listener in VersionedRegistry.rho accepts a
+    /// `(returnCh, notifyCh)` pair and replies with `bundle+{v1Api}` for
+    /// the v1 API surface (insertVersion / deprecateVersion /
+    /// approveVersion / lookupVersion). The test-only
+    /// `rho:registry:v1:internal` URN (at byte 19) stays in place during
+    /// the rollout; a follow-up cleanup commit will remove it.
+    pub fn reg_v1() -> Par { byte_name(24) }
+
     pub fn grpc_tell() -> Par { byte_name(25) }
 
     pub fn dev_null() -> Par { byte_name(26) }
