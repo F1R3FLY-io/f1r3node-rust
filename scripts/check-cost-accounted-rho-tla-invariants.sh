@@ -23,6 +23,14 @@
 
 set -euo pipefail
 
+# Advisory by default per Greg's compile-time-shapes design: external-proof
+# certificates (Rocq/Lean/TLA+) are NOT a required gate. Set CA_ENFORCE_PROOFS=1
+# to run the full strict TLA+ invariant gate (preserved verbatim below).
+if [ "${CA_ENFORCE_PROOFS:-0}" != "1" ]; then
+  echo "cost-accounted-rho TLA+ invariant gate: ADVISORY (relaxed; external-proof certificates not required). CA_ENFORCE_PROOFS=1 to run the full gate."
+  exit 0
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 TLA_DIR="$REPO_ROOT/formal/tlaplus/cost_accounted_rho"
@@ -71,6 +79,13 @@ WRAPPED_BY[EvalStrictAbsent]=MCEvalStrictAbsent
 WRAPPED_BY[FullProtocol]=MCFull
 WRAPPED_BY[MergeableChannelAccounting]=MCMergeableChannelAccounting
 WRAPPED_BY[RuntimeBudgetReplay]=MCRuntimeBudgetReplay
+# MAJOR-5: the token-gated-join sequential-fuel griefing / atomicity obligation.
+# TokenGatedJoin.cfg is the NATIVE-model safety suite (must HOLD). The companion
+# TokenGatedJoinM2Grief.cfg is an EXPECTED-REFUTATION run (it confirms the griefing
+# vector for the TRANSPILER runtime-gate model by producing a counterexample), so
+# it is deliberately NOT registered here — a counterexample is its intended result,
+# not a pass. Run it explicitly: tlc -config TokenGatedJoinM2Grief.cfg MCTokenGatedJoin.tla
+WRAPPED_BY[TokenGatedJoin]=MCTokenGatedJoin
 
 # Collect all .cfg files whose paired .tla module exists.
 specs=()
