@@ -31,10 +31,10 @@ All HTTP endpoints return errors as structured JSON. Every non-2xx response body
 
 | Code | Meaning | Common `error` values |
 |------|---------|----------------------|
-| `400` | Client sent invalid input | `invalid_request_body`, `invalid_path_parameter`, `invalid_query_parameter`, `invalid_hash`, `illegal_argument`, `rholang_bad_term`, `readonly_node_required` |
+| `400` | Client sent invalid input | `invalid_request_body`, `invalid_path_parameter`, `invalid_query_parameter`, `invalid_hash`, `illegal_argument`, `rholang_bad_term`, `readonly_node_required`, `endpoint_not_found`, `method_not_allowed` |
 | `404` | Requested resource not found | `block_not_found`, `deploy_not_found` |
 | `422` | Input is valid but execution failed | `rholang_execution_error`, `out_of_phlogistons`, `user_abort`, `aggregate_error` |
-| `500` | Node-side failure | `interpreter_internal_error`, `runtime_error`, `replay_failure`, `signing_error` |
+| `500` | Node-side failure | `interpreter_internal_error`, `runtime_error`, `replay_failure`, `signing_error`, `kv_store_error`, `history_error`, `system_runtime_error`, `stream_error`, `lock_error`, `other_error`, `unknown_error` |
 | `502` | Upstream or peer communication failure | `comm_error`, `external_service_error` |
 
 ### Read-only-only endpoints on validators
@@ -254,7 +254,7 @@ curl -X POST http://localhost:40413/api/deploy \
 | Status | Condition |
 |--------|-----------|
 | `200` | Deploy accepted; body is the deploy ID (hex string) |
-| `400` | Malformed body or invalid field value (`invalid_request_body`, `illegal_argument`, `rholang_bad_term`) |
+| `400` | Malformed body or invalid field value: read-only node, wrong shard ID, forbidden key, phlo price below minimum, deploy expired (`invalid_request_body`, `illegal_argument`, `rholang_bad_term`) |
 | `422` | Term valid but execution failed (`rholang_execution_error`, `out_of_phlogistons`, `user_abort`) |
 | `500` | Node-side failure (`interpreter_internal_error`, `replay_failure`, `signing_error`) |
 | `502` | Peer communication failure (`comm_error`) |
@@ -336,7 +336,7 @@ Possible `state` values: `Finalized`, `Failed`, `Pending`, `Expired`.
 
 #### `GET /api/prepare-deploy`
 
-Get the next deploy sequence number for the node's validator (or `-1` if not a validator). Use `seqNumber` as the deployer's sequence number when constructing a deploy.
+Get the next sequence number for the node's validator (or `-1` if not a validator). Use `seqNumber` as `validAfterBlockNumber` in the deploy data — it is the validator's next expected sequence number, not the deployer's.
 
 **Parameters:** None
 
@@ -728,9 +728,9 @@ curl -X POST http://localhost:40405/api/propose
 
 | Status | Condition |
 |--------|-----------|
-| `200` | Propose result message (hex block hash) |
-| `400` | No new deploys or propose constraints not satisfied (`unknown_error`) |
-| `500` | Node-side failure (`runtime_error`, `replay_failure`) |
+| `200` | Propose result message (success block hash) |
+| `400` | Read-only node or no new deploys to propose (`readonly_node_required`, `illegal_argument`) |
+| `500` | Node-side propose failure (`unknown_error`, `replay_failure`) |
 
 ---
 
@@ -751,7 +751,7 @@ curl -X POST http://localhost:40405/api/propose
 | `getDataAtName` | `DataAtNameByBlockQuery` | `RhoDataResponse` | Query data at a Rholang name in a specific block's post-state. Takes `Par` + block hash + `usePreStateHash` |
 | `listenForContinuationAtName` | `ContinuationAtNameQuery` | `ContinuationAtNameResponse` | Find processes waiting to receive on given channel names. Returns matching patterns and continuation bodies |
 | `exploratoryDeploy` | `ExploratoryDeployQuery` | `ExploratoryDeployResponse` | Execute Rholang read-only. No block created, no phlo consumed. Returns result `Par`s, block context, and cost. Readonly only |
-| `bondStatus` | `BondStatusQuery` | `BondStatusResponse` | Check if a public key is bonded. Takes public key bytes, returns bool. HTTP: `GET /api/bond-status/{pubkey}` |
+| `bondStatus` | `BondStatusQuery` | `BondStatusResponse` | Check if a public key is bonded. Validates that the key is a 65-byte uncompressed secp256k1 point; returns error on invalid input. HTTP: `GET /api/bond-status/{pubkey}` |
 | `previewPrivateNames` | `PrivateNamePreviewQuery` | `PrivateNamePreviewResponse` | Generate unforgeable names from deployer key + timestamp. Allows clients to compute signatures over names before deploying. Max 1024 names |
 | `getEventByHash` | `ReportQuery` | `EventInfoResponse` | Get full block execution trace — every COMM/produce/consume event per deploy and system deploy. Takes block hash + `forceReplay` flag. Used for debugging and auditing |
 | `visualizeDag` | `VisualizeDagQuery` | `stream VisualizeBlocksResponse` | DAG visualization in DOT format. Takes depth + startBlockNumber + showJustificationLines |

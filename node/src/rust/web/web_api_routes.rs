@@ -69,7 +69,7 @@ impl WebApiRoutes {
     get,
     path = "/api/prepare-deploy",
     responses(
-        (status = 200, description = "Next deploy sequence number. Use `seqNumber` as `validAfterBlockNumber` in your deploy", body = PrepareResponse),
+        (status = 200, description = "Validator's next sequence number (`seqNumber`). This is the validator's internal block counter, not a field the deployer sets.", body = PrepareResponse),
         (status = 500, description = "Node-side failure (`runtime_error`)", body = ApiErrorResponse),
     ),
     tag = "WebAPI"

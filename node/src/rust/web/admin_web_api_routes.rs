@@ -17,9 +17,9 @@ impl AdminWebApiRoutes {
         post,
         path = "/api/propose",
         responses(
-            (status = 200, description = "Propose result message", body = String),
-            (status = 400, description = "No new deploys or propose constraints not satisfied (`unknown_error`)", body = ApiErrorResponse),
-            (status = 500, description = "Node-side failure (`runtime_error`, `replay_failure`)", body = ApiErrorResponse),
+            (status = 200, description = "Propose result message (success block hash)", body = String),
+            (status = 400, description = "Read-only node or no new deploys to propose (`readonly_node_required`, `illegal_argument`)", body = ApiErrorResponse),
+            (status = 500, description = "Node-side propose failure (`unknown_error`, `replay_failure`)", body = ApiErrorResponse),
         ),
         tag = "AdminAPI"
     )]

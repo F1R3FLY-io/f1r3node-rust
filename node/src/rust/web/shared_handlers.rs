@@ -7,7 +7,8 @@ use axum::http::request::Parts;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json, Response};
 use casper::rust::api::block_api::{
-    BlockNotFoundError, DeployNotFoundError, ExploratoryDeployReadOnlyError, InvalidHashError,
+    BlockNotFoundError, DeployNotFoundError, DeployValidationError, ExploratoryDeployReadOnlyError,
+    InvalidHashError, NoNewDeploysError, ProposeReadOnlyError,
 };
 use casper::rust::api::block_report_api::BlockReportAPI;
 use casper::rust::errors::CasperError;
@@ -67,15 +68,24 @@ impl AppState {
 /// Every non-2xx response body conforms to this schema.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ApiErrorResponse {
-    /// Machine-readable error kind. Stable across node versions.
+    /// Machine-readable error kind. Stable across node versions — safe to switch on in client code.
     ///
-    /// Possible values:
+    /// **4xx client error kinds:**
     /// `invalid_request_body`, `invalid_path_parameter`, `invalid_query_parameter`,
     /// `invalid_hash`, `illegal_argument`, `rholang_bad_term`,
     /// `deploy_not_found`, `block_not_found`, `readonly_node_required`,
-    /// `out_of_phlogistons`, `user_abort`, `rholang_execution_error`, `aggregate_error`,
-    /// `interpreter_internal_error`, `comm_error`, `external_service_error`,
-    /// `signing_error`, `replay_failure`, `unknown_error`
+    /// `endpoint_not_found`, `method_not_allowed`
+    ///
+    /// **422 execution error kinds:**
+    /// `out_of_phlogistons`, `user_abort`, `rholang_execution_error`, `aggregate_error`
+    ///
+    /// **500 node-side error kinds:**
+    /// `interpreter_internal_error`, `signing_error`, `replay_failure`,
+    /// `kv_store_error`, `history_error`, `system_runtime_error`,
+    /// `stream_error`, `lock_error`, `other_error`, `unknown_error`
+    ///
+    /// **502 upstream error kinds:**
+    /// `comm_error`, `external_service_error`
     pub error: String,
     /// Human-readable description of the error.
     pub message: String,
@@ -86,9 +96,13 @@ pub struct AppError(pub eyre::Error);
 // Tell axum how to convert `AppError` into a response.
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
-        tracing::warn!("API error: {:#}", self.0);
-
         let (status, error_kind, message) = classify_error(&self.0);
+
+        if status.is_server_error() {
+            tracing::warn!("API error: {:#}", self.0);
+        } else {
+            tracing::debug!("API error: {:#}", self.0);
+        }
 
         (
             status,
@@ -205,6 +219,15 @@ fn classify_error(err: &eyre::Error) -> (StatusCode, &'static str, String) {
                 "readonly_node_required",
                 cause.to_string(),
             );
+        }
+        if cause.downcast_ref::<DeployValidationError>().is_some() {
+            return (StatusCode::BAD_REQUEST, "illegal_argument", cause.to_string());
+        }
+        if cause.downcast_ref::<ProposeReadOnlyError>().is_some() {
+            return (StatusCode::BAD_REQUEST, "readonly_node_required", cause.to_string());
+        }
+        if cause.downcast_ref::<NoNewDeploysError>().is_some() {
+            return (StatusCode::BAD_REQUEST, "illegal_argument", cause.to_string());
         }
     }
 

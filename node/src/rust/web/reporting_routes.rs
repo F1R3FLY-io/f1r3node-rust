@@ -45,7 +45,7 @@ impl ReportingRoutes {
         ),
         responses(
             (status = 200, description = "Block trace report containing per-deploy execution events, or an inline error if replay failed", body = ReportResponse),
-            (status = 400, description = "`blockHash` is missing, shorter than 6 characters, or contains non-hex characters (`invalid_query_parameter`, `invalid_hex`)", body = ApiErrorResponse),
+            (status = 400, description = "`blockHash` is missing, shorter than 6 characters, or contains non-hex characters (`invalid_query_parameter`, `invalid_hash`)", body = ApiErrorResponse),
         ),
         tag = "Reporting"
     )]
@@ -70,7 +70,7 @@ pub async fn trace_handler(
             return (
                 StatusCode::BAD_REQUEST,
                 Json(json!({
-                    "error": "invalid_hex",
+                    "error": "invalid_hash",
                     "message": format!("invalid block_hash hex: {e}"),
                 })),
             )

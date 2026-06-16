@@ -30,6 +30,7 @@ use shared::rust::ByteString;
 use crate::rust::blocks::proposer::propose_result::{
     CheckProposeConstraintsFailure, ProposeFailure, ProposeResult, ProposeStatus,
 };
+use rholang::rust::interpreter::errors::InterpreterError;
 use crate::rust::blocks::proposer::proposer::ProposerResult;
 use crate::rust::casper::MultiParentCasper;
 use crate::rust::engine::engine_cell::EngineCell;
@@ -237,6 +238,41 @@ impl std::fmt::Display for LatestBlockMessageError {
 
 impl std::error::Error for LatestBlockMessageError {}
 
+#[derive(Debug)]
+pub struct DeployValidationError {
+    pub message: String,
+}
+
+impl std::fmt::Display for DeployValidationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
+
+impl std::error::Error for DeployValidationError {}
+
+#[derive(Debug)]
+pub struct ProposeReadOnlyError;
+
+impl std::fmt::Display for ProposeReadOnlyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Propose error: read-only node.")
+    }
+}
+
+impl std::error::Error for ProposeReadOnlyError {}
+
+#[derive(Debug)]
+pub struct NoNewDeploysError;
+
+impl std::fmt::Display for NoNewDeploysError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "No new deploys to propose.")
+    }
+}
+
+impl std::error::Error for NoNewDeploysError {}
+
 impl BlockAPI {
     fn find_deploy_scan_depth() -> usize { 128 }
 
@@ -413,23 +449,25 @@ impl BlockAPI {
         }
 
         // Validation chain - mimics Scala's whenA pattern
-        let validation_result: Result<(), String> = Ok(())
+        let validation_result: Result<(), DeployValidationError> = Ok(())
             .and_then(|_| {
                 if is_node_read_only {
-                    Err(
-                        "Deploy was rejected because node is running in read-only mode."
+                    Err(DeployValidationError {
+                        message: "Deploy was rejected because node is running in read-only mode."
                             .to_string(),
-                    )
+                    })
                 } else {
                     Ok(())
                 }
             })
             .and_then(|_| {
                 if d.data.shard_id != shard_id {
-                    Err(format!(
-                        "Deploy shardId '{}' is not as expected network shard '{}'.",
-                        d.data.shard_id, shard_id
-                    ))
+                    Err(DeployValidationError {
+                        message: format!(
+                            "Deploy shardId '{}' is not as expected network shard '{}'.",
+                            d.data.shard_id, shard_id
+                        ),
+                    })
                 } else {
                     Ok(())
                 }
@@ -439,46 +477,45 @@ impl BlockAPI {
                     .iter()
                     .any(|pk| **pk == d.pk);
                 if is_forbidden_key {
-                    Err(
-                        "Deploy refused because it's signed with forbidden private key."
+                    Err(DeployValidationError {
+                        message: "Deploy refused because it's signed with forbidden private key."
                             .to_string(),
-                    )
+                    })
                 } else {
                     Ok(())
                 }
             })
             .and_then(|_| {
                 if d.data.phlo_price < min_phlo_price {
-                    Err(format!(
-                        "Phlo price {} is less than minimum price {}.",
-                        d.data.phlo_price, min_phlo_price
-                    ))
+                    Err(DeployValidationError {
+                        message: format!(
+                            "Phlo price {} is less than minimum price {}.",
+                            d.data.phlo_price, min_phlo_price
+                        ),
+                    })
                 } else {
                     Ok(())
                 }
             })
             .and_then(|_| {
-                // Check if deploy has already expired based on expirationTimestamp
                 let now = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .map(|d| d.as_millis() as i64)
                     .unwrap_or(0);
                 if d.data.is_expired_at(now) {
-                    // Use DeployExpiredError for consistent error classification
-                    Err(DeployExpiredError {
+                    Err(DeployValidationError {
                         message: format!(
                             "Deploy has expired: expirationTimestamp={:?} is in the past.",
                             d.data.expiration_timestamp
                         ),
-                    }
-                    .to_string())
+                    })
                 } else {
                     Ok(())
                 }
             });
 
         // Return early if validation fails
-        validation_result.map_err(|e| eyre::eyre!(e))?;
+        validation_result.map_err(|e| eyre::Report::new(e))?;
 
         let log_error_message =
             "Error: Could not deploy, casper instance was not available yet.".to_string();
@@ -530,9 +567,13 @@ impl BlockAPI {
 
             let r: ApiErr<String> = match proposer_result {
                 ProposerResult::Empty => log_debug("Failure: another propose is in progress"),
-                ProposerResult::Failure(ref status, seq_number) => {
-                    log_debug(&format!("Failure: {} (seqNum {})", status, seq_number))
-                }
+                ProposerResult::Failure(ref status, seq_number) => match status {
+                    ProposeStatus::Failure(ProposeFailure::NoNewDeploys) => {
+                        tracing::debug!("Propose: no new deploys (seqNum {})", seq_number);
+                        Err(eyre::Report::new(NoNewDeploysError))
+                    }
+                    _ => log_debug(&format!("Failure: {} (seqNum {})", status, seq_number)),
+                },
                 ProposerResult::Started(seq_number) => {
                     log_success(&format!("Propose started (seqNum {})", seq_number))
                 }
@@ -1464,7 +1505,7 @@ impl BlockAPI {
         name_qty: i32,
     ) -> ApiErr<Vec<ByteString>> {
         let mut rand = Tools::unforgeable_name_rng(&PublicKey::from_bytes(deployer), timestamp);
-        let safe_qty = std::cmp::min(name_qty, 1024) as usize;
+        let safe_qty = name_qty.clamp(0, 1024) as usize;
         let ids: Vec<BlockHash> = (0..safe_qty)
             .map(|_| rand.next().into_iter().map(|b| b as u8).collect())
             .collect();
@@ -1572,6 +1613,12 @@ impl BlockAPI {
     }
 
     pub async fn bond_status(engine_cell: &EngineCell, public_key: &ByteString) -> ApiErr<bool> {
+        if let Err(e) = PublicKey::validate_secp256k1_bytes(public_key) {
+            return Err(eyre::Report::new(CasperError::InterpreterError(
+                InterpreterError::IllegalArgumentError(format!("invalid public key: {}", e)),
+            )));
+        }
+
         let error_message =
             "Could not check if validator is bonded, casper instance was not available yet.";
         let eng = engine_cell.get().await;
@@ -1677,7 +1724,9 @@ impl BlockAPI {
                             (state, Some(b))
                         }
                         None => {
-                            return Err(eyre::eyre!("Can not find block {:?}", block_hash));
+                            return Err(eyre::Report::new(BlockNotFoundError {
+                                hash: hash_str.to_string(),
+                            }));
                         }
                     }
                 };
@@ -1691,7 +1740,9 @@ impl BlockAPI {
                             Self::get_light_block_info(casper.as_ref(), &b).await?;
                         Ok((res, light_block_info, cost))
                     }
-                    None => Err(eyre::eyre!("Can not find block {:?}", block_hash)),
+                    None => Err(eyre::Report::new(BlockNotFoundError {
+                        hash: block_hash.unwrap_or_default(),
+                    })),
                 }
             } else {
                 Err(eyre::Report::new(ExploratoryDeployReadOnlyError))
@@ -1734,10 +1785,21 @@ impl BlockAPI {
             block_hash: &str,
         ) -> ApiErr<(Vec<Par>, LightBlockInfo)> {
             let padded_hash = pad_hex_string(block_hash);
-            let block_hash_bytes: BlockHash = hex::decode(&padded_hash)
-                .map_err(|_| eyre::eyre!("Invalid block hash"))?
-                .into();
-            let block = casper.block_store().get_unsafe(&block_hash_bytes);
+            let hash_bytes = hex::decode(&padded_hash).map_err(|_| {
+                eyre::Report::new(InvalidHashError {
+                    reason: format!("not a valid hex string: {}", block_hash),
+                })
+            })?;
+            let block_hash_bytes: BlockHash = hash_bytes.into();
+            let block = casper
+                .block_store()
+                .get(&block_hash_bytes)
+                .map_err(|e| eyre::eyre!(e.to_string()))?
+                .ok_or_else(|| {
+                    eyre::Report::new(BlockNotFoundError {
+                        hash: block_hash.to_string(),
+                    })
+                })?;
             let sorted_par = ParSortMatcher::sort_match(par).term;
             let runtime_manager = casper.runtime_manager();
             let data =
