@@ -2157,5 +2157,31 @@ mod tests {
             Some(3),
             "Σ⟦right⟧ -= 3"
         );
+
+        // F-1/F-2 (red-team): the compound FEE is FLAT — ONE token, drawn
+        // combined-first (0 here, drained) then from a SINGLE component (the
+        // canonical-first `left`), NOT the cost-style matched PAIR. The OLD code
+        // reused the cost policy and charged a compound deploy 2 (left 1 + right 1);
+        // `FlatFeeApportionment` charges exactly 1. Post-cost residual is
+        // left=1,right=1, so left -= 1 covers the flat fee with no underflow.
+        assert_eq!(
+            outcome.fee_debits.get(&left_key).map(|d| d.amount),
+            Some(1),
+            "F-1: flat fee draws 1 from the canonical-first component"
+        );
+        assert!(
+            outcome.fee_debits.get(&right_key).is_none(),
+            "F-1: flat fee must NOT touch the right component (no pair doubling)"
+        );
+        assert!(
+            outcome.fee_debits.get(&compound_key).is_none(),
+            "drained combined pool ⇒ no compound fee draw"
+        );
+        let total_fee: i64 = outcome.fee_debits.values().map(|d| d.amount).sum();
+        assert_eq!(total_fee, 1, "F-1: a compound deploy's fee is FLAT (1), not 2");
+        assert_eq!(
+            outcome.fee_debits, recomputed.fee,
+            "fee play == replay byte-identical (flat, pair-only regime)"
+        );
     }
 }
