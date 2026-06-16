@@ -1061,19 +1061,26 @@ compile-time discipline in the plan; `feedback_formal_verification_is_local_only
 
 ## DR-27 — Token-source model realigned to the papers (spectral phlogiston + typed value); implementation divergences + mortality
 
-**Status.** Findings recorded + remediations decided; code remediations tracked (pgmcp work item #481). 2026-06-15.
+**Status.** Original clean-slate findings 2026-06-15. **Token-source verdict SUPERSEDED the same day by Greg's
+authoritative answers** (REV is a NAME for the one system token, `wallets.txt` IS the genesis root — see the
+CORRECTED paragraph below). **F-A / F-B / F-C-F-D + the F-1 red-team finding are LANDED + adversarially red-teamed**
+(commits e329aed3, c94e980f, a5a26f5c, e55769dd, e011e0e7, 59c59b1e, 87c012f2). pgmcp #481.
 
 **Decision (token sources).** A clean-slate re-reading of the `publications/*.tex` establishes the intended model:
 **ONE species — phlogiston as signature-indexed first-class token stacks `s:S`** (the old homogeneous phlo is the
 degenerate `s₀`-collapse), **plus a typed-value `Pay(τ)`** layer (`TypedCurrency/typed_value.tex`) metering
 *transfer* (rivalrous, contraction-rejected) while phlogiston meters *computation*. **Stake** is a distinct
 locked-token *role* (consensus weight, slashable; *"phlogiston is not drawn from stake — a separate resource"*,
-cost-accounted-rho.tex:3024). **There is NO "REV" species in any paper.** OFF-MODEL artifacts (in zero papers):
-the **REV value ledger** (`wallets.txt`→`SystemVault`), the **`client_fuel_allocations`** config, and the
-**`sysAuthToken` mint-monopoly**. Minting is FIRST-CLASS (construct a token stack + send it on a signature channel;
-*"no privileged runtime hook"*), gated by **object-capability** (the unforgeable channel name) + the **usage type**;
-protocol/epoch minting is **uniform** with user minting, not privileged. Genesis/initial supply is **unspecified**
-by the papers (implementation-defined; fill with the uniform mint-onto-channel primitive).
+cost-accounted-rho.tex:3024). **CORRECTED by Greg's 2026-06-15 authoritative answers** (which OVERTURNED the pre-answer "off-model" verdict on
+REV / `wallets.txt`): **REV is NOT a separate species and NOT off-model** — it is one of several inconsistent NAMES
+(*token / Phlogiston / REV / Rock / F1r3caps*; avoid `F1r3caps`, collides with F1R3FLY.io *Capabilities*; canonical
+= **phlogiston**) for the ONE system token. **`wallets.txt` IS the genesis trust-root (Greg P12)** and the impl's
+**`client_fuel_allocations` IS its seeding mechanism** — both ON-model. The REV ledger UNIFIES with the `Σ` supply
+(one consumable, Greg P9); the legacy `SystemVault`/`MakeMint` value-transfer layer is a SEPARATE concern migrating
+to the one-token + `Pay(τ)`-TYPE model (Greg P13, deferred — blocked on OSLF). User-provided cons-notation tokens
+(signed) **desugar to system tokens**, the signature tracking origin. Minting drops the `sysAuthToken` MONOPOLY (the
+genuinely off-model part) → capability + (forward) type-gated; the unforgeability mechanism (DR-13) stays, only the
+system-monopoly half is superseded; protocol minting uniform. Genesis supply = `wallets.txt`.
 
 **Remediation direction (docs now; code = W3 in the plan).** Retire the REV-as-distinct-token-ledger framing in the
 docs (keep STAKE as a role; value = purse + `Pay(τ)`); replace the `sysAuthToken` monopoly with capability+type-gated
@@ -1084,14 +1091,19 @@ the safety lever — DR-13's unforgeability half stays; its system-monopoly half
 - **F-A (CONSENSUS, EXTRA):** 6 LL signature connectives (`Threshold/Plus/With/Bang/WhyNot/Lolly`) ride the
   consensus wire (`CasperMessage.proto` `sig_algebra` field 17; `accounting/mod.rs`) but are in NEITHER calculus
   paper (signature grammar = `g | #P | s∘s`; ⊕/&/!/?/⊸ are the VALUE type-logic in `typed_value.tex`, not
-  funding-signature formers; Rocq verifies only `And`). **Remediation:** treat the extra variants as an
-  undocumented Phase-3 extension — **gate them off the consensus wire (reject at decode)** pending a spec addendum
-  legitimizing a richer signature algebra; the funding `Sig` is `g|#P|s∘s`. (Protocol change → needs Greg's
-  ratification before the wire edit; the *decided default* is gate-off/reject.)
+  funding-signature formers; Rocq verifies only `And`). **RESOLVED + LANDED (e55769dd; user-ratified):** the
+  funding/capability SEPARATION shipped — `reject_capability_connectives` rejects ⊕/&/!/?/⊸ at gRPC ingress
+  (`from_proto_cosigned_with_sig_algebra`), `Sig::is_funding_former()` gates the funding envelope, `debug_assert`
+  guards `supply_channel`. **Threshold = (A) admission-boundary quorum** (kept, lowered to a flat `Cosigned`; zero
+  semantic change, no Rocq change). The funding `Sig` stays `g|#P|s∘s`; the 6 connectives are capability/type-layer
+  only. NO wire-format change, NO hard-fork — a red-team verified the funding path was ALREADY paper-faithful
+  (`envelope_sig` total to Quote/And; `from_proto` dead on funding) and the dormant decode carried no fund-theft
+  (sig-verified, sig-keyed channels); (c) closes the latent confused-deputy gap.
 - **F-B (CONSENSUS, INCORRECT):** the acceptance gate folds `min_phlo_price` margin into the correctness inequality
   `Σ_s ≥ Δ_s` for EVERY deploy (`delta_sigma.rs:475`; `block_creator.rs:896`); Def 19 has no margin (the Thm-20
-  margin is ONLY the data-dependent `unknown` branch). **Remediation:** restrict the margin to the `unknown==true`
-  branch; update the Kani proof `reject_below_demand_plus_margin`.
+  margin is ONLY the data-dependent `unknown` branch). **RESOLVED + LANDED (e329aed3):** the margin is restricted
+  to the `unknown==true` branch; Def-19 `Σ_s ≥ Δ_s` is now exact for resolvable demand (Greg P3/P11 confirmed: the
+  over-estimate is needed ONLY for data-dependent interactions; for resolvable demand the bare inequality holds).
 - **F-C / F-D (CONSENSUS — RESOLVED, conserving carve landed):** the per-block `FeeExtract` previously credited
   an additive 1-token/deploy mint (and the formal model "collected" `F_v += f` from outside the ledger).
   **Remediation (LANDED, aligned to the paper):** the fee is now a supply-CONSERVING CARVE from the client's OWN

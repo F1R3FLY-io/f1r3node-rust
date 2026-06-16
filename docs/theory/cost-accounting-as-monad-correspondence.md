@@ -36,6 +36,35 @@ wrapper" is a sorting invariant — the paper's *wrapping by construction*. The 
 | Located resource stacks / purses; nearness `near(I,J)` | `ChannelSeparation.v` `lane_pool_disjoint` (disjoint per-signature pools); `near` = name-equality `≡_N` (DR-20 (ii)) | **TLA+** `LocatedPurse` (`Inv_NoUnderflow`, `Inv_LocalSufficiencyComposes`); runtime `DashMap<Sig,…>` lane pool |
 | The calculus IS a continued interactive GSLT with the cost structure | **`ContinuedGSLTCapstone.v` `continued_gslt_cost_capstone`** (axiom-free, "Closed under the global context") | — |
 
+## Token-source model — clean-slate realignment (DR-27, 2026-06-15; CORRECTED same day by Greg's authoritative answers)
+
+A re-reading of the source `.tex` re-derived the token model; **Greg's 2026-06-15 SOLUTIONs then made it
+authoritative and OVERTURNED the pre-answer "off-model" verdict on REV / `wallets.txt`** (those were a misreading).
+The authoritative model:
+- **ONE system token (canonical).** ONE consumable — the system token; phlogiston is the degenerate single-token
+  case (the old homogeneous phlo = the `s₀`-collapse, cost-accounted-rho.tex:1481). It has NO consistent name —
+  *token / Phlogiston / REV / Rock / F1r3caps* all denote it (Greg: "pegged" = identical); **avoid `F1r3caps`**
+  (collides with F1R3FLY.io *Capabilities*); canonical = **phlogiston**. So **REV is a NAME for the one token, NOT
+  a separate species** (and NOT off-model). **`Pay(τ)`** (typed_value.tex) is a **TYPE on that one token, NOT a
+  second token** (Greg P9/P13); **stake** is a distinct locked-token ROLE (slashable, same denomination).
+- **`wallets.txt` IS the genesis trust-root (Greg P12), NOT off-model.** One entry per wallet (balance = its
+  available system tokens); the seed source of the per-signer pools `Σ⟦s⟧`. The impl's `client_fuel_allocations`
+  IS that `wallets.txt` seeding mechanism (on-model). User-provided cons-notation tokens (signed) **desugar to
+  system tokens**, the signature tracking origin for cost attribution. The legacy `SystemVault`/`MakeMint`
+  value-transfer layer is a SEPARATE concern migrating to the one-token + `Pay(τ)`-type model (Greg P13, deferred —
+  blocked on OSLF). Minting drops the `sysAuthToken` MONOPOLY → capability + (forward) type-gated, uniform protocol
+  minting; genesis supply = `wallets.txt`.
+- **`spacetime-functor.tex` is geometry, NOT storage.** It maps spent phlogiston to spacetime *volume*
+  (Number = Volume); it does **not** model a storage/rent charge (the rent model is `rent_and_shard_splitting.tex`,
+  rebased off the legacy `phloLimit×phloPrice` escrow per DR-27). Do not read it as the rent resolution.
+- **Funding `Sig` is `g | #P | s∘s`.** The LL connectives `⊕/&/!/?/⊸` are the *value* type-logic (typed_value.tex) /
+  the OSLF *type* layer — NOT funding-signature formers; the 6 extra `Sig` variants on the consensus wire are an
+  undocumented extension (DR-27 F-A). This corrects an earlier reading that conflated the funding `Sig` algebra
+  with the type-connective set.
+
+See [DR-26](cost-accounting-decision-records.md) (verification posture: shapes, not certificates) and
+[DR-27](cost-accounting-decision-records.md) (full findings + remediations).
+
 ## Runtime correspondence (zero behavioral change)
 
 The native migration adds **no new runtime behavior** (verified); the existing runtime already realizes the
