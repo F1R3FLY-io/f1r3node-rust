@@ -8,7 +8,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json, Response};
 use casper::rust::api::block_api::{
     BlockNotFoundError, DeployNotFoundError, DeployValidationError, ExploratoryDeployReadOnlyError,
-    InvalidHashError, NoNewDeploysError, ProposeReadOnlyError,
+    InvalidHashError, InvalidPublicKeyError, NoNewDeploysError, ProposeReadOnlyError,
 };
 use casper::rust::api::block_report_api::BlockReportAPI;
 use casper::rust::errors::CasperError;
@@ -70,21 +70,26 @@ impl AppState {
 pub struct ApiErrorResponse {
     /// Machine-readable error kind. Stable across node versions — safe to switch on in client code.
     ///
-    /// **4xx client error kinds:**
+    /// **400 Bad Request:**
     /// `invalid_request_body`, `invalid_path_parameter`, `invalid_query_parameter`,
     /// `invalid_hash`, `illegal_argument`, `rholang_bad_term`,
-    /// `deploy_not_found`, `block_not_found`, `readonly_node_required`,
-    /// `endpoint_not_found`, `method_not_allowed`
+    /// `readonly_node_required`,
     ///
-    /// **422 execution error kinds:**
+    /// **404 Not Found:**
+    /// `deploy_not_found`, `block_not_found`, `endpoint_not_found`
+    ///
+    /// **405 Method Not Allowed:**
+    /// `method_not_allowed`
+    ///
+    /// **422 Unprocessable Entity:**
     /// `out_of_phlogistons`, `user_abort`, `rholang_execution_error`, `aggregate_error`
     ///
-    /// **500 node-side error kinds:**
+    /// **500 Internal Server Error:**
     /// `interpreter_internal_error`, `signing_error`, `replay_failure`,
     /// `kv_store_error`, `history_error`, `system_runtime_error`,
-    /// `stream_error`, `lock_error`, `other_error`, `unknown_error`
+    /// `stream_error`, `lock_error`, `other_error`, `unknown_error`, `no_new_deploys`
     ///
-    /// **502 upstream error kinds:**
+    /// **502 Bad Gateway:**
     /// `comm_error`, `external_service_error`
     pub error: String,
     /// Human-readable description of the error.
@@ -220,14 +225,33 @@ fn classify_error(err: &eyre::Error) -> (StatusCode, &'static str, String) {
                 cause.to_string(),
             );
         }
+        if cause.downcast_ref::<InvalidPublicKeyError>().is_some() {
+            return (
+                StatusCode::BAD_REQUEST,
+                "illegal_argument",
+                cause.to_string(),
+            );
+        }
         if cause.downcast_ref::<DeployValidationError>().is_some() {
-            return (StatusCode::BAD_REQUEST, "illegal_argument", cause.to_string());
+            return (
+                StatusCode::BAD_REQUEST,
+                "illegal_argument",
+                cause.to_string(),
+            );
         }
         if cause.downcast_ref::<ProposeReadOnlyError>().is_some() {
-            return (StatusCode::BAD_REQUEST, "readonly_node_required", cause.to_string());
+            return (
+                StatusCode::BAD_REQUEST,
+                "readonly_node_required",
+                cause.to_string(),
+            );
         }
         if cause.downcast_ref::<NoNewDeploysError>().is_some() {
-            return (StatusCode::BAD_REQUEST, "illegal_argument", cause.to_string());
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "no_new_deploys",
+                cause.to_string(),
+            );
         }
     }
 

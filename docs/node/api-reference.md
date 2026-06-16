@@ -31,10 +31,11 @@ All HTTP endpoints return errors as structured JSON. Every non-2xx response body
 
 | Code | Meaning | Common `error` values |
 |------|---------|----------------------|
-| `400` | Client sent invalid input | `invalid_request_body`, `invalid_path_parameter`, `invalid_query_parameter`, `invalid_hash`, `illegal_argument`, `rholang_bad_term`, `readonly_node_required`, `endpoint_not_found`, `method_not_allowed` |
-| `404` | Requested resource not found | `block_not_found`, `deploy_not_found` |
+| `400` | Client sent invalid input | `invalid_request_body`, `invalid_path_parameter`, `invalid_query_parameter`, `invalid_hash`, `illegal_argument`, `rholang_bad_term`, `readonly_node_required`|
+| `404` | Requested resource not found | `block_not_found`, `deploy_not_found`, `endpoint_not_found` |
+| `405` | HTTP method not allowed for this path | `method_not_allowed` |
 | `422` | Input is valid but execution failed | `rholang_execution_error`, `out_of_phlogistons`, `user_abort`, `aggregate_error` |
-| `500` | Node-side failure | `interpreter_internal_error`, `runtime_error`, `replay_failure`, `signing_error`, `kv_store_error`, `history_error`, `system_runtime_error`, `stream_error`, `lock_error`, `other_error`, `unknown_error` |
+| `500` | Node-side failure | `interpreter_internal_error`, `runtime_error`, `replay_failure`, `signing_error`, `kv_store_error`, `history_error`, `system_runtime_error`, `stream_error`, `lock_error`, `other_error`, `unknown_error`, `no_new_deploys` |
 | `502` | Upstream or peer communication failure | `comm_error`, `external_service_error` |
 
 ### Read-only-only endpoints on validators
@@ -473,6 +474,37 @@ curl -X POST http://localhost:40453/api/data-at-name-by-block-hash \
 
 ---
 
+### Reporting
+
+Block execution trace. **Read-only nodes only** (requires block report replay). Available when the node is started with reporting enabled.
+
+#### `GET /reporting/trace`
+
+Full per-deploy execution trace for a block — every produce, consume, and COMM event for every user deploy and system deploy. Use for debugging orphan sends and auditing contract execution.
+
+| Parameter | Location | Required | Description |
+|-----------|----------|----------|-------------|
+| `blockHash` | query | yes | Full 64-char hex block hash |
+| `forceReplay` | query | no | If `true`, discard any cached trace and re-replay the block (default: `false`) |
+
+```bash
+curl "http://localhost:40453/reporting/trace?blockHash=3bfdf56f...&forceReplay=false"
+```
+
+```json
+{
+  "report": { "deploys": [ ... ], "systemDeploys": [ ... ] }
+}
+```
+
+| Status | Condition |
+|--------|-----------|
+| `200` | Trace report returned |
+| `400` | `blockHash` query parameter is missing, empty, or contains non-hex characters (`invalid_query_parameter`, `invalid_hash`) |
+| `500` | Block report replay failed (`unknown_error`) |
+
+---
+
 ### High-Level Query Endpoints
 
 Convenience endpoints wrapping exploratory deploy or genesis config. Unless noted, **read-only nodes only**.
@@ -729,8 +761,8 @@ curl -X POST http://localhost:40405/api/propose
 | Status | Condition |
 |--------|-----------|
 | `200` | Propose result message (success block hash) |
-| `400` | Read-only node or no new deploys to propose (`readonly_node_required`, `illegal_argument`) |
-| `500` | Node-side propose failure (`unknown_error`, `replay_failure`) |
+| `400` | Read-only node (`readonly_node_required`) |
+| `500` | Node-side propose failure (`unknown_error`, `replay_failure`, `no_new_deploys`) |
 
 ---
 

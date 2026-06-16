@@ -30,7 +30,6 @@ use shared::rust::ByteString;
 use crate::rust::blocks::proposer::propose_result::{
     CheckProposeConstraintsFailure, ProposeFailure, ProposeResult, ProposeStatus,
 };
-use rholang::rust::interpreter::errors::InterpreterError;
 use crate::rust::blocks::proposer::proposer::ProposerResult;
 use crate::rust::casper::MultiParentCasper;
 use crate::rust::engine::engine_cell::EngineCell;
@@ -185,14 +184,10 @@ impl std::fmt::Display for BlockNotFoundError {
 impl std::error::Error for BlockNotFoundError {}
 
 #[derive(Debug)]
-pub struct InvalidHashError {
-    pub reason: String,
-}
+pub struct InvalidHashError(pub String);
 
 impl std::fmt::Display for InvalidHashError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Invalid block hash: {}", self.reason)
-    }
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { write!(f, "{}", self.0) }
 }
 
 impl std::error::Error for InvalidHashError {}
@@ -239,6 +234,15 @@ impl std::fmt::Display for LatestBlockMessageError {
 impl std::error::Error for LatestBlockMessageError {}
 
 #[derive(Debug)]
+pub struct InvalidPublicKeyError(pub String);
+
+impl std::fmt::Display for InvalidPublicKeyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { write!(f, "{}", self.0) }
+}
+
+impl std::error::Error for InvalidPublicKeyError {}
+
+#[derive(Debug)]
 pub struct DeployValidationError {
     pub message: String,
 }
@@ -256,7 +260,10 @@ pub struct ProposeReadOnlyError;
 
 impl std::fmt::Display for ProposeReadOnlyError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Propose error: read-only node.")
+        write!(
+            f,
+            "propose is not available: this node is running in read-only mode"
+        )
     }
 }
 
@@ -1296,17 +1303,19 @@ impl BlockAPI {
 
         async fn casper_response(casper: &dyn MultiParentCasper, hash: &str) -> ApiErr<BlockInfo> {
             if hash.len() < 6 {
-                return Err(eyre::Report::new(InvalidHashError {
-                    reason: format!("must be at least 6 characters, got: {}", hash),
-                }));
+                return Err(eyre::Report::new(InvalidHashError(format!(
+                    "'{}' is not a valid block hash (minimum 6 hex characters)",
+                    hash
+                ))));
             }
 
             let padded_hash = pad_hex_string(hash);
 
             let hash_byte_string = hex::decode(&padded_hash).map_err(|_| {
-                eyre::Report::new(InvalidHashError {
-                    reason: format!("not a valid hex string: {}", hash),
-                })
+                eyre::Report::new(InvalidHashError(format!(
+                    "'{}' is not valid block hash",
+                    hash
+                )))
             })?;
 
             let get_block = async {
@@ -1550,9 +1559,10 @@ impl BlockAPI {
             let dag = casper.block_dag().await?;
             let padded_hash = pad_hex_string(hash);
             let given_block_hash = hex::decode(&padded_hash).map_err(|_| {
-                eyre::Report::new(InvalidHashError {
-                    reason: format!("not a valid hex string: {}", hash),
-                })
+                eyre::Report::new(InvalidHashError(format!(
+                    "'{}' is not valid block hash",
+                    hash
+                )))
             })?;
             let result = dag.is_finalized(&given_block_hash.into());
             Ok(result)
@@ -1614,9 +1624,10 @@ impl BlockAPI {
 
     pub async fn bond_status(engine_cell: &EngineCell, public_key: &ByteString) -> ApiErr<bool> {
         if let Err(e) = PublicKey::validate_secp256k1_bytes(public_key) {
-            return Err(eyre::Report::new(CasperError::InterpreterError(
-                InterpreterError::IllegalArgumentError(format!("invalid public key: {}", e)),
-            )));
+            return Err(eyre::Report::new(InvalidPublicKeyError(format!(
+                "invalid public key: {}",
+                e
+            ))));
         }
 
         let error_message =
@@ -1708,9 +1719,10 @@ impl BlockAPI {
                     let hash_str = block_hash.as_ref().unwrap();
                     let padded_hash = pad_hex_string(hash_str);
                     let hash_byte_string = hex::decode(&padded_hash).map_err(|_| {
-                        eyre::Report::new(InvalidHashError {
-                            reason: format!("not a valid hex string: {:?}", block_hash),
-                        })
+                        eyre::Report::new(InvalidHashError(format!(
+                            "'{}' is not valid block hash",
+                            hash_str
+                        )))
                     })?;
                     let block_opt = casper.block_store().get(&hash_byte_string.into())?;
 
@@ -1740,9 +1752,9 @@ impl BlockAPI {
                             Self::get_light_block_info(casper.as_ref(), &b).await?;
                         Ok((res, light_block_info, cost))
                     }
-                    None => Err(eyre::Report::new(BlockNotFoundError {
-                        hash: block_hash.unwrap_or_default(),
-                    })),
+                    None => Err(eyre::eyre!(
+                        "target block unexpectedly absent from block store (internal inconsistency)"
+                    )),
                 }
             } else {
                 Err(eyre::Report::new(ExploratoryDeployReadOnlyError))
@@ -1786,9 +1798,10 @@ impl BlockAPI {
         ) -> ApiErr<(Vec<Par>, LightBlockInfo)> {
             let padded_hash = pad_hex_string(block_hash);
             let hash_bytes = hex::decode(&padded_hash).map_err(|_| {
-                eyre::Report::new(InvalidHashError {
-                    reason: format!("not a valid hex string: {}", block_hash),
-                })
+                eyre::Report::new(InvalidHashError(format!(
+                    "'{}' is not valid block hash",
+                    block_hash
+                )))
             })?;
             let block_hash_bytes: BlockHash = hash_bytes.into();
             let block = casper

@@ -486,10 +486,11 @@ impl WebApi for WebApiImpl {
     }
 
     async fn find_deploy(&self, deploy_id: String, view: ViewMode) -> Result<DeployResponse> {
-        let deploy_id_bytes = hex::decode(&deploy_id).map_err(|e| {
-            eyre::Report::new(InvalidHashError {
-                reason: format!("invalid deploy ID hex: {}", e),
-            })
+        let deploy_id_bytes = hex::decode(&deploy_id).map_err(|_| {
+            eyre::Report::new(InvalidHashError(format!(
+                "'{}' is not a valid hex deploy ID",
+                deploy_id
+            )))
         })?;
 
         let retry_interval_ms = find_deploy_retry_interval_ms();
@@ -649,10 +650,11 @@ impl WebApi for WebApiImpl {
         &self,
         deploy_sig_hex: String,
     ) -> Result<DeployFinalizationStatusJson> {
-        let sig = hex::decode(deploy_sig_hex.trim_start_matches("0x")).map_err(|e| {
-            eyre::Report::new(InvalidHashError {
-                reason: format!("invalid deploy signature hex: {}", e),
-            })
+        let sig = hex::decode(deploy_sig_hex.trim_start_matches("0x")).map_err(|_| {
+            eyre::Report::new(InvalidHashError(format!(
+                "'{}' is not a valid hex deploy signature",
+                deploy_sig_hex
+            )))
         })?;
         let status = BlockAPI::deploy_finalization_status(&self.engine_cell, &sig).await?;
         Ok(DeployFinalizationStatusJson {
