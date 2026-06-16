@@ -678,3 +678,281 @@ async fn fs_floor_state_is_path_independent_and_cross_node_identical() {
     .expect("store hit must succeed");
     assert_eq!(fs_cold, fs_again, "store hit must equal the folded value");
 }
+
+/// Multi-parent merge must SERIALIZE concurrent writes to one single-value cell,
+/// never bag them into a multi-value cell.
+///
+/// Two sibling blocks concurrently read-modify-write ONE shared cell off a
+/// common base (`@7!(0)`): node0 adds 10, node1 adds 1. Both consume the SAME
+/// base `0` datum (they are not propagated between creation). `@7` is a plain
+/// user channel (NOT in the mergeable-tag registry), so it is a single-value
+/// cell — it must hold exactly ONE datum.
+///
+/// The merge keeps ONE write (the cell becomes 10 or 1) and rejects the other to
+/// recovery, where it re-executes against the merged value in a later block.
+/// (That cross-round convergence to BOTH writes is verified by
+/// `fs_seal_must_preserve_both_concurrent_single_value_cell_writes`.) The bug
+/// this guards against is the cell going MULTI-value — `[0, 1, 10]` (bagged, the
+/// content-twin shape) — which finalizes and regresses downstream. So the gate
+/// is: exactly one datum, a real write, and the loser recorded as rejected.
+#[tokio::test]
+async fn multi_parent_merge_serializes_concurrent_single_value_cell_writes() {
+    let genesis = GenesisBuilder::new()
+        .build_genesis_with_parameters(Some(
+            GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(3)),
+        ))
+        .await
+        .expect("Failed to build genesis");
+
+    let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None, None)
+        .await
+        .unwrap();
+    let shard_id = genesis.genesis_block.shard_id.clone();
+
+    // Seed the shared single-value cell on a block every node sees — the common
+    // base both sibling writes read-modify-write.
+    let seed = construct_deploy::source_deploy_now(
+        "@7!(0)".to_string(),
+        None,
+        None,
+        Some(shard_id.clone()),
+    )
+    .unwrap();
+    let _block_seed = nodes[0].add_block_from_deploys(&[seed]).await.unwrap();
+    {
+        let nodes_refs: Vec<&mut TestNode> = nodes.iter_mut().collect();
+        TestNode::propagate(&mut nodes_refs.into_iter().collect::<Vec<_>>())
+            .await
+            .unwrap();
+    }
+
+    // Two concurrent read-modify-write siblings off the seeded base. They are
+    // NOT propagated between creation, so each consumes the SAME `0` datum.
+    let add_10 = construct_deploy::source_deploy_now(
+        "for (@v <- @7) { @7!(v + 10) }".to_string(),
+        None,
+        None,
+        Some(shard_id.clone()),
+    )
+    .unwrap();
+    let add_1 = construct_deploy::source_deploy_now(
+        "for (@v <- @7) { @7!(v + 1) }".to_string(),
+        Some(construct_deploy::DEFAULT_SEC2.clone()),
+        None,
+        Some(shard_id.clone()),
+    )
+    .unwrap();
+    let block_a = nodes[0].add_block_from_deploys(&[add_10]).await.unwrap();
+    let block_b = nodes[1].add_block_from_deploys(&[add_1]).await.unwrap();
+    {
+        let nodes_refs: Vec<&mut TestNode> = nodes.iter_mut().collect();
+        TestNode::propagate(&mut nodes_refs.into_iter().collect::<Vec<_>>())
+            .await
+            .unwrap();
+    }
+
+    // node2 proposes a merge block over both siblings; the noop write is on a
+    // disjoint channel so the merge is non-empty but does not itself touch @7.
+    let noop = construct_deploy::source_deploy_now(
+        "@9!(9)".to_string(),
+        None,
+        None,
+        Some(shard_id.clone()),
+    )
+    .unwrap();
+    let merge_block = TestNode::propagate_block_at_index(&mut nodes, 2, &[noop])
+        .await
+        .unwrap();
+
+    // The merge must include both sibling writes as parents (the multi-parent
+    // conflict case this test exists to exercise).
+    assert!(
+        merge_block
+            .header
+            .parents_hash_list
+            .contains(&block_a.block_hash)
+            && merge_block
+                .header
+                .parents_hash_list
+                .contains(&block_b.block_hash),
+        "merge block must have both sibling writes as parents; got {:?}",
+        merge_block.header.parents_hash_list
+    );
+
+    // Read the shared cell at the merged post-state.
+    let cell =
+        rspace_util::get_data_at_public_channel_block(&merge_block, 7, &nodes[0].runtime_manager)
+            .await;
+
+    // Single-value cell: exactly ONE datum (serialized, NOT bagged to multi-value).
+    assert_eq!(
+        cell.len(),
+        1,
+        "single-value cell @7 must hold exactly one datum after the merge (serialized), not a bag \
+         of concurrent writes; got {:?}",
+        cell
+    );
+    // The surviving value is one of the two writes — the merge applied one; it is
+    // not garbage, and the un-consumed seed `0` did not survive.
+    assert!(
+        cell == vec!["10".to_string()] || cell == vec!["1".to_string()],
+        "the serialized value must be one of the two concurrent writes (+10 -> 10 or +1 -> 1), \
+         not the un-consumed seed or a bag; got {:?}",
+        cell
+    );
+    // The losing write is NOT lost: the merge records it as rejected, which feeds
+    // recovery to re-execute it on the merged value in a later block.
+    assert_eq!(
+        merge_block.body.rejected_deploys.len(),
+        1,
+        "the concurrent write that lost serialization must be recorded as rejected (-> recovery), \
+         not silently dropped or bagged; rejected_deploys count = {}",
+        merge_block.body.rejected_deploys.len()
+    );
+}
+
+/// Companion FS-layer guard: the SEALED finalized state `FS(floor)` must durably
+/// retain a concurrent single-value-cell write, never silently drop it.
+///
+/// Six rounds of two concurrent `set()` writes to ONE shared map cell (`@7`),
+/// each merged and fully propagated, so finalization advances well past the
+/// early rounds. Round 0's two writes (`Ka0`, `Kb0`) are therefore deeply
+/// finalized by the end. The finalized state the node serves (`FS(floor)`, which
+/// `/validators` and the default `/explore-deploy` read) must contain BOTH: a
+/// concurrent write the merge dropped and recovery never re-landed is lost
+/// finalized work — the multi-parent finalized-state regression this branch
+/// exists to eliminate.
+///
+/// Unlike `single_value_cell_concurrent_writes_must_both_survive_merge` (which
+/// asserts on a single merge BLOCK's post-state), this asserts on the
+/// independently re-folded `FS(floor)` — the layer where `FS(floor) != the
+/// finalized block's post-state` shows up.
+#[tokio::test]
+async fn fs_seal_must_preserve_both_concurrent_single_value_cell_writes() {
+    use casper::rust::finality::floor::floor_of_block;
+    use casper::rust::finality::floor_seal::floor_state_get_or_compute;
+
+    const FT_THRESHOLD: f32 = 0.1;
+
+    let genesis = GenesisBuilder::new()
+        .build_genesis_with_parameters(Some(
+            GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(3)),
+        ))
+        .await
+        .expect("Failed to build genesis");
+
+    let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None, None)
+        .await
+        .unwrap();
+    let shard_id = genesis.genesis_block.shard_id.clone();
+
+    // Seed the shared single-value cell with the empty map.
+    let seed = construct_deploy::source_deploy_now(
+        "@7!({})".to_string(),
+        None,
+        None,
+        Some(shard_id.clone()),
+    )
+    .unwrap();
+    nodes[0].add_block_from_deploys(&[seed]).await.unwrap();
+    {
+        let nodes_refs: Vec<&mut TestNode> = nodes.iter_mut().collect();
+        TestNode::propagate(&mut nodes_refs.into_iter().collect::<Vec<_>>())
+            .await
+            .unwrap();
+    }
+
+    // Rounds of concurrent set() writes to the one cell, each merged by node2.
+    let rounds = 6u32;
+    let mut last_tip = None;
+    for r in 0..rounds {
+        let set_a = construct_deploy::source_deploy_now(
+            format!("for (@m <- @7) {{ @7!(m.set(\"Ka{}\", 1)) }}", r),
+            None,
+            None,
+            Some(shard_id.clone()),
+        )
+        .unwrap();
+        let set_b = construct_deploy::source_deploy_now(
+            format!("for (@m <- @7) {{ @7!(m.set(\"Kb{}\", 2)) }}", r),
+            Some(construct_deploy::DEFAULT_SEC2.clone()),
+            None,
+            Some(shard_id.clone()),
+        )
+        .unwrap();
+        // Siblings: not propagated between creation, so both consume the same
+        // current cell value.
+        nodes[0].add_block_from_deploys(&[set_a]).await.unwrap();
+        nodes[1].add_block_from_deploys(&[set_b]).await.unwrap();
+        {
+            let nodes_refs: Vec<&mut TestNode> = nodes.iter_mut().collect();
+            TestNode::propagate(&mut nodes_refs.into_iter().collect::<Vec<_>>())
+                .await
+                .unwrap();
+        }
+        let noop = construct_deploy::source_deploy_now(
+            format!("@9!({})", r),
+            None,
+            None,
+            Some(shard_id.clone()),
+        )
+        .unwrap();
+        let merge = TestNode::propagate_block_at_index(&mut nodes, 2, &[noop])
+            .await
+            .unwrap();
+        last_tip = Some(merge);
+    }
+    let tip = last_tip.expect("rounds produced a merge block");
+
+    // The sealed finalized state at the tip's justification-derived floor.
+    let dag = nodes[0].block_dag_storage.get_representation();
+    let floor = floor_of_block(&dag, &tip.block_hash, FT_THRESHOLD)
+        .await
+        .expect("floor must resolve");
+    assert_ne!(
+        floor.hash, genesis.genesis_block.block_hash,
+        "test needs floors past genesis; raise the round count if this fires"
+    );
+    let fs = floor_state_get_or_compute(
+        &dag,
+        &nodes[0].block_store,
+        &nodes[0].runtime_manager,
+        &floor.hash,
+        FT_THRESHOLD,
+    )
+    .await
+    .expect("FS(floor) must fold");
+
+    // Read the shared cell out of the SEALED finalized state (across all datums
+    // if the cell went multi-value).
+    let fs_cell =
+        rspace_util::get_data_at_public_channel(&fs.state_hash.0, 7, &nodes[0].runtime_manager)
+            .await;
+    let fs_joined = fs_cell.join(" | ");
+
+    // The cell is single-value: the finalized state must hold exactly ONE map
+    // datum, not a bag of divergent maps (multi-datum = the cell silently went
+    // multi-value, a different shape of the same corruption).
+    assert_eq!(
+        fs_cell.len(),
+        1,
+        "finalized state FS(floor #{}) holds {} datums on the single-value cell @7 — it was bagged \
+         to multi-value, not serialized: {:?}",
+        floor.block_number,
+        fs_cell.len(),
+        fs_cell,
+    );
+
+    // Round 0's two concurrent writes are deeply finalized (the floor is many
+    // blocks past them). The single finalized map must retain BOTH.
+    assert!(
+        fs_joined.contains("Ka0") && fs_joined.contains("Kb0"),
+        "finalized state FS(floor #{}) dropped a concurrent single-value-cell write from round 0: \
+         expected BOTH Ka0 and Kb0 present (deeply finalized after {} rounds), got {:?}. A \
+         concurrent write the merge dropped and recovery never re-landed is lost finalized \
+         work — the regression seal-the-base must prevent.",
+        floor.block_number,
+        rounds,
+        fs_cell,
+    );
+}

@@ -285,15 +285,27 @@ fn make_trie_action<C: Clone, P: Clone, A: Clone, K: Clone>(
         }
     }
 
-    // Compose as (init -- removed) ++ added, as multisets — the upstream RChain
-    // StateChangeMerger form. Single-value-cell conflict detection (Check #1
-    // over system + user chains) rejects concurrent destructive writes to one
-    // cell before composition, so no two chained writes to the same cell are
-    // ever both kept; base-first subtraction is therefore sufficient and matches
-    // the merge spec. (The prior `(init ++ added) -- removed` pool form was a
-    // band-aid for a detection gap that does not exist once system deploys
-    // participate in conflict detection.)
-    let new_val = {
+    // Compose the channel's new value. The two multiset orderings differ only
+    // when a `removed` datum was PRODUCED within the merge set (not in the base):
+    //
+    //   datums path  (init ++ added) -- removed  — pool form. A datum a chain
+    //     produces and a serialized successor consumes cancels, so a kept linear
+    //     write path on a single-value cell collapses to one value. Concurrent
+    //     (fork) writers are serialized upstream in DagMerger — one path kept,
+    //     the rest rejected to recovery — so only a single path reaches here.
+    //   joins path   (init -- removed) ++ added  — base-first, unchanged. Join
+    //     add/remove track consume lifecycle against the base, not in-set
+    //     produce/consume cancellation.
+    //
+    // The two forms are identical whenever `removed` is a sub-multiset of `init`
+    // (the common case), so this changes behavior only for the in-set-produce
+    // case the datums path needs. The stale-consume backstop above still rejects
+    // a `removed` datum absent from BOTH init and added.
+    let new_val = if reject_stale_removes {
+        let mut pooled = init.clone();
+        pooled.extend(changes.added.clone());
+        StateChange::multiset_diff(&pooled, &changes.removed)
+    } else {
         let mut result = StateChange::multiset_diff(&init, &changes.removed);
         result.extend(changes.added.clone());
         result

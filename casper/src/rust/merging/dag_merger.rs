@@ -61,6 +61,24 @@ fn descendants_within_scope(
     result
 }
 
+/// True iff `sub` is a sub-multiset of `sup`: every datum appears in `sup` at
+/// least as many times as in `sub`. The single-value-cell serialization uses
+/// this to decide whether a chain's consumed (`removed`) datums are still
+/// available in the running cell state.
+fn is_sub_multiset(sub: &[Vec<u8>], sup: &[Vec<u8>]) -> bool {
+    let mut sup_counts: HashMap<&Vec<u8>, usize> = HashMap::new();
+    for d in sup {
+        *sup_counts.entry(d).or_insert(0) += 1;
+    }
+    let mut sub_counts: HashMap<&Vec<u8>, usize> = HashMap::new();
+    for d in sub {
+        *sub_counts.entry(d).or_insert(0) += 1;
+    }
+    sub_counts
+        .iter()
+        .all(|(d, &need)| sup_counts.get(*d).copied().unwrap_or(0) >= need)
+}
+
 /// Finalized counterparties for a merge — the enforcement window between the
 /// base floor and the fork-point cover of the conflict scope. Built by
 /// `floor_seal::enforcement_window`; empty in the common no-lag case.
@@ -635,24 +653,18 @@ pub fn merge(
         );
     }
 
-    // Stale-consume rejection: single-value-cell race. A surviving branch whose
-    // diff consumes (removes) a datum on a NON-foldable channel that is neither
-    // present in the merge base nor produced within the branch itself was
-    // rebased onto a base it did not execute on — a sibling already rewrote that
-    // single-value cell. Base-first composition would leave the base value
-    // alongside the new one (the cell goes multi-value), which then cascades
-    // through replay as non-determinism. Reject the whole branch: its user
-    // deploys recover (re-proposed and re-executed against the updated base);
-    // its system close-block effects are re-derived by the next block's
-    // close-block. This is the explicit, deterministic form of the
-    // serialization the premature finalize-purge performed silently before it
-    // was removed. Foldable (mergeable number) channels are exempt — they
-    // compose via the dispatcher fold and never reach the raw datums path.
+    // Single-value-cell serialization. After conflict resolution the surviving
+    // chains may still contain CONCURRENT writes to one non-foldable single-value
+    // cell — a fork where two chains consumed the same base datum. Conflict
+    // detection misses this when both writers share a dependency on the producer
+    // (they land in one branch, and the combined event log hides the double
+    // consume as internal COMMs). A single-value cell cannot hold both writes;
+    // keep one linear write path and reject the rest to recovery, where they
+    // re-execute against the updated base. Generalizes the prior stale-consume
+    // pass: a stale rebased consume is the degenerate fork whose consumed datum
+    // was never available. Foldable (mergeable number) channels compose via the
+    // dispatcher fold and are exempt.
     {
-        // Channels folded as mergeable number channels anywhere in the surviving
-        // set: build the exemption from ALL surviving chains so a channel that
-        // is foldable in any branch is never stale-checked (over-exemption is
-        // safe; under-exemption would over-reject a composable cell).
         let mut foldable: HashSet<Blake2b256Hash> = HashSet::new();
         for branch in resolved.to_merge.iter() {
             for chain in branch.0.iter() {
@@ -662,29 +674,51 @@ pub fn merge(
             }
         }
 
-        let mut base_cache: HashMap<Blake2b256Hash, Vec<Vec<u8>>> = HashMap::new();
-        let mut stale_indices: HashSet<usize> = HashSet::new();
+        // Decide which chains to reject. Order all surviving chains so a producer
+        // always precedes its consumers: deploy_chains are dependency-grouped per
+        // block, so a chain consuming another's produce is in a strictly higher
+        // block; ordering by block number — with (block hash, sorted sigs) as a
+        // total-order tiebreak — respects producer-before-consumer without a
+        // topological sort and is identical on every node.
+        // `mutable_key_type`: DeployChainIndex contains a DashMap (interior
+        // mutability) but is hashed by its stable content, as elsewhere in this
+        // module — the keys are never mutated while in the set.
+        #[allow(clippy::mutable_key_type)]
+        let rejected: HashSet<DeployChainIndex> = {
+            let mut ordered: Vec<&DeployChainIndex> = resolved
+                .to_merge
+                .iter()
+                .flat_map(|branch| branch.0.iter())
+                .collect();
+            let sig_key = |chain: &DeployChainIndex| -> Vec<Vec<u8>> {
+                let mut sigs: Vec<Vec<u8>> = chain
+                    .deploys_with_cost
+                    .0
+                    .iter()
+                    .map(|d| d.deploy_id.to_vec())
+                    .collect();
+                sigs.sort();
+                sigs
+            };
+            ordered.sort_by(|a, b| {
+                a.source_block_number
+                    .cmp(&b.source_block_number)
+                    .then_with(|| a.source_block_hash.cmp(&b.source_block_hash))
+                    .then_with(|| sig_key(a).cmp(&sig_key(b)))
+            });
 
-        for (bi, branch) in resolved.to_merge.iter().enumerate() {
-            // Datums produced within this branch (the in-scope exemption: a datum
-            // produced then consumed inside the branch is a legitimate chained
-            // write, not a lost race).
-            let mut branch_added: HashMap<Blake2b256Hash, HashSet<Vec<u8>>> = HashMap::new();
-            for chain in branch.0.iter() {
-                for e in chain.state_changes.datums_changes.iter() {
-                    let entry = branch_added.entry(e.key().clone()).or_default();
-                    for d in e.value().added.iter() {
-                        entry.insert(d.clone());
-                    }
-                }
-            }
+            // Running available-datum multiset per non-foldable channel, seeded
+            // lazily from the merge base.
+            let mut available: HashMap<Blake2b256Hash, Vec<Vec<u8>>> = HashMap::new();
+            #[allow(clippy::mutable_key_type)]
+            let mut rejected: HashSet<DeployChainIndex> = HashSet::new();
 
-            // On a stale hit, capture (channel_hex, base_count, removed_hash) so
-            // the trace pins WHICH cell raced and how the base differs from the
-            // chain's consumed datum. The tracing span (create_block vs the seal
-            // span) distinguishes construction-merge from seal-merge context.
-            let mut stale_detail: Option<(String, usize, String)> = None;
-            'scan: for chain in branch.0.iter() {
+            for chain in ordered.iter() {
+                let chain: &DeployChainIndex = chain;
+                // Serializable iff every non-foldable channel it consumes from
+                // still has those datums available in the running cell state.
+                let mut serializable = true;
+                let mut detail: Option<(String, String)> = None;
                 for e in chain.state_changes.datums_changes.iter() {
                     let ch = e.key();
                     if foldable.contains(ch) {
@@ -694,80 +728,96 @@ pub fn merge(
                     if removed.is_empty() {
                         continue;
                     }
-                    let base = if let Some(b) = base_cache.get(ch) {
-                        b.clone()
-                    } else {
-                        let b = history_reader
+                    if !available.contains_key(ch) {
+                        let base = history_reader
                             .get_data_proj_binary(ch)
                             .map_err(CasperError::HistoryError)?;
-                        base_cache.insert(ch.clone(), b.clone());
-                        b
-                    };
-                    let added_here = branch_added.get(ch);
-                    for d in removed.iter() {
-                        let in_base = base.contains(d);
-                        let in_branch = added_here.is_some_and(|s| s.contains(d));
-                        if !in_base && !in_branch {
-                            stale_detail = Some((
-                                hex::encode(ch.bytes()),
-                                base.len(),
-                                hex::encode(&d[..d.len().min(8)]),
-                            ));
-                            break 'scan;
-                        }
+                        available.insert(ch.clone(), base);
+                    }
+                    if !is_sub_multiset(removed, available.get(ch).expect("seeded above")) {
+                        serializable = false;
+                        detail = Some((
+                            hex::encode(ch.bytes()),
+                            removed
+                                .first()
+                                .map(|d| hex::encode(&d[..d.len().min(8)]))
+                                .unwrap_or_default(),
+                        ));
+                        break;
                     }
                 }
+                if !serializable {
+                    if let Some((ch_hex, removed_hash)) = detail {
+                        let sigs: Vec<String> = chain
+                            .deploys_with_cost
+                            .0
+                            .iter()
+                            .filter(|dp| !is_system_deploy_id(&dp.deploy_id))
+                            .map(|dp| hex::encode(&dp.deploy_id[..dp.deploy_id.len().min(8)]))
+                            .collect();
+                        tracing::info!(
+                            target: "f1r3.trace.fs_floor",
+                            event = "serialize_reject_chain",
+                            channel = %ch_hex,
+                            removed_hash = %removed_hash,
+                            sigs = %sigs.join(","),
+                            "single-value-cell serialization: chain's consumed datum no longer available (fork sibling or stale rebase) — rejecting to recovery"
+                        );
+                    }
+                    rejected.insert(DeployChainIndex::clone(chain));
+                    continue;
+                }
+                // Apply this chain's writes so later chains see them:
+                // available = (available -- removed) ++ added, per touched channel.
+                for e in chain.state_changes.datums_changes.iter() {
+                    let ch = e.key();
+                    if foldable.contains(ch) {
+                        continue;
+                    }
+                    if !available.contains_key(ch) {
+                        let base = history_reader
+                            .get_data_proj_binary(ch)
+                            .map_err(CasperError::HistoryError)?;
+                        available.insert(ch.clone(), base);
+                    }
+                    let avail = available.get_mut(ch).expect("seeded above");
+                    let mut next =
+                        rspace_plus_plus::rspace::merger::state_change::StateChange::multiset_diff(
+                            avail,
+                            &e.value().removed,
+                        );
+                    next.extend(e.value().added.iter().cloned());
+                    *avail = next;
+                }
             }
-            if let Some((ch_hex, base_count, removed_hash)) = stale_detail {
-                let sigs: Vec<String> = branch
-                    .0
-                    .iter()
-                    .flat_map(|c| c.deploys_with_cost.0.iter())
-                    .filter(|dp| !is_system_deploy_id(&dp.deploy_id))
-                    .map(|dp| hex::encode(&dp.deploy_id[..dp.deploy_id.len().min(8)]))
-                    .collect();
-                let has_system = branch
-                    .0
-                    .iter()
-                    .flat_map(|c| c.deploys_with_cost.0.iter())
-                    .any(|dp| is_system_deploy_id(&dp.deploy_id));
-                tracing::info!(
-                    target: "f1r3.trace.fs_floor",
-                    event = "stale_consume_branch",
-                    channel = %ch_hex,
-                    base_count,
-                    removed_hash = %removed_hash,
-                    has_system,
-                    sigs = %sigs.join(","),
-                    "stale-consume rejecting branch: removed datum absent from base+branch (single-value race)"
-                );
-                stale_indices.insert(bi);
-            }
-        }
+            rejected
+        };
 
-        if !stale_indices.is_empty() {
+        if !rejected.is_empty() {
             let pre = resolved.to_merge.len();
-            let mut kept: Vec<HashableSet<DeployChainIndex>> = Vec::new();
-            for (bi, branch) in std::mem::take(&mut resolved.to_merge)
-                .into_iter()
-                .enumerate()
-            {
-                if stale_indices.contains(&bi) {
-                    for chain in branch.0 {
+            let mut kept_branches: Vec<HashableSet<DeployChainIndex>> = Vec::new();
+            for branch in std::mem::take(&mut resolved.to_merge) {
+                #[allow(clippy::mutable_key_type)]
+                let mut kept: HashSet<DeployChainIndex> = HashSet::new();
+                for chain in branch.0 {
+                    if rejected.contains(&chain) {
                         resolved.rejected.0.insert(chain);
+                    } else {
+                        kept.insert(chain);
                     }
-                } else {
-                    kept.push(branch);
+                }
+                if !kept.is_empty() {
+                    kept_branches.push(HashableSet(kept));
                 }
             }
-            resolved.to_merge = kept;
+            resolved.to_merge = kept_branches;
             tracing::info!(
                 target: "f1r3.trace.fs_floor",
-                event = "stale_consume_rejected",
-                branches = stale_indices.len(),
-                kept = resolved.to_merge.len(),
-                of = pre,
-                "rejected branches consuming a datum absent from base and branch (single-value-cell race)"
+                event = "serialize_rejected",
+                chains = rejected.len(),
+                branches_before = pre,
+                branches_after = resolved.to_merge.len(),
+                "single-value-cell serialization rejected fork/stale chains; one linear path kept per cell"
             );
         }
     }
