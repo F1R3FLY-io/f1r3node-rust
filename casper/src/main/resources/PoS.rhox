@@ -1157,21 +1157,24 @@ in {
                                           // 6. Pick new `activeValidators`
                                           pickActiveValidators!(newMovedPendingState.get("allBonds").toList(), *newValidatorsCh) |
                                           for (@newValidators <- newValidatorsCh) {
-                                            // 6b. Cost-Accounted Rho Stage D: CONVERT
-                                            //     collected fees BEFORE the mint (spec
-                                            //     tex:3095-3100). Fold `allBonds`: for
-                                            //     each active ∧ ¬halted ∧
-                                            //     ¬convertedEpochs validator with F_v
-                                            //     count f > 0, 1:1-convert via the
-                                            //     blessed Exchange, deposit the @W_v
-                                            //     draw purse of k=f, zero F_v, record
-                                            //     (v, epochIdx) in convertedEpochs.
-                                            //     Publish (v, k) on `feeConvertList`
-                                            //     for post_eval's Σ⟦v⟧ mirror. Uses the
-                                            //     NEWLY-PICKED active set (eligibility),
-                                            //     and the converted state feeds the
-                                            //     mint below so both ledgers
-                                            //     (convertedEpochs + mintedEpochs)
+                                            // 6b. Cost-Accounted Rho Stage D: mark the
+                                            //     fee CONVERSION eligibility BEFORE the
+                                            //     mint (spec tex:3095-3100). This fold
+                                            //     does NOT move any tokens: F_v is a
+                                            //     Rust-only, reducer-unwritable pool
+                                            //     (DR-13), so the actual conserving
+                                            //     F_v→Σ⟦v⟧ move (read f, credit Σ⟦v⟧+=f,
+                                            //     zero F_v) is the RUST dual-write half
+                                            //     in `close_block_deploy` post_eval. Here
+                                            //     the fold only (i) selects the eligible
+                                            //     validators (active ∧ ¬halted ∧
+                                            //     ¬convertedEpochs) over the NEWLY-PICKED
+                                            //     active set, (ii) records (v, epochIdx)
+                                            //     in convertedEpochs, and (iii) publishes
+                                            //     the eligible list on `feeConvertList`
+                                            //     for post_eval to read. The converted
+                                            //     state feeds the mint below so both
+                                            //     ledgers (convertedEpochs + mintedEpochs)
                                             //     advance in one runMVar transition.
                                             new epochStateWithActiveCh in {
                                               epochStateWithActiveCh!(newRemovedQuantinueState.set("activeValidators", newValidators)) |

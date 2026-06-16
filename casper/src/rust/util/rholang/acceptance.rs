@@ -808,6 +808,19 @@ where
 /// bypassed the strict gate ⇒ the block is INVALID
 /// ([`ReplayFailure::ReplayAdmissionMismatch`]). When `strict` is `false` this
 /// check is skipped (absent ⇒ unenforced, matching the transitional gate).
+///
+/// **F-4 invariant (proposer/dummy deploys — red-team hardening).** This recompute
+/// runs over ALL of `block.body.deploys`, INCLUDING the proposer's own gate-exempt
+/// DUMMY deploys (the play side fed only the USER deploys to the gate, never the
+/// dummies). The play↔replay COST+FEE symmetry therefore relies on every
+/// dummy/proposer deploy contributing ZERO here: a dummy's envelope signature is a
+/// fresh per-block `Quote(Blake2b256(DEPLOY_SIGNATURE_DOMAIN ‖ sig))` — a
+/// never-provisioned, ABSENT pool, disjoint from the validator pool `Ground(pk)` —
+/// so the present-filter drops its debit/fee entry to 0, matching the play side
+/// (which excluded it). This is the same latent property the cost recompute
+/// already inherits; it holds for any honest block because a Σ⟦c⟧ write on a
+/// deploy-signature-keyed channel is confined by DR-13 to the Rust supply module on
+/// system deploys (no shard provisions a pool keyed by a deploy signature).
 pub async fn recompute_settlement_debits(
     admitted: Vec<Cosigned<DeployData>>,
     supply_reader: &dyn SupplyReader,

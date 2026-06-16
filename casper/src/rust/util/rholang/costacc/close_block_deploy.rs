@@ -315,10 +315,28 @@ impl CloseBlockDeploy {
                     continue;
                 }
                 let old_c = supply::read_balance(runtime_ops, &debit.channel).await;
-                let new_c = old_c.checked_sub(debit.amount).expect(
-                    "phlogiston supply underflow on FeeExtract carve — gate invariant \
-                     violated (admitted Σ⟦c⟧ < cost + fee)",
-                );
+                // F-3 (red-team hardening): an over-fee'd block — one whose carve
+                // exceeds the client's POST-COST `Σ⟦c⟧` — is an INVALID BLOCK on
+                // replay, NOT a node panic; symmetric with the cost settlement's
+                // `ReplayAdmissionMismatch` guard (the fee previously lacked this).
+                // On the PLAY path an underflow means THIS proposer violated its OWN
+                // admission gate (`Σ⟦c⟧ ≥ cost + fee`) — a local invariant bug ⇒ panic.
+                let new_c = match old_c.checked_sub(debit.amount) {
+                    Some(v) => v,
+                    None if is_replay => {
+                        return Err(CasperError::ReplayFailure(
+                            ReplayFailure::replay_supply_mismatch(
+                                format!("feeCarveUnderflow:{}", hex::encode(sig_key)),
+                                debit.amount,
+                                old_c,
+                            ),
+                        ));
+                    }
+                    None => panic!(
+                        "phlogiston supply underflow on FeeExtract carve — gate \
+                         invariant violated (admitted Σ⟦c⟧ < cost + fee)"
+                    ),
+                };
                 let carve_rand = supply::fee_carve_random_state(&close_rand, index as i64);
                 supply::produce_balance(runtime_ops, &debit.channel, new_c, carve_rand).await?;
                 carved_total = carved_total
