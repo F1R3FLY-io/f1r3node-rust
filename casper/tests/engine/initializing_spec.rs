@@ -42,9 +42,7 @@ impl InitializingSpec {
             .set_responses(|_peer, _protocol| Ok(()));
     }
 
-    fn after_each(fixture: &TestFixture) {
-        fixture.transport_layer.reset();
-    }
+    fn after_each(fixture: &TestFixture) { fixture.transport_layer.reset(); }
     async fn make_transition_to_running_once_approved_block_received() {
         let _event_bus = shared::rust::shared::f1r3fly_events::F1r3flyEvents::new();
 

@@ -61,10 +61,9 @@ impl Sortable<Connective> for ConnectiveSortMatcher {
                     term: Connective {
                         connective_instance: Some(ConnectiveInstance::ConnNotBody(scored_par.term)),
                     },
-                    score: Tree::<ScoreAtom>::create_node_from_i32(
-                        Score::CONNECTIVE_NOT,
-                        vec![scored_par.score],
-                    ),
+                    score: Tree::<ScoreAtom>::create_node_from_i32(Score::CONNECTIVE_NOT, vec![
+                        scored_par.score,
+                    ]),
                 }
             }
 

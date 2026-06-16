@@ -44,9 +44,7 @@ pub trait RSpaceLogger<C, P: Clone, A: Clone, K: Clone>: Send + Sync {
 pub struct BasicLogger;
 
 impl BasicLogger {
-    pub fn new() -> Self {
-        BasicLogger
-    }
+    pub fn new() -> Self { BasicLogger }
 }
 
 impl<C, P: Clone, A: Clone, K: Clone> RSpaceLogger<C, P, A, K> for BasicLogger {}

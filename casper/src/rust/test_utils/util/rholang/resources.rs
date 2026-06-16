@@ -182,9 +182,7 @@ pub fn mk_test_rnode_store_manager_shared(scope_id: String) -> Box<dyn KeyValueS
 /// Each test should use a unique scope ID to ensure database isolation
 /// within the shared LMDB environment.
 #[cfg(feature = "test-utils")]
-pub fn generate_scope_id() -> String {
-    Uuid::new_v4().to_string()
-}
+pub fn generate_scope_id() -> String { Uuid::new_v4().to_string() }
 
 /// Returns the path to the shared LMDB environment.
 ///
@@ -521,9 +519,7 @@ pub async fn mk_runtime_manager_with_history_at(
 /// Creates a managed temporary directory that will be automatically removed when the TempDir is dropped
 #[cfg(feature = "test-utils")]
 pub fn with_temp_dir<F, R>(prefix: &str, f: F) -> R
-where
-    F: FnOnce(&Path) -> R,
-{
+where F: FnOnce(&Path) -> R {
     let temp_dir = Builder::new()
         .prefix(prefix)
         .tempdir()

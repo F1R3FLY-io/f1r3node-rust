@@ -7,7 +7,10 @@
 //!   * the PURE per-signature demand analyzer `Δ_s` + Split/Join supply closure
 //!     (`rholang/.../accounting/delta_sigma.rs`, WD-D1);
 //!   * the per-signature supply pool `Σ⟦s⟧` read helpers (`supply.rs`, StageB);
-//!   * the ONE extracted envelope-`Sig` derivation (`accounting::envelope_sig`).
+//!   * the ONE extracted FUNDING-`Sig` derivation (`accounting::funding_sig`) —
+//!     keyed by the signers' GROUND public keys, so the pool the gate proves
+//!     `Σ ≥ Δ` against and debits IS the genesis-seeded wallet `Σ⟦Ground(pk)⟧`
+//!     (`Σ⟦signer⟧ == Σ⟦wallet⟧`, WD-D2 §D2.9); replay re-derives it identically.
 //!
 //! ## What the gate computes (and does not)
 //!
@@ -257,18 +260,23 @@ pub fn canonical_sort(deploys: &mut [Cosigned<DeployData>]) {
     });
 }
 
-/// Build the gate candidate for one deploy: derive the envelope `Sig` via the
-/// ONE shared `accounting::envelope_sig`, the supply key + channel from it, and
+/// Build the gate candidate for one deploy: derive the FUNDING `Sig` via the
+/// ONE shared `accounting::funding_sig`, the supply key + channel from it, and
 /// the static demand `Δ_s` from the desugared term. A term whose
 /// `source_to_adt` fails is flagged `malformed` (⇒ rejected).
+///
+/// The funding signature is keyed by the signers' GROUND public keys
+/// (`Sig::Ground(pk)` / the `And`-fold thereof), so the pool the gate reads,
+/// proves `Σ ≥ Δ` against, and debits IS the genesis-seeded wallet
+/// `Σ⟦Ground(pk)⟧` — `Σ⟦signer⟧ == Σ⟦wallet⟧` (cost-accounting WD-D2 §D2.9).
 fn build_candidate_with_logic<L>(cosigned: Cosigned<DeployData>, logic: &L) -> Candidate
 where L: OslfResourceLogic<RhoGslt> {
     let gslt = RhoGslt;
-    let envelope: Sig = accounting::envelope_sig(&cosigned);
+    let funding: Sig = accounting::funding_sig(&cosigned);
 
     // F-A funding/capability separation (gate invariant (a) — red-team M2,
     // `docs/theory/cost-accounting-impl/f-a-funding-vs-capability-separation.md`
-    // §3/§6): the envelope `Sig` that keys the supply pool `Σ⟦s⟧` MUST be a
+    // §3/§6): the funding `Sig` that keys the supply pool `Σ⟦s⟧` MUST be a
     // funding-grammar signature (`g|#P|s∘s` = `Unit`/`Ground`/`Quote` atoms
     // folded by `And`). A value/capability type-logic connective
     // (`Plus`/`With`/`Bang`/`WhyNot`/`Lolly`/`Threshold`) is NOT a funding former
@@ -277,22 +285,22 @@ where L: OslfResourceLogic<RhoGslt> {
     // than panicking — a malformed funding shape is refused, not crashed.
     //
     // This is a BELT-AND-SUSPENDERS REGRESSION GUARD, not the live-wire defense:
-    // `envelope_sig` is already total to `Quote`/`And` (it folds the flat
-    // `Cosigned` by arity), so this branch is UNREACHABLE today and can only fire
-    // if a future change makes `envelope_sig` non-total. It does NOT defend the
-    // gRPC wire path — the LOAD-BEARING guard that actually stops a malicious
-    // client from submitting a `⊕/&/!/?/⊸`-formed `sig_algebra` is the INGRESS
-    // reject (c) in
+    // `funding_sig` is already total to `Ground`/`And` (it maps each verified
+    // cosigner's public key to a `Sig::Ground` atom, folding ≥2 by `And`), so
+    // this branch is UNREACHABLE today and can only fire if a future change makes
+    // `funding_sig` non-total. It does NOT defend the gRPC wire path — the
+    // LOAD-BEARING guard that actually stops a malicious client from submitting a
+    // `⊕/&/!/?/⊸`-formed `sig_algebra` is the INGRESS reject (c) in
     // `models/.../casper_message.rs::from_proto_cosigned_with_sig_algebra`.
-    if !envelope.is_funding_former() {
+    if !funding.is_funding_former() {
         // No-panic contract: derive the (rejected) candidate's key/channel from
         // the TOTAL reflection (`Sig::key` → `lane_hash` → `from_sig`,
         // `SignatureChannel::from_sig` directly) rather than the funding-asserting
         // `supply::supply_channel` wrapper, so this guard refuses the candidate
         // instead of tripping the `debug_assert!`. The candidate is `malformed`
         // ⇒ rejected; its key/channel only serve as map placeholders.
-        let sig_key = envelope.key();
-        let channel = accounting::SignatureChannel::from_sig(&envelope).par;
+        let sig_key = funding.key();
+        let channel = accounting::SignatureChannel::from_sig(&funding).par;
         return Candidate {
             cosigned,
             sig_key,
@@ -302,8 +310,8 @@ where L: OslfResourceLogic<RhoGslt> {
         };
     }
 
-    let sig_key = envelope.key();
-    let channel = supply::supply_channel(&envelope);
+    let sig_key = funding.key();
+    let channel = supply::supply_channel(&funding);
 
     match Compiler::source_to_adt(&cosigned.data().term) {
         Ok(par) => {
@@ -313,7 +321,7 @@ where L: OslfResourceLogic<RhoGslt> {
             // therefore equals the runtime's consumed per-COMM `total_cost()`,
             // so gate demand == runtime consumed == settlement debit, all
             // per-COMM (the D1→D3 handoff completed in lockstep).
-            let demand = logic.demand(&desugared, &envelope);
+            let demand = logic.demand(&desugared, &funding);
             Candidate {
                 cosigned,
                 sig_key,
@@ -610,8 +618,8 @@ where
             channels_by_key
                 .entry(repr.sig_key)
                 .or_insert_with(|| repr.channel.clone());
-            let envelope = accounting::envelope_sig(&repr.cosigned);
-            collect_decompositions(&envelope, &mut decompositions, &mut channels_by_key);
+            let funding = accounting::funding_sig(&repr.cosigned);
+            collect_decompositions(&funding, &mut decompositions, &mut channels_by_key);
         }
     }
 
@@ -845,7 +853,7 @@ where
     // 1. Group admitted deploys by pool, summing Δ_s, AND collect the Split/Join
     //    decompositions + every distinct channel (group + compound component) —
     //    EXACTLY as `admit_by_funding` does, from the same `Cosigned` envelopes
-    //    (`build_candidate` → `envelope_sig` → the same `Sig::And`), so the
+    //    (`build_candidate` → `funding_sig` → the same `Sig::Ground`/`And`), so the
     //    inputs to `compute_settlement_debits` are byte-identical to the play
     //    side. A malformed term among the ADMITTED set cannot occur for a valid
     //    block (the proposer never admits a malformed deploy), but is treated
@@ -860,7 +868,10 @@ where
     let mut channels_by_key: BTreeMap<SigKey, Par> = BTreeMap::new();
     let mut group_envelopes: BTreeMap<SigKey, Sig> = BTreeMap::new();
     for cosigned in admitted {
-        let envelope = accounting::envelope_sig(&cosigned);
+        // SAME shared `funding_sig` the play-side gate (`build_candidate_with_logic`)
+        // keys by — so replay reconstructs the byte-identical `Sig::Ground(pk)` /
+        // `And`-fold, hence the byte-identical settlement-debit map.
+        let funding = accounting::funding_sig(&cosigned);
         let candidate = build_candidate_with_logic(cosigned, logic);
         if candidate.malformed {
             continue;
@@ -868,10 +879,10 @@ where
         channels_by_key
             .entry(candidate.sig_key)
             .or_insert_with(|| candidate.channel.clone());
-        // Record the envelope once per group so the decomposition collection
-        // (below) walks each compound exactly once — identical to the play-side
-        // per-group representative walk.
-        group_envelopes.entry(candidate.sig_key).or_insert(envelope);
+        // Record the funding signature once per group so the decomposition
+        // collection (below) walks each compound exactly once — identical to the
+        // play-side per-group representative walk.
+        group_envelopes.entry(candidate.sig_key).or_insert(funding);
         let entry = demand_by_group
             .entry(candidate.sig_key)
             .or_insert_with(|| (candidate.channel.clone(), 0));
@@ -906,19 +917,32 @@ where
         }
     }
 
+    // The Split/Join EFFECTIVE supply (mirrors the play side, `:644`): a
+    // compound group's `effectiveΣ_compound = Σ⟦compound⟧ + min(Σ⟦s₁⟧, Σ⟦s₂⟧)`
+    // folds its component pools in. The strict re-verification + the settle
+    // filter below MUST key on this (NOT raw own-pool presence), because a
+    // multi-sig deploy funds from the cosigners' `Σ⟦Ground(pkᵢ)⟧` wallets even
+    // when no combined `Σ⟦And(…)⟧` pool exists (genesis seeds per-pubkey
+    // wallets, never compound pools — §D2.9). Keying on raw presence would
+    // reject on replay a strict compound deploy the play side admitted (a
+    // play/replay FORK).
+    let effective = delta_sigma::effective_supply_with(&raw, &decompositions);
+
     // Task #13a STRICT replay RE-VERIFICATION: under spec-strict funding, the
-    // gate would NEVER admit a `Δ > 0` deploy onto an ABSENT pool (absent ⇒
-    // effective supply 0 ⇒ rejected, §7.6 step 5). So a recorded ADMITTED group
-    // with positive demand whose own pool is absent on the block's pre-state
-    // means the proposer bypassed the strict gate ⇒ INVALID block. (Skipped
-    // when `!strict`: the transitional gate admits absent pools unenforced, so
-    // this is exactly the byte-identical pre-#13a behavior.) Iterates the
-    // PRE-filter `demand_by_group` (deterministic `SigKey` order) so absent
-    // admitted groups are still visible here before the present-filter below
-    // drops them.
+    // gate would NEVER admit a `Δ > 0` deploy onto a pool with ZERO EFFECTIVE
+    // supply (effective 0 ⇒ rejected, §7.6 step 5). So a recorded ADMITTED group
+    // with positive demand whose EFFECTIVE supply is 0 on the block's pre-state
+    // means the proposer bypassed the strict gate ⇒ INVALID block. (Skipped when
+    // `!strict`: the transitional gate admits absent pools unenforced, so this is
+    // exactly the byte-identical pre-#13a behavior.) Iterates the PRE-filter
+    // `demand_by_group` (deterministic `SigKey` order) so groups are still
+    // visible here before the settle-filter below. NOTE: effective supply (not
+    // raw presence) — a compound group funded only by present COMPONENTS has a
+    // positive effective supply and is correctly NOT flagged (the play side
+    // admitted it on the same effective supply).
     if strict {
         for (key, (_channel, amount)) in &demand_by_group {
-            if *amount > 0 && !present.contains(key) {
+            if *amount > 0 && *effective.get(key).unwrap_or(&0) <= 0 {
                 return Err(CasperError::ReplayFailure(
                     ReplayFailure::replay_admission_mismatch(
                         0,
@@ -926,8 +950,8 @@ where
                         0,
                         0,
                         format!(
-                            "strict funding: admitted deploy with ΣΔ_s={} targets ABSENT pool \
-                             (SigKey {}, effective supply 0) — proposer bypassed the spec-strict \
+                            "strict funding: admitted deploy with ΣΔ_s={} targets a pool with \
+                             ZERO effective supply (SigKey {}) — proposer bypassed the spec-strict \
                              gate (§7.6 step 5: underfunded deploy must be rejected)",
                             amount,
                             hex::encode(key),
@@ -938,13 +962,21 @@ where
         }
     }
 
+    // Settle filter — mirror EXACTLY which groups the play side put in
+    // `demand_by_group`: the play side excludes a group iff it was EARLY-ADMITTED
+    // unenforced (`!strict && !present` at `:680`), i.e. it keeps a group iff
+    // `strict || present(own pool)`. Under strict, every still-present group has
+    // already passed the effective-supply re-verification above, so keeping them
+    // all (including a compound funded only via its components) reproduces the
+    // play-side debit map; under non-strict, only own-pool-present groups carry a
+    // debit (byte-identical pre-#13a behavior).
     let demand_by_group: BTreeMap<SigKey, (Par, i64)> = demand_by_group
         .into_iter()
-        .filter(|(key, (_chan, amount))| *amount > 0 && present.contains(key))
+        .filter(|(key, (_chan, amount))| *amount > 0 && (strict || present.contains(key)))
         .collect();
     let fee_by_group: BTreeMap<SigKey, (Par, i64)> = fee_by_group
         .into_iter()
-        .filter(|(key, (_chan, amount))| *amount > 0 && present.contains(key))
+        .filter(|(key, (_chan, amount))| *amount > 0 && (strict || present.contains(key)))
         .collect();
 
     // 3. Settle the per-pool COST debit via the SAME shared function the play side
@@ -1021,12 +1053,37 @@ mod tests {
     //! algorithm (no live runtime needed).
     use std::collections::HashMap;
 
+    use crypto::rust::hash::blake2b256::Blake2b256;
     use crypto::rust::public_key::PublicKey;
     use crypto::rust::signatures::secp256k1::Secp256k1;
     use crypto::rust::signatures::signed::Signed;
     use models::rust::casper::protocol::casper_message::DeployData;
 
     use super::*;
+
+    /// Deterministic 33-byte secp256k1-shaped public key derived from a test's
+    /// signature-label bytes. The gate now keys funding by the signer's PUBLIC
+    /// KEY (`funding_sig` ⇒ `Sig::Ground(pk)`), so distinct labels must map to
+    /// distinct pks (distinct wallets `Σ⟦Ground(pk)⟧`) while two deploys sharing
+    /// a label share a pk (one pool — the s₀ double-spend group shape). The gate
+    /// never verifies the sig against the pk (`from_single_signer` is
+    /// infallible), so any deterministic 33-byte value is a valid stand-in; the
+    /// Blake2b256 of the label is collision-free across distinct labels.
+    fn pk_from_sig(sig: &[u8]) -> Vec<u8> {
+        let hash = Blake2b256::hash(sig.to_vec());
+        let mut pk = Vec::with_capacity(33);
+        pk.push(0x02);
+        pk.extend_from_slice(&hash);
+        pk
+    }
+
+    /// The supply-pool `SigKey` the gate keys a single-signer test deploy to:
+    /// `Σ⟦Ground(pk_from_sig(sig))⟧` — the signer's ground-pubkey wallet
+    /// (`Σ⟦signer⟧ == Σ⟦wallet⟧`). Replaces the pre-fix
+    /// `sig_key(envelope_sig_single(sig))` (which keyed the wire-sig `#P` pool).
+    fn pool_key(sig: &[u8]) -> SigKey {
+        delta_sigma::sig_key(&accounting::funding_sig_single(&pk_from_sig(sig)))
+    }
 
     /// A canned per-channel supply reader keyed by the channel's wire encoding.
     struct MockSupplyReader {
@@ -1040,11 +1097,15 @@ mod tests {
             }
         }
 
-        /// Set the balance of the pool a given envelope `sig` maps to.
+        /// Set the balance of the SIGNER'S ground-pubkey wallet `Σ⟦Ground(pk)⟧`
+        /// for the deploy keyed by label `sig` — the SAME pool the gate now keys
+        /// via `funding_sig` (`Σ⟦signer⟧ == Σ⟦wallet⟧`). `pk` is derived from the
+        /// label by `pk_from_sig`, identically to [`cosigned`], so the seeded
+        /// channel and the gate's keyed channel coincide.
         fn set(&mut self, sig: &[u8], balance: i64) {
             use prost::Message;
-            let envelope = accounting::envelope_sig_single(sig);
-            let chan = supply::supply_channel(&envelope);
+            let funding = accounting::funding_sig_single(&pk_from_sig(sig));
+            let chan = supply::supply_channel(&funding);
             self.balances.insert(chan.encode_to_vec(), balance);
         }
 
@@ -1076,10 +1137,13 @@ mod tests {
     }
 
     /// Build a `Cosigned<DeployData>` with the given Rholang `term`, primary
-    /// signature bytes `sig` (controls the supply-pool group), and ordering
-    /// fields. The gate does not verify signatures, so an arbitrary `sig` byte
-    /// string is sufficient to place the deploy into a chosen group — two
-    /// deploys sharing `sig` share a group (the s₀-collapse double-spend shape).
+    /// signature-label bytes `sig`, and ordering fields. The label both (a) is
+    /// the deploy's wire `sig` (ordering / `deploy_id`) and (b) derives the
+    /// signer's public key via [`pk_from_sig`], which the gate keys the supply
+    /// pool `Σ⟦Ground(pk)⟧` by (`funding_sig`). The gate does not verify
+    /// signatures, so an arbitrary label is sufficient to place the deploy into a
+    /// chosen group — two deploys sharing a label share a pk, hence a pool (the
+    /// s₀-collapse double-spend shape).
     fn cosigned(term: &str, sig: &[u8], vabn: i64, ts: i64) -> Cosigned<DeployData> {
         let data = DeployData {
             term: term.to_string(),
@@ -1090,9 +1154,12 @@ mod tests {
         };
         let signed = Signed {
             data,
-            // A deterministic 33-byte secp256k1-shaped public key placeholder;
-            // unused by the gate (it keys on the envelope sig, not the pk).
-            pk: PublicKey::from_bytes(&[2u8; 33]),
+            // The gate keys funding by the signer's PUBLIC KEY (`funding_sig` ⇒
+            // `Sig::Ground(pk)`), so the pk is derived from the label so distinct
+            // labels get distinct wallets `Σ⟦Ground(pk)⟧` (and same-label deploys
+            // share one pool). `from_single_signer` does not verify, so this
+            // stand-in pk needs no matching private key.
+            pk: PublicKey::from_bytes(&pk_from_sig(sig)),
             sig: Bytes::copy_from_slice(sig),
             sig_algorithm: Box::new(Secp256k1),
         };
@@ -1289,8 +1356,8 @@ mod tests {
         assert_eq!(outcome.admitted.len(), 2, "a0 + b0 admitted");
         assert_eq!(outcome.rejected.len(), 1, "a1 rejected (pool exhausted)");
         // COST debits (burned from Σ⟦c⟧): alice pool -= 3, bob pool -= 2.
-        let alice_key = delta_sigma::sig_key(&accounting::envelope_sig_single(b"alice"));
-        let bob_key = delta_sigma::sig_key(&accounting::envelope_sig_single(b"bob"));
+        let alice_key = pool_key(b"alice");
+        let bob_key = pool_key(b"bob");
         assert_eq!(outcome.debits.get(&alice_key).map(|d| d.amount), Some(3));
         assert_eq!(outcome.debits.get(&bob_key).map(|d| d.amount), Some(2));
         // FEE carve (one token per ADMITTED deploy, carved to F_v): one admitted
@@ -1353,7 +1420,7 @@ mod tests {
         let deploy = cosigned(&n_sends(2), b"oslf-replay", 0, 10);
         let mut reader = MockSupplyReader::new();
         reader.set(b"oslf-replay", 10);
-        let key = delta_sigma::sig_key(&accounting::envelope_sig_single(b"oslf-replay"));
+        let key = pool_key(b"oslf-replay");
 
         let default = recompute_settlement_debits(vec![deploy.clone()], &reader, false)
             .await
@@ -1390,7 +1457,7 @@ mod tests {
 
         assert!(outcome.admitted.is_empty(), "first unfunded ⇒ reject both");
         assert_eq!(outcome.rejected.len(), 2, "both deploys rejected");
-        let carol_key = delta_sigma::sig_key(&accounting::envelope_sig_single(b"carol"));
+        let carol_key = pool_key(b"carol");
         assert!(
             outcome.debits.get(&carol_key).is_none(),
             "no admitted deploys ⇒ no debit on the pool"
@@ -1428,7 +1495,7 @@ mod tests {
             "Σ = Δ + fee ⇒ accepted (margin inert)"
         );
         assert!(accepted.rejected.is_empty());
-        let dave_key = delta_sigma::sig_key(&accounting::envelope_sig_single(b"dave"));
+        let dave_key = pool_key(b"dave");
         // COST debit is still the cost-only Δ (the fee is carved separately).
         assert_eq!(
             accepted.debits.get(&dave_key).map(|x| x.amount),
@@ -1581,7 +1648,7 @@ mod tests {
     /// the +1 is the fee, not the margin.
     #[tokio::test]
     async fn strict_zero_demand_is_fee_gated() {
-        let zoe_key = delta_sigma::sig_key(&accounting::envelope_sig_single(b"zoe"));
+        let zoe_key = pool_key(b"zoe");
 
         // (a) ABSENT pool: Δ=0 but the FeeExtract needs Σ≥1 ⇒ effective 0 ⇒ rejected.
         let z_absent = cosigned("Nil", b"zoe", 0, 10);
@@ -1681,9 +1748,9 @@ mod tests {
         );
 
         // Debits: exactly the funded pool (Δ=2). Absent + drained ⇒ no debit.
-        let abs_key = delta_sigma::sig_key(&accounting::envelope_sig_single(b"abs"));
-        let fund_key = delta_sigma::sig_key(&accounting::envelope_sig_single(b"fund"));
-        let drain_key = delta_sigma::sig_key(&accounting::envelope_sig_single(b"drain"));
+        let abs_key = pool_key(b"abs");
+        let fund_key = pool_key(b"fund");
+        let drain_key = pool_key(b"drain");
         assert_eq!(
             outcome.debits.len(),
             1,
@@ -1725,7 +1792,7 @@ mod tests {
         const DEMAND: usize = 4;
         const MARGIN: i64 = 1;
         let client = cosigned(&n_sends(DEMAND), b"client", 0, 10);
-        let client_key = delta_sigma::sig_key(&accounting::envelope_sig_single(b"client"));
+        let client_key = pool_key(b"client");
 
         let mut reader = MockSupplyReader::new();
         reader.set(b"client", (DEMAND as i64) + MARGIN + 5); // present, comfortably funds Δ
@@ -1777,6 +1844,226 @@ mod tests {
             recomputed.settlement.get(&client_key).map(|d| d.amount),
             Some(DEMAND as i64),
             "replayed client debit equals its demand"
+        );
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // §D2.9 — `Σ⟦signer⟧ == Σ⟦wallet⟧`: a deploy's fuel is drawn from the pool
+    // keyed by the SIGNER'S GROUND PUBLIC KEY `Σ⟦Ground(pk)⟧` — the genesis-
+    // seeded wallet (`close_block_deploy.rs` seeds `Sig::Ground(pk)`) — NOT a
+    // per-deploy wire-signature pool. These are the consensus payoff tests that
+    // the gate now binds against the signer's real wallet.
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /// §D2.9 (single-sig) — a funded signer's deploy is admitted and the cost is
+    /// debited from EXACTLY `Σ⟦Ground(signer_pk)⟧` (the wallet channel), by Δ;
+    /// the gate's funding key IS `funding_sig_single(signer_pk)`. Conservation:
+    /// the debit `CloseBlockDeploy` applies is `post = pre − Δ`.
+    #[tokio::test]
+    async fn deploy_funds_from_signer_ground_pubkey_wallet() {
+        const DEMAND: usize = 3;
+        let deploy = cosigned(&n_sends(DEMAND), b"signer", 0, 10);
+
+        // The pool the gate keys is the signer's GROUND public-key wallet.
+        let signer_pk = deploy.primary().pk.bytes.to_vec();
+        let wallet_sig = accounting::funding_sig_single(&signer_pk);
+        assert_eq!(
+            accounting::funding_sig(&deploy),
+            wallet_sig,
+            "the gate funds a single-sig deploy from Σ⟦Ground(signer_pk)⟧"
+        );
+        let wallet_chan = supply::supply_channel(&wallet_sig);
+        let wallet_key = delta_sigma::sig_key(&wallet_sig);
+
+        const PRE: i64 = 10; // genesis-seeded balance ≥ Δ
+        let mut reader = MockSupplyReader::new();
+        reader.set_sig(&wallet_sig, PRE);
+
+        let outcome = admit_by_funding(vec![deploy.clone()], &reader, /* margin */ 1, /* strict */ true)
+            .await
+            .expect("gate must not error");
+
+        assert_eq!(outcome.admitted.len(), 1, "funded signer admitted");
+        assert!(outcome.rejected.is_empty());
+        let debit = outcome
+            .debits
+            .get(&wallet_key)
+            .expect("the signer's ground-pubkey wallet is debited");
+        assert_eq!(debit.amount, DEMAND as i64, "cost debit == Δ");
+        assert_eq!(
+            debit.channel, wallet_chan,
+            "the debited channel IS Σ⟦Ground(signer_pk)⟧ — the wallet, not a wire-sig pool"
+        );
+        // Conservation: CloseBlockDeploy applies post = pre − Δ.
+        assert_eq!(PRE - debit.amount, PRE - DEMAND as i64);
+    }
+
+    /// §D2.9 (single-sig) — under STRICT funding, a deploy whose signer wallet
+    /// `Σ⟦Ground(pk)⟧` is ABSENT (never seeded) is REJECTED: it cannot prove
+    /// `Σ ≥ Δ`. Pre-fix the wire-sig pool was ALWAYS absent ⇒ every deploy was
+    /// silently admitted-unenforced; now an unfunded signer is actually refused.
+    #[tokio::test]
+    async fn unfunded_signer_rejected_under_strict() {
+        let deploy = cosigned(&n_sends(2), b"poor", 0, 10);
+        let reader = MockSupplyReader::new(); // the signer's wallet is ABSENT
+        let outcome =
+            admit_by_funding(vec![deploy.clone()], &reader, /* margin */ 1, /* strict */ true)
+                .await
+                .expect("gate must not error");
+        assert!(
+            outcome.admitted.is_empty(),
+            "absent signer wallet ⇒ rejected under strict"
+        );
+        assert_eq!(outcome.rejected, vec![deploy.primary().sig.clone()]);
+        assert!(outcome.debits.is_empty(), "rejected ⇒ no debit");
+    }
+
+    /// §D2.9 (multi-sig) + P8 — a compound deploy's funding components are
+    /// EXACTLY the cosigners' ground-pubkey wallets `Σ⟦Ground(pkᵢ)⟧`, drawn
+    /// BALANCED (each cosigner's wallet debited equally), with play == replay.
+    ///
+    /// This mirrors GENESIS: only the individual cosigner wallets
+    /// `Σ⟦Ground(pkᵢ)⟧` are seeded — there is NO combined `Σ⟦And(…)⟧` pool (the
+    /// genesis ceremony seeds per-pubkey wallets, never compound pools). Under
+    /// STRICT enforcement the compound group therefore funds from
+    /// `effectiveΣ_compound = Σ⟦compound⟧(absent ⇒ 0) + min(Σ⟦left⟧, Σ⟦right⟧)`,
+    /// i.e. the matched component pair, debiting each cosigner's wallet equally.
+    /// (On a non-strict shard the absent compound pool early-admits unenforced —
+    /// the pre-existing transitional activation gate; strict is the enforced
+    /// production path.) The exact Split/Join split is pinned by
+    /// `compound_debit_play_replay_identical_pair_only` (now `funding_sig`-keyed);
+    /// here we pin the cosigner-wallet identity + per-cosigner balance.
+    #[tokio::test]
+    async fn multi_sig_funds_balanced_over_cosigner_ground_pubkey_wallets() {
+        let compound = compound_cosigned("@0!(0) | @0!(0)", 0, 10); // Δ = 2
+        let pks: Vec<Vec<u8>> = compound.signers().iter().map(|s| s.pk.bytes.to_vec()).collect();
+        assert_eq!(pks.len(), 2, "two cosigners");
+
+        // The funding signature is And(Ground(pk_a), Ground(pk_b)) over the
+        // ACTUAL cosigner public keys — their wallets (P8-balanced).
+        let funding = accounting::funding_sig(&compound);
+        let pk_refs: Vec<&[u8]> = pks.iter().map(|p| p.as_slice()).collect();
+        assert_eq!(
+            funding,
+            accounting::funding_sig_compound(&pk_refs),
+            "compound funding == And(Ground(cosigner_pkᵢ)) — the cosigners' wallets"
+        );
+        let (left, right) = match &funding {
+            Sig::And(l, r) => ((**l).clone(), (**r).clone()),
+            other => panic!("expected And(Ground,Ground), got {:?}", other),
+        };
+        assert!(
+            matches!(left, Sig::Ground(_)) && matches!(right, Sig::Ground(_)),
+            "both components are the cosigners' Ground(pk) wallets"
+        );
+
+        // Seed ONLY the two cosigner wallets (mirrors genesis: per-pubkey
+        // wallets, NO compound pool). effectiveΣ_compound = 0 + min(5,5) = 5.
+        let mut reader = MockSupplyReader::new();
+        reader.set_sig(&left, 5);
+        reader.set_sig(&right, 5);
+
+        // STRICT: the enforced production path — the absent compound pool falls
+        // through to enforcement against the component pair (effectiveΣ).
+        let play = admit_by_funding(vec![compound.clone()], &reader, 0, /* strict */ true)
+            .await
+            .expect("gate must not error");
+        assert_eq!(play.admitted.len(), 1, "admitted from the cosigner wallets");
+        assert!(play.rejected.is_empty());
+
+        let replay = recompute_settlement_debits(play.admitted.clone(), &reader, /* strict */ true)
+            .await
+            .expect("recompute must not error");
+        assert_eq!(
+            play.debits, replay.settlement,
+            "play == replay byte-identical over the cosigner wallets"
+        );
+
+        // Balanced (P8): each cosigner's wallet is debited EQUALLY (a compound
+        // token is a matched pair — one from each pool), and they actually fund.
+        let l = play.debits.get(&delta_sigma::sig_key(&left)).map(|d| d.amount).unwrap_or(0);
+        let r = play.debits.get(&delta_sigma::sig_key(&right)).map(|d| d.amount).unwrap_or(0);
+        assert_eq!(l, r, "per-cosigner draw is balanced (P8)");
+        assert!(l > 0, "the cosigner wallets actually fund the deploy");
+    }
+
+    /// §D2.9 SECURITY (placeholder filter, R1-F4) — a THRESHOLD envelope may
+    /// list empty-`sig` PLACEHOLDER cosigners (un-signed members of an M-of-N
+    /// set). `funding_sig` MUST exclude them, so a deploy can NEVER key funding
+    /// to (debit) an UNSIGNED victim's wallet `Σ⟦Ground(victim_pk)⟧`. A 1-of-2
+    /// threshold with one real signer + one placeholder "victim" must fund ONLY
+    /// the real signer's wallet and leave the victim's (seeded) wallet untouched.
+    #[tokio::test]
+    async fn threshold_placeholder_victim_wallet_is_never_debited() {
+        use crypto::rust::signatures::signatures_alg::SignaturesAlg;
+        use crypto::rust::signatures::signed::{Cosigner, ToMessage};
+        use prost::Message;
+
+        let data = DeployData {
+            term: n_sends(2),
+            time_stamp: 10,
+            valid_after_block_number: 0,
+            shard_id: String::new(),
+            expiration_timestamp: None,
+        };
+        let secp = Secp256k1;
+        let serialized = data.to_message().encode_to_vec();
+        let hash = Signed::<DeployData>::signature_hash(&Secp256k1::name(), serialized);
+
+        // One REAL signer (valid sig over the canonical hash).
+        let (sk, real_pk) = secp.new_key_pair();
+        let real_sig = Bytes::from(secp.sign(&hash, &sk.bytes));
+        // One PLACEHOLDER "victim": a pubkey with an EMPTY sig (did NOT sign).
+        let (_victim_sk, victim_pk) = secp.new_key_pair();
+
+        let real_signer = Cosigner {
+            pk: real_pk.clone(),
+            sig: real_sig,
+            sig_algorithm: Box::new(Secp256k1),
+        };
+        let victim_placeholder = Cosigner {
+            pk: victim_pk.clone(),
+            sig: Bytes::new(),
+            sig_algorithm: Box::new(Secp256k1),
+        };
+
+        // 1-of-2 threshold: only the real signer's signature is required/valid.
+        let cosigned = Cosigned::from_signed_data_threshold(
+            data,
+            vec![real_signer, victim_placeholder],
+            1,
+        )
+        .expect("1-of-2 threshold with one valid signer");
+
+        // funding_sig EXCLUDES the placeholder ⇒ Ground(real_pk) ONLY — the
+        // FILTERED funder count (1) drives the arity, NOT `is_compound()` (2).
+        let real_wallet = accounting::funding_sig_single(&real_pk.bytes);
+        assert_eq!(
+            accounting::funding_sig(&cosigned),
+            real_wallet,
+            "funding excludes the unsigned placeholder ⇒ only the real signer funds"
+        );
+
+        // Seed BOTH wallets; the victim's (richly funded) wallet must stay intact.
+        let victim_wallet = accounting::funding_sig_single(&victim_pk.bytes);
+        let mut reader = MockSupplyReader::new();
+        reader.set_sig(&real_wallet, 10);
+        reader.set_sig(&victim_wallet, 100);
+
+        let outcome = admit_by_funding(vec![cosigned.clone()], &reader, 0, /* strict */ true)
+            .await
+            .expect("gate must not error");
+        assert_eq!(outcome.admitted.len(), 1, "the real signer funds the deploy");
+        let real_key = delta_sigma::sig_key(&real_wallet);
+        let victim_key = delta_sigma::sig_key(&victim_wallet);
+        assert_eq!(
+            outcome.debits.get(&real_key).map(|d| d.amount),
+            Some(2),
+            "the real signer's wallet is debited Δ"
+        );
+        assert!(
+            outcome.debits.get(&victim_key).is_none(),
+            "the unsigned victim's wallet is NEVER debited (placeholder filter)"
         );
     }
 
@@ -1999,8 +2286,9 @@ mod tests {
 
     /// Build a REAL 2-signer compound `Cosigned<DeployData>` over `term` (two
     /// fresh Secp256k1 keypairs both signing the canonical message hash), so the
-    /// gate's `envelope_sig` derives a genuine `Sig::And` (the compound shape).
-    /// Mirrors `multi_sig_fanout_bench::build_n_signers`.
+    /// gate's `funding_sig` derives a genuine `Sig::And` of the two cosigners'
+    /// `Sig::Ground(pkᵢ)` atoms (the compound shape). Mirrors
+    /// `multi_sig_fanout_bench::build_n_signers`.
     fn compound_cosigned(term: &str, vabn: i64, ts: i64) -> Cosigned<DeployData> {
         use crypto::rust::signatures::signatures_alg::SignaturesAlg;
         use crypto::rust::signatures::signed::{Cosigner, ToMessage};
@@ -2043,7 +2331,7 @@ mod tests {
         assert!(compound.is_compound(), "must be a true multi-sig envelope");
 
         // The compound envelope `Sig::And(left, right)` the gate will derive.
-        let envelope = accounting::envelope_sig(&compound);
+        let envelope = accounting::funding_sig(&compound);
         let (left, right) = match &envelope {
             Sig::And(l, r) => ((**l).clone(), (**r).clone()),
             other => panic!(
@@ -2110,7 +2398,7 @@ mod tests {
     #[tokio::test]
     async fn compound_debit_play_replay_identical_pair_only() {
         let compound = compound_cosigned("@0!(0) | @0!(0) | @0!(0)", 0, 10); // Δ = 3
-        let envelope = accounting::envelope_sig(&compound);
+        let envelope = accounting::funding_sig(&compound);
         let (left, right) = match &envelope {
             Sig::And(l, r) => ((**l).clone(), (**r).clone()),
             other => panic!("expected Sig::And, got {:?}", other),

@@ -66,9 +66,7 @@ impl ParMap {
 // Serde implementation to match Scala JsonEncoder behavior
 impl Serialize for ParMap {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
+    where S: Serializer {
         // Serialize as array of (Par, Par) tuples (like Scala's encodeParMap)
         use serde::ser::SerializeSeq;
         let seq = &self.ps.sorted_list;
@@ -82,9 +80,7 @@ impl Serialize for ParMap {
 
 impl<'de> Deserialize<'de> for ParMap {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
+    where D: Deserializer<'de> {
         // Deserialize from array of (Par, Par) tuples (like Scala's decodeParMap)
         let vec: Vec<(Par, Par)> = Vec::deserialize(deserializer)?;
         Ok(ParMap::create_from_vec(vec))

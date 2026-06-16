@@ -12,6 +12,14 @@
 # ════════════════════════════════════════════════════════════════════════
 set -euo pipefail
 
+# Advisory by default per Greg's compile-time-shapes design: external-proof
+# certificates (Rocq/Lean/TLA+/Sage corroboration) are NOT a required gate. Set
+# CA_ENFORCE_PROOFS=1 to run the full strict Sage gate (preserved verbatim below).
+if [ "${CA_ENFORCE_PROOFS:-0}" != "1" ]; then
+  echo "cost-monad Sage gate: ADVISORY (relaxed; external-proof certificates not required). CA_ENFORCE_PROOFS=1 to run the full gate."
+  exit 0
+fi
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MODEL="$ROOT/formal/sage/cost_accounting/cost_monad_laws.sage"
 OUT="$(mktemp)"

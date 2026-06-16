@@ -60,9 +60,7 @@ pub fn any_sig_bounded(depth: u32, leaves: u32) -> impl Strategy<Value = Sig> {
 
 /// Default `Sig` strategy: depth 4, ≤ 32 nodes — small enough that
 /// proptest runs stay snappy, large enough to exercise all combinators.
-pub fn any_sig() -> impl Strategy<Value = Sig> {
-    any_sig_bounded(4, 32)
-}
+pub fn any_sig() -> impl Strategy<Value = Sig> { any_sig_bounded(4, 32) }
 
 /// Atom-payload strategy: 1–4 bytes drawn from a 4-element pool so
 /// duplicate hashes appear at reasonable frequency.

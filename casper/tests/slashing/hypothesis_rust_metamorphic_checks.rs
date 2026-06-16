@@ -20,9 +20,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use super::divergence_class::{frontier_classification_ok, DivergenceClass};
 
-fn normalized_edges(edges: &[(u8, u8)]) -> BTreeSet<(u8, u8)> {
-    edges.iter().copied().collect()
-}
+fn normalized_edges(edges: &[(u8, u8)]) -> BTreeSet<(u8, u8)> { edges.iter().copied().collect() }
 
 fn rename_edges(edges: &[(u8, u8)], renaming: &BTreeMap<u8, u8>) -> BTreeSet<(u8, u8)> {
     edges

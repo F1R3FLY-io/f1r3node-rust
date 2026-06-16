@@ -26,9 +26,7 @@ pub trait BuildPar<T> {
 
 /// Implementation for single Name
 impl BuildPar<Name> for Name {
-    fn build(&self, _input: Name) -> ServiceResult<Par> {
-        build_par_id(self.clone())
-    }
+    fn build(&self, _input: Name) -> ServiceResult<Par> { build_par_id(self.clone()) }
 }
 
 /// Build Par from a single Name

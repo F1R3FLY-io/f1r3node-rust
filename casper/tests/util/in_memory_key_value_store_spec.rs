@@ -21,13 +21,9 @@ struct Int64StringStore {
 }
 
 impl Int64StringStore {
-    fn new(store: Arc<dyn KeyValueStore>) -> Self {
-        Self { store }
-    }
+    fn new(store: Arc<dyn KeyValueStore>) -> Self { Self { store } }
 
-    fn encode_key(&self, key: &i64) -> Vec<u8> {
-        key.to_le_bytes().to_vec()
-    }
+    fn encode_key(&self, key: &i64) -> Vec<u8> { key.to_le_bytes().to_vec() }
 
     fn decode_key(&self, bytes: &[u8]) -> Result<i64, KvStoreError> {
         bytes[0..8]
@@ -36,9 +32,7 @@ impl Int64StringStore {
             .map_err(|_| KvStoreError::SerializationError("Invalid key bytes".to_string()))
     }
 
-    fn encode_value(&self, value: &String) -> Vec<u8> {
-        value.as_bytes().to_vec()
-    }
+    fn encode_value(&self, value: &String) -> Vec<u8> { value.as_bytes().to_vec() }
 
     fn decode_value(&self, bytes: &[u8]) -> Result<String, KvStoreError> {
         String::from_utf8(bytes.to_vec())
@@ -82,9 +76,7 @@ impl KeyValueTypedStore<i64, String> for Int64StringStore {
     }
 
     fn collect<F, T>(&self, mut f: F) -> Result<Vec<T>, KvStoreError>
-    where
-        F: FnMut((&i64, &String)) -> Option<T>,
-    {
+    where F: FnMut((&i64, &String)) -> Option<T> {
         let store_map = self.store.to_map()?;
         let mut result = Vec::new();
 
@@ -113,9 +105,7 @@ impl KeyValueTypedStore<i64, String> for Int64StringStore {
         Ok(result)
     }
 
-    fn non_empty(&self) -> Result<bool, KvStoreError> {
-        self.store.non_empty()
-    }
+    fn non_empty(&self) -> Result<bool, KvStoreError> { self.store.non_empty() }
 }
 
 pub struct KeyValueStoreSut {

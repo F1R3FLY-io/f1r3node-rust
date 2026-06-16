@@ -41,16 +41,13 @@ fn uc_06_self_regression_caught() {
     // seq=5, justifications=[(v0, b_high)].
     use super::types::BlockMeta;
     let regressing = b_high.wrapping_add(1000);
-    harness.dag.blocks.insert(
-        regressing,
-        BlockMeta {
-            hash: regressing,
-            sender: "v0".into(),
-            seq: 5,
-            justifications: vec![("v0".into(), b_high)],
-            slash_targets: vec![],
-        },
-    );
+    harness.dag.blocks.insert(regressing, BlockMeta {
+        hash: regressing,
+        sender: "v0".into(),
+        seq: 5,
+        justifications: vec![("v0".into(), b_high)],
+        slash_targets: vec![],
+    });
 
     let status = harness.dispatch(regressing);
     assert_eq!(

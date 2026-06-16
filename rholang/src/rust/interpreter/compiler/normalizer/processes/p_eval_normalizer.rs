@@ -57,11 +57,13 @@ mod tests {
         let eval_name = create_name_id("x");
         let parser = rholang_parser::RholangParser::new();
         let (mut inputs, env) = proc_visit_inputs_and_env();
-        inputs.bound_map_chain = inputs.bound_map_chain.put_pos((
-            "x".to_string(),
-            VarSort::NameSort,
-            SourcePos { line: 0, col: 0 },
-        ));
+        inputs.bound_map_chain =
+            inputs
+                .bound_map_chain
+                .put_pos(("x".to_string(), VarSort::NameSort, SourcePos {
+                    line: 0,
+                    col: 0,
+                }));
 
         let result = normalize_p_eval(&eval_name, inputs.clone(), &env, &parser);
         assert!(result.is_ok());
@@ -77,11 +79,13 @@ mod tests {
         use crate::rust::interpreter::test_utils::par_builder_util::ParBuilderUtil;
 
         let (mut inputs, env) = proc_visit_inputs_and_env();
-        inputs.bound_map_chain = inputs.bound_map_chain.put_pos((
-            "x".to_string(),
-            VarSort::ProcSort,
-            SourcePos { line: 0, col: 0 },
-        ));
+        inputs.bound_map_chain =
+            inputs
+                .bound_map_chain
+                .put_pos(("x".to_string(), VarSort::ProcSort, SourcePos {
+                    line: 0,
+                    col: 0,
+                }));
 
         let parser = rholang_parser::RholangParser::new();
 

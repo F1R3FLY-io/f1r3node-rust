@@ -87,137 +87,71 @@ pub fn byte_name(b: Byte) -> Par {
 pub struct FixedChannels;
 
 impl FixedChannels {
-    pub fn stdout() -> Par {
-        byte_name(0)
-    }
+    pub fn stdout() -> Par { byte_name(0) }
 
-    pub fn stdout_ack() -> Par {
-        byte_name(1)
-    }
+    pub fn stdout_ack() -> Par { byte_name(1) }
 
-    pub fn stderr() -> Par {
-        byte_name(2)
-    }
+    pub fn stderr() -> Par { byte_name(2) }
 
-    pub fn stderr_ack() -> Par {
-        byte_name(3)
-    }
+    pub fn stderr_ack() -> Par { byte_name(3) }
 
-    pub fn ed25519_verify() -> Par {
-        byte_name(4)
-    }
+    pub fn ed25519_verify() -> Par { byte_name(4) }
 
-    pub fn sha256_hash() -> Par {
-        byte_name(5)
-    }
+    pub fn sha256_hash() -> Par { byte_name(5) }
 
-    pub fn keccak256_hash() -> Par {
-        byte_name(6)
-    }
+    pub fn keccak256_hash() -> Par { byte_name(6) }
 
-    pub fn blake2b256_hash() -> Par {
-        byte_name(7)
-    }
+    pub fn blake2b256_hash() -> Par { byte_name(7) }
 
-    pub fn secp256k1_verify() -> Par {
-        byte_name(8)
-    }
+    pub fn secp256k1_verify() -> Par { byte_name(8) }
 
-    pub fn get_block_data() -> Par {
-        byte_name(10)
-    }
+    pub fn get_block_data() -> Par { byte_name(10) }
 
-    pub fn get_invalid_blocks() -> Par {
-        byte_name(11)
-    }
+    pub fn get_invalid_blocks() -> Par { byte_name(11) }
 
-    pub fn vault_address() -> Par {
-        byte_name(12)
-    }
+    pub fn vault_address() -> Par { byte_name(12) }
 
-    pub fn deployer_id_ops() -> Par {
-        byte_name(13)
-    }
+    pub fn deployer_id_ops() -> Par { byte_name(13) }
 
-    pub fn reg_lookup() -> Par {
-        byte_name(14)
-    }
+    pub fn reg_lookup() -> Par { byte_name(14) }
 
-    pub fn reg_insert_random() -> Par {
-        byte_name(15)
-    }
+    pub fn reg_insert_random() -> Par { byte_name(15) }
 
-    pub fn reg_insert_signed() -> Par {
-        byte_name(16)
-    }
+    pub fn reg_insert_signed() -> Par { byte_name(16) }
 
-    pub fn reg_ops() -> Par {
-        byte_name(17)
-    }
+    pub fn reg_ops() -> Par { byte_name(17) }
 
-    pub fn sys_authtoken_ops() -> Par {
-        byte_name(18)
-    }
+    pub fn sys_authtoken_ops() -> Par { byte_name(18) }
 
-    pub fn gpt4() -> Par {
-        byte_name(20)
-    }
+    pub fn gpt4() -> Par { byte_name(20) }
 
-    pub fn dalle3() -> Par {
-        byte_name(21)
-    }
+    pub fn dalle3() -> Par { byte_name(21) }
 
-    pub fn text_to_audio() -> Par {
-        byte_name(22)
-    }
+    pub fn text_to_audio() -> Par { byte_name(22) }
 
-    pub fn grpc_tell() -> Par {
-        byte_name(25)
-    }
+    pub fn grpc_tell() -> Par { byte_name(25) }
 
-    pub fn dev_null() -> Par {
-        byte_name(26)
-    }
+    pub fn dev_null() -> Par { byte_name(26) }
 
-    pub fn abort() -> Par {
-        byte_name(27)
-    }
+    pub fn abort() -> Par { byte_name(27) }
 
-    pub fn ollama_chat() -> Par {
-        byte_name(28)
-    }
+    pub fn ollama_chat() -> Par { byte_name(28) }
 
-    pub fn ollama_generate() -> Par {
-        byte_name(29)
-    }
+    pub fn ollama_generate() -> Par { byte_name(29) }
 
-    pub fn ollama_models() -> Par {
-        byte_name(30)
-    }
+    pub fn ollama_models() -> Par { byte_name(30) }
 
-    pub fn deploy_data() -> Par {
-        byte_name(31)
-    }
+    pub fn deploy_data() -> Par { byte_name(31) }
 
-    pub fn chroma_create_collection() -> Par {
-        byte_name(32)
-    }
+    pub fn chroma_create_collection() -> Par { byte_name(32) }
 
-    pub fn chroma_get_collection_meta() -> Par {
-        byte_name(33)
-    }
+    pub fn chroma_get_collection_meta() -> Par { byte_name(33) }
 
-    pub fn chroma_upsert_entries() -> Par {
-        byte_name(34)
-    }
+    pub fn chroma_upsert_entries() -> Par { byte_name(34) }
 
-    pub fn chroma_query() -> Par {
-        byte_name(35)
-    }
+    pub fn chroma_query() -> Par { byte_name(35) }
 
-    pub fn chroma_delete_documents() -> Par {
-        byte_name(36)
-    }
+    pub fn chroma_delete_documents() -> Par { byte_name(36) }
 }
 
 pub struct BodyRefs;

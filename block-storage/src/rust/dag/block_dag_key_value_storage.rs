@@ -134,13 +134,9 @@ impl KeyValueDagRepresentation {
         self.latest_messages_map.clone()
     }
 
-    pub fn invalid_blocks(&self) -> imbl::HashSet<BlockMetadata> {
-        self.invalid_blocks_set.clone()
-    }
+    pub fn invalid_blocks(&self) -> imbl::HashSet<BlockMetadata> { self.invalid_blocks_set.clone() }
 
-    pub fn last_finalized_block(&self) -> BlockHash {
-        self.last_finalized_block_hash.clone()
-    }
+    pub fn last_finalized_block(&self) -> BlockHash { self.last_finalized_block_hash.clone() }
 
     // latestBlockNumber, topoSort and lookupByDeployId are only used in BlockAPI.
     // Do they need to be part of the DAG current state or they can be moved to DAG storage directly?
@@ -153,9 +149,7 @@ impl KeyValueDagRepresentation {
         }
     }
 
-    pub fn latest_block_number(&self) -> i64 {
-        self.get_max_height()
-    }
+    pub fn latest_block_number(&self) -> i64 { self.get_max_height() }
 
     pub fn block_number(&self, block_hash: &BlockHash) -> Option<i64> {
         self.block_number_map.get(block_hash).copied()
@@ -722,9 +716,7 @@ impl BlockDagKeyValueStorage {
 
     /// Current DAG generation — incremented on every block insert.
     /// Can be used by caches to detect whether the DAG has changed since the last snapshot.
-    pub fn current_generation(&self) -> u64 {
-        self.dag_generation.load(Ordering::Relaxed)
-    }
+    pub fn current_generation(&self) -> u64 { self.dag_generation.load(Ordering::Relaxed) }
 
     /// Public method to get DAG representation with global lock protection.
     /// Matches Scala's lock.withPermit(representation).

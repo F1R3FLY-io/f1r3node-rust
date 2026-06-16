@@ -19,9 +19,7 @@ pub struct Send {
 
 impl Send {
     /// Create a new Send message
-    pub fn new(msg: Protocol) -> Self {
-        Self { msg }
-    }
+    pub fn new(msg: Protocol) -> Self { Self { msg } }
 }
 
 /// Stream message containing metadata about a streamed blob

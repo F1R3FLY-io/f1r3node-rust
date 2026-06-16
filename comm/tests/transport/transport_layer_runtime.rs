@@ -423,9 +423,7 @@ impl TestProtocolDispatcher {
     }
 
     /// Get received messages
-    pub fn received(&self) -> Vec<(PeerNode, Protocol)> {
-        self.received.lock().unwrap().clone()
-    }
+    pub fn received(&self) -> Vec<(PeerNode, Protocol)> { self.received.lock().unwrap().clone() }
 }
 
 /// Test stream dispatcher that records received Blob messages

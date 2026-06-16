@@ -389,25 +389,22 @@ impl SubstituteTrait<Par> for Substitute {
 
         Ok(concatenate_pars(
             exprs,
-            concatenate_pars(
-                connectives,
-                Par {
-                    sends,
-                    receives,
-                    news,
-                    exprs: Vec::new(),
-                    matches,
-                    unforgeables: term.unforgeables,
-                    bundles,
-                    connectives: Vec::new(),
-                    conditionals,
-                    locally_free: {
-                        // println!("\nenv.shift in substitute_no_sort for par: {}", env.shift);
-                        set_bits_until(term.locally_free, env.shift)
-                    },
-                    connective_used: term.connective_used,
+            concatenate_pars(connectives, Par {
+                sends,
+                receives,
+                news,
+                exprs: Vec::new(),
+                matches,
+                unforgeables: term.unforgeables,
+                bundles,
+                connectives: Vec::new(),
+                conditionals,
+                locally_free: {
+                    // println!("\nenv.shift in substitute_no_sort for par: {}", env.shift);
+                    set_bits_until(term.locally_free, env.shift)
                 },
-            ),
+                connective_used: term.connective_used,
+            }),
         ))
     }
 

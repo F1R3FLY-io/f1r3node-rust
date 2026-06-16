@@ -189,9 +189,7 @@ pub fn slash_evidence_epoch_matches_target(
         .map(|evidence_epoch| target_activation_epoch == evidence_epoch)
 }
 
-pub fn slash_target_has_positive_bond(bond: i64) -> bool {
-    bond > 0
-}
+pub fn slash_target_has_positive_bond(bond: i64) -> bool { bond > 0 }
 
 pub fn slash_target_key(
     offender: &Validator,
@@ -362,13 +360,10 @@ pub fn validate_received_slash_deploys(
     snapshot: &CasperSnapshot,
 ) -> Result<(), CasperError> {
     let has_slash_deploy = block.body.system_deploys.iter().any(|system_deploy| {
-        matches!(
-            system_deploy,
-            ProcessedSystemDeploy::Succeeded {
-                system_deploy: SystemDeployData::Slash { .. },
-                ..
-            }
-        )
+        matches!(system_deploy, ProcessedSystemDeploy::Succeeded {
+            system_deploy: SystemDeployData::Slash { .. },
+            ..
+        })
     });
     // Fast path: most blocks contain no slash deploys; avoid the per-deploy
     // loop and the epoch division (which can fail on an invalid epoch_length).

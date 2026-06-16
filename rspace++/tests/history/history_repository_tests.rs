@@ -304,17 +304,11 @@ async fn history_repository_should_record_next_root_as_valid() {
     let _ = repo.reset(&next_repo_history.root());
 }
 
-fn test_channel_data_prefix() -> String {
-    "channel-data".to_string()
-}
+fn test_channel_data_prefix() -> String { "channel-data".to_string() }
 
-fn test_channel_joins_prefix() -> String {
-    "channel-joins".to_string()
-}
+fn test_channel_joins_prefix() -> String { "channel-joins".to_string() }
 
-fn test_channel_continuations_prefix() -> String {
-    "channel-continuations".to_string()
-}
+fn test_channel_continuations_prefix() -> String { "channel-continuations".to_string() }
 
 fn insert_datum(
     s: i32,
@@ -348,10 +342,10 @@ fn insert_continuation(
 }
 
 fn join(s: i32) -> Vec<Vec<String>> {
-    vec![
-        vec![format!("abc{}", s), format!("def{}", s)],
-        vec![format!("wer{}", s), format!("tre{}", s)],
-    ]
+    vec![vec![format!("abc{}", s), format!("def{}", s)], vec![
+        format!("wer{}", s),
+        format!("tre{}", s),
+    ]]
 }
 
 fn continuation(s: i32) -> WaitingContinuation<String, String> {
@@ -457,16 +451,12 @@ fn root_repository() -> RootRepository {
     }
 }
 
-fn create_inmem_cold_store() -> Arc<dyn KeyValueStore> {
-    Arc::new(InMemoryKeyValueStore::new())
-}
+fn create_inmem_cold_store() -> Arc<dyn KeyValueStore> { Arc::new(InMemoryKeyValueStore::new()) }
 
 struct EmptyExporter;
 
 impl RSpaceExporter for EmptyExporter {
-    fn get_root(&self) -> Result<KeyHash, RootError> {
-        todo!()
-    }
+    fn get_root(&self) -> Result<KeyHash, RootError> { todo!() }
 }
 
 impl TrieExporter for EmptyExporter {
@@ -489,21 +479,13 @@ impl TrieExporter for EmptyExporter {
 struct EmptyImporter;
 
 impl RSpaceImporter for EmptyImporter {
-    fn get_history_item(&self, _hash: KeyHash) -> Option<ByteVector> {
-        todo!()
-    }
+    fn get_history_item(&self, _hash: KeyHash) -> Option<ByteVector> { todo!() }
 }
 
 impl TrieImporter for EmptyImporter {
-    fn set_history_items(&self, _data: Vec<(KeyHash, Value)>) -> () {
-        todo!()
-    }
+    fn set_history_items(&self, _data: Vec<(KeyHash, Value)>) -> () { todo!() }
 
-    fn set_data_items(&self, _data: Vec<(KeyHash, Value)>) -> () {
-        todo!()
-    }
+    fn set_data_items(&self, _data: Vec<(KeyHash, Value)>) -> () { todo!() }
 
-    fn set_root(&self, _key: &KeyHash) -> () {
-        todo!()
-    }
+    fn set_root(&self, _key: &KeyHash) -> () { todo!() }
 }

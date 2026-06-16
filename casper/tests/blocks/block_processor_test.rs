@@ -122,9 +122,7 @@ impl TestFixture {
         }
     }
 
-    fn reset_transport(&self) {
-        self.dependencies.transport().reset();
-    }
+    fn reset_transport(&self) { self.dependencies.transport().reset(); }
 }
 
 #[tokio::test]

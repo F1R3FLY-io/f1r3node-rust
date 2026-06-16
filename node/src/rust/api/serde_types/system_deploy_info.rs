@@ -68,15 +68,11 @@ pub struct RejectedDeployInfoSerde {
 }
 
 impl From<RejectedDeployInfo> for RejectedDeployInfoSerde {
-    fn from(data: RejectedDeployInfo) -> Self {
-        Self { sig: data.sig }
-    }
+    fn from(data: RejectedDeployInfo) -> Self { Self { sig: data.sig } }
 }
 
 impl From<RejectedDeployInfoSerde> for RejectedDeployInfo {
-    fn from(data: RejectedDeployInfoSerde) -> Self {
-        Self { sig: data.sig }
-    }
+    fn from(data: RejectedDeployInfoSerde) -> Self { Self { sig: data.sig } }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -118,15 +114,11 @@ impl From<SlashSystemDeployDataSerde> for SlashSystemDeployDataProto {
 pub struct CloseBlockSystemDeployDataSerde {}
 
 impl From<CloseBlockSystemDeployDataProto> for CloseBlockSystemDeployDataSerde {
-    fn from(_data: CloseBlockSystemDeployDataProto) -> Self {
-        Self {}
-    }
+    fn from(_data: CloseBlockSystemDeployDataProto) -> Self { Self {} }
 }
 
 impl From<CloseBlockSystemDeployDataSerde> for CloseBlockSystemDeployDataProto {
-    fn from(_data: CloseBlockSystemDeployDataSerde) -> Self {
-        Self {}
-    }
+    fn from(_data: CloseBlockSystemDeployDataSerde) -> Self { Self {} }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]

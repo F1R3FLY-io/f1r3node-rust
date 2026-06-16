@@ -16,13 +16,9 @@ fn vm_rss_kb() -> Option<usize> {
         .and_then(|value| value.parse::<usize>().ok())
 }
 
-fn kb_to_mib(kb: usize) -> f64 {
-    kb as f64 / 1024.0
-}
+fn kb_to_mib(kb: usize) -> f64 { kb as f64 / 1024.0 }
 
-fn delta_kb_to_mib(delta_kb: isize) -> f64 {
-    delta_kb as f64 / 1024.0
-}
+fn delta_kb_to_mib(delta_kb: isize) -> f64 { delta_kb as f64 / 1024.0 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "manual memory profiling; run with --ignored --nocapture"]

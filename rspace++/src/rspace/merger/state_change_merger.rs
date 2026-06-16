@@ -283,23 +283,17 @@ mod tests {
     struct EmptyHistoryReaderBase;
 
     impl HistoryReaderBase<(), (), (), ()> for EmptyHistoryReaderBase {
-        fn get_data_proj(&self, _key: &()) -> Vec<Datum<()>> {
-            vec![]
-        }
+        fn get_data_proj(&self, _key: &()) -> Vec<Datum<()>> { vec![] }
 
         fn get_continuations_proj(&self, _key: &Vec<()>) -> Vec<WaitingContinuation<(), ()>> {
             vec![]
         }
 
-        fn get_joins_proj(&self, _key: &()) -> Vec<Vec<()>> {
-            vec![]
-        }
+        fn get_joins_proj(&self, _key: &()) -> Vec<Vec<()>> { vec![] }
     }
 
     impl HistoryReader<Blake2b256Hash, (), (), (), ()> for StubHistoryReaderBinary {
-        fn root(&self) -> Blake2b256Hash {
-            Blake2b256Hash::from_bytes(vec![0xff; 32])
-        }
+        fn root(&self) -> Blake2b256Hash { Blake2b256Hash::from_bytes(vec![0xff; 32]) }
 
         fn get_data_proj(&self, _key: &Blake2b256Hash) -> Result<Vec<Datum<()>>, HistoryError> {
             Ok(vec![])
@@ -338,9 +332,7 @@ mod tests {
             Box::new(EmptyHistoryReaderBase)
         }
 
-        fn get_data_proj_generic(&self, _key: &()) -> Vec<Datum<()>> {
-            vec![]
-        }
+        fn get_data_proj_generic(&self, _key: &()) -> Vec<Datum<()>> { vec![] }
 
         fn get_continuations_proj_generic(
             &self,
@@ -349,9 +341,7 @@ mod tests {
             vec![]
         }
 
-        fn get_joins_proj_generic(&self, _key: &()) -> Vec<Vec<()>> {
-            vec![]
-        }
+        fn get_joins_proj_generic(&self, _key: &()) -> Vec<Vec<()>> { vec![] }
     }
 
     /// Reproduces the ChannelChange.combine() duplication bug end-to-end
@@ -369,13 +359,10 @@ mod tests {
 
         // Two sibling blocks both change A -> B on the same channel
         let datums_changes = DashMap::new();
-        datums_changes.insert(
-            channel_hash.clone(),
-            ChannelChange {
-                added: vec![datum_b.clone()],
-                removed: vec![datum_a.clone()],
-            },
-        );
+        datums_changes.insert(channel_hash.clone(), ChannelChange {
+            added: vec![datum_b.clone()],
+            removed: vec![datum_a.clone()],
+        });
         let branch_change = StateChange {
             datums_changes,
             cont_changes: DashMap::new(),

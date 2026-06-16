@@ -15,9 +15,7 @@ impl Blake2b256 {
     }
 
     pub fn hash_parts<'a, I>(parts: I) -> Vec<u8>
-    where
-        I: IntoIterator<Item = &'a [u8]>,
-    {
+    where I: IntoIterator<Item = &'a [u8]> {
         let mut hasher = Blake2b::<U32>::new();
         for part in parts {
             hasher.update(part);
@@ -26,9 +24,7 @@ impl Blake2b256 {
     }
 
     pub fn hash_stream<F>(feed: F) -> Vec<u8>
-    where
-        F: FnOnce(&mut dyn FnMut(&[u8])),
-    {
+    where F: FnOnce(&mut dyn FnMut(&[u8])) {
         let mut hasher = Blake2b::<U32>::new();
         {
             let mut update = |part: &[u8]| hasher.update(part);

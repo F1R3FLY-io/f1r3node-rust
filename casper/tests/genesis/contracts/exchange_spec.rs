@@ -15,6 +15,8 @@
 //!    well-formed Rholang) — the Rust-side compile gate the genesis ceremony
 //!    relies on.
 
+use casper::rust::genesis::contracts::standard_deploys;
+use casper::rust::util::construct_deploy;
 use crypto::rust::hash::blake2b256::Blake2b256;
 use crypto::rust::private_key::PrivateKey;
 use crypto::rust::signatures::secp256k1::Secp256k1;
@@ -22,9 +24,6 @@ use crypto::rust::signatures::signatures_alg::SignaturesAlg;
 use rholang::rust::interpreter::compiler::compiler::Compiler;
 use rholang::rust::interpreter::registry::registry::Registry;
 use rholang::rust::interpreter::test_utils::par_builder_util::ParBuilderUtil;
-
-use casper::rust::genesis::contracts::standard_deploys;
-use casper::rust::util::construct_deploy;
 
 use crate::util::rholang::resources::with_runtime_manager;
 

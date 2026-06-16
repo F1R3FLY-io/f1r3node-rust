@@ -13,6 +13,7 @@ use crate::rust::interpreter::compiler::exports::{
     FreeMap, NameVisitInputs, NameVisitOutputs, ProcVisitInputs, ProcVisitOutputs,
 };
 use crate::rust::interpreter::compiler::normalize::{normalize_ann_proc, VarSort};
+use crate::rust::interpreter::compiler::normalizer::cost_accounting::pattern_guard::reject_cost_syntax_in_name_pattern;
 use crate::rust::interpreter::compiler::normalizer::name_normalize_matcher::normalize_name;
 use crate::rust::interpreter::compiler::normalizer::processes::utils::fail_on_invalid_connective;
 use crate::rust::interpreter::compiler::normalizer::remainder_normalizer_matcher::normalize_match_name;
@@ -266,6 +267,37 @@ pub fn normalize_p_input<'ast>(
                     let remainder = &lhs.remainder;
                     Ok(((names, remainder), rhs))
                 }
+                // Cost-accounted per-clause signed bind `{% y <- x %}[s]` (W1). The
+                // Phase-4 signed-JOIN dispatch (`normalize.rs` ForComprehension arm
+                // → `recognize_signed_join` → `strip_signed_binds`) demotes EVERY
+                // `Bind::Signed` to its linear bind BEFORE `normalize_p_input` sees
+                // it, so this arm is unreachable in normal operation (the
+                // `debug_assert` catches a dispatch regression). The release
+                // fallback treats it as its underlying LINEAR bind — identical
+                // receive shape / COMM count to the unsigned form, metered to the
+                // deploy envelope — so a dispatch bug degrades gracefully rather
+                // than miscompiling.
+                Bind::Signed { lhs, rhs, .. } => {
+                    debug_assert!(
+                        false,
+                        "Bind::Signed must be stripped by recognize_signed_join before \
+                         normalize_p_input (W1 Phase 4 dispatch)"
+                    );
+                    let names: Vec<_> = lhs.names.iter().collect();
+                    let remainder = &lhs.remainder;
+
+                    let source_name = match rhs {
+                        Source::Simple { name } => name,
+                        _ => {
+                            return Err(InterpreterError::ParserError(
+                                "Only simple sources supported in current implementation"
+                                    .to_string(),
+                            ))
+                        }
+                    };
+
+                    Ok(((names, remainder), source_name))
+                }
             })
             .collect();
 
@@ -276,6 +308,10 @@ pub fn normalize_p_input<'ast>(
             Bind::Linear { .. } => (false, false),
             Bind::Repeated { .. } => (true, false),
             Bind::Peek { .. } => (false, true),
+            // A cost-accounted signed bind is the linear-receive form (non-
+            // persistent, non-peek); the signature decorates, it does not change
+            // the COMM shape (W1, recognition-only in Phase 1).
+            Bind::Signed { .. } => (false, false),
         };
 
         // Extract patterns and sources
@@ -349,6 +385,12 @@ pub fn normalize_p_input<'ast>(
                     let mut locally_free = Vec::new();
 
                     for name in names {
+                        // Reject cost syntax in receive-bind pattern position (W1
+                        // §1.5): a signed term / token stack inside a bound name
+                        // `@{...}` is a process form (recognized + metered), not a
+                        // receive pattern.
+                        reject_cost_syntax_in_name_pattern(name)?;
+
                         let NameVisitOutputs {
                             par,
                             free_map: updated_known_free,
@@ -362,13 +404,10 @@ pub fn normalize_p_input<'ast>(
                             parser,
                         )?;
 
-                        fail_on_invalid_connective(
-                            &input,
-                            &NameVisitOutputs {
-                                par: par.clone(),
-                                free_map: updated_known_free.clone(),
-                            },
-                        )?;
+                        fail_on_invalid_connective(&input, &NameVisitOutputs {
+                            par: par.clone(),
+                            free_map: updated_known_free.clone(),
+                        })?;
 
                         vector_par.push(par.clone());
                         current_known_free = updated_known_free;

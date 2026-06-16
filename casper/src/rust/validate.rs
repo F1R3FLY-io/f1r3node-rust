@@ -389,13 +389,10 @@ impl Validate {
         // most-lenient view, which matches the proposer-side
         // `authorized_slash_candidates` snapshot context.
         let _saved_bonds_map = if block.body.system_deploys.iter().any(|sd| {
-            matches!(
-                sd,
-                ProcessedSystemDeploy::Succeeded {
-                    system_deploy: SystemDeployData::Slash { .. },
-                    ..
-                }
-            )
+            matches!(sd, ProcessedSystemDeploy::Succeeded {
+                system_deploy: SystemDeployData::Slash { .. },
+                ..
+            })
         }) {
             let mut parent_bonds: std::collections::HashMap<Validator, i64> =
                 std::collections::HashMap::new();
@@ -991,13 +988,10 @@ impl Validate {
         // Slash deploys are liveness-critical recovery actions and must not be blocked
         // by empty-block progress checks.
         let has_slash_system_deploys = b.body.system_deploys.iter().any(|system_deploy| {
-            matches!(
-                system_deploy,
-                ProcessedSystemDeploy::Succeeded {
-                    system_deploy: SystemDeployData::Slash { .. },
-                    ..
-                }
-            )
+            matches!(system_deploy, ProcessedSystemDeploy::Succeeded {
+                system_deploy: SystemDeployData::Slash { .. },
+                ..
+            })
         });
 
         let maybe_parent_hashes = proto_util::parent_hashes(b);
@@ -1410,13 +1404,10 @@ impl Validate {
         // Recovery path: if this block carries slash system deploys, allow it through so
         // validators can converge by slashing the offending branch.
         let has_slash_system_deploys = block.body.system_deploys.iter().any(|system_deploy| {
-            matches!(
-                system_deploy,
-                ProcessedSystemDeploy::Succeeded {
-                    system_deploy: SystemDeployData::Slash { .. },
-                    ..
-                }
-            )
+            matches!(system_deploy, ProcessedSystemDeploy::Succeeded {
+                system_deploy: SystemDeployData::Slash { .. },
+                ..
+            })
         });
 
         if neglected_invalid_justification && !has_slash_system_deploys {

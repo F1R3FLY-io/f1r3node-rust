@@ -66,19 +66,13 @@ pub enum Circuit {
 
 impl Circuit {
     /// Check if the circuit is broken
-    pub fn broken(&self) -> bool {
-        matches!(self, Circuit::Opened { .. })
-    }
+    pub fn broken(&self) -> bool { matches!(self, Circuit::Opened { .. }) }
 
     /// Create an opened circuit with an error
-    pub fn opened(error: StreamError) -> Self {
-        Circuit::Opened { error }
-    }
+    pub fn opened(error: StreamError) -> Self { Circuit::Opened { error } }
 
     /// Create a closed circuit
-    pub fn closed() -> Self {
-        Circuit::Closed
-    }
+    pub fn closed() -> Self { Circuit::Closed }
 }
 
 /// Stream error types
@@ -115,24 +109,16 @@ impl StreamError {
     }
 
     /// Create a WrongNetworkId error
-    pub fn wrong_network_id() -> Self {
-        StreamError::WrongNetworkId
-    }
+    pub fn wrong_network_id() -> Self { StreamError::WrongNetworkId }
 
     /// Create a MaxSizeReached error (circuit opened)
-    pub fn circuit_opened() -> Self {
-        StreamError::MaxSizeReached
-    }
+    pub fn circuit_opened() -> Self { StreamError::MaxSizeReached }
 
     /// Create a NotFullMessage error
-    pub fn not_full_message(streamed: String) -> Self {
-        StreamError::NotFullMessage { streamed }
-    }
+    pub fn not_full_message(streamed: String) -> Self { StreamError::NotFullMessage { streamed } }
 
     /// Create an Unexpected error
-    pub fn unexpected(error: String) -> Self {
-        StreamError::Unexpected { error }
-    }
+    pub fn unexpected(error: String) -> Self { StreamError::Unexpected { error } }
 }
 
 /// State of an ongoing streaming operation

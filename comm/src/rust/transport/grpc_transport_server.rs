@@ -231,9 +231,7 @@ impl TransportServer {
     }
 
     /// Check if the server is currently running
-    pub fn is_running(&self) -> bool {
-        self.is_running.load(Ordering::Acquire)
-    }
+    pub fn is_running(&self) -> bool { self.is_running.load(Ordering::Acquire) }
 
     /// Get a JoinHandle for monitoring the server's lifecycle
     ///

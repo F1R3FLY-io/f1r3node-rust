@@ -18,8 +18,7 @@
 // by the NORMAL next-epoch mint (all phlogiston creation stays on the single
 // authorized path; `MintingHalt.v` `halted_validator_supply_not_increased`).
 
-use std::collections::HashMap;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crypto::rust::hash::blake2b256::Blake2b256;
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
@@ -248,13 +247,9 @@ impl SystemDeployTrait for RedeemDeploy {
         }
     }
 
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
+    fn as_any(&self) -> &dyn std::any::Any { self }
 
-    fn rand(&self) -> Blake2b512Random {
-        self.initial_rand.clone()
-    }
+    fn rand(&self) -> Blake2b512Random { self.initial_rand.clone() }
 
     fn env(&mut self) -> HashMap<String, Par> {
         let mut env = HashMap::new();
@@ -289,8 +284,9 @@ impl SystemDeployTrait for RedeemDeploy {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crypto::rust::signatures::signatures_alg::SignaturesAlg;
+
+    use super::*;
 
     /// Build a redeem deploy with `n_keys` configured authority keys at
     /// `quorum`, signing the redemption digest with the FIRST `n_signers` of

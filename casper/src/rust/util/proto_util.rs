@@ -253,9 +253,7 @@ pub fn get_parent_metadatas_above_block_number(
     })
 }
 
-pub fn deploys(block: &BlockMessage) -> Vec<ProcessedDeploy> {
-    block.body.deploys.clone()
-}
+pub fn deploys(block: &BlockMessage) -> Vec<ProcessedDeploy> { block.body.deploys.clone() }
 
 pub fn system_deploys(block: &BlockMessage) -> Vec<ProcessedSystemDeploy> {
     block.body.system_deploys.clone()
@@ -269,13 +267,9 @@ pub fn pre_state_hash(block: &BlockMessage) -> prost::bytes::Bytes {
     block.body.state.pre_state_hash.clone()
 }
 
-pub fn bonds(block: &BlockMessage) -> Vec<Bond> {
-    block.body.state.bonds.clone()
-}
+pub fn bonds(block: &BlockMessage) -> Vec<Bond> { block.body.state.bonds.clone() }
 
-pub fn block_number(block: &BlockMessage) -> i64 {
-    block.body.state.block_number
-}
+pub fn block_number(block: &BlockMessage) -> i64 { block.body.state.block_number }
 
 pub fn bond_to_bond_info(bond: &Bond) -> BondInfo {
     BondInfo {

@@ -20,8 +20,7 @@ pub struct Datum<A: Clone> {
 }
 
 impl<A> Datum<A>
-where
-    A: Clone + Serialize,
+where A: Clone + Serialize
 {
     pub fn create<C: Serialize>(channel: &C, a: A, persist: bool) -> Datum<A> {
         let source = Produce::create(channel, &a, persist);
@@ -124,13 +123,9 @@ where
         }
     }
 
-    pub fn clear(&self) {
-        self.map.clear();
-    }
+    pub fn clear(&self) { self.map.clear(); }
 
-    pub fn is_empty(&self) -> bool {
-        self.map.is_empty()
-    }
+    pub fn is_empty(&self) -> bool { self.map.is_empty() }
 }
 
 impl<K: Hash + Eq, V: Hash + Eq> MultisetMultiMap<K, V> {

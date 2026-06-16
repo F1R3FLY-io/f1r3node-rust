@@ -189,9 +189,7 @@ impl TestResultCollector {
         }
     }
 
-    pub fn get_result(&self) -> TestResult {
-        self.result.try_lock().unwrap().clone()
-    }
+    pub fn get_result(&self) -> TestResult { self.result.try_lock().unwrap().clone() }
 
     pub fn update(&self, test_result: TestResult) {
         self.result.lock().unwrap().clone_from(&test_result);
@@ -267,14 +265,12 @@ impl TestResultCollector {
                     println!("\ncondition: {:?}", condition);
 
                     let curr_test_result = self.get_result();
-                    let new_test_result = curr_test_result.add_assertion(
-                        attempt,
-                        RhoTestAssertion::RhoAssertTrue {
+                    let new_test_result =
+                        curr_test_result.add_assertion(attempt, RhoTestAssertion::RhoAssertTrue {
                             test_name,
                             is_success: condition,
                             clue,
-                        },
-                    );
+                        });
                     self.update(new_test_result);
 
                     if let Err(e) = produce(
@@ -289,14 +285,12 @@ impl TestResultCollector {
                     println!("\nfailed to evaluate assertion: {:?}", assertion);
 
                     let curr_test_result = self.get_result();
-                    let new_test_result = curr_test_result.add_assertion(
-                        attempt,
-                        RhoTestAssertion::RhoAssertTrue {
+                    let new_test_result =
+                        curr_test_result.add_assertion(attempt, RhoTestAssertion::RhoAssertTrue {
                             test_name,
                             is_success: false,
                             clue: format!("Failed to evaluate assertion: {:?}", assertion),
-                        },
-                    );
+                        });
                     self.update(new_test_result);
 
                     if let Err(e) = produce(

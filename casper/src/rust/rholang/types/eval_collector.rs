@@ -19,9 +19,7 @@ impl EvalCollector {
         }
     }
 
-    pub fn add_event_log(&mut self, event_log: Vec<Event>) {
-        self.event_log.extend(event_log);
-    }
+    pub fn add_event_log(&mut self, event_log: Vec<Event>) { self.event_log.extend(event_log); }
 
     pub fn add_mergeable_channels(&mut self, mergeable_channels: HashMap<Par, MergeType>) {
         self.mergeable_channels.extend(mergeable_channels);

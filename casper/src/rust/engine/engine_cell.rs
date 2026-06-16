@@ -33,13 +33,9 @@ impl EngineCell {
     /// Read the current engine (equivalent to Cell.read: F[Engine[F]])
     /// This is the most frequently used method in the Scala codebase
     #[inline]
-    pub async fn get(&self) -> Arc<dyn Engine> {
-        Arc::clone(&*self.inner.read().await)
-    }
+    pub async fn get(&self) -> Arc<dyn Engine> { Arc::clone(&*self.inner.read().await) }
 
     /// Set the engine to a new instance (equivalent to Cell.set(s: Engine[F]): F[Unit])
     #[inline]
-    pub async fn set(&self, engine: Arc<dyn Engine>) {
-        *self.inner.write().await = engine;
-    }
+    pub async fn set(&self, engine: Arc<dyn Engine>) { *self.inner.write().await = engine; }
 }

@@ -278,21 +278,18 @@ fn t9_pos_multi_sig_envelope_construction_is_pure() {
         let secp = Secp256k1;
         let pk_a = secp.to_public(&sk_a);
         let pk_b = secp.to_public(&sk_b);
-        Cosigned::from_signed_data(
-            data.clone(),
-            vec![
-                Cosigner {
-                    pk: pk_a,
-                    sig: sign(&data, &sk_a),
-                    sig_algorithm: Box::new(Secp256k1),
-                },
-                Cosigner {
-                    pk: pk_b,
-                    sig: sign(&data, &sk_b),
-                    sig_algorithm: Box::new(Secp256k1),
-                },
-            ],
-        )
+        Cosigned::from_signed_data(data.clone(), vec![
+            Cosigner {
+                pk: pk_a,
+                sig: sign(&data, &sk_a),
+                sig_algorithm: Box::new(Secp256k1),
+            },
+            Cosigner {
+                pk: pk_b,
+                sig: sign(&data, &sk_b),
+                sig_algorithm: Box::new(Secp256k1),
+            },
+        ])
         .expect("construct")
     };
 

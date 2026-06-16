@@ -117,11 +117,13 @@ mod tests {
         let par_proc = ParBuilderUtil::create_ast_par(left_proc, right_proc, &parser);
 
         let (mut inputs, env) = proc_visit_inputs_and_env();
-        inputs.bound_map_chain = inputs.bound_map_chain.put_pos((
-            "x".to_string(),
-            VarSort::ProcSort,
-            SourcePos { line: 0, col: 0 },
-        ));
+        inputs.bound_map_chain =
+            inputs
+                .bound_map_chain
+                .put_pos(("x".to_string(), VarSort::ProcSort, SourcePos {
+                    line: 0,
+                    col: 0,
+                }));
 
         let result = normalize_ann_proc(&par_proc, inputs, &env, &parser);
 
@@ -201,16 +203,14 @@ mod tests {
         assert_eq!(
             result.unwrap().free_map,
             ProcVisitInputs::new().free_map.put_all_pos(vec![
-                (
-                    "x".to_owned(),
-                    VarSort::ProcSort,
-                    SourcePos { line: 0, col: 0 }
-                ),
-                (
-                    "y".to_owned(),
-                    VarSort::ProcSort,
-                    SourcePos { line: 0, col: 0 }
-                )
+                ("x".to_owned(), VarSort::ProcSort, SourcePos {
+                    line: 0,
+                    col: 0
+                }),
+                ("y".to_owned(), VarSort::ProcSort, SourcePos {
+                    line: 0,
+                    col: 0
+                })
             ])
         )
     }

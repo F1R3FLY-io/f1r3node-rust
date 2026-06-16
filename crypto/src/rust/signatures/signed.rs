@@ -294,32 +294,22 @@ impl<A: std::fmt::Debug + serde::Serialize + ToMessage> Cosigned<A> {
     }
 
     /// Phase 2 M-of-N quorum threshold. 0 = N-of-N (Phase 1) semantics.
-    pub fn cosigner_threshold(&self) -> u32 {
-        self.cosigner_threshold
-    }
+    pub fn cosigner_threshold(&self) -> u32 { self.cosigner_threshold }
 
     /// All signers, in canonical ascending `pk.bytes` order. Always non-empty.
-    pub fn signers(&self) -> &[Cosigner] {
-        &self.signers
-    }
+    pub fn signers(&self) -> &[Cosigner] { &self.signers }
 
     /// The deploy payload. Borrow accessor mirroring [`Self::signers`] so
     /// callers (e.g. `deploy_group_id`) can serialize the canonical payload
     /// without reaching into the public `data` field directly.
-    pub fn data(&self) -> &A {
-        &self.data
-    }
+    pub fn data(&self) -> &A { &self.data }
 
     /// The primary signer (`signers[0]`). Equivalent to the legacy
     /// single-signer `Signed<A>`'s sole signer.
-    pub fn primary(&self) -> &Cosigner {
-        &self.signers[0]
-    }
+    pub fn primary(&self) -> &Cosigner { &self.signers[0] }
 
     /// `true` if more than one signer is present (i.e., a true multi-sig).
-    pub fn is_compound(&self) -> bool {
-        self.signers.len() > 1
-    }
+    pub fn is_compound(&self) -> bool { self.signers.len() > 1 }
 
     /// Reconstitute the primary signer as a legacy [`Signed<A>`] value,
     /// consuming the envelope. Used at storage / API boundaries where
@@ -475,9 +465,7 @@ mod cosigned_tests {
 
     impl ToMessage for TestPayload {
         type Type = TestPayload;
-        fn to_message(&self) -> Self::Type {
-            self.clone()
-        }
+        fn to_message(&self) -> Self::Type { self.clone() }
     }
 
     fn fresh_cosigner(payload: &TestPayload) -> Cosigner {
@@ -584,9 +572,7 @@ mod cosigned_tests {
         }
     }
 
-    fn fresh_signer_for(payload: &TestPayload) -> Cosigner {
-        fresh_cosigner(payload)
-    }
+    fn fresh_signer_for(payload: &TestPayload) -> Cosigner { fresh_cosigner(payload) }
 
     fn empty_placeholder_signer() -> Cosigner {
         let secp = Secp256k1;

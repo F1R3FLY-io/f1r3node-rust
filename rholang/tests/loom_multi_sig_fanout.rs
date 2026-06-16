@@ -16,10 +16,11 @@
 //! - `rholang/tests/loom_runtime_budget_reconciliation.rs` (the budget
 //!   reconciliation analogue)
 
+use std::collections::HashMap;
+
 use loom::sync::atomic::{AtomicBool, Ordering};
 use loom::sync::{Arc, Mutex};
 use loom::thread;
-use std::collections::HashMap;
 
 /// Shadow PoS Map: deployerId → charged_amount. Production stores
 /// this in MVar Rholang state; here it's a loom::Mutex-wrapped

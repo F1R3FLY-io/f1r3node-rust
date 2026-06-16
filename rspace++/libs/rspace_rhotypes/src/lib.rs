@@ -18,14 +18,10 @@ fn blocking_runtime() -> &'static Runtime {
 static ALLOCATED_BYTES: AtomicUsize = AtomicUsize::new(0);
 
 #[no_mangle]
-pub extern "C" fn get_allocated_bytes() -> usize {
-    ALLOCATED_BYTES.load(Ordering::SeqCst)
-}
+pub extern "C" fn get_allocated_bytes() -> usize { ALLOCATED_BYTES.load(Ordering::SeqCst) }
 
 #[no_mangle]
-pub extern "C" fn reset_allocated_bytes() {
-    ALLOCATED_BYTES.store(0, Ordering::SeqCst)
-}
+pub extern "C" fn reset_allocated_bytes() { ALLOCATED_BYTES.store(0, Ordering::SeqCst) }
 use std::ffi::{CStr, c_char};
 use std::sync::{Arc, Mutex};
 

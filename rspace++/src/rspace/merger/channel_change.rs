@@ -22,9 +22,7 @@ impl<A> ChannelChange<A> {
     /// prevents this by only appending elements from `other` that are not
     /// already present in `self` (accounting for multiplicities).
     pub fn combine(self, other: Self) -> Self
-    where
-        A: PartialEq,
-    {
+    where A: PartialEq {
         let added_only_in_other = Self::vec_diff(other.added, &self.added);
         let removed_only_in_other = Self::vec_diff(other.removed, &self.removed);
         Self {
@@ -40,9 +38,7 @@ impl<A> ChannelChange<A> {
     /// Multiset difference: for each element in `to_remove`, removes at most
     /// one matching element from `from`.
     fn vec_diff(mut from: Vec<A>, to_remove: &[A]) -> Vec<A>
-    where
-        A: PartialEq,
-    {
+    where A: PartialEq {
         for item in to_remove {
             if let Some(pos) = from.iter().position(|x| x == item) {
                 from.remove(pos);

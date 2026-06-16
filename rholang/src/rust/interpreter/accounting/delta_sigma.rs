@@ -68,6 +68,7 @@ use std::collections::BTreeMap;
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::var::VarInstance;
 use models::rhoapi::Par;
+use prost::Message;
 
 use super::Sig;
 
@@ -85,6 +86,25 @@ pub type SigKey = [u8; 32];
 /// the same basis without reaching into `accounting/mod.rs` internals.
 #[inline]
 pub fn sig_key(sig: &Sig) -> SigKey { sig.lane_hash() }
+
+/// Match a resolved COMM channel against the installed signer channels, returning
+/// the matched signer's lane key or `None`. This is the ONE shared channel→lane
+/// decision used by BOTH the static dual ([`demand_by_sig`]) and the runtime
+/// per-redex attribution (`metering::MeteredMachine`'s channel match), so the two
+/// can never drift — the consensus bridge (W1 Phase 3 §3.1). `signer_channels`
+/// are `(SignatureChannel::from_sig(signer).par.encode_to_vec(), signer.lane_hash())`
+/// pairs, i.e. the wire encoding of the envelope's [`Sig::signer_channels`]. A
+/// channel matching NO installed signer returns `None`, and the caller attributes
+/// that COMM to the envelope — never inventing a foreign lane (§3.4).
+///
+/// [`Sig::signer_channels`]: super::Sig::signer_channels
+pub fn match_channel_to_lane(channel: &Par, signer_channels: &[(Vec<u8>, SigKey)]) -> Option<SigKey> {
+    let encoded = channel.encode_to_vec();
+    signer_channels
+        .iter()
+        .find(|(chan_bytes, _)| chan_bytes.as_slice() == encoded.as_slice())
+        .map(|(_, lane)| *lane)
+}
 
 /// The static demand analysis result for one signature `s` over a desugared
 /// `Par` (cost-accounted-rho Def 17 + Thm 20 over-approximation).
@@ -305,6 +325,117 @@ fn demand_par(par: &Par) -> DemandEntry {
     // opaque name with no sub-process. Both are intentionally not recursed.
 
     acc
+}
+
+/// Per-`SigKey` static demand — the multi-lane generalization of [`demand`] (W1
+/// Phase 3 §3.1). Walks the SAME process/name positions as [`demand_par`] (so the
+/// per-lane counts sum COMM-for-COMM back to [`demand`]), but buckets each COMM by
+/// `region_sig(channel)`: a COMM whose resolved channel matches an installed
+/// signer channel attributes to that signer's lane; every other COMM — and the
+/// `unknown` over-approximation — attributes to `envelope_key` (§3.4: never a
+/// foreign lane).
+///
+/// `region_sig` MUST be exactly the runtime's channel match — [`match_channel_to_lane`]
+/// bound to the SAME `signer_channels` the reducer installs — so the static dual
+/// and the reducer agree COMM-for-COMM (the consensus bridge). Under the s₀
+/// collapse `region_sig` returns `None` for every COMM (no deploy COMMs on a
+/// `Σ⟦s⟧` supply channel — the §5 no-alias audit), so the result collapses to the
+/// singleton `{ envelope_key: demand(par, envelope) }` and `demand_by_sig` agrees
+/// with [`demand`] exactly.
+pub fn demand_by_sig(
+    desugared: &Par,
+    envelope_key: SigKey,
+    region_sig: &dyn Fn(&Par) -> Option<SigKey>,
+) -> BTreeMap<SigKey, DemandEntry> {
+    let mut acc: BTreeMap<SigKey, DemandEntry> = BTreeMap::new();
+    demand_by_sig_into(desugared, envelope_key, region_sig, &mut acc);
+    acc
+}
+
+/// Fold one sub-result into a lane's accumulator (Def 17 add; `unknown` sticky).
+fn bump_lane(acc: &mut BTreeMap<SigKey, DemandEntry>, lane: SigKey, entry: DemandEntry) {
+    let slot = acc.entry(lane).or_insert(DemandEntry::ZERO);
+    *slot = slot.combine(entry);
+}
+
+/// The per-lane walk. Mirrors [`demand_par`] node-for-node (identical RECURSED vs
+/// NOT-recursed discipline) so summing the lanes reproduces [`demand`]'s count;
+/// the ONLY addition is the per-COMM lane attribution via `region_sig`.
+fn demand_by_sig_into(
+    par: &Par,
+    envelope_key: SigKey,
+    region_sig: &dyn Fn(&Par) -> Option<SigKey>,
+    acc: &mut BTreeMap<SigKey, DemandEntry>,
+) {
+    // Sends: one COMM each, attributed by the send CHANNEL's lane. The channel is a
+    // name position — inspected for attribution, NOT recursed for COMMs.
+    for send in &par.sends {
+        let lane = send
+            .chan
+            .as_ref()
+            .and_then(|channel| region_sig(channel))
+            .unwrap_or(envelope_key);
+        bump_lane(acc, lane, DemandEntry::ZERO.plus_one());
+    }
+    // Receives: one COMM each, attributed by the (first) bind SOURCE's lane; the
+    // continuation `body` IS a process position (recursed). Per-clause attribution
+    // of a multi-bind signed join is Phase 4; a plain join is one envelope COMM.
+    for receive in &par.receives {
+        let lane = receive
+            .binds
+            .first()
+            .and_then(|bind| bind.source.as_ref())
+            .and_then(|source| region_sig(source))
+            .unwrap_or(envelope_key);
+        bump_lane(acc, lane, DemandEntry::ZERO.plus_one());
+        if let Some(body) = &receive.body {
+            demand_by_sig_into(body, envelope_key, region_sig, acc);
+        }
+    }
+    // new / match / if / bundle: process positions recursed, no COMM node (D3).
+    for new in &par.news {
+        if let Some(body) = &new.p {
+            demand_by_sig_into(body, envelope_key, region_sig, acc);
+        }
+    }
+    for mat in &par.matches {
+        for case in &mat.cases {
+            if let Some(source) = &case.source {
+                demand_by_sig_into(source, envelope_key, region_sig, acc);
+            }
+        }
+    }
+    for conditional in &par.conditionals {
+        if let Some(if_true) = &conditional.if_true {
+            demand_by_sig_into(if_true, envelope_key, region_sig, acc);
+        }
+        if let Some(if_false) = &conditional.if_false {
+            demand_by_sig_into(if_false, envelope_key, region_sig, acc);
+        }
+    }
+    for bundle in &par.bundles {
+        if let Some(body) = &bundle.body {
+            demand_by_sig_into(body, envelope_key, region_sig, acc);
+        }
+    }
+    // Un-inlined `*x` dequotation in process position ⇒ the Thm 20 over-
+    // approximation (`unknown`), attributed to the envelope lane (it is not on a
+    // signer channel).
+    for expr in &par.exprs {
+        if let Some(ExprInstance::EVarBody(evar)) = &expr.expr_instance {
+            if let Some(var) = &evar.v {
+                match &var.var_instance {
+                    Some(VarInstance::BoundVar(_)) | Some(VarInstance::FreeVar(_)) => {
+                        bump_lane(acc, envelope_key, DemandEntry {
+                            known_lower_bound: 0,
+                            unknown: true,
+                        });
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
 }
 
 /// §7.4 desugaring boundary for the funding analysis. The §7.4 semantic count

@@ -15,7 +15,6 @@
 
 use proptest::prelude::*;
 use proptest::test_runner::Config as ProptestConfig;
-
 use rholang::rust::interpreter::accounting::{RuntimeBudget, Sig};
 
 use super::test_support::{any_sig, channel_eq};

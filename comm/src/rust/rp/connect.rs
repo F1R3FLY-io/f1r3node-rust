@@ -22,41 +22,25 @@ pub type Connection = PeerNode;
 pub struct Connections(pub Vec<Connection>);
 
 impl Connections {
-    pub fn empty() -> Self {
-        Self(Vec::new())
-    }
+    pub fn empty() -> Self { Self(Vec::new()) }
 
-    pub fn from_vec(connections: Vec<Connection>) -> Self {
-        Self(connections)
-    }
+    pub fn from_vec(connections: Vec<Connection>) -> Self { Self(connections) }
 
-    pub fn into_vec(self) -> Vec<Connection> {
-        self.0
-    }
+    pub fn into_vec(self) -> Vec<Connection> { self.0 }
 
-    pub fn as_slice(&self) -> &[Connection] {
-        &self.0
-    }
+    pub fn as_slice(&self) -> &[Connection] { &self.0 }
 
-    pub fn len(&self) -> usize {
-        self.0.len()
-    }
+    pub fn len(&self) -> usize { self.0.len() }
 
-    pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
+    pub fn is_empty(&self) -> bool { self.0.is_empty() }
 
-    pub fn iter(&self) -> std::slice::Iter<'_, Connection> {
-        self.0.iter()
-    }
+    pub fn iter(&self) -> std::slice::Iter<'_, Connection> { self.0.iter() }
 
     pub fn take(&self, n: usize) -> Connections {
         Connections(self.0.iter().take(n).cloned().collect())
     }
 
-    pub fn to_set(&self) -> HashSet<PeerNode> {
-        self.0.iter().cloned().collect()
-    }
+    pub fn to_set(&self) -> HashSet<PeerNode> { self.0.iter().cloned().collect() }
 
     pub fn add_conn_and_report(&self, connection: Connection) -> Result<Connections, CommError> {
         let new_connections = self.add_conn(connection)?;
@@ -165,9 +149,7 @@ impl ConnectionsCell {
     }
 
     pub fn flat_modify<F>(&self, f: F) -> Result<Connections, CommError>
-    where
-        F: FnOnce(Connections) -> Result<Connections, CommError>,
-    {
+    where F: FnOnce(Connections) -> Result<Connections, CommError> {
         let mut peers = self.peers.lock().map_err(|_| {
             CommError::InternalCommunicationError("ConnectionsCell lock poisoned".to_string())
         })?;

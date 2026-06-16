@@ -22,9 +22,7 @@ mod tests {
     #[derive(Debug, Clone, PartialEq)]
     struct TestReason;
     impl Into<AdmitHashReason> for TestReason {
-        fn into(self) -> AdmitHashReason {
-            AdmitHashReason::HasBlockMessageReceived
-        }
+        fn into(self) -> AdmitHashReason { AdmitHashReason::HasBlockMessageReceived }
     }
 
     struct TestFixture {
@@ -66,9 +64,7 @@ mod tests {
             }
         }
 
-        fn reset(&self) {
-            self.transport_layer.reset();
-        }
+        fn reset(&self) { self.transport_layer.reset(); }
 
         async fn setup_known_hash(&self) {
             let test_reason = TestReason;

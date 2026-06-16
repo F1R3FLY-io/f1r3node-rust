@@ -560,18 +560,14 @@ mod tests {
 
     #[async_trait::async_trait]
     impl WebApi for StubWebApi {
-        async fn status(&self) -> eyre::Result<ApiStatus> {
-            unimplemented!()
-        }
+        async fn status(&self) -> eyre::Result<ApiStatus> { unimplemented!() }
         async fn prepare_deploy(
             &self,
             _: Option<crate::rust::api::web_api::PrepareRequest>,
         ) -> eyre::Result<crate::rust::api::web_api::PrepareResponse> {
             unimplemented!()
         }
-        async fn deploy(&self, _: DeployRequest) -> eyre::Result<String> {
-            unimplemented!()
-        }
+        async fn deploy(&self, _: DeployRequest) -> eyre::Result<String> { unimplemented!() }
         async fn get_data_at_par(
             &self,
             _: DataAtNameByBlockHashRequest,
@@ -617,9 +613,7 @@ mod tests {
         ) -> eyre::Result<Vec<crate::rust::api::serde_types::block_info::BlockInfoSerde>> {
             unimplemented!()
         }
-        async fn is_finalized(&self, _: String) -> eyre::Result<bool> {
-            unimplemented!()
-        }
+        async fn is_finalized(&self, _: String) -> eyre::Result<bool> { unimplemented!() }
         async fn deploy_finalization_status(
             &self,
             _: String,

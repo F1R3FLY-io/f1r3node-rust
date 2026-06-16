@@ -185,9 +185,7 @@ mod tests {
         conf
     }
 
-    fn create_test_node_conf_all_disabled() -> NodeConf {
-        create_test_node_conf()
-    }
+    fn create_test_node_conf_all_disabled() -> NodeConf { create_test_node_conf() }
 
     #[test]
     #[serial]
@@ -365,10 +363,9 @@ mod tests {
 
         assert_eq!(config.default_buckets.len(), 3);
         assert_eq!(config.custom_buckets.len(), 1);
-        assert_eq!(
-            config.custom_buckets.get("my_metric").unwrap(),
-            &vec![1.0, 2.0, 3.0]
-        );
+        assert_eq!(config.custom_buckets.get("my_metric").unwrap(), &vec![
+            1.0, 2.0, 3.0
+        ]);
     }
 
     #[test]

@@ -173,9 +173,7 @@ impl<Key: Hash + Eq + Clone> ST<Key> {
     /// Returns flag if all keys are marked as finished (Done).
     ///
     /// **Scala equivalent**: `def isFinished: Boolean`
-    pub fn is_finished(&self) -> bool {
-        !self.d.values().any(|status| *status != ReqStatus::Done)
-    }
+    pub fn is_finished(&self) -> bool { !self.d.values().any(|status| *status != ReqStatus::Done) }
 }
 
 /// Stream processor for tuple space requester operations

@@ -65,9 +65,7 @@ pub enum BlockCreatorResult {
 }
 
 impl CheckProposeConstraintsResult {
-    pub fn success() -> Self {
-        CheckProposeConstraintsResult::Success
-    }
+    pub fn success() -> Self { CheckProposeConstraintsResult::Success }
 
     pub fn not_bonded() -> Self {
         CheckProposeConstraintsResult::Failure(CheckProposeConstraintsFailure::NotBonded)
@@ -142,9 +140,7 @@ impl ProposeResult {
 }
 
 impl BlockCreatorResult {
-    pub fn no_new_deploys() -> Self {
-        BlockCreatorResult::NoNewDeploys
-    }
+    pub fn no_new_deploys() -> Self { BlockCreatorResult::NoNewDeploys }
 
     pub fn created(b: BlockMessage, pre_state_hash: Bytes, post_state_hash: Bytes) -> Self {
         BlockCreatorResult::Created(b, pre_state_hash, post_state_hash)

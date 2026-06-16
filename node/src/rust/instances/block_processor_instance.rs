@@ -58,9 +58,7 @@ impl InFlightBlockGuard {
 }
 
 impl Drop for InFlightBlockGuard {
-    fn drop(&mut self) {
-        self.blocks_in_processing.remove(&self.hash);
-    }
+    fn drop(&mut self) { self.blocks_in_processing.remove(&self.hash); }
 }
 
 /// Configuration for BlockProcessorInstance

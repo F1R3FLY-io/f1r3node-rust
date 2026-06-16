@@ -374,9 +374,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Initializing<
 
     /// Scala equivalent: Engine trait - Initializing doesn't have casper yet, so withCasper returns default
     /// In Scala: `def withCasper[A](f: MultiParentCasper[F] => F[A], default: F[A]): F[A] = default`
-    fn with_casper(&self) -> Option<Arc<dyn MultiParentCasper + Send + Sync>> {
-        None
-    }
+    fn with_casper(&self) -> Option<Arc<dyn MultiParentCasper + Send + Sync>> { None }
 }
 
 impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
@@ -1205,9 +1203,7 @@ impl<T: TransportLayer + Send + Sync> BlockRequesterOps for BlockRequesterWrappe
         Ok(self.block_store.put(block_hash, block)?)
     }
 
-    fn validate_block(&self, block: &BlockMessage) -> bool {
-        (self.validate_block_fn)(block)
-    }
+    fn validate_block(&self, block: &BlockMessage) -> bool { (self.validate_block_fn)(block) }
 
     async fn request_for_mergeable_entry(&self, block_hash: &BlockHash) -> Result<(), CasperError> {
         let req = MergeableEntryRequest {

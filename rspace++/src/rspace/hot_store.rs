@@ -77,9 +77,7 @@ pub trait HotStore<C: Clone + Hash + Eq, P: Clone, A: Clone, K: Clone>: Sync + S
     fn set_state(&self, state: HotStoreState<C, P, A, K>);
 }
 
-pub fn new_hashmap<K: std::cmp::Eq + std::hash::Hash, V>() -> HashMap<K, V> {
-    HashMap::new()
-}
+pub fn new_hashmap<K: std::cmp::Eq + std::hash::Hash, V>() -> HashMap<K, V> { HashMap::new() }
 
 #[derive(Default, Debug, Clone)]
 pub struct HotStoreState<C, P, A, K>
@@ -106,9 +104,7 @@ where
     K: Clone + Debug + Arbitrary + Default,
 {
     fn random_vec<T>(size: usize) -> Vec<T>
-    where
-        T: Default + Clone,
-    {
+    where T: Default + Clone {
         let mut rng = thread_rng();
         (0..size)
             .map(|_| T::default())
@@ -832,9 +828,7 @@ where
             .as_millis() as u64
     }
 
-    fn state_metrics_update_interval_ms() -> u64 {
-        HOT_STORE_STATE_METRICS_UPDATE_INTERVAL_MS
-    }
+    fn state_metrics_update_interval_ms() -> u64 { HOT_STORE_STATE_METRICS_UPDATE_INTERVAL_MS }
 
     fn history_cache_metrics_update_interval_ms() -> u64 {
         HOT_STORE_HISTORY_CACHE_METRICS_UPDATE_INTERVAL_MS
@@ -926,22 +920,22 @@ where
         let data_items: usize = cache.datums.values().map(|v| v.len()).sum();
         let joins_items: usize = cache.joins.values().map(|v| v.len()).sum();
 
-        if cache.continuations.len() >= MAX_HISTORY_STORE_CACHE_ENTRIES
-            || cont_items >= MAX_HISTORY_STORE_CACHE_CONT_ITEMS
+        if cache.continuations.len() >= MAX_HISTORY_STORE_CACHE_ENTRIES ||
+            cont_items >= MAX_HISTORY_STORE_CACHE_CONT_ITEMS
         {
             metrics::counter!(HOT_STORE_HISTORY_CACHE_BULK_CLEAR_CONT_METRIC, "source" => RSPACE_METRICS_SOURCE)
                 .increment(1);
             cache.continuations.clear();
         }
-        if cache.datums.len() >= MAX_HISTORY_STORE_CACHE_ENTRIES
-            || data_items >= MAX_HISTORY_STORE_CACHE_DATA_ITEMS
+        if cache.datums.len() >= MAX_HISTORY_STORE_CACHE_ENTRIES ||
+            data_items >= MAX_HISTORY_STORE_CACHE_DATA_ITEMS
         {
             metrics::counter!(HOT_STORE_HISTORY_CACHE_BULK_CLEAR_DATUMS_METRIC, "source" => RSPACE_METRICS_SOURCE)
                 .increment(1);
             cache.datums.clear();
         }
-        if cache.joins.len() >= MAX_HISTORY_STORE_CACHE_ENTRIES
-            || joins_items >= MAX_HISTORY_STORE_CACHE_JOIN_ITEMS
+        if cache.joins.len() >= MAX_HISTORY_STORE_CACHE_ENTRIES ||
+            joins_items >= MAX_HISTORY_STORE_CACHE_JOIN_ITEMS
         {
             metrics::counter!(HOT_STORE_HISTORY_CACHE_BULK_CLEAR_JOINS_METRIC, "source" => RSPACE_METRICS_SOURCE)
                 .increment(1);

@@ -7,6 +7,4 @@ pub mod listen_at_name;
 
 type ServiceResult<T> = std::result::Result<T, Vec<String>>; // left the type of Err as Vec<String> for compatibility with Scala version
 
-pub fn error_to_vec<E: std::fmt::Display>(err: E) -> Vec<String> {
-    vec![err.to_string()]
-}
+pub fn error_to_vec<E: std::fmt::Display>(err: E) -> Vec<String> { vec![err.to_string()] }

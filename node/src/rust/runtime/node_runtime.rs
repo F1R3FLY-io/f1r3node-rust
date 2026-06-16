@@ -68,9 +68,7 @@ impl NodeRuntime {
     /// # Arguments
     /// * `node_conf` - Node configuration
     /// * `id` - Node identifier derived from TLS certificate
-    pub fn new(node_conf: NodeConf, id: NodeIdentifier) -> Self {
-        Self { node_conf, id }
-    }
+    pub fn new(node_conf: NodeConf, id: NodeIdentifier) -> Self { Self { node_conf, id } }
 
     /// Main node entry point
     ///
@@ -1338,9 +1336,7 @@ pub async fn start(node_conf: NodeConf) -> eyre::Result<()> {
 /// # Returns
 /// Returns `Ok(())` on successful completion, or logs the error and exits with code 1
 async fn handle_unrecoverable_errors<F>(program: F) -> eyre::Result<()>
-where
-    F: Future<Output = eyre::Result<()>>,
-{
+where F: Future<Output = eyre::Result<()>> {
     match program.await {
         Ok(_) => {
             info!("Node program completed successfully. Exiting.");

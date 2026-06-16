@@ -8,9 +8,7 @@ use comm::rust::transport::transport_layer::TransportLayer;
 use prost::bytes::Bytes;
 
 /// Helper function to create an endpoint with given port
-fn endpoint(port: u32) -> Endpoint {
-    Endpoint::new("host".to_string(), port, port)
-}
+fn endpoint(port: u32) -> Endpoint { Endpoint::new("host".to_string(), port, port) }
 
 /// Helper function to create a peer node with given name and port
 fn peer_node(name: &str, port: u32) -> PeerNode {

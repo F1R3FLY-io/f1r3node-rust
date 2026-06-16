@@ -23,9 +23,7 @@ pub trait ToPacket {
 macro_rules! impl_packet {
     ($type:ty, $tag:expr) => {
         impl ToPacket for $type {
-            fn content(&self) -> prost::bytes::Bytes {
-                self.encode_to_vec().into()
-            }
+            fn content(&self) -> prost::bytes::Bytes { self.encode_to_vec().into() }
 
             fn mk_packet(&self) -> Packet {
                 Packet {

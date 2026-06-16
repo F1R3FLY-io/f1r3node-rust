@@ -283,9 +283,7 @@ mod stream_handler_spec {
 
     /// Handle a stream and expect success
     async fn handle_stream<S>(stream: S) -> comm::rust::transport::messages::StreamMessage
-    where
-        S: Stream<Item = Chunk> + Unpin,
-    {
+    where S: Stream<Item = Chunk> + Unpin {
         let cache = Arc::new(dashmap::DashMap::new());
         StreamHandler::handle_stream(stream, never_break, &cache)
             .await

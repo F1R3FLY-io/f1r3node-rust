@@ -55,9 +55,7 @@ impl KeyValueDeployStorage {
     }
 
     pub fn any<F>(&self, predicate: F) -> Result<bool, KvStoreError>
-    where
-        F: FnMut(&Signed<DeployData>) -> Result<bool, KvStoreError>,
-    {
+    where F: FnMut(&Signed<DeployData>) -> Result<bool, KvStoreError> {
         self.store.any_value(predicate)
     }
 
@@ -66,7 +64,5 @@ impl KeyValueDeployStorage {
     }
 
     /// Check if the storage contains any pending deploys. O(1) time and space.
-    pub fn non_empty(&self) -> Result<bool, KvStoreError> {
-        self.store.non_empty()
-    }
+    pub fn non_empty(&self) -> Result<bool, KvStoreError> { self.store.non_empty() }
 }

@@ -2207,9 +2207,7 @@ fn generated_frontier_runtime_trace_interleaving_properties_hold() {
 }
 
 #[test]
-fn generated_frontier_v9_coverage_adequacy_holds() {
-    generated_frontier_coverage_adequacy_holds();
-}
+fn generated_frontier_v9_coverage_adequacy_holds() { generated_frontier_coverage_adequacy_holds(); }
 
 #[test]
 fn generated_frontier_v10_fuzz_seed_fixtures_hold() {

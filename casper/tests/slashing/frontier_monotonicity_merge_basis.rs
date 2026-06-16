@@ -18,9 +18,7 @@ use proptest::prelude::*;
 
 type Edge = (u8, u8);
 
-fn validators(input: &[u8]) -> BTreeSet<u8> {
-    input.iter().copied().filter(|v| *v < 4).collect()
-}
+fn validators(input: &[u8]) -> BTreeSet<u8> { input.iter().copied().filter(|v| *v < 4).collect() }
 
 fn edges(input: &[Edge]) -> BTreeSet<Edge> {
     input

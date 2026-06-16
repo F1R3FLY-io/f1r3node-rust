@@ -19,9 +19,7 @@ const SCHNORR_SIG_LEN: usize = 64;
 pub struct SchnorrSecp256k1;
 
 impl SchnorrSecp256k1 {
-    pub fn name() -> String {
-        SCHNORR_SECP256K1_ALGORITHM_NAME.to_string()
-    }
+    pub fn name() -> String { SCHNORR_SECP256K1_ALGORITHM_NAME.to_string() }
 
     pub fn signing_preimage(serialized_payload: &[u8]) -> Vec<u8> {
         let mut out = Vec::with_capacity(
@@ -131,21 +129,13 @@ impl SignaturesAlg for SchnorrSecp256k1 {
         (private_key, public_key)
     }
 
-    fn name(&self) -> String {
-        Self::name()
-    }
+    fn name(&self) -> String { Self::name() }
 
-    fn sig_length(&self) -> usize {
-        SCHNORR_SIG_LEN
-    }
+    fn sig_length(&self) -> usize { SCHNORR_SIG_LEN }
 
-    fn eq(&self, other: &dyn SignaturesAlg) -> bool {
-        self.name() == other.name()
-    }
+    fn eq(&self, other: &dyn SignaturesAlg) -> bool { self.name() == other.name() }
 
-    fn box_clone(&self) -> Box<dyn SignaturesAlg> {
-        Box::new(self.clone())
-    }
+    fn box_clone(&self) -> Box<dyn SignaturesAlg> { Box::new(self.clone()) }
 }
 
 #[cfg(test)]
@@ -153,9 +143,7 @@ mod tests {
     use super::*;
     use crate::rust::hash::blake2b256::Blake2b256;
 
-    fn decode_hex(hex_str: &str) -> Vec<u8> {
-        hex::decode(hex_str).expect("valid hex")
-    }
+    fn decode_hex(hex_str: &str) -> Vec<u8> { hex::decode(hex_str).expect("valid hex") }
 
     #[test]
     fn generates_valid_key_pairs() {

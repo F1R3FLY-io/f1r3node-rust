@@ -370,13 +370,9 @@ impl KeyValueBlockStore {
         CACHE.get_or_init(|| Mutex::new(DeploySigCache::default()))
     }
 
-    fn decode_buffer_retain_bytes() -> usize {
-        Self::DECOMPRESS_BUFFER_RETAIN_BYTES
-    }
+    fn decode_buffer_retain_bytes() -> usize { Self::DECOMPRESS_BUFFER_RETAIN_BYTES }
 
-    fn max_deploy_sig_cache_entries() -> usize {
-        Self::DEPLOY_SIG_CACHE_MAX_ENTRIES
-    }
+    fn max_deploy_sig_cache_entries() -> usize { Self::DEPLOY_SIG_CACHE_MAX_ENTRIES }
 
     #[cfg(test)]
     fn block_proto_decode_buffer_capacity_for_test() -> usize {
@@ -512,9 +508,7 @@ mod tests {
             todo!()
         }
 
-        fn clone_box(&self) -> Box<dyn KeyValueStore> {
-            todo!()
-        }
+        fn clone_box(&self) -> Box<dyn KeyValueStore> { todo!() }
 
         fn to_map(
             &self,
@@ -525,17 +519,11 @@ mod tests {
             todo!()
         }
 
-        fn print_store(&self) -> Result<(), KvStoreError> {
-            Ok(())
-        }
+        fn print_store(&self) -> Result<(), KvStoreError> { Ok(()) }
 
-        fn size_bytes(&self) -> usize {
-            todo!()
-        }
+        fn size_bytes(&self) -> usize { todo!() }
 
-        fn non_empty(&self) -> Result<bool, KvStoreError> {
-            todo!()
-        }
+        fn non_empty(&self) -> Result<bool, KvStoreError> { todo!() }
     }
 
     pub struct NotImplementedKV;
@@ -549,13 +537,9 @@ mod tests {
             todo!()
         }
 
-        fn delete(&self, _keys: Vec<ByteBuffer>) -> Result<usize, KvStoreError> {
-            todo!()
-        }
+        fn delete(&self, _keys: Vec<ByteBuffer>) -> Result<usize, KvStoreError> { todo!() }
 
-        fn iterate(&self, _f: fn(ByteBuffer, ByteBuffer)) -> Result<(), KvStoreError> {
-            todo!()
-        }
+        fn iterate(&self, _f: fn(ByteBuffer, ByteBuffer)) -> Result<(), KvStoreError> { todo!() }
 
         fn iterate_while(
             &self,
@@ -564,9 +548,7 @@ mod tests {
             todo!()
         }
 
-        fn clone_box(&self) -> Box<dyn KeyValueStore> {
-            todo!()
-        }
+        fn clone_box(&self) -> Box<dyn KeyValueStore> { todo!() }
 
         fn to_map(
             &self,
@@ -574,17 +556,11 @@ mod tests {
             todo!()
         }
 
-        fn print_store(&self) -> Result<(), KvStoreError> {
-            todo!()
-        }
+        fn print_store(&self) -> Result<(), KvStoreError> { todo!() }
 
-        fn size_bytes(&self) -> usize {
-            todo!()
-        }
+        fn size_bytes(&self) -> usize { todo!() }
 
-        fn non_empty(&self) -> Result<bool, KvStoreError> {
-            todo!()
-        }
+        fn non_empty(&self) -> Result<bool, KvStoreError> { todo!() }
     }
 
     fn to_approved_block(block: BlockMessage) -> ApprovedBlock {
@@ -607,17 +583,11 @@ mod tests {
             .and_then(|value| value.parse::<usize>().ok())
     }
 
-    fn kb_to_mib(kb: usize) -> f64 {
-        kb as f64 / 1024.0
-    }
+    fn kb_to_mib(kb: usize) -> f64 { kb as f64 / 1024.0 }
 
-    fn delta_kb_to_mib(delta_kb: isize) -> f64 {
-        delta_kb as f64 / 1024.0
-    }
+    fn delta_kb_to_mib(delta_kb: isize) -> f64 { delta_kb as f64 / 1024.0 }
 
-    fn bytes_to_mib(bytes: usize) -> f64 {
-        bytes as f64 / (1024.0 * 1024.0)
-    }
+    fn bytes_to_mib(bytes: usize) -> f64 { bytes as f64 / (1024.0 * 1024.0) }
 
     proptest! {
         #![proptest_config(ProptestConfig {

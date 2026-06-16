@@ -65,13 +65,13 @@ pub fn normalize_p_disjunction<'ast>(
         input.bound_map_chain.depth() as i32,
     );
 
-    let updated_free_map = input.free_map.add_connective(
-        result_connective.connective_instance.unwrap(),
-        SourceSpan {
-            start: left.span.start,
-            end: right.span.end,
-        },
-    );
+    let updated_free_map =
+        input
+            .free_map
+            .add_connective(result_connective.connective_instance.unwrap(), SourceSpan {
+                start: left.span.start,
+                end: right.span.end,
+            });
 
     Ok(ProcVisitOutputs {
         par: result_par,

@@ -14,8 +14,8 @@
 //!  - linear no-double-spend    ↔ the resource-logic / Δσ discipline
 //!    (`CATypeDiscipline.ca_linear_no_contraction`).
 
-use std::collections::VecDeque;
-use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
+use std::collections::{BTreeMap, VecDeque};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use costs::Cost;
@@ -115,6 +115,29 @@ pub struct RuntimeBudget {
     // `Sig::lane_hash` — the same canonical basis as the supply channel
     // `SignatureChannel::from_sig` (integration invariant).
     lanes: Arc<DashMap<[u8; 32], Lane>>,
+    // --- W1 Phase 3: per-redex located-stack attribution (channel match) ---
+    //
+    // These three are DIAGNOSTIC/forward-infra and NEVER feed the consensus
+    // reconciliation (`reconcile`/`total_cost`/the supply pools): they record a
+    // per-signer-LANE projection of the COMM count so a multi-signer deploy's
+    // per-lane demand can be read back and cross-checked against the static
+    // [`delta_sigma::demand_by_sig`] dual. Under the s₀ collapse every COMM is on
+    // a DATA channel (never a `Σ⟦s⟧` supply channel — the §5 no-alias audit), so
+    // `lane_comm_counts` stays EMPTY, `per_lane_demand` collapses to the singleton
+    // `{envelope: total}`, and the scalar fast path is byte-identical.
+    //
+    /// `true` iff the installed envelope decomposes into MORE THAN ONE signer
+    /// channel (a multi-signer cosigned deploy). The cheap per-COMM gate for the
+    /// channel match: a single-signer deploy (the only signer channel IS the
+    /// envelope) leaves this `false` and does ZERO channel-match work.
+    any_signed_regions: Arc<AtomicBool>,
+    /// The installed signer channels (`Sig::signer_channels`, wire-encoded) the
+    /// per-redex channel match resolves a COMM channel against. Refreshed per
+    /// deploy by [`install_signer_channels`](RuntimeBudget::install_signer_channels).
+    signer_channels: Arc<Mutex<Vec<(Vec<u8>, [u8; 32])>>>,
+    /// Per-signer-LANE COMM tally for COMMs that matched a NON-envelope signer
+    /// channel (a `Σ⟦sᵢ⟧` rendezvous). Diagnostic only; empty under s₀.
+    lane_comm_counts: Arc<DashMap<[u8; 32], i64>>,
 }
 
 /// One per-signature token pool entry (spec §4.6). Structurally mirrors the
@@ -344,6 +367,11 @@ impl RuntimeBudget {
             // every legacy single-signature deploy (mirrors `rspace.rs`
             // `phase_a_locks` construction).
             lanes: Arc::new(DashMap::new()),
+            // W1 Phase 3 located-stack attribution: a fresh budget defaults to the
+            // single-lane (envelope) regime; `set_deploy_signature(s)` refreshes.
+            any_signed_regions: Arc::new(AtomicBool::new(false)),
+            signer_channels: Arc::new(Mutex::new(Vec::new())),
+            lane_comm_counts: Arc::new(DashMap::new()),
         }
     }
 
@@ -940,7 +968,12 @@ impl RuntimeBudget {
         self.initial_tokens
             .store(token.remaining_units_i64(), Ordering::Release);
         self.consumed_tokens.store(0, Ordering::Release);
-        *self.signature.lock().expect("signature lock") = token.signature();
+        let token_sig = token.signature();
+        *self.signature.lock().expect("signature lock") = token_sig.clone();
+        // W1 Phase 3: refresh the per-redex channel-match state for the reused
+        // budget (defaults back to the single-lane envelope regime + clears the
+        // per-lane tally). DIAGNOSTIC; no consensus reconciliation state touched.
+        self.install_signer_channels(&token_sig);
         self.event_log.lock().expect("event log").clear();
         self.log.lock().expect("cost log").clear();
         // Drain and discard any residual lock-free attempts, then clear
@@ -957,28 +990,44 @@ impl RuntimeBudget {
     }
 
     pub fn set_deploy_signature(&self, signature: &[u8]) {
-        // The envelope `Sig` is derived by the ONE shared function
-        // [`envelope_sig_single`] so the runtime install, the D2 acceptance
-        // gate, and replay never drift (cost-accounting WD-D2 §D2.2 — one
-        // extracted derivation). The deploy-signature digest is a `#P`-style
-        // process-hash (the Blake2b256 of the domain-separated wire signature),
-        // NOT a ground key `g`, so it is a `Sig::Quote` atom (eq:app-sig-hash).
-        let sig = envelope_sig_single(signature);
-        // The deploy_id reuses the same digest: a `Sig::Quote(hash)` carries
-        // exactly the domain-separated Blake2b256, so this is byte-identical to
-        // the pre-extraction inline derivation.
+        // Legacy single-sig install. The FUNDING signature is the wire-sig
+        // `#P`/`Sig::Quote` envelope atom (`envelope_sig_single`), preserving
+        // the pre-`funding_sig` behavior bit-for-bit — so every test/bench
+        // caller (and its `Sig::Quote`-variant assertions) is unchanged.
+        // PRODUCTION (`evaluate_cosigned`) routes through
+        // `set_deploy_signature_funded` with the signer's GROUND public key, so
+        // the funded pool is the genesis-seeded wallet `Σ⟦Ground(pk)⟧`
+        // (`Σ⟦signer⟧ == Σ⟦wallet⟧`, cost-accounting WD-D2 §D2.9).
+        self.set_deploy_signature_funded(signature, envelope_sig_single(signature));
+    }
+
+    /// Install a single-signer deploy with a DECOUPLED funding signature
+    /// (cost-accounting WD-D2 §D2.9 — `Σ⟦signer⟧ == Σ⟦wallet⟧`).
+    ///
+    /// The `deploy_id` is derived from the WIRE signature `signature` and is
+    /// byte-identical to the legacy [`set_deploy_signature`] (so a deploy's
+    /// on-chain identity NEVER moves under the funding-key decoupling), while
+    /// `funding_sig` keys the supply pool `Σ⟦s⟧` and the per-redex signer
+    /// channels. Production passes `funding_sig = Sig::Ground(signer_pubkey)`
+    /// (via [`funding_sig`]) so the pool is the genesis-seeded wallet; the
+    /// legacy wrapper passes the wire-sig `Sig::Quote` envelope.
+    pub fn set_deploy_signature_funded(&self, signature: &[u8], funding_sig: Sig) {
+        // deploy_id = the wire-signature `#P`-atom digest, UNCHANGED. The funded
+        // pool moves to `Σ⟦Ground(pk)⟧`; the on-chain deploy_id does not.
+        let id_sig = envelope_sig_single(signature);
         let mut deploy_id = [0; 32];
-        match &sig {
+        match &id_sig {
             Sig::Quote(hash) => deploy_id.copy_from_slice(&hash[..32]),
             // `envelope_sig_single` is total to `Sig::Quote`; this arm is
             // unreachable and exists only to keep the match exhaustive.
             _ => unreachable!("envelope_sig_single always yields Sig::Quote"),
         }
         *self.deploy_id.lock().expect("deploy id lock") = deploy_id;
-        // Cost-accounting channels are internal capabilities derived from,
-        // but not equal to, the wire signature. Domain separation prevents
-        // accidental reuse of raw signature bytes as another protocol hash.
-        *self.signature.lock().expect("signature lock") = sig;
+        // The FUNDING signature keys `Σ⟦s⟧` + the per-redex signer channels
+        // (single signer ⇒ one signer channel == the envelope ⇒
+        // `any_signed_regions = false`).
+        self.install_signer_channels(&funding_sig);
+        *self.signature.lock().expect("signature lock") = funding_sig;
     }
 
     /// Install a compound (multi-signer) deploy signature into the budget.
@@ -1008,28 +1057,46 @@ impl RuntimeBudget {
     /// separator), but operationally equivalent in terms of the resulting
     /// `Sig::Quote` value and `SignatureChannel` reflection.
     pub fn set_deploy_signatures(&self, signatures: &[&[u8]]) {
+        // Legacy compound install. The FUNDING signature is the wire-sig
+        // `Sig::And` fold of `Sig::Quote` leaves (`envelope_sig_compound`),
+        // preserving the pre-`funding_sig` behavior bit-for-bit (every
+        // test/bench caller unchanged). PRODUCTION (`evaluate_cosigned`) routes
+        // through `set_deploy_signatures_funded` with the cosigners' GROUND
+        // public keys so each component pool is the genesis-seeded wallet
+        // `Σ⟦Ground(pkᵢ)⟧` (P8-balanced over cosigners).
+        //
+        // Guard the empty case HERE (before the `envelope_sig_compound` argument
+        // is evaluated) so the panic message is the legacy one, not the inner
+        // `fold_compound_sig` expect.
+        assert!(
+            !signatures.is_empty(),
+            "set_deploy_signatures requires at least one signature"
+        );
+        self.set_deploy_signatures_funded(signatures, envelope_sig_compound(signatures));
+    }
+
+    /// Install a compound (multi-signer) deploy with a DECOUPLED funding
+    /// signature (cost-accounting WD-D2 §D2.9).
+    ///
+    /// The `deploy_id` is derived from the full ordered concatenation of the
+    /// per-signer WIRE-signature hashes under the COMPOUND domain — byte-
+    /// identical to the legacy [`set_deploy_signatures`] (canonical-order input
+    /// ⇒ permutation-equal multi-sig deploys produce identical `deploy_id`s),
+    /// while `funding_sig` keys the supply pools `Σ⟦sᵢ⟧`. Production passes the
+    /// `And`-fold of `Sig::Ground(pkᵢ)` (via [`funding_sig`]) so each component
+    /// pool is the genesis-seeded wallet `Σ⟦Ground(pkᵢ)⟧`.
+    pub fn set_deploy_signatures_funded(&self, signatures: &[&[u8]], funding_sig: Sig) {
         assert!(
             !signatures.is_empty(),
             "set_deploy_signatures requires at least one signature"
         );
 
-        // Domain-separated hash of each individual wire signature. Per-signature
+        // deploy_id derives from the full ordered concatenation of per-sig WIRE
+        // hashes under the COMPOUND domain (UNCHANGED — the funded pool moves to
+        // `Σ⟦Ground(pkᵢ)⟧`; the on-chain deploy_id does not). Per-signature
         // domain separation uses the COMPOUND domain so single-element calls
-        // remain distinguishable from legacy single-sig deploys. Shared with
-        // [`envelope_sig_compound`] so the runtime install and the D2 gate /
-        // replay derive ONE identical compound `Sig` (no drift).
+        // remain distinguishable from legacy single-sig deploys.
         let sig_hashes = compound_sig_hashes(signatures);
-
-        // Fold into the left-associated `Sig::And` tree via the ONE shared
-        // function (WD-D2 §D2.2 — single extracted derivation):
-        //   [h0]          => Sig::Quote(h0)
-        //   [h0, h1]      => Sig::And(Sig::Quote(h0), Sig::Quote(h1))
-        //   [h0, h1, h2]  => Sig::And(Sig::And(Sig::Quote(h0), Sig::Quote(h1)), Sig::Quote(h2))
-        let folded_sig: Sig = fold_compound_sig(&sig_hashes);
-
-        // deploy_id derives from the full ordered concatenation of per-sig
-        // hashes under the COMPOUND domain. Canonical-order input means
-        // permutation-equal multi-sig deploys produce identical deploy_ids.
         let mut id_buf =
             Vec::with_capacity(COMPOUND_DEPLOY_SIGNATURE_DOMAIN.len() + 32 * sig_hashes.len());
         id_buf.extend_from_slice(COMPOUND_DEPLOY_SIGNATURE_DOMAIN);
@@ -1041,12 +1108,90 @@ impl RuntimeBudget {
         deploy_id.copy_from_slice(&deploy_id_hash[..32]);
 
         *self.deploy_id.lock().expect("deploy id lock") = deploy_id;
-        *self.signature.lock().expect("signature lock") = folded_sig;
+        // The FUNDING signature keys `Σ⟦sᵢ⟧` + the per-redex signer channels
+        // (one signer channel per `And` leaf ⇒ `any_signed_regions` iff there is
+        // more than one funding component).
+        self.install_signer_channels(&funding_sig);
+        *self.signature.lock().expect("signature lock") = funding_sig;
     }
 
     pub fn signature(&self) -> Sig { self.signature.lock().expect("signature lock").clone() }
 
     pub fn deploy_id(&self) -> [u8; 32] { *self.deploy_id.lock().expect("deploy id lock") }
+
+    /// Refresh the per-deploy located-stack attribution state (W1 Phase 3) from
+    /// the installed envelope `sig`: decompose it into signer channels
+    /// ([`Sig::signer_channels`], wire-encoded), set [`any_signed_regions`] iff
+    /// there is MORE THAN ONE signer channel (a multi-signer deploy), and clear
+    /// the per-lane tally so the deploy starts on a clean projection. Called by
+    /// both `set_deploy_signature(s)` and `reset_from_token`, so the channel-match
+    /// state can never drift from the installed signature. DIAGNOSTIC ONLY — it
+    /// touches no consensus reconciliation state (`reconcile`/`total_cost`/`lanes`).
+    ///
+    /// [`any_signed_regions`]: RuntimeBudget::any_signed_regions
+    fn install_signer_channels(&self, sig: &Sig) {
+        use prost::Message;
+        let channels: Vec<(Vec<u8>, [u8; 32])> = sig
+            .signer_channels()
+            .into_iter()
+            .map(|(channel, lane)| (channel.encode_to_vec(), lane))
+            .collect();
+        self.any_signed_regions
+            .store(channels.len() > 1, Ordering::Release);
+        *self.signer_channels.lock().expect("signer channels lock") = channels;
+        self.lane_comm_counts.clear();
+    }
+
+    /// Cheap per-COMM gate: is per-redex channel-match attribution active (i.e. is
+    /// this a multi-signer deploy with >1 signer lane)? A single-signer deploy
+    /// returns `false` and the reducer does ZERO channel-match work.
+    pub fn any_signed_regions(&self) -> bool {
+        self.any_signed_regions.load(Ordering::Acquire)
+    }
+
+    /// Snapshot the installed signer channels for a channel match (cloned; only
+    /// taken on the multi-signer path, gated by [`any_signed_regions`]).
+    ///
+    /// [`any_signed_regions`]: RuntimeBudget::any_signed_regions
+    pub fn signer_channels_snapshot(&self) -> Vec<(Vec<u8>, [u8; 32])> {
+        self.signer_channels
+            .lock()
+            .expect("signer channels lock")
+            .clone()
+    }
+
+    /// Tally one COMM that matched a NON-envelope signer lane (a `Σ⟦sᵢ⟧`
+    /// rendezvous). Diagnostic only; never reached under s₀.
+    pub fn note_lane_comm(&self, lane: [u8; 32]) {
+        *self.lane_comm_counts.entry(lane).or_insert(0) += 1;
+    }
+
+    /// The per-signer-LANE projection of this deploy's COMM demand: each
+    /// non-envelope signer lane that received COMMs (from [`note_lane_comm`]), plus
+    /// the envelope lane carrying the remaining COMMs (total committed COMM count
+    /// minus the matched-lane tallies). The STATIC dual is
+    /// [`delta_sigma::demand_by_sig`]; the two agree COMM-for-COMM because both use
+    /// the SAME channel→lane decision ([`delta_sigma::match_channel_to_lane`]).
+    /// Under the s₀ collapse the tally is empty, so this is the singleton
+    /// `{ envelope: total }` and agrees with [`delta_sigma::demand`].
+    ///
+    /// [`note_lane_comm`]: RuntimeBudget::note_lane_comm
+    /// [`delta_sigma::demand_by_sig`]: super::delta_sigma::demand_by_sig
+    /// [`delta_sigma::match_channel_to_lane`]: super::delta_sigma::match_channel_to_lane
+    /// [`delta_sigma::demand`]: super::delta_sigma::demand
+    pub fn per_lane_demand(&self) -> BTreeMap<[u8; 32], i64> {
+        let envelope = self.signature().lane_hash();
+        let total = self.total_cost().value;
+        let mut map: BTreeMap<[u8; 32], i64> = BTreeMap::new();
+        let mut matched_sum: i64 = 0;
+        for entry in self.lane_comm_counts.iter() {
+            let count = *entry.value();
+            matched_sum = matched_sum.saturating_add(count);
+            map.insert(*entry.key(), count);
+        }
+        map.insert(envelope, total.saturating_sub(matched_sum));
+        map
+    }
 
     pub fn set_unmetered(&self, unmetered: bool) {
         // System deploys use unmetered mode only around post-evaluation
@@ -1392,6 +1537,76 @@ where A: std::fmt::Debug + serde::Serialize + crypto::rust::signatures::signed::
     }
 }
 
+/// The FUNDING signature of a single signer: the spec's GROUND identity atom
+/// `Sig::Ground(pk)` over the signer's raw public-key bytes (cost-accounted-rho
+/// §"signature grammar" — a ground signature `g` is *"an Ed25519 public key, a
+/// secp256k1 key hash"*). UNLIKE [`envelope_sig_single`] (which hashes the
+/// per-deploy WIRE signature into a `#P`/`Sig::Quote` atom — a fresh value every
+/// deploy), this keys the deploy's funding pool by the signer's STABLE identity,
+/// so `Σ⟦signer⟧ == Σ⟦Ground(pk)⟧ ==` the genesis-seeded wallet `Σ⟦wallet⟧`
+/// (cost-accounting WD-D2 §D2.9). DR-1 (ground/quote channel collapse) means
+/// this reflects to the SAME channel as the genesis seed's `Sig::Ground(pk)`.
+pub fn funding_sig_single(pubkey: &[u8]) -> Sig {
+    Sig::Ground(pubkey.to_vec())
+}
+
+/// The FUNDING signature of a multi-signer deploy: the left-associated
+/// `Sig::And` fold of each cosigner's ground identity atom `Sig::Ground(pkᵢ)`
+/// (the compound `g₁∘g₂`). Fuel is drawn balanced across the cosigners' wallets
+/// `Σ⟦Ground(pkᵢ)⟧` (P8) by the existing `compute_settlement_debits` +
+/// `DefaultApportionment` over the `And`-fold's component pools. `pubkeys` MUST
+/// be non-empty and in the canonical (pk-ascending) order the `Cosigned`
+/// envelope is sorted by — so the fold (hence the on-chain `Sig`) is stable.
+pub fn funding_sig_compound(pubkeys: &[&[u8]]) -> Sig {
+    let mut iter = pubkeys.iter();
+    let first = iter
+        .next()
+        .expect("funding_sig_compound requires at least one pubkey");
+    iter.fold(Sig::Ground(first.to_vec()), |acc, pk| {
+        Sig::And(Box::new(acc), Box::new(Sig::Ground(pk.to_vec())))
+    })
+}
+
+/// The ONE function that derives a deploy's FUNDING signature from its
+/// [`Cosigned`](crypto::rust::signatures::signed::Cosigned) envelope — keyed by
+/// the signers' GROUND public keys, so the funded pool is the genesis-seeded
+/// wallet (`Σ⟦signer⟧ == Σ⟦wallet⟧`, cost-accounting WD-D2 §D2.9). Used
+/// IDENTICALLY by the runtime install
+/// ([`RuntimeBudget::set_deploy_signature_funded`] /
+/// [`RuntimeBudget::set_deploy_signatures_funded`]), the D2 acceptance gate
+/// (`casper/.../util/rholang/acceptance.rs::build_candidate_with_logic`), and
+/// replay (`recompute_settlement_debits_with_logic`) — the no-drift guarantee
+/// that the gate, the install, and the replay recompute all key the SAME pool.
+///
+/// SECURITY (placeholder filter): only signers whose signature actually
+/// VERIFIED contribute a funding atom. A Phase-2 threshold envelope may carry
+/// empty-`sig` PLACEHOLDER cosigners (the un-signed members of an M-of-N set —
+/// `Cosigned::from_signed_data_threshold`); funding from them would let a deploy
+/// key a pool by an UNSIGNED victim's public key. Excluding empty-`sig` signers
+/// means a deploy can only ever debit wallets whose owners SIGNED it. (Ingress
+/// `from_proto_cosigned` already verifies every non-placeholder `sig` against
+/// its `pk`, so a forger cannot present a victim's pk with a valid sig either.)
+pub fn funding_sig<A>(cosigned: &crypto::rust::signatures::signed::Cosigned<A>) -> Sig
+where A: std::fmt::Debug + serde::Serialize + crypto::rust::signatures::signed::ToMessage {
+    let funders: Vec<&[u8]> = cosigned
+        .signers()
+        .iter()
+        .filter(|signer| !signer.sig.is_empty())
+        .map(|signer| signer.pk.bytes.as_ref())
+        .collect();
+    // A `Cosigned` constructed via `from_signed_data{,_threshold}` is guaranteed
+    // ≥ threshold (≥ 1) VERIFIED (non-placeholder) signatures, so `funders` is
+    // never empty for a well-formed envelope; a single funder is the single-sig
+    // fast path, more than one is the balanced compound.
+    match funders.as_slice() {
+        [] => panic!(
+            "funding_sig: a constructed Cosigned must carry ≥1 verified (non-placeholder) signer"
+        ),
+        [single] => funding_sig_single(single),
+        _ => funding_sig_compound(&funders),
+    }
+}
+
 impl Sig {
     /// Serialize the runtime `Sig` algebra into the `SigCompound`
     /// wire-format proto message (Phase 2+3 `CasperMessage.proto`).
@@ -1638,6 +1853,39 @@ impl Sig {
             | Sig::Bang(_)
             | Sig::WhyNot(_)
             | Sig::Lolly(_, _) => false,
+        }
+    }
+
+    /// The funding SIGNER CHANNELS this envelope `Sig` decomposes into — each a
+    /// `(SignatureChannel::from_sig(leaf).par, leaf.lane_hash())` pair. A single
+    /// atom (`Ground`/`Quote`/`Unit`) yields ONE entry whose channel and lane ARE
+    /// the envelope's, so a single-signer deploy has exactly one signer channel
+    /// (== the envelope) and the metering machine runs the scalar fast path. An
+    /// `And`-fold (a multi-signer cosigned envelope — `envelope_sig_compound`)
+    /// yields one entry per LEAF: the component pools native ALREADY funds via the
+    /// `And`-fold + `compute_settlement_debits` component draws (DR-13 — no new
+    /// pool-write path).
+    ///
+    /// This is the installed signer set the per-redex channel match (W1 Phase 3,
+    /// located stacks / funding slots, cost-accounted-rho.tex §"Funding slots as
+    /// located stacks") resolves a COMM channel against. Under the s₀ collapse
+    /// every COMM is on a DATA channel (never a `Σ⟦s⟧` supply channel — the §5
+    /// no-alias audit), so the match always resolves to the envelope and the
+    /// spectral split stays collapsed ("the prism … collapses the spectrum back to
+    /// white light"). Non-funding connectives never reach here (the envelope is
+    /// funding-former by construction — F-A / [`is_funding_former`]); a non-`And`
+    /// shape is treated as a single signer channel, which is correct for the
+    /// funding grammar `g | #P | s ∘ s`.
+    ///
+    /// [`is_funding_former`]: Sig::is_funding_former
+    pub fn signer_channels(&self) -> Vec<(Par, [u8; 32])> {
+        match self {
+            Sig::And(left, right) => {
+                let mut channels = left.signer_channels();
+                channels.extend(right.signer_channels());
+                channels
+            }
+            atom => vec![(SignatureChannel::from_sig(atom).par, atom.lane_hash())],
         }
     }
 }
@@ -2282,5 +2530,117 @@ mod envelope_sig_extraction_tests {
         let budget = RuntimeBudget::new(Cost::create(100, "install-equivalence"));
         budget.set_deploy_signatures(&[s0, s1]);
         assert_eq!(envelope_sig_compound(&[s0, s1]), budget.signature());
+    }
+}
+
+#[cfg(test)]
+mod funding_sig_tests {
+    //! WD-D2 §D2.9 — the FUNDING-`Sig` derivation that keys a deploy's supply
+    //! pool by the signer's GROUND PUBLIC KEY (`Σ⟦signer⟧ == Σ⟦wallet⟧`),
+    //! DECOUPLED from the wire-signature `deploy_id`. These pin (a) the shape
+    //! (single ⇒ `Sig::Ground(pk)`; n-signer ⇒ left-associated `Sig::And` of
+    //! `Ground` atoms) and (b) the decoupling invariant: `set_deploy_signature(s)_funded`
+    //! installs the funding `Sig` while leaving the `deploy_id` byte-identical to
+    //! the legacy wire-sig-derived install.
+    use super::*;
+
+    /// Single signer ⇒ `Sig::Ground(pk)` over the raw public-key bytes (the
+    /// spec's ground identity atom `g`), NOT a wire-sig `Sig::Quote`.
+    #[test]
+    fn funding_sig_single_is_ground() {
+        let pk = b"signer-ed25519-public-key-bytes";
+        assert_eq!(funding_sig_single(pk), Sig::Ground(pk.to_vec()));
+    }
+
+    /// Two signers ⇒ left-associated `Sig::And(Ground(pk0), Ground(pk1))` — the
+    /// compound `g₁∘g₂` over the cosigners' public keys (P8-balanced wallets).
+    #[test]
+    fn funding_sig_compound_is_left_assoc_and_of_ground() {
+        let pk0: &[u8] = b"cosigner-pubkey-zero";
+        let pk1: &[u8] = b"cosigner-pubkey-one";
+        let expected = Sig::And(
+            Box::new(Sig::Ground(pk0.to_vec())),
+            Box::new(Sig::Ground(pk1.to_vec())),
+        );
+        assert_eq!(funding_sig_compound(&[pk0, pk1]), expected);
+    }
+
+    /// Three signers ⇒ left-associated nesting of `Ground` atoms.
+    #[test]
+    fn funding_sig_three_pubkeys_left_assoc_nested() {
+        let pk0: &[u8] = b"pk-a";
+        let pk1: &[u8] = b"pk-b";
+        let pk2: &[u8] = b"pk-c";
+        let expected = Sig::And(
+            Box::new(Sig::And(
+                Box::new(Sig::Ground(pk0.to_vec())),
+                Box::new(Sig::Ground(pk1.to_vec())),
+            )),
+            Box::new(Sig::Ground(pk2.to_vec())),
+        );
+        assert_eq!(funding_sig_compound(&[pk0, pk1, pk2]), expected);
+    }
+
+    /// THE DECOUPLING (§D2.9): `set_deploy_signature_funded` leaves the
+    /// `deploy_id` byte-identical to the legacy wire-sig-derived install while
+    /// installing the GROUND-pubkey funding `Sig`. So a deploy's on-chain
+    /// identity never moves, but the funded pool becomes `Σ⟦Ground(pk)⟧`.
+    #[test]
+    fn set_deploy_signature_funded_preserves_deploy_id_and_installs_ground() {
+        let wire = b"on-chain-deploy-signature";
+        let pk = b"signer-ground-public-key";
+
+        let legacy = RuntimeBudget::new(Cost::create(100, "legacy"));
+        legacy.set_deploy_signature(wire);
+
+        let funded = RuntimeBudget::new(Cost::create(100, "funded"));
+        funded.set_deploy_signature_funded(wire, funding_sig_single(pk));
+
+        assert_eq!(
+            funded.deploy_id(),
+            legacy.deploy_id(),
+            "deploy_id stays wire-sig-derived (byte-identical) under the funding decoupling"
+        );
+        assert_eq!(
+            funded.signature(),
+            Sig::Ground(pk.to_vec()),
+            "the installed funding signature is the signer's Ground(pk) wallet key"
+        );
+        assert_ne!(
+            funded.signature(),
+            legacy.signature(),
+            "funding moved off the wire-sig Quote pool onto the Ground(pk) wallet"
+        );
+    }
+
+    /// The compound decoupling: `set_deploy_signatures_funded` keeps the
+    /// compound wire-sig `deploy_id` while installing the `And`-fold of the
+    /// cosigners' `Ground(pk)` atoms.
+    #[test]
+    fn set_deploy_signatures_funded_preserves_deploy_id_and_installs_ground_fold() {
+        let w0: &[u8] = b"cosigner-wire-aaaa";
+        let w1: &[u8] = b"cosigner-wire-bbbb";
+        let pk0: &[u8] = b"ground-pk-aaaa";
+        let pk1: &[u8] = b"ground-pk-bbbb";
+
+        let legacy = RuntimeBudget::new(Cost::create(100, "legacy"));
+        legacy.set_deploy_signatures(&[w0, w1]);
+
+        let funded = RuntimeBudget::new(Cost::create(100, "funded"));
+        funded.set_deploy_signatures_funded(&[w0, w1], funding_sig_compound(&[pk0, pk1]));
+
+        assert_eq!(
+            funded.deploy_id(),
+            legacy.deploy_id(),
+            "compound deploy_id stays wire-sig-derived (byte-identical)"
+        );
+        assert_eq!(
+            funded.signature(),
+            Sig::And(
+                Box::new(Sig::Ground(pk0.to_vec())),
+                Box::new(Sig::Ground(pk1.to_vec())),
+            ),
+            "the installed funding signature is And(Ground(pkᵢ)) over the cosigners' keys"
+        );
     }
 }

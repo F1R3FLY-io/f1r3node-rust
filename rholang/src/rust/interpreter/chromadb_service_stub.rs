@@ -12,9 +12,7 @@ pub enum ChromaDBService {
 pub type SharedChromaDBService = Arc<ChromaDBService>;
 
 /// Create a NoOp OpenAI service
-pub fn create_noop_chromadb_service() -> SharedChromaDBService {
-    Arc::new(ChromaDBService::NoOp)
-}
+pub fn create_noop_chromadb_service() -> SharedChromaDBService { Arc::new(ChromaDBService::NoOp) }
 
 /// This is a stub version of the function that creates a real ChromaDB service
 /// Instead, it just creates a noop

@@ -31,6 +31,7 @@ use models::rust::sorted_par_hash_set::SortedParHashSet;
 use models::rust::sorted_par_map::SortedParMap;
 use models::rust::utils::new_freevar_par;
 use models::rust::validator::Validator;
+use rholang::rust::interpreter::accounting;
 use rholang::rust::interpreter::accounting::costs::Cost;
 use rholang::rust::interpreter::accounting::has_cost::HasCost;
 use rholang::rust::interpreter::compiler::compiler::Compiler;
@@ -71,9 +72,7 @@ pub struct RuntimeOps {
 }
 
 impl RuntimeOps {
-    pub fn new(runtime: RhoRuntimeImpl) -> Self {
-        Self { runtime }
-    }
+    pub fn new(runtime: RhoRuntimeImpl) -> Self { Self { runtime } }
 }
 
 #[allow(type_alias_bounds)]
@@ -362,7 +361,7 @@ impl RuntimeOps {
 
     /**
      * Evaluates deploys on root hash with checkpoint to get final state hash
-     */
+     * */
     /// Multi-signature-aware variant of [`Self::play_deploys_for_state`].
     /// Accepts `Vec<Cosigned<DeployData>>` so multi-signature deploys
     /// route through the per-cosigner pre-charge + FIFO refund fan-out
@@ -1311,17 +1310,29 @@ impl RuntimeOps {
         self.runtime.set_deploy_data(deploy_data).await;
         self.runtime.cost.set_unmetered(false);
 
+        // Decouple the on-chain deploy_id (wire-sig-derived, UNCHANGED) from the
+        // FUNDING signature that keys Σ⟦s⟧: fund from the signers' GROUND public
+        // keys so the pool is the genesis-seeded wallet `Σ⟦Ground(pk)⟧`
+        // (`Σ⟦signer⟧ == Σ⟦wallet⟧`, cost-accounting WD-D2 §D2.9). `funding_sig`
+        // is the ONE shared derivation the D2 gate + replay recompute also use
+        // (no drift), and it excludes empty-sig threshold placeholders so only
+        // signers who actually signed the deploy fund it.
+        let funding = accounting::funding_sig(cosigned);
         if cosigned.is_compound() {
-            // Multi-sig: fold all signatures into Sig::And, derive
-            // compound-domain deploy_id from canonical-order signer set.
+            // Multi-sig: deploy_id from the canonical-order WIRE signatures
+            // (compound domain); funding from the `And`-fold of Ground(pkᵢ),
+            // balanced across the cosigners' wallets at settlement (P8).
             let sigs: Vec<&[u8]> = cosigned.signers().iter().map(|s| s.sig.as_ref()).collect();
-            self.runtime.cost.set_deploy_signatures(&sigs);
-        } else {
-            // Legacy single-sig path — byte-identical deploy_id to existing
-            // on-chain deploys (legacy DEPLOY_SIGNATURE_DOMAIN).
             self.runtime
                 .cost
-                .set_deploy_signature(&cosigned.primary().sig);
+                .set_deploy_signatures_funded(&sigs, funding);
+        } else {
+            // Legacy single-sig path — byte-identical deploy_id to existing
+            // on-chain deploys (legacy DEPLOY_SIGNATURE_DOMAIN); funding from
+            // Ground(primary_pk).
+            self.runtime
+                .cost
+                .set_deploy_signature_funded(&cosigned.primary().sig, funding);
         }
 
         let primary = cosigned.primary();

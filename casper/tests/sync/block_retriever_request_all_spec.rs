@@ -24,9 +24,7 @@ mod tests {
     #[derive(Debug, Clone, PartialEq)]
     struct TestReason;
     impl Into<AdmitHashReason> for TestReason {
-        fn into(self) -> AdmitHashReason {
-            AdmitHashReason::HasBlockMessageReceived
-        }
+        fn into(self) -> AdmitHashReason { AdmitHashReason::HasBlockMessageReceived }
     }
 
     struct TestFixture {
@@ -63,14 +61,10 @@ mod tests {
             }
         }
 
-        fn reset(&self) {
-            self.transport_layer.reset();
-        }
+        fn reset(&self) { self.transport_layer.reset(); }
 
         // Helper function to create a peer node for testing
-        fn peer_node(name: &str, port: u32) -> PeerNode {
-            setup::peer_node(name, port)
-        }
+        fn peer_node(name: &str, port: u32) -> PeerNode { setup::peer_node(name, port) }
 
         // Helper function to create a timed out timestamp
         fn create_timed_out_timestamp(&self) -> u64 {

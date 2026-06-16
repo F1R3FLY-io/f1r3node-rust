@@ -25,14 +25,10 @@ pub struct CompressedBlockEventInfoStore {
 }
 
 impl CompressedBlockEventInfoStore {
-    pub fn new(store: Arc<dyn KeyValueStore>) -> Self {
-        Self { store }
-    }
+    pub fn new(store: Arc<dyn KeyValueStore>) -> Self { Self { store } }
 
     /// Encode key - ByteString passes through as-is
-    fn encode_key(&self, key: &ByteString) -> Result<BitVector, KvStoreError> {
-        Ok(key.clone())
-    }
+    fn encode_key(&self, key: &ByteString) -> Result<BitVector, KvStoreError> { Ok(key.clone()) }
 
     /// Decode key - ByteString passes through as-is
     fn decode_key(&self, encoded_key: &BitVector) -> Result<ByteString, KvStoreError> {
@@ -108,9 +104,7 @@ impl KeyValueTypedStore<ByteString, BlockEventInfo> for CompressedBlockEventInfo
     }
 
     fn collect<F, T>(&self, mut f: F) -> Result<Vec<T>, KvStoreError>
-    where
-        F: FnMut((&ByteString, &BlockEventInfo)) -> Option<T>,
-    {
+    where F: FnMut((&ByteString, &BlockEventInfo)) -> Option<T> {
         let store_map = self.store.to_map()?;
         let mut result = Vec::new();
 
@@ -141,9 +135,7 @@ impl KeyValueTypedStore<ByteString, BlockEventInfo> for CompressedBlockEventInfo
         Ok(result)
     }
 
-    fn non_empty(&self) -> Result<bool, KvStoreError> {
-        self.store.non_empty()
-    }
+    fn non_empty(&self) -> Result<bool, KvStoreError> { self.store.non_empty() }
 }
 
 /// Compress bytes using LZ4 with varint length prefix (compatible with Java LZ4CompressorWithLength)

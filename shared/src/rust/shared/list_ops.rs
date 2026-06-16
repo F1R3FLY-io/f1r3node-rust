@@ -42,9 +42,7 @@ impl ListOps {
     /// )
     /// ```
     pub fn sort_by_with_decreasing_order<A>(list: Vec<A>, map: &HashMap<A, i64>) -> Vec<A>
-    where
-        A: Clone + Hash + Eq + Ord,
-    {
+    where A: Clone + Hash + Eq + Ord {
         let mut scored_items: Vec<(i64, A)> = list
             .into_iter()
             .map(|e| {

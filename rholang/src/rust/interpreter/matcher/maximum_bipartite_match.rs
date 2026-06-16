@@ -138,17 +138,11 @@ where
         }
     }
 
-    fn reset_seen(&mut self) {
-        self.seen_targets.clear();
-    }
+    fn reset_seen(&mut self) { self.seen_targets.clear(); }
 
-    fn not_seen(&self, candidate: Candidate<T>) -> bool {
-        !self.seen_targets.contains(&candidate)
-    }
+    fn not_seen(&self, candidate: Candidate<T>) -> bool { !self.seen_targets.contains(&candidate) }
 
-    fn add_seen(&mut self, candidate: Candidate<T>) {
-        self.seen_targets.insert(candidate);
-    }
+    fn add_seen(&mut self, candidate: Candidate<T>) { self.seen_targets.insert(candidate); }
 
     fn get_match(&self, candidate: Candidate<T>) -> Option<Pattern<P, T>> {
         self.matches.get(&candidate).map(|x| x.0.clone())

@@ -36,9 +36,7 @@ use crate::util::rholang::resources::mk_test_rnode_store_manager_from_genesis;
 
 const SHARD_ID: &str = "root-shard";
 
-fn mk_casper_snapshot(dag: KeyValueDagRepresentation) -> CasperSnapshot {
-    CasperSnapshot::new(dag)
-}
+fn mk_casper_snapshot(dag: KeyValueDagRepresentation) -> CasperSnapshot { CasperSnapshot::new(dag) }
 
 fn create_chain(
     block_store: &mut KeyValueBlockStore,
@@ -552,13 +550,11 @@ async fn block_number_validation_should_correctly_validate_a_multi_parent_block_
             vec![],
         );
 
-        let b3 = create_block_with_number(
-            &mut block_store,
-            &mut block_dag_storage,
-            8,
-            &genesis,
-            vec![b1.block_hash.clone(), b2.block_hash.clone()],
-        );
+        let b3 =
+            create_block_with_number(&mut block_store, &mut block_dag_storage, 8, &genesis, vec![
+                b1.block_hash.clone(),
+                b2.block_hash.clone(),
+            ]);
 
         let dag = block_dag_storage
             .get_representation()
@@ -1206,15 +1202,10 @@ async fn sender_validation_should_return_true_for_genesis_and_blocks_from_bonded
         let validator = generate_validator(Some("Validator"));
         let impostor = generate_validator(Some("Impostor"));
 
-        let _genesis = create_chain(
-            &mut block_store,
-            &mut block_dag_storage,
-            3,
-            vec![Bond {
-                validator: validator.clone(),
-                stake: 1,
-            }],
-        );
+        let _genesis = create_chain(&mut block_store, &mut block_dag_storage, 3, vec![Bond {
+            validator: validator.clone(),
+            stake: 1,
+        }]);
 
         let genesis = block_dag_storage.lookup_by_id_unsafe(0);
         let valid_block = with_sender(&block_dag_storage.lookup_by_id_unsafe(1), &validator);

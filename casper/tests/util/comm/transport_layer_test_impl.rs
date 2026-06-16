@@ -131,14 +131,10 @@ pub struct TransportLayerTestImpl {
 
 impl TransportLayerTestImpl {
     /// Create a new test transport layer with the given test network
-    pub fn new(test_network: test_network::TestNetwork) -> Self {
-        Self { test_network }
-    }
+    pub fn new(test_network: test_network::TestNetwork) -> Self { Self { test_network } }
 
     /// Get access to the underlying test network for test setup
-    pub fn test_network(&self) -> &test_network::TestNetwork {
-        &self.test_network
-    }
+    pub fn test_network(&self) -> &test_network::TestNetwork { &self.test_network }
 }
 
 #[async_trait]

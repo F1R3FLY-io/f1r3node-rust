@@ -51,9 +51,7 @@ mod tests {
             *self.will_connect_successfully.lock().unwrap() = peers;
         }
 
-        fn get_called_peers(&self) -> Vec<PeerNode> {
-            self.connect_called.lock().unwrap().clone()
-        }
+        fn get_called_peers(&self) -> Vec<PeerNode> { self.connect_called.lock().unwrap().clone() }
 
         fn create_connect_fn(
             &self,

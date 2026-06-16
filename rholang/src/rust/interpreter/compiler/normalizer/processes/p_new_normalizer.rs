@@ -47,14 +47,10 @@ pub fn normalize_p_new<'ast>(
     let new_bindings: Vec<IdContextPos<VarSort>> = sorted_bindings
         .iter()
         .map(|row| {
-            (
-                row.1.clone(),
-                row.2.clone(),
-                SourcePos {
-                    line: row.3,
-                    col: row.4,
-                },
-            )
+            (row.1.clone(), row.2.clone(), SourcePos {
+                line: row.3,
+                col: row.4,
+            })
         })
         .collect();
 
@@ -182,39 +178,36 @@ mod tests {
         );
         assert!(result.is_ok());
 
-        let expected_result = prepend_new(
-            Par::default(),
-            New {
-                bind_count: 3,
-                p: Some(
-                    Par::default()
-                        .prepend_send(new_send(
-                            new_boundvar_par(2, create_bit_vector(&vec![2]), false),
-                            vec![new_gint_par(7, Vec::new(), false)],
-                            false,
-                            create_bit_vector(&vec![2]),
-                            false,
-                        ))
-                        .prepend_send(new_send(
-                            new_boundvar_par(1, create_bit_vector(&vec![1]), false),
-                            vec![new_gint_par(8, Vec::new(), false)],
-                            false,
-                            create_bit_vector(&vec![1]),
-                            false,
-                        ))
-                        .prepend_send(new_send(
-                            new_boundvar_par(0, create_bit_vector(&vec![0]), false),
-                            vec![new_gint_par(9, Vec::new(), false)],
-                            false,
-                            create_bit_vector(&vec![0]),
-                            false,
-                        )),
-                ),
-                uri: Vec::new(),
-                injections: BTreeMap::new(),
-                locally_free: Vec::new(),
-            },
-        );
+        let expected_result = prepend_new(Par::default(), New {
+            bind_count: 3,
+            p: Some(
+                Par::default()
+                    .prepend_send(new_send(
+                        new_boundvar_par(2, create_bit_vector(&vec![2]), false),
+                        vec![new_gint_par(7, Vec::new(), false)],
+                        false,
+                        create_bit_vector(&vec![2]),
+                        false,
+                    ))
+                    .prepend_send(new_send(
+                        new_boundvar_par(1, create_bit_vector(&vec![1]), false),
+                        vec![new_gint_par(8, Vec::new(), false)],
+                        false,
+                        create_bit_vector(&vec![1]),
+                        false,
+                    ))
+                    .prepend_send(new_send(
+                        new_boundvar_par(0, create_bit_vector(&vec![0]), false),
+                        vec![new_gint_par(9, Vec::new(), false)],
+                        false,
+                        create_bit_vector(&vec![0]),
+                        false,
+                    )),
+            ),
+            uri: Vec::new(),
+            injections: BTreeMap::new(),
+            locally_free: Vec::new(),
+        });
 
         assert_eq!(result.clone().unwrap().par, expected_result);
         assert_eq!(
@@ -325,53 +318,50 @@ mod tests {
         );
         assert!(result.is_ok());
 
-        let expected_result = prepend_new(
-            Par::default(),
-            New {
-                bind_count: 5,
-                p: Some(
-                    Par::default()
-                        .prepend_send(new_send(
-                            new_boundvar_par(4, create_bit_vector(&vec![4]), false),
-                            vec![new_gint_par(7, Vec::new(), false)],
-                            false,
-                            create_bit_vector(&vec![4]),
-                            false,
-                        ))
-                        .prepend_send(new_send(
-                            new_boundvar_par(3, create_bit_vector(&vec![3]), false),
-                            vec![new_gint_par(8, Vec::new(), false)],
-                            false,
-                            create_bit_vector(&vec![3]),
-                            false,
-                        ))
-                        .prepend_send(new_send(
-                            new_boundvar_par(1, create_bit_vector(&vec![1]), false),
-                            vec![new_gint_par(9, Vec::new(), false)],
-                            false,
-                            create_bit_vector(&vec![1]),
-                            false,
-                        ))
-                        .prepend_send(new_send(
-                            new_boundvar_par(0, create_bit_vector(&vec![0]), false),
-                            vec![new_gint_par(10, Vec::new(), false)],
-                            false,
-                            create_bit_vector(&vec![0]),
-                            false,
-                        ))
-                        .prepend_send(new_send(
-                            new_boundvar_par(2, create_bit_vector(&vec![2]), false),
-                            vec![new_gint_par(11, Vec::new(), false)],
-                            false,
-                            create_bit_vector(&vec![2]),
-                            false,
-                        )),
-                ),
-                uri: vec!["rho:registry".to_string(), "rho:stdout".to_string()],
-                injections: BTreeMap::new(),
-                locally_free: Vec::new(),
-            },
-        );
+        let expected_result = prepend_new(Par::default(), New {
+            bind_count: 5,
+            p: Some(
+                Par::default()
+                    .prepend_send(new_send(
+                        new_boundvar_par(4, create_bit_vector(&vec![4]), false),
+                        vec![new_gint_par(7, Vec::new(), false)],
+                        false,
+                        create_bit_vector(&vec![4]),
+                        false,
+                    ))
+                    .prepend_send(new_send(
+                        new_boundvar_par(3, create_bit_vector(&vec![3]), false),
+                        vec![new_gint_par(8, Vec::new(), false)],
+                        false,
+                        create_bit_vector(&vec![3]),
+                        false,
+                    ))
+                    .prepend_send(new_send(
+                        new_boundvar_par(1, create_bit_vector(&vec![1]), false),
+                        vec![new_gint_par(9, Vec::new(), false)],
+                        false,
+                        create_bit_vector(&vec![1]),
+                        false,
+                    ))
+                    .prepend_send(new_send(
+                        new_boundvar_par(0, create_bit_vector(&vec![0]), false),
+                        vec![new_gint_par(10, Vec::new(), false)],
+                        false,
+                        create_bit_vector(&vec![0]),
+                        false,
+                    ))
+                    .prepend_send(new_send(
+                        new_boundvar_par(2, create_bit_vector(&vec![2]), false),
+                        vec![new_gint_par(11, Vec::new(), false)],
+                        false,
+                        create_bit_vector(&vec![2]),
+                        false,
+                    )),
+            ),
+            uri: vec!["rho:registry".to_string(), "rho:stdout".to_string()],
+            injections: BTreeMap::new(),
+            locally_free: Vec::new(),
+        });
 
         assert_eq!(result.clone().unwrap().par, expected_result);
         assert_eq!(

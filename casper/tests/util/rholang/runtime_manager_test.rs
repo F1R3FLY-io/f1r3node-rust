@@ -1679,12 +1679,15 @@ async fn gate_decision_replay_determinism() {
                 crypto::rust::signatures::signed::Cosigned::from_single_signer(d_absent.clone())
                     .unwrap();
 
-            // The funded signer's supply pool channel.
-            let funded_env = accounting::envelope_sig(&funded_cosigned);
+            // The funded signer's supply pool channel — keyed by the signer's
+            // GROUND PUBLIC KEY `Σ⟦Ground(pk)⟧` (the genesis-seeded wallet), the
+            // SAME `funding_sig` the gate now keys by (§D2.9 — `Σ⟦signer⟧ ==
+            // Σ⟦wallet⟧`), NOT the per-deploy wire-signature pool.
+            let funded_env = accounting::funding_sig(&funded_cosigned);
             let funded_chan = supply::supply_channel(&funded_env);
-            let absent_env = accounting::envelope_sig(&absent_cosigned);
+            let absent_env = accounting::funding_sig(&absent_cosigned);
             let absent_chan = supply::supply_channel(&absent_env);
-            // Distinct signers ⇒ distinct pools.
+            // Distinct signers ⇒ distinct pubkeys ⇒ distinct pools.
             assert_ne!(funded_chan, absent_chan);
 
             // ---- SEED: provision the funded signer's pool with Σ = 5 ----

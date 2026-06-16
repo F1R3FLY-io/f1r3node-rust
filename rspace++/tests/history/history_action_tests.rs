@@ -463,13 +463,9 @@ fn update_state(
     state
 }
 
-fn zeros() -> KeyPath {
-    vec![0; 32]
-}
+fn zeros() -> KeyPath { vec![0; 32] }
 
-fn thirty_one_zeros() -> KeyPath {
-    vec![0; 31]
-}
+fn thirty_one_zeros() -> KeyPath { vec![0; 31] }
 
 fn zeros_and(i: u8) -> KeyPath {
     let mut key_path = thirty_one_zeros();
@@ -477,9 +473,7 @@ fn zeros_and(i: u8) -> KeyPath {
     key_path
 }
 
-fn hex_key(s: &str) -> Vec<Byte> {
-    hex::decode(s).unwrap()
-}
+fn hex_key(s: &str) -> Vec<Byte> { hex::decode(s).unwrap() }
 
 fn history_insert(k: KeyPath) -> (HistoryAction, InsertAction) {
     let insert_action = InsertAction {

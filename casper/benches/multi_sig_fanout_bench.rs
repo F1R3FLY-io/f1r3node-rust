@@ -21,7 +21,8 @@ use crypto::rust::signatures::signed::{Cosigned, Cosigner, Signed, ToMessage};
 use models::rust::casper::protocol::casper_message::DeployData;
 use prost::bytes::Bytes;
 use prost::Message;
-use rholang::rust::interpreter::accounting::{costs::Cost, RuntimeBudget, Sig, SignatureChannel};
+use rholang::rust::interpreter::accounting::costs::Cost;
+use rholang::rust::interpreter::accounting::{RuntimeBudget, Sig, SignatureChannel};
 
 // D3 (DR-9): `phlo_limit` retained as an (ignored) param for caller stability.
 fn baseline_deploy_data(_phlo_limit: i64) -> DeployData {

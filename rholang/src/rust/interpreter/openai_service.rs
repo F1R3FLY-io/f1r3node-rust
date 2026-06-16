@@ -311,9 +311,7 @@ impl OpenAIService {
     }
 
     /// Check if this service is enabled
-    pub fn is_enabled(&self) -> bool {
-        matches!(self, Self::Real(_))
-    }
+    pub fn is_enabled(&self) -> bool { matches!(self, Self::Real(_)) }
 
     /// Create audio speech from text (text-to-speech)
     /// Returns the raw audio bytes for use as non-deterministic produce output
@@ -396,16 +394,15 @@ impl OpenAIService {
     pub async fn gpt4_chat_completion(&self, prompt: &str) -> Result<String, InterpreterError> {
         match self {
             Self::Real(client) => {
-                let request = ChatCompletionRequest::new(
-                    GPT4_O_MINI.to_string(),
-                    vec![chat_completion::ChatCompletionMessage {
+                let request = ChatCompletionRequest::new(GPT4_O_MINI.to_string(), vec![
+                    chat_completion::ChatCompletionMessage {
                         role: chat_completion::MessageRole::user,
                         content: chat_completion::Content::Text(prompt.to_string()),
                         name: None,
                         tool_calls: None,
                         tool_call_id: None,
-                    }],
-                );
+                    },
+                ]);
 
                 let mut client = client.lock().await;
                 let response = client.chat_completion(request).await?;

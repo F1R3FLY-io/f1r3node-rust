@@ -75,9 +75,7 @@ impl Budget {
         self.success_log.lock().unwrap().len() + usize::from(self.oop.lock().unwrap().is_some())
     }
 
-    fn finalized_event_count(&self) -> usize {
-        self.event_count()
-    }
+    fn finalized_event_count(&self) -> usize { self.event_count() }
 }
 
 #[test]

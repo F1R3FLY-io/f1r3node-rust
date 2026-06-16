@@ -109,9 +109,7 @@ where
     A: Clone + for<'a> Deserialize<'a> + 'static + Sync + Send,
     K: Clone + for<'a> Deserialize<'a> + 'static + Sync + Send,
 {
-    fn root(&self) -> Blake2b256Hash {
-        self.target_history.root()
-    }
+    fn root(&self) -> Blake2b256Hash { self.target_history.root() }
 
     fn get_data_proj(&self, key: &Blake2b256Hash) -> Result<Vec<Datum<A>>, HistoryError> {
         match self.fetch_data(PREFIX_DATUM, key)? {

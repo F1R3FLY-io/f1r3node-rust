@@ -95,9 +95,7 @@ mod tests {
 
     use super::*;
 
-    fn pk(byte: u8) -> PublicKey {
-        PublicKey::from_bytes(&vec![byte; 32])
-    }
+    fn pk(byte: u8) -> PublicKey { PublicKey::from_bytes(&vec![byte; 32]) }
 
     fn mk_slash(invalid_block_marker: u8, issuer_marker: u8) -> RejectedSlash {
         RejectedSlash {

@@ -24,9 +24,7 @@ use rspace_plus_plus::rspace::history::Either;
 
 const DEPTH: i32 = 0;
 
-fn env() -> Env<Par> {
-    Env::new()
-}
+fn env() -> Env<Par> { Env::new() }
 
 fn substitute_instance() -> Substitute {
     let cost = Cost::create(0, "substitute_test".to_string());
@@ -224,22 +222,19 @@ fn send_should_substitute_bound_vars_for_values() {
 
     let substitution = substitute_instance().substitute(send, DEPTH, &env);
     assert!(substitution.is_ok());
-    assert_eq!(
-        substitution.unwrap(),
-        Send {
-            chan: Some(Par::default().with_sends(vec![Send {
-                chan: Some(source0),
-                data: vec![Par::default()],
-                persistent: false,
-                locally_free: Vec::new(),
-                connective_used: false,
-            }])),
+    assert_eq!(substitution.unwrap(), Send {
+        chan: Some(Par::default().with_sends(vec![Send {
+            chan: Some(source0),
             data: vec![Par::default()],
             persistent: false,
             locally_free: Vec::new(),
             connective_used: false,
-        }
-    )
+        }])),
+        data: vec![Par::default()],
+        persistent: false,
+        locally_free: Vec::new(),
+        connective_used: false,
+    })
 }
 
 #[test]
@@ -324,34 +319,31 @@ fn send_should_substitute_all_bound_vars_for_values_in_environment() {
         locally_free: create_bit_vector(&vec![0]),
         connective_used: false,
     }]));
-    assert_eq!(
-        substitution.unwrap(),
-        Send {
+    assert_eq!(substitution.unwrap(), Send {
+        chan: Some(Par::default().with_news(vec![New {
+            bind_count: 1,
+            p: p.clone(),
+            uri: vec![],
+            injections: BTreeMap::new(),
+            locally_free: vec![]
+        }])),
+        data: vec![Par::default().with_sends(vec![Send {
             chan: Some(Par::default().with_news(vec![New {
                 bind_count: 1,
-                p: p.clone(),
+                p,
                 uri: vec![],
                 injections: BTreeMap::new(),
                 locally_free: vec![]
             }])),
-            data: vec![Par::default().with_sends(vec![Send {
-                chan: Some(Par::default().with_news(vec![New {
-                    bind_count: 1,
-                    p,
-                    uri: vec![],
-                    injections: BTreeMap::new(),
-                    locally_free: vec![]
-                }])),
-                data: vec![Par::default()],
-                persistent: false,
-                locally_free: Vec::new(),
-                connective_used: false,
-            }])],
+            data: vec![Par::default()],
             persistent: false,
             locally_free: Vec::new(),
             connective_used: false,
-        }
-    )
+        }])],
+        persistent: false,
+        locally_free: Vec::new(),
+        connective_used: false,
+    })
 }
 
 #[test]
@@ -377,22 +369,19 @@ fn new_should_only_substitute_body_of_expression() {
     let substitution = substitute_instance().substitute(target, DEPTH, &env);
     assert!(substitution.is_ok());
 
-    assert_eq!(
-        substitution.unwrap(),
-        New {
-            bind_count: 1,
-            p: Some(Par::default().with_sends(vec![Send {
-                chan: Some(source),
-                data: vec![Par::default()],
-                persistent: false,
-                locally_free: Vec::new(),
-                connective_used: false
-            }])),
-            uri: vec![],
-            injections: BTreeMap::new(),
+    assert_eq!(substitution.unwrap(), New {
+        bind_count: 1,
+        p: Some(Par::default().with_sends(vec![Send {
+            chan: Some(source),
+            data: vec![Par::default()],
+            persistent: false,
             locally_free: Vec::new(),
-        }
-    )
+            connective_used: false
+        }])),
+        uri: vec![],
+        injections: BTreeMap::new(),
+        locally_free: Vec::new(),
+    })
 }
 
 #[test]
@@ -426,28 +415,25 @@ fn new_should_only_substitute_all_variables_in_body_of_expression() {
     let substitution = substitute_instance().substitute(target, DEPTH, &env);
     assert!(substitution.is_ok());
 
-    assert_eq!(
-        substitution.unwrap(),
-        New {
-            bind_count: 2,
-            p: Some(Par::default().with_sends(vec![Send {
-                chan: Some(source0),
-                data: vec![Par::default().with_sends(vec![Send {
-                    chan: Some(source1),
-                    data: vec![Par::default()],
-                    persistent: false,
-                    locally_free: vec![],
-                    connective_used: false
-                }])],
+    assert_eq!(substitution.unwrap(), New {
+        bind_count: 2,
+        p: Some(Par::default().with_sends(vec![Send {
+            chan: Some(source0),
+            data: vec![Par::default().with_sends(vec![Send {
+                chan: Some(source1),
+                data: vec![Par::default()],
                 persistent: false,
-                locally_free: Vec::new(),
+                locally_free: vec![],
                 connective_used: false
-            }])),
-            uri: vec![],
-            injections: BTreeMap::new(),
+            }])],
+            persistent: false,
             locally_free: Vec::new(),
-        }
-    )
+            connective_used: false
+        }])),
+        uri: vec![],
+        injections: BTreeMap::new(),
+        locally_free: Vec::new(),
+    })
 }
 
 #[test]
@@ -488,20 +474,17 @@ fn bundle_should_substitute_within_the_body_of_the_bundle() {
     let substitution = substitute_instance().substitute(target, DEPTH, &env);
     assert!(substitution.is_ok());
 
-    assert_eq!(
-        substitution.unwrap(),
-        Bundle {
-            body: Some(Par::default().with_sends(vec![Send {
-                chan: Some(source),
-                data: vec![Par::default()],
-                persistent: false,
-                locally_free: vec![],
-                connective_used: false
-            }])),
-            write_flag: false,
-            read_flag: false
-        }
-    )
+    assert_eq!(substitution.unwrap(), Bundle {
+        body: Some(Par::default().with_sends(vec![Send {
+            chan: Some(source),
+            data: vec![Par::default()],
+            persistent: false,
+            locally_free: vec![],
+            connective_used: false
+        }])),
+        write_flag: false,
+        read_flag: false
+    })
 }
 
 #[test]
@@ -533,26 +516,23 @@ fn bundle_should_only_substitute_all_vars_inside_body() {
     let substitution = substitute_instance().substitute(target, DEPTH, &env);
     assert!(substitution.is_ok());
 
-    assert_eq!(
-        substitution.unwrap(),
-        Bundle {
-            body: Some(Par::default().with_sends(vec![Send {
-                chan: Some(source0),
-                data: vec![Par::default().with_sends(vec![Send {
-                    chan: Some(source1),
-                    data: vec![Par::default()],
-                    persistent: false,
-                    locally_free: Vec::new(),
-                    connective_used: false,
-                }])],
+    assert_eq!(substitution.unwrap(), Bundle {
+        body: Some(Par::default().with_sends(vec![Send {
+            chan: Some(source0),
+            data: vec![Par::default().with_sends(vec![Send {
+                chan: Some(source1),
+                data: vec![Par::default()],
                 persistent: false,
-                locally_free: vec![],
-                connective_used: false
-            }])),
-            write_flag: false,
-            read_flag: false
-        }
-    )
+                locally_free: Vec::new(),
+                connective_used: false,
+            }])],
+            persistent: false,
+            locally_free: vec![],
+            connective_used: false
+        }])),
+        write_flag: false,
+        read_flag: false
+    })
 }
 
 #[test]
@@ -574,14 +554,11 @@ fn bundle_should_preserve_bundles_polarities_during_substitution() {
     let substitution = substitute_instance().substitute(bundle, DEPTH, &env);
     assert!(substitution.is_ok());
 
-    assert_eq!(
-        substitution.unwrap(),
-        Bundle {
-            body: Some(new_gstring_par("stdout".to_string(), Vec::new(), false)),
-            write_flag: false,
-            read_flag: false
-        }
-    )
+    assert_eq!(substitution.unwrap(), Bundle {
+        body: Some(new_gstring_par("stdout".to_string(), Vec::new(), false)),
+        write_flag: false,
+        read_flag: false
+    })
 }
 
 #[test]

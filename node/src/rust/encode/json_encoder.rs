@@ -27,14 +27,10 @@ impl JsonEncoder {
     }
 
     /// Serialize Par to JSON (matches Scala encodePar)
-    pub fn encode_par(par: &Par) -> Result<String, serde_json::Error> {
-        Self::to_json(par)
-    }
+    pub fn encode_par(par: &Par) -> Result<String, serde_json::Error> { Self::to_json(par) }
 
     /// Deserialize Par from JSON (matches Scala decodePar)
-    pub fn decode_par(json: &str) -> Result<Par, serde_json::Error> {
-        Self::from_json(json)
-    }
+    pub fn decode_par(json: &str) -> Result<Par, serde_json::Error> { Self::from_json(json) }
 
     /// Serialize ParSet to JSON as array (matches Scala encodeParSet)
     pub fn encode_par_set(par_set: &ParSet) -> Result<String, serde_json::Error> {
@@ -42,9 +38,7 @@ impl JsonEncoder {
     }
 
     /// Deserialize ParSet from JSON array (matches Scala decodeParSet)
-    pub fn decode_par_set(json: &str) -> Result<ParSet, serde_json::Error> {
-        Self::from_json(json)
-    }
+    pub fn decode_par_set(json: &str) -> Result<ParSet, serde_json::Error> { Self::from_json(json) }
 
     /// Serialize ParMap to JSON as array of pairs (matches Scala encodeParMap)
     pub fn encode_par_map(par_map: &ParMap) -> Result<String, serde_json::Error> {
@@ -52,9 +46,7 @@ impl JsonEncoder {
     }
 
     /// Deserialize ParMap from JSON array of pairs (matches Scala decodeParMap)
-    pub fn decode_par_map(json: &str) -> Result<ParMap, serde_json::Error> {
-        Self::from_json(json)
-    }
+    pub fn decode_par_map(json: &str) -> Result<ParMap, serde_json::Error> { Self::from_json(json) }
 
     /// Serialize Blake2b512Random to JSON as null (matches Scala encodeBlake2b512Random)
     pub fn encode_blake2b512_random(

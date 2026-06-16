@@ -79,9 +79,7 @@ impl<T: KademliaRPC> PeerTable<T> {
     }
 
     /// Get the concurrency factor (alpha) for network operations
-    pub fn alpha(&self) -> u32 {
-        self.alpha
-    }
+    pub fn alpha(&self) -> u32 { self.alpha }
 
     /** Computes Kademlia XOR distance.
      *

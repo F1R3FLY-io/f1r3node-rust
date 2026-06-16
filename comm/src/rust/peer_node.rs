@@ -39,9 +39,7 @@ impl NodeIdentifier {
         }
     }
 
-    pub fn to_string(&self) -> String {
-        hex::encode(self.key.clone())
-    }
+    pub fn to_string(&self) -> String { hex::encode(self.key.clone()) }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -68,17 +66,13 @@ pub struct PeerNode {
 }
 
 impl PartialEq for PeerNode {
-    fn eq(&self, other: &Self) -> bool {
-        self.id == other.id
-    }
+    fn eq(&self, other: &Self) -> bool { self.id == other.id }
 }
 
 impl Eq for PeerNode {}
 
 impl Hash for PeerNode {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.id.hash(state);
-    }
+    fn hash<H: Hasher>(&self, state: &mut H) { self.id.hash(state); }
 }
 
 impl PeerNode {
@@ -142,13 +136,9 @@ impl PeerNode {
         ))
     }
 
-    pub fn key(&self) -> &Bytes {
-        &self.id.key
-    }
+    pub fn key(&self) -> &Bytes { &self.id.key }
 
-    pub fn s_key(&self) -> String {
-        self.id.to_string()
-    }
+    pub fn s_key(&self) -> String { self.id.to_string() }
 
     pub fn to_address(&self) -> String {
         format!(
@@ -162,7 +152,5 @@ impl PeerNode {
 }
 
 impl fmt::Display for PeerNode {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}", self.to_address())
-    }
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result { write!(f, "{}", self.to_address()) }
 }

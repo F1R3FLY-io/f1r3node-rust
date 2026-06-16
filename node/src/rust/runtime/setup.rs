@@ -43,13 +43,9 @@ type ProposerQueueEntry = (
     u8,
 );
 
-fn proposer_queue_max_pending() -> usize {
-    PROPOSER_QUEUE_MAX_PENDING
-}
+fn proposer_queue_max_pending() -> usize { PROPOSER_QUEUE_MAX_PENDING }
 
-fn block_processor_queue_max_pending() -> usize {
-    BLOCK_PROCESSOR_QUEUE_MAX_PENDING
-}
+fn block_processor_queue_max_pending() -> usize { BLOCK_PROCESSOR_QUEUE_MAX_PENDING }
 
 pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'static>(
     rp_connections: ConnectionsCell,

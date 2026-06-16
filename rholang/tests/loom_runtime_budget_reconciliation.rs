@@ -144,14 +144,11 @@ fn reconcile_commits_both_when_budget_admits_both() {
         b.join().unwrap();
 
         let rec = budget.reconcile();
-        assert_eq!(
-            rec,
-            ToyReconciliation {
-                committed: vec![event_a.clone(), event_b.clone()],
-                oop: None,
-                consumed_units: 7,
-            }
-        );
+        assert_eq!(rec, ToyReconciliation {
+            committed: vec![event_a.clone(), event_b.clone()],
+            oop: None,
+            consumed_units: 7,
+        });
     });
 }
 
@@ -189,14 +186,11 @@ fn reconcile_canonical_oop_is_higher_rank_event_under_any_schedule() {
         // to 6 > 5 → OOP. This is true under every loom-explored
         // schedule, even when the CAS race had event_b succeed first
         // and event_a fail at runtime.
-        assert_eq!(
-            rec,
-            ToyReconciliation {
-                committed: vec![event_a.clone()],
-                oop: Some(event_b.clone()),
-                consumed_units: 5,
-            }
-        );
+        assert_eq!(rec, ToyReconciliation {
+            committed: vec![event_a.clone()],
+            oop: Some(event_b.clone()),
+            consumed_units: 5,
+        });
     });
 }
 
@@ -240,14 +234,11 @@ fn reconcile_commits_lex_smallest_prefix_under_any_schedule() {
         let rec = budget.reconcile();
         // Canonical walk over sorted ranks: 1+2=2, 2+3=5, 3+4=9>6.
         // event_low commits (2), event_mid commits (5), event_high OOP.
-        assert_eq!(
-            rec,
-            ToyReconciliation {
-                committed: vec![event_low.clone(), event_mid.clone()],
-                oop: Some(event_high.clone()),
-                consumed_units: 6,
-            }
-        );
+        assert_eq!(rec, ToyReconciliation {
+            committed: vec![event_low.clone(), event_mid.clone()],
+            oop: Some(event_high.clone()),
+            consumed_units: 6,
+        });
     });
 }
 

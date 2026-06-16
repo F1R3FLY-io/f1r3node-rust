@@ -93,14 +93,10 @@ impl TestFixture {
     }
 
     /// Get the dispatcher reference.
-    fn dispatcher(&self) -> &FairRoundRobinDispatcher<String, i32> {
-        &self.dispatcher
-    }
+    fn dispatcher(&self) -> &FairRoundRobinDispatcher<String, i32> { &self.dispatcher }
 
     /// Get the list of handled messages.
-    fn get_handled(&self) -> Vec<(String, i32)> {
-        self.handled.lock().unwrap().clone()
-    }
+    fn get_handled(&self) -> Vec<(String, i32)> { self.handled.lock().unwrap().clone() }
 
     /// Get the internal state for validation.
     fn get_state(

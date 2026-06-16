@@ -10,9 +10,7 @@ use crate::rust::signatures::signatures_alg::SignaturesAlg;
 pub struct Secp256k1Eth;
 
 impl Secp256k1Eth {
-    pub fn name() -> String {
-        format!("{}:eth", Secp256k1::name())
-    }
+    pub fn name() -> String { format!("{}:eth", Secp256k1::name()) }
 }
 
 //TODO need review
@@ -32,29 +30,17 @@ impl SignaturesAlg for Secp256k1Eth {
         rs_signature.unwrap_or_default()
     }
 
-    fn to_public(&self, sec: &PrivateKey) -> PublicKey {
-        Secp256k1.to_public(sec)
-    }
+    fn to_public(&self, sec: &PrivateKey) -> PublicKey { Secp256k1.to_public(sec) }
 
-    fn new_key_pair(&self) -> (PrivateKey, PublicKey) {
-        Secp256k1.new_key_pair()
-    }
+    fn new_key_pair(&self) -> (PrivateKey, PublicKey) { Secp256k1.new_key_pair() }
 
-    fn name(&self) -> String {
-        format!("{}:eth", Secp256k1.name())
-    }
+    fn name(&self) -> String { format!("{}:eth", Secp256k1.name()) }
 
-    fn sig_length(&self) -> usize {
-        Secp256k1.sig_length()
-    }
+    fn sig_length(&self) -> usize { Secp256k1.sig_length() }
 
-    fn eq(&self, other: &dyn SignaturesAlg) -> bool {
-        self.name() == other.name()
-    }
+    fn eq(&self, other: &dyn SignaturesAlg) -> bool { self.name() == other.name() }
 
-    fn box_clone(&self) -> Box<dyn SignaturesAlg> {
-        Box::new(self.clone())
-    }
+    fn box_clone(&self) -> Box<dyn SignaturesAlg> { Box::new(self.clone()) }
 }
 
 fn encode_signature_rs_to_der(signature_rs: &[u8]) -> Result<Vec<u8>, &'static str> {

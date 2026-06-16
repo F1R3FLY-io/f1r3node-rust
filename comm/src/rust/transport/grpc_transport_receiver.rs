@@ -158,13 +158,10 @@ impl TransportLayerService {
             } else {
                 // Peer doesn't exist
                 let new_once_cell = Arc::new(OnceCell::new());
-                buffers_map.insert(
-                    peer.clone(),
-                    PeerBufferSlot {
-                        once_cell: new_once_cell.clone(),
-                        last_seen_ms: now_ms,
-                    },
-                );
+                buffers_map.insert(peer.clone(), PeerBufferSlot {
+                    once_cell: new_once_cell.clone(),
+                    last_seen_ms: now_ms,
+                });
                 (new_once_cell, true)
             }
         };

@@ -17,13 +17,9 @@ use rspace_plus_plus::rspace::history::Either;
 pub struct RhoNil;
 
 impl RhoNil {
-    pub fn unapply(p: &Par) -> bool {
-        p.is_nil()
-    }
+    pub fn unapply(p: &Par) -> bool { p.is_nil() }
 
-    pub fn create_par() -> Par {
-        Par::default()
-    }
+    pub fn create_par() -> Par { Par::default() }
 }
 
 pub struct RhoByteArray;
@@ -73,9 +69,7 @@ impl RhoString {
 pub struct RhoBoolean;
 
 impl RhoBoolean {
-    pub fn create_par(b: bool) -> Par {
-        Par::default().with_exprs(vec![Self::create_expr(b)])
-    }
+    pub fn create_par(b: bool) -> Par { Par::default().with_exprs(vec![Self::create_expr(b)]) }
 
     pub fn create_expr(b: bool) -> Expr {
         Expr {
@@ -105,9 +99,7 @@ impl RhoNumber {
         }
     }
 
-    pub fn create_par(i: i64) -> Par {
-        Par::default().with_exprs(vec![RhoNumber::create_expr(i)])
-    }
+    pub fn create_par(i: i64) -> Par { Par::default().with_exprs(vec![RhoNumber::create_expr(i)]) }
 
     pub fn unapply(p: &Par) -> Option<i64> {
         if let Some(expr) = single_expr(p) {
@@ -296,13 +288,9 @@ impl RhoName {
 pub struct RhoExpression;
 
 impl RhoExpression {
-    pub fn create_par(expr: Expr) -> Par {
-        Par::default().with_exprs(vec![expr])
-    }
+    pub fn create_par(expr: Expr) -> Par { Par::default().with_exprs(vec![expr]) }
 
-    pub fn unapply(p: &Par) -> Option<Expr> {
-        single_expr(p)
-    }
+    pub fn unapply(p: &Par) -> Option<Expr> { single_expr(p) }
 }
 
 pub struct RhoUnforgeable;
@@ -312,9 +300,7 @@ impl RhoUnforgeable {
         Par::default().with_unforgeables(vec![unforgeable])
     }
 
-    pub fn unapply(p: &Par) -> Option<GUnforgeable> {
-        single_unforgeable(p)
-    }
+    pub fn unapply(p: &Par) -> Option<GUnforgeable> { single_unforgeable(p) }
 }
 
 pub struct RhoSysAuthToken;
@@ -348,17 +334,13 @@ pub trait Extractor {
 impl Extractor for RhoBoolean {
     type RustType = bool;
 
-    fn unapply(p: &Par) -> Option<Self::RustType> {
-        RhoBoolean::unapply(p)
-    }
+    fn unapply(p: &Par) -> Option<Self::RustType> { RhoBoolean::unapply(p) }
 }
 
 impl Extractor for RhoString {
     type RustType = String;
 
-    fn unapply(p: &Par) -> Option<Self::RustType> {
-        RhoString::unapply(p)
-    }
+    fn unapply(p: &Par) -> Option<Self::RustType> { RhoString::unapply(p) }
 }
 
 impl Extractor for RhoNil {
@@ -376,73 +358,55 @@ impl Extractor for RhoNil {
 impl Extractor for RhoByteArray {
     type RustType = Vec<u8>;
 
-    fn unapply(p: &Par) -> Option<Self::RustType> {
-        RhoByteArray::unapply(p)
-    }
+    fn unapply(p: &Par) -> Option<Self::RustType> { RhoByteArray::unapply(p) }
 }
 
 impl Extractor for RhoDeployerId {
     type RustType = Vec<u8>;
 
-    fn unapply(p: &Par) -> Option<Self::RustType> {
-        RhoDeployerId::unapply(p)
-    }
+    fn unapply(p: &Par) -> Option<Self::RustType> { RhoDeployerId::unapply(p) }
 }
 
 impl Extractor for RhoDeployId {
     type RustType = Vec<u8>;
 
-    fn unapply(p: &Par) -> Option<Self::RustType> {
-        RhoDeployId::unapply(p)
-    }
+    fn unapply(p: &Par) -> Option<Self::RustType> { RhoDeployId::unapply(p) }
 }
 
 impl Extractor for RhoName {
     type RustType = GPrivate;
 
-    fn unapply(p: &Par) -> Option<Self::RustType> {
-        RhoName::unapply(p)
-    }
+    fn unapply(p: &Par) -> Option<Self::RustType> { RhoName::unapply(p) }
 }
 
 impl Extractor for RhoNumber {
     type RustType = i64;
 
-    fn unapply(p: &Par) -> Option<Self::RustType> {
-        RhoNumber::unapply(p)
-    }
+    fn unapply(p: &Par) -> Option<Self::RustType> { RhoNumber::unapply(p) }
 }
 
 impl Extractor for RhoUri {
     type RustType = String;
 
-    fn unapply(p: &Par) -> Option<Self::RustType> {
-        RhoUri::unapply(p)
-    }
+    fn unapply(p: &Par) -> Option<Self::RustType> { RhoUri::unapply(p) }
 }
 
 impl Extractor for RhoUnforgeable {
     type RustType = GUnforgeable;
 
-    fn unapply(p: &Par) -> Option<Self::RustType> {
-        RhoUnforgeable::unapply(p)
-    }
+    fn unapply(p: &Par) -> Option<Self::RustType> { RhoUnforgeable::unapply(p) }
 }
 
 impl Extractor for RhoExpression {
     type RustType = Expr;
 
-    fn unapply(p: &Par) -> Option<Self::RustType> {
-        RhoExpression::unapply(p)
-    }
+    fn unapply(p: &Par) -> Option<Self::RustType> { RhoExpression::unapply(p) }
 }
 
 impl Extractor for RhoSysAuthToken {
     type RustType = GSysAuthToken;
 
-    fn unapply(p: &Par) -> Option<Self::RustType> {
-        RhoSysAuthToken::unapply(p)
-    }
+    fn unapply(p: &Par) -> Option<Self::RustType> { RhoSysAuthToken::unapply(p) }
 }
 
 impl<A, B> Extractor for (A, B)
@@ -463,8 +427,7 @@ where
 }
 
 impl<A> Extractor for Vec<A>
-where
-    A: Extractor,
+where A: Extractor
 {
     type RustType = Vec<A::RustType>;
 

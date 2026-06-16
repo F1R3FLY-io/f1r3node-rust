@@ -149,9 +149,7 @@ impl ProposeEffectHandler for TestProposeEffectHandler {
         Ok(())
     }
 
-    fn publish_block_created(&self, _: &BlockMessage) -> Result<(), CasperError> {
-        Ok(())
-    }
+    fn publish_block_created(&self, _: &BlockMessage) -> Result<(), CasperError> { Ok(()) }
 }
 
 use std::sync::atomic::{AtomicI32, Ordering};
@@ -164,9 +162,7 @@ pub struct TrackingProposeEffectHandler {
 }
 
 impl TrackingProposeEffectHandler {
-    pub fn new(value: i32) -> Self {
-        Self { value }
-    }
+    pub fn new(value: i32) -> Self { Self { value } }
 }
 
 impl ProposeEffectHandler for TrackingProposeEffectHandler {
@@ -179,18 +175,12 @@ impl ProposeEffectHandler for TrackingProposeEffectHandler {
         Ok(())
     }
 
-    fn publish_block_created(&self, _: &BlockMessage) -> Result<(), CasperError> {
-        Ok(())
-    }
+    fn publish_block_created(&self, _: &BlockMessage) -> Result<(), CasperError> { Ok(()) }
 }
 
-fn get_propose_effect_var() -> i32 {
-    PROPOSE_EFFECT_VAR.load(Ordering::SeqCst)
-}
+fn get_propose_effect_var() -> i32 { PROPOSE_EFFECT_VAR.load(Ordering::SeqCst) }
 
-fn reset_propose_effect_var() {
-    PROPOSE_EFFECT_VAR.store(0, Ordering::SeqCst);
-}
+fn reset_propose_effect_var() { PROPOSE_EFFECT_VAR.store(0, Ordering::SeqCst); }
 
 fn dummy_validator_identity() -> ValidatorIdentity {
     ValidatorIdentity::new(&DEFAULT_VALIDATOR_SKS[0])

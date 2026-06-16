@@ -12,9 +12,7 @@ pub struct SystemDeployUserError {
 }
 
 impl SystemDeployUserError {
-    pub fn new(error_message: String) -> Self {
-        Self { error_message }
-    }
+    pub fn new(error_message: String) -> Self { Self { error_message } }
 }
 
 /**

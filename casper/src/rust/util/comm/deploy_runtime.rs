@@ -22,9 +22,7 @@ pub struct DeployRuntime;
 impl DeployRuntime {
     /// Like Scala: gracefulExit(program: F[Either[Seq[String], String]])
     async fn graceful_exit<F>(program: F)
-    where
-        F: std::future::Future<Output = ServiceResult<String>>,
-    {
+    where F: std::future::Future<Output = ServiceResult<String>> {
         let attempted = program.await;
 
         // Note: usage of the sync IO is not a good practice in the async context. The reason of such impl
@@ -170,7 +168,5 @@ impl DeployRuntime {
         .await
     }
 
-    pub async fn status<S: DeployService>(svc: &mut S) {
-        Self::graceful_exit(svc.status()).await
-    }
+    pub async fn status<S: DeployService>(svc: &mut S) { Self::graceful_exit(svc.status()).await }
 }

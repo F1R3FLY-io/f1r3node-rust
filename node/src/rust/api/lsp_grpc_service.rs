@@ -40,9 +40,7 @@ static RE_TOP_LEVEL_CONNECTIVES: LazyLock<Regex> = LazyLock::new(|| {
 pub struct LspGrpcServiceImpl;
 
 impl LspGrpcServiceImpl {
-    pub fn new() -> Self {
-        Self
-    }
+    pub fn new() -> Self { Self }
 
     const SOURCE: &'static str = "rholang";
 
@@ -461,9 +459,7 @@ impl Lsp for LspGrpcServiceImpl {
 }
 
 /// Create a new LSP gRPC service instance
-pub fn create_lsp_grpc_service() -> impl Lsp {
-    LspGrpcServiceImpl::new()
-}
+pub fn create_lsp_grpc_service() -> impl Lsp { LspGrpcServiceImpl::new() }
 
 #[cfg(test)]
 mod tests {

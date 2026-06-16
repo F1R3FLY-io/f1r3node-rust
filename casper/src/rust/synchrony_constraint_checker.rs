@@ -296,16 +296,13 @@ fn should_bypass_synchrony_constraint(
             false
         }
         None => {
-            states.insert(
-                validator.clone(),
-                SynchronyRecoveryState {
-                    last_known_hash: last_proposed_block_hash.to_vec(),
-                    first_failure_at: Some(now),
-                    consecutive_failures: 1,
-                    bypass_count: 0,
-                    last_bypass_at: None,
-                },
-            );
+            states.insert(validator.clone(), SynchronyRecoveryState {
+                last_known_hash: last_proposed_block_hash.to_vec(),
+                first_failure_at: Some(now),
+                consecutive_failures: 1,
+                bypass_count: 0,
+                last_bypass_at: None,
+            });
             false
         }
     }

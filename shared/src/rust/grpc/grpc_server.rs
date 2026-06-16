@@ -163,14 +163,10 @@ impl GrpcServer {
     }
 
     /// Get the port the server is configured to run on
-    pub fn port(&self) -> u16 {
-        self.port
-    }
+    pub fn port(&self) -> u16 { self.port }
 
     /// Check if the server is currently running
-    pub fn is_running(&self) -> bool {
-        self.server_future.is_some()
-    }
+    pub fn is_running(&self) -> bool { self.server_future.is_some() }
 
     /// Take the server future handle for external lifecycle management
     ///

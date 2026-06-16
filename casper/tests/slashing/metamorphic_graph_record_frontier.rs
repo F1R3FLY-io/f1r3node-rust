@@ -22,9 +22,7 @@ use super::divergence_class::{frontier_classification_ok, DivergenceClass};
 
 type Edge = (u8, u8); // (citer, offender)
 
-fn closure_of(edges: &[Edge]) -> BTreeSet<u8> {
-    edges.iter().map(|(_, o)| *o).collect()
-}
+fn closure_of(edges: &[Edge]) -> BTreeSet<u8> { edges.iter().map(|(_, o)| *o).collect() }
 
 #[test]
 fn uc_78_edge_order_independence() {

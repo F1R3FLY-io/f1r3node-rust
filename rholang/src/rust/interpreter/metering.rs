@@ -2,7 +2,10 @@ use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+use models::rhoapi::Par;
+
 use super::accounting::costs::Cost;
+use super::accounting::delta_sigma::match_channel_to_lane;
 use super::accounting::{
     BillableKind, BillableTokenEvent, CostReservationBatch, RedexId, RuntimeBudget, SourcePath,
 };
@@ -65,9 +68,7 @@ impl MeteredMachine {
         }
     }
 
-    pub fn budget(&self) -> RuntimeBudget {
-        self.budget.clone()
-    }
+    pub fn budget(&self) -> RuntimeBudget { self.budget.clone() }
 
     pub fn child(&self, component: u32) -> Self {
         let mut source_path = self.source_path.0.clone();
@@ -94,6 +95,32 @@ impl MeteredMachine {
     /// consensus.
     pub fn reserve_comm(&self, amount: Cost) -> Result<(), InterpreterError> {
         self.reserve_cost(BillableKind::Comm, amount)
+    }
+
+    /// W1 Phase 3 — per-redex located-stack attribution. AFTER a COMM's channel is
+    /// resolved, match it against the installed signer channels: a COMM on a
+    /// NON-envelope signer channel (`Σ⟦sᵢ⟧`) is tallied to that signer's lane for
+    /// the diagnostic per-lane projection ([`RuntimeBudget::per_lane_demand`]). The
+    /// COMM itself was ALREADY charged (scalar, to the envelope) by `reserve_comm`,
+    /// so this records only the per-lane VIEW — it never re-charges and never
+    /// touches the consensus reconciliation (`reconcile`/`total_cost`/the supply
+    /// pools). Cheap on the single-signer fast path: the `any_signed_regions` gate
+    /// short-circuits before any channel encode / snapshot.
+    ///
+    /// Under the s₀ collapse every COMM is on a DATA channel (never a `Σ⟦s⟧` supply
+    /// channel — the §5 no-alias audit), so the match never fires and the
+    /// projection stays the singleton envelope lane. The shared decision is
+    /// [`match_channel_to_lane`] — the SAME one the static dual
+    /// [`demand_by_sig`](super::accounting::delta_sigma::demand_by_sig) uses, so the
+    /// two cannot drift (the consensus bridge).
+    pub fn note_channel_lane(&self, channel: &Par) {
+        if !self.budget.any_signed_regions() {
+            return;
+        }
+        let signer_channels = self.budget.signer_channels_snapshot();
+        if let Some(lane) = match_channel_to_lane(channel, &signer_channels) {
+            self.budget.note_lane_comm(lane);
+        }
     }
 
     /// Charge a non-COMM structural reduction (new / match / if). D3 (DR-9,

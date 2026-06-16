@@ -259,10 +259,11 @@ pub(crate) fn add_deploy_cosigned<T: TransportLayer + Send + Sync>(
     // reconstruction. Only populated for compound deploys; single-signer
     // deploys are uniquely identified by primary sig in the legacy pool.
     if let Some(cosigners) = metadata {
-        this.pending_cosigner_metadata.lock().insert(
-            primary_sig.clone(),
-            super::types::PendingCosignerMetadata { cosigners },
-        );
+        this.pending_cosigner_metadata
+            .lock()
+            .insert(primary_sig.clone(), super::types::PendingCosignerMetadata {
+                cosigners,
+            });
     }
 
     let deploy_info = PrettyPrinter::build_string_signed_deploy_data(&legacy_signed);

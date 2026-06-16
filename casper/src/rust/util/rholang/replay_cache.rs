@@ -71,9 +71,7 @@ impl InMemoryReplayCache {
     }
 
     /// Create with default capacity (1024 entries).
-    pub fn default_capacity() -> Self {
-        Self::new(1024)
-    }
+    pub fn default_capacity() -> Self { Self::new(1024) }
 }
 
 impl ReplayCache for InMemoryReplayCache {

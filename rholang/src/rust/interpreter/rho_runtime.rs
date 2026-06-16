@@ -273,21 +273,13 @@ impl RhoRuntimeImpl {
         }
     }
 
-    pub fn get_cost_log(&self) -> Vec<Cost> {
-        self.cost.get_log()
-    }
+    pub fn get_cost_log(&self) -> Vec<Cost> { self.cost.get_log() }
 
-    pub fn get_cost_event_log(&self) -> Vec<BillableTokenEvent> {
-        self.cost.get_event_log()
-    }
+    pub fn get_cost_event_log(&self) -> Vec<BillableTokenEvent> { self.cost.get_event_log() }
 
-    pub fn clear_cost_log(&self) {
-        self.cost.clear_log()
-    }
+    pub fn clear_cost_log(&self) { self.cost.clear_log() }
 
-    pub fn clear_cost_event_log(&self) {
-        self.cost.clear_event_log()
-    }
+    pub fn clear_cost_event_log(&self) { self.cost.clear_event_log() }
 }
 
 impl RhoRuntime for RhoRuntimeImpl {
@@ -349,9 +341,7 @@ impl RhoRuntime for RhoRuntimeImpl {
         log
     }
 
-    async fn get_root(&self) -> Blake2b256Hash {
-        self.reducer.space.get_root().await
-    }
+    async fn get_root(&self) -> Blake2b256Hash { self.reducer.space.get_root().await }
 
     async fn revert_to_soft_checkpoint(
         &mut self,
@@ -459,9 +449,7 @@ impl RhoRuntime for RhoRuntimeImpl {
 }
 
 impl HasCost for RhoRuntimeImpl {
-    fn cost(&self) -> &RuntimeBudget {
-        &self.cost
-    }
+    fn cost(&self) -> &RuntimeBudget { &self.cost }
 }
 
 pub type RhoTuplespace =
@@ -975,9 +963,7 @@ fn std_rho_chroma_processes() -> Vec<Definition> {
 }
 
 #[cfg(not(feature = "chromadb"))]
-fn std_rho_chroma_processes() -> Vec<Definition> {
-    vec![]
-}
+fn std_rho_chroma_processes() -> Vec<Definition> { vec![] }
 
 fn dispatch_table_creator(
     space: RhoISpace,

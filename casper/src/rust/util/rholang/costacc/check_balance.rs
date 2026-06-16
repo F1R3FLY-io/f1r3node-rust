@@ -43,9 +43,7 @@ impl SystemDeployTrait for CheckBalance {
       "#
     }
 
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
+    fn as_any(&self) -> &dyn std::any::Any { self }
 
     fn process_result(
         value: <Self::Output as Extractor>::RustType,
@@ -53,9 +51,7 @@ impl SystemDeployTrait for CheckBalance {
         Either::Right(value)
     }
 
-    fn rand(&self) -> Blake2b512Random {
-        self.rand.clone()
-    }
+    fn rand(&self) -> Blake2b512Random { self.rand.clone() }
 
     fn env(&mut self) -> HashMap<String, Par> {
         let mut env = HashMap::new();

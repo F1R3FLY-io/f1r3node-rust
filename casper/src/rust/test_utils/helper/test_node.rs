@@ -688,9 +688,7 @@ impl TestNode {
     }
 
     /// Checks if this node contains a block (equivalent to Scala contains, line 346).
-    pub fn contains(&self, block_hash: &BlockHash) -> bool {
-        self.casper.contains(block_hash)
-    }
+    pub fn contains(&self, block_hash: &BlockHash) -> bool { self.casper.contains(block_hash) }
 
     /// Checks if this node knows about a block (in storage or requested) (equivalent to Scala knowsAbout, line 347-348).
     pub fn knows_about(&self, block_hash: &BlockHash) -> bool {
@@ -709,9 +707,7 @@ impl TestNode {
     /// Shuts off this node by clearing its transport layer queue (equivalent to Scala shutoff, line 350).
     ///
     /// This is useful for simulating network partitions or node failures in tests.
-    pub fn shutoff(&self) -> Result<(), CommError> {
-        self.tle.test_network().clear(&self.local)
-    }
+    pub fn shutoff(&self) -> Result<(), CommError> { self.tle.test_network().clear(&self.local) }
 
     /// Visualizes the DAG starting from a block number (equivalent to Scala visualizeDag, line 352-369).
     ///
@@ -1303,9 +1299,7 @@ impl TestNode {
     }
 
     /// Creates an endpoint with the given port for both TCP and UDP
-    fn endpoint(port: u32) -> Endpoint {
-        Endpoint::new("host".to_string(), port, port)
-    }
+    fn endpoint(port: u32) -> Endpoint { Endpoint::new("host".to_string(), port, port) }
 
     /// Propagates messages across all nodes until all queues are empty (equivalent to Scala propagate, line 640-649).
     ///

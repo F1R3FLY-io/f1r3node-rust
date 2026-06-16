@@ -111,9 +111,7 @@ pub enum ProposerResult {
 }
 
 impl ProposerResult {
-    pub fn empty() -> Self {
-        Self::Empty
-    }
+    pub fn empty() -> Self { Self::Empty }
 
     pub fn success(status: ProposeStatus, block: BlockMessage) -> Self {
         Self::Success(status, block)
@@ -123,9 +121,7 @@ impl ProposerResult {
         Self::Failure(status, seq_number)
     }
 
-    pub fn started(seq_number: i32) -> Self {
-        Self::Started(seq_number)
-    }
+    pub fn started(seq_number: i32) -> Self { Self::Started(seq_number) }
 }
 
 pub struct Proposer<C, A, S, H, BC, BV, E>
@@ -635,9 +631,7 @@ pub struct ProductionHeightChecker {
 }
 
 impl ProductionHeightChecker {
-    pub fn new(validator: Arc<ValidatorIdentity>) -> Self {
-        Self { validator }
-    }
+    pub fn new(validator: Arc<ValidatorIdentity>) -> Self { Self { validator } }
 }
 
 impl HeightChecker for ProductionHeightChecker {

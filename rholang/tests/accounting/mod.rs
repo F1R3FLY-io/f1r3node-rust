@@ -1,3 +1,4 @@
+mod cost_accounting_demo_spec;
 mod cost_accounting_frontier;
 mod cost_accounting_spec;
 mod delta_sigma_spec;

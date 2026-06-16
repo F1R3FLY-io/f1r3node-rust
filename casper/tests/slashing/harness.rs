@@ -88,13 +88,9 @@ impl SlashingTestHarness {
 
     /// Adds a pendant to the casper buffer. Used by UC-55 to set up
     /// the buffer pre-state before driving an atomic transition.
-    pub fn put_buffer_pendant(&mut self, hash: BlockHash) {
-        self.buffer.pendants.insert(hash);
-    }
+    pub fn put_buffer_pendant(&mut self, hash: BlockHash) { self.buffer.pendants.insert(hash); }
 
-    pub fn buffer_contains(&self, hash: BlockHash) -> bool {
-        self.buffer.pendants.contains(&hash)
-    }
+    pub fn buffer_contains(&self, hash: BlockHash) -> bool { self.buffer.pendants.contains(&hash) }
 
     /// Drives a dispatch effect with a simulated crash at the given
     /// point. Mirrors the Rocq `crash_step` function from
@@ -150,9 +146,7 @@ impl SlashingTestHarness {
     /// followed by replay of any pending dispatch. UC-55 uses this to
     /// assert post-resume observational equivalence with a no-crash
     /// run.
-    pub fn simulate_resume(&mut self) -> usize {
-        self.reconcile_buffer_against_dag()
-    }
+    pub fn simulate_resume(&mut self) -> usize { self.reconcile_buffer_against_dag() }
 
     /// Signs a fresh block at `(validator, seq)` and adds it to the DAG.
     /// Returns the assigned hash.
@@ -175,16 +169,13 @@ impl SlashingTestHarness {
             .max_by_key(|b| b.seq)
             .map(|b| (b.sender.clone(), b.hash));
         let justifications = creator_just.into_iter().collect();
-        self.dag.blocks.insert(
+        self.dag.blocks.insert(hash, BlockMeta {
             hash,
-            BlockMeta {
-                hash,
-                sender: validator.to_string(),
-                seq,
-                justifications,
-                slash_targets: vec![],
-            },
-        );
+            sender: validator.to_string(),
+            seq,
+            justifications,
+            slash_targets: vec![],
+        });
         hash
     }
 
@@ -209,16 +200,13 @@ impl SlashingTestHarness {
         if !cited_sender.is_empty() {
             justifications.push((cited_sender, cited_block));
         }
-        self.dag.blocks.insert(
+        self.dag.blocks.insert(hash, BlockMeta {
             hash,
-            BlockMeta {
-                hash,
-                sender: validator.to_string(),
-                seq,
-                justifications,
-                slash_targets: vec![],
-            },
-        );
+            sender: validator.to_string(),
+            seq,
+            justifications,
+            slash_targets: vec![],
+        });
         hash
     }
 
@@ -245,16 +233,13 @@ impl SlashingTestHarness {
         if !cited_sender.is_empty() {
             justifications.push((cited_sender, cited_block));
         }
-        self.dag.blocks.insert(
+        self.dag.blocks.insert(hash, BlockMeta {
             hash,
-            BlockMeta {
-                hash,
-                sender: validator.to_string(),
-                seq,
-                justifications,
-                slash_targets: vec![slash_target.to_string()],
-            },
-        );
+            sender: validator.to_string(),
+            seq,
+            justifications,
+            slash_targets: vec![slash_target.to_string()],
+        });
         hash
     }
 
@@ -389,17 +374,11 @@ impl SlashingTestHarness {
         self.tracker.witnesses(validator, base_seq)
     }
 
-    pub fn bond(&self, validator: &str) -> i64 {
-        self.pos_state.bond(validator)
-    }
+    pub fn bond(&self, validator: &str) -> i64 { self.pos_state.bond(validator) }
 
-    pub fn coop_vault(&self) -> i64 {
-        self.pos_state.coop_vault
-    }
+    pub fn coop_vault(&self) -> i64 { self.pos_state.coop_vault }
 
-    pub fn is_active(&self, validator: &str) -> bool {
-        self.pos_state.is_active(validator)
-    }
+    pub fn is_active(&self, validator: &str) -> bool { self.pos_state.is_active(validator) }
 
     /// Mirrors `PoSContract.slash`: zeroes bonds, removes from active,
     /// adds to slashed, transfers bond into Coop vault. Idempotent
@@ -476,24 +455,16 @@ impl SlashingTestHarness {
 
 /// Tier 3: harness implements `SlashingObserver` directly.
 impl SlashingObserver for SlashingTestHarness {
-    fn bond(&self, validator: &str) -> i64 {
-        SlashingTestHarness::bond(self, validator)
-    }
-    fn coop_vault(&self) -> i64 {
-        SlashingTestHarness::coop_vault(self)
-    }
-    fn is_active(&self, validator: &str) -> bool {
-        SlashingTestHarness::is_active(self, validator)
-    }
+    fn bond(&self, validator: &str) -> i64 { SlashingTestHarness::bond(self, validator) }
+    fn coop_vault(&self) -> i64 { SlashingTestHarness::coop_vault(self) }
+    fn is_active(&self, validator: &str) -> bool { SlashingTestHarness::is_active(self, validator) }
     fn has_record(&self, validator: &str, base_seq: SeqNum) -> bool {
         SlashingTestHarness::has_record(self, validator, base_seq)
     }
     fn record_witnesses(&self, validator: &str, base_seq: SeqNum) -> BTreeSet<BlockHash> {
         SlashingTestHarness::record_witnesses(self, validator, base_seq)
     }
-    fn fork_choice(&self) -> Vec<ValidatorId> {
-        SlashingTestHarness::fork_choice(self)
-    }
+    fn fork_choice(&self) -> Vec<ValidatorId> { SlashingTestHarness::fork_choice(self) }
 }
 
 impl SlashingTestHarness {

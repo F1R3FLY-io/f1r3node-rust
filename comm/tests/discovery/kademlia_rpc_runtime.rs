@@ -27,9 +27,7 @@ pub struct TestRuntime {
 }
 
 impl TestRuntime {
-    pub fn new(network_id: String) -> Self {
-        Self { network_id }
-    }
+    pub fn new(network_id: String) -> Self { Self { network_id } }
 
     /// Create environment with random peer ID and given port
     pub fn create_environment(&self, port: u16) -> GrpcEnvironment {
@@ -120,9 +118,7 @@ impl TestPingHandler {
     }
 
     /// Get received messages
-    pub fn received(&self) -> Vec<(PeerNode, PeerNode)> {
-        self.received.lock().unwrap().clone()
-    }
+    pub fn received(&self) -> Vec<(PeerNode, PeerNode)> { self.received.lock().unwrap().clone() }
 }
 
 /// Test lookup handler

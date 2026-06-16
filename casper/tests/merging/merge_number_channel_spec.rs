@@ -74,9 +74,7 @@ new return in {
 }
 "#;
 
-fn par_rho(ori: &str, append_rho: &str) -> String {
-    format!("{}|{}", ori, append_rho)
-}
+fn par_rho(ori: &str, append_rho: &str) -> String { format!("{}|{}", ori, append_rho) }
 
 fn make_sig(hex: &str) -> Vec<u8> {
     let hex_str = if hex.starts_with("0x") {
@@ -87,9 +85,7 @@ fn make_sig(hex: &str) -> Vec<u8> {
     hex::decode(hex_str).unwrap()
 }
 
-fn make_sig_pb(hex: &str) -> prost::bytes::Bytes {
-    prost::bytes::Bytes::from(make_sig(hex))
-}
+fn make_sig_pb(hex: &str) -> prost::bytes::Bytes { prost::bytes::Bytes::from(make_sig(hex)) }
 
 fn base_rho_seed() -> Blake2b512Random {
     let bytes: [u8; 128] = [1; 128];

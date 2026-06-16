@@ -15,6 +15,14 @@
 # Per team policy this is NOT a CI gate (formal verification stays local).
 set -euo pipefail
 
+# Advisory by default per Greg's compile-time-shapes design: external-proof
+# certificates (Rocq/Lean/TLA+) are NOT a required gate. Set CA_ENFORCE_PROOFS=1
+# to run the full strict Lean gate (preserved verbatim below).
+if [ "${CA_ENFORCE_PROOFS:-0}" != "1" ]; then
+  echo "validator Lean proof gate: ADVISORY (relaxed; external-proof certificates not required). CA_ENFORCE_PROOFS=1 to run the full gate."
+  exit 0
+fi
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LEAN_DIR="$ROOT/formal/lean"
 export PATH="$HOME/.elan/bin:$PATH"

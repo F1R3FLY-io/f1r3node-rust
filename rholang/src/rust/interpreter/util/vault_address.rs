@@ -28,9 +28,7 @@ fn tools() -> AddressTools {
 }
 
 impl VaultAddress {
-    pub fn to_base58(&self) -> String {
-        self.address.to_base58()
-    }
+    pub fn to_base58(&self) -> String { self.address.to_base58() }
 
     pub fn from_deployer_id(deployer_id: Vec<u8>) -> Option<VaultAddress> {
         VaultAddress::from_public_key(&PublicKey::from_bytes(&deployer_id))
@@ -61,7 +59,5 @@ impl VaultAddress {
         }
     }
 
-    pub fn is_valid(address: &str) -> bool {
-        VaultAddress::parse(address).is_ok()
-    }
+    pub fn is_valid(address: &str) -> bool { VaultAddress::parse(address).is_ok() }
 }

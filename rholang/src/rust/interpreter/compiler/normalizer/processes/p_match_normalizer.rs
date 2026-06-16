@@ -6,6 +6,7 @@ use rholang_parser::ast::{AnnProc, Case};
 
 use crate::rust::interpreter::compiler::exports::{FreeMap, ProcVisitInputs, ProcVisitOutputs};
 use crate::rust::interpreter::compiler::normalize::normalize_ann_proc;
+use crate::rust::interpreter::compiler::normalizer::cost_accounting::pattern_guard::reject_cost_syntax_in_pattern;
 use crate::rust::interpreter::errors::InterpreterError;
 use crate::rust::interpreter::util::filter_and_adjust_bitset;
 
@@ -34,6 +35,12 @@ pub fn normalize_p_match<'ast>(
             guard,
             proc: case_body,
         } = case;
+
+        // Cost syntax (`{% P %}[s]`, `s :: S`) is a process form (recognized +
+        // metered), not a match pattern — reject it in pattern position (W1
+        // §1.5). f1r3node's normalizer does not run rholang-lib's resolver, so
+        // the guard is applied here at the pattern entry point.
+        reject_cost_syntax_in_pattern(pattern)?;
 
         let pattern_result = normalize_ann_proc(
             pattern,
@@ -83,15 +90,12 @@ pub fn normalize_p_match<'ast>(
             parser,
         )?;
 
-        init_acc.0.insert(
-            0,
-            MatchCase {
-                pattern: Some(pattern_result.par.clone()),
-                source: Some(case_body_result.par.clone()),
-                free_count: bound_count as i32,
-                guard: guard_result.as_ref().map(|gr| gr.par.clone()),
-            },
-        );
+        init_acc.0.insert(0, MatchCase {
+            pattern: Some(pattern_result.par.clone()),
+            source: Some(case_body_result.par.clone()),
+            free_count: bound_count as i32,
+            guard: guard_result.as_ref().map(|gr| gr.par.clone()),
+        });
         init_acc.1 = case_body_result.free_map;
         init_acc.2 = union(
             union(init_acc.2.clone(), pattern_result.par.locally_free.clone()),
@@ -208,11 +212,13 @@ mod tests {
         use crate::rust::interpreter::test_utils::par_builder_util::ParBuilderUtil;
 
         let (mut inputs, env) = proc_visit_inputs_and_env();
-        inputs.bound_map_chain = inputs.bound_map_chain.put_pos((
-            "x".to_string(),
-            VarSort::NameSort,
-            SourcePos { line: 0, col: 0 },
-        ));
+        inputs.bound_map_chain =
+            inputs
+                .bound_map_chain
+                .put_pos(("x".to_string(), VarSort::NameSort, SourcePos {
+                    line: 0,
+                    col: 0,
+                }));
 
         let parser = rholang_parser::RholangParser::new();
 

@@ -17,9 +17,7 @@ impl ReplRuntime {
   ╩╚═└─┘┴ ┴┴ ┴┴┘└┘  ╝╚╝└─┘─┴┘└─┘  ╩╚═╚═╝╩  ╩═╝
 "#;
 
-    pub fn new() -> Self {
-        Self {}
-    }
+    pub fn new() -> Self { Self {} }
 
     /// Scala: def replProgram[F[_]: Monad: ConsoleIO: ReplClient]: F[Boolean]
     /// Rust: returns Ok(true) if loop continued, Ok(false) if terminated (on ":q" or failed run)
@@ -127,6 +125,4 @@ impl ReplRuntime {
     }
 }
 
-fn if_read_mode() -> bool {
-    std::io::stdin().is_terminal()
-}
+fn if_read_mode() -> bool { std::io::stdin().is_terminal() }

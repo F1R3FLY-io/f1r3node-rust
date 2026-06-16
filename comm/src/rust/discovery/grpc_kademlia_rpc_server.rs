@@ -133,9 +133,7 @@ mod tests {
         }
     }
 
-    fn test_node() -> Node {
-        to_node(&test_peer())
-    }
+    fn test_node() -> Node { to_node(&test_peer()) }
 
     #[tokio::test]
     async fn test_ping_with_matching_network_id() {

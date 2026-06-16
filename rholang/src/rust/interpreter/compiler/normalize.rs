@@ -43,9 +43,7 @@ impl ProcVisitInputs {
 }
 
 impl Default for ProcVisitInputs {
-    fn default() -> Self {
-        Self::new()
-    }
+    fn default() -> Self { Self::new() }
 }
 
 /// Returns the update Par and an updated map of free variables.
@@ -400,9 +398,32 @@ pub fn normalize_ann_proc<'ast>(
         }
 
         // ForComprehension - handle for-comprehensions (was Input in old AST)
-        Proc::ForComprehension { receipts, proc } => {
-            use crate::rust::interpreter::compiler::normalizer::processes::p_input_normalizer::normalize_p_input;
-            normalize_p_input(receipts, proc, input, _env, parser)
+        Proc::ForComprehension {
+            receipts,
+            proc: continuation,
+        } => {
+            // W1 Phase 4: a `for` carrying any per-clause SIGNED bind
+            // `{% y <- x %}[s]` routes to signed-join recognition (validate each
+            // clause sig, recover the natural-arity plain join). Greg 2026-06-15:
+            // fuel is provisioned on `Σ⟦s⟧` and acquired by SEQUENTIAL per-atom
+            // gates — a fuel token is structurally incapable of entering the data
+            // join's `ReceiveBind` set, so fuel is NEVER folded into the join
+            // (recognition-only: no gate node; the reducer meters per-COMM by
+            // lane). An unsigned `for` lowers ordinarily.
+            use rholang_parser::ast::Bind;
+            let has_signed_bind = receipts.iter().any(|receipt| {
+                receipt
+                    .binds
+                    .iter()
+                    .any(|bind| matches!(bind, Bind::Signed { .. }))
+            });
+            if has_signed_bind {
+                use crate::rust::interpreter::compiler::normalizer::cost_accounting::recognize::recognize_signed_join;
+                recognize_signed_join(receipts, *continuation, proc.span, input, _env, parser)
+            } else {
+                use crate::rust::interpreter::compiler::normalizer::processes::p_input_normalizer::normalize_p_input;
+                normalize_p_input(receipts, continuation, input, _env, parser)
+            }
         }
 
         // Let - handle let bindings
@@ -428,6 +449,22 @@ pub fn normalize_ann_proc<'ast>(
             Err(InterpreterError::ParserError(
                 "Select (choice) constructs not yet implemented in normalizer".to_string(),
             ))
+        }
+
+        // Cost-accounted surface syntax (W1): recognition + native attribution.
+        // A signed term / token stack resolves its signature(s) to a native `Sig`
+        // and lowers the inner process ORDINARILY — NO synthetic fuel gate (the
+        // reducer meters per-COMM; surface forms decorate). The located-stack
+        // attribution that consumes the resolved `Sig` is a metering-context
+        // concern (Phase 3, at the reducer/gate where the `Cosigned` envelope is
+        // installed — BLOCKER-1). See `normalizer::cost_accounting::recognize`.
+        Proc::SignedTerm { proc: inner, sig } => {
+            use crate::rust::interpreter::compiler::normalizer::cost_accounting::recognize::recognize_signed_term;
+            recognize_signed_term(inner, sig, input, _env, parser)
+        }
+        Proc::TokenStack { stack } => {
+            use crate::rust::interpreter::compiler::normalizer::cost_accounting::recognize::recognize_token_stack;
+            recognize_token_stack(stack, input, _env, parser)
         }
 
         // Bad - handle parsing errors
@@ -814,14 +851,11 @@ mod tests {
         use std::collections::HashMap;
 
         let (base_inputs, _env) = proc_visit_inputs_and_env();
-        let inputs = proc_visit_inputs_with_updated_vec_bound_map_chain(
-            base_inputs,
-            vec![
-                ("x".into(), ProcSort),
-                ("y".into(), ProcSort),
-                ("z".into(), ProcSort),
-            ],
-        );
+        let inputs = proc_visit_inputs_with_updated_vec_bound_map_chain(base_inputs, vec![
+            ("x".into(), ProcSort),
+            ("y".into(), ProcSort),
+            ("z".into(), ProcSort),
+        ]);
 
         fn test_with_parser(
             inputs: ProcVisitInputs,

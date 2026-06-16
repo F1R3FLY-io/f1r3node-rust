@@ -23,9 +23,7 @@ pub struct InsertAction {
 }
 
 impl HistoryActionTrait for InsertAction {
-    fn key(&self) -> KeyPath {
-        self.key.clone()
-    }
+    fn key(&self) -> KeyPath { self.key.clone() }
 }
 
 #[derive(Clone, Debug)]
@@ -34,9 +32,7 @@ pub struct DeleteAction {
 }
 
 impl HistoryActionTrait for DeleteAction {
-    fn key(&self) -> KeyPath {
-        self.key.clone()
-    }
+    fn key(&self) -> KeyPath { self.key.clone() }
 }
 
 impl HistoryActionTrait for HistoryAction {

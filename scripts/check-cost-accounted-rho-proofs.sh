@@ -1,6 +1,22 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# ── Proof-gate posture (Greg's design, 2026-06) ───────────────────────────────
+# Validator behavioral alignment is supplied by compile-time SHAPES (types), so
+# external-proof CERTIFICATES (Rocq/Lean/TLA+) are NOT a required gate. This gate
+# is therefore ADVISORY by default: it reports the posture and exits 0 without
+# blocking. Formal verification remains valuable — the full strict gate (compile +
+# rocqchk + axiom-free `Print Assumptions`) is preserved verbatim below and runs
+# when CA_ENFORCE_PROOFS=1.
+if [ "${CA_ENFORCE_PROOFS:-0}" != "1" ]; then
+  echo "cost-accounted-rho proof gate: ADVISORY (relaxed per Greg's compile-time-shapes design)."
+  echo "  External-proof certificates are no longer a required gate; behavioral"
+  echo "  alignment comes from the compile-time type discipline."
+  echo "  Run the full strict gate with: CA_ENFORCE_PROOFS=1 $0"
+  exit 0
+fi
+# ──────────────────────────────────────────────────────────────────────────────
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PROOF_ROOT="$ROOT/formal/rocq/cost_accounted_rho"
 THEORIES="$PROOF_ROOT/theories"

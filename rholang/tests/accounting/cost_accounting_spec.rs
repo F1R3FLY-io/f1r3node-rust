@@ -1185,14 +1185,11 @@ fn runtime_budget_records_typed_billable_events_without_legacy_compat() {
         .map(|event| event.kind)
         .collect::<Vec<_>>();
 
-    assert_eq!(
-        kinds,
-        vec![
-            BillableKind::Comm,
-            BillableKind::Primitive("method call".to_string()),
-            BillableKind::Substitution
-        ]
-    );
+    assert_eq!(kinds, vec![
+        BillableKind::Comm,
+        BillableKind::Primitive("method call".to_string()),
+        BillableKind::Substitution
+    ]);
     // D3 (DR-9, OD-3): consensus cost = the COMM count. Only the `Comm` counts
     // (=1); the diagnostic Primitive / Substitution contribute 0. (All three
     // still appear in the event log / digest.)
@@ -1230,10 +1227,9 @@ async fn negative_initial_phlo_is_rejected_before_metered_trace() {
     let (result, cost_log) = evaluate_with_cost_log(-1, "@0!(0)".to_string()).await;
 
     assert_eq!(result.cost.value, 0);
-    assert!(matches!(
-        result.errors.as_slice(),
-        [InterpreterError::IllegalArgumentError(_)]
-    ));
+    assert!(matches!(result.errors.as_slice(), [
+        InterpreterError::IllegalArgumentError(_)
+    ]));
     assert!(cost_log.is_empty());
 }
 

@@ -1018,6 +1018,12 @@ impl DebruijnInterpreter {
             None => sub_chan,
         };
 
+        // W1 Phase 3: per-redex located-stack attribution. The COMM was already
+        // charged (scalar, to the envelope) above; this records the per-lane VIEW
+        // if the resolved channel is a signer supply channel `Σ⟦sᵢ⟧`. No-op on the
+        // single-signer fast path (gated by `any_signed_regions`).
+        self.metering.note_channel_lane(&unbundled);
+
         let subst_data = send
             .data
             .iter()
@@ -1085,6 +1091,15 @@ impl DebruijnInterpreter {
                 ))
             })
             .collect::<Result<Vec<_>, InterpreterError>>()?;
+
+        // W1 Phase 3: per-redex located-stack attribution. A receive is ONE COMM
+        // (already charged scalar to the envelope above); record the per-lane VIEW
+        // keyed on the FIRST bind's resolved source channel — the SAME bind
+        // `delta_sigma::demand_by_sig` attributes on, so the static dual and the
+        // runtime agree COMM-for-COMM. No-op on the single-signer fast path.
+        if let Some((_, first_channel)) = binds.first() {
+            self.metering.note_channel_lane(first_channel);
+        }
 
         // TODO: Allow for the environment to be stored with the body in the Tuplespace - OLD
         let subst_body = self.substitute.substitute_no_sort_and_charge(

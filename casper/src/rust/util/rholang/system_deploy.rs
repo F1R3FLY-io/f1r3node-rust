@@ -6,11 +6,10 @@ use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use crypto::rust::public_key::PublicKey;
 use models::rhoapi::g_unforgeable::UnfInstance;
 use models::rhoapi::{GDeployerId, GPrivate, GSysAuthToken, GUnforgeable, Par};
-use rholang::rust::interpreter::rho_type::Extractor;
-use rspace_plus_plus::rspace::history::Either;
-
 use models::rust::block::state_hash::StateHash;
+use rholang::rust::interpreter::rho_type::Extractor;
 use rholang::rust::interpreter::system_processes::BlockData;
+use rspace_plus_plus::rspace::history::Either;
 
 use super::system_deploy_user_error::{SystemDeployPlatformFailure, SystemDeployUserError};
 use crate::rust::errors::CasperError;

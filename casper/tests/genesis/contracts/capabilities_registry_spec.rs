@@ -17,13 +17,12 @@
 //! interactions against a live runtime; the present spec exercises
 //! the Rust glue + wire format).
 
+use casper::rust::genesis::contracts::standard_deploys;
 use crypto::rust::hash::blake2b256::Blake2b256;
 use crypto::rust::private_key::PrivateKey;
 use crypto::rust::signatures::secp256k1::Secp256k1;
 use crypto::rust::signatures::signatures_alg::SignaturesAlg;
 use rholang::rust::interpreter::registry::registry::Registry;
-
-use casper::rust::genesis::contracts::standard_deploys;
 
 #[test]
 fn capabilities_registry_pubkey_resolves_to_deterministic_uri() {

@@ -264,10 +264,9 @@ mod tests {
                     sig: "deploy_no_transfer".to_string(),
                     ..Default::default()
                 }),
-                report: vec![
-                    SingleReport { events: vec![] },
-                    SingleReport { events: vec![] },
-                ],
+                report: vec![SingleReport { events: vec![] }, SingleReport {
+                    events: vec![],
+                }],
             }],
             system_deploys: vec![],
             post_state_hash: vec![].into(),

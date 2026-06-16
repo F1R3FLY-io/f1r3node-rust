@@ -58,13 +58,9 @@ impl IntoServiceError for casper::rust::api::block_report_api::BlockReportError 
 const FIND_DEPLOY_RETRY_INTERVAL_MS: u64 = 100;
 const FIND_DEPLOY_MAX_ATTEMPTS: u8 = 80;
 
-fn find_deploy_retry_interval_ms() -> u64 {
-    FIND_DEPLOY_RETRY_INTERVAL_MS
-}
+fn find_deploy_retry_interval_ms() -> u64 { FIND_DEPLOY_RETRY_INTERVAL_MS }
 
-fn find_deploy_max_attempts() -> u8 {
-    FIND_DEPLOY_MAX_ATTEMPTS
-}
+fn find_deploy_max_attempts() -> u8 { FIND_DEPLOY_MAX_ATTEMPTS }
 
 /// Deploy gRPC Service V1 implementation
 #[derive(Clone)]

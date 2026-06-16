@@ -69,9 +69,7 @@ where
         })
     }
 
-    fn checkpoint_parallel_actions_threshold() -> usize {
-        CHECKPOINT_PARALLEL_ACTIONS_THRESHOLD
-    }
+    fn checkpoint_parallel_actions_threshold() -> usize { CHECKPOINT_PARALLEL_ACTIONS_THRESHOLD }
 
     fn should_parallelize_checkpoint_actions(actions_len: usize) -> bool {
         actions_len >= Self::checkpoint_parallel_actions_threshold()
@@ -450,17 +448,11 @@ where
         }))
     }
 
-    fn history(&self) -> Arc<Mutex<Box<dyn History>>> {
-        self.current_history.clone()
-    }
+    fn history(&self) -> Arc<Mutex<Box<dyn History>>> { self.current_history.clone() }
 
-    fn exporter(&self) -> Arc<dyn RSpaceExporter> {
-        self.rspace_exporter.clone()
-    }
+    fn exporter(&self) -> Arc<dyn RSpaceExporter> { self.rspace_exporter.clone() }
 
-    fn importer(&self) -> Arc<dyn RSpaceImporter> {
-        self.rspace_importer.clone()
-    }
+    fn importer(&self) -> Arc<dyn RSpaceImporter> { self.rspace_importer.clone() }
 
     fn get_history_reader(
         &self,

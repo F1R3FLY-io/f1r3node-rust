@@ -25,8 +25,7 @@ pub trait TransportLayerClientTrait {
 
     /// Stream chunks and get a response
     async fn stream<S>(&mut self, input: S) -> Result<TlResponse, Status>
-    where
-        S: tokio_stream::Stream<Item = Chunk> + Send + Unpin + 'static;
+    where S: tokio_stream::Stream<Item = Chunk> + Send + Unpin + 'static;
 }
 
 /// Implementation for the real gRPC client
@@ -42,9 +41,7 @@ impl TransportLayerClientTrait
     }
 
     async fn stream<S>(&mut self, input: S) -> Result<TlResponse, Status>
-    where
-        S: tokio_stream::Stream<Item = Chunk> + Send + Unpin + 'static,
-    {
+    where S: tokio_stream::Stream<Item = Chunk> + Send + Unpin + 'static {
         self.stream(Request::new(input))
             .await
             .map(|response| response.into_inner())

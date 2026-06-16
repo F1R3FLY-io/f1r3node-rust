@@ -22,13 +22,9 @@ pub struct KademliaNodeDiscovery<T: KademliaRPC> {
 
 #[async_trait::async_trait]
 impl<T: KademliaRPC + Send + Sync + 'static> NodeDiscovery for KademliaNodeDiscovery<T> {
-    async fn discover(&self) -> Result<(), CommError> {
-        self.discover_raw(&self.node_id).await
-    }
+    async fn discover(&self) -> Result<(), CommError> { self.discover_raw(&self.node_id).await }
 
-    fn peers(&self) -> Result<Vec<PeerNode>, CommError> {
-        self.store.peers()
-    }
+    fn peers(&self) -> Result<Vec<PeerNode>, CommError> { self.store.peers() }
 
     fn remove_peer(&self, peer: &PeerNode) -> Result<(), CommError> {
         self.store.remove(&peer.id.key)
@@ -75,9 +71,7 @@ impl<T: KademliaRPC> KademliaNodeDiscovery<T> {
         Ok(())
     }
 
-    pub fn peers(&self) -> Result<Vec<PeerNode>, CommError> {
-        self.store.peers()
-    }
+    pub fn peers(&self) -> Result<Vec<PeerNode>, CommError> { self.store.peers() }
 
     async fn find(
         &self,

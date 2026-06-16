@@ -18,21 +18,13 @@ fn par_of(instance: ExprInstance) -> Par {
     }
 }
 
-fn gbool(b: bool) -> Par {
-    par_of(ExprInstance::GBool(b))
-}
+fn gbool(b: bool) -> Par { par_of(ExprInstance::GBool(b)) }
 
-fn gint(i: i64) -> Par {
-    par_of(ExprInstance::GInt(i))
-}
+fn gint(i: i64) -> Par { par_of(ExprInstance::GInt(i)) }
 
-fn gdouble(f: f64) -> Par {
-    par_of(ExprInstance::GDouble(f.to_bits()))
-}
+fn gdouble(f: f64) -> Par { par_of(ExprInstance::GDouble(f.to_bits())) }
 
-fn gstr(s: &str) -> Par {
-    par_of(ExprInstance::GString(s.to_string()))
-}
+fn gstr(s: &str) -> Par { par_of(ExprInstance::GString(s.to_string())) }
 
 fn evar(idx: i32) -> Par {
     par_of(ExprInstance::EVarBody(EVar {

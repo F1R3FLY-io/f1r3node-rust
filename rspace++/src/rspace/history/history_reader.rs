@@ -38,17 +38,13 @@ pub trait HistoryReader<Key, C: Clone, P: Clone, A: Clone, K: Clone> {
      *                                                                      
      *
      */
-    fn get_data(&self, key: &Key) -> Result<Vec<Datum<A>>, HistoryError> {
-        self.get_data_proj(key)
-    }
+    fn get_data(&self, key: &Key) -> Result<Vec<Datum<A>>, HistoryError> { self.get_data_proj(key) }
 
     fn get_continuations(&self, key: &Key) -> Result<Vec<WaitingContinuation<P, K>>, HistoryError> {
         self.get_continuations_proj(key)
     }
 
-    fn get_joins(&self, key: &Key) -> Result<Vec<Vec<C>>, HistoryError> {
-        self.get_joins_proj(key)
-    }
+    fn get_joins(&self, key: &Key) -> Result<Vec<Vec<C>>, HistoryError> { self.get_joins_proj(key) }
 
     /**
      * Get reader which accepts non-serialized and hashed keys
@@ -80,15 +76,11 @@ pub trait HistoryReaderBase<C: Clone, P: Clone, A: Clone, K: Clone>: Sync + Send
      *                                                                      
      *
      */
-    fn get_data(&self, key: &C) -> Vec<Datum<A>> {
-        self.get_data_proj(key)
-    }
+    fn get_data(&self, key: &C) -> Vec<Datum<A>> { self.get_data_proj(key) }
 
     fn get_continuations(&self, key: &Vec<C>) -> Vec<WaitingContinuation<P, K>> {
         self.get_continuations_proj(key)
     }
 
-    fn get_joins(&self, key: &C) -> Vec<Vec<C>> {
-        self.get_joins_proj(key)
-    }
+    fn get_joins(&self, key: &C) -> Vec<Vec<C>> { self.get_joins_proj(key) }
 }

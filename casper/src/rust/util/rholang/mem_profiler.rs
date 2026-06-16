@@ -1,6 +1,4 @@
-pub fn mem_profile_enabled() -> bool {
-    false
-}
+pub fn mem_profile_enabled() -> bool { false }
 
 #[cfg(target_os = "linux")]
 pub fn read_vm_rss_kb() -> Option<usize> {
@@ -13,6 +11,4 @@ pub fn read_vm_rss_kb() -> Option<usize> {
 }
 
 #[cfg(not(target_os = "linux"))]
-pub fn read_vm_rss_kb() -> Option<usize> {
-    None
-}
+pub fn read_vm_rss_kb() -> Option<usize> { None }

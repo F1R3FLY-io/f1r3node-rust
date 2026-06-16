@@ -28,9 +28,7 @@ pub struct CasperPacketHandler {
 }
 
 impl CasperPacketHandler {
-    pub fn new(engine_cell: EngineCell) -> Self {
-        Self { engine_cell }
-    }
+    pub fn new(engine_cell: EngineCell) -> Self { Self { engine_cell } }
 }
 
 #[async_trait]
@@ -67,9 +65,7 @@ pub struct BlockCreator {
 }
 
 impl BlockCreator {
-    pub fn new(value: Bytes) -> Self {
-        Self { value }
-    }
+    pub fn new(value: Bytes) -> Self { Self { value } }
 
     /// Create an empty BlockCreator (used for non-BlockHashMessage types).
     pub fn empty() -> Self {
@@ -88,21 +84,15 @@ impl BlockCreator {
     }
 
     /// Access the underlying value (primarily for tests and debugging).
-    pub fn value(&self) -> &Bytes {
-        &self.value
-    }
+    pub fn value(&self) -> &Bytes { &self.value }
 }
 
 impl Hash for BlockCreator {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.value.hash(state);
-    }
+    fn hash<H: Hasher>(&self, state: &mut H) { self.value.hash(state); }
 }
 
 impl PartialEq for BlockCreator {
-    fn eq(&self, other: &Self) -> bool {
-        self.value == other.value
-    }
+    fn eq(&self, other: &Self) -> bool { self.value == other.value }
 }
 
 impl Eq for BlockCreator {}
@@ -124,9 +114,7 @@ pub struct DispatcherMessage {
 }
 
 impl DispatcherMessage {
-    pub fn new(peer: PeerNode, message: CasperMessage) -> Self {
-        Self { peer, message }
-    }
+    pub fn new(peer: PeerNode, message: CasperMessage) -> Self { Self { peer, message } }
 }
 
 /// Implement equality based on message content only (ignoring peer).

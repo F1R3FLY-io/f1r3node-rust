@@ -43,9 +43,7 @@ pub trait SignaturesAlg: std::fmt::Debug + Send + Sync {
     /// axis). Ground signatures are opaque byte sequences, so the default is
     /// byte equality; algorithms with a non-trivial canonical form (e.g. a
     /// curve with multiple wire encodings of the same key) may override.
-    fn ground_eq(&self, a: &[u8], b: &[u8]) -> bool {
-        a == b
-    }
+    fn ground_eq(&self, a: &[u8], b: &[u8]) -> bool { a == b }
 
     /// Hash a ground signature `g` to its canonical-process encoding `H_g`
     /// (DR-2; the spec's `Σ⟦g⟧ = quote(H_g)`, eq:app-sig-ground). Default is
@@ -58,31 +56,23 @@ pub trait SignaturesAlg: std::fmt::Debug + Send + Sync {
 }
 
 impl Clone for Box<dyn SignaturesAlg> {
-    fn clone(&self) -> Self {
-        self.box_clone()
-    }
+    fn clone(&self) -> Self { self.box_clone() }
 }
 
 impl PartialEq for Box<dyn SignaturesAlg> {
-    fn eq(&self, other: &Self) -> bool {
-        self.name() == other.name()
-    }
+    fn eq(&self, other: &Self) -> bool { self.name() == other.name() }
 }
 
 impl Serialize for Box<dyn SignaturesAlg> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
+    where S: Serializer {
         serializer.serialize_str(&self.name())
     }
 }
 
 impl<'de> Deserialize<'de> for Box<dyn SignaturesAlg> {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
+    where D: Deserializer<'de> {
         struct SignaturesAlgVisitor;
 
         impl<'de> Visitor<'de> for SignaturesAlgVisitor {
@@ -93,9 +83,7 @@ impl<'de> Deserialize<'de> for Box<dyn SignaturesAlg> {
             }
 
             fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
-            where
-                E: de::Error,
-            {
+            where E: de::Error {
                 match value {
                     "secp256k1" => Ok(Box::new(Secp256k1)),
                     "secp256k1-eth" => Ok(Box::new(Secp256k1Eth)),

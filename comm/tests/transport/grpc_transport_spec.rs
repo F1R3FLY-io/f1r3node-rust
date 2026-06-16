@@ -63,14 +63,10 @@ impl TestTransportLayer {
     }
 
     /// Get send message count
-    pub fn send_messages_length(&self) -> usize {
-        self.send_messages.lock().unwrap().len()
-    }
+    pub fn send_messages_length(&self) -> usize { self.send_messages.lock().unwrap().len() }
 
     /// Get stream message count
-    pub fn stream_messages_length(&self) -> usize {
-        self.stream_messages.lock().unwrap().len()
-    }
+    pub fn stream_messages_length(&self) -> usize { self.stream_messages.lock().unwrap().len() }
 
     /// Get first send message
     pub fn send_messages_head(&self) -> Option<TlRequest> {
@@ -101,9 +97,7 @@ impl TransportLayerClientTrait for TestTransportLayer {
 
     /// Simulate the stream operation
     async fn stream<S>(&mut self, input: S) -> Result<TlResponse, Status>
-    where
-        S: Stream<Item = Chunk> + Send + Unpin + 'static,
-    {
+    where S: Stream<Item = Chunk> + Send + Unpin + 'static {
         // Collect all chunks from the stream
         let chunks: Vec<Chunk> = input.collect().await;
 
@@ -150,17 +144,11 @@ mod tests {
         }
     }
 
-    fn unavailable_throwable() -> Status {
-        Status::unavailable("Service unavailable")
-    }
+    fn unavailable_throwable() -> Status { Status::unavailable("Service unavailable") }
 
-    fn timeout_throwable() -> Status {
-        Status::deadline_exceeded("Request timeout")
-    }
+    fn timeout_throwable() -> Status { Status::deadline_exceeded("Request timeout") }
 
-    fn test_throwable() -> Status {
-        Status::internal("Test exception")
-    }
+    fn test_throwable() -> Status { Status::internal("Test exception") }
 
     #[tokio::test]
     async fn test_send_everything_is_fine_should_send_and_receive_unit() {

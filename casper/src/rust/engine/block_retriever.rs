@@ -526,9 +526,7 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
     }
 
     /// Get access to the requested_blocks for testing purposes
-    pub fn requested_blocks(&self) -> &RequestedBlocks {
-        &self.requested_blocks
-    }
+    pub fn requested_blocks(&self) -> &RequestedBlocks { &self.requested_blocks }
 
     /// Helper method to add a source peer to an existing request
     fn add_source_peer_to_request(
@@ -569,18 +567,15 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
         if init_state.contains_key(&hash) {
             false // Request already exists
         } else {
-            init_state.insert(
-                hash,
-                RequestState {
-                    timestamp: now,
-                    initial_timestamp: now,
-                    peers: HashSet::new(),
-                    received: mark_as_received,
-                    in_casper_buffer: false,
-                    waiting_list: normalized_waiting_list,
-                    peer_requery_cursor: 0,
-                },
-            );
+            init_state.insert(hash, RequestState {
+                timestamp: now,
+                initial_timestamp: now,
+                peers: HashSet::new(),
+                received: mark_as_received,
+                in_casper_buffer: false,
+                waiting_list: normalized_waiting_list,
+                peer_requery_cursor: 0,
+            });
             true
         }
     }
@@ -1449,18 +1444,15 @@ mod tests {
         let stale_initial = now.saturating_sub(120_000);
 
         block_retriever
-            .set_request_state_for_test(
-                hash.clone(),
-                RequestState {
-                    timestamp: stale_initial,
-                    initial_timestamp: stale_initial,
-                    peers: HashSet::new(),
-                    received: false,
-                    in_casper_buffer: false,
-                    waiting_list: Vec::new(),
-                    peer_requery_cursor: 0,
-                },
-            )
+            .set_request_state_for_test(hash.clone(), RequestState {
+                timestamp: stale_initial,
+                initial_timestamp: stale_initial,
+                peers: HashSet::new(),
+                received: false,
+                in_casper_buffer: false,
+                waiting_list: Vec::new(),
+                peer_requery_cursor: 0,
+            })
             .await
             .expect("should seed request state");
 
@@ -1539,18 +1531,15 @@ mod tests {
         let hash: BlockHash = Bytes::from_static(b"orphan-dependency-hash");
         let now = BlockRetriever::<TransportLayerStub>::current_millis();
         block_retriever
-            .set_request_state_for_test(
-                hash.clone(),
-                RequestState {
-                    timestamp: now,
-                    initial_timestamp: now,
-                    peers: HashSet::new(),
-                    received: false,
-                    in_casper_buffer: false,
-                    waiting_list: Vec::new(),
-                    peer_requery_cursor: 0,
-                },
-            )
+            .set_request_state_for_test(hash.clone(), RequestState {
+                timestamp: now,
+                initial_timestamp: now,
+                peers: HashSet::new(),
+                received: false,
+                in_casper_buffer: false,
+                waiting_list: Vec::new(),
+                peer_requery_cursor: 0,
+            })
             .await
             .expect("should seed request state");
 
@@ -1593,18 +1582,15 @@ mod tests {
         let mut peers = HashSet::new();
         peers.insert(remote);
         block_retriever
-            .set_request_state_for_test(
-                hash.clone(),
-                RequestState {
-                    timestamp: stale,
-                    initial_timestamp: stale,
-                    peers,
-                    received: false,
-                    in_casper_buffer: false,
-                    waiting_list: Vec::new(),
-                    peer_requery_cursor: 0,
-                },
-            )
+            .set_request_state_for_test(hash.clone(), RequestState {
+                timestamp: stale,
+                initial_timestamp: stale,
+                peers,
+                received: false,
+                in_casper_buffer: false,
+                waiting_list: Vec::new(),
+                peer_requery_cursor: 0,
+            })
             .await
             .expect("should seed request state");
 
@@ -1665,18 +1651,15 @@ mod tests {
             Duration::from_secs(2),
         );
         block_retriever
-            .set_request_state_for_test(
-                hash.clone(),
-                RequestState {
-                    timestamp: stale,
-                    initial_timestamp: stale,
-                    peers: HashSet::new(),
-                    received: false,
-                    in_casper_buffer: false,
-                    waiting_list: vec![waiting_peer.clone()],
-                    peer_requery_cursor: 0,
-                },
-            )
+            .set_request_state_for_test(hash.clone(), RequestState {
+                timestamp: stale,
+                initial_timestamp: stale,
+                peers: HashSet::new(),
+                received: false,
+                in_casper_buffer: false,
+                waiting_list: vec![waiting_peer.clone()],
+                peer_requery_cursor: 0,
+            })
             .await
             .expect("should seed request state");
 

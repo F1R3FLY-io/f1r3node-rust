@@ -108,29 +108,21 @@ pub struct Produce {
 }
 
 impl PartialEq for Produce {
-    fn eq(&self, other: &Self) -> bool {
-        self.hash == other.hash
-    }
+    fn eq(&self, other: &Self) -> bool { self.hash == other.hash }
 }
 
 impl Eq for Produce {}
 
 impl std::hash::Hash for Produce {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.hash.hash(state);
-    }
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) { self.hash.hash(state); }
 }
 
 impl Ord for Produce {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.hash.cmp(&other.hash)
-    }
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering { self.hash.cmp(&other.hash) }
 }
 
 impl PartialOrd for Produce {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> { Some(self.cmp(other)) }
 }
 
 impl Produce {
