@@ -124,13 +124,9 @@ pub struct HasBlockRequest {
 }
 
 impl HasBlockRequest {
-    pub fn from_proto(proto: HasBlockRequestProto) -> Self {
-        Self { hash: proto.hash }
-    }
+    pub fn from_proto(proto: HasBlockRequestProto) -> Self { Self { hash: proto.hash } }
 
-    pub fn to_proto(self) -> HasBlockRequestProto {
-        HasBlockRequestProto { hash: self.hash }
-    }
+    pub fn to_proto(self) -> HasBlockRequestProto { HasBlockRequestProto { hash: self.hash } }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -139,13 +135,9 @@ pub struct HasBlock {
 }
 
 impl HasBlock {
-    pub fn from_proto(proto: HasBlockProto) -> Self {
-        Self { hash: proto.hash }
-    }
+    pub fn from_proto(proto: HasBlockProto) -> Self { Self { hash: proto.hash } }
 
-    pub fn to_proto(self) -> HasBlockProto {
-        HasBlockProto { hash: self.hash }
-    }
+    pub fn to_proto(self) -> HasBlockProto { HasBlockProto { hash: self.hash } }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -154,22 +146,16 @@ pub struct BlockRequest {
 }
 
 impl BlockRequest {
-    pub fn from_proto(proto: BlockRequestProto) -> Self {
-        Self { hash: proto.hash }
-    }
+    pub fn from_proto(proto: BlockRequestProto) -> Self { Self { hash: proto.hash } }
 
-    pub fn to_proto(self) -> BlockRequestProto {
-        BlockRequestProto { hash: self.hash }
-    }
+    pub fn to_proto(self) -> BlockRequestProto { BlockRequestProto { hash: self.hash } }
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ForkChoiceTipRequest;
 
 impl ForkChoiceTipRequest {
-    pub fn to_proto(self) -> ForkChoiceTipRequestProto {
-        ForkChoiceTipRequestProto {}
-    }
+    pub fn to_proto(self) -> ForkChoiceTipRequestProto { ForkChoiceTipRequestProto {} }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -442,13 +428,9 @@ pub struct RejectedDeploy {
 }
 
 impl RejectedDeploy {
-    pub fn from_proto(proto: RejectedDeployProto) -> Self {
-        Self { sig: proto.sig }
-    }
+    pub fn from_proto(proto: RejectedDeployProto) -> Self { Self { sig: proto.sig } }
 
-    pub fn to_proto(self) -> RejectedDeployProto {
-        RejectedDeployProto { sig: self.sig }
-    }
+    pub fn to_proto(self) -> RejectedDeployProto { RejectedDeployProto { sig: self.sig } }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -831,9 +813,7 @@ impl SystemDeployData {
         }
     }
 
-    pub fn create_close() -> Self {
-        Self::CloseBlockSystemDeployData
-    }
+    pub fn create_close() -> Self { Self::CloseBlockSystemDeployData }
 
     pub fn create_redeem(
         validator_pk: ByteString,
@@ -955,9 +935,7 @@ pub enum ProcessedSystemDeploy {
 }
 
 impl ProcessedSystemDeploy {
-    pub fn failed(self) -> bool {
-        matches!(self, ProcessedSystemDeploy::Failed { .. })
-    }
+    pub fn failed(self) -> bool { matches!(self, ProcessedSystemDeploy::Failed { .. }) }
 
     pub fn fold<A, F, G>(self, if_succeeded: F, if_failed: G) -> A
     where
@@ -1050,9 +1028,7 @@ pub struct DeployData {
 
 impl ToMessage for DeployData {
     type Type = DeployDataProto;
-    fn to_message(&self) -> Self::Type {
-        DeployData::_to_proto(self.clone())
-    }
+    fn to_message(&self) -> Self::Type { DeployData::_to_proto(self.clone()) }
 }
 
 /// Internal helper for walking a `SigCompound` expression and collecting
@@ -1098,9 +1074,7 @@ impl DeployData {
             .unwrap_or(false)
     }
 
-    pub fn encode(a: DeployData) -> ByteVector {
-        DeployData::_to_proto(a).encode_to_vec()
-    }
+    pub fn encode(a: DeployData) -> ByteVector { DeployData::_to_proto(a).encode_to_vec() }
 
     pub fn decode(a: ByteVector) -> Result<DeployData, String> {
         let proto = DeployDataProto::decode(&a[..])
@@ -1266,6 +1240,26 @@ impl DeployData {
     ) -> Result<crypto::rust::signatures::signed::Cosigned<DeployData>, String> {
         use crypto::rust::signatures::signed::{Cosigned, Cosigner};
 
+        // F-A funding/capability separation — INGRESS REJECT (c), THE
+        // load-bearing guard (`docs/theory/cost-accounting-impl/
+        // f-a-funding-vs-capability-separation.md` §3/§6, red-team item 4).
+        //
+        // BEFORE lowering the wire algebra to a flat `Cosigned`, reject any
+        // `sig_algebra` whose tree contains a VALUE/CAPABILITY type-logic
+        // connective (`Plus` ⊕ / `With` & / `Bang` ! / `WhyNot` ? / `Lolly` ⊸).
+        // These are NOT funding-signature formers (cost-accounted-rho §App-A:
+        // the funding grammar is `s ::= g | #P | s ∘ s` — atoms folded by the
+        // tensor only); they belong to the capability/type layer
+        // (`typed_value.tex`, `rho:system:capabilities` + W2). `Atom`, `Tensor`
+        // (the funding `And` ∘), and `Threshold` (a k-of-N admission-boundary
+        // quorum, F-A Threshold=(A) — lowered to a flat `Cosigned` + scalar
+        // `cosigner_threshold`) are KEPT.
+        //
+        // This is what actually stops a malicious gRPC client: the decode below
+        // (`collect_atoms` + `min_required_for`) would otherwise SILENTLY ACCEPT
+        // a `⊕/&/!/?/⊸`-formed algebra and fold it into a funding envelope.
+        Self::reject_capability_connectives(sig_algebra)?;
+
         // Walk the algebra and collect EVERY atom into the signer list
         // (with its actual sig), and compute the minimum number of valid
         // signatures the algebra requires (`min_required`).
@@ -1335,6 +1329,62 @@ impl DeployData {
                     min_required, e
                 )
             })
+        }
+    }
+
+    /// F-A funding/capability separation — INGRESS REJECT (c). Recursively
+    /// reject a `SigCompound` deploy algebra that contains ANY value/capability
+    /// type-logic connective (`Plus` ⊕ / `With` & / `Bang` ! / `WhyNot` ? /
+    /// `Lolly` ⊸ — the five formers that are NOT in the funding grammar
+    /// `g|#P|s∘s`, cost-accounted-rho §App-A). `Atom`, `Tensor` (the funding
+    /// `And` ∘), and `Threshold` (a k-of-N admission-boundary quorum, F-A
+    /// Threshold=(A)) are accepted; the walk recurses THROUGH `Tensor`'s sides
+    /// and `Threshold`'s members so a connective nested anywhere in the tree is
+    /// still caught.
+    ///
+    /// Returns a crisp protocol error naming the offending connective. This is
+    /// the load-bearing wire-boundary guard: it refuses a malicious/ill-formed
+    /// deploy at decode time, BEFORE the algebra is lowered into a funding
+    /// `Cosigned`.
+    fn reject_capability_connectives(sig: &crate::casper::SigCompound) -> Result<(), String> {
+        use crate::casper::sig_compound::Connective;
+        let connective = sig
+            .connective
+            .as_ref()
+            .ok_or_else(|| "SigCompound.connective missing".to_string())?;
+        const NOT_A_FUNDING_FORMER: &str =
+            "is not a funding-signature former (cost-accounted-rho §App-A: \
+             funding signatures are g | #P | s∘s — ground/quote atoms folded by \
+             the tensor ∘; value/capability connectives ⊕/&/!/?/⊸ are \
+             capability-layer only)";
+        match connective {
+            // Funding-grammar formers — accepted; recurse through the
+            // structural ones so a nested capability connective is still caught.
+            Connective::Atom(_) => Ok(()),
+            Connective::Tensor(pair) => {
+                let left = pair
+                    .left
+                    .as_deref()
+                    .ok_or_else(|| "SigPair.left missing".to_string())?;
+                let right = pair
+                    .right
+                    .as_deref()
+                    .ok_or_else(|| "SigPair.right missing".to_string())?;
+                Self::reject_capability_connectives(left)?;
+                Self::reject_capability_connectives(right)
+            }
+            Connective::Threshold(thresh) => {
+                for member in &thresh.members {
+                    Self::reject_capability_connectives(member)?;
+                }
+                Ok(())
+            }
+            // Value/capability type-logic connectives — REJECTED at ingress.
+            Connective::Plus(_) => Err(format!("value/capability connective ⊕ (Plus) {NOT_A_FUNDING_FORMER}")),
+            Connective::With(_) => Err(format!("value/capability connective & (With) {NOT_A_FUNDING_FORMER}")),
+            Connective::Bang(_) => Err(format!("value/capability connective ! (Bang) {NOT_A_FUNDING_FORMER}")),
+            Connective::Whynot(_) => Err(format!("value/capability connective ? (WhyNot) {NOT_A_FUNDING_FORMER}")),
+            Connective::Lolly(_) => Err(format!("value/capability connective ⊸ (Lolly) {NOT_A_FUNDING_FORMER}")),
         }
     }
 
@@ -2143,8 +2193,13 @@ mod tests {
         assert_eq!(cosigned.signers().len(), 2);
     }
 
+    /// F-A ingress reject (c): a `Plus` (⊕) `sig_algebra` is a VALUE/CAPABILITY
+    /// connective, NOT a funding-signature former — it is now REJECTED at the
+    /// deploy-decode boundary BEFORE any branch-witness validation (previously
+    /// this test asserted the Plus was processed; F-A reclassifies ⊕ to the
+    /// capability layer).
     #[test]
-    fn from_proto_cosigned_sig_algebra_plus_chosen_left_only() {
+    fn from_proto_cosigned_sig_algebra_plus_rejected_at_ingress() {
         let payload = deploy_data();
         let (atom_a, _) = fresh_atom_signing(&payload);
         let atom_b_unsigned = empty_atom(); // not chosen, sig is empty
@@ -2163,9 +2218,13 @@ mod tests {
                 },
             ))),
         };
-        let cosigned = DeployData::from_proto_cosigned_with_sig_algebra(payload, &algebra)
-            .expect("Plus with chosen=0 + valid left sig must verify");
-        assert_eq!(cosigned.signers().len(), 2);
+        let err = DeployData::from_proto_cosigned_with_sig_algebra(payload, &algebra)
+            .expect_err("Plus (⊕) is a capability connective, rejected at ingress");
+        assert!(
+            err.contains("Plus") && err.contains("not a funding-signature former"),
+            "error must name the rejected ⊕/Plus connective: {}",
+            err
+        );
     }
 
     #[test]
@@ -2199,75 +2258,67 @@ mod tests {
         assert_eq!(cosigned.signers().len(), 3);
     }
 
+    /// F-A ingress reject (c): a `WhyNot` (?) `sig_algebra` is a
+    /// VALUE/CAPABILITY connective and is REJECTED at the deploy-decode boundary
+    /// — regardless of whether its wrapped atom is present, absent, valid, or
+    /// invalid. Previously the absent / present-valid / present-invalid WhyNot
+    /// cases each took a different decode branch; F-A reclassifies `?` to the
+    /// capability layer, so all of them now fail at ingress with the SAME
+    /// connective-rejection error (verified here for the absent and the
+    /// present-invalid cases).
     #[test]
-    fn from_proto_cosigned_sig_algebra_whynot_admits_absent_signer() {
+    fn from_proto_cosigned_sig_algebra_whynot_rejected_at_ingress() {
+        // (i) absent (empty) wrapped atom.
         let payload = deploy_data();
         let absent_atom = empty_atom();
-        let algebra = crate::casper::SigCompound {
+        let algebra_absent = crate::casper::SigCompound {
             connective: Some(crate::casper::sig_compound::Connective::Whynot(Box::new(
                 crate::casper::SigCompound {
                     connective: Some(crate::casper::sig_compound::Connective::Atom(absent_atom)),
                 },
             ))),
         };
-        // WhyNot with empty atom → no required signers; phlo_limit=0
-        // because no fuel is paid by an absent atom. We need at least
-        // one signer in the envelope, so the algebra walks to "optional"
-        // and the Cosigned constructor sees a single placeholder. This
-        // exercises the "WhyNot absent" code path.
-        let result = DeployData::from_proto_cosigned_with_sig_algebra(payload, &algebra);
-        // The envelope requires a non-empty signer list; absent WhyNot
-        // alone is invalid (the deploy must have at least one signer).
-        // We expect this to fail at the empty-signer-list invariant
-        // rather than at quorum.
+        let err_absent =
+            DeployData::from_proto_cosigned_with_sig_algebra(payload, &algebra_absent)
+                .expect_err("WhyNot (?) is a capability connective, rejected at ingress");
         assert!(
-            result.is_err(),
-            "WhyNot with only absent atom must fail (empty signer list)"
+            err_absent.contains("WhyNot") && err_absent.contains("not a funding-signature former"),
+            "error must name the rejected ?/WhyNot connective: {}",
+            err_absent
         );
-    }
 
-    #[test]
-    fn from_proto_cosigned_sig_algebra_whynot_present_signer_verifies() {
-        let payload = deploy_data();
-        let (atom, _) = fresh_atom_signing(&payload);
-        let algebra = crate::casper::SigCompound {
-            connective: Some(crate::casper::sig_compound::Connective::Whynot(Box::new(
-                crate::casper::SigCompound {
-                    connective: Some(crate::casper::sig_compound::Connective::Atom(atom)),
-                },
-            ))),
-        };
-        let cosigned = DeployData::from_proto_cosigned_with_sig_algebra(payload, &algebra)
-            .expect("present WhyNot signer must verify");
-        assert_eq!(cosigned.signers().len(), 1);
-    }
-
-    #[test]
-    fn from_proto_cosigned_sig_algebra_whynot_present_invalid_rejected() {
-        let payload = deploy_data();
+        // (ii) present-but-wrong-payload wrapped atom — still rejected at the
+        // connective boundary BEFORE any signature verification runs.
+        let payload2 = deploy_data();
         let other_payload = DeployData {
             term: "other-payload".to_string(),
             ..deploy_data()
         };
-        let (atom, _) = fresh_atom_signing(&other_payload);
-        let algebra = crate::casper::SigCompound {
+        let (atom_invalid, _) = fresh_atom_signing(&other_payload);
+        let algebra_invalid = crate::casper::SigCompound {
             connective: Some(crate::casper::sig_compound::Connective::Whynot(Box::new(
                 crate::casper::SigCompound {
-                    connective: Some(crate::casper::sig_compound::Connective::Atom(atom)),
+                    connective: Some(crate::casper::sig_compound::Connective::Atom(atom_invalid)),
                 },
             ))),
         };
-        let err = DeployData::from_proto_cosigned_with_sig_algebra(payload, &algebra)
-            .expect_err("present invalid WhyNot signer must reject");
+        let err_invalid =
+            DeployData::from_proto_cosigned_with_sig_algebra(payload2, &algebra_invalid)
+                .expect_err("present-invalid WhyNot is still rejected at the connective boundary");
         assert!(
-            err.contains("failed signature verification"),
-            "error must identify signature verification failure: {}",
-            err
+            err_invalid.contains("WhyNot") && !err_invalid.contains("failed signature verification"),
+            "ingress reject must fire BEFORE signature verification: {}",
+            err_invalid
         );
     }
 
+    /// F-A ingress reject (c): a `Plus` (⊕) `sig_algebra` is rejected at the
+    /// connective boundary BEFORE the `chosen_branch` range check — so even a
+    /// structurally invalid `chosen_branch` surfaces the connective-rejection,
+    /// not the branch error (previously this asserted the `chosen_branch`
+    /// message). The funding grammar has no ⊕ former at all.
     #[test]
-    fn from_proto_cosigned_sig_algebra_plus_invalid_chosen_branch_rejected() {
+    fn from_proto_cosigned_sig_algebra_plus_rejected_before_chosen_branch_check() {
         let payload = deploy_data();
         let (atom_a, _) = fresh_atom_signing(&payload);
         let (atom_b, _) = fresh_atom_signing(&payload);
@@ -2280,13 +2331,17 @@ mod tests {
                     right: Some(Box::new(crate::casper::SigCompound {
                         connective: Some(crate::casper::sig_compound::Connective::Atom(atom_b)),
                     })),
-                    chosen_branch: 2, // invalid
+                    chosen_branch: 2, // invalid — but the connective is rejected first
                 },
             ))),
         };
         let err = DeployData::from_proto_cosigned_with_sig_algebra(payload, &algebra)
-            .expect_err("invalid chosen_branch must reject");
-        assert!(err.contains("chosen_branch"));
+            .expect_err("Plus (⊕) rejected at ingress before chosen_branch validation");
+        assert!(
+            err.contains("Plus") && err.contains("not a funding-signature former"),
+            "ingress reject must fire before the chosen_branch check: {}",
+            err
+        );
     }
 
     #[test]
@@ -2303,5 +2358,233 @@ mod tests {
 
         let decoded = ProcessedDeploy::from_proto(processed.clone().to_proto()).unwrap();
         assert_eq!(decoded.cosigner_threshold, 2);
+    }
+
+    // =================================================================
+    // F-A funding/capability separation — INGRESS REJECT (c) tests.
+    //
+    // `docs/theory/cost-accounting-impl/f-a-funding-vs-capability-separation.md`
+    // §3/§6: the deploy-decode path
+    // (`from_proto_cosigned_with_sig_algebra`) REJECTS the five value/capability
+    // type-logic connectives (`Plus` ⊕ / `With` & / `Bang` ! / `WhyNot` ? /
+    // `Lolly` ⊸) — they are NOT funding-signature formers (§App-A `g|#P|s∘s`).
+    // `Atom`, `Tensor` (the funding `And` ∘) and `Threshold` (a k-of-N
+    // admission-boundary quorum, F-A Threshold=(A)) are KEPT. Plus + WhyNot
+    // rejection are covered by the two repaired tests above; the remaining three
+    // connectives (`Bang`/`Lolly`/`With`) + nesting + the Threshold-kept and
+    // flat-N-of-N no-regression cases are pinned here.
+    // =================================================================
+
+    fn atom_compound(payload: &DeployData) -> crate::casper::SigCompound {
+        let (atom, _) = fresh_atom_signing(payload);
+        crate::casper::SigCompound {
+            connective: Some(crate::casper::sig_compound::Connective::Atom(atom)),
+        }
+    }
+
+    /// `Bang` (!) at the top level is rejected at ingress.
+    #[test]
+    fn from_proto_cosigned_sig_algebra_bang_rejected_at_ingress() {
+        let payload = deploy_data();
+        let algebra = crate::casper::SigCompound {
+            connective: Some(crate::casper::sig_compound::Connective::Bang(Box::new(
+                crate::casper::SigBang {
+                    inner: Some(Box::new(atom_compound(&payload))),
+                    uses_bound: 0,
+                    capability_handle: prost::bytes::Bytes::new(),
+                },
+            ))),
+        };
+        let err = DeployData::from_proto_cosigned_with_sig_algebra(payload, &algebra)
+            .expect_err("Bang (!) is a capability connective, rejected at ingress");
+        assert!(
+            err.contains("Bang") && err.contains("not a funding-signature former"),
+            "error must name the rejected !/Bang connective: {}",
+            err
+        );
+    }
+
+    /// `Lolly` (⊸) at the top level is rejected at ingress.
+    #[test]
+    fn from_proto_cosigned_sig_algebra_lolly_rejected_at_ingress() {
+        let payload = deploy_data();
+        let algebra = crate::casper::SigCompound {
+            connective: Some(crate::casper::sig_compound::Connective::Lolly(Box::new(
+                crate::casper::SigLolly {
+                    from: Some(Box::new(atom_compound(&payload))),
+                    to: Some(Box::new(atom_compound(&payload))),
+                    capability_handle: prost::bytes::Bytes::new(),
+                },
+            ))),
+        };
+        let err = DeployData::from_proto_cosigned_with_sig_algebra(payload, &algebra)
+            .expect_err("Lolly (⊸) is a capability connective, rejected at ingress");
+        assert!(
+            err.contains("Lolly") && err.contains("not a funding-signature former"),
+            "error must name the rejected ⊸/Lolly connective: {}",
+            err
+        );
+    }
+
+    /// `With` (&) at the top level is rejected at ingress.
+    #[test]
+    fn from_proto_cosigned_sig_algebra_with_rejected_at_ingress() {
+        let payload = deploy_data();
+        let algebra = crate::casper::SigCompound {
+            connective: Some(crate::casper::sig_compound::Connective::With(Box::new(
+                crate::casper::SigPair {
+                    left: Some(Box::new(atom_compound(&payload))),
+                    right: Some(Box::new(atom_compound(&payload))),
+                },
+            ))),
+        };
+        let err = DeployData::from_proto_cosigned_with_sig_algebra(payload, &algebra)
+            .expect_err("With (&) is a capability connective, rejected at ingress");
+        assert!(
+            err.contains("With") && err.contains("not a funding-signature former"),
+            "error must name the rejected &/With connective: {}",
+            err
+        );
+    }
+
+    /// A capability connective NESTED inside an otherwise-funding `Tensor`
+    /// (`Atom ∘ Bang`) is still caught — the reject walk recurses through the
+    /// tensor's sides.
+    #[test]
+    fn from_proto_cosigned_sig_algebra_connective_nested_in_tensor_rejected() {
+        let payload = deploy_data();
+        let bang = crate::casper::SigCompound {
+            connective: Some(crate::casper::sig_compound::Connective::Bang(Box::new(
+                crate::casper::SigBang {
+                    inner: Some(Box::new(atom_compound(&payload))),
+                    uses_bound: 0,
+                    capability_handle: prost::bytes::Bytes::new(),
+                },
+            ))),
+        };
+        let algebra = crate::casper::SigCompound {
+            connective: Some(crate::casper::sig_compound::Connective::Tensor(Box::new(
+                crate::casper::SigPair {
+                    left: Some(Box::new(atom_compound(&payload))),
+                    right: Some(Box::new(bang)),
+                },
+            ))),
+        };
+        let err = DeployData::from_proto_cosigned_with_sig_algebra(payload, &algebra)
+            .expect_err("a Bang nested in a Tensor must still be rejected");
+        assert!(
+            err.contains("Bang") && err.contains("not a funding-signature former"),
+            "nested-connective reject must name the offending connective: {}",
+            err
+        );
+    }
+
+    /// A capability connective NESTED inside a `Threshold` member is still
+    /// caught — the reject walk recurses through threshold members (Threshold
+    /// itself is kept, but its members must be funding-grammar).
+    #[test]
+    fn from_proto_cosigned_sig_algebra_connective_nested_in_threshold_member_rejected() {
+        let payload = deploy_data();
+        let lolly = crate::casper::SigCompound {
+            connective: Some(crate::casper::sig_compound::Connective::Lolly(Box::new(
+                crate::casper::SigLolly {
+                    from: Some(Box::new(atom_compound(&payload))),
+                    to: Some(Box::new(atom_compound(&payload))),
+                    capability_handle: prost::bytes::Bytes::new(),
+                },
+            ))),
+        };
+        let algebra = crate::casper::SigCompound {
+            connective: Some(crate::casper::sig_compound::Connective::Threshold(
+                crate::casper::SigThreshold {
+                    threshold: 1,
+                    members: vec![atom_compound(&payload), lolly],
+                },
+            )),
+        };
+        let err = DeployData::from_proto_cosigned_with_sig_algebra(payload, &algebra)
+            .expect_err("a Lolly nested in a Threshold member must still be rejected");
+        assert!(
+            err.contains("Lolly") && err.contains("not a funding-signature former"),
+            "nested-in-threshold reject must name the offending connective: {}",
+            err
+        );
+    }
+
+    /// F-A Threshold=(A): a `Threshold` k-of-N (with funding-grammar atom
+    /// members) is STILL ACCEPTED — it is an admission-boundary quorum, lowered
+    /// to a flat `Cosigned` + scalar `cosigner_threshold`, NOT rejected by the
+    /// ingress guard. (Mirrors the kept Tensor case which the existing
+    /// `..._tensor_validates_both_branches` test already covers.)
+    #[test]
+    fn from_proto_cosigned_sig_algebra_threshold_still_accepted_post_f_a() {
+        let payload = deploy_data();
+        let (atom_a, _) = fresh_atom_signing(&payload);
+        let (atom_b, _) = fresh_atom_signing(&payload);
+        let atom_c_unsigned = empty_atom();
+        let algebra = crate::casper::SigCompound {
+            connective: Some(crate::casper::sig_compound::Connective::Threshold(
+                crate::casper::SigThreshold {
+                    threshold: 2,
+                    members: vec![
+                        crate::casper::SigCompound {
+                            connective: Some(crate::casper::sig_compound::Connective::Atom(atom_a)),
+                        },
+                        crate::casper::SigCompound {
+                            connective: Some(crate::casper::sig_compound::Connective::Atom(atom_b)),
+                        },
+                        crate::casper::SigCompound {
+                            connective: Some(crate::casper::sig_compound::Connective::Atom(
+                                atom_c_unsigned,
+                            )),
+                        },
+                    ],
+                },
+            )),
+        };
+        let cosigned = DeployData::from_proto_cosigned_with_sig_algebra(payload, &algebra)
+            .expect("Threshold 2-of-3 (funding atoms) must still verify post-F-A");
+        assert_eq!(cosigned.signers().len(), 3);
+        assert_eq!(cosigned.cosigner_threshold(), 2);
+    }
+
+    /// No-regression: a plain flat N-of-N deploy (`cosigners[]`, NO
+    /// `sig_algebra`) decodes through the legacy `from_proto_cosigned` path
+    /// exactly as before F-A (the ingress reject only touches the `sig_algebra`
+    /// branch). Pairs with `single_sig_to_proto_omits_sig_algebra_and_cosigners`
+    /// (single-sig wire shape) and the `deploy_signature_hash_excludes_*` golden
+    /// pin (single-sig byte identity).
+    #[test]
+    fn flat_n_of_n_without_sig_algebra_still_decodes_post_f_a() {
+        use prost::Message;
+        let payload = deploy_data();
+        let serialized = DeployData::_to_proto(payload.clone()).encode_to_vec();
+        let hash = Signed::<DeployData>::signature_hash(&Secp256k1::name(), serialized);
+        let secp = Secp256k1;
+
+        let (sk_primary, pk_primary) = secp.new_key_pair();
+        let (sk_co, pk_co) = secp.new_key_pair();
+        let proto = DeployDataProto {
+            deployer: pk_primary.bytes.clone().into(),
+            term: payload.term.clone(),
+            timestamp: payload.time_stamp,
+            sig: prost::bytes::Bytes::from(secp.sign(&hash, &sk_primary.bytes)),
+            sig_algorithm: Secp256k1::name(),
+            valid_after_block_number: payload.valid_after_block_number,
+            shard_id: payload.shard_id.clone(),
+            language: String::new(),
+            expiration_timestamp: 0,
+            cosigners: vec![CompoundSigner {
+                pk: pk_co.bytes.clone().into(),
+                sig: prost::bytes::Bytes::from(secp.sign(&hash, &sk_co.bytes)),
+                sig_algorithm: Secp256k1::name(),
+            }],
+            cosigner_threshold: 0, // N-of-N
+            sig_algebra: None,
+        };
+        let cosigned = DeployData::from_proto_cosigned(proto)
+            .expect("flat N-of-N (no sig_algebra) must decode unchanged post-F-A");
+        assert_eq!(cosigned.signers().len(), 2);
+        assert!(cosigned.is_compound());
     }
 }

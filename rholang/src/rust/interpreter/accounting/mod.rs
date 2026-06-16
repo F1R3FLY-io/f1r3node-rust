@@ -18,11 +18,10 @@ use std::collections::VecDeque;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use crossbeam_queue::SegQueue;
-use dashmap::DashMap;
-
 use costs::Cost;
+use crossbeam_queue::SegQueue;
 use crypto::rust::hash::blake2b256::Blake2b256;
+use dashmap::DashMap;
 use models::rhoapi::g_unforgeable::UnfInstance;
 use models::rhoapi::{GPrivate, GUnforgeable, Par};
 use models::rust::rholang::implicits::concatenate_pars;
@@ -317,9 +316,7 @@ pub struct BillableTokenEvent {
 }
 
 impl RuntimeBudget {
-    fn resolve_max_log_entries() -> usize {
-        1024
-    }
+    fn resolve_max_log_entries() -> usize { 1024 }
 
     pub fn new(initial_value: Cost) -> Self {
         let max_log_entries = Self::resolve_max_log_entries();
@@ -1047,13 +1044,9 @@ impl RuntimeBudget {
         *self.signature.lock().expect("signature lock") = folded_sig;
     }
 
-    pub fn signature(&self) -> Sig {
-        self.signature.lock().expect("signature lock").clone()
-    }
+    pub fn signature(&self) -> Sig { self.signature.lock().expect("signature lock").clone() }
 
-    pub fn deploy_id(&self) -> [u8; 32] {
-        *self.deploy_id.lock().expect("deploy id lock")
-    }
+    pub fn deploy_id(&self) -> [u8; 32] { *self.deploy_id.lock().expect("deploy id lock") }
 
     pub fn set_unmetered(&self, unmetered: bool) {
         // System deploys use unmetered mode only around post-evaluation
@@ -1099,9 +1092,7 @@ impl RuntimeBudget {
         }
     }
 
-    pub fn remaining(&self) -> Cost {
-        self.get()
-    }
+    pub fn remaining(&self) -> Cost { self.get() }
 
     /// Diagnostic running cost log. As of Milestone 2 this is the bounded
     /// ring-buffer of per-committed-event `Cost` values from the canonical
@@ -1140,17 +1131,11 @@ impl RuntimeBudget {
     /// reconciliation, which includes any prior metered attempts even
     /// when the budget is currently in unmetered mode (only NEW unmetered
     /// attempts are skipped — see `attempt_one`'s unmetered fast path).
-    pub fn last_oop_event(&self) -> Option<BillableTokenEvent> {
-        self.reconcile().oop
-    }
+    pub fn last_oop_event(&self) -> Option<BillableTokenEvent> { self.reconcile().oop }
 
-    pub fn clear_log(&self) {
-        self.log.lock().unwrap().clear();
-    }
+    pub fn clear_log(&self) { self.log.lock().unwrap().clear(); }
 
-    pub fn clear_event_log(&self) {
-        self.event_log.lock().unwrap().clear();
-    }
+    pub fn clear_event_log(&self) { self.event_log.lock().unwrap().clear(); }
 
     /// Returns the finalized consensus-trace event count.
     ///
@@ -1398,9 +1383,7 @@ pub fn envelope_sig_compound(signatures: &[&[u8]]) -> Sig {
 /// mis-keys the pool. Anchoring gate + install + replay to this single function
 /// is the no-drift guarantee.
 pub fn envelope_sig<A>(cosigned: &crypto::rust::signatures::signed::Cosigned<A>) -> Sig
-where
-    A: std::fmt::Debug + serde::Serialize + crypto::rust::signatures::signed::ToMessage,
-{
+where A: std::fmt::Debug + serde::Serialize + crypto::rust::signatures::signed::ToMessage {
     if cosigned.is_compound() {
         let sigs: Vec<&[u8]> = cosigned.signers().iter().map(|s| s.sig.as_ref()).collect();
         envelope_sig_compound(&sigs)
@@ -1615,6 +1598,48 @@ impl Sig {
         lane_key.copy_from_slice(&hash[..32]);
         lane_key
     }
+
+    /// `true` iff this `Sig` is a member of the FUNDING-signature grammar of the
+    /// cost-accounted rho-calculus (§App-A, `eq:app-sig-ground`/`eq:app-sig-hash`):
+    ///
+    /// ```text
+    /// s(G) ::= g | #P | s ∘ s
+    /// ```
+    ///
+    /// i.e. the ground/quote ATOMS (`Sig::Unit` — the `1` identity for `∘` —,
+    /// `Sig::Ground` = `g`, `Sig::Quote` = `#P`) folded by the multiplicative
+    /// tensor `∘` (`Sig::And`). This is EXACTLY what the Rocq `sig` inductive
+    /// admits (`SUnit | SGround | SQuote | SAnd`, `CostAccountedSyntax.v`) and the
+    /// only shape `accounting::envelope_sig*` ever constructs.
+    ///
+    /// Returns `false` for the VALUE/CAPABILITY type-logic connectives
+    /// (`Sig::Plus` ⊕, `Sig::With` &, `Sig::Bang` !, `Sig::WhyNot` ?,
+    /// `Sig::Lolly` ⊸) — these belong to the capability/type layer
+    /// (`typed_value.tex`, `rho:system:capabilities` + W2), NOT to funding — and
+    /// for `Sig::Threshold`: a `k`-of-`N` quorum is an admission-boundary
+    /// predicate (F-A Threshold=(A)), lowered to a flat `Cosigned` + scalar
+    /// `cosigner_threshold` at ingress and NEVER kept as a funding-`Sig` former,
+    /// so the funding grammar stays exactly `g|#P|s∘s` (paper- + Rocq-faithful).
+    ///
+    /// F-A separation guard (`docs/theory/cost-accounting-impl/
+    /// f-a-funding-vs-capability-separation.md` §3/§6): the funding chokepoint
+    /// (`casper/.../acceptance.rs::build_candidate_with_logic`) asserts this on
+    /// the envelope `Sig`, and the supply-channel keying
+    /// (`casper/.../supply.rs::supply_channel`) + `SignatureChannel::from_sig`
+    /// `debug_assert!` it as a precondition — so a value/capability connective can
+    /// never key a funding supply pool `Σ⟦s⟧`.
+    pub fn is_funding_former(&self) -> bool {
+        match self {
+            Sig::Unit | Sig::Ground(_) | Sig::Quote(_) => true,
+            Sig::And(left, right) => left.is_funding_former() && right.is_funding_former(),
+            Sig::Threshold { .. }
+            | Sig::Plus(_, _)
+            | Sig::With(_, _)
+            | Sig::Bang(_)
+            | Sig::WhyNot(_)
+            | Sig::Lolly(_, _) => false,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1625,9 +1650,7 @@ pub enum Token {
 }
 
 impl Token {
-    pub fn coalesced(sig: Sig, remaining: u64) -> Self {
-        Token::Count { sig, remaining }
-    }
+    pub fn coalesced(sig: Sig, remaining: u64) -> Self { Token::Count { sig, remaining } }
 
     pub fn gate(sig: Sig, rest: Token) -> Self {
         Token::Gate {
@@ -1651,9 +1674,7 @@ impl Token {
         }
     }
 
-    fn remaining_units_i64(&self) -> i64 {
-        token_units_to_i64(self.remaining_units())
-    }
+    fn remaining_units_i64(&self) -> i64 { token_units_to_i64(self.remaining_units()) }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1699,6 +1720,30 @@ pub struct SignatureChannel {
 }
 
 impl SignatureChannel {
+    /// Reflect a `Sig` onto its content-addressed substrate channel.
+    ///
+    /// FUNDING PRECONDITION (F-A separation, `docs/theory/cost-accounting-impl/
+    /// f-a-funding-vs-capability-separation.md` §3/§6/red-team M3): on every
+    /// FUNDING path the argument is a funding-grammar `Sig`
+    /// (`Sig::is_funding_former` — `g|#P|s∘s`). The six value/capability
+    /// connective arms below (`Threshold`/`Plus`/`With`/`Bang`/`WhyNot`/`Lolly`)
+    /// are CAPABILITY-LAYER ONLY (`typed_value.tex`, `rho:system:capabilities`)
+    /// and are UNREACHABLE on the funding path — the envelope `Sig` is built
+    /// solely by `accounting::envelope_sig*` (total to `Quote`/`And`), the
+    /// acceptance gate rejects any non-funding envelope, and ingress
+    /// (`from_proto_cosigned_with_sig_algebra`) rejects the five type-logic
+    /// connectives before they reach a `Cosigned`.
+    ///
+    /// The `debug_assert!` that enforces this precondition lives on the FUNDING
+    /// entry point [`crate::rust::interpreter::accounting`]'s
+    /// `supply::supply_channel` (`casper/.../util/rholang/supply.rs`), NOT here:
+    /// `from_sig` is deliberately TOTAL over the WHOLE algebra so the capability
+    /// layer + the LL reflection round-trip tests (`ll_algebra_spec.rs`,
+    /// `ll_rejection_spec.rs`, which call `from_sig` on `Plus`/`With`/`Bang`/
+    /// `WhyNot`/`Lolly`/`Threshold` and assert reflection is non-panicking) keep
+    /// working. Asserting inside this shared reflection primitive would
+    /// (incorrectly) make those non-funding capability callers panic. See the
+    /// red-team M3 deviation note in the F-A design doc.
     pub fn from_sig(sig: &Sig) -> Self {
         match sig {
             Sig::Unit => SignatureChannel {
@@ -1853,9 +1898,7 @@ mod d0_lane_pool_tests {
     // A distinct ground signature per lane index. `from_sig` content-hashes
     // the atom bytes, so distinct bytes ⇒ distinct supply channels ⇒ distinct
     // `lane_hash` ⇒ disjoint lanes (the `lane_pool_disjoint` corollary).
-    fn lane_sig(tag: u8) -> Sig {
-        Sig::Ground(vec![tag, tag, tag, tag])
-    }
+    fn lane_sig(tag: u8) -> Sig { Sig::Ground(vec![tag, tag, tag, tag]) }
 
     /// The N=1 scalar fast path is BYTE-IDENTICAL to the pre-D0
     /// implementation: a single-signature deploy never touches the lane pool,

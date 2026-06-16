@@ -474,8 +474,15 @@ fn sig_algebra_threshold_2_of_3_processed_deploy_round_trip() {
     assert_eq!(cosigned.cosigner_threshold(), 2);
 }
 
+/// F-A funding/capability separation — INGRESS REJECT (c),
+/// `docs/theory/cost-accounting-impl/f-a-funding-vs-capability-separation.md`
+/// §3/§6: `Plus` (⊕) is a value/capability connective, NOT a funding-signature
+/// former (§App-A `g|#P|s∘s`). The deploy-decode path now rejects it at the wire
+/// boundary BEFORE the `chosen_branch` range check, so an out-of-range
+/// `chosen_branch` surfaces the connective-rejection rather than the branch
+/// error (this test previously asserted the `chosen_branch` message).
 #[test]
-fn sig_algebra_invalid_walk_plus_chosen_branch_out_of_range_rejected() {
+fn sig_algebra_plus_rejected_at_ingress_before_chosen_branch_check() {
     let data = baseline_deploy_data(100);
     let atom_a = make_signed_atom(&data, 100);
     let atom_b = make_signed_atom(&data, 100);
@@ -483,14 +490,14 @@ fn sig_algebra_invalid_walk_plus_chosen_branch_out_of_range_rejected() {
         connective: Some(sig_compound::Connective::Plus(Box::new(SigPlus {
             left: Some(Box::new(make_compound_from_atom(atom_a))),
             right: Some(Box::new(make_compound_from_atom(atom_b))),
-            chosen_branch: 99, // invalid: must be 0 or 1
+            chosen_branch: 99, // invalid — but the ⊕ connective is rejected first
         }))),
     };
     let err = DeployData::from_proto_cosigned_with_sig_algebra(data, &algebra)
-        .expect_err("invalid chosen_branch must be rejected");
+        .expect_err("Plus (⊕) is rejected at ingress before chosen_branch validation");
     assert!(
-        err.contains("chosen_branch"),
-        "error must reference chosen_branch: {}",
+        err.contains("Plus") && err.contains("not a funding-signature former"),
+        "F-A ingress reject must fire before the chosen_branch check: {}",
         err
     );
 }

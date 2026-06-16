@@ -12,13 +12,12 @@
 //! - TypedCurrency `typed_value.tex` lines 307–363
 //! - Plan §4.3 (`/home/dylon/.claude/plans/multi-sig-support-is-modeled-sparkling-minsky.md`)
 
+use models::rhoapi::Par;
 use proptest::prelude::*;
 use proptest::test_runner::Config as ProptestConfig;
 use rholang::rust::interpreter::accounting::{RuntimeBudget, Sig, SignatureChannel};
 
 use super::test_support::{any_sig, channel_eq, fixed_atoms};
-
-use models::rhoapi::Par;
 
 /// True iff `sig`'s channel reflection is non-trivial (i.e., NOT
 /// `SignatureChannel { par: Par::default() }`). Many connectives
@@ -195,13 +194,22 @@ fn anti_with_tensor_at_enum_layer() {
 // ---------------------------------------------------------------------
 
 /// Threshold(0, members) is malformed (quorum < 1). The proto-decoder
-/// in `from_proto_cosigned_with_sig_algebra` (Phase 3 task #17)
-/// catches this at the wire boundary; this test verifies the Sig
-/// substrate also panics-or-errors on the malformed structure when
-/// reflected. Reflection itself is total (no panic) — the rejection
-/// lives at the verifier dispatch layer; for the substrate we simply
-/// document via this test that the structure is constructible but
-/// will be rejected downstream.
+/// in `from_proto_cosigned_with_sig_algebra` catches this at the wire
+/// boundary (the `1 ≤ threshold ≤ members.len()` range check in
+/// `collect_atoms`); this test verifies the `Sig` SUBSTRATE reflection is
+/// TOTAL on the malformed structure (no panic) — the quorum-range rejection
+/// lives at the wire-decode + verifier-dispatch layers, not the substrate.
+///
+/// F-A note (red-team M1, `docs/theory/cost-accounting-impl/
+/// f-a-funding-vs-capability-separation.md`): SEPARATELY from this Threshold
+/// range check, the deploy-ingress decoder
+/// (`DeployData::from_proto_cosigned_with_sig_algebra`) now ACTUALLY rejects
+/// the five value/capability connectives (`⊕`/`&`/`!`/`?`/`⊸`) at the wire
+/// boundary via `reject_capability_connectives` (option (c)). `Threshold`
+/// itself is KEPT (F-A Threshold=(A) — a k-of-N admission-boundary quorum). An
+/// earlier version of this comment claimed the decode "caught" the connectives
+/// at the wire boundary; that was FALSE (the decode silently accepted them)
+/// until the F-A ingress reject landed — it is now true.
 #[test]
 fn threshold_with_more_than_members_size_constructible_but_invalid() {
     // The Sig enum permits the malformed value (substrate is total);
@@ -216,6 +224,91 @@ fn threshold_with_more_than_members_size_constructible_but_invalid() {
     };
     let _channel = rholang::rust::interpreter::accounting::SignatureChannel::from_sig(&sig);
     // No panic = pass. The structural invariant is enforced upstream.
+}
+
+// ---------------------------------------------------------------------
+// F-A funding/capability separation — `Sig::is_funding_former()`
+// ---------------------------------------------------------------------
+
+/// `Sig::is_funding_former()` is the predicate the F-A funding chokepoint
+/// (`acceptance.rs::build_candidate_with_logic`) and the funding-channel keying
+/// (`supply.rs::supply_channel`, `SignatureChannel::from_sig` precondition)
+/// enforce: `true` iff the `Sig` is in the funding grammar `g|#P|s∘s`
+/// (cost-accounted-rho §App-A — `Unit`/`Ground`/`Quote` atoms folded by `And`),
+/// `false` for the five value/capability type-logic connectives (`Plus` ⊕ /
+/// `With` & / `Bang` ! / `WhyNot` ? / `Lolly` ⊸) and for `Threshold` (an
+/// admission-boundary quorum, F-A Threshold=(A) — never a funding-`Sig`
+/// former). This is the enum-side companion to the wire-side ingress reject in
+/// `models::DeployData::from_proto_cosigned_with_sig_algebra`.
+#[test]
+fn is_funding_former_accepts_funding_grammar_rejects_capability_connectives() {
+    let [a, b, c, d] = fixed_atoms();
+
+    // Funding grammar `g|#P|s∘s` — accepted.
+    assert!(Sig::Unit.is_funding_former(), "Unit (the ∘ identity) is funding");
+    assert!(a.is_funding_former(), "Ground atom g is funding");
+    assert!(
+        Sig::Quote(vec![0xDE, 0xAD]).is_funding_former(),
+        "Quote atom #P is funding"
+    );
+    let and_of_quotes = Sig::And(
+        Box::new(Sig::Quote(vec![0x01])),
+        Box::new(Sig::Quote(vec![0x02])),
+    );
+    assert!(
+        and_of_quotes.is_funding_former(),
+        "And-of-Quote (s∘s) is funding — the envelope_sig compound shape"
+    );
+    // Left-associated n≥3 And-fold of atoms — still funding.
+    let and3 = Sig::And(
+        Box::new(Sig::And(Box::new(a.clone()), Box::new(b.clone()))),
+        Box::new(c.clone()),
+    );
+    assert!(and3.is_funding_former(), "left-assoc And-fold of atoms is funding");
+
+    // The five value/capability type-logic connectives — NOT funding.
+    assert!(
+        !Sig::Plus(Box::new(a.clone()), Box::new(b.clone())).is_funding_former(),
+        "Plus ⊕ is capability-layer"
+    );
+    assert!(
+        !Sig::With(Box::new(a.clone()), Box::new(b.clone())).is_funding_former(),
+        "With & is capability-layer"
+    );
+    assert!(
+        !Sig::Bang(Box::new(a.clone())).is_funding_former(),
+        "Bang ! is capability-layer"
+    );
+    assert!(
+        !Sig::WhyNot(Box::new(a.clone())).is_funding_former(),
+        "WhyNot ? is capability-layer"
+    );
+    assert!(
+        !Sig::Lolly(Box::new(a.clone()), Box::new(d.clone())).is_funding_former(),
+        "Lolly ⊸ is capability-layer"
+    );
+
+    // Threshold (k-of-N quorum) — an admission boundary, NOT a funding former
+    // (F-A Threshold=(A)).
+    assert!(
+        !Sig::Threshold {
+            threshold: 2,
+            members: vec![a.clone(), b.clone(), c.clone()],
+        }
+        .is_funding_former(),
+        "Threshold is an admission-boundary quorum, not a funding former"
+    );
+
+    // A funding `And` with a capability connective buried inside is NOT a
+    // funding former (recursion catches the nested ⊸).
+    let poisoned = Sig::And(
+        Box::new(a.clone()),
+        Box::new(Sig::Lolly(Box::new(b), Box::new(c))),
+    );
+    assert!(
+        !poisoned.is_funding_former(),
+        "And(atom, Lolly) is non-funding — recursion catches the nested connective"
+    );
 }
 
 // ---------------------------------------------------------------------

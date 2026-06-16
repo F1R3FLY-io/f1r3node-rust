@@ -265,6 +265,43 @@ fn build_candidate_with_logic<L>(cosigned: Cosigned<DeployData>, logic: &L) -> C
 where L: OslfResourceLogic<RhoGslt> {
     let gslt = RhoGslt;
     let envelope: Sig = accounting::envelope_sig(&cosigned);
+
+    // F-A funding/capability separation (gate invariant (a) — red-team M2,
+    // `docs/theory/cost-accounting-impl/f-a-funding-vs-capability-separation.md`
+    // §3/§6): the envelope `Sig` that keys the supply pool `Σ⟦s⟧` MUST be a
+    // funding-grammar signature (`g|#P|s∘s` = `Unit`/`Ground`/`Quote` atoms
+    // folded by `And`). A value/capability type-logic connective
+    // (`Plus`/`With`/`Bang`/`WhyNot`/`Lolly`/`Threshold`) is NOT a funding former
+    // and must never key a funding pool. If one ever appears, route the candidate
+    // to the SAME rejected (`malformed`) path as a `source_to_adt` failure rather
+    // than panicking — a malformed funding shape is refused, not crashed.
+    //
+    // This is a BELT-AND-SUSPENDERS REGRESSION GUARD, not the live-wire defense:
+    // `envelope_sig` is already total to `Quote`/`And` (it folds the flat
+    // `Cosigned` by arity), so this branch is UNREACHABLE today and can only fire
+    // if a future change makes `envelope_sig` non-total. It does NOT defend the
+    // gRPC wire path — the LOAD-BEARING guard that actually stops a malicious
+    // client from submitting a `⊕/&/!/?/⊸`-formed `sig_algebra` is the INGRESS
+    // reject (c) in
+    // `models/.../casper_message.rs::from_proto_cosigned_with_sig_algebra`.
+    if !envelope.is_funding_former() {
+        // No-panic contract: derive the (rejected) candidate's key/channel from
+        // the TOTAL reflection (`Sig::key` → `lane_hash` → `from_sig`,
+        // `SignatureChannel::from_sig` directly) rather than the funding-asserting
+        // `supply::supply_channel` wrapper, so this guard refuses the candidate
+        // instead of tripping the `debug_assert!`. The candidate is `malformed`
+        // ⇒ rejected; its key/channel only serve as map placeholders.
+        let sig_key = envelope.key();
+        let channel = accounting::SignatureChannel::from_sig(&envelope).par;
+        return Candidate {
+            cosigned,
+            sig_key,
+            channel,
+            demand: DemandEntry::ZERO,
+            malformed: true,
+        };
+    }
+
     let sig_key = envelope.key();
     let channel = supply::supply_channel(&envelope);
 

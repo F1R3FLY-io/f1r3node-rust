@@ -44,7 +44,30 @@ pub const TOKEN_TAG: &str = "phlo";
 /// (handoff Decision 1). The g/#P axis collapses at the channel (DR-1: equal
 /// atom bytes ⇒ equal channel) and compounds are permutation-invariant via
 /// `ParSortMatcher::sort_match` (accounting/mod.rs:1544-1612).
-pub fn supply_channel(sig: &Sig) -> Par { SignatureChannel::from_sig(sig).par }
+///
+/// PRECONDITION (F-A separation, red-team M3 — `docs/theory/cost-accounting-impl/
+/// f-a-funding-vs-capability-separation.md` §3/§6): `sig` is a FUNDING-grammar
+/// signature (`Sig::is_funding_former` — `g|#P|s∘s`: `Unit`/`Ground`/`Quote`
+/// atoms folded by `And`). The value/capability type-logic connectives
+/// (`Plus`/`With`/`Bang`/`WhyNot`/`Lolly`) and `Threshold` are CAPABILITY-LAYER
+/// ONLY and are unreachable here: the only `sig` ever passed in is the envelope
+/// `Sig` from `accounting::envelope_sig*` (total to `Quote`/`And`). The
+/// `debug_assert!` makes that loud in debug/test builds without changing release
+/// behavior; it cannot fire on any currently-valid funding deploy (envelope_sig
+/// is total to Quote/And) and is the belt-and-suspenders companion to the
+/// load-bearing INGRESS reject in
+/// `models/.../casper_message.rs::from_proto_cosigned_with_sig_algebra`.
+pub fn supply_channel(sig: &Sig) -> Par {
+    debug_assert!(
+        sig.is_funding_former(),
+        "supply_channel: a value/capability connective (⊕/&/!/?/⊸/Threshold) \
+         reached the funding supply-channel keying — these are capability-layer \
+         only and unreachable on the funding path \
+         (cost-accounted-rho §App-A: g|#P|s∘s). sig = {:?}",
+        sig
+    );
+    SignatureChannel::from_sig(sig).par
+}
 
 /// Stage-D fee-collection domain: domain-separates the per-validator FEE pool
 /// `F_v` from the supply pool `Σ⟦v⟧` (both are content-addressed `GPrivate`s
