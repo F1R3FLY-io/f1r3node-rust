@@ -262,6 +262,72 @@ impl<G: GsltPresentation> ApportionmentPolicy<G> for DefaultApportionment {
     }
 }
 
+/// The FLAT-FEE apportionment (Cost-Accounted Rho Stage-D `FeeExtract`): charges a
+/// flat `k` tokens per group (one per admitted deploy), drawn combined-pool-FIRST
+/// then from a SINGLE component — NEVER the matched component PAIR.
+///
+/// DISTINCT from the COST policy ([`DefaultApportionment`]), whose compound case
+/// debits BOTH components `k` each (Conservation of Authority: a COMM consumes one
+/// unit of group authority from EVERY cosigner). The `FeeExtract` is ONE PHYSICAL
+/// token per deploy (cost-accounted-rho.tex:3637 "one client token consumed as
+/// fee"; design OD-3 "flat one token per admitted client deploy"; Rocq
+/// `TokenConservation.fee_collect`'s flat single-pool `f`), so a COMPOUND deploy
+/// owes 1, not 2. Reusing the cost policy for the fee over-charged multi-sig
+/// deploys up to 2× (red-team F-1); this policy fixes that while staying conserving
+/// (the carved total still equals the sum of client debits == `F_v` credit).
+///
+/// The single component is the canonical-first (`left`, `SigKey`-ascending) —
+/// deterministic play↔replay. The admission bound `effectiveΣ = combined +
+/// min(left,right) ≥ cost + fee` leaves a post-cost residual `combined_res +
+/// min(left_res,right_res) ≥ fee`, so `remaining = fee − combined_res ≤
+/// min(left_res,right_res) ≤ left_res` — the flat draw cannot underflow on an
+/// admitted group (the `min(left_res)` cap is a defensive no-op there, mirroring
+/// [`DefaultApportionment`]).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct FlatFeeApportionment;
+
+impl<G: GsltPresentation> ApportionmentPolicy<G> for FlatFeeApportionment {
+    fn apportion(
+        &self,
+        shape: GroupShape<<G::Signature as ResourceSignature>::Key>,
+        k: i64,
+    ) -> Vec<PoolDraw<<G::Signature as ResourceSignature>::Key>> {
+        let mut out = Vec::with_capacity(2);
+        match shape {
+            GroupShape::Single { own } => {
+                if k > 0 {
+                    out.push(PoolDraw { key: own.key, amount: k });
+                }
+            }
+            GroupShape::Compound {
+                combined,
+                left,
+                right: _,
+            } => {
+                let draw_compound = k.min(combined.residual).max(0);
+                let remaining = (k - draw_compound).min(left.residual).max(0);
+                if draw_compound > 0 {
+                    out.push(PoolDraw {
+                        key: combined.key,
+                        amount: draw_compound,
+                    });
+                }
+                if remaining > 0 {
+                    // ONE component (canonical-first), NOT the matched pair — the
+                    // FeeExtract is a flat single token per deploy, not a per-COMM
+                    // unit of group authority. This is what makes a compound's fee
+                    // == 1, not 2.
+                    out.push(PoolDraw {
+                        key: left.key,
+                        amount: remaining,
+                    });
+                }
+            }
+        }
+        out
+    }
+}
+
 #[cfg(test)]
 mod resource_logic_conformance {
     //! Conformance harness: the OSLF linear-logic laws (the Rocq
@@ -558,6 +624,66 @@ mod apportionment_conformance {
     #[test]
     fn default_apportionment_conserves_and_never_overdraws() {
         check_compound_laws(&DefaultApportionment);
+    }
+
+    /// Stage-D FEE policy (red-team F-1): a compound deploy's fee is FLAT — one
+    /// physical token, drawn combined-first then a SINGLE component — NOT the
+    /// matched-pair DOUBLING of the COST policy. Over the same grid: the right
+    /// component is NEVER drawn (so the total physical draw is `k`, not `2k`),
+    /// no pool overdraws, and conservation holds on every admitted shape
+    /// (`sc + min(sl,sr) ≥ k ⟹ sc + sl ≥ k`, so combined+left cover `k` exactly).
+    #[test]
+    fn flat_fee_apportionment_is_flat_not_doubled() {
+        for k in 0..=6i64 {
+            for sc in 0..=6i64 {
+                for sl in 0..=6i64 {
+                    for sr in 0..=6i64 {
+                        let shape = GroupShape::Compound {
+                            combined: PoolResidual { key: KC, residual: sc },
+                            left: PoolResidual { key: KL, residual: sl },
+                            right: PoolResidual { key: KR, residual: sr },
+                        };
+                        let draws =
+                            ApportionmentPolicy::<RhoGslt>::apportion(&FlatFeeApportionment, shape, k);
+                        let dc = drawn(&draws, &KC);
+                        let dl = drawn(&draws, &KL);
+                        let dr = drawn(&draws, &KR);
+                        assert!(
+                            dc <= sc && dl <= sl && dr <= sr,
+                            "overdraw: k={k} σ=({sc},{sl},{sr}) draws=({dc},{dl},{dr})"
+                        );
+                        // FLAT, NOT the matched pair: the right component is NEVER
+                        // drawn ⇒ a compound's fee can never double.
+                        assert_eq!(
+                            dr, 0,
+                            "flat fee drew the right component (doubling): k={k} σ=({sc},{sl},{sr})"
+                        );
+                        let settled = dc + dl + dr; // total PHYSICAL tokens == dc + dl
+                        if sc + sl.min(sr) >= k {
+                            assert_eq!(
+                                settled, k,
+                                "flat fee not conserved (or doubled): k={k} σ=({sc},{sl},{sr}) settled={settled}"
+                            );
+                        } else {
+                            assert!(settled <= sc + sl);
+                        }
+                    }
+                }
+            }
+        }
+        // The exact F-1 scenario: combined pool drained, both components funded,
+        // k=1. The COST policy doubles (left 1 + right 1 = 2 physical); the FLAT
+        // FEE charges exactly 1 (left only).
+        let f1 = GroupShape::Compound {
+            combined: PoolResidual { key: KC, residual: 0 },
+            left: PoolResidual { key: KL, residual: 5 },
+            right: PoolResidual { key: KR, residual: 5 },
+        };
+        let cost = ApportionmentPolicy::<RhoGslt>::apportion(&DefaultApportionment, f1, 1);
+        let fee = ApportionmentPolicy::<RhoGslt>::apportion(&FlatFeeApportionment, f1, 1);
+        assert_eq!(drawn(&cost, &KL) + drawn(&cost, &KR), 2, "cost should double the pair");
+        assert_eq!(drawn(&fee, &KL) + drawn(&fee, &KR), 1, "flat fee must charge exactly 1");
+        assert_eq!(drawn(&fee, &KR), 0, "flat fee must not touch the right component");
     }
 
     /// A behaviorally-different policy (components-first) must satisfy the SAME

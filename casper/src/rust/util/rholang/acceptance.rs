@@ -67,7 +67,8 @@ use prost::bytes::Bytes;
 pub use rholang::rust::interpreter::accounting::delta_sigma::SigKey;
 use rholang::rust::interpreter::accounting::delta_sigma::{self, Decomposition, DemandEntry};
 use rholang::rust::interpreter::accounting::resource_logic::{
-    ApportionmentPolicy, DefaultApportionment, DefaultResourceLogic, GroupShape, GsltPresentation,
+    ApportionmentPolicy, DefaultApportionment, DefaultResourceLogic, FlatFeeApportionment,
+    GroupShape, GsltPresentation,
     OslfResourceLogic, PoolDraw, PoolResidual, ResourceSignature, RhoGslt,
 };
 use rholang::rust::interpreter::accounting::{self, Sig};
@@ -699,12 +700,16 @@ where
         compute_settlement_debits(&demand_by_group, &decompositions, &raw, &channels_by_key, policy);
 
     // FEE carve (Stage D): the per-pool fee debit is computed AFTER the cost
-    // debit, against the POST-COST residual (raw − cost draws), reusing the SAME
-    // apportionment policy + compound split-join so a compound deploy's fee is
-    // apportioned exactly like its cost. The carved total is TRANSFERRED to F_v
-    // (conserving — TokenConservation.fee_collect_conserves). The gate admitted
+    // debit, against the POST-COST residual (raw − cost draws). It uses the FLAT
+    // [`FlatFeeApportionment`], NOT the cost `policy`: the `FeeExtract` is ONE
+    // PHYSICAL token per admitted deploy (tex:3637; design OD-3; Rocq flat-`f`), so
+    // a COMPOUND deploy owes 1 — drawn combined-pool-first then a SINGLE component,
+    // never the matched component PAIR that the COST debits (which would charge a
+    // multi-sig deploy 2× — red-team F-1). The carved total is still TRANSFERRED to
+    // F_v (conserving — TokenConservation.fee_collect_conserves). The gate admitted
     // only deploys with Σ⟦c⟧ ≥ cost + fee, so this pass never underflows; the same
-    // function over identically-derived inputs runs on replay ⇒ byte-identical.
+    // function + policy over identically-derived inputs runs on replay (`:911`) ⇒
+    // byte-identical.
     let raw_after_cost: BTreeMap<SigKey, i64> = channels_by_key
         .keys()
         .map(|k| {
@@ -718,7 +723,7 @@ where
         &decompositions,
         &raw_after_cost,
         &channels_by_key,
-        policy,
+        &FlatFeeApportionment,
     );
 
     // Re-impose canonical order on the admitted set: the per-group walk emits
@@ -908,12 +913,15 @@ where
             (*k, post)
         })
         .collect();
+    // Stage-D fee: FLAT [`FlatFeeApportionment`] (one physical token per deploy),
+    // NOT the cost `policy` — identical to the play-side fee pass (`:716`) so the
+    // recomputed `fee` is byte-identical. A compound deploy owes 1, not 2 (F-1).
     let fee = compute_settlement_debits(
         &fee_by_group,
         &decompositions,
         &raw_after_cost,
         &channels_by_key,
-        policy,
+        &FlatFeeApportionment,
     );
 
     Ok(RecomputedDebits { settlement, fee })
