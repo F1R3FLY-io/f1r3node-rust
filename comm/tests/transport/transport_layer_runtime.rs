@@ -151,15 +151,14 @@ impl TransportLayerTestRuntime {
         let remote = env2.peer.clone();
 
         // Use provided dispatchers or create defaults
-        let protocol_dispatcher =
-            protocol_dispatcher.unwrap_or_else(|| TestProtocolDispatcher::new());
-        let stream_dispatcher = stream_dispatcher.unwrap_or_else(|| TestStreamDispatcher::new());
+        let protocol_dispatcher = protocol_dispatcher.unwrap_or_default();
+        let stream_dispatcher = stream_dispatcher.unwrap_or_default();
 
         // Create dispatcher callback
         let callback = DispatcherCallback::new();
 
         // Start the remote server
-        let _server_handle = remote_transport_server
+        remote_transport_server
             .start(
                 protocol_dispatcher.to_handler(remote.clone(), Some(callback.clone())),
                 stream_dispatcher.to_handler(remote.clone(), Some(callback.clone())),
@@ -233,23 +232,22 @@ impl TransportLayerTestRuntime {
         let remote2 = env3.peer.clone();
 
         // Use provided dispatchers or create defaults
-        let protocol_dispatcher =
-            protocol_dispatcher.unwrap_or_else(|| TestProtocolDispatcher::new());
-        let stream_dispatcher = stream_dispatcher.unwrap_or_else(|| TestStreamDispatcher::new());
+        let protocol_dispatcher = protocol_dispatcher.unwrap_or_default();
+        let stream_dispatcher = stream_dispatcher.unwrap_or_default();
 
         // Create dispatcher callbacks
         let callback1 = DispatcherCallback::new();
         let callback2 = DispatcherCallback::new();
 
         // Start both remote servers
-        let _server_handle1 = remote_transport_server1
+        remote_transport_server1
             .start(
                 protocol_dispatcher.to_handler(remote1.clone(), Some(callback1.clone())),
                 stream_dispatcher.to_handler(remote1.clone(), Some(callback1.clone())),
             )
             .await?;
 
-        let _server_handle2 = remote_transport_server2
+        remote_transport_server2
             .start(
                 protocol_dispatcher.to_handler(remote2.clone(), Some(callback2.clone())),
                 stream_dispatcher.to_handler(remote2.clone(), Some(callback2.clone())),
@@ -351,6 +349,10 @@ pub enum ResponseType {
     InternalError(String),
 }
 
+impl Default for TestProtocolDispatcher {
+    fn default() -> Self { Self::new() }
+}
+
 impl TestProtocolDispatcher {
     pub fn new() -> Self {
         Self {
@@ -434,6 +436,10 @@ pub struct TestStreamDispatcher {
     delay: Option<Duration>,
 }
 
+impl Default for TestStreamDispatcher {
+    fn default() -> Self { Self::new() }
+}
+
 impl TestStreamDispatcher {
     pub fn new() -> Self {
         Self {
@@ -497,6 +503,10 @@ impl TestStreamDispatcher {
 pub struct DispatcherCallback {
     notified: Arc<tokio::sync::Mutex<bool>>,
     notify: Arc<tokio::sync::Notify>,
+}
+
+impl Default for DispatcherCallback {
+    fn default() -> Self { Self::new() }
 }
 
 impl DispatcherCallback {

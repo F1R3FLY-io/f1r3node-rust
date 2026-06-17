@@ -193,7 +193,7 @@ mod tests {
 
         // then - should return at most k peers, excluding the lookup key itself
         assert!(result.len() <= 3);
-        assert!(result.len() > 0);
+        assert!(!result.is_empty());
 
         // Should not return a peer with the exact lookup key
         assert!(!result.iter().any(|p| p.key() == &lookup_key));
@@ -274,7 +274,7 @@ mod tests {
 
         // then - distances with fewer peers should come first
         // Most buckets are empty (0 peers), then distance 1 (1 peer), then distance 0 (2 peers)
-        assert!(sparseness.len() > 0);
+        assert!(!sparseness.is_empty());
         assert!(sparseness.contains(&0)); // distance 0 bucket
         assert!(sparseness.contains(&1)); // distance 1 bucket
     }
@@ -397,7 +397,7 @@ mod tests {
         // Note: Some peers might have the same distance and be in the same bucket,
         // and some distances might not be reachable with single-byte keys
         assert!(all_peers.len() <= 64); // Should be <= original count
-        assert!(all_peers.len() > 0); // Should have some peers
+        assert!(!all_peers.is_empty()); // Should have some peers
 
         // Test lookup with many peers
         let lookup_result = table.lookup(&Bytes::from(vec![0b10101010u8])).unwrap();
@@ -407,8 +407,8 @@ mod tests {
         let mut found_count = 0;
         for peer in &added_peers {
             let found = table.find(peer.key()).unwrap();
-            if found.is_some() {
-                assert_eq!(found.unwrap(), *peer);
+            if let Some(found) = found {
+                assert_eq!(found, *peer);
                 found_count += 1;
             }
         }
@@ -442,8 +442,8 @@ mod tests {
         let final_peers = table.peers().unwrap();
 
         // then - operations should be consistent
-        assert!(lookup1.len() > 0);
-        assert!(lookup2.len() > 0);
+        assert!(!lookup1.is_empty());
+        assert!(!lookup2.is_empty());
         assert_eq!(final_peers.len(), 1);
         assert_eq!(final_peers[0], peer1_updated);
     }

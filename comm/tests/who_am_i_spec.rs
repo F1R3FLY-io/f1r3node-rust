@@ -75,7 +75,8 @@ async fn test_fetch_local_peer_node_with_host() {
     let protocol_port: u16 = 40400;
     let discovery_port: u16 = 40404;
     let no_upnp = true;
-    let host: Option<String> = Some("localhost".to_string());
+    let host_value = "localhost".to_string();
+    let host: Option<String> = Some(host_value.clone());
 
     let test_node_id = "de6eed5d00cf080fc587eeb412cb31a75fd10358";
     let node_identifier = NodeIdentifier::new(test_node_id.to_string());
@@ -92,8 +93,7 @@ async fn test_fetch_local_peer_node_with_host() {
     match result {
         Ok(peer_node) => {
             assert_eq!(
-                peer_node.endpoint.host,
-                host.unwrap(),
+                peer_node.endpoint.host, host_value,
                 "Host should match the provided host"
             );
             assert_eq!(

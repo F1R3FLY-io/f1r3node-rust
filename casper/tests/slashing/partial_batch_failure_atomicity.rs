@@ -33,7 +33,7 @@ fn uc_71_batch_slash_order_independent_under_idempotence() {
     // T-IdemMany: slashing all 4 validators in any order yields
     // the same post-state. This is the Sage witness from row 12
     // (24 permutations all produce the same result).
-    let bonds = vec![100i64, 100, 100, 100];
+    let bonds = [100i64, 100, 100, 100];
     let total = bonds.iter().sum::<i64>();
 
     let h_a = run_in_order(vec!["v0", "v1", "v2", "v3"]);

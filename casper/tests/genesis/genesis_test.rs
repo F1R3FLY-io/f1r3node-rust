@@ -407,7 +407,7 @@ async fn genesis_from_input_files_should_create_a_valid_genesis_block() {
                     &genesis,
                     &block_store,
                     &mut mk_casper_snapshot(dag),
-                    &mut runtime_manager,
+                    &runtime_manager,
                     None,
                 )
                 .await

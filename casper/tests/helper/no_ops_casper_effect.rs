@@ -338,7 +338,7 @@ impl NoOpsCasperEffect {
             if !block.sender.is_empty() {
                 self.block_dag_storage
                     .latest_messages_map
-                    .insert(block.sender.clone().into(), block.block_hash.clone());
+                    .insert(block.sender.clone(), block.block_hash.clone());
             }
 
             // 2. Handle newly bonded validators (matching Scala newLatestMessages logic)
@@ -347,7 +347,7 @@ impl NoOpsCasperEffect {
                 .state
                 .bonds
                 .iter()
-                .map(|bond| bond.validator.clone().into())
+                .map(|bond| bond.validator.clone())
                 .collect();
 
             let justified_validators: std::collections::HashSet<Validator> = block

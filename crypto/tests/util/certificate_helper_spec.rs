@@ -209,7 +209,7 @@ fn test_read_key_pair_from_file() {
     // Convert to PEM format
     match secret_key.to_pkcs8_der() {
         Ok(der_bytes) => {
-            let pem_content = CertificatePrinter::print_private_key(&der_bytes.as_bytes());
+            let pem_content = CertificatePrinter::print_private_key(der_bytes.as_bytes());
 
             // Write to a temporary file
             let temp_dir = std::env::temp_dir();

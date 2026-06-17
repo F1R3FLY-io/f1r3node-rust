@@ -668,7 +668,7 @@ mod tests {
                 .insert(block.block_hash.clone(), block_number);
             dag.height_map
                 .entry(block_number)
-                .or_insert_with(imbl::HashSet::new)
+                .or_default()
                 .insert(block.block_hash.clone());
             if let Some(self_parent) = EquivocationDetector::creator_justification_hash(block) {
                 dag.self_justification_map

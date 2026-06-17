@@ -22,7 +22,7 @@ pub async fn get(
                 ) {
                     if deployer_id_str == "deployerId" {
                         let output = vec![RhoDeployerId::create_par(public_key)];
-                        produce(&output, &ack_channel).await?;
+                        produce(&output, ack_channel).await?;
                         Ok(output)
                     } else {
                         Err(illegal_argument_error("deployer_id_make"))

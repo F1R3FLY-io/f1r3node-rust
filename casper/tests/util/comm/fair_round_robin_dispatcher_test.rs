@@ -99,6 +99,7 @@ impl TestFixture {
     fn get_handled(&self) -> Vec<(String, i32)> { self.handled.lock().unwrap().clone() }
 
     /// Get the internal state for validation.
+    #[allow(clippy::type_complexity)]
     fn get_state(
         &self,
     ) -> (
@@ -284,7 +285,7 @@ mod tests {
                 )
                 .await;
 
-            assert_eq!(result, true);
+            assert!(result);
         }
 
         #[tokio::test]
@@ -318,7 +319,7 @@ mod tests {
                 )
                 .await;
 
-            assert_eq!(result, false);
+            assert!(!result);
         }
     }
 
@@ -427,7 +428,7 @@ mod tests {
                 )
                 .await;
 
-            assert_eq!(result, true);
+            assert!(result);
         }
 
         #[tokio::test]
@@ -472,7 +473,7 @@ mod tests {
                 )
                 .await;
 
-            assert_eq!(result, false);
+            assert!(!result);
         }
     }
 

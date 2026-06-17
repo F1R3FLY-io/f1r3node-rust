@@ -104,7 +104,7 @@ jobs:
       - name: Run clippy
         env:
           RUSTFLAGS: "-C target-feature=+aes,+sse2 -D warnings"
-        run: cargo clippy --workspace
+        run: cargo clippy --workspace --all-targets
 
   deny:
     name: cargo-deny

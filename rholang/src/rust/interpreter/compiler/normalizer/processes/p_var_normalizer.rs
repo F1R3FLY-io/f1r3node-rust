@@ -137,10 +137,7 @@ mod tests {
         );
 
         assert_eq!(result.clone().unwrap().free_map, inputs_span().free_map);
-        assert_eq!(
-            result.unwrap().par.locally_free,
-            create_bit_vector(&vec![0])
-        );
+        assert_eq!(result.unwrap().par.locally_free, create_bit_vector(&[0]));
     }
 
     #[test]

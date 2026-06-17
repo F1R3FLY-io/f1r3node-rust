@@ -149,6 +149,7 @@ impl GenesisBuilder {
         }
     }
 
+    #[allow(clippy::type_complexity)]
     pub fn build_genesis_parameters_with_defaults(
         bonds_function: Option<fn(Vec<PublicKey>) -> HashMap<PublicKey, i64>>,
         validators_num: Option<usize>,
@@ -199,7 +200,7 @@ impl GenesisBuilder {
             .map(|(_, pk)| Self::predefined_vault(pk))
             .collect::<Vec<Vault>>()
             .into_iter()
-            .chain(bonds.iter().map(|(pk, _)| {
+            .chain(bonds.keys().map(|pk| {
                 // Initial validator vaults contain 0 Rev
                 VaultAddress::from_public_key(pk)
                     .map(|vault_address| Vault {
@@ -223,7 +224,7 @@ impl GenesisBuilder {
                 quarantine_length: 50000,
                 number_of_active_validators: 100,
                 validators: bonds
-                    .into_iter()
+                    .iter()
                     .map(|(pk, stake)| Validator {
                         pk: pk.clone(),
                         stake: *stake,
@@ -300,7 +301,7 @@ impl GenesisBuilder {
         let genesis = {
             // Create genesis with rspace_scope_id so TestNodes can share the same RSpace stores
             let mut kvs_manager = mk_test_rnode_store_manager_shared(rspace_scope_id.clone());
-            let r_store = (&mut *kvs_manager)
+            let r_store = (*kvs_manager)
                 .r_space_stores()
                 .await
                 .expect("Failed to create RSpaceStore");
@@ -308,7 +309,7 @@ impl GenesisBuilder {
             let m_store =
                 crate::util::rholang::resources::mergeable_store_from_dyn(&mut *kvs_manager)
                     .await?;
-            let mut runtime_manager = RuntimeManager::create_with_store(
+            let runtime_manager = RuntimeManager::create_with_store(
                 r_store,
                 m_store,
                 std::sync::Arc::new(Genesis::default_mergeable_tags()),
@@ -316,7 +317,7 @@ impl GenesisBuilder {
             );
 
             let genesis =
-                Genesis::create_genesis_block(&mut runtime_manager, &genesis_parameters).await?;
+                Genesis::create_genesis_block(&runtime_manager, &genesis_parameters).await?;
             let block_store = KeyValueBlockStore::create_from_kvm(&mut *kvs_manager).await?;
             block_store.put(genesis.block_hash.clone(), &genesis)?;
 

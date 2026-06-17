@@ -78,6 +78,10 @@ pub struct TestPingHandler {
     delay: Option<Duration>,
 }
 
+impl Default for TestPingHandler {
+    fn default() -> Self { Self::new() }
+}
+
 impl TestPingHandler {
     pub fn new() -> Self {
         Self {
@@ -123,10 +127,15 @@ impl TestPingHandler {
 
 /// Test lookup handler
 #[derive(Clone)]
+#[allow(clippy::type_complexity)]
 pub struct TestLookupHandler {
     received: Arc<Mutex<Vec<(PeerNode, (PeerNode, Vec<u8>))>>>,
     response: Vec<PeerNode>,
     delay: Option<Duration>,
+}
+
+impl Default for TestLookupHandler {
+    fn default() -> Self { Self::new() }
 }
 
 impl TestLookupHandler {
@@ -228,8 +237,8 @@ where
     let remote = env2.peer.clone();
 
     // Use provided handlers or create defaults
-    let ping_handler = ping_handler.unwrap_or_else(|| TestPingHandler::new());
-    let lookup_handler = lookup_handler.unwrap_or_else(|| TestLookupHandler::new());
+    let ping_handler = ping_handler.unwrap_or_default();
+    let lookup_handler = lookup_handler.unwrap_or_default();
 
     // Create local RPC client
     let local_rpc = runtime.create_kademlia_rpc(&env1);
@@ -290,8 +299,8 @@ where
     let remote = env2.peer.clone();
 
     // Use provided handlers or create defaults (even though they won't be used)
-    let ping_handler = ping_handler.unwrap_or_else(|| TestPingHandler::new());
-    let lookup_handler = lookup_handler.unwrap_or_else(|| TestLookupHandler::new());
+    let ping_handler = ping_handler.unwrap_or_default();
+    let lookup_handler = lookup_handler.unwrap_or_default();
 
     // Create local RPC client
     let local_rpc = runtime.create_kademlia_rpc(&env1);

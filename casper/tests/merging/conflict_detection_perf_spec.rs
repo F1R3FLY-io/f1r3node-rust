@@ -1,5 +1,6 @@
-/// Tests that pre-computing derived sets for depends() and
-/// branch conflict detection produces identical results faster.
+//! Tests that pre-computing derived sets for depends() and
+//! branch conflict detection produces identical results faster.
+#![allow(clippy::mutable_key_type)]
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
@@ -401,13 +402,14 @@ fn event_indexed_conflicts_with_overlap_match_baseline() {
     // Mix of disjoint, conflicting, and unrelated chains. Expect the event-
     // indexed result to record exactly the same conflict pairs as the
     // pairwise predicate baseline.
-    let mut chains: Vec<DeployChainIndex> = Vec::new();
-    chains.push(make_chain_active_produce(0, 0xA0)); // [0] active produce on ch=A0
-    chains.push(make_chain_active_consume(1, 0xA0)); // [1] active consume on ch=A0 (conflicts w/ [0])
-    chains.push(make_chain(2)); // [2] disjoint
-    chains.push(make_chain_active_produce(3, 0xB0)); // [3] active produce on ch=B0 (no conflict)
-    chains.push(make_chain_active_consume(4, 0xA0)); // [4] active consume on ch=A0 (conflicts w/ [0])
-    chains.push(make_chain(5)); // [5] disjoint
+    let chains: Vec<DeployChainIndex> = vec![
+        make_chain_active_produce(0, 0xA0), // [0] active produce on ch=A0
+        make_chain_active_consume(1, 0xA0), // [1] active consume on ch=A0 (conflicts w/ [0])
+        make_chain(2),                      // [2] disjoint
+        make_chain_active_produce(3, 0xB0), // [3] active produce on ch=B0 (no conflict)
+        make_chain_active_consume(4, 0xA0), // [4] active consume on ch=A0 (conflicts w/ [0])
+        make_chain(5),                      // [5] disjoint
+    ];
 
     let chain_set = HashableSet(chains.into_iter().collect());
 
@@ -427,11 +429,12 @@ fn event_indexed_conflicts_with_join_touch_match_baseline() {
     // produces_touching_base_joins, regardless of channel overlap. The event-
     // indexed algorithm handles this via the global-pair fallback for any
     // branch with non-empty `produces_touching_base_joins`.
-    let mut chains: Vec<DeployChainIndex> = Vec::new();
-    chains.push(make_chain_join_touch(0)); // tainted, disjoint channel
-    chains.push(make_chain(1));
-    chains.push(make_chain(2));
-    chains.push(make_chain(3));
+    let chains: Vec<DeployChainIndex> = vec![
+        make_chain_join_touch(0), // tainted, disjoint channel
+        make_chain(1),
+        make_chain(2),
+        make_chain(3),
+    ];
 
     let chain_set = HashableSet(chains.into_iter().collect());
 
@@ -864,11 +867,7 @@ fn event_indexed_depends_with_overlap_match_baseline() {
     // `producesDepends`. Other chains in the set are disjoint and must
     // not be marked as depending on anything.
     let (p0, c0) = make_depends_pair(0, 1);
-    let mut chains: Vec<DeployChainIndex> = Vec::new();
-    chains.push(p0);
-    chains.push(c0);
-    chains.push(make_chain(2));
-    chains.push(make_chain(3));
+    let chains: Vec<DeployChainIndex> = vec![p0, c0, make_chain(2), make_chain(3)];
 
     let chain_set = HashableSet(chains.into_iter().collect());
 

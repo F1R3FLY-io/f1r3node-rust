@@ -115,8 +115,7 @@ async fn integration_t_neglected_invalid_block() {
     // nodes[1] would propose a Valid block and the integration
     // would silently pass without exercising the arm at all.
     let d3 = construct_deploy::basic_deploy_data(20, None, Some(shard_id.clone())).expect("d3");
-    let mut b3_justifs: Vec<Justification> = Vec::new();
-    b3_justifs.push(Justification {
+    let b3_justifs: Vec<Justification> = vec![Justification {
         validator: nodes[0]
             .validator_id_opt
             .as_ref()
@@ -125,7 +124,7 @@ async fn integration_t_neglected_invalid_block() {
             .bytes
             .clone(),
         latest_block_hash: b1p.block_hash.clone(),
-    });
+    }];
     let b3 = propose_with_explicit_justifications(&mut nodes[1], vec![d3], b3_justifs)
         .await
         .expect("propose b3");

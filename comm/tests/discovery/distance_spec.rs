@@ -44,7 +44,7 @@ fn one_offs(key: &[u8]) -> Vec<Vec<u8>> {
         for j in (0..=7).rev() {
             let mut k1 = vec![0u8; key.len()];
             k1.copy_from_slice(key);
-            k1[i] = k1[i] ^ (1 << j);
+            k1[i] ^= 1 << j;
             result.push(k1);
         }
     }

@@ -4,7 +4,6 @@
 use casper::rust::genesis::contracts::standard_deploys;
 use casper::rust::rholang::runtime::RuntimeOps;
 use casper::rust::util::construct_deploy;
-use hex;
 use models::rhoapi::expr::ExprInstance;
 use node::rust::rho_trie_traverser::RhoTrieTraverser;
 use rand::prelude::*;

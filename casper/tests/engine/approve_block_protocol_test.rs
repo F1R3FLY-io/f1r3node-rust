@@ -160,6 +160,7 @@ fn setup_metrics_recorder() -> metrics_util::debugging::Snapshotter {
         .clone()
 }
 
+#[allow(clippy::mutable_key_type)]
 fn get_genesis_counter(snapshotter: &metrics_util::debugging::Snapshotter) -> u64 {
     let snapshot = snapshotter.snapshot();
     let metrics_map = snapshot.into_hashmap();

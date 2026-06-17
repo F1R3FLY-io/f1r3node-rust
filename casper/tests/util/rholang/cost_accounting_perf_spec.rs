@@ -1,10 +1,11 @@
-/// Performance benchmark for PoS cost accounting system deploys.
-///
-/// Measures the time taken by PreChargeDeploy and RefundDeploy in isolation
-/// and counts RSpace produce/consume operations to quantify the overhead.
-///
-/// Run with: cargo test -p casper --test mod cost_accounting_perf -- --nocapture
-/// Release:  cargo test -p casper --test mod --release cost_accounting_perf -- --nocapture
+//! Performance benchmark for PoS cost accounting system deploys.
+//!
+//! Measures the time taken by PreChargeDeploy and RefundDeploy in isolation
+//! and counts RSpace produce/consume operations to quantify the overhead.
+//!
+//! Run with: cargo test -p casper --test mod cost_accounting_perf -- --nocapture
+//! Release:  cargo test -p casper --test mod --release cost_accounting_perf -- --nocapture
+#![allow(clippy::mutable_key_type, clippy::type_complexity)]
 use std::collections::HashMap;
 use std::sync::OnceLock;
 use std::time::Instant;
@@ -164,7 +165,7 @@ async fn measure_precharge_and_refund_cost() {
                 let mut precharge = PreChargeDeploy {
                     charge_amount: 100_000,
                     pk: user_pk.clone(),
-                    rand: Blake2b512Random::create_from_bytes(&vec![i as u8, 0]),
+                    rand: Blake2b512Random::create_from_bytes(&[i as u8, 0]),
                 };
                 let (state_after_charge, precharge_time) = play_system_deploy_timed(
                     &mut runtime_manager,
@@ -183,7 +184,7 @@ async fn measure_precharge_and_refund_cost() {
                 let before = snapshot_rspace_counts(snapshotter);
                 let mut refund = RefundDeploy {
                     refund_amount: 50_000,
-                    rand: Blake2b512Random::create_from_bytes(&vec![i as u8, 1]),
+                    rand: Blake2b512Random::create_from_bytes(&[i as u8, 1]),
                 };
                 let (state_after_refund, refund_time) = play_system_deploy_timed(
                     &mut runtime_manager,

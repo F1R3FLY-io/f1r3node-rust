@@ -136,7 +136,7 @@ async fn broadcasting_a_message_should_send_the_message_to_all_peers() {
     }
 
     // Verify receivers are the two remote nodes (order may vary)
-    let receivers = vec![receiver1, receiver2];
+    let receivers = [receiver1, receiver2];
     assert!(receivers.contains(&&result.remote_node1));
     assert!(receivers.contains(&&result.remote_node2));
 
@@ -231,7 +231,7 @@ async fn stream_blob_should_send_a_blob_and_receive_by_multiple_remote_side() {
     }
 
     // Verify receivers are the two remote nodes (order may vary)
-    let receivers = vec![receiver1, receiver2];
+    let receivers = [receiver1, receiver2];
     assert!(receivers.contains(&&result.remote_node1));
     assert!(receivers.contains(&&result.remote_node2));
 
@@ -497,7 +497,7 @@ async fn concurrent_streams_to_same_peer_should_all_succeed() {
                             };
 
                             transport
-                                .stream(&remote, &blob)
+                                .stream(remote, &blob)
                                 .await
                                 .map_err(|e| format!("Concurrent stream {} failed: {}", i, e))
                         }
@@ -560,7 +560,7 @@ async fn concurrent_streams_to_same_peer_should_all_succeed() {
         );
         let first_byte = blob.packet.content[0];
         assert!(
-            first_byte >= 100 && first_byte <= 102,
+            (100..=102).contains(&first_byte),
             "First byte should indicate stream number (100-102)"
         );
     }

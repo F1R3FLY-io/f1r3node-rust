@@ -28,7 +28,7 @@ pub async fn set(
                                 drop(block_data);
 
                                 let result_par = vec![Par::default()];
-                                produce(&result_par, &ack_channel).await?;
+                                produce(&result_par, ack_channel).await?;
                                 Ok(result_par)
                             } else {
                                 Err(illegal_argument_error("block_data_set"))
@@ -41,7 +41,7 @@ pub async fn set(
                                 drop(block_data);
 
                                 let result_par = vec![Par::default()];
-                                produce(&result_par, &ack_channel).await?;
+                                produce(&result_par, ack_channel).await?;
                                 Ok(result_par)
                             } else {
                                 Err(illegal_argument_error("block_data_set"))

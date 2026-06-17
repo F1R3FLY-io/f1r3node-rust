@@ -99,6 +99,7 @@ async fn create_runtimes_with_cost_log(
     (rho_runtime, replay_rho_runtime, history_repository)
 }
 
+#[allow(clippy::type_complexity)]
 async fn evaluate_and_replay(initial_phlo: Cost, term: String) -> (EvaluateResult, EvaluateResult) {
     let mut kvm = InMemoryStoreManager::new();
     let store = kvm.r_space_stores().await.unwrap();

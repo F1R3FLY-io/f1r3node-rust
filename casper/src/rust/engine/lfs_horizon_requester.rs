@@ -733,9 +733,9 @@ mod tests {
     struct NoopImporter;
 
     impl TrieImporter for NoopImporter {
-        fn set_history_items(&self, _data: Vec<(Blake2b256Hash, Vec<u8>)>) -> () {}
-        fn set_data_items(&self, _data: Vec<(Blake2b256Hash, Vec<u8>)>) -> () {}
-        fn set_root(&self, _key: &Blake2b256Hash) -> () {}
+        fn set_history_items(&self, _data: Vec<(Blake2b256Hash, Vec<u8>)>) {}
+        fn set_data_items(&self, _data: Vec<(Blake2b256Hash, Vec<u8>)>) {}
+        fn set_root(&self, _key: &Blake2b256Hash) {}
     }
 
     impl RSpaceImporter for NoopImporter {
@@ -762,9 +762,9 @@ mod tests {
     }
 
     impl TrieImporter for RecordingImporter {
-        fn set_history_items(&self, _data: Vec<(Blake2b256Hash, Vec<u8>)>) -> () {}
-        fn set_data_items(&self, _data: Vec<(Blake2b256Hash, Vec<u8>)>) -> () {}
-        fn set_root(&self, key: &Blake2b256Hash) -> () {
+        fn set_history_items(&self, _data: Vec<(Blake2b256Hash, Vec<u8>)>) {}
+        fn set_data_items(&self, _data: Vec<(Blake2b256Hash, Vec<u8>)>) {}
+        fn set_root(&self, key: &Blake2b256Hash) {
             self.recorded.lock().unwrap().insert(key.clone());
         }
     }

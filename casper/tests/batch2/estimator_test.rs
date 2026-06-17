@@ -83,7 +83,7 @@ async fn estimator_on_empty_latest_messages_should_return_the_genesis_regardless
         let b2 = create_test_block(
             &mut block_store,
             &mut block_dag_storage,
-            &[genesis.block_hash.clone()],
+            std::slice::from_ref(&genesis.block_hash),
             &genesis,
             &v2,
             &bonds,
@@ -93,7 +93,7 @@ async fn estimator_on_empty_latest_messages_should_return_the_genesis_regardless
         let b3 = create_test_block(
             &mut block_store,
             &mut block_dag_storage,
-            &[genesis.block_hash.clone()],
+            std::slice::from_ref(&genesis.block_hash),
             &genesis,
             &v1,
             &bonds,
@@ -103,7 +103,7 @@ async fn estimator_on_empty_latest_messages_should_return_the_genesis_regardless
         let b4 = create_test_block(
             &mut block_store,
             &mut block_dag_storage,
-            &[b2.block_hash.clone()],
+            std::slice::from_ref(&b2.block_hash),
             &genesis,
             &v2,
             &bonds,
@@ -113,7 +113,7 @@ async fn estimator_on_empty_latest_messages_should_return_the_genesis_regardless
         let b5 = create_test_block(
             &mut block_store,
             &mut block_dag_storage,
-            &[b2.block_hash.clone()],
+            std::slice::from_ref(&b2.block_hash),
             &genesis,
             &v1,
             &bonds,
@@ -123,7 +123,7 @@ async fn estimator_on_empty_latest_messages_should_return_the_genesis_regardless
         let _b6 = create_test_block(
             &mut block_store,
             &mut block_dag_storage,
-            &[b4.block_hash.clone()],
+            std::slice::from_ref(&b4.block_hash),
             &genesis,
             &v2,
             &bonds,
@@ -133,7 +133,7 @@ async fn estimator_on_empty_latest_messages_should_return_the_genesis_regardless
         let b7 = create_test_block(
             &mut block_store,
             &mut block_dag_storage,
-            &[b4.block_hash.clone()],
+            std::slice::from_ref(&b4.block_hash),
             &genesis,
             &v1,
             &bonds,
@@ -143,7 +143,7 @@ async fn estimator_on_empty_latest_messages_should_return_the_genesis_regardless
         let _b8 = create_test_block(
             &mut block_store,
             &mut block_dag_storage,
-            &[b7.block_hash.clone()],
+            std::slice::from_ref(&b7.block_hash),
             &genesis,
             &v1,
             &bonds,
@@ -196,7 +196,7 @@ async fn estimator_on_simple_dag_should_return_the_appropriate_score_map_and_for
         let b2 = create_test_block(
             &mut block_store,
             &mut block_dag_storage,
-            &[genesis.block_hash.clone()],
+            std::slice::from_ref(&genesis.block_hash),
             &genesis,
             &v2,
             &bonds,
@@ -206,7 +206,7 @@ async fn estimator_on_simple_dag_should_return_the_appropriate_score_map_and_for
         let b3 = create_test_block(
             &mut block_store,
             &mut block_dag_storage,
-            &[genesis.block_hash.clone()],
+            std::slice::from_ref(&genesis.block_hash),
             &genesis,
             &v1,
             &bonds,
@@ -216,7 +216,7 @@ async fn estimator_on_simple_dag_should_return_the_appropriate_score_map_and_for
         let b4 = create_test_block(
             &mut block_store,
             &mut block_dag_storage,
-            &[b2.block_hash.clone()],
+            std::slice::from_ref(&b2.block_hash),
             &genesis,
             &v2,
             &bonds,
@@ -226,7 +226,7 @@ async fn estimator_on_simple_dag_should_return_the_appropriate_score_map_and_for
         let b5 = create_test_block(
             &mut block_store,
             &mut block_dag_storage,
-            &[b2.block_hash.clone()],
+            std::slice::from_ref(&b2.block_hash),
             &genesis,
             &v1,
             &bonds,
@@ -236,7 +236,7 @@ async fn estimator_on_simple_dag_should_return_the_appropriate_score_map_and_for
         let b6 = create_test_block(
             &mut block_store,
             &mut block_dag_storage,
-            &[b4.block_hash.clone()],
+            std::slice::from_ref(&b4.block_hash),
             &genesis,
             &v2,
             &bonds,
@@ -246,7 +246,7 @@ async fn estimator_on_simple_dag_should_return_the_appropriate_score_map_and_for
         let b7 = create_test_block(
             &mut block_store,
             &mut block_dag_storage,
-            &[b4.block_hash.clone()],
+            std::slice::from_ref(&b4.block_hash),
             &genesis,
             &v1,
             &bonds,
@@ -256,7 +256,7 @@ async fn estimator_on_simple_dag_should_return_the_appropriate_score_map_and_for
         let b8 = create_test_block(
             &mut block_store,
             &mut block_dag_storage,
-            &[b7.block_hash.clone()],
+            std::slice::from_ref(&b7.block_hash),
             &genesis,
             &v1,
             &bonds,
@@ -321,7 +321,7 @@ async fn estimator_on_flipping_forkchoice_dag_should_return_the_appropriate_scor
         let b2 = create_test_block(
             &mut block_store,
             &mut block_dag_storage,
-            &[genesis.block_hash.clone()],
+            std::slice::from_ref(&genesis.block_hash),
             &genesis,
             &v2,
             &bonds,
@@ -331,7 +331,7 @@ async fn estimator_on_flipping_forkchoice_dag_should_return_the_appropriate_scor
         let b3 = create_test_block(
             &mut block_store,
             &mut block_dag_storage,
-            &[genesis.block_hash.clone()],
+            std::slice::from_ref(&genesis.block_hash),
             &genesis,
             &v1,
             &bonds,
@@ -341,7 +341,7 @@ async fn estimator_on_flipping_forkchoice_dag_should_return_the_appropriate_scor
         let b4 = create_test_block(
             &mut block_store,
             &mut block_dag_storage,
-            &[b2.block_hash.clone()],
+            std::slice::from_ref(&b2.block_hash),
             &genesis,
             &v3,
             &bonds,
@@ -351,7 +351,7 @@ async fn estimator_on_flipping_forkchoice_dag_should_return_the_appropriate_scor
         let b5 = create_test_block(
             &mut block_store,
             &mut block_dag_storage,
-            &[b3.block_hash.clone()],
+            std::slice::from_ref(&b3.block_hash),
             &genesis,
             &v2,
             &bonds,
@@ -361,7 +361,7 @@ async fn estimator_on_flipping_forkchoice_dag_should_return_the_appropriate_scor
         let b6 = create_test_block(
             &mut block_store,
             &mut block_dag_storage,
-            &[b4.block_hash.clone()],
+            std::slice::from_ref(&b4.block_hash),
             &genesis,
             &v1,
             &bonds,
@@ -371,7 +371,7 @@ async fn estimator_on_flipping_forkchoice_dag_should_return_the_appropriate_scor
         let b7 = create_test_block(
             &mut block_store,
             &mut block_dag_storage,
-            &[b5.block_hash.clone()],
+            std::slice::from_ref(&b5.block_hash),
             &genesis,
             &v3,
             &bonds,
@@ -381,7 +381,7 @@ async fn estimator_on_flipping_forkchoice_dag_should_return_the_appropriate_scor
         let b8 = create_test_block(
             &mut block_store,
             &mut block_dag_storage,
-            &[b6.block_hash.clone()],
+            std::slice::from_ref(&b6.block_hash),
             &genesis,
             &v2,
             &bonds,

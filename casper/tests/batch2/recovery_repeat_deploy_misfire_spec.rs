@@ -138,7 +138,7 @@ async fn repeat_deploy_correctly_rejects_stale_recovery_when_d_is_finalized() {
         rejected.insert(deploy_sig.clone());
         snapshot.rejected_in_scope = Arc::new(rejected);
 
-        let result = Validate::repeat_deploy(&block_w, &mut snapshot, &mut block_store, 50);
+        let result = Validate::repeat_deploy(&block_w, &mut snapshot, &block_store, 50);
 
         assert!(
             matches!(

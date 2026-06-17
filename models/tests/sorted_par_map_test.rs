@@ -191,7 +191,7 @@ fn sorted_par_map_should_be_equal_when_it_is_equal() {
 
 #[test]
 fn sorted_par_map_should_keep_keys_sorted() {
-    let sorted_par_map_keys = vec![
+    let sorted_par_map_keys = [
         Par::default().with_connective_used(true),
         Par::default().with_bundles(vec![Bundle {
             body: Some(Par::default()),
@@ -231,7 +231,7 @@ fn sorted_par_map_should_sort_all_input() {
         .iter()
         .map(|(_, value)| value.clone())
         .collect();
-    let kvs: Vec<(Par, Par)> = keys.into_iter().zip(values.into_iter()).collect();
+    let kvs: Vec<(Par, Par)> = keys.into_iter().zip(values).collect();
 
     let map = SortedParMap::create_from_vec(kvs.clone());
 
@@ -277,14 +277,14 @@ fn sorted_par_map_should_preserve_sortedness_for_all_operations() {
     let pairs1: Vec<(Par, Par)> = pars1
         .clone()
         .into_iter()
-        .zip(pars2.clone().into_iter())
+        .zip(pars2.clone())
         .map(|((k1, v1), _)| (k1, v1)) // take pairs from the first list
         .collect();
 
     let pairs2: Vec<(Par, Par)> = pars2
         .clone()
         .into_iter()
-        .zip(pars1.clone().into_iter())
+        .zip(pars1.clone())
         .map(|((k1, v1), _)| (k1, v1)) // take pairs from the second list
         .collect();
 

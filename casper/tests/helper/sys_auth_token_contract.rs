@@ -19,7 +19,7 @@ pub async fn get(
                 let auth_token = new_gsys_auth_token_par(Vec::new(), false);
 
                 let output = vec![auth_token];
-                produce(&output, &ack_channel).await?;
+                produce(&output, ack_channel).await?;
                 Ok(output)
             }
             _ => Err(illegal_argument_error("sys_auth_token_make")),

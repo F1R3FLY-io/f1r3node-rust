@@ -830,9 +830,9 @@ mod tests {
         default_config.override_config_values(options);
 
         // Verify that CLI options have overridden the default values
-        assert_eq!(default_config.standalone, true);
-        assert_eq!(default_config.autopropose, false);
-        assert_eq!(default_config.dev_mode, true);
+        assert!(default_config.standalone);
+        assert!(!default_config.autopropose);
+        assert!(default_config.dev_mode);
 
         // Protocol server fields
         assert_eq!(
@@ -843,10 +843,10 @@ mod tests {
             default_config.protocol_server.host,
             Some("localhost".to_string())
         );
-        assert_eq!(default_config.protocol_server.allow_private_addresses, true);
-        assert_eq!(default_config.protocol_server.use_random_ports, true);
-        assert_eq!(default_config.protocol_server.dynamic_ip, true);
-        assert_eq!(default_config.protocol_server.no_upnp, true);
+        assert!(default_config.protocol_server.allow_private_addresses);
+        assert!(default_config.protocol_server.use_random_ports);
+        assert!(default_config.protocol_server.dynamic_ip);
+        assert!(default_config.protocol_server.no_upnp);
         assert_eq!(default_config.protocol_server.port, 11111);
         assert_eq!(
             default_config.protocol_server.grpc_max_recv_message_size,
@@ -859,10 +859,10 @@ mod tests {
             111111
         );
         assert_eq!(default_config.protocol_server.max_message_consumers, 111111);
-        assert_eq!(default_config.protocol_server.disable_state_exporter, true);
+        assert!(default_config.protocol_server.disable_state_exporter);
 
         // Protocol client fields
-        assert_eq!(default_config.protocol_client.disable_lfs, true);
+        assert!(default_config.protocol_client.disable_lfs);
         assert_eq!(default_config.protocol_client.bootstrap, "rnode://de6eed5d00cf080fc587eeb412cb31a75fd10358@52.119.8.109?protocol=40400&discovery=40404".to_string());
         assert_eq!(
             default_config.protocol_client.network_timeout,
@@ -895,7 +895,7 @@ mod tests {
         );
 
         // API server fields
-        assert_eq!(default_config.api_server.enable_reporting, true);
+        assert!(default_config.api_server.enable_reporting);
         assert_eq!(default_config.api_server.port_grpc_external, 11111);
         assert_eq!(default_config.api_server.port_grpc_internal, 11111);
         assert_eq!(default_config.api_server.port_http, 11111);
@@ -935,7 +935,7 @@ mod tests {
         );
 
         // TLS fields
-        assert_eq!(default_config.tls.secure_random_non_blocking, true);
+        assert!(default_config.tls.secure_random_non_blocking);
         assert_eq!(
             default_config.tls.key_path,
             PathBuf::from("/var/lib/rnode/node.key.pem")
@@ -946,11 +946,11 @@ mod tests {
         );
 
         // Metrics fields
-        assert_eq!(default_config.metrics.prometheus, true);
-        assert_eq!(default_config.metrics.influxdb, true);
-        assert_eq!(default_config.metrics.influxdb_udp, true);
-        assert_eq!(default_config.metrics.zipkin, true);
-        assert_eq!(default_config.metrics.sigar, true);
+        assert!(default_config.metrics.prometheus);
+        assert!(default_config.metrics.influxdb);
+        assert!(default_config.metrics.influxdb_udp);
+        assert!(default_config.metrics.zipkin);
+        assert!(default_config.metrics.sigar);
 
         // Dev fields
         assert_eq!(
@@ -1141,12 +1141,11 @@ mod tests {
             default_config.casper.genesis_ceremony.autogen_shard_size,
             111111
         );
-        assert_eq!(
+        assert!(
             default_config
                 .casper
                 .genesis_ceremony
-                .genesis_validator_mode,
-            true
+                .genesis_validator_mode
         );
     }
 }

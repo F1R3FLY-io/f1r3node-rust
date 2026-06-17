@@ -79,11 +79,8 @@ fn arb_psw() -> impl Strategy<Value = PoSStateW> {
                 0u64..10_000,
             )
                 .prop_map(move |(w, rewards_vec, balance)| {
-                    let rewards: BTreeMap<Validator, u64> = withdrawers_clone
-                        .keys()
-                        .copied()
-                        .zip(rewards_vec.into_iter())
-                        .collect();
+                    let rewards: BTreeMap<Validator, u64> =
+                        withdrawers_clone.keys().copied().zip(rewards_vec).collect();
                     PoSStateW {
                         withdrawers: w,
                         rewards,

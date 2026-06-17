@@ -105,8 +105,9 @@ type LookupResult = (
     i64,
 );
 
+#[allow(clippy::type_complexity)]
 fn lookup_elements(
-    block_elements: &Vec<BlockMessage>,
+    block_elements: &[BlockMessage],
     dag_storage: &BlockDagKeyValueStorage,
     topo_sort_start_block_number: Option<i64>,
 ) -> LookupResult {
@@ -153,7 +154,7 @@ fn lookup_elements(
 
 fn test_lookup_elements_result(
     lookup_result: &LookupResult,
-    block_elements: &Vec<BlockMessage>,
+    block_elements: &[BlockMessage],
     genesis: &BlockMessage,
 ) {
     let (list, latest_message_hashes, latest_messages, topo_sort, latest_block_number) =
@@ -166,7 +167,7 @@ fn test_lookup_elements_result(
                 if !block_element.sender.is_empty() {
                     acc.insert(
                         block_element.sender.clone(),
-                        BlockMetadata::from_block(&block_element, false, None, None),
+                        BlockMetadata::from_block(block_element, false, None, None),
                     );
                 }
                 acc
@@ -179,7 +180,7 @@ fn test_lookup_elements_result(
         )| {
             assert_eq!(
                 *block_metadata,
-                Some(BlockMetadata::from_block(&block_element, false, None, None))
+                Some(BlockMetadata::from_block(block_element, false, None, None))
             );
 
             assert_eq!(
@@ -191,9 +192,7 @@ fn test_lookup_elements_result(
 
             assert_eq!(
                 *latest_message,
-                real_latest_messages
-                    .get(&block_element.sender)
-                    .map(|metadata| metadata.clone())
+                real_latest_messages.get(&block_element.sender).cloned()
             );
 
             let children_set = children.as_ref().map(|dash_set| {
@@ -215,7 +214,7 @@ fn test_lookup_elements_result(
                 .collect();
 
             assert_eq!(children_set, Some(expected_children));
-            assert_eq!(*contains, true);
+            assert!(*contains);
         },
     );
 
@@ -315,7 +314,7 @@ fn dag_storage_should_be_able_to_handle_checking_if_contains_a_block_with_empty_
         .get_representation()
         .expect("dag representation");
     let contains = dag.contains(&prost::bytes::Bytes::new());
-    assert_eq!(contains, false);
+    assert!(!contains);
 }
 
 #[test]
@@ -460,7 +459,7 @@ fn dag_storage_should_be_able_to_restore_invalid_blocks_on_startup() {
 
       let dag = dag_storage.get_representation().expect("dag representation");
       let invalid_blocks = dag.invalid_blocks();
-      let invalid_blocks_set: HashSet<_> = invalid_blocks.iter().map(|item| item.clone()).collect();
+      let invalid_blocks_set: HashSet<_> = invalid_blocks.iter().cloned().collect();
       assert_eq!(invalid_blocks_set, block_elements.into_iter().map(|b| BlockMetadata::from_block(&b, true, None, None)).collect::<HashSet<_>>());
     });
 }
@@ -681,23 +680,20 @@ async fn recording_of_new_directly_finalized_block_should_record_finalized_all_n
         )
         .unwrap();
 
-    assert_eq!(
-        dag.lookup_unsafe(&genesis.block_hash).unwrap().finalized,
-        true
-    );
-    assert_eq!(dag.is_finalized(&genesis.block_hash), true);
+    assert!(dag.lookup_unsafe(&genesis.block_hash).unwrap().finalized);
+    assert!(dag.is_finalized(&genesis.block_hash));
 
-    assert_eq!(dag.lookup_unsafe(&b1.block_hash).unwrap().finalized, false);
-    assert_eq!(dag.is_finalized(&b1.block_hash), false);
+    assert!(!dag.lookup_unsafe(&b1.block_hash).unwrap().finalized);
+    assert!(!dag.is_finalized(&b1.block_hash));
 
-    assert_eq!(dag.lookup_unsafe(&b2.block_hash).unwrap().finalized, false);
-    assert_eq!(dag.is_finalized(&b2.block_hash), false);
+    assert!(!dag.lookup_unsafe(&b2.block_hash).unwrap().finalized);
+    assert!(!dag.is_finalized(&b2.block_hash));
 
-    assert_eq!(dag.lookup_unsafe(&b3.block_hash).unwrap().finalized, false);
-    assert_eq!(dag.is_finalized(&b3.block_hash), false);
+    assert!(!dag.lookup_unsafe(&b3.block_hash).unwrap().finalized);
+    assert!(!dag.is_finalized(&b3.block_hash));
 
-    assert_eq!(dag.lookup_unsafe(&b4.block_hash).unwrap().finalized, false);
-    assert_eq!(dag.is_finalized(&b4.block_hash), false);
+    assert!(!dag.lookup_unsafe(&b4.block_hash).unwrap().finalized);
+    assert!(!dag.is_finalized(&b4.block_hash));
 
     let effects = std::sync::Arc::new(std::sync::Mutex::new(HashSet::new()));
     let effects_clone = effects.clone();
@@ -722,26 +718,26 @@ async fn recording_of_new_directly_finalized_block_should_record_finalized_all_n
         .get_representation()
         .expect("dag representation");
     assert_eq!(dag.last_finalized_block(), b3.block_hash);
-    assert_eq!(dag.is_finalized(&b1.block_hash), true);
-    assert_eq!(dag.is_finalized(&b2.block_hash), true);
-    assert_eq!(dag.is_finalized(&b3.block_hash), true);
-    assert_eq!(dag.is_finalized(&b4.block_hash), false);
+    assert!(dag.is_finalized(&b1.block_hash));
+    assert!(dag.is_finalized(&b2.block_hash));
+    assert!(dag.is_finalized(&b3.block_hash));
+    assert!(!dag.is_finalized(&b4.block_hash));
 
     let b1_meta = dag.lookup_unsafe(&b1.block_hash).unwrap();
-    assert_eq!(b1_meta.finalized, true);
-    assert_eq!(b1_meta.directly_finalized, false);
+    assert!(b1_meta.finalized);
+    assert!(!b1_meta.directly_finalized);
 
     let b2_meta = dag.lookup_unsafe(&b2.block_hash).unwrap();
-    assert_eq!(b2_meta.finalized, true);
-    assert_eq!(b2_meta.directly_finalized, false);
+    assert!(b2_meta.finalized);
+    assert!(!b2_meta.directly_finalized);
 
     let b3_meta = dag.lookup_unsafe(&b3.block_hash).unwrap();
-    assert_eq!(b3_meta.finalized, true);
-    assert_eq!(b3_meta.directly_finalized, true);
+    assert!(b3_meta.finalized);
+    assert!(b3_meta.directly_finalized);
 
     let b4_meta = dag.lookup_unsafe(&b4.block_hash).unwrap();
-    assert_eq!(b4_meta.finalized, false);
-    assert_eq!(b4_meta.directly_finalized, false);
+    assert!(!b4_meta.finalized);
+    assert!(!b4_meta.directly_finalized);
 
     // Check that all finalized blocks were captured in the effects
     let finalized_effects = effects.lock().unwrap();
