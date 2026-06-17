@@ -8,7 +8,8 @@ on:
       - master
       - staging
       - trying
-    tags: "**"
+    tags:
+      - "**"
   pull_request:
     branches:
       - dev
@@ -427,6 +428,13 @@ jobs:
           repository: F1R3FLY-io/system-integration
           ref: fix/test-stability
           path: system-integration
+
+      - name: Clone pyf1r3fly
+        uses: actions/checkout@v4
+        with:
+          repository: F1R3FLY-io/pyf1r3fly
+          ref: main
+          path: system-integration/services/pyf1r3fly
 
       - name: Load Docker Image (from build_docker_image artifact)
         uses: actions/download-artifact@v4
