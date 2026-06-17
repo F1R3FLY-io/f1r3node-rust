@@ -14,7 +14,8 @@ no-default-features = false
 [advisories]
 db-path = "$CARGO_HOME/advisory-db"
 db-urls = ["https://github.com/RustSec/advisory-db"]
-yanked = "warn"
+# Fail on yanked crates — a yank is often a pulled-for-security release.
+yanked = "deny"
 
 # Specific advisories knowingly accepted. Each entry MUST justify why.
 ignore = [
