@@ -19,7 +19,7 @@ use std::collections::{BTreeSet, HashSet};
 
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
-use models::rust::block::floor_data::{FloorData, SealedRejection};
+use models::rust::block::floor_data::{FloorData, SealedAcceptance, SealedRejection};
 use models::rust::block::state_hash::StateHashSerde;
 use models::rust::block_hash::{BlockHash, BlockHashSerde};
 use models::rust::casper::pretty_printer::PrettyPrinter;
@@ -148,21 +148,31 @@ pub async fn enforcement_window(
 /// exactly-once decision (re-proposal admission, repeat validation).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeployFateAtFloor {
-    /// Included at-or-below the floor and absent from the sealed rejected set:
-    /// its effects are in `FS(floor)`. Re-executing it is double-application.
+    /// The sig has at least one sealed-ACCEPTED inclusion: its effect is in
+    /// `FS`. Re-executing it is double-application — even if a LATER inclusion
+    /// was sealed-rejected. Recovery must drop it; `repeat_deploy` must reject
+    /// any re-inclusion.
     SealedAccepted,
-    /// In the sealed rejected set with no newer inclusion known: its effects
-    /// are finally absent from `FS(floor)`. Re-proposal is the recovery path.
+    /// The sig has a sealed REJECTION and NO sealed acceptance: its effect is
+    /// finally absent from `FS`. Re-proposal is the recovery path.
     SealedRejected,
-    /// No sealed verdict usable for a re-execution decision: never included,
-    /// still in flight above the floor, or sealed-rejected but already
-    /// re-included above the floor (that copy's fate is still open).
+    /// Neither sealed-accepted nor sealed-rejected: never included, or still in
+    /// flight above the floor. Held; never mistaken for a sealed effect, never
+    /// authorizes another copy.
     Unsealed,
 }
 
-/// Per-floor resolver for [`DeployFateAtFloor`] — builds the sealed rejected
-/// pair set and floor closure once, then answers per-sig queries.
+/// Per-floor resolver for [`DeployFateAtFloor`] — builds the sealed accepted
+/// and rejected sets and the floor closure once, then answers per-sig queries.
+///
+/// The decision is "any accepted inclusion wins": the deploy index's
+/// most-recent inclusion is NOT the authority, because a deploy accepted into
+/// `FS` at one inclusion and re-included-then-rejected at a later one would
+/// otherwise be misclassified `SealedRejected` and re-executed onto its own
+/// finalized cell (the content-twin).
 pub struct FloorFateResolver {
+    accepted_sigs: HashSet<prost::bytes::Bytes>,
+    rejected_sigs: HashSet<prost::bytes::Bytes>,
     rejected_pairs: HashSet<(prost::bytes::Bytes, BlockHash)>,
     closure: std::sync::Arc<HashSet<BlockHash>>,
 }
@@ -174,56 +184,68 @@ impl FloorFateResolver {
         floor_hash: &BlockHash,
         floor_data: &FloorData,
     ) -> Result<Self, CasperError> {
+        let rejected_pairs: HashSet<(prost::bytes::Bytes, BlockHash)> = floor_data
+            .rejected_deploys
+            .iter()
+            .map(|r| (r.sig.clone(), r.host.0.clone()))
+            .collect();
+        let rejected_sigs: HashSet<prost::bytes::Bytes> =
+            rejected_pairs.iter().map(|(s, _)| s.clone()).collect();
+        let accepted_sigs: HashSet<prost::bytes::Bytes> = floor_data
+            .accepted_deploys
+            .iter()
+            .map(|a| a.sig.clone())
+            .collect();
         Ok(FloorFateResolver {
-            rejected_pairs: floor_data
-                .rejected_deploys
-                .iter()
-                .map(|r| (r.sig.clone(), r.host.0.clone()))
-                .collect(),
+            accepted_sigs,
+            rejected_sigs,
+            rejected_pairs,
             closure: floor_closure(dag, runtime_manager, floor_hash)?,
         })
     }
 
-    /// Fate of `sig` at this floor, judged on its most recent inclusion (the
-    /// deploy index maps a sig to its most recently inserted host block):
+    /// Fate of `sig` at this floor under the "any accepted inclusion wins" rule:
     ///
-    /// - inclusion sealed (in closure) and ITS pair rejected → `SealedRejected`
-    ///   (recovery's re-proposal trigger);
-    /// - inclusion sealed and its pair absent → `SealedAccepted` (effects are
-    ///   in `FS(floor)` — including a recovered re-inclusion that composed);
-    /// - inclusion above the floor or unknown → `Unsealed` (in flight; never
-    ///   mistaken for a sealed effect, never authorizes another copy).
+    /// - any sealed-accepted inclusion → `SealedAccepted` (effect in `FS`,
+    ///   never re-execute — overrides any later sealed rejection);
+    /// - else a sealed rejection → `SealedRejected` (recovery trigger);
+    /// - else → `Unsealed` (in flight / unknown).
     pub fn fate(
         &self,
         dag: &KeyValueDagRepresentation,
         sig: &prost::bytes::Bytes,
     ) -> Result<DeployFateAtFloor, CasperError> {
-        let indexed_inclusion = dag
+        let fate = if self.accepted_sigs.contains(sig) {
+            DeployFateAtFloor::SealedAccepted
+        } else if self.rejected_sigs.contains(sig) {
+            DeployFateAtFloor::SealedRejected
+        } else {
+            DeployFateAtFloor::Unsealed
+        };
+        // Diagnostic: surface the deploy index's most-recent inclusion (what the
+        // OLD logic judged on) alongside the authoritative set memberships, so a
+        // SealedAccepted verdict that overrides a most-recent rejection is
+        // visible in the trace.
+        let __probe_indexed = dag
             .lookup_by_deploy_id(&sig.to_vec())
             .map_err(CasperError::KvStoreError)?;
-        let __probe_indexed = indexed_inclusion.clone();
-        let __probe_any = self.rejected_pairs.iter().any(|(s, _)| s == sig);
-        let fate = match indexed_inclusion {
-            Some(block) if self.closure.contains(&block) => {
-                if self.rejected_pairs.contains(&(sig.clone(), block)) {
-                    DeployFateAtFloor::SealedRejected
-                } else {
-                    DeployFateAtFloor::SealedAccepted
-                }
-            }
-            _ => DeployFateAtFloor::Unsealed,
-        };
         tracing::trace!(
             target: "f1r3.trace.fateprobe",
             sig = %hex::encode(&sig[..sig.len().min(16)]),
             indexed = %__probe_indexed.as_ref().map(|b| hex::encode(&b[..b.len().min(4)])).unwrap_or_else(|| "none".into()),
-            in_closure = __probe_indexed.as_ref().map(|b| self.closure.contains(b)).unwrap_or(false),
-            exact_pair_rejected = __probe_indexed.as_ref().map(|b| self.rejected_pairs.contains(&(sig.clone(), b.clone()))).unwrap_or(false),
-            any_host_rejected = __probe_any,
+            indexed_in_closure = __probe_indexed.as_ref().map(|b| self.closure.contains(b)).unwrap_or(false),
+            accepted = self.accepted_sigs.contains(sig),
+            rejected = self.rejected_sigs.contains(sig),
             fate = ?fate,
             "FATEPROBE"
         );
         Ok(fate)
+    }
+
+    /// Whether `sig` has any sealed-accepted inclusion (effect in `FS`). The
+    /// exactly-once authority shared by recovery admission and `repeat_deploy`.
+    pub fn is_sealed_accepted(&self, sig: &prost::bytes::Bytes) -> bool {
+        self.accepted_sigs.contains(sig)
     }
 
     /// Membership of `block_hash` in `closure(floor)` — for callers that
@@ -303,6 +325,7 @@ pub async fn floor_state_get_or_compute(
             let seed = FloorData {
                 state_hash: StateHashSerde(genesis.body.state.post_state_hash.clone()),
                 rejected_deploys: Vec::new(),
+                accepted_deploys: Vec::new(),
                 block_number: genesis.body.state.block_number,
             };
             dag.put_floor_state(cursor.clone(), seed.clone())?;
@@ -422,7 +445,7 @@ async fn seal_floor_cut(
     .await?;
 
     let base_state = Blake2b256Hash::from_bytes_prost(&prev_state.state_hash.0);
-    let (sealed_state, rejected_user, _rejected_slash) = dag_merger::merge(
+    let (sealed_state, applied_user, rejected_user, _rejected_slash) = dag_merger::merge(
         dag,
         &prev.hash,
         &base_state,
@@ -443,22 +466,63 @@ async fn seal_floor_cut(
         sig,
         host: BlockHashSerde(src),
     }));
-    let sealed_state_bytes = sealed_state.to_bytes_prost();
+
+    // Accumulate kept-chain acceptances the same way: a deploy accepted into FS
+    // at any cut stays accepted at every later cut. "Any accepted inclusion
+    // wins" is enforced at read time by the FloorFateResolver; here we only
+    // record the per-inclusion acceptances.
+    let mut accepted: BTreeSet<SealedAcceptance> =
+        prev_state.accepted_deploys.iter().cloned().collect();
+    let accepted_carried = accepted.len();
+    accepted.extend(applied_user.into_iter().map(|(sig, src)| SealedAcceptance {
+        sig,
+        host: BlockHashSerde(src),
+    }));
+    // FS(cut) IS the cut block's committed, finalized post-state — NOT the
+    // independent cone re-merge above. The re-merge is kept ONLY to derive the
+    // rejected/accepted ledgers the construction-time enforcement window needs;
+    // its STATE result systematically dropped writes the finalized block itself
+    // committed (verified: cut #40 committed map{b,c} but the re-merge sealed
+    // {b}), making FS strictly lossier than the chain it summarizes and causing
+    // the finalized cell to oscillate/regress across cuts. The block's post-state
+    // is consensus-validated (replay must reproduce it), node-identical, and a
+    // pure function of the block — the same path-independence the re-merge was
+    // introduced for, without the loss. Restores the FS(B) ≡ B.post_state
+    // property an earlier iteration had; mirrors RChain's fringeState.
+    let remerge_state_bytes = sealed_state.to_bytes_prost();
+    let committed_state_bytes = block_store.get_unsafe(cut).body.state.post_state_hash.clone();
+
+    if committed_state_bytes != remerge_state_bytes {
+        // Diagnostic: surface residual divergence so a run MEASURES how often /
+        // how far the re-merge would have lost state vs the committed block.
+        tracing::debug!(
+            target: "f1r3.trace.fs_floor",
+            event = "seal_state_divergence",
+            cut = %PrettyPrinter::build_string_bytes(cut),
+            cut_number,
+            committed = %PrettyPrinter::build_string_bytes(&committed_state_bytes),
+            remerge = %PrettyPrinter::build_string_bytes(&remerge_state_bytes),
+            "FS set to committed block post-state; cone re-merge diverged (lossy) — kept for ledgers only"
+        );
+    }
 
     tracing::debug!(
         target: "f1r3.trace.fs_floor",
         event = "seal_result",
         cut = %PrettyPrinter::build_string_bytes(cut),
         cut_number,
-        fs_state = %PrettyPrinter::build_string_bytes(&sealed_state_bytes),
+        fs_state = %PrettyPrinter::build_string_bytes(&committed_state_bytes),
         rejected_total = rejected.len(),
         rejected_carried = carried,
-        "sealed floor state"
+        accepted_total = accepted.len(),
+        accepted_carried,
+        "sealed floor state (= committed block post-state)"
     );
 
     Ok(FloorData {
-        state_hash: StateHashSerde(sealed_state_bytes),
+        state_hash: StateHashSerde(committed_state_bytes),
         rejected_deploys: rejected.into_iter().collect(),
+        accepted_deploys: accepted.into_iter().collect(),
         block_number: cut_number,
     })
 }

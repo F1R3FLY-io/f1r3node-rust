@@ -752,3 +752,99 @@ async fn finalized_floor_admits_mergeable_cofinalized_siblings() {
     })
     .await;
 }
+
+/// Regression lock for the recover-an-already-finalized-deploy content-twin.
+///
+/// A sig that is sealed-ACCEPTED at one inclusion and sealed-REJECTED at a
+/// later one must resolve `SealedAccepted` (its effect is in `FS`, so it must
+/// never be re-executed), not `SealedRejected`. The pre-fix `fate` judged by
+/// the single most-recent inclusion (`lookup_by_deploy_id`) and so returned
+/// `SealedRejected` for exactly this shape — recovery then re-executed the
+/// finalized deploy onto its own deterministic pre-charge cell, producing the
+/// `[0,0]` twin that wedged the proposer. The fix makes acceptance authoritative
+/// ("any accepted inclusion wins").
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn fate_any_accepted_inclusion_overrides_a_later_rejection() {
+    use casper::rust::finality::floor_seal::{DeployFateAtFloor, FloorFateResolver};
+    use models::rust::block::floor_data::{FloorData, SealedAcceptance, SealedRejection};
+    use models::rust::block::state_hash::StateHashSerde;
+    use models::rust::block_hash::BlockHashSerde;
+    use prost::bytes::Bytes;
+
+    crate::init_logger();
+    with_storage(|mut block_store, mut block_dag_storage| async move {
+        let genesis = create_genesis_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        let genesis_hash = genesis.block_hash.clone();
+        let dag = block_dag_storage.get_representation();
+        let rm = crate::util::rholang::resources::mk_runtime_manager("fate-accepted-", None).await;
+
+        let accepted_host = BlockHashSerde(genesis_hash.clone());
+        let rejected_host =
+            BlockHashSerde(Bytes::from_static(b"a-later-rejecting-host-block-hash"));
+
+        let sig_both: Bytes = Bytes::from_static(b"sig-accepted-then-rejected");
+        let sig_rejected_only: Bytes = Bytes::from_static(b"sig-rejected-only");
+        let sig_unseen: Bytes = Bytes::from_static(b"sig-never-sealed");
+
+        let floor_data = FloorData {
+            state_hash: StateHashSerde(genesis.body.state.post_state_hash.clone()),
+            rejected_deploys: vec![
+                SealedRejection {
+                    sig: sig_both.clone(),
+                    host: rejected_host.clone(),
+                },
+                SealedRejection {
+                    sig: sig_rejected_only.clone(),
+                    host: rejected_host.clone(),
+                },
+            ],
+            accepted_deploys: vec![SealedAcceptance {
+                sig: sig_both.clone(),
+                host: accepted_host.clone(),
+            }],
+            block_number: genesis.body.state.block_number,
+        };
+
+        let resolver = FloorFateResolver::new(&dag, &rm, &genesis_hash, &floor_data)
+            .expect("build FloorFateResolver");
+
+        // The fix: a sig with ANY accepted inclusion is SealedAccepted even
+        // though it also carries a (later) sealed rejection.
+        assert!(
+            resolver.is_sealed_accepted(&sig_both),
+            "sig with an accepted inclusion must be reported sealed-accepted"
+        );
+        assert_eq!(
+            resolver.fate(&dag, &sig_both).expect("fate sig_both"),
+            DeployFateAtFloor::SealedAccepted,
+            "accepted-and-rejected sig must be SealedAccepted (effect in FS), not SealedRejected"
+        );
+
+        // Negative controls: rejected-only recovers; never-sealed is in flight.
+        assert!(!resolver.is_sealed_accepted(&sig_rejected_only));
+        assert_eq!(
+            resolver
+                .fate(&dag, &sig_rejected_only)
+                .expect("fate sig_rejected_only"),
+            DeployFateAtFloor::SealedRejected,
+            "rejected-only sig must remain SealedRejected (recovery path)"
+        );
+        assert_eq!(
+            resolver.fate(&dag, &sig_unseen).expect("fate sig_unseen"),
+            DeployFateAtFloor::Unsealed,
+            "never-sealed sig must be Unsealed"
+        );
+    })
+    .await;
+}

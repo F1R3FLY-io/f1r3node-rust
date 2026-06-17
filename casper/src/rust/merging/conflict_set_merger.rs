@@ -146,6 +146,10 @@ pub fn resolve_conflicts<R: Clone + Eq + std::hash::Hash + PartialOrd + Ord>(
     // duplicates of finalized-accepted work and are force-rejected.
     final_set: &FinalSet<R>,
     carries_enforced_sig: &impl Fn(&R) -> bool,
+    // DIAG: called once per force-rejected branch with the three reason flags
+    // (conflicts_with_final, enforced_sig, depends_on_rejected) so a caller can
+    // attribute enforcement-window rejections to specific deploys/channels.
+    force_reject_log: &impl Fn(&HashableSet<R>, bool, bool, bool),
 ) -> Result<ResolvedConflicts<R>, HistoryError> {
     // Convert to Sets for set operations, but use Vec for ordered iteration
     let actual_set: HashSet<R> = actual_seq.iter().cloned().collect();
@@ -225,6 +229,12 @@ pub fn resolve_conflicts<R: Clone + Eq + std::hash::Hash + PartialOrd + Ord>(
             });
             if conflicts_with_final || enforced_sig || depends_on_rejected {
                 forced.insert(branch.clone());
+                force_reject_log(
+                    branch,
+                    conflicts_with_final,
+                    enforced_sig,
+                    depends_on_rejected,
+                );
             }
         }
     }
@@ -598,6 +608,7 @@ pub fn merge<
         &compute_conflict_map,
         &FinalSet::empty(),
         &|_| false,
+        &|_, _, _, _| {},
     )?;
     let new_state = compute_merged_state(
         &resolved,
@@ -999,6 +1010,7 @@ mod tests {
             &compute_conflict_map,
             &final_set,
             &carries_enforced_sig,
+            &|_, _, _, _| {},
         )
         .expect("resolve_conflicts must succeed");
 

@@ -25,6 +25,29 @@ pub struct SealedRejection {
     pub host: BlockHashSerde,
 }
 
+/// One seal-acceptance record: the chain hosting `sig` in block `host` was
+/// KEPT when its cone was sealed, so the deploy's effect is in `FS`. Keyed
+/// per INCLUSION (like [`SealedRejection`]) so retention windowing can prune
+/// by host height. The exactly-once authority is "any accepted inclusion
+/// wins": once a sig has any accepted record it is finalized-applied and must
+/// never be re-executed, even if a LATER re-inclusion was rejected.
+#[derive(
+    Clone,
+    Debug,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Serialize,
+    Deserialize
+)]
+pub struct SealedAcceptance {
+    #[serde(with = "shared::rust::serde_bytes")]
+    pub sig: Bytes,
+    pub host: BlockHashSerde,
+}
+
 /// The sealed finalized state at one floor cut, keyed (in storage) by the
 /// floor block hash.
 ///
@@ -47,6 +70,14 @@ pub struct FloorData {
     /// resurrected above the cut by a later merge; a RE-inclusion of the same
     /// sig in a new host is a fresh chain judged on its own merits.
     pub rejected_deploys: Vec<SealedRejection>,
+    /// Per-inclusion ACCEPTANCE verdicts accumulated by the seals up to this
+    /// cut: the deploys whose effect is in `FS`. A sig with any entry here is
+    /// finalized-applied — recovery must never re-propose it and `repeat_deploy`
+    /// must reject any re-inclusion, regardless of a more-recent sealed
+    /// rejection of a different inclusion. This is the fix for the
+    /// recover-an-already-finalized-deploy content-twin: judging by the single
+    /// most-recent inclusion classified an accepted deploy as `SealedRejected`.
+    pub accepted_deploys: Vec<SealedAcceptance>,
     /// Block number of the floor block, used for retention windowing.
     pub block_number: i64,
 }

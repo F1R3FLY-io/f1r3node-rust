@@ -376,6 +376,86 @@ impl Validate {
         Either::Right(ValidBlock::Valid)
     }
 
+    /// One BFS over the ancestry window (parents up to `expiration_threshold`
+    /// blocks back) returning, per sig in `sigs`, the highest block in which it
+    /// was INCLUDED (`body.deploys`) and the highest block in which it was
+    /// REJECTED (`body.rejected_deploys`). Every input is an ancestor block body
+    /// — consensus data — so the result is node-identical for the same parents.
+    ///
+    /// Shared by [`Self::repeat_deploy`] (block validation) and the proposer's
+    /// recovery gate (`block_creator::prepare_user_deploys`) so the two never
+    /// disagree about whether a deploy's effect is live in the ancestry. A
+    /// deploy is "live in the execution base" iff its latest inclusion height is
+    /// strictly greater than its latest rejection height (applied and not
+    /// merged away by a descendant) — see [`Self::is_live_in_ancestry`].
+    pub fn ancestry_inclusion_rejection(
+        dag: &block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation,
+        block_store: &KeyValueBlockStore,
+        init_parents: Vec<BlockMetadata>,
+        expiration_threshold: i32,
+        sigs: &HashSet<prost::bytes::Bytes>,
+    ) -> (
+        HashMap<prost::bytes::Bytes, (i64, BlockHash)>,
+        HashMap<prost::bytes::Bytes, i64>,
+    ) {
+        let max_block_number = proto_util::max_block_number_metadata(&init_parents);
+        let earliest_block_number = max_block_number + 1 - expiration_threshold as i64;
+
+        let visited = dag_ops::bf_traverse(init_parents, |metadata| {
+            proto_util::get_parent_metadatas_above_block_number(
+                metadata,
+                earliest_block_number,
+                dag,
+            )
+            .unwrap_or_default()
+        });
+
+        let mut latest_inclusion: HashMap<prost::bytes::Bytes, (i64, BlockHash)> = HashMap::new();
+        let mut latest_rejection: HashMap<prost::bytes::Bytes, i64> = HashMap::new();
+        for metadata in &visited {
+            let ancestor = block_store.get_unsafe(&metadata.block_hash);
+            for pd in &ancestor.body.deploys {
+                if sigs.contains(&pd.deploy.sig) {
+                    let entry = latest_inclusion
+                        .entry(pd.deploy.sig.clone())
+                        .or_insert((i64::MIN, BlockHash::default()));
+                    if metadata.block_number > entry.0 {
+                        *entry = (metadata.block_number, metadata.block_hash.clone());
+                    }
+                }
+            }
+            for rd in &ancestor.body.rejected_deploys {
+                if sigs.contains(&rd.sig) {
+                    let entry = latest_rejection.entry(rd.sig.clone()).or_insert(i64::MIN);
+                    if metadata.block_number > *entry {
+                        *entry = metadata.block_number;
+                    }
+                }
+            }
+        }
+        (latest_inclusion, latest_rejection)
+    }
+
+    /// True iff `sig`'s effect is live in the ancestry: it has a prior inclusion
+    /// AND no rejection at-or-above that inclusion's height. Such a deploy is
+    /// already applied in the execution base a new block builds on, so
+    /// re-executing it double-applies its deterministic cells (the content-twin).
+    /// The same predicate decides `repeat_deploy` invalidity and recovery-gate
+    /// admission, keeping proposer and validator consistent.
+    pub fn is_live_in_ancestry(
+        latest_inclusion: &HashMap<prost::bytes::Bytes, (i64, BlockHash)>,
+        latest_rejection: &HashMap<prost::bytes::Bytes, i64>,
+        sig: &prost::bytes::Bytes,
+    ) -> bool {
+        match latest_inclusion.get(sig) {
+            Some((inclusion_number, _)) => {
+                let rejection_number = latest_rejection.get(sig).copied().unwrap_or(i64::MIN);
+                *inclusion_number > rejection_number
+            }
+            None => false,
+        }
+    }
+
     /// Validate no deploy with the same sig has been produced in the chain
     /// Agnostic of non-parent justifications.
     ///
@@ -437,46 +517,19 @@ impl Validate {
             Err(e) => return Either::Left(BlockError::BlockException(CasperError::from(e))),
         };
 
-        // Calculate max block number and earliest acceptable block number
-        let max_block_number = proto_util::max_block_number_metadata(&init_parents);
-        let earliest_block_number = max_block_number + 1 - expiration_threshold as i64;
-
         // One traversal of the ancestry window collecting, per checked sig, the
         // most recent prior INCLUSION (body.deploys) and the most recent
-        // REJECTION record (body.rejected_deploys).
+        // REJECTION record (body.rejected_deploys). Shared with the proposer's
+        // recovery gate via `ancestry_inclusion_rejection` so the two never
+        // disagree about whether a deploy is live.
         tracing::debug!(target: "f1r3fly.casper", "before-repeat-deploy-ancestry-scan");
-        let visited = dag_ops::bf_traverse(init_parents, |metadata| {
-            proto_util::get_parent_metadatas_above_block_number(
-                metadata,
-                earliest_block_number,
-                &s.dag,
-            )
-            .unwrap_or_default()
-        });
-
-        let mut latest_inclusion: HashMap<prost::bytes::Bytes, (i64, BlockHash)> = HashMap::new();
-        let mut latest_rejection: HashMap<prost::bytes::Bytes, i64> = HashMap::new();
-        for metadata in &visited {
-            let ancestor = block_store.get_unsafe(&metadata.block_hash);
-            for pd in &ancestor.body.deploys {
-                if checked_sigs.contains(&pd.deploy.sig) {
-                    let entry = latest_inclusion
-                        .entry(pd.deploy.sig.clone())
-                        .or_insert((i64::MIN, BlockHash::default()));
-                    if metadata.block_number > entry.0 {
-                        *entry = (metadata.block_number, metadata.block_hash.clone());
-                    }
-                }
-            }
-            for rd in &ancestor.body.rejected_deploys {
-                if checked_sigs.contains(&rd.sig) {
-                    let entry = latest_rejection.entry(rd.sig.clone()).or_insert(i64::MIN);
-                    if metadata.block_number > *entry {
-                        *entry = metadata.block_number;
-                    }
-                }
-            }
-        }
+        let (latest_inclusion, latest_rejection) = Self::ancestry_inclusion_rejection(
+            &s.dag,
+            block_store,
+            init_parents,
+            expiration_threshold,
+            &checked_sigs,
+        );
 
         // Sealed-floor authority: the block's own floor is a pure function of
         // its justifications; the stored seal at that cut is the canonical
@@ -529,6 +582,26 @@ impl Validate {
         };
 
         for sig in &checked_sigs {
+            // Any sealed-ACCEPTED inclusion makes the deploy finalized-applied:
+            // re-including it is double-application, regardless of a more-recent
+            // sealed rejection of a different inclusion. This authority is what
+            // the most-recent-inclusion logic below cannot see — without it, a
+            // deploy accepted at one inclusion and rejected at a later one was
+            // exempted as "recovery" and re-executed onto its own finalized
+            // cell (the content-twin).
+            if let Some(resolver) = &fate_resolver {
+                if resolver.is_sealed_accepted(sig) {
+                    let message = format!(
+                        "deploy with sig {} is sealed-accepted at the floor (effect in the \
+                         finalized base); re-inclusion is double-application regardless of any \
+                         later rejection record",
+                        PrettyPrinter::build_string_bytes(sig),
+                    );
+                    tracing::warn!("{}", Self::ignore(block, &message));
+                    return Either::Left(BlockError::Invalid(InvalidBlock::InvalidRepeatDeploy));
+                }
+            }
+
             let Some((inclusion_number, inclusion_block)) = latest_inclusion.get(sig) else {
                 continue; // never included before — clean
             };
@@ -1375,5 +1448,66 @@ impl Validate {
         } else {
             Either::Left(BlockError::Invalid(InvalidBlock::LowDeployCost))
         }
+    }
+}
+
+#[cfg(test)]
+mod recovery_liveness_tests {
+    use std::collections::HashMap;
+
+    use models::rust::block_hash::BlockHash;
+    use prost::bytes::Bytes;
+
+    use super::Validate;
+
+    fn sig(b: u8) -> Bytes { Bytes::from(vec![b; 8]) }
+
+    fn host(b: u8) -> BlockHash { Bytes::from(vec![b; 32]) }
+
+    /// Applied at #9, rejected at #6: the effect IS live in the execution base,
+    /// so recovery must NOT re-execute it (doing so is the content-twin). This
+    /// is the exact wedge case (deploy re-applied above its last rejection).
+    #[test]
+    fn live_when_inclusion_above_rejection() {
+        let s = sig(1);
+        let incl = HashMap::from([(s.clone(), (9i64, host(9)))]);
+        let rej = HashMap::from([(s.clone(), 6i64)]);
+        assert!(Validate::is_live_in_ancestry(&incl, &rej, &s));
+    }
+
+    /// Applied at #4, rejected at #6 (and the equal-height boundary): the latest
+    /// inclusion was merged away, so the deploy is a genuine recovery candidate,
+    /// not live. The `>` rule mirrors `repeat_deploy`'s `rejection >= inclusion
+    /// => exempt`, keeping proposer and validator consistent.
+    #[test]
+    fn not_live_when_rejected_at_or_above_inclusion() {
+        let s = sig(2);
+        let incl = HashMap::from([(s.clone(), (4i64, host(4)))]);
+        assert!(!Validate::is_live_in_ancestry(
+            &incl,
+            &HashMap::from([(s.clone(), 6i64)]),
+            &s
+        ));
+        assert!(!Validate::is_live_in_ancestry(
+            &incl,
+            &HashMap::from([(s.clone(), 4i64)]),
+            &s
+        ));
+    }
+
+    /// Included with no rejection on record: live. Never included: not live.
+    #[test]
+    fn included_no_rejection_is_live_and_unseen_is_not() {
+        let s = sig(3);
+        assert!(Validate::is_live_in_ancestry(
+            &HashMap::from([(s.clone(), (9i64, host(9)))]),
+            &HashMap::new(),
+            &s
+        ));
+        assert!(!Validate::is_live_in_ancestry(
+            &HashMap::new(),
+            &HashMap::new(),
+            &s
+        ));
     }
 }

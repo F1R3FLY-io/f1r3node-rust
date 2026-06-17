@@ -973,7 +973,9 @@ pub async fn compute_parents_post_state(
             )?;
             let merge_ms = merge_started.elapsed().as_millis();
 
-            let (state, rejected_user_pairs, rejected_slash_pairs) = merger_result;
+            // `_applied_user` is consumed only by the seal (FloorData accepted
+            // ledger); the proposer's pre-state merge does not need it.
+            let (state, _applied_user, rejected_user_pairs, rejected_slash_pairs) = merger_result;
 
             tracing::debug!(
                 target: "f1r3fly.casper.parent_selection",

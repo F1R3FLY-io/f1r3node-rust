@@ -1499,48 +1499,16 @@ impl BlockAPI {
         };
 
         let dag = casper.block_dag().await?;
-        match crate::rust::api::deploy_finalization_status::resolve(
+        use crate::rust::api::deploy_finalization_status::{
+            DeployFinalizationState, DeployFinalizationStatus,
+        };
+        let resolved = match crate::rust::api::deploy_finalization_status::resolve(
             &dag,
             casper.block_store(),
             casper.casper_shard_conf().deploy_lifespan,
             sig,
         ) {
-            Ok(status) => {
-                // Finality = FS: the resolver reports `Finalized` from
-                // block-inclusion (body.deploys minus body.rejected_deploys
-                // records). Promote that to EFFECT-finality — a deploy is truly
-                // Finalized only if its effect survived into the sealed floor
-                // state. If the sig is in the FS(LFB) rejection ledger, its
-                // effect was sealed-rejected, so downgrade to Pending (the
-                // recovery path re-proposes it). Applied ONLY here (client
-                // reporting); the shared resolver — and thus the recovery admit
-                // path that also calls it — is untouched.
-                use crate::rust::api::deploy_finalization_status::{
-                    DeployFinalizationState, DeployFinalizationStatus,
-                };
-                if status.state == DeployFinalizationState::Finalized {
-                    let ft = casper.casper_shard_conf().fault_tolerance_threshold;
-                    let lfb_hash = dag.last_finalized_block();
-                    let rm = casper.runtime_manager();
-                    let fs = crate::rust::finality::floor_seal::floor_state_get_or_compute(
-                        &dag,
-                        casper.block_store(),
-                        &rm,
-                        &lfb_hash,
-                        ft,
-                    )
-                    .await?;
-                    let sealed_rejected = fs.rejected_deploys.iter().any(|r| r.sig.as_ref() == sig);
-                    if sealed_rejected {
-                        return Ok(DeployFinalizationStatus {
-                            state: DeployFinalizationState::Pending,
-                            rejection_count: status.rejection_count,
-                            latest_block_hash: status.latest_block_hash,
-                        });
-                    }
-                }
-                Ok(status)
-            }
+            Ok(status) => status,
             Err(err) => {
                 // Convert deploy-index inconsistency to `pending_unknown`
                 // so HTTP/gRPC callers see a tractable response. The
@@ -1551,12 +1519,52 @@ impl BlockAPI {
                     .downcast_ref::<crate::rust::api::deploy_finalization_status::DeployFinalizationCorruption>()
                     .is_some()
                 {
-                    Ok(crate::rust::api::deploy_finalization_status::DeployFinalizationStatus::pending_unknown())
-                } else {
-                    Err(err)
+                    return Ok(DeployFinalizationStatus::pending_unknown());
                 }
+                return Err(err);
             }
+        };
+
+        // Effect-finality from the sealed floor at the LFB is the AUTHORITY;
+        // the body-scan `resolve` judges by the most-recent inclusion and so
+        // misreports a deploy that was sealed-accepted at one inclusion and
+        // sealed-rejected at a later one (it returns `Pending`). "Any accepted
+        // inclusion wins":
+        //   - sig in FS accepted ledger  -> Finalized (overrides resolve);
+        //   - sig in FS rejected ledger and NOT accepted -> not effect-final,
+        //     so a body-inclusion `Finalized` is downgraded to Pending.
+        // A sig never seen in any block (no latest_block_hash and not Finalized)
+        // cannot be sealed-accepted, so skip the FS read on that hot path.
+        if resolved.latest_block_hash.is_none()
+            && resolved.state != DeployFinalizationState::Finalized
+        {
+            return Ok(resolved);
         }
+        let ft = casper.casper_shard_conf().fault_tolerance_threshold;
+        let lfb_hash = dag.last_finalized_block();
+        let rm = casper.runtime_manager();
+        let fs = crate::rust::finality::floor_seal::floor_state_get_or_compute(
+            &dag,
+            casper.block_store(),
+            &rm,
+            &lfb_hash,
+            ft,
+        )
+        .await?;
+        let sealed_accepted = fs.accepted_deploys.iter().any(|a| a.sig.as_ref() == sig);
+        let sealed_rejected = fs.rejected_deploys.iter().any(|r| r.sig.as_ref() == sig);
+        let state = if sealed_accepted {
+            DeployFinalizationState::Finalized
+        } else if resolved.state == DeployFinalizationState::Finalized && sealed_rejected {
+            DeployFinalizationState::Pending
+        } else {
+            resolved.state
+        };
+        Ok(DeployFinalizationStatus {
+            state,
+            rejection_count: resolved.rejection_count,
+            latest_block_hash: resolved.latest_block_hash,
+        })
     }
 
     pub async fn bond_status(engine_cell: &EngineCell, public_key: &ByteString) -> ApiErr<bool> {

@@ -108,6 +108,11 @@ pub fn merge(
 ) -> Result<
     (
         Blake2b256Hash,
+        // Applied (kept-chain) user-deploy (sig, source block) pairs — the
+        // deploys whose effect IS in this merged state. The seal records these
+        // as FS's accepted ledger so a deploy finalized-accepted at any
+        // inclusion is never re-proposed (the content-twin fix).
+        Vec<(Bytes, BlockHash)>,
         Vec<(Bytes, BlockHash)>,
         Vec<(Bytes, BlockHash)>,
     ),
@@ -626,6 +631,100 @@ pub fn merge(
         })
     };
 
+    // DIAG: attribute enforcement-window force-rejections. For each force-
+    // rejected branch, classify its relationship to the finalized window chains:
+    //   succ_acc  — branch CONSUMED an accepted final chain's OUTPUT produce
+    //               (a legitimate RMW successor building on finalized state);
+    //   race_acc  — branch CONSUMED the SAME INPUT produce an accepted final
+    //               chain consumed (a genuine double-spend race);
+    //   succ_rej / race_rej — same vs the rejected window chains.
+    // This discriminates "successor force-rejected (the bug)" from "genuine race
+    // / stale-base recovery (force-rejection correct, bug elsewhere)".
+    let force_reject_logger =
+        |branch: &HashableSet<DeployChainIndex>,
+         conflicts_final: bool,
+         enforced_sig: bool,
+         depends_rej: bool| {
+            use rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex;
+            let branch_log = branch
+                .0
+                .iter()
+                .map(|c| &c.event_log_index)
+                .try_fold(EventLogIndex::empty(), |acc, x| {
+                    EventLogIndex::combine(&acc, x)
+                })
+                .ok();
+            let consumed: std::collections::HashSet<_> = branch_log
+                .as_ref()
+                .map(|bl| bl.produces_consumed.0.iter().cloned().collect())
+                .unwrap_or_default();
+            let fc_sig = |fc: &DeployChainIndex| -> String {
+                fc.deploys_with_cost
+                    .0
+                    .iter()
+                    .filter(|d| !is_system_deploy_id(&d.deploy_id))
+                    .map(|d| hex::encode(&d.deploy_id[..d.deploy_id.len().min(8)]))
+                    .collect::<Vec<_>>()
+                    .join("/")
+            };
+            let classify = |chains: &[DeployChainIndex]| -> (Vec<String>, Vec<String>) {
+                let (mut succ, mut race) = (Vec::new(), Vec::new());
+                for fc in chains {
+                    let out = merging_logic::produces_created_and_not_destroyed(
+                        &fc.event_log_index,
+                    );
+                    let inp: std::collections::HashSet<_> =
+                        fc.event_log_index.produces_consumed.0.iter().collect();
+                    let label = fc_sig(fc);
+                    if label.is_empty() {
+                        continue;
+                    }
+                    if consumed.iter().any(|p| out.0.contains(p)) {
+                        succ.push(label.clone());
+                    }
+                    if consumed.iter().any(|p| inp.contains(p)) {
+                        race.push(label);
+                    }
+                }
+                (succ, race)
+            };
+            let (succ_acc, race_acc) = classify(&final_set.accepted);
+            let (succ_rej, race_rej) = classify(&final_set.rejected);
+            for chain in branch.0.iter() {
+                let sigs: Vec<String> = chain
+                    .deploys_with_cost
+                    .0
+                    .iter()
+                    .filter(|d| !is_system_deploy_id(&d.deploy_id))
+                    .map(|d| hex::encode(&d.deploy_id[..d.deploy_id.len().min(8)]))
+                    .collect();
+                if sigs.is_empty() {
+                    continue;
+                }
+                let mut nonfold_chans: Vec<String> = Vec::new();
+                for e in chain.state_changes.datums_changes.iter() {
+                    let ch = e.key();
+                    if !chain.event_log_index.number_channels_data.contains_key(ch) {
+                        nonfold_chans.push(hex::encode(&ch.bytes()[..6]));
+                    }
+                }
+                tracing::info!(
+                    target: "f1r3.trace.fs_floor",
+                    event = "force_rejected_branch",
+                    sigs = %sigs.join(","),
+                    conflicts_final,
+                    enforced_sig,
+                    depends_rej,
+                    nonfold_channels = %nonfold_chans.join(" "),
+                    succ_acc = %succ_acc.join(","),
+                    race_acc = %race_acc.join(","),
+                    succ_rej = %succ_rej.join(","),
+                    race_rej = %race_rej.join(","),
+                    "enforcement force-rejected branch"
+                );
+            }
+        };
+
     // Resolve conflicts: enforce finalized decisions, then select the
     // cost-optimal rejection set among the survivors.
     let mut resolved = conflict_set_merger::resolve_conflicts(
@@ -639,8 +738,36 @@ pub fn merge(
         &compute_conflict_map_fn,
         &final_set,
         &carries_enforced_sig,
+        &force_reject_logger,
     )
     .map_err(|e| CasperError::HistoryError(e))?;
+
+    // DIAG: per-pass attribution of resolve_conflicts. Lets a run tell whether
+    // the user writes were dropped here (and by which sub-pass: force-rejection /
+    // cost-optimal keep-one / late-dependency) versus a later pass (serialize /
+    // expansion).
+    {
+        let resolve_rejected_user: Vec<String> = resolved
+            .rejected
+            .0
+            .iter()
+            .flat_map(|c| c.deploys_with_cost.0.iter())
+            .filter(|d| !is_system_deploy_id(&d.deploy_id))
+            .map(|d| hex::encode(&d.deploy_id[..d.deploy_id.len().min(8)]))
+            .collect();
+        tracing::info!(
+            target: "f1r3.trace.fs_floor",
+            event = "resolve_breakdown",
+            late = resolved.late_set_size,
+            dependents = resolved.rejected_as_dependents_count,
+            forced = resolved.force_rejected_final_count,
+            optimal = resolved.optimal_rejection_count,
+            branches = resolved.branches_count,
+            to_merge = resolved.to_merge.len(),
+            rejected_user = %resolve_rejected_user.join(","),
+            "resolve_conflicts result (before serialize/expand)"
+        );
+    }
 
     if resolved.force_rejected_final_count > 0 {
         tracing::info!(
@@ -851,6 +978,7 @@ pub fn merge(
             // clusters — rejecting partial branches would leave internally
             // inconsistent diffs.
             let mut new_to_merge: Vec<HashableSet<DeployChainIndex>> = Vec::new();
+            let mut expanded_user: Vec<String> = Vec::new();
             for branch in resolved.to_merge.drain(..) {
                 let has_stale = branch
                     .0
@@ -858,6 +986,12 @@ pub fn merge(
                     .any(|chain| descendant_blocks.contains(&chain.source_block_hash));
                 if has_stale {
                     for chain in branch.0 {
+                        for d in chain.deploys_with_cost.0.iter() {
+                            if !is_system_deploy_id(&d.deploy_id) {
+                                expanded_user
+                                    .push(hex::encode(&d.deploy_id[..d.deploy_id.len().min(8)]));
+                            }
+                        }
                         resolved.rejected.0.insert(chain);
                     }
                 } else {
@@ -867,10 +1001,13 @@ pub fn merge(
             resolved.to_merge = new_to_merge;
 
             tracing::info!(
-                "DagMerger rejection expansion: {} descendant blocks, rejected grew from {} to {} chains",
-                descendant_blocks.len(),
-                pre_expansion_rejected,
-                resolved.rejected.0.len()
+                target: "f1r3.trace.fs_floor",
+                event = "rejection_expansion",
+                descendant_blocks = descendant_blocks.len(),
+                rejected_before = pre_expansion_rejected,
+                rejected_after = resolved.rejected.0.len(),
+                expanded_user = %expanded_user.join(","),
+                "rejection expansion moved stale-descendant chains to rejected"
             );
             metrics::counter!(
                 crate::rust::metrics_constants::DAG_MERGE_REJECTION_EXPANSION_FIRED_METRIC,
@@ -901,7 +1038,65 @@ pub fn merge(
         "dag merge apply result"
     );
 
+    // Applied (kept-chain) user-deploy (sig, source block) pairs — the deploys
+    // whose effect IS in this merged state. Mirrors the rejected extraction but
+    // reads `resolved.to_merge` (the survivors). The seal accumulates these into
+    // FloorData.accepted_deploys so a deploy finalized-accepted at any inclusion
+    // is never re-proposed, even if a later re-inclusion is rejected.
+    let mut applied_user: Vec<(Bytes, BlockHash)> = resolved
+        .to_merge
+        .iter()
+        .flat_map(|branch| branch.0.iter())
+        .flat_map(|chain| {
+            let src = chain.source_block_hash.clone();
+            chain
+                .deploys_with_cost
+                .0
+                .iter()
+                .map(move |deploy| (deploy.deploy_id.clone(), src.clone()))
+        })
+        .filter(|(id, _)| !is_system_deploy_id(id))
+        .collect();
+    applied_user.sort();
+    applied_user.dedup();
+
     let rejected = resolved.rejected;
+
+    // DIAG: per rejected user chain, dump the datum channels it touched (N =
+    // non-foldable, F = foldable/number) with removed/added counts. Lets a
+    // post-run trace attribute WHY a user deploy lost the merge — i.e. which
+    // cell its chain conflicted on (the map cell vs a vault/PoS cell).
+    for chain in rejected.0.iter() {
+        let sigs: Vec<String> = chain
+            .deploys_with_cost
+            .0
+            .iter()
+            .filter(|d| !is_system_deploy_id(&d.deploy_id))
+            .map(|d| hex::encode(&d.deploy_id[..d.deploy_id.len().min(8)]))
+            .collect();
+        if sigs.is_empty() {
+            continue;
+        }
+        let mut chans: Vec<String> = Vec::new();
+        for e in chain.state_changes.datums_changes.iter() {
+            let ch = e.key();
+            let foldable = chain.event_log_index.number_channels_data.contains_key(ch);
+            chans.push(format!(
+                "{}:{}r{}a{}",
+                hex::encode(&ch.bytes()[..6]),
+                if foldable { "F" } else { "N" },
+                e.value().removed.len(),
+                e.value().added.len(),
+            ));
+        }
+        tracing::info!(
+            target: "f1r3.trace.fs_floor",
+            event = "rejected_chain_channels",
+            sigs = %sigs.join(","),
+            channels = %chans.join(" "),
+            "rejected user chain touched channels"
+        );
+    }
 
     // Extract (rejected deploy ID, source block hash) pairs, split by kind.
     // User deploys feed the rejected-deploy buffer for re-proposal. Slash
@@ -990,5 +1185,10 @@ pub fn merge(
         );
     }
 
-    Ok((new_state, rejected_user_deploys, rejected_slashes))
+    Ok((
+        new_state,
+        applied_user,
+        rejected_user_deploys,
+        rejected_slashes,
+    ))
 }

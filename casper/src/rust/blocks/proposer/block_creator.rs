@@ -187,6 +187,46 @@ pub async fn prepare_user_deploys(
             (None, 0)
         };
 
+    // Liveness in the execution base: a recovered deploy whose latest ancestry
+    // inclusion is not rejected at-or-above it is ALREADY applied in the parent
+    // post-state this block will execute against (the proposer builds on a
+    // covering parent's post-state via `compute_parents_post_state`'s
+    // descendant fast path). Re-executing it re-allocates its deterministic
+    // `new`-site cells (the content-twin) → IntegerAdd single-value violation →
+    // propose wedge. Drop such deploys from recovery and purge them from the
+    // buffer. This uses the SAME ancestry predicate as `Validate::repeat_deploy`,
+    // so the proposer never re-includes what validation would reject as a repeat
+    // — the proposer/validator split that produced the wedge.
+    let recovery_live_in_base: HashSet<Bytes> =
+        if has_recovery_candidates && !casper_snapshot.parents.is_empty() {
+            let init_parents: Vec<models::rust::block_metadata::BlockMetadata> = casper_snapshot
+                .parents
+                .iter()
+                .filter_map(|p| casper_snapshot.dag.lookup(&p.block_hash).ok().flatten())
+                .collect();
+            let (latest_inclusion, latest_rejection) =
+                crate::rust::validate::Validate::ancestry_inclusion_rejection(
+                    &casper_snapshot.dag,
+                    block_store,
+                    init_parents,
+                    casper_snapshot.on_chain_state.shard_conf.deploy_lifespan as i32,
+                    &recovered_sigs,
+                );
+            recovered_sigs
+                .iter()
+                .filter(|sig| {
+                    crate::rust::validate::Validate::is_live_in_ancestry(
+                        &latest_inclusion,
+                        &latest_rejection,
+                        sig,
+                    )
+                })
+                .cloned()
+                .collect()
+        } else {
+            HashSet::new()
+        };
+
     use crate::rust::finality::floor_seal::DeployFateAtFloor;
     let mut valid_unique: HashSet<Signed<DeployData>> = HashSet::new();
     let mut already_in_scope: Vec<Signed<DeployData>> = Vec::new();
@@ -194,8 +234,18 @@ pub async fn prepare_user_deploys(
     let mut recoveries_held = 0usize;
     let mut recoveries_not_owned = 0usize;
     let mut recoveries_sealed_accepted: Vec<Bytes> = Vec::new();
+    let mut recoveries_already_applied: Vec<Bytes> = Vec::new();
     for deploy in valid {
         if recovered_sigs.contains(&deploy.sig) {
+            // Already applied (live) in the execution base: re-executing would
+            // double-apply its deterministic cells (content-twin). Drop it and
+            // purge from the buffer below. Authoritative over the sealed-fate
+            // gate, which judges only finalized state and misses a deploy whose
+            // effect is live in the speculative parent post-state.
+            if recovery_live_in_base.contains(&deploy.sig) {
+                recoveries_already_applied.push(deploy.sig.clone());
+                continue;
+            }
             // Single-owner recovery: only the validator that proposed this
             // deploy's indexed inclusion re-proposes it. Without this, every
             // node holding the rejected sig would re-propose it concurrently,
@@ -249,24 +299,29 @@ pub async fn prepare_user_deploys(
         }
     }
 
-    // A sealed-accepted recovery's effects are final; purge it so the buffer
-    // cannot resurrect it.
-    if !recoveries_sealed_accepted.is_empty() {
+    // Purge recoveries whose effect is final (sealed-accepted) or already live
+    // in the execution base (already-applied) so the buffer cannot resurrect
+    // them and drive re-execution.
+    if !recoveries_sealed_accepted.is_empty() || !recoveries_already_applied.is_empty() {
         let mut buffer_guard = rejected_deploy_buffer
             .lock()
             .map_err(|e| CasperError::LockError(e.to_string()))?;
-        for sig in &recoveries_sealed_accepted {
+        for sig in recoveries_sealed_accepted
+            .iter()
+            .chain(recoveries_already_applied.iter())
+        {
             buffer_guard.remove_by_sig(sig)?;
         }
     }
     if has_recovery_candidates {
         tracing::info!(
-            "Prepare user deploys: recovery gate at floor #{}: admitted={}, held={}, not-owned={}, sealed-accepted dropped={}",
+            "Prepare user deploys: recovery gate at floor #{}: admitted={}, held={}, not-owned={}, sealed-accepted dropped={}, already-applied dropped={}",
             floor_number,
             recoveries_admitted,
             recoveries_held,
             recoveries_not_owned,
-            recoveries_sealed_accepted.len()
+            recoveries_sealed_accepted.len(),
+            recoveries_already_applied.len()
         );
     }
 
