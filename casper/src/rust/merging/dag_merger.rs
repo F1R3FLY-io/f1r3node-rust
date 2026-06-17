@@ -30,37 +30,6 @@ pub fn cost_optimal_rejection_alg() -> impl Fn(&DeployChainIndex) -> u64 {
     }
 }
 
-/// BFS walk of DAG descendants of `start_blocks`, restricted to `scope`.
-///
-/// When the merge rejects the deploy chains of a block, any descendant block
-/// in scope has diffs that were computed against the rejected block's
-/// post-state and are therefore stale. This walk identifies the affected
-/// descendants so their chains can be rejected as well.
-///
-/// Returns the strict descendants; the start blocks themselves are not included.
-fn descendants_within_scope(
-    dag: &KeyValueDagRepresentation,
-    start_blocks: &HashSet<BlockHash>,
-    scope: &HashSet<BlockHash>,
-) -> HashSet<BlockHash> {
-    let mut result = HashSet::new();
-    let mut queue: Vec<BlockHash> = start_blocks.iter().cloned().collect();
-    let mut visited: HashSet<BlockHash> = start_blocks.clone();
-
-    while let Some(current) = queue.pop() {
-        if let Some(children) = dag.children(&current) {
-            for child in children {
-                if scope.contains(&child) && visited.insert(child.clone()) {
-                    result.insert(child.clone());
-                    queue.push(child);
-                }
-            }
-        }
-    }
-
-    result
-}
-
 /// True iff `sub` is a sub-multiset of `sup`: every datum appears in `sup` at
 /// least as many times as in `sub`. The single-value-cell serialization uses
 /// this to decide whether a chain's consumed (`removed`) datums are still
@@ -949,15 +918,11 @@ pub fn merge(
         }
     }
 
-    // Rejection expansion. Any chain whose source block is a DAG descendant
-    // of a rejected chain's source block (within merge scope) has pre-computed
-    // diffs against a pre-state that the merge is about to drop. Expand the
-    // rejection set to include those chains before applying diffs.
-    //
-    // All descendant chains are rejected unconditionally; an event-log
-    // read/write analysis could narrow this, but event logs miss indirect
-    // dependencies through system contracts (the very condition the expansion
-    // exists to catch), so we prefer conservative correctness.
+    // Source blocks of the rejected chains, classified system/user for merge
+    // tracing only. The former rejection-expansion pass that consumed this set
+    // (rejecting any chain whose block DAG-descended from a rejected chain) was
+    // removed: it dropped channel-disjoint descendants — keep-one's survivor —
+    // on block-descent rather than data dependency.
     let rejected_source_blocks: HashSet<BlockHash> = resolved
         .rejected
         .0
@@ -965,62 +930,47 @@ pub fn merge(
         .map(|chain| chain.source_block_hash.clone())
         .collect();
 
-    let pre_expansion_rejected = resolved.rejected.0.len();
-
-    let __exp_start = std::time::Instant::now();
+    // DIAG: dump the rejected source blocks that feed the descendant walk, with
+    // block number and whether each carries a system (S, e.g. CloseBlock) and/or
+    // user (U) chain. Lets a run confirm whether a dropped user write descends
+    // from a rejected SYSTEM chain's block (the suspected expansion over-reach)
+    // rather than from a conflicting user write.
     if !rejected_source_blocks.is_empty() {
-        let descendant_blocks =
-            descendants_within_scope(dag, &rejected_source_blocks, &actual_blocks);
-
-        if !descendant_blocks.is_empty() {
-            // Rebuild to_merge: any branch containing a chain from a descendant
-            // block gets moved whole into rejected. Branches are dependency
-            // clusters — rejecting partial branches would leave internally
-            // inconsistent diffs.
-            let mut new_to_merge: Vec<HashableSet<DeployChainIndex>> = Vec::new();
-            let mut expanded_user: Vec<String> = Vec::new();
-            for branch in resolved.to_merge.drain(..) {
-                let has_stale = branch
-                    .0
-                    .iter()
-                    .any(|chain| descendant_blocks.contains(&chain.source_block_hash));
-                if has_stale {
-                    for chain in branch.0 {
-                        for d in chain.deploys_with_cost.0.iter() {
-                            if !is_system_deploy_id(&d.deploy_id) {
-                                expanded_user
-                                    .push(hex::encode(&d.deploy_id[..d.deploy_id.len().min(8)]));
-                            }
-                        }
-                        resolved.rejected.0.insert(chain);
-                    }
+        use std::collections::BTreeMap;
+        let mut by_block: BTreeMap<(i64, String), (bool, bool)> = BTreeMap::new();
+        for chain in resolved.rejected.0.iter() {
+            let key = (
+                chain.source_block_number,
+                hex::encode(&chain.source_block_hash[..chain.source_block_hash.len().min(6)]),
+            );
+            let entry = by_block.entry(key).or_insert((false, false));
+            for d in chain.deploys_with_cost.0.iter() {
+                if is_system_deploy_id(&d.deploy_id) {
+                    entry.0 = true;
                 } else {
-                    new_to_merge.push(branch);
+                    entry.1 = true;
                 }
             }
-            resolved.to_merge = new_to_merge;
-
-            tracing::info!(
-                target: "f1r3.trace.fs_floor",
-                event = "rejection_expansion",
-                descendant_blocks = descendant_blocks.len(),
-                rejected_before = pre_expansion_rejected,
-                rejected_after = resolved.rejected.0.len(),
-                expanded_user = %expanded_user.join(","),
-                "rejection expansion moved stale-descendant chains to rejected"
-            );
-            metrics::counter!(
-                crate::rust::metrics_constants::DAG_MERGE_REJECTION_EXPANSION_FIRED_METRIC,
-                "source" => crate::rust::metrics_constants::MERGING_METRICS_SOURCE
-            )
-            .increment(1);
         }
+        let summary: Vec<String> = by_block
+            .iter()
+            .map(|((num, hash), (sys, usr))| {
+                format!(
+                    "#{}:{}:{}{}",
+                    num,
+                    hash,
+                    if *sys { "S" } else { "" },
+                    if *usr { "U" } else { "" }
+                )
+            })
+            .collect();
+        tracing::info!(
+            target: "f1r3.trace.fs_floor",
+            event = "rejected_source_blocks",
+            blocks = %summary.join(" "),
+            "rejected chains' source blocks (S=system, U=user)"
+        );
     }
-    metrics::histogram!(
-        crate::rust::metrics_constants::DAG_MERGE_REJECTION_EXPANSION_TIME_METRIC,
-        "source" => crate::rust::metrics_constants::MERGING_METRICS_SOURCE
-    )
-    .record(__exp_start.elapsed().as_secs_f64());
 
     // Combine surviving diffs and apply to the LFB post-state.
     let new_state = conflict_set_merger::compute_merged_state(

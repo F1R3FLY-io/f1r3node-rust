@@ -943,19 +943,10 @@ pub async fn compute_parents_post_state(
             // merge builds indices; recompute any the node never replayed.
             ensure_scope_mergeable_present(block_store, runtime_manager, &s.dag, &scope).await?;
 
-            // Finalized decisions in the window between the floor and the
-            // scope's fork-point cover are enforced, never re-litigated.
-            let final_context = crate::rust::finality::floor_seal::enforcement_window(
-                &s.dag,
-                block_store,
-                runtime_manager,
-                &floor,
-                &fs,
-                &scope,
-                ft_threshold,
-            )
-            .await?;
-
+            // Construction merge resolves the cone by keep-one + recovery on the
+            // sealed FS(floor) base. The enforcement window is intentionally not
+            // applied here: it force-rejected channel-disjoint writes that merely
+            // DAG-descend from a finalized-rejected boundary CloseBlock.
             let merge_started = std::time::Instant::now();
             let merger_result = dag_merger::merge(
                 &s.dag,
@@ -969,7 +960,7 @@ pub async fn compute_parents_post_state(
                 dag_merger::cost_optimal_rejection_alg(),
                 Some(scope),
                 disable_late_block_filtering,
-                Some(&final_context),
+                None,
             )?;
             let merge_ms = merge_started.elapsed().as_millis();
 
