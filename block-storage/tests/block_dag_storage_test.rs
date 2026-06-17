@@ -91,21 +91,22 @@ fn proptest_config() -> ProptestConfig {
 
 static RUNTIME: Lazy<Runtime> = Lazy::new(|| Runtime::new().unwrap());
 
-type LookupResult = (
-    Vec<(
-        Option<BlockMetadata>,
-        Option<BlockHash>,
-        Option<BlockMetadata>,
-        Option<imbl::HashSet<BlockHash>>,
-        bool,
-    )>,
-    imbl::HashMap<Validator, BlockHash>,
-    HashMap<Validator, BlockMetadata>,
-    Vec<Vec<BlockHash>>,
-    i64,
-);
+struct BlockLookup {
+    block_metadata: Option<BlockMetadata>,
+    latest_message_hash: Option<BlockHash>,
+    latest_message: Option<BlockMetadata>,
+    children: Option<imbl::HashSet<BlockHash>>,
+    contains: bool,
+}
 
-#[allow(clippy::type_complexity)]
+struct LookupResult {
+    list: Vec<BlockLookup>,
+    latest_message_hashes: imbl::HashMap<Validator, BlockHash>,
+    latest_messages: HashMap<Validator, BlockMetadata>,
+    topo_sort: Vec<Vec<BlockHash>>,
+    latest_block_number: i64,
+}
+
 fn lookup_elements(
     block_elements: &[BlockMessage],
     dag_storage: &BlockDagKeyValueStorage,
@@ -115,13 +116,7 @@ fn lookup_elements(
     let dag = dag_storage
         .get_representation()
         .expect("dag representation");
-    let list: Vec<(
-        Option<BlockMetadata>,
-        Option<BlockHash>,
-        Option<BlockMetadata>,
-        Option<imbl::HashSet<BlockHash>>,
-        bool,
-    )> = block_elements
+    let list: Vec<BlockLookup> = block_elements
         .iter()
         .map(|block_element| {
             let block_metadata = dag.lookup(&block_element.block_hash).unwrap();
@@ -129,13 +124,13 @@ fn lookup_elements(
             let latest_message = dag.latest_message(&block_element.sender).unwrap();
             let children = dag.children(&block_element.block_hash);
             let contains = dag.contains(&block_element.block_hash);
-            (
+            BlockLookup {
                 block_metadata,
                 latest_message_hash,
                 latest_message,
                 children,
                 contains,
-            )
+            }
         })
         .collect();
 
@@ -143,13 +138,13 @@ fn lookup_elements(
     let latest_messages = dag.latest_messages().unwrap();
     let topo_sort = dag.topo_sort(topo_sort_start_block_number, None).unwrap();
     let latest_block_number = dag.latest_block_number();
-    (
+    LookupResult {
         list,
         latest_message_hashes,
         latest_messages,
         topo_sort,
         latest_block_number,
-    )
+    }
 }
 
 fn test_lookup_elements_result(
@@ -157,8 +152,13 @@ fn test_lookup_elements_result(
     block_elements: &[BlockMessage],
     genesis: &BlockMessage,
 ) {
-    let (list, latest_message_hashes, latest_messages, topo_sort, latest_block_number) =
-        lookup_result;
+    let LookupResult {
+        list,
+        latest_message_hashes,
+        latest_messages,
+        topo_sort,
+        latest_block_number,
+    } = lookup_result;
 
     let real_latest_messages =
         block_elements
@@ -173,11 +173,16 @@ fn test_lookup_elements_result(
                 acc
             });
 
-    list.iter().zip(block_elements.iter()).for_each(
-        |(
-            (block_metadata, latest_message_hash, latest_message, children, contains),
-            block_element,
-        )| {
+    list.iter()
+        .zip(block_elements.iter())
+        .for_each(|(block_lookup, block_element)| {
+            let BlockLookup {
+                block_metadata,
+                latest_message_hash,
+                latest_message,
+                children,
+                contains,
+            } = block_lookup;
             assert_eq!(
                 *block_metadata,
                 Some(BlockMetadata::from_block(block_element, false, None, None))
@@ -215,8 +220,7 @@ fn test_lookup_elements_result(
 
             assert_eq!(children_set, Some(expected_children));
             assert!(*contains);
-        },
-    );
+        });
 
     let filtered_latest_message_hashes: HashMap<_, _> = latest_message_hashes
         .iter()
