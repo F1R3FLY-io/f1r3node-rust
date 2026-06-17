@@ -893,3 +893,87 @@ Proof.
   - apply admit_prefix_maximal; exact Hlt.
   - intros j' Hj'. unfold rejected_at. exact Hj'.
 Qed.
+
+(* ─── Cross-group shared-component bound (TM-CA-165) ──────────────────────────
+
+   The acceptance gate ([acceptance.rs::admit_by_funding_with_logic]) and its
+   replay re-verification ([recompute_settlement_debits_with_logic]) maintain a
+   LIVE cross-group residual ledger: deployments competing for ONE shared
+   component wallet [Σ⟦Ground(s)⟧] — across DISTINCT cosigner sets, e.g. [{A,s}]
+   and [{B,s}] — are admitted in canonical (SigKey) order, drawing the shared
+   residual down so that a later group sees the REDUCED balance. The
+   consensus-safety obligation (TM-CA-165) is that the SUMMED draw on the shared
+   component never exceeds its supply: linearity admits no contraction — a single
+   token funds at most one consumer, generalizing
+   [competing_funding_at_most_one_succeeds] (Remark 21: one token, two
+   competitors) to a supply of [s] competed for by a LIST of groups.
+
+   We model the shared component's supply as [supply : nat] and the per-group
+   demands ON THAT COMPONENT as the list [gs] (in canonical order). The live
+   ledger admits the largest prefix of [gs] whose cumulative draw fits [supply] —
+   which is EXACTLY the per-group prefix walk [admitted_len]/[cumdemand] above, now
+   read with the GROUPS as the competing units and the SHARED supply as the cap.
+   So the cross-group bound is the prefix-fits property AT the shared pool, and the
+   single-group TM-CA-164 check is its one-element special case. *)
+
+(* The total draw on a shared component by the admitted prefix of competing groups. *)
+Definition cross_group_draw (supply : nat) (gs : list nat) : nat :=
+  cumdemand gs (admitted_len supply gs).
+
+(* THE cross-group bound (TM-CA-165): the summed draw on a shared component across
+   ALL admitted groups never exceeds the component's supply — the live ledger
+   cannot over-draw a shared wallet, no matter how many distinct cosigner sets
+   compete for it. Axiom-free; a direct corollary of [admitted_prefix_fits] with
+   the shared supply as the cap. *)
+Theorem cross_group_draw_le_supply :
+  forall (supply : nat) (gs : list nat),
+    cross_group_draw supply gs <= supply.
+Proof.
+  intros supply gs. unfold cross_group_draw. apply admitted_prefix_fits.
+Qed.
+
+(* [cumdemand] is monotone in the prefix length (each per-group demand is a
+   non-negative [nat], so a longer admitted prefix draws at least as much). *)
+Lemma cumdemand_monotone :
+  forall gs k1 k2, k1 <= k2 -> cumdemand gs k1 <= cumdemand gs k2.
+Proof.
+  induction gs as [| d gs' IH]; intros k1 k2 Hle.
+  - destruct k1, k2; cbn; lia.
+  - destruct k1 as [| k1']; cbn; [ lia | ].
+    destruct k2 as [| k2']; cbn; [ lia | ].
+    assert (Hk : k1' <= k2') by lia. specialize (IH k1' k2' Hk). lia.
+Qed.
+
+(* SOUNDNESS of cross-group admission: every admitted group (in canonical order)
+   is funded from the LIVE shared residual at its turn — the cumulative draw
+   through ANY admitted prefix stays within supply, so the ledger never goes
+   negative and the gate admits no group it cannot fund from the remaining shared
+   balance. *)
+Theorem cross_group_admission_sound :
+  forall (supply : nat) (gs : list nat) (k : nat),
+    k <= admitted_len supply gs ->
+    cumdemand gs k <= supply.
+Proof.
+  intros supply gs k Hk.
+  transitivity (cumdemand gs (admitted_len supply gs)).
+  - apply cumdemand_monotone. exact Hk.
+  - apply admitted_prefix_fits.
+Qed.
+
+(* The cross-group analogue of [competing_funding_at_most_one_succeeds] (Remark 21)
+   for a SHARED component: if two distinct cosigner groups' combined demand on the
+   shared wallet exceeds its supply, the live ledger does NOT fund both in full —
+   the summed draw is STRICTLY less than the combined demand (the second
+   competitor is reject-both on the exhausted shared stack). This is the formal
+   content of the TM-CA-165 worked example ([Σ⟦Ground(s)⟧ = 3], two demand-2
+   groups ⇒ only one fully funded). *)
+Corollary competing_funding_shared_component :
+  forall (supply d1 d2 : nat),
+    supply < d1 + d2 ->
+    cross_group_draw supply [d1; d2] < d1 + d2.
+Proof.
+  intros supply d1 d2 Hlt.
+  eapply Nat.le_lt_trans.
+  - apply cross_group_draw_le_supply.
+  - exact Hlt.
+Qed.

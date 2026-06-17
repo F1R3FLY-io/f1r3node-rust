@@ -214,6 +214,37 @@ def compound_cross_group_shared_component(sigma_comp, sigma1, sigma2, sigma3, k1
     }, props
 
 
+def cross_group_admission_gate(sigma_comp, sigma1, sigma2, sigma3, k1, k2):
+    """The TM-CA-165 cross-group LEDGER gate (the FIX). Group 1 (And(s1,s2)) is
+    admitted against its effective supply and drawn down combined-first; group 2
+    (And(s1,s3)) is then admitted against the LIVE effective supply AFTER group 1's
+    draw on the shared component s1 — so a shared wallet Σ⟦Ground(s1)⟧ cannot fund
+    both groups beyond its balance (linear logic: no contraction). Mirrors the Rust
+    gate's `remaining` ledger (admit_by_funding_with_logic) + the replay
+    re-verification (recompute_settlement_debits_with_logic), and the TLA+ AdmitGate
+    that threads the shared residual. Returns the per-group effective caps + verdicts.
+    """
+    sc = int(sigma_comp); s1 = int(sigma1); s2 = int(sigma2); s3 = int(sigma3)
+    kk1 = int(k1); kk2 = int(k2)
+    eff1 = sc + min(s1, s2)
+    g1_admitted = (kk1 <= eff1)
+    # Group 1's combined-first draw (the gate computes it to thread the residual).
+    dC1 = min(kk1, sc) if g1_admitted else 0
+    dP1 = max(0, min(kk1 - dC1, s1, s2)) if g1_admitted else 0
+    # The LIVE effective supply for group 2 AFTER group 1's draw on the drawn-down
+    # shared component s1 (and the drawn-down combined pool) — the TM-CA-165 bound.
+    live_eff2 = (sc - dC1) + min(s1 - dP1, s3)
+    # The PRE-FIX independent gate used eff2 = sc + min(s1, s3), with s1 at its FULL
+    # balance — the over-admission this fix closes.
+    eff2_pre_fix = sc + min(s1, s3)
+    g2_admitted = g1_admitted and (kk2 <= live_eff2)
+    return {
+        "eff1": int(eff1), "live_eff2": int(live_eff2), "eff2_pre_fix": int(eff2_pre_fix),
+        "g1_admitted": bool(g1_admitted), "g2_admitted": bool(g2_admitted),
+        "dC1": int(dC1), "dP1": int(dP1),
+    }
+
+
 def compound_debit_search(max_supply=5):
     """Bounded-EXHAUSTIVE sweep of the three-pool compound debit: every
     (Σ_comp, Σ1, Σ2) over 0..max_supply and every ADMISSIBLE demand
@@ -269,6 +300,66 @@ def compound_debit_search(max_supply=5):
     }
 
 
+def cross_group_admission_search(max_supply=4):
+    """Bounded-EXHAUSTIVE sweep of the TM-CA-165 cross-group ADMISSION gate over two
+    compound groups sharing component s1. For every pre-state and every (k1, k2) in
+    the PRE-FIX independent admissible ranges (k1 ≤ eff1; k2 ≤ eff2_pre_fix =
+    sc + min(s1, s3), s1 at FULL balance), classify by the FIXED gate's live bound
+    and assert:
+
+      (A1) SOUNDNESS — when the fixed gate ADMITS group 2 (k2 ≤ live_eff2), the
+           settlement draws its FULL demand (dC2 + dP2 = k2, NO residual-cap
+           truncation) and the summed shared-component / combined draws stay within
+           supply.
+      (A2) NECESSITY — when k2 is in the over-admission band (live_eff2 < k2 ≤
+           eff2_pre_fix, i.e. the pre-fix gate WOULD admit it), the settlement
+           TRUNCATES group 2's draw (dC2 + dP2 < k2): exactly the un-funded compute
+           the FIXED gate prevents by rejecting. So the tighter live bound is
+           NECESSARY, not gratuitous.
+    """
+    traces = 0
+    sound_violations = []
+    necessity_violations = []
+    cg = max(2, max_supply)
+    for sc in range(0, cg + 1):
+        for s1 in range(0, cg + 1):
+            for s2 in range(0, cg + 1):
+                for s3 in range(0, cg + 1):
+                    eff1 = sc + min(s1, s2)
+                    for k1 in range(0, eff1 + 1):
+                        gate = cross_group_admission_gate(sc, s1, s2, s3, k1, 0)
+                        live_eff2 = gate["live_eff2"]
+                        eff2_pre_fix = gate["eff2_pre_fix"]
+                        for k2 in range(0, eff2_pre_fix + 1):
+                            traces += 1
+                            data, _ = compound_cross_group_shared_component(
+                                sc, s1, s2, s3, k1, k2)
+                            drawn2 = data["dC2"] + data["dP2"]
+                            if k2 <= live_eff2:
+                                # (A1) fixed gate ADMITS ⇒ full demand drawn + within supply.
+                                if not (drawn2 == k2
+                                        and data["s1_summed_draw"] <= s1
+                                        and data["comp_summed_draw"] <= sc):
+                                    sound_violations.append(
+                                        {"sigma_comp": sc, "sigma1": s1, "sigma2": s2,
+                                         "sigma3": s3, "k1": k1, "k2": k2,
+                                         "drawn2": int(drawn2), "live_eff2": int(live_eff2)})
+                            else:
+                                # (A2) pre-fix over-admission band ⇒ settlement truncates.
+                                if not (drawn2 < k2):
+                                    necessity_violations.append(
+                                        {"sigma_comp": sc, "sigma1": s1, "sigma2": s2,
+                                         "sigma3": s3, "k1": k1, "k2": k2,
+                                         "drawn2": int(drawn2), "live_eff2": int(live_eff2)})
+    return {
+        "admission_traces": traces,
+        "sound_violations": sound_violations,
+        "necessity_violations": necessity_violations,
+        "all_safe": len(sound_violations) == 0 and len(necessity_violations) == 0,
+        "max_supply": int(max_supply),
+    }
+
+
 def records():
     # Funded boundary: Sigma = Delta + margin admits, and the debit (= Delta)
     # leaves a non-negative pool (no underflow).
@@ -314,6 +405,27 @@ def records():
         % (json.dumps(compound_search["single_violations"][:3], default=schema_json_default),
            json.dumps(compound_search["cross_violations"][:3], default=schema_json_default))
     )
+
+    # TM-CA-165 — the cross-group ADMISSION gate (the FIX). Bounded-exhaustive:
+    # (A1) when the live-residual gate ADMITS, the full demand settles within supply
+    # (no cap truncation); (A2) in the over-admission band the pre-fix gate would
+    # have allowed, the settlement TRUNCATES (un-funded compute) — so the tighter
+    # live bound is NECESSARY. Zero violations on either face.
+    admission_search = cross_group_admission_search(max_supply=4)
+    assert admission_search["all_safe"], (
+        "cross-group admission search found a violation: sound=%s necessity=%s"
+        % (json.dumps(admission_search["sound_violations"][:3], default=schema_json_default),
+           json.dumps(admission_search["necessity_violations"][:3], default=schema_json_default))
+    )
+    # Witness — Σ⟦s1⟧=3 shared by two demand-2 groups: group 1 admits and draws s1
+    # to 1; group 2's LIVE cap is min(s1_res=1, s3)=1 < 2, so the FIXED gate REJECTS
+    # it (g2_admitted False), where the pre-fix gate (eff2_pre_fix = min(3,·)=3)
+    # would have admitted it against s1's full balance and truncated the settlement.
+    admission_gate_witness = cross_group_admission_gate(0, 3, 100, 100, 2, 2)
+    assert admission_gate_witness["g2_admitted"] is False \
+        and admission_gate_witness["live_eff2"] == 1 \
+        and admission_gate_witness["eff2_pre_fix"] == 3, \
+        "TM-CA-165 witness: shared Σ⟦s1⟧=3 must reject the second demand-2 group (live cap 1)"
     # Witness 1 — combined-pool-first then component pair: Σ⟦comp⟧=1, Σ1=Σ2=5,
     # k=3 ⇒ draw_compound=1, draw_pair=2; post=(0,3,3), total_drawn=1+2·2=5=k+drawn.
     compound_split_witness, compound_split_props = compound_settle_properties(1, 5, 5, 3)
@@ -468,6 +580,28 @@ def records():
             ["Rust: compound_shared_component_contention",
              "TLA+: CompoundSettlement Inv_SharedComponentSummedDrawWithinSupply",
              "Rust: compute_settlement_debits residual ledger"],
+        ),
+        record(
+            "settlement",
+            "confirmed_safe",
+            "sage_cross_group_admission_bounds_shared_component",
+            "TM-CA-165: the cross-group LEDGER gate admits a second cosigner group sharing a component ONLY against the LIVE effective supply after the first group's draw — so two DISTINCT cosigner sets {A,s},{B,s} cannot jointly over-draw a shared wallet Σ⟦Ground(s)⟧. Bounded-exhaustive over Σ ∈ 0..4: (A1) when the fixed gate ADMITS, the full demand settles within supply (no residual-cap truncation, dC2+dP2=k2); (A2) in the pre-fix over-admission band (live_eff2 < k2 ≤ sc+min(s1,s3)) the settlement TRUNCATES (dC2+dP2 < k2) — the un-funded compute the fixed gate prevents, so the tighter live bound is NECESSARY. Witness: Σ⟦s1⟧=3 shared by two demand-2 groups ⇒ the second is REJECTED (live cap 1 < 2) where the pre-fix gate admitted it against s1's full 3.",
+            canonical_scenario(
+                "cross_group_admission_bound",
+                threat_family="settlement",
+                settlement={"kind": "cross_group_admission", "sigma_s1": 3, "demands": [2, 2],
+                            "live_eff2": 1, "eff2_pre_fix": 3, "group2_admitted": False},
+                concurrency={"interleavings": int(admission_search["admission_traces"]), "shared_component": True},
+                expected_invariants=["cross_group_admission_bounded", "second_group_draw_matches_demand"],
+                expected_classification="confirmed_safe",
+            ),
+            {"gate": admission_gate_witness,
+             "admission_traces_searched": int(admission_search["admission_traces"]),
+             "sound_violations": len(admission_search["sound_violations"]),
+             "necessity_violations": len(admission_search["necessity_violations"])},
+            ["Rocq: cross_group_draw_le_supply / cross_group_admission_sound (LinearLogicResources.v)",
+             "TLA+: CompoundSettlement Inv_CrossGroupAdmissionBounded / Inv_SecondGroupDrawMatchesDemand",
+             "Rust: cross_group_two_compounds_sharing_component_admits_one / cross_group_over_admission_distinct_sets_rejected_on_replay"],
         ),
     ]
 

@@ -21,10 +21,20 @@
 (* AND a cross-group contention case where a SECOND compound group shares the  *)
 (* component pool Σ⟦s₁⟧ (the residual-ledger / shared-component invariant).    *)
 (*                                                                          *)
-(* The two headline invariants are the TLA+ analogues of the Rocq             *)
+(* The two headline SETTLEMENT invariants are the TLA+ analogues of the Rocq  *)
 (* [compound_split_debit_conserves]:                                          *)
 (*   Inv_CompoundDebitConserves     — Σ post-pools + total drawn = Σ pre-pools.*)
 (*   Inv_ComponentDrawNoUnderflow   — each component post-pool ≥ 0.           *)
+(*                                                                          *)
+(* TM-CA-165 adds the cross-group ADMISSION bound: AdmitGate now threads the   *)
+(* shared residual, bounding the SECOND group's demand by the LIVE effective    *)
+(* supply after group 1, so the cross-group cumulative draw on a shared         *)
+(* component is bounded at ADMISSION — not merely capped at settlement:         *)
+(*   Inv_CrossGroupAdmissionBounded   — k2 ≤ LIVE effective supply.            *)
+(*   Inv_SecondGroupDrawMatchesDemand — group 2's full demand settles.         *)
+(* Rocq analogue: cross_group_draw_le_supply + cross_group_admission_sound      *)
+(* (LinearLogicResources.v); Rust: the LIVE `remaining` ledger in               *)
+(* acceptance.rs::admit_by_funding_with_logic + recompute_settlement_debits.    *)
 (****************************************************************************)
 
 EXTENDS Integers, FiniteSets
@@ -125,9 +135,17 @@ Init ==
 AdmitGate ==
     /\ phase = "pregate"
     /\ \E kk \in 0..EffectiveSupply(sComp, s1, s2) :
-         \E kk2 \in 0..EffectiveSupply(sComp, s1, s3) :
-            /\ k' = kk
-            /\ k2' = kk2
+         \* TM-CA-165: the cross-group ledger gate bounds the SECOND group's demand
+         \* by the LIVE effective supply AFTER group 1's combined-first draw on the
+         \* shared component s₁ — group 2 sees the DRAWN-DOWN s₁ (s1 − dP1), not its
+         \* full pre-balance. (The pre-fix gate used EffectiveSupply(sComp, s1, s3)
+         \* with s₁ at FULL balance — the cross-group over-admission this models the
+         \* fix of: both groups were admitted against s₁'s full balance.)
+         LET dC1 == Min2(kk, sComp)
+             dP1 == kk - dC1
+         IN \E kk2 \in 0..EffectiveSupply(sComp - dC1, s1 - dP1, s3) :
+              /\ k' = kk
+              /\ k2' = kk2
     /\ phase' = "admitted"
     /\ UNCHANGED <<sComp, s1, s2, s3, drawComp, drawPair, drawComp2, drawPair2,
                    postComp, post1, post2, post3, postS1AfterBoth>>
@@ -231,5 +249,35 @@ Inv_SharedComponentSummedDrawWithinSupply ==
 (*--------------------------------------------------------------------------*)
 Inv_CombinedPoolSummedDrawWithinSupply ==
     phase = "settled" => drawComp + drawComp2 <= sComp
+
+(*--------------------------------------------------------------------------*)
+(* Inv_CrossGroupAdmissionBounded (TM-CA-165): the GATE — not merely the        *)
+(* settlement's residual cap — bounds the cross-group cumulative demand on the   *)
+(* shared component s₁. The SECOND group's admitted demand k2 fits the LIVE       *)
+(* effective supply AFTER group 1's combined-first draw (the DRAWN-DOWN s₁ =     *)
+(* s1 − dP1), so the combined draw on s₁ is bounded at ADMISSION time. With the   *)
+(* pre-fix independent gate (k2 ≤ EffectiveSupply(sComp, s1, s3), s₁ at FULL       *)
+(* balance) this is FALSE; the cross-group ledger gate (AdmitGate, now threading   *)
+(* the shared residual) makes it hold.                                            *)
+(*--------------------------------------------------------------------------*)
+Inv_CrossGroupAdmissionBounded ==
+    phase \in {"admitted", "settled"} =>
+        k2 <= EffectiveSupply(sComp - Min2(k, sComp),
+                              s1 - (k - Min2(k, sComp)),
+                              s3)
+
+(*--------------------------------------------------------------------------*)
+(* Inv_SecondGroupDrawMatchesDemand (TM-CA-165): the SECOND group's FULL admitted *)
+(* demand is settled — drawComp2 + drawPair2 = k2 — exactly as group 1            *)
+(* (Inv_DrawMatchesDemand). Under the FIXED cross-group gate the settlement's      *)
+(* residual cap on the shared component NEVER truncates group 2's draw (the gate   *)
+(* already proved fundability against the LIVE residual); under the pre-fix        *)
+(* independent gate it WOULD truncate (the cap silently absorbs the over-demand    *)
+(* into per-pool debits ≤ balance — the TM-CA-165 un-funded-compute leak), so this *)
+(* invariant fails. It is the model witness that the GATE, not the settlement cap, *)
+(* bounds the cross-group cumulative demand on a shared component.                 *)
+(*--------------------------------------------------------------------------*)
+Inv_SecondGroupDrawMatchesDemand ==
+    phase = "settled" => drawComp2 + drawPair2 = k2
 
 =============================================================================
