@@ -25,13 +25,13 @@ skinparam NoteBackgroundColor #FFF8E1
 skinparam NoteBorderColor     #666666
 title One Cosigned, two keys — deploy_id (wire-sig) is decoupled from the funding pool (pubkey)\nDR-13 §D2.9: identity ≠ wallet
 
-component "Cosigned { wire_sig, pk }\n— the signed deploy envelope" <<#F8C3B8>> as SRC
+component "Cosigned { wire_sig, pk }\n— the signed deploy envelope" as SRC #F8C3B8
 
-component "envelope_sig =\nSig::Quote(Blake2b256(\nDEPLOY_SIGNATURE_DOMAIN ‖ wire_sig))" <<#B2DFDB>> as ENV
-component "funding_sig =\nSig::Ground(pk)" <<#B2DFDB>> as FUND
+component "envelope_sig =\nSig::Quote(Blake2b256(\nDEPLOY_SIGNATURE_DOMAIN ‖ wire_sig))" as ENV #B2DFDB
+component "funding_sig =\nSig::Ground(pk)" as FUND #B2DFDB
 
-component "deploy_id\non-chain identity — STABLE,\nbyte-identical pre/post-§D2.9" <<#BBDEFB>> as DID
-component "Σ⟦Ground(pk)⟧  supply pool\nthe wallet — gate proves Σ ≥ Δ,\nsettlement debits Σ −= Δ" <<#C8E6C9>> as POOL
+component "deploy_id\non-chain identity — STABLE,\nbyte-identical pre/post-§D2.9" as DID #BBDEFB
+component "Σ⟦Ground(pk)⟧  supply pool\nthe wallet — gate proves Σ ≥ Δ,\nsettlement debits Σ −= Δ" as POOL #C8E6C9
 
 ' Fan-out: one Cosigned derives two independent keys.
 SRC --> ENV  : derive from\nwire_sig  (the signature)

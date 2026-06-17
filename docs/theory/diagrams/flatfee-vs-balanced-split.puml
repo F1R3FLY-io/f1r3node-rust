@@ -27,10 +27,10 @@ skinparam NoteBackgroundColor #FFF8E1
 skinparam NoteBorderColor     #666666
 title FEE = transfer (conserving, flat-per-deploy)  ·  COST = burn (balanced-per-cosigner)
 
-package "LEFT — FLAT FeeExtract (F-C / F-D)" <<#C8E6C9>> {
-  component "FlatFeeApportionment\n— ONE token per ADMITTED deploy" <<#FFECB3>> as FFA
-  component "Σ⟦c⟧  client supply pool\n(combined pool first,\nelse canonical-first component)" <<#C8E6C9>> as CPOOL
-  component "F_v  validator fee channel" <<#C8E6C9>> as FV
+package "LEFT — FLAT FeeExtract (F-C / F-D)" #E8F5E9 {
+  component "FlatFeeApportionment\n— ONE token per ADMITTED deploy" as FFA #FFECB3
+  component "Σ⟦c⟧  client supply pool\n(combined pool first,\nelse canonical-first component)" as CPOOL #C8E6C9
+  component "F_v  validator fee channel" as FV #C8E6C9
 
   FFA  -[#C62828]-> CPOOL : draw ONE token\nΣ⟦c⟧ −= fee   (carve)
   CPOOL -[#2E7D32]-> FV   : F_v += fee   (credit)
@@ -42,11 +42,11 @@ package "LEFT — FLAT FeeExtract (F-C / F-D)" <<#C8E6C9>> {
   end note
 }
 
-package "RIGHT — Balanced cost split (P8)" <<#C5CAE9>> {
-  component "DefaultApportionment\n— split cost Δ EQUALLY per cosigner" <<#FFECB3>> as DA
-  component "Σ⟦Ground(pk₁)⟧\ncosigner 1 pool" <<#C8E6C9>> as P1
-  component "Σ⟦Ground(pk₂)⟧\ncosigner 2 pool" <<#C8E6C9>> as P2
-  component "Σ⟦Ground(pk₃)⟧\ncosigner 3 pool" <<#C8E6C9>> as P3
+package "RIGHT — Balanced cost split (P8)" #E8EAF6 {
+  component "DefaultApportionment\n— split cost Δ EQUALLY per cosigner" as DA #FFECB3
+  component "Σ⟦Ground(pk₁)⟧\ncosigner 1 pool" as P1 #C8E6C9
+  component "Σ⟦Ground(pk₂)⟧\ncosigner 2 pool" as P2 #C8E6C9
+  component "Σ⟦Ground(pk₃)⟧\ncosigner 3 pool" as P3 #C8E6C9
 
   DA -[#C62828]-> P1 : Δ / n   (BURN)
   DA -[#C62828]-> P2 : Δ / n   (BURN)

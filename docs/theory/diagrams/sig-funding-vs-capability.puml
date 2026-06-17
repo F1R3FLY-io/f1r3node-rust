@@ -28,24 +28,24 @@ skinparam NoteBackgroundColor #FFF8E1
 skinparam NoteBorderColor     #666666
 title One Sig enum, two grammars (F-A) — funding formers (g | #P | s∘s) vs the value/capability type-logic
 
-package "Funding formers   (g | #P | s∘s)" <<#C8E6C9>> {
-  component "Unit\n— multiplicative 1" <<#C8E6C9>> as F_UNIT
-  component "★ Ground(g)\n⟵ the public key\n(§D2.9 funding key)" <<#C8E6C9>> as F_GROUND
-  component "Quote(#P)\n— process hash" <<#C8E6C9>> as F_QUOTE
-  component "And(∘)\n— the tensor combinator" <<#C8E6C9>> as F_AND
+package "Funding formers   (g | #P | s∘s)" #E8F5E9 {
+  component "Unit\n— multiplicative 1" as F_UNIT #C8E6C9
+  component "★ Ground(g)\n⟵ the public key\n(§D2.9 funding key)" as F_GROUND #C8E6C9
+  component "Quote(#P)\n— process hash" as F_QUOTE #C8E6C9
+  component "And(∘)\n— the tensor combinator" as F_AND #C8E6C9
 }
 
-package "Capability / value type-logic   (F-A: NOT funding formers)" <<#C5CAE9>> {
-  component "Threshold\n— k-of-N quorum" <<#C5CAE9>> as C_THRESH
-  component "Plus  ⊕" <<#C5CAE9>> as C_PLUS
-  component "With  &" <<#C5CAE9>> as C_WITH
-  component "Bang  !" <<#C5CAE9>> as C_BANG
-  component "WhyNot  ?" <<#C5CAE9>> as C_WHYNOT
-  component "Lolly  ⊸" <<#C5CAE9>> as C_LOLLY
+package "Capability / value type-logic   (F-A: NOT funding formers)" #E8EAF6 {
+  component "Threshold\n— k-of-N quorum" as C_THRESH #C5CAE9
+  component "Plus  ⊕" as C_PLUS #C5CAE9
+  component "With  &" as C_WITH #C5CAE9
+  component "Bang  !" as C_BANG #C5CAE9
+  component "WhyNot  ?" as C_WHYNOT #C5CAE9
+  component "Lolly  ⊸" as C_LOLLY #C5CAE9
 }
 
-component "is_funding_former()\n— the funding chokepoint" <<#FFECB3>> as GATE
-component "Σ⟦s⟧  supply pool\nfrom_sig(s).par — the funded channel" <<#C8E6C9>> as POOL
+component "is_funding_former()\n— the funding chokepoint" as GATE #FFECB3
+component "Σ⟦s⟧  supply pool\nfrom_sig(s).par — the funded channel" as POOL #C8E6C9
 
 ' Funding formers pass the gate and key the supply pool.
 F_UNIT   --> GATE

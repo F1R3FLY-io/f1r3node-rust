@@ -28,18 +28,18 @@ skinparam NoteBackgroundColor #FFF8E1
 skinparam NoteBorderColor     #666666
 title §D2.9 reconciles the implementation with its already-pubkey-keyed model
 
-package "Rocq model — WalletNaming.v" <<#C8E6C9>> {
-  component "@W_v := @(*walletTag, validatorPk)" <<#C8E6C9>> as WV
-  component "SGround : list bool → sig\n(the ground-axis carrier)" <<#C8E6C9>> as SGROUND
-  component "wallet_name_injective\ndistinct pk ⇒ distinct @W_v" <<#C8E6C9>> as INJ
+package "Rocq model — WalletNaming.v" #E8F5E9 {
+  component "@W_v := @(*walletTag, validatorPk)" as WV #C8E6C9
+  component "SGround : list bool → sig\n(the ground-axis carrier)" as SGROUND #C8E6C9
+  component "wallet_name_injective\ndistinct pk ⇒ distinct @W_v" as INJ #C8E6C9
   note bottom of INJ #E8F5E9
     axiom-free — the model was ALWAYS pubkey-keyed.
   end note
 }
 
-package "Rust impl (§D2.9)" <<#F8C3B8>> {
-  component "funding_sig = Sig::Ground(pk)" <<#F8C3B8>> as FSIG
-  component "Σ⟦Ground(pk)⟧  supply pool\n(the wallet, gate-read)" <<#F8C3B8>> as POOL
+package "Rust impl (§D2.9)" #FCE4EC {
+  component "funding_sig = Sig::Ground(pk)" as FSIG #F8C3B8
+  component "Σ⟦Ground(pk)⟧  supply pool\n(the wallet, gate-read)" as POOL #F8C3B8
   FSIG --> POOL : keys
 }
 
@@ -47,7 +47,7 @@ package "Rust impl (§D2.9)" <<#F8C3B8>> {
 WV -[#1565C0]-> FSIG : instantiates\n(the abstract funding-key parameter)
 
 ' The corrected pre-§D2.9 outlier.
-component "pre-§D2.9: funding keyed by\nwire-sig Quote(hash)\n— the OUTLIER the code corrected" <<#FFEBEE>> as OUTLIER
+component "pre-§D2.9: funding keyed by\nwire-sig Quote(hash)\n— the OUTLIER the code corrected" as OUTLIER #FFEBEE
 OUTLIER .[#C62828].> FSIG : §D2.9 re-points funding\nfrom Quote(hash) to Ground(pk)
 
 note as CONCLUSION #E8F5E9
