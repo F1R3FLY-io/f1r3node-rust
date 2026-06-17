@@ -990,6 +990,7 @@ fn dispatch_table_creator(
     dispatcher: RhoDispatch,
     block_data: Arc<tokio::sync::RwLock<BlockData>>,
     invalid_blocks: InvalidBlocks,
+    urn_map: Arc<HashMap<String, Par>>,
     deploy_data: Arc<tokio::sync::RwLock<DeployData>>,
     extra_system_processes: &mut Vec<Definition>,
     openai_service: SharedOpenAIService,
@@ -1016,6 +1017,7 @@ fn dispatch_table_creator(
             block_data.clone(),
             invalid_blocks.clone(),
             deploy_data.clone(),
+            urn_map.clone(),
             openai_service.clone(),
             ollama_service.clone(),
             grpc_client_service.clone(),
@@ -1108,11 +1110,18 @@ async fn setup_reducer(
         reducer: reducer_cell.clone(),
     });
 
+    // Wrap urn_map in Arc up front so it can be shared between the
+    // dispatch_table_creator (passes it into ProcessContext / SystemProcesses
+    // for the upcoming registry_lookup handler) and the DebruijnInterpreter
+    // (uses it directly in the eval_new fast path).
+    let urn_map = Arc::new(urn_map);
+
     let replay_dispatch_table = dispatch_table_creator(
         charging_rspace.clone(),
         temp_dispatcher.clone(),
         block_data_ref,
         invalid_blocks,
+        urn_map.clone(),
         deploy_data_ref,
         extra_system_processes,
         openai_service,
@@ -1129,7 +1138,7 @@ async fn setup_reducer(
     let reducer = Arc::new(DebruijnInterpreter {
         space: charging_rspace.clone(),
         dispatcher: dispatcher.clone(),
-        urn_map: Arc::new(urn_map),
+        urn_map,
         merge_chs,
         mergeable_tags,
         cost: cost.clone(),

@@ -319,6 +319,11 @@ pub struct ProcessContext {
     pub block_data: Arc<tokio::sync::RwLock<BlockData>>,
     pub invalid_blocks: InvalidBlocks,
     pub deploy_data: Arc<tokio::sync::RwLock<DeployData>>,
+    /// The runtime's URN → Par binding table, shared with
+    /// `DebruijnInterpreter`. Plumbed in so a future
+    /// `registry_lookup` system process can serve legacy URNs by
+    /// consulting it directly instead of duplicating the table.
+    pub urn_map: Arc<HashMap<String, Par>>,
     pub system_processes: SystemProcesses,
 }
 
@@ -329,6 +334,7 @@ impl ProcessContext {
         block_data: Arc<tokio::sync::RwLock<BlockData>>,
         invalid_blocks: InvalidBlocks,
         deploy_data: Arc<tokio::sync::RwLock<DeployData>>,
+        urn_map: Arc<HashMap<String, Par>>,
         openai_service: SharedOpenAIService,
         ollama_service: SharedOllamaService,
         grpc_client_service: GrpcClientService,
@@ -340,11 +346,13 @@ impl ProcessContext {
             block_data: block_data.clone(),
             invalid_blocks,
             deploy_data: deploy_data.clone(),
+            urn_map: urn_map.clone(),
             system_processes: SystemProcesses::create(
                 dispatcher,
                 space,
                 block_data,
                 deploy_data,
+                urn_map,
                 openai_service,
                 ollama_service,
                 grpc_client_service,
@@ -501,6 +509,10 @@ pub struct SystemProcesses {
     pub space: RhoISpace,
     pub block_data: Arc<tokio::sync::RwLock<BlockData>>,
     pub deploy_data: Arc<tokio::sync::RwLock<DeployData>>,
+    /// Shared with `ProcessContext` and `DebruijnInterpreter`. The
+    /// upcoming `registry_lookup` handler consults this when serving
+    /// legacy URNs.
+    pub urn_map: Arc<HashMap<String, Par>>,
     openai_service: SharedOpenAIService,
     ollama_service: SharedOllamaService,
     grpc_client_service: GrpcClientService,
@@ -515,6 +527,7 @@ impl SystemProcesses {
         space: RhoISpace,
         block_data: Arc<tokio::sync::RwLock<BlockData>>,
         deploy_data: Arc<tokio::sync::RwLock<DeployData>>,
+        urn_map: Arc<HashMap<String, Par>>,
         openai_service: SharedOpenAIService,
         ollama_service: SharedOllamaService,
         grpc_client_service: GrpcClientService,
@@ -525,6 +538,7 @@ impl SystemProcesses {
             space,
             block_data,
             deploy_data,
+            urn_map,
             openai_service,
             ollama_service,
             grpc_client_service,
