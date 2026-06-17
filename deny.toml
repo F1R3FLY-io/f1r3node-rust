@@ -1,8 +1,11 @@
 # cargo-deny configuration for the F1R3node Rust workspace.
 # See https://embarkstudios.github.io/cargo-deny/ for documentation.
 
+# all-features = true to match CI: the cargo-deny-action runs with --all-features,
+# which pulls in feature-gated transitive deps (rholang's rust-bert / chroma).
+# Keeping this in sync means `cargo deny check` locally reproduces CI exactly.
 [graph]
-all-features = false
+all-features = true
 no-default-features = false
 
 # ---------------------------------------------------------------------------
@@ -33,6 +36,13 @@ ignore = [
     "RUSTSEC-2021-0141", # dotenv (transitive via openai-api-rs)
     "RUSTSEC-2021-0153", # encoding (transitive via hocon -> nom)
     "RUSTSEC-2024-0436", # paste proc-macro (transitive via metrics)
+
+    # Feature-gated transitive deps, present only under --all-features (as CI runs
+    # cargo-deny). All reach the graph through rholang's optional rust-bert (ML)
+    # and chroma (vector store) features; none have a safe upgrade we own.
+    "RUSTSEC-2024-0437", # protobuf 2.x recursion crash (rust_tokenizers -> rust-bert -> rholang)
+    "RUSTSEC-2025-0119", # number_prefix unmaintained (indicatif -> cached-path -> rust-bert -> rholang)
+    "RUSTSEC-2026-0173", # proc-macro-error2 unmaintained (validator_derive -> validator -> chroma -> rholang)
 ]
 
 # ---------------------------------------------------------------------------
