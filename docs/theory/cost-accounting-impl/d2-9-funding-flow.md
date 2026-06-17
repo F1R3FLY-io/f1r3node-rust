@@ -162,6 +162,20 @@ so a strict compound deploy was play-admitted (on `effectiveΣ`) but replay-reje
 (`effective_supply_with`), with the settle-filter keeping a group iff `strict ∨ present(own pool)` —
 mirroring the play side exactly (non-strict stays byte-identical).
 
+**Over-admission re-check (TM-CA-164).** The strict re-verification above only guarantees a compound group
+has a *positive* effective supply; it does NOT bound the group's *cumulative demand* against that supply on
+replay. Because `compute_settlement_debits` residual-caps a compound pair-draw at `min(Σ_l, Σ_r)`, an
+over-demand `ΣΔ > effectiveΣ` (a malicious proposer stuffing more compound deploys from one cosigner set than
+the gate would admit) is silently absorbed into per-pool debits ≤ balance — so the per-pool `debit > balance`
+replay check (`recompute_and_verify_admission`) cannot catch it (it catches single-sig only, whose own-pool
+debit is *uncapped* `= ΣΔ`). The deploys still execute (unmetered-for-liveness), so the cosigners would
+oversubscribe their shared component wallets by `ΣΔ − effectiveΣ` un-funded units. The recompute therefore
+ALSO re-imposes the gate's per-group bound on the RAW cumulative demand: for every enforced group it asserts
+`Σ(cost + fee) ≤ effectiveΣ`, raising `ReplayAdmissionMismatch` otherwise — matching the gate's static
+per-group `effective`, so it never forks a gate-admitted block (equality is admissible). Test:
+`compound_over_admission_rejected_on_replay`. (Cross-group sharing of one component across *distinct* cosigner
+sets is a separate, tracked follow-up — see TM-CA-164.)
+
 ![Strict compound effective supply — a strict multi-sig deploy whose combined Σ⟦And(…)⟧ pool is genesis-absent funds from effectiveΣ = Σ_compound (absent ⇒ 0) + min(Σ_l, Σ_r). Keying the replay recompute on the raw compound-pool presence (the pre-§D2.9 bug) rejects on replay what play admitted — a fork (red). §D2.9 keys on the effective supply, admits, settles balanced from the component pair (left −= k, right −= k, P8), and keeps the group in the settle-filter iff strict ∨ present(own pool), so play and replay are byte-identical (green).](../diagrams/strict-compound-effective-supply.svg)
 
 (*Source: [`diagrams/strict-compound-effective-supply.puml`](../diagrams/strict-compound-effective-supply.puml) — render with `plantuml -tsvg docs/theory/diagrams/strict-compound-effective-supply.puml`.*)

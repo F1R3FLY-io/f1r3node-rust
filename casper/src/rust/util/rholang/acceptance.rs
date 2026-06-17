@@ -928,37 +928,61 @@ where
     // play/replay FORK).
     let effective = delta_sigma::effective_supply_with(&raw, &decompositions);
 
-    // Task #13a STRICT replay RE-VERIFICATION: under spec-strict funding, the
-    // gate would NEVER admit a `Δ > 0` deploy onto a pool with ZERO EFFECTIVE
-    // supply (effective 0 ⇒ rejected, §7.6 step 5). So a recorded ADMITTED group
-    // with positive demand whose EFFECTIVE supply is 0 on the block's pre-state
-    // means the proposer bypassed the strict gate ⇒ INVALID block. (Skipped when
-    // `!strict`: the transitional gate admits absent pools unenforced, so this is
-    // exactly the byte-identical pre-#13a behavior.) Iterates the PRE-filter
-    // `demand_by_group` (deterministic `SigKey` order) so groups are still
-    // visible here before the settle-filter below. NOTE: effective supply (not
-    // raw presence) — a compound group funded only by present COMPONENTS has a
-    // positive effective supply and is correctly NOT flagged (the play side
-    // admitted it on the same effective supply).
-    if strict {
-        for (key, (_channel, amount)) in &demand_by_group {
-            if *amount > 0 && *effective.get(key).unwrap_or(&0) <= 0 {
-                return Err(CasperError::ReplayFailure(
-                    ReplayFailure::replay_admission_mismatch(
-                        0,
-                        0,
-                        0,
-                        0,
-                        format!(
-                            "strict funding: admitted deploy with ΣΔ_s={} targets a pool with \
-                             ZERO effective supply (SigKey {}) — proposer bypassed the spec-strict \
-                             gate (§7.6 step 5: underfunded deploy must be rejected)",
-                            amount,
-                            hex::encode(key),
-                        ),
+    // REPLAY ADMISSIBILITY RE-VERIFICATION (TM-CA-153) — the SUFFICIENT
+    // consensus guarantee against over-admission, INCLUDING compound (multi-sig)
+    // groups. The play-side gate admits a per-signer group only while its
+    // cumulative admitted demand (cost `ΣΔ_s` + the flat per-deploy `FeeExtract`)
+    // fits the Split/Join EFFECTIVE supply `effectiveΣ = Σ⟦compound⟧ +
+    // min(Σ⟦s₁⟧, Σ⟦s₂⟧)` (the per-group `is_funded` prefix walk at `:712`, keyed
+    // on the SAME static per-group `effective` computed here). Replay MUST
+    // re-impose THAT bound — on the RAW cumulative demand, BEFORE the
+    // residual-capping settlement apportionment.
+    //
+    // Why the per-pool `debit > balance` check in `recompute_and_verify_admission`
+    // is NOT enough: `compute_settlement_debits` residual-caps a COMPOUND
+    // pair-draw at `min(Σ⟦s₁⟧, Σ⟦s₂⟧)`, so an over-demand `ΣΔ > effectiveΣ` is
+    // silently absorbed into per-pool debits ≤ balance (the cap that is correct
+    // and underflow-safe for an ADMITTED group becomes an over-demand absorber
+    // for a hand-crafted over-set). Single-sig is caught there only because its
+    // own-pool draw is UNCAPPED (`= ΣΔ`); compound is not. This re-check closes
+    // that asymmetry uniformly.
+    //
+    // A group is ENFORCED iff `strict || present(own pool)` — matching the
+    // play-side early-admit condition (a non-strict ABSENT pool is early-admitted
+    // unenforced and carries no funding obligation, so it is excluded here, NOT
+    // rejected). This SUBSUMES the prior `effective ≤ 0` strict check (zero
+    // effective ⇒ any positive demand exceeds it) and never rejects a VALID block
+    // (the gate guarantees `Σ(cost+fee) ≤ effectiveΣ`; equality is admissible).
+    // It matches the gate's per-group static `effective` exactly, so it cannot
+    // fork a gate-admitted block. (NOTE: cross-group sharing of a component pool
+    // across DISTINCT cosigner sets is governed by the gate's own per-group
+    // admission + the cross-group settlement residual ledger and is tracked
+    // separately — TM-CA-153 cross-group; this check is the per-group bound.)
+    for (key, (_channel, cost)) in &demand_by_group {
+        if *cost <= 0 || !(strict || present.contains(key)) {
+            continue;
+        }
+        let fee = fee_by_group.get(key).map(|(_chan, f)| *f).unwrap_or(0);
+        let effective_supply = *effective.get(key).unwrap_or(&0);
+        if cost.saturating_add(fee) > effective_supply {
+            return Err(CasperError::ReplayFailure(
+                ReplayFailure::replay_admission_mismatch(
+                    0,
+                    0,
+                    0,
+                    0,
+                    format!(
+                        "funding over-admission: group cumulative demand (cost {} + fee {}) \
+                         exceeds effective supply {} (SigKey {}) — proposer admitted \
+                         ΣΔ > effectiveΣ, bypassing the §7.7 reject-both bound \
+                         (compound double-spend / oversubscription)",
+                        cost,
+                        fee,
+                        effective_supply,
+                        hex::encode(key),
                     ),
-                ));
-            }
+                ),
+            ));
         }
     }
 
@@ -2065,6 +2089,57 @@ mod tests {
             outcome.debits.get(&victim_key).is_none(),
             "the unsigned victim's wallet is NEVER debited (placeholder filter)"
         );
+    }
+
+    /// TM-CA-153 (COMPOUND over-admission) — a hand-crafted compound admitted set
+    /// whose cumulative demand `ΣΔ` EXCEEDS the group's effective supply is
+    /// REJECTED on replay with `ReplayAdmissionMismatch`. The Split/Join
+    /// residual-cap silently absorbs the over-demand into per-pool debits ≤
+    /// balance, so the per-pool `debit > balance` check cannot catch it — the
+    /// cumulative `cost + fee ≤ effectiveΣ` re-check must. A VALID compound deploy
+    /// at the admissible boundary still passes (no fork of a gate-admitted block).
+    #[tokio::test]
+    async fn compound_over_admission_rejected_on_replay() {
+        // Over-set: ONE compound deploy Δ = 8, components seeded to 5 each ⇒
+        // effectiveΣ = Σ⟦And⟧(absent ⇒ 0) + min(5,5) = 5 < Δ. The play-side gate
+        // would reject it (8 > 5); a malicious proposer includes it anyway.
+        let over = compound_cosigned(&n_sends(8), 0, 10);
+        let (left, right) = match accounting::funding_sig(&over) {
+            Sig::And(l, r) => (*l, *r),
+            other => panic!("expected And(Ground,Ground), got {:?}", other),
+        };
+        let mut reader = MockSupplyReader::new();
+        reader.set_sig(&left, 5);
+        reader.set_sig(&right, 5);
+
+        let err = recompute_settlement_debits(vec![over.clone()], &reader, /* strict */ true)
+            .await
+            .expect_err("compound over-admission (ΣΔ=8 > effectiveΣ=5) must be rejected on replay");
+        match err {
+            CasperError::ReplayFailure(ReplayFailure::ReplayAdmissionMismatch { detail, .. }) => {
+                assert!(
+                    detail.contains("over-admission") || detail.contains("exceeds effective"),
+                    "expected an over-admission diagnostic, got: {detail}"
+                );
+            }
+            other => panic!("expected ReplayAdmissionMismatch, got {:?}", other),
+        }
+
+        // A VALID compound deploy: Δ = 4, components 5 each ⇒ effectiveΣ = 5, and
+        // cost + fee = 4 + 1 = 5 ≤ 5 (the admissible boundary) ⇒ NOT rejected. This
+        // confirms the re-check matches the gate exactly and never forks a
+        // gate-admitted block.
+        let ok = compound_cosigned(&n_sends(4), 0, 10);
+        let (l2, r2) = match accounting::funding_sig(&ok) {
+            Sig::And(l, r) => (*l, *r),
+            other => panic!("expected And, got {:?}", other),
+        };
+        let mut reader_ok = MockSupplyReader::new();
+        reader_ok.set_sig(&l2, 5);
+        reader_ok.set_sig(&r2, 5);
+        recompute_settlement_debits(vec![ok.clone()], &reader_ok, /* strict */ true)
+            .await
+            .expect("a funded compound deploy (cost+fee = effectiveΣ) must pass the re-check");
     }
 
     // ═══════════════════════════════════════════════════════════════════════
