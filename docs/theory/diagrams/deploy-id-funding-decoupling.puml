@@ -1,0 +1,76 @@
+' Deploy-id / funding-key decoupling (DR-13 §D2.9) — one Cosigned envelope, two
+' derived keys: the wire signature drives the on-chain deploy_id (STABLE,
+' byte-identical pre/post-§D2.9), while the signer's public key drives the
+' funding supply pool Σ⟦Ground(pk)⟧. The pre-§D2.9 bug routed the funding pool
+' off the wire signature, so the pool was a fresh genesis-absent channel that
+' was never debited.
+'
+' Source of truth: docs/theory/cost-accounting-impl/d2-9-funding-flow.md
+'                  (DR-13 §D2.9 refinement; cost-accounting-decision-records.md:369-383).
+' Palette:  deployer/source=salmon #F8C3B8 · derivation/middleware=teal #B2DFDB
+'           on-chain identity / tuplespace=blue #BBDEFB · supply pool=mint #C8E6C9
+'   arrows: stable-identity/credit path=green #2E7D32 · pre-§D2.9 bug edge=red-dashed #C62828
+' Render:  plantuml -tsvg docs/theory/diagrams/deploy-id-funding-decoupling.puml
+
+@startuml deploy-id-funding-decoupling
+!theme plain
+skinparam defaultFontName "sans-serif"
+skinparam componentStyle rectangle
+skinparam shadowing false
+skinparam ArrowFontSize 11
+skinparam component {
+  BorderColor #333333
+}
+skinparam NoteBackgroundColor #FFF8E1
+skinparam NoteBorderColor     #666666
+title One Cosigned, two keys — deploy_id (wire-sig) is decoupled from the funding pool (pubkey)\nDR-13 §D2.9: identity ≠ wallet
+
+component "Cosigned { wire_sig, pk }\n— the signed deploy envelope" <<#F8C3B8>> as SRC
+
+component "envelope_sig =\nSig::Quote(Blake2b256(\nDEPLOY_SIGNATURE_DOMAIN ‖ wire_sig))" <<#B2DFDB>> as ENV
+component "funding_sig =\nSig::Ground(pk)" <<#B2DFDB>> as FUND
+
+component "deploy_id\non-chain identity — STABLE,\nbyte-identical pre/post-§D2.9" <<#BBDEFB>> as DID
+component "Σ⟦Ground(pk)⟧  supply pool\nthe wallet — gate proves Σ ≥ Δ,\nsettlement debits Σ −= Δ" <<#C8E6C9>> as POOL
+
+' Fan-out: one Cosigned derives two independent keys.
+SRC --> ENV  : derive from\nwire_sig  (the signature)
+SRC --> FUND : derive from\npk  (the public key)
+
+' Post-§D2.9 wiring: each derived key feeds its OWN sink.
+ENV  -[#2E7D32]-> DID   : identity\n(NOT a funding key)
+FUND -[#2E7D32]-> POOL  : keys the wallet\nΣ⟦signer⟧ == Σ⟦wallet⟧
+
+' Pre-§D2.9 bug: the funding pool was keyed off the wire-sig Quote atom.
+ENV .[#C62828].> POOL : ✗ pre-§D2.9 funding edge
+note on link #FFEBEE
+  ✗ pre-§D2.9 BUG: the funding pool was keyed by the
+  wire-sig Quote atom (envelope_sig). That channel was
+  a fresh, genesis-absent pool — always absent ⇒ the
+  wallet was NEVER debited. §D2.9 (3a4e03eb) re-points
+  funding to Sig::Ground(pk) and leaves deploy_id alone.
+end note
+
+note bottom of POOL #E8F5E9
+  Σ⟦signer⟧ == Σ⟦Ground(pk)⟧ == Σ⟦wallet⟧
+  Multi-sig: funding_sig is the left-assoc Sig::And-fold
+  of Sig::Ground(pkᵢ) over the signers who actually signed.
+end note
+
+note bottom of DID #E3F2FD
+  deploy_id still derives from envelope_sig (the wire
+  signature) — so it is byte-identical before and after
+  §D2.9. This IS the decoupling: identity ≠ funding.
+end note
+
+legend bottom
+  |= color |= meaning |
+  |<#F8C3B8>| deployer / signed source envelope |
+  |<#B2DFDB>| key-derivation step (middleware/function) |
+  |<#BBDEFB>| on-chain identity (tuplespace-visible) |
+  |<#C8E6C9>| funding supply pool Σ⟦·⟧ (accounting) |
+  |<#2E7D32>| stable-identity / wallet-credit path (post-§D2.9) |
+  |<#C62828>| pre-§D2.9 bug edge (wire-sig pool, never debited) |
+endlegend
+
+@enduml

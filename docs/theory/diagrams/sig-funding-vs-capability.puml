@@ -1,0 +1,84 @@
+' The ONE Sig enum bisected (F-A) — the funding-signature formers (g | #P | s∘s:
+' Unit, Ground, Quote, And) versus the value/capability type-logic connectives
+' (Threshold, Plus ⊕, With &, Bang !, WhyNot ?, Lolly ⊸). The funding former
+' Ground(pk) is the §D2.9 funding key. is_funding_former() is the chokepoint:
+' funding formers flow to the supply pool Σ⟦s⟧; the six connectives are rejected
+' there and reflect to the value/type layer.
+'
+' Source of truth: docs/theory/cost-accounting-impl/w1-surface-syntax-native-integration.md
+'                  (F-A; mod.rs Sig @1390, is_funding_former @1846).
+' Palette:  funding formers=mint #C8E6C9 · capability/value type-logic=indigo #C5CAE9
+'           is_funding_former() gate=amber #FFECB3 · supply pool Σ⟦s⟧=mint #C8E6C9
+'   arrows: funding/credit path=green #2E7D32 · capability reject=red #C62828
+' Render:  plantuml -tsvg docs/theory/diagrams/sig-funding-vs-capability.puml
+
+@startuml sig-funding-vs-capability
+!theme plain
+skinparam defaultFontName "sans-serif"
+skinparam componentStyle rectangle
+skinparam shadowing false
+skinparam ArrowFontSize 11
+skinparam package {
+  BorderColor #444444
+}
+skinparam component {
+  BorderColor #333333
+}
+skinparam NoteBackgroundColor #FFF8E1
+skinparam NoteBorderColor     #666666
+title One Sig enum, two grammars (F-A) — funding formers (g | #P | s∘s) vs the value/capability type-logic
+
+package "Funding formers   (g | #P | s∘s)" <<#C8E6C9>> {
+  component "Unit\n— multiplicative 1" <<#C8E6C9>> as F_UNIT
+  component "★ Ground(g)\n⟵ the public key\n(§D2.9 funding key)" <<#C8E6C9>> as F_GROUND
+  component "Quote(#P)\n— process hash" <<#C8E6C9>> as F_QUOTE
+  component "And(∘)\n— the tensor combinator" <<#C8E6C9>> as F_AND
+}
+
+package "Capability / value type-logic   (F-A: NOT funding formers)" <<#C5CAE9>> {
+  component "Threshold\n— k-of-N quorum" <<#C5CAE9>> as C_THRESH
+  component "Plus  ⊕" <<#C5CAE9>> as C_PLUS
+  component "With  &" <<#C5CAE9>> as C_WITH
+  component "Bang  !" <<#C5CAE9>> as C_BANG
+  component "WhyNot  ?" <<#C5CAE9>> as C_WHYNOT
+  component "Lolly  ⊸" <<#C5CAE9>> as C_LOLLY
+}
+
+component "is_funding_former()\n— the funding chokepoint" <<#FFECB3>> as GATE
+component "Σ⟦s⟧  supply pool\nfrom_sig(s).par — the funded channel" <<#C8E6C9>> as POOL
+
+' Funding formers pass the gate and key the supply pool.
+F_UNIT   --> GATE
+F_GROUND --> GATE
+F_QUOTE  --> GATE
+F_AND    --> GATE
+GATE -[#2E7D32]-> POOL : funding former ⇒ admit\n(builds funding_sig, keys Σ⟦s⟧)
+
+' Capability connectives are rejected at the funding chokepoint (F-A).
+C_THRESH -[#C62828]-> GATE
+C_PLUS   -[#C62828]-> GATE
+C_WITH   -[#C62828]-> GATE
+C_BANG   -[#C62828]-> GATE
+C_WHYNOT -[#C62828]-> GATE
+C_LOLLY  -[#C62828]-> GATE
+note on link #FFEBEE
+  rejected at the funding chokepoint — F-A
+  (reflect to the value / type layer instead)
+end note
+
+note bottom of POOL #E8F5E9
+  funding_sig is built only from { Unit, Ground, Quote, And };
+  the six connectives ⊕ & ! ? ⊸ (and Threshold, per F-A §2(A))
+  reflect to the value/type layer, never to Σ⟦s⟧ (F-A).
+end note
+
+legend bottom
+  |= color |= meaning |
+  |<#C8E6C9>| funding former / supply pool Σ⟦·⟧ (g | #P | s∘s) |
+  |<#C5CAE9>| value / capability type-logic connective |
+  |<#FFECB3>| is_funding_former() control gate |
+  |<#2E7D32>| funding-admit / pool-keying path |
+  |<#C62828>| capability connective rejected at funding (F-A) |
+endlegend
+
+@enduml

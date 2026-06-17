@@ -3692,12 +3692,12 @@ references.
 | `Bisimulation.v`            | 1,248      | 36       | Coinductive bisim, multi-stuck bisim, generic bisim dispatcher                                                                                                                                                                                                                     |
 | `WeakBarbedEquiv.v`         | 259        | 17       | Weak barb predicates (`weak_barb_input`, `weak_barb_output`), reachability/≡ₙ-closure, `weak_barbed_equiv_except` hidden-channel equivalence, parallel-congruence lemmas (§6.5, §6.6)                                                                                               |
 | `Replication.v`             | 2,071      | 56       | Meredith's reflective encoding (`bang_encoding`, `D_encoding`); `bang_encoding_unfolds` (§6.5 Theorem 9.19); forward barb propagation `preplicate_bang_encoding_body_barbs_sound` (§6.5 Theorem 9.20); step inversion `step_PReplicate_inv_se`, `step_PPar_PReplicate_inv_se` (§8.7 Lemma 9.21); closed forward-boundary theorem `replication_encoding_forward_barb_sound` (§6.6 Theorem 9.23) |
-| `MintingInjection.v`        | 630        | 26       | Minting is exogenous token injection, never a `ca_step`; supply-pool balance layer (`Σ⟦v⟧` injectivity in pk, epoch-mint idempotency, user steps never move a supply balance) |
+| `MintingInjection.v`        | 630        | 26       | Minting is exogenous token injection, never a `ca_step`; supply-pool balance layer (`Σ⟦v⟧` injectivity in pk, epoch-mint idempotency, user steps never move a supply balance — the same pubkey keying §D2.9 extends to user-deploy funding, §12(iv)) |
 | `MintingHalt.v`             | 179        | 8        | A halted (slashed) validator is never minted and never gains supply; redemption is the only path back to funding (`halted_validator_not_minted`, `halted_validator_supply_not_increased`) |
 | `Exchange.v`                | 203        | 7        | The blessed conserving 1:1 token Exchange (Stage D): per-channel and total token conservation of the swap, requires-both-inputs join, and Exchange-is-a-`ca_step`-not-a-mint |
 | `SystemStructEquiv.v`       | 474        | 14       | System-level structural equivalence (`sys_equiv`): parallel-unit law `sse_par_unit`, Appendix-B token-stack decomposition `token_decomp`, and source-level free names `sig_free_names` (Def 3.3 axes; §3.5) |
 | `SyntacticSugar.v`          | 196        | 6        | Section 3.8 syntactic sugar at the translation level: uniform-signing and linear-transfer (⊸) defining equations as `proc`-level structural equivalences of the translated images (Option A; ⊸ desugars to nested plain-signature gate layers) |
-| `WalletNaming.v`            | 313        | 14       | Per-validator wallet `@W_v` naming (Stage A): injectivity in the validator public key and pairwise disjointness of the wallet / quarantine / funding-slot seed domains |
+| `WalletNaming.v`            | 313        | 14       | Per-validator wallet `@W_v` naming (Stage A): injectivity in the validator public key and pairwise disjointness of the wallet / quarantine / funding-slot seed domains — the pubkey-keyed `@W_v`/`SGround` the §D2.9 user-deploy funding key `Sig::Ground(pk)` instantiates (§12(iv)) |
 | `MultiSignerRefinement.v`   | 530        | 31       | Phase 1.10 multi-signature deploy support: per-deployer Map-in-MVar PoS refinement, single-signer observable equivalence to the legacy contract, and canonical-order FIFO refund-drain conservation |
 | `LinearLogicResources.v`    | 818        | 38       | Publication-derived linear-resource calculus: mixed unrestricted/linear resource boundary, anti-contraction / anti-weakening, no-double-spend, funding decidability, and the runtime `sig_algebra` bridge |
 | `LLIdentities.v`            | 587        | 51       | Phase 2/3 ILLE algebraic identities: multiplicative (tensor/and), additive (plus/with), and exponential (bang/why-not) laws plus Phase 2 Threshold permutation invariance at the reflection layer |
@@ -4281,7 +4281,7 @@ translation/bisimulation stack — and the graded-HML adequacy and two adjunctio
 that rest on it — continues; the construct-by-construct map is in
 [cost-accounting-as-monad-correspondence.md](cost-accounting-as-monad-correspondence.md).
 
-**Implementation-delegated parameters.** Three constructs the paper uses but
+**Implementation-delegated parameters.** Four constructs the paper uses but
 deliberately leaves to the implementation. (i) **The hash function** for
 crypto-quoting `#P` (§4.2): the paper specifies "a configurable hash function
 (SHA-256, Blake2b, …)" and the mechanization parameterizes over it
@@ -4297,8 +4297,31 @@ message resident on `Σ⟦s⟧`; supply is injective in the signature) and the
 mechanization fixes the *balance datum* (DR-13) and its disjointness
 (`lane_pool_disjoint`), but the concrete in-memory container (the runtime
 `DashMap<Sig, AtomicI64>`) is an implementation choice the paper does not
-constrain. Each delegation is intentional in the paper; the implementation's
-choice is consistent with every behavioral law the paper does fix. (See DR-20.)
+constrain. (iv) **The funding-key instantiation** (§D2.9). The paper's funding
+signature `s` — the key of the per-actor pool `Σ⟦s⟧` (§4.6/§4.7) — is an
+*abstract parameter* over the backend `G` (Def 3, DR-2/16): the model fixes only
+that `Σ` is injective in `s` and that distinct principals get distinct pools. The
+Rocq model already commits the *validator* instance concretely — `WalletNaming.v`
+keys the draw wallet `@W_v := @(*walletTag, validatorPk)` by the **public key**
+(modeled `SGround : list bool → sig`), with `wallet_name_injective` proved
+axiom-free ("Closed under the global context"); **no formal artifact ties a pool
+to a *wire signature***. The implementation's §D2.9 correction therefore
+instantiates this abstract funding key as `Sig::Ground(pk)` for user deploys
+(`funding_sig`: single-sig `Ground(pk)`, multi-sig the left-associated `And`-fold
+of `Ground(pkᵢ)`) — exactly the pubkey naming `WalletNaming.v` already proves
+injective — so that `Σ⟦signer⟧ == Σ⟦wallet⟧`. The `deploy_id` continues to derive
+from the wire signature (`envelope_sig`); that is on-chain identity (which the
+model does not constrain), not a funding key. The strict-compound effective-supply
+check the §D2.9 replay recompute performs,
+`effectiveΣ_{s₁∘s₂} = Σ_{s₁∘s₂} + min(Σ_{s₁}, Σ_{s₂})`, is the **already-proven
+Split/Join algebra** (the `Split`/`Join` mediators + `CAJoinConservation`, App. §4.8.4)
+applied at replay — no new proof obligation; the prior wire-sig keying was the
+outlier the code corrected to match the model. **No FV artifact changes** (the
+85 `.v` / 64 `.tla` / 62 `.sage` / 11 `.lean` are abstract over / already
+consistent with the pubkey keying). See `cost-accounting-impl/d2-9-funding-flow.md`
+and `wd-d2-acceptance-gate.md` §D2.9. Each delegation is intentional in the paper;
+the implementation's choice is consistent with every behavioral law the paper does
+fix. (See DR-20.)
 
 ---
 

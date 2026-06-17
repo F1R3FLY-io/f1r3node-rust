@@ -54,10 +54,18 @@ Confirmed by reading both worktrees on 2026-06-15:
 - **`Compiler::source_to_adt(source: &str)` has NO signer context** (compiler.rs:17).
   The normalizer therefore CANNOT validate "in-term `s` ∈ deploy signers" — it can
   only RECOGNIZE `s` and mark the region. Signer-membership validation +
-  attribution happen at the reducer/gate, where the envelope `Sig` is installed
+  attribution happen at the reducer/gate, where the signer `Sig` is installed
   from `Cosigned` (`casper/.../rholang/runtime.rs::evaluate_cosigned` →
-  `RuntimeBudget::set_deploy_signature` / `set_deploy_signatures`,
-  `accounting/mod.rs:959`/`:1010`). **This split shapes Phase 3 (riskiest).**
+  `RuntimeBudget::set_deploy_signature_funded(wire_sig, funding_sig)` /
+  `set_deploy_signatures_funded(...)`, `accounting/mod.rs`). Post-§D2.9 the install
+  is SPLIT: `deploy_id` comes from `wire_sig` (the per-deploy wire signature), while
+  `self.signature` / the signer channels + supply key come from
+  `funding_sig = Sig::Ground(pk)` (single) / the `And`-fold of `Ground(pkᵢ)` (multi)
+  — the signer's genesis-seeded wallet `Σ⟦Ground(pk)⟧`, so `Σ⟦signer⟧ == Σ⟦wallet⟧`
+  (cross-ref `wd-d2-acceptance-gate.md` §D2.9 + the forthcoming `d2-9-funding-flow.md`).
+  The legacy `set_deploy_signature(s)` are now thin wrappers passing the wire-sig
+  `envelope_sig*` for byte-identical test/bench callers. **This split shapes Phase 3
+  (riskiest).**
 - **`metering.rs`:** `MeteredMachine::new` captures `sig_hash =
   budget.signature().lane_hash()` ONCE (`:57`); `child()` inherits it (`:84`);
   `reserve_comm` (`:93`) → `reserve_cost` (`:128`) stamps that one `sig_hash` on
@@ -392,9 +400,10 @@ refactor of `metering.rs` (MAJOR-3) plus the `delta_sigma::demand` generalizatio
 
 ### 3.1 `delta_sigma::demand` — per-`SigKey` attribution
 Add a sibling to `demand` that returns a `BTreeMap<SigKey, DemandEntry>` keyed by
-the ENVELOPE SIGNER the in-term `s` resolves to (BLOCKER-1): single-sig collapses
-all in-term `s` to the one envelope `SigKey`; multi-sig attributes a `Σ⟦sᵢ⟧`-gated
-COMM to its component `SigKey`. Signature: `pub fn demand_by_sig(desugared:
+the signer's `funding_sig = Ground(pk)` the in-term `s` resolves to (BLOCKER-1;
+§D2.9): single-sig collapses all in-term `s` to the one `funding_sig` SigKey
+(`= lane_hash(Ground(pk))` = the signer's wallet `Σ⟦Ground(pk)⟧`); multi-sig
+attributes a `Σ⟦Ground(pkᵢ)⟧`-gated COMM to its component `SigKey`. Signature: `pub fn demand_by_sig(desugared:
 &Par, signer_keys: &BTreeSet<SigKey>, region_sig: impl Fn(&Par)->Option<SigKey>)
 -> BTreeMap<SigKey, DemandEntry>`. KEEP the existing single-arg `demand` for the
 s₀ path (back-compat / `legacy` pin). Because the normalized `Par` carries no
@@ -442,13 +451,14 @@ override active inside a recognized signed region:
   the envelope-signer set is already on the budget via the installed `Sig`).
 
 ### 3.3 BLOCKER-1 attribution rule (signer pools only)
-A COMM whose resolved channel equals `from_sig(signer_i).par` for some installed
+A COMM whose resolved channel equals `from_sig(Ground(pk_i)).par` for some installed
 deploy signer attributes to `signer_i`'s lane (`attempt_in_lane`); otherwise it
-attributes to the envelope (the default, byte-identical s₀ behavior). Single-sig:
-the only signer channel IS the envelope, so everything collapses (no change).
-Multi-sig: the component pools are the `Sig::And` leaves, which native ALREADY
-funds via the `And`-fold + `compute_settlement_debits` component draws — NO new
-pool-write path; DR-13 preserved.
+attributes to the envelope-default lane (the byte-identical s₀ behavior). Post-§D2.9
+the signer channels are the signers' GROUND wallet pools, so single-sig: the only
+signer channel IS `Σ⟦Ground(pk)⟧` (`= funding_sig`'s lane), so everything collapses
+(no change). Multi-sig: the component pools are the `Sig::And` leaves
+`Σ⟦Ground(pkᵢ)⟧`, which native ALREADY funds via the `And`-fold of `Ground(pkᵢ)` +
+`compute_settlement_debits` component draws — NO new pool-write path; DR-13 preserved.
 
 ### 3.4 BLOCKER-1 rejection (in-term `s` not among signers)
 Because the normalizer can't see signers, the reject lives at the

@@ -138,7 +138,9 @@ does (it requires both inputs); would also raise consensus weight over time (con
 
 **Decision.** Remove the per-deploy precharge/refund machinery (`PreChargeDeploy`/`RefundDeploy`, PoS
 `chargeDeploy`/`refundDeploy`, the runtime fan-out). Deploys draw phlogiston from the per-validator wallet;
-the acceptance gate commits tokens linearly at acceptance.
+the acceptance gate commits tokens linearly at acceptance. (For USER deploys the wallet is the signer's
+`Σ⟦Ground(pk)⟧`, keyed by the signer's public key so that `Σ⟦signer⟧ == Σ⟦wallet⟧` — the now-literal sense
+of "draw from the wallet"; §D2.9 and the DR-13 §D2.9-refinement below.)
 
 **Spec basis.** §7.6 (acceptance commits resources; "no tokens are consumed" on rejection).
 
@@ -363,6 +365,23 @@ replay-stable `random_state` paths (`fee_carve_random_state` `-0x30`, `fee_colle
 fee is a transferred token (`Σ⟦c⟧ → F_v`, conserving), the cost is the burned settlement debit on `Σ⟦s⟧`.
 Play/replay symmetry exercised by
 `fee_collection_and_convert_is_play_replay_deterministic` + `fee_convert_converted_epochs_idempotent_deterministic`.
+
+**§D2.9 refinement (the user-deploy funding key).** This DR fixes that supply is a balance datum on
+`Σ⟦s⟧ = from_sig(s)`; it does not, by itself, fix what `s` IS for a user deploy. The validator/system pools
+were always keyed by a GROUND public key (`Σ⟦v⟧ = from_sig(Sig::Ground(pk))`, the mint/fee target — and the
+Rocq model `WalletNaming.v` keys the wallet `@W_v := @(*walletTag, validatorPk)` by `pk`/`SGround`, proved
+injective). The USER-deploy gate/settlement key, however, was originally derived from the per-deploy WIRE
+signature (`envelope_sig = Sig::Quote(Blake2b256(DEPLOY_SIGNATURE_DOMAIN ‖ wire_sig))`), so a deploy's pool
+was a fresh, genesis-absent channel and the wallet was never debited. §D2.9 (`3a4e03eb`) re-points the user
+funding key to `funding_sig = Sig::Ground(pk)` (single) / the left-associated `Sig::And`-fold of
+`Sig::Ground(pkᵢ)` (multi), so `Σ⟦signer⟧ == Σ⟦Ground(pk)⟧ == Σ⟦wallet⟧`. This UNIFIES the user and validator
+pools under one keying (`from_sig(Ground(pk))`) and is what makes `client_fuel_allocations` (already
+pubkey-keyed at genesis) the binding seed for strict shards. The `deploy_id` continues to derive from
+`envelope_sig` (the wire signature) — on-chain identity, NOT a funding key — so it is byte-identical
+pre/post-§D2.9 (the decoupling). The unforgeability / balance-datum / disjointness decisions of this DR are
+otherwise unchanged. Threshold envelopes EXCLUDE empty-`sig` placeholder cosigners from `funding_sig` (only
+signers who actually signed fund the deploy). See `wd-d2-acceptance-gate.md` §D2.9 and
+`cost-accounting-impl/d2-9-funding-flow.md`.
 
 **Alternatives considered.** (a) literal nested-send messages, one per token — rejected (O(n) gate-read
 bottleneck); (b) a Rust-injected supply name `@sigSupplyCh` bound into `VB`'s continuation — rejected
@@ -1098,7 +1117,14 @@ the safety lever — DR-13's unforgeability half stays; its system-monopoly half
   semantic change, no Rocq change). The funding `Sig` stays `g|#P|s∘s`; the 6 connectives are capability/type-layer
   only. NO wire-format change, NO hard-fork — a red-team verified the funding path was ALREADY paper-faithful
   (`envelope_sig` total to Quote/And; `from_proto` dead on funding) and the dormant decode carried no fund-theft
-  (sig-verified, sig-keyed channels); (c) closes the latent confused-deputy gap.
+  (sig-verified, sig-keyed channels); (c) closes the latent confused-deputy gap. **§D2.9 update:** the funding
+key was subsequently re-pointed from `envelope_sig` (the wire-sig `Quote` atom — now `deploy_id`-only) to
+`funding_sig = Sig::Ground(pk)` / the `And`-fold of `Sig::Ground(pkᵢ)` (the signer's pubkey wallet,
+`Σ⟦signer⟧ == Σ⟦wallet⟧`; DR-13 §D2.9-refinement). F-A is UNAFFECTED: `is_funding_former()` now gates the
+`funding_sig` envelope, and `Ground`/`And` are both funding formers — indeed the funding key is now literally
+the `g` ground atom (the public key), making the funding path MORE paper-faithful (`g` = "an Ed25519 public
+key / secp256k1 key hash"). The connective-separation argument holds identically for the `Ground`-keyed
+funding envelope.
 - **F-B (CONSENSUS, INCORRECT):** the acceptance gate folds `min_phlo_price` margin into the correctness inequality
   `Σ_s ≥ Δ_s` for EVERY deploy (`delta_sigma.rs:475`; `block_creator.rs:896`); Def 19 has no margin (the Thm-20
   margin is ONLY the data-dependent `unknown` branch). **RESOLVED + LANDED (e329aed3):** the margin is restricted

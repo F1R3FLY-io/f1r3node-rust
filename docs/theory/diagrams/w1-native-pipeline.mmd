@@ -1,0 +1,42 @@
+flowchart TD
+    %% W1 native cost-accounting pipeline — surface syntax is RECOGNIZED (decorates
+    %% + validates the signature, lowers P through the ORDINARY dispatch, emits NO
+    %% fuel-gate node), then metered per-COMM at the reducer. The transpiler's
+    %% Part-B gate translation is DROPPED (it double-meters vs the normative Rule 1).
+    %% Source of truth for cost-accounting-impl/w1-surface-syntax-native-integration.md (Figure D).
+    %% Render: mmdc -i docs/theory/diagrams/w1-native-pipeline.mmd -o docs/theory/diagrams/w1-native-pipeline.svg
+
+    subgraph SURF["Surface syntax (parsed AST)"]
+      direction TB
+      A1["{% P %}[s] — signed term"]
+      A2["s :: S — token stack"]
+      A3["for(... {% y &lt;- x %}[s] ...) — signed join"]
+    end
+
+    REC["Recognizer<br/>recognize_signed_term / _token_stack / _signed_join"]
+    SIG["Resolve + validate signature<br/>signature_to_native_sig ⇒ accounting::Sig<br/>(lollipop / uniform-sign / strip_signed_binds AST rewrites)"]
+    NORM["ORDINARY lowering<br/>normalize_ann_proc(P)<br/>— emits NO fuel-gate node"]
+    PAR["Normalized Par<br/>≡ byte-identical to unsigned P ✓"]
+    METER["Reducer — per-COMM metering<br/>one token per send / receive,<br/>attributed to s's lane (s₀ collapse: one envelope lane)"]
+    DROP["✗ Part-B gate  for(t &lt;- Σ⟦s⟧)&#123; *t ∣ P &#125;<br/>DROPPED — would double-meter vs Rule 1 (§838)"]
+
+    A1 --> REC
+    A2 --> REC
+    A3 --> REC
+    REC --> SIG --> NORM --> PAR --> METER
+    SIG -. "recognition decorates; emits NO gate" .-> DROP
+
+    classDef surface fill:#F8C3B8,stroke:#333,color:#000;
+    classDef pipe fill:#D4C4E8,stroke:#333,color:#000;
+    classDef fn fill:#B2DFDB,stroke:#333,color:#000;
+    classDef ctrl fill:#FFECB3,stroke:#333,color:#000;
+    classDef pool fill:#C8E6C9,stroke:#333,color:#000;
+    classDef par fill:#BBDEFB,stroke:#333,color:#000;
+    classDef reject fill:#EF9A9A,stroke:#C62828,color:#000,stroke-dasharray: 5 5;
+    class A1,A2,A3 surface
+    class REC pipe
+    class SIG fn
+    class NORM ctrl
+    class PAR par
+    class METER pool
+    class DROP reject

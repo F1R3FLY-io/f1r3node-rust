@@ -1,0 +1,101 @@
+' §D2.9 funding flow — wallet → funding_sig → gate (Σ≥Δ) → debit → replay.
+' One Cosigned yields TWO keys: deploy_id (wire-sig, on-chain identity) and the
+' funding key funding_sig = Sig::Ground(pk) (the signer's wallet Σ⟦Ground(pk)⟧).
+'
+' Source of truth for cost-accounting-impl/d2-9-funding-flow.md (Figure A).
+'
+' Color palette (house style; cf. deploy-execution-sequence.puml):
+'   Actor / Deployer       : salmon  (#F8C3B8)
+'   Ingress (control)      : amber   (#FFECB3)
+'   funding_sig / settle   : mint    (#C8E6C9)
+'   Gate / Replay (fn)     : teal    (#B2DFDB)
+'   Supply pool Σ⟦Ground(pk)⟧ (the wallet) : blue (#BBDEFB)
+' Semantic arrows:
+'   debit / charge         : red     (#C62828)
+'   read / conserve        : green   (#2E7D32)
+'   deploy_id (decoupled)  : grey-dashed (#9E9E9E)
+'
+' Render:  plantuml -tsvg docs/theory/diagrams/d2-9-funding-flow-sequence.puml
+
+@startuml d2-9-funding-flow-sequence
+!theme plain
+
+skinparam sequence {
+  ArrowColor              #444444
+  LifeLineBorderColor     #666666
+  ParticipantBorderColor  #333333
+  NoteBorderColor         #666666
+  NoteBackgroundColor     #FFF8E1
+  GroupBorderColor        #333333
+  GroupHeaderFontColor    #222222
+  DividerBackgroundColor  #ECEFF1
+}
+skinparam defaultFontName "sans-serif"
+skinparam defaultFontSize 12
+
+autonumber
+
+actor       "Deployer"                       as D   #F8C3B8
+participant "Ingress\nfrom_proto_cosigned"   as IN  #FFECB3
+participant "funding_sig\n(accounting)"      as FS  #C8E6C9
+participant "Gate\nadmit_by_funding"         as G   #B2DFDB
+database    "Σ⟦Ground(pk)⟧\n(the wallet)"     as W   #BBDEFB
+participant "CloseBlock\nsettlement"         as CB  #C8E6C9
+participant "Replay\nrecompute"              as RP  #B2DFDB
+
+D -> IN ++ : submit Cosigned { wire_sig, pk }
+IN -> IN : verify each cosigner sig vs its pk\n(forgery ⇒ reject at ingress)
+
+note over IN #FFF3E0
+deploy_id is derived from the WIRE signature
+(envelope_sig = Quote(Blake2b256(DOMAIN ‖ wire_sig)))
+— on-chain identity, UNCHANGED. It is NOT the funding key.
+end note
+IN -[#9E9E9E]->> IN : deploy_id := envelope_sig(wire_sig)  [decoupled]
+
+IN -> FS ++ : funding_sig(cosigned)
+FS --> IN -- : Sig::Ground(pk)\n(multi-sig: And-fold of Ground(pkᵢ),\nplaceholders filtered)
+IN -> G ++ : candidate { funding_sig, Δ_s }
+
+G -[#2E7D32]-> W ++ : read Σ⟦Ground(pk)⟧
+W --> G -- : Σ_s
+G -> G : is_funded:  Σ_s ≥ Δ_s  ? (Def 19)\nmargin only on the `unknown` branch (F-B)
+alt Σ_s ≥ Δ_s  (funded)
+  G --> CB ++ : admit ⇒ settlement debit ΣΔ_s
+  CB -[#C62828]-> W : debit  post = pre − ΣΔ_s  (checked_sub)
+  deactivate CB
+else Σ_s < Δ_s  (strict shard)
+  G --> D : REJECT (under-funded; no execution, no debit)
+end
+deactivate G
+deactivate IN
+
+== Replay (independent re-verification) ==
+RP -> RP : to_cosigned() ⇒ re-derive the SAME funding_sig\n(no drift)
+RP -[#C62828]-> W : recompute Σ⟦Ground(pk)⟧ debit
+note over RP, W #E8F5E9
+Replay reconstructs the verified cosigner set and re-derives
+funding_sig, so the settlement-debit map is BYTE-IDENTICAL
+to play. Strict compound deploys key on the effective supply
+(effectiveΣ = Σ_compound + min(Σ_l,Σ_r)), not raw presence.
+end note
+
+note over D, W #E3F2FD
+**Σ⟦signer⟧ == Σ⟦wallet⟧** — the pool the gate proves Σ≥Δ
+against and debits IS the genesis-seeded wallet Σ⟦Ground(pk)⟧.
+Pre-§D2.9 the wire-sig pool was always absent ⇒ never debited.
+end note
+
+legend left
+| Color | Meaning |
+| <#F8C3B8> salmon | Deployer (actor) |
+| <#FFECB3> amber | ingress / control |
+| <#C8E6C9> mint | funding_sig / settlement (accounting) |
+| <#B2DFDB> teal | gate / replay (function) |
+| <#BBDEFB> blue | supply pool Σ⟦Ground(pk)⟧ (the wallet) |
+| <#C62828> red | debit / charge |
+| <#2E7D32> green | read / conserve |
+| <#9E9E9E> grey-dash | deploy_id (wire-sig, decoupled) |
+endlegend
+
+@enduml

@@ -1,0 +1,69 @@
+' Close-block supply stages — dual_write_supply: epoch mint → cost debit →
+' fee carve (conserving) → fee convert. Each write is read-modify-replace of a
+' single balance datum on a disjoint, replay-stable random_state path, guarded by
+' a ReplaySupplyMismatch readback; play and replay produce a byte-identical state.
+'
+' Source of truth for cost-accounting-impl/d2-9-funding-flow.md (Figure C).
+'
+' Palette:  control amber #FFECB3 · supply pools blue #BBDEFB · fee pool mint #C8E6C9
+'   arrows: debit/burn red #C62828 · mint/credit/conserve green #2E7D32
+'
+' Render:  plantuml -tsvg docs/theory/diagrams/close-block-stages-sequence.puml
+
+@startuml close-block-stages-sequence
+!theme plain
+
+skinparam sequence {
+  ArrowColor              #444444
+  LifeLineBorderColor     #666666
+  ParticipantBorderColor  #333333
+  NoteBorderColor         #666666
+  NoteBackgroundColor     #FFF8E1
+  DividerBackgroundColor  #ECEFF1
+}
+skinparam defaultFontName "sans-serif"
+skinparam defaultFontSize 12
+
+autonumber
+
+participant "CloseBlockDeploy\ndual_write_supply" as CB #FFECB3
+database    "Σ⟦v⟧\n(validator pool)"  as V #BBDEFB
+database    "Σ⟦Ground(pk)⟧\n(client wallet)" as C #BBDEFB
+database    "F_v\n(fee pool)"          as F #C8E6C9
+
+== Stage 1 — epoch mint (epoch boundary only) ==
+CB -[#2E7D32]-> V : Σ⟦v⟧ += epochPhlogiston\n(mintedEpochs (pk,e) guard; random_state lo ≥ 0)
+
+== Stage 2 — cost settlement debit (WD-D2 / §D2.9) ==
+CB -[#C62828]-> C : Σ⟦Ground(pk)⟧ −= ΣΔ_s\n(the gate's admitted demand; checked_sub; random_state −0x2b)
+note over C #FFEBEE
+COST = BURN. Settled per signer wallet
+Σ⟦Ground(pk)⟧ (§D2.9). Multi-sig: balanced
+equally across each cosigner's Σ⟦Ground(pkᵢ)⟧.
+end note
+
+== Stage 3 — fee carve (F-C/F-D, conserving) ==
+CB -[#C62828]-> C : Σ⟦Ground(pk)⟧ −= fee\n(flat FeeExtract — one token / admitted deploy; −0x30)
+CB -[#2E7D32]-> F : F_v += Σ fee\n(CONSERVING transfer: clients debited == F_v credited)
+
+== Stage 3b — fee convert (epoch, backed) ==
+CB -[#2E7D32]-> V : Σ⟦v⟧ += f\n(f = F_v count; BACKED by the carve, not a mint; −0x2d)
+CB -> F : F_v := 0\n(convertedEpochs (v,e) guard)
+
+note over CB, V #E8F5E9
+FEE = TRANSFER (conserving), COST = BURN. The full flow
+Σ⟦c⟧ → F_v → Σ⟦v⟧ conserves supply (Rocq fee_collect_then_convert_conserves).
+Every write: read-modify-REPLACE of one datum, disjoint replay-stable
+random_state, ReplaySupplyMismatch readback ⇒ play == replay.
+end note
+
+legend left
+| Color | Meaning |
+| <#FFECB3> amber | CloseBlock (control) |
+| <#BBDEFB> blue | supply pool (Σ⟦v⟧ / Σ⟦Ground(pk)⟧) |
+| <#C8E6C9> mint | fee pool F_v |
+| <#C62828> red | debit / burn |
+| <#2E7D32> green | mint / credit / conserving transfer |
+endlegend
+
+@enduml

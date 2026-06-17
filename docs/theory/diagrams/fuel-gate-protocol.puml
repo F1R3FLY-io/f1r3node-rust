@@ -54,6 +54,13 @@ participant "Evaluator"                                                       as
 participant "TokenBudget"                                                     as CM   #C8E6C9
 database    "RSpace"                                                          as R    #BBDEFB
 
+note across #FFF3E0
+**⚠ MIGRATION-ERA model (gate translation).** The native W1 path emits NO `for(t <- Σ⟦s⟧)`
+fuel gate — metering is per-COMM at the reducer (recognition-only; see
+diagrams/w1-native-pipeline.mmd, "the optimal combination"). The supply pool is keyed by
+funding_sig = Sig::Ground(pk) (§D2.9), not the wire-sig envelope.
+end note
+
 D -> T ++ : submit Rholang source + signature s
 note over T #EDE7F6
 parse → normalize → annotate P with s

@@ -1,0 +1,67 @@
+' §D2.9 reconciliation — the Rocq model WalletNaming.v was ALWAYS pubkey-keyed
+' (@W_v := @(*walletTag, validatorPk); SGround : list bool → sig;
+' wallet_name_injective, axiom-free). §D2.9 instantiates that abstract funding-key
+' parameter in Rust with funding_sig = Sig::Ground(pk) keying Σ⟦Ground(pk)⟧. The
+' pre-§D2.9 code keyed funding by the wire-sig Quote(hash) — the OUTLIER §D2.9
+' corrected. No formal-model change was needed: §D2.9 reconciles the code with its
+' own already-pubkey-keyed model.
+'
+' Source of truth: docs/theory/cost-accounting-impl/d2-9-funding-flow.md
+'                  (DR-13 §D2.9; WalletNaming.v:9,39,202,237).
+' Palette:  Rocq model=mint #C8E6C9 · Rust impl=salmon #F8C3B8
+'   arrows: instantiation (model→code)=blue #1565C0 · corrected outlier=red-dashed #C62828
+' Render:  plantuml -tsvg docs/theory/diagrams/d2-9-walletnaming-reconciliation.puml
+
+@startuml d2-9-walletnaming-reconciliation
+!theme plain
+skinparam defaultFontName "sans-serif"
+skinparam componentStyle rectangle
+skinparam shadowing false
+skinparam ArrowFontSize 11
+skinparam package {
+  BorderColor #444444
+}
+skinparam component {
+  BorderColor #333333
+}
+skinparam NoteBackgroundColor #FFF8E1
+skinparam NoteBorderColor     #666666
+title §D2.9 reconciles the implementation with its already-pubkey-keyed model
+
+package "Rocq model — WalletNaming.v" <<#C8E6C9>> {
+  component "@W_v := @(*walletTag, validatorPk)" <<#C8E6C9>> as WV
+  component "SGround : list bool → sig\n(the ground-axis carrier)" <<#C8E6C9>> as SGROUND
+  component "wallet_name_injective\ndistinct pk ⇒ distinct @W_v" <<#C8E6C9>> as INJ
+  note bottom of INJ #E8F5E9
+    axiom-free — the model was ALWAYS pubkey-keyed.
+  end note
+}
+
+package "Rust impl (§D2.9)" <<#F8C3B8>> {
+  component "funding_sig = Sig::Ground(pk)" <<#F8C3B8>> as FSIG
+  component "Σ⟦Ground(pk)⟧  supply pool\n(the wallet, gate-read)" <<#F8C3B8>> as POOL
+  FSIG --> POOL : keys
+}
+
+' The model instantiates into the corrected Rust code.
+WV -[#1565C0]-> FSIG : instantiates\n(the abstract funding-key parameter)
+
+' The corrected pre-§D2.9 outlier.
+component "pre-§D2.9: funding keyed by\nwire-sig Quote(hash)\n— the OUTLIER the code corrected" <<#FFEBEE>> as OUTLIER
+OUTLIER .[#C62828].> FSIG : §D2.9 re-points funding\nfrom Quote(hash) to Ground(pk)
+
+note as CONCLUSION #E8F5E9
+  ⇒ no formal-model change needed;
+  §D2.9 reconciles code with its own model.
+end note
+POOL .. CONCLUSION
+
+legend bottom
+  |= color |= meaning |
+  |<#C8E6C9>| Rocq model WalletNaming.v (already pubkey-keyed) |
+  |<#F8C3B8>| Rust implementation (§D2.9) |
+  |<#1565C0>| instantiates — model parameter realized in code |
+  |<#C62828>| corrected pre-§D2.9 outlier (wire-sig keying) |
+endlegend
+
+@enduml

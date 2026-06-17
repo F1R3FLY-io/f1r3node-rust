@@ -82,6 +82,7 @@ decision record / the register · **C** = still-open scope-boundary.
 | §4.6 (`tex:1251/1273`) | Uniform-signing + linear-transfer `⊸` sugar | `SyntacticSugar.uniform_sugar_translation_equiv`, `lollipop_sugar_translation_equiv` | — | A |
 | §4.6 Rmk (`tex:1208`) | `⊸` is `∘`'s right adjoint (tensor–hom) — *"left to the sequel"* | **`LLIdentities.lolly_curry_isomorphism`** | — | A (exceeds) |
 | Def 4–6 (`tex:2002`) | Token demand Δ, supply Σ, funding obligation Σ≥Δ | `LinearLogicResources.{delta_s,sigma_s,funding_check_balance_sound}` | Sage `budget_admission_model` | A |
+| §4.6/§4.7 | **Per-actor pool keyed by the signer's pubkey** (`Σ⟦signer⟧ == Σ⟦wallet⟧`, §D2.9) — the model was already pubkey-keyed; the impl's wire-sig keying was the outlier | `WalletNaming.wallet_name_injective` (pubkey `@W_v := @(*walletTag, pk)` / `SGround`) | Rust `accounting::funding_sig` = `Ground(pk)`; `acceptance.rs::build_candidate_with_logic` (§D2.9) | A |
 | Thm 1 (`tex:2060`) | Funding check decidable (linear-time) | `LinearLogicResources.funding_decidable` (decidability; linear-time is an impl property) | Rust `admit_by_funding` | A |
 | Def 7 (`tex:2138`) | Conservative demand + refund | `Settlement.{charged_plus_refund_eq_escrow,refund_le_escrow}`; `evaluation_cannot_receive_refund_fuel` | Sage `settlement_model` | A (DR-5) |
 | §7.7 (`tex:2231`) | Deployment boundary = unit of financial atomicity | `LinearLogicResources.admit_prefix_maximal`/`reject_both_sound` | TLA+ D2 acceptance; Rust `admit_by_funding` | A (DR-11/13) |
@@ -243,3 +244,34 @@ All gates are LOCAL-ONLY (never `.github/workflows`):
 
 > Buckets marked **C→A** in §2 move to A as Components 2/3/5 land; this document is updated to
 > match, and the per-prover witnesses are filled into the matrix as each gate goes green.
+
+## 8. Publications-alignment crosswalk (F-A…F-D, REV, §D2.9)
+
+The corrections that aligned the implementation with the calculus papers, each mapped spec →
+prover → Rust. All have landed.
+
+> **Caveat:** `publications/*.tex` is read-only and **not** in this working tree; the `.tex` clause
+> references below are the design pass's citations and are *unverified against the real paper* —
+> confirm before relying on them; do not edit any `.tex`.
+
+| Correction | Normative basis | Rocq / formal anchor | Rust anchor | Status |
+|---|---|---|---|---|
+| **F-A** funding vs capability: the funding `Sig` grammar is `g \| #P \| s∘s`; the six LL connectives (`⊕`/`&`/`!`/`?`/`⊸`, and `Threshold` as an admission-quorum) are value/type-logic, **not** funding formers | signature grammar `g \| #P \| s∘s` | `is_funding_former` (`Sig`); `sig_algebra_valid` (`CostAccountedSyntax.v`) | ingress `reject_capability_connectives` (`casper_message.rs`); gate `is_funding_former` (`acceptance.rs`) | landed |
+| **F-B** margin only on `unknown`: Definition 19 is the bare `Σ ≥ Δ` for resolvable demand; the Theorem-20 margin rides ONLY the data-dependent (`unknown`) branch | Def 19 / Thm 20 | `funding_decidable` (`funds n d := d ≤ n`, no margin term) | `delta_sigma::is_funded` (`margin iff Δ.unknown`) | landed |
+| **F-C / F-D** supply-conserving FeeExtract: a FLAT one-token-per-admitted-deploy carve `Σ⟦c⟧ → F_v` (not an additive mint), and the epoch convert is BACKED by the carve | FeeExtract (`tex:3637`) | `fee_collect_conserves`, `fee_collect_then_convert_conserves`, `fee_collect_is_client_backed` (`TokenConservation.v` / `MintingInjection.v`) | `FlatFeeApportionment`; `close_block_deploy::dual_write_supply` carve | landed |
+| **REV → phlogiston**: REV is a legacy NAME for the one system token (phlogiston), not a separate species; `wallets.txt` is the genesis trust-root | DR-27 (Greg) | the `Σ` supply layer is a single-token balance datum | `Σ⟦s⟧` balance datum (DR-13); `client_fuel_allocations` / `wallets.txt` | landed (DR-27) |
+| **§D2.9** funding key = the signer's GROUND public key (`Σ⟦signer⟧ == Σ⟦wallet⟧`); was the wire-sig envelope — but the model was already pubkey-keyed | per-actor signature-indexed pools (§4.6/§4.7); `g` = a public key | `WalletNaming.wallet_name_injective` (the pubkey-keyed `@W_v` / `SGround`) | `accounting::funding_sig` = `Sig::Ground(pk)`; `acceptance.rs::build_candidate_with_logic` | landed (`3a4e03eb`) |
+
+F-A is enforced by two independent guards — the load-bearing gRPC-ingress reject and the
+belt-and-suspenders funding-former gate predicate:
+
+![F-A ingress + gate flow — the wire DeployDataProto.sig_algebra is checked at ingress: if it contains a capability connective (⊕/&/!/?/⊸) from_proto_cosigned_with_sig_algebra calls reject_capability_connectives and returns an error (the load-bearing guard). Otherwise the Cosigned is built, funding_sig is derived, and the gate asserts funding_sig.is_funding_former() (the regression lock, unreachable unless funding_sig is made non-total) before admitting. Both guards ensure no capability-formed channel ever keys a funding pool.](diagrams/f-a-ingress-gate-flow.svg)
+
+(*Source: [`diagrams/f-a-ingress-gate-flow.puml`](diagrams/f-a-ingress-gate-flow.puml) — render with `plantuml -tsvg docs/theory/diagrams/f-a-ingress-gate-flow.puml`.*)
+
+The F-C/F-D fee is a FLAT, conserving transfer — distinct from the balanced (burned) cost split a
+multi-sig deploy pays:
+
+![FlatFee vs balanced split — the FeeExtract (F-C/F-D, left) is ONE client token per admitted deploy, drawn via FlatFeeApportionment from Σ⟦c⟧ and credited to the validator fee pool F_v (a conserving transfer, shown as a paired red-carve / green-credit), never doubled for a compound deploy. The multi-sig COST (P8, right) is the demand Δ debited EQUALLY across each cosigner's wallet Σ⟦Ground(pkᵢ)⟧ via DefaultApportionment (a burn). The divider note: FEE = transfer (conserving, flat-per-deploy); COST = burn (balanced-per-cosigner); cost ≠ fee, flat ≠ balanced.](diagrams/flatfee-vs-balanced-split.svg)
+
+(*Source: [`diagrams/flatfee-vs-balanced-split.puml`](diagrams/flatfee-vs-balanced-split.puml) — render with `plantuml -tsvg docs/theory/diagrams/flatfee-vs-balanced-split.puml`.*)

@@ -2,6 +2,8 @@
 
 **Status:** Execution design (grounded, ready to implement). Spec `publications/cost-accounting/cost-accounted-rho.tex` is law. Conforms to the approved plan and `../cost-accounting-decision-records.md` (DR-9 token-per-COMM, DR-11 acceptance gate). **The per-signature supply seam (`Σ⟦s⟧` representation, producer/consumer, decrement) is governed by [supply-realization-c-d-handoff.md](supply-realization-c-d-handoff.md) + DR-13.**
 
+> **⚠ SUPERSEDED on the funding key by §D2.9** ([wd-d2-acceptance-gate.md](wd-d2-acceptance-gate.md)). This sketch keys the supply pool by `lane_hash(deploy_sig)` (the per-deploy **wire-signature** envelope); the landed implementation keys it by `funding_sig = Sig::Ground(pk)` (single) / the `Sig::And`-fold of `Sig::Ground(pkᵢ)` (multi), so `Σ⟦signer⟧ == Σ⟦wallet⟧` (the genesis-seeded wallet `Σ⟦Ground(pk)⟧`). `deploy_id` remains wire-sig-derived (correct, byte-identical). Read this doc for the D0–D6 staging spine; read `wd-d2-acceptance-gate.md` §D2.9 for the authoritative funding key.
+
 ## Central representation decision (load-bearing)
 
 Today the runtime is the **s₀ collapse** (spec Remark 11): one `Sig` per deploy, installed once at
@@ -52,7 +54,7 @@ No proto change to `Par`. The N=1 (single-signature) scalar fast-path is preserv
 
 > **Governed by [wd-d2-acceptance-gate.md](wd-d2-acceptance-gate.md)** (authoritative). Key refinements: the gate runs in `create()` after `compute_parents_post_state` (block_creator.rs:790), NOT literally inside `prepare_user_deploys` (no pre-state there); the **settlement debit** (`post Σ⟦s⟧ = pre − ΣΔ`) rides `CloseBlockDeploy::post_eval`/`post_eval_replay`; `ReplayAdmissionMismatch` guards the admitted set; margin = on-chain `min_phlo_price`. Tracked follow-ons (NOT consensus-critical): speculative execution-on-receipt → **D2-perf**; compound multi-pool debit → **D3** (D2 caps compounds at their own pool; single-signer exact).
 - New `admit_by_funding(deploys, pre_state_reader, margin) -> (admitted, rejected)`: group by
-  `lane_hash(deploy_sig)`; per group sum `Δ_s`, read `Σ_s` once from the merged pre-state
+  `funding_sig.lane_hash()` (§D2.9 — the signer's wallet key `Σ⟦Ground(pk)⟧`, NOT `lane_hash(deploy_sig)`); per group sum `Δ_s`, read `Σ_s` once from the merged pre-state
   (`compute_parents_post_state` result, block_creator.rs:777-784); admit the largest **canonical-order
   prefix** (block_creator.rs:315-324 order) with cumulative `Δ_s ≤ effectiveΣ_s`; reject it + all after
   (§7.7 reject-both / no-partial). **No global lock, no global barrier** — groups are independent `BTreeMap`

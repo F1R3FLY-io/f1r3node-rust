@@ -1,0 +1,72 @@
+' F-A two-guard ingress flow — a wire DeployDataProto.sig_algebra is rejected at
+' the gRPC boundary if it contains a value/capability connective (⊕/&/!/?/⊸); the
+' admitted funding_sig is then re-checked by is_funding_former() as a regression
+' lock. Guard (1) ingress reject is LOAD-BEARING; guard (2) the gate predicate is
+' the belt-and-suspenders regression lock (unreachable unless funding_sig is made
+' non-total).
+'
+' Source of truth: docs/theory/cost-accounting-spec-alignment-audit.md
+'                  (F-A; reject_capability_connectives casper_message.rs:1349,
+'                   is_funding_former mod.rs:1846).
+' Palette:  funding-input=mint #C8E6C9 · decisions=amber #FFE082
+'           reject/error=red #EF9A9A · admit/credit=mint #C8E6C9
+'   arrows: default control=grey #444444
+' Render:  plantuml -tsvg docs/theory/diagrams/f-a-ingress-gate-flow.puml
+
+@startuml f-a-ingress-gate-flow
+!theme plain
+skinparam defaultFontName "sans-serif"
+skinparam ArrowColor                     #444444
+skinparam ActivityBorderColor            #333333
+skinparam ActivityBackgroundColor        #FFFFFF
+skinparam ActivityDiamondBackgroundColor #FFE082
+skinparam ActivityDiamondBorderColor     #333333
+skinparam NoteBackgroundColor            #FFF8E1
+skinparam NoteBorderColor                #666666
+title F-A two-guard ingress — ingress reject (load-bearing) + is_funding_former() (regression lock)
+
+start
+:wire DeployDataProto.sig_algebra; <<#C8E6C9>>
+if (contains ⊕ / & / ! / ? / ⊸ ?) then (yes · capability connective)
+  :from_proto_cosigned_with_sig_algebra\ncalls reject_capability_connectives; <<#EF9A9A>>
+  :Err — refused at the gRPC boundary; <<#EF9A9A>>
+  note right
+    GUARD (1): the LOAD-BEARING guard.
+    A value/capability connective never
+    reaches the funding gate — it is
+    refused with a crisp protocol error.
+    F-A ingress reject (c).
+  end note
+  stop
+else (no · only funding formers)
+  :build Cosigned { wire_sig, pk }; <<#C8E6C9>>
+  :derive funding_sig\n(Sig::Ground(pk) / And-fold of Sig::Ground(pkᵢ)); <<#C8E6C9>>
+  if (funding_sig.is_funding_former() ?) then (yes · g | #P | s∘s)
+    :admit to the gate\n(key Σ⟦s⟧, prove Σ ≥ Δ); <<#C8E6C9>>
+    note right
+      GUARD (2): the regression lock.
+      envelope/funding derivation is already
+      total to Ground/And, so this branch is
+      always taken on valid traffic.
+    end note
+  else (no · non-funding former)
+    :malformed — rejected\n(source_to_adt-failure path); <<#EF9A9A>>
+    note right
+      unreachable unless funding_sig is made
+      non-total by a future change — exactly
+      the regression F-A makes impossible
+      (belt-and-suspenders).
+    end note
+    stop
+  endif
+endif
+stop
+
+legend bottom
+  |= color |= meaning |
+  |<#C8E6C9>| funding input / admitted to the gate (accounting) |
+  |<#FFE082>| decision (ingress kind / funding-former predicate) |
+  |<#EF9A9A>| reject / error (refused deploy) |
+endlegend
+
+@enduml

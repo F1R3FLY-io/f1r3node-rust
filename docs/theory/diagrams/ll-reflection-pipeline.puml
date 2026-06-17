@@ -40,6 +40,13 @@ package "Rocq · LinearLogicResources.v" <<ll>> {
 component "ℕ\nfuel cost" <<sink>> as COST
 component "list ℕ\nwitnesses spent" <<sink>> as SPENT
 
+note bottom of SIG #FFF8E1
+F-A: only {Unit, Ground, Quote(=Hash), And} are FUNDING formers
+— the funding key is funding_sig = Ground(pk) (§D2.9). The other six
+(Plus/With/Bang/WhyNot/Lolly/Threshold) are value/type-logic only.
+Canonical F-A picture: sig-funding-vs-capability.puml.
+end note
+
 SIG -[#1565C0]-> SA   : models (Rocq abstraction of)
 SIG .[#C62828].> COST : min_required_for (Rust)\nmirrors clause-for-clause
 SA  -[#1565C0]-> LLF  : <b>ll_of_sig_algebra</b>\nreflection
