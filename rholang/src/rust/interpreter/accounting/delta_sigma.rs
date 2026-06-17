@@ -527,13 +527,29 @@ pub struct Decomposition {
 
 /// The Split/Join closure with explicit compound decompositions (the general
 /// form of [`effective_supply`]). Applies, for each decomposition
-/// `(s₁∘s₂, s₁, s₂)`:
+/// `(s₁∘s₂, s₁, s₂)`, ONLY the Join (combine) term:
 ///
 /// ```text
-/// effectiveΣ_{s₁∘s₂} = Σ_{s₁∘s₂} + min(Σ_{s₁}, Σ_{s₂})
-/// effectiveΣ_{s₁}    = Σ_{s₁}    + Σ_{s₁∘s₂}
-/// effectiveΣ_{s₂}    = Σ_{s₂}    + Σ_{s₁∘s₂}
+/// effectiveΣ_{s₁∘s₂} = Σ_{s₁∘s₂} + min(Σ_{s₁}, Σ_{s₂})   // Join: a matched pair builds a compound
+/// effectiveΣ_{s₁}    = Σ_{s₁}                            // no-weakening: a single component is
+/// effectiveΣ_{s₂}    = Σ_{s₂}                            //   NOT augmented by the compound pool
 /// ```
+///
+/// The DUAL of Join — crediting a single component `s₁` with the compound pool
+/// `Σ_{s₁∘s₂}` — is **weakening** and is FORBIDDEN: discharging a single-`s₁`
+/// demand by consuming a compound token `s₁∘s₂` silently discards the `s₂`
+/// authority (Rocq `CAJoinConservation.join_no_weakening` — `s₁∘s₂` carries
+/// strictly more signature atoms than `s₁`, so it cannot be discharged as `s₁`
+/// alone). Funding `s₁` from a compound requires an explicit, observable `Split`
+/// reduction that credits `Σ⟦s₂⟧` with the orphaned half (the runtime Splitter),
+/// NEVER a static admission credit (Cost-Accounted Rho "Weakening Is Forbidden";
+/// unverified against the canonical paper — confirm before relying. WD-D2
+/// §D2.9-R2). An earlier version also inserted `effectiveΣ_{s₁} = Σ_{s₁} +
+/// Σ_{s₁∘s₂}`; that over-credit (a code-only outlier matching no proof/doc/model)
+/// admitted a single-sig group against a capacity the conservation-preserving
+/// settlement (`GroupShape::Single` draws its own pool only) cannot honor — a
+/// latent underflow once any compound pool is provisioned. Removed here to match
+/// the verified model.
 ///
 /// using the RAW balances (`min` is computed on the raw component supplies so the
 /// closure is well-defined regardless of decomposition order — the result is a
@@ -557,19 +573,21 @@ pub fn effective_supply_with(
         let sigma_left = read_raw(&decomposition.left);
         let sigma_right = read_raw(&decomposition.right);
 
-        // effectiveΣ_{s₁∘s₂} = Σ_{s₁∘s₂} + min(Σ_{s₁}, Σ_{s₂})
+        // effectiveΣ_{s₁∘s₂} = Σ_{s₁∘s₂} + min(Σ_{s₁}, Σ_{s₂})  (Join — build a
+        // compound from a matched component pair; the authority-preserving
+        // direction. `sigma_left`/`sigma_right` are read only for this `min`.)
         let compound_effective = sigma_compound.saturating_add(sigma_left.min(sigma_right));
         effective.insert(decomposition.compound, compound_effective);
 
-        // effectiveΣ_{s₁} = Σ_{s₁} + Σ_{s₁∘s₂}  (and dually for s₂)
-        effective.insert(
-            decomposition.left,
-            sigma_left.saturating_add(sigma_compound),
-        );
-        effective.insert(
-            decomposition.right,
-            sigma_right.saturating_add(sigma_compound),
-        );
+        // NO single-component over-credit (no-weakening — WD-D2 §D2.9-R2): a
+        // single component `s₁`/`s₂` is NOT augmented by the compound pool
+        // `Σ_{s₁∘s₂}`. Consuming a compound `s₁∘s₂` to discharge a single-`s₁`
+        // demand would discard the `s₂` authority (Rocq
+        // `CAJoinConservation.join_no_weakening`); funding `s₁` from a compound
+        // requires an explicit `Split` reduction crediting `Σ⟦s₂⟧`, never a static
+        // admission credit. So `s₁` and `s₂` pass through at their raw balance (the
+        // identity `effective = raw.clone()` set above) — the settlement's
+        // `GroupShape::Single` draws the own pool only, so this matches exactly.
     }
 
     effective
@@ -816,9 +834,9 @@ mod tests {
     #[test]
     fn effective_supply_split_join_closure_arithmetic() {
         // Σ_{s1} = 4, Σ_{s2} = 6, Σ_{s1∘s2} = 10.
-        // effectiveΣ_{s1∘s2} = 10 + min(4,6) = 14
-        // effectiveΣ_{s1}    = 4 + 10        = 14
-        // effectiveΣ_{s2}    = 6 + 10        = 16
+        // effectiveΣ_{s1∘s2} = 10 + min(4,6) = 14   (Join term)
+        // effectiveΣ_{s1}    = 4   (no-weakening: NOT 4+10 — a compound pool does
+        // effectiveΣ_{s2}    = 6    NOT augment a single component; §D2.9-R2)
         let s1 = [1u8; 32];
         let s2 = [2u8; 32];
         let compound = [3u8; 32];
@@ -834,15 +852,18 @@ mod tests {
         }]);
 
         assert_eq!(effective.get(&compound), Some(&14));
-        assert_eq!(effective.get(&s1), Some(&14));
-        assert_eq!(effective.get(&s2), Some(&16));
+        // No-weakening (§D2.9-R2): the single components pass through at their RAW
+        // balance, NOT credited with the compound pool (was 14 / 16 pre-R2).
+        assert_eq!(effective.get(&s1), Some(&4));
+        assert_eq!(effective.get(&s2), Some(&6));
     }
 
     #[test]
     fn effective_supply_treats_absent_component_as_zero() {
         // Only the compound pool exists; components absent ⇒ read as 0.
         // effectiveΣ_{s1∘s2} = 8 + min(0,0) = 8
-        // effectiveΣ_{s1}    = 0 + 8         = 8
+        // No-weakening (§D2.9-R2): absent single components are NOT credited with
+        // the compound pool — they pass through UNSET (the gate reads absent ⇒ 0).
         let s1 = [1u8; 32];
         let s2 = [2u8; 32];
         let compound = [3u8; 32];
@@ -856,8 +877,8 @@ mod tests {
         }]);
 
         assert_eq!(effective.get(&compound), Some(&8));
-        assert_eq!(effective.get(&s1), Some(&8));
-        assert_eq!(effective.get(&s2), Some(&8));
+        assert_eq!(effective.get(&s1), None);
+        assert_eq!(effective.get(&s2), None);
     }
 
     #[test]

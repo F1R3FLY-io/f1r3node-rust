@@ -387,12 +387,12 @@ async fn effective_supply_closure_over_real_lane_hashes() {
         right: key_s2,
     }]);
 
-    // effectiveΣ_{s1∘s2} = 10 + min(4,6) = 14
-    // effectiveΣ_{s1}    = 4 + 10        = 14
-    // effectiveΣ_{s2}    = 6 + 10        = 16
+    // effectiveΣ_{s1∘s2} = 10 + min(4,6) = 14   (Join term)
+    // No-weakening (§D2.9-R2): the single components pass through at their RAW
+    // balance, NOT credited with the compound pool (was 14 / 16 pre-R2).
     assert_eq!(effective.get(&key_compound), Some(&14));
-    assert_eq!(effective.get(&key_s1), Some(&14));
-    assert_eq!(effective.get(&key_s2), Some(&16));
+    assert_eq!(effective.get(&key_s1), Some(&4));
+    assert_eq!(effective.get(&key_s2), Some(&6));
 
     // The no-decomposition closure is the identity (single-signer fast path).
     assert_eq!(effective_supply(&raw), raw);
