@@ -383,6 +383,104 @@ fn collect_component_channels(envelope: &Sig, component_channels: &mut BTreeMap<
     }
 }
 
+/// Index Split/Join decompositions by their compound key for O(1) shape lookup.
+/// An n≥3 left-assoc fold contributes nested decompositions on keys that are NOT
+/// standalone groups; the first (top-level) entry per compound key wins.
+fn index_decompositions(decompositions: &[Decomposition]) -> BTreeMap<SigKey, Decomposition> {
+    let mut by_compound: BTreeMap<SigKey, Decomposition> = BTreeMap::new();
+    for decomposition in decompositions {
+        by_compound
+            .entry(decomposition.compound)
+            .or_insert(*decomposition);
+    }
+    by_compound
+}
+
+/// The funding shape of a group, read from a residual ledger (the static `raw`
+/// pre-state OR the LIVE cross-group `remaining` ledger). A group keyed on a
+/// compound (`Sig::And`) decomposition presents as [`GroupShape::Compound`]
+/// (combined pool + matched component pair); any other key is
+/// [`GroupShape::Single`] (own pool only — NO compound-pool credit; no-weakening,
+/// §D2.9-R2). The SINGLE source of truth for shape construction, shared by the
+/// admission gate, the cross-group replay re-verification, and
+/// [`compute_settlement_debits`], so all three build identical shapes from the
+/// same ledger (no drift ⇒ no play/replay fork).
+fn group_shape_from(
+    group_key: &SigKey,
+    decomposition_by_compound: &BTreeMap<SigKey, Decomposition>,
+    residual: &BTreeMap<SigKey, i64>,
+) -> GroupShape<SigKey> {
+    let read = |key: &SigKey| -> i64 { *residual.get(key).unwrap_or(&0) };
+    match decomposition_by_compound.get(group_key) {
+        Some(decomposition) => GroupShape::Compound {
+            combined: PoolResidual {
+                key: *group_key,
+                residual: read(group_key),
+            },
+            left: PoolResidual {
+                key: decomposition.left,
+                residual: read(&decomposition.left),
+            },
+            right: PoolResidual {
+                key: decomposition.right,
+                residual: read(&decomposition.right),
+            },
+        },
+        None => GroupShape::Single {
+            own: PoolResidual {
+                key: *group_key,
+                residual: read(group_key),
+            },
+        },
+    }
+}
+
+/// The LIVE effective funding capacity of a group shape (cost-accounted-rho Def 19
+/// effective supply, evaluated on the residual ledger): a single group funds from
+/// its own pool ONLY (no-weakening, §D2.9-R2); a compound funds from its combined
+/// pool plus the matched component pair `min(left, right)` (the Split/Join Join
+/// term). This is the bound admission proves `Σ(cost+fee) ≤ capacity` against —
+/// keyed on the LIVE residual so a later group sharing a component sees the
+/// drawn-down balance (cross-group linearity — linear logic admits no contraction).
+fn group_capacity(shape: GroupShape<SigKey>) -> i64 {
+    match shape {
+        GroupShape::Single { own } => own.residual,
+        GroupShape::Compound {
+            combined,
+            left,
+            right,
+        } => combined
+            .residual
+            .saturating_add(left.residual.min(right.residual)),
+    }
+}
+
+/// Apply a group's folded `cost + fee` demand to the LIVE cross-group residual
+/// ledger, combined-pool-first via [`DefaultApportionment`] — the conservative
+/// reservation that DOMINATES the two-pass cost-then-fee settlement on every pool
+/// (the flat fee policy draws a single component, a subset of the cost pair-draw),
+/// so `admission-fundable ⟹ settlement-safe`. Each drawn pool is `saturating_sub`-
+/// decremented; the caller processes groups in `SigKey` order, so the ledger
+/// evolves deterministically and identically on play and replay.
+fn draw_group_from_ledger(
+    shape: GroupShape<SigKey>,
+    demand: i64,
+    residual: &mut BTreeMap<SigKey, i64>,
+) {
+    let draws = <DefaultApportionment as ApportionmentPolicy<RhoGslt>>::apportion(
+        &DefaultApportionment,
+        shape,
+        demand,
+    );
+    for PoolDraw { key, amount } in draws {
+        if amount <= 0 {
+            continue;
+        }
+        let current = *residual.get(&key).unwrap_or(&0);
+        residual.insert(key, current.saturating_sub(amount));
+    }
+}
+
 /// CONSENSUS-CRITICAL (#12): the EXACT per-component (Split/Join) compound
 /// settlement debit. Given each PRESENT group's cumulative admitted demand
 /// `k = ΣΔ_admitted` (`demand_by_group`, keyed + channel'd by the group's
@@ -456,12 +554,7 @@ where
     // to exactly one decomposition; an n≥3 left-assoc fold contributes nested
     // decompositions on keys that are NOT standalone groups (no demand entry),
     // so they never drive a group draw here.
-    let mut decomposition_by_compound: BTreeMap<SigKey, Decomposition> = BTreeMap::new();
-    for decomposition in decompositions {
-        decomposition_by_compound
-            .entry(decomposition.compound)
-            .or_insert(*decomposition);
-    }
+    let decomposition_by_compound = index_decompositions(decompositions);
 
     for (group_key, (_channel, k)) in demand_by_group {
         let k = *k;
@@ -474,30 +567,10 @@ where
         // `(shape, k)` (see `ApportionmentPolicy`); it never sees channels, so it
         // cannot inject a wrong pool — the caller owns the ledger and the channel
         // resolution below.
-        let shape = match decomposition_by_compound.get(group_key) {
-            Some(decomposition) => GroupShape::Compound {
-                // ≤ min(Σ⟦s₁⟧, Σ⟦s₂⟧) component residuals bound the pair draw (the
-                // admission bound + the LIVE cross-group residual ⇒ underflow-safe).
-                combined: PoolResidual {
-                    key: *group_key,
-                    residual: read_residual(&residual, group_key),
-                },
-                left: PoolResidual {
-                    key: decomposition.left,
-                    residual: read_residual(&residual, &decomposition.left),
-                },
-                right: PoolResidual {
-                    key: decomposition.right,
-                    residual: read_residual(&residual, &decomposition.right),
-                },
-            },
-            None => GroupShape::Single {
-                own: PoolResidual {
-                    key: *group_key,
-                    residual: read_residual(&residual, group_key),
-                },
-            },
-        };
+        // Build the funding shape from the LIVE residual ledger via the SAME helper
+        // the admission gate + cross-group replay re-verification use, so all three
+        // construct identical shapes from the same ledger (no drift ⇒ no fork).
+        let shape = group_shape_from(group_key, &decomposition_by_compound, &residual);
         // Apply each elected draw to the LIVE ledger + the per-pool accumulator.
         // `saturating_sub` is exact for the (residual-bounded) compound draws AND
         // reproduces the pre-#12 single-pool semantics (the own-pool debit is NOT
@@ -640,8 +713,15 @@ where
         }
     }
 
-    // 6. Apply the Split/Join closure to get the EFFECTIVE supplies.
-    let effective = delta_sigma::effective_supply_with(&raw, &decompositions);
+    // 6. The LIVE cross-group residual ledger (TM-CA-165): each group's admission
+    //    cap is its EFFECTIVE supply read from this ledger, drawn DOWN as
+    //    successive groups (SigKey order) are admitted — so two DISTINCT cosigner
+    //    sets sharing a component wallet `Σ⟦Ground(s)⟧` cannot each be admitted
+    //    against s's FULL balance (cross-group linearity: linear logic admits no
+    //    contraction; a token is spent once). Seeded from the raw pre-state
+    //    (absent ⇒ 0); evolves identically on play and replay (same SigKey order).
+    let mut remaining: BTreeMap<SigKey, i64> = raw.clone();
+    let decomposition_by_compound = index_decompositions(&decompositions);
 
     // 7. Per-group prefix admission (reject-both), accumulating Σ Δ_s per group.
     //    The cumulative admitted demand of each PRESENT group is recorded into
@@ -684,12 +764,15 @@ where
             continue;
         }
 
-        // The admission residual is the EFFECTIVE supply (#12: NO artificial
-        // `min(Σ_compound)` cap — a compound group is fundable up to its full
-        // `effectiveΣ_compound = Σ⟦compound⟧ + min(Σ⟦s₁⟧, Σ⟦s₂⟧)`; the exact
-        // multi-pool draw is settled by `compute_settlement_debits`, which keeps
-        // the per-pool debit underflow-safe).
-        let mut residual: i64 = *effective.get(&sig_key).unwrap_or(&0);
+        // The admission residual is the group's EFFECTIVE supply read from the
+        // LIVE cross-group ledger (TM-CA-165): a single group caps at its own-pool
+        // residual (no-weakening, §D2.9-R2 — a compound pool does NOT augment a
+        // single component); a compound caps at `Σ⟦compound⟧ + min(Σ⟦s₁⟧, Σ⟦s₂⟧)`.
+        // Both are read from the DRAWN-DOWN `remaining`, so a later group sharing a
+        // component sees the reduced balance — the exact multi-pool draw is still
+        // settled by `compute_settlement_debits` (underflow-safe per-pool debit).
+        let shape = group_shape_from(&sig_key, &decomposition_by_compound, &remaining);
+        let mut residual: i64 = group_capacity(shape);
 
         // FeeExtract (cost-accounted-rho.tex:3637): ONE client token per admitted
         // deploy, CARVED from the client's own `Σ⟦c⟧` (conserving) IN ADDITION to
@@ -726,6 +809,16 @@ where
                     .rejected
                     .push(candidate.cosigned.primary().sig.clone());
             }
+        }
+
+        // Draw this group's folded cost+fee DOWN the LIVE cross-group ledger so the
+        // NEXT group (SigKey order) sharing a component wallet sees the reduced
+        // residual (TM-CA-165). Combined-pool-first via DefaultApportionment — the
+        // conservative reservation that dominates the two-pass cost-then-fee
+        // settlement on every pool, so admission-fundable ⟹ settlement-safe.
+        let group_total = group_debit.saturating_add(group_fee);
+        if group_total > 0 {
+            draw_group_from_ledger(shape, group_total, &mut remaining);
         }
 
         if group_debit > 0 {
@@ -917,54 +1010,62 @@ where
         }
     }
 
-    // The Split/Join EFFECTIVE supply (mirrors the play side, `:644`): a
-    // compound group's `effectiveΣ_compound = Σ⟦compound⟧ + min(Σ⟦s₁⟧, Σ⟦s₂⟧)`
-    // folds its component pools in. The strict re-verification + the settle
-    // filter below MUST key on this (NOT raw own-pool presence), because a
-    // multi-sig deploy funds from the cosigners' `Σ⟦Ground(pkᵢ)⟧` wallets even
-    // when no combined `Σ⟦And(…)⟧` pool exists (genesis seeds per-pubkey
-    // wallets, never compound pools — §D2.9). Keying on raw presence would
-    // reject on replay a strict compound deploy the play side admitted (a
-    // play/replay FORK).
-    let effective = delta_sigma::effective_supply_with(&raw, &decompositions);
+    // The LIVE cross-group residual ledger (TM-CA-165) — the SAME ledger the
+    // play-side gate draws (seeded `raw.clone()`, drawn down per group in SigKey
+    // order via `draw_group_from_ledger`). Replay re-runs that pass over the
+    // admitted set to re-verify the gate's CROSS-GROUP admission bound (below).
+    // The settle filter further down keys on `strict || present(own pool)`,
+    // mirroring the play-side early-admit: a multi-sig deploy funds from the
+    // cosigners' `Σ⟦Ground(pkᵢ)⟧` wallets even when no combined `Σ⟦And(…)⟧` pool
+    // exists (genesis seeds per-pubkey wallets, never compound pools — §D2.9).
+    let mut remaining: BTreeMap<SigKey, i64> = raw.clone();
+    let decomposition_by_compound = index_decompositions(&decompositions);
 
-    // REPLAY ADMISSIBILITY RE-VERIFICATION (TM-CA-153) — the SUFFICIENT
-    // consensus guarantee against over-admission, INCLUDING compound (multi-sig)
-    // groups. The play-side gate admits a per-signer group only while its
-    // cumulative admitted demand (cost `ΣΔ_s` + the flat per-deploy `FeeExtract`)
-    // fits the Split/Join EFFECTIVE supply `effectiveΣ = Σ⟦compound⟧ +
-    // min(Σ⟦s₁⟧, Σ⟦s₂⟧)` (the per-group `is_funded` prefix walk at `:712`, keyed
-    // on the SAME static per-group `effective` computed here). Replay MUST
-    // re-impose THAT bound — on the RAW cumulative demand, BEFORE the
-    // residual-capping settlement apportionment.
+    // CROSS-GROUP ADMISSIBILITY RE-VERIFICATION (TM-CA-165) — the SUFFICIENT
+    // consensus guarantee against over-admission across DISTINCT cosigner sets
+    // sharing a component wallet `Σ⟦Ground(s)⟧`. SUPERSEDES the prior per-group
+    // static-`effective` check (TM-CA-164), which bounded each group independently
+    // and so could not catch two groups jointly over-drawing a shared component
+    // (e.g. `{A,s}` + `{B,s}` each admitted against `Σ⟦Ground(s)⟧`'s full balance).
     //
-    // Why the per-pool `debit > balance` check in `recompute_and_verify_admission`
-    // is NOT enough: `compute_settlement_debits` residual-caps a COMPOUND
-    // pair-draw at `min(Σ⟦s₁⟧, Σ⟦s₂⟧)`, so an over-demand `ΣΔ > effectiveΣ` is
-    // silently absorbed into per-pool debits ≤ balance (the cap that is correct
-    // and underflow-safe for an ADMITTED group becomes an over-demand absorber
-    // for a hand-crafted over-set). Single-sig is caught there only because its
-    // own-pool draw is UNCAPPED (`= ΣΔ`); compound is not. This re-check closes
-    // that asymmetry uniformly.
+    // Replay RE-RUNS the gate's LIVE cross-group ledger over the admitted set:
+    // process enforced groups in SigKey order, draw each group's folded cost+fee
+    // DOWN the shared `remaining` ledger (`draw_group_from_ledger`), and reject
+    // (ReplayAdmissionMismatch) any group whose folded demand exceeds the LIVE
+    // effective capacity at its turn. Why this — not the per-pool `debit > balance`
+    // check in `recompute_and_verify_admission` — is what bounds CUMULATIVE demand:
+    // `compute_settlement_debits` residual-caps each pool draw, so an
+    // over-admission is silently absorbed into per-pool debits ≤ balance and the
+    // post-state agrees play↔replay; only re-running the admission ledger detects
+    // it. Margin-free: the margin is a play-side admission tightening that only
+    // REMOVES deploys; a removed deploy is not in the block, so replay never needs
+    // it (matches the pre-existing margin-free recompute). Identical inputs +
+    // SigKey order on play and replay ⇒ no fork; equality is admissible (the gate
+    // guarantees folded demand ≤ capacity, and this check uses the SAME ledger).
     //
     // A group is ENFORCED iff `strict || present(own pool)` — matching the
     // play-side early-admit condition (a non-strict ABSENT pool is early-admitted
-    // unenforced and carries no funding obligation, so it is excluded here, NOT
-    // rejected). This SUBSUMES the prior `effective ≤ 0` strict check (zero
-    // effective ⇒ any positive demand exceeds it) and never rejects a VALID block
-    // (the gate guarantees `Σ(cost+fee) ≤ effectiveΣ`; equality is admissible).
-    // It matches the gate's per-group static `effective` exactly, so it cannot
-    // fork a gate-admitted block. (NOTE: cross-group sharing of a component pool
-    // across DISTINCT cosigner sets is governed by the gate's own per-group
-    // admission + the cross-group settlement residual ledger and is tracked
-    // separately — TM-CA-153 cross-group; this check is the per-group bound.)
-    for (key, (_channel, cost)) in &demand_by_group {
-        if *cost <= 0 || !(strict || present.contains(key)) {
+    // unenforced, carries no funding obligation, draws nothing). The folded demand
+    // covers groups carrying a cost AND/OR a fee (a zero-cost admitted deploy still
+    // carries a fee draw), via the union of `demand_by_group` and `fee_by_group`.
+    let mut combined_demand: BTreeMap<SigKey, i64> = BTreeMap::new();
+    for (key, (_chan, cost)) in &demand_by_group {
+        if *cost > 0 && (strict || present.contains(key)) {
+            *combined_demand.entry(*key).or_insert(0) += *cost;
+        }
+    }
+    for (key, (_chan, fee)) in &fee_by_group {
+        if *fee > 0 && (strict || present.contains(key)) {
+            *combined_demand.entry(*key).or_insert(0) += *fee;
+        }
+    }
+    for (key, demand) in &combined_demand {
+        if *demand <= 0 {
             continue;
         }
-        let fee = fee_by_group.get(key).map(|(_chan, f)| *f).unwrap_or(0);
-        let effective_supply = *effective.get(key).unwrap_or(&0);
-        if cost.saturating_add(fee) > effective_supply {
+        let shape = group_shape_from(key, &decomposition_by_compound, &remaining);
+        let capacity = group_capacity(shape);
+        if *demand > capacity {
             return Err(CasperError::ReplayFailure(
                 ReplayFailure::replay_admission_mismatch(
                     0,
@@ -972,18 +1073,19 @@ where
                     0,
                     0,
                     format!(
-                        "funding over-admission: group cumulative demand (cost {} + fee {}) \
-                         exceeds effective supply {} (SigKey {}) — proposer admitted \
-                         ΣΔ > effectiveΣ, bypassing the §7.7 reject-both bound \
-                         (compound double-spend / oversubscription)",
-                        cost,
-                        fee,
-                        effective_supply,
+                        "cross-group funding over-admission: group folded demand \
+                         (cost+fee {}) exceeds LIVE effective supply {} (SigKey {}) \
+                         after drawing prior groups that share its component \
+                         wallets — proposer admitted cumulative demand exceeding a \
+                         shared Σ⟦Ground(s)⟧ (cross-group oversubscription, TM-CA-165)",
+                        demand,
+                        capacity,
                         hex::encode(key),
                     ),
                 ),
             ));
         }
+        draw_group_from_ledger(shape, *demand, &mut remaining);
     }
 
     // Settle filter — mirror EXACTLY which groups the play side put in
@@ -1078,6 +1180,7 @@ mod tests {
     use std::collections::HashMap;
 
     use crypto::rust::hash::blake2b256::Blake2b256;
+    use crypto::rust::private_key::PrivateKey;
     use crypto::rust::public_key::PublicKey;
     use crypto::rust::signatures::secp256k1::Secp256k1;
     use crypto::rust::signatures::signed::Signed;
@@ -2391,6 +2494,306 @@ mod tests {
             })
             .collect();
         Cosigned::from_signed_data(data, signers).expect("2-signer compound envelope")
+    }
+
+    // ── TM-CA-165 cross-group shared-component admission helpers + tests ─────
+
+    /// A fresh Secp256k1 keypair `(sk, pk)` for the cross-group tests.
+    fn fresh_keypair() -> (PrivateKey, PublicKey) {
+        use crypto::rust::signatures::signatures_alg::SignaturesAlg;
+        Secp256k1.new_key_pair()
+    }
+
+    /// Build a `Cosigned<DeployData>` over `term` from the GIVEN keypairs, so two
+    /// envelopes can SHARE a cosigner (`compound_cosigned` generates fresh keys
+    /// each call, yielding DISJOINT cosigner sets — useless for shared-component
+    /// tests). One keypair ⇒ a single-sig deploy keyed `Σ⟦Ground(pk)⟧`; two or more
+    /// ⇒ a compound whose `funding_sig` is the `And`-fold of `Ground(pkᵢ)`. Two
+    /// envelopes built with a shared keypair `s` therefore share that cosigner's
+    /// component wallet `Σ⟦Ground(pk_s)⟧` — the contended pool in TM-CA-165.
+    fn cosigned_with_keypairs(
+        term: &str,
+        keypairs: &[(PrivateKey, PublicKey)],
+        vabn: i64,
+        ts: i64,
+    ) -> Cosigned<DeployData> {
+        use crypto::rust::signatures::signatures_alg::SignaturesAlg;
+        use crypto::rust::signatures::signed::{Cosigner, ToMessage};
+        use prost::Message;
+
+        let data = DeployData {
+            term: term.to_string(),
+            time_stamp: ts,
+            valid_after_block_number: vabn,
+            shard_id: String::new(),
+            expiration_timestamp: None,
+        };
+        let secp = Secp256k1;
+        let serialized = data.to_message().encode_to_vec();
+        let hash = Signed::<DeployData>::signature_hash(&Secp256k1::name(), serialized);
+        let signers: Vec<Cosigner> = keypairs
+            .iter()
+            .map(|(sk, pk)| {
+                let sig = Bytes::from(secp.sign(&hash, &sk.bytes));
+                Cosigner {
+                    pk: pk.clone(),
+                    sig,
+                    sig_algorithm: Box::new(Secp256k1),
+                }
+            })
+            .collect();
+        Cosigned::from_signed_data(data, signers).expect("cosigned envelope from given keypairs")
+    }
+
+    /// The `Σ⟦Ground(pk)⟧` component-wallet key + `Sig` for a keypair's pubkey.
+    fn ground_pool(pk: &PublicKey) -> (Sig, SigKey) {
+        let sig = Sig::Ground(pk.bytes.to_vec());
+        let key = delta_sigma::sig_key(&sig);
+        (sig, key)
+    }
+
+    /// TM-CA-165 (headline): two DISTINCT cosigner sets `{A,s}` and `{B,s}` share
+    /// the component wallet `Σ⟦Ground(pk_s)⟧ = 3`. Each group's folded demand is
+    /// cost(1)+fee(1) = 2, so the shared stack funds only ONE. The LIVE cross-group
+    /// ledger draws `Σ⟦Ground(pk_s)⟧` down as the SigKey-first group is admitted, so
+    /// the second is reject-both on the exhausted stack. PRE-FIX (static per-group
+    /// effective) BOTH admitted, jointly over-drawing s by 1 unit of un-funded
+    /// compute (TM-CA-165). The verdict is order-robust (whichever group sorts first
+    /// wins; the other always rejects).
+    #[tokio::test]
+    async fn cross_group_two_compounds_sharing_component_admits_one() {
+        let kp_a = fresh_keypair();
+        let kp_b = fresh_keypair();
+        let kp_s = fresh_keypair();
+
+        let g1 = cosigned_with_keypairs("@0!(0)", &[kp_a.clone(), kp_s.clone()], 0, 10);
+        let g2 = cosigned_with_keypairs("@0!(0)", &[kp_b.clone(), kp_s.clone()], 0, 20);
+
+        let (s_sig, s_key) = ground_pool(&kp_s.1);
+        let (a_sig, _) = ground_pool(&kp_a.1);
+        let (b_sig, _) = ground_pool(&kp_b.1);
+
+        let mut reader = MockSupplyReader::new();
+        reader.set_sig(&s_sig, 3); // the contended shared wallet
+        reader.set_sig(&a_sig, 100);
+        reader.set_sig(&b_sig, 100);
+
+        // strict = true ⇒ enforce even though the compound `Σ⟦And⟧` pools are
+        // genesis-absent (§D2.9): funding flows through the component wallets.
+        let outcome = admit_by_funding(vec![g1, g2], &reader, 0, true)
+            .await
+            .expect("gate must not error");
+
+        assert_eq!(
+            outcome.admitted.len(),
+            1,
+            "shared Σ⟦Ground(s)⟧=3 funds only ONE of two cost+fee=2 groups (pre-fix: 2)"
+        );
+        assert_eq!(
+            outcome.rejected.len(),
+            1,
+            "the second group sharing s is reject-both on the exhausted stack"
+        );
+        let s_draw = outcome.debits.get(&s_key).map(|d| d.amount).unwrap_or(0);
+        assert!(
+            s_draw <= 3,
+            "summed shared-component draw {} must not exceed Σ⟦Ground(s)⟧=3",
+            s_draw
+        );
+
+        // play == replay: the admitted set re-verifies + recomputes identically.
+        let recomputed = recompute_settlement_debits(outcome.admitted.clone(), &reader, true)
+            .await
+            .expect("admitted set is fundable ⇒ no cross-group mismatch on replay");
+        assert_eq!(
+            outcome.debits, recomputed.settlement,
+            "play debit map == replay recompute (byte-identical)"
+        );
+    }
+
+    /// TM-CA-165 boundary: when the two groups' COMBINED folded demand EXACTLY
+    /// equals the shared supply, BOTH are admitted (equality is admissible — no
+    /// false-reject). `Σ⟦Ground(pk_s)⟧ = 4`, each group folds 2 ⇒ 2+2 = 4.
+    #[tokio::test]
+    async fn cross_group_boundary_demand_equals_shared_supply_admits_both() {
+        let kp_a = fresh_keypair();
+        let kp_b = fresh_keypair();
+        let kp_s = fresh_keypair();
+
+        let g1 = cosigned_with_keypairs("@0!(0)", &[kp_a.clone(), kp_s.clone()], 0, 10);
+        let g2 = cosigned_with_keypairs("@0!(0)", &[kp_b.clone(), kp_s.clone()], 0, 20);
+
+        let (s_sig, s_key) = ground_pool(&kp_s.1);
+        let (a_sig, _) = ground_pool(&kp_a.1);
+        let (b_sig, _) = ground_pool(&kp_b.1);
+
+        let mut reader = MockSupplyReader::new();
+        reader.set_sig(&s_sig, 4); // exactly funds both groups' folded 2 + 2
+        reader.set_sig(&a_sig, 100);
+        reader.set_sig(&b_sig, 100);
+
+        let outcome = admit_by_funding(vec![g1, g2], &reader, 0, true)
+            .await
+            .expect("gate must not error");
+        assert_eq!(
+            outcome.admitted.len(),
+            2,
+            "Σ⟦Ground(s)⟧=4 exactly funds both folded-2 groups (equality admissible)"
+        );
+        let s_draw = outcome.debits.get(&s_key).map(|d| d.amount).unwrap_or(0);
+        assert!(s_draw <= 4, "summed shared-component draw {} ≤ 4", s_draw);
+
+        let recomputed = recompute_settlement_debits(outcome.admitted.clone(), &reader, true)
+            .await
+            .expect("boundary block re-verifies with no mismatch");
+        assert_eq!(outcome.debits, recomputed.settlement, "play == replay at the boundary");
+    }
+
+    /// TM-CA-165 replay guard: a malicious proposer who admits BOTH `{A,s}` and
+    /// `{B,s}` jointly over-drawing `Σ⟦Ground(pk_s)⟧ = 3` is caught on replay — the
+    /// cross-group ledger re-verification (not the per-pool debit≤balance check,
+    /// which the residual-capped settlement silently satisfies) raises
+    /// `ReplayAdmissionMismatch`.
+    #[tokio::test]
+    async fn cross_group_over_admission_distinct_sets_rejected_on_replay() {
+        let kp_a = fresh_keypair();
+        let kp_b = fresh_keypair();
+        let kp_s = fresh_keypair();
+
+        let g1 = cosigned_with_keypairs("@0!(0)", &[kp_a.clone(), kp_s.clone()], 0, 10);
+        let g2 = cosigned_with_keypairs("@0!(0)", &[kp_b.clone(), kp_s.clone()], 0, 20);
+
+        let (s_sig, _) = ground_pool(&kp_s.1);
+        let (a_sig, _) = ground_pool(&kp_a.1);
+        let (b_sig, _) = ground_pool(&kp_b.1);
+
+        let mut reader = MockSupplyReader::new();
+        reader.set_sig(&s_sig, 3); // cannot fund both groups' combined demand of 4
+        reader.set_sig(&a_sig, 100);
+        reader.set_sig(&b_sig, 100);
+
+        // Hand-crafted over-admitted block: BOTH groups in the admitted set.
+        let result = recompute_settlement_debits(vec![g1, g2], &reader, true).await;
+        assert!(
+            result.is_err(),
+            "cross-group over-admission of a shared component must be rejected on replay"
+        );
+        let msg = format!("{:?}", result.err().expect("err"));
+        assert!(
+            msg.contains("cross-group") || msg.contains("over-admission"),
+            "replay error must name the cross-group over-admission: {}",
+            msg
+        );
+    }
+
+    /// TM-CA-165 / §D2.9-R2: a SINGLE-sig deploy from `s` and a compound `{A,s}`
+    /// share the component wallet `Σ⟦Ground(pk_s)⟧`. Under R2 the single-sig caps
+    /// at its OWN-pool live residual (it cannot weaken a compound pool), and the
+    /// compound's pair-draw also hits `Σ⟦Ground(pk_s)⟧`, so the LIVE ledger bounds
+    /// their combined draw — only one is admitted; the shared stack is not
+    /// over-drawn.
+    #[tokio::test]
+    async fn single_sig_and_compound_sharing_component_bounded() {
+        let kp_a = fresh_keypair();
+        let kp_s = fresh_keypair();
+
+        // Single-sig from s (1 signer ⇒ funding_sig = Ground(pk_s)); compound {A,s}.
+        let single_s = cosigned_with_keypairs("@0!(0) | @0!(0)", &[kp_s.clone()], 0, 10); // Δ=2
+        let compound_as =
+            cosigned_with_keypairs("@0!(0) | @0!(0)", &[kp_a.clone(), kp_s.clone()], 0, 20); // Δ=2
+
+        let (s_sig, s_key) = ground_pool(&kp_s.1);
+        let (a_sig, _) = ground_pool(&kp_a.1);
+
+        let mut reader = MockSupplyReader::new();
+        reader.set_sig(&s_sig, 4); // funds only one folded-3 group
+        reader.set_sig(&a_sig, 100);
+
+        let outcome = admit_by_funding(vec![single_s, compound_as], &reader, 0, true)
+            .await
+            .expect("gate must not error");
+        assert_eq!(
+            outcome.admitted.len(),
+            1,
+            "Σ⟦Ground(s)⟧=4 funds only ONE of the single(s)/{{A,s}} folded-3 groups"
+        );
+        let s_draw = outcome.debits.get(&s_key).map(|d| d.amount).unwrap_or(0);
+        assert!(
+            s_draw <= 4,
+            "single-sig (own-pool, no-weakening) + compound pair-draw on s ≤ 4, got {}",
+            s_draw
+        );
+
+        let recomputed = recompute_settlement_debits(outcome.admitted.clone(), &reader, true)
+            .await
+            .expect("admitted set fundable on replay");
+        assert_eq!(outcome.debits, recomputed.settlement, "play == replay");
+    }
+
+    /// TM-CA-165 migration no-op: on a DEFAULT shard (strict=false, all pools
+    /// ABSENT) the two shared-component compounds early-admit unenforced with NO
+    /// ledger draw and NO debit — byte-identical to pre-fix behavior (no golden
+    /// move). The cross-group ledger activates only on a strict/funded shard.
+    #[tokio::test]
+    async fn cross_group_migration_no_op_default_shard_both_admitted() {
+        let kp_a = fresh_keypair();
+        let kp_b = fresh_keypair();
+        let kp_s = fresh_keypair();
+
+        let g1 = cosigned_with_keypairs("@0!(0)", &[kp_a.clone(), kp_s.clone()], 0, 10);
+        let g2 = cosigned_with_keypairs("@0!(0)", &[kp_b.clone(), kp_s.clone()], 0, 20);
+
+        // No pools set ⇒ all absent ⇒ early-admit unenforced (strict = false).
+        let reader = MockSupplyReader::new();
+        let outcome = admit_by_funding(vec![g1, g2], &reader, 0, false)
+            .await
+            .expect("gate must not error");
+
+        assert_eq!(outcome.admitted.len(), 2, "default shard early-admits both, unenforced");
+        assert!(outcome.rejected.is_empty(), "no enforcement ⇒ no rejection");
+        assert!(outcome.debits.is_empty(), "absent pools ⇒ no debit (byte-identical to pre-fix)");
+        assert!(outcome.fee_debits.is_empty(), "absent pools ⇒ no fee carve");
+    }
+
+    /// TM-CA-165 nested-arity guard: an n≥3 compound `{A,s,t}` =
+    /// `And(And(A,s),t)` keys its TOP-LEVEL pair on `Σ⟦And(A,s)⟧` and `Σ⟦Ground(t)⟧`,
+    /// NOT on `Σ⟦Ground(s)⟧` directly. With the inner compound pool `Σ⟦And(A,s)⟧`
+    /// genesis-absent (§D2.9), the 3-sig group's effective capacity is 0, so it is
+    /// rejected — it cannot leak draw onto a 2-sig `{A,s}`'s shared `s`. Pins that
+    /// the nested-sharing flavor stays latent (unreachable) under absent compound
+    /// pools, so no cross-group bound is bypassed via nesting.
+    #[tokio::test]
+    async fn nary_nested_compound_absent_inner_pool_rejected() {
+        let kp_a = fresh_keypair();
+        let kp_s = fresh_keypair();
+        let kp_t = fresh_keypair();
+
+        let two_sig = cosigned_with_keypairs("@0!(0)", &[kp_a.clone(), kp_s.clone()], 0, 10);
+        let three_sig =
+            cosigned_with_keypairs("@0!(0)", &[kp_a.clone(), kp_s.clone(), kp_t.clone()], 0, 20);
+
+        let (s_sig, _) = ground_pool(&kp_s.1);
+        let (a_sig, _) = ground_pool(&kp_a.1);
+        let (t_sig, _) = ground_pool(&kp_t.1);
+
+        let mut reader = MockSupplyReader::new();
+        reader.set_sig(&s_sig, 100);
+        reader.set_sig(&a_sig, 100);
+        reader.set_sig(&t_sig, 100);
+        // Σ⟦And(A,s)⟧ and Σ⟦And(And(A,s),t)⟧ are NOT set ⇒ absent ⇒ 0.
+
+        let outcome = admit_by_funding(vec![two_sig, three_sig], &reader, 0, true)
+            .await
+            .expect("gate must not error");
+
+        // The 2-sig {A,s} funds from min(Σ⟦A⟧,Σ⟦s⟧) and is admitted; the 3-sig's
+        // top-level pair (Σ⟦And(A,s)⟧=0, Σ⟦t⟧) has effective capacity 0 ⇒ rejected.
+        assert_eq!(
+            outcome.admitted.len(),
+            1,
+            "only the 2-sig admits; the 3-sig has 0 effective capacity (inner pool absent)"
+        );
+        assert_eq!(outcome.rejected.len(), 1, "the 3-sig {{A,s,t}} is rejected");
     }
 
     /// #12.5 — THE FORK-SAFETY BAR: for a REAL compound (2-signer) deploy, the
