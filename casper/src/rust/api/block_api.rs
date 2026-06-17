@@ -158,19 +158,6 @@ lazy_static::lazy_static! {
 
 // TODO: Scala we should refactor BlockApi with applicative errors for better classification of errors and to overcome nesting when validating data.
 #[derive(Debug)]
-pub struct BlockRetrievalError {
-    pub message: String,
-}
-
-impl std::fmt::Display for BlockRetrievalError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "BlockRetrievalError: {}", self.message)
-    }
-}
-
-impl std::error::Error for BlockRetrievalError {}
-
-#[derive(Debug)]
 pub struct BlockNotFoundError {
     pub hash: String,
 }
@@ -204,29 +191,20 @@ impl std::fmt::Display for ExploratoryDeployReadOnlyError {
 impl std::error::Error for ExploratoryDeployReadOnlyError {}
 
 #[derive(Debug)]
-pub struct DeployExpiredError {
-    pub message: String,
-}
-
-impl std::fmt::Display for DeployExpiredError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "DeployExpiredError: {}", self.message)
-    }
-}
-
-impl std::error::Error for DeployExpiredError {}
-
-#[derive(Debug)]
 pub enum LatestBlockMessageError {
-    ValidatorReadOnlyError,
+    NodeReadOnlyError,
     NoBlockMessageError,
 }
 
 impl std::fmt::Display for LatestBlockMessageError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            LatestBlockMessageError::ValidatorReadOnlyError => write!(f, "ValidatorReadOnlyError"),
-            LatestBlockMessageError::NoBlockMessageError => write!(f, "NoBlockMessageError"),
+            LatestBlockMessageError::NodeReadOnlyError => {
+                write!(f, "node is running in read-only mode; this endpoint requires a validator")
+            }
+            LatestBlockMessageError::NoBlockMessageError => {
+                write!(f, "no block is available yet")
+            }
         }
     }
 }
@@ -1770,14 +1748,13 @@ impl BlockAPI {
         let eng = engine_cell.get().await;
         if let Some(casper) = eng.with_casper() {
             let validator_opt = casper.get_validator();
-            let validator = validator_opt.ok_or_else(|| {
-                eyre::eyre!("{}", LatestBlockMessageError::ValidatorReadOnlyError)
-            })?;
+            let validator = validator_opt
+                .ok_or_else(|| eyre::Report::new(LatestBlockMessageError::NodeReadOnlyError))?;
             let dag = casper.block_dag().await?;
             let latest_message_opt =
                 dag.latest_message(&validator.public_key.bytes.clone().into())?;
             let latest_message = latest_message_opt
-                .ok_or_else(|| eyre::eyre!("{}", LatestBlockMessageError::NoBlockMessageError))?;
+                .ok_or_else(|| eyre::Report::new(LatestBlockMessageError::NoBlockMessageError))?;
             Ok(latest_message)
         } else {
             tracing::warn!("{}", error_message);

@@ -8,7 +8,8 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json, Response};
 use casper::rust::api::block_api::{
     BlockNotFoundError, DeployNotFoundError, DeployValidationError, ExploratoryDeployReadOnlyError,
-    InvalidHashError, InvalidPublicKeyError, NoNewDeploysError, ProposeReadOnlyError,
+    InvalidHashError, InvalidPublicKeyError, LatestBlockMessageError, NoNewDeploysError,
+    ProposeReadOnlyError,
 };
 use casper::rust::api::block_report_api::BlockReportAPI;
 use casper::rust::errors::CasperError;
@@ -231,6 +232,16 @@ fn classify_error(err: &eyre::Error) -> (StatusCode, &'static str, String) {
                 "illegal_argument",
                 cause.to_string(),
             );
+        }
+        if let Some(e) = cause.downcast_ref::<LatestBlockMessageError>() {
+            return match e {
+                LatestBlockMessageError::NodeReadOnlyError => {
+                    (StatusCode::BAD_REQUEST, "validator_node_required", cause.to_string())
+                }
+                LatestBlockMessageError::NoBlockMessageError => {
+                    (StatusCode::NOT_FOUND, "block_not_found", cause.to_string())
+                }
+            };
         }
         if cause.downcast_ref::<DeployValidationError>().is_some() {
             return (
