@@ -188,7 +188,25 @@ Step 5 split into two pieces. **The resolver mechanism is done**; the `eval_new`
 
 Verified end-to-end by flipping the expected value on `resolve_patch_wildcard` from `"patch2"` to `"patch0"`: the Rust spec failed with `left: "patch0"`, `right: "patch2"`.
 
-**Deferred to Step 5b (lands with Step 6):** the `eval_new` branch in `reduce.rs:1333-1346` that auto-routes versioned URNs through this resolver. Plan text retained below for reference.
+**Deferred to a follow-up branch:** the `eval_new` / normalizer rewrite that makes `new x(`URN`) in P` desugar automatically to the for-receive pattern.
+
+After Commits A (`735760aa`) and B (`de54c618`) on this branch, the unified dispatcher exists as the `rho:internal:registry_lookup` URN and works for both legacy and versioned URNs. Users who want the unified semantics today can write:
+
+```rho
+new rl(`rho:internal:registry_lookup`), got in {
+  rl!?("rho:lib:1.0.0:abc:proj:2.6.3", *got) |
+  for (foo <- got) { /* foo is the resolved code; works for both for-receive and send patterns */ }
+}
+```
+
+The remaining sugar — getting `new foo(`URN`) in P` to compile to this shape automatically — needs either:
+
+- A synchronous rspace round-trip inside `eval_new` that calls `registry_lookup`. Requires wiring `eval_new` into the dispatcher and handling replay-mode / cost-accounting subtleties.
+- An AST-level rewrite in `p_new_normalizer.rs` that transforms URN bindings into `new tmpRet in { rl!(URN, *tmpRet) | for(foo <- tmpRet) { P } }` before normalization. Requires constructing Rholang AST nodes via the parser and verifying DeBruijn index handling end-to-end for multi-binding `new`s.
+
+Both are doable but want focused design + multi-commit work. Documented as the natural next branch.
+
+Plan text retained below for reference.
 
 ---
 
