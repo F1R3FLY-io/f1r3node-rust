@@ -50,6 +50,10 @@ const EXPECTED_TEST_NAMES: &[&str] = &[
     "notify_fires_to_one_listener",
     "notify_fires_to_many_listeners",
     "approve_then_deprecate_refires",
+    // Step 5b/C precursor: registry_lookup unified dispatcher
+    "registry_lookup_legacy_urn_matches_urn_map",
+    "registry_lookup_versioned_urn_delegates_to_v1Api",
+    "registry_lookup_forms_eval_new_desugaring",
 ];
 
 #[tokio::test]

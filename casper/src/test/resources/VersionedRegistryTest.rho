@@ -44,7 +44,13 @@ new
   // Step 7 channels — deprecation notify wiring
   ins22, lk22, notify22, dep22, ack22,
   ins23, lk23a, lk23b, lk23c, n23a, n23b, n23c, dep23, ack23,
-  ins24, lk24, dep24, app24, redep24, n24, ack24
+  ins24, lk24, dep24, app24, redep24, n24, ack24,
+
+  // Step 5b/C precursor: registry_lookup unified dispatcher
+  registryLookup(`rho:internal:registry_lookup`),
+  rl25, ack25,
+  ins26, rl26, ack26,
+  ins27, rl27, dispatch27, ack27
 in {
   // 1. insertVersion under lib happy path returns true
   v1Api!("insertVersion", "lib", "deployerA".toByteArray(), "projA", "1.0.0", "codeA", *ins1) |
@@ -334,6 +340,49 @@ in {
           }
         }
       }
+    }
+  } |
+
+  // ─── Step 5b/C precursor: registry_lookup unified dispatcher ─────────
+  //
+  // The new rho:internal:registry_lookup URN dispatches both legacy
+  // and versioned URNs. eval_new will later be rewritten to call it
+  // for every `new x(URN)` binding; for now we exercise it directly.
+
+  // 25. Legacy URN: registry_lookup returns the stored Par from urn_map.
+  //     The stored value for rho:registry:lookup is the same write-only
+  //     bundle that `new x(URN)` already binds — we compare to that.
+  registryLookup!(`rho:registry:lookup`, *rl25) |
+  for (@stored <- rl25) {
+    new control(`rho:registry:lookup`) in {
+      assert!("registry_lookup_legacy_urn_matches_urn_map", 1,
+              (stored, "==", *control),
+              "registry_lookup on a legacy URN should return the same Par new-with-URN binds", *ack25)
+    }
+  } |
+
+  // 26. Versioned URN: registry_lookup delegates to v1Api's lookupVersion
+  //     and the resolved code comes back on our ret channel.
+  v1Api!("insertVersion", "lib", "alice", "p26", "1.0.0", "code26", *ins26) |
+  for (@_ <- ins26) {
+    registryLookup!(`rho:lib:1.0.0:alice:p26:1.0.0`, *rl26) |
+    for (@code <- rl26) {
+      assert!("registry_lookup_versioned_urn_delegates_to_v1Api", 1,
+              ("code26", "==", code),
+              "registry_lookup on a versioned URN should produce the resolved code", *ack26)
+    }
+  } |
+
+  // 27. registry_lookup composes with `for(@x <- registry_lookup!?(URN))`
+  //     — the desugaring eval_new will use. Verifies the for-bound x
+  //     is the resolved value directly.
+  v1Api!("insertVersion", "lib", "alice", "p27", "1.0.0", "code27", *ins27) |
+  for (@_ <- ins27) {
+    registryLookup!(`rho:lib:1.0.0:alice:p27:1.0.0`, *rl27) |
+    for (@boundProcess <- rl27) {
+      assert!("registry_lookup_forms_eval_new_desugaring", 1,
+              ("code27", "==", boundProcess),
+              "for(@x <- registry_lookup!?(URN)) binds x to the resolved code", *ack27)
     }
   }
 }

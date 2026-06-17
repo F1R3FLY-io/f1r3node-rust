@@ -261,6 +261,20 @@ impl FixedChannels {
     pub fn chroma_query() -> Par { byte_name(35) }
 
     pub fn chroma_delete_documents() -> Par { byte_name(36) }
+
+    /// Unified URN-binding dispatcher. The handler `registry_lookup`
+    /// (see below) serves any URN: legacy URNs are resolved by
+    /// consulting `ProcessContext::urn_map`; versioned URNs
+    /// (`rho:lib:…` / `rho:serve:…` / `rho:registry:<ver>`) are
+    /// delegated to the Rholang-side `lookupVersion` contract on the
+    /// v1 API channel; unknown URNs raise a runtime error.
+    ///
+    /// Registered under `rho:internal:registry_lookup` so the upcoming
+    /// `eval_new` rewrite (a follow-up commit) can target it via that
+    /// URN. Exposed publicly for now to make the handler testable;
+    /// future cleanup may hide it behind the byte_name once eval_new
+    /// stops needing to resolve URNs through `urn_map` itself.
+    pub fn registry_lookup() -> Par { byte_name(37) }
 }
 
 pub struct BodyRefs;
@@ -297,6 +311,7 @@ impl BodyRefs {
     pub const CHROMA_UPSERT_ENTRIES: i64 = 34;
     pub const CHROMA_QUERY: i64 = 35;
     pub const CHROMA_DELETE_DOCUMENTS: i64 = 36;
+    pub const REGISTRY_LOOKUP: i64 = 30;
 }
 
 pub fn non_deterministic_ops() -> HashSet<i64> {
@@ -855,6 +870,77 @@ impl SystemProcesses {
         };
 
         produce(&[response], ack).await
+    }
+
+    /// Unified URN-binding dispatcher. Handles every URN shape:
+    ///
+    /// - **Legacy URN** (anything in `self.urn_map`, e.g. `rho:io:stdout`):
+    ///   produce the stored Par on `ret`. The stored Par is the
+    ///   write-only bundle around the URN's fixed channel, exactly what
+    ///   `eval_new`'s fast path used to bind directly.
+    /// - **Versioned URN** (`rho:lib:…`, `rho:serve:…`, `rho:registry:<ver>`):
+    ///   inject `("lookupVersion", urn, Nil, *ret)` onto the v1 API
+    ///   channel via the same `produce` capability we'd use to reply
+    ///   to `ret` directly. The Rholang `lookupVersion` contract picks
+    ///   it up, resolves the version, and produces the resulting `code`
+    ///   Par on `ret`. The original requester gets the result.
+    /// - **Unknown URN**: return `InterpreterError` — the deploy halts
+    ///   with a runtime error, matching the design directive that
+    ///   lookup failure is fatal.
+    ///
+    /// Once `eval_new` is rewritten (a follow-up commit) to synthesize
+    /// `new tmpRet in { registryLookup!(URN, *tmpRet) | for(x <- tmpRet) { P } }`
+    /// for every `new x(URN)` binding, this handler is the single
+    /// dispatch point for URN resolution.
+    pub async fn registry_lookup(
+        &self,
+        contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
+    ) -> Result<Vec<Par>, InterpreterError> {
+        let Some((produce, _, _, args)) = self.is_contract_call().unapply(contract_args) else {
+            return Err(illegal_argument_error("registry_lookup"));
+        };
+
+        let [urn_par, ret_par] = args.as_slice() else {
+            return Err(illegal_argument_error("registry_lookup"));
+        };
+
+        let urn_str = RhoString::unapply(urn_par)
+            .or_else(|| RhoUri::unapply(urn_par))
+            .ok_or_else(|| {
+                illegal_argument_error("registry_lookup: urn arg must be a String or Uri")
+            })?;
+
+        // 1. Legacy URN: serve directly from urn_map.
+        if let Some(stored) = self.urn_map.get(&urn_str) {
+            let stored_clone = stored.clone();
+            produce(&[stored_clone], ret_par).await?;
+            return Ok(vec![]);
+        }
+
+        // 2. Versioned URN: delegate to v1Api's lookupVersion contract.
+        //    The produce here goes to the v1Api channel, not to ret;
+        //    the contract will produce on ret itself. We re-encode the
+        //    URN as a String regardless of whether the caller sent a
+        //    String or a Uri Par, because v1Api's `parseVersionedUri`
+        //    only accepts String.
+        if versioned_urn::parse_urn(&urn_str).is_some() {
+            let msg = vec![
+                RhoString::create_par("lookupVersion".to_string()),
+                RhoString::create_par(urn_str.clone()),
+                Par::default(), // Nil notify — the upcoming eval_new
+                // rewrite will plumb a per-import
+                // notify channel through here.
+                ret_par.clone(),
+            ];
+            produce(&msg, &FixedChannels::reg_v1_internal()).await?;
+            return Ok(vec![]);
+        }
+
+        // 3. Unknown URN.
+        Err(InterpreterError::ReduceError(format!(
+            "registry_lookup: unknown URN: {}",
+            urn_str
+        )))
     }
 
     pub async fn sys_auth_token_ops(

@@ -657,6 +657,25 @@ fn std_system_processes() -> Vec<Definition> {
             }),
             remainder: None,
         },
+        // Unified URN-binding dispatcher. Serves both legacy URNs (via
+        // ProcessContext::urn_map) and versioned URNs (by delegating to
+        // the Rholang lookupVersion contract). Will be the single
+        // dispatch point for eval_new once that refactor lands.
+        Definition {
+            urn: "rho:internal:registry_lookup".to_string(),
+            fixed_channel: FixedChannels::registry_lookup(),
+            arity: 2,
+            body_ref: BodyRefs::REGISTRY_LOOKUP,
+            handler: Box::new(|ctx| {
+                Box::new(move |args| {
+                    let ctx = ctx.clone();
+                    Box::pin(
+                        async move { ctx.system_processes.clone().registry_lookup(args).await },
+                    )
+                })
+            }),
+            remainder: None,
+        },
         Definition {
             urn: "sys:authToken:ops".to_string(),
             fixed_channel: FixedChannels::sys_authtoken_ops(),
