@@ -85,10 +85,13 @@ pub struct ApiErrorResponse {
     /// **422 Unprocessable Entity:**
     /// `out_of_phlogistons`, `user_abort`, `rholang_execution_error`, `aggregate_error`
     ///
+    /// **409 Conflict:**
+    /// `no_new_deploys`
+    ///
     /// **500 Internal Server Error:**
     /// `interpreter_internal_error`, `signing_error`, `replay_failure`,
     /// `kv_store_error`, `history_error`, `system_runtime_error`,
-    /// `stream_error`, `lock_error`, `other_error`, `unknown_error`, `no_new_deploys`
+    /// `stream_error`, `lock_error`, `other_error`, `unknown_error`
     ///
     /// **502 Bad Gateway:**
     /// `comm_error`, `external_service_error`
@@ -235,9 +238,11 @@ fn classify_error(err: &eyre::Error) -> (StatusCode, &'static str, String) {
         }
         if let Some(e) = cause.downcast_ref::<LatestBlockMessageError>() {
             return match e {
-                LatestBlockMessageError::NodeReadOnlyError => {
-                    (StatusCode::BAD_REQUEST, "validator_node_required", cause.to_string())
-                }
+                LatestBlockMessageError::NodeReadOnlyError => (
+                    StatusCode::BAD_REQUEST,
+                    "validator_node_required",
+                    cause.to_string(),
+                ),
                 LatestBlockMessageError::NoBlockMessageError => {
                     (StatusCode::NOT_FOUND, "block_not_found", cause.to_string())
                 }
@@ -258,11 +263,7 @@ fn classify_error(err: &eyre::Error) -> (StatusCode, &'static str, String) {
             );
         }
         if cause.downcast_ref::<NoNewDeploysError>().is_some() {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "no_new_deploys",
-                cause.to_string(),
-            );
+            return (StatusCode::CONFLICT, "no_new_deploys", cause.to_string());
         }
     }
 

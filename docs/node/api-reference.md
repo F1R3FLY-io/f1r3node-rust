@@ -35,7 +35,8 @@ All HTTP endpoints return errors as structured JSON. Every non-2xx response body
 | `404` | Requested resource not found | `block_not_found`, `deploy_not_found`, `endpoint_not_found` |
 | `405` | HTTP method not allowed for this path | `method_not_allowed` |
 | `422` | Input is valid but execution failed | `rholang_execution_error`, `out_of_phlogistons`, `user_abort`, `aggregate_error` |
-| `500` | Node-side failure | `interpreter_internal_error`, `runtime_error`, `replay_failure`, `signing_error`, `kv_store_error`, `history_error`, `system_runtime_error`, `stream_error`, `lock_error`, `other_error`, `unknown_error`, `no_new_deploys` |
+| `409` | Expected state conflict (empty mempool) | `no_new_deploys` |
+| `500` | Node-side failure | `interpreter_internal_error`, `runtime_error`, `replay_failure`, `signing_error`, `kv_store_error`, `history_error`, `system_runtime_error`, `stream_error`, `lock_error`, `other_error`, `unknown_error` |
 | `502` | Upstream or peer communication failure | `comm_error`, `external_service_error` |
 
 ### Read-only-only endpoints on validators
@@ -762,7 +763,8 @@ curl -X POST http://localhost:40405/api/propose
 |--------|-----------|
 | `200` | Propose result message (success block hash) |
 | `400` | Read-only node (`readonly_node_required`) |
-| `500` | Node-side propose failure (`unknown_error`, `replay_failure`, `no_new_deploys`) |
+| `409` | No new deploys to propose (`no_new_deploys`) |
+| `500` | Node-side propose failure (`unknown_error`, `replay_failure`) |
 
 ---
 

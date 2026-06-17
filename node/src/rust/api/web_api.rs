@@ -5,10 +5,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use casper::rust::api::block_api::{BlockAPI, DeployNotFoundError, InvalidHashError};
+use casper::rust::api::block_api::{
+    BlockAPI, DeployNotFoundError, InvalidHashError, InvalidPublicKeyError,
+};
 use casper::rust::api::block_report_api::BlockReportAPI;
 use casper::rust::engine::engine_cell::EngineCell;
-use casper::rust::errors::CasperError;
 use casper::rust::ProposeFunction;
 use comm::rust::discovery::node_discovery::NodeDiscovery;
 use comm::rust::rp::connect::ConnectionsCell;
@@ -23,7 +24,6 @@ use eyre::{eyre, Result};
 use hex;
 use models::casper::LightBlockInfo;
 use models::rust::casper::protocol::casper_message::DeployData;
-use rholang::rust::interpreter::errors::InterpreterError;
 use serde::{Deserialize, Serialize};
 use tokio::time::sleep;
 use tracing::warn;
@@ -897,12 +897,7 @@ impl WebApi for WebApiImpl {
         pubkey: String,
         block_hash: Option<String>,
     ) -> Result<ValidatorStatusResponse> {
-        PublicKey::validate_secp256k1_hex(&pubkey).map_err(|e: eyre::Error| {
-            CasperError::InterpreterError(InterpreterError::IllegalArgumentError(format!(
-                "invalid public key: {}",
-                e
-            )))
-        })?;
+        let _ = validate_and_decode_pubkey(&pubkey)?;
 
         let term = r#"new return, rl(`rho:registry:lookup`), poSCh in {
             rl!(`rho:system:pos`, *poSCh) |
@@ -945,14 +940,8 @@ impl WebApi for WebApiImpl {
     }
 
     async fn get_bond_status(&self, pubkey: String) -> Result<BondStatusResponse> {
-        PublicKey::validate_secp256k1_hex(&pubkey).map_err(|e: eyre::Error| {
-            CasperError::InterpreterError(InterpreterError::IllegalArgumentError(format!(
-                "invalid public key: {}",
-                e
-            )))
-        })?;
+        let pk_bytes = validate_and_decode_pubkey(&pubkey)?;
 
-        let pk_bytes = hex::decode(&pubkey)?;
         let is_bonded = BlockAPI::bond_status(&self.engine_cell, &pk_bytes).await?;
 
         Ok(BondStatusResponse {
@@ -1462,6 +1451,22 @@ impl std::fmt::Display for WebApiError {
 }
 
 impl std::error::Error for WebApiError {}
+
+fn validate_and_decode_pubkey(pubkey_hex: &str) -> Result<Vec<u8>> {
+    let bytes = hex::decode(pubkey_hex).map_err(|e| {
+        eyre::Report::new(InvalidPublicKeyError(format!(
+            "decode: invalid public key hex: {}",
+            e
+        )))
+    })?;
+    PublicKey::validate_secp256k1_bytes(&bytes).map_err(|e| {
+        eyre::Report::new(InvalidPublicKeyError(format!(
+            "validate_secp256k1_bytes: invalid public key: {}",
+            e
+        )))
+    })?;
+    Ok(bytes)
+}
 
 // Conversion functions
 

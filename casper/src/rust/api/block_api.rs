@@ -200,7 +200,10 @@ impl std::fmt::Display for LatestBlockMessageError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             LatestBlockMessageError::NodeReadOnlyError => {
-                write!(f, "node is running in read-only mode; this endpoint requires a validator")
+                write!(
+                    f,
+                    "node is running in read-only mode; this endpoint requires a validator"
+                )
             }
             LatestBlockMessageError::NoBlockMessageError => {
                 write!(f, "no block is available yet")
@@ -1601,13 +1604,6 @@ impl BlockAPI {
     }
 
     pub async fn bond_status(engine_cell: &EngineCell, public_key: &ByteString) -> ApiErr<bool> {
-        if let Err(e) = PublicKey::validate_secp256k1_bytes(public_key) {
-            return Err(eyre::Report::new(InvalidPublicKeyError(format!(
-                "invalid public key: {}",
-                e
-            ))));
-        }
-
         let error_message =
             "Could not check if validator is bonded, casper instance was not available yet.";
         let eng = engine_cell.get().await;
