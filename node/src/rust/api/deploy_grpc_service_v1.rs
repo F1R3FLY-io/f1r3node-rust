@@ -14,6 +14,7 @@ use casper::rust::engine::engine_cell::EngineCell;
 use casper::rust::ProposeFunction;
 use comm::rust::discovery::node_discovery::NodeDiscovery;
 use comm::rust::rp::connect::ConnectionsCell;
+use crypto::rust::public_key::PublicKey;
 use graphz::{GraphSerializer, ListSerializer};
 use models::casper::v1::deploy_service_server::DeployService;
 use models::casper::v1::{
@@ -729,7 +730,18 @@ impl DeployService for DeployGrpcServiceV1Impl {
         request: tonic::Request<BondStatusQuery>,
     ) -> Result<tonic::Response<BondStatusResponse>, tonic::Status> {
         let request = request.into_inner();
-        match BlockAPI::bond_status(&self.engine_cell, &request.public_key.to_vec()).await {
+        let pk = request.public_key.to_vec();
+
+        if let Err(e) = PublicKey::validate_secp256k1_bytes(&pk) {
+            error!("Deploy service method error bond_status: {}", e);
+            return Ok(tonic::Response::new(BondStatusResponse {
+                message: Some(models::casper::v1::bond_status_response::Message::Error(
+                    e.into_service_error(),
+                )),
+            }));
+        }
+
+        match BlockAPI::bond_status(&self.engine_cell, &pk).await {
             Ok(is_bonded) => Ok(tonic::Response::new(BondStatusResponse {
                 message: Some(models::casper::v1::bond_status_response::Message::IsBonded(
                     is_bonded,
