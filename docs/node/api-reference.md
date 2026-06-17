@@ -501,8 +501,9 @@ curl "http://localhost:40453/reporting/trace?blockHash=3bfdf56f...&forceReplay=f
 | Status | Condition |
 |--------|-----------|
 | `200` | Trace report returned |
-| `400` | `blockHash` query parameter is missing, empty, or contains non-hex characters (`invalid_query_parameter`, `invalid_hash`) |
-| `500` | Block report replay failed (`unknown_error`) |
+| `400` | `blockHash` query parameter is missing, empty, or contains non-hex characters; or node is not read-only (`invalid_query_parameter`, `invalid_hash`, `readonly_node_required`) |
+| `404` | Specified block not found (`block_not_found`) |
+| `500` | Node-side failure (`replay_failure`, `kv_store_error`, `lock_error`, `unknown_error`) |
 
 ---
 

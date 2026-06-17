@@ -1,20 +1,25 @@
 use axum::extract::State;
+use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::get;
 use axum::Router;
-use casper::rust::api::block_api::InvalidHashError;
+use casper::rust::api::block_report_api::BlockReportError;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 use crate::rust::api::serde_types::block_event_info::BlockEventInfoSerde;
-use crate::rust::web::shared_handlers::{ApiErrorResponse, AppError, AppQuery, AppState};
+use crate::rust::web::shared_handlers::{AppQuery, AppState};
 
 pub struct ReportingRoutes;
 
-#[derive(Debug, Serialize, ToSchema)]
-pub struct BlockTracesReport {
-    pub report: BlockEventInfoSerde,
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[serde(tag = "type")]
+pub enum ReportResponse {
+    #[serde(rename = "block-traces-report")]
+    BlockTracesReport { report: BlockEventInfoSerde },
+    #[serde(rename = "block-report-error")]
+    BlockReportError { error_message: String },
 }
 
 #[derive(Debug, Deserialize)]
@@ -35,13 +40,12 @@ impl ReportingRoutes {
         get,
         path = "/reporting/trace",
         params(
-            ("blockHash" = String, Query, description = "Full 64-char hex block hash to generate the trace report for"),
+            ("blockHash" = String, Query, description = "Block hash to generate the trace report for"),
             ("forceReplay" = Option<bool>, Query, description = "If `true`, discards any cached trace and re-replays the block from scratch (default: `false`)"),
         ),
         responses(
-            (status = 200, description = "Block trace report containing per-deploy execution events", body = BlockTracesReport),
-            (status = 400, description = "`blockHash` query parameter is missing, empty, or contains non-hex characters (`invalid_query_parameter`, `invalid_hash`)", body = ApiErrorResponse),
-            (status = 500, description = "Block report replay failed (`unknown_error`)", body = ApiErrorResponse),
+            (status = 200, description = "Block trace report (tagged: block-traces-report or block-report-error)", body = ReportResponse),
+            (status = 400, description = "Invalid parameters"),
         ),
         tag = "Reporting"
     )]
@@ -50,20 +54,20 @@ pub async fn trace_handler(
     AppQuery(params): AppQuery<TraceQuery>,
 ) -> Response {
     if params.block_hash.is_empty() {
-        return AppError(eyre::Report::new(InvalidHashError(
-            "blockHash query parameter is required and must not be empty".to_string(),
-        )))
-        .into_response();
+        let error_response = ReportResponse::BlockReportError {
+            error_message: "blockHash query parameter is required and must not be empty"
+                .to_string(),
+        };
+        return (StatusCode::BAD_REQUEST, Json(error_response)).into_response();
     }
 
-    let block_hash_bytes = match hex::decode(&params.block_hash) {
-        Ok(bytes) => bytes,
+    let block_hash = match Blake2b256Hash::try_from_hex(&params.block_hash) {
+        Ok(hash) => hash,
         Err(_) => {
-            return AppError(eyre::Report::new(InvalidHashError(format!(
-                "'{}' is not valid hex",
-                params.block_hash
-            ))))
-            .into_response();
+            let error_response = ReportResponse::BlockReportError {
+                error_message: format!("'{}' is not a valid hex hash", params.block_hash),
+            };
+            return (StatusCode::BAD_REQUEST, Json(error_response)).into_response();
         }
     };
 
@@ -71,16 +75,30 @@ pub async fn trace_handler(
 
     match app_state
         .block_report_api
-        .block_report(
-            Blake2b256Hash::from_bytes(block_hash_bytes).to_bytes_prost(),
-            force_replay,
-        )
+        .block_report(block_hash.to_bytes_prost(), force_replay)
         .await
     {
-        Ok(block_event_info) => Json(BlockTracesReport {
+        Ok(block_event_info) => Json(ReportResponse::BlockTracesReport {
             report: block_event_info.into(),
         })
         .into_response(),
-        Err(e) => AppError(eyre::eyre!("block report replay failed: {}", e)).into_response(),
+        Err(e) => {
+            let status = match &e {
+                BlockReportError::BlockNotFound(_) => StatusCode::NOT_FOUND,
+                BlockReportError::ReadOnlyRequired => StatusCode::BAD_REQUEST,
+                BlockReportError::CasperNotInitialized => StatusCode::INTERNAL_SERVER_ERROR,
+                BlockReportError::ReplayFailed(_) => StatusCode::INTERNAL_SERVER_ERROR,
+                BlockReportError::BlockInfoError(_) => StatusCode::INTERNAL_SERVER_ERROR,
+                BlockReportError::StoreError(_) => StatusCode::INTERNAL_SERVER_ERROR,
+                BlockReportError::SemaphoreError(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            };
+            (
+                status,
+                Json(ReportResponse::BlockReportError {
+                    error_message: e.to_string(),
+                }),
+            )
+                .into_response()
+        }
     }
 }
