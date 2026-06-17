@@ -162,19 +162,45 @@ so a strict compound deploy was play-admitted (on `effectiveΣ`) but replay-reje
 (`effective_supply_with`), with the settle-filter keeping a group iff `strict ∨ present(own pool)` —
 mirroring the play side exactly (non-strict stays byte-identical).
 
-**Over-admission re-check (TM-CA-164).** The strict re-verification above only guarantees a compound group
-has a *positive* effective supply; it does NOT bound the group's *cumulative demand* against that supply on
-replay. Because `compute_settlement_debits` residual-caps a compound pair-draw at `min(Σ_l, Σ_r)`, an
-over-demand `ΣΔ > effectiveΣ` (a malicious proposer stuffing more compound deploys from one cosigner set than
-the gate would admit) is silently absorbed into per-pool debits ≤ balance — so the per-pool `debit > balance`
-replay check (`recompute_and_verify_admission`) cannot catch it (it catches single-sig only, whose own-pool
-debit is *uncapped* `= ΣΔ`). The deploys still execute (unmetered-for-liveness), so the cosigners would
-oversubscribe their shared component wallets by `ΣΔ − effectiveΣ` un-funded units. The recompute therefore
-ALSO re-imposes the gate's per-group bound on the RAW cumulative demand: for every enforced group it asserts
-`Σ(cost + fee) ≤ effectiveΣ`, raising `ReplayAdmissionMismatch` otherwise — matching the gate's static
-per-group `effective`, so it never forks a gate-admitted block (equality is admissible). Test:
-`compound_over_admission_rejected_on_replay`. (Cross-group sharing of one component across *distinct* cosigner
-sets is a separate, tracked follow-up — see TM-CA-164.)
+**Over-admission bound (TM-CA-164 → TM-CA-165 — the LIVE cross-group ledger).** The strict re-verification
+above only guarantees a compound group has a *positive* effective supply; it does NOT by itself bound a
+group's *cumulative demand* — nor the *combined* demand of several groups sharing a component — against the
+supply. Because `compute_settlement_debits` residual-caps a compound pair-draw at `min(Σ_l, Σ_r)`, an
+over-demand is silently absorbed into per-pool debits ≤ balance, so the per-pool `debit > balance` replay
+check (`recompute_and_verify_admission`) cannot catch it (it catches single-sig only, whose own-pool debit
+is *uncapped* `= ΣΔ`). The deploys still execute (unmetered-for-liveness), so the over-demand runs as
+`ΣΔ − supply` un-funded units. Two flavors:
+
+- **TM-CA-164** — one cosigner set over-demands its own effective supply (`ΣΔ > effectiveΣ`).
+- **TM-CA-165** — two DISTINCT cosigner sets share a component wallet (`{A,s}` + `{B,s}` both drawing
+  `Σ⟦Ground(s)⟧`); each fits its own static per-group effective, but their *combined* draw on the shared
+  wallet exceeds it (honest-proposer-reachable).
+
+Both are closed by the SAME mechanism: the gate's admission DECISION (`admit_by_funding`) and the replay
+re-verification (`recompute_settlement_debits`) each run a **LIVE cross-group residual ledger** `remaining`
+(seeded `raw.clone()`), processing groups in canonical `SigKey` order. Each group's admission cap is its
+effective supply read from the *drawn-down* `remaining` (`group_capacity`: own-pool for a single group,
+`Σ⟦compound⟧ + min(Σ⟦l⟧, Σ⟦r⟧)` for a compound), and after admission its folded `cost + fee` is drawn down
+the shared ledger (`draw_group_from_ledger`, combined-pool-first — the conservative reservation that
+dominates the two-pass settlement, so `admission-fundable ⟹ settlement-safe`). A later group sharing a
+component therefore sees the reduced balance and is reject-both on the exhausted stack. Replay re-runs the
+IDENTICAL ledger (margin-free — the margin only removes deploys on play, never present in the block) and
+raises `ReplayAdmissionMismatch` on any admitted group whose folded demand exceeds its LIVE capacity. This
+bounds the *cumulative* demand on every shared wallet across all groups (linearity: no contraction),
+**subsuming** the single-group TM-CA-164 check as the one-element special case (the per-group loop was
+replaced by the cross-group ledger pass). Equality is admissible (never forks a gate-admitted block); the
+settlement passes are unchanged (already cross-group-correct, byte-identical play↔replay). Tests:
+`cross_group_two_compounds_sharing_component_admits_one`,
+`cross_group_over_admission_distinct_sets_rejected_on_replay`,
+`cross_group_boundary_demand_equals_shared_supply_admits_both`,
+`single_sig_and_compound_sharing_component_bounded`,
+`cross_group_migration_no_op_default_shard_both_admitted`,
+`nary_nested_compound_absent_inner_pool_rejected`, plus `compound_over_admission_rejected_on_replay`. Formal:
+Rocq `cross_group_draw_le_supply` / `cross_group_admission_sound` (axiom-free); TLA+
+`Inv_CrossGroupAdmissionBounded` / `Inv_SecondGroupDrawMatchesDemand` (TLC PASS); Sage cross-group admission
+sweep (12,605 traces, 0 violations). See diagram below.
+
+![Cross-group shared-component ledger (TM-CA-165) — two distinct cosigner groups {A,s} and {B,s} share the component wallet Σ⟦Ground(s)⟧. The gate processes groups in SigKey order against a LIVE remaining ledger: the first group draws Σ⟦Ground(s)⟧ down, so the second sees the reduced balance and is reject-both on the exhausted stack (red), where the pre-fix static per-group effective admitted both (over-draw). Replay re-runs the identical ledger and raises ReplayAdmissionMismatch on an over-admitted block.](../diagrams/cross-group-shared-component-ledger.svg)
 
 ![Strict compound effective supply — a strict multi-sig deploy whose combined Σ⟦And(…)⟧ pool is genesis-absent funds from effectiveΣ = Σ_compound (absent ⇒ 0) + min(Σ_l, Σ_r). Keying the replay recompute on the raw compound-pool presence (the pre-§D2.9 bug) rejects on replay what play admitted — a fork (red). §D2.9 keys on the effective supply, admits, settles balanced from the component pair (left −= k, right −= k, P8), and keeps the group in the settle-filter iff strict ∨ present(own pool), so play and replay are byte-identical (green).](../diagrams/strict-compound-effective-supply.svg)
 

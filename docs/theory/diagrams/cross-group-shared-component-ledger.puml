@@ -1,0 +1,71 @@
+' Cross-group shared-component ledger (TM-CA-165) — two DISTINCT cosigner groups
+' {A,s} and {B,s} share the component wallet Σ⟦Ground(s)⟧. The acceptance gate (and
+' the replay re-verification) run a LIVE cross-group residual ledger in canonical
+' SigKey order, drawing the shared wallet DOWN as each group is admitted — so the
+' two groups cannot jointly over-draw it (linearity: no contraction). The pre-fix
+' static per-group effective re-read the shared wallet's FULL balance per group, so
+' both admitted and over-drew (un-funded compute, the deploys run unmetered).
+'
+' Source of truth for cost-accounting-impl/d2-9-funding-flow.md §4 and
+' cost-accounting-threat-model.md TM-CA-165.
+'
+' Palette:  supply pools / admit / conserve mint #C8E6C9 · effectiveΣ fold teal #B2DFDB
+'   decision amber #FFE082 · reject / over-draw red #EF9A9A · input orange #FFE0B2
+'   LIVE-ledger draw / replay blue #BBDEFB
+'
+' Render:  plantuml -tsvg docs/theory/diagrams/cross-group-shared-component-ledger.puml
+
+@startuml cross-group-shared-component-ledger
+!theme plain
+skinparam defaultFontName "sans-serif"
+skinparam ArrowColor                     #444444
+skinparam ActivityBorderColor            #333333
+skinparam ActivityBackgroundColor        #FFFFFF
+skinparam ActivityDiamondBackgroundColor #FFE082
+skinparam ActivityDiamondBorderColor     #333333
+skinparam PartitionBorderColor           #888888
+skinparam NoteBackgroundColor            #FFF8E1
+skinparam NoteBorderColor                #666666
+title Cross-group shared-component ledger (TM-CA-165) — two cosigner sets {A,s},{B,s} share Σ⟦Ground(s)⟧
+
+start
+:two compound deploys share cosigner s\nG1 = And(Ground(A), Ground(s))\nG2 = And(Ground(B), Ground(s)); <<#FFE0B2>>
+:seed the LIVE ledger  remaining := raw\nΣ⟦Ground(s)⟧ = 3 (shared) ·  Σ⟦Ground(A)⟧ = Σ⟦Ground(B)⟧ = 100\n(genesis seeds per-pubkey wallets; Σ⟦And(…)⟧ absent ⇒ 0); <<#C8E6C9>>
+:process groups in canonical SigKey order; <<#B2DFDB>>
+
+partition "Group 1 (SigKey-first)" {
+  :cap = remaining[And] + min(remaining[A], remaining[s])\n    = 0 + min(100, 3) = 3; <<#B2DFDB>>
+  :folded demand cost+fee = 2 ≤ 3 ⇒ ADMIT; <<#C8E6C9>>
+  :draw 2 DOWN the ledger (combined-first, then matched pair)\nremaining[s] : 3 → 1    remaining[A] : 100 → 98; <<#BBDEFB>>
+}
+
+partition "Group 2 (shares s)" {
+  :cap = remaining[And] + min(remaining[B], remaining[s])\n    = 0 + min(100, 1) = 1     (s is DRAWN-DOWN by G1); <<#B2DFDB>>
+  if (folded demand cost+fee = 2  ≤  cap = 1 ?) then (no)
+    :REJECT-BOTH on the exhausted shared stack\n(linear logic: a token is spent once); <<#EF9A9A>>
+  else (yes)
+    :admit; <<#C8E6C9>>
+  endif
+}
+
+:admitted = {G1} ·  rejected = {G2}\nsummed draw on Σ⟦Ground(s)⟧ = 2 ≤ 3  (bounded); <<#C8E6C9>>
+note right
+  PRE-FIX (static per-group effective): BOTH groups
+  read Σ⟦Ground(s)⟧'s FULL balance 3, BOTH admit,
+  combined draw 4 > 3 ⇒ 1 un-funded compute unit
+  (the deploys run unmetered-for-liveness; the
+  settlement silently caps the post-state).
+end note
+:REPLAY re-runs the IDENTICAL ledger (margin-free, SigKey order)\n⇒ ReplayAdmissionMismatch on any over-admitted block; <<#BBDEFB>>
+stop
+
+legend left
+| Color | Meaning |
+| <#FFE0B2> orange | the two shared-cosigner deploys (input) |
+| <#C8E6C9> mint | supply / admit / conserve |
+| <#B2DFDB> teal | the effectiveΣ cap fold |
+| <#BBDEFB> blue | LIVE ledger draw-down / replay |
+| <#FFE082> amber | the cross-group fit decision |
+| <#EF9A9A> red | reject-both on the exhausted shared stack |
+endlegend
+@enduml

@@ -3699,7 +3699,7 @@ references.
 | `SyntacticSugar.v`          | 196        | 6        | Section 3.8 syntactic sugar at the translation level: uniform-signing and linear-transfer (⊸) defining equations as `proc`-level structural equivalences of the translated images (Option A; ⊸ desugars to nested plain-signature gate layers) |
 | `WalletNaming.v`            | 313        | 14       | Per-validator wallet `@W_v` naming (Stage A): injectivity in the validator public key and pairwise disjointness of the wallet / quarantine / funding-slot seed domains — the pubkey-keyed `@W_v`/`SGround` the §D2.9 user-deploy funding key `Sig::Ground(pk)` instantiates (§12(iv)) |
 | `MultiSignerRefinement.v`   | 530        | 31       | Phase 1.10 multi-signature deploy support: per-deployer Map-in-MVar PoS refinement, single-signer observable equivalence to the legacy contract, and canonical-order FIFO refund-drain conservation |
-| `LinearLogicResources.v`    | 818        | 38       | Publication-derived linear-resource calculus: mixed unrestricted/linear resource boundary, anti-contraction / anti-weakening, no-double-spend, funding decidability, and the runtime `sig_algebra` bridge |
+| `LinearLogicResources.v`    | 979        | 45       | Publication-derived linear-resource calculus: mixed unrestricted/linear resource boundary, anti-contraction / anti-weakening, no-double-spend, funding decidability, the runtime `sig_algebra` bridge, and the **cross-group cumulative-demand bound** (`cross_group_draw_le_supply`, `cross_group_admission_sound` — TM-CA-165, the live-ledger generalization of `competing_funding_at_most_one_succeeds`/`admitted_prefix_fits`) |
 | `LLIdentities.v`            | 587        | 51       | Phase 2/3 ILLE algebraic identities: multiplicative (tensor/and), additive (plus/with), and exponential (bang/why-not) laws plus Phase 2 Threshold permutation invariance at the reflection layer |
 | **Total**                   | **25,776** | **967**  |                                                                                                                                                                                                                                                                                    |
 
@@ -4316,12 +4316,36 @@ check the §D2.9 replay recompute performs,
 `effectiveΣ_{s₁∘s₂} = Σ_{s₁∘s₂} + min(Σ_{s₁}, Σ_{s₂})`, is the **already-proven
 Split/Join algebra** (the `Split`/`Join` mediators + `CAJoinConservation`, App. §4.8.4)
 applied at replay — no new proof obligation; the prior wire-sig keying was the
-outlier the code corrected to match the model. **No FV artifact changes** (the
-85 `.v` / 64 `.tla` / 62 `.sage` / 11 `.lean` are abstract over / already
-consistent with the pubkey keying). See `cost-accounting-impl/d2-9-funding-flow.md`
-and `wd-d2-acceptance-gate.md` §D2.9. Each delegation is intentional in the paper;
-the implementation's choice is consistent with every behavioral law the paper does
-fix. (See DR-20.)
+outlier the code corrected to match the model. See
+`cost-accounting-impl/d2-9-funding-flow.md` and `wd-d2-acceptance-gate.md` §D2.9.
+
+**§D2.9-R2 (TM-CA-166) — no-weakening closure correction (code-to-model, no model
+change).** A red-team found `effective_supply_with` additionally credited a *single*
+component with the compound pool (`effective[s₁] = Σ_{s₁} + Σ_{s₁∘s₂}`), but the
+settlement's single-sig draw can only reach `Σ_{s₁}` — a static **weakening** credit
+the model already forbids (`CAJoinConservation.join_no_weakening`, axiom-free:
+`s₁∘s₂` carries strictly more signature atoms than `s₁`, so it cannot be discharged
+as `s₁` alone). The over-credit was a *code-only outlier* present in no
+`.v`/`.tla`/`.sage`/`.tex`; the code now drops it (a single component passes through
+at its raw balance `effective[s₁] = Σ_{s₁}`), so `effective_supply_with` MATCHES the
+model — again a code-to-model correction, **no model change**. Latent today (genesis
+seeds only per-pubkey wallets ⇒ `Σ_compound = 0`).
+
+**TM-CA-165 — cross-group cumulative-demand bound (FV ADDITIONS, no existing proof
+invalidated).** The gate's admission decision + the replay re-verification now run a
+LIVE cross-group residual ledger so two DISTINCT cosigner sets sharing a component
+wallet cannot jointly over-draw it (linearity, no contraction). Verified full-stack
+by ADDING (not changing): Rocq `cross_group_draw_le_supply` +
+`cross_group_admission_sound` in `LinearLogicResources.v` (axiom-free, generalizing
+`competing_funding_at_most_one_succeeds`/`admitted_prefix_fits`); TLA+
+`Inv_CrossGroupAdmissionBounded` + `Inv_SecondGroupDrawMatchesDemand` in
+`CompoundSettlement.tla` (its `AdmitGate` now threads the shared residual; TLC PASS);
+a Sage cross-group admission sweep (12,605 traces, 0 sound + 0 necessity violations).
+No EXISTING proof is invalidated — the additions strengthen the funding-soundness
+layer. See `cost-accounting-impl/d2-9-funding-flow.md` §4, `wd-d2-acceptance-gate.md`
+§D2.2, threat-model TM-CA-165/166, and DR-28. Each delegation is intentional in the
+paper; the implementation's choice is consistent with every behavioral law the paper
+does fix. (See DR-20.)
 
 ---
 

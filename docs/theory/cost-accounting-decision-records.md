@@ -1154,3 +1154,72 @@ legacy (DR-9 removed it); rebase rent funding to a located-`Σ`-purse debit (hea
 **Cross-refs.** DR-9 (per-COMM cost; escrow removed), DR-13 (system-only minting — monopoly half superseded, the
 unforgeability half retained), DR-24 (generic GSLT/OSLF boundary), DR-25; the plan's W3 (token-source + minting)
 and W4 (rent/economics) workstreams; pgmcp work item #481.
+
+## DR-28 — Cross-group cumulative-demand bound (live residual ledger) + the §D2.9-R2 no-weakening closure correction
+
+**Context.** Two red-team passes on the §D2.9 funding gate found a soundness hole and a latent inconsistency:
+
+1. **TM-CA-165 (cross-group over-admission).** The acceptance gate admitted each per-signature group against a
+   STATIC per-group effective supply (`effective_supply_with(raw, …)` computed once, each group re-reading its
+   own slice). Two DISTINCT cosigner sets sharing a component wallet — `{A,s}` and `{B,s}` both drawing
+   `Σ⟦Ground(s)⟧` — were each admitted against `s`'s full balance, so their COMBINED demand could exceed it.
+   The deploys run unmetered-for-liveness; `compute_settlement_debits` caps the post-state (no conservation
+   break, play↔replay agree), so `ΣΔ − Σ⟦Ground(s)⟧` units of un-funded compute executed undetected —
+   honest-proposer-reachable. Linearity admits no contraction: a shared token funds at most one consumer.
+2. **TM-CA-166 / §D2.9-R2 (single-component no-weakening over-credit).** `effective_supply_with` credited a
+   single component with the compound pool (`effective[s₁] = Σ_{s₁} + Σ_{s₁∘s₂}`), but a single-sig group
+   settles only on its own pool — so once a compound pool is provisioned, a single-sig deploy could be admitted
+   against a capacity the settlement cannot honor (underflow). This is **weakening** (discharging a single-`s₁`
+   demand by consuming a compound token discards the `s₂` authority).
+
+**Decision.**
+
+- **(R2) Correct the closure, not the settlement.** Drop the single-component over-credit from
+  `effective_supply_with`; a single component passes through at its raw balance. Rocq
+  `CAJoinConservation.join_no_weakening` and the paper's "Weakening Is Forbidden" already forbid the operation;
+  the over-credit was a code-only outlier matching no proof/model/spec. Funding a single component from a
+  compound requires the explicit, observable `Split` reduction crediting `Σ⟦s₂⟧` (the runtime Splitter), never
+  a static admission credit. *(R1 — extend the settlement to split-with-byproduct — was REJECTED: it would mint
+  `s₂`-authority no demand requested and require re-proving the settlement conservation; R2 keeps the verified
+  core untouched and the code merely matches the model.)*
+- **(TM-CA-165) Bound admission with a LIVE cross-group residual ledger.** The gate's admission DECISION and the
+  replay re-verification each run one `remaining` ledger (seeded `raw.clone()`) over the `SigKey`-ordered
+  groups, drawing each shared component down as groups are admitted; a group is admitted only if its folded
+  `cost + fee` fits its effective supply read from the drawn-down ledger. This is the linear-resource discipline
+  (admit greedily in canonical order, draw the shared stack down) — **not** reject-both-across-groups, which
+  would destroy fundable demand (both could be partially funded) and violate maximality. Single-sig caps at its
+  own-pool live residual (consistent with R2).
+- **§7.7 admit-in-canonical-`SigKey`-order**, not reject-both-across-groups. The order is a pure function of the
+  cosigners' public keys (deterministic, identical play↔replay), so there is no determinism hazard; option (a)
+  also admits strictly more than (b), maximizing liveness.
+- **Margin-free replay.** The replay re-verification checks the hard `folded demand ≤ live capacity` bound
+  WITHOUT the margin (the margin is a play-side admission tightening that only REMOVES deploys; a removed deploy
+  is not in the block, so replay never needs it — matching the pre-existing margin-free recompute).
+- **Settlement untouched.** `compute_settlement_debits` was already cross-group-correct and byte-identical
+  play↔replay; the gate, replay, and settlement now share the `group_shape_from` / `group_capacity` /
+  `index_decompositions` helpers (single source of truth, no drift). The folded-`cost+fee` admission ledger
+  DOMINATES the two-pass cost-then-fee settlement on every pool (the flat fee draws a single component, a subset
+  of the cost pair-draw), so `admission-fundable ⟹ settlement-safe` — capturing the admission draws as debits
+  (the rejected INVASIVE variant) would have forked play vs the two-pass replay settlement.
+
+**No-execution-serialization.** The fix is pure bookkeeping over the finite shared stacks, run BEFORE execution;
+admitted deploys still execute concurrently and unmetered-for-liveness. Linearizing the *admission accounting*
+over a finite resource is the required linear-logic semantics (no contraction), not an artificial serialization
+of compute (cf. the no-serialization mandate).
+
+**Migration.** No-op on a default shard (strict=false, empty `client_fuel_allocations` ⇒ all pools absent ⇒
+early-admit unenforced, no ledger draw, post-state byte-identical). R2 is a no-op on every current post-state
+(genesis seeds only per-pubkey wallets, so `Σ_compound = 0` always). Only a strict + client-funded shard with
+shared components changes behavior — exactly where the bug was LIVE.
+
+**Verification.** Rust: 31 acceptance lib tests (6 new cross-group) + `gate_decision_replay_determinism`,
+`multi_sig_funds_balanced`, `redeem_outcomes_and_multisig_gate`; `compound_debit_play_replay_byte_identical`
+confirms the settlement refactor is byte-identical. Rocq (axiom-free): `cross_group_draw_le_supply`,
+`cross_group_admission_sound`, `competing_funding_shared_component`. TLA+ (TLC PASS): `AdmitGate` threads the
+shared residual; `Inv_CrossGroupAdmissionBounded`, `Inv_SecondGroupDrawMatchesDemand`. Sage: 12,605-trace
+cross-group admission sweep, 0 sound + 0 necessity violations.
+
+**Cross-refs.** §D2.9 (the funding-key correction this extends), DR-9 (unmetered-for-liveness — the gate's
+soundness is load-bearing because there is no runtime backstop within a block; the precharge IS the gate),
+DR-11 (block-assembly gate), TM-CA-153 / TM-CA-164 (the over-admission lineage this completes), TM-CA-165 /
+TM-CA-166. Commits `eec6e323` (R2), `8575e7c0` (cross-group gate), `4d848faf` (formal verification).
