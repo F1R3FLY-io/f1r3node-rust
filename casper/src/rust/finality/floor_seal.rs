@@ -284,6 +284,51 @@ pub fn floor_closure(
     Ok(closure)
 }
 
+/// The previous finalized cut below `cut` on its main-parent chain — the base the
+/// seal chains onto.
+///
+/// Unlike `floor_of_block` (justification-derived, lagging the cut by the witnessing
+/// depth), this is the actual finalized frontier below `cut`. Chaining the seal here
+/// puts every write finalized at-or-below it INTO the base, so the seal never
+/// re-litigates an already-finalized write — `FS` grows monotonically (the #71 fix).
+///
+/// Node-identical: every `FS` read is of a finalized cut (`floor ≤ LFB`), and
+/// finalization advances the whole cone, so when `cut` is finalized every finalized
+/// ancestor is already finalized. The main-parent walk to the first `is_finalized`
+/// block therefore yields the same predecessor on every node. Genesis (no main
+/// parent) is the terminal cut.
+fn previous_finalized_cut(
+    dag: &KeyValueDagRepresentation,
+    cut: &BlockHash,
+) -> Result<BlockHash, CasperError> {
+    const DEEP_WALK_WARN: usize = 256;
+    let mut current = cut.clone();
+    let mut walked: usize = 0;
+    loop {
+        match dag.main_parent(&current) {
+            Some(parent) => {
+                if dag.is_finalized(&parent) {
+                    return Ok(parent);
+                }
+                current = parent;
+                walked += 1;
+                if walked == DEEP_WALK_WARN {
+                    tracing::warn!(
+                        target: "f1r3.trace.fs_floor",
+                        cut = %PrettyPrinter::build_string_bytes(cut),
+                        walked,
+                        "previous_finalized_cut walk unusually deep; finalization lagging or cold start"
+                    );
+                }
+            }
+            None => {
+                // `current` is genesis: the terminal finalized cut.
+                return Ok(current);
+            }
+        }
+    }
+}
+
 /// `FS(floor_hash)`, from the store when present, else computed by the
 /// canonical recursion and persisted write-through.
 ///
@@ -338,7 +383,7 @@ pub async fn floor_state_get_or_compute(
             break seed;
         }
         unsealed.push(cursor.clone());
-        cursor = floor_of_block(dag, &cursor, ft_threshold).await?.hash;
+        cursor = previous_finalized_cut(dag, &cursor)?;
     };
 
     if !unsealed.is_empty() {
@@ -386,7 +431,11 @@ async fn seal_floor_cut(
     ft_threshold: f32,
 ) -> Result<FloorData, CasperError> {
     let cut_number = dag.block_number_unsafe(cut)?;
-    let prev = floor_of_block(dag, cut, ft_threshold).await?;
+    let prev_hash = previous_finalized_cut(dag, cut)?;
+    let prev = Floor {
+        block_number: dag.block_number_unsafe(&prev_hash)?,
+        hash: prev_hash,
+    };
 
     // scope = closure(cut) \ closure(prev): the newly finalized cone. The
     // predecessor closure is downward-closed, so gating the ancestor walk on
@@ -431,19 +480,13 @@ async fn seal_floor_cut(
     )
     .await?;
 
-    // Finalized decisions made at-or-below the previous floor are enforced on
-    // the seal too: scope chains may have executed before those decisions.
-    let final_context = enforcement_window(
-        dag,
-        block_store,
-        runtime_manager,
-        &prev,
-        prev_state,
-        &scope,
-        ft_threshold,
-    )
-    .await?;
-
+    // No enforcement window. The base is FS(prev_finalized_cut), so every decision
+    // finalized at-or-below `prev` is already baked into the base; the scope is only
+    // the newly-finalized delta. keep-one + single-value serialization on the sealed
+    // base resolve the delta, and a delta chain that depends on a finalized-rejected
+    // chain hits a stale-consume and is dropped — so the enforcement window is
+    // redundant here, and omitting it avoids its over-rejection (the Step-4 hazard)
+    // now that the re-merge result IS FS.
     let base_state = Blake2b256Hash::from_bytes_prost(&prev_state.state_hash.0);
     let (sealed_state, applied_user, rejected_user, _rejected_slash) = dag_merger::merge(
         dag,
@@ -456,8 +499,35 @@ async fn seal_floor_cut(
         // The scope IS the explicit finalized closure; late-block filtering is
         // a live-view concept and must not participate.
         true,
-        Some(&final_context),
+        None,
     )?;
+
+    // DIAG (mechanism discriminator): a kept chain whose sig is ALREADY in
+    // FS(prev).accepted is re-applying a finalized deploy's effect — the
+    // content-twin source if this is mechanism 1 (recovery re-proposing an
+    // already-accepted deploy). Silence ⇒ the double is a distinct-deploy
+    // re-create (mechanism 2).
+    {
+        let prev_accepted: HashSet<prost::bytes::Bytes> = prev_state
+            .accepted_deploys
+            .iter()
+            .map(|a| a.sig.clone())
+            .collect();
+        let reapplied: Vec<String> = applied_user
+            .iter()
+            .filter(|(sig, _)| prev_accepted.contains(sig))
+            .map(|(sig, _)| hex::encode(&sig[..sig.len().min(8)]))
+            .collect();
+        if !reapplied.is_empty() {
+            tracing::warn!(
+                target: "f1r3.trace.fs_floor",
+                event = "seal_reapply",
+                cut_number,
+                reapplied = %reapplied.join(","),
+                "seal kept chains re-apply already-FS-accepted deploys (content-twin source)"
+            );
+        }
+    }
 
     let mut rejected: BTreeSet<SealedRejection> =
         prev_state.rejected_deploys.iter().cloned().collect();
@@ -478,31 +548,27 @@ async fn seal_floor_cut(
         sig,
         host: BlockHashSerde(src),
     }));
-    // FS(cut) IS the cut block's committed, finalized post-state — NOT the
-    // independent cone re-merge above. The re-merge is kept ONLY to derive the
-    // rejected/accepted ledgers the construction-time enforcement window needs;
-    // its STATE result systematically dropped writes the finalized block itself
-    // committed (verified: cut #40 committed map{b,c} but the re-merge sealed
-    // {b}), making FS strictly lossier than the chain it summarizes and causing
-    // the finalized cell to oscillate/regress across cuts. The block's post-state
-    // is consensus-validated (replay must reproduce it), node-identical, and a
-    // pure function of the block — the same path-independence the re-merge was
-    // introduced for, without the loss. Restores the FS(B) ≡ B.post_state
-    // property an earlier iteration had; mirrors RChain's fringeState.
+    // FS(cut) is the chained re-merge: the newly-finalized delta merged onto
+    // FS(prev_finalized_cut). Because the base is the finalized frontier (not the
+    // lagging justification floor), the re-merge never re-litigates an already-
+    // finalized write, so FS grows monotonically — a finalized entry is never
+    // dropped by a descendant cut (the #71 fix). The block's own committed
+    // post-state may differ (it merged on its lagging floor); that is the block's
+    // working state, while FS is the canonical finalized state every consumer reads.
     let remerge_state_bytes = sealed_state.to_bytes_prost();
     let committed_state_bytes = block_store.get_unsafe(cut).body.state.post_state_hash.clone();
 
     if committed_state_bytes != remerge_state_bytes {
-        // Diagnostic: surface residual divergence so a run MEASURES how often /
-        // how far the re-merge would have lost state vs the committed block.
+        // Diagnostic: FS (chained on the finalized frontier) intentionally differs
+        // from the block's committed post-state (merged on the lagging floor).
         tracing::debug!(
             target: "f1r3.trace.fs_floor",
             event = "seal_state_divergence",
             cut = %PrettyPrinter::build_string_bytes(cut),
             cut_number,
             committed = %PrettyPrinter::build_string_bytes(&committed_state_bytes),
-            remerge = %PrettyPrinter::build_string_bytes(&remerge_state_bytes),
-            "FS set to committed block post-state; cone re-merge diverged (lossy) — kept for ledgers only"
+            fs = %PrettyPrinter::build_string_bytes(&remerge_state_bytes),
+            "FS (chained finalized seal) differs from committed block post-state"
         );
     }
 
@@ -511,16 +577,18 @@ async fn seal_floor_cut(
         event = "seal_result",
         cut = %PrettyPrinter::build_string_bytes(cut),
         cut_number,
-        fs_state = %PrettyPrinter::build_string_bytes(&committed_state_bytes),
+        prev_floor = %PrettyPrinter::build_string_bytes(&prev.hash),
+        prev_fs_block = prev.block_number,
+        fs_state = %PrettyPrinter::build_string_bytes(&remerge_state_bytes),
         rejected_total = rejected.len(),
         rejected_carried = carried,
         accepted_total = accepted.len(),
         accepted_carried,
-        "sealed floor state (= committed block post-state)"
+        "sealed floor state (chained on previous finalized cut)"
     );
 
     Ok(FloorData {
-        state_hash: StateHashSerde(committed_state_bytes),
+        state_hash: StateHashSerde(remerge_state_bytes),
         rejected_deploys: rejected.into_iter().collect(),
         accepted_deploys: accepted.into_iter().collect(),
         block_number: cut_number,
