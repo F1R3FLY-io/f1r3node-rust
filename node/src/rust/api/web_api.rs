@@ -1455,15 +1455,12 @@ impl std::error::Error for WebApiError {}
 fn validate_and_decode_pubkey(pubkey_hex: &str) -> Result<Vec<u8>> {
     let bytes = hex::decode(pubkey_hex).map_err(|e| {
         eyre::Report::new(InvalidPublicKeyError(format!(
-            "decode: invalid public key hex: {}",
+            "invalid public key hex: {}",
             e
         )))
     })?;
     PublicKey::validate_secp256k1_bytes(&bytes).map_err(|e| {
-        eyre::Report::new(InvalidPublicKeyError(format!(
-            "validate_secp256k1_bytes: invalid public key: {}",
-            e
-        )))
+        eyre::Report::new(InvalidPublicKeyError(format!("invalid public key: {}", e)))
     })?;
     Ok(bytes)
 }
