@@ -378,8 +378,6 @@ jobs:
     # multiplier. Still caps any genuine hang at ~2× the realistic
     # completion time.
     timeout-minutes: 120
-    concurrency:
-      group: integration-${{ matrix.arch }}-${{ github.ref }}
     strategy:
       fail-fast: false
       matrix:
