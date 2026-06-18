@@ -673,7 +673,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: F1R3FLY-io/pyf1r3fly
-          ref: main
+          ref: ce41fba1c01900de1cad14629255e0375c840a57
           path: system-integration/services/pyf1r3fly
 
       - name: Load Docker Image (from build_docker_image artifact)
