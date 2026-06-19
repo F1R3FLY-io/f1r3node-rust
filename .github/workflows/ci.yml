@@ -166,9 +166,13 @@ jobs:
           if [ "$EVENT_NAME" = "pull_request" ]; then
             head_repo="$PR_HEAD_REPO"
             head_sha="$PR_HEAD_SHA"
-            if [ "$PR_HEAD_REPO" = "$REPOSITORY" ]; then
-              full_validation=true
-            fi
+            # OCI full-validation is deferred on pull_request. The v2 system-integration
+            # harness requires native-token-metadata (casper.genesis-block-data.native-token-name),
+            # which currently exists only on the dev lineage, not on master. PR-time runs would
+            # launch ~22 ephemeral OCI VMs only to fail genesis bring-up. Re-enable by restoring
+            # `full_validation=true` when PR_HEAD_REPO == REPOSITORY, once master's node carries
+            # native-token-metadata. Push/workflow_dispatch still validate (e.g. on dev).
+            :
           elif [ "$EVENT_NAME" = "push" ] || [ "$EVENT_NAME" = "workflow_dispatch" ]; then
             full_validation=true
           fi

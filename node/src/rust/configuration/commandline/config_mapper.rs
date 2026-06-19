@@ -290,7 +290,16 @@ impl ConfigMapper<Options> for NodeConf {
                 &mut self.casper.genesis_ceremony.ceremony_master_mode,
                 run.standalone,
             );
+            if run.ceremony_master_mode {
+                self.casper.genesis_ceremony.ceremony_master_mode = true;
+            }
             Self::try_override_value(&mut self.casper.min_phlo_price, run.min_phlo_price);
+
+            if run.disable_mergeable_channel_gc {
+                self.casper.enable_mergeable_channel_gc = false;
+            } else if run.enable_mergeable_channel_gc {
+                self.casper.enable_mergeable_channel_gc = true;
+            }
 
             // Heartbeat configuration overrides
             // Keep backward compatibility with --heartbeat-disabled while preserving
@@ -568,6 +577,9 @@ mod tests {
                 dev_mode: true,
                 deployer_private_key: Some("test-key".to_string()),
                 min_phlo_price: Some(1),
+                ceremony_master_mode: false,
+                enable_mergeable_channel_gc: false,
+                disable_mergeable_channel_gc: false,
                 heartbeat_enabled: true,
                 heartbeat_disabled: true,
                 heartbeat_check_interval: Some(Duration::from_secs(111111)),
