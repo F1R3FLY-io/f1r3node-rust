@@ -3796,6 +3796,12 @@ It deliberately covers proof artifacts in this repository and records the
 obligations the staged `f1r3node-rust` implementation must satisfy. The
 external paper remains a read-only input for this phase.
 
+> **Exhaustive property index.** This matrix is organized by *proof artifact*. For the
+> spec-property-first view — every `CA-P-###` obligation of both governing `.tex` documents
+> (plus related publications) with its assertion modality, covering artifact, and
+> COVERED/PARTIAL/GAP/DEFERRED/SCOPE-BOUNDARY/EXCEEDS status — see the conformance catalog
+> [`cost-accounting-conformance-properties.md`](./cost-accounting-conformance-properties.md).
+
 **Reading §11.3 after TM-CA-151.** Rows that mechanize a cost-trace
 digest / event-count / commitment describe a *digest-inclusive
 diagnostic-refinement* level (`rb_full_replay_payload` etc.). Per

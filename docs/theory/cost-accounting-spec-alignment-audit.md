@@ -61,6 +61,15 @@ The repository's verification documents historically used a §-numbering that di
 are named where they exist. Bucket: **A** = filled by formal/impl · **B** = resolved by a
 decision record / the register · **C** = still-open scope-boundary.
 
+> **Fine-grained catalog.** This matrix is the *coarse* (per-spec-section) view. The
+> **exhaustive, per-property** conformance catalog — every `CA-P-###` obligation with its spec
+> source, assertion modality, covering artifact, and COVERED/PARTIAL/GAP/DEFERRED/SCOPE-BOUNDARY/
+> EXCEEDS status — lives in
+> [`cost-accounting-conformance-properties.md`](./cost-accounting-conformance-properties.md)
+> (also mirrored as a pgmcp work-item tree, *"Cost-Accounting Conformance Property Catalog v1"*,
+> linked to register root 87). Use it to assert an implementation against the *entire*
+> specification.
+
 ### 2.1 The concrete calculus — `cost-accounted-rho.tex`
 
 | tex § / label | Normative claim | Rocq | Other prover / Rust | Bucket |
