@@ -3,8 +3,7 @@ use pathmap::ring::{AlgebraicResult, DistributiveLattice, Lattice, SELF_IDENT};
 use crate::rhoapi::Par;
 
 /// Left-biased Lattice implementation for Par.
-/// Uses Identity to avoid cloning - signals to PathMap to keep the existing
-/// value unchanged.
+/// Uses Identity to avoid cloning - signals to PathMap to keep the existing value unchanged.
 impl Lattice for Par {
     fn pjoin(&self, _other: &Self) -> AlgebraicResult<Self> {
         // Left-bias: keep self unchanged, avoiding clone

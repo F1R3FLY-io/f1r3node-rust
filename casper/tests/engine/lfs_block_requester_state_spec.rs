@@ -1,5 +1,4 @@
-// See casper/src/test/scala/coop/rchain/casper/engine/
-// LfsBlockRequesterStateSpec.scala
+// See casper/src/test/scala/coop/rchain/casper/engine/LfsBlockRequesterStateSpec.scala
 
 use std::collections::HashSet;
 

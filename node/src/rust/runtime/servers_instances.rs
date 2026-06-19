@@ -101,12 +101,12 @@ impl ServersInstances {
     /// * `host` - Host address for servers
     /// * `address` - Address string for logging
     /// * `node_conf` - Node configuration
-    /// * `rp_conf` - RChain Protocol configuration (needed for transport
-    ///   server)
+    /// * `rp_conf` - RChain Protocol configuration (needed for transport server)
     /// * `rp_connections` - Connections cell (needed for AppState)
     /// * `node_discovery` - Node discovery service (needed for AppState)
     /// * `block_report_api` - Block report API (needed for AppState)
     /// * `event_stream` - Event stream (needed for AppState)
+    /// * `startup_events` - Startup event buffer for WebSocket replay
     /// * `kademlia_store` - Kademlia store (needed for Kademlia server)
     pub async fn build<T: KademliaRPC + Send + Sync + 'static>(
         api_servers: APIServers,
@@ -122,6 +122,7 @@ impl ServersInstances {
         node_discovery: Arc<dyn NodeDiscovery + Send + Sync>,
         block_report_api: Arc<casper::rust::api::block_report_api::BlockReportAPI>,
         event_stream: EventStream,
+        startup_events: shared::rust::shared::f1r3fly_events::StartupBuffer,
         kademlia_store: Arc<KademliaStore<T>>,
     ) -> eyre::Result<Self> {
         // Read current RPConf
@@ -255,6 +256,7 @@ impl ServersInstances {
             Arc::new(rp_connections),
             node_discovery.clone(),
             Arc::new(event_stream.new_subscribe()),
+            startup_events,
         );
 
         // Create HTTP server router
@@ -328,8 +330,7 @@ impl ServersInstances {
         // Metrics can be configured separately if needed
 
         // Extract lifecycle handles from gRPC servers
-        // Note: After taking the handle, the GrpcServer will no longer manage its own
-        // lifecycle
+        // Note: After taking the handle, the GrpcServer will no longer manage its own lifecycle
 
         let transport_server_arc = Arc::new(transport_server);
 

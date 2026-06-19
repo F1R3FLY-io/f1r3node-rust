@@ -1,6 +1,5 @@
-// See block-storage/src/test/scala/coop/rchain/blockstorage/dag/
-// BlockDagStorageTest.scala See block-storage/src/test/scala/coop/rchain/
-// blockstorage/dag/BlockDagKeyValueStorageTest.scala
+// See block-storage/src/test/scala/coop/rchain/blockstorage/dag/BlockDagStorageTest.scala
+// See block-storage/src/test/scala/coop/rchain/blockstorage/dag/BlockDagKeyValueStorageTest.scala
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Once;
@@ -71,7 +70,12 @@ fn genesis_block() -> BlockMessage {
 async fn create_dag_storage(genesis: &BlockMessage) -> BlockDagKeyValueStorage {
     let mut kvm = InMemoryStoreManager::new();
     let dag_storage = BlockDagKeyValueStorage::new(&mut kvm).await.unwrap();
-    dag_storage.insert(genesis, false, true).unwrap();
+    dag_storage
+        .insert(
+            genesis,
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved,
+        )
+        .unwrap();
     dag_storage
 }
 
@@ -107,7 +111,9 @@ fn lookup_elements(
     topo_sort_start_block_number: Option<i64>,
 ) -> LookupResult {
     let topo_sort_start_block_number = topo_sort_start_block_number.unwrap_or(0);
-    let dag = dag_storage.get_representation();
+    let dag = dag_storage
+        .get_representation()
+        .expect("dag representation");
     let list: Vec<(
         Option<BlockMetadata>,
         Option<BlockHash>,
@@ -275,10 +281,10 @@ fn dag_storage_should_be_able_to_lookup_a_stored_block() {
       let dag_storage = RUNTIME.block_on(create_dag_storage(&genesis));
 
       for block_element in &block_elements {
-        dag_storage.insert(block_element, false, false).unwrap();
+        dag_storage.insert(block_element, block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal).unwrap();
       }
 
-      let dag = dag_storage.get_representation();
+      let dag = dag_storage.get_representation().expect("dag representation");
 
       let block_element_lookups = block_elements.iter().map(|block_element| {
         let block_metadata = dag.lookup(&block_element.block_hash).unwrap();
@@ -305,7 +311,9 @@ fn dag_storage_should_be_able_to_lookup_a_stored_block() {
 fn dag_storage_should_be_able_to_handle_checking_if_contains_a_block_with_empty_hash() {
     let genesis = genesis_block();
     let dag_storage = RUNTIME.block_on(create_dag_storage(&genesis));
-    let dag = dag_storage.get_representation();
+    let dag = dag_storage
+        .get_representation()
+        .expect("dag representation");
     let contains = dag.contains(&prost::bytes::Bytes::new());
     assert_eq!(contains, false);
 }
@@ -317,7 +325,7 @@ fn dag_storage_should_be_able_to_restore_state_on_startup() {
       let dag_storage = RUNTIME.block_on(create_dag_storage(&genesis));
 
       for block_element in &block_elements {
-        dag_storage.insert(block_element, false, false).unwrap();
+        dag_storage.insert(block_element, block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal).unwrap();
       }
 
       let result = lookup_elements(&block_elements, &dag_storage, None);
@@ -337,7 +345,7 @@ fn dag_storage_should_be_able_to_restore_latest_messages_with_genesis_with_empty
       }
 
       for block_element in &block_elements_with_genesis {
-        dag_storage.insert(block_element, false, false).unwrap();
+        dag_storage.insert(block_element, block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal).unwrap();
       }
 
       let result = lookup_elements(&block_elements_with_genesis, &dag_storage, None);
@@ -353,11 +361,11 @@ fn dag_storage_should_be_able_to_restore_state_from_the_previous_two_instances()
         let dag_storage = RUNTIME.block_on(create_dag_storage(&genesis));
 
         for block_element in &first_block_elements {
-            dag_storage.insert(block_element, false, false).unwrap();
+            dag_storage.insert(block_element, block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal).unwrap();
         }
 
         for block_element in &second_block_elements {
-            dag_storage.insert(block_element, false, false).unwrap();
+            dag_storage.insert(block_element, block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal).unwrap();
         }
 
         let mut all_block_elements = first_block_elements.clone();
@@ -378,15 +386,15 @@ fn dag_storage_should_be_able_to_restore_after_squashing_latest_messages() {
             let dag_storage = RUNTIME.block_on(create_dag_storage(&genesis));
 
             for block_element in &block_elements {
-                dag_storage.insert(block_element, false, false).unwrap();
+                dag_storage.insert(block_element, block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal).unwrap();
             }
 
             for block_element in &second_block_elements {
-                dag_storage.insert(block_element, false, false).unwrap();
+                dag_storage.insert(block_element, block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal).unwrap();
             }
 
             for block_element in &third_block_elements {
-                dag_storage.insert(block_element, false, false).unwrap();
+                dag_storage.insert(block_element, block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal).unwrap();
             }
 
             let mut all_block_elements = block_elements.clone();
@@ -407,7 +415,7 @@ fn dag_storage_should_be_able_to_restore_equivocations_tracker_on_startup() {
         let dag_storage = RUNTIME.block_on(create_dag_storage(&genesis));
 
         for block_element in &block_elements {
-            dag_storage.insert(block_element, false, false).unwrap();
+            dag_storage.insert(block_element, block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal).unwrap();
         }
 
         let equivocation_record = EquivocationRecord::new(equivocator, 0, BTreeSet::from([block_hash]));
@@ -447,10 +455,10 @@ fn dag_storage_should_be_able_to_restore_invalid_blocks_on_startup() {
       let dag_storage = RUNTIME.block_on(create_dag_storage(&genesis));
 
       for block_element in &block_elements {
-        dag_storage.insert(block_element, true, false).unwrap();
+        dag_storage.insert(block_element, block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Invalid).unwrap();
       }
 
-      let dag = dag_storage.get_representation();
+      let dag = dag_storage.get_representation().expect("dag representation");
       let invalid_blocks = dag.invalid_blocks();
       let invalid_blocks_set: HashSet<_> = invalid_blocks.iter().map(|item| item.clone()).collect();
       assert_eq!(invalid_blocks_set, block_elements.into_iter().map(|b| BlockMetadata::from_block(&b, true, None, None)).collect::<HashSet<_>>());
@@ -458,7 +466,11 @@ fn dag_storage_should_be_able_to_restore_invalid_blocks_on_startup() {
 }
 
 #[test]
-fn dag_storage_should_not_replace_latest_message_with_invalid_block_from_same_sender() {
+fn dag_storage_should_advance_latest_message_to_invalid_block_from_same_sender() {
+    // Inserting an invalid block with an advancing sequence number updates the
+    // sender's latest message. Required for equivocation detection via
+    // `invalid_latest_messages` to fire on validators that have a prior valid
+    // block.
     let genesis = genesis_block();
     let dag_storage = RUNTIME.block_on(create_dag_storage(&genesis));
 
@@ -478,7 +490,12 @@ fn dag_storage_should_not_replace_latest_message_with_invalid_block_from_same_se
         None,
         None,
     );
-    dag_storage.insert(&valid_block, false, false).unwrap();
+    dag_storage
+        .insert(
+            &valid_block,
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal,
+        )
+        .unwrap();
 
     let invalid_block = get_random_block(
         Some(2),
@@ -496,16 +513,26 @@ fn dag_storage_should_not_replace_latest_message_with_invalid_block_from_same_se
         None,
         None,
     );
-    dag_storage.insert(&invalid_block, true, false).unwrap();
+    dag_storage
+        .insert(
+            &invalid_block,
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Invalid,
+        )
+        .unwrap();
 
-    let dag = dag_storage.get_representation();
+    let dag = dag_storage
+        .get_representation()
+        .expect("dag representation");
     assert_eq!(
         dag.latest_message_hash(&valid_block.sender),
-        Some(valid_block.block_hash.clone())
+        Some(invalid_block.block_hash.clone())
     );
 
     let invalid_latest_messages = dag.invalid_latest_messages().unwrap();
-    assert!(!invalid_latest_messages.contains_key(&valid_block.sender));
+    assert_eq!(
+        invalid_latest_messages.get(&valid_block.sender),
+        Some(&invalid_block.block_hash)
+    );
 }
 
 #[test]
@@ -515,10 +542,10 @@ fn dag_storage_should_be_able_to_restore_deploy_index_on_startup() {
       let dag_storage = RUNTIME.block_on(create_dag_storage(&genesis));
 
       for block_element in &block_elements {
-        dag_storage.insert(block_element, true, false).unwrap();
+        dag_storage.insert(block_element, block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Invalid).unwrap();
       }
 
-      let dag = dag_storage.get_representation();
+      let dag = dag_storage.get_representation().expect("dag representation");
       let mut deploy_sigs = Vec::new();
       let mut block_hashes = Vec::new();
 
@@ -545,8 +572,8 @@ fn dag_storage_should_be_able_to_handle_blocks_with_invalid_numbers() {
         let dag_storage = RUNTIME.block_on(create_dag_storage(&genesis));
         let mut invalid_block = block.clone();
         invalid_block.body.state.block_number = 1000;
-        dag_storage.insert(&genesis, false, false).unwrap();
-        dag_storage.insert(&invalid_block, true, false).unwrap();
+        dag_storage.insert(&genesis, block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal).unwrap();
+        dag_storage.insert(&invalid_block, block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Invalid).unwrap();
     });
 }
 
@@ -555,7 +582,12 @@ async fn recording_of_new_directly_finalized_block_should_record_finalized_all_n
 ) {
     let genesis = genesis_block();
     let dag_storage = create_dag_storage(&genesis).await;
-    dag_storage.insert(&genesis, false, true).unwrap();
+    dag_storage
+        .insert(
+            &genesis,
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved,
+        )
+        .unwrap();
 
     let b1 = get_random_block(
         Some(1),
@@ -573,7 +605,12 @@ async fn recording_of_new_directly_finalized_block_should_record_finalized_all_n
         None,
         None,
     );
-    dag_storage.insert(&b1, false, false).unwrap();
+    dag_storage
+        .insert(
+            &b1,
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal,
+        )
+        .unwrap();
 
     let b2 = get_random_block(
         Some(2),
@@ -591,7 +628,12 @@ async fn recording_of_new_directly_finalized_block_should_record_finalized_all_n
         None,
         None,
     );
-    dag_storage.insert(&b2, false, false).unwrap();
+    dag_storage
+        .insert(
+            &b2,
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal,
+        )
+        .unwrap();
 
     let b3 = get_random_block(
         Some(3),
@@ -609,7 +651,12 @@ async fn recording_of_new_directly_finalized_block_should_record_finalized_all_n
         None,
         None,
     );
-    dag_storage.insert(&b3, false, false).unwrap();
+    dag_storage
+        .insert(
+            &b3,
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal,
+        )
+        .unwrap();
 
     let b4 = get_random_block(
         Some(4),
@@ -627,7 +674,12 @@ async fn recording_of_new_directly_finalized_block_should_record_finalized_all_n
         None,
         None,
     );
-    let dag = dag_storage.insert(&b4, false, false).unwrap();
+    let dag = dag_storage
+        .insert(
+            &b4,
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal,
+        )
+        .unwrap();
 
     assert_eq!(
         dag.lookup_unsafe(&genesis.block_hash).unwrap().finalized,
@@ -650,19 +702,25 @@ async fn recording_of_new_directly_finalized_block_should_record_finalized_all_n
     let effects = std::sync::Arc::new(std::sync::Mutex::new(HashSet::new()));
     let effects_clone = effects.clone();
     dag_storage
-        .record_directly_finalized(b3.block_hash.clone(), move |blocks: &HashSet<BlockHash>| {
-            let blocks = blocks.clone();
-            let effects_clone = effects_clone.clone();
-            Box::pin(async move {
-                let mut effects_guard = effects_clone.lock().unwrap();
-                effects_guard.extend(blocks.iter().cloned());
-                Ok(())
-            })
-        })
+        .record_directly_finalized(
+            b3.block_hash.clone(),
+            1.0,
+            move |blocks: &HashSet<BlockHash>| {
+                let blocks = blocks.clone();
+                let effects_clone = effects_clone.clone();
+                Box::pin(async move {
+                    let mut effects_guard = effects_clone.lock().unwrap();
+                    effects_guard.extend(blocks.iter().cloned());
+                    Ok(())
+                })
+            },
+        )
         .await
         .unwrap();
 
-    let dag = dag_storage.get_representation();
+    let dag = dag_storage
+        .get_representation()
+        .expect("dag representation");
     assert_eq!(dag.last_finalized_block(), b3.block_hash);
     assert_eq!(dag.is_finalized(&b1.block_hash), true);
     assert_eq!(dag.is_finalized(&b2.block_hash), true);
@@ -693,4 +751,87 @@ async fn recording_of_new_directly_finalized_block_should_record_finalized_all_n
         b3.block_hash.clone(),
     ]);
     assert_eq!(*finalized_effects, expected_effects);
+}
+
+#[test]
+fn find_returns_some_for_valid_even_length_truncated_hash() {
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        let genesis = genesis_block();
+        let dag_storage = create_dag_storage(&genesis).await;
+        let dag = dag_storage
+            .get_representation()
+            .expect("dag representation");
+        let full_hex = hex::encode(&*genesis.block_hash);
+        let prefix = &full_hex[..6];
+        match dag.find(prefix) {
+            Ok(Some(found)) => assert_eq!(found, genesis.block_hash),
+            Ok(None) => panic!("find() returned None for known prefix {prefix}"),
+            Err(e) => panic!("find() returned Err for valid hex prefix: {e:?}"),
+        }
+    });
+}
+
+#[test]
+fn find_returns_some_for_valid_odd_length_truncated_hash() {
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        let genesis = genesis_block();
+        let dag_storage = create_dag_storage(&genesis).await;
+        let dag = dag_storage
+            .get_representation()
+            .expect("dag representation");
+        let full_hex = hex::encode(&*genesis.block_hash);
+        let prefix = &full_hex[..5];
+        match dag.find(prefix) {
+            Ok(Some(found)) => assert_eq!(found, genesis.block_hash),
+            Ok(None) => panic!("find() returned None for known odd prefix {prefix}"),
+            Err(e) => panic!("find() returned Err for valid odd hex prefix: {e:?}"),
+        }
+    });
+}
+
+#[test]
+fn find_returns_err_for_invalid_hex_input() {
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        let genesis = genesis_block();
+        let dag_storage = create_dag_storage(&genesis).await;
+        let dag = dag_storage
+            .get_representation()
+            .expect("dag representation");
+        match dag.find("zzzz") {
+            Err(_) => {}
+            Ok(other) => panic!("find() should return Err for non-hex input, got {other:?}"),
+        }
+        match dag.find("zzzzz") {
+            Err(_) => {}
+            Ok(other) => {
+                panic!("find() should return Err for odd-length non-hex input, got {other:?}")
+            }
+        }
+    });
+}
+
+#[test]
+fn find_returns_ok_none_for_unknown_valid_prefix() {
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        let genesis = genesis_block();
+        let dag_storage = create_dag_storage(&genesis).await;
+        let dag = dag_storage
+            .get_representation()
+            .expect("dag representation");
+        // "deadbeef" is a valid hex string but extremely unlikely to match
+        // the genesis hash prefix.
+        match dag.find("deadbeef") {
+            Ok(None) => {}
+            Ok(Some(h)) => {
+                // Allow the (cosmologically improbable) case where the genesis
+                // hash actually starts with deadbeef.
+                assert!(hex::encode(&*h).starts_with("deadbeef"));
+            }
+            Err(e) => panic!("find() returned Err for valid hex prefix: {e:?}"),
+        }
+    });
 }

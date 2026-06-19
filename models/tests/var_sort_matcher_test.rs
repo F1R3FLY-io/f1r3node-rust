@@ -1,5 +1,4 @@
-// See models/src/test/scala/coop/rchain/models/rholang/SortTest.scala -
-// VarSortMatcherSpec
+// See models/src/test/scala/coop/rchain/models/rholang/SortTest.scala - VarSortMatcherSpec
 
 use models::create_bit_vector;
 use models::rhoapi::expr::ExprInstance;

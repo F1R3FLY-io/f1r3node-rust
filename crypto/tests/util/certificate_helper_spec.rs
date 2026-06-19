@@ -75,13 +75,11 @@ fn test_certificate_generation() {
             assert!(!cert_der.is_empty());
             // Try to parse it back
             let _parse_result = CertificateHelper::parse_certificate(&cert_der);
-            // Parsing might also fail due to format differences, but should not
-            // panic
+            // Parsing might also fail due to format differences, but should not panic
         }
         Err(_) => {
-            // Certificate generation failed, which is acceptable in test
-            // environment where we might not have all the required
-            // dependencies properly configured
+            // Certificate generation failed, which is acceptable in test environment
+            // where we might not have all the required dependencies properly configured
         }
     }
 }
@@ -211,7 +209,7 @@ fn test_read_key_pair_from_file() {
     // Convert to PEM format
     match secret_key.to_pkcs8_der() {
         Ok(der_bytes) => {
-            let pem_content = CertificatePrinter::print_private_key(der_bytes.as_bytes());
+            let pem_content = CertificatePrinter::print_private_key(&der_bytes.as_bytes());
 
             // Write to a temporary file
             let temp_dir = std::env::temp_dir();
@@ -232,10 +230,7 @@ fn test_read_key_pair_from_file() {
                             assert!(address.is_some());
                             assert_eq!(address.unwrap().len(), 20);
 
-                            println!(
-                                "✓ read_key_pair_from_file test passed - successfully read key \
-                                 pair from file"
-                            );
+                            println!("✓ read_key_pair_from_file test passed - successfully read key pair from file");
                         }
                         Err(e) => {
                             println!(

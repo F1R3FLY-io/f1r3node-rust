@@ -10,8 +10,8 @@ Rholang is completely asynchronous, in the sense that while you can read a messa
 
 Get started with Rholang by selecting one of the options below.
 * __Run Rholang on RNode__ - Write Rholang contracts in an editor of your choice and run them on RNode using either the REPL or EVAL modes. [Get started](https://github.com/rchain/rchain/releases) with the latest version of RNode.
-* __Run Rholang on a web interface__ - This [web interface](http://rchain.cloud) was created by a RChain community member.
-* __Run Rholang using Cryptofex IDE__ - This closed source [IDE](http://cryptofex.io/download) was created by Pyrofex.
+* __Run Rholang on a web interface__ - A web interface was created by a RChain community member.
+* __Run Rholang using Cryptofex IDE__ - A closed source IDE was created by Pyrofex.
 * __Write Rholang using an IntelliJ plugin__ - This [Rholang IntelliJ plugin](https://github.com/tgrospic/rholang-idea) was created by a RChain community member.
 
 ## Summary of the language constructs
@@ -417,6 +417,45 @@ If you want to capture the value you matched, you can use the and logcial connec
 
     for( @{x /\ Int} <- ack) { ... }
 
+
+## `where` clauses (guards)
+
+Spatial patterns are limited to *structural* tests — they can check shape, type, or specific values, but they can't express relational predicates like "x is greater than 5" or "the first element of the list is even". The `where` clause adds a boolean guard that the matcher evaluates after spatial matching succeeds.
+
+### `where` on a receive
+
+Attach a `where` clause after a receipt's binds. The guard runs in the rspace matcher: spatial-match first, then the guard. Only when both pass do the messages get consumed.
+
+    for (@x <- @price where x > 0) {
+      // body fires only for positive prices
+    }
+
+If the guard evaluates to anything other than `true` (false, non-bool, or an error), the receive behaves exactly as if the spatial pattern had not matched: nothing is consumed, the continuation stays installed, and the messages remain available for other consumers.
+
+The guard sees the variables introduced by *this* receipt's binds. So:
+
+    for (@x <- @c where x < 100) { ... }    // works — `x` is in scope
+    for (@x <- @c) { ... where x < 100 }    // syntax error — `where` attaches to the receipt
+
+For `&`-joined receipts (atomic joins across channels), the guard sees variables from all channels combined — but with one current limitation: the matcher today evaluates each channel's bind independently, so a guard that mentions a variable from a *different* channel won't fire (it's treated as an unbound-variable, hence guard-fail). Single-bind receives — the most common shape — work without restriction.
+
+`;`-separated receipts each carry their own optional guard:
+
+    for (@x <- @a where x > 0 ; @y <- @b where y < x) { ... }
+    // desugars to nested `for`s, so `cond_2` (y < x) sees both `x` and `y`
+
+### `where` on a match case
+
+Attach a `where` clause between a case's pattern and `=>`. If the pattern matches the target *and* the guard evaluates to `true`, the case fires. Anything else (false, non-bool, eval-error) falls through to the next case.
+
+    match age {
+      n where n < 13  => "child"
+      n where n < 20  => "teen"
+      _               => "adult"
+    }
+
+This is a clean way to express overlapping patterns differentiated by a runtime predicate.
+
 ## Mutable state
 
      1 new MakeCell in {
@@ -612,19 +651,21 @@ Here's how to solve the problem:
      1 new philosopher1, philosopher2, north, south, knife, spoon in {
      2   north!(*knife) |
      3   south!(*spoon) |
-     4   for (@knf <- north; @spn <- south) {
+     4   for (@knf <- north & @spn <- south) {
      5     philosopher1!("Complete!") |
      6     north!(knf) |
      7     south!(spn)
      8   } |
-     9   for (@spn <- south; @knf <- north) {
+     9   for (@spn <- south & @knf <- north) {
     10     philosopher2!("Complete!") |
     11     north!(knf) |
     12     south!(spn)
     13   }
     14 }
 
-4, 9) The join operator, denoted with a semicolon `;`, declares that the continuation should only proceed if there is a message available on each of the channels simultaneously, preventing the deadlock above.
+4, 9) The join operator, denoted with an ampersand `&`, declares that the continuation should only proceed if there is a message available on every channel in the group simultaneously, atomically consuming one from each. This prevents the deadlock above.
+
+A semicolon `;` between bind groups means *sequential nesting*, not atomic join: `for (a; b) { P }` desugars to `for (a) { for (b) { P } }`. Use `;` when the second receive should only start after the first has fired; use `&` when both must happen atomically.
 
 ## Crypto channels
 
@@ -735,7 +776,7 @@ new x, y, stdout(`rho:io:stdout`) in {
 
 ## Secure design patterns
 
-In this section we describe several design patterns.  These patterns are adapted from Marc Stiegler's [_A PictureBook of Secure Cooperation_](http://erights.org/talks/efun/SecurityPictureBook.pdf).
+In this section we describe several design patterns.  These patterns are adapted from Marc Stiegler's _A PictureBook of Secure Cooperation_.
 
 ### Facets
 

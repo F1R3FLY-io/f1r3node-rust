@@ -1,5 +1,4 @@
-// See casper/src/test/scala/coop/rchain/casper/util/rholang/
-// InterpreterUtilTest.scala
+// See casper/src/test/scala/coop/rchain/casper/util/rholang/InterpreterUtilTest.scala
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -14,7 +13,7 @@ use casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum;
 use casper::rust::util::{construct_deploy, proto_util, rspace_util};
 use crypto::rust::private_key::PrivateKey;
 use crypto::rust::signatures::signed::Signed;
-use dashmap::{DashMap, DashSet};
+use dashmap::DashSet;
 use models::rhoapi::PCost;
 use models::rust::block::state_hash::StateHash;
 use models::rust::block_hash::BlockHash;
@@ -31,8 +30,7 @@ use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::{GenesisBuilder, GenesisContext};
 use crate::util::rholang::resources;
 
-// Note: In Scala, genesisContext is defined at class level. In Rust, each test
-// creates its own genesis context
+// Note: In Scala, genesisContext is defined at class level. In Rust, each test creates its own genesis context
 struct TestContext {
     genesis_context: GenesisContext,
 }
@@ -50,10 +48,9 @@ impl TestContext {
         Self { genesis_context }
     }
 
-    // Helper function to create deploys from Rholang source code with timestamp and
-    // shard_id Note: Used in tests that need to create blocks with specific
-    // timestamps (e.g., Test #1) This wraps ConstructDeploy.sourceDeploy(...,
-    // timestamp, ..., shardId)
+    // Helper function to create deploys from Rholang source code with timestamp and shard_id
+    // Note: Used in tests that need to create blocks with specific timestamps (e.g., Test #1)
+    // This wraps ConstructDeploy.sourceDeploy(..., timestamp, ..., shardId)
     fn create_deploys(
         sources: Vec<&str>,
         timestamp: i64,
@@ -77,9 +74,8 @@ impl TestContext {
     }
 
     // Helper function to create deploys from Rholang source code without timestamp
-    // Note: Wraps ConstructDeploy.sourceDeployNow(source, sec) where sec defaults
-    // to DEFAULT_SEC if None Scala: def sourceDeployNow(source: String, sec:
-    // PrivateKey = defaultSec, ...)
+    // Note: Wraps ConstructDeploy.sourceDeployNow(source, sec) where sec defaults to DEFAULT_SEC if None
+    // Scala: def sourceDeployNow(source: String, sec: PrivateKey = defaultSec, ...)
     fn create_deploys_now(sources: Vec<&str>, sec: Option<PrivateKey>) -> Vec<Signed<DeployData>> {
         sources
             .into_iter()
@@ -125,11 +121,12 @@ impl TestContext {
             lca: BlockHash::default(),
             tips: Vec::new(),
             parents: Vec::new(),
-            justifications: DashSet::new(),
+            justifications: HashSet::new(),
             invalid_blocks: HashMap::new(),
             deploys_in_scope: Arc::new(DashSet::new()),
+            rejected_in_scope: Arc::new(DashSet::new()),
             max_block_num: 0,
-            max_seq_nums: DashMap::new(),
+            max_seq_nums: HashMap::new(),
             on_chain_state: OnChainCasperState {
                 shard_conf: CasperShardConf::new(),
                 bonds_map: HashMap::new(),
@@ -140,9 +137,9 @@ impl TestContext {
 
     // Scala: def computeDeployCosts(...): Task[Seq[PCost]] =
     //   for {
-    //     computeResult <- computeDeploysCheckpoint[Task](Seq(genesis), deploy,
-    // dag, runtimeManager)     Right((_, _, processedDeploys, _, _)) =
-    // computeResult   } yield processedDeploys.map(_.cost)
+    //     computeResult <- computeDeploysCheckpoint[Task](Seq(genesis), deploy, dag, runtimeManager)
+    //     Right((_, _, processedDeploys, _, _)) = computeResult
+    //   } yield processedDeploys.map(_.cost)
     async fn compute_deploy_costs(
         &self,
         runtime_manager: &mut RuntimeManager,
@@ -214,12 +211,13 @@ impl TestContext {
             runtime_manager,
             block_data,
             HashMap::new(),
+            None,
         )
         .await
     }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn compute_block_checkpoint_should_compute_the_final_post_state_of_a_chain_properly() {
     let time = 0i64;
 
@@ -317,7 +315,7 @@ async fn compute_block_checkpoint_should_compute_the_final_post_state_of_a_chain
 }
 
 //TODO: Scala reenable when merging of REV balances is done
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "Scala ignore"]
 async fn compute_block_checkpoint_should_merge_histories_in_case_of_multiple_parents() {
     let b1_deploys = TestContext::create_deploys_now(
@@ -382,7 +380,7 @@ new ri(`rho:registry:insertArbitrary`) in {
 }
 "#;
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "Scala ignore"]
 async fn compute_block_checkpoint_should_merge_histories_in_case_of_multiple_parents_with_complex_contract(
 ) {
@@ -467,7 +465,9 @@ async fn compute_block_checkpoint_should_merge_histories_in_case_of_multiple_par
             .await
             .expect("Failed to step b2");
 
-            let dag = block_dag_storage.get_representation();
+            let dag = block_dag_storage
+                .get_representation()
+                .expect("dag representation");
             let mut casper_snapshot = TestContext::mk_casper_snapshot(dag);
 
             let post_state = interpreter_util::validate_block_checkpoint(
@@ -475,6 +475,7 @@ async fn compute_block_checkpoint_should_merge_histories_in_case_of_multiple_par
                 &block_store,
                 &mut casper_snapshot,
                 &mut runtime_manager,
+                None,
             )
             .await
             .expect("Failed to validate block checkpoint");
@@ -482,15 +483,14 @@ async fn compute_block_checkpoint_should_merge_histories_in_case_of_multiple_par
             assert_eq!(
                 post_state,
                 rspace_plus_plus::rspace::history::Either::Right(None),
-                "Block validation should return Right(None) for blocks with complex contract \
-                 merges"
+                "Block validation should return Right(None) for blocks with complex contract merges"
             );
         },
     )
     .await;
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "Scala ignore"]
 async fn compute_block_checkpoint_should_merge_histories_in_case_of_multiple_parents_uneven_histories(
 ) {
@@ -628,7 +628,9 @@ async fn compute_block_checkpoint_should_merge_histories_in_case_of_multiple_par
             .await
             .expect("Failed to step b4");
 
-            let dag = block_dag_storage.get_representation();
+            let dag = block_dag_storage
+                .get_representation()
+                .expect("dag representation");
             let mut casper_snapshot = TestContext::mk_casper_snapshot(dag);
 
             let post_state = interpreter_util::validate_block_checkpoint(
@@ -636,6 +638,7 @@ async fn compute_block_checkpoint_should_merge_histories_in_case_of_multiple_par
                 &block_store,
                 &mut casper_snapshot,
                 &mut runtime_manager,
+                None,
             )
             .await
             .expect("Failed to validate block checkpoint");
@@ -650,7 +653,7 @@ async fn compute_block_checkpoint_should_merge_histories_in_case_of_multiple_par
     .await;
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn compute_deploys_checkpoint_should_aggregate_cost_of_deploying_rholang_programs_within_the_block(
 ) {
     //reference costs
@@ -691,7 +694,10 @@ async fn compute_deploys_checkpoint_should_aggregate_cost_of_deploying_rholang_p
         .await
         .expect("Failed to create standalone node");
 
-    let dag = node.block_dag_storage.get_representation();
+    let dag = node
+        .block_dag_storage
+        .get_representation()
+        .expect("dag representation");
 
     let cost1 = ctx
         .compute_deploy_costs(
@@ -756,7 +762,7 @@ async fn compute_deploys_checkpoint_should_aggregate_cost_of_deploying_rholang_p
     }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "Scala ignore, pendingUntilFixed"]
 async fn compute_deploys_checkpoint_should_return_cost_of_deploying_even_if_one_of_the_programs_within_the_deployment_throws_an_error(
 ) {
@@ -772,7 +778,10 @@ async fn compute_deploys_checkpoint_should_return_cost_of_deploying_even_if_one_
         .await
         .expect("Failed to create standalone node");
 
-    let dag = node.block_dag_storage.get_representation();
+    let dag = node
+        .block_dag_storage
+        .get_representation()
+        .expect("dag representation");
 
     let cost1 = ctx
         .compute_deploy_costs(
@@ -830,15 +839,14 @@ async fn compute_deploys_checkpoint_should_return_cost_of_deploying_even_if_one_
 }
 
 //7
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn validate_block_checkpoint_should_not_return_a_checkpoint_for_an_invalid_block() {
     with_storage(|mut block_store, mut block_dag_storage| async move {
         let processed_deploys = TestContext::prepare_deploys(vec!["@1!(1)"], PCost { cost: 1 });
 
         let invalid_hash = StateHash::default();
 
-        // Scala: mkRuntimeManager[Task]("interpreter-util-test").use { runtimeManager
-        // =>
+        // Scala: mkRuntimeManager[Task]("interpreter-util-test").use { runtimeManager =>
         let mut runtime_manager =
             resources::mk_runtime_manager("interpreter-util-test-", None).await;
 
@@ -855,7 +863,9 @@ async fn validate_block_checkpoint_should_not_return_a_checkpoint_for_an_invalid
             None,
         );
 
-        let dag = block_dag_storage.get_representation();
+        let dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
         let mut casper_snapshot = TestContext::mk_casper_snapshot(dag);
 
         let validate_result = interpreter_util::validate_block_checkpoint(
@@ -863,6 +873,7 @@ async fn validate_block_checkpoint_should_not_return_a_checkpoint_for_an_invalid
             &block_store,
             &mut casper_snapshot,
             &mut runtime_manager,
+            None,
         )
         .await
         .expect("Failed to validate block checkpoint");
@@ -879,7 +890,7 @@ async fn validate_block_checkpoint_should_not_return_a_checkpoint_for_an_invalid
     .await;
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn validate_block_checkpoint_should_return_a_checkpoint_with_the_right_hash_for_a_valid_block(
 ) {
     let ctx = TestContext::new().await;
@@ -901,7 +912,9 @@ async fn validate_block_checkpoint_should_return_a_checkpoint_with_the_right_has
                 None,
             );
 
-            let dag1 = block_dag_storage.get_representation();
+            let dag1 = block_dag_storage
+                .get_representation()
+                .expect("dag representation");
             let casper_snapshot = TestContext::mk_casper_snapshot(dag1);
 
             let genesis = ctx.genesis_context.genesis_block.clone();
@@ -927,6 +940,7 @@ async fn validate_block_checkpoint_should_return_a_checkpoint_with_the_right_has
                 &mut runtime_manager,
                 block_data,
                 HashMap::new(),
+                None,
             )
             .await
             .expect("Failed to compute deploys checkpoint");
@@ -950,7 +964,9 @@ async fn validate_block_checkpoint_should_return_a_checkpoint_with_the_right_has
                 None,
             );
 
-            let dag2 = block_dag_storage.get_representation();
+            let dag2 = block_dag_storage
+                .get_representation()
+                .expect("dag representation");
             let mut casper_snapshot = TestContext::mk_casper_snapshot(dag2);
 
             let validate_result = interpreter_util::validate_block_checkpoint(
@@ -958,6 +974,7 @@ async fn validate_block_checkpoint_should_return_a_checkpoint_with_the_right_has
                 &block_store,
                 &mut casper_snapshot,
                 &mut runtime_manager,
+                None,
             )
             .await
             .expect("Failed to validate block checkpoint");
@@ -976,7 +993,7 @@ async fn validate_block_checkpoint_should_return_a_checkpoint_with_the_right_has
     .await;
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn validate_block_checkpoint_should_pass_linked_list_test() {
     let ctx = TestContext::new().await;
 
@@ -1012,7 +1029,9 @@ contract @"recursionTest"(@list) = {
                 None,
             );
 
-            let dag1 = block_dag_storage.get_representation();
+            let dag1 = block_dag_storage
+                .get_representation()
+                .expect("dag representation");
             let casper_snapshot = TestContext::mk_casper_snapshot(dag1);
 
             let genesis = ctx.genesis_context.genesis_block.clone();
@@ -1038,6 +1057,7 @@ contract @"recursionTest"(@list) = {
                 &mut runtime_manager,
                 block_data,
                 HashMap::new(),
+                None,
             )
             .await
             .expect("Failed to compute deploys checkpoint");
@@ -1061,7 +1081,9 @@ contract @"recursionTest"(@list) = {
                 None,
             );
 
-            let dag2 = block_dag_storage.get_representation();
+            let dag2 = block_dag_storage
+                .get_representation()
+                .expect("dag representation");
             let mut casper_snapshot = TestContext::mk_casper_snapshot(dag2);
 
             let validate_result = interpreter_util::validate_block_checkpoint(
@@ -1069,6 +1091,7 @@ contract @"recursionTest"(@list) = {
                 &block_store,
                 &mut casper_snapshot,
                 &mut runtime_manager,
+                None,
             )
             .await
             .expect("Failed to validate block checkpoint");
@@ -1087,7 +1110,7 @@ contract @"recursionTest"(@list) = {
     .await;
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn validate_block_checkpoint_should_pass_persistent_produce_test_with_causality() {
     let ctx = TestContext::new().await;
 
@@ -1127,7 +1150,9 @@ async fn validate_block_checkpoint_should_pass_persistent_produce_test_with_caus
                 None, // uses default key
             );
 
-            let dag1 = block_dag_storage.get_representation();
+            let dag1 = block_dag_storage
+                .get_representation()
+                .expect("dag representation");
             let casper_snapshot = TestContext::mk_casper_snapshot(dag1);
 
             let genesis = ctx.genesis_context.genesis_block.clone();
@@ -1153,6 +1178,7 @@ async fn validate_block_checkpoint_should_pass_persistent_produce_test_with_caus
                 &mut runtime_manager,
                 block_data,
                 HashMap::new(),
+                None,
             )
             .await
             .expect("Failed to compute deploys checkpoint");
@@ -1176,7 +1202,9 @@ async fn validate_block_checkpoint_should_pass_persistent_produce_test_with_caus
                 None,
             );
 
-            let dag2 = block_dag_storage.get_representation();
+            let dag2 = block_dag_storage
+                .get_representation()
+                .expect("dag representation");
             let mut casper_snapshot = TestContext::mk_casper_snapshot(dag2);
 
             let validate_result = interpreter_util::validate_block_checkpoint(
@@ -1184,6 +1212,7 @@ async fn validate_block_checkpoint_should_pass_persistent_produce_test_with_caus
                 &block_store,
                 &mut casper_snapshot,
                 &mut runtime_manager,
+                None,
             )
             .await
             .expect("Failed to validate block checkpoint");
@@ -1202,7 +1231,7 @@ async fn validate_block_checkpoint_should_pass_persistent_produce_test_with_caus
     .await;
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn validate_block_checkpoint_should_pass_tests_involving_primitives() {
     let ctx = TestContext::new().await;
 
@@ -1238,7 +1267,9 @@ new loop, primeCheck, stdoutAck(`rho:io:stdoutAck`) in {
                 None,
             );
 
-            let dag1 = block_dag_storage.get_representation();
+            let dag1 = block_dag_storage
+                .get_representation()
+                .expect("dag representation");
             let casper_snapshot = TestContext::mk_casper_snapshot(dag1);
 
             let genesis = ctx.genesis_context.genesis_block.clone();
@@ -1264,6 +1295,7 @@ new loop, primeCheck, stdoutAck(`rho:io:stdoutAck`) in {
                 &mut runtime_manager,
                 block_data,
                 HashMap::new(),
+                None,
             )
             .await
             .expect("Failed to compute deploys checkpoint");
@@ -1287,7 +1319,9 @@ new loop, primeCheck, stdoutAck(`rho:io:stdoutAck`) in {
                 None,
             );
 
-            let dag2 = block_dag_storage.get_representation();
+            let dag2 = block_dag_storage
+                .get_representation()
+                .expect("dag representation");
             let mut casper_snapshot = TestContext::mk_casper_snapshot(dag2);
 
             let validate_result = interpreter_util::validate_block_checkpoint(
@@ -1295,6 +1329,7 @@ new loop, primeCheck, stdoutAck(`rho:io:stdoutAck`) in {
                 &block_store,
                 &mut casper_snapshot,
                 &mut runtime_manager,
+                None,
             )
             .await
             .expect("Failed to validate block checkpoint");
@@ -1313,7 +1348,7 @@ new loop, primeCheck, stdoutAck(`rho:io:stdoutAck`) in {
     .await;
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn validate_block_checkpoint_should_pass_tests_involving_races() {
     let ctx = TestContext::new().await;
 
@@ -1341,7 +1376,9 @@ async fn validate_block_checkpoint_should_pass_tests_involving_races() {
                     None,
                 );
 
-                let dag1 = block_dag_storage.get_representation();
+                let dag1 = block_dag_storage
+                    .get_representation()
+                    .expect("dag representation");
                 let casper_snapshot = TestContext::mk_casper_snapshot(dag1);
 
                 let genesis = ctx.genesis_context.genesis_block.clone();
@@ -1367,6 +1404,7 @@ async fn validate_block_checkpoint_should_pass_tests_involving_races() {
                     &mut runtime_manager,
                     block_data,
                     HashMap::new(),
+                    None,
                 )
                 .await
                 .expect("Failed to compute deploys checkpoint");
@@ -1391,7 +1429,9 @@ async fn validate_block_checkpoint_should_pass_tests_involving_races() {
                     None,
                 );
 
-                let dag2 = block_dag_storage.get_representation();
+                let dag2 = block_dag_storage
+                    .get_representation()
+                    .expect("dag representation");
                 let mut casper_snapshot = TestContext::mk_casper_snapshot(dag2);
 
                 let validate_result = interpreter_util::validate_block_checkpoint(
@@ -1399,6 +1439,7 @@ async fn validate_block_checkpoint_should_pass_tests_involving_races() {
                     &block_store,
                     &mut casper_snapshot,
                     &mut runtime_manager,
+                    None,
                 )
                 .await
                 .expect("Failed to validate block checkpoint");
@@ -1422,7 +1463,7 @@ async fn validate_block_checkpoint_should_pass_tests_involving_races() {
     .await;
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn validate_block_checkpoint_should_return_none_for_logs_containing_extra_comm_events() {
     let ctx = TestContext::new().await;
 
@@ -1435,7 +1476,9 @@ async fn validate_block_checkpoint_should_return_none_for_logs_containing_extra_
             let deploys =
                 TestContext::create_deploys_now(sources.iter().map(|s| s.as_str()).collect(), None);
 
-            let dag1 = block_dag_storage.get_representation();
+            let dag1 = block_dag_storage
+                .get_representation()
+                .expect("dag representation");
             let casper_snapshot = TestContext::mk_casper_snapshot(dag1);
 
             let genesis = ctx.genesis_context.genesis_block.clone();
@@ -1461,6 +1504,7 @@ async fn validate_block_checkpoint_should_return_none_for_logs_containing_extra_
                 &mut runtime_manager,
                 block_data,
                 HashMap::new(),
+                None,
             )
             .await
             .expect("Failed to compute deploys checkpoint");
@@ -1500,7 +1544,9 @@ async fn validate_block_checkpoint_should_return_none_for_logs_containing_extra_
                 None,
             );
 
-            let dag2 = block_dag_storage.get_representation();
+            let dag2 = block_dag_storage
+                .get_representation()
+                .expect("dag representation");
             let mut casper_snapshot = TestContext::mk_casper_snapshot(dag2);
 
             let validate_result = interpreter_util::validate_block_checkpoint(
@@ -1508,6 +1554,7 @@ async fn validate_block_checkpoint_should_return_none_for_logs_containing_extra_
                 &block_store,
                 &mut casper_snapshot,
                 &mut runtime_manager,
+                None,
             )
             .await
             .expect("Failed to validate block checkpoint");
@@ -1520,9 +1567,8 @@ async fn validate_block_checkpoint_should_return_none_for_logs_containing_extra_
                     );
                 }
                 Either::Left(status) => {
-                    // In Rust implementation, invalid blocks may return Left with InvalidBlock
-                    // status which is also acceptable for this test (block is
-                    // invalid due to extra comm events)
+                    // In Rust implementation, invalid blocks may return Left with InvalidBlock status
+                    // which is also acceptable for this test (block is invalid due to extra comm events)
                     println!("Block validation returned Left with status: {:?}", status);
                 }
             }
@@ -1531,7 +1577,7 @@ async fn validate_block_checkpoint_should_return_none_for_logs_containing_extra_
     .await;
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn validate_block_checkpoint_should_pass_map_update_test() {
     let ctx = TestContext::new().await;
 
@@ -1563,7 +1609,9 @@ async fn validate_block_checkpoint_should_pass_map_update_test() {
                     None,
                 );
 
-                let dag1 = block_dag_storage.get_representation();
+                let dag1 = block_dag_storage
+                    .get_representation()
+                    .expect("dag representation");
                 let casper_snapshot = TestContext::mk_casper_snapshot(dag1);
 
                 let now = std::time::SystemTime::now()
@@ -1587,6 +1635,7 @@ async fn validate_block_checkpoint_should_pass_map_update_test() {
                     &mut runtime_manager,
                     block_data,
                     HashMap::new(),
+                    None,
                 )
                 .await
                 .expect("Failed to compute deploys checkpoint");
@@ -1611,7 +1660,9 @@ async fn validate_block_checkpoint_should_pass_map_update_test() {
                     None,
                 );
 
-                let dag2 = block_dag_storage.get_representation();
+                let dag2 = block_dag_storage
+                    .get_representation()
+                    .expect("dag representation");
                 let mut casper_snapshot = TestContext::mk_casper_snapshot(dag2);
 
                 let validate_result = interpreter_util::validate_block_checkpoint(
@@ -1619,6 +1670,7 @@ async fn validate_block_checkpoint_should_pass_map_update_test() {
                     &block_store,
                     &mut casper_snapshot,
                     &mut runtime_manager,
+                    None,
                 )
                 .await
                 .expect("Failed to validate block checkpoint");
@@ -1638,8 +1690,7 @@ async fn validate_block_checkpoint_should_pass_map_update_test() {
                 }
 
                 // Scala: _ <- timeEff.advance()
-                // Note: timeEff.advance() in Scala is used to advance logical
-                // time
+                // Note: timeEff.advance() in Scala is used to advance logical time
             }
         },
     )
@@ -1647,7 +1698,7 @@ async fn validate_block_checkpoint_should_pass_map_update_test() {
 }
 
 // Test for cost mismatch between play and replay in case of out of phlo error
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn used_deploy_with_insufficient_phlos_should_be_added_to_a_block_with_all_phlos_consumed() {
     let ctx = TestContext::new().await;
 
@@ -1723,7 +1774,7 @@ const MULTI_BRANCH_SAMPLE_TERM_WITH_ERROR: &str = r#"
   }
 "#;
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn replay_should_match_in_case_of_out_of_phlo_error() {
     let ctx = TestContext::new().await;
 
@@ -1765,7 +1816,7 @@ async fn replay_should_match_in_case_of_out_of_phlo_error() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn replay_should_match_in_case_of_user_execution_error() {
     let ctx = TestContext::new().await;
 

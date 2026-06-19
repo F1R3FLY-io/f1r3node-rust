@@ -30,11 +30,9 @@ pub enum BondsParserError {
 pub struct BondsParser;
 
 impl BondsParser {
-    /// Parser for bonds file used in genesis ceremony to set initial
-    /// validators.
+    /// Parser for bonds file used in genesis ceremony to set initial validators.
     ///
-    /// TODO: Create async file operations. For now it's ok because it's used
-    /// only once at genesis.
+    /// TODO: Create async file operations. For now it's ok because it's used only once at genesis.
     pub fn parse(bonds_path: &Path) -> Result<HashMap<PublicKey, i64>, BondsParserError> {
         tracing::info!("Parsing bonds file {:?}.", bonds_path);
 

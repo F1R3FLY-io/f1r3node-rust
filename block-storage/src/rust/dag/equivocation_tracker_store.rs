@@ -1,5 +1,4 @@
-// See block-storage/src/main/scala/coop/rchain/blockstorage/dag/
-// EquivocationTrackerStore.scala
+// See block-storage/src/main/scala/coop/rchain/blockstorage/dag/EquivocationTrackerStore.scala
 
 use std::collections::{BTreeSet, HashSet};
 

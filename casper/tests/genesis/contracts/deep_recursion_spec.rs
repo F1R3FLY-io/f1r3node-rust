@@ -4,8 +4,7 @@ use std::time::Duration;
 
 use casper::rust::genesis::genesis::Genesis;
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
-use models::rhoapi::{BindPattern, ListParWithRandom};
-use rholang::rust::build::compile_rholang_source::CompiledRholangSource;
+use models::rhoapi::{BindPattern, ListParWithRandom, TaggedContinuation};
 use rholang::rust::interpreter::matcher::r#match::Matcher;
 use rholang::rust::interpreter::rho_runtime::create_runtime_from_kv_store;
 use rspace_plus_plus::rspace::r#match::Match;
@@ -21,12 +20,12 @@ async fn eval_rholang_code(code: &str, timeout: Duration) -> Result<(), String> 
         .await
         .map_err(|e| format!("Failed to create RSpaceStore: {}", e))?;
 
-    let matcher =
-        Arc::new(Box::new(Matcher::default()) as Box<dyn Match<BindPattern, ListParWithRandom>>);
+    let matcher = Arc::new(Box::new(Matcher::default())
+        as Box<dyn Match<BindPattern, ListParWithRandom, TaggedContinuation>>);
 
     let runtime = create_runtime_from_kv_store(
         r_store,
-        Genesis::non_negative_mergeable_tag_name(),
+        std::sync::Arc::new(Genesis::default_mergeable_tags()),
         true,
         &mut vec![],
         matcher,
@@ -54,8 +53,8 @@ async fn eval_rholang_code(code: &str, timeout: Duration) -> Result<(), String> 
 /// Without StackGrowingFuture, this causes stack overflow in debug builds.
 #[tokio::test]
 async fn deep_recursion_shortslow_should_not_stackoverflow() {
-    let code =
-        CompiledRholangSource::load_source("shortslow.rho").expect("Failed to load shortslow.rho");
+    let code = crate::util::rholang::test_rho_loader::load_test_rho("shortslow.rho")
+        .expect("Failed to load shortslow.rho");
 
     let result = eval_rholang_code(&code, Duration::from_secs(300)).await;
     assert!(
@@ -72,8 +71,8 @@ async fn deep_recursion_shortslow_should_not_stackoverflow() {
 /// in addition to deep recursion, matching the exact integration test scenario.
 #[tokio::test]
 async fn deep_recursion_longslow_should_not_stackoverflow() {
-    let code =
-        CompiledRholangSource::load_source("longslow.rho").expect("Failed to load longslow.rho");
+    let code = crate::util::rholang::test_rho_loader::load_test_rho("longslow.rho")
+        .expect("Failed to load longslow.rho");
 
     let result = eval_rholang_code(&code, Duration::from_secs(300)).await;
     assert!(

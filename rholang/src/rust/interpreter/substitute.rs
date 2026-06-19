@@ -4,7 +4,7 @@ use models::rhoapi::var::VarInstance;
 use models::rhoapi::{
     Bundle, Connective, ConnectiveBody, EAnd, EDiv, EEq, EGt, EGte, EList, ELt, ELte, EMatches,
     EMethod, EMinus, EMinusMinus, EMod, EMult, ENeg, ENeq, ENot, EOr, EPercentPercent, EPlus,
-    EPlusPlus, ETuple, EVar, Expr, Match, MatchCase, New, Par, Receive, ReceiveBind, Send, Var,
+    EPlusPlus, ETuple, EVar, Expr, If, Match, MatchCase, New, Par, Receive, ReceiveBind, Send, Var,
     VarRef,
 };
 use models::rust::bundle_ops::BundleOps;
@@ -13,6 +13,7 @@ use models::rust::par_map_type_mapper::ParMapTypeMapper;
 use models::rust::par_set::ParSet;
 use models::rust::par_set_type_mapper::ParSetTypeMapper;
 use models::rust::rholang::implicits::{concatenate_pars, single_bundle};
+use models::rust::rholang::sorter::if_sort_matcher::IfSortMatcher;
 use models::rust::rholang::sorter::match_sort_matcher::MatchSortMatcher;
 use models::rust::rholang::sorter::new_sort_matcher::NewSortMatcher;
 use models::rust::rholang::sorter::par_sort_matcher::ParSortMatcher;
@@ -113,7 +114,7 @@ impl Substitute {
         if depth != 0 {
             Ok(Either::Left(term))
         } else {
-            match unwrap_option_safe(term.var_instance)? {
+            match unwrap_option_safe(term.clone().var_instance)? {
                 VarInstance::BoundVar(index) => {
                     // println!("\nindex in maybe_substitute_var: {:?}", index);
                     match env.get(&index) {
@@ -241,7 +242,7 @@ impl Substitute {
             .try_fold(Par::default(), |par, conn| match conn.connective_instance {
                 Some(ref conn_instance) => match conn_instance {
                     ConnectiveInstance::VarRefBody(v) => {
-                        match self.maybe_substitute_var_ref(*v, depth, env)? {
+                        match self.maybe_substitute_var_ref(v.clone(), depth, env)? {
                             Either::Left(_) => Ok(prepend_connective(par, conn, depth)),
                             Either::Right(new_par) => Ok(concatenate_pars(new_par, par)),
                         }
@@ -348,33 +349,39 @@ impl SubstituteTrait<Par> for Substitute {
 
         let sends = term
             .sends
-            .iter()
-            .map(|s| self.substitute_no_sort(s.clone(), depth, env))
+            .into_iter()
+            .map(|s| self.substitute_no_sort(s, depth, env))
             .collect::<Result<Vec<Send>, InterpreterError>>()?;
 
         let bundles = term
             .bundles
-            .iter()
-            .map(|b| self.substitute_no_sort(b.clone(), depth, env))
+            .into_iter()
+            .map(|b| self.substitute_no_sort(b, depth, env))
             .collect::<Result<Vec<Bundle>, InterpreterError>>()?;
 
         let receives = term
             .receives
-            .iter()
-            .map(|r| self.substitute_no_sort(r.clone(), depth, env))
+            .into_iter()
+            .map(|r| self.substitute_no_sort(r, depth, env))
             .collect::<Result<Vec<Receive>, InterpreterError>>()?;
 
         let news = term
             .news
-            .iter()
-            .map(|n| self.substitute_no_sort(n.clone(), depth, env))
+            .into_iter()
+            .map(|n| self.substitute_no_sort(n, depth, env))
             .collect::<Result<Vec<New>, InterpreterError>>()?;
 
         let matches = term
             .matches
-            .iter()
-            .map(|m| self.substitute_no_sort(m.clone(), depth, env))
+            .into_iter()
+            .map(|m| self.substitute_no_sort(m, depth, env))
             .collect::<Result<Vec<Match>, InterpreterError>>()?;
+
+        let conditionals = term
+            .conditionals
+            .iter()
+            .map(|i| self.substitute_no_sort(i.clone(), depth, env))
+            .collect::<Result<Vec<If>, InterpreterError>>()?;
 
         Ok(concatenate_pars(
             exprs,
@@ -387,6 +394,7 @@ impl SubstituteTrait<Par> for Substitute {
                 unforgeables: term.unforgeables,
                 bundles,
                 connectives: Vec::new(),
+                conditionals,
                 locally_free: {
                     // println!("\nenv.shift in substitute_no_sort for par: {}", env.shift);
                     set_bits_until(term.locally_free, env.shift)
@@ -477,6 +485,11 @@ impl SubstituteTrait<Receive> for Substitute {
             &env.shift(term.bind_count),
         )?;
 
+        let condition_sub = match term.condition {
+            Some(c) => Some(self.substitute_no_sort(c, depth, &env.shift(term.bind_count))?),
+            None => None,
+        };
+
         Ok(Receive {
             binds: binds_sub,
             body: Some(body_sub),
@@ -485,6 +498,7 @@ impl SubstituteTrait<Receive> for Substitute {
             bind_count: term.bind_count,
             locally_free: set_bits_until(term.locally_free, env.shift),
             connective_used: term.connective_used,
+            condition: condition_sub,
         })
     }
 
@@ -546,6 +560,7 @@ impl SubstituteTrait<Match> for Substitute {
                      pattern,
                      source,
                      free_count,
+                     guard,
                  }| {
                     let par = self.substitute_no_sort(
                         unwrap_option_safe(source.clone())?,
@@ -559,10 +574,20 @@ impl SubstituteTrait<Match> for Substitute {
                         env,
                     )?;
 
+                    let sub_guard = match guard {
+                        Some(g) => Some(self.substitute_no_sort(
+                            g.clone(),
+                            depth,
+                            &env.shift(*free_count),
+                        )?),
+                        None => None,
+                    };
+
                     Ok(MatchCase {
                         pattern: Some(sub_case),
                         source: Some(par),
                         free_count: *free_count,
+                        guard: sub_guard,
                     })
                 },
             )
@@ -584,6 +609,35 @@ impl SubstituteTrait<Match> for Substitute {
     ) -> Result<Match, InterpreterError> {
         self.substitute_no_sort(term, depth, env)
             .map(|m| MatchSortMatcher::sort_match(&m))
+            .map(|st| st.term)
+    }
+}
+
+impl SubstituteTrait<If> for Substitute {
+    fn substitute_no_sort(
+        &self,
+        term: If,
+        depth: i32,
+        env: &Env<Par>,
+    ) -> Result<If, InterpreterError> {
+        let condition_sub =
+            self.substitute_no_sort(unwrap_option_safe(term.condition)?, depth, env)?;
+        let if_true_sub = self.substitute_no_sort(unwrap_option_safe(term.if_true)?, depth, env)?;
+        let if_false_sub =
+            self.substitute_no_sort(unwrap_option_safe(term.if_false)?, depth, env)?;
+
+        Ok(If {
+            condition: Some(condition_sub),
+            if_true: Some(if_true_sub),
+            if_false: Some(if_false_sub),
+            locally_free: set_bits_until(term.locally_free, env.shift),
+            connective_used: term.connective_used,
+        })
+    }
+
+    fn substitute(&self, term: If, depth: i32, env: &Env<Par>) -> Result<If, InterpreterError> {
+        self.substitute_no_sort(term, depth, env)
+            .map(|i| IfSortMatcher::sort_match(&i))
             .map(|st| st.term)
     }
 }
@@ -1277,20 +1331,10 @@ impl SubstituteTrait<Expr> for Substitute {
 }
 
 fn set_bits_until(bits: Vec<u8>, until: i32) -> Vec<u8> {
-    // println!("\nbits in set_bits_until: {:?}", bits);
-    // println!("\nuntil in set_bits_until: {:?}", until);
     if until <= 0 {
         return Vec::new();
     }
-    let until_usize = until as usize;
-
-    let result = bits
-        .iter()
-        .enumerate()
-        .filter(|&(i, &bit)| i < until_usize && bit == 1)
-        .map(|(_, &bit)| bit)
-        .collect();
-
-    // println!("\nresult bits in set_bits_until: {:?}", result);
-    result
+    // Truncate the bitvector at `until` positions, preserving bit positions.
+    // Matches Scala's BitSet.until(n).
+    bits.into_iter().take(until as usize).collect()
 }

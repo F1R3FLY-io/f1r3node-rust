@@ -6,10 +6,6 @@ use std::iter::FromIterator;
 #[derive(Debug, Clone)]
 pub struct HashableSet<T>(pub HashSet<T>);
 
-impl<T: Eq + Hash> Default for HashableSet<T> {
-    fn default() -> Self { Self::new() }
-}
-
 impl<T: Eq + Hash> HashableSet<T> {
     pub fn new() -> Self { Self(HashSet::new()) }
 }

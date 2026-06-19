@@ -6,11 +6,12 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use clap::Parser;
-use models::rhoapi::{BindPattern, ListParWithRandom, Par};
+use models::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
 use rholang::rust::interpreter::compiler::compiler::Compiler;
 use rholang::rust::interpreter::errors::InterpreterError;
 use rholang::rust::interpreter::external_services::ExternalServices;
 use rholang::rust::interpreter::matcher::r#match::Matcher;
+use rholang::rust::interpreter::merging::mergeable_tags::default_mergeable_tags;
 use rholang::rust::interpreter::pretty_printer::PrettyPrinter;
 use rholang::rust::interpreter::rho_runtime::{
     create_runtime_from_kv_store, RhoRuntime, RhoRuntimeImpl,
@@ -22,11 +23,10 @@ use tokio::fs;
 
 /// Creates a unique temporary directory path with the given prefix.
 ///
-/// This function handles the case where `std::env::temp_dir()` returns an empty
-/// path by falling back to `/tmp` (standard on macOS/Unix systems).
+/// This function handles the case where `std::env::temp_dir()` returns an empty path
+/// by falling back to `/tmp` (standard on macOS/Unix systems).
 ///
-/// The directory name is made unique using a combination of process ID and
-/// nanosecond timestamp.
+/// The directory name is made unique using a combination of process ID and nanosecond timestamp.
 fn mk_unique_temp_dir(prefix: &str) -> PathBuf {
     // Get system temp directory with fallback to /tmp
     let mut temp_dir = std::env::temp_dir();
@@ -96,17 +96,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let stores = get_or_create_rspace_store(&data_dir.to_string_lossy(), conf.map_size)?;
         let matcher_impl = Matcher;
         let matcher: Arc<
-            Box<dyn rspace_plus_plus::rspace::r#match::Match<BindPattern, ListParWithRandom>>,
+            Box<
+                dyn rspace_plus_plus::rspace::r#match::Match<
+                    BindPattern,
+                    ListParWithRandom,
+                    TaggedContinuation,
+                >,
+            >,
         > = Arc::new(Box::new(matcher_impl));
         let mut additional_system_processes: Vec<Definition> = vec![];
 
         let mut rho_runtime = create_runtime_from_kv_store(
             stores,
-            Par::default(),
+            Arc::new(default_mergeable_tags()),
             true,
             &mut additional_system_processes,
             matcher,
-            ExternalServices::noop(),
+            ExternalServices::for_observer(),
         )
         .await;
 
@@ -179,12 +185,12 @@ fn print_normalized_term(normalized_term: &Par) {
     println!("{}", printer.build_string_from_message(normalized_term));
 }
 
-fn print_storage_contents(runtime: &RhoRuntimeImpl, unmatched_sends_only: bool) {
+async fn print_storage_contents(runtime: &RhoRuntimeImpl, unmatched_sends_only: bool) {
     println!("\nStorage Contents:");
     let output = if unmatched_sends_only {
-        storage_printer::pretty_print_unmatched_sends(runtime)
+        storage_printer::pretty_print_unmatched_sends(runtime).await
     } else {
-        storage_printer::pretty_print(runtime)
+        storage_printer::pretty_print(runtime).await
     };
     println!("{}", output);
 }
@@ -296,8 +302,7 @@ async fn write_binary(file_name: &str, source: &str) -> Result<(), InterpreterEr
     Ok(())
 }
 
-/// Wait for evaluation result with timeout feedback, similar to Scala's
-/// waitForSuccess
+/// Wait for evaluation result with timeout feedback, similar to Scala's waitForSuccess
 async fn wait_for_success<F, T>(mut future: std::pin::Pin<Box<F>>) -> Result<T, InterpreterError>
 where F: std::future::Future<Output = Result<T, InterpreterError>> {
     loop {
@@ -331,7 +336,7 @@ async fn evaluate_par(
     print_errors(&result.errors);
 
     if !quiet {
-        print_storage_contents(runtime, unmatched_sends_only);
+        print_storage_contents(runtime, unmatched_sends_only).await;
     }
 
     Ok(())

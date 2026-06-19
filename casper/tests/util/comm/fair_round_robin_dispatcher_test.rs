@@ -1,5 +1,4 @@
-// See casper/src/test/scala/coop/rchain/casper/util/comm/
-// FairRoundRobinDispatcherSpec.scala
+// See casper/src/test/scala/coop/rchain/casper/util/comm/FairRoundRobinDispatcherSpec.scala
 
 use std::collections::{HashMap, VecDeque};
 use std::future::Future;

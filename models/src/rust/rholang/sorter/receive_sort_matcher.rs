@@ -1,5 +1,4 @@
-// See models/src/main/scala/coop/rchain/models/rholang/sorter/
-// ReceiveSortMatcher.scala
+// See models/src/main/scala/coop/rchain/models/rholang/sorter/ReceiveSortMatcher.scala
 
 use super::par_sort_matcher::ParSortMatcher;
 use super::score_tree::{Score, ScoreAtom, ScoredTerm, Tree};
@@ -50,7 +49,7 @@ impl ReceiveSortMatcher {
                 vec![sorted_channel.score]
                     .into_iter()
                     .chain(sorted_patterns.into_iter().map(|p| p.score))
-                    .chain(vec![sorted_remainder.score])
+                    .chain(vec![sorted_remainder.score].into_iter())
                     .collect(),
             ),
         }
@@ -65,7 +64,7 @@ impl Sortable<Receive> for ReceiveSortMatcher {
             .binds
             .clone()
             .into_iter()
-            .map(ReceiveSortMatcher::sort_bind)
+            .map(|rb| ReceiveSortMatcher::sort_bind(rb))
             .collect();
 
         let persistent_score: i64 = if r.persistent { 1 } else { 0 };
@@ -77,6 +76,18 @@ impl Sortable<Receive> for ReceiveSortMatcher {
                 .expect("body field on Receive was None, should be Some"),
         );
 
+        // Optional `where`-clause condition. Empty Par when absent so the
+        // score is stable. Collapse `Some(empty Par)` to `None` on the
+        // output term so the wire format doesn't preserve a distinction
+        // the runtime treats as identical (eval_receive ignores empty).
+        let condition_par = r.condition.clone().unwrap_or_default();
+        let sorted_condition = ParSortMatcher::sort_match(&condition_par);
+        let condition_term = r
+            .condition
+            .as_ref()
+            .filter(|p| *p != &Par::default())
+            .map(|_| sorted_condition.term.clone());
+
         ScoredTerm {
             term: Receive {
                 binds: sorted_binds.clone().into_iter().map(|rb| rb.term).collect(),
@@ -86,6 +97,7 @@ impl Sortable<Receive> for ReceiveSortMatcher {
                 bind_count: r.bind_count,
                 locally_free: r.locally_free.clone(),
                 connective_used: r.connective_used,
+                condition: condition_term,
             },
             score: Tree::<ScoreAtom>::create_node_from_i32(
                 Score::RECEIVE,
@@ -99,6 +111,7 @@ impl Sortable<Receive> for ReceiveSortMatcher {
                 .chain(vec![
                     Tree::<ScoreAtom>::create_leaf_from_i64(r.bind_count as i64),
                     Tree::<ScoreAtom>::create_leaf_from_i64(connective_used_score),
+                    sorted_condition.score,
                 ])
                 .collect(),
             ),

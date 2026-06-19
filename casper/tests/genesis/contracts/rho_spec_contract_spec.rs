@@ -1,5 +1,4 @@
-// See casper/src/test/scala/coop/rchain/casper/genesis/contracts/
-// RhoSpecContractSpec.scala
+// See casper/src/test/scala/coop/rchain/casper/genesis/contracts/RhoSpecContractSpec.scala
 
 use std::collections::HashMap;
 
@@ -10,8 +9,9 @@ use crate::helper::rho_spec::RhoSpec;
 
 #[tokio::test]
 async fn rho_spec_contract_spec() {
-    let test_object = CompiledRholangSource::load_source("RhoSpecContractTest.rho")
-        .expect("Failed to load RhoSpecContractTest.rho");
+    let test_object =
+        crate::util::rholang::test_rho_loader::load_test_rho("RhoSpecContractTest.rho")
+            .expect("Failed to load RhoSpecContractTest.rho");
 
     let compiled = CompiledRholangSource::new(
         test_object,

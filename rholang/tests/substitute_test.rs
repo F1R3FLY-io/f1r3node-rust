@@ -1,5 +1,4 @@
-// See rholang/src/test/scala/coop/rchain/rholang/interpreter/SubstituteTest.
-// scala
+// See rholang/src/test/scala/coop/rchain/rholang/interpreter/SubstituteTest.scala
 
 use std::collections::BTreeMap;
 
@@ -28,7 +27,7 @@ fn env() -> Env<Par> { Env::new() }
 
 fn substitute_instance() -> Substitute {
     let cost = Cost::create(0, "substitute_test".to_string());
-    let cost_manager = CostManager::new(cost, 1);
+    let cost_manager = CostManager::new(cost);
     let substitute = Substitute { cost: cost_manager };
     substitute
 }
@@ -615,6 +614,7 @@ fn var_ref_should_be_replaced_at_a_higher_depth_inside_a_pattern() {
             }])),
             source: Some(Par::default()),
             free_count: 0,
+            guard: None,
         }],
         locally_free: Vec::new(),
         connective_used: false,
@@ -631,6 +631,7 @@ fn var_ref_should_be_replaced_at_a_higher_depth_inside_a_pattern() {
                 pattern: Some(source),
                 source: Some(Par::default()),
                 free_count: 0,
+                guard: None,
             }],
             locally_free: Vec::new(),
             connective_used: false,

@@ -1,5 +1,4 @@
-// See casper/src/test/scala/coop/rchain/casper/sync/
-// BlockRetrieverRequesAllSpec.scala
+// See casper/src/test/scala/coop/rchain/casper/sync/BlockRetrieverRequesAllSpec.scala
 
 #[cfg(test)]
 mod tests {
@@ -281,8 +280,7 @@ mod tests {
                             .as_millis() as u64
                     };
 
-                    // Then - verify the timestamp was reset to the current time (matches Scala:
-                    // requestedAfter.timestamp shouldBe time.clock)
+                    // Then - verify the timestamp was reset to the current time (matches Scala: requestedAfter.timestamp shouldBe time.clock)
                     let request_state_after = fixture
                         .block_retriever
                         .get_request_state_for_test(&fixture.hash)
@@ -291,8 +289,7 @@ mod tests {
                         .expect("Request state should exist");
 
                     // The timestamp should be between the current time before and after the call
-                    // This matches the Scala semantics where requestedAfter.timestamp shouldBe
-                    // time.clock
+                    // This matches the Scala semantics where requestedAfter.timestamp shouldBe time.clock
                     assert!(
                         request_state_after.timestamp >= current_time_before,
                         "Timestamp should be at least the current time before the call"
@@ -407,8 +404,7 @@ mod tests {
                     let fixture = TestFixture::new();
                     fixture.reset();
 
-                    // Given - setup a timed out request that's in casper buffer with empty waiting
-                    // list
+                    // Given - setup a timed out request that's in casper buffer with empty waiting list
                     let peer = TestFixture::peer_node("peer", 40403);
                     let peers = HashSet::from([peer]);
                     let timed_out_timestamp = fixture.create_timed_out_timestamp();
@@ -433,8 +429,7 @@ mod tests {
                     let result = fixture.block_retriever.request_all(fixture.timeout).await;
                     assert!(result.is_ok());
 
-                    // Then - unresolved entries remain tracked until retry budget/quarantine logic
-                    // decides cleanup
+                    // Then - unresolved entries remain tracked until retry budget/quarantine logic decides cleanup
                     let final_count = fixture
                         .block_retriever
                         .get_requested_blocks_count()

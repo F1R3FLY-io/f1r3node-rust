@@ -1,5 +1,4 @@
-// See block-storage/src/test/scala/coop/rchain/blockstorage/dag/
-// IndexedBlockDagStorage.scala
+// See block-storage/src/test/scala/coop/rchain/blockstorage/dag/IndexedBlockDagStorage.scala
 
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
@@ -10,7 +9,7 @@ use models::rust::casper::protocol::casper_message::BlockMessage;
 use shared::rust::store::key_value_store::KvStoreError;
 
 use crate::rust::dag::block_dag_key_value_storage::{
-    BlockDagKeyValueStorage, KeyValueDagRepresentation,
+    BlockDagKeyValueStorage, InsertMode, KeyValueDagRepresentation,
 };
 use crate::rust::dag::equivocation_tracker_store::EquivocationTrackerStore;
 
@@ -29,21 +28,20 @@ impl IndexedBlockDagStorage {
         }
     }
 
-    pub fn get_representation(&self) -> KeyValueDagRepresentation {
-        // Use underlying's lock for consistency
-        let _lock_guard = self.underlying.global_lock.lock().unwrap();
+    pub fn get_representation(&self) -> Result<KeyValueDagRepresentation, KvStoreError> {
+        // P2-12: shared lock for pure-read snapshot path.
+        let _lock_guard = self.underlying.global_lock.read();
         self.underlying.get_representation_internal()
     }
 
     pub fn insert(
         &mut self,
         block: &BlockMessage,
-        invalid: bool,
-        approved: bool,
+        mode: InsertMode,
     ) -> Result<KeyValueDagRepresentation, KvStoreError> {
-        // Use underlying's lock for consistency
-        let _lock_guard = self.underlying.global_lock.lock().unwrap();
-        self.underlying.insert_internal(block, invalid, approved)
+        // P2-12: insert mutates; exclusive lock.
+        let _lock_guard = self.underlying.global_lock.write();
+        self.underlying.insert_internal(block, mode)
     }
 
     pub fn insert_indexed(
@@ -52,13 +50,13 @@ impl IndexedBlockDagStorage {
         genesis: &BlockMessage,
         invalid: bool,
     ) -> Result<BlockMessage, KvStoreError> {
-        // Lock the entire operation to match Scala's lock.withPermit
-        // Use underlying's lock to ensure atomicity
-        let _lock_guard = self.underlying.global_lock.lock().unwrap();
+        // P2-12: insert mutates; exclusive lock.
+        let _lock_guard = self.underlying.global_lock.write();
 
         // Use internal methods to avoid re-acquiring lock
-        self.underlying.insert_internal(genesis, false, true)?;
-        let dag = self.underlying.get_representation_internal();
+        self.underlying
+            .insert_internal(genesis, InsertMode::Approved)?;
+        let dag = self.underlying.get_representation_internal()?;
         let next_creator_seq_num = if block.seq_num == 0 {
             dag.latest_message(&block.sender)?
                 .map_or(-1, |b| b.sequence_number)
@@ -81,8 +79,14 @@ impl IndexedBlockDagStorage {
         modified_block.seq_num = next_creator_seq_num;
         modified_block.body.state = new_post_state;
 
-        self.underlying
-            .insert_internal(&modified_block, invalid, false)?;
+        self.underlying.insert_internal(
+            &modified_block,
+            if invalid {
+                InsertMode::Invalid
+            } else {
+                InsertMode::Normal
+            },
+        )?;
         self.id_to_blocks.insert(next_id, modified_block.clone());
         *current_id = next_id;
 
@@ -95,17 +99,24 @@ impl IndexedBlockDagStorage {
         block: BlockMessage,
         invalid: bool,
     ) -> Result<(), KvStoreError> {
-        // Use underlying's lock for consistency
-        let _lock_guard = self.underlying.global_lock.lock().unwrap();
+        // P2-12: insert mutates; exclusive lock.
+        let _lock_guard = self.underlying.global_lock.write();
         self.id_to_blocks.insert(index, block.clone());
-        self.underlying.insert_internal(&block, invalid, false)?;
+        self.underlying.insert_internal(
+            &block,
+            if invalid {
+                InsertMode::Invalid
+            } else {
+                InsertMode::Normal
+            },
+        )?;
 
         Ok(())
     }
 
     pub fn access_equivocations_tracker<A>(
         &self,
-        f: impl Fn(&EquivocationTrackerStore) -> Result<A, KvStoreError>,
+        f: impl FnOnce(&EquivocationTrackerStore) -> Result<A, KvStoreError>,
     ) -> Result<A, KvStoreError> {
         // Use underlying's access_equivocations_tracker which has its own lock
         self.underlying.access_equivocations_tracker(f)
@@ -114,6 +125,7 @@ impl IndexedBlockDagStorage {
     pub async fn record_directly_finalized<F, Fut>(
         &mut self,
         block_hash: BlockHash,
+        ft_value: f32,
         finalization_effect: F,
     ) -> Result<(), KvStoreError>
     where
@@ -121,7 +133,7 @@ impl IndexedBlockDagStorage {
         Fut: std::future::Future<Output = Result<(), KvStoreError>>,
     {
         self.underlying
-            .record_directly_finalized(block_hash, finalization_effect)
+            .record_directly_finalized(block_hash, ft_value, finalization_effect)
             .await
     }
 
@@ -133,5 +145,18 @@ impl IndexedBlockDagStorage {
     pub fn lookup_by_id_unsafe(&self, id: i64) -> BlockMessage {
         // DashMap is already thread-safe, so no additional lock needed
         self.id_to_blocks.get(&id).unwrap().clone()
+    }
+}
+
+// EquivocationsAccess trait impl — delegates to the inherent method
+// which itself delegates to the underlying BlockDagKeyValueStorage's
+// global_lock. See `crate::rust::dag::equivocations_access` for the
+// trait contract (T-9.2 anchor, atomic-RMW guarantee).
+impl crate::rust::dag::equivocations_access::EquivocationsAccess for IndexedBlockDagStorage {
+    fn access_equivocations_tracker<A>(
+        &self,
+        f: impl FnOnce(&EquivocationTrackerStore) -> Result<A, KvStoreError>,
+    ) -> Result<A, KvStoreError> {
+        IndexedBlockDagStorage::access_equivocations_tracker(self, f)
     }
 }

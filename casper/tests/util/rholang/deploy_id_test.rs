@@ -38,7 +38,7 @@ fn deploy(
     .unwrap()
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn deploy_id_should_be_equal_to_deploy_signature() {
     with_runtime_manager(|runtime_manager, genesis_context, _| async move {
         let sk = default_sec();
@@ -71,7 +71,7 @@ async fn deploy_id_should_be_equal_to_deploy_signature() {
     .unwrap();
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn deploy_id_should_be_resolved_during_normalization() {
     let mut genesis_builder = GenesisBuilder::new();
     let genesis_parameters_tuple =

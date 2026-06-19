@@ -6,28 +6,27 @@ use crate::rust::interpreter::matcher::spatial_matcher::SpatialMatcherContext;
 
 // See models/src/main/scala/coop/rchain/models/HasLocallyFree.scala
 pub trait HasLocallyFree<T> {
-    /** Return true if a connective (including free variables and wildcards)
-     * is  used anywhere in {@code source}.
+    /** Return true if a connective (including free variables and wildcards) is
+     *  used anywhere in {@code source}.
      *  @param source the object in question
-     *  Specifically looks for constructions that make a pattern
-     * non-concrete.  A non-concrete pattern cannot be viewed as if it
-     * were a term.
+     *  Specifically looks for constructions that make a pattern non-concrete.
+     *  A non-concrete pattern cannot be viewed as if it were a term.
      */
     fn connective_used(&self, source: T) -> bool;
 
-    /** Returns a bitset representing which variables are locally free if the
-     * term  is located at depth {@code depth}
+    /** Returns a bitset representing which variables are locally free if the term
+     *  is located at depth {@code depth}
      *  @param source the object in question
      *  @param depth pattern nesting depth
-     *  This relies on cached values based on the actual depth of a term and
-     * will  only return the correct answer if asked about the actual
-     * depth of a term.  The reason we pass depth is that building the
-     * caches calls this API and for  the few instances where we don't
-     * rely on the cache, we need to know the  depth.
+     *  This relies on cached values based on the actual depth of a term and will
+     *  only return the correct answer if asked about the actual depth of a term.
+     *  The reason we pass depth is that building the caches calls this API and for
+     *  the few instances where we don't rely on the cache, we need to know the
+     *  depth.
      *
-     *  Depth is related to pattern nesting. A top level term is depth 0. A
-     * pattern  in a top-level term is depth 1. A pattern in a depth 1
-     * term is depth 2,  etc.
+     *  Depth is related to pattern nesting. A top level term is depth 0. A pattern
+     *  in a top-level term is depth 1. A pattern in a depth 1 term is depth 2,
+     *  etc.
      */
     fn locally_free(&self, source: T, depth: i32) -> Vec<u8>;
 }
@@ -46,8 +45,7 @@ impl HasLocallyFree<(Par, Par)> for SpatialMatcherContext {
     }
 }
 
-// See models/src/main/scala/coop/rchain/models/rholang/implicits.scala - line
-// 357 and beyond
+// See models/src/main/scala/coop/rchain/models/rholang/implicits.scala - line 357 and beyond
 impl HasLocallyFree<Par> for SpatialMatcherContext {
     fn connective_used(&self, p: Par) -> bool { p.connective_used }
 
@@ -369,13 +367,15 @@ impl HasLocallyFree<VarInstance> for VarInstance {
 
 impl HasLocallyFree<Var> for Var {
     fn connective_used(&self, v: Var) -> bool {
-        v.var_instance
+        v.clone()
+            .var_instance
             .unwrap()
             .connective_used(v.var_instance.unwrap())
     }
 
     fn locally_free(&self, v: Var, depth: i32) -> Vec<u8> {
-        v.var_instance
+        v.clone()
+            .var_instance
             .unwrap()
             .locally_free(v.var_instance.unwrap(), depth)
     }
@@ -401,7 +401,7 @@ impl HasLocallyFree<Expr> for Expr {
             Some(EPathmapBody(e)) => e.connective_used,
             Some(EZipperBody(e)) => e.connective_used,
 
-            Some(EVarBody(EVar { v })) => v.unwrap().connective_used(v.unwrap()),
+            Some(EVarBody(EVar { v })) => v.clone().unwrap().connective_used(v.unwrap()),
             Some(ENotBody(ENot { p })) => p.unwrap().connective_used,
             Some(ENegBody(ENeg { p })) => p.unwrap().connective_used,
 
@@ -481,7 +481,7 @@ impl HasLocallyFree<Expr> for Expr {
             Some(EPathmapBody(e)) => e.locally_free,
             Some(EZipperBody(e)) => e.locally_free,
 
-            Some(EVarBody(EVar { v })) => v.unwrap().locally_free(v.unwrap(), depth),
+            Some(EVarBody(EVar { v })) => v.clone().unwrap().locally_free(v.unwrap(), depth),
             Some(ENotBody(ENot { p })) => p.unwrap().locally_free,
             Some(ENegBody(ENeg { p })) => p.unwrap().locally_free,
 

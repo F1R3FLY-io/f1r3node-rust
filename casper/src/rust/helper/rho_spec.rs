@@ -23,8 +23,8 @@
 //                     Box::new(move |args| {
 //                         let collector = Arc::clone(&collector);
 //                         let ctx = ctx.clone();
-//                         Box::pin(async move { collector.handle_message(ctx,
-// args).await })                     })
+//                         Box::pin(async move { collector.handle_message(ctx, args).await })
+//                     })
 //                 })
 //             },
 //             remainder: None,
@@ -41,8 +41,8 @@
 //                     Box::new(move |args| {
 //                         let collector = Arc::clone(&collector);
 //                         let ctx = ctx.clone();
-//                         Box::pin(async move { collector.handle_message(ctx,
-// args).await })                     })
+//                         Box::pin(async move { collector.handle_message(ctx, args).await })
+//                     })
 //                 })
 //             },
 //             remainder: None,
@@ -56,8 +56,8 @@
 //                 Box::new(move |ctx| {
 //                     Box::new(move |args| {
 //                         let ctx = ctx.clone();
-//                         Box::pin(async move { RhoLoggerContract::std_log(ctx,
-// args).await })                     })
+//                         Box::pin(async move { RhoLoggerContract::std_log(ctx, args).await })
+//                     })
 //                 })
 //             },
 //             remainder: None,

@@ -1,5 +1,5 @@
-// See rholang/src/main/scala/coop/rchain/rholang/externalservices/GrpcClient.
-// scala Ported from Scala PR #140
+// See rholang/src/main/scala/coop/rchain/rholang/externalservices/GrpcClient.scala
+// Ported from Scala PR #140
 //
 // Uses enum-based dispatch instead of trait objects for async compatibility.
 
@@ -75,8 +75,7 @@ impl GrpcClientService {
             }
             Self::NoOp => {
                 tracing::debug!(
-                    "GrpcClientService is disabled - tell request ignored: host={}, port={}, \
-                     payload={}",
+                    "GrpcClientService is disabled - tell request ignored: host={}, port={}, payload={}",
                     client_host,
                     client_port,
                     notification_payload

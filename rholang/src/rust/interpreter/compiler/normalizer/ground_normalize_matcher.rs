@@ -274,9 +274,8 @@ mod tests {
         );
     }
 
-    // TODO: URI tests omitted because Uri struct has private fields and can't be
-    // constructed in tests The URI normalization logic is tested through
-    // integration tests with actual parsing
+    // TODO: URI tests omitted because Uri struct has private fields and can't be constructed in tests
+    // The URI normalization logic is tested through integration tests with actual parsing
 
     #[test]
     fn unsupported_type_should_return_error() {

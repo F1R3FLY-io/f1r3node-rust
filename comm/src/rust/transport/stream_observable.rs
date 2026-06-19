@@ -27,8 +27,7 @@ pub struct Stream {
     pub sender: PeerNode,
 }
 
-/// StreamObservable provides bounded buffering for streaming messages with
-/// overflow handling
+/// StreamObservable provides bounded buffering for streaming messages with overflow handling
 #[derive(Debug)]
 pub struct StreamObservable {
     peer: PeerNode,
@@ -122,8 +121,7 @@ impl StreamObservable {
         Some(parsed.and_utc().timestamp())
     }
 
-    /// Create a new StreamObservable with the given peer, buffer size, and
-    /// cache
+    /// Create a new StreamObservable with the given peer, buffer size, and cache
     pub fn new(peer: PeerNode, buffer_size: usize, cache: StreamCache) -> Self {
         let subject = FlumeLimitedBuffer::drop_new_observable(buffer_size);
 

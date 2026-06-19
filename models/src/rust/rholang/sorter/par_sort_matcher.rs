@@ -1,13 +1,13 @@
-// See models/src/main/scala/coop/rchain/models/rholang/sorter/ParSortMatcher.
-// scala
+// See models/src/main/scala/coop/rchain/models/rholang/sorter/ParSortMatcher.scala
 
 use super::score_tree::ScoredTerm;
 use super::send_sort_matcher::SendSortMatcher;
 use super::sortable::Sortable;
-use crate::rhoapi::{Bundle, Connective, Expr, GUnforgeable, Match, New, Par, Receive, Send};
+use crate::rhoapi::{Bundle, Connective, Expr, GUnforgeable, If, Match, New, Par, Receive, Send};
 use crate::rust::rholang::sorter::bundle_sort_matcher::BundleSortMatcher;
 use crate::rust::rholang::sorter::connective_sort_matcher::ConnectiveSortMatcher;
 use crate::rust::rholang::sorter::expr_sort_matcher::ExprSortMatcher;
+use crate::rust::rholang::sorter::if_sort_matcher::IfSortMatcher;
 use crate::rust::rholang::sorter::match_sort_matcher::MatchSortMatcher;
 use crate::rust::rholang::sorter::new_sort_matcher::NewSortMatcher;
 use crate::rust::rholang::sorter::receive_sort_matcher::ReceiveSortMatcher;
@@ -19,8 +19,11 @@ pub struct ParSortMatcher;
 impl Sortable<Par> for ParSortMatcher {
     fn sort_match(par: &Par) -> ScoredTerm<Par> {
         let sends: Vec<ScoredTerm<Send>> = {
-            let mut _sends: Vec<ScoredTerm<Send>> =
-                par.sends.iter().map(SendSortMatcher::sort_match).collect();
+            let mut _sends: Vec<ScoredTerm<Send>> = par
+                .sends
+                .iter()
+                .map(|s| SendSortMatcher::sort_match(s))
+                .collect();
 
             ScoredTerm::sort_vec(&mut _sends);
             _sends
@@ -30,7 +33,7 @@ impl Sortable<Par> for ParSortMatcher {
             let mut _receives: Vec<ScoredTerm<Receive>> = par
                 .receives
                 .iter()
-                .map(ReceiveSortMatcher::sort_match)
+                .map(|r| ReceiveSortMatcher::sort_match(r))
                 .collect();
 
             ScoredTerm::sort_vec(&mut _receives);
@@ -38,16 +41,22 @@ impl Sortable<Par> for ParSortMatcher {
         };
 
         let exprs: Vec<ScoredTerm<Expr>> = {
-            let mut _exprs: Vec<ScoredTerm<Expr>> =
-                par.exprs.iter().map(ExprSortMatcher::sort_match).collect();
+            let mut _exprs: Vec<ScoredTerm<Expr>> = par
+                .exprs
+                .iter()
+                .map(|e| ExprSortMatcher::sort_match(e))
+                .collect();
 
             ScoredTerm::sort_vec(&mut _exprs);
             _exprs
         };
 
         let news: Vec<ScoredTerm<New>> = {
-            let mut _news: Vec<ScoredTerm<New>> =
-                par.news.iter().map(NewSortMatcher::sort_match).collect();
+            let mut _news: Vec<ScoredTerm<New>> = par
+                .news
+                .iter()
+                .map(|n| NewSortMatcher::sort_match(n))
+                .collect();
 
             ScoredTerm::sort_vec(&mut _news);
             _news
@@ -57,7 +66,7 @@ impl Sortable<Par> for ParSortMatcher {
             let mut _matches: Vec<ScoredTerm<Match>> = par
                 .matches
                 .iter()
-                .map(MatchSortMatcher::sort_match)
+                .map(|m| MatchSortMatcher::sort_match(m))
                 .collect();
 
             ScoredTerm::sort_vec(&mut _matches);
@@ -68,7 +77,7 @@ impl Sortable<Par> for ParSortMatcher {
             let mut _bundles: Vec<ScoredTerm<Bundle>> = par
                 .bundles
                 .iter()
-                .map(BundleSortMatcher::sort_match)
+                .map(|b| BundleSortMatcher::sort_match(b))
                 .collect();
 
             ScoredTerm::sort_vec(&mut _bundles);
@@ -79,7 +88,7 @@ impl Sortable<Par> for ParSortMatcher {
             let mut _connectives: Vec<ScoredTerm<Connective>> = par
                 .connectives
                 .iter()
-                .map(ConnectiveSortMatcher::sort_match)
+                .map(|c| ConnectiveSortMatcher::sort_match(c))
                 .collect();
 
             ScoredTerm::sort_vec(&mut _connectives);
@@ -90,11 +99,22 @@ impl Sortable<Par> for ParSortMatcher {
             let mut _unforgeables: Vec<ScoredTerm<GUnforgeable>> = par
                 .unforgeables
                 .iter()
-                .map(UnforgeableSortMatcher::sort_match)
+                .map(|gu| UnforgeableSortMatcher::sort_match(gu))
                 .collect();
 
             ScoredTerm::sort_vec(&mut _unforgeables);
             _unforgeables
+        };
+
+        let conditionals: Vec<ScoredTerm<If>> = {
+            let mut _conditionals: Vec<ScoredTerm<If>> = par
+                .conditionals
+                .iter()
+                .map(IfSortMatcher::sort_match)
+                .collect();
+
+            ScoredTerm::sort_vec(&mut _conditionals);
+            _conditionals
         };
 
         let (send_terms, send_scores) = split_scored_terms(sends);
@@ -105,6 +125,7 @@ impl Sortable<Par> for ParSortMatcher {
         let (bundle_terms, bundle_scores) = split_scored_terms(bundles);
         let (connective_terms, connective_scores) = split_scored_terms(connectives);
         let (unforgeable_terms, unforgeable_scores) = split_scored_terms(unforgeables);
+        let (conditional_terms, conditional_scores) = split_scored_terms(conditionals);
 
         let sorted_par = Par {
             sends: send_terms,
@@ -115,6 +136,7 @@ impl Sortable<Par> for ParSortMatcher {
             unforgeables: unforgeable_terms,
             bundles: bundle_terms,
             connectives: connective_terms,
+            conditionals: conditional_terms,
             locally_free: par.locally_free.clone(),
             connective_used: par.connective_used,
         };
@@ -124,6 +146,7 @@ impl Sortable<Par> for ParSortMatcher {
             Score::PAR,
             send_scores
                 .into_iter()
+                .map(|s| s)
                 .chain(
                     receive_scores
                         .into_iter()
@@ -133,6 +156,7 @@ impl Sortable<Par> for ParSortMatcher {
                         .chain(bundle_scores)
                         .chain(connective_scores)
                         .chain(unforgeable_scores)
+                        .chain(conditional_scores)
                         .chain(vec![Tree::<ScoreAtom>::create_leaf_from_i64(
                             connective_used_score,
                         )]),

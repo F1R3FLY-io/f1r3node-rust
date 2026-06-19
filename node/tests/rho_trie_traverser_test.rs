@@ -1,6 +1,5 @@
-// Port of casper/src/test/scala/coop/rchain/node/revvaultexport/
-// RhoTrieTraverserTest.scala 1:1 conversion of the "traverse the TreeHashMap"
-// test
+// Port of casper/src/test/scala/coop/rchain/node/revvaultexport/RhoTrieTraverserTest.scala
+// 1:1 conversion of the "traverse the TreeHashMap" test
 
 use casper::rust::genesis::contracts::standard_deploys;
 use casper::rust::rholang::runtime::RuntimeOps;
@@ -15,9 +14,8 @@ use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 
 const _SHARD_ID: &str = "root-shard";
 
-/// 1:1 port of RhoTrieTraverserTest.scala - "traverse the TreeHashMap" should
-/// "work"
-#[tokio::test]
+/// 1:1 port of RhoTrieTraverserTest.scala - "traverse the TreeHashMap" should "work"
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn traverse_the_tree_hash_map_should_work() {
     let total = 1;
     let trie_depth = 2;
@@ -85,8 +83,7 @@ new
         // Wrap runtime with RuntimeOps to access higher-level operations
         let mut runtime_ops = RuntimeOps::new(runtime);
 
-        // 1. Obtain empty state hash (includes fixed registry channels according to
-        //    Scala test)
+        // 1. Obtain empty state hash (includes fixed registry channels according to Scala test)
         let hash1 = runtime_ops
             .empty_state_hash()
             .await
@@ -97,20 +94,21 @@ new
         runtime_ops
             .runtime
             .reset(&empty_hash_b2)
+            .await
             .expect("Failed to reset runtime to empty state");
 
-        // Bootstrap registry directly (avoids heavy Registry.rho deploy which overflows
-        // stack)
+        // Bootstrap registry directly (avoids heavy Registry.rho deploy which overflows stack)
         runtime_ops
             .process_deploy(standard_deploys::registry(_SHARD_ID))
             .await
             .expect("Failed to process registry deploy");
 
         // 4. Create a checkpoint and reset to it – aligns with Scala test
-        let check = runtime_ops.runtime.create_checkpoint();
+        let check = runtime_ops.runtime.create_checkpoint().await;
         runtime_ops
             .runtime
             .reset(&check.root)
+            .await
             .expect("Failed to reset runtime to first checkpoint");
 
         // 5. Create deploy that initializes the TreeHashMap
@@ -136,11 +134,11 @@ new
         );
 
         // 6. Create second checkpoint (before exploratory deploy)
-        let check2 = runtime_ops.runtime.create_checkpoint();
+        let check2 = runtime_ops.runtime.create_checkpoint().await;
 
         // 7. Run exploratory deploy to obtain the trie map handle
         let check2_root_bytes = check2.root.to_bytes_prost();
-        let trie_map_handle_r = runtime_ops
+        let (trie_map_handle_r, _cost) = runtime_ops
             .play_exploratory_deploy(get_trie_map_handle_rho.to_string(), &check2_root_bytes)
             .await
             .expect("Failed to play exploratory deploy");
@@ -154,6 +152,7 @@ new
         runtime_ops
             .runtime
             .reset(&check2.root)
+            .await
             .expect("Failed to reset runtime to second checkpoint");
 
         // 9. Retrieve trie map handle (first element)
@@ -162,6 +161,7 @@ new
         // 10. Traverse trie and collect maps
         let maps =
             RhoTrieTraverser::traverse_trie(trie_depth, trie_map_handle, &runtime_ops.runtime)
+                .await
                 .expect("Failed to traverse trie");
 
         // 11. Convert collected ParMaps to HashMap<Vec<u8>, i64>
@@ -212,8 +212,7 @@ new
                                     .map(|(k, v)| (hex::encode(k), *v))
                                     .collect::<Vec<(String, i64)>>()
                             );
-                            //panic!("Key '{}' not found in traversed trie
-                            // map", key);
+                            //panic!("Key '{}' not found in traversed trie map", key);
                         }
                     }
                 }

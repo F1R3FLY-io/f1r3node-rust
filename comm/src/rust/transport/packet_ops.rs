@@ -152,8 +152,7 @@ impl PacketExt for Packet {
     }
 }
 
-// See comm/src/test/scala/coop/rchain/comm/transport/PacketStoreRestoreSpec.
-// scala
+// See comm/src/test/scala/coop/rchain/comm/transport/PacketStoreRestoreSpec.scala
 
 #[cfg(test)]
 mod tests {
@@ -233,8 +232,7 @@ mod tests {
 
     #[test]
     fn test_timestamp_uniqueness() {
-        // Generate multiple timestamps quickly - they should be unique due to random
-        // component
+        // Generate multiple timestamps quickly - they should be unique due to random component
         let mut timestamps = std::collections::HashSet::new();
         for _ in 0..10 {
             let ts = PacketOps::timestamp();

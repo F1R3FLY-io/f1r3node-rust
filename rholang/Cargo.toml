@@ -1,8 +1,8 @@
 [package]
 name = "rholang"
 version = "0.1.0"
-publish = false  # internal workspace crate; not published to crates.io
 edition = "2021"
+publish = false
 
 [lib]
 crate-type = ["cdylib", "rlib"]
@@ -16,6 +16,7 @@ path = "src/rholang_cli.rs"
 [dependencies]
 crypto = { path = "../crypto" }
 models = { path = "../models" }
+rho-pure-eval = { path = "../rho-pure-eval" }
 shared = { path = "../shared" }
 rspace_plus_plus = { path = "../rspace++" }
 itertools = { workspace = true }
@@ -42,7 +43,7 @@ indexmap = "2.8.0"
 rayon = "1.10.0"
 tempfile = "3.19.1"
 clap = { version = "4.5", features = ["derive"] }
-rholang-parser = { git = "https://github.com/F1R3FLY-io/rholang-rs", rev = "d25f953a" }
+rholang-parser = { git = "https://github.com/F1R3FLY-io/rholang-rs", rev = "c163755" }
 validated = "1.0.0"
 smallvec = { version = "1.15.1", features = [
 	"union",
@@ -61,6 +62,14 @@ metrics = { workspace = true }
 stacker = { workspace = true }
 reqwest = { version = "0.11", features = ["json"] }
 serde_json = { workspace = true }
+rust-bert = { version = "0.23.0", optional = true }
+console = "0.16.0"
+anyhow = "1.0.100"
+chroma = { version = "0.10.0", optional = true }
+async-trait = { workspace = true }
 
 [build-dependencies]
 cc = "1.0"
+
+[features]
+chromadb = ["dep:chroma", "dep:rust-bert"]

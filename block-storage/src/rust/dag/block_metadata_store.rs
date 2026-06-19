@@ -1,12 +1,16 @@
-// See block-storage/src/main/scala/coop/rchain/blockstorage/dag/
-// BlockMetadataStore.scala
+// See block-storage/src/main/scala/coop/rchain/blockstorage/dag/BlockMetadataStore.scala
 
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 use models::rust::block_hash::{BlockHash, BlockHashSerde};
 use models::rust::block_metadata::BlockMetadata;
 use models::rust::casper::pretty_printer::PrettyPrinter;
+// Slashing-critical DagState lock is held inside the
+// `BlockDagKeyValueStorage::get_representation_internal` RMW chain;
+// migrating to `parking_lot::RwLock` aligns it with the parent
+// crate's parking_lot migration (P1-3, slashing audit).
+use parking_lot::RwLock;
 use shared::rust::store::key_value_store::KvStoreError;
 use shared::rust::store::key_value_typed_store::KeyValueTypedStore;
 use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
@@ -35,8 +39,7 @@ pub(crate) struct DagState {
     pub(crate) finalized_block_set: imbl::HashSet<BlockHash>,
 }
 
-// Keep the in-memory finalized set bounded; finalized truth is persisted in
-// block metadata.
+// Keep the in-memory finalized set bounded; finalized truth is persisted in block metadata.
 const FINALIZED_BLOCK_CACHE_MAX: usize = 50_000;
 const FINALIZED_BLOCK_CACHE_RETAIN: usize = 25_000;
 
@@ -148,12 +151,13 @@ impl BlockMetadataStore {
         Ok(())
     }
 
-    /** Record new last finalized lock. Directly finalized is the output of
-     * finalizer, indirectly finalized are new LFB ancestors. */
+    /** Record new last finalized lock. Directly finalized is the output of finalizer,
+     * indirectly finalized are new LFB ancestors. */
     pub fn record_finalized(
         &mut self,
         directly: BlockHash,
         indirectly: HashSet<BlockHash>,
+        ft_value: f32,
     ) -> Result<(), KvStoreError> {
         let indirectly_serde: Vec<BlockHashSerde> = indirectly
             .iter()
@@ -166,17 +170,23 @@ impl BlockMetadataStore {
         let mut new_meta_for_df = self.store.get_unsafe(&BlockHashSerde(directly.clone()))?;
         new_meta_for_df.finalized = true;
         new_meta_for_df.directly_finalized = true;
+        if ft_value > new_meta_for_df.fault_tolerance_value {
+            new_meta_for_df.fault_tolerance_value = ft_value;
+        }
 
         let new_metas_for_if: Vec<(BlockHashSerde, BlockMetadata)> = cur_metas_for_if
             .into_iter()
             .map(|mut v| {
                 v.finalized = true;
+                if v.fault_tolerance_value < ft_value {
+                    v.fault_tolerance_value = ft_value;
+                }
                 (BlockHashSerde(v.block_hash.clone()), v)
             })
             .collect();
 
         // Add all blocks to finalized set
-        let mut dag_state_guard = self.dag_state.write().unwrap();
+        let mut dag_state_guard = self.dag_state.write();
         for hash in indirectly {
             dag_state_guard.finalized_block_set.insert(hash);
         }
@@ -202,6 +212,41 @@ impl BlockMetadataStore {
         Ok(())
     }
 
+    pub fn update_ft_if_higher(
+        &mut self,
+        block_hashes: HashSet<BlockHash>,
+        ft_value: f32,
+    ) -> Result<(), KvStoreError> {
+        let serde_keys: Vec<BlockHashSerde> = block_hashes
+            .iter()
+            .map(|h| BlockHashSerde(h.clone()))
+            .collect();
+        let metas = self.store.get_batch(&serde_keys)?;
+
+        let updates: Vec<(BlockHashSerde, BlockMetadata)> = metas
+            .into_iter()
+            .filter(|m| m.fault_tolerance_value < ft_value)
+            .map(|mut m| {
+                m.fault_tolerance_value = ft_value;
+                (BlockHashSerde(m.block_hash.clone()), m)
+            })
+            .collect();
+
+        if !updates.is_empty() {
+            self.store.put(updates)?;
+        }
+        Ok(())
+    }
+
+    pub fn finalized_block_hashes(&self) -> HashSet<BlockHash> {
+        self.dag_state
+            .read()
+            .finalized_block_set
+            .iter()
+            .cloned()
+            .collect()
+    }
+
     pub fn get(&self, hash: &BlockHash) -> Result<Option<BlockMetadata>, KvStoreError> {
         self.store.get_one(&BlockHashSerde(hash.clone()))
     }
@@ -210,7 +255,7 @@ impl BlockMetadataStore {
         self.get(hash)?.ok_or_else(|| {
             KvStoreError::KeyNotFound(format!(
                 "BlockMetadataStore is missing key {}",
-                PrettyPrinter::build_string_bytes(hash)
+                PrettyPrinter::build_string_bytes(&hash.to_vec())
             ))
         })
     }
@@ -219,54 +264,44 @@ impl BlockMetadataStore {
 
     pub(crate) fn dag_state(&self) -> &Arc<RwLock<DagState>> { &self.dag_state }
 
-    pub fn dag_set(&self) -> imbl::HashSet<BlockHash> {
-        self.dag_state.read().unwrap().dag_set.clone()
-    }
+    pub fn dag_set(&self) -> imbl::HashSet<BlockHash> { self.dag_state.read().dag_set.clone() }
 
     pub fn contains(&self, hash: &BlockHash) -> bool {
-        self.dag_state.read().unwrap().dag_set.contains(hash)
+        self.dag_state.read().dag_set.contains(hash)
     }
 
     pub fn child_map(&self) -> imbl::HashMap<BlockHash, imbl::HashSet<BlockHash>> {
-        self.dag_state.read().unwrap().child_map.clone()
+        self.dag_state.read().child_map.clone()
     }
 
     pub fn height_map(&self) -> imbl::OrdMap<i64, imbl::HashSet<BlockHash>> {
-        self.dag_state.read().unwrap().height_map.clone()
+        self.dag_state.read().height_map.clone()
     }
 
     pub fn block_number_map(&self) -> imbl::HashMap<BlockHash, i64> {
-        self.dag_state.read().unwrap().block_number_map.clone()
+        self.dag_state.read().block_number_map.clone()
     }
 
     pub fn main_parent_map(&self) -> imbl::HashMap<BlockHash, BlockHash> {
-        self.dag_state.read().unwrap().main_parent_map.clone()
+        self.dag_state.read().main_parent_map.clone()
     }
 
     pub fn self_justification_map(&self) -> imbl::HashMap<BlockHash, BlockHash> {
-        self.dag_state
-            .read()
-            .unwrap()
-            .self_justification_map
-            .clone()
+        self.dag_state.read().self_justification_map.clone()
     }
 
     pub fn last_finalized_block(&self) -> BlockHash {
         self.dag_state
             .read()
-            .unwrap()
             .last_finalized_block
             .as_ref()
-            .expect(
-                "DagState does not contain lastFinalizedBlock. Are you calling this on empty \
-                 BlockDagStorage? Otherwise there is a bug.",
-            )
+            .expect("DagState does not contain lastFinalizedBlock. Are you calling this on empty BlockDagStorage? Otherwise there is a bug.")
             .0
             .clone()
     }
 
     pub fn finalized_block_set(&self) -> imbl::HashSet<BlockHash> {
-        self.dag_state.read().unwrap().finalized_block_set.clone()
+        self.dag_state.read().finalized_block_set.clone()
     }
 
     fn add_block_to_dag_state(
@@ -274,7 +309,7 @@ impl BlockMetadataStore {
         block_info: BlockInfo,
     ) -> Arc<RwLock<DagState>> {
         let hash = &block_info.hash;
-        let mut state_guard = state.write().unwrap();
+        let mut state_guard = state.write();
 
         // Update dag set / all blocks in the DAG
         state_guard.dag_set.insert(hash.clone());
@@ -342,7 +377,7 @@ impl BlockMetadataStore {
     }
 
     fn validate_dag_state(dag_state: Arc<RwLock<DagState>>) -> Arc<RwLock<DagState>> {
-        let dag_state_guard = dag_state.read().unwrap();
+        let dag_state_guard = dag_state.read();
         let height_map = &dag_state_guard.height_map;
         // Validate height map index (block numbers) are in sequence without holes
         let (min, max) = if !height_map.is_empty() {

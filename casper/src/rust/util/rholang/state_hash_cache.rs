@@ -1,5 +1,4 @@
-// See casper/src/main/scala/coop/rchain/casper/util/rholang/StateHashCache.
-// scala
+// See casper/src/main/scala/coop/rchain/casper/util/rholang/StateHashCache.scala
 
 use std::sync::Mutex;
 

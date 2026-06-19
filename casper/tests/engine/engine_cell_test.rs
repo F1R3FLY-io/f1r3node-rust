@@ -199,10 +199,9 @@ async fn test_concurrent_reads_are_safe() {
     // Verify all tasks completed
     assert_eq!(results.len(), NUM_READERS);
 
-    // Note: We can't verify engine calls in spawned tasks due to non-Send
-    // futures limitation The test verifies that concurrent reads are safe
-    // (no panics or deadlocks) The engine call verification is commented
-    // out in the spawned tasks above
+    // Note: We can't verify engine calls in spawned tasks due to non-Send futures limitation
+    // The test verifies that concurrent reads are safe (no panics or deadlocks)
+    // The engine call verification is commented out in the spawned tasks above
 }
 
 #[tokio::test]
@@ -472,7 +471,6 @@ async fn test_engine_with_casper_behavior() {
         "TestEngine should return None from with_casper (simulates NoopEngine)"
     );
 
-    // Note: In real implementation, engines like Running or EngineWithCasper
-    // would return Some(casper) but for test engines, we keep it simple and
-    // return None to match NoopEngine behavior
+    // Note: In real implementation, engines like Running or EngineWithCasper would return Some(casper)
+    // but for test engines, we keep it simple and return None to match NoopEngine behavior
 }

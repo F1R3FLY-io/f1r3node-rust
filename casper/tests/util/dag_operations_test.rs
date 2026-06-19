@@ -15,16 +15,14 @@ use crate::helper::block_generator::{create_block, create_genesis_block};
 
 #[test]
 fn bf_traverse_f_should_lazily_breadth_first_traverse_a_dag_with_effectful_neighbours() {
-    // Port of Scala test: val stream = DagOps.bfTraverseF[Id, Int](List(1))(i =>
-    // List(i * 2, i * 3)) stream.take(10).toList shouldBe List(1, 2, 3, 4, 6,
-    // 9, 8, 12, 18, 27)
+    // Port of Scala test: val stream = DagOps.bfTraverseF[Id, Int](List(1))(i => List(i * 2, i * 3))
+    // stream.take(10).toList shouldBe List(1, 2, 3, 4, 6, 9, 8, 12, 18, 27)
     //
-    // Key difference: Scala's StreamT is lazy - it generates elements only when
-    // needed. When .take(10) is called, the stream stops after producing
-    // exactly 10 elements. Rust's bf_traverse is eager - it tries to traverse
-    // the entire graph before returning. Since the graph i -> [i*2, i*3] is
-    // infinite, we need to limit neighbor generation to simulate the lazy
-    // behavior and prevent infinite traversal/overflow.
+    // Key difference: Scala's StreamT is lazy - it generates elements only when needed.
+    // When .take(10) is called, the stream stops after producing exactly 10 elements.
+    // Rust's bf_traverse is eager - it tries to traverse the entire graph before returning.
+    // Since the graph i -> [i*2, i*3] is infinite, we need to limit neighbor generation
+    // to simulate the lazy behavior and prevent infinite traversal/overflow.
 
     let neighbors = |i: &i32| vec![i * 2, i * 3];
 
@@ -181,7 +179,9 @@ async fn lowest_common_universal_ancestor_should_be_computed_properly() {
             block_metadata_to_block_hash(&b8),
         ]);
 
-        let dag = block_dag_storage.get_representation();
+        let dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
 
         let result = DagOperations::lowest_universal_common_ancestor(&b1, &b5, &dag)
             .await
@@ -416,7 +416,9 @@ async fn uncommon_ancestors_should_be_computed_properly() {
             None,
         );
 
-        let dag = block_dag_storage.get_representation();
+        let dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
 
         let b1_meta = to_metadata(&b1);
         let b2_meta = to_metadata(&b2);

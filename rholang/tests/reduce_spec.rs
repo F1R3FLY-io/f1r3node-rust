@@ -1,6 +1,6 @@
 // See rholang/src/test/scala/coop/rchain/rholang/interpreter/ReduceSpec.scala
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::i64;
 use std::sync::Arc;
 
@@ -22,9 +22,10 @@ use models::rust::par_set_type_mapper::ParSetTypeMapper;
 use models::rust::rholang::implicits::GPrivateBuilder;
 use models::rust::string_ops::StringOps;
 use models::rust::utils::{
-    new_boundvar_par, new_bundle_par, new_elist_expr, new_elist_par, new_eplus_par_gint,
-    new_etuple_par, new_freevar_par, new_freevar_var, new_gbool_expr, new_gbool_par, new_gint_expr,
-    new_gint_par, new_gstring_expr, new_gstring_par, new_wildcard_par,
+    new_boundvar_par, new_bundle_par, new_elist_expr, new_elist_par, new_eplus_par,
+    new_eplus_par_gint, new_etuple_par, new_freevar_par, new_freevar_var, new_gbool_expr,
+    new_gbool_par, new_gint_expr, new_gint_par, new_gstring_expr, new_gstring_par,
+    new_wildcard_par,
 };
 use prost::Message;
 use rholang::rust::interpreter::accounting::cost_accounting::CostAccounting;
@@ -86,6 +87,7 @@ fn check_continuation(
             &bind_patterns,
             &TaggedContinuation {
                 tagged_cont: Some(TaggedCont::ParBody(body)),
+                guard: None,
             },
             false,
             BTreeSet::new(),
@@ -109,7 +111,7 @@ fn check_continuation(
     true
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn eval_expr_should_handle_simple_addition() {
     let (_, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
@@ -123,7 +125,7 @@ async fn eval_expr_should_handle_simple_addition() {
     assert_eq!(result.unwrap().exprs, expected);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn eval_expr_should_handle_long_addition() {
     let (_, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
@@ -137,7 +139,7 @@ async fn eval_expr_should_handle_long_addition() {
     assert_eq!(result.unwrap().exprs, expected);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn eval_expr_should_handle_simple_division() {
     let (_, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
@@ -156,7 +158,7 @@ async fn eval_expr_should_handle_simple_division() {
     assert_eq!(result.unwrap().exprs, expected);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn eval_expr_should_return_error_for_division_by_zero() {
     let (_, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
@@ -177,7 +179,7 @@ async fn eval_expr_should_return_error_for_division_by_zero() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn eval_expr_should_handle_simple_modulo() {
     let (_, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
@@ -196,7 +198,7 @@ async fn eval_expr_should_handle_simple_modulo() {
     assert_eq!(result.unwrap().exprs, expected);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn eval_expr_should_return_error_for_modulo_by_zero() {
     let (_, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
@@ -217,7 +219,7 @@ async fn eval_expr_should_return_error_for_modulo_by_zero() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn eval_expr_should_handle_simple_multiplication() {
     let (_, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
@@ -236,7 +238,7 @@ async fn eval_expr_should_handle_simple_multiplication() {
     assert_eq!(result.unwrap().exprs, expected);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn eval_expr_should_return_error_for_multiplication_overflow() {
     let (_, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
@@ -257,7 +259,7 @@ async fn eval_expr_should_return_error_for_multiplication_overflow() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn eval_expr_should_handle_simple_subtraction() {
     let (_, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
@@ -276,7 +278,7 @@ async fn eval_expr_should_handle_simple_subtraction() {
     assert_eq!(result.unwrap().exprs, expected);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn eval_expr_should_handle_simple_negation() {
     let (_, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
@@ -294,7 +296,7 @@ async fn eval_expr_should_handle_simple_negation() {
     assert_eq!(result.unwrap().exprs, expected);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn eval_expr_should_return_error_for_negation_overflow() {
     let (_, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
@@ -314,7 +316,7 @@ async fn eval_expr_should_return_error_for_negation_overflow() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn eval_expr_should_return_error_for_division_overflow() {
     let (_, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
@@ -335,7 +337,7 @@ async fn eval_expr_should_return_error_for_division_overflow() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn eval_expr_should_leave_ground_values_alone() {
     let (_, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
@@ -349,7 +351,7 @@ async fn eval_expr_should_leave_ground_values_alone() {
     assert_eq!(result.unwrap().exprs, expected);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn eval_expr_should_handle_equality_between_arbitary_processes() {
     let (_, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
@@ -372,7 +374,7 @@ async fn eval_expr_should_handle_equality_between_arbitary_processes() {
     assert_eq!(result.unwrap().exprs, expected);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn eval_expr_should_substitute_before_comparison() {
     let (_, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
@@ -396,7 +398,7 @@ async fn eval_expr_should_substitute_before_comparison() {
     assert_eq!(result.unwrap().exprs, expected);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn eval_of_bundle_should_evaluate_contents_of_bundle() {
     let (space, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
@@ -436,12 +438,12 @@ async fn eval_of_bundle_should_evaluate_contents_of_bundle() {
         ),
     );
     let expected_result = map_data(expected_elements);
-    assert_eq!(space.to_map(), expected_result);
+    assert_eq!(space.to_map().await, expected_result);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn eval_of_bundle_should_throw_an_error_if_names_are_used_against_their_polarity_1() {
-    let (space, reducer) =
+    let (_space, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
             .await;
 
@@ -461,13 +463,11 @@ async fn eval_of_bundle_should_throw_an_error_if_names_are_used_against_their_po
         bind_count: 0,
         locally_free: Vec::new(),
         connective_used: false,
+        condition: None,
     }]);
 
     let env: Env<Par> = Env::new();
-    let result = reducer
-        .eval(receive, &env, rand())
-        .await
-        .map(|_| space.to_map());
+    let result = reducer.eval(receive, &env, rand()).await;
     assert!(result.is_err());
     if let Err(e) = result {
         assert_eq!(
@@ -479,9 +479,9 @@ async fn eval_of_bundle_should_throw_an_error_if_names_are_used_against_their_po
     }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn eval_of_bundle_should_throw_an_error_if_names_are_used_against_their_polarity_2() {
-    let (space, reducer) =
+    let (_space, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
             .await;
 
@@ -497,10 +497,7 @@ async fn eval_of_bundle_should_throw_an_error_if_names_are_used_against_their_po
     }]);
 
     let env: Env<Par> = Env::new();
-    let result = reducer
-        .eval(send, &env, rand())
-        .await
-        .map(|_| space.to_map());
+    let result = reducer.eval(send, &env, rand()).await;
     assert!(result.is_err());
     if let Err(e) = result {
         assert_eq!(
@@ -510,7 +507,7 @@ async fn eval_of_bundle_should_throw_an_error_if_names_are_used_against_their_po
     }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn eval_of_send_should_place_something_in_the_tuplespace() {
     let (space, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
@@ -531,12 +528,9 @@ async fn eval_of_send_should_place_something_in_the_tuplespace() {
     }]);
 
     let env: Env<Par> = Env::new();
-    let result = reducer
-        .eval(send, &env, split_rand.clone())
-        .await
-        .map(|_| space.to_map());
+    reducer.eval(send, &env, split_rand.clone()).await.unwrap();
 
-    assert!(result.is_ok());
+    let result = space.to_map().await;
     let mut expected_elements = HashMap::new();
     expected_elements.insert(
         channel,
@@ -550,10 +544,10 @@ async fn eval_of_send_should_place_something_in_the_tuplespace() {
         ),
     );
     let expected_result = map_data(expected_elements);
-    assert_eq!(result.unwrap(), expected_result);
+    assert_eq!(result, expected_result);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn eval_of_send_should_verify_that_bundle_is_writeable_before_sending_on_bundle() {
     let (space, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
@@ -573,22 +567,19 @@ async fn eval_of_send_should_verify_that_bundle_is_writeable_before_sending_on_b
     }]);
 
     let env: Env<Par> = Env::new();
-    let result = reducer
-        .eval(send, &env, split_rand.clone())
-        .await
-        .map(|_| space.to_map());
+    reducer.eval(send, &env, split_rand.clone()).await.unwrap();
 
-    assert!(result.is_ok());
+    let result = space.to_map().await;
     let mut expected_elements = HashMap::new();
     expected_elements.insert(
         channel,
         (vec![new_gint_par(7, Vec::new(), false)], split_rand),
     );
     let expected_result = map_data(expected_elements);
-    assert_eq!(result.unwrap(), expected_result);
+    assert_eq!(result, expected_result);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn eval_of_single_channel_receive_should_place_something_in_the_tuplespace() {
     let (space, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
@@ -613,15 +604,16 @@ async fn eval_of_single_channel_receive_should_place_something_in_the_tuplespace
         bind_count: 3,
         locally_free: Vec::new(),
         connective_used: false,
+        condition: None,
     }]);
 
     let env: Env<Par> = Env::new();
-    let result = reducer
+    reducer
         .eval(receive, &env, split_rand.clone())
         .await
-        .map(|_| space.to_map());
+        .unwrap();
 
-    assert!(result.is_ok());
+    let result = space.to_map().await;
     let bind_pattern = BindPattern {
         patterns: vec![
             new_freevar_par(0, Vec::new()),
@@ -633,7 +625,7 @@ async fn eval_of_single_channel_receive_should_place_something_in_the_tuplespace
     };
 
     assert!(check_continuation(
-        result.unwrap(),
+        result,
         vec![channel],
         vec![bind_pattern],
         ParWithRandom {
@@ -643,7 +635,7 @@ async fn eval_of_single_channel_receive_should_place_something_in_the_tuplespace
     ))
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn eval_of_single_channel_receive_should_verify_that_bundle_is_readable_if_receiving_on_bundle(
 ) {
     let (space, reducer) =
@@ -668,22 +660,23 @@ async fn eval_of_single_channel_receive_should_verify_that_bundle_is_readable_if
         bind_count: 0,
         locally_free: Vec::new(),
         connective_used: false,
+        condition: None,
     }]);
 
     let env: Env<Par> = Env::new();
-    let result = reducer
+    reducer
         .eval(receive, &env, split_rand.clone())
         .await
-        .map(|_| space.to_map());
+        .unwrap();
 
-    assert!(result.is_ok());
+    let result = space.to_map().await;
     assert!(check_continuation(
-        result.unwrap(),
+        result,
         vec![y],
         vec![BindPattern {
             patterns: vec![Par::default()],
             remainder: None,
-            free_count: 0
+            free_count: 0,
         }],
         ParWithRandom {
             body: Some(Par::default()),
@@ -692,7 +685,7 @@ async fn eval_of_single_channel_receive_should_verify_that_bundle_is_readable_if
     ))
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn eval_of_send_pipe_receive_should_meet_in_the_tuple_space_and_proceed() {
     let (space, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
@@ -736,6 +729,7 @@ async fn eval_of_send_pipe_receive_should_meet_in_the_tuple_space_and_proceed() 
         bind_count: 3,
         locally_free: Vec::new(),
         connective_used: false,
+        condition: None,
     }]);
 
     let env: Env<Par> = Env::new();
@@ -748,7 +742,7 @@ async fn eval_of_send_pipe_receive_should_meet_in_the_tuple_space_and_proceed() 
         .await
         .is_ok());
 
-    let send_result = space.to_map();
+    let send_result = space.to_map().await;
     let mut expected_elements = HashMap::new();
     expected_elements.insert(
         new_gstring_par(String::from("result"), Vec::new(), false),
@@ -768,11 +762,11 @@ async fn eval_of_send_pipe_receive_should_meet_in_the_tuple_space_and_proceed() 
         .is_ok());
     assert!(reducer.eval(send, &env, split_rand0.clone()).await.is_ok());
 
-    let receive_result = space.to_map();
+    let receive_result = space.to_map().await;
     assert_eq!(receive_result, map_data(expected_elements));
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn eval_of_send_pipe_receive_with_peek_should_meet_in_the_tuple_space_and_proceed() {
     let (space, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
@@ -820,6 +814,7 @@ async fn eval_of_send_pipe_receive_with_peek_should_meet_in_the_tuple_space_and_
         bind_count: 3,
         locally_free: Vec::new(),
         connective_used: false,
+        condition: None,
     }]);
 
     let mut expected_elements = HashMap::new();
@@ -852,7 +847,7 @@ async fn eval_of_send_pipe_receive_with_peek_should_meet_in_the_tuple_space_and_
         .await
         .is_ok());
 
-    let send_result = space.to_map();
+    let send_result = space.to_map().await;
     assert_eq!(send_result, map_data(expected_elements.clone()));
 
     let (space, reducer) =
@@ -864,11 +859,11 @@ async fn eval_of_send_pipe_receive_with_peek_should_meet_in_the_tuple_space_and_
         .is_ok());
     assert!(reducer.eval(send, &env, split_rand0.clone()).await.is_ok());
 
-    let receive_result = space.to_map();
+    let receive_result = space.to_map().await;
     assert_eq!(receive_result, map_data(expected_elements));
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn eval_of_send_pipe_receive_when_whole_list_is_bound_to_list_remainder_should_meet_in_the_tuple_space_and_proceed(
 ) {
     let (space, reducer) =
@@ -927,6 +922,7 @@ async fn eval_of_send_pipe_receive_when_whole_list_is_bound_to_list_remainder_sh
         bind_count: 1,
         locally_free: Vec::new(),
         connective_used: false,
+        condition: None,
     }]);
 
     let env: Env<Par> = Env::new();
@@ -939,7 +935,7 @@ async fn eval_of_send_pipe_receive_when_whole_list_is_bound_to_list_remainder_sh
         .await
         .is_ok());
 
-    let send_result = space.to_map();
+    let send_result = space.to_map().await;
 
     let mut expected_elements = HashMap::new();
     expected_elements.insert(
@@ -960,11 +956,11 @@ async fn eval_of_send_pipe_receive_when_whole_list_is_bound_to_list_remainder_sh
         .is_ok());
     assert!(reducer.eval(send, &env, split_rand0.clone()).await.is_ok());
 
-    let receive_result = space.to_map();
+    let receive_result = space.to_map().await;
     assert_eq!(receive_result, map_data(expected_elements));
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn eval_of_send_on_seven_plus_eight_pipe_receive_on_fifteen_should_meet_in_the_tuple_space_and_proceed(
 ) {
     let (space, reducer) =
@@ -1010,6 +1006,7 @@ async fn eval_of_send_on_seven_plus_eight_pipe_receive_on_fifteen_should_meet_in
         bind_count: 3,
         locally_free: Vec::new(),
         connective_used: false,
+        condition: None,
     }]);
 
     let env: Env<Par> = Env::new();
@@ -1022,7 +1019,7 @@ async fn eval_of_send_on_seven_plus_eight_pipe_receive_on_fifteen_should_meet_in
         .await
         .is_ok());
 
-    let send_result = space.to_map();
+    let send_result = space.to_map().await;
 
     let mut expected_elements = HashMap::new();
     expected_elements.insert(
@@ -1043,11 +1040,11 @@ async fn eval_of_send_on_seven_plus_eight_pipe_receive_on_fifteen_should_meet_in
         .is_ok());
     assert!(reducer.eval(send, &env, split_rand0.clone()).await.is_ok());
 
-    let receive_result = space.to_map();
+    let receive_result = space.to_map().await;
     assert_eq!(receive_result, map_data(expected_elements));
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn eval_of_send_of_receive_pipe_receive_should_meet_in_the_tuple_space_and_proceed() {
     let (space, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
@@ -1071,6 +1068,7 @@ async fn eval_of_send_of_receive_pipe_receive_should_meet_in_the_tuple_space_and
         bind_count: 0,
         locally_free: Vec::new(),
         connective_used: false,
+        condition: None,
     }]);
 
     let send = Par::default().with_sends(vec![Send {
@@ -1094,6 +1092,7 @@ async fn eval_of_send_of_receive_pipe_receive_should_meet_in_the_tuple_space_and
         bind_count: 1,
         locally_free: Vec::new(),
         connective_used: false,
+        condition: None,
     }]);
 
     let env: Env<Par> = Env::new();
@@ -1106,7 +1105,7 @@ async fn eval_of_send_of_receive_pipe_receive_should_meet_in_the_tuple_space_and
         .await
         .is_ok());
 
-    let send_result = space.to_map();
+    let send_result = space.to_map().await;
     let channels = vec![new_gint_par(2, Vec::new(), false)];
     // Because they are evaluated separately, nothing is split.
     assert!(check_continuation(
@@ -1132,7 +1131,7 @@ async fn eval_of_send_of_receive_pipe_receive_should_meet_in_the_tuple_space_and
         .is_ok());
     assert!(reducer.eval(send, &env, split_rand0.clone()).await.is_ok());
 
-    let receive_result = space.to_map();
+    let receive_result = space.to_map().await;
     assert!(check_continuation(
         receive_result,
         channels.clone(),
@@ -1163,6 +1162,7 @@ async fn eval_of_send_of_receive_pipe_receive_should_meet_in_the_tuple_space_and
         bind_count: 1,
         locally_free: Vec::new(),
         connective_used: false,
+        condition: None,
     }]);
     par_param = par_param.with_sends(vec![Send {
         chan: Some(new_gint_par(1, Vec::new(), false)),
@@ -1173,7 +1173,7 @@ async fn eval_of_send_of_receive_pipe_receive_should_meet_in_the_tuple_space_and
     }]);
     assert!(reducer.eval(par_param, &env, base_rand).await.is_ok());
 
-    let both_result = space.to_map();
+    let both_result = space.to_map().await;
     assert!(check_continuation(
         both_result,
         channels,
@@ -1189,7 +1189,7 @@ async fn eval_of_send_of_receive_pipe_receive_should_meet_in_the_tuple_space_and
     ));
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn simple_match_should_capture_and_add_to_the_environment() {
     let (space, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
@@ -1234,6 +1234,7 @@ async fn simple_match_should_capture_and_add_to_the_environment() {
                 connective_used: false,
             }])),
             free_count: 2,
+            guard: None,
         }],
         locally_free: Vec::new(),
         connective_used: false,
@@ -1247,7 +1248,7 @@ async fn simple_match_should_capture_and_add_to_the_environment() {
         .await
         .is_ok());
 
-    let match_result = space.to_map();
+    let match_result = space.to_map().await;
     let mut expected_elements = HashMap::new();
     expected_elements.insert(
         new_gstring_par("result".to_string(), Vec::new(), false),
@@ -1262,7 +1263,7 @@ async fn simple_match_should_capture_and_add_to_the_environment() {
     assert_eq!(match_result, map_data(expected_elements));
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn eval_of_send_pipe_send_pipe_receive_join_should_meet_in_tuplespace_and_proceed() {
     let (space, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
@@ -1336,6 +1337,7 @@ async fn eval_of_send_pipe_send_pipe_receive_join_should_meet_in_tuplespace_and_
         bind_count: 3,
         locally_free: Vec::new(),
         connective_used: false,
+        condition: None,
     }]);
 
     assert!(reducer
@@ -1351,7 +1353,7 @@ async fn eval_of_send_pipe_send_pipe_receive_join_should_meet_in_tuplespace_and_
         .await
         .is_ok());
 
-    let send_result = space.to_map();
+    let send_result = space.to_map().await;
     let mut expected_elements = HashMap::new();
     expected_elements.insert(
         new_gstring_par("result".to_string(), Vec::new(), false),
@@ -1378,7 +1380,7 @@ async fn eval_of_send_pipe_send_pipe_receive_join_should_meet_in_tuplespace_and_
         .await
         .is_ok());
 
-    let receive_result = space.to_map();
+    let receive_result = space.to_map().await;
     assert_eq!(receive_result, map_data(expected_elements.clone()));
 
     let (space, reducer) =
@@ -1397,11 +1399,11 @@ async fn eval_of_send_pipe_send_pipe_receive_join_should_meet_in_tuplespace_and_
         .await
         .is_ok());
 
-    let inter_leaved_result = space.to_map();
+    let inter_leaved_result = space.to_map().await;
     assert_eq!(inter_leaved_result, map_data(expected_elements));
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn eval_of_send_with_remainder_receive_should_capture_the_remainder() {
     let (space, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
@@ -1442,6 +1444,7 @@ async fn eval_of_send_with_remainder_receive_should_capture_the_remainder() {
         bind_count: 0,
         locally_free: Vec::new(),
         connective_used: false,
+        condition: None,
     }]);
 
     let env = Env::new();
@@ -1454,7 +1457,7 @@ async fn eval_of_send_with_remainder_receive_should_capture_the_remainder() {
         .await
         .is_ok());
 
-    let result = space.to_map();
+    let result = space.to_map().await;
     let mut expected_elements = HashMap::new();
     expected_elements.insert(
         new_gstring_par("result".to_string(), Vec::new(), false),
@@ -1477,7 +1480,7 @@ async fn eval_of_send_with_remainder_receive_should_capture_the_remainder() {
     assert_eq!(result, map_data(expected_elements));
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn eval_of_nth_method_should_pick_out_the_nth_item_from_a_list() {
     let (_, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
@@ -1545,7 +1548,7 @@ async fn eval_of_nth_method_should_pick_out_the_nth_item_from_a_list() {
         .await
         .is_ok());
 
-    let indirect_result = space.to_map();
+    let indirect_result = space.to_map().await;
     let mut expected_elements = HashMap::new();
     expected_elements.insert(
         new_gstring_par("result".to_string(), Vec::new(), false),
@@ -1557,7 +1560,7 @@ async fn eval_of_nth_method_should_pick_out_the_nth_item_from_a_list() {
     assert_eq!(indirect_result, map_data(expected_elements));
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn eval_of_nth_method_should_pick_out_the_nth_item_from_a_byte_array() {
     let (_, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
@@ -1580,7 +1583,7 @@ async fn eval_of_nth_method_should_pick_out_the_nth_item_from_a_byte_array() {
     assert_eq!(new_gint_par(255, Vec::new(), false), direct_result);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn eval_of_length_method_should_get_length_of_byte_array() {
     let (_, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
@@ -1603,7 +1606,7 @@ async fn eval_of_length_method_should_get_length_of_byte_array() {
     assert_eq!(new_gint_par(3, Vec::new(), false), direct_result);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn eval_of_new_should_use_deterministic_names_and_provide_urn_based_resources() {
     let split_rand = rand().split_byte(42);
     let mut result_rand = rand().split_byte(42);
@@ -1646,18 +1649,18 @@ async fn eval_of_new_should_use_deterministic_names_and_provide_urn_based_resour
     let mut kvm = InMemoryStoreManager::new();
     let store = kvm.r_space_stores().await.unwrap();
     let space = RSpace::create(store, Arc::new(Box::new(Matcher))).unwrap();
-    let rspace: RhoISpace = Arc::new(tokio::sync::Mutex::new(Box::new(space.clone())));
+    let rspace: RhoISpace = Arc::new(Box::new(space.clone()));
     let reducer = DebruijnInterpreter::new(
         rspace,
         Arc::new(urn_map),
-        Arc::new(std::sync::RwLock::new(HashSet::new())),
-        Par::default(),
+        Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+        Arc::new(std::collections::HashMap::new()),
         cost.clone(),
     );
     cost.set(Cost::unsafe_max());
     let env = Env::new();
     assert!(reducer.eval(new, &env, split_rand).await.is_ok());
-    let result = space.to_map();
+    let result = space.to_map().await;
 
     let channel0 = new_gstring_par("result0".to_string(), Vec::new(), false);
     let channel1 = new_gstring_par("result1".to_string(), Vec::new(), false);
@@ -1696,7 +1699,7 @@ async fn eval_of_new_should_use_deterministic_names_and_provide_urn_based_resour
     assert_eq!(result, expected_result);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn eval_of_nth_method_in_send_position_should_change_what_is_sent() {
     let (space, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
@@ -1741,7 +1744,7 @@ async fn eval_of_nth_method_in_send_position_should_change_what_is_sent() {
 
     let env = Env::new();
     assert!(reducer.eval(send, &env, split_rand.clone()).await.is_ok());
-    let result = space.to_map();
+    let result = space.to_map().await;
 
     let channel = new_gstring_par("result".to_string(), Vec::new(), false);
     let mut expected_result = HashMap::new();
@@ -1761,7 +1764,7 @@ async fn eval_of_nth_method_in_send_position_should_change_what_is_sent() {
     assert_eq!(result, map_data(expected_result));
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn eval_of_a_method_should_substitute_target_before_evaluating() {
     let (_, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
@@ -1790,7 +1793,7 @@ async fn eval_of_a_method_should_substitute_target_before_evaluating() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn eval_of_to_byte_array_method_on_any_process_should_return_that_process_serialized() {
     let (space, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
@@ -1810,6 +1813,7 @@ async fn eval_of_to_byte_array_method_on_any_process_should_return_that_process_
         bind_count: 1,
         locally_free: Vec::new(),
         connective_used: false,
+        condition: None,
     }]);
 
     let serialized_process = proc.encode_to_vec();
@@ -1834,7 +1838,7 @@ async fn eval_of_to_byte_array_method_on_any_process_should_return_that_process_
         .eval(to_byte_array_call, &env, split_rand.clone())
         .await
         .is_ok());
-    let result = space.to_map();
+    let result = space.to_map().await;
     let mut expected_result = HashMap::new();
     expected_result.insert(
         new_gstring_par("result".to_string(), Vec::new(), false),
@@ -1848,7 +1852,7 @@ async fn eval_of_to_byte_array_method_on_any_process_should_return_that_process_
     assert_eq!(result, map_data(expected_result));
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn eval_of_to_byte_array_method_on_any_process_should_substitute_before_serialization() {
     let (space, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
@@ -1864,7 +1868,11 @@ async fn eval_of_to_byte_array_method_on_any_process_should_substitute_before_se
     }]);
     let sub_proc = Par::default().with_news(vec![New {
         bind_count: 1,
-        p: Some(GPrivateBuilder::new_par_from_string("zero".to_string())),
+        p: Some({
+            let mut p = GPrivateBuilder::new_par_from_string("zero".to_string());
+            p.locally_free = vec![0];
+            p
+        }),
         uri: Vec::new(),
         injections: BTreeMap::new(),
         locally_free: vec![],
@@ -1895,7 +1903,7 @@ async fn eval_of_to_byte_array_method_on_any_process_should_substitute_before_se
         .eval(to_byte_array_call, &env, split_rand.clone())
         .await
         .is_ok());
-    let result = space.to_map();
+    let result = space.to_map().await;
     let mut expected_result = HashMap::new();
     expected_result.insert(
         new_gstring_par("result".to_string(), Vec::new(), false),
@@ -1909,7 +1917,7 @@ async fn eval_of_to_byte_array_method_on_any_process_should_substitute_before_se
     assert_eq!(result, map_data(expected_result));
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn eval_of_to_string_method_on_deploy_id_return_that_id_serialized() {
     let (space, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
@@ -1945,7 +1953,7 @@ async fn eval_of_to_string_method_on_deploy_id_return_that_id_serialized() {
         .await
         .is_ok());
 
-    let result = space.to_map();
+    let result = space.to_map().await;
     let mut expected_result = HashMap::new();
     expected_result.insert(
         new_gstring_par("result".to_string(), Vec::new(), false),
@@ -1959,7 +1967,7 @@ async fn eval_of_to_string_method_on_deploy_id_return_that_id_serialized() {
     assert_eq!(result, map_data(expected_result));
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn eval_of_to_byte_array_method_on_any_process_should_return_an_error_when_to_byte_array_is_called_with_arguments(
 ) {
     let (_, reducer) =
@@ -1989,7 +1997,7 @@ async fn eval_of_to_byte_array_method_on_any_process_should_return_an_error_when
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn eval_of_hex_to_bytes_should_transform_encoded_string_to_byte_array_not_the_rholang_term() {
     let (space, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
@@ -2021,7 +2029,7 @@ async fn eval_of_hex_to_bytes_should_transform_encoded_string_to_byte_array_not_
         .eval(to_byte_array_call, &env, split_rand.clone())
         .await
         .is_ok());
-    let result = space.to_map();
+    let result = space.to_map().await;
     let mut expected_result = HashMap::new();
     expected_result.insert(
         new_gstring_par("result".to_string(), Vec::new(), false),
@@ -2035,7 +2043,7 @@ async fn eval_of_hex_to_bytes_should_transform_encoded_string_to_byte_array_not_
     assert_eq!(result, map_data(expected_result));
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn eval_of_bytes_to_hex_should_transform_byte_array_to_hex_string_not_the_rholang_term() {
     let (space, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
@@ -2069,7 +2077,7 @@ async fn eval_of_bytes_to_hex_should_transform_byte_array_to_hex_string_not_the_
         .eval(to_string_call, &env, split_rand.clone())
         .await
         .is_ok());
-    let result = space.to_map();
+    let result = space.to_map().await;
     let mut expected_result = HashMap::new();
     expected_result.insert(
         new_gstring_par("result".to_string(), Vec::new(), false),
@@ -2081,7 +2089,7 @@ async fn eval_of_bytes_to_hex_should_transform_byte_array_to_hex_string_not_the_
     assert_eq!(result, map_data(expected_result));
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn eval_of_to_utf8_bytes_should_transform_string_to_utf8_byte_array_not_the_rholang_term() {
     let (space, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
@@ -2112,7 +2120,7 @@ async fn eval_of_to_utf8_bytes_should_transform_string_to_utf8_byte_array_not_th
         .eval(to_utf8_bytes_call, &env, split_rand.clone())
         .await
         .is_ok());
-    let result = space.to_map();
+    let result = space.to_map().await;
     let mut expected_result = HashMap::new();
     expected_result.insert(
         new_gstring_par("result".to_string(), Vec::new(), false),
@@ -2126,7 +2134,7 @@ async fn eval_of_to_utf8_bytes_should_transform_string_to_utf8_byte_array_not_th
     assert_eq!(result, map_data(expected_result));
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn eval_of_to_utf8_bytes_should_return_an_error_when_to_utf8_bytes_is_called_with_arguments()
 {
     let (_, reducer) =
@@ -2156,7 +2164,7 @@ async fn eval_of_to_utf8_bytes_should_return_an_error_when_to_utf8_bytes_is_call
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn eval_of_to_utf8_bytes_should_return_an_error_when_to_utf8_bytes_is_evaluated_on_a_non_string(
 ) {
     let (_, reducer) =
@@ -2185,7 +2193,7 @@ async fn eval_of_to_utf8_bytes_should_return_an_error_when_to_utf8_bytes_is_eval
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn variable_references_should_be_substituted_before_being_used() {
     let (space, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
@@ -2231,6 +2239,7 @@ async fn variable_references_should_be_substituted_before_being_used() {
                     bind_count: 0,
                     locally_free: Vec::new(),
                     connective_used: false,
+                    condition: None,
                 }]),
         ),
         uri: Vec::new(),
@@ -2244,7 +2253,7 @@ async fn variable_references_should_be_substituted_before_being_used() {
         .await;
     assert!(res.is_ok());
 
-    let result = space.to_map();
+    let result = space.to_map().await;
     let mut expected_elements = HashMap::new();
     expected_elements.insert(
         new_gstring_par("result".to_string(), Vec::new(), false),
@@ -2258,7 +2267,7 @@ async fn variable_references_should_be_substituted_before_being_used() {
     assert_eq!(result, map_data(expected_elements));
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn variable_references_should_be_substituted_before_being_used_in_a_match() {
     let (space, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
@@ -2284,6 +2293,7 @@ async fn variable_references_should_be_substituted_before_being_used_in_a_match(
                     connective_used: false,
                 }])),
                 free_count: 0,
+                guard: None,
             }],
             locally_free: Vec::new(),
             connective_used: false,
@@ -2299,7 +2309,7 @@ async fn variable_references_should_be_substituted_before_being_used_in_a_match(
         .await;
     assert!(res.is_ok());
 
-    let result = space.to_map();
+    let result = space.to_map().await;
     let mut expected_elements = HashMap::new();
     expected_elements.insert(
         new_gstring_par("result".to_string(), Vec::new(), false),
@@ -2311,7 +2321,7 @@ async fn variable_references_should_be_substituted_before_being_used_in_a_match(
     assert_eq!(result, map_data(expected_elements));
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn variable_references_should_reference_a_variable_that_comes_from_a_match_in_tuplespace() {
     let (space, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
@@ -2351,6 +2361,7 @@ async fn variable_references_should_reference_a_variable_that_comes_from_a_match
                         connective_used: false,
                     }])),
                     free_count: 0,
+                    guard: None,
                 }],
                 locally_free: Vec::new(),
                 connective_used: false,
@@ -2360,13 +2371,14 @@ async fn variable_references_should_reference_a_variable_that_comes_from_a_match
             bind_count: 0,
             locally_free: Vec::new(),
             connective_used: false,
+            condition: None,
         }]);
 
     let env = Env::new();
     let res = reducer.eval(proc.clone(), &env, base_rand.clone()).await;
     assert!(res.is_ok());
 
-    let result = space.to_map();
+    let result = space.to_map().await;
     let mut expected_elements = HashMap::new();
     expected_elements.insert(
         new_gstring_par("result".to_string(), Vec::new(), false),
@@ -2378,7 +2390,7 @@ async fn variable_references_should_reference_a_variable_that_comes_from_a_match
     assert_eq!(result, map_data(expected_elements));
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn one_matches_one_should_return_true() {
     let (_, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
@@ -2398,7 +2410,7 @@ async fn one_matches_one_should_return_true() {
     assert_eq!(res.unwrap().exprs, vec![new_gbool_expr(true)])
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn one_matches_zero_should_return_false() {
     let (_, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
@@ -2419,7 +2431,7 @@ async fn one_matches_zero_should_return_false() {
 }
 
 // "1 matches _"
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn one_matches_wildcard_should_return_true() {
     let (_, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
@@ -2439,7 +2451,7 @@ async fn one_matches_wildcard_should_return_true() {
     assert_eq!(res.unwrap().exprs, vec![new_gbool_expr(true)])
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn x_matches_one_should_return_true_when_x_is_bound_to_one() {
     let (_, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
@@ -2461,7 +2473,7 @@ async fn x_matches_one_should_return_true_when_x_is_bound_to_one() {
 }
 
 // "1 matches =x"
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn one_matches_equal_sign_x_should_return_true_when_x_is_bound_to_one() {
     let (_, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
@@ -2484,7 +2496,7 @@ async fn one_matches_equal_sign_x_should_return_true_when_x_is_bound_to_one() {
     assert_eq!(res.unwrap().exprs, vec![new_gbool_expr(true)])
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn length_should_return_the_length_of_the_string() {
     let (_, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
@@ -2508,7 +2520,7 @@ async fn length_should_return_the_length_of_the_string() {
 }
 
 // "'abcabac'.slice(3, 6)" should "return 'aba'"
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn slice_should_work_correctly_1() {
     let (_, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
@@ -2537,7 +2549,7 @@ async fn slice_should_work_correctly_1() {
 }
 
 // "'abcabcac'.slice(2,1)" should "return empty string"
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn slice_should_work_correctly_2() {
     let (_, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
@@ -2564,7 +2576,7 @@ async fn slice_should_work_correctly_2() {
 }
 
 // "'abcabcac'.slice(8,9)" should "return empty string"
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn slice_should_work_correctly_3() {
     let (_, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
@@ -2591,7 +2603,7 @@ async fn slice_should_work_correctly_3() {
 }
 
 // "'abcabcac'.slice(-2,2)" should "return 'ab'"
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn slice_should_work_correctly_4() {
     let (_, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
@@ -2618,7 +2630,7 @@ async fn slice_should_work_correctly_4() {
 }
 
 // "'Hello, ${name}!' % {'name': 'Alice'}" should "return 'Hello, Alice!"
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn percent_percent_should_work_correctly() {
     let (_, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
@@ -2652,7 +2664,7 @@ async fn percent_percent_should_work_correctly() {
 }
 
 // "'abc' ++ 'def'" should "return 'abcdef"
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn plus_plus_should_work_correctly_with_string() {
     let (_, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
@@ -2674,9 +2686,8 @@ async fn plus_plus_should_work_correctly_with_string() {
     )])
 }
 
-// "ByteArray('dead') ++ ByteArray('beef)'" should "return
-// ByteArray('deadbeef')"
-#[tokio::test]
+// "ByteArray('dead') ++ ByteArray('beef)'" should "return ByteArray('deadbeef')"
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn plus_plus_should_work_correctly_with_byte_array() {
     let (_, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
@@ -2721,7 +2732,7 @@ fn interpolate(base: String, substitutes: Vec<(Par, Par)>) -> Par {
     }])
 }
 // "'${a} ${b}' % {'a': '1 ${b}', 'b': '2 ${a}'" should "return '1 ${b} 2 ${a}"
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn interpolate_should_work_correctly() {
     let (_, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
@@ -2747,7 +2758,7 @@ async fn interpolate_should_work_correctly() {
     )])
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn interpolate_should_interpolate_boolean_values() {
     let (_, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
@@ -2773,7 +2784,7 @@ async fn interpolate_should_interpolate_boolean_values() {
     )])
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn interpolate_should_interpolate_uris() {
     let (_, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
@@ -2803,7 +2814,7 @@ async fn interpolate_should_interpolate_uris() {
     )])
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn length_should_return_the_length_of_the_list() {
     let (_, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
@@ -2840,7 +2851,7 @@ async fn length_should_return_the_length_of_the_list() {
 }
 
 // "[3, 7, 2, 9, 4, 3, 7].slice(3, 5)" should "return [9, 4]"
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn slice_should_work_correctly_with_list_1() {
     let (_, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
@@ -2893,7 +2904,7 @@ async fn slice_should_work_correctly_with_list_1() {
 }
 
 // "[3, 7, 2, 9, 4, 3, 7].slice(5, 4)" should "return []"
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn slice_should_work_correctly_with_list_2() {
     let (_, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
@@ -2943,7 +2954,7 @@ async fn slice_should_work_correctly_with_list_2() {
 }
 
 // "[3, 7, 2, 9, 4, 3, 7].slice(7, 8)" should "return []"
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn slice_should_work_correctly_with_list_3() {
     let (_, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
@@ -2993,7 +3004,7 @@ async fn slice_should_work_correctly_with_list_3() {
 }
 
 // "[3, 7, 2, 9, 4, 3, 7].slice(-2, 2)" should "return [3, 7]"
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn slice_should_work_correctly_with_list_4() {
     let (_, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
@@ -3046,7 +3057,7 @@ async fn slice_should_work_correctly_with_list_4() {
 }
 
 // "[3, 2, 9] ++ [6, 1, 7]" should "return [3, 2, 9, 6, 1, 7]"
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn plus_plus_should_work_correctly_with_list() {
     let (_, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
@@ -3104,7 +3115,7 @@ async fn plus_plus_should_work_correctly_with_list() {
 }
 
 // "{1: 'a', 2: 'b'}.getOrElse(1, 'c')" should "return 'a'"
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn get_or_else_method_should_work_correctly_1() {
     let (_, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
@@ -3146,7 +3157,7 @@ async fn get_or_else_method_should_work_correctly_1() {
 }
 
 // "{1: 'a', 2: 'b'}.getOrElse(3, 'c')" should "return 'c'"
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn get_or_else_method_should_work_correctly_2() {
     let (_, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
@@ -3188,7 +3199,7 @@ async fn get_or_else_method_should_work_correctly_2() {
 }
 
 // "{1: 'a', 2: 'b'}.set(3, 'c')" should "return {1: 'a', 2: 'b', 3: 'c'}"
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn set_method_should_work_correctly_1() {
     let (_, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
@@ -3247,7 +3258,7 @@ async fn set_method_should_work_correctly_1() {
 }
 
 // "{1: 'a', 2: 'b'}.set(2, 'c')" should "return {1: 'a', 2: 'c'}"
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn set_method_should_work_correctly_2() {
     let (_, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
@@ -3302,7 +3313,7 @@ async fn set_method_should_work_correctly_2() {
 }
 
 // "{1: 'a', 2: 'b', 3: 'c'}.keys()" should "return Set(1, 2, 3)"
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn keys_method_should_work_correctly() {
     let (_, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
@@ -3352,7 +3363,7 @@ async fn keys_method_should_work_correctly() {
     }])
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn size_method_should_work_correctly_emap() {
     let (_, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
@@ -3394,7 +3405,7 @@ async fn size_method_should_work_correctly_emap() {
     assert_eq!(res.unwrap().exprs, vec![new_gint_expr(3)])
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn size_method_should_work_correctly_with_eset() {
     let (_, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
@@ -3427,7 +3438,7 @@ async fn size_method_should_work_correctly_with_eset() {
     assert_eq!(res.unwrap().exprs, vec![new_gint_expr(3)])
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn plus_method_should_work_correctly_with_eset() {
     let (_, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
@@ -3465,7 +3476,7 @@ async fn plus_method_should_work_correctly_with_eset() {
 }
 
 // "{1: 'a', 2: 'b', 3: 'c'} - 3" should "return {1: 'a', 2: 'b'}"
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn minus_method_should_work_correctly_with_emap() {
     let (_, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
@@ -3517,7 +3528,7 @@ async fn minus_method_should_work_correctly_with_emap() {
     }])
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn minus_method_should_work_correctly_with_eset() {
     let (_, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
@@ -3554,7 +3565,7 @@ async fn minus_method_should_work_correctly_with_eset() {
     }])
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn plus_plus_method_should_work_correctly_with_eset() {
     let (_, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
@@ -3600,7 +3611,7 @@ async fn plus_plus_method_should_work_correctly_with_eset() {
     }])
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn plus_plus_method_with_map_should_return_union() {
     let (_, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
@@ -3670,7 +3681,7 @@ async fn plus_plus_method_with_map_should_return_union() {
     }])
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn minus_minus_method_should_work_correctly_with_eset() {
     let (_, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
@@ -3716,7 +3727,7 @@ async fn minus_minus_method_should_work_correctly_with_eset() {
     }])
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn get_method_on_set_should_not_be_defined() {
     let (_, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
@@ -3755,7 +3766,7 @@ async fn get_method_on_set_should_not_be_defined() {
     )
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn add_method_on_map_should_not_be_defined() {
     let (_, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
@@ -3799,7 +3810,7 @@ async fn add_method_on_map_should_not_be_defined() {
     )
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn to_list_method_should_error_when_called_with_arguments() {
     let (_, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
@@ -3836,7 +3847,7 @@ async fn to_list_method_should_error_when_called_with_arguments() {
     )
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn to_list_method_should_transform_set_into_list() {
     let (_, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
@@ -3876,7 +3887,7 @@ async fn to_list_method_should_transform_set_into_list() {
     )])
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn to_list_method_should_transform_map_into_list_of_tuples() {
     let (_, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
@@ -3934,7 +3945,7 @@ async fn to_list_method_should_transform_map_into_list_of_tuples() {
     )])
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn to_list_method_should_transform_tuple_into_list() {
     let (_, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
@@ -3976,7 +3987,7 @@ async fn to_list_method_should_transform_tuple_into_list() {
     )])
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn to_set_method_should_turn_list_into_set() {
     let (_, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
@@ -4018,7 +4029,7 @@ async fn to_set_method_should_turn_list_into_set() {
     }])
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn to_set_method_should_turn_list_with_duplicate_into_set_without_duplicate() {
     let (_, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
@@ -4055,7 +4066,7 @@ async fn to_set_method_should_turn_list_with_duplicate_into_set_without_duplicat
     }])
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn to_set_method_should_turn_empty_list_into_empty_set() {
     let (_, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
@@ -4089,7 +4100,7 @@ async fn to_set_method_should_turn_empty_list_into_empty_set() {
     }])
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn to_map_method_should_transform_list_of_tuples_into_map() {
     let (_, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
@@ -4147,7 +4158,7 @@ async fn to_map_method_should_transform_list_of_tuples_into_map() {
     }])
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn to_map_method_should_transform_set_of_tuples_into_map() {
     let (_, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
@@ -4205,7 +4216,7 @@ async fn to_map_method_should_transform_set_of_tuples_into_map() {
     }])
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn to_set_method_should_turn_map_into_set() {
     let (_, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
@@ -4263,7 +4274,7 @@ async fn to_set_method_should_turn_map_into_set() {
     }])
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn to_map_method_should_correctly_do_put_operations() {
     let (_, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
@@ -4308,7 +4319,7 @@ async fn to_map_method_should_correctly_do_put_operations() {
     }])
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn to_map_method_should_turn_empty_list_into_empty_map() {
     let (_, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
@@ -4341,7 +4352,7 @@ async fn to_map_method_should_turn_empty_list_into_empty_map() {
     }])
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn to_set_method_should_not_change_the_object_it_is_applied_on() {
     let (_, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
@@ -4373,7 +4384,7 @@ async fn to_set_method_should_not_change_the_object_it_is_applied_on() {
     }])
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn to_map_method_should_not_change_the_object_it_is_applied_on() {
     let (_, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
@@ -4431,7 +4442,7 @@ async fn to_map_method_should_not_change_the_object_it_is_applied_on() {
     }])
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn to_map_method_should_throw_error_if_not_called_with_correct_types() {
     let (_, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
@@ -4474,7 +4485,7 @@ async fn to_map_method_should_throw_error_if_not_called_with_correct_types() {
     )
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn to_map_method_should_throw_error_when_called_with_arguments() {
     let (_, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
@@ -4515,7 +4526,7 @@ async fn to_map_method_should_throw_error_when_called_with_arguments() {
     )
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn to_map_method_should_throw_error_when_called_on_an_int() {
     let (_, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
@@ -4545,7 +4556,7 @@ async fn to_map_method_should_throw_error_when_called_on_an_int() {
     )
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn to_set_method_should_throw_error_when_called_with_arguments() {
     let (_, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
@@ -4580,7 +4591,7 @@ async fn to_set_method_should_throw_error_when_called_with_arguments() {
     )
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn to_set_method_should_throw_error_when_called_on_an_int() {
     let (_, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
@@ -4610,7 +4621,7 @@ async fn to_set_method_should_throw_error_when_called_on_an_int() {
     )
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn term_split_size_max_should_be_evaluated_for_max_size() {
     let (_, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
@@ -4631,7 +4642,7 @@ async fn term_split_size_max_should_be_evaluated_for_max_size() {
     assert!(res.is_ok());
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn term_split_size_max_should_limited_to_max_value() {
     let (_, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
@@ -4656,4 +4667,650 @@ async fn term_split_size_max_should_limited_to_max_value() {
             "The number of terms in the Par is 32768, which exceeds the limit of 32767".to_string()
         ))
     )
+}
+
+// =====================================================================
+// Phase 7: receive guard runtime — `where` clause on for-comprehensions
+// evaluated inside the rspace matcher (plan §3.5 / Option 3).
+// =====================================================================
+
+/// Build a guard Par expressing `BoundVar(0) > GInt(0)`. The matcher
+/// resolves BoundVar(0) to the bind's first bound variable.
+fn guard_first_bound_gt_zero() -> Par {
+    let p1 = new_boundvar_par(0, models::create_bit_vector(&vec![0]), false);
+    let p2 = new_gint_par(0, Vec::new(), false);
+    Par::default().with_exprs(vec![Expr {
+        expr_instance: Some(ExprInstance::EGtBody(models::rhoapi::EGt {
+            p1: Some(p1),
+            p2: Some(p2),
+        })),
+    }])
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn receive_with_true_guard_should_consume_message() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+
+    let split_send = rand().split_byte(0);
+    let split_recv = rand().split_byte(1);
+    let chan = new_gstring_par("c".to_string(), Vec::new(), false);
+
+    // Send 5 (positive → guard `x > 0` passes).
+    let send = Par::default().with_sends(vec![Send {
+        chan: Some(chan.clone()),
+        data: vec![new_gint_par(5, Vec::new(), false)],
+        persistent: false,
+        locally_free: Vec::new(),
+        connective_used: false,
+    }]);
+
+    let receive = Par::default().with_receives(vec![Receive {
+        binds: vec![ReceiveBind {
+            patterns: vec![new_freevar_par(0, Vec::new())],
+            source: Some(chan.clone()),
+            remainder: None,
+            free_count: 1,
+        }],
+        body: Some(Par::default()),
+        persistent: false,
+        peek: false,
+        bind_count: 1,
+        locally_free: Vec::new(),
+        connective_used: false,
+        condition: Some(guard_first_bound_gt_zero()),
+    }]);
+
+    let env: Env<Par> = Env::new();
+    reducer.eval(send, &env, split_send).await.unwrap();
+    reducer.eval(receive, &env, split_recv).await.unwrap();
+
+    let result = space.to_map().await;
+    assert!(
+        result.is_empty(),
+        "tuple space should be empty after guard-true match: {result:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn receive_with_false_guard_should_leave_data_and_continuation() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+
+    let split_send = rand().split_byte(0);
+    let split_recv = rand().split_byte(1);
+    let chan = new_gstring_par("c".to_string(), Vec::new(), false);
+
+    // Send -3 (non-positive → guard `x > 0` fails).
+    let send = Par::default().with_sends(vec![Send {
+        chan: Some(chan.clone()),
+        data: vec![new_gint_par(-3, Vec::new(), false)],
+        persistent: false,
+        locally_free: Vec::new(),
+        connective_used: false,
+    }]);
+
+    let receive = Par::default().with_receives(vec![Receive {
+        binds: vec![ReceiveBind {
+            patterns: vec![new_freevar_par(0, Vec::new())],
+            source: Some(chan.clone()),
+            remainder: None,
+            free_count: 1,
+        }],
+        body: Some(Par::default()),
+        persistent: false,
+        peek: false,
+        bind_count: 1,
+        locally_free: Vec::new(),
+        connective_used: false,
+        condition: Some(guard_first_bound_gt_zero()),
+    }]);
+
+    let env: Env<Par> = Env::new();
+    reducer.eval(send, &env, split_send).await.unwrap();
+    reducer.eval(receive, &env, split_recv).await.unwrap();
+
+    let result = space.to_map().await;
+    let row = result
+        .get(&vec![chan.clone()])
+        .expect("channel should still hold state after guard-fail");
+    assert_eq!(
+        row.data.len(),
+        1,
+        "the unmatched datum stays in the tuple space"
+    );
+    assert_eq!(row.wks.len(), 1, "the continuation stays installed");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn receive_with_guard_filters_among_multiple_messages() {
+    // Send -1 first (guard fails), then send 7 (guard passes). Verify
+    // only the matching message is consumed and the continuation fires.
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+
+    let chan = new_gstring_par("c".to_string(), Vec::new(), false);
+    let receive = Par::default().with_receives(vec![Receive {
+        binds: vec![ReceiveBind {
+            patterns: vec![new_freevar_par(0, Vec::new())],
+            source: Some(chan.clone()),
+            remainder: None,
+            free_count: 1,
+        }],
+        body: Some(Par::default()),
+        persistent: false,
+        peek: false,
+        bind_count: 1,
+        locally_free: Vec::new(),
+        connective_used: false,
+        condition: Some(guard_first_bound_gt_zero()),
+    }]);
+
+    let send_neg = Par::default().with_sends(vec![Send {
+        chan: Some(chan.clone()),
+        data: vec![new_gint_par(-1, Vec::new(), false)],
+        persistent: false,
+        locally_free: Vec::new(),
+        connective_used: false,
+    }]);
+
+    let send_pos = Par::default().with_sends(vec![Send {
+        chan: Some(chan.clone()),
+        data: vec![new_gint_par(7, Vec::new(), false)],
+        persistent: false,
+        locally_free: Vec::new(),
+        connective_used: false,
+    }]);
+
+    let env: Env<Par> = Env::new();
+    reducer
+        .eval(receive, &env, rand().split_byte(0))
+        .await
+        .unwrap();
+    reducer
+        .eval(send_neg.clone(), &env, rand().split_byte(1))
+        .await
+        .unwrap();
+    // After send_neg: guard failed, the -1 datum stays AND the
+    // continuation stays installed.
+    let mid = space.to_map().await;
+    let mid_row = mid.get(&vec![chan.clone()]).expect("state present");
+    assert_eq!(mid_row.data.len(), 1, "rejected datum stays");
+    assert_eq!(mid_row.wks.len(), 1, "continuation stays");
+
+    reducer
+        .eval(send_pos, &env, rand().split_byte(2))
+        .await
+        .unwrap();
+
+    let final_state = space.to_map().await;
+    let final_row = final_state.get(&vec![chan]).expect("state present");
+    // The 7 was consumed (guard true); the -1 still sitting there.
+    assert_eq!(final_row.data.len(), 1, "the rejected -1 still sits there");
+    assert_eq!(final_row.wks.len(), 0, "continuation fired and was removed");
+}
+
+// =====================================================================
+// Phase 9: cross-channel multi-bind `where` guards (plan §7.12). The
+// guard now lives on the TaggedContinuation and is evaluated by the
+// matcher coordinator after every spatial bind has matched, so it can
+// reference variables bound by *any* of the binds.
+// =====================================================================
+
+/// Build a guard expressing `BoundVar(0) + BoundVar(1) > GInt(10)`.
+/// In a two-bind receive `for(@x <- a; @y <- b)` the parser would emit
+/// BoundVar(0) for the most recently bound name (y) and BoundVar(1) for
+/// the previously bound name (x). The matcher concatenates bind 0's
+/// pars with bind 1's pars and pushes them into rho-pure-eval's Env in
+/// that order, so this guard reads as `x + y > 10`.
+fn guard_cross_bind_sum_gt_ten() -> Par {
+    let lhs = new_eplus_par(
+        new_boundvar_par(1, models::create_bit_vector(&vec![1]), false),
+        new_boundvar_par(0, models::create_bit_vector(&vec![0]), false),
+    );
+    let rhs = new_gint_par(10, Vec::new(), false);
+    Par::default().with_exprs(vec![Expr {
+        expr_instance: Some(ExprInstance::EGtBody(models::rhoapi::EGt {
+            p1: Some(lhs),
+            p2: Some(rhs),
+        })),
+    }])
+}
+
+/// Build a non-commutative guard `BoundVar(1) > 100 && BoundVar(0) < 100`,
+/// which reads as `x > 100 && y < 100` for `for(@x <- a & @y <- b)`. If the
+/// matcher ever swapped the bind order on the env stack (so x and y were
+/// resolved from each other's slots), this guard would fire on the wrong
+/// data, which the commutative `x + y > 10` guard cannot detect.
+fn guard_cross_bind_x_gt_100_and_y_lt_100() -> Par {
+    let x = new_boundvar_par(1, models::create_bit_vector(&vec![1]), false);
+    let y = new_boundvar_par(0, models::create_bit_vector(&vec![0]), false);
+    let x_gt_100 = Par::default().with_exprs(vec![Expr {
+        expr_instance: Some(ExprInstance::EGtBody(models::rhoapi::EGt {
+            p1: Some(x),
+            p2: Some(new_gint_par(100, Vec::new(), false)),
+        })),
+    }]);
+    let y_lt_100 = Par::default().with_exprs(vec![Expr {
+        expr_instance: Some(ExprInstance::ELtBody(models::rhoapi::ELt {
+            p1: Some(y),
+            p2: Some(new_gint_par(100, Vec::new(), false)),
+        })),
+    }]);
+    Par::default().with_exprs(vec![Expr {
+        expr_instance: Some(ExprInstance::EAndBody(models::rhoapi::EAnd {
+            p1: Some(x_gt_100),
+            p2: Some(y_lt_100),
+        })),
+    }])
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cross_bind_guard_should_commit_when_combined_predicate_holds() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+
+    let chan_a = new_gstring_par("a".to_string(), Vec::new(), false);
+    let chan_b = new_gstring_par("b".to_string(), Vec::new(), false);
+
+    // 3 + 15 = 18 > 10 → guard passes → both messages consumed,
+    // continuation fires, tuple space ends up empty.
+    let send_a = Par::default().with_sends(vec![Send {
+        chan: Some(chan_a.clone()),
+        data: vec![new_gint_par(3, Vec::new(), false)],
+        persistent: false,
+        locally_free: Vec::new(),
+        connective_used: false,
+    }]);
+    let send_b = Par::default().with_sends(vec![Send {
+        chan: Some(chan_b.clone()),
+        data: vec![new_gint_par(15, Vec::new(), false)],
+        persistent: false,
+        locally_free: Vec::new(),
+        connective_used: false,
+    }]);
+
+    let receive = Par::default().with_receives(vec![Receive {
+        binds: vec![
+            ReceiveBind {
+                patterns: vec![new_freevar_par(0, Vec::new())],
+                source: Some(chan_a.clone()),
+                remainder: None,
+                free_count: 1,
+            },
+            ReceiveBind {
+                patterns: vec![new_freevar_par(0, Vec::new())],
+                source: Some(chan_b.clone()),
+                remainder: None,
+                free_count: 1,
+            },
+        ],
+        body: Some(Par::default()),
+        persistent: false,
+        peek: false,
+        bind_count: 2,
+        locally_free: Vec::new(),
+        connective_used: false,
+        condition: Some(guard_cross_bind_sum_gt_ten()),
+    }]);
+
+    let env: Env<Par> = Env::new();
+    reducer
+        .eval(send_a, &env, rand().split_byte(0))
+        .await
+        .unwrap();
+    reducer
+        .eval(send_b, &env, rand().split_byte(1))
+        .await
+        .unwrap();
+    reducer
+        .eval(receive, &env, rand().split_byte(2))
+        .await
+        .unwrap();
+
+    let result = space.to_map().await;
+    assert!(
+        result.is_empty(),
+        "tuple space should be empty after cross-bind guard passes: {result:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cross_bind_guard_should_leave_data_when_combined_predicate_fails() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+
+    let chan_a = new_gstring_par("a".to_string(), Vec::new(), false);
+    let chan_b = new_gstring_par("b".to_string(), Vec::new(), false);
+
+    // 3 + 5 = 8 ≤ 10 → guard fails → neither bind commits. Both data
+    // points stay in their channels and the continuation gets installed.
+    let send_a = Par::default().with_sends(vec![Send {
+        chan: Some(chan_a.clone()),
+        data: vec![new_gint_par(3, Vec::new(), false)],
+        persistent: false,
+        locally_free: Vec::new(),
+        connective_used: false,
+    }]);
+    let send_b = Par::default().with_sends(vec![Send {
+        chan: Some(chan_b.clone()),
+        data: vec![new_gint_par(5, Vec::new(), false)],
+        persistent: false,
+        locally_free: Vec::new(),
+        connective_used: false,
+    }]);
+
+    let receive = Par::default().with_receives(vec![Receive {
+        binds: vec![
+            ReceiveBind {
+                patterns: vec![new_freevar_par(0, Vec::new())],
+                source: Some(chan_a.clone()),
+                remainder: None,
+                free_count: 1,
+            },
+            ReceiveBind {
+                patterns: vec![new_freevar_par(0, Vec::new())],
+                source: Some(chan_b.clone()),
+                remainder: None,
+                free_count: 1,
+            },
+        ],
+        body: Some(Par::default()),
+        persistent: false,
+        peek: false,
+        bind_count: 2,
+        locally_free: Vec::new(),
+        connective_used: false,
+        condition: Some(guard_cross_bind_sum_gt_ten()),
+    }]);
+
+    let env: Env<Par> = Env::new();
+    reducer
+        .eval(send_a, &env, rand().split_byte(0))
+        .await
+        .unwrap();
+    reducer
+        .eval(send_b, &env, rand().split_byte(1))
+        .await
+        .unwrap();
+    reducer
+        .eval(receive, &env, rand().split_byte(2))
+        .await
+        .unwrap();
+
+    let result = space.to_map().await;
+    // to_map only surfaces single-channel keys; multi-channel
+    // continuation keys aren't enumerated here. We still verify the
+    // *data* stays put — if the guard had passed and committed, both
+    // data entries would have been removed.
+    let row_a = result.get(&vec![chan_a]).expect("chan a state present");
+    assert_eq!(row_a.data.len(), 1, "rejected datum on a stays");
+    let row_b = result.get(&vec![chan_b]).expect("chan b state present");
+    assert_eq!(row_b.data.len(), 1, "rejected datum on b stays");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cross_bind_guard_filters_among_multiple_messages() {
+    // Send a=3 b=5 first (sum 8, guard fails → both stay), then send
+    // b=20 (a=3 still there, sum 23, guard passes). Verify the second
+    // pair gets consumed and the first pair stays in the tuple space.
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+
+    let chan_a = new_gstring_par("a".to_string(), Vec::new(), false);
+    let chan_b = new_gstring_par("b".to_string(), Vec::new(), false);
+
+    let receive = Par::default().with_receives(vec![Receive {
+        binds: vec![
+            ReceiveBind {
+                patterns: vec![new_freevar_par(0, Vec::new())],
+                source: Some(chan_a.clone()),
+                remainder: None,
+                free_count: 1,
+            },
+            ReceiveBind {
+                patterns: vec![new_freevar_par(0, Vec::new())],
+                source: Some(chan_b.clone()),
+                remainder: None,
+                free_count: 1,
+            },
+        ],
+        body: Some(Par::default()),
+        persistent: false,
+        peek: false,
+        bind_count: 2,
+        locally_free: Vec::new(),
+        connective_used: false,
+        condition: Some(guard_cross_bind_sum_gt_ten()),
+    }]);
+
+    let env: Env<Par> = Env::new();
+    reducer
+        .eval(receive, &env, rand().split_byte(0))
+        .await
+        .unwrap();
+
+    // First pair: a=3, b=5 → guard fails, both stay.
+    let send_a_small = Par::default().with_sends(vec![Send {
+        chan: Some(chan_a.clone()),
+        data: vec![new_gint_par(3, Vec::new(), false)],
+        persistent: false,
+        locally_free: Vec::new(),
+        connective_used: false,
+    }]);
+    let send_b_small = Par::default().with_sends(vec![Send {
+        chan: Some(chan_b.clone()),
+        data: vec![new_gint_par(5, Vec::new(), false)],
+        persistent: false,
+        locally_free: Vec::new(),
+        connective_used: false,
+    }]);
+    reducer
+        .eval(send_a_small, &env, rand().split_byte(1))
+        .await
+        .unwrap();
+    reducer
+        .eval(send_b_small, &env, rand().split_byte(2))
+        .await
+        .unwrap();
+
+    let mid = space.to_map().await;
+    // After the failing pair: data for both channels still sitting in
+    // the tuple space (the receive didn't commit). to_map can't show
+    // the multi-channel wk, so we check via data presence.
+    assert_eq!(
+        mid.get(&vec![chan_a.clone()])
+            .map(|r| r.data.len())
+            .unwrap_or(0),
+        1,
+        "rejected a=3 stays after first pair"
+    );
+    assert_eq!(
+        mid.get(&vec![chan_b.clone()])
+            .map(|r| r.data.len())
+            .unwrap_or(0),
+        1,
+        "rejected b=5 stays after first pair"
+    );
+
+    // Second pair: send b=20 (paired with the still-present a=3 → 23 > 10).
+    let send_b_big = Par::default().with_sends(vec![Send {
+        chan: Some(chan_b.clone()),
+        data: vec![new_gint_par(20, Vec::new(), false)],
+        persistent: false,
+        locally_free: Vec::new(),
+        connective_used: false,
+    }]);
+    reducer
+        .eval(send_b_big, &env, rand().split_byte(3))
+        .await
+        .unwrap();
+
+    let final_state = space.to_map().await;
+    // a=3 should be consumed; the rejected b=5 stays put.
+    assert!(
+        final_state
+            .get(&vec![chan_a])
+            .map(|r| r.data.is_empty())
+            .unwrap_or(true),
+        "a=3 was consumed when guard finally passed"
+    );
+    let final_b = final_state.get(&vec![chan_b]).expect("chan b state");
+    assert_eq!(final_b.data.len(), 1, "the rejected b=5 still sits there");
+}
+
+// Non-commutative cross-bind guard: would catch a swap of bind 0 / bind 1
+// indices on the env stack — a regression the commutative `x + y > 10`
+// guard above can't detect because addition is order-insensitive.
+//
+// Receive: `for (@x <- a & @y <- b where x > 100 && y < 100) { ... }`
+//   x = BoundVar(1), y = BoundVar(0).
+// Data: a=200, b=50 → x=200, y=50 → x>100 ∧ y<100 → true → fires.
+// If indices were swapped: x=50, y=200 → false ∧ false → would NOT fire.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cross_bind_guard_non_commutative_fires_with_correct_index_assignment() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+
+    let chan_a = new_gstring_par("a".to_string(), Vec::new(), false);
+    let chan_b = new_gstring_par("b".to_string(), Vec::new(), false);
+
+    let send_a = Par::default().with_sends(vec![Send {
+        chan: Some(chan_a.clone()),
+        data: vec![new_gint_par(200, Vec::new(), false)],
+        persistent: false,
+        locally_free: Vec::new(),
+        connective_used: false,
+    }]);
+    let send_b = Par::default().with_sends(vec![Send {
+        chan: Some(chan_b.clone()),
+        data: vec![new_gint_par(50, Vec::new(), false)],
+        persistent: false,
+        locally_free: Vec::new(),
+        connective_used: false,
+    }]);
+
+    let receive = Par::default().with_receives(vec![Receive {
+        binds: vec![
+            ReceiveBind {
+                patterns: vec![new_freevar_par(0, Vec::new())],
+                source: Some(chan_a.clone()),
+                remainder: None,
+                free_count: 1,
+            },
+            ReceiveBind {
+                patterns: vec![new_freevar_par(0, Vec::new())],
+                source: Some(chan_b.clone()),
+                remainder: None,
+                free_count: 1,
+            },
+        ],
+        body: Some(Par::default()),
+        persistent: false,
+        peek: false,
+        bind_count: 2,
+        locally_free: Vec::new(),
+        connective_used: false,
+        condition: Some(guard_cross_bind_x_gt_100_and_y_lt_100()),
+    }]);
+
+    let env: Env<Par> = Env::new();
+    reducer
+        .eval(send_a, &env, rand().split_byte(0))
+        .await
+        .unwrap();
+    reducer
+        .eval(send_b, &env, rand().split_byte(1))
+        .await
+        .unwrap();
+    reducer
+        .eval(receive, &env, rand().split_byte(2))
+        .await
+        .unwrap();
+
+    let result = space.to_map().await;
+    assert!(
+        result.is_empty(),
+        "tuple space empty: guard with correct index→bind mapping fires; got {result:?}"
+    );
+}
+
+// Mirror test: same guard, swapped data values. Would-be-true if and only
+// if the index→bind mapping were reversed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cross_bind_guard_non_commutative_does_not_fire_when_data_violates_per_bind_order() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+
+    let chan_a = new_gstring_par("a".to_string(), Vec::new(), false);
+    let chan_b = new_gstring_par("b".to_string(), Vec::new(), false);
+
+    // Reversed values: a=50, b=200 → x=50, y=200 → x>100 is false →
+    // guard fails → both data stay in their channels.
+    let send_a = Par::default().with_sends(vec![Send {
+        chan: Some(chan_a.clone()),
+        data: vec![new_gint_par(50, Vec::new(), false)],
+        persistent: false,
+        locally_free: Vec::new(),
+        connective_used: false,
+    }]);
+    let send_b = Par::default().with_sends(vec![Send {
+        chan: Some(chan_b.clone()),
+        data: vec![new_gint_par(200, Vec::new(), false)],
+        persistent: false,
+        locally_free: Vec::new(),
+        connective_used: false,
+    }]);
+
+    let receive = Par::default().with_receives(vec![Receive {
+        binds: vec![
+            ReceiveBind {
+                patterns: vec![new_freevar_par(0, Vec::new())],
+                source: Some(chan_a.clone()),
+                remainder: None,
+                free_count: 1,
+            },
+            ReceiveBind {
+                patterns: vec![new_freevar_par(0, Vec::new())],
+                source: Some(chan_b.clone()),
+                remainder: None,
+                free_count: 1,
+            },
+        ],
+        body: Some(Par::default()),
+        persistent: false,
+        peek: false,
+        bind_count: 2,
+        locally_free: Vec::new(),
+        connective_used: false,
+        condition: Some(guard_cross_bind_x_gt_100_and_y_lt_100()),
+    }]);
+
+    let env: Env<Par> = Env::new();
+    reducer
+        .eval(send_a, &env, rand().split_byte(0))
+        .await
+        .unwrap();
+    reducer
+        .eval(send_b, &env, rand().split_byte(1))
+        .await
+        .unwrap();
+    reducer
+        .eval(receive, &env, rand().split_byte(2))
+        .await
+        .unwrap();
+
+    let result = space.to_map().await;
+    let row_a = result.get(&vec![chan_a]).expect("chan a state present");
+    assert_eq!(row_a.data.len(), 1, "rejected a=50 stays");
+    let row_b = result.get(&vec![chan_b]).expect("chan b state present");
+    assert_eq!(row_b.data.len(), 1, "rejected b=200 stays");
 }

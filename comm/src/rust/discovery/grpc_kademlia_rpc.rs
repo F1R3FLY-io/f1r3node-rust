@@ -65,8 +65,7 @@ impl GrpcKademliaRPC {
     }
 
     /// Execute a function with a gRPC client, handling resource management
-    /// This includes: channel creation, deadline setting on client, and proper
-    /// cleanup
+    /// This includes: channel creation, deadline setting on client, and proper cleanup
     async fn with_client_ping(&self, peer: &PeerNode, ping_msg: Ping) -> Result<bool, CommError> {
         let start = Instant::now();
         // Create channel
@@ -128,8 +127,7 @@ impl GrpcKademliaRPC {
             Ok(c) => c,
             Err(e) => {
                 tracing::error!("Failed to connect to peer for lookup: {}", e);
-                return Ok(Vec::new()); // Return empty list for connection
-                                       // failures
+                return Ok(Vec::new()); // Return empty list for connection failures
             }
         };
 
@@ -305,8 +303,7 @@ mod tests {
             id: NodeIdentifier {
                 key: Bytes::from("other_key".as_bytes().to_vec()),
             },
-            endpoint: Endpoint::new("127.0.0.1".to_string(), 65432, 65432), /* Localhost with
-                                                                             * high port */
+            endpoint: Endpoint::new("127.0.0.1".to_string(), 65432, 65432), // Localhost with high port
         };
 
         // Test that ping returns false for non-existent peer (should fail quickly)
@@ -330,8 +327,7 @@ mod tests {
             id: NodeIdentifier {
                 key: Bytes::from("other_key".as_bytes().to_vec()),
             },
-            endpoint: Endpoint::new("127.0.0.1".to_string(), 65433, 65433), /* Localhost with
-                                                                             * high port */
+            endpoint: Endpoint::new("127.0.0.1".to_string(), 65433, 65433), // Localhost with high port
         };
 
         let key = b"lookup_key";

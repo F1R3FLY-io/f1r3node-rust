@@ -1,6 +1,7 @@
 pub mod bundle_sort_matcher;
 pub mod connective_sort_matcher;
 pub mod expr_sort_matcher;
+pub mod if_sort_matcher;
 pub mod match_sort_matcher;
 pub mod new_sort_matcher;
 pub mod ordering;

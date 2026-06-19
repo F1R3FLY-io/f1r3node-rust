@@ -1,8 +1,8 @@
 [package]
 name = "casper"
 version = "0.1.0"
-publish = false  # internal workspace crate; not published to crates.io
 edition = "2021"
+publish = false
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -43,16 +43,29 @@ tokio-stream = "0.1"
 humantime = "2.3.0"
 tonic = { workspace = true }
 eyre = { workspace = true }
-metrics = "0.23"
+metrics = { workspace = true }
 proptest = "1.6.0"
+parking_lot = "0.12"
 tempfile = { version = "3.24.0", optional = true }
 
 [dev-dependencies]
+# P2-16: enable block-storage's test-only RMW bypass helpers for
+# detector-totality / record-lifecycle integration tests. Production
+# builds of casper do NOT enable this feature.
+block-storage = { path = "../block-storage", features = ["test-internals"] }
 metrics-util = "0.17"
 k256 = { version = "0.13.4", features = ["ecdsa"] }
 serial_test = "3.1"
 env_logger = "0.11.8"
 tempfile = "3.24.0"
+# Exhaustive thread-interleaving model checker for the slashing
+# atomic-RMW property (T-9.2). See
+# docs/theory/slashing/design/14-test-plan.md §14.5.
+loom = "=0.7.2"
+# JSON parsing for the TLA+ trace-replay harness. See
+# casper/tests/slashing/tla_trace_replay.rs (Item 4 / Track 7).
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
 
 
 
@@ -60,6 +73,19 @@ tempfile = "3.24.0"
 default = []
 # Exposes test utilities (TestNode, mocks, genesis helpers) to other workspace members.
 # Guarded with #[cfg(feature = "test-utils")] so it is never compiled in production.
-test-utils = ["tempfile"]
+#
+# Phase 11 (visibility hardening): the casper `test_utils` module constructs
+# `BlockDagKeyValueStorage` directly from in-memory stores and grabs raw write
+# guards on the metadata / deploy indices. Those entry points now live behind
+# block-storage's `test-internals` feature, so enabling casper's `test-utils`
+# transitively enables it. Production builds keep both features off.
+test-utils = ["tempfile", "block-storage/test-internals"]
+schnorr_secp256k1_experimental = [
+    "crypto/schnorr_secp256k1_experimental",
+    "models/schnorr_secp256k1_experimental",
+]
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }
 
 [build-dependencies]

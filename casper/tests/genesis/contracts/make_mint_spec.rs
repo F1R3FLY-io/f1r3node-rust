@@ -1,5 +1,4 @@
-// See casper/src/test/scala/coop/rchain/casper/genesis/contracts/MakeMintSpec.
-// scala
+// See casper/src/test/scala/coop/rchain/casper/genesis/contracts/MakeMintSpec.scala
 
 use std::collections::HashMap;
 
@@ -10,7 +9,7 @@ use crate::helper::rho_spec::RhoSpec;
 
 #[tokio::test]
 async fn make_mint_spec() {
-    let test_object = CompiledRholangSource::load_source("MakeMintTest.rho")
+    let test_object = crate::util::rholang::test_rho_loader::load_test_rho("MakeMintTest.rho")
         .expect("Failed to load MakeMintTest.rho");
 
     let compiled =

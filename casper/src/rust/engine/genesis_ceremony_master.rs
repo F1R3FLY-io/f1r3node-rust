@@ -1,5 +1,4 @@
-// See casper/src/main/scala/coop/rchain/casper/engine/GenesisCeremonyMaster.
-// scala
+// See casper/src/main/scala/coop/rchain/casper/engine/GenesisCeremonyMaster.scala
 
 use std::future::Future;
 use std::pin::Pin;
@@ -10,6 +9,7 @@ use async_trait::async_trait;
 use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
 use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
 use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
+use block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use comm::rust::peer_node::PeerNode;
 use comm::rust::rp::connect::ConnectionsCell;
@@ -72,8 +72,9 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> GenesisCeremonyMaster<T>
         mut block_store: KeyValueBlockStore,
         mut block_dag_storage: BlockDagKeyValueStorage,
         deploy_storage: KeyValueDeployStorage,
+        rejected_deploy_buffer: Arc<Mutex<KeyValueRejectedDeployBuffer>>,
         casper_buffer_storage: CasperBufferKeyValueStorage,
-        runtime_manager: Arc<tokio::sync::Mutex<RuntimeManager>>,
+        runtime_manager: Arc<RuntimeManager>,
         estimator: Estimator,
         // Explicit parameters from Scala (in same order as Scala signature)
         block_processing_queue_tx: mpsc::Sender<(
@@ -103,6 +104,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> GenesisCeremonyMaster<T>
                     block_store,
                     block_dag_storage,
                     deploy_storage,
+                    rejected_deploy_buffer,
                     casper_buffer_storage,
                     runtime_manager,
                     estimator,
@@ -132,6 +134,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> GenesisCeremonyMaster<T>
                     &block_store,
                     &block_dag_storage,
                     &deploy_storage,
+                    &rejected_deploy_buffer,
                     &casper_buffer_storage,
                     validator_id.clone(),
                     &casper_shard_conf,
@@ -146,8 +149,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> GenesisCeremonyMaster<T>
                         as Pin<Box<dyn Future<Output = Result<(), CasperError>> + Send>>
                 });
 
-                // Direct-to-running path: emit init metrics that are otherwise produced in
-                // Initializing.
+                // Direct-to-running path: emit init metrics that are otherwise produced in Initializing.
                 record_direct_to_running_init_metrics();
 
                 transition_to_running(
@@ -180,18 +182,20 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> GenesisCeremonyMaster<T>
     #[allow(clippy::too_many_arguments)]
     fn create_casper_from_storage(
         event_publisher: &F1r3flyEvents,
-        runtime_manager: &Arc<tokio::sync::Mutex<RuntimeManager>>,
+        runtime_manager: &Arc<RuntimeManager>,
         estimator: &Estimator,
         block_store: &KeyValueBlockStore,
         block_dag_storage: &BlockDagKeyValueStorage,
         deploy_storage: &KeyValueDeployStorage,
+        rejected_deploy_buffer: &Arc<Mutex<KeyValueRejectedDeployBuffer>>,
         casper_buffer_storage: &CasperBufferKeyValueStorage,
         validator_id: Option<ValidatorIdentity>,
         casper_shard_conf: &CasperShardConf,
         ab: BlockMessage,
         block_retriever: &BlockRetriever<T>,
         heartbeat_signal_ref: &crate::rust::heartbeat_signal::HeartbeatSignalRef,
-    ) -> Result<crate::rust::multi_parent_casper_impl::MultiParentCasperImpl<T>, CasperError> {
+    ) -> Result<crate::rust::engine::multi_parent_casper::MultiParentCasperImpl<T>, CasperError>
+    {
         let runtime_manager_for_casper = runtime_manager.clone();
 
         hash_set_casper(
@@ -202,6 +206,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> GenesisCeremonyMaster<T>
             block_store.clone(),
             block_dag_storage.clone(),
             deploy_storage.clone(),
+            rejected_deploy_buffer.clone(),
             casper_buffer_storage.clone(),
             validator_id,
             casper_shard_conf.clone(),

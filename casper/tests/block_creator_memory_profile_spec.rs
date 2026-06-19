@@ -23,7 +23,7 @@ use crypto::rust::private_key::PrivateKey;
 use crypto::rust::signatures::secp256k1::Secp256k1;
 use crypto::rust::signatures::signatures_alg::SignaturesAlg;
 use crypto::rust::signatures::signed::Signed;
-use dashmap::{DashMap, DashSet};
+use dashmap::DashSet;
 use models::rust::casper::protocol::casper_message::{DeployData, Justification};
 use models::rust::validator::Validator;
 use prost::bytes::Bytes;
@@ -34,13 +34,6 @@ use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreMana
 use tokio::time::{timeout, Duration};
 
 const DEPLOY_LIFESPAN: i64 = 50;
-
-fn env_usize(name: &str, default: usize) -> usize {
-    std::env::var(name)
-        .ok()
-        .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or(default)
-}
 
 fn vm_rss_kb() -> Option<usize> {
     let status = std::fs::read_to_string("/proc/self/status").ok()?;
@@ -74,13 +67,7 @@ fn create_deploy(
     validator_sk: &PrivateKey,
     shard_id: &str,
 ) -> Signed<DeployData> {
-    let fixed_inputs = std::env::var("F1R3_BLOCK_CREATOR_PHASE_PROFILE_FIXED_INPUTS")
-        .ok()
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false);
-    let timestamp = if fixed_inputs {
-        0
-    } else {
+    let timestamp = {
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_millis() as i64)
@@ -114,7 +101,7 @@ fn create_snapshot_with_parent(
         latest_block_hash: parent.block_hash.clone(),
     });
 
-    let max_seq_nums: DashMap<Validator, u64> = DashMap::new();
+    let mut max_seq_nums: HashMap<Validator, u64> = HashMap::new();
     max_seq_nums.insert(validator.clone(), parent.seq_num as u64);
     snapshot.max_seq_nums = max_seq_nums;
 
@@ -144,10 +131,9 @@ fn create_snapshot_with_parent(
 #[test]
 #[ignore = "manual memory profiling; run with --ignored --nocapture"]
 fn profile_block_creator_create_memory_usage() {
-    let stack_bytes = env_usize("F1R3_BLOCK_CREATOR_PROFILE_STACK_BYTES", 64 * 1024 * 1024);
     let handle = std::thread::Builder::new()
         .name("block-creator-memory-profile".to_string())
-        .stack_size(stack_bytes)
+        .stack_size(64 * 1024 * 1024)
         .spawn(|| {
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -163,12 +149,10 @@ fn profile_block_creator_create_memory_usage() {
 }
 
 async fn run_block_creator_create_memory_profile() {
-    let iterations = env_usize("F1R3_BLOCK_CREATOR_PROFILE_ITERS", 10);
-    let sample_every = env_usize("F1R3_BLOCK_CREATOR_PROFILE_SAMPLE_EVERY", 5).max(1);
-    let timeout_ms = env_usize("F1R3_BLOCK_CREATOR_PROFILE_TIMEOUT_MS", 2000) as u64;
-    let growth_limit_kb = std::env::var("F1R3_BLOCK_CREATOR_PROFILE_MAX_GROWTH_KB")
-        .ok()
-        .and_then(|value| value.parse::<usize>().ok());
+    let iterations: usize = 10;
+    let sample_every: usize = 5;
+    let timeout_ms: u64 = 2000;
+    let growth_limit_kb: Option<usize> = None;
 
     let secp = Secp256k1;
     let (validator_sk, validator_pk) = secp.new_key_pair();
@@ -177,10 +161,15 @@ async fn run_block_creator_create_memory_profile() {
     let shard_name = "test-shard".to_string();
 
     let mut kvm = InMemoryStoreManager::new();
-    let deploy_storage = Arc::new(Mutex::new(
+    let deploy_storage = Arc::new(parking_lot::Mutex::new(
         KeyValueDeployStorage::new(&mut kvm)
             .await
             .expect("Failed to create deploy storage"),
+    ));
+    let rejected_deploy_buffer = Arc::new(Mutex::new(
+        block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer::new(&mut kvm)
+            .await
+            .expect("Failed to create rejected deploy buffer"),
     ));
     let mut block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
         .await
@@ -199,7 +188,7 @@ async fn run_block_creator_create_memory_profile() {
     let (mut runtime_manager, _) = RuntimeManager::create_with_history(
         rspace_store,
         mergeable_store,
-        Genesis::non_negative_mergeable_tag_name(),
+        std::sync::Arc::new(Genesis::default_mergeable_tags()),
         ExternalServices::noop(),
     );
 
@@ -227,6 +216,9 @@ async fn run_block_creator_create_memory_profile() {
         vaults: Vec::new(),
         supply: i64::MAX,
         version: 1,
+        native_token_name: "F1R3CAP".to_string(),
+        native_token_symbol: "F1R3".to_string(),
+        native_token_decimals: 8,
     };
     let parent = Genesis::create_genesis_block(&mut runtime_manager, &genesis)
         .await
@@ -236,11 +228,16 @@ async fn run_block_creator_create_memory_profile() {
         .put_block_message(&parent)
         .expect("Failed to store parent block");
     dag_storage
-        .insert(&parent, false, true)
+        .insert(
+            &parent,
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved,
+        )
         .expect("Failed to insert parent block in DAG");
 
     let snapshot = create_snapshot_with_parent(
-        dag_storage.get_representation(),
+        dag_storage
+            .get_representation()
+            .expect("dag representation"),
         parent,
         validator.clone(),
         shard_name.clone(),
@@ -265,7 +262,7 @@ async fn run_block_creator_create_memory_profile() {
     for i in 1..=iterations {
         let deploy = create_deploy(i, &validator_sk, &shard_name);
         {
-            let mut ds = deploy_storage.lock().unwrap();
+            let mut ds = deploy_storage.lock();
             ds.add(vec![deploy]).expect("Failed to add deploy");
         }
 
@@ -276,6 +273,7 @@ async fn run_block_creator_create_memory_profile() {
                 &validator_identity,
                 None,
                 deploy_storage.clone(),
+                rejected_deploy_buffer.clone(),
                 &mut runtime_manager,
                 &mut block_store,
                 false,
@@ -306,7 +304,7 @@ async fn run_block_creator_create_memory_profile() {
         };
 
         {
-            let mut ds = deploy_storage.lock().unwrap();
+            let mut ds = deploy_storage.lock();
             let all = ds.read_all().expect("Failed to read deploy pool");
             if !all.is_empty() {
                 ds.remove(all.into_iter().collect())
@@ -322,8 +320,7 @@ async fn run_block_creator_create_memory_profile() {
                 .unwrap_or(0);
 
             println!(
-                "create #{:>3}: {:<11} rss={}KB ({:.2} MiB) delta_iter={:+}KB ({:+.2} MiB) \
-                 delta_total={:+}KB ({:+.2} MiB)",
+                "create #{:>3}: {:<11} rss={}KB ({:.2} MiB) delta_iter={:+}KB ({:+.2} MiB) delta_total={:+}KB ({:+.2} MiB)",
                 i,
                 outcome,
                 rss,
@@ -352,14 +349,12 @@ async fn run_block_creator_create_memory_profile() {
     }
 
     println!(
-        "block_creator::create profile created={}, non_created={}, errors={}, timeouts={}, \
-         vmrss_kb_samples={:?}, error_samples={:?}",
+        "block_creator::create profile created={}, non_created={}, errors={}, timeouts={}, vmrss_kb_samples={:?}, error_samples={:?}",
         created_count, non_created_count, error_count, timeout_count, samples, error_samples
     );
     assert!(
         created_count > 0,
-        "profiling requires at least one successful block_creator::create; got created=0, \
-         non_created={}, errors={}, timeouts={}, samples={:?}, errors={:?}",
+        "profiling requires at least one successful block_creator::create; got created=0, non_created={}, errors={}, timeouts={}, samples={:?}, errors={:?}",
         non_created_count,
         error_count,
         timeout_count,
@@ -386,10 +381,9 @@ async fn run_block_creator_create_memory_profile() {
 #[test]
 #[ignore = "manual memory profiling; run with --ignored --nocapture"]
 fn profile_block_creator_phase_split_memory_usage() {
-    let stack_bytes = env_usize("F1R3_BLOCK_CREATOR_PROFILE_STACK_BYTES", 64 * 1024 * 1024);
     let handle = std::thread::Builder::new()
         .name("block-creator-phase-split-memory-profile".to_string())
-        .stack_size(stack_bytes)
+        .stack_size(64 * 1024 * 1024)
         .spawn(|| {
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -405,29 +399,13 @@ fn profile_block_creator_phase_split_memory_usage() {
 }
 
 async fn run_block_creator_phase_split_memory_profile() {
-    let iterations = env_usize("F1R3_BLOCK_CREATOR_PHASE_PROFILE_ITERS", 10);
-    let timeout_ms = env_usize("F1R3_BLOCK_CREATOR_PHASE_PROFILE_TIMEOUT_MS", 4000) as u64;
-    let fixed_inputs = std::env::var("F1R3_BLOCK_CREATOR_PHASE_PROFILE_FIXED_INPUTS")
-        .ok()
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false);
-    let skip_user_deploy = std::env::var("F1R3_BLOCK_CREATOR_PHASE_PROFILE_SKIP_USER_DEPLOY")
-        .ok()
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false);
-    let skip_system_deploy = std::env::var("F1R3_BLOCK_CREATOR_PHASE_PROFILE_SKIP_SYSTEM_DEPLOY")
-        .ok()
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false);
-    let skip_parents_compute =
-        std::env::var("F1R3_BLOCK_CREATOR_PHASE_PROFILE_SKIP_PARENTS_COMPUTE")
-            .ok()
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
-    let skip_bonds = std::env::var("F1R3_BLOCK_CREATOR_PHASE_PROFILE_SKIP_BONDS")
-        .ok()
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false);
+    let iterations: usize = 10;
+    let timeout_ms: u64 = 4000;
+    let fixed_inputs = false;
+    let skip_user_deploy = false;
+    let skip_system_deploy = false;
+    let skip_parents_compute = false;
+    let skip_bonds = false;
 
     let secp = Secp256k1;
     let (validator_sk, validator_pk) = secp.new_key_pair();
@@ -453,7 +431,7 @@ async fn run_block_creator_phase_split_memory_profile() {
     let (mut runtime_manager, _) = RuntimeManager::create_with_history(
         rspace_store,
         mergeable_store,
-        Genesis::non_negative_mergeable_tag_name(),
+        std::sync::Arc::new(Genesis::default_mergeable_tags()),
         ExternalServices::noop(),
     );
 
@@ -481,6 +459,9 @@ async fn run_block_creator_phase_split_memory_profile() {
         vaults: Vec::new(),
         supply: i64::MAX,
         version: 1,
+        native_token_name: "F1R3CAP".to_string(),
+        native_token_symbol: "F1R3".to_string(),
+        native_token_decimals: 8,
     };
     let parent = Genesis::create_genesis_block(&mut runtime_manager, &genesis)
         .await
@@ -490,11 +471,16 @@ async fn run_block_creator_phase_split_memory_profile() {
         .put_block_message(&parent)
         .expect("Failed to store parent block");
     dag_storage
-        .insert(&parent, false, true)
+        .insert(
+            &parent,
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved,
+        )
         .expect("Failed to insert parent block in DAG");
 
     let snapshot = create_snapshot_with_parent(
-        dag_storage.get_representation(),
+        dag_storage
+            .get_representation()
+            .expect("dag representation"),
         parent,
         validator.clone(),
         shard_name.clone(),
@@ -513,8 +499,7 @@ async fn run_block_creator_phase_split_memory_profile() {
     let mut prev_total_store_kb =
         prev_history_store_kb + prev_cold_store_kb + prev_roots_store_kb + prev_mergeable_store_kb;
     println!(
-        "phase stores baseline: history={}KB ({:.2} MiB), cold={}KB ({:.2} MiB), roots={}KB \
-         ({:.2} MiB), mergeable={}KB ({:.2} MiB), total={}KB ({:.2} MiB)",
+        "phase stores baseline: history={}KB ({:.2} MiB), cold={}KB ({:.2} MiB), roots={}KB ({:.2} MiB), mergeable={}KB ({:.2} MiB), total={}KB ({:.2} MiB)",
         prev_history_store_kb,
         kb_to_mib(prev_history_store_kb),
         prev_cold_store_kb,
@@ -577,10 +562,18 @@ async fn run_block_creator_phase_split_memory_profile() {
 
         let rss_before = vm_rss_kb();
 
-        let (pre_state_hash, _rejected) = if skip_parents_compute {
+        let (pre_state_hash, _rejected, _rejected_slashes) = if skip_parents_compute {
             match snapshot.parents.first() {
-                Some(parent) => (parent.body.state.post_state_hash.clone(), Vec::new()),
-                None => (RuntimeManager::empty_state_hash_fixed(), Vec::new()),
+                Some(parent) => (
+                    parent.body.state.post_state_hash.clone(),
+                    Vec::new(),
+                    Vec::new(),
+                ),
+                None => (
+                    RuntimeManager::empty_state_hash_fixed(),
+                    Vec::new(),
+                    Vec::new(),
+                ),
             }
         } else {
             match compute_parents_post_state(
@@ -588,6 +581,7 @@ async fn run_block_creator_phase_split_memory_profile() {
                 snapshot.parents.clone(),
                 &snapshot,
                 &runtime_manager,
+                None,
                 None,
             ) {
                 Ok(result) => result,
@@ -681,8 +675,7 @@ async fn run_block_creator_phase_split_memory_profile() {
             .unwrap_or(0);
 
         println!(
-            "phase #{:>3}: {:<7} rss={}KB ({:.2} MiB) parents_delta={:+}KB ({:+.2} MiB) \
-             state_delta={:+}KB ({:+.2} MiB) total_delta={:+}KB ({:+.2} MiB)",
+            "phase #{:>3}: {:<7} rss={}KB ({:.2} MiB) parents_delta={:+}KB ({:+.2} MiB) state_delta={:+}KB ({:+.2} MiB) total_delta={:+}KB ({:+.2} MiB)",
             i,
             outcome,
             rss_value,
@@ -702,8 +695,7 @@ async fn run_block_creator_phase_split_memory_profile() {
         let total_store_kb = history_store_kb + cold_store_kb + roots_store_kb + mergeable_store_kb;
 
         println!(
-            "phase #{:>3} stores: history={}KB ({:+}KB), cold={}KB ({:+}KB), roots={}KB ({:+}KB), \
-             mergeable={}KB ({:+}KB), total={}KB ({:+}KB)",
+            "phase #{:>3} stores: history={}KB ({:+}KB), cold={}KB ({:+}KB), roots={}KB ({:+}KB), mergeable={}KB ({:+}KB), total={}KB ({:+}KB)",
             i,
             history_store_kb,
             history_store_kb as isize - prev_history_store_kb as isize,
@@ -731,8 +723,7 @@ async fn run_block_creator_phase_split_memory_profile() {
 
     assert!(
         success_count > 0,
-        "phase-split profiling requires at least one successful compute_state_with_bonds; got \
-         ok=0, errors={}, timeouts={}, error_samples={:?}",
+        "phase-split profiling requires at least one successful compute_state_with_bonds; got ok=0, errors={}, timeouts={}, error_samples={:?}",
         error_count,
         timeout_count,
         error_samples

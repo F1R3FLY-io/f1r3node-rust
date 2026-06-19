@@ -195,17 +195,10 @@ in {
                   calTotalActiveBonds!(*totalActiveBondCh) |
                   accumulateItemInState!(*totalWithdrawCh, "withdrawers", *accumulateFstOfSndArg) |
                   accumulateItemInState!(*committedRewardsCh, "committedRewards", *accumulateSndNum) |
-                  for (@posBalance <- posBalanceCh) {
-                    for (@totalBond <- totalBondCh) {
-                      for (@activeBonds <- totalActiveBondCh) {
-                        for (@totalWithdraw <- totalWithdrawCh) {
-                          for (@totalCommittedRewards <- committedRewardsCh) {
-                            for (@state <<- stateCh) {
-                              retCh!((posBalance , totalBond , activeBonds, totalWithdraw, totalCommittedRewards, state.get("allBonds"), state.get("activeValidators")))
-                            }
-                          }
-                        }
-                      }
+                  for (@posBalance <- posBalanceCh; @totalBond <- totalBondCh; @activeBonds <- totalActiveBondCh;
+                       @totalWithdraw <- totalWithdrawCh; @totalCommittedRewards <- committedRewardsCh){
+                    for (@state <<- stateCh) {
+                      retCh!((posBalance , totalBond , activeBonds, totalWithdraw, totalCommittedRewards, state.get("allBonds"), state.get("activeValidators")))
                     }
                   }
                 }
@@ -320,6 +313,17 @@ in {
                        @userPk          <- userCh) {
                     if (state.get("allBonds").contains(userPk)) {
                       resultCh!(state, (false, "Public key is already bonded."))
+                    } else if (amount <= 0) {
+                      // Bug #5 fix: explicit positive-stake assertion. The
+                      // Rocq invariant `active_implies_bonded` (T-9.5,
+                      // BugFixStakeZero.v:36) requires every active
+                      // validator to have a strictly positive bond. The
+                      // earlier `amount < minimumBond` check covers this
+                      // when minimumBond ≥ 1, but a defensive zero-stake
+                      // gate makes the invariant explicit and independent
+                      // of genesis configuration. See
+                      // design/09-bug-fixes-and-rationale.md §9.6 (option a).
+                      resultCh!(state, (false, "Bond amount must be positive."))
                     } else if (amount < $$minimumBond$$) {
                       resultCh!(state, (false, "Bond is less than minimum!"))
                     } else if (amount > $$maximumBond$$) {
@@ -454,42 +458,65 @@ in {
                                @userPk               <- userCh &
                                @state, stateUpdateCh <- stateProcessCh) {
                                 new toBeSlashed, valBondCh, valRewardCh in {
-                                  // Flow of logic:
-                                  // 0. check if blockHash is the hash of an invalid block
-                                  // 1. transfer stake of slashed validator from PoS to Coop vault
-                                  // 2. update state
-                                  // Retrieves either public key of sender of invalid block or the deployer public key.
-                                  toBeSlashed!(invalidBlocks.getOrElse(blockHash, userPk)) |
-                                  for (@validator <- toBeSlashed) {
-                                    // Takes the stake of slashed validator
-                                    valBondCh!(state.get("allBonds").get(validator)) |
-                                    for (@valBond <- valBondCh) {
-                                      // Transfers slashed funds from PoS vault to Coop vault, then updates state.
-                                      new transferDoneCh in {
-                                        @posVault!(
-                                          "transfer",
-                                          coopMultiVaultAddr,
-                                          valBond,
-                                          posAuthKey,
-                                          *transferDoneCh
-                                        ) |
-                                        // FIXME handle transfer failing case
-                                        for (_ <- transferDoneCh) {
-                                          // Sets slashed validator's committed rewards and bond to 0 in state.
-                                          // Moves slashed validator to withdrawers map with no quarantine period.
-                                          stateUpdateCh!({
-                                            "allBonds"        : state.get("allBonds").set(validator, 0),
-                                            "activeValidators": state.get("activeValidators").delete(validator),
-                                            "committedRewards" : state.get("committedRewards").delete(validator),
-                                            "withdrawers"     : state.get("withdrawers"),
-                                            "pendingWithdrawers": state.get("pendingWithdrawers"),
-                                            "randomImages"    : state.get("randomImages"),
-                                            "randomNumbers"   : state.get("randomNumbers")
-                                          },
-                                          (true, Nil))
+                                  if (invalidBlocks.contains(blockHash)) {
+                                    toBeSlashed!(invalidBlocks.get(blockHash)) |
+                                    for (@validator <- toBeSlashed) {
+                                      valBondCh!(state.get("allBonds").get(validator)) |
+                                      for (@valBond <- valBondCh) {
+                                        // Idempotency: a validator already at
+                                        // stake 0 has been slashed by a prior
+                                        // call. The transfer of `valBond = 0`
+                                        // would fail with "Amount must be
+                                        // positive value", but the desired
+                                        // end state (validator at 0, removed
+                                        // from active set) is already reached.
+                                        // Returning (true, Nil) here makes
+                                        // PoS!"slash" safe to invoke from
+                                        // every block whose body re-issues a
+                                        // SlashDeploy for the same offender —
+                                        // a requirement for the
+                                        // merge-rejected-slash recovery
+                                        // path (`merging::rejected_slash::
+                                        // filter_recoverable`) and for the
+                                        // T-9.3 catch-all dispatcher that
+                                        // mints a record per slashable
+                                        // variant.
+                                        if (valBond <= 0) {
+                                          stateUpdateCh!(state, (true, Nil))
+                                        } else {
+                                          new transferDoneCh in {
+                                            @posVault!(
+                                              "transfer",
+                                              coopMultiVaultAddr,
+                                              valBond,
+                                              posAuthKey,
+                                              *transferDoneCh
+                                            ) |
+                                            for (@transferResult <- transferDoneCh) {
+                                              match transferResult {
+                                                (true, _) => {
+                                                  stateUpdateCh!({
+                                                    "allBonds"        : state.get("allBonds").set(validator, 0),
+                                                    "activeValidators": state.get("activeValidators").delete(validator),
+                                                    "committedRewards" : state.get("committedRewards").delete(validator),
+                                                    "withdrawers"     : state.get("withdrawers"),
+                                                    "pendingWithdrawers": state.get("pendingWithdrawers"),
+                                                    "randomImages"    : state.get("randomImages"),
+                                                    "randomNumbers"   : state.get("randomNumbers")
+                                                  },
+                                                  (true, Nil))
+                                                }
+                                                (_, errorMessage) => {
+                                                  stateUpdateCh!(state, (false, "transfer failed: " ++ errorMessage))
+                                                }
+                                              }
+                                            }
+                                          }
                                         }
                                       }
                                     }
+                                  } else {
+                                    stateUpdateCh!(state, (false, "invalid slash evidence"))
                                   }
                                 }
                           }
@@ -593,17 +620,44 @@ in {
                                     @ListOps!("filter", state.get("withdrawers").toList(), *isQuarantineFinished, *quarantinedValidatorsCh) |
                                     for (@quarantinedValidators <- quarantinedValidatorsCh) {
                                       @ListOps!("unorderedParMap", quarantinedValidators, *payWithdraw, *payRet) |
+                                      // Bug #10 fix: pattern-match on the transfer outcome and emit
+                                      // (pk, success_bool) on resultCh. The downstream `computeRemove`
+                                      // fold then removes ONLY successful withdrawers from the maps;
+                                      // failed transfers leave the per-validator state intact for
+                                      // retry on a later block. Pre-fix the resultCh just forwarded
+                                      // posVault.transfer's (true, _) | (false, errMsg) pair, and the
+                                      // surrounding `for (@_ <- payRet)` accepted any value, so a
+                                      // failed transfer would still drop the validator from
+                                      // `withdrawers` and `committedRewards` — losing funds. See
+                                      // design/09-bug-fixes-and-rationale.md §9.13
+                                      // (theorem t_9_10_withdraw_transfer_failure_safety,
+                                      // formal/rocq/slashing/theories/BugFixWithdrawTransferFailure.v).
                                       contract payWithdraw(@(pk, (bonds, quantine)), resultCh) = {
-                                        // FIXME fix transfer in failure case
-                                        payWithdrawer!((pk, bonds + state.get("committedRewards").getOrElse(pk, 0)), *resultCh)
+                                        new transferResultCh in {
+                                          payWithdrawer!((pk, bonds + state.get("committedRewards").getOrElse(pk, 0)), *transferResultCh) |
+                                          for (@transferResult <- transferResultCh) {
+                                            match transferResult {
+                                              (true, _) => { resultCh!((pk, true)) }
+                                              (_, _)    => { resultCh!((pk, false)) }
+                                            }
+                                          }
+                                        }
                                       } |
-                                      for (@_ <- payRet) {
-                                        @ListOps!("fold", quarantinedValidators, state, *computeRemove, *returnCh) |
-                                        contract computeRemove(@(pk, (bonds, quantine)), @updatedState, resultCh) = {
-                                          resultCh!(updatedState
-                                                    .set("committedRewards", updatedState.get("committedRewards").delete(pk))
-                                                    .set("withdrawers", updatedState.get("withdrawers").delete(pk))
-                                                    )
+                                      for (@payResults <- payRet) {
+                                        @ListOps!("fold", payResults, state, *computeRemove, *returnCh) |
+                                        contract computeRemove(@(pk, success), @updatedState, resultCh) = {
+                                          if (success) {
+                                            resultCh!(updatedState
+                                                      .set("committedRewards", updatedState.get("committedRewards").delete(pk))
+                                                      .set("withdrawers", updatedState.get("withdrawers").delete(pk))
+                                                      )
+                                          } else {
+                                            // Failure path: leave per-validator state intact so the
+                                            // outer scheduler retries on a later block. The validator
+                                            // remains in `withdrawers` with their original (bond,
+                                            // quarantine) entry and unchanged `committedRewards`.
+                                            resultCh!(updatedState)
+                                          }
                                         }
                                       }
                                     } |

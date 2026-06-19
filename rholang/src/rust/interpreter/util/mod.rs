@@ -1,4 +1,4 @@
-use models::rhoapi::{Bundle, Connective, Expr, Match, New, Par, Receive, Send};
+use models::rhoapi::{Bundle, Connective, Expr, If, Match, New, Par, Receive, Send};
 use models::rust::utils::union;
 
 use super::matcher::has_locally_free::HasLocallyFree;
@@ -6,6 +6,8 @@ use super::matcher::has_locally_free::HasLocallyFree;
 pub mod address_tools;
 pub mod base58;
 pub mod vault_address;
+#[cfg(feature = "chromadb")]
+pub mod sbert_embeddings;
 
 // Helper enum. This is 'GeneratedMessage' in Scala
 #[derive(Clone, Debug)]
@@ -16,13 +18,13 @@ pub enum GeneratedMessage {
     Match(Match),
     Bundle(Bundle),
     Expr(Expr),
+    If(If),
 }
 
-// These two functions need to be under 'rholang' dir because of HasLocallyFree
-// Trait. This trait should, I think, be moved to models
+// These two functions need to be under 'rholang' dir because of HasLocallyFree Trait.
+// This trait should, I think, be moved to models
 
-// See models/src/main/scala/coop/rchain/models/rholang/implicits.scala -
-// prepend
+// See models/src/main/scala/coop/rchain/models/rholang/implicits.scala - prepend
 pub fn prepend_connective(mut p: Par, c: Connective, depth: i32) -> Par {
     let mut new_connectives = vec![c.clone()];
     new_connectives.append(&mut p.connectives);
@@ -70,8 +72,7 @@ pub fn prepend_bundle(mut p: Par, b: Bundle) -> Par {
     }
 }
 
-// for locally_free parameter, in case when we have
-// (bodyResult.par.locallyFree.from(boundCount).map(x => x - boundCount))
+// for locally_free parameter, in case when we have (bodyResult.par.locallyFree.from(boundCount).map(x => x - boundCount))
 pub(crate) fn filter_and_adjust_bitset(bitset: Vec<u8>, bound_count: usize) -> Vec<u8> {
     bitset
         .into_iter()

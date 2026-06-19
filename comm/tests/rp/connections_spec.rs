@@ -27,8 +27,7 @@ mod tests {
         }
     }
 
-    /// Helper function to create a peer with just name (uses default host and
-    /// port)
+    /// Helper function to create a peer with just name (uses default host and port)
     fn peer_simple(name: &str) -> PeerNode { peer(name, None, None) }
 
     /// Helper function to create a peer with name, host, and port

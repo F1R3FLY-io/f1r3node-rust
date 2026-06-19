@@ -4,12 +4,10 @@ use std::sync::Mutex;
 
 use indexmap::IndexSet;
 
-/// Simple synchronized LRU filter to suppress redundant gossip messages by
-/// hash.
+/// Simple synchronized LRU filter to suppress redundant gossip messages by hash.
 ///
-/// This filter tracks recently seen hashes and allows callers to check if a
-/// hash has been seen before. It uses an LRU eviction policy to bound memory
-/// usage.
+/// This filter tracks recently seen hashes and allows callers to check if a hash
+/// has been seen before. It uses an LRU eviction policy to bound memory usage.
 pub struct RecentHashFilter {
     set: Mutex<IndexSet<String>>,
     max_entries: usize,

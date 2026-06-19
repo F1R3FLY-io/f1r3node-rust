@@ -1,5 +1,4 @@
-// See casper/src/test/scala/coop/rchain/casper/api/ExploratoryDeployAPITest.
-// scala
+// See casper/src/test/scala/coop/rchain/casper/api/ExploratoryDeployAPITest.scala
 //
 // Tests for the exploratory deploy API, which allows read-only queries
 // against the blockchain state.
@@ -13,8 +12,7 @@ use crypto::rust::public_key::PublicKey;
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::GenesisBuilder;
 
-/// Creates genesis parameters with equal bond stakes (10 each) for 3
-/// validators.
+/// Creates genesis parameters with equal bond stakes (10 each) for 3 validators.
 fn bonds_function(validators: Vec<PublicKey>) -> HashMap<PublicKey, i64> {
     validators
         .into_iter()
@@ -25,8 +23,7 @@ fn bonds_function(validators: Vec<PublicKey>) -> HashMap<PublicKey, i64> {
 /// Exploratory deploy should get data from the read-only node.
 ///
 /// DAG structure for finalization:
-/// With 3 validators at 10 stake each (total 30), finalization requires >15
-/// stake.
+/// With 3 validators at 10 stake each (total 30), finalization requires >15 stake.
 ///
 ///     n1: genesis -> b1 -> b2
 ///     n2: genesis ---------> b3 (main parent: b2)
@@ -149,7 +146,7 @@ async fn exploratory_deploy_should_get_data_from_read_only_node() {
 
     // Verify result
     match result {
-        Ok((pars, last_finalized_block)) => {
+        Ok((pars, last_finalized_block, _cost)) => {
             // Verify we got the stored data back
             assert!(!pars.is_empty(), "Exploratory deploy should return data");
 

@@ -1,11 +1,59 @@
-// Upstream code + protobuf-generated code triggers these lints.
-#![allow(clippy::large_enum_variant)]
-#![allow(clippy::mixed_attributes_style)]
-#![allow(clippy::ptr_arg)]
-#![allow(clippy::too_many_arguments)]
-#![allow(clippy::module_inception)]
-#![allow(clippy::match_like_matches_macro)]
-#![allow(clippy::inherent_to_string)]
+#![allow(
+    clippy::type_complexity,
+    clippy::ptr_arg,
+    clippy::too_many_arguments,
+    clippy::module_inception,
+    clippy::large_enum_variant,
+    clippy::match_like_matches_macro,
+    clippy::inherent_to_string,
+    clippy::mixed_attributes_style,
+    clippy::needless_range_loop,
+    clippy::should_implement_trait,
+    clippy::manual_memcpy,
+    clippy::unnecessary_sort_by,
+    clippy::borrowed_box,
+    clippy::match_single_binding,
+    clippy::unnecessary_unwrap,
+    clippy::redundant_iter_cloned,
+    clippy::new_ret_no_self,
+    clippy::new_without_default,
+    clippy::empty_line_after_doc_comments,
+    clippy::assertions_on_constants,
+    clippy::collapsible_match,
+    clippy::no_effect,
+    clippy::non_canonical_partial_ord_impl,
+    clippy::cloned_ref_to_slice_refs,
+    clippy::extra_unused_lifetimes,
+    clippy::if_same_then_else,
+    clippy::manual_strip,
+    clippy::manual_try_fold,
+    clippy::map_identity,
+    clippy::only_used_in_recursion,
+    clippy::redundant_pattern_matching,
+    clippy::useless_conversion,
+    clippy::while_let_loop,
+    clippy::wrong_self_convention,
+    clippy::arc_with_non_send_sync,
+    clippy::derived_hash_with_manual_eq,
+    clippy::doc_lazy_continuation,
+    clippy::map_entry,
+    clippy::nonminimal_bool,
+    clippy::not_unsafe_ptr_arg_deref,
+    clippy::unnecessary_fallible_conversions,
+    clippy::unnecessary_get_then_check,
+    clippy::approx_constant,
+    clippy::single_component_path_imports,
+    clippy::overly_complex_bool_expr,
+    clippy::partialeq_to_none,
+    clippy::clone_on_copy,
+    clippy::redundant_closure,
+    clippy::single_char_pattern,
+    clippy::unnecessary_to_owned,
+    clippy::vec_init_then_push,
+    clippy::unused_io_amount,
+    clippy::large_stack_arrays,
+    clippy::manual_div_ceil
+)]
 
 pub mod rust;
 
@@ -75,6 +123,7 @@ impl PartialEq for Par {
             && self.unforgeables == other.unforgeables
             && self.bundles == other.bundles
             && self.connectives == other.connectives
+            && self.conditionals == other.conditionals
             && self.connective_used == other.connective_used
     }
 }
@@ -89,16 +138,22 @@ impl Hash for Par {
         self.unforgeables.hash(state);
         self.bundles.hash(state);
         self.connectives.hash(state);
+        self.conditionals.hash(state);
         self.connective_used.hash(state);
     }
 }
 
 impl PartialEq for TaggedContinuation {
-    fn eq(&self, other: &Self) -> bool { self.tagged_cont == other.tagged_cont }
+    fn eq(&self, other: &Self) -> bool {
+        self.tagged_cont == other.tagged_cont && self.guard == other.guard
+    }
 }
 
 impl Hash for TaggedContinuation {
-    fn hash<H: Hasher>(&self, state: &mut H) { self.tagged_cont.hash(state); }
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.tagged_cont.hash(state);
+        self.guard.hash(state);
+    }
 }
 
 impl PartialEq for TaggedCont {
@@ -283,6 +338,7 @@ impl PartialEq for Receive {
             && self.persistent == other.persistent
             && self.peek == other.peek
             && self.bind_count == other.bind_count
+            && self.condition == other.condition
             && self.connective_used == other.connective_used
     }
 }
@@ -294,6 +350,7 @@ impl Hash for Receive {
         self.persistent.hash(state);
         self.peek.hash(state);
         self.bind_count.hash(state);
+        self.condition.hash(state);
         self.connective_used.hash(state);
     }
 }
@@ -321,6 +378,7 @@ impl PartialEq for MatchCase {
         self.pattern == other.pattern
             && self.source == other.source
             && self.free_count == other.free_count
+            && self.guard == other.guard
     }
 }
 
@@ -329,6 +387,7 @@ impl Hash for MatchCase {
         self.pattern.hash(state);
         self.source.hash(state);
         self.free_count.hash(state);
+        self.guard.hash(state);
     }
 }
 
@@ -344,6 +403,24 @@ impl Hash for Match {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.target.hash(state);
         self.cases.hash(state);
+        self.connective_used.hash(state);
+    }
+}
+
+impl PartialEq for If {
+    fn eq(&self, other: &Self) -> bool {
+        self.condition == other.condition
+            && self.if_true == other.if_true
+            && self.if_false == other.if_false
+            && self.connective_used == other.connective_used
+    }
+}
+
+impl Hash for If {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.condition.hash(state);
+        self.if_true.hash(state);
+        self.if_false.hash(state);
         self.connective_used.hash(state);
     }
 }
@@ -443,10 +520,9 @@ impl Hash for expr::ExprInstance {
     }
 }
 
-// Relies on numerator/denominator always being in lowest terms
-// (GCD-normalized). Both repos use num_rational::BigRational which normalizes
-// on every operation, so 2/4 is always stored as 1/2 before serialization to
-// proto bytes.
+// Relies on numerator/denominator always being in lowest terms (GCD-normalized).
+// Both repos use num_rational::BigRational which normalizes on every operation,
+// so 2/4 is always stored as 1/2 before serialization to proto bytes.
 impl PartialEq for GBigRational {
     fn eq(&self, other: &Self) -> bool {
         self.numerator == other.numerator && self.denominator == other.denominator

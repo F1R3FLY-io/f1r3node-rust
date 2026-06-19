@@ -42,8 +42,7 @@ impl MachineVerifiableDag {
                 blocks_and_parents.push((block_hash_str, parent_strings));
             }
 
-            // Equivalent to blocksAndParents.flatMap { case (b, bp) =>
-            // bp.map(VerifiableEdge(b, _)) }
+            // Equivalent to blocksAndParents.flatMap { case (b, bp) => bp.map(VerifiableEdge(b, _)) }
             let new_edges: Vec<VerifiableEdge> = blocks_and_parents
                 .into_iter()
                 .flat_map(|(block_hash_str, parent_strings)| {
@@ -53,8 +52,7 @@ impl MachineVerifiableDag {
                 })
                 .collect();
 
-            // Collect each group separately to reverse group order later (not individual
-            // elements)
+            // Collect each group separately to reverse group order later (not individual elements)
             result_parts.push(new_edges);
         }
 

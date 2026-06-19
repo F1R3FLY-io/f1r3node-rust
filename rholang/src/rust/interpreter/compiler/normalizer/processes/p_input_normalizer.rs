@@ -1,11 +1,10 @@
-// See rholang/src/main/scala/coop/rchain/rholang/interpreter/compiler/
-// normalizer/processes/PInputNormalizer.scala
+// See rholang/src/main/scala/coop/rchain/rholang/interpreter/compiler/normalizer/processes/PInputNormalizer.scala
 
 use std::collections::{HashMap, HashSet};
 
 use models::rhoapi::{Par, Receive, ReceiveBind};
 use models::rust::utils::union;
-use rholang_parser::ast::{AnnProc, Bind, Name, Proc, Source};
+use rholang_parser::ast::{AnnProc, Bind, Name, Proc, Receipts, Source};
 use rholang_parser::{SourcePos, SourceSpan};
 use shared::rust::BitSet;
 use uuid::Uuid;
@@ -25,7 +24,7 @@ use crate::rust::interpreter::unwrap_option_safe;
 use crate::rust::interpreter::util::filter_and_adjust_bitset;
 
 pub fn normalize_p_input<'ast>(
-    receipts: &'ast smallvec::SmallVec<[smallvec::SmallVec<[Bind<'ast>; 1]>; 1]>,
+    receipts: &'ast Receipts<'ast>,
     body: &'ast AnnProc<'ast>,
     input: ProcVisitInputs,
     env: &HashMap<String, Par>,
@@ -39,6 +38,27 @@ pub fn normalize_p_input<'ast>(
         return Err(InterpreterError::BugFoundError(
             "Expected at least one receipt".to_string(),
         ));
+    }
+
+    // Multiple receipt groups (separated by `;`) are desugared into nested
+    // for loops, matching Scala's PInputNormalizer behavior.
+    //   for (@a <- ch1 where g1; @b <- ch2 where g2) { body }
+    // becomes:
+    //   for (@a <- ch1 where g1) { for (@b <- ch2 where g2) { body } }
+    // Each receipt's original `where` guard is preserved on its own
+    // nested `for` via alloc_for_with_guards.
+    if receipts.len() > 1 {
+        let desugared = receipts
+            .iter()
+            .rev()
+            .fold(*body, |acc_body, receipt_group| AnnProc {
+                proc: parser.ast_builder().alloc_for_with_guards(
+                    vec![(receipt_group.binds.to_vec(), receipt_group.guard)],
+                    acc_body,
+                ),
+                span: body.span,
+            });
+        return normalize_ann_proc(&desugared, input, env, parser);
     }
 
     let head_receipt = &receipts[0][0];
@@ -91,15 +111,14 @@ pub fn normalize_p_input<'ast>(
                                 }
 
                                 Source::ReceiveSend { name, .. } => {
-                                    // ReceiveSend desugaring: x <- name?() becomes x, temp <- name
-                                    // & temp!()
+                                    // ReceiveSend desugaring: x <- name?() becomes x, temp <- name & temp!()
                                     let mut new_names = lhs.names.clone();
-                                    new_names.push(temp_var);
+                                    new_names.push(temp_var.clone());
 
                                     list_linear_bind.push(Bind::Linear {
                                         lhs: rholang_parser::ast::Names {
                                             names: new_names,
-                                            remainder: lhs.remainder,
+                                            remainder: lhs.remainder.clone(),
                                         },
                                         rhs: Source::Simple { name: *name },
                                     });
@@ -126,8 +145,7 @@ pub fn normalize_p_input<'ast>(
                                 }
 
                                 Source::SendReceive { name, inputs, .. } => {
-                                    // SendReceive desugaring: x <- name!(args) becomes new temp in
-                                    // { name!(temp, args) | x <- temp }
+                                    // SendReceive desugaring: x <- name!(args) becomes new temp in { name!(temp, args) | x <- temp }
                                     list_name_decl.push(rholang_parser::ast::NameDecl {
                                         id: rholang_parser::ast::Id {
                                             name: parser.ast_builder().alloc_str(&identifier),
@@ -138,7 +156,9 @@ pub fn normalize_p_input<'ast>(
 
                                     list_linear_bind.push(Bind::Linear {
                                         lhs: lhs.clone(),
-                                        rhs: Source::Simple { name: temp_var },
+                                        rhs: Source::Simple {
+                                            name: temp_var.clone(),
+                                        },
                                     });
 
                                     // Prepend temp variable to inputs
@@ -211,8 +231,7 @@ pub fn normalize_p_input<'ast>(
         // Simple source handling - similar to original's else branch
 
         // Convert receipts to the format expected by processing functions
-        // Note: We flatten the nested SmallVec structure since input normalizer expects
-        // a flat list
+        // Note: We flatten the nested SmallVec structure since input normalizer expects a flat list
         let flat_receipts: Vec<&Bind<'ast>> = receipts
             .iter()
             .flat_map(|receipt_group| receipt_group.iter())
@@ -231,7 +250,7 @@ pub fn normalize_p_input<'ast>(
                             return Err(InterpreterError::ParserError(
                                 "Only simple sources supported in current implementation"
                                     .to_string(),
-                            ));
+                            ))
                         }
                     };
 
@@ -375,6 +394,7 @@ pub fn normalize_p_input<'ast>(
                 .clone()
                 .into_iter()
                 .zip(sources_par)
+                .into_iter()
                 .map(|((a, b, c, _), e)| (a, b, e, c))
                 .collect(),
         )?;
@@ -420,21 +440,56 @@ pub fn normalize_p_input<'ast>(
             },
         )?;
 
+        let body_env = input
+            .bound_map_chain
+            .absorb_free_span(&receive_binds_free_map);
+
+        // Optional `where`-clause guard. By the time we reach this branch
+        // there is a single receipt (multi-receipt is desugared into nested
+        // `for`s above), so its guard is the one we care about. Normalize
+        // the guard against the same scope as the body — the merged-bind
+        // free map has been absorbed into bound_map_chain, so guard and
+        // body see the same de Bruijn levels.
+        let guard_result = match receipts[0].guard.as_ref().map(|g| g) {
+            Some(guard) => Some(normalize_ann_proc(
+                guard,
+                ProcVisitInputs {
+                    par: Par::default(),
+                    bound_map_chain: body_env.clone(),
+                    free_map: sources_free.clone(),
+                },
+                env,
+                parser,
+            )?),
+            None => None,
+        };
+
         // Process body
         let proc_visit_outputs = normalize_ann_proc(
             body,
             ProcVisitInputs {
                 par: Par::default(),
-                bound_map_chain: input
-                    .bound_map_chain
-                    .absorb_free_span(&receive_binds_free_map),
-                free_map: sources_free,
+                bound_map_chain: body_env,
+                free_map: guard_result
+                    .as_ref()
+                    .map(|gr| gr.free_map.clone())
+                    .unwrap_or(sources_free),
             },
             env,
             parser,
         )?;
 
         let bind_count = receive_binds_free_map.count_no_wildcards();
+
+        let guard_par = guard_result.as_ref().map(|gr| gr.par.clone());
+        let guard_locally_free = guard_result
+            .as_ref()
+            .map(|gr| gr.par.locally_free.clone())
+            .unwrap_or_default();
+        let guard_connective_used = guard_result
+            .as_ref()
+            .map(|gr| gr.par.connective_used)
+            .unwrap_or(false);
 
         Ok(ProcVisitOutputs {
             par: input.par.clone().prepend_receive(Receive {
@@ -454,21 +509,23 @@ pub fn normalize_p_input<'ast>(
                                     union(locally_free1, locally_free2)
                                 }),
                             filter_and_adjust_bitset(
-                                proc_visit_outputs.par.locally_free,
+                                union(proc_visit_outputs.par.locally_free, guard_locally_free),
                                 bind_count,
                             ),
                         ),
                     )
                 },
-                connective_used: sources_connective_used || proc_visit_outputs.par.connective_used,
+                connective_used: sources_connective_used
+                    || proc_visit_outputs.par.connective_used
+                    || guard_connective_used,
+                condition: guard_par,
             }),
             free_map: proc_visit_outputs.free_map,
         })
     }
 }
 
-// See rholang/src/test/scala/coop/rchain/rholang/interpreter/compiler/
-// normalizer/ProcMatcherSpec.scala
+// See rholang/src/test/scala/coop/rchain/rholang/interpreter/compiler/normalizer/ProcMatcherSpec.scala
 #[cfg(test)]
 mod tests {
     use models::create_bit_vector;
@@ -555,6 +612,7 @@ mod tests {
             bind_count,
             locally_free: Vec::new(),
             connective_used: false,
+            condition: None,
         });
 
         assert_eq!(result.clone().unwrap().par, expected_result);
@@ -648,6 +706,7 @@ mod tests {
             bind_count,
             locally_free: Vec::new(),
             connective_used: false,
+            condition: None,
         });
 
         assert_eq!(result.unwrap().par, expected_result);
@@ -723,7 +782,9 @@ mod tests {
 
         let body = ParBuilderUtil::create_ast_par(send1, send2, &parser);
 
-        // Create ForComprehension - Two separate receipt groups for & operation
+        // Create ForComprehension - Two separate receipt groups (for/; syntax)
+        // With desugaring, this becomes nested for loops:
+        //   for (x1, @y1 <- @Nil) { for (x2, @y2 <- @1) { x1!(y2) | x2!(y1) } }
         let for_comprehension = ParBuilderUtil::create_ast_for_comprehension(
             vec![vec![bind1], vec![bind2]],
             body,
@@ -731,63 +792,81 @@ mod tests {
         );
 
         let result = normalize_ann_proc(&for_comprehension, inputs_data.clone(), &env, &parser);
-        assert!(result.is_ok());
+        assert!(result.is_ok(), "Normalization failed: {:?}", result.err());
 
-        let bind_count = 4;
+        // Desugared form: for (x1, @y1 <- @Nil) { for (x2, @y2 <- @1) { x1!(y2) | x2!(y1) } }
+        // Outer Receive: 1 bind (x1, @y1 <- @Nil), bind_count=2
+        // Inner Receive: 1 bind (x2, @y2 <- @1), bind_count=2
+        // Body: x1!(y2) | x2!(y1)
+        //   BoundVar(0)=x2, BoundVar(1)=y2 (inner), BoundVar(2)=x1, BoundVar(3)=y1 (outer)
         let expected_result = inputs_data.par.prepend_receive(Receive {
-            binds: vec![
-                ReceiveBind {
-                    patterns: vec![
-                        new_freevar_par(0, Vec::new()),
-                        new_freevar_par(1, Vec::new()),
-                    ],
-                    source: Some(Par::default()),
-                    remainder: None,
-                    free_count: 2,
-                },
-                ReceiveBind {
-                    patterns: vec![
-                        new_freevar_par(0, Vec::new()),
-                        new_freevar_par(1, Vec::new()),
-                    ],
-                    source: Some(new_gint_par(1, Vec::new(), false)),
-                    remainder: None,
-                    free_count: 2,
-                },
-            ],
+            binds: vec![ReceiveBind {
+                patterns: vec![
+                    new_freevar_par(0, Vec::new()),
+                    new_freevar_par(1, Vec::new()),
+                ],
+                source: Some(Par::default()),
+                remainder: None,
+                free_count: 2,
+            }],
             body: Some({
-                let mut par = Par::default().with_sends(vec![
-                    new_send(
-                        new_boundvar_par(1, create_bit_vector(&vec![1]), false),
-                        vec![new_boundvar_par(2, create_bit_vector(&vec![2]), false)],
-                        false,
-                        create_bit_vector(&vec![1, 2]),
-                        false,
-                    ),
-                    new_send(
-                        new_boundvar_par(3, create_bit_vector(&vec![3]), false),
-                        vec![new_boundvar_par(0, create_bit_vector(&vec![0]), false)],
-                        false,
-                        create_bit_vector(&vec![0, 3]),
-                        false,
-                    ),
-                ]);
-                par.locally_free = create_bit_vector(&vec![0, 1, 2, 3]);
-                par
+                let mut inner_par = Par::default();
+                inner_par.receives.push(Receive {
+                    binds: vec![ReceiveBind {
+                        patterns: vec![
+                            new_freevar_par(0, Vec::new()),
+                            new_freevar_par(1, Vec::new()),
+                        ],
+                        source: Some(new_gint_par(1, Vec::new(), false)),
+                        remainder: None,
+                        free_count: 2,
+                    }],
+                    body: Some({
+                        let mut par = Par::default().with_sends(vec![
+                            new_send(
+                                new_boundvar_par(1, create_bit_vector(&vec![1]), false),
+                                vec![new_boundvar_par(2, create_bit_vector(&vec![2]), false)],
+                                false,
+                                create_bit_vector(&vec![1, 2]),
+                                false,
+                            ),
+                            new_send(
+                                new_boundvar_par(3, create_bit_vector(&vec![3]), false),
+                                vec![new_boundvar_par(0, create_bit_vector(&vec![0]), false)],
+                                false,
+                                create_bit_vector(&vec![0, 3]),
+                                false,
+                            ),
+                        ]);
+                        par.locally_free = create_bit_vector(&vec![0, 1, 2, 3]);
+                        par
+                    }),
+                    persistent: false,
+                    peek: false,
+                    bind_count: 2,
+                    locally_free: create_bit_vector(&vec![0, 1]),
+                    connective_used: false,
+                    condition: None,
+                });
+                inner_par.locally_free = create_bit_vector(&vec![0, 1]);
+                inner_par
             }),
             persistent: false,
             peek: false,
-            bind_count,
+            bind_count: 2,
             locally_free: Vec::new(),
             connective_used: false,
+            condition: None,
         });
 
         assert_eq!(result.unwrap().par, expected_result);
     }
 
     #[test]
-    fn p_input_should_fail_if_a_free_variable_is_used_in_two_different_receives() {
+    fn p_input_should_fail_if_a_free_variable_is_used_in_same_receipt_join() {
         // for ( (x1, @y1) <- @Nil  & (x2, @y1) <- @1) { Nil }
+        // Uses & (single receipt with 2 binds = join), NOT ; (separate receipts).
+        // Reusing y1 within the same join is an error.
         use rholang_parser::ast::{Bind, Names, Source};
 
         use crate::rust::interpreter::compiler::normalize::normalize_ann_proc;
@@ -795,7 +874,6 @@ mod tests {
 
         let parser = rholang_parser::RholangParser::new();
 
-        // Create first bind: x1, @y1 <- @Nil
         let y1_eval =
             ParBuilderUtil::create_ast_eval(ParBuilderUtil::create_ast_name_var("y1"), &parser);
         let y1_pattern = ParBuilderUtil::create_ast_quote_name(y1_eval);
@@ -813,7 +891,6 @@ mod tests {
             rhs: Source::Simple { name: nil_channel },
         };
 
-        // Create second bind: x2, @y1 <- @1 (reusing y1!)
         let y1_eval2 =
             ParBuilderUtil::create_ast_eval(ParBuilderUtil::create_ast_name_var("y1"), &parser);
         let y1_pattern2 = ParBuilderUtil::create_ast_quote_name(y1_eval2);
@@ -831,15 +908,11 @@ mod tests {
             rhs: Source::Simple { name: one_channel },
         };
 
-        // Create body: Nil
         let body = ParBuilderUtil::create_ast_nil(&parser);
 
-        // Create ForComprehension
-        let for_comprehension = ParBuilderUtil::create_ast_for_comprehension(
-            vec![vec![bind1], vec![bind2]],
-            body,
-            &parser,
-        );
+        // Single receipt with 2 binds (& join) — NOT 2 receipt groups (;)
+        let for_comprehension =
+            ParBuilderUtil::create_ast_for_comprehension(vec![vec![bind1, bind2]], body, &parser);
 
         let result =
             normalize_ann_proc(&for_comprehension, inputs_span(), &HashMap::new(), &parser);

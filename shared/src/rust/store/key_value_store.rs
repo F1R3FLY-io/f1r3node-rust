@@ -12,6 +12,10 @@ pub trait KeyValueStore: Send + Sync {
     fn delete(&self, keys: Vec<ByteBuffer>) -> Result<usize, KvStoreError>;
 
     fn iterate(&self, f: fn(ByteBuffer, ByteBuffer)) -> Result<(), KvStoreError>;
+    fn iterate_while(
+        &self,
+        f: &mut dyn FnMut(ByteBuffer, ByteBuffer) -> Result<bool, KvStoreError>,
+    ) -> Result<(), KvStoreError>;
 
     fn clone_box(&self) -> Box<dyn KeyValueStore>;
 
@@ -71,6 +75,9 @@ pub enum KvStoreError {
     SerializationError(String),
     InvalidArgument(String),
     LockError(String),
+    /// Returned when a DAG representation is requested before the
+    /// approved-block / last-finalized-block bootstrap has completed.
+    LastFinalizedBlockUninitialized,
 }
 
 impl std::fmt::Display for KvStoreError {
@@ -81,6 +88,10 @@ impl std::fmt::Display for KvStoreError {
             KvStoreError::SerializationError(e) => write!(f, "SerializationError error: {}", e),
             KvStoreError::InvalidArgument(e) => write!(f, "Invalid argument: {}", e),
             KvStoreError::LockError(e) => write!(f, "Lock error: {}", e),
+            KvStoreError::LastFinalizedBlockUninitialized => write!(
+                f,
+                "DagState does not contain lastFinalizedBlock (bootstrap incomplete)"
+            ),
         }
     }
 }

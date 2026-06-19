@@ -14,9 +14,12 @@ use tempfile::Builder;
 
 use crate::rust::interpreter::external_services::ExternalServices;
 use crate::rust::interpreter::matcher::r#match::Matcher;
+use crate::rust::interpreter::merging::mergeable_tags::default_mergeable_tags;
 use crate::rust::interpreter::rho_runtime;
 use crate::rust::interpreter::rho_runtime::{create_replay_rho_runtime, create_rho_runtime};
 use crate::rust::interpreter::system_processes::Definition;
+#[cfg(feature = "chromadb")]
+use crate::rust::interpreter::{ollama_service::OllamaConfig, openai_service::OpenAIConfig};
 use crate::RhoRuntimeImpl;
 
 pub fn mk_temp_dir(prefix: &str) -> PathBuf {
@@ -54,13 +57,38 @@ where
 
     let mut store_manager = mk_rspace_store_manager(temp_dir.path().to_path_buf(), 100 * MB);
     let rspace_store = store_manager.r_space_stores().await.unwrap();
+
+    // `ExternalServices::for_validator` constructs a `ChromaDBClient`,
+    // which builds `SBERTEmbeddings::new()`, which forces lazy-init of
+    // `rust_bert::common::resources::remote::CACHE`. That cache builds a
+    // `reqwest::blocking::Client`, which internally creates+drops a
+    // fresh current-thread `tokio::runtime::Runtime` inside
+    // `reqwest::blocking::wait::enter`. Doing that from inside our
+    // outer `#[tokio::test]` async context trips tokio's
+    // "Cannot drop a runtime in a context where blocking is not allowed"
+    // guard at `tokio::runtime::blocking::shutdown::Receiver::wait` and
+    // panics the test. `spawn_blocking` runs the construction on a
+    // blocking-pool worker so the inner Runtime never touches the outer
+    // async context. The expensive part (model download + reqwest
+    // client build) runs unchanged; the only cost is the microsecond
+    // hand-off to a blocking-pool thread, and the `lazy_static! CACHE`
+    // is warm for every subsequent test in the same process.
+    #[cfg(feature = "chromadb")]
+    let external_services = tokio::task::spawn_blocking(|| {
+        ExternalServices::for_validator(&OpenAIConfig::disabled(), &OllamaConfig::disabled())
+    })
+    .await
+    .expect("ExternalServices::for_validator panicked during test setup");
+    #[cfg(not(feature = "chromadb"))]
+    let external_services = ExternalServices::noop();
+
     let runtime = rho_runtime::create_runtime_from_kv_store(
         rspace_store,
-        Par::default(),
+        Arc::new(default_mergeable_tags()),
         false,
         &mut Vec::new(),
         Arc::new(Box::new(Matcher)),
-        ExternalServices::noop(),
+        external_services,
     )
     .await;
 
@@ -121,7 +149,7 @@ pub async fn create_runtimes_with_services(
 
     let rho_runtime = create_rho_runtime(
         space.clone(),
-        Par::default(),
+        Arc::new(default_mergeable_tags()),
         init_registry,
         additional_system_processes,
         external_services.clone(),
@@ -130,7 +158,7 @@ pub async fn create_runtimes_with_services(
 
     let replay_rho_runtime = create_replay_rho_runtime(
         replay,
-        Par::default(),
+        Arc::new(default_mergeable_tags()),
         init_registry,
         additional_system_processes,
         external_services,
@@ -139,6 +167,6 @@ pub async fn create_runtimes_with_services(
     (
         rho_runtime,
         replay_rho_runtime,
-        space.history_repository.clone(),
+        space.get_history_repository(),
     )
 }

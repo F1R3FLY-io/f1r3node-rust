@@ -6,7 +6,7 @@ use std::sync::Arc;
 use casper::rust::api::block_api::BlockAPI;
 use casper::rust::engine::engine_cell::EngineCell;
 use casper::rust::engine::engine_with_casper::EngineWithCasper;
-use casper::rust::multi_parent_casper_impl::MultiParentCasperImpl;
+use casper::rust::engine::multi_parent_casper::MultiParentCasperImpl;
 use casper::rust::util::construct_deploy;
 use casper::rust::util::construct_deploy::{DEFAULT_PUB, DEFAULT_SEC};
 use crypto::rust::public_key::PublicKey;
@@ -29,16 +29,14 @@ impl TestContext {
         // )
         // This means:
         // - First 3 validators: random keys from defaultValidatorKeyPairs (bonded)
-        // - 4th validator (n4): ConstructDeploy.defaultKeyPair = (DEFAULT_SEC,
-        //   DEFAULT_PUB) This matches genesisVaults[0] which has 9,000,000 REV,
-        //   allowing n4 to pay for bonding
+        // - 4th validator (n4): ConstructDeploy.defaultKeyPair = (DEFAULT_SEC, DEFAULT_PUB)
+        //   This matches genesisVaults[0] which has 9,000,000 REV, allowing n4 to pay for bonding
 
         let validator_key_pairs = vec![
             DEFAULT_VALIDATOR_KEY_PAIRS[0].clone(),
             DEFAULT_VALIDATOR_KEY_PAIRS[1].clone(),
             DEFAULT_VALIDATOR_KEY_PAIRS[2].clone(),
-            (DEFAULT_SEC.clone(), DEFAULT_PUB.clone()), /* n4 uses DEFAULT keypair to match
-                                                         * genesisVaults[0] */
+            (DEFAULT_SEC.clone(), DEFAULT_PUB.clone()), // n4 uses DEFAULT keypair to match genesisVaults[0]
         ];
 
         // Extract public keys for bonds
@@ -65,11 +63,10 @@ impl TestContext {
     }
 }
 
-/// Creates an EngineCell with EngineWithCasper from a TestNode's casper
-/// instance Scala equivalent:
+/// Creates an EngineCell with EngineWithCasper from a TestNode's casper instance
+/// Scala equivalent:
 ///   val engine = new EngineWithCasper[Task](node.casperEff)
-///   Cell.mvarCell[Task, Engine[Task]](engine).flatMap { implicit engineCell =>
-/// ... }
+///   Cell.mvarCell[Task, Engine[Task]](engine).flatMap { implicit engineCell => ... }
 async fn bonded_status(public_key: &PublicKey, node: &TestNode) -> bool {
     // Create engine and engine_cell (Scala lines 40-41)
     let casper_for_engine = Arc::new(MultiParentCasperImpl {
@@ -80,6 +77,7 @@ async fn bonded_status(public_key: &PublicKey, node: &TestNode) -> bool {
         block_store: node.casper.block_store.clone(),
         block_dag_storage: node.casper.block_dag_storage.clone(),
         deploy_storage: node.casper.deploy_storage.clone(),
+        rejected_deploy_buffer: node.casper.rejected_deploy_buffer.clone(),
         casper_buffer_storage: node.casper.casper_buffer_storage.clone(),
         validator_id: node.casper.validator_id.clone(),
         casper_shard_conf: node.casper.casper_shard_conf.clone(),
@@ -88,7 +86,7 @@ async fn bonded_status(public_key: &PublicKey, node: &TestNode) -> bool {
         finalizer_task_in_progress: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         finalizer_task_queued: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         heartbeat_signal_ref: casper::rust::heartbeat_signal::new_heartbeat_signal_ref(),
-        deploys_in_scope_cache: std::sync::Arc::new(std::sync::Mutex::new(None)),
+        deploys_in_scope_cache: std::sync::Arc::new(parking_lot::Mutex::new(None)),
         active_validators_cache: std::sync::Arc::new(tokio::sync::Mutex::new(
             std::collections::HashMap::new(),
         )),

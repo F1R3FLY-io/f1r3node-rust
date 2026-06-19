@@ -13,7 +13,7 @@ use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use crypto::rust::private_key::PrivateKey;
 use crypto::rust::signatures::secp256k1::Secp256k1;
 use crypto::rust::signatures::signed::Signed;
-use models::rhoapi::{BindPattern, ListParWithRandom};
+use models::rhoapi::{BindPattern, ListParWithRandom, TaggedContinuation};
 use models::rust::casper::protocol::casper_message::DeployData;
 use rholang::rust::build::compile_rholang_source::CompiledRholangSource;
 use rholang::rust::interpreter::errors::InterpreterError;
@@ -131,9 +131,8 @@ impl RhoSpec {
         }
     }
 
-    // Note: Original Scala code has a bug here - it checks `_.isSuccess` instead of
-    // `!_.isSuccess`. This was fixed in Rust to correctly return true when
-    // there are failures (not successes).
+    // Note: Original Scala code has a bug here - it checks `_.isSuccess` instead of `!_.isSuccess`.
+    // This was fixed in Rust to correctly return true when there are failures (not successes).
     pub fn has_failures(assertions: &[RhoTestAssertion]) -> bool {
         assertions.iter().any(|a| !a.is_success())
     }
@@ -314,19 +313,18 @@ pub async fn get_results(
         InterpreterError::BugFoundError(format!("Failed to create RSpaceStore: {}", e))
     })?;
 
-    // NOTE: In Scala, RSpacePlusPlus_RhoTypes.create() calls Rust via JNA, where
-    // Matcher is created automatically (see
-    // rspace++/libs/rspace_rhotypes/src/lib.rs). In pure Rust code (without
-    // JNA), we must create the Matcher explicitly here,
+    // NOTE: In Scala, RSpacePlusPlus_RhoTypes.create() calls Rust via JNA, where Matcher
+    // is created automatically (see rspace++/libs/rspace_rhotypes/src/lib.rs).
+    // In pure Rust code (without JNA), we must create the Matcher explicitly here,
     // as RSpace::create(stores, matcher) requires it as a parameter.
-    let matcher =
-        Arc::new(Box::new(Matcher::default()) as Box<dyn Match<BindPattern, ListParWithRandom>>);
+    let matcher = Arc::new(Box::new(Matcher::default())
+        as Box<dyn Match<BindPattern, ListParWithRandom, TaggedContinuation>>);
 
     let mut additional_system_processes = test_framework_contracts(test_result_collector.clone());
 
     let runtime = create_runtime_from_kv_store(
         r_store,
-        Genesis::non_negative_mergeable_tag_name(),
+        std::sync::Arc::new(Genesis::default_mergeable_tags()),
         true,
         &mut additional_system_processes,
         matcher,
@@ -341,8 +339,7 @@ pub async fn get_results(
     let rand = Blake2b512Random::create_from_length(128).split_short(1);
 
     // Note: tokio::time::timeout similar to Scala's `monix.eval.Task.timeout()`.
-    // If test execution takes longer than `execution_timeout`, it returns a timeout
-    // error.
+    // If test execution takes longer than `execution_timeout`, it returns a timeout error.
     match tokio::time::timeout(
         execution_timeout,
         TestUtil::eval_source(test_object, &runtime, rand),
@@ -354,7 +351,7 @@ pub async fn get_results(
             return Err(InterpreterError::BugFoundError(format!(
                 "Timeout of {:?} expired while executing test from {}",
                 execution_timeout, test_object.path
-            )));
+            )))
         }
     }
 
@@ -401,7 +398,7 @@ fn rho_spec_deploy() -> Signed<DeployData> {
     let sk_bytes = hex::decode(RHO_SPEC_PRIVATE_KEY).expect("Invalid RHO_SPEC_PRIVATE_KEY hex");
     let sk = PrivateKey::from_bytes(&sk_bytes);
 
-    let code = CompiledRholangSource::load_source("RhoSpecContract.rho")
+    let code = crate::util::rholang::test_rho_loader::load_test_rho("RhoSpecContract.rho")
         .expect("Failed to load RhoSpecContract.rho");
 
     let compiled =

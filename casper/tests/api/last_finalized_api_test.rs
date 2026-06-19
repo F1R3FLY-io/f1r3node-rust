@@ -7,7 +7,7 @@ use casper::rust::api::block_api::BlockAPI;
 use casper::rust::casper::MultiParentCasper;
 use casper::rust::engine::engine_cell::EngineCell;
 use casper::rust::engine::engine_with_casper::EngineWithCasper;
-use casper::rust::multi_parent_casper_impl::MultiParentCasperImpl;
+use casper::rust::engine::multi_parent_casper::MultiParentCasperImpl;
 use casper::rust::util::{construct_deploy, proto_util};
 use crypto::rust::public_key::PublicKey;
 use models::rust::casper::protocol::casper_message::BlockMessage;
@@ -44,10 +44,9 @@ impl TestContext {
     }
 }
 
-/// Creates an EngineCell with EngineWithCasper from a TestNode's casper
-/// instance Equivalent to Scala: val engine = new
-/// EngineWithCasper[Task](n1.casperEff)                       engineCell <-
-/// Cell.mvarCell[Task, Engine[Task]](engine)
+/// Creates an EngineCell with EngineWithCasper from a TestNode's casper instance
+/// Equivalent to Scala: val engine = new EngineWithCasper[Task](n1.casperEff)
+///                       engineCell <- Cell.mvarCell[Task, Engine[Task]](engine)
 async fn create_engine_cell(node: &TestNode) -> EngineCell {
     let casper_for_engine = Arc::new(MultiParentCasperImpl {
         block_retriever: node.casper.block_retriever.clone(),
@@ -57,6 +56,7 @@ async fn create_engine_cell(node: &TestNode) -> EngineCell {
         block_store: node.casper.block_store.clone(),
         block_dag_storage: node.casper.block_dag_storage.clone(),
         deploy_storage: node.casper.deploy_storage.clone(),
+        rejected_deploy_buffer: node.casper.rejected_deploy_buffer.clone(),
         casper_buffer_storage: node.casper.casper_buffer_storage.clone(),
         validator_id: node.casper.validator_id.clone(),
         casper_shard_conf: node.casper.casper_shard_conf.clone(),
@@ -65,7 +65,7 @@ async fn create_engine_cell(node: &TestNode) -> EngineCell {
         finalizer_task_in_progress: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         finalizer_task_queued: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         heartbeat_signal_ref: casper::rust::heartbeat_signal::new_heartbeat_signal_ref(),
-        deploys_in_scope_cache: std::sync::Arc::new(std::sync::Mutex::new(None)),
+        deploys_in_scope_cache: std::sync::Arc::new(parking_lot::Mutex::new(None)),
         active_validators_cache: std::sync::Arc::new(tokio::sync::Mutex::new(
             std::collections::HashMap::new(),
         )),
@@ -111,8 +111,7 @@ async fn is_finalized_should_return_true_for_ancestors_of_last_finalized_block()
 
     // Note: We create deploys one by one with sleep to ensure unique timestamps.
     // In Scala, the Time effect provides unique timestamps automatically,
-    // but in Rust we need to explicitly wait between deploys to avoid NoNewDeploys
-    // error.
+    // but in Rust we need to explicitly wait between deploys to avoid NoNewDeploys error.
     let mut produce_deploys = Vec::new();
     for i in 0..7 {
         tokio::time::sleep(tokio::time::Duration::from_millis(1)).await;
