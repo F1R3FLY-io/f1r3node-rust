@@ -56,7 +56,9 @@ CI for fork-based pull requests requires maintainer approval every time. This pr
 
 Approval to run CI is not approval to merge. Maintainers may review the code, ask for local validation output, or request changes before approving expensive CI.
 
-Full OCI-backed validation runs only after an owner or maintainer approves the pull request for full validation. For fork pull requests, maintainers use the trusted `Full OCI Validation` workflow from the default branch and provide the pull request number plus the reviewed head SHA. The workflow validates that the SHA still matches the pull request before launching OCI capacity, and only users with `maintain` or `admin` repository permission may dispatch it.
+Full OCI-backed validation runs only after an owner or maintainer approves the pull request for full validation. For fork pull requests, maintainers add a pull request comment containing exactly `/full-oci-validate <pr_number> <head_sha>`, then use the trusted `Full OCI Validation` workflow from the default branch and provide the pull request number, reviewed head SHA, and approval comment ID.
+
+The workflow validates that the SHA still matches the pull request and that the approval comment belongs to the PR and was authored by a user with `maintain` or `admin` permission before launching OCI capacity. Only users with `maintain` or `admin` repository permission may dispatch it.
 
 The workflow also accepts a pinned `system_integration_ref` commit SHA for the trusted OCI runner launcher and integration-test harness. Maintainers should update that SHA deliberately after reviewing the corresponding `F1R3FLY-io/system-integration` change.
 

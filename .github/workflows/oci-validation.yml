@@ -9,6 +9,9 @@ on:
       head_sha:
         description: Expected pull request head SHA reviewed by the maintainer
         required: true
+      approval_comment_id:
+        description: Pull request comment ID containing /full-oci-validate <pr_number> <head_sha>
+        required: true
 
 concurrency:
   group: full-oci-validation-${{ github.event.inputs.pr_number }}
@@ -47,12 +50,29 @@ jobs:
           GH_REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.inputs.pr_number }}
           EXPECTED_HEAD_SHA: ${{ github.event.inputs.head_sha }}
+          APPROVAL_COMMENT_ID: ${{ github.event.inputs.approval_comment_id }}
           ACTOR: ${{ github.actor }}
         shell: bash -euo pipefail {0}
         run: |
-          actor_permission=$(gh api "repos/${GH_REPO}/collaborators/${ACTOR}/permission" --jq '.permission')
+          if [[ ! "$PR_NUMBER" =~ ^[0-9]+$ ]]; then
+            echo "pr_number must be numeric."
+            exit 1
+          fi
+
+          if [[ ! "$EXPECTED_HEAD_SHA" =~ ^[0-9a-fA-F]{40}$ ]]; then
+            echo "head_sha must be a 40-character commit SHA."
+            exit 1
+          fi
+          expected_head_sha=$(tr '[:upper:]' '[:lower:]' <<< "$EXPECTED_HEAD_SHA")
+
+          if [[ ! "$APPROVAL_COMMENT_ID" =~ ^[0-9]+$ ]]; then
+            echo "approval_comment_id must be numeric."
+            exit 1
+          fi
+
+          actor_permission=$(gh api "repos/${GH_REPO}/collaborators/${ACTOR}/permission" --jq '.permission' 2>/dev/null || true)
           if [ "$actor_permission" != "admin" ] && [ "$actor_permission" != "maintain" ]; then
-            echo "${ACTOR} has ${actor_permission} permission; Full OCI Validation requires maintain or admin permission."
+            echo "${ACTOR} has ${actor_permission:-no} permission; Full OCI Validation requires maintain or admin permission."
             exit 1
           fi
 
@@ -67,8 +87,30 @@ jobs:
             exit 1
           fi
 
-          if [ "$EXPECTED_HEAD_SHA" != "$head_sha" ]; then
-            echo "Expected head SHA ${EXPECTED_HEAD_SHA}, but PR ${PR_NUMBER} currently points to ${head_sha}."
+          if [ "$expected_head_sha" != "$head_sha" ]; then
+            echo "Expected head SHA ${expected_head_sha}, but PR ${PR_NUMBER} currently points to ${head_sha}."
+            exit 1
+          fi
+
+          approval_json=$(gh api "repos/${GH_REPO}/issues/comments/${APPROVAL_COMMENT_ID}")
+          approval_issue_url=$(jq -r '.issue_url' <<< "$approval_json")
+          expected_issue_url="https://api.github.com/repos/${GH_REPO}/issues/${PR_NUMBER}"
+          if [ "$approval_issue_url" != "$expected_issue_url" ]; then
+            echo "Approval comment ${APPROVAL_COMMENT_ID} does not belong to PR ${PR_NUMBER}."
+            exit 1
+          fi
+
+          approval_author=$(jq -r '.user.login' <<< "$approval_json")
+          approval_author_permission=$(gh api "repos/${GH_REPO}/collaborators/${approval_author}/permission" --jq '.permission' 2>/dev/null || true)
+          if [ "$approval_author_permission" != "admin" ] && [ "$approval_author_permission" != "maintain" ]; then
+            echo "Approval comment author ${approval_author} has ${approval_author_permission:-no} permission; Full OCI Validation approval requires maintain or admin permission."
+            exit 1
+          fi
+
+          approval_body=$(jq -r '.body // ""' <<< "$approval_json")
+          approval_phrase="/full-oci-validate ${PR_NUMBER} ${head_sha}"
+          if ! grep -Fxq "$approval_phrase" <<< "$approval_body"; then
+            echo "Approval comment ${APPROVAL_COMMENT_ID} must contain this exact line: ${approval_phrase}"
             exit 1
           fi
 
@@ -93,7 +135,6 @@ jobs:
     environment: ephemeral-launch
     timeout-minutes: 10
     permissions:
-      actions: write
       contents: read
     steps:
       - name: Clone trusted system-integration launcher
@@ -107,7 +148,7 @@ jobs:
       - name: Install OCI CLI
         shell: bash -e {0}
         run: |
-          python3 -m pip install --user 'oci-cli==3.85.0'
+          python3 -m pip install --user --only-binary=:all: 'oci-cli==3.85.0'
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           "$HOME/.local/bin/oci" --version
 
@@ -164,7 +205,9 @@ jobs:
       - name: Remove OCI credentials
         if: always()
         shell: bash -e {0}
-        run: rm -rf ~/.oci
+        run: |
+          shred -fu ~/.oci/oci_api_key.pem 2>/dev/null || true
+          rm -rf ~/.oci
 
   oci_validation:
     name: Run OCI Validation

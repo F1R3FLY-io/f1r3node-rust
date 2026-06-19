@@ -188,7 +188,6 @@ jobs:
     environment: ephemeral-launch
     timeout-minutes: 10
     permissions:
-      actions: write
       contents: read
     steps:
       - name: Clone trusted system-integration launcher
@@ -202,7 +201,7 @@ jobs:
       - name: Install OCI CLI
         shell: bash -e {0}
         run: |
-          python3 -m pip install --user 'oci-cli==3.85.0'
+          python3 -m pip install --user --only-binary=:all: 'oci-cli==3.85.0'
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           "$HOME/.local/bin/oci" --version
 
@@ -259,7 +258,9 @@ jobs:
       - name: Remove OCI credentials
         if: always()
         shell: bash -e {0}
-        run: rm -rf ~/.oci
+        run: |
+          shred -fu ~/.oci/oci_api_key.pem 2>/dev/null || true
+          rm -rf ~/.oci
 
   oci_validation:
     name: Run OCI Validation
