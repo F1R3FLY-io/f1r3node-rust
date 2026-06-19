@@ -29,15 +29,11 @@ Org-wide policy lives in [F1R3FLY-io/.github](https://github.com/F1R3FLY-io/.git
 
 Run the smallest set relevant to your change, then broader checks before opening the PR.
 
-<!-- BUILD-COMMANDS:BEGIN
-     Filled in for this repo. /harmonize will not overwrite this block.
--->
 ```bash
 cargo fmt --all
 cargo clippy --workspace --all-targets
 cargo test
 ```
-<!-- BUILD-COMMANDS:END -->
 
 If a check is unavailable in your environment, say so explicitly in the PR description rather than skipping silently.
 
@@ -123,11 +119,3 @@ Unless the repo states otherwise, contributions are licensed under [Apache Licen
 - **Questions / design discussion:** GitHub Discussions on this repo (or the [`.github` org repo](https://github.com/F1R3FLY-io/.github/discussions) if cross-cutting).
 - **Bugs:** GitHub Issues with reproduction steps, version/commit, and environment.
 - **Process or scope concerns:** mention a maintainer in the relevant issue or PR.
-
-<!-- REPO-SPECIFIC:BEGIN
-     Optional. Add anything that's unique to this repo and doesn't belong in
-     README.md or DEVELOPER.md — for example: required signing setup, special
-     branch policies, or hand-off conventions to downstream repos.
-     /harmonize will not overwrite this block.
--->
-<!-- REPO-SPECIFIC:END -->
