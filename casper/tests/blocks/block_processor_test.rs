@@ -288,6 +288,7 @@ async fn buffer_manager_should_handle_concurrent_operations() {
 }
 
 #[tokio::test]
+#[allow(clippy::assertions_on_constants)]
 async fn block_processor_components_should_work_together() {
     let fixture = TestFixture::new().await;
 

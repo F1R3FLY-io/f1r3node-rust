@@ -115,7 +115,7 @@ impl TestNode {
             None, // dummy_deploy_opt
             self.deploy_storage.clone(),
             self.rejected_deploy_buffer.clone(),
-            &mut self.runtime_manager.clone(),
+            &self.runtime_manager.clone(),
             &mut self.block_store.clone(),
             false,
         )
@@ -721,7 +721,7 @@ impl TestNode {
             > { Box::pin(async move { Ok(()) }) },
         );
 
-        let _ = self.tls.handle_receive(dispatch, handle_streamed).await?;
+        drop(self.tls.handle_receive(dispatch, handle_streamed).await?);
 
         Ok(())
     }
@@ -844,6 +844,7 @@ impl TestNode {
         Ok(nodes)
     }
 
+    #[allow(clippy::too_many_arguments, clippy::type_complexity)]
     async fn create_node(
         name: String,
         current_peer_node: PeerNode,
@@ -911,7 +912,7 @@ impl TestNode {
             .await
             .unwrap();
 
-        let rspace_store = (&mut *kvm).r_space_stores().await.unwrap();
+        let rspace_store = (*kvm).r_space_stores().await.unwrap();
         let mergeable_store = resources::mergeable_store_from_dyn(&mut *kvm)
             .await
             .unwrap();
@@ -947,8 +948,8 @@ impl TestNode {
             Some(ValidatorIdentity::new(&sk))
         };
 
-        let _proposer_opt = match validator_id_opt {
-            Some(ref vi) => Some(new_proposer(
+        let _proposer_opt = validator_id_opt.as_ref().map(|vi| {
+            new_proposer(
                 vi.clone(),
                 None,
                 runtime_manager.clone(),
@@ -961,9 +962,8 @@ impl TestNode {
                 rp_conf.clone(),
                 event_publisher.clone(),
                 false, // allow_empty_blocks - disabled for tests
-            )),
-            None => None,
-        };
+            )
+        });
 
         let bp_dependencies = BlockProcessorDependencies::new(
             block_store.clone(),

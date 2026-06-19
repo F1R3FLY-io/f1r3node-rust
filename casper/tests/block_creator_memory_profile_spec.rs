@@ -157,7 +157,7 @@ async fn run_block_creator_create_memory_profile() {
     let secp = Secp256k1;
     let (validator_sk, validator_pk) = secp.new_key_pair();
     let validator_identity = ValidatorIdentity::new(&validator_sk);
-    let validator: Bytes = validator_pk.bytes.clone().into();
+    let validator: Bytes = validator_pk.bytes.clone();
     let shard_name = "test-shard".to_string();
 
     let mut kvm = InMemoryStoreManager::new();
@@ -185,7 +185,7 @@ async fn run_block_creator_create_memory_profile() {
     let mergeable_store = RuntimeManager::mergeable_store(&mut kvm)
         .await
         .expect("Failed to create mergeable store");
-    let (mut runtime_manager, _) = RuntimeManager::create_with_history(
+    let (runtime_manager, _) = RuntimeManager::create_with_history(
         rspace_store,
         mergeable_store,
         std::sync::Arc::new(Genesis::default_mergeable_tags()),
@@ -220,7 +220,7 @@ async fn run_block_creator_create_memory_profile() {
         native_token_symbol: "F1R3".to_string(),
         native_token_decimals: 8,
     };
-    let parent = Genesis::create_genesis_block(&mut runtime_manager, &genesis)
+    let parent = Genesis::create_genesis_block(&runtime_manager, &genesis)
         .await
         .expect("Failed to create genesis block for block_creator profiling");
 
@@ -274,7 +274,7 @@ async fn run_block_creator_create_memory_profile() {
                 None,
                 deploy_storage.clone(),
                 rejected_deploy_buffer.clone(),
-                &mut runtime_manager,
+                &runtime_manager,
                 &mut block_store,
                 false,
             ),
@@ -410,7 +410,7 @@ async fn run_block_creator_phase_split_memory_profile() {
     let secp = Secp256k1;
     let (validator_sk, validator_pk) = secp.new_key_pair();
     let validator_identity = ValidatorIdentity::new(&validator_sk);
-    let validator: Bytes = validator_pk.bytes.clone().into();
+    let validator: Bytes = validator_pk.bytes.clone();
     let shard_name = "test-shard".to_string();
 
     let mut kvm = InMemoryStoreManager::new();
@@ -428,7 +428,7 @@ async fn run_block_creator_phase_split_memory_profile() {
     let mergeable_store = RuntimeManager::mergeable_store(&mut kvm)
         .await
         .expect("Failed to create mergeable store");
-    let (mut runtime_manager, _) = RuntimeManager::create_with_history(
+    let (runtime_manager, _) = RuntimeManager::create_with_history(
         rspace_store,
         mergeable_store,
         std::sync::Arc::new(Genesis::default_mergeable_tags()),
@@ -463,7 +463,7 @@ async fn run_block_creator_phase_split_memory_profile() {
         native_token_symbol: "F1R3".to_string(),
         native_token_decimals: 8,
     };
-    let parent = Genesis::create_genesis_block(&mut runtime_manager, &genesis)
+    let parent = Genesis::create_genesis_block(&runtime_manager, &genesis)
         .await
         .expect("Failed to create genesis block for phase-split profiling");
 

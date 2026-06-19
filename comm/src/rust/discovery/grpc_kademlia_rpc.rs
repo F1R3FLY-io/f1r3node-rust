@@ -309,7 +309,7 @@ mod tests {
         // Test that ping returns false for non-existent peer (should fail quickly)
         let ping_result = rpc.ping(&non_existent_peer).await;
         assert!(ping_result.is_ok());
-        assert_eq!(ping_result.unwrap(), false);
+        assert!(!ping_result.unwrap());
     }
 
     #[tokio::test]

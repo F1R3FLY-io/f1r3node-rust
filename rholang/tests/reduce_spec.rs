@@ -1,7 +1,6 @@
 // See rholang/src/test/scala/coop/rchain/rholang/interpreter/ReduceSpec.scala
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::i64;
 use std::sync::Arc;
 
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
@@ -4635,7 +4634,7 @@ async fn term_split_size_max_should_be_evaluated_for_max_size() {
         injections: BTreeMap::new(),
         locally_free: vec![],
     };
-    let news = vec![p; std::i16::MAX as usize];
+    let news = vec![p; i16::MAX as usize];
     let proc = Par::default().with_news(news);
 
     let res = reducer.eval(proc, &env, rand()).await;
@@ -4656,7 +4655,7 @@ async fn term_split_size_max_should_limited_to_max_value() {
         injections: BTreeMap::new(),
         locally_free: vec![],
     };
-    let news = vec![p; std::i16::MAX as usize + 1];
+    let news = vec![p; i16::MAX as usize + 1];
     let proc = Par::default().with_news(news);
 
     let res = reducer.eval(proc, &env, rand()).await;
@@ -4677,7 +4676,7 @@ async fn term_split_size_max_should_limited_to_max_value() {
 /// Build a guard Par expressing `BoundVar(0) > GInt(0)`. The matcher
 /// resolves BoundVar(0) to the bind's first bound variable.
 fn guard_first_bound_gt_zero() -> Par {
-    let p1 = new_boundvar_par(0, models::create_bit_vector(&vec![0]), false);
+    let p1 = new_boundvar_par(0, models::create_bit_vector(&[0]), false);
     let p2 = new_gint_par(0, Vec::new(), false);
     Par::default().with_exprs(vec![Expr {
         expr_instance: Some(ExprInstance::EGtBody(models::rhoapi::EGt {
@@ -4868,8 +4867,8 @@ async fn receive_with_guard_filters_among_multiple_messages() {
 /// that order, so this guard reads as `x + y > 10`.
 fn guard_cross_bind_sum_gt_ten() -> Par {
     let lhs = new_eplus_par(
-        new_boundvar_par(1, models::create_bit_vector(&vec![1]), false),
-        new_boundvar_par(0, models::create_bit_vector(&vec![0]), false),
+        new_boundvar_par(1, models::create_bit_vector(&[1]), false),
+        new_boundvar_par(0, models::create_bit_vector(&[0]), false),
     );
     let rhs = new_gint_par(10, Vec::new(), false);
     Par::default().with_exprs(vec![Expr {
@@ -4886,8 +4885,8 @@ fn guard_cross_bind_sum_gt_ten() -> Par {
 /// resolved from each other's slots), this guard would fire on the wrong
 /// data, which the commutative `x + y > 10` guard cannot detect.
 fn guard_cross_bind_x_gt_100_and_y_lt_100() -> Par {
-    let x = new_boundvar_par(1, models::create_bit_vector(&vec![1]), false);
-    let y = new_boundvar_par(0, models::create_bit_vector(&vec![0]), false);
+    let x = new_boundvar_par(1, models::create_bit_vector(&[1]), false);
+    let y = new_boundvar_par(0, models::create_bit_vector(&[0]), false);
     let x_gt_100 = Par::default().with_exprs(vec![Expr {
         expr_instance: Some(ExprInstance::EGtBody(models::rhoapi::EGt {
             p1: Some(x),

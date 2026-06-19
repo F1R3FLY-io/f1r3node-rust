@@ -91,7 +91,7 @@ async fn multi_parent_casper_should_be_able_to_create_a_chain_of_blocks_from_dif
     .unwrap();
 
     let signed_block2 = node
-        .add_block_from_deploys(&[deploy2.clone()])
+        .add_block_from_deploys(std::slice::from_ref(&deploy2))
         .await
         .unwrap();
 

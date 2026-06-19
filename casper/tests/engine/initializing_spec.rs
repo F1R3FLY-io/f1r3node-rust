@@ -94,6 +94,7 @@ impl InitializingSpec {
 
         let chunk_size = lfs_tuple_space_requester::PAGE_SIZE;
 
+        #[allow(clippy::type_complexity)]
         fn genesis_export(
             genesis_exporter: Arc<dyn RSpaceExporter>,
             start_path: Vec<(Blake2b256Hash, Option<u8>)>,
@@ -406,6 +407,7 @@ impl InitializingSpec {
 //
 // CRITICAL: Using fixture's stores ensures genesis data exported from fixture.rspace_store
 // is imported into the SAME rspace_store instance, preventing storage isolation bugs.
+#[allow(clippy::type_complexity)]
 async fn create_initializing_engine(
     fixture: &TestFixture,
     the_init: Arc<

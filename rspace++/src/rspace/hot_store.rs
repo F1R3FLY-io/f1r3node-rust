@@ -110,8 +110,8 @@ where
             .map(|_| T::default())
             .collect::<Vec<T>>()
             .iter()
-            .cloned()
             .take(rng.gen_range(0..size + 1))
+            .cloned()
             .collect()
     }
 

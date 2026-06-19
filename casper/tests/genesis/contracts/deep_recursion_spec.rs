@@ -20,8 +20,11 @@ async fn eval_rholang_code(code: &str, timeout: Duration) -> Result<(), String> 
         .await
         .map_err(|e| format!("Failed to create RSpaceStore: {}", e))?;
 
-    let matcher = Arc::new(Box::new(Matcher::default())
-        as Box<dyn Match<BindPattern, ListParWithRandom, TaggedContinuation>>);
+    let matcher =
+        Arc::new(Box::new(Matcher)
+            as Box<
+                dyn Match<BindPattern, ListParWithRandom, TaggedContinuation>,
+            >);
 
     let runtime = create_runtime_from_kv_store(
         r_store,

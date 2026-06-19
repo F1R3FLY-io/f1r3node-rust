@@ -123,7 +123,7 @@ async fn should_remove_block_expired_deploys_while_keeping_valid_ones() {
 
     let validator_sk = DEFAULT_VALIDATOR_SKS[0].clone();
     let validator_identity = ValidatorIdentity::new(&validator_sk);
-    let validator_id: Bytes = validator_identity.public_key.bytes.clone().into();
+    let validator_id: Bytes = validator_identity.public_key.bytes.clone();
 
     // Create all stores from a single InMemoryStoreManager (like Scala's kvm pattern)
     let mut kvm = InMemoryStoreManager::new();
@@ -151,7 +151,7 @@ async fn should_remove_block_expired_deploys_while_keeping_valid_ones() {
         .await
         .expect("Failed to create mergeable store");
 
-    let (mut runtime_manager, _) = RuntimeManager::create_with_history(
+    let (runtime_manager, _) = RuntimeManager::create_with_history(
         rspace_store,
         mergeable_store,
         std::sync::Arc::new(casper::rust::genesis::genesis::Genesis::default_mergeable_tags()),
@@ -187,7 +187,7 @@ async fn should_remove_block_expired_deploys_while_keeping_valid_ones() {
         None,
         deploy_storage.clone(),
         rejected_deploy_buffer.clone(),
-        &mut runtime_manager,
+        &runtime_manager,
         &mut block_store.clone(),
         false,
     )
@@ -222,7 +222,7 @@ async fn should_remove_both_block_expired_and_time_expired_deploys() {
 
     let validator_sk = DEFAULT_VALIDATOR_SKS[0].clone();
     let validator_identity = ValidatorIdentity::new(&validator_sk);
-    let validator_id: Bytes = validator_identity.public_key.bytes.clone().into();
+    let validator_id: Bytes = validator_identity.public_key.bytes.clone();
 
     // Create all stores from a single InMemoryStoreManager (like Scala's kvm pattern)
     let mut kvm = InMemoryStoreManager::new();
@@ -250,7 +250,7 @@ async fn should_remove_both_block_expired_and_time_expired_deploys() {
         .await
         .expect("Failed to create mergeable store");
 
-    let (mut runtime_manager, _) = RuntimeManager::create_with_history(
+    let (runtime_manager, _) = RuntimeManager::create_with_history(
         rspace_store,
         mergeable_store,
         std::sync::Arc::new(casper::rust::genesis::genesis::Genesis::default_mergeable_tags()),
@@ -297,7 +297,7 @@ async fn should_remove_both_block_expired_and_time_expired_deploys() {
         None,
         deploy_storage.clone(),
         rejected_deploy_buffer.clone(),
-        &mut runtime_manager,
+        &runtime_manager,
         &mut block_store.clone(),
         false,
     )
@@ -341,7 +341,7 @@ async fn should_remove_expired_deploys_from_rejected_deploy_buffer() {
 
     let validator_sk = DEFAULT_VALIDATOR_SKS[0].clone();
     let validator_identity = ValidatorIdentity::new(&validator_sk);
-    let validator_id: Bytes = validator_identity.public_key.bytes.clone().into();
+    let validator_id: Bytes = validator_identity.public_key.bytes.clone();
 
     let mut kvm = InMemoryStoreManager::new();
 

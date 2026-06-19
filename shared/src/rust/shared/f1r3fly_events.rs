@@ -323,9 +323,10 @@ mod tests {
                 let mut count = 0;
 
                 // Add a timeout to avoid waiting forever
-                while let Some(_) = tokio::time::timeout(Duration::from_millis(100), stream.next())
+                while tokio::time::timeout(Duration::from_millis(100), stream.next())
                     .await
                     .unwrap_or(None)
+                    .is_some()
                 {
                     count += 1;
                     if count >= 5 {
@@ -403,6 +404,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
     async fn test_startup_replay_scenario() {
         // Simulates the full WebSocket startup replay scenario:
         // 1. Events published during startup (no subscribers)

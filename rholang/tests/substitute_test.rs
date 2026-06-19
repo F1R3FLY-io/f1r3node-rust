@@ -28,8 +28,8 @@ fn env() -> Env<Par> { Env::new() }
 fn substitute_instance() -> Substitute {
     let cost = Cost::create(0, "substitute_test".to_string());
     let cost_manager = CostManager::new(cost);
-    let substitute = Substitute { cost: cost_manager };
-    substitute
+
+    Substitute { cost: cost_manager }
 }
 
 fn generate_random_subsequence<T: Clone>(items: &[T]) -> Vec<T> {
@@ -89,7 +89,7 @@ fn substitute_should_retain_all_non_empty_par_ed_connectives() {
     let doubled_connectives: Vec<Connective> = sample_connectives
         .clone()
         .into_iter()
-        .chain(sample_connectives.into_iter())
+        .chain(sample_connectives)
         .collect();
 
     for _ in 0..10 {
@@ -137,7 +137,7 @@ fn bound_var_should_be_substituted_with_expression() {
         chan: Some(new_boundvar_par(0, Vec::new(), false)),
         data: vec![Par::default()],
         persistent: false,
-        locally_free: create_bit_vector(&vec![0]),
+        locally_free: create_bit_vector(&[0]),
         connective_used: false,
     }];
     let source = Par::default().with_sends(new_sends);
@@ -184,10 +184,10 @@ fn send_should_leave_variables_not_in_the_environment_alone() {
     env = env.shift(1);
 
     let send = Send {
-        chan: Some(new_boundvar_par(0, create_bit_vector(&vec![0]), false)),
+        chan: Some(new_boundvar_par(0, create_bit_vector(&[0]), false)),
         data: vec![Par::default()],
         persistent: false,
-        locally_free: create_bit_vector(&vec![0]),
+        locally_free: create_bit_vector(&[0]),
         connective_used: false,
     };
 
@@ -205,15 +205,15 @@ fn send_should_substitute_bound_vars_for_values() {
 
     let send = Send {
         chan: Some(Par::default().with_sends(vec![Send {
-            chan: Some(new_boundvar_par(1, create_bit_vector(&vec![1]), false)),
+            chan: Some(new_boundvar_par(1, create_bit_vector(&[1]), false)),
             data: vec![Par::default()],
             persistent: false,
-            locally_free: create_bit_vector(&vec![1]),
+            locally_free: create_bit_vector(&[1]),
             connective_used: false,
         }])),
         data: vec![Par::default()],
         persistent: false,
-        locally_free: create_bit_vector(&vec![1]),
+        locally_free: create_bit_vector(&[1]),
         connective_used: false,
     };
 
@@ -246,11 +246,11 @@ fn send_should_substitute_all_bound_vars_for_values() {
             chan: Some(new_boundvar_par(0, Vec::new(), false)),
             data: vec![Par::default()],
             persistent: false,
-            locally_free: create_bit_vector(&vec![0]),
+            locally_free: create_bit_vector(&[0]),
             connective_used: false,
         }])],
         persistent: false,
-        locally_free: create_bit_vector(&vec![0]),
+        locally_free: create_bit_vector(&[0]),
         connective_used: false,
     };
 
@@ -282,7 +282,7 @@ fn send_should_substitute_all_bound_vars_for_values_in_environment() {
             chan: Some(chan0.clone()),
             data: vec![Par::default()],
             persistent: false,
-            locally_free: create_bit_vector(&vec![0]),
+            locally_free: create_bit_vector(&[0]),
             connective_used: false,
         }])),
         uri: vec![],
@@ -298,11 +298,11 @@ fn send_should_substitute_all_bound_vars_for_values_in_environment() {
             chan: Some(chan0.clone()),
             data: vec![Par::default()],
             persistent: false,
-            locally_free: create_bit_vector(&vec![0]),
+            locally_free: create_bit_vector(&[0]),
             connective_used: false,
         }])],
         persistent: false,
-        locally_free: create_bit_vector(&vec![0]),
+        locally_free: create_bit_vector(&[0]),
         connective_used: false,
     };
 
@@ -313,7 +313,7 @@ fn send_should_substitute_all_bound_vars_for_values_in_environment() {
         chan: Some(chan0.clone()),
         data: vec![Par::default()],
         persistent: false,
-        locally_free: create_bit_vector(&vec![0]),
+        locally_free: create_bit_vector(&[0]),
         connective_used: false,
     }]));
     assert_eq!(substitution.unwrap(), Send {
@@ -352,15 +352,15 @@ fn new_should_only_substitute_body_of_expression() {
     let target = New {
         bind_count: 1,
         p: Some(Par::default().with_sends(vec![Send {
-            chan: Some(new_boundvar_par(1, create_bit_vector(&vec![1]), false)),
+            chan: Some(new_boundvar_par(1, create_bit_vector(&[1]), false)),
             data: vec![Par::default()],
             persistent: false,
-            locally_free: create_bit_vector(&vec![1]),
+            locally_free: create_bit_vector(&[1]),
             connective_used: false,
         }])),
         uri: vec![],
         injections: BTreeMap::new(),
-        locally_free: create_bit_vector(&vec![0]),
+        locally_free: create_bit_vector(&[0]),
     };
 
     let substitution = substitute_instance().substitute(target, DEPTH, &env);
@@ -397,16 +397,16 @@ fn new_should_only_substitute_all_variables_in_body_of_expression() {
                 chan: Some(new_boundvar_par(2, Vec::new(), false)),
                 data: vec![Par::default()],
                 persistent: false,
-                locally_free: create_bit_vector(&vec![2]),
+                locally_free: create_bit_vector(&[2]),
                 connective_used: false,
             }])],
             persistent: false,
-            locally_free: create_bit_vector(&vec![2, 3]),
+            locally_free: create_bit_vector(&[2, 3]),
             connective_used: false,
         }])),
         uri: vec![],
         injections: BTreeMap::new(),
-        locally_free: create_bit_vector(&vec![0, 1]),
+        locally_free: create_bit_vector(&[0, 1]),
     };
 
     let substitution = substitute_instance().substitute(target, DEPTH, &env);
@@ -461,7 +461,7 @@ fn bundle_should_substitute_within_the_body_of_the_bundle() {
             chan: Some(new_boundvar_par(0, Vec::new(), false)),
             data: vec![Par::default()],
             persistent: false,
-            locally_free: create_bit_vector(&vec![0]),
+            locally_free: create_bit_vector(&[0]),
             connective_used: false,
         }])),
         write_flag: false,
@@ -499,11 +499,11 @@ fn bundle_should_only_substitute_all_vars_inside_body() {
                 chan: Some(new_boundvar_par(0, Vec::new(), false)),
                 data: vec![Par::default()],
                 persistent: false,
-                locally_free: create_bit_vector(&vec![0]),
+                locally_free: create_bit_vector(&[0]),
                 connective_used: false,
             }])],
             persistent: false,
-            locally_free: create_bit_vector(&vec![0, 1]),
+            locally_free: create_bit_vector(&[0, 1]),
             connective_used: false,
         }])),
         write_flag: false,
@@ -642,20 +642,20 @@ fn var_ref_should_be_replaced_at_a_higher_depth_inside_a_pattern() {
 #[test]
 fn e_plus_plus_should_be_substituted_correctly() {
     let mut source = Par::default().with_sends(vec![Send {
-        chan: Some(new_boundvar_par(0, create_bit_vector(&vec![0]), false)),
+        chan: Some(new_boundvar_par(0, create_bit_vector(&[0]), false)),
         data: vec![Par::default()],
         persistent: false,
-        locally_free: create_bit_vector(&vec![0]),
+        locally_free: create_bit_vector(&[0]),
         connective_used: false,
     }]);
-    source.locally_free = create_bit_vector(&vec![0]);
+    source.locally_free = create_bit_vector(&[0]);
     let mut env = Env::new();
     env = env.put(source.clone());
 
     let target = Par::default().with_exprs(vec![Expr {
         expr_instance: Some(ExprInstance::EPlusPlusBody(EPlusPlus {
-            p1: Some(new_boundvar_par(0, create_bit_vector(&vec![0]), false)),
-            p2: Some(new_boundvar_par(1, create_bit_vector(&vec![1]), false)),
+            p1: Some(new_boundvar_par(0, create_bit_vector(&[0]), false)),
+            p2: Some(new_boundvar_par(1, create_bit_vector(&[1]), false)),
         })),
     }]);
 
@@ -666,10 +666,10 @@ fn e_plus_plus_should_be_substituted_correctly() {
         let mut p = Par::default().with_exprs(vec![Expr {
             expr_instance: Some(ExprInstance::EPlusPlusBody(EPlusPlus {
                 p1: Some(source),
-                p2: Some(new_boundvar_par(1, create_bit_vector(&vec![1]), false)),
+                p2: Some(new_boundvar_par(1, create_bit_vector(&[1]), false)),
             })),
         }]);
-        p.locally_free = create_bit_vector(&vec![0, 1]);
+        p.locally_free = create_bit_vector(&[0, 1]);
         p
     })
 }
@@ -677,20 +677,20 @@ fn e_plus_plus_should_be_substituted_correctly() {
 #[test]
 fn e_percent_percent_should_be_substituted_correctly() {
     let mut source = Par::default().with_sends(vec![Send {
-        chan: Some(new_boundvar_par(0, create_bit_vector(&vec![0]), false)),
+        chan: Some(new_boundvar_par(0, create_bit_vector(&[0]), false)),
         data: vec![Par::default()],
         persistent: false,
-        locally_free: create_bit_vector(&vec![0]),
+        locally_free: create_bit_vector(&[0]),
         connective_used: false,
     }]);
-    source.locally_free = create_bit_vector(&vec![0]);
+    source.locally_free = create_bit_vector(&[0]);
     let mut env = Env::new();
     env = env.put(source.clone());
 
     let target = Par::default().with_exprs(vec![Expr {
         expr_instance: Some(ExprInstance::EPercentPercentBody(EPercentPercent {
-            p1: Some(new_boundvar_par(0, create_bit_vector(&vec![0]), false)),
-            p2: Some(new_boundvar_par(1, create_bit_vector(&vec![1]), false)),
+            p1: Some(new_boundvar_par(0, create_bit_vector(&[0]), false)),
+            p2: Some(new_boundvar_par(1, create_bit_vector(&[1]), false)),
         })),
     }]);
 
@@ -701,10 +701,10 @@ fn e_percent_percent_should_be_substituted_correctly() {
         let mut p = Par::default().with_exprs(vec![Expr {
             expr_instance: Some(ExprInstance::EPercentPercentBody(EPercentPercent {
                 p1: Some(source),
-                p2: Some(new_boundvar_par(1, create_bit_vector(&vec![1]), false)),
+                p2: Some(new_boundvar_par(1, create_bit_vector(&[1]), false)),
             })),
         }]);
-        p.locally_free = create_bit_vector(&vec![0, 1]);
+        p.locally_free = create_bit_vector(&[0, 1]);
         p
     })
 }
@@ -712,20 +712,20 @@ fn e_percent_percent_should_be_substituted_correctly() {
 #[test]
 fn e_minus_minus_should_be_substituted_correctly() {
     let mut source = Par::default().with_sends(vec![Send {
-        chan: Some(new_boundvar_par(0, create_bit_vector(&vec![0]), false)),
+        chan: Some(new_boundvar_par(0, create_bit_vector(&[0]), false)),
         data: vec![Par::default()],
         persistent: false,
-        locally_free: create_bit_vector(&vec![0]),
+        locally_free: create_bit_vector(&[0]),
         connective_used: false,
     }]);
-    source.locally_free = create_bit_vector(&vec![0]);
+    source.locally_free = create_bit_vector(&[0]);
     let mut env = Env::new();
     env = env.put(source.clone());
 
     let target = Par::default().with_exprs(vec![Expr {
         expr_instance: Some(ExprInstance::EMinusMinusBody(EMinusMinus {
-            p1: Some(new_boundvar_par(0, create_bit_vector(&vec![0]), false)),
-            p2: Some(new_boundvar_par(1, create_bit_vector(&vec![1]), false)),
+            p1: Some(new_boundvar_par(0, create_bit_vector(&[0]), false)),
+            p2: Some(new_boundvar_par(1, create_bit_vector(&[1]), false)),
         })),
     }]);
 
@@ -736,10 +736,10 @@ fn e_minus_minus_should_be_substituted_correctly() {
         let mut p = Par::default().with_exprs(vec![Expr {
             expr_instance: Some(ExprInstance::EMinusMinusBody(EMinusMinus {
                 p1: Some(source),
-                p2: Some(new_boundvar_par(1, create_bit_vector(&vec![1]), false)),
+                p2: Some(new_boundvar_par(1, create_bit_vector(&[1]), false)),
             })),
         }]);
-        p.locally_free = create_bit_vector(&vec![0, 1]);
+        p.locally_free = create_bit_vector(&[0, 1]);
         p
     })
 }

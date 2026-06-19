@@ -74,11 +74,9 @@ proptest! {
             fixture.add_block(&child_b);
             fixture.add_block(&missing_pointer);
 
-            let entries = vec![
-                justification(fixture.validators[1].clone(), child_a.block_hash.clone()),
+            let entries = [justification(fixture.validators[1].clone(), child_a.block_hash.clone()),
                 justification(fixture.validators[2].clone(), child_b.block_hash.clone()),
-                justification(fixture.validators[3].clone(), missing_pointer.block_hash.clone()),
-            ];
+                justification(fixture.validators[3].clone(), missing_pointer.block_hash.clone())];
             let current = block(
                 20,
                 fixture.validators[4].clone(),

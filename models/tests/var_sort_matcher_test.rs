@@ -61,7 +61,7 @@ fn different_kinds_of_variables_should_bin_separately() {
                 })),
             },
         ],
-        locally_free: create_bit_vector(&vec![2]),
+        locally_free: create_bit_vector(&[2]),
         connective_used: true,
         ..Default::default()
     };
@@ -118,7 +118,7 @@ fn different_kinds_of_variables_should_bin_separately() {
                 })),
             },
         ],
-        locally_free: create_bit_vector(&vec![2]),
+        locally_free: create_bit_vector(&[2]),
         connective_used: true,
         ..Default::default()
     };

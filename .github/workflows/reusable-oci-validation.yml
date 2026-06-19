@@ -1,0 +1,259 @@
+name: Reusable OCI Validation
+
+on:
+  workflow_call:
+    inputs:
+      head_repo:
+        description: Repository containing the reviewed PR head
+        required: true
+        type: string
+      head_sha:
+        description: Reviewed PR head SHA to validate
+        required: true
+        type: string
+      system_integration_ref:
+        description: Trusted system-integration ref used for integration tests
+        required: true
+        type: string
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-C target-feature=+aes,+sse2"
+  DOCKER_IMAGE_NAME: "f1r3flyindustries/f1r3fly-rust"
+
+permissions:
+  contents: read
+
+jobs:
+  build_docker_image:
+    name: Build Docker Image (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+        include:
+          - arch: amd64
+            platform: linux/amd64
+            runner:
+              [self-hosted, linux, x64, f1r3fly-rust-ci-ephemeral, oracle-cloud]
+          - arch: arm64
+            platform: linux/arm64
+            runner:
+              [
+                self-hosted,
+                linux,
+                arm64,
+                f1r3fly-rust-ci-ephemeral,
+                oracle-cloud,
+              ]
+    steps:
+      - name: Checkout pull request head
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.head_repo }}
+          ref: ${{ inputs.head_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Enable Containerd Image Store
+        shell: bash -ex {0}
+        run: |
+          sudo mkdir -p /etc/docker
+          DESIRED='{"features": {"containerd-snapshotter": true}}'
+          CURRENT=$(cat /etc/docker/daemon.json 2>/dev/null || echo '{}')
+          if [ "$CURRENT" != "$DESIRED" ]; then
+            echo "$DESIRED" | sudo tee /etc/docker/daemon.json | jq
+            sudo systemctl restart docker
+          fi
+
+      - name: Build Docker Image
+        shell: bash -ex {0}
+        run: |
+          docker context use default
+          VERSION="$(git describe --tags --always)"
+          docker buildx build \
+            --platform ${{ matrix.platform }} \
+            --file node/Dockerfile \
+            --build-arg VERSION="${VERSION}" \
+            --tag ${{ env.DOCKER_IMAGE_NAME }}:${{ matrix.arch }} \
+            --load \
+            .
+
+      - name: Export Docker Image
+        shell: bash -ex {0}
+        run: |
+          docker image save ${{ env.DOCKER_IMAGE_NAME }}:${{ matrix.arch }} \
+              | gzip > /tmp/rust-node-docker.tar.gz
+
+      - name: Save Docker Image
+        uses: actions/upload-artifact@v4
+        with:
+          name: artifacts-docker-${{ matrix.arch }}
+          path: /tmp/rust-node-docker.tar.gz
+
+  integration_tests:
+    name: Integration Tests (${{ matrix.arch }}-${{ matrix.provider }}-${{ matrix.slot }})
+    needs: build_docker_image
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+        provider: [docker, subprocess]
+        slot: [1, 2, 3, 4, 5]
+        include:
+          - arch: amd64
+            runner:
+              [self-hosted, linux, x64, f1r3fly-rust-ci-ephemeral, oracle-cloud]
+          - arch: arm64
+            runner:
+              [
+                self-hosted,
+                linux,
+                arm64,
+                f1r3fly-rust-ci-ephemeral,
+                oracle-cloud,
+              ]
+    steps:
+      - name: Checkout pull request head
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.head_repo }}
+          ref: ${{ inputs.head_sha }}
+          persist-credentials: false
+
+      - name: Clone trusted system-integration tests
+        uses: actions/checkout@v4
+        with:
+          repository: F1R3FLY-io/system-integration
+          ref: ${{ inputs.system_integration_ref }}
+          path: system-integration
+          persist-credentials: false
+
+      - name: Load Docker Image
+        uses: actions/download-artifact@v4
+        with:
+          name: artifacts-docker-${{ matrix.arch }}
+          path: /tmp
+
+      - name: Import Docker Image
+        shell: bash -ex {0}
+        run: |
+          zcat /tmp/rust-node-docker.tar.gz | docker image load
+          docker tag ${{ env.DOCKER_IMAGE_NAME }}:${{ matrix.arch }} ${{ env.DOCKER_IMAGE_NAME }}:latest
+
+      - name: Extract rnode binary from image
+        if: matrix.provider == 'subprocess'
+        shell: bash -ex {0}
+        run: |
+          docker create --name extract-rnode ${{ env.DOCKER_IMAGE_NAME }}:latest
+          docker cp extract-rnode:/opt/docker/bin/node /tmp/rnode
+          chmod +x /tmp/rnode
+          docker rm extract-rnode
+          /tmp/rnode --version 2>/dev/null || true
+          ldd /tmp/rnode
+
+      - name: Install system-integration dependencies
+        shell: bash -ex {0}
+        run: |
+          cd system-integration
+          poetry lock --no-update
+          poetry install --with integration
+
+      - name: Run Integration Tests
+        shell: bash -ex {0}
+        env:
+          F1R3FLY_NODE_IMAGE: ${{ env.DOCKER_IMAGE_NAME }}:latest
+          F1R3FLY_NODE_BINARY: /tmp/rnode
+          F1R3FLY_NODE_DEFAULTS_CONF: ${{ github.workspace }}/node/src/main/resources/defaults.conf
+        run: |
+          cd system-integration
+          SCALE_FLAG=""
+          if [ "${{ matrix.arch }}" = "arm64" ]; then
+            SCALE_FLAG="--timeout-scale=1.5"
+          fi
+          poetry run pytest \
+            integration-tests/test/tests/shared/ \
+            integration-tests/test/tests/custom/ \
+            integration-tests/test/tests/standalone/ \
+            --deselect integration-tests/test/tests/custom/test_load.py \
+            --deselect integration-tests/test/tests/shared/test_convergence.py::test_network_converges_after_slow_deploy \
+            --deselect integration-tests/test/tests/custom/test_asymmetric_bonds.py::test_finalization_asymmetric_bonds \
+            --deselect integration-tests/test/tests/shared/test_convergence.py::test_ft_convergence \
+            --deselect integration-tests/test/tests/shared/test_bonding_validators.py \
+            --deselect integration-tests/test/tests/custom/test_joiner_self_proposes_at_epoch_boundary.py \
+            --deselect integration-tests/test/tests/shared/test_observer_lfs_sync.py \
+            --deselect integration-tests/test/tests/custom/test_shard_degradation.py \
+            --deselect integration-tests/test/tests/shared/test_contract_lifecycle.py \
+            --deselect integration-tests/test/tests/custom/test_consensus_safety.py::test_epoch_transition_under_heartbeat \
+            --provider=${{ matrix.provider }} \
+            -v --tb=short --instafail --maxfail=10 \
+            -n auto --dist=loadgroup --timeout=1200 $SCALE_FLAG
+
+      - name: Upload Integration Test Logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-logs-${{ matrix.arch }}-${{ matrix.provider }}-slot${{ matrix.slot }}-run${{ github.run_id }}-attempt${{ github.run_attempt }}
+          path: system-integration/integration-tests/
+          retention-days: 7
+
+  integration_tests_amd64:
+    name: Integration Tests (amd64)
+    needs: integration_tests
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+    steps:
+      - name: Check amd64 matrix slots
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash -e {0}
+        run: |
+          failures=$(gh api \
+            "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}/jobs" \
+            --paginate \
+            --jq '.jobs[] | select(.name | startswith("Integration Tests (amd64-")) | select(.conclusion != "success") | "\(.conclusion)\t\(.name)"')
+          if [ -n "$failures" ]; then
+            echo "amd64 integration test failures:"
+            echo "$failures"
+            exit 1
+          fi
+          echo "All amd64 integration test slots succeeded"
+
+  integration_tests_arm64:
+    name: Integration Tests (arm64)
+    needs: integration_tests
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+    steps:
+      - name: Check arm64 matrix slots
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash -e {0}
+        run: |
+          failures=$(gh api \
+            "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}/jobs" \
+            --paginate \
+            --jq '.jobs[] | select(.name | startswith("Integration Tests (arm64-")) | select(.conclusion != "success") | "\(.conclusion)\t\(.name)"')
+          if [ -n "$failures" ]; then
+            echo "arm64 integration test failures:"
+            echo "$failures"
+            exit 1
+          fi
+          echo "All arm64 integration test slots succeeded"

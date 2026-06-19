@@ -59,8 +59,8 @@ async fn multi_validator_recovery_dedups_re_proposed_sig() {
     let genesis_hash = genesis_block.block_hash.clone();
     let genesis_state = proto_util::post_state_hash(&genesis_block);
     let genesis_bonds = genesis_block.body.state.bonds.clone();
-    let validator_0: prost::bytes::Bytes = genesis_context.validator_pks()[0].bytes.clone().into();
-    let validator_1: prost::bytes::Bytes = genesis_context.validator_pks()[1].bytes.clone().into();
+    let validator_0: prost::bytes::Bytes = genesis_context.validator_pks()[0].bytes.clone();
+    let validator_1: prost::bytes::Bytes = genesis_context.validator_pks()[1].bytes.clone();
     let shard_name = genesis_block.shard_id.clone();
 
     let mut kvm = mk_test_rnode_store_manager_from_genesis(&genesis_context);
@@ -68,7 +68,7 @@ async fn multi_validator_recovery_dedups_re_proposed_sig() {
     let mergeable_store = mergeable_store_from_dyn(&mut *kvm)
         .await
         .expect("mergeable store");
-    let (mut rm, _) = RuntimeManager::create_with_history(
+    let (rm, _) = RuntimeManager::create_with_history(
         rspace_store,
         mergeable_store,
         std::sync::Arc::new(Genesis::default_mergeable_tags()),
@@ -219,7 +219,7 @@ for(@_v <- @"multi-validator-shared") { Nil }
             .collect(),
         Vec::<SystemDeployEnum>::new(),
         &mk_snapshot(&genesis_hash),
-        &mut rm,
+        &rm,
         BlockData::from_block(&r0_raw),
         HashMap::new(),
         None,
@@ -271,7 +271,7 @@ for(@_v <- @"multi-validator-shared") { Nil }
             .collect(),
         Vec::<SystemDeployEnum>::new(),
         &mk_snapshot(&genesis_hash),
-        &mut rm,
+        &rm,
         BlockData::from_block(&r1_raw),
         HashMap::new(),
         None,

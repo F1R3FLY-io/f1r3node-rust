@@ -60,14 +60,17 @@ async fn multi_parent_casper_should_not_create_a_block_with_a_repeated_deploy() 
         let node1_slice = &mut rest[0..1];
         let mut nodes_for_propagate: Vec<&mut TestNode> = node1_slice.iter_mut().collect();
         node0_slice[0]
-            .propagate_block(&[deploy.clone()], &mut nodes_for_propagate)
+            .propagate_block(std::slice::from_ref(&deploy), &mut nodes_for_propagate)
             .await
             .unwrap()
     };
 
     // Scala: node1.createBlock(deploy)
     // node1 tries to create block with the same deploy
-    let create_block_result2 = nodes[1].create_block(&[deploy.clone()]).await.unwrap();
+    let create_block_result2 = nodes[1]
+        .create_block(std::slice::from_ref(&deploy))
+        .await
+        .unwrap();
 
     // Should return NoNewDeploys since deploy was already used
     assert!(

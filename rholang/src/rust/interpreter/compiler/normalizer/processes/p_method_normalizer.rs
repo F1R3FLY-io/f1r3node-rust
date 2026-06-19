@@ -105,7 +105,7 @@ mod tests {
         use crate::rust::interpreter::compiler::normalize::normalize_ann_proc;
         use crate::rust::interpreter::test_utils::par_builder_util::ParBuilderUtil;
 
-        let methods = vec![String::from("nth"), String::from("toByteArray")];
+        let methods = [String::from("nth"), String::from("toByteArray")];
 
         fn test(method_name: String) {
             let parser = rholang_parser::RholangParser::new();
@@ -148,9 +148,9 @@ mod tests {
                 Expr {
                     expr_instance: Some(ExprInstance::EMethodBody(EMethod {
                         method_name,
-                        target: Some(new_boundvar_par(0, create_bit_vector(&vec![0]), false)),
+                        target: Some(new_boundvar_par(0, create_bit_vector(&[0]), false)),
                         arguments: vec![new_gint_par(0, Vec::new(), false)],
-                        locally_free: create_bit_vector(&vec![0]),
+                        locally_free: create_bit_vector(&[0]),
                         connective_used: false,
                     })),
                 },

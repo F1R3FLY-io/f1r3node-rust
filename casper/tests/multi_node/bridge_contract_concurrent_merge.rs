@@ -145,15 +145,15 @@ async fn two_concurrent_bridges_should_merge_without_rejection() {
     // Phase 1: each validator proposes a sibling block off genesis without
     // sync between them — three concurrent siblings.
     let block1 = nodes[0]
-        .add_block_from_deploys(&[bridge1_deploy.clone()])
+        .add_block_from_deploys(std::slice::from_ref(&bridge1_deploy))
         .await
         .expect("validator 0 propose bridge1");
     let block2 = nodes[1]
-        .add_block_from_deploys(&[bridge2_deploy.clone()])
+        .add_block_from_deploys(std::slice::from_ref(&bridge2_deploy))
         .await
         .expect("validator 1 propose bridge2");
     let block3 = nodes[2]
-        .add_block_from_deploys(&[bridge3_deploy.clone()])
+        .add_block_from_deploys(std::slice::from_ref(&bridge3_deploy))
         .await
         .expect("validator 2 propose third sibling");
 
@@ -193,7 +193,7 @@ async fn two_concurrent_bridges_should_merge_without_rejection() {
     // `rejected_deploys` field captures any deploys that were rejected during
     // the merge — that's the observable we assert against.
     let merge_block = nodes[0]
-        .add_block_from_deploys(&[trigger_deploy.clone()])
+        .add_block_from_deploys(std::slice::from_ref(&trigger_deploy))
         .await
         .expect("validator 0 propose merge block");
 

@@ -8,7 +8,8 @@ on:
       - master
       - staging
       - trying
-    tags: "**"
+    tags:
+      - "**"
   pull_request:
     branches:
       - dev
@@ -35,6 +36,9 @@ env:
   RUSTFLAGS: "-C target-feature=+aes,+sse2"
   DOCKER_IMAGE_NAME: "f1r3flyindustries/f1r3fly-rust"
 
+permissions:
+  contents: read
+
 jobs:
   # Resolve version + branch env vars once for downstream jobs.
   # Skip release-bump commits on branch pushes — the tag push handles publish.
@@ -48,6 +52,7 @@ jobs:
     outputs:
       VERSION: ${{ steps.env.outputs.VERSION }}
       BRANCH: ${{ steps.env.outputs.BRANCH }}
+      SYSTEM_INTEGRATION_REF: ${{ steps.env.outputs.SYSTEM_INTEGRATION_REF }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -72,6 +77,13 @@ jobs:
             BRANCH="${GITHUB_REF#refs/heads/}"
           fi
           echo "BRANCH=$BRANCH" >> "$GITHUB_OUTPUT"
+
+          source .github/oci-validation.env
+          if [[ ! "$SYSTEM_INTEGRATION_REF" =~ ^[0-9a-f]{40}$ && ! "$SYSTEM_INTEGRATION_REF" =~ ^refs/tags/[A-Za-z0-9._/-]+$ ]]; then
+            echo "SYSTEM_INTEGRATION_REF must be a 40-character commit SHA or refs/tags/<tag>."
+            exit 1
+          fi
+          echo "SYSTEM_INTEGRATION_REF=$SYSTEM_INTEGRATION_REF" >> "$GITHUB_OUTPUT"
 
           echo "Version: $VERSION | Branch: $BRANCH"
 
@@ -104,7 +116,7 @@ jobs:
       - name: Run clippy
         env:
           RUSTFLAGS: "-C target-feature=+aes,+sse2 -D warnings"
-        run: cargo clippy --workspace
+        run: cargo clippy --workspace --all-targets
 
   deny:
     name: cargo-deny
@@ -284,7 +296,7 @@ jobs:
   # self-terminates. Lifecycle: see F1R3FLY-io/system-integration ci/oci-runners/.
   launch_ephemeral_runners:
     name: Launch Ephemeral Runners
-    needs: lint
+    needs: [build_base, lint]
     # Skip on fork PRs: secrets.OCI_* aren't exposed to workflows triggered
     # by PRs from forks, so this job would only ever fail with malformed-
     # config errors. The integration_tests matrix needs this job, so it'll
@@ -294,36 +306,39 @@ jobs:
     # the branch into the canonical repo (e.g. staging).
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
+    environment: ephemeral-launch
     permissions:
-      actions: write  # needed for gh api ... actions/runners/registration-token
+      contents: read
     timeout-minutes: 10
     steps:
       - name: Clone system-integration
         uses: actions/checkout@v4
         with:
           repository: F1R3FLY-io/system-integration
-          ref: fix/test-stability
+          ref: ${{ needs.build_base.outputs.SYSTEM_INTEGRATION_REF }}
           path: system-integration
+          persist-credentials: false
 
       - name: Install OCI CLI
-        shell: bash -ex {0}
+        shell: bash -e {0}
         run: |
-          bash -c "$(curl -L https://raw.githubusercontent.com/oracle/oci-cli/master/scripts/install/install.sh)" -- \
-            --accept-all-defaults --install-dir /opt/oci-cli --exec-dir /usr/local/bin
-          oci --version
+          python3 -m pip install --user --only-binary=:all: 'oci-cli==3.85.0'
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/oci" --version
 
       - name: Configure OCI auth from secrets
-        shell: bash -ex {0}
+        shell: bash -euo pipefail {0}
         env:
           OCI_TENANCY_OCID: ${{ secrets.OCI_TENANCY_OCID }}
           OCI_USER_OCID: ${{ secrets.OCI_USER_OCID }}
           OCI_REGION: ${{ secrets.OCI_REGION }}
           OCI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
           OCI_PRIVATE_KEY: ${{ secrets.OCI_PRIVATE_KEY }}
+          SUPPRESS_LABEL_WARNING: "True"
         run: |
-          mkdir -p ~/.oci
+          install -d -m 700 ~/.oci
+          umask 077
           printf '%s\n' "$OCI_PRIVATE_KEY" > ~/.oci/oci_api_key.pem
-          chmod 600 ~/.oci/oci_api_key.pem
           cat > ~/.oci/config <<EOF
           [DEFAULT]
           user=$OCI_USER_OCID
@@ -336,7 +351,7 @@ jobs:
           oci iam region list >/dev/null && echo "OCI auth OK"
 
       - name: Launch 10 amd64 + 10 arm64 ephemeral runners
-        shell: bash -ex {0}
+        shell: bash -e {0}
         env:
           # The default GITHUB_TOKEN can't mint runner registration tokens even
           # with permissions: actions: write — that endpoint requires admin-on-
@@ -348,15 +363,30 @@ jobs:
           SUPPRESS_LABEL_WARNING: "True"
         run: |
           cd system-integration/ci/oci-runners
-          # Launch in parallel; each script exits as soon as the OCI launch
-          # API call returns (the VM continues booting in the background and
-          # registers itself via cloud-init). 10 amd64 + 10 arm64 feeds the
-          # 20-job dual-provider matrix (docker × {amd64,arm64} × 5 slots +
-          # subprocess × {amd64,arm64} × 5 slots).
-          for _ in $(seq 1 10); do ./launch-runner.sh amd64 & done
-          for _ in $(seq 1 10); do ./launch-runner.sh arm64 & done
-          wait
+          pids=()
+          for _ in $(seq 1 10); do ./launch-runner.sh amd64 & pids+=("$!"); done
+          for _ in $(seq 1 10); do ./launch-runner.sh arm64 & pids+=("$!"); done
+
+          failed=0
+          for pid in "${pids[@]}"; do
+            if ! wait "$pid"; then
+              failed=1
+            fi
+          done
+
+          if [ "$failed" -ne 0 ]; then
+            echo "At least one OCI runner launch failed."
+            exit 1
+          fi
+
           echo "All 20 ephemeral runner VMs submitted."
+
+      - name: Remove OCI credentials
+        if: always()
+        shell: bash -e {0}
+        run: |
+          shred -fu ~/.oci/oci_api_key.pem 2>/dev/null || true
+          rm -rf ~/.oci
 
   # Integration tests run on ephemeral OCI runners — one fresh VM per matrix
   # job, self-terminating after the job completes. The matrix runs the same
@@ -365,7 +395,7 @@ jobs:
   # ephemeral runners (provider is a pytest flag, not a runner concern).
   integration_tests:
     name: Integration Tests (${{ matrix.arch }}-${{ matrix.provider }}-${{ matrix.slot }})
-    needs: [build_docker_image, launch_ephemeral_runners]
+    needs: [build_base, build_docker_image, launch_ephemeral_runners]
     runs-on: ${{ matrix.runner }}
     # The system-integration pytest suite (~47 tests, boots a full
     # 4-node Docker shard for each scenario, 1-3 min per test) has
@@ -377,36 +407,274 @@ jobs:
     # multiplier. Still caps any genuine hang at ~2× the realistic
     # completion time.
     timeout-minutes: 120
-    concurrency:
-      group: integration-${{ matrix.arch }}-${{ github.ref }}
     strategy:
       fail-fast: false
       matrix:
         include:
           # ── amd64 × docker × 5 ───────────────────────────────────────────────
-          - { arch: amd64, provider: docker,     slot: 1, runner: [self-hosted, linux, x64,   f1r3fly-rust-ci-ephemeral, oracle-cloud] }
-          - { arch: amd64, provider: docker,     slot: 2, runner: [self-hosted, linux, x64,   f1r3fly-rust-ci-ephemeral, oracle-cloud] }
-          - { arch: amd64, provider: docker,     slot: 3, runner: [self-hosted, linux, x64,   f1r3fly-rust-ci-ephemeral, oracle-cloud] }
-          - { arch: amd64, provider: docker,     slot: 4, runner: [self-hosted, linux, x64,   f1r3fly-rust-ci-ephemeral, oracle-cloud] }
-          - { arch: amd64, provider: docker,     slot: 5, runner: [self-hosted, linux, x64,   f1r3fly-rust-ci-ephemeral, oracle-cloud] }
+          - {
+              arch: amd64,
+              provider: docker,
+              slot: 1,
+              runner:
+                [
+                  self-hosted,
+                  linux,
+                  x64,
+                  f1r3fly-rust-ci-ephemeral,
+                  oracle-cloud,
+                ],
+            }
+          - {
+              arch: amd64,
+              provider: docker,
+              slot: 2,
+              runner:
+                [
+                  self-hosted,
+                  linux,
+                  x64,
+                  f1r3fly-rust-ci-ephemeral,
+                  oracle-cloud,
+                ],
+            }
+          - {
+              arch: amd64,
+              provider: docker,
+              slot: 3,
+              runner:
+                [
+                  self-hosted,
+                  linux,
+                  x64,
+                  f1r3fly-rust-ci-ephemeral,
+                  oracle-cloud,
+                ],
+            }
+          - {
+              arch: amd64,
+              provider: docker,
+              slot: 4,
+              runner:
+                [
+                  self-hosted,
+                  linux,
+                  x64,
+                  f1r3fly-rust-ci-ephemeral,
+                  oracle-cloud,
+                ],
+            }
+          - {
+              arch: amd64,
+              provider: docker,
+              slot: 5,
+              runner:
+                [
+                  self-hosted,
+                  linux,
+                  x64,
+                  f1r3fly-rust-ci-ephemeral,
+                  oracle-cloud,
+                ],
+            }
           # ── amd64 × subprocess × 5 ───────────────────────────────────────────
-          - { arch: amd64, provider: subprocess, slot: 1, runner: [self-hosted, linux, x64,   f1r3fly-rust-ci-ephemeral, oracle-cloud] }
-          - { arch: amd64, provider: subprocess, slot: 2, runner: [self-hosted, linux, x64,   f1r3fly-rust-ci-ephemeral, oracle-cloud] }
-          - { arch: amd64, provider: subprocess, slot: 3, runner: [self-hosted, linux, x64,   f1r3fly-rust-ci-ephemeral, oracle-cloud] }
-          - { arch: amd64, provider: subprocess, slot: 4, runner: [self-hosted, linux, x64,   f1r3fly-rust-ci-ephemeral, oracle-cloud] }
-          - { arch: amd64, provider: subprocess, slot: 5, runner: [self-hosted, linux, x64,   f1r3fly-rust-ci-ephemeral, oracle-cloud] }
+          - {
+              arch: amd64,
+              provider: subprocess,
+              slot: 1,
+              runner:
+                [
+                  self-hosted,
+                  linux,
+                  x64,
+                  f1r3fly-rust-ci-ephemeral,
+                  oracle-cloud,
+                ],
+            }
+          - {
+              arch: amd64,
+              provider: subprocess,
+              slot: 2,
+              runner:
+                [
+                  self-hosted,
+                  linux,
+                  x64,
+                  f1r3fly-rust-ci-ephemeral,
+                  oracle-cloud,
+                ],
+            }
+          - {
+              arch: amd64,
+              provider: subprocess,
+              slot: 3,
+              runner:
+                [
+                  self-hosted,
+                  linux,
+                  x64,
+                  f1r3fly-rust-ci-ephemeral,
+                  oracle-cloud,
+                ],
+            }
+          - {
+              arch: amd64,
+              provider: subprocess,
+              slot: 4,
+              runner:
+                [
+                  self-hosted,
+                  linux,
+                  x64,
+                  f1r3fly-rust-ci-ephemeral,
+                  oracle-cloud,
+                ],
+            }
+          - {
+              arch: amd64,
+              provider: subprocess,
+              slot: 5,
+              runner:
+                [
+                  self-hosted,
+                  linux,
+                  x64,
+                  f1r3fly-rust-ci-ephemeral,
+                  oracle-cloud,
+                ],
+            }
           # ── arm64 × docker × 5 ───────────────────────────────────────────────
-          - { arch: arm64, provider: docker,     slot: 1, runner: [self-hosted, linux, arm64, f1r3fly-rust-ci-ephemeral, oracle-cloud] }
-          - { arch: arm64, provider: docker,     slot: 2, runner: [self-hosted, linux, arm64, f1r3fly-rust-ci-ephemeral, oracle-cloud] }
-          - { arch: arm64, provider: docker,     slot: 3, runner: [self-hosted, linux, arm64, f1r3fly-rust-ci-ephemeral, oracle-cloud] }
-          - { arch: arm64, provider: docker,     slot: 4, runner: [self-hosted, linux, arm64, f1r3fly-rust-ci-ephemeral, oracle-cloud] }
-          - { arch: arm64, provider: docker,     slot: 5, runner: [self-hosted, linux, arm64, f1r3fly-rust-ci-ephemeral, oracle-cloud] }
+          - {
+              arch: arm64,
+              provider: docker,
+              slot: 1,
+              runner:
+                [
+                  self-hosted,
+                  linux,
+                  arm64,
+                  f1r3fly-rust-ci-ephemeral,
+                  oracle-cloud,
+                ],
+            }
+          - {
+              arch: arm64,
+              provider: docker,
+              slot: 2,
+              runner:
+                [
+                  self-hosted,
+                  linux,
+                  arm64,
+                  f1r3fly-rust-ci-ephemeral,
+                  oracle-cloud,
+                ],
+            }
+          - {
+              arch: arm64,
+              provider: docker,
+              slot: 3,
+              runner:
+                [
+                  self-hosted,
+                  linux,
+                  arm64,
+                  f1r3fly-rust-ci-ephemeral,
+                  oracle-cloud,
+                ],
+            }
+          - {
+              arch: arm64,
+              provider: docker,
+              slot: 4,
+              runner:
+                [
+                  self-hosted,
+                  linux,
+                  arm64,
+                  f1r3fly-rust-ci-ephemeral,
+                  oracle-cloud,
+                ],
+            }
+          - {
+              arch: arm64,
+              provider: docker,
+              slot: 5,
+              runner:
+                [
+                  self-hosted,
+                  linux,
+                  arm64,
+                  f1r3fly-rust-ci-ephemeral,
+                  oracle-cloud,
+                ],
+            }
           # ── arm64 × subprocess × 5 ───────────────────────────────────────────
-          - { arch: arm64, provider: subprocess, slot: 1, runner: [self-hosted, linux, arm64, f1r3fly-rust-ci-ephemeral, oracle-cloud] }
-          - { arch: arm64, provider: subprocess, slot: 2, runner: [self-hosted, linux, arm64, f1r3fly-rust-ci-ephemeral, oracle-cloud] }
-          - { arch: arm64, provider: subprocess, slot: 3, runner: [self-hosted, linux, arm64, f1r3fly-rust-ci-ephemeral, oracle-cloud] }
-          - { arch: arm64, provider: subprocess, slot: 4, runner: [self-hosted, linux, arm64, f1r3fly-rust-ci-ephemeral, oracle-cloud] }
-          - { arch: arm64, provider: subprocess, slot: 5, runner: [self-hosted, linux, arm64, f1r3fly-rust-ci-ephemeral, oracle-cloud] }
+          - {
+              arch: arm64,
+              provider: subprocess,
+              slot: 1,
+              runner:
+                [
+                  self-hosted,
+                  linux,
+                  arm64,
+                  f1r3fly-rust-ci-ephemeral,
+                  oracle-cloud,
+                ],
+            }
+          - {
+              arch: arm64,
+              provider: subprocess,
+              slot: 2,
+              runner:
+                [
+                  self-hosted,
+                  linux,
+                  arm64,
+                  f1r3fly-rust-ci-ephemeral,
+                  oracle-cloud,
+                ],
+            }
+          - {
+              arch: arm64,
+              provider: subprocess,
+              slot: 3,
+              runner:
+                [
+                  self-hosted,
+                  linux,
+                  arm64,
+                  f1r3fly-rust-ci-ephemeral,
+                  oracle-cloud,
+                ],
+            }
+          - {
+              arch: arm64,
+              provider: subprocess,
+              slot: 4,
+              runner:
+                [
+                  self-hosted,
+                  linux,
+                  arm64,
+                  f1r3fly-rust-ci-ephemeral,
+                  oracle-cloud,
+                ],
+            }
+          - {
+              arch: arm64,
+              provider: subprocess,
+              slot: 5,
+              runner:
+                [
+                  self-hosted,
+                  linux,
+                  arm64,
+                  f1r3fly-rust-ci-ephemeral,
+                  oracle-cloud,
+                ],
+            }
     steps:
       - name: Clean self-hosted runner state
         shell: bash {0}
@@ -425,8 +693,9 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: F1R3FLY-io/system-integration
-          ref: fix/test-stability
+          ref: ${{ needs.build_base.outputs.SYSTEM_INTEGRATION_REF }}
           path: system-integration
+          persist-credentials: false
 
       - name: Load Docker Image (from build_docker_image artifact)
         uses: actions/download-artifact@v4

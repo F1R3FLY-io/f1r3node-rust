@@ -150,8 +150,7 @@ fn signed_block(
         .expect("dag representation");
     let sender = Bytes::copy_from_slice(&pk.bytes);
     let latest_message_opt = dag.latest_message(&sender).unwrap_or(None);
-    let seq_num =
-        latest_message_opt.map_or(0, |block_metadata| block_metadata.sequence_number as i32) + 1;
+    let seq_num = latest_message_opt.map_or(0, |block_metadata| block_metadata.sequence_number) + 1;
 
     block.seq_num = seq_num;
     ValidatorIdentity::new(private_key).sign_block(&block)
@@ -248,10 +247,10 @@ async fn block_signature_validation_should_return_false_on_unknown_algorithms() 
         let block1 = with_sig_algorithm(&block_dag_storage.lookup_by_id_unsafe(1), rsa);
 
         let result0 = Validate::block_signature(&block0);
-        assert_eq!(result0, false);
+        assert!(!result0);
 
         let result1 = Validate::block_signature(&block1);
-        assert_eq!(result1, false);
+        assert!(!result1);
 
         // Add log validation mechanism when LogStub mechanism from Scala will be implemented on Rust.
         // log.warns.last.contains(s"signature algorithm $unknownAlgorithm is unsupported") should be(true)
@@ -306,11 +305,11 @@ async fn block_signature_validation_should_return_false_on_invalid_secp256k1_sig
             &block0.sig,
         ); //wrong sig
 
-        let blocks = vec![block0, block1, block2, block3, block4, block5];
+        let blocks = [block0, block1, block2, block3, block4, block5];
 
         for (i, block) in blocks.iter().enumerate() {
-            let result = Validate::block_signature(&block);
-            assert_eq!(result, false, "Block {} should have invalid signature", i);
+            let result = Validate::block_signature(block);
+            assert!(!result, "Block {} should have invalid signature", i);
         }
 
         // Add log validation mechanism when LogStub mechanism from Scala will be implemented on Rust.
@@ -334,7 +333,7 @@ async fn block_signature_validation_should_return_true_on_valid_secp256k1_signat
             Validate::block_signature(&block)
         });
 
-        assert_eq!(condition, true);
+        assert!(condition);
 
         // Add log validation mechanism when LogStub mechanism from Scala will be implemented on Rust.
         // log.warns should be(Nil)
@@ -363,14 +362,14 @@ async fn timestamp_validation_should_not_accept_blocks_with_future_time() {
 
         let result_invalid = Validate::timestamp(
             &modified_timestamp_header(&block, future_timestamp),
-            &mut block_store,
+            &block_store,
         );
         assert_eq!(
             result_invalid,
             Either::Left(BlockError::Invalid(InvalidBlock::InvalidTimestamp))
         );
 
-        let result_valid = Validate::timestamp(&block, &mut block_store);
+        let result_valid = Validate::timestamp(&block, &block_store);
         assert_eq!(result_valid, Either::Right(ValidBlock::Valid));
 
         // Add log validation mechanism when LogStub mechanism from Scala will be implemented on Rust.
@@ -391,13 +390,13 @@ async fn timestamp_validation_should_not_accept_blocks_that_were_published_befor
             .get_representation()
             .expect("dag representation");
 
-        let result_invalid = Validate::timestamp(&modified_timestamp_header, &mut block_store);
+        let result_invalid = Validate::timestamp(&modified_timestamp_header, &block_store);
         assert_eq!(
             result_invalid,
             Either::Left(BlockError::Invalid(InvalidBlock::InvalidTimestamp))
         );
 
-        let result_valid = Validate::timestamp(&block, &mut block_store);
+        let result_valid = Validate::timestamp(&block, &block_store);
         assert_eq!(result_valid, Either::Right(ValidBlock::Valid));
 
         // Add log validation mechanism when LogStub mechanism from Scala will be implemented on Rust.
@@ -478,7 +477,7 @@ async fn block_number_validation_should_return_true_for_sequential_numbering() {
             result == Either::Right(ValidBlock::Valid)
         });
 
-        assert_eq!(condition, true);
+        assert!(condition);
 
         // Add log validation mechanism when LogStub mechanism from Scala will be implemented on Rust.
         // log.warns should be(Nil)
@@ -916,7 +915,7 @@ async fn sequence_number_validation_should_return_true_for_sequential_numbering(
             result == Either::Right(ValidBlock::Valid)
         });
 
-        assert_eq!(condition, true);
+        assert!(condition);
 
         // Add log validation mechanism when LogStub mechanism from Scala will be implemented on Rust.
         // log.warns should be(Nil)
@@ -935,10 +934,10 @@ async fn repeat_deploy_validation_should_return_valid_for_empty_blocks() {
             .expect("dag representation");
         let mut casper_snapshot = mk_casper_snapshot(dag);
 
-        let result1 = Validate::repeat_deploy(&block, &mut casper_snapshot, &mut block_store, 50);
+        let result1 = Validate::repeat_deploy(&block, &mut casper_snapshot, &block_store, 50);
         assert_eq!(result1, Either::Right(ValidBlock::Valid));
 
-        let result2 = Validate::repeat_deploy(&block2, &mut casper_snapshot, &mut block_store, 50);
+        let result2 = Validate::repeat_deploy(&block2, &mut casper_snapshot, &block_store, 50);
         assert_eq!(result2, Either::Right(ValidBlock::Valid));
     })
     .await
@@ -984,7 +983,7 @@ async fn repeat_deploy_validation_should_not_accept_blocks_with_a_repeated_deplo
             .expect("dag representation");
         let mut casper_snapshot = mk_casper_snapshot(dag);
 
-        let result = Validate::repeat_deploy(&block1, &mut casper_snapshot, &mut block_store, 50);
+        let result = Validate::repeat_deploy(&block1, &mut casper_snapshot, &block_store, 50);
         assert_eq!(
             result,
             Either::Left(BlockError::Invalid(InvalidBlock::InvalidRepeatDeploy))
@@ -1096,7 +1095,7 @@ async fn repeat_deploy_validation_allows_recovered_deploy_from_rejected_in_scope
         rejected.insert(deploy_sig);
         snapshot.rejected_in_scope = Arc::new(rejected);
 
-        let result = Validate::repeat_deploy(&block_w, &mut snapshot, &mut block_store, 50);
+        let result = Validate::repeat_deploy(&block_w, &mut snapshot, &block_store, 50);
         assert_eq!(
             result,
             Either::Right(ValidBlock::Valid),
@@ -1184,7 +1183,7 @@ async fn repeat_deploy_blocks_double_execution_when_finalized_and_in_rejected_in
         rejected.insert(deploy_sig);
         snapshot.rejected_in_scope = Arc::new(rejected);
 
-        let result = Validate::repeat_deploy(&block_w, &mut snapshot, &mut block_store, 50);
+        let result = Validate::repeat_deploy(&block_w, &mut snapshot, &block_store, 50);
         assert_eq!(
             result,
             Either::Left(BlockError::Invalid(InvalidBlock::InvalidRepeatDeploy)),
@@ -1215,15 +1214,15 @@ async fn sender_validation_should_return_true_for_genesis_and_blocks_from_bonded
             .expect("dag representation");
         let result_genesis =
             Validate::block_sender_has_weight(&genesis, &genesis, &mut block_store);
-        assert_eq!(result_genesis.unwrap(), true);
+        assert!(result_genesis.unwrap());
 
         let result_valid =
             Validate::block_sender_has_weight(&valid_block, &genesis, &mut block_store);
-        assert_eq!(result_valid.unwrap(), true);
+        assert!(result_valid.unwrap());
 
         let result_invalid =
             Validate::block_sender_has_weight(&invalid_block, &genesis, &mut block_store);
-        assert_eq!(result_invalid.unwrap(), false);
+        assert!(!result_invalid.unwrap());
     })
     .await
 }
@@ -1711,9 +1710,8 @@ async fn block_summary_validation_should_short_circuit_after_first_invalidity() 
         let (sk, pk) = secp256k1.new_key_pair();
         let sender = Bytes::copy_from_slice(&pk.bytes);
         let latest_message_opt = dag.latest_message(&sender).unwrap_or(None);
-        let _seq_num = latest_message_opt
-            .map_or(0, |block_metadata| block_metadata.sequence_number as i32)
-            + 1;
+        let _seq_num =
+            latest_message_opt.map_or(0, |block_metadata| block_metadata.sequence_number) + 1;
 
         let signed_block = ValidatorIdentity::new(&sk)
             .sign_block(&with_seq_num(&with_block_number(&block, 17), 1));
@@ -1747,7 +1745,7 @@ async fn block_summary_validation_should_short_circuit_after_first_invalidity() 
             max_number_of_parents,
             i32::MAX, // max_parent_depth: disable depth check for this test
             0,        // depth_buffer: irrelevant when depth check disabled
-            &mut block_store,
+            &block_store,
             false,
         )
         .await;
@@ -1931,16 +1929,16 @@ async fn justification_follow_validation_should_return_valid_for_proper_justific
             let _dag = block_dag_storage
                 .get_representation()
                 .expect("dag representation");
-            let result = Validate::justification_follows(&block, &mut block_store);
+            let result = Validate::justification_follows(&block, &block_store);
             result == Either::Right(ValidBlock::Valid)
         });
-        assert_eq!(condition, true);
+        assert!(condition);
 
         let block_id_7 = block_dag_storage.lookup_by_id_unsafe(7);
         let _dag = block_dag_storage
             .get_representation()
             .expect("dag representation");
-        let result = Validate::justification_follows(&block_id_7, &mut block_store);
+        let result = Validate::justification_follows(&block_id_7, &block_store);
         assert_eq!(
             result,
             Either::Left(BlockError::Invalid(InvalidBlock::InvalidFollows))
@@ -2046,7 +2044,7 @@ async fn justification_regression_validation_should_return_valid_for_proper_just
             let result = Validate::justification_regressions(&block, &mut casper_snapshot);
             result == Either::Right(ValidBlock::Valid)
         });
-        assert_eq!(condition, true);
+        assert!(condition);
 
         // The justification block for validator 0 should point to b2 or above.
         let justifications_with_regression = vec![
@@ -2236,7 +2234,7 @@ async fn justification_regression_validation_should_return_valid_for_regressive_
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn bonds_cache_validation_should_succeed_on_a_valid_block_and_fail_on_modified_bonds() {
-    with_storage(|mut block_store, mut block_dag_storage| async move {
+    with_storage(|block_store, mut block_dag_storage| async move {
         let context = GenesisBuilder::new()
             .build_genesis_with_parameters(None)
             .await
@@ -2256,8 +2254,8 @@ async fn bonds_cache_validation_should_succeed_on_a_valid_block_and_fail_on_modi
             .await
             .unwrap();
 
-        let mut runtime_manager = RuntimeManager::create_with_store(
-            (&mut *kvm).r_space_stores().await.unwrap(),
+        let runtime_manager = RuntimeManager::create_with_store(
+            (*kvm).r_space_stores().await.unwrap(),
             m_store,
             std::sync::Arc::new(Genesis::default_mergeable_tags()),
             rholang::rust::interpreter::external_services::ExternalServices::noop(),
@@ -2270,9 +2268,9 @@ async fn bonds_cache_validation_should_succeed_on_a_valid_block_and_fail_on_modi
 
         interpreter_util::validate_block_checkpoint(
             &genesis,
-            &mut block_store,
+            &block_store,
             &mut casper_snapshot,
-            &mut runtime_manager,
+            &runtime_manager,
             None,
         )
         .await
@@ -2328,23 +2326,23 @@ async fn field_format_validation_should_succeed_on_a_valid_block_and_fail_on_emp
             ValidatorIdentity::new(sk).sign_block(&with_seq_num(&context.genesis_block, seq_num));
 
         let result = Validate::format_of_fields(&genesis);
-        assert_eq!(result, true);
+        assert!(result);
 
         let invalid_block = with_sig(&genesis, &Bytes::new());
         let result = Validate::format_of_fields(&invalid_block);
-        assert_eq!(result, false);
+        assert!(!result);
 
         let invalid_block = with_sig_algorithm(&genesis, "");
         let result = Validate::format_of_fields(&invalid_block);
-        assert_eq!(result, false);
+        assert!(!result);
 
         let invalid_block = with_shard_id(&genesis, "");
         let result = Validate::format_of_fields(&invalid_block);
-        assert_eq!(result, false);
+        assert!(!result);
 
         let invalid_block = with_post_state_hash(&genesis, &Bytes::new());
         let result = Validate::format_of_fields(&invalid_block);
-        assert_eq!(result, false);
+        assert!(!result);
     })
     .await
 }
@@ -2417,10 +2415,10 @@ async fn block_version_validation_should_work() {
             ValidatorIdentity::new(sk).sign_block(&with_seq_num(&context.genesis_block, seq_num));
 
         let result = Validate::version(&genesis, -1);
-        assert_eq!(result, false);
+        assert!(!result);
 
         let result = Validate::version(&genesis, 1);
-        assert_eq!(result, true);
+        assert!(result);
     })
     .await
 }

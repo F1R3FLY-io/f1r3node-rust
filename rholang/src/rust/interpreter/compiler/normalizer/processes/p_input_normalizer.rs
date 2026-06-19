@@ -599,12 +599,12 @@ mod tests {
                 free_count: 2,
             }],
             body: Some(new_send_par(
-                new_boundvar_par(1, create_bit_vector(&vec![1]), false),
-                vec![new_boundvar_par(0, create_bit_vector(&vec![0]), false)],
+                new_boundvar_par(1, create_bit_vector(&[1]), false),
+                vec![new_boundvar_par(0, create_bit_vector(&[0]), false)],
                 false,
-                create_bit_vector(&vec![0, 1]),
+                create_bit_vector(&[0, 1]),
                 false,
-                create_bit_vector(&vec![0, 1]),
+                create_bit_vector(&[0, 1]),
                 false,
             )),
             persistent: false,
@@ -636,8 +636,8 @@ mod tests {
             !normalized.receives.is_empty(),
             "Should have at least one receive"
         );
-        assert_eq!(
-            normalized.receives[0].peek, true,
+        assert!(
+            normalized.receives[0].peek,
             "Peek should be true for <<- operator"
         );
     }
@@ -824,31 +824,31 @@ mod tests {
                     body: Some({
                         let mut par = Par::default().with_sends(vec![
                             new_send(
-                                new_boundvar_par(1, create_bit_vector(&vec![1]), false),
-                                vec![new_boundvar_par(2, create_bit_vector(&vec![2]), false)],
+                                new_boundvar_par(1, create_bit_vector(&[1]), false),
+                                vec![new_boundvar_par(2, create_bit_vector(&[2]), false)],
                                 false,
-                                create_bit_vector(&vec![1, 2]),
+                                create_bit_vector(&[1, 2]),
                                 false,
                             ),
                             new_send(
-                                new_boundvar_par(3, create_bit_vector(&vec![3]), false),
-                                vec![new_boundvar_par(0, create_bit_vector(&vec![0]), false)],
+                                new_boundvar_par(3, create_bit_vector(&[3]), false),
+                                vec![new_boundvar_par(0, create_bit_vector(&[0]), false)],
                                 false,
-                                create_bit_vector(&vec![0, 3]),
+                                create_bit_vector(&[0, 3]),
                                 false,
                             ),
                         ]);
-                        par.locally_free = create_bit_vector(&vec![0, 1, 2, 3]);
+                        par.locally_free = create_bit_vector(&[0, 1, 2, 3]);
                         par
                     }),
                     persistent: false,
                     peek: false,
                     bind_count: 2,
-                    locally_free: create_bit_vector(&vec![0, 1]),
+                    locally_free: create_bit_vector(&[0, 1]),
                     connective_used: false,
                     condition: None,
                 });
-                inner_par.locally_free = create_bit_vector(&vec![0, 1]);
+                inner_par.locally_free = create_bit_vector(&[0, 1]);
                 inner_par
             }),
             persistent: false,

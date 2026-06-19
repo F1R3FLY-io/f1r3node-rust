@@ -77,8 +77,8 @@ new return in {
 fn par_rho(ori: &str, append_rho: &str) -> String { format!("{}|{}", ori, append_rho) }
 
 fn make_sig(hex: &str) -> Vec<u8> {
-    let hex_str = if hex.starts_with("0x") {
-        &hex[2..]
+    let hex_str = if let Some(stripped) = hex.strip_prefix("0x") {
+        stripped
     } else {
         hex
     };
@@ -104,6 +104,7 @@ fn unforgeable_name_seed() -> Par {
     }])
 }
 
+#[allow(clippy::mutable_key_type)]
 async fn test_case(
     base_terms: Vec<String>,
     left_terms: Vec<DeployTestInfo>,
@@ -290,7 +291,7 @@ async fn test_case(
         |hash: &Blake2b256Hash,
          changes: &ChannelChange<Vec<u8>>,
          number_channels: &NumberChannelsDiff| {
-            match number_channels.get(&hash) {
+            match number_channels.get(hash) {
                 Some(number_channel_diff) => {
                     let (diff, merge_type) = *number_channel_diff;
                     Ok(Some(RholangMergingLogic::calculate_number_channel_merge(

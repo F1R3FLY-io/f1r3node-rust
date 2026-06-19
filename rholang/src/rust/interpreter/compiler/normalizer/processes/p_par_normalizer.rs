@@ -131,7 +131,7 @@ mod tests {
         assert_eq!(result.clone().unwrap().par, {
             let mut par =
                 Par::default().with_exprs(vec![new_boundvar_expr(0), new_boundvar_expr(0)]);
-            par.locally_free = create_bit_vector(&vec![0]);
+            par.locally_free = create_bit_vector(&[0]);
             par
         });
         assert_eq!(result.unwrap().free_map, ProcVisitInputs::new().free_map);

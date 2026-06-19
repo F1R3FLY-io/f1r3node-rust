@@ -225,12 +225,12 @@ mod tests {
         let new_x_branch = new_new_par(
             1,
             new_send_par(
-                new_boundvar_par(0, create_bit_vector(&vec![0]), false),
+                new_boundvar_par(0, create_bit_vector(&[0]), false),
                 vec![new_gint_par(47, Vec::new(), false)],
                 false,
-                create_bit_vector(&vec![0]),
+                create_bit_vector(&[0]),
                 false,
-                create_bit_vector(&vec![0]),
+                create_bit_vector(&[0]),
                 false,
             ),
             vec![],
@@ -242,12 +242,12 @@ mod tests {
         let new_y_branch = new_new_par(
             1,
             new_send_par(
-                new_boundvar_par(0, create_bit_vector(&vec![0]), false),
+                new_boundvar_par(0, create_bit_vector(&[0]), false),
                 vec![new_gint_par(47, Vec::new(), false)],
                 false,
-                create_bit_vector(&vec![0]),
+                create_bit_vector(&[0]),
                 false,
-                create_bit_vector(&vec![0]),
+                create_bit_vector(&[0]),
                 false,
             ),
             vec![],

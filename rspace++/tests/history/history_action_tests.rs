@@ -306,6 +306,7 @@ fn collision_detecting_in_kvdb_should_work() {
 }
 
 #[test]
+#[allow(clippy::assertions_on_constants, clippy::type_complexity)]
 fn randomly_insert_or_delete_should_return_the_correct_result() {
     let size_inserts = 10000;
     let size_deletes = 3000;
@@ -330,14 +331,14 @@ fn randomly_insert_or_delete_should_return_the_correct_result() {
 
             let new_deletes = generate_random_delete_from_insert(size_deletes, last_inserts)
                 .into_iter()
-                .chain(generate_random_delete(size_deletes).into_iter())
+                .chain(generate_random_delete(size_deletes))
                 .collect::<Vec<_>>();
 
             let actions = new_inserts
                 .clone()
                 .into_iter()
-                .chain(new_deletes.clone().into_iter())
-                .chain(new_updates.into_iter())
+                .chain(new_deletes.clone())
+                .chain(new_updates)
                 .collect::<Vec<_>>();
 
             println!("\nprocess {}", actions.len());
@@ -434,10 +435,10 @@ fn generate_random_delete_from_insert(
 
 fn generate_random_insert_from_insert(
     size: usize,
-    inserts: &Vec<HistoryAction>,
+    inserts: &[HistoryAction],
 ) -> Vec<HistoryAction> {
     let mut rng = rand::thread_rng();
-    let mut shuffled_inserts = inserts.clone();
+    let mut shuffled_inserts = inserts.to_vec();
     shuffled_inserts.shuffle(&mut rng);
     shuffled_inserts
         .into_iter()

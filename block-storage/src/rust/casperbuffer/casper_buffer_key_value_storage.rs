@@ -408,7 +408,7 @@ mod tests {
         let temp_block = BlockHashSerde(prost::bytes::Bytes::from_static(b"tempblock"));
         casper_buffer.put_pendant(block.clone())?;
 
-        assert!(casper_buffer.contains(&block) == false);
+        assert!(!casper_buffer.contains(&block));
         assert!(casper_buffer.is_pendant(&block));
         assert!(!casper_buffer.contains(&temp_block));
         assert!(!casper_buffer.is_pendant(&temp_block));

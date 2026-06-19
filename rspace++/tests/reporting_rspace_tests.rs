@@ -24,6 +24,7 @@ impl Match<Pattern, String, String> for StringMatch {
     fn get(&self, _p: Pattern, a: String) -> Option<String> { Some(a) }
 }
 
+#[allow(clippy::type_complexity)]
 fn build_reporting_rspace()
 -> (RSpace<String, Pattern, String, String>, ReportingRspace<String, Pattern, String, String>) {
     let mut kvm = InMemoryStoreManager::new();

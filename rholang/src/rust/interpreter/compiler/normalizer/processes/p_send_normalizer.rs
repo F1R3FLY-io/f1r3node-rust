@@ -181,13 +181,13 @@ mod tests {
         assert_eq!(
             result.clone().unwrap().par,
             inputs.par.prepend_send(new_send(
-                new_boundvar_par(0, create_bit_vector(&vec![0]), false),
+                new_boundvar_par(0, create_bit_vector(&[0]), false),
                 vec![
                     new_gint_par(7, Vec::new(), false),
                     new_gint_par(8, Vec::new(), false)
                 ],
                 false,
-                create_bit_vector(&vec![0]),
+                create_bit_vector(&[0]),
                 false
             ))
         );

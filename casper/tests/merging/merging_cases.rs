@@ -90,8 +90,8 @@ async fn two_deploys_executed_inside_single_state_transition_should_be_dependent
 
         // Combine processed deploys with cached mergeable channels data
         let processed_deploys_with_mergeable = processed_deploys
-            .to_vec()
-            .into_iter()
+            .iter()
+            .cloned()
             .zip(mergeable_channels)
             .collect::<Vec<_>>();
 

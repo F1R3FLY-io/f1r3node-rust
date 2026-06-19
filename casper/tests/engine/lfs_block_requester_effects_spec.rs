@@ -18,7 +18,7 @@ use tokio::sync::mpsc;
 use crate::init_logger;
 
 /// This creates a reverse lexicographic ordering for BlockHash
-fn reverse_lexicographic_sort(hashes: &mut Vec<BlockHash>) {
+fn reverse_lexicographic_sort(hashes: &mut [BlockHash]) {
     hashes.sort_by(|a, b| {
         // Convert to bytes and compare in reverse lexicographic order
         a.as_ref().cmp(b.as_ref()).reverse()
@@ -1020,7 +1020,7 @@ mod tests {
 
                 // Sort saves by hash for consistent comparison
                 round3_saves.sort_by(|a, b| a.0.cmp(&b.0));
-                let mut expected_hashes = vec![b7_hash.clone(), b5_hash.clone()];
+                let mut expected_hashes = [b7_hash.clone(), b5_hash.clone()];
                 expected_hashes.sort();
 
                 assert_eq!(
@@ -1067,7 +1067,7 @@ mod tests {
 
                 // Sort saves by hash for consistent comparison
                 round4_saves.sort_by(|a, b| a.0.cmp(&b.0));
-                let mut expected_round4_hashes = vec![b6_hash.clone(), b3_hash.clone()];
+                let mut expected_round4_hashes = [b6_hash.clone(), b3_hash.clone()];
                 expected_round4_hashes.sort();
 
                 assert_eq!(
@@ -1113,7 +1113,7 @@ mod tests {
 
                 // Sort saves by hash for consistent comparison
                 round5_saves.sort_by(|a, b| a.0.cmp(&b.0));
-                let mut expected_round5_hashes = vec![b4_hash.clone(), b1_hash.clone()];
+                let mut expected_round5_hashes = [b4_hash.clone(), b1_hash.clone()];
                 expected_round5_hashes.sort();
 
                 assert_eq!(

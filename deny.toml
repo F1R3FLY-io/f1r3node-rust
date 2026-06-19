@@ -1,8 +1,11 @@
 # cargo-deny configuration for the F1R3node Rust workspace.
 # See https://embarkstudios.github.io/cargo-deny/ for documentation.
 
+# all-features = true to match CI: the cargo-deny-action runs with --all-features,
+# which pulls in feature-gated transitive deps (rholang's rust-bert / chroma).
+# Keeping this in sync means `cargo deny check` locally reproduces CI exactly.
 [graph]
-all-features = false
+all-features = true
 no-default-features = false
 
 # ---------------------------------------------------------------------------
@@ -11,7 +14,8 @@ no-default-features = false
 [advisories]
 db-path = "$CARGO_HOME/advisory-db"
 db-urls = ["https://github.com/RustSec/advisory-db"]
-yanked = "warn"
+# Fail on yanked crates — a yank is often a pulled-for-security release.
+yanked = "deny"
 
 # Specific advisories knowingly accepted. Each entry MUST justify why.
 ignore = [
@@ -27,8 +31,6 @@ ignore = [
 
     # Unmaintained advisories accepted for now (transitive deps from upstream
     # crates we don't own). Track upstream remediation; revisit on next sync.
-    "RUSTSEC-2024-0437", # protobuf 2.x stack overflow on untrusted input (transitive via rust-bert -> rust_tokenizers; rust-bert hasn't bumped)
-    "RUSTSEC-2025-0119", # number_prefix unmaintained (transitive via indicatif; upstream uses it for human-readable byte formatting)
     "RUSTSEC-2025-0134", # rustls-pemfile (transitive via reqwest/tonic)
     "RUSTSEC-2024-0387", # opentelemetry_api merged into opentelemetry
     "RUSTSEC-2025-0141", # bincode 1.x (workspace dep; bincode 2.0 is breaking)
@@ -36,10 +38,12 @@ ignore = [
     "RUSTSEC-2021-0153", # encoding (transitive via hocon -> nom)
     "RUSTSEC-2024-0436", # paste proc-macro (transitive via metrics)
 
-    # Rand unsoundness with custom-logger + rand::rng(). We don't override
-    # the global rng with a custom logger; the unsafe path is unreachable in
-    # this codebase. Track upstream rand fix.
-    "RUSTSEC-2026-0097",
+    # Feature-gated transitive deps, present only under --all-features (as CI runs
+    # cargo-deny). All reach the graph through rholang's optional rust-bert (ML)
+    # and chroma (vector store) features; none have a safe upgrade we own.
+    "RUSTSEC-2024-0437", # protobuf 2.x recursion crash (rust_tokenizers -> rust-bert -> rholang)
+    "RUSTSEC-2025-0119", # number_prefix unmaintained (indicatif -> cached-path -> rust-bert -> rholang)
+    "RUSTSEC-2026-0173", # proc-macro-error2 unmaintained (validator_derive -> validator -> chroma -> rholang)
 ]
 
 # ---------------------------------------------------------------------------

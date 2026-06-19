@@ -35,6 +35,7 @@ use crate::init_logger;
 use crate::util::genesis_builder::GenesisContext;
 use crate::util::rholang::resources;
 
+#[allow(clippy::await_holding_lock)]
 pub async fn with_genesis<F, Fut, R>(context: GenesisContext, f: F) -> R
 where
     F: FnOnce(KeyValueBlockStore, IndexedBlockDagStorage, RuntimeManager) -> Fut,
@@ -82,6 +83,7 @@ where
     f(blocks, indexed_dag, runtime).await
 }
 
+#[allow(clippy::await_holding_lock)]
 pub async fn with_storage<F, Fut, R>(f: F) -> R
 where
     F: FnOnce(KeyValueBlockStore, IndexedBlockDagStorage) -> Fut,
