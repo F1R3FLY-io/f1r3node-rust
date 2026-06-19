@@ -28,6 +28,8 @@
 
 use std::collections::BTreeMap;
 
+use models::rhoapi::expr::ExprInstance;
+use models::rhoapi::var::VarInstance;
 use models::rhoapi::Par;
 use models::rust::utils::new_send;
 use prost::Message;
@@ -210,6 +212,138 @@ async fn delta_s_equals_runtime_consumed_for_sec_7_4_example() {
     // counts). gate demand == runtime consumed == 8 == comm_node_count.
     assert_eq!(analysis.known_lower_bound, 8);
     assert_eq!(analysis.known_lower_bound as usize, comms);
+}
+
+/// B6 (CA-P-176) — the SUGARED §7.4 surface form, written with the synchronous-
+/// send sugar `!?` on BOTH the debit and the credit round-trip (the spec's
+/// two-sided `?!`/`!?` expansion). The normalizer (`p_send_sync_normalizer.rs`)
+/// expands EACH `chan!?(args).` to `new ret in { chan!(ret, args) | for(_ <- ret){ Nil } }`
+/// — a send + a wildcard reply for-comprehension. So the SOURCE's 6 token-bearing
+/// signed layers (2 handler `for`s + 2 handler `ret!` replies + 2 `!?` sync sends)
+/// become 8 token-consuming COMMs after desugaring: the 2 `!?` each contribute a
+/// SECOND COMM (their generated reply receive), so 6 → 8. This is the literal
+/// "8 not 6" semantic count. (`d!?(1).` is the standalone synchronous send with
+/// the empty continuation `.` — grammar `send_sync` + `empty_cont`.)
+const SEC_7_4_SUGARED: &str = r#"new d, c in {
+    for(@x, ret <= d){ ret!(x) } |
+    for(@y, ret <= c){ ret!(y) } |
+    d!?(1). |
+    c!?(2).
+}"#;
+
+/// Count the `?!`/`!?`-introduced REPLY receives in a desugared `Par`: a
+/// for-comprehension whose single bind matches a lone WILDCARD pattern (the
+/// `for(_ <- ret){…}` the sync-send normalizer emits). Each two-sided sync send
+/// contributes exactly one such reply receive — the "+1 COMM per `!?`" that turns
+/// the surface count into the semantic count. Descends `news` (each `!?` wraps
+/// its send+reply under a fresh `new ret`) and receive bodies.
+fn sync_reply_receive_count(par: &Par) -> usize {
+    let mut n = 0;
+    for receive in &par.receives {
+        // The hallmark of a sync-send reply receive: exactly one bind whose sole
+        // pattern is a lone `Var::Wildcard` (`for(_ <- ret){…}`).
+        let lone_wildcard = receive.binds.len() == 1
+            && receive.binds[0].patterns.len() == 1
+            && {
+                let p = &receive.binds[0].patterns[0];
+                p.sends.is_empty()
+                    && p.receives.is_empty()
+                    && p.news.is_empty()
+                    && p.matches.is_empty()
+                    && p.bundles.is_empty()
+                    && p.exprs.len() == 1
+                    && matches!(
+                        &p.exprs[0].expr_instance,
+                        Some(ExprInstance::EVarBody(ev))
+                            if matches!(
+                                ev.v.as_ref().and_then(|v| v.var_instance.as_ref()),
+                                Some(VarInstance::Wildcard(_))
+                            )
+                    )
+            };
+        if lone_wildcard {
+            n += 1;
+        }
+        if let Some(body) = &receive.body {
+            n += sync_reply_receive_count(body);
+        }
+    }
+    for new in &par.news {
+        if let Some(body) = &new.p {
+            n += sync_reply_receive_count(body);
+        }
+    }
+    n
+}
+
+/// B6 (CA-P-176) — pin the literal §7.4 SOURCE-count 6 → DESUGARED-count 8 for
+/// the two-sided `?!`/`!?` expansion, and `Δ_s == 8`.
+///
+/// The two-sided sync round-trip is already exercised end-to-end by
+/// `delta_s_equals_runtime_consumed_for_sec_7_4_example` (the desugared form);
+/// this test PINS THE COUNT: the SUGARED surface (`SEC_7_4_SUGARED`, two `!?`
+/// sync sends) carries exactly 2 surface sync sends, and the normalizer expands
+/// each into a send + a wildcard reply receive — so the desugared `Par` has 8
+/// token-consuming COMMs, of which exactly 2 are `!?`-introduced reply receives.
+/// The surface signed-layer count is therefore 8 − 2 = 6, and `Δ_s` (which
+/// counts the desugared COMMs) is 8.
+#[tokio::test]
+async fn sec_7_4_two_sided_desugar_pins_source_6_to_desugared_8() {
+    // The SOURCE carries exactly two `!?` synchronous sends (one per side of the
+    // two-sided round-trip) — the surface sugar that desugars.
+    let surface_sync_sends = SEC_7_4_SUGARED.matches("!?").count();
+    assert_eq!(
+        surface_sync_sends, 2,
+        "the two-sided §7.4 surface has exactly 2 `!?` sync sends"
+    );
+
+    let par = normalized_par(SEC_7_4_SUGARED);
+
+    // DESUGARED count: 8 token-consuming COMMs — the "8 not 6" semantic count.
+    let desugared_comms = comm_node_count(&par);
+    assert_eq!(
+        desugared_comms, 8,
+        "the two-sided §7.4 sugar desugars to 8 token-consuming COMMs"
+    );
+
+    // Exactly 2 of those 8 COMMs are the `!?`-introduced wildcard reply receives
+    // (one per surface sync send) — the COMMs the desugar ADDS.
+    let added_by_desugar = sync_reply_receive_count(&par);
+    assert_eq!(
+        added_by_desugar, 2,
+        "each of the 2 `!?` sync sends adds exactly one reply receive COMM"
+    );
+
+    // SOURCE-count 6 → DESUGARED-count 8: the surface signed-layer count is the
+    // desugared COMM count MINUS the desugar-introduced reply receives.
+    let source_layers = desugared_comms - added_by_desugar;
+    assert_eq!(
+        source_layers, 6,
+        "§7.4 source signed-layer count = 8 desugared COMMs − 2 `!?` reply receives = 6"
+    );
+
+    // Δ_s counts the desugared COMMs, so Δ_s == 8 (and matches the explicit
+    // desugared `SEC_7_4_DEBIT_CREDIT` example exactly).
+    let analysis = demand(&par, &envelope_sig());
+    assert!(!analysis.unknown, "the §7.4 example is fully resolvable");
+    assert_eq!(analysis.known_lower_bound, 8, "Δ_s == 8 for the §7.4 two-sided desugar");
+
+    // The runtime confirms the 8: the live reducer consumes exactly 8 COMM tokens.
+    let runtime_consumed = runtime_consumed_token_count(SEC_7_4_SUGARED).await;
+    assert_eq!(
+        runtime_consumed, 8,
+        "the runtime consumes exactly 8 COMM tokens for the §7.4 two-sided desugar"
+    );
+
+    // Cross-pin: the sugared form and the hand-desugared `SEC_7_4_DEBIT_CREDIT`
+    // example carry the SAME desugared COMM count (8) and the SAME Δ_s (8) — they
+    // are two surface spellings of the one §7.4 orchestrator.
+    let hand_desugared = normalized_par(SEC_7_4_DEBIT_CREDIT);
+    assert_eq!(
+        comm_node_count(&hand_desugared),
+        desugared_comms,
+        "sugared `!?` form and hand-desugared form have the same 8-COMM semantic count"
+    );
 }
 
 #[tokio::test]

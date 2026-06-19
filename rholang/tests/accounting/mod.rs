@@ -6,4 +6,6 @@ mod ll_algebra_spec;
 mod ll_operational_spec;
 mod ll_rejection_spec;
 mod non_deterministic_processes_spec;
+mod reduction_rules_spec;
+mod stuck_out_of_fuel_spec;
 mod test_support;

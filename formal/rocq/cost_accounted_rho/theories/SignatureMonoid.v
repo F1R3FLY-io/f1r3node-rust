@@ -91,3 +91,74 @@ Proof.
   exists (TGate SUnit TUnit), (TGate (SGround nil) TUnit).
   simpl. intro H. inversion H.
 Qed.
+
+(* ── CA-P-180: the section/digest does NOT respect ≡, and MUST NOT ─────────────
+   continued-gslt-cost-v2 §5 "Quotient and section" (:618-632). The signature
+   constructor is the SECTION composed with a collision-resistant digest,
+   [#] = digest ∘ cf : 𝕔Term → Sig — "a one-way commitment to a representative.
+   It does NOT respect ≡ — and must not, since a commitment identifying
+   congruent-but-distinct representatives would be no commitment."
+
+   We mechanize the "must not" half as a THEOREM, parametrically over ANY
+   would-be encoder [enc] of the signature AST that is injective on syntax (the
+   defining property of a collision-resistant digest composed with a section: a
+   one-way commitment that distinguishes distinct representatives). The point is
+   that injectivity on the AST is INCOMPATIBLE with respecting ≡sig: the section
+   commits to the SYNTACTIC representative, and ≡sig identifies syntactically
+   distinct representatives (e.g. the two argument orders of a compound), so an
+   ≡sig-respecting encoder would have to identify representatives that an
+   injective one keeps apart. No fresh axiom is introduced: injectivity is a
+   HYPOTHESIS on the supplied [enc], discharged by the caller (the runtime
+   digest), exactly as DR-2/DR-16 abstract the digest section. *)
+
+(* Injectivity of an encoder on the signature syntax (the AST), the
+   commitment-distinguishes-representatives property of [digest ∘ cf]. *)
+Definition injective_on_syntax {D : Type} (enc : sig -> D) : Prop :=
+  forall a b, enc a = enc b -> a = b.
+
+(* An encoder "respects ≡sig" iff it assigns equal codes to ≡sig-congruent
+   signatures (the property a commitment must FAIL to have). *)
+Definition respects_sig_equiv {D : Type} (enc : sig -> D) : Prop :=
+  forall a b, a ≡sig b -> enc a = enc b.
+
+(* CA-P-180 headline: a digest/section that is injective on the signature
+   syntax does NOT respect ≡sig. Equivalently, no encoder can be both a
+   faithful commitment (injective on representatives) AND ≡-coherent — which is
+   precisely "a commitment identifying congruent-but-distinct representatives
+   would be no commitment." *)
+Theorem sig_section_not_respect_equiv :
+  forall {D : Type} (enc : sig -> D),
+    injective_on_syntax enc -> ~ respects_sig_equiv enc.
+Proof.
+  intros D enc Hinj Hresp.
+  (* Two distinct ground signatures s, t and the congruent-but-distinct compound
+     pair SAnd s t ≡sig SAnd t s with SAnd s t <> SAnd t s. *)
+  set (s := SGround (cons true nil)).
+  set (t := SGround (cons false nil)).
+  (* ≡sig identifies the two compound orderings (commutativity constructor). *)
+  assert (Hcong : SAnd s t ≡sig SAnd t s) by apply sige_and_comm.
+  (* If enc respected ≡sig, the two distinct compounds would get equal codes; *)
+  pose proof (Hresp _ _ Hcong) as Hcodes.
+  (* injectivity then forces the two compounds to be syntactically equal, *)
+  apply Hinj in Hcodes.
+  (* whence the first arguments coincide — but s <> t, a contradiction (SAnd is
+     a free constructor, so SAnd s t = SAnd t s forces s = t). *)
+  injection Hcodes as Hs _. discriminate Hs.
+Qed.
+
+(* Restatement matching the spec's prose verbatim: there is a congruent-but-
+   syntactically-distinct pair on which any injective digest disagrees, so the
+   digest DISTINGUISHES congruent representatives (the desired non-coherence). *)
+Corollary digest_distinguishes_congruent_reps :
+  forall {D : Type} (enc : sig -> D),
+    injective_on_syntax enc ->
+    exists a b, a ≡sig b /\ a <> b /\ enc a <> enc b.
+Proof.
+  intros D enc Hinj.
+  exists (SAnd (SGround (cons true nil)) (SGround (cons false nil))).
+  exists (SAnd (SGround (cons false nil)) (SGround (cons true nil))).
+  split; [ apply sige_and_comm |].
+  split.
+  - intro Heq. inversion Heq.
+  - intro Hcodes. apply Hinj in Hcodes. inversion Hcodes.
+Qed.

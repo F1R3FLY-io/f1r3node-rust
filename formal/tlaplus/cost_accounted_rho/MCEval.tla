@@ -23,4 +23,20 @@ MC_CanonOrder    == <<b1, b2, b3>>
 MC_Demand        == [b \in MC_Bodies |-> 2]
 MC_PoolSupply    == 5
 
+\* CA-P-171 group-B disjoint acceptance-gate instance: a SINGLE deploy (b1) in
+\* canonical order, demanding 1 token (Δ_sB = 1), drawing on a SEPARATE signature
+\* pool Σ⟦sB⟧ = 2. This pool is DISJOINT from group A's Σ⟦s⟧ = 5 (different
+\* signature ⇒ ChannelSeparation / lane_pool_disjoint). Group B is FULLY FUNDED
+\* (cumulative 1 <= 2 admits its whole order), so group B reaches "settled" with
+\* its deploy admitted & executed, EVEN THOUGH group A is oversubscribed and
+\* rejects its tail. This is the disjoint-pool concurrent-admission witness: A's
+\* partial admission does NOT block B's full admission, and the two share no lock
+\* (independent per-pool fairness only). A single-deploy group B keeps the state
+\* space within the bounded-memory envelope while remaining a faithful second,
+\* disjoint, fully-funded pool. (DemandB is total over Bodies; only b1 is in B's
+\* canonical order, so only b1's demand is ever drawn.)
+MC_CanonOrderB   == <<b1>>
+MC_DemandB       == [b \in MC_Bodies |-> 1]
+MC_PoolSupplyB   == 2
+
 =============================================================================

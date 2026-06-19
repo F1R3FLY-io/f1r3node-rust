@@ -109,10 +109,53 @@ CONSTANT PoolSupply       \* Nat: the shared signature pool's pre-state Σ⟦s�
 ASSUME PoolSupply \in Nat
 ASSUME Demand \in [Bodies -> Nat]
 
+(*--------------------------------------------------------------------------*)
+(* CA-P-171 "concurrent non-locking admission" (cost-accounted-rho §2.3,     *)
+(* tex:309-378): a SECOND, signature-DISJOINT acceptance-gate group. The spec *)
+(* §2.3(ii) "Concurrent acceptance" promises "Multiple deployments can be     *)
+(* active simultaneously, each drawing from its own committed token supply.   *)
+(* RSpace is never locked by a single deployment", and §2.3(iv) makes the     *)
+(* disjoint-signature case explicit: "deployments signed by DIFFERENT         *)
+(* signatures draw from DISJOINT token pools and cannot conflict. They may be  *)
+(* executed in parallel". The Remark "From blocking to budgeting" gives the    *)
+(* structural form: the funding question "can be answered independently for    *)
+(* each deployment" — i.e. there is NO global execution lock / turn variable.  *)
+(*                                                                           *)
+(* The single-pool gate above (CanonOrder / Demand / PoolSupply, group "A") is *)
+(* the §7.6/§7.7 acceptance-gate already modeled. Here we add a SECOND group   *)
+(* "B" — a SEPARATE signature pool Σ⟦sB⟧ with its OWN canonical deploy order,  *)
+(* per-deploy demand, and supply (CanonOrderB / DemandB / PoolSupplyB). Group  *)
+(* B's pool is DISJOINT from group A's (different signature ⇒ ChannelSeparation *)
+(* / lane_pool_disjoint), so the two groups CANNOT conflict. Group B's gate is  *)
+(* a faithful parallel copy of group A's machinery; CRUCIALLY each group's gate *)
+(* actions are enabled by ITS OWN phase/supply/demand ALONE (AcceptanceGateB    *)
+(* never reads gatePhase/poolBalance, and AcceptanceGate never reads            *)
+(* gatePhaseB/poolBalanceB) — there is no shared lock, turn, or mutual-exclusion *)
+(* variable. The liveness property DisjointPoolsAdmitConcurrentlyNoGlobalLock   *)
+(* (below) is the machine-checkable witness that, under INDEPENDENT per-group   *)
+(* weak fairness, BOTH groups reach their settled/admitted state — neither is   *)
+(* blocked waiting on the other.                                                *)
+(*--------------------------------------------------------------------------*)
+CONSTANT CanonOrderB      \* Seq(Bodies): group-B canonical deploy order
+CONSTANT DemandB          \* [Bodies -> Nat]: group-B per-deploy static Δ_sB
+CONSTANT PoolSupplyB      \* Nat: group-B disjoint signature pool's pre-state Σ⟦sB⟧
+
+ASSUME PoolSupplyB \in Nat
+ASSUME DemandB \in [Bodies -> Nat]
+
 VARIABLE gatePhase        \* {"pregate","executing","settled"}: block-assembly phase
 VARIABLE admittedLen      \* Nat: length of the admitted canonical prefix
 VARIABLE poolBalance      \* Nat: current Σ⟦s⟧ balance (pre, then post-settle)
 VARIABLE gateExecuted     \* SUBSET Bodies: admitted deploys that have executed
+
+(* CA-P-171: group-B gate state — a faithful, signature-DISJOINT copy of the   *)
+(* group-A gate variables above. Each is touched ONLY by group-B's own gate     *)
+(* actions, so group B's admission progress is structurally independent of      *)
+(* group A's (no shared lock/turn variable couples them).                       *)
+VARIABLE gatePhaseB       \* {"pregate","executing","settled"}: group-B phase
+VARIABLE admittedLenB     \* Nat: length of group-B's admitted canonical prefix
+VARIABLE poolBalanceB     \* Nat: current Σ⟦sB⟧ balance (pre, then post-settle)
+VARIABLE gateExecutedB    \* SUBSET Bodies: group-B admitted deploys that executed
 
 (* Cumulative demand of the first k deploys in canonical order. *)
 RECURSIVE CumDemand(_)
@@ -130,10 +173,28 @@ AdmittedPrefixLen == CHOOSE k \in FittingLens :
 (* The admitted deploy set: the first AdmittedPrefixLen deploys in canon order. *)
 AdmittedSet(len) == { CanonOrder[i] : i \in 1..len }
 
+(* CA-P-171: the group-B analogues. CumDemandB/AdmittedPrefixLenB/AdmittedSetB   *)
+(* read ONLY group-B's own canon order, demand, and supply — never group A's.    *)
+RECURSIVE CumDemandB(_)
+CumDemandB(k) ==
+    IF k = 0 THEN 0
+    ELSE DemandB[CanonOrderB[k]] + CumDemandB(k - 1)
+
+FittingLensB == { k \in 0..Len(CanonOrderB) : CumDemandB(k) <= PoolSupplyB }
+AdmittedPrefixLenB == CHOOSE k \in FittingLensB :
+                        \A j \in FittingLensB : j <= k
+
+AdmittedSetB(len) == { CanonOrderB[i] : i \in 1..len }
+
 vars == <<executed, totalCost, extCost, orderSoFar, channelTouches,
           supply, halted, mintedThisEpoch,
           gatePhase, admittedLen, poolBalance, gateExecuted,
-          feeCollected, convertedThisEpoch>>
+          feeCollected, convertedThisEpoch,
+          gatePhaseB, admittedLenB, poolBalanceB, gateExecutedB>>
+
+(* CA-P-171: the group-B gate variables alone, used as the UNCHANGED footprint  *)
+(* for every group-A / orthogonal action (each of which stutters group B).      *)
+varsB == <<gatePhaseB, admittedLenB, poolBalanceB, gateExecutedB>>
 
 TypeOK ==
     /\ executed   \in SUBSET Bodies
@@ -150,6 +211,11 @@ TypeOK ==
     /\ gateExecuted \in SUBSET Bodies
     /\ feeCollected \in [Bodies -> Nat]
     /\ convertedThisEpoch \in SUBSET Bodies
+    \* CA-P-171 group-B gate.
+    /\ gatePhaseB \in {"pregate", "executing", "settled"}
+    /\ admittedLenB \in 0..Len(CanonOrderB)
+    /\ poolBalanceB \in Nat
+    /\ gateExecutedB \in SUBSET Bodies
 
 Init ==
     /\ executed       = {}
@@ -171,6 +237,12 @@ Init ==
     \* Stage D: no fees collected or converted yet.
     /\ feeCollected      = [b \in Bodies |-> 0]
     /\ convertedThisEpoch = {}
+    \* CA-P-171: group B starts BEFORE its own gate, carrying its disjoint
+    \* pre-state Σ⟦sB⟧ = PoolSupplyB; nothing admitted or executed in B yet.
+    /\ gatePhaseB    = "pregate"
+    /\ admittedLenB  = 0
+    /\ poolBalanceB  = PoolSupplyB
+    /\ gateExecutedB = {}
 
 (*--------------------------------------------------------------------------*)
 (* Action: Execute body b.                                                  *)
@@ -193,6 +265,8 @@ ExecuteBody(b) ==
     /\ UNCHANGED <<supply, halted, mintedThisEpoch,
                    gatePhase, admittedLen, poolBalance, gateExecuted,
                    feeCollected, convertedThisEpoch>>
+    \* CA-P-171: orthogonal to group B's disjoint gate.
+    /\ UNCHANGED varsB
 
 (*--------------------------------------------------------------------------*)
 (* Cost-Accounted Rho Stage B: the epoch mint. An ELIGIBLE validator        *)
@@ -210,6 +284,8 @@ MintValidator(b) ==
     /\ UNCHANGED <<executed, totalCost, extCost, orderSoFar, channelTouches, halted,
                    gatePhase, admittedLen, poolBalance, gateExecuted,
                    feeCollected, convertedThisEpoch>>
+    \* CA-P-171: orthogonal to group B's disjoint gate.
+    /\ UNCHANGED varsB
 
 (*--------------------------------------------------------------------------*)
 (* Cost-Accounted Rho Stage D: the per-block fee COLLECTION. The proposing    *)
@@ -229,6 +305,8 @@ CollectFee(b) ==
     /\ UNCHANGED <<executed, totalCost, extCost, orderSoFar, channelTouches,
                    supply, halted, mintedThisEpoch, gatePhase, admittedLen,
                    poolBalance, gateExecuted, convertedThisEpoch>>
+    \* CA-P-171: orthogonal to group B's disjoint gate.
+    /\ UNCHANGED varsB
 
 (*--------------------------------------------------------------------------*)
 (* Cost-Accounted Rho Stage D: the per-epoch fee→v CONVERSION (the economic    *)
@@ -249,6 +327,8 @@ FeeConvert(b) ==
     /\ UNCHANGED <<executed, totalCost, extCost, orderSoFar, channelTouches,
                    halted, mintedThisEpoch, gatePhase, admittedLen,
                    poolBalance, gateExecuted>>
+    \* CA-P-171: orthogonal to group B's disjoint gate.
+    /\ UNCHANGED varsB
 
 (*--------------------------------------------------------------------------*)
 (* WD-D2 Action: the ACCEPTANCE GATE. From the "pregate" phase, compute the   *)
@@ -265,6 +345,9 @@ AcceptanceGate ==
     /\ UNCHANGED <<executed, totalCost, extCost, orderSoFar, channelTouches,
                    supply, halted, mintedThisEpoch, poolBalance, gateExecuted,
                    feeCollected, convertedThisEpoch>>
+    \* CA-P-171: group A's gate NEVER reads or writes group B's pool/phase —
+    \* the two groups share no lock/turn variable (no global execution lock).
+    /\ UNCHANGED varsB
 
 (*--------------------------------------------------------------------------*)
 (* WD-D2 Action: execute an ADMITTED deploy. Only possible AFTER the gate     *)
@@ -281,6 +364,8 @@ ExecuteAdmitted(b) ==
     /\ UNCHANGED <<executed, totalCost, extCost, orderSoFar, channelTouches,
                    supply, halted, mintedThisEpoch, gatePhase, admittedLen,
                    poolBalance, feeCollected, convertedThisEpoch>>
+    \* CA-P-171: orthogonal to group B's disjoint gate.
+    /\ UNCHANGED varsB
 
 (*--------------------------------------------------------------------------*)
 (* WD-D2 Action: SETTLE the block. Once every admitted deploy has executed,    *)
@@ -296,6 +381,47 @@ SettleBlock ==
     /\ UNCHANGED <<executed, totalCost, extCost, orderSoFar, channelTouches,
                    supply, halted, mintedThisEpoch, admittedLen, gateExecuted,
                    feeCollected, convertedThisEpoch>>
+    \* CA-P-171: settling group A leaves group B's disjoint pool untouched.
+    /\ UNCHANGED varsB
+
+(*--------------------------------------------------------------------------*)
+(* CA-P-171: the group-B gate actions — a faithful copy of AcceptanceGate /    *)
+(* ExecuteAdmitted / SettleBlock, but every enabling condition and update      *)
+(* reads/writes ONLY group-B state (gatePhaseB / admittedLenB / poolBalanceB / *)
+(* gateExecutedB) and the group-B CONSTANTS (CanonOrderB / DemandB /           *)
+(* PoolSupplyB). No group-A variable (gatePhase / poolBalance / ...) and no     *)
+(* shared lock or turn variable appears in any guard — so group B's admission   *)
+(* progress is structurally independent of group A's (§2.3 Remark: the funding  *)
+(* question "can be answered independently for each deployment"). All non-B     *)
+(* state is stuttered.                                                          *)
+(*--------------------------------------------------------------------------*)
+AOthers == <<executed, totalCost, extCost, orderSoFar, channelTouches,
+             supply, halted, mintedThisEpoch,
+             gatePhase, admittedLen, poolBalance, gateExecuted,
+             feeCollected, convertedThisEpoch>>
+
+AcceptanceGateB ==
+    /\ gatePhaseB = "pregate"
+    /\ admittedLenB' = AdmittedPrefixLenB
+    /\ gatePhaseB'   = "executing"
+    /\ UNCHANGED <<poolBalanceB, gateExecutedB>>
+    /\ UNCHANGED AOthers
+
+ExecuteAdmittedB(b) ==
+    /\ gatePhaseB = "executing"
+    /\ b \in AdmittedSetB(admittedLenB)
+    /\ b \notin gateExecutedB
+    /\ gateExecutedB' = gateExecutedB \cup {b}
+    /\ UNCHANGED <<gatePhaseB, admittedLenB, poolBalanceB>>
+    /\ UNCHANGED AOthers
+
+SettleBlockB ==
+    /\ gatePhaseB = "executing"
+    /\ gateExecutedB = AdmittedSetB(admittedLenB)
+    /\ poolBalanceB' = PoolSupplyB - CumDemandB(admittedLenB)
+    /\ gatePhaseB'   = "settled"
+    /\ UNCHANGED <<admittedLenB, gateExecutedB>>
+    /\ UNCHANGED AOthers
 
 Next ==
     \/ \E b \in Bodies : ExecuteBody(b)
@@ -305,6 +431,10 @@ Next ==
     \/ AcceptanceGate
     \/ \E b \in Bodies : ExecuteAdmitted(b)
     \/ SettleBlock
+    \* CA-P-171: group-B gate actions, interleaved with everything above.
+    \/ AcceptanceGateB
+    \/ \E b \in Bodies : ExecuteAdmittedB(b)
+    \/ SettleBlockB
 
 Spec == Init /\ [][Next]_vars
 
@@ -527,11 +657,156 @@ SupplyOnlyWrittenByMintOrFeeConvert ==
         /\ (poolBalance' # poolBalance => gatePhase' = "settled" /\ gatePhase = "executing")
       ]_vars
 
+(*==========================================================================*)
+(* CA-P-171 ACCEPTANCE-GATE INVARIANTS FOR THE GROUP-B DISJOINT POOL          *)
+(*==========================================================================*)
+(* The group-A gate invariants (NoDoubleSpendAtBlock, RejectBothOnOver-       *)
+(* subscription, GateBeforeExecute, SupplyConservation) are mirrored here for *)
+(* the disjoint group-B pool, so the second pool is held to the SAME safety   *)
+(* discipline (its admission is a real linear-proof gate, not a free pass).   *)
+
+(* Group B's signature pool Σ⟦sB⟧ never goes negative; the settlement debit    *)
+(* lands on a non-negative balance (the admitted prefix fits PoolSupplyB).     *)
+NoDoubleSpendAtBlockB ==
+    gatePhaseB = "settled" => poolBalanceB = PoolSupplyB - CumDemandB(admittedLenB)
+                              /\ CumDemandB(admittedLenB) <= PoolSupplyB
+
+(* Group B admits exactly a canonical PREFIX (reject-both / no-partial).       *)
+RejectBothOnOversubscriptionB ==
+    (gatePhaseB \in {"executing", "settled"}) =>
+        /\ AdmittedSetB(admittedLenB) = { CanonOrderB[i] : i \in 1..admittedLenB }
+        /\ (admittedLenB < Len(CanonOrderB) =>
+              CumDemandB(admittedLenB + 1) > PoolSupplyB)
+
+(* Group B never executes a deploy before its gate ran, and only admitted ones.*)
+GateBeforeExecuteB ==
+    /\ (gatePhaseB = "pregate" => gateExecutedB = {})
+    /\ gateExecutedB \subseteq AdmittedSetB(admittedLenB)
+
+(* Group B's settlement conserves its pool (post + ΣΔ = pre).                  *)
+SupplyConservationB ==
+    gatePhaseB = "settled" => poolBalanceB + CumDemandB(admittedLenB) = PoolSupplyB
+
+(*--------------------------------------------------------------------------*)
+(* CA-P-171 PoolGatesDisjoint (state invariant): the two acceptance gates     *)
+(* operate on DISJOINT signature pools and never co-mingle their accounting.  *)
+(* Group A's settled balance is determined SOLELY by group-A demand against    *)
+(* PoolSupply, and group B's SOLELY by group-B demand against PoolSupplyB —    *)
+(* neither pool's post-state depends on the other group's demand or phase.     *)
+(* This is the state-space image of ChannelSeparation.v / lane_pool_disjoint:  *)
+(* different signatures ⇒ disjoint pools ⇒ no cross-pool coupling. (It is the   *)
+(* SAFETY companion of the no-global-lock LIVENESS property below: not only is  *)
+(* progress decoupled, the ACCOUNTING is decoupled.)                           *)
+(*--------------------------------------------------------------------------*)
+PoolGatesDisjoint ==
+    /\ (gatePhase  = "settled" => poolBalance  = PoolSupply  - CumDemand(admittedLen))
+    /\ (gatePhaseB = "settled" => poolBalanceB = PoolSupplyB - CumDemandB(admittedLenB))
+
 (*--------------------------------------------------------------------------*)
 (* Progress: every body eventually executes (with fairness).                *)
 (*--------------------------------------------------------------------------*)
 Fairness == \A b \in Bodies : WF_vars(ExecuteBody(b))
-LiveSpec == Spec /\ Fairness
+
+(*--------------------------------------------------------------------------*)
+(* CA-P-171 PER-POOL fairness. Each group's gate progress is driven by its    *)
+(* OWN weak-fairness conditions, with NO shared scheduler/lock between them.   *)
+(* GateFairnessA forces group A's gate (AcceptanceGate → ExecuteAdmitted* →    *)
+(* SettleBlock) to run when continuously enabled; GateFairnessB does the same  *)
+(* for group B — INDEPENDENTLY. The two fairness bundles share no action, so   *)
+(* TLC must witness B's completion WITHOUT assuming anything forces A, and     *)
+(* vice versa. This is the formal content of "no global execution lock":       *)
+(* progress of one pool is not contingent on progress of the other.           *)
+(*--------------------------------------------------------------------------*)
+GateFairnessA ==
+    /\ WF_vars(AcceptanceGate)
+    /\ \A b \in Bodies : WF_vars(ExecuteAdmitted(b))
+    /\ WF_vars(SettleBlock)
+
+GateFairnessB ==
+    /\ WF_vars(AcceptanceGateB)
+    /\ \A b \in Bodies : WF_vars(ExecuteAdmittedB(b))
+    /\ WF_vars(SettleBlockB)
+
+(* LiveSpec carries the original body-execution fairness PLUS the two          *)
+(* INDEPENDENT per-pool gate-fairness bundles (no shared fairness term).       *)
+LiveSpec == Spec /\ Fairness /\ GateFairnessA /\ GateFairnessB
+
 AllEventuallyDone == <>(executed = Bodies)
+
+(*--------------------------------------------------------------------------*)
+(* CA-P-171 DisjointPoolsAdmitConcurrentlyNoGlobalLock (the headline LIVENESS  *)
+(* property): two deployments drawing on DISJOINT signature pools (group A on  *)
+(* Σ⟦s⟧, group B on Σ⟦sB⟧) are BOTH admitted/executed/settled — neither is     *)
+(* blocked by the other, and no global lock serializes them.                   *)
+(*                                                                           *)
+(* Faithful to cost-accounted-rho §2.3 (tex:309-378):                          *)
+(*   (ii)  "Multiple deployments can be active simultaneously, each drawing    *)
+(*         from its own committed token supply. RSpace is never locked by a    *)
+(*         single deployment."                                                 *)
+(*   (iv)  "deployments signed by DIFFERENT signatures draw from DISJOINT      *)
+(*         token pools and cannot conflict. They may be executed in parallel". *)
+(*   Remark ("From blocking to budgeting"): the funding question "can be       *)
+(*         answered independently for each deployment".                        *)
+(*                                                                           *)
+(* HOW THIS WITNESSES "no global lock": LiveSpec supplies group A and group B  *)
+(* with SEPARATE, INDEPENDENT weak-fairness bundles (GateFairnessA /           *)
+(* GateFairnessB) that share NO action. Each group's gate actions are enabled  *)
+(* by that group's OWN phase/supply/demand ALONE (AcceptanceGateB never reads  *)
+(* gatePhase/poolBalance; AcceptanceGate never reads gatePhaseB/poolBalanceB). *)
+(* So if reaching "both settled" were contingent on a serializing lock/turn,   *)
+(* one group's fairness could not discharge it — yet TLC verifies the          *)
+(* conjunction. Because the group-A instance is deliberately OVERSUBSCRIBED    *)
+(* (it admits only a PREFIX and rejects the tail), group B's full admission is *)
+(* reached EVEN THOUGH group A never admits its whole order: B's progress does *)
+(* NOT wait on A's completion. The reject-both tail of A is also irrelevant to *)
+(* B — disjoint pools cannot conflict.                                         *)
+(*                                                                           *)
+(* WHAT "admitted+executed" MEANS HERE (so the property BITES — an empty-        *)
+(* admission settle must NOT satisfy it). For the FULLY-FUNDED disjoint group B, *)
+(* "its deployment is admitted and executed" is:                                 *)
+(*     gatePhaseB = "settled"                          (block assembled & debited)*)
+(*  ∧  admittedLenB = Len(CanonOrderB)                 (its WHOLE order admitted — *)
+(*                                                       NOT an empty prefix)      *)
+(*  ∧  gateExecutedB = AdmittedSetB(admittedLenB)      (every admitted deploy ran).*)
+(* If group B were UNFUNDED (Σ⟦sB⟧ < Δ_sB), the strict gate would admit NOTHING  *)
+(* (admittedLenB = 0 ≠ Len(CanonOrderB)) and this conjunct would be FALSE even    *)
+(* though gatePhaseB still reaches "settled" — so the property genuinely requires *)
+(* concurrent ADMISSION+EXECUTION, not a vacuous phase advance. (Verified by the  *)
+(* negative-control instance MCEvalNoLockNeg / EvalNoLockNeg.cfg, which sets      *)
+(* PoolSupplyB = 0 and confirms TLC REFUTES this property.)                       *)
+(*                                                                           *)
+(* For the OVERSUBSCRIBED group A, "admitted+executed+settled" is just            *)
+(* gatePhase = "settled" (∧ the always-true gateExecuted = AdmittedSet(admittedLen)*)
+(* that SettleBlock's guard enforces): A's gate ran, its admitted PREFIX executed, *)
+(* and it settled. We do NOT require A to admit its whole order (it cannot — it is  *)
+(* oversubscribed); the point is precisely that A's PARTIAL admission and B's FULL  *)
+(* admission both complete, concurrently, with neither blocking the other.         *)
+(*--------------------------------------------------------------------------*)
+GroupASettled ==
+    /\ gatePhase = "settled"
+    /\ gateExecuted = AdmittedSet(admittedLen)   \* admitted prefix fully executed
+
+GroupBAdmittedExecuted ==
+    /\ gatePhaseB = "settled"
+    /\ admittedLenB = Len(CanonOrderB)            \* fully-funded ⇒ WHOLE order admitted
+    /\ gateExecutedB = AdmittedSetB(admittedLenB) \* every admitted deploy executed
+
+DisjointPoolsAdmitConcurrentlyNoGlobalLock ==
+    <>(GroupASettled /\ GroupBAdmittedExecuted)
+
+(*--------------------------------------------------------------------------*)
+(* CA-P-171 EachPoolAdmittedIndependently: a finer-grained companion stating   *)
+(* that EACH pool's admission+execution is INDEPENDENTLY inevitable. Each        *)
+(* conjunct is discharged by that group's OWN fairness bundle alone, so neither  *)
+(* group's progress waits on the other — the "answered independently for each    *)
+(* deployment" content of the §2.3 Remark. Group A independently reaches its      *)
+(* settled (admitted-prefix-executed) state; group B independently reaches its    *)
+(* fully-admitted-and-executed state. The CONJUNCTION being checked under         *)
+(* SEPARATE per-pool fairness (no shared term) is the machine-checkable witness   *)
+(* that no global lock couples them.                                              *)
+(*--------------------------------------------------------------------------*)
+EachPoolAdmittedIndependently ==
+    /\ <>GroupASettled
+    /\ <>GroupBAdmittedExecuted
 
 =============================================================================

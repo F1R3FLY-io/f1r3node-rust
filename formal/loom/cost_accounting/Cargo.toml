@@ -1,0 +1,29 @@
+# Loom shadow-model concurrency verification for cost-accounting.
+#
+# This crate is INTENTIONALLY ISOLATED from the rest of the workspace's
+# dependency graph: it depends only on `loom`. The cost-accounting loom models
+# are self-contained shadow models (no rholang/casper production imports), so
+# building them here under `RUSTFLAGS="--cfg loom"` does NOT drag in
+# `tokio-tungstenite`, whose `tokio::net` use is cfg'd out under `--cfg loom`
+# and breaks the rholang test crate. Here the models run under GENUINE EXHAUSTIVE
+# loom interleaving exploration (and once under plain `cargo test`), the Rust-
+# level complement to the TLA+ exhaustive models (DisjointPoolsAdmitConcurrently-
+# NoGlobalLock, TokenGatedJoin:Inv_M1_AtomicNoPartialPrefix).
+#
+# Run exhaustively:
+#   RUSTFLAGS="--cfg loom -C target-cpu=native" cargo test -p cost-accounting-loom-models
+[package]
+name = "cost-accounting-loom-models"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dev-dependencies]
+loom = "=0.7.2"
+
+[lints.rust]
+# loom-gated code reads `cfg(loom)`; silence the unexpected-cfg lint here.
+unexpected_cfgs = { level = "allow", check-cfg = ['cfg(loom)'] }

@@ -2950,4 +2950,332 @@ mod tests {
             "fee play == replay byte-identical (flat, pair-only regime)"
         );
     }
+
+    // ════════════════════════════════════════════════════════════════════════
+    // B2(a) (CA-P-171) — concurrent DISJOINT-POOL admission, example tests.
+    //
+    // `admit_deploy_cosigned` (block_admission.rs) is the deploy INTAKE path
+    // (parse + cosigner-cap + store); it does NOT make the funding decision and
+    // needs a full `MultiParentCasperImpl<T>`. The "accepts a funded deploy,
+    // rejects an underfunded one, no side effects on reject" behavior is the
+    // FUNDING gate `admit_by_funding` (F-A, Def 19) — exercised here. CA-P-171's
+    // disjoint-pool concern: two deploys on DISTINCT signer pools (no shared
+    // component) are admitted INDEPENDENTLY — one being unfunded must not block
+    // the other, and a rejected deploy leaves NO debit on any pool (no side
+    // effect). The existing tests cover same-pool oversubscription
+    // (`reject_both_on_oversubscription`) and single-deploy boundaries
+    // (`funded_unfunded_boundary_at_def19`); none covers the disjoint pair.
+    // ════════════════════════════════════════════════════════════════════════
+
+    /// A funded deploy and an UNDERFUNDED deploy on DISJOINT pools: the funded
+    /// one is admitted (with its cost + fee debit), the underfunded one is
+    /// rejected, and the rejection has NO side effect — the underfunded pool is
+    /// never debited, and the funded pool's debit is exactly its own demand
+    /// (the disjoint groups do not interfere). Δ = 2 each (`@0!(0) | @0!(0)`).
+    #[tokio::test]
+    async fn disjoint_pools_one_funded_one_underfunded_admit_independently() {
+        const DEMAND: usize = 2;
+        const FEE: i64 = 1;
+        // "alpha" is funded to cover cost + fee; "beta" is one unit short of even
+        // its cost. Distinct labels ⇒ distinct pks ⇒ DISJOINT wallets.
+        let funded = cosigned(&n_sends(DEMAND), b"alpha", 0, 10);
+        let underfunded = cosigned(&n_sends(DEMAND), b"beta", 0, 20);
+
+        let mut reader = MockSupplyReader::new();
+        reader.set(b"alpha", DEMAND as i64 + FEE); // exactly cost + fee
+        reader.set(b"beta", DEMAND as i64 - 1); // below cost ⇒ reject
+
+        let outcome = admit_by_funding(
+            vec![funded.clone(), underfunded.clone()],
+            &reader,
+            0,
+            false,
+        )
+        .await
+        .expect("gate must not error");
+
+        let alpha_key = pool_key(b"alpha");
+        let beta_key = pool_key(b"beta");
+
+        // The funded deploy is admitted exactly once.
+        assert_eq!(outcome.admitted.len(), 1, "exactly the funded deploy is admitted");
+        assert_eq!(
+            outcome.admitted[0].primary().sig,
+            funded.primary().sig,
+            "the ADMITTED deploy is the funded one (alpha)"
+        );
+        // The underfunded deploy is rejected.
+        assert_eq!(outcome.rejected.len(), 1, "exactly the underfunded deploy is rejected");
+        assert_eq!(
+            outcome.rejected[0],
+            underfunded.primary().sig,
+            "the REJECTED deploy is the underfunded one (beta)"
+        );
+
+        // The funded pool is debited exactly its own cost demand (disjoint ⇒ no
+        // cross-pool effect) + its single flat fee.
+        assert_eq!(
+            outcome.debits.get(&alpha_key).map(|d| d.amount),
+            Some(DEMAND as i64),
+            "the funded pool's COST debit is exactly its own demand"
+        );
+        assert_eq!(
+            outcome.fee_debits.get(&alpha_key).map(|d| d.amount),
+            Some(FEE),
+            "the funded pool carves exactly one flat fee token"
+        );
+
+        // NO SIDE EFFECT on reject: the underfunded pool is never touched.
+        assert!(
+            outcome.debits.get(&beta_key).is_none(),
+            "the rejected (underfunded) pool must NOT be cost-debited"
+        );
+        assert!(
+            outcome.fee_debits.get(&beta_key).is_none(),
+            "the rejected (underfunded) pool must NOT be fee-carved"
+        );
+    }
+
+    /// The funded deploy's admission is INDEPENDENT of whether its disjoint peer
+    /// is present and rejected: admitting `{alpha funded}` alone yields the SAME
+    /// alpha cost + fee debits as admitting `{alpha funded, beta underfunded}`.
+    /// The unfunded beta does not block, starve, or perturb alpha (the disjoint-
+    /// pool non-interference CA-P-171 asserts). Order-robust: the input is
+    /// canonicalized, so the result does not depend on submission order.
+    #[tokio::test]
+    async fn disjoint_underfunded_peer_does_not_perturb_the_funded_admission() {
+        const DEMAND: usize = 3;
+        const FEE: i64 = 1;
+        let alpha = cosigned(&n_sends(DEMAND), b"alpha", 0, 10);
+        let beta = cosigned(&n_sends(DEMAND), b"beta", 0, 20);
+        let alpha_key = pool_key(b"alpha");
+
+        let mut reader = MockSupplyReader::new();
+        reader.set(b"alpha", DEMAND as i64 + FEE);
+        reader.set(b"beta", 0); // present but drained ⇒ rejected
+
+        // Alpha ALONE.
+        let solo = admit_by_funding(vec![alpha.clone()], &reader, 0, false)
+            .await
+            .expect("gate must not error");
+        // Alpha WITH the unfunded beta (both orders).
+        let with_peer = admit_by_funding(vec![alpha.clone(), beta.clone()], &reader, 0, false)
+            .await
+            .expect("gate must not error");
+        let with_peer_rev = admit_by_funding(vec![beta.clone(), alpha.clone()], &reader, 0, false)
+            .await
+            .expect("gate must not error");
+
+        // Alpha is admitted in all three, with IDENTICAL cost + fee debits.
+        for outcome in [&solo, &with_peer, &with_peer_rev] {
+            assert!(
+                outcome.admitted.iter().any(|c| c.primary().sig == alpha.primary().sig),
+                "alpha is admitted regardless of the unfunded peer"
+            );
+        }
+        let alpha_cost = |o: &AdmissionOutcome| o.debits.get(&alpha_key).map(|d| d.amount);
+        let alpha_fee = |o: &AdmissionOutcome| o.fee_debits.get(&alpha_key).map(|d| d.amount);
+        assert_eq!(
+            alpha_cost(&solo),
+            alpha_cost(&with_peer),
+            "alpha's cost debit is unchanged by the disjoint unfunded peer"
+        );
+        assert_eq!(
+            alpha_cost(&with_peer),
+            alpha_cost(&with_peer_rev),
+            "alpha's cost debit is order-independent"
+        );
+        assert_eq!(
+            alpha_fee(&solo),
+            alpha_fee(&with_peer),
+            "alpha's fee carve is unchanged by the disjoint unfunded peer"
+        );
+        assert_eq!(alpha_cost(&solo), Some(DEMAND as i64), "alpha cost = its own demand");
+        assert_eq!(alpha_fee(&solo), Some(FEE), "alpha fee = one flat token");
+    }
+
+    /// Two FUNDED deploys on DISJOINT pools are BOTH admitted, each debited
+    /// exactly its own cost + fee — the pools settle independently with no
+    /// cross-talk (the happy-path companion to the funded/underfunded test).
+    #[tokio::test]
+    async fn disjoint_pools_both_funded_admit_both_independently() {
+        const DA: usize = 2;
+        const DB: usize = 4;
+        const FEE: i64 = 1;
+        let a = cosigned(&n_sends(DA), b"alpha", 0, 10);
+        let b = cosigned(&n_sends(DB), b"beta", 0, 20);
+        let alpha_key = pool_key(b"alpha");
+        let beta_key = pool_key(b"beta");
+
+        let mut reader = MockSupplyReader::new();
+        reader.set(b"alpha", DA as i64 + FEE);
+        reader.set(b"beta", DB as i64 + FEE);
+
+        let outcome = admit_by_funding(vec![a, b], &reader, 0, false)
+            .await
+            .expect("gate must not error");
+
+        assert_eq!(outcome.admitted.len(), 2, "both funded deploys admitted");
+        assert!(outcome.rejected.is_empty(), "nothing rejected");
+        // Each disjoint pool is debited exactly its OWN demand + fee.
+        assert_eq!(outcome.debits.get(&alpha_key).map(|d| d.amount), Some(DA as i64));
+        assert_eq!(outcome.debits.get(&beta_key).map(|d| d.amount), Some(DB as i64));
+        assert_eq!(outcome.fee_debits.get(&alpha_key).map(|d| d.amount), Some(FEE));
+        assert_eq!(outcome.fee_debits.get(&beta_key).map(|d| d.amount), Some(FEE));
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    // B4 (CA-P-086/087) — fee FLATNESS + supply CONSERVATION over random arity.
+    //
+    // (a) the carved fee is EXACTLY one layer per deploy regardless of compound
+    //     arity (`FlatFeeApportionment` draws ONE pool, never the pair — so a
+    //     compound deploy's fee is 1, not 2/n); (b) on every pool the gate
+    //     conserves supply: `Σ pre = Σ residual + Σ cost-debits + Σ fee-debits`
+    //     (no mint/burn beyond the recorded debits — the `dual_write_supply`
+    //     `pre.checked_sub(debit)` identity). The existing
+    //     `compound_debit_play_replay_identical_pair_only` pins arity-2 only;
+    //     this proptest exercises arities 1..=4 with random balances.
+    // ════════════════════════════════════════════════════════════════════════
+
+    /// `n` parallel sends ⇒ cost demand Δ = n; one deploy ⇒ flat fee = 1.
+    /// Property over random arity `a ∈ 1..=4` and random surplus: a single
+    /// admitted `a`-signer deploy carves a fee of EXACTLY 1 (flat — never `a` or
+    /// 2), and supply is conserved on every pool the gate touches.
+    #[test]
+    fn fee_is_flat_and_supply_conserved_across_random_arity() {
+        use proptest::prelude::*;
+        use proptest::test_runner::{Config as ProptestConfig, TestRunner};
+
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        let mut runner = TestRunner::new(ProptestConfig {
+            cases: 48,
+            ..ProptestConfig::default()
+        });
+        runner
+            .run(
+                &(
+                    1usize..=4,             // arity (number of distinct cosigners)
+                    1usize..=4,             // cost demand Δ (number of sends)
+                    0i64..=6,               // per-component surplus above the bound
+                ),
+                |(arity, demand, surplus)| {
+                    const FEE: i64 = 1;
+                    // Build `arity` fresh keypairs → an `arity`-signer compound
+                    // (or single-sig when arity == 1). `funding_sig` folds them
+                    // into `Sig::And(Ground(pk₀), …)`.
+                    let keypairs: Vec<(PrivateKey, PublicKey)> =
+                        (0..arity).map(|_| fresh_keypair()).collect();
+                    let deploy =
+                        cosigned_with_keypairs(&n_sends(demand), &keypairs, 0, 10);
+                    let envelope = accounting::funding_sig(&deploy);
+
+                    // Seed every pool the gate will read (the compound + each
+                    // component) generously enough to admit: each component pool
+                    // gets `demand + FEE + surplus`, and the combined pool the
+                    // same, so the Join bound clears cost + fee with headroom.
+                    let mut reader = MockSupplyReader::new();
+                    let bound = demand as i64 + FEE + surplus;
+                    // Collect every (Sig, pre-balance) the gate reads so we can
+                    // check conservation pool-by-pool afterward.
+                    let mut seeded: Vec<(Sig, i64)> = Vec::new();
+                    // The top-level envelope pool.
+                    reader.set_sig(&envelope, bound);
+                    seeded.push((envelope.clone(), bound));
+                    // Each leaf component pool (the `And`-fold's grounds).
+                    for (_, pk) in &keypairs {
+                        let comp = Sig::Ground(pk.bytes.to_vec());
+                        reader.set_sig(&comp, bound);
+                        seeded.push((comp, bound));
+                    }
+                    // Intermediate `And` nodes of an n≥3 left-assoc fold are also
+                    // read by the gate (collect_decompositions); seed them too so
+                    // presence is uniform. Walk the envelope's nested `And`s.
+                    fn collect_and_nodes(sig: &Sig, out: &mut Vec<Sig>) {
+                        if let Sig::And(l, r) = sig {
+                            out.push(sig.clone());
+                            collect_and_nodes(l, out);
+                            collect_and_nodes(r, out);
+                        }
+                    }
+                    let mut and_nodes = Vec::new();
+                    collect_and_nodes(&envelope, &mut and_nodes);
+                    for node in &and_nodes {
+                        // The top envelope is already seeded; seed deeper nodes.
+                        if node != &envelope {
+                            reader.set_sig(node, bound);
+                            seeded.push((node.clone(), bound));
+                        }
+                    }
+
+                    let outcome = rt
+                        .block_on(admit_by_funding(vec![deploy.clone()], &reader, 0, false))
+                        .expect("gate must not error");
+
+                    // The deploy is admitted (every pool is funded with headroom).
+                    prop_assert_eq!(
+                        outcome.admitted.len(),
+                        1,
+                        "the fully-funded deploy must be admitted"
+                    );
+
+                    // (a) FLATNESS: the TOTAL carved fee is EXACTLY 1 — one flat
+                    // token for the one admitted deploy — regardless of arity. A
+                    // pair-doubling bug (the OLD behavior) would make this 2 for a
+                    // compound; an n-fold bug would make it `arity`.
+                    let total_fee: i64 = outcome.fee_debits.values().map(|d| d.amount).sum();
+                    prop_assert_eq!(
+                        total_fee,
+                        FEE,
+                        "the fee is FLAT (1) for arity {} — never pair-doubled / n-folded",
+                        arity
+                    );
+
+                    // (b) CONSERVATION: on every pool, pre = residual + cost +
+                    // fee. The settlement debits BURN cost from the pool and the
+                    // fee carve TRANSFERS the fee out; both are `pre - draw`, so
+                    // for each seeded pool the drawn total must not exceed pre and
+                    // the residual is exactly pre minus the draws.
+                    for (sig, pre) in &seeded {
+                        let key = delta_sigma::sig_key(sig);
+                        let cost_draw =
+                            outcome.debits.get(&key).map(|d| d.amount).unwrap_or(0);
+                        let fee_draw =
+                            outcome.fee_debits.get(&key).map(|d| d.amount).unwrap_or(0);
+                        // No pool is over-drawn (no underflow at settlement).
+                        prop_assert!(
+                            cost_draw + fee_draw <= *pre,
+                            "pool draw {}+{} must not exceed pre {} (no underflow)",
+                            cost_draw,
+                            fee_draw,
+                            pre
+                        );
+                        // Conservation identity: residual = pre − (cost + fee).
+                        let residual = *pre - cost_draw - fee_draw;
+                        prop_assert_eq!(
+                            residual + cost_draw + fee_draw,
+                            *pre,
+                            "supply conserved on this pool: residual + cost + fee == pre"
+                        );
+                    }
+
+                    // The COST burned (Σ over cost debits) equals the demand Δ
+                    // (the admitted deploy consumes exactly its COMM count), and
+                    // the FEE transferred equals 1 — so the TOTAL leaving the
+                    // client pools is Δ + 1 (cost + flat fee), conserving.
+                    let total_cost: i64 = outcome.debits.values().map(|d| d.amount).sum();
+                    prop_assert_eq!(
+                        total_cost,
+                        demand as i64,
+                        "total cost burned == Δ (the deploy's COMM demand)"
+                    );
+                    prop_assert_eq!(
+                        total_cost + total_fee,
+                        demand as i64 + FEE,
+                        "fee + deploy cost == Δ + 1 (supply-conserving carve)"
+                    );
+                    Ok(())
+                },
+            )
+            .expect("fee must be flat and supply conserved across all sampled arities");
+    }
 }

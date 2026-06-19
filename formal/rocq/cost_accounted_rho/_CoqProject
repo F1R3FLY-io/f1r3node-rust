@@ -421,3 +421,27 @@ theories/CASimulationBicat.v
 theories/CAAdjunctionII.v
 theories/CAProperSubcategory.v
 theories/CAAbstractCapstone.v
+
+# CA-P-178 — the generic nearness gate near(I,J) on the rho object
+# (continued-gslt-cost-v2 §"The nominal surface" + the R1/R2/R3 premise
+# L = near(I,J)). In the rho instance near is channel-IDENTITY matching (the
+# user-clarified semantics: the send and receive act on the same channel); the
+# metered cut fires IFF near is Some and blocks on None — a faithful MON-level
+# restatement of the channel-match the native ca_rule1 already enforces. Depends
+# on CASyntax/CAReduction/WrappingSubjectReduction. Axiom-free.
+theories/CANearMatch.v
+
+# CA-P-179 — no ambient authority under a non-free K (continued-gslt-cost-v2
+# sec:ac-leak + "Located resource stacks"): proximity to a located resource
+# stack never confers the right to draw; authority is carried by a NAMED matching
+# surface. Composes the located-purse lemmas of CALocatedPurses. Axiom-free.
+theories/CAAmbientAuthority.v
+
+# CA-P-180 (corollary half) — the digest section's ≡-incoherence is
+# bisimulation-harmless because signatures never reduce (continued-gslt-cost-v2
+# §5 "Quotient and section", :629-632). The forcing half (the digest does NOT
+# respect ≡sig, and must not) lives in SignatureMonoid; here we discharge the
+# companion sentence via the inertness facts no_leak_requires_token /
+# no_leak_stack_inert. Depends on SignatureMonoid + WrappingSubjectReduction.
+# Axiom-free.
+theories/CASection.v

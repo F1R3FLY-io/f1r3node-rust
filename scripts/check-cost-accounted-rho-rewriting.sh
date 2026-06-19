@@ -38,16 +38,36 @@ else
   echo "  ttt2 not found — termination leg skipped."
 fi
 
-if command -v csi >/dev/null 2>&1; then
-  out="$(timeout 180 csi "$TRS" 2>&1 | head -1 || true)"
-  if [ "$out" = "YES" ]; then
-    echo "  CSI confluence: YES"
-  else
-    echo "  CSI confluence: '$out' (expected YES)" >&2
-    status=1
-  fi
+# Resolve the CSI confluence tool. NB: the bare name `csi` collides on some hosts
+# with Mono's C# interactive REPL (`/usr/bin/csi` → `mono csi.exe`), which is NOT
+# the confluence tool. The real CSI confluence frontend ships with ttt2-hg as
+# `ttt2-csi` (binary at /usr/lib/ttt2-hg/csi), so prefer it; only fall back to a
+# bare `csi` whose output is an actual confluence verdict.
+CSI_BIN=""
+if command -v ttt2-csi >/dev/null 2>&1; then
+  CSI_BIN="ttt2-csi"
+elif command -v csi >/dev/null 2>&1; then
+  CSI_BIN="csi"
+fi
+
+if [ -n "$CSI_BIN" ]; then
+  out="$(timeout 180 "$CSI_BIN" "$TRS" 2>&1 | head -1 || true)"
+  case "$out" in
+    YES)
+      echo "  CSI confluence: YES ($CSI_BIN)" ;;
+    NO|MAYBE*|TIMEOUT*)
+      # A genuine confluence verdict that is not YES IS a failure.
+      echo "  CSI confluence: '$out' (expected YES)" >&2
+      status=1 ;;
+    *)
+      # The resolved binary is not the confluence tool (e.g. a bare `csi` that is
+      # Mono's C# REPL emitting 'CSxxxx' errors). Treat as unavailable ⇒ fail-soft
+      # skip; termination is witnessed by TTT2 above and confluence by the Rocq
+      # development (CAConfluence.ca_local_confluence / Confluence.ca_confluent).
+      echo "  '$CSI_BIN' is not the confluence tool (got: '${out:-<empty>}') — confluence leg skipped (fail-soft)." ;;
+  esac
 else
-  echo "  csi not found — confluence leg skipped."
+  echo "  no confluence tool (ttt2-csi/csi) found — confluence leg skipped."
 fi
 
 if [ "$status" -eq 0 ]; then

@@ -38,4 +38,13 @@ MC_CanonOrder    == <<b1, b2, b3>>
 MC_Demand        == [b \in MC_Bodies |-> 2]
 MC_PoolSupply    == 0
 
+\* CA-P-171: this focused #13b instance is about group A's ABSENT pool, so group
+\* B is given a trivial DISJOINT, fully-funded SINGLE-deploy instance (b1, Δ_sB = 1,
+\* Σ⟦sB⟧ = 2) purely to satisfy the (now mandatory) group-B constants. It does not
+\* affect the strict reject-when-absent headline (Inv_StrictRejectsAbsent ranges
+\* over group A's PoolSupply = 0). Group B simply admits its one deploy and settles.
+MC_CanonOrderB   == <<b1>>
+MC_DemandB       == [b \in MC_Bodies |-> 1]
+MC_PoolSupplyB   == 2
+
 =============================================================================
