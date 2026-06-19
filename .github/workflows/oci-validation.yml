@@ -1,0 +1,263 @@
+name: Full OCI Validation
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Pull request number to validate
+        required: true
+      head_sha:
+        description: Expected pull request head SHA reviewed by the maintainer
+        required: true
+      approval_comment_id:
+        description: Pull request comment ID containing /full-oci-validate <pr_number> <head_sha>
+        required: true
+
+concurrency:
+  group: full-oci-validation-${{ github.event.inputs.pr_number }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  validate_pr:
+    name: Validate PR Input
+    if: github.ref_name == github.event.repository.default_branch
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      head_repo: ${{ steps.pr.outputs.head_repo }}
+      head_sha: ${{ steps.pr.outputs.head_sha }}
+      head_ref: ${{ steps.pr.outputs.head_ref }}
+      base_ref: ${{ steps.pr.outputs.base_ref }}
+      system_integration_ref: ${{ steps.pr.outputs.system_integration_ref }}
+    steps:
+      - name: Checkout workflow configuration
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+
+      - name: Validate pull request
+        id: pr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.inputs.pr_number }}
+          EXPECTED_HEAD_SHA: ${{ github.event.inputs.head_sha }}
+          APPROVAL_COMMENT_ID: ${{ github.event.inputs.approval_comment_id }}
+          ACTOR: ${{ github.actor }}
+        shell: bash -euo pipefail {0}
+        run: |
+          if [[ ! "$PR_NUMBER" =~ ^[0-9]+$ ]]; then
+            echo "pr_number must be numeric."
+            exit 1
+          fi
+
+          if [[ ! "$EXPECTED_HEAD_SHA" =~ ^[0-9a-fA-F]{40}$ ]]; then
+            echo "head_sha must be a 40-character commit SHA."
+            exit 1
+          fi
+          expected_head_sha=$(tr '[:upper:]' '[:lower:]' <<< "$EXPECTED_HEAD_SHA")
+
+          if [[ ! "$APPROVAL_COMMENT_ID" =~ ^[0-9]+$ ]]; then
+            echo "approval_comment_id must be numeric."
+            exit 1
+          fi
+
+          actor_permission=$(gh api "repos/${GH_REPO}/collaborators/${ACTOR}/permission" --jq '.permission' 2>/dev/null || true)
+          if [ "$actor_permission" != "admin" ] && [ "$actor_permission" != "maintain" ]; then
+            echo "${ACTOR} has ${actor_permission:-no} permission; Full OCI Validation requires maintain or admin permission."
+            exit 1
+          fi
+
+          pr_json=$(gh api "repos/${GH_REPO}/pulls/${PR_NUMBER}")
+          state=$(jq -r '.state' <<< "$pr_json")
+          head_repo=$(jq -r '.head.repo.full_name' <<< "$pr_json")
+          head_sha=$(jq -r '.head.sha' <<< "$pr_json")
+          head_ref=$(jq -r '.head.ref' <<< "$pr_json")
+          base_ref=$(jq -r '.base.ref' <<< "$pr_json")
+          if [ "$state" != "open" ]; then
+            echo "PR ${PR_NUMBER} is ${state}; only open PRs can be validated."
+            exit 1
+          fi
+
+          if [ "$expected_head_sha" != "$head_sha" ]; then
+            echo "Expected head SHA ${expected_head_sha}, but PR ${PR_NUMBER} currently points to ${head_sha}."
+            exit 1
+          fi
+
+          approval_json=$(gh api "repos/${GH_REPO}/issues/comments/${APPROVAL_COMMENT_ID}")
+          approval_issue_url=$(jq -r '.issue_url' <<< "$approval_json")
+          expected_issue_url="https://api.github.com/repos/${GH_REPO}/issues/${PR_NUMBER}"
+          if [ "$approval_issue_url" != "$expected_issue_url" ]; then
+            echo "Approval comment ${APPROVAL_COMMENT_ID} does not belong to PR ${PR_NUMBER}."
+            exit 1
+          fi
+
+          approval_author=$(jq -r '.user.login' <<< "$approval_json")
+          approval_author_permission=$(gh api "repos/${GH_REPO}/collaborators/${approval_author}/permission" --jq '.permission' 2>/dev/null || true)
+          if [ "$approval_author_permission" != "admin" ] && [ "$approval_author_permission" != "maintain" ]; then
+            echo "Approval comment author ${approval_author} has ${approval_author_permission:-no} permission; Full OCI Validation approval requires maintain or admin permission."
+            exit 1
+          fi
+
+          approval_body=$(jq -r '.body // ""' <<< "$approval_json")
+          approval_phrase="/full-oci-validate ${PR_NUMBER} ${head_sha}"
+          if ! grep -Fxq "$approval_phrase" <<< "$approval_body"; then
+            echo "Approval comment ${APPROVAL_COMMENT_ID} must contain this exact line: ${approval_phrase}"
+            exit 1
+          fi
+
+          source .github/oci-validation.env
+          if [[ ! "$SYSTEM_INTEGRATION_REF" =~ ^[0-9a-f]{40}$ && ! "$SYSTEM_INTEGRATION_REF" =~ ^refs/tags/[A-Za-z0-9._/-]+$ ]]; then
+            echo "SYSTEM_INTEGRATION_REF must be a 40-character commit SHA or refs/tags/<tag>."
+            exit 1
+          fi
+
+          {
+            echo "head_repo=${head_repo}"
+            echo "head_sha=${head_sha}"
+            echo "head_ref=${head_ref}"
+            echo "base_ref=${base_ref}"
+            echo "system_integration_ref=${SYSTEM_INTEGRATION_REF}"
+          } >> "$GITHUB_OUTPUT"
+
+  launch_ephemeral_runners:
+    name: Launch Ephemeral OCI Runners
+    needs: validate_pr
+    runs-on: ubuntu-latest
+    environment: ephemeral-launch
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Clone trusted system-integration launcher
+        uses: actions/checkout@v4
+        with:
+          repository: F1R3FLY-io/system-integration
+          ref: ${{ needs.validate_pr.outputs.system_integration_ref }}
+          path: system-integration
+          persist-credentials: false
+
+      - name: Install OCI CLI
+        shell: bash -e {0}
+        run: |
+          python3 -m pip install --user --only-binary=:all: 'oci-cli==3.85.0'
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/oci" --version
+
+      - name: Configure OCI auth from secrets
+        shell: bash -e {0}
+        env:
+          OCI_TENANCY_OCID: ${{ secrets.OCI_TENANCY_OCID }}
+          OCI_USER_OCID: ${{ secrets.OCI_USER_OCID }}
+          OCI_REGION: ${{ secrets.OCI_REGION }}
+          OCI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
+          OCI_PRIVATE_KEY: ${{ secrets.OCI_PRIVATE_KEY }}
+          SUPPRESS_LABEL_WARNING: "True"
+        run: |
+          install -d -m 700 ~/.oci
+          umask 077
+          printf '%s\n' "$OCI_PRIVATE_KEY" > ~/.oci/oci_api_key.pem
+          cat > ~/.oci/config <<EOF
+          [DEFAULT]
+          user=$OCI_USER_OCID
+          fingerprint=$OCI_FINGERPRINT
+          tenancy=$OCI_TENANCY_OCID
+          region=$OCI_REGION
+          key_file=$HOME/.oci/oci_api_key.pem
+          EOF
+          chmod 600 ~/.oci/config
+          oci iam region list >/dev/null && echo "OCI auth OK"
+
+      - name: Launch 11 amd64 + 11 arm64 ephemeral runners
+        shell: bash -e {0}
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PAT }}
+          GH_REPO: ${{ github.repository }}
+          SUPPRESS_LABEL_WARNING: "True"
+        run: |
+          cd system-integration/ci/oci-runners
+          pids=()
+          for _ in $(seq 1 11); do ./launch-runner.sh amd64 & pids+=("$!"); done
+          for _ in $(seq 1 11); do ./launch-runner.sh arm64 & pids+=("$!"); done
+
+          failed=0
+          for pid in "${pids[@]}"; do
+            if ! wait "$pid"; then
+              failed=1
+            fi
+          done
+
+          if [ "$failed" -ne 0 ]; then
+            echo "At least one OCI runner launch failed."
+            exit 1
+          fi
+
+          echo "All 22 ephemeral runner VMs submitted."
+
+      - name: Remove OCI credentials
+        if: always()
+        shell: bash -e {0}
+        run: |
+          shred -fu ~/.oci/oci_api_key.pem 2>/dev/null || true
+          rm -rf ~/.oci
+
+  oci_validation:
+    name: Run OCI Validation
+    needs: [validate_pr, launch_ephemeral_runners]
+    uses: ./.github/workflows/reusable-oci-validation.yml
+    permissions:
+      actions: read
+      contents: read
+    with:
+      head_repo: ${{ needs.validate_pr.outputs.head_repo }}
+      head_sha: ${{ needs.validate_pr.outputs.head_sha }}
+      system_integration_ref: ${{ needs.validate_pr.outputs.system_integration_ref }}
+
+  report_result:
+    name: Report OCI Validation Result
+    needs: [validate_pr, launch_ephemeral_runners, oci_validation]
+    if: always() && github.ref_name == github.event.repository.default_branch
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+      pull-requests: write
+      statuses: write
+    steps:
+      - name: Report result
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.inputs.pr_number }}
+          HEAD_SHA: ${{ needs.validate_pr.outputs.head_sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          VALIDATE_RESULT: ${{ needs.validate_pr.result }}
+          LAUNCH_RESULT: ${{ needs.launch_ephemeral_runners.result }}
+          OCI_RESULT: ${{ needs.oci_validation.result }}
+        shell: bash -euo pipefail {0}
+        run: |
+          if [ "$VALIDATE_RESULT" = "success" ] && [ "$LAUNCH_RESULT" = "success" ] && [ "$OCI_RESULT" = "success" ]; then
+            state=success
+            description="Full OCI validation passed"
+          else
+            state=failure
+            description="Full OCI validation failed"
+          fi
+
+          gh pr comment "$PR_NUMBER" --body "${description} for ${HEAD_SHA}. Run: ${RUN_URL}"
+
+          if [ -n "$HEAD_SHA" ]; then
+            gh api -X POST "repos/${GH_REPO}/statuses/${HEAD_SHA}" \
+              -f state="$state" \
+              -f context="Full OCI Validation" \
+              -f target_url="$RUN_URL" \
+              -f description="$description" || echo "Warning: failed to update commit status"
+          fi
