@@ -1,8 +1,11 @@
 # cargo-deny configuration for the F1R3node Rust workspace.
 # See https://embarkstudios.github.io/cargo-deny/ for documentation.
 
+# all-features = true to match CI: the cargo-deny-action runs with --all-features,
+# which pulls in feature-gated transitive deps (rholang's optional chroma feature).
+# Keeping this in sync means `cargo deny check` locally reproduces CI exactly.
 [graph]
-all-features = false
+all-features = true
 no-default-features = false
 
 # ---------------------------------------------------------------------------
@@ -11,7 +14,8 @@ no-default-features = false
 [advisories]
 db-path = "$CARGO_HOME/advisory-db"
 db-urls = ["https://github.com/RustSec/advisory-db"]
-yanked = "warn"
+# Fail on yanked crates — a yank is often a pulled-for-security release.
+yanked = "deny"
 
 # Specific advisories knowingly accepted. Each entry MUST justify why.
 ignore = [
@@ -32,6 +36,11 @@ ignore = [
     "RUSTSEC-2021-0141", # dotenv (transitive via openai-api-rs)
     "RUSTSEC-2021-0153", # encoding (transitive via hocon -> nom)
     "RUSTSEC-2024-0436", # paste proc-macro (transitive via metrics)
+
+    # Feature-gated transitive dep, present only under --all-features (as CI runs
+    # cargo-deny). Reaches the graph through rholang's optional chroma (vector
+    # store) feature; no safe upgrade we own.
+    "RUSTSEC-2026-0173", # proc-macro-error2 unmaintained (validator_derive -> validator -> chroma -> rholang)
 
     # === MASTER-ONLY DEBT — REMOVE BEFORE MERGING TO STAGING/DEV ===
     # These advisories are tripped by master's older transitive deps but NOT by
