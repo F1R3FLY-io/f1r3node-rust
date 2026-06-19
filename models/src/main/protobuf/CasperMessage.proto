@@ -190,6 +190,10 @@ message BodyProto {
 
 message RejectedDeployProto{
   bytes sig = 1;
+  // Source block of the rejected inclusion (the block whose chain the merge
+  // rejected). Per-inclusion key: lets a node tell which inclusion of a sig was
+  // rejected vs an earlier inclusion that survived, without a node-local ledger.
+  bytes host = 2;
 }
 
 message JustificationProto {

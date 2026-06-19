@@ -388,6 +388,15 @@ impl Validate {
     /// deploy is "live in the execution base" iff its latest inclusion height is
     /// strictly greater than its latest rejection height (applied and not
     /// merged away by a descendant) — see [`Self::is_live_in_ancestry`].
+    /// Per-sig acceptance over the block's cone (lifespan window). For each checked
+    /// sig, returns the set of ancestor blocks that INCLUDE it (`body.deploys`) and
+    /// the set whose inclusion was REJECTED (`body.rejected_deploys`, keyed
+    /// per-inclusion by `host`). Consumed by [`Self::is_live_in_ancestry`].
+    ///
+    /// Uses only cone bodies + per-inclusion hosts, so it is node-identical, and
+    /// being per-inclusion it recognizes an EARLIER surviving inclusion even when a
+    /// LATER inclusion of the same sig was rejected — the content-twin the previous
+    /// single-most-recent-height proxy missed.
     pub fn ancestry_inclusion_rejection(
         dag: &block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation,
         block_store: &KeyValueBlockStore,
@@ -395,8 +404,8 @@ impl Validate {
         expiration_threshold: i32,
         sigs: &HashSet<prost::bytes::Bytes>,
     ) -> (
-        HashMap<prost::bytes::Bytes, (i64, BlockHash)>,
-        HashMap<prost::bytes::Bytes, i64>,
+        HashMap<prost::bytes::Bytes, HashSet<BlockHash>>,
+        HashMap<prost::bytes::Bytes, HashSet<BlockHash>>,
     ) {
         let max_block_number = proto_util::max_block_number_metadata(&init_parents);
         let earliest_block_number = max_block_number + 1 - expiration_threshold as i64;
@@ -410,48 +419,49 @@ impl Validate {
             .unwrap_or_default()
         });
 
-        let mut latest_inclusion: HashMap<prost::bytes::Bytes, (i64, BlockHash)> = HashMap::new();
-        let mut latest_rejection: HashMap<prost::bytes::Bytes, i64> = HashMap::new();
+        let mut inclusion_hosts: HashMap<prost::bytes::Bytes, HashSet<BlockHash>> = HashMap::new();
+        let mut rejected_hosts: HashMap<prost::bytes::Bytes, HashSet<BlockHash>> = HashMap::new();
         for metadata in &visited {
             let ancestor = block_store.get_unsafe(&metadata.block_hash);
             for pd in &ancestor.body.deploys {
                 if sigs.contains(&pd.deploy.sig) {
-                    let entry = latest_inclusion
+                    inclusion_hosts
                         .entry(pd.deploy.sig.clone())
-                        .or_insert((i64::MIN, BlockHash::default()));
-                    if metadata.block_number > entry.0 {
-                        *entry = (metadata.block_number, metadata.block_hash.clone());
-                    }
+                        .or_default()
+                        .insert(metadata.block_hash.clone());
                 }
             }
             for rd in &ancestor.body.rejected_deploys {
                 if sigs.contains(&rd.sig) {
-                    let entry = latest_rejection.entry(rd.sig.clone()).or_insert(i64::MIN);
-                    if metadata.block_number > *entry {
-                        *entry = metadata.block_number;
-                    }
+                    rejected_hosts
+                        .entry(rd.sig.clone())
+                        .or_default()
+                        .insert(rd.host.clone());
                 }
             }
         }
-        (latest_inclusion, latest_rejection)
+        (inclusion_hosts, rejected_hosts)
     }
 
-    /// True iff `sig`'s effect is live in the ancestry: it has a prior inclusion
-    /// AND no rejection at-or-above that inclusion's height. Such a deploy is
-    /// already applied in the execution base a new block builds on, so
-    /// re-executing it double-applies its deterministic cells (the content-twin).
-    /// The same predicate decides `repeat_deploy` invalidity and recovery-gate
-    /// admission, keeping proposer and validator consistent.
+    /// True iff `sig`'s effect is live in the cone: it has at least one inclusion
+    /// host whose inclusion was NOT rejected (no `(sig, host)` rejection record).
+    /// Such a deploy is already applied in the execution base a new block builds
+    /// on, so re-executing it double-applies its deterministic `new`-site cells
+    /// (the content-twin). Per-inclusion, so an earlier surviving inclusion keeps
+    /// the deploy live even when a later inclusion was rejected. The same predicate
+    /// decides `repeat_deploy` invalidity and recovery-gate admission, keeping
+    /// proposer and validator consistent — and uses only cone bodies + per-inclusion
+    /// hosts, so it is node-identical.
     pub fn is_live_in_ancestry(
-        latest_inclusion: &HashMap<prost::bytes::Bytes, (i64, BlockHash)>,
-        latest_rejection: &HashMap<prost::bytes::Bytes, i64>,
+        inclusion_hosts: &HashMap<prost::bytes::Bytes, HashSet<BlockHash>>,
+        rejected_hosts: &HashMap<prost::bytes::Bytes, HashSet<BlockHash>>,
         sig: &prost::bytes::Bytes,
     ) -> bool {
-        match latest_inclusion.get(sig) {
-            Some((inclusion_number, _)) => {
-                let rejection_number = latest_rejection.get(sig).copied().unwrap_or(i64::MIN);
-                *inclusion_number > rejection_number
-            }
+        match inclusion_hosts.get(sig) {
+            Some(hosts) => match rejected_hosts.get(sig) {
+                Some(rejected) => hosts.iter().any(|h| !rejected.contains(h)),
+                None => true,
+            },
             None => false,
         }
     }
@@ -496,7 +506,9 @@ impl Validate {
         block: &BlockMessage,
         s: &mut CasperSnapshot,
         block_store: &KeyValueBlockStore,
-        runtime_manager: &RuntimeManager,
+        // Unused since repeat_deploy became body/ancestry-based (no replay); kept in
+        // the signature for call-site symmetry with the other validation steps.
+        _runtime_manager: &RuntimeManager,
         expiration_threshold: i32,
     ) -> ValidBlockProcessing {
         let checked_sigs: HashSet<prost::bytes::Bytes> = block
@@ -517,13 +529,14 @@ impl Validate {
             Err(e) => return Either::Left(BlockError::BlockException(CasperError::from(e))),
         };
 
-        // One traversal of the ancestry window collecting, per checked sig, the
-        // most recent prior INCLUSION (body.deploys) and the most recent
-        // REJECTION record (body.rejected_deploys). Shared with the proposer's
-        // recovery gate via `ancestry_inclusion_rejection` so the two never
-        // disagree about whether a deploy is live.
+        // One traversal of the ancestry window collecting, per checked sig, the set
+        // of INCLUSION hosts (body.deploys) and the set of REJECTED hosts
+        // (body.rejected_deploys, keyed per-inclusion by host). Shared with the
+        // proposer's recovery gate via `ancestry_inclusion_rejection` + the
+        // `is_live_in_ancestry` predicate so the two never disagree about whether a
+        // deploy is live. Body-based + per-inclusion ⇒ node-identical.
         tracing::debug!(target: "f1r3fly.casper", "before-repeat-deploy-ancestry-scan");
-        let (latest_inclusion, latest_rejection) = Self::ancestry_inclusion_rejection(
+        let (inclusion_hosts, rejected_hosts) = Self::ancestry_inclusion_rejection(
             &s.dag,
             block_store,
             init_parents,
@@ -531,138 +544,43 @@ impl Validate {
             &checked_sigs,
         );
 
-        // Sealed-floor authority: the block's own floor is a pure function of
-        // its justifications; the stored seal at that cut is the canonical
-        // accept/reject ledger for everything inside the floor closure. A
-        // missing stored seal falls back to the record-only rule below — the
-        // proposer-side gate and the merge's enforcement window remain the
-        // defenses for that case. The floor here is the same derivation the
-        // proposer's recovery gate and block_creator A1 use, so the verdict is
-        // node-identical.
-        let fate_resolver = {
-            let ft_threshold = s.on_chain_state.shard_conf.fault_tolerance_threshold;
-            let block_latest_messages: std::collections::BTreeMap<_, _> = block
-                .justifications
-                .iter()
-                .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
-                .collect();
-            let floor = match crate::rust::finality::floor::finalized_floor(
-                &s.dag,
-                &block.header.parents_hash_list,
-                &block_latest_messages,
-                ft_threshold,
-            )
-            .await
-            {
-                Ok(floor) => floor,
-                Err(e) => return Either::Left(BlockError::BlockException(e)),
-            };
-            match s.dag.get_floor_state(&floor.hash) {
-                Ok(Some(floor_data)) => {
-                    match crate::rust::finality::floor_seal::FloorFateResolver::new(
-                        &s.dag,
-                        runtime_manager,
-                        &floor.hash,
-                        &floor_data,
-                    ) {
-                        Ok(resolver) => Some(resolver),
-                        Err(e) => return Either::Left(BlockError::BlockException(e)),
-                    }
-                }
-                Ok(None) => {
-                    tracing::debug!(
-                        target: "f1r3fly.casper",
-                        floor = %PrettyPrinter::build_string_bytes(&floor.hash),
-                        "repeat_deploy: floor state not yet sealed; record-only verdicts"
-                    );
-                    None
-                }
-                Err(e) => return Either::Left(BlockError::BlockException(CasperError::from(e))),
-            }
-        };
-
         for sig in &checked_sigs {
-            // Any sealed-ACCEPTED inclusion makes the deploy finalized-applied:
-            // re-including it is double-application, regardless of a more-recent
-            // sealed rejection of a different inclusion. This authority is what
-            // the most-recent-inclusion logic below cannot see — without it, a
-            // deploy accepted at one inclusion and rejected at a later one was
-            // exempted as "recovery" and re-executed onto its own finalized
-            // cell (the content-twin).
-            if let Some(resolver) = &fate_resolver {
-                if resolver.is_sealed_accepted(sig) {
-                    let message = format!(
-                        "deploy with sig {} is sealed-accepted at the floor (effect in the \
-                         finalized base); re-inclusion is double-application regardless of any \
-                         later rejection record",
-                        PrettyPrinter::build_string_bytes(sig),
-                    );
-                    tracing::warn!("{}", Self::ignore(block, &message));
-                    return Either::Left(BlockError::Invalid(InvalidBlock::InvalidRepeatDeploy));
-                }
-            }
-
-            let Some((inclusion_number, inclusion_block)) = latest_inclusion.get(sig) else {
-                continue; // never included before — clean
-            };
-
-            // An inclusion inside the floor closure has a FINAL verdict that
-            // per-merge records cannot override in either direction.
-            if let Some(resolver) = &fate_resolver {
-                if resolver.closure_contains(inclusion_block) {
-                    if resolver.sealed_rejected_at(sig, inclusion_block) {
-                        tracing::debug!(
-                            target: "f1r3fly.casper",
-                            sig = %hex::encode(&sig[..sig.len().min(16)]),
-                            inclusion_number,
-                            "repeat_deploy: latest inclusion sealed-rejected; re-proposal exempt"
-                        );
-                        continue;
-                    }
-                    let message = format!(
-                        "deploy with sig {} re-included while its latest inclusion in block {} (#{}) \
-                         is sealed-accepted at the floor — its effects are in the finalized base; \
-                         re-execution is double-application regardless of rejection records",
-                        PrettyPrinter::build_string_bytes(sig),
-                        PrettyPrinter::build_string_bytes(inclusion_block),
-                        inclusion_number,
-                    );
-                    tracing::warn!("{}", Self::ignore(block, &message));
-                    return Either::Left(BlockError::Invalid(InvalidBlock::InvalidRepeatDeploy));
-                }
-            }
-
-            // A rejection recorded at-or-above the latest inclusion height means
-            // that inclusion's effect was merged away; re-proposal is legal.
-            let rejection_number = latest_rejection.get(sig).copied().unwrap_or(i64::MIN);
-            if rejection_number >= *inclusion_number {
-                tracing::debug!(
-                    target: "f1r3fly.casper",
-                    sig = %hex::encode(&sig[..sig.len().min(16)]),
-                    inclusion_number,
-                    rejection_number,
-                    "repeat_deploy: prior inclusion was rejected in ancestry; re-proposal exempt"
-                );
+            // Live ⟺ some prior inclusion survived (its host has no (sig, host)
+            // rejection). Not-live ⟺ never included, or EVERY prior inclusion was
+            // rejected (the recovery path re-proposing a merge-rejected loser) —
+            // both legal re-inclusions.
+            if !Self::is_live_in_ancestry(&inclusion_hosts, &rejected_hosts, sig) {
                 continue;
             }
 
-            let duplicated_block = block_store.get_unsafe(inclusion_block);
+            // A surviving (non-rejected) prior inclusion exists → its effect is in
+            // the base, so re-inclusion would double-apply (the content-twin).
+            let surviving_host = inclusion_hosts
+                .get(sig)
+                .and_then(|hosts| {
+                    hosts.iter().find(|h| {
+                        rejected_hosts
+                            .get(sig)
+                            .map(|rejected| !rejected.contains(*h))
+                            .unwrap_or(true)
+                    })
+                })
+                .expect("is_live_in_ancestry returned true, so a surviving inclusion host exists");
+            let duplicated_block = block_store.get_unsafe(surviving_host);
             let duplicated_deploy = duplicated_block
                 .body
                 .deploys
                 .iter()
                 .map(|processed_deploy| &processed_deploy.deploy)
                 .find(|deploy| deploy.sig == *sig)
-                .expect("inclusion was recorded from this block's deploys above");
+                .expect("surviving host includes this sig");
             let message = format!(
-                "found deploy [{}] (user {}, millisecond timestamp {}) with the same sig in the block {} as current block {} (latest rejection at #{} < inclusion at #{})",
+                "found deploy [{}] (user {}, millisecond timestamp {}) with the same sig in surviving inclusion {} as current block {} (prior inclusion not rejected)",
                 &duplicated_deploy.data.term,
                 PrettyPrinter::build_string_bytes(&duplicated_deploy.pk.bytes),
                 duplicated_deploy.data.time_stamp,
                 PrettyPrinter::build_string_bytes(&duplicated_block.block_hash),
                 PrettyPrinter::build_string_bytes(&block.block_hash),
-                rejection_number,
-                inclusion_number,
             );
             tracing::warn!("{}", Self::ignore(block, &message));
             return Either::Left(BlockError::Invalid(InvalidBlock::InvalidRepeatDeploy));
@@ -1453,7 +1371,7 @@ impl Validate {
 
 #[cfg(test)]
 mod recovery_liveness_tests {
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
 
     use models::rust::block_hash::BlockHash;
     use prost::bytes::Bytes;
@@ -1464,33 +1382,36 @@ mod recovery_liveness_tests {
 
     fn host(b: u8) -> BlockHash { Bytes::from(vec![b; 32]) }
 
-    /// Applied at #9, rejected at #6: the effect IS live in the execution base,
-    /// so recovery must NOT re-execute it (doing so is the content-twin). This
-    /// is the exact wedge case (deploy re-applied above its last rejection).
+    /// Two inclusions, only ONE rejected: the surviving inclusion keeps the effect
+    /// in the base, so the deploy is live and recovery must NOT re-execute it
+    /// (doing so is the content-twin). This is the exact wedge case the previous
+    /// single-most-recent-height proxy missed — it saw the later rejection and
+    /// called the deploy not-live.
     #[test]
-    fn live_when_inclusion_above_rejection() {
+    fn live_when_a_surviving_inclusion_exists() {
         let s = sig(1);
-        let incl = HashMap::from([(s.clone(), (9i64, host(9)))]);
-        let rej = HashMap::from([(s.clone(), 6i64)]);
+        let incl = HashMap::from([(s.clone(), HashSet::from([host(9), host(6)]))]);
+        let rej = HashMap::from([(s.clone(), HashSet::from([host(6)]))]);
         assert!(Validate::is_live_in_ancestry(&incl, &rej, &s));
     }
 
-    /// Applied at #4, rejected at #6 (and the equal-height boundary): the latest
-    /// inclusion was merged away, so the deploy is a genuine recovery candidate,
-    /// not live. The `>` rule mirrors `repeat_deploy`'s `rejection >= inclusion
-    /// => exempt`, keeping proposer and validator consistent.
+    /// Every inclusion host was rejected: the effect is absent from the base, so
+    /// the deploy is a genuine recovery candidate — not live. Re-proposing it is
+    /// how a merge-rejected loser's effect re-lands (convergence).
     #[test]
-    fn not_live_when_rejected_at_or_above_inclusion() {
+    fn not_live_when_all_inclusions_rejected() {
         let s = sig(2);
-        let incl = HashMap::from([(s.clone(), (4i64, host(4)))]);
+        let incl = HashMap::from([(s.clone(), HashSet::from([host(4)]))]);
         assert!(!Validate::is_live_in_ancestry(
             &incl,
-            &HashMap::from([(s.clone(), 6i64)]),
+            &HashMap::from([(s.clone(), HashSet::from([host(4)]))]),
             &s
         ));
+        // Multiple inclusions, all rejected → still not live.
+        let incl2 = HashMap::from([(s.clone(), HashSet::from([host(4), host(5)]))]);
         assert!(!Validate::is_live_in_ancestry(
-            &incl,
-            &HashMap::from([(s.clone(), 4i64)]),
+            &incl2,
+            &HashMap::from([(s.clone(), HashSet::from([host(4), host(5)]))]),
             &s
         ));
     }
@@ -1500,7 +1421,7 @@ mod recovery_liveness_tests {
     fn included_no_rejection_is_live_and_unseen_is_not() {
         let s = sig(3);
         assert!(Validate::is_live_in_ancestry(
-            &HashMap::from([(s.clone(), (9i64, host(9)))]),
+            &HashMap::from([(s.clone(), HashSet::from([host(9)]))]),
             &HashMap::new(),
             &s
         ));

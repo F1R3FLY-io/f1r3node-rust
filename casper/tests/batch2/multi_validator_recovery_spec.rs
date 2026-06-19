@@ -322,6 +322,9 @@ for(@_v <- @"multi-validator-shared") { Nil }
     )
     .await
     .expect("compute_parents_post_state over [R0, R1]");
+    // The merge now returns (sig, host); this spec asserts on the rejected sigs.
+    let rejected_sigs: Vec<prost::bytes::Bytes> =
+        rejected_sigs.into_iter().map(|(sig, _host)| sig).collect();
 
     assert!(
         rejected_slashes.is_empty(),

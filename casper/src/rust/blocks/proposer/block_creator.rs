@@ -17,6 +17,7 @@ use models::rust::casper::protocol::casper_message::{
 use models::rust::validator::Validator;
 use prost::bytes::Bytes;
 use rholang::rust::interpreter::system_processes::BlockData;
+use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use tracing;
 
 use crate::rust::blocks::proposer::propose_result::BlockCreatorResult;
@@ -46,6 +47,10 @@ pub struct PreparedUserDeploys {
     pub deploys: HashSet<Signed<DeployData>>,
     pub effective_cap: usize,
     pub cap_hit: bool,
+    /// Sigs read from the recovery buffer this round (the re-proposed losers).
+    /// `create` base-checks these against the execution base before re-executing;
+    /// fresh deploys never had an effect in the base and skip the check.
+    pub recovered_sigs: HashSet<Bytes>,
 }
 
 fn deploy_selection_reserve_tail_enabled() -> bool { true }
@@ -58,8 +63,6 @@ pub async fn prepare_user_deploys(
     rejected_deploy_buffer: Arc<
         Mutex<block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer>,
     >,
-    block_store: &KeyValueBlockStore,
-    runtime_manager: &RuntimeManager,
     self_validator: Option<&Bytes>,
 ) -> Result<PreparedUserDeploys, CasperError> {
     // The guard must not be held across the await points below (floor
@@ -129,123 +132,24 @@ pub async fn prepare_user_deploys(
     //  - ordinary deploys: skip when already included within the ancestry
     //    scope (the baseline duplicate guard);
     //
-    //  - recovered (merge-rejected) deploys: admitted ONLY on the sealed
-    //    verdict at the upcoming proposal's floor. Per-merge rejection records
-    //    are individual merges' claims; the sealed floor state is the canonical
-    //    ledger of which effects are in the finalized base. A deploy whose fate
-    //    is not yet sealed is HELD in the buffer — never re-executed while its
-    //    first copy's outcome is still being litigated above the floor — and
-    //    one whose inclusion the seal accepted is dropped permanently (its
-    //    effects are final; re-proposal would be double-execution).
-    //
-    // The floor is derived from the same parents + justifications the block
-    // will carry, so it equals the floor block_creator embeds (A1) and the one
-    // every validator re-derives in `repeat_deploy`. Without a parent
-    // (degenerate snapshot) recoveries are HELD — the conservative verdict.
+    //  - recovered (merge-rejected) deploys: re-proposed by their single owner.
+    //    The recovery buffer holds only deploys whose latest outcome was
+    //    rejection — `handle_valid_block` purges a deploy on block acceptance
+    //    and `compute_parents_post_state` re-adds it when a merge rejects it —
+    //    so a buffered deploy is by construction NOT in the execution base.
+    //    Re-executing one lands a genuine merge loser, never an already-applied
+    //    deploy, so no proposal-time liveness check is needed.
+    //    `Validate::repeat_deploy` remains the consensus backstop.
     let has_recovery_candidates = valid
         .iter()
         .any(|deploy| recovered_sigs.contains(&deploy.sig));
-    let (fate_resolver, floor_number) =
-        if has_recovery_candidates && !casper_snapshot.parents.is_empty() {
-            let ft_threshold = casper_snapshot
-                .on_chain_state
-                .shard_conf
-                .fault_tolerance_threshold;
-            let parent_hashes: Vec<BlockHash> = casper_snapshot
-                .parents
-                .iter()
-                .map(|p| p.block_hash.clone())
-                .collect();
-            let latest_messages: std::collections::BTreeMap<Validator, BlockHash> = casper_snapshot
-                .justifications
-                .iter()
-                .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
-                .collect();
-            let floor = crate::rust::finality::floor::finalized_floor(
-                &casper_snapshot.dag,
-                &parent_hashes,
-                &latest_messages,
-                ft_threshold,
-            )
-            .await?;
-            let floor_data = crate::rust::finality::floor_seal::floor_state_get_or_compute(
-                &casper_snapshot.dag,
-                block_store,
-                runtime_manager,
-                &floor.hash,
-                ft_threshold,
-            )
-            .await?;
-            let resolver = crate::rust::finality::floor_seal::FloorFateResolver::new(
-                &casper_snapshot.dag,
-                runtime_manager,
-                &floor.hash,
-                &floor_data,
-            )?;
-            (Some(resolver), floor.block_number)
-        } else {
-            (None, 0)
-        };
 
-    // Liveness in the execution base: a recovered deploy whose latest ancestry
-    // inclusion is not rejected at-or-above it is ALREADY applied in the parent
-    // post-state this block will execute against (the proposer builds on a
-    // covering parent's post-state via `compute_parents_post_state`'s
-    // descendant fast path). Re-executing it re-allocates its deterministic
-    // `new`-site cells (the content-twin) → IntegerAdd single-value violation →
-    // propose wedge. Drop such deploys from recovery and purge them from the
-    // buffer. This uses the SAME ancestry predicate as `Validate::repeat_deploy`,
-    // so the proposer never re-includes what validation would reject as a repeat
-    // — the proposer/validator split that produced the wedge.
-    let recovery_live_in_base: HashSet<Bytes> =
-        if has_recovery_candidates && !casper_snapshot.parents.is_empty() {
-            let init_parents: Vec<models::rust::block_metadata::BlockMetadata> = casper_snapshot
-                .parents
-                .iter()
-                .filter_map(|p| casper_snapshot.dag.lookup(&p.block_hash).ok().flatten())
-                .collect();
-            let (latest_inclusion, latest_rejection) =
-                crate::rust::validate::Validate::ancestry_inclusion_rejection(
-                    &casper_snapshot.dag,
-                    block_store,
-                    init_parents,
-                    casper_snapshot.on_chain_state.shard_conf.deploy_lifespan as i32,
-                    &recovered_sigs,
-                );
-            recovered_sigs
-                .iter()
-                .filter(|sig| {
-                    crate::rust::validate::Validate::is_live_in_ancestry(
-                        &latest_inclusion,
-                        &latest_rejection,
-                        sig,
-                    )
-                })
-                .cloned()
-                .collect()
-        } else {
-            HashSet::new()
-        };
-
-    use crate::rust::finality::floor_seal::DeployFateAtFloor;
     let mut valid_unique: HashSet<Signed<DeployData>> = HashSet::new();
     let mut already_in_scope: Vec<Signed<DeployData>> = Vec::new();
     let mut recoveries_admitted = 0usize;
-    let mut recoveries_held = 0usize;
     let mut recoveries_not_owned = 0usize;
-    let mut recoveries_sealed_accepted: Vec<Bytes> = Vec::new();
-    let mut recoveries_already_applied: Vec<Bytes> = Vec::new();
     for deploy in valid {
         if recovered_sigs.contains(&deploy.sig) {
-            // Already applied (live) in the execution base: re-executing would
-            // double-apply its deterministic cells (content-twin). Drop it and
-            // purge from the buffer below. Authoritative over the sealed-fate
-            // gate, which judges only finalized state and misses a deploy whose
-            // effect is live in the speculative parent post-state.
-            if recovery_live_in_base.contains(&deploy.sig) {
-                recoveries_already_applied.push(deploy.sig.clone());
-                continue;
-            }
             // Single-owner recovery: only the validator that proposed this
             // deploy's indexed inclusion re-proposes it. Without this, every
             // node holding the rejected sig would re-propose it concurrently,
@@ -270,28 +174,14 @@ pub async fn prepare_user_deploys(
                 recoveries_not_owned += 1;
                 continue;
             }
-            let Some(resolver) = fate_resolver.as_ref() else {
-                recoveries_held += 1;
-                continue;
-            };
-            match resolver.fate(&casper_snapshot.dag, &deploy.sig)? {
-                DeployFateAtFloor::SealedRejected => {
-                    recoveries_admitted += 1;
-                    tracing::debug!(
-                        target: "f1r3.trace.fateprobe",
-                        event = "recovery_admitted",
-                        sig = %hex::encode(&deploy.sig[..deploy.sig.len().min(16)]),
-                        "recovered loser admitted for re-execution"
-                    );
-                    valid_unique.insert(deploy);
-                }
-                DeployFateAtFloor::SealedAccepted => {
-                    recoveries_sealed_accepted.push(deploy.sig.clone());
-                }
-                DeployFateAtFloor::Unsealed => {
-                    recoveries_held += 1;
-                }
-            }
+            recoveries_admitted += 1;
+            tracing::debug!(
+                target: "f1r3.trace.fateprobe",
+                event = "recovery_admitted",
+                sig = %hex::encode(&deploy.sig[..deploy.sig.len().min(16)]),
+                "recovered loser admitted for re-execution (owned, not in base)"
+            );
+            valid_unique.insert(deploy);
         } else if casper_snapshot.deploys_in_scope.contains(&deploy.sig) {
             already_in_scope.push(deploy);
         } else {
@@ -299,29 +189,11 @@ pub async fn prepare_user_deploys(
         }
     }
 
-    // Purge recoveries whose effect is final (sealed-accepted) or already live
-    // in the execution base (already-applied) so the buffer cannot resurrect
-    // them and drive re-execution.
-    if !recoveries_sealed_accepted.is_empty() || !recoveries_already_applied.is_empty() {
-        let mut buffer_guard = rejected_deploy_buffer
-            .lock()
-            .map_err(|e| CasperError::LockError(e.to_string()))?;
-        for sig in recoveries_sealed_accepted
-            .iter()
-            .chain(recoveries_already_applied.iter())
-        {
-            buffer_guard.remove_by_sig(sig)?;
-        }
-    }
     if has_recovery_candidates {
         tracing::info!(
-            "Prepare user deploys: recovery gate at floor #{}: admitted={}, held={}, not-owned={}, sealed-accepted dropped={}, already-applied dropped={}",
-            floor_number,
+            "Prepare user deploys: recovery gate: admitted={}, not-owned={}",
             recoveries_admitted,
-            recoveries_held,
-            recoveries_not_owned,
-            recoveries_sealed_accepted.len(),
-            recoveries_already_applied.len()
+            recoveries_not_owned
         );
     }
 
@@ -421,6 +293,7 @@ pub async fn prepare_user_deploys(
             deploys: valid_unique,
             effective_cap: max_user_deploys,
             cap_hit: false,
+            recovered_sigs: recovered_sigs.clone(),
         });
     }
 
@@ -482,6 +355,7 @@ pub async fn prepare_user_deploys(
         deploys: selected,
         effective_cap: max_user_deploys,
         cap_hit: true,
+        recovered_sigs,
     })
 }
 
@@ -688,7 +562,7 @@ pub async fn create(
     let shard_id = casper_snapshot.on_chain_state.shard_conf.shard_name.clone();
 
     // Prepare deploys
-    let (user_deploys, _, _) = {
+    let (user_deploys, recovered_sigs) = {
         let t = std::time::Instant::now();
         let prepared = prepare_user_deploys(
             casper_snapshot,
@@ -696,8 +570,6 @@ pub async fn create(
             now_millis,
             deploy_storage.clone(),
             rejected_deploy_buffer.clone(),
-            block_store,
-            runtime_manager,
             Some(&validator_identity.public_key.bytes),
         )
         .await?;
@@ -734,7 +606,7 @@ pub async fn create(
         );
         metrics::histogram!(BLOCK_CREATOR_PREPARE_USER_DEPLOYS_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
             .record(t.elapsed().as_secs_f64());
-        (v, prepared.effective_cap, prepared.cap_hit)
+        (v, prepared.recovered_sigs)
     };
     let dummy_deploys = {
         let t = std::time::Instant::now();
@@ -801,7 +673,58 @@ pub async fn create(
         "source" => CASPER_METRICS_SOURCE
     )
     .record(__merge_pre_t.elapsed().as_secs_f64());
-    let (_pre_state, _rejected_user_sigs, rejected_slashes) = merge_pre_info;
+    let (pre_state, _rejected_user_sigs, rejected_slashes) = merge_pre_info;
+
+    // Base-check: drop any recovered deploy whose effect is already in the
+    // execution base. A merge can KEEP a deploy by absorbing its effect from a
+    // parent's body — without that deploy appearing in the merge's own
+    // body.deploys, so the recovery buffer is never purged of it — and a
+    // fast-pathed block then builds directly on such a base. Re-executing it
+    // would re-create the deploy's per-deploy number cells (content-twin) and
+    // re-charge its vault. Reading the actual pre-state catches this where the
+    // buffer-membership and ancestry paper-trail are blind, for both merged and
+    // fast-pathed bases. On a check error we skip (conservative: never risk the
+    // twin); the deploy stays buffered and is retried.
+    if !recovered_sigs.is_empty() {
+        let base_state = Blake2b256Hash::from_bytes_prost(&pre_state);
+        let block_store_ref: &KeyValueBlockStore = &*block_store;
+        let before = all_deploys.len();
+        let mut skipped: usize = 0;
+        all_deploys.retain(|deploy| {
+            if !recovered_sigs.contains(&deploy.sig) {
+                return true;
+            }
+            match interpreter_util::recovered_deploy_effect_in_base(
+                &casper_snapshot.dag,
+                block_store_ref,
+                runtime_manager,
+                &base_state,
+                &deploy.sig,
+            ) {
+                Ok(false) => true,
+                Ok(true) => {
+                    skipped += 1;
+                    false
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        "Recovery base-check failed for {}: {} — skipping re-execution to avoid content-twin",
+                        hex::encode(&deploy.sig[..std::cmp::min(8, deploy.sig.len())]),
+                        err
+                    );
+                    skipped += 1;
+                    false
+                }
+            }
+        });
+        if skipped > 0 {
+            tracing::info!(
+                "Recovery base-check: skipped {} of {} candidate deploy(s) already applied in the base",
+                skipped,
+                before
+            );
+        }
+    }
 
     // Union own slashes with merge-rejected slashes, dedup by
     // `invalid_block_hash`. Own detections take priority — any
@@ -1053,7 +976,7 @@ fn package_block(
     pre_state_hash: Bytes,
     post_state_hash: Bytes,
     deploys: Vec<ProcessedDeploy>,
-    rejected_deploys: Vec<Bytes>,
+    rejected_deploys: Vec<(Bytes, BlockHash)>,
     system_deploys: Vec<ProcessedSystemDeploy>,
     bonds_map: Vec<Bond>,
     shard_id: String,
@@ -1068,7 +991,7 @@ fn package_block(
 
     let rejected_deploys_wrapped: Vec<RejectedDeploy> = rejected_deploys
         .into_iter()
-        .map(|r| RejectedDeploy { sig: r })
+        .map(|(sig, host)| RejectedDeploy { sig, host })
         .collect();
 
     let body = Body {

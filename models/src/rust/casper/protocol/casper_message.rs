@@ -425,12 +425,25 @@ impl Header {
 #[derive(Debug, Clone, PartialEq)]
 pub struct RejectedDeploy {
     pub sig: ByteString,
+    /// Source block of the rejected inclusion — the block whose chain the merge
+    /// rejected. Per-inclusion key for the recovery/repeat content-twin guard.
+    pub host: ByteString,
 }
 
 impl RejectedDeploy {
-    pub fn from_proto(proto: RejectedDeployProto) -> Self { Self { sig: proto.sig } }
+    pub fn from_proto(proto: RejectedDeployProto) -> Self {
+        Self {
+            sig: proto.sig,
+            host: proto.host,
+        }
+    }
 
-    pub fn to_proto(self) -> RejectedDeployProto { RejectedDeployProto { sig: self.sig } }
+    pub fn to_proto(self) -> RejectedDeployProto {
+        RejectedDeployProto {
+            sig: self.sig,
+            host: self.host,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

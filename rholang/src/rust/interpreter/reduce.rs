@@ -337,6 +337,17 @@ impl DebruijnInterpreter {
         data: ListParWithRandom,
         persistent: bool,
     ) -> Result<DispatchType, InterpreterError> {
+        // DIAG: map a produce's channel blake-hash (the merge/rspace channel key)
+        // to its decoded Rholang identity, so a doubled merge cell (e.g. 593edd3f)
+        // can be tied to the name/registry/vault it actually is.
+        tracing::trace!(
+            target: "f1r3.trace.chanid",
+            blake = %hex::encode(
+                rspace_plus_plus::rspace::hashing::stable_hash_provider::hash(&chan).bytes()
+            ),
+            chan = ?chan,
+            "produce channel identity"
+        );
         self.update_mergeable_channels(&chan).await;
         let produce_result = self
             .space

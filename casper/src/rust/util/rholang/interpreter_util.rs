@@ -181,12 +181,14 @@ pub async fn validate_block_checkpoint(
 
     match computed_parents_info {
         Ok((computed_pre_state_hash, rejected_deploys, _rejected_slashes)) => {
+            // (sig, host) pairs: validate the host too, so a proposer cannot forge
+            // which inclusion a rejection blames (the per-inclusion guard relies on it).
             let rejected_deploy_ids: HashSet<_> = rejected_deploys.iter().cloned().collect();
             let block_rejected_deploy_sigs: HashSet<_> = block
                 .body
                 .rejected_deploys
                 .iter()
-                .map(|d| d.sig.clone())
+                .map(|d| (d.sig.clone(), d.host.clone()))
                 .collect();
 
             if incoming_pre_state_hash != computed_pre_state_hash {
@@ -510,7 +512,8 @@ pub async fn compute_deploys_checkpoint(
         StateHash,
         StateHash,
         Vec<ProcessedDeploy>,
-        Vec<prost::bytes::Bytes>,
+        // Rejected user deploys as (sig, host) — carried into the block body.
+        Vec<(prost::bytes::Bytes, BlockHash)>,
         Vec<ProcessedSystemDeploy>,
         Vec<Bond>,
     ),
@@ -672,6 +675,117 @@ pub fn build_block_index(
     Ok(block_index)
 }
 
+/// True iff a recovered deploy's effect is already present in `base_state` — i.e.
+/// the deploy already executed in the lineage this block builds on (the "flip":
+/// kept on a branch the base descends from, while a sibling merge rejected it
+/// into the recovery buffer). Re-executing such a deploy re-creates its per-deploy
+/// number cells (content-twin) and re-charges its vault, so the proposer must skip
+/// it. The check reads the actual pre-state, so it is correct for both merged and
+/// fast-pathed bases — exactly where buffer membership and the ancestry
+/// paper-trail are blind.
+///
+/// Signal: the deploy's own number-cell produces. Each carries a sig-derived rnd,
+/// so its `Produce` identity (channel + datum + persist) is unique to this deploy
+/// and a match is false-positive-free even on a shared channel. We rebuild the
+/// deploy's per-deploy event-log index from the block that executed it, take its
+/// created-and-not-destroyed produces on number channels, and test each against
+/// the base with the same `Datum.source == Produce` match the block index uses.
+/// Any present ⇒ the deploy ran in this base.
+pub fn recovered_deploy_effect_in_base(
+    dag: &KeyValueDagRepresentation,
+    block_store: &KeyValueBlockStore,
+    runtime_manager: &RuntimeManager,
+    base_state: &Blake2b256Hash,
+    sig: &Bytes,
+) -> Result<bool, CasperError> {
+    // The block that executed the deploy. The deploy index records `body.deploys`
+    // inclusions only, so the resolved block carries the deploy's `deploy_log` and
+    // a per-index mergeable map. A deploy with no such block never ran -> not in base.
+    let Some(origin_hash) = dag
+        .lookup_by_deploy_id(&sig.to_vec())
+        .map_err(CasperError::KvStoreError)?
+    else {
+        return Ok(false);
+    };
+    let Some(origin) = block_store.get(&origin_hash)? else {
+        return Ok(false);
+    };
+    let Some(idx) = origin
+        .body
+        .deploys
+        .iter()
+        .position(|pd| pd.deploy.sig == *sig)
+    else {
+        return Ok(false);
+    };
+
+    // The deploy's own number channels, aligned per-deploy by index.
+    let mergeable_chs = runtime_manager.load_mergeable_channels(
+        &origin.body.state.post_state_hash,
+        origin.sender.clone(),
+        origin.seq_num,
+    )?;
+    let Some(merge_chs) = mergeable_chs.get(idx) else {
+        return Ok(false);
+    };
+    if merge_chs.is_empty() {
+        return Ok(false);
+    }
+
+    // Value-agnostic channel check. The collision channel is sig-derived, so its
+    // NAME is stable across executions even when its VALUE is not (gas/PoS amounts,
+    // map contents differ by base) — content matching the datum is therefore
+    // unreliable; channel presence is not.
+    //
+    // Restrict to the deploy's OWN per-deploy cells: a channel this deploy touched
+    // (in its mergeable set) that did NOT exist in the block-that-executed-it's
+    // pre-state is one this deploy created (its gas / `new`-site cells, sig-unique).
+    // Channels that pre-existed (the shared PoS / vault state the pre-charge reads)
+    // carry data unrelated to this deploy and are excluded — checking them would
+    // false-positive. If one of the deploy's own created cells is already populated
+    // in the base, the deploy already executed in this base's lineage, so
+    // re-executing it would double its cell (content-twin); skip it.
+    let origin_pre = Blake2b256Hash::from_bytes_prost(&origin.body.state.pre_state_hash);
+    let origin_pre_reader = runtime_manager
+        .history_repo
+        .get_history_reader(&origin_pre)
+        .map_err(CasperError::HistoryError)?;
+    let base_reader = runtime_manager
+        .history_repo
+        .get_history_reader(base_state)
+        .map_err(CasperError::HistoryError)?;
+    for (ch, _) in merge_chs.iter() {
+        let created_by_deploy = origin_pre_reader
+            .get_data(ch)
+            .map_err(CasperError::HistoryError)?
+            .is_empty();
+        if !created_by_deploy {
+            continue;
+        }
+        let in_base = !base_reader
+            .get_data(ch)
+            .map_err(CasperError::HistoryError)?
+            .is_empty();
+        tracing::debug!(
+            target: "f1r3.trace.basecheck",
+            sig = %hex::encode(&sig[..sig.len().min(8)]),
+            channel = %hex::encode(&ch.bytes()[..6]),
+            in_base,
+            "base-check per-deploy created cell"
+        );
+        if in_base {
+            return Ok(true);
+        }
+    }
+    tracing::debug!(
+        target: "f1r3.trace.basecheck",
+        sig = %hex::encode(&sig[..sig.len().min(8)]),
+        merge_chs = merge_chs.len(),
+        "base-check: deploy effect NOT found in base (will re-execute)"
+    );
+    Ok(false)
+}
+
 /// Upper bound on how far below the floor a straddling parent's cone may fork.
 /// Purely anti-DoS: a tip forked pathologically deep would otherwise force
 /// every merge to walk and conflict-check history back to its fork point. The
@@ -707,7 +821,9 @@ pub async fn compute_parents_post_state(
 ) -> Result<
     (
         StateHash,
-        Vec<Bytes>,
+        // Rejected user deploys as (sig, host): host = the rejected inclusion's
+        // source block, carried into the body for the per-inclusion guard.
+        Vec<(Bytes, BlockHash)>,
         Vec<crate::rust::merging::rejected_slash::RejectedSlash>,
     ),
     CasperError,
@@ -1128,11 +1244,9 @@ pub async fn compute_parents_post_state(
                     out
                 };
 
-            // Strip block hashes; the cache and callers only need the deploy sigs.
-            let rejected: Vec<Bytes> = rejected_user_pairs
-                .into_iter()
-                .map(|(sig, _)| sig)
-                .collect();
+            // Keep (sig, host): the body's rejected_deploys carry the host so the
+            // per-inclusion content-twin guard can tell which inclusion was rejected.
+            let rejected: Vec<(Bytes, BlockHash)> = rejected_user_pairs;
 
             let computed_state = prost::bytes::Bytes::copy_from_slice(&state.bytes());
             runtime_manager.put_cached_parents_post_state(

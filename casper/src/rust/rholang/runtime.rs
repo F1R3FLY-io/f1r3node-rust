@@ -412,9 +412,25 @@ impl RuntimeOps {
                 match refund_result {
                     Either::Right(_) => {
                         // Get mergeable channels data
-                        let mergeable_channels_data = self
+                        let mergeable_channels_data = match self
                             .get_number_channels_data(&eval_collector_state.mergeable_channels)
-                            .await?;
+                            .await
+                        {
+                            Ok(d) => d,
+                            Err(e) => {
+                                // DIAG (content-twin discriminator): which deploy's
+                                // execution observed the multi-value cell. Cross-ref with
+                                // recovery_admitted: if this sig is a recovered loser, the
+                                // twin is recovery re-execution onto a base copy.
+                                tracing::error!(
+                                    target: "f1r3.trace.twin",
+                                    deploy_sig = %deploy_sig_hex,
+                                    error = %e,
+                                    "TWIN: get_number_channels_data failed during deploy execution"
+                                );
+                                return Err(e);
+                            }
+                        };
 
                         let deploy_log = mem::take(&mut eval_collector_state.event_log);
                         if let Some(rss_kb) =
@@ -585,6 +601,32 @@ impl RuntimeOps {
                     // (the bonds/transfer silent-loss). Surface it instead — a
                     // wrong-but-loud error is recoverable; silent corruption is not.
                     MergeType::IntegerAdd => {
+                        // DIAG (content-twin discriminator): which deploy is executing
+                        // when the collision is observed, and the source produce of each
+                        // datum (identical-modulo-value sources => same logical create
+                        // re-executed; distinct => two writers).
+                        let datum_srcs: Vec<String> = ch_values
+                            .iter()
+                            .map(|d| {
+                                format!(
+                                    "val={:?},src={},det={},persist={}",
+                                    RholangMergingLogic::try_get_number_with_rnd(&d.a)
+                                        .map(|(n, _)| n),
+                                    hex::encode(
+                                        &d.source.hash.bytes()
+                                            [..8.min(d.source.hash.bytes().len())]
+                                    ),
+                                    d.source.is_deterministic,
+                                    d.persist
+                                )
+                            })
+                            .collect();
+                        tracing::error!(
+                            target: "f1r3.trace.twin",
+                            channel = %hex::encode(ch_hash.bytes()),
+                            datums = ?datum_srcs,
+                            "TWIN: IntegerAdd valueStore multi-value at execution"
+                        );
                         return Err(CasperError::RuntimeError(format!(
                             "number channel {} holds {} values {:?}; IntegerAdd single-value \
                              invariant violated — concurrent single-cell writes must be \

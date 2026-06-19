@@ -880,6 +880,9 @@ async fn fs_seal_must_preserve_both_concurrent_single_value_cell_writes() {
             Some(shard_id.clone()),
         )
         .unwrap();
+        // Capture sigs before the deploys are moved into the proposal calls.
+        let ka_sig = hex::encode(&set_a.sig[..8]);
+        let kb_sig = hex::encode(&set_b.sig[..8]);
         // Siblings: not propagated between creation, so both consume the same
         // current cell value.
         nodes[0].add_block_from_deploys(&[set_a]).await.unwrap();
@@ -900,6 +903,22 @@ async fn fs_seal_must_preserve_both_concurrent_single_value_cell_writes() {
         let merge = TestNode::propagate_block_at_index(&mut nodes, 2, &[noop])
             .await
             .unwrap();
+        // DIAG: per-round labels + decoded @7 so the recovery walkthrough can
+        // track writes by name (Ka{r}/Kb{r}) and read the cell value at each
+        // height instead of by raw signature.
+        let cell_now =
+            rspace_util::get_data_at_public_channel_block(&merge, 7, &nodes[0].runtime_manager)
+                .await;
+        tracing::info!(
+            target: "f1r3.trace.cell",
+            round = r,
+            ka_sig = %ka_sig,
+            kb_sig = %kb_sig,
+            merge_block = %hex::encode(&merge.block_hash[..6]),
+            merge_rejected = merge.body.rejected_deploys.len(),
+            cell = ?cell_now,
+            "round cell state: Ka{r}=ka_sig Kb{r}=kb_sig",
+        );
         last_tip = Some(merge);
     }
     let tip = last_tip.expect("rounds produced a merge block");
@@ -954,5 +973,88 @@ async fn fs_seal_must_preserve_both_concurrent_single_value_cell_writes() {
         floor.block_number,
         rounds,
         fs_cell,
+    );
+}
+
+/// Focused guard for the recovery base-check (`recovered_deploy_effect_in_base`).
+///
+/// A merge-rejected deploy may be re-proposed by recovery, but it must be
+/// re-executed ONLY when its effect is not already in the execution base. Every
+/// deploy allocates a sig-derived per-deploy number cell (via pre-charge); a
+/// recovered deploy whose cell is already present in the base is the "flip" (kept
+/// on a branch the base descends from while a sibling merge rejected it), and
+/// re-executing it would re-create that cell — the content-twin. The base-check
+/// must therefore return:
+///   - `true`  (skip)    when the deploy's per-deploy cell IS in the base, and
+///   - `false` (execute) when it is NOT (a genuine loser that must re-land).
+///
+/// This exercises both directions against a real executed deploy without
+/// depending on the separate finalized-state convergence (`#71`) the bundled
+/// `fs_seal_*` test also asserts: base = the deploy's own post-state (effect
+/// present) and base = the pre-state it built on (effect absent).
+#[tokio::test]
+async fn recovery_base_check_skips_only_when_effect_is_in_base() {
+    use casper::rust::util::rholang::interpreter_util::recovered_deploy_effect_in_base;
+    use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+
+    let genesis = GenesisBuilder::new()
+        .build_genesis_with_parameters(Some(
+            GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(3)),
+        ))
+        .await
+        .expect("Failed to build genesis");
+
+    let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None, None)
+        .await
+        .unwrap();
+    let shard_id = genesis.genesis_block.shard_id.clone();
+
+    // Any user deploy is pre-charged, so it allocates its own sig-derived number
+    // cell — the per-deploy cell the base-check keys on.
+    let deploy = construct_deploy::source_deploy_now(
+        "@7!(42)".to_string(),
+        None,
+        None,
+        Some(shard_id.clone()),
+    )
+    .unwrap();
+    let sig = deploy.sig.clone();
+
+    let block = nodes[0].add_block_from_deploys(&[deploy]).await.unwrap();
+
+    let dag = nodes[0].block_dag_storage.get_representation();
+    let block_post = Blake2b256Hash::from_bytes_prost(&block.body.state.post_state_hash);
+    let genesis_post =
+        Blake2b256Hash::from_bytes_prost(&genesis.genesis_block.body.state.post_state_hash);
+
+    // base = the deploy's own post-state: its cell is present -> skip (true).
+    let in_own_post = recovered_deploy_effect_in_base(
+        &dag,
+        &nodes[0].block_store,
+        &nodes[0].runtime_manager,
+        &block_post,
+        &sig,
+    )
+    .expect("base-check must not error on a healthy block");
+    assert!(
+        in_own_post,
+        "base-check must return true when the deploy's per-deploy cell is present in \
+         the base (re-executing would content-twin it)"
+    );
+
+    // base = the pre-state the deploy built on (genesis): its cell is absent ->
+    // execute (false). This is the genuine-loser case recovery must re-land.
+    let in_genesis = recovered_deploy_effect_in_base(
+        &dag,
+        &nodes[0].block_store,
+        &nodes[0].runtime_manager,
+        &genesis_post,
+        &sig,
+    )
+    .expect("base-check must not error against genesis state");
+    assert!(
+        !in_genesis,
+        "base-check must return false when the deploy's effect is absent from the base \
+         (a genuine merge loser that must re-land)"
     );
 }

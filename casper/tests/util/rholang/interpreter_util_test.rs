@@ -180,7 +180,7 @@ impl TestContext {
             StateHash,
             StateHash,
             Vec<ProcessedDeploy>,
-            Vec<Bytes>,
+            Vec<(Bytes, models::rust::block_hash::BlockHash)>,
             Vec<ProcessedSystemDeploy>,
             Vec<Bond>,
         ),

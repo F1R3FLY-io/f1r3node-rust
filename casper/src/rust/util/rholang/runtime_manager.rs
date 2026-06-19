@@ -101,7 +101,9 @@ pub struct ParentsPostStateCacheKey {
 
 pub type ParentsPostStateCacheVal = (
     StateHash,
-    Vec<prost::bytes::Bytes>,
+    // Rejected user deploys as (sig, host) — host is the rejected inclusion's
+    // source block, carried into the block body for the per-inclusion guard.
+    Vec<(prost::bytes::Bytes, models::rust::block_hash::BlockHash)>,
     Vec<crate::rust::merging::rejected_slash::RejectedSlash>,
 );
 

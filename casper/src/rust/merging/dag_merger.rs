@@ -49,8 +49,11 @@ fn is_sub_multiset(sub: &[Vec<u8>], sup: &[Vec<u8>]) -> bool {
 }
 
 /// Finalized counterparties for a merge — the enforcement window between the
-/// base floor and the fork-point cover of the conflict scope. Built by
-/// `floor_seal::enforcement_window`; empty in the common no-lag case.
+/// base floor and the fork-point cover of the conflict scope. Currently unused:
+/// its only producer (`floor_seal::enforcement_window`) was removed in the
+/// buffer-drain change, so every live caller passes `None`. Retained (dead-but-
+/// wired through `merge`/`resolve_conflicts`) pending the follow-up that strips
+/// the `final_context` parameter end-to-end.
 pub struct FinalContext {
     /// Seal-accepted chains in the window: conflict counterparties whose
     /// effects are in the base. Never merged, never re-litigated.
@@ -609,90 +612,87 @@ pub fn merge(
     //   succ_rej / race_rej — same vs the rejected window chains.
     // This discriminates "successor force-rejected (the bug)" from "genuine race
     // / stale-base recovery (force-rejection correct, bug elsewhere)".
-    let force_reject_logger =
-        |branch: &HashableSet<DeployChainIndex>,
-         conflicts_final: bool,
-         enforced_sig: bool,
-         depends_rej: bool| {
-            use rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex;
-            let branch_log = branch
+    let force_reject_logger = |branch: &HashableSet<DeployChainIndex>,
+                               conflicts_final: bool,
+                               enforced_sig: bool,
+                               depends_rej: bool| {
+        use rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex;
+        let branch_log = branch
+            .0
+            .iter()
+            .map(|c| &c.event_log_index)
+            .try_fold(EventLogIndex::empty(), |acc, x| {
+                EventLogIndex::combine(&acc, x)
+            })
+            .ok();
+        let consumed: std::collections::HashSet<_> = branch_log
+            .as_ref()
+            .map(|bl| bl.produces_consumed.0.iter().cloned().collect())
+            .unwrap_or_default();
+        let fc_sig = |fc: &DeployChainIndex| -> String {
+            fc.deploys_with_cost
                 .0
                 .iter()
-                .map(|c| &c.event_log_index)
-                .try_fold(EventLogIndex::empty(), |acc, x| {
-                    EventLogIndex::combine(&acc, x)
-                })
-                .ok();
-            let consumed: std::collections::HashSet<_> = branch_log
-                .as_ref()
-                .map(|bl| bl.produces_consumed.0.iter().cloned().collect())
-                .unwrap_or_default();
-            let fc_sig = |fc: &DeployChainIndex| -> String {
-                fc.deploys_with_cost
-                    .0
-                    .iter()
-                    .filter(|d| !is_system_deploy_id(&d.deploy_id))
-                    .map(|d| hex::encode(&d.deploy_id[..d.deploy_id.len().min(8)]))
-                    .collect::<Vec<_>>()
-                    .join("/")
-            };
-            let classify = |chains: &[DeployChainIndex]| -> (Vec<String>, Vec<String>) {
-                let (mut succ, mut race) = (Vec::new(), Vec::new());
-                for fc in chains {
-                    let out = merging_logic::produces_created_and_not_destroyed(
-                        &fc.event_log_index,
-                    );
-                    let inp: std::collections::HashSet<_> =
-                        fc.event_log_index.produces_consumed.0.iter().collect();
-                    let label = fc_sig(fc);
-                    if label.is_empty() {
-                        continue;
-                    }
-                    if consumed.iter().any(|p| out.0.contains(p)) {
-                        succ.push(label.clone());
-                    }
-                    if consumed.iter().any(|p| inp.contains(p)) {
-                        race.push(label);
-                    }
-                }
-                (succ, race)
-            };
-            let (succ_acc, race_acc) = classify(&final_set.accepted);
-            let (succ_rej, race_rej) = classify(&final_set.rejected);
-            for chain in branch.0.iter() {
-                let sigs: Vec<String> = chain
-                    .deploys_with_cost
-                    .0
-                    .iter()
-                    .filter(|d| !is_system_deploy_id(&d.deploy_id))
-                    .map(|d| hex::encode(&d.deploy_id[..d.deploy_id.len().min(8)]))
-                    .collect();
-                if sigs.is_empty() {
+                .filter(|d| !is_system_deploy_id(&d.deploy_id))
+                .map(|d| hex::encode(&d.deploy_id[..d.deploy_id.len().min(8)]))
+                .collect::<Vec<_>>()
+                .join("/")
+        };
+        let classify = |chains: &[DeployChainIndex]| -> (Vec<String>, Vec<String>) {
+            let (mut succ, mut race) = (Vec::new(), Vec::new());
+            for fc in chains {
+                let out = merging_logic::produces_created_and_not_destroyed(&fc.event_log_index);
+                let inp: std::collections::HashSet<_> =
+                    fc.event_log_index.produces_consumed.0.iter().collect();
+                let label = fc_sig(fc);
+                if label.is_empty() {
                     continue;
                 }
-                let mut nonfold_chans: Vec<String> = Vec::new();
-                for e in chain.state_changes.datums_changes.iter() {
-                    let ch = e.key();
-                    if !chain.event_log_index.number_channels_data.contains_key(ch) {
-                        nonfold_chans.push(hex::encode(&ch.bytes()[..6]));
-                    }
+                if consumed.iter().any(|p| out.0.contains(p)) {
+                    succ.push(label.clone());
                 }
-                tracing::info!(
-                    target: "f1r3.trace.fs_floor",
-                    event = "force_rejected_branch",
-                    sigs = %sigs.join(","),
-                    conflicts_final,
-                    enforced_sig,
-                    depends_rej,
-                    nonfold_channels = %nonfold_chans.join(" "),
-                    succ_acc = %succ_acc.join(","),
-                    race_acc = %race_acc.join(","),
-                    succ_rej = %succ_rej.join(","),
-                    race_rej = %race_rej.join(","),
-                    "enforcement force-rejected branch"
-                );
+                if consumed.iter().any(|p| inp.contains(p)) {
+                    race.push(label);
+                }
             }
+            (succ, race)
         };
+        let (succ_acc, race_acc) = classify(&final_set.accepted);
+        let (succ_rej, race_rej) = classify(&final_set.rejected);
+        for chain in branch.0.iter() {
+            let sigs: Vec<String> = chain
+                .deploys_with_cost
+                .0
+                .iter()
+                .filter(|d| !is_system_deploy_id(&d.deploy_id))
+                .map(|d| hex::encode(&d.deploy_id[..d.deploy_id.len().min(8)]))
+                .collect();
+            if sigs.is_empty() {
+                continue;
+            }
+            let mut nonfold_chans: Vec<String> = Vec::new();
+            for e in chain.state_changes.datums_changes.iter() {
+                let ch = e.key();
+                if !chain.event_log_index.number_channels_data.contains_key(ch) {
+                    nonfold_chans.push(hex::encode(&ch.bytes()[..6]));
+                }
+            }
+            tracing::info!(
+                target: "f1r3.trace.fs_floor",
+                event = "force_rejected_branch",
+                sigs = %sigs.join(","),
+                conflicts_final,
+                enforced_sig,
+                depends_rej,
+                nonfold_channels = %nonfold_chans.join(" "),
+                succ_acc = %succ_acc.join(","),
+                race_acc = %race_acc.join(","),
+                succ_rej = %succ_rej.join(","),
+                race_rej = %race_rej.join(","),
+                "enforcement force-rejected branch"
+            );
+        }
+    };
 
     // Resolve conflicts: enforce finalized decisions, then select the
     // cost-optimal rejection set among the survivors.
@@ -1009,6 +1009,50 @@ pub fn merge(
         .collect();
     applied_user.sort();
     applied_user.dedup();
+
+    // DIAG: kept (applied) chains' channels + system status — symmetric to
+    // rejected_chain_channels but INCLUDES system chains, so a run reveals
+    // whether the chain CREATING a doubled cell is a user pre-charge chain (and
+    // which deployer sig owns it) or a system (CloseBlock/Slash) chain.
+    for branch in resolved.to_merge.iter() {
+        for chain in branch.0.iter() {
+            let user_sigs: Vec<String> = chain
+                .deploys_with_cost
+                .0
+                .iter()
+                .filter(|d| !is_system_deploy_id(&d.deploy_id))
+                .map(|d| hex::encode(&d.deploy_id[..d.deploy_id.len().min(8)]))
+                .collect();
+            let is_sys = chain
+                .deploys_with_cost
+                .0
+                .iter()
+                .any(|d| is_system_deploy_id(&d.deploy_id));
+            let mut chans: Vec<String> = Vec::new();
+            for e in chain.state_changes.datums_changes.iter() {
+                let ch = e.key();
+                let foldable = chain.event_log_index.number_channels_data.contains_key(ch);
+                chans.push(format!(
+                    "{}:{}r{}a{}",
+                    hex::encode(&ch.bytes()[..6]),
+                    if foldable { "F" } else { "N" },
+                    e.value().removed.len(),
+                    e.value().added.len(),
+                ));
+            }
+            if chans.is_empty() {
+                continue;
+            }
+            tracing::info!(
+                target: "f1r3.trace.fs_floor",
+                event = "kept_chain_channels",
+                is_sys,
+                sigs = %user_sigs.join(","),
+                channels = %chans.join(" "),
+                "kept chain touched channels (is_sys = system deploy)"
+            );
+        }
+    }
 
     let rejected = resolved.rejected;
 

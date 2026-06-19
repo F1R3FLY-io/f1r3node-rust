@@ -1058,10 +1058,26 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
                 .map_err(|_| {
                     CasperError::RuntimeError("Failed to acquire deploy_storage lock".to_string())
                 })?
+                .remove(deploys.clone())?;
+
+            // The rejected-deploy (recovery) buffer is the merge-loser pool; a
+            // deploy that lands in an accepted block is applied, so it leaves the
+            // buffer exactly as it leaves the pending pool. Re-entry happens only
+            // when a later merge rejects it (the populate in
+            // compute_parents_post_state). This keeps the buffer invariant
+            // "membership == not in the execution base", so recovery never
+            // re-executes an already-applied deploy (the content-twin).
+            self.rejected_deploy_buffer
+                .lock()
+                .map_err(|_| {
+                    CasperError::RuntimeError(
+                        "Failed to acquire rejected_deploy_buffer lock".to_string(),
+                    )
+                })?
                 .remove(deploys)?;
 
             tracing::debug!(
-                "Removed {} deploys from pending pool for accepted block {} at {}.",
+                "Removed {} deploys from pending pool and recovery buffer for accepted block {} at {}.",
                 deploys_count,
                 block_hash,
                 block_number
@@ -1576,19 +1592,20 @@ async fn compute_last_finalized_block(
                                 .remove(deploys)?;
 
                             // The rejected-deploy buffer is intentionally NOT
-                            // purged on finalization. A deploy present in a
-                            // finalized block's body — whether executed
-                            // (body.deploys) or rejected (body.rejected_deploys)
-                            // — has not had its canonical fate settled: under
-                            // finality-aware multi-parent merge a finalized
-                            // block's executed deploy can still be merge-rejected
-                            // downstream, and a rejected deploy is exactly a
-                            // recovery candidate. Purging here removed
-                            // still-recoverable losers ~0-2 blocks before their
-                            // rejection sealed, defeating recovery. The buffer
-                            // now drains only through the proposer's sealed-fate
-                            // gate (SealedAccepted drop) and deploy-lifespan
-                            // expiry.
+                            // purged on finalization. Buffer membership tracks
+                            // "not in the execution base", and that is settled at
+                            // block ACCEPTANCE, not finalization: a deploy is
+                            // removed when it lands in an accepted block's
+                            // body.deploys (see handle_valid_block) and re-added
+                            // when a later merge rejects it (the populate in
+                            // compute_parents_post_state). Finalization changes
+                            // nothing about that invariant — a finalized block's
+                            // executed deploy was already removed on acceptance,
+                            // and a finalized block's rejected deploy is a
+                            // recovery candidate that must stay re-proposable.
+                            // Purging here would remove still-recoverable losers,
+                            // defeating recovery. Deploy-lifespan expiry bounds
+                            // the buffer for deploys that never re-land.
 
                             let finalized_set_str = PrettyPrinter::build_string_hashes(
                                 &finalized_set.iter().map(|h| h.to_vec()).collect::<Vec<_>>(),
