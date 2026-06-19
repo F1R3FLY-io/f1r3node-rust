@@ -18,20 +18,21 @@
 //! settled — tracked in notes/merge-lifecycle.md, separate from this module's
 //! recursion logic.
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::HashSet;
 
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
-use models::rust::block::floor_data::{FloorData, SealedAcceptance, SealedRejection};
-use models::rust::block::state_hash::StateHashSerde;
-use models::rust::block_hash::{BlockHash, BlockHashSerde};
+use crypto::rust::signatures::signed::Signed;
+use models::rust::block::floor_data::FloorData;
+use models::rust::block::state_hash::{StateHash, StateHashSerde};
+use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
+use models::rust::casper::protocol::casper_message::DeployData;
+use rholang::rust::interpreter::system_processes::BlockData;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 
 use super::floor::Floor;
 use crate::rust::errors::CasperError;
-use crate::rust::merging::dag_merger;
-use crate::rust::util::rholang::interpreter_util::build_block_index;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 
 /// Materialized `closure(floor)` — the floor block with all its ancestors —
@@ -255,102 +256,97 @@ async fn seal_floor_cut(
     )
     .await?;
 
-    // No enforcement window. The base is FS(prev_finalized_cut), so every decision
-    // finalized at-or-below `prev` is already baked into the base; the scope is only
-    // the newly-finalized delta. keep-one + single-value serialization on the sealed
-    // base resolve the delta, and a delta chain that depends on a finalized-rejected
-    // chain hits a stale-consume and is dropped — so the enforcement window is
-    // redundant here, and omitting it avoids its over-rejection (the Step-4 hazard)
-    // now that the re-merge result IS FS.
-    let base_state = Blake2b256Hash::from_bytes_prost(&prev_state.state_hash.0);
-    let (sealed_state, applied_user, rejected_user, _rejected_slash) = dag_merger::merge(
-        dag,
-        &prev.hash,
-        &base_state,
-        |hash: &BlockHash| Ok(build_block_index(runtime_manager, block_store, hash)?.deploy_chains),
-        &runtime_manager.history_repo,
-        dag_merger::cost_optimal_rejection_alg(),
-        Some(scope),
-        // The scope IS the explicit finalized closure; late-block filtering is
-        // a live-view concept and must not participate.
-        true,
-        None,
-    )?;
+    // FS(cut) = deterministic re-execution of the newly-finalized cone onto
+    // FS(prev_finalized_cut) (the #71 fix). A keep-one merge drops concurrent writes
+    // to a single-value cell (e.g. the PoS state cell); instead we PLAY each finalized
+    // block's user deploys in topological order on the running FS, so concurrent writes
+    // become a linear chain and every finalized write is preserved. PLAY uses
+    // deterministic matching, so FS is node-identical across nodes (no proposer here to
+    // freeze a random match choice). FS is the canonical finalized state every consumer
+    // reads; it intentionally differs from any block's committed (lagging-floor) post-state.
+    //
+    // Dedup by signature: a deploy can be kept in more than one block (the "flip"), so a
+    // naive per-block replay would apply it twice. Playing each signature once (first
+    // topological appearance) makes the fold exactly-once.
+    //
+    // System deploys (close-block at epoch boundaries, slash) also write the PoS state
+    // cell; folding those in is the next step. User deploys are played here.
+    let mut numbered: Vec<(i64, BlockHash)> = scope
+        .iter()
+        .map(|h| Ok::<_, CasperError>((dag.block_number_unsafe(h)?, h.clone())))
+        .collect::<Result<Vec<_>, _>>()?;
+    numbered.sort_by(|(na, ha), (nb, hb)| na.cmp(nb).then_with(|| ha.cmp(hb)));
 
-    // DIAG (mechanism discriminator): a kept chain whose sig is ALREADY in
-    // FS(prev).accepted is re-applying a finalized deploy's effect — the
-    // content-twin source if this is mechanism 1 (recovery re-proposing an
-    // already-accepted deploy). Silence ⇒ the double is a distinct-deploy
-    // re-create (mechanism 2).
-    {
-        let prev_accepted: HashSet<prost::bytes::Bytes> = prev_state
-            .accepted_deploys
-            .iter()
-            .map(|a| a.sig.clone())
-            .collect();
-        let reapplied: Vec<String> = applied_user
-            .iter()
-            .filter(|(sig, _)| prev_accepted.contains(sig))
-            .map(|(sig, _)| hex::encode(&sig[..sig.len().min(8)]))
-            .collect();
-        if !reapplied.is_empty() {
-            tracing::warn!(
-                target: "f1r3.trace.fs_floor",
-                event = "seal_reapply",
-                cut_number,
-                reapplied = %reapplied.join(","),
-                "seal kept chains re-apply already-FS-accepted deploys (content-twin source)"
-            );
+    // FS(cut) is the deterministic op-fold of the finalized cone: PLAY each finalized
+    // deploy in topological order onto the running FS. Sequencing turns concurrent
+    // writes into a linear chain, so it folds with NO content-awareness — commutative
+    // number channels accumulate as ordered read-modify-writes, non-foldable cells
+    // apply in order. Determinism comes from `compute_state_deterministic` (identity
+    // match order). Two dedups keep each finalized effect applied EXACTLY ONCE:
+    //   - `played_sigs`: a sig kept in more than one block in THIS cone (the "flip").
+    //   - the base-check: a recovery re-proposal whose effect is already folded into
+    //     FS(prev_cut) from an EARLIER cut. It reuses the proposer's session-20
+    //     base-check — value-agnostic presence of the deploy's own sig-derived created
+    //     cells in the base — querying the actual running FS, so there is no separate
+    //     ledger to drift. Without it the same deploy applies once per cut it appears
+    //     in (the cross-cut double-count: e.g. a `+N` counted twice).
+    let mut played_sigs: HashSet<prost::bytes::Bytes> = HashSet::new();
+    let mut fs_state: StateHash = prev_state.state_hash.0.clone();
+    let mut deploys_played = 0usize;
+    let mut deploys_skipped = 0usize;
+    for (_block_number, block_hash) in &numbered {
+        let block = block_store.get_unsafe(block_hash);
+        let block_data = BlockData::from_block(&block);
+        for pd in &block.body.deploys {
+            // Within-cut exact dedup: a sig kept in more than one cone block.
+            if !played_sigs.insert(pd.deploy.sig.clone()) {
+                continue;
+            }
+            // Cross-cut dedup: skip if this deploy's effect is already in FS(prev_cut).
+            let base_hash = Blake2b256Hash::from_bytes_prost(&fs_state);
+            if crate::rust::util::rholang::interpreter_util::recovered_deploy_effect_in_base(
+                dag,
+                block_store,
+                runtime_manager,
+                &base_hash,
+                &pd.deploy.sig,
+            )? {
+                deploys_skipped += 1;
+                continue;
+            }
+            deploys_played += 1;
+            let (next_fs, _processed, _sys) = runtime_manager
+                .compute_state_deterministic(
+                    &fs_state,
+                    vec![pd.deploy.clone()],
+                    vec![],
+                    block_data.clone(),
+                    None,
+                )
+                .await?;
+            fs_state = next_fs;
         }
     }
 
-    let mut rejected: BTreeSet<SealedRejection> =
-        prev_state.rejected_deploys.iter().cloned().collect();
-    let carried = rejected.len();
-    rejected.extend(rejected_user.into_iter().map(|(sig, src)| SealedRejection {
-        sig,
-        host: BlockHashSerde(src),
-    }));
-
-    // Accumulate kept-chain acceptances the same way: a deploy accepted into FS
-    // at any cut stays accepted at every later cut. This ledger is retained but
-    // no longer consumed — the FloorFateResolver that read it was removed in the
-    // buffer-drain change; exactly-once is now the recovery-buffer invariant
-    // (purge-on-accept) plus `Validate::repeat_deploy`. Kept here to avoid a
-    // serialized-FloorData model change; remove in the follow-up cleanup.
-    let mut accepted: BTreeSet<SealedAcceptance> =
-        prev_state.accepted_deploys.iter().cloned().collect();
-    let accepted_carried = accepted.len();
-    accepted.extend(applied_user.into_iter().map(|(sig, src)| SealedAcceptance {
-        sig,
-        host: BlockHashSerde(src),
-    }));
-    // FS(cut) is the chained re-merge: the newly-finalized delta merged onto
-    // FS(prev_finalized_cut). Because the base is the finalized frontier (not the
-    // lagging justification floor), the re-merge never re-litigates an already-
-    // finalized write, so FS grows monotonically — a finalized entry is never
-    // dropped by a descendant cut (the #71 fix). The block's own committed
-    // post-state may differ (it merged on its lagging floor); that is the block's
-    // working state, while FS is the canonical finalized state every consumer reads.
-    let remerge_state_bytes = sealed_state.to_bytes_prost();
+    // The seal no longer keep-one rejects anything — every finalized deploy is played —
+    // so the rejected/accepted ledgers carry forward unchanged. They are
+    // retained-but-unconsumed (the FloorFateResolver that read them was removed); a
+    // follow-up cleanup can drop them from the FloorData model.
     let committed_state_bytes = block_store
         .get_unsafe(cut)
         .body
         .state
         .post_state_hash
         .clone();
-
-    if committed_state_bytes != remerge_state_bytes {
-        // Diagnostic: FS (chained on the finalized frontier) intentionally differs
-        // from the block's committed post-state (merged on the lagging floor).
+    if committed_state_bytes != fs_state {
         tracing::debug!(
             target: "f1r3.trace.fs_floor",
             event = "seal_state_divergence",
             cut = %PrettyPrinter::build_string_bytes(cut),
             cut_number,
             committed = %PrettyPrinter::build_string_bytes(&committed_state_bytes),
-            fs = %PrettyPrinter::build_string_bytes(&remerge_state_bytes),
-            "FS (chained finalized seal) differs from committed block post-state"
+            fs = %PrettyPrinter::build_string_bytes(&fs_state),
+            "FS (deterministic seal re-execution) differs from committed block post-state"
         );
     }
 
@@ -361,18 +357,17 @@ async fn seal_floor_cut(
         cut_number,
         prev_floor = %PrettyPrinter::build_string_bytes(&prev.hash),
         prev_fs_block = prev.block_number,
-        fs_state = %PrettyPrinter::build_string_bytes(&remerge_state_bytes),
-        rejected_total = rejected.len(),
-        rejected_carried = carried,
-        accepted_total = accepted.len(),
-        accepted_carried,
-        "sealed floor state (chained on previous finalized cut)"
+        fs_state = %PrettyPrinter::build_string_bytes(&fs_state),
+        cone_blocks = numbered.len(),
+        deploys_played,
+        deploys_skipped,
+        "sealed floor state (deterministic re-execution of the finalized cone)"
     );
 
     Ok(FloorData {
-        state_hash: StateHashSerde(remerge_state_bytes),
-        rejected_deploys: rejected.into_iter().collect(),
-        accepted_deploys: accepted.into_iter().collect(),
+        state_hash: StateHashSerde(fs_state),
+        rejected_deploys: prev_state.rejected_deploys.clone(),
+        accepted_deploys: prev_state.accepted_deploys.clone(),
         block_number: cut_number,
     })
 }

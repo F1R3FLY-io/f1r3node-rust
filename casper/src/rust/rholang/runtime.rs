@@ -601,38 +601,12 @@ impl RuntimeOps {
                     // (the bonds/transfer silent-loss). Surface it instead — a
                     // wrong-but-loud error is recoverable; silent corruption is not.
                     MergeType::IntegerAdd => {
-                        // DIAG (content-twin discriminator): which deploy is executing
-                        // when the collision is observed, and the source produce of each
-                        // datum (identical-modulo-value sources => same logical create
-                        // re-executed; distinct => two writers).
-                        let datum_srcs: Vec<String> = ch_values
-                            .iter()
-                            .map(|d| {
-                                format!(
-                                    "val={:?},src={},det={},persist={}",
-                                    RholangMergingLogic::try_get_number_with_rnd(&d.a)
-                                        .map(|(n, _)| n),
-                                    hex::encode(
-                                        &d.source.hash.bytes()
-                                            [..8.min(d.source.hash.bytes().len())]
-                                    ),
-                                    d.source.is_deterministic,
-                                    d.persist
-                                )
-                            })
-                            .collect();
-                        tracing::error!(
-                            target: "f1r3.trace.twin",
-                            channel = %hex::encode(ch_hash.bytes()),
-                            datums = ?datum_srcs,
-                            "TWIN: IntegerAdd valueStore multi-value at execution"
-                        );
                         return Err(CasperError::RuntimeError(format!(
                             "number channel {} holds {} values {:?}; IntegerAdd single-value \
-                             invariant violated — concurrent single-cell writes must be \
-                             serialized by the merge, not folded",
+                             invariant violated — concurrent writes to a single cell were not \
+                             serialized by the merge/seal",
                             hex::encode(ch_hash.bytes()),
-                            ch_values.len(),
+                            nums.len(),
                             nums,
                         )));
                     }

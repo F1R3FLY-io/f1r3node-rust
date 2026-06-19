@@ -277,6 +277,29 @@ impl RuntimeManager {
         runtime
     }
 
+    /// Like [`spawn_runtime`](Self::spawn_runtime) but the runtime's RSpace matches
+    /// candidates deterministically (identity order) instead of shuffling — for
+    /// finalized-state PLAY at the seal, which must be node-identical.
+    pub async fn spawn_deterministic_runtime(&self) -> RhoRuntimeImpl {
+        let start = std::time::Instant::now();
+        let new_space = self
+            .space
+            .spawn_deterministic()
+            .expect("Failed to spawn deterministic RSpace");
+        let runtime = rho_runtime::create_rho_runtime(
+            new_space,
+            self.mergeable_tags.clone(),
+            true,
+            &mut Vec::new(),
+            self.external_services.clone(),
+        )
+        .await;
+        metrics::histogram!(RUNTIME_SPAWN_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
+            .record(start.elapsed().as_secs_f64());
+
+        runtime
+    }
+
     pub async fn spawn_replay_runtime(&self) -> RhoRuntimeImpl {
         let start = std::time::Instant::now();
         let new_replay_space = self
@@ -306,8 +329,52 @@ impl RuntimeManager {
         block_data: BlockData,
         invalid_blocks: Option<HashMap<BlockHash, Validator>>,
     ) -> Result<(StateHash, Vec<ProcessedDeploy>, Vec<ProcessedSystemDeploy>), CasperError> {
-        let invalid_blocks = invalid_blocks.unwrap_or_default();
         let runtime = self.spawn_runtime().await;
+        self.compute_state_with_runtime(
+            runtime,
+            start_hash,
+            terms,
+            system_deploys,
+            block_data,
+            invalid_blocks,
+        )
+        .await
+    }
+
+    /// Like [`compute_state`](Self::compute_state) but matches candidates
+    /// deterministically (identity order), so a fresh PLAY is bit-identical across
+    /// nodes. Used by the finalized-state seal, which re-executes the finalized cone
+    /// and must produce a node-identical `FS`.
+    pub async fn compute_state_deterministic(
+        &self,
+        start_hash: &StateHash,
+        terms: Vec<Signed<DeployData>>,
+        system_deploys: Vec<super::system_deploy_enum::SystemDeployEnum>,
+        block_data: BlockData,
+        invalid_blocks: Option<HashMap<BlockHash, Validator>>,
+    ) -> Result<(StateHash, Vec<ProcessedDeploy>, Vec<ProcessedSystemDeploy>), CasperError> {
+        let runtime = self.spawn_deterministic_runtime().await;
+        self.compute_state_with_runtime(
+            runtime,
+            start_hash,
+            terms,
+            system_deploys,
+            block_data,
+            invalid_blocks,
+        )
+        .await
+    }
+
+    async fn compute_state_with_runtime(
+        &self,
+        runtime: RhoRuntimeImpl,
+        start_hash: &StateHash,
+        terms: Vec<Signed<DeployData>>,
+        system_deploys: Vec<super::system_deploy_enum::SystemDeployEnum>,
+        block_data: BlockData,
+        invalid_blocks: Option<HashMap<BlockHash, Validator>>,
+    ) -> Result<(StateHash, Vec<ProcessedDeploy>, Vec<ProcessedSystemDeploy>), CasperError> {
+        let invalid_blocks = invalid_blocks.unwrap_or_default();
         let mut runtime_ops = RuntimeOps::new(runtime);
 
         // Block data used for mergeable key

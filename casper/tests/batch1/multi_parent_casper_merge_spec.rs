@@ -7,8 +7,25 @@ use rspace_plus_plus::rspace::history::Either;
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::GenesisBuilder;
 
+/// Per-test tracing init: idempotent (the global subscriber is set once via
+/// `try_init`; later calls are no-ops) and routed through the test writer, so each
+/// test's `f1r3.trace.*` diagnostics (seal result + `deploys_skipped`, base-check,
+/// per-cut cell) surface under `--nocapture` or on failure. Quiet by default except
+/// the `f1r3.trace.*` targets; override with `RUST_LOG`.
+fn init_test_logging() {
+    use tracing_subscriber::EnvFilter;
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(
+            EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| EnvFilter::new("warn,f1r3.trace=debug")),
+        )
+        .with_test_writer()
+        .try_init();
+}
+
 #[tokio::test]
 async fn hash_set_casper_should_handle_multi_parent_blocks_correctly() {
+    init_test_logging();
     let genesis = GenesisBuilder::new()
         .build_genesis_with_parameters(Some(
             GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(3)),
@@ -123,6 +140,7 @@ async fn hash_set_casper_should_handle_multi_parent_blocks_correctly() {
 #[tokio::test]
 async fn hash_set_casper_should_not_produce_unused_comm_event_while_merging_non_conflicting_blocks_in_the_presence_of_conflicting_ones(
 ) {
+    init_test_logging();
     let registry_rho = r#"
 // Expected output
 //
@@ -267,6 +285,7 @@ new getBlockData(`rho:block:data`), stdout(`rho:io:stdout`), tCh in {
 #[tokio::test]
 #[ignore = "Scala ignore"]
 async fn hash_set_casper_should_not_merge_blocks_that_touch_the_same_channel_involving_joins() {
+    init_test_logging();
     let genesis = GenesisBuilder::new()
         .build_genesis_with_parameters(Some(
             GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(3)),
@@ -340,6 +359,7 @@ async fn hash_set_casper_should_not_merge_blocks_that_touch_the_same_channel_inv
 /// where each round forces a multi-parent merge and verifies all nodes agree.
 #[tokio::test]
 async fn hash_set_casper_should_compute_identical_post_states_across_validators_for_merge_blocks() {
+    init_test_logging();
     let genesis = GenesisBuilder::new()
         .build_genesis_with_parameters(Some(
             GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(3)),
@@ -452,6 +472,7 @@ async fn hash_set_casper_should_compute_identical_post_states_across_validators_
 #[tokio::test]
 async fn hash_set_casper_should_produce_identical_merge_results_regardless_of_finalization_state_divergence(
 ) {
+    init_test_logging();
     let genesis = GenesisBuilder::new()
         .build_genesis_with_parameters(Some(
             GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(3)),
@@ -547,6 +568,7 @@ async fn hash_set_casper_should_produce_identical_merge_results_regardless_of_fi
 /// was the verified FS path-dependence root cause in the prior experiment.
 #[tokio::test]
 async fn fs_floor_state_is_path_independent_and_cross_node_identical() {
+    init_test_logging();
     use casper::rust::finality::floor::floor_of_block;
     use casper::rust::finality::floor_seal::floor_state_get_or_compute;
 
@@ -697,6 +719,7 @@ async fn fs_floor_state_is_path_independent_and_cross_node_identical() {
 /// is: exactly one datum, a real write, and the loser recorded as rejected.
 #[tokio::test]
 async fn multi_parent_merge_serializes_concurrent_single_value_cell_writes() {
+    init_test_logging();
     let genesis = GenesisBuilder::new()
         .build_genesis_with_parameters(Some(
             GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(3)),
@@ -829,6 +852,7 @@ async fn multi_parent_merge_serializes_concurrent_single_value_cell_writes() {
 /// finalized block's post-state` shows up.
 #[tokio::test]
 async fn fs_seal_must_preserve_both_concurrent_single_value_cell_writes() {
+    init_test_logging();
     use casper::rust::finality::floor::floor_of_block;
     use casper::rust::finality::floor_seal::floor_state_get_or_compute;
 
@@ -865,6 +889,10 @@ async fn fs_seal_must_preserve_both_concurrent_single_value_cell_writes() {
     // Rounds of concurrent set() writes to the one cell, each merged by node2.
     let rounds = 6u32;
     let mut last_tip = None;
+    // FAMILY-2 PROBE: capture every @7-writing block's post-state so we can find the
+    // max union any single committed block holds — does recovery ever build the full
+    // fold in one validated (node-identical) block before the lag drops it?
+    let mut union_probe: Vec<(u32, &'static str, prost::bytes::Bytes)> = Vec::new();
     for r in 0..rounds {
         let set_a = construct_deploy::source_deploy_now(
             format!("for (@m <- @7) {{ @7!(m.set(\"Ka{}\", 1)) }}", r),
@@ -885,8 +913,10 @@ async fn fs_seal_must_preserve_both_concurrent_single_value_cell_writes() {
         let kb_sig = hex::encode(&set_b.sig[..8]);
         // Siblings: not propagated between creation, so both consume the same
         // current cell value.
-        nodes[0].add_block_from_deploys(&[set_a]).await.unwrap();
-        nodes[1].add_block_from_deploys(&[set_b]).await.unwrap();
+        let blk_a = nodes[0].add_block_from_deploys(&[set_a]).await.unwrap();
+        let blk_b = nodes[1].add_block_from_deploys(&[set_b]).await.unwrap();
+        union_probe.push((r, "Ka", blk_a.body.state.post_state_hash.clone()));
+        union_probe.push((r, "Kb", blk_b.body.state.post_state_hash.clone()));
         {
             let nodes_refs: Vec<&mut TestNode> = nodes.iter_mut().collect();
             TestNode::propagate(&mut nodes_refs.into_iter().collect::<Vec<_>>())
@@ -919,7 +949,106 @@ async fn fs_seal_must_preserve_both_concurrent_single_value_cell_writes() {
             cell = ?cell_now,
             "round cell state: Ka{r}=ka_sig Kb{r}=kb_sig",
         );
+        // DIAG (#71 monotonicity): decode FS(floor) per round + the floor lag, so a
+        // run shows whether the FINALIZED cell regresses (a finalized write lost) or
+        // is monotone-but-never-converges, and how far the floor trails the tip.
+        {
+            let dag_now = nodes[0].block_dag_storage.get_representation();
+            if let Ok(floor) =
+                casper::rust::finality::floor::floor_of_block(&dag_now, &merge.block_hash, FT_THRESHOLD)
+                    .await
+            {
+                if let Ok(fs) = casper::rust::finality::floor_seal::floor_state_get_or_compute(
+                    &dag_now,
+                    &nodes[0].block_store,
+                    &nodes[0].runtime_manager,
+                    &floor.hash,
+                    FT_THRESHOLD,
+                )
+                .await
+                {
+                    let fs_cell = rspace_util::get_data_at_public_channel(
+                        &fs.state_hash.0,
+                        7,
+                        &nodes[0].runtime_manager,
+                    )
+                    .await;
+                    // The floor BLOCK's own committed post-state @7 — if FS(floor)
+                    // differs from this, the seal re-merge dropped writes the
+                    // finalized block itself committed (lossy re-merge, not a
+                    // regression).
+                    let floor_post = match nodes[0].block_store.get(&floor.hash) {
+                        Ok(Some(fb)) => {
+                            rspace_util::get_data_at_public_channel(
+                                &fb.body.state.post_state_hash,
+                                7,
+                                &nodes[0].runtime_manager,
+                            )
+                            .await
+                        }
+                        _ => vec!["<floor block missing>".to_string()],
+                    };
+                    tracing::info!(
+                        target: "f1r3.trace.cell",
+                        round = r,
+                        floor_number = floor.block_number,
+                        merge_number = merge.body.state.block_number,
+                        fs_cell = ?fs_cell,
+                        floor_block_post = ?floor_post,
+                        "round FS(floor) state",
+                    );
+                }
+            }
+        }
+        union_probe.push((r, "merge", merge.body.state.post_state_hash.clone()));
         last_tip = Some(merge);
+    }
+    // FAMILY-2 PROBE: decode @7 at every captured block; find the single block with
+    // the largest union and whether any block holds the complete fold for its round.
+    // If max == total, recovery already builds the full fold in a committed block and
+    // the problem reduces to "stop the lag dropping it" (no re-execution at the seal).
+    {
+        use std::collections::BTreeSet;
+        let all_writes: BTreeSet<String> = (0..rounds)
+            .flat_map(|rr| [format!("Ka{}", rr), format!("Kb{}", rr)])
+            .collect();
+        let mut max_union = 0usize;
+        let mut max_label = String::new();
+        for (r, label, post) in &union_probe {
+            let cell =
+                rspace_util::get_data_at_public_channel(post, 7, &nodes[0].runtime_manager).await;
+            let joined = cell.join(" ");
+            let keys: BTreeSet<String> = all_writes
+                .iter()
+                .filter(|k| joined.contains(k.as_str()))
+                .cloned()
+                .collect();
+            let expected_so_far: BTreeSet<String> = (0..=*r)
+                .flat_map(|rr| [format!("Ka{}", rr), format!("Kb{}", rr)])
+                .collect();
+            let complete = keys.is_superset(&expected_so_far);
+            if keys.len() > max_union {
+                max_union = keys.len();
+                max_label = format!("round {} {}", r, label);
+            }
+            tracing::info!(
+                target: "f1r3.trace.union",
+                round = r,
+                label = label,
+                nkeys = keys.len(),
+                expected = expected_so_far.len(),
+                complete = complete,
+                keys = ?keys,
+                "union probe: @7 at this committed block",
+            );
+        }
+        tracing::info!(
+            target: "f1r3.trace.union",
+            max_union,
+            max_label = %max_label,
+            total_writes = all_writes.len(),
+            "FAMILY-2: max union held by any single committed block",
+        );
     }
     let tip = last_tip.expect("rounds produced a merge block");
 
@@ -994,6 +1123,7 @@ async fn fs_seal_must_preserve_both_concurrent_single_value_cell_writes() {
 /// present) and base = the pre-state it built on (effect absent).
 #[tokio::test]
 async fn recovery_base_check_skips_only_when_effect_is_in_base() {
+    init_test_logging();
     use casper::rust::util::rholang::interpreter_util::recovered_deploy_effect_in_base;
     use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 
@@ -1056,5 +1186,550 @@ async fn recovery_base_check_skips_only_when_effect_is_in_base() {
         !in_genesis,
         "base-check must return false when the deploy's effect is absent from the base \
          (a genuine merge loser that must re-land)"
+    );
+}
+
+/// Exact-fold guard for finalized state (issue #71).
+///
+/// The finalized state must be the deterministic image of the finalized
+/// OPERATION log: a key is in `FS` iff a finalized deploy `set` it and no
+/// finalized deploy `removed` it. A merge keep-one is NOT an operation — `FS`
+/// must never *silently* drop a finalized write; it may lose a key ONLY via an
+/// explicit finalized `remove`. This is stronger than the presence check in
+/// `fs_seal_must_preserve_both_*`: it issues concurrent `set`s plus an explicit
+/// `remove`, asserts per-cut monotonicity for every non-removed key (no silent
+/// regression), and asserts the final `FS` equals the exact op-fold — no more,
+/// no less. Flush rounds advance finality past every op so the final cut folds
+/// them all.
+/// FAMILY-1 FALSIFICATION: is PLAY (`compute_state`) deterministic on a fixed base?
+///
+/// Seal-side PLAY requires every node to derive the SAME `FS` from the SAME finalized
+/// deploys on the SAME base. rspace's match path shuffles candidates with
+/// `rand::rng()` (entropy-seeded), so PLAY *could* diverge whenever a deploy hits
+/// multiple simultaneous match candidates. This plays the contended `@7` write batch
+/// on one fixed base across two independent nodes (fresh runtimes) and repeatedly on
+/// one node, and asserts the post-state hash is identical every time. It also
+/// confirms sequential PLAY composes the full union `{Ka,Kb,Kc}` (the seal-PLAY model
+/// works functionally). Divergence ⇒ seal-side PLAY is not node-identical and family 1
+/// needs the rspace shuffle made deterministic.
+#[tokio::test]
+async fn play_is_deterministic_on_fixed_base_for_contended_cell() {
+    init_test_logging();
+    use rholang::rust::interpreter::system_processes::BlockData;
+
+    let genesis = GenesisBuilder::new()
+        .build_genesis_with_parameters(Some(
+            GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(3)),
+        ))
+        .await
+        .expect("Failed to build genesis");
+    let mut nodes = TestNode::create_network(genesis.clone(), 2, None, None, None, None)
+        .await
+        .unwrap();
+    let shard_id = genesis.genesis_block.shard_id.clone();
+
+    // Fixed base: @7 seeded with the empty map, present on both nodes.
+    let seed = construct_deploy::source_deploy_now(
+        "@7!({})".to_string(),
+        None,
+        None,
+        Some(shard_id.clone()),
+    )
+    .unwrap();
+    let seed_block = nodes[0].add_block_from_deploys(&[seed]).await.unwrap();
+    {
+        let nodes_refs: Vec<&mut TestNode> = nodes.iter_mut().collect();
+        TestNode::propagate(&mut nodes_refs.into_iter().collect::<Vec<_>>())
+            .await
+            .unwrap();
+    }
+    let base = seed_block.body.state.post_state_hash.clone();
+    let block_data = BlockData::from_block(&seed_block);
+
+    // The contended write batch — sequential play composes them into the full union.
+    let deploys = vec![
+        construct_deploy::source_deploy_now(
+            "for (@m <- @7) { @7!(m.set(\"Ka\", 1)) }".to_string(),
+            None,
+            None,
+            Some(shard_id.clone()),
+        )
+        .unwrap(),
+        construct_deploy::source_deploy_now(
+            "for (@m <- @7) { @7!(m.set(\"Kb\", 2)) }".to_string(),
+            Some(construct_deploy::DEFAULT_SEC2.clone()),
+            None,
+            Some(shard_id.clone()),
+        )
+        .unwrap(),
+        construct_deploy::source_deploy_now(
+            "for (@m <- @7) { @7!(m.set(\"Kc\", 3)) }".to_string(),
+            None,
+            None,
+            Some(shard_id.clone()),
+        )
+        .unwrap(),
+    ];
+
+    // PLAY the same batch on the same base many times: node0 (same runtime cache) and
+    // node1 (independent runtime) — mimics two nodes computing FS at the seal.
+    let mut hashes: Vec<(String, prost::bytes::Bytes)> = Vec::new();
+    for i in 0..3 {
+        let (s, _, _) = nodes[0]
+            .runtime_manager
+            .compute_state_deterministic(&base, deploys.clone(), vec![], block_data.clone(), None)
+            .await
+            .unwrap();
+        hashes.push((format!("node0#{i}"), s));
+    }
+    for i in 0..3 {
+        let (s, _, _) = nodes[1]
+            .runtime_manager
+            .compute_state_deterministic(&base, deploys.clone(), vec![], block_data.clone(), None)
+            .await
+            .unwrap();
+        hashes.push((format!("node1#{i}"), s));
+    }
+
+    // Decode @7 for EVERY run: is the LOGICAL value deterministic even when the state
+    // hash isn't? (If yes, the non-determinism is purely physical/shuffle-driven.)
+    let mut cells: Vec<(String, String, Vec<String>)> = Vec::new();
+    for (label, h) in &hashes {
+        let cell = rspace_util::get_data_at_public_channel(h, 7, &nodes[0].runtime_manager).await;
+        cells.push((label.clone(), hex::encode(&h[..8]), cell));
+    }
+    tracing::info!(
+        target: "f1r3.trace.playdet",
+        runs = ?cells,
+        "PLAY determinism probe: (label, state_hash8, @7 value) per run",
+    );
+    let joined = cells[0].2.join(" ");
+    assert!(
+        joined.contains("Ka") && joined.contains("Kb") && joined.contains("Kc"),
+        "sequential PLAY must compose the full union {{Ka,Kb,Kc}}, got {:?}",
+        cells[0].2
+    );
+
+    let (first_label, first_hash) = &hashes[0];
+    for (label, h) in &hashes[1..] {
+        assert_eq!(
+            h,
+            first_hash,
+            "PLAY diverged: {label} != {first_label} ({} vs {}) — seal-side PLAY is NOT node-identical; \
+             the rspace match-shuffle (rand::rng) makes it non-deterministic",
+            hex::encode(&h[..8]),
+            hex::encode(&first_hash[..8]),
+        );
+    }
+}
+
+#[tokio::test]
+async fn fs_seal_finalized_state_is_exact_operation_fold() {
+    init_test_logging();
+    use casper::rust::finality::floor::floor_of_block;
+    use casper::rust::finality::floor_seal::floor_state_get_or_compute;
+    use std::collections::BTreeSet;
+
+    const FT_THRESHOLD: f32 = 0.1;
+    const REMOVED_KEY: &str = "Kb0";
+
+    // Extract the @7 map's keys (e.g. "Ka0", "Kb3") from the serialized datum.
+    fn map_keys(cell: &[String]) -> BTreeSet<String> {
+        let s = cell.join(" ");
+        let b = s.as_bytes();
+        let mut keys = BTreeSet::new();
+        let mut i = 0usize;
+        while i + 2 < b.len() {
+            if b[i] == b'K' && (b[i + 1] == b'a' || b[i + 1] == b'b') && b[i + 2].is_ascii_digit() {
+                let mut j = i + 2;
+                while j < b.len() && b[j].is_ascii_digit() {
+                    j += 1;
+                }
+                keys.insert(String::from_utf8_lossy(&b[i..j]).into_owned());
+                i = j;
+            } else {
+                i += 1;
+            }
+        }
+        keys
+    }
+
+    let genesis = GenesisBuilder::new()
+        .build_genesis_with_parameters(Some(
+            GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(3)),
+        ))
+        .await
+        .expect("Failed to build genesis");
+    let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None, None)
+        .await
+        .unwrap();
+    let shard_id = genesis.genesis_block.shard_id.clone();
+
+    let seed = construct_deploy::source_deploy_now(
+        "@7!({})".to_string(),
+        None,
+        None,
+        Some(shard_id.clone()),
+    )
+    .unwrap();
+    nodes[0].add_block_from_deploys(&[seed]).await.unwrap();
+    {
+        let nodes_refs: Vec<&mut TestNode> = nodes.iter_mut().collect();
+        TestNode::propagate(&mut nodes_refs.into_iter().collect::<Vec<_>>())
+            .await
+            .unwrap();
+    }
+
+    let rounds = 6u32;
+    let mut all_set_keys: BTreeSet<String> = BTreeSet::new();
+    // FS(floor) key-set observed at each cut, for the monotonicity check.
+    let mut fs_history: Vec<BTreeSet<String>> = Vec::new();
+
+    for r in 0..rounds {
+        let set_a = construct_deploy::source_deploy_now(
+            format!("for (@m <- @7) {{ @7!(m.set(\"Ka{}\", 1)) }}", r),
+            None,
+            None,
+            Some(shard_id.clone()),
+        )
+        .unwrap();
+        let set_b = construct_deploy::source_deploy_now(
+            format!("for (@m <- @7) {{ @7!(m.set(\"Kb{}\", 2)) }}", r),
+            Some(construct_deploy::DEFAULT_SEC2.clone()),
+            None,
+            Some(shard_id.clone()),
+        )
+        .unwrap();
+        all_set_keys.insert(format!("Ka{}", r));
+        all_set_keys.insert(format!("Kb{}", r));
+        nodes[0].add_block_from_deploys(&[set_a]).await.unwrap();
+        nodes[1].add_block_from_deploys(&[set_b]).await.unwrap();
+        {
+            let nodes_refs: Vec<&mut TestNode> = nodes.iter_mut().collect();
+            TestNode::propagate(&mut nodes_refs.into_iter().collect::<Vec<_>>())
+                .await
+                .unwrap();
+        }
+        let noop = construct_deploy::source_deploy_now(
+            format!("@9!({})", r),
+            None,
+            None,
+            Some(shard_id.clone()),
+        )
+        .unwrap();
+        let merge = TestNode::propagate_block_at_index(&mut nodes, 2, &[noop])
+            .await
+            .unwrap();
+
+        let dag_now = nodes[0].block_dag_storage.get_representation();
+        if let Ok(floor) = floor_of_block(&dag_now, &merge.block_hash, FT_THRESHOLD).await {
+            if let Ok(fs) = floor_state_get_or_compute(
+                &dag_now,
+                &nodes[0].block_store,
+                &nodes[0].runtime_manager,
+                &floor.hash,
+                FT_THRESHOLD,
+            )
+            .await
+            {
+                let cell = rspace_util::get_data_at_public_channel(
+                    &fs.state_hash.0,
+                    7,
+                    &nodes[0].runtime_manager,
+                )
+                .await;
+                fs_history.push(map_keys(&cell));
+            }
+        }
+    }
+
+    // Explicit remove of a previously-set key — a legitimate finalized state change.
+    let remove = construct_deploy::source_deploy_now(
+        format!("for (@m <- @7) {{ @7!(m.delete(\"{}\")) }}", REMOVED_KEY),
+        None,
+        None,
+        Some(shard_id.clone()),
+    )
+    .unwrap();
+    nodes[0].add_block_from_deploys(&[remove]).await.unwrap();
+    {
+        let nodes_refs: Vec<&mut TestNode> = nodes.iter_mut().collect();
+        TestNode::propagate(&mut nodes_refs.into_iter().collect::<Vec<_>>())
+            .await
+            .unwrap();
+    }
+
+    // Flush rounds: advance finality past every @7 op (writes + the remove), so the
+    // final cut folds all of them. These touch @9 only, never @7.
+    for f in 0..6u32 {
+        let noop_a = construct_deploy::source_deploy_now(
+            format!("@9!({})", 1000 + f),
+            None,
+            None,
+            Some(shard_id.clone()),
+        )
+        .unwrap();
+        let noop_b = construct_deploy::source_deploy_now(
+            format!("@9!({})", 2000 + f),
+            Some(construct_deploy::DEFAULT_SEC2.clone()),
+            None,
+            Some(shard_id.clone()),
+        )
+        .unwrap();
+        nodes[0].add_block_from_deploys(&[noop_a]).await.unwrap();
+        nodes[1].add_block_from_deploys(&[noop_b]).await.unwrap();
+        {
+            let nodes_refs: Vec<&mut TestNode> = nodes.iter_mut().collect();
+            TestNode::propagate(&mut nodes_refs.into_iter().collect::<Vec<_>>())
+                .await
+                .unwrap();
+        }
+        let noop_c = construct_deploy::source_deploy_now(
+            format!("@9!({})", 3000 + f),
+            None,
+            None,
+            Some(shard_id.clone()),
+        )
+        .unwrap();
+        let merge = TestNode::propagate_block_at_index(&mut nodes, 2, &[noop_c])
+            .await
+            .unwrap();
+
+        let dag_now = nodes[0].block_dag_storage.get_representation();
+        if let Ok(floor) = floor_of_block(&dag_now, &merge.block_hash, FT_THRESHOLD).await {
+            if let Ok(fs) = floor_state_get_or_compute(
+                &dag_now,
+                &nodes[0].block_store,
+                &nodes[0].runtime_manager,
+                &floor.hash,
+                FT_THRESHOLD,
+            )
+            .await
+            {
+                let cell = rspace_util::get_data_at_public_channel(
+                    &fs.state_hash.0,
+                    7,
+                    &nodes[0].runtime_manager,
+                )
+                .await;
+                fs_history.push(map_keys(&cell));
+            }
+        }
+    }
+
+    // DIAG: full FS-per-cut sequence so a run shows monotonicity + how the remove
+    // is applied (Kb0 should persist until the remove finalizes, then drop).
+    for (idx, keys) in fs_history.iter().enumerate() {
+        tracing::info!(
+            target: "f1r3.trace.cell",
+            idx,
+            fs = ?keys,
+            "exact-fold: FS per cut",
+        );
+    }
+
+    // (1) Monotonicity: no NON-removed key may disappear from FS between cuts. A
+    //     finalized write that vanishes without a corresponding remove is the #71
+    //     silent regression (a merge keep-one undoing finalized state).
+    for w in fs_history.windows(2) {
+        for k in &w[0] {
+            if k != REMOVED_KEY {
+                assert!(
+                    w[1].contains(k),
+                    "finalized-state REGRESSION: non-removed key {} was in one FS but dropped \
+                     in the next — a merge silently undid a finalized write. FS sequence: {:?}",
+                    k,
+                    fs_history
+                );
+            }
+        }
+    }
+
+    // (2) Exact op-fold: with finality flushed past every op, FS must equal
+    //     {all set keys} minus {the removed key} — exactly.
+    let final_fs = fs_history.last().cloned().unwrap_or_default();
+    let mut expected = all_set_keys.clone();
+    expected.remove(REMOVED_KEY);
+    assert_eq!(
+        final_fs, expected,
+        "finalized state must equal the exact operation fold: expected {:?} \
+         (every set key minus the removed {}), got {:?}",
+        expected, REMOVED_KEY, final_fs
+    );
+}
+
+/// Non-zero accumulation through the seal: concurrent read-modify-write additions to
+/// a single-value number cell seeded at a NON-ZERO base, finalized. The seal must
+/// sequence the writes to the exact total `base + sum(deltas)`. This is the
+/// discriminating check against double-counting: if the seal summed concurrent
+/// absolute values (`[base+a, base+b]`) instead of sequencing, the result would be
+/// inflated by the base; if it kept-one, the result would be short.
+#[tokio::test]
+async fn fs_seal_nonzero_accumulation_has_no_double_count() {
+    init_test_logging();
+    use casper::rust::finality::floor::floor_of_block;
+    use casper::rust::finality::floor_seal::floor_state_get_or_compute;
+
+    const FT_THRESHOLD: f32 = 0.1;
+    const BASE: i64 = 100;
+    const ROUNDS: u32 = 6;
+
+    // Largest integer appearing in the decoded @5 datum.
+    fn cell_number(cell: &[String]) -> Option<i64> {
+        let s = cell.join(" ");
+        let b = s.as_bytes();
+        let mut best: Option<i64> = None;
+        let mut i = 0usize;
+        while i < b.len() {
+            if b[i].is_ascii_digit() {
+                let mut j = i;
+                while j < b.len() && b[j].is_ascii_digit() {
+                    j += 1;
+                }
+                if let Ok(n) = s[i..j].parse::<i64>() {
+                    best = Some(best.map_or(n, |m: i64| m.max(n)));
+                }
+                i = j;
+            } else {
+                i += 1;
+            }
+        }
+        best
+    }
+
+    let genesis = GenesisBuilder::new()
+        .build_genesis_with_parameters(Some(
+            GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(3)),
+        ))
+        .await
+        .expect("Failed to build genesis");
+    let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None, None)
+        .await
+        .unwrap();
+    let shard_id = genesis.genesis_block.shard_id.clone();
+
+    let seed = construct_deploy::source_deploy_now(
+        format!("@5!({})", BASE),
+        None,
+        None,
+        Some(shard_id.clone()),
+    )
+    .unwrap();
+    nodes[0].add_block_from_deploys(&[seed]).await.unwrap();
+    {
+        let nodes_refs: Vec<&mut TestNode> = nodes.iter_mut().collect();
+        TestNode::propagate(&mut nodes_refs.into_iter().collect::<Vec<_>>())
+            .await
+            .unwrap();
+    }
+
+    let mut last_fs_val: Option<i64> = None;
+    for r in 0..ROUNDS {
+        // The leading throwaway produce makes each round's source unique (distinct sig).
+        let add_a = construct_deploy::source_deploy_now(
+            format!("@8!({}) | for (@v <- @5) {{ @5!(v + 10) }}", r),
+            None,
+            None,
+            Some(shard_id.clone()),
+        )
+        .unwrap();
+        let add_b = construct_deploy::source_deploy_now(
+            format!("@8!({}) | for (@v <- @5) {{ @5!(v + 1) }}", r),
+            Some(construct_deploy::DEFAULT_SEC2.clone()),
+            None,
+            Some(shard_id.clone()),
+        )
+        .unwrap();
+        nodes[0].add_block_from_deploys(&[add_a]).await.unwrap();
+        nodes[1].add_block_from_deploys(&[add_b]).await.unwrap();
+        {
+            let nodes_refs: Vec<&mut TestNode> = nodes.iter_mut().collect();
+            TestNode::propagate(&mut nodes_refs.into_iter().collect::<Vec<_>>())
+                .await
+                .unwrap();
+        }
+        let noop = construct_deploy::source_deploy_now(
+            format!("@9!({})", r),
+            None,
+            None,
+            Some(shard_id.clone()),
+        )
+        .unwrap();
+        let _ = TestNode::propagate_block_at_index(&mut nodes, 2, &[noop])
+            .await
+            .unwrap();
+    }
+
+    // Flush rounds to advance finality past every @5 write.
+    for f in 0..6u32 {
+        let noop_a = construct_deploy::source_deploy_now(
+            format!("@9!({})", 1000 + f),
+            None,
+            None,
+            Some(shard_id.clone()),
+        )
+        .unwrap();
+        let noop_b = construct_deploy::source_deploy_now(
+            format!("@9!({})", 2000 + f),
+            Some(construct_deploy::DEFAULT_SEC2.clone()),
+            None,
+            Some(shard_id.clone()),
+        )
+        .unwrap();
+        nodes[0].add_block_from_deploys(&[noop_a]).await.unwrap();
+        nodes[1].add_block_from_deploys(&[noop_b]).await.unwrap();
+        {
+            let nodes_refs: Vec<&mut TestNode> = nodes.iter_mut().collect();
+            TestNode::propagate(&mut nodes_refs.into_iter().collect::<Vec<_>>())
+                .await
+                .unwrap();
+        }
+        let noop_c = construct_deploy::source_deploy_now(
+            format!("@9!({})", 3000 + f),
+            None,
+            None,
+            Some(shard_id.clone()),
+        )
+        .unwrap();
+        let merge = TestNode::propagate_block_at_index(&mut nodes, 2, &[noop_c])
+            .await
+            .unwrap();
+
+        let dag_now = nodes[0].block_dag_storage.get_representation();
+        if let Ok(floor) = floor_of_block(&dag_now, &merge.block_hash, FT_THRESHOLD).await {
+            if let Ok(fs) = floor_state_get_or_compute(
+                &dag_now,
+                &nodes[0].block_store,
+                &nodes[0].runtime_manager,
+                &floor.hash,
+                FT_THRESHOLD,
+            )
+            .await
+            {
+                let cell = rspace_util::get_data_at_public_channel(
+                    &fs.state_hash.0,
+                    5,
+                    &nodes[0].runtime_manager,
+                )
+                .await;
+                tracing::info!(target: "f1r3.trace.cell", flush = f, raw = ?cell, num = ?cell_number(&cell), "nonzero @5 raw");
+                if let Some(v) = cell_number(&cell) {
+                    last_fs_val = Some(v);
+                }
+            }
+        }
+    }
+
+    let expected = BASE + 11 * (ROUNDS as i64);
+    assert_eq!(
+        last_fs_val,
+        Some(expected),
+        "non-zero accumulation through the seal must total {} (base {} + {} rounds of +10/+1), \
+         got {:?} — a larger value means concurrent writes were summed as absolutes \
+         (double-counting the base); a smaller value means a write was dropped",
+        expected,
+        BASE,
+        ROUNDS,
+        last_fs_val
     );
 }
