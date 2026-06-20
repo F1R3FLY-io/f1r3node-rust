@@ -43,7 +43,13 @@ where
     // Acquire global lock for shared LMDB to ensure test isolation.
     // This prevents concurrent tests from interfering with each other when using shared LMDB.
     // The lock is held for the entire test duration to guarantee consistency.
-    let _lock_guard = resources::SHARED_LMDB_LOCK.lock().unwrap();
+    // Poison-tolerant: if a test panics while holding this lock, recover the guard
+    // (into_inner) so a single failure doesn't cascade PoisonError to every other
+    // shared-LMDB test. The underlying race (unlocked shared-env access) is tracked
+    // separately; this only keeps one flake from mass-failing the suite.
+    let _lock_guard = resources::SHARED_LMDB_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
 
     async fn create(
         genesis_context: &GenesisContext,
@@ -86,7 +92,13 @@ where
 {
     // Acquire global lock for shared LMDB to ensure test isolation.
     // Same reason as with_genesis - prevents race conditions with shared LMDB.
-    let _lock_guard = resources::SHARED_LMDB_LOCK.lock().unwrap();
+    // Poison-tolerant: if a test panics while holding this lock, recover the guard
+    // (into_inner) so a single failure doesn't cascade PoisonError to every other
+    // shared-LMDB test. The underlying race (unlocked shared-env access) is tracked
+    // separately; this only keeps one flake from mass-failing the suite.
+    let _lock_guard = resources::SHARED_LMDB_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
 
     async fn create() -> (KeyValueBlockStore, IndexedBlockDagStorage) {
         let scope_id = resources::generate_scope_id();
