@@ -378,42 +378,21 @@ impl Validate {
     }
 
 
-    /// Validate no deploy with the same sig has been produced in the chain
-    /// Agnostic of non-parent justifications.
+    /// Validate that no deploy in the block re-applies an effect already present in
+    /// the block's declared PRE-state.
     ///
-    /// Recovery exemption: sigs present in `s.rejected_in_scope` (rejected
-    /// by a descendant merge within deploy_lifespan) may be legitimate
-    /// recovery candidates — the rejected-deploy buffer pipeline re-includes
-    /// them so their effects can land in canonical state. Without this
-    /// exemption, every recovery-path block would fail `InvalidRepeatDeploy`.
+    /// A deploy is a REPEAT iff its own per-deploy cells are already in the base this
+    /// block builds on, so re-executing it would double-apply (the content-twin). This
+    /// is the SAME state-based criterion the proposer's recovery base-check uses
+    /// (`recovered_deploy_effect_in_base`), so proposer and validator never disagree.
     ///
-    /// The exemption is gated on the sig's current finalization status. A
-    /// sig in `rejected_in_scope` falls into one of two cases:
-    ///
-    ///   - `Pending` / `Expired` / `Failed`: the deploy's effects are NOT
-    ///     in canonical state (no clean canonical inclusion that survived
-    ///     descendant rejection). Re-inclusion is the only way to land
-    ///     them. Exempt from the repeat check.
-    ///
-    ///   - `Finalized`: the deploy has a clean canonical inclusion that
-    ///     was NOT invalidated by a canonical-descendant rejection. Its
-    ///     effects ARE already in canonical state. Re-inclusion would be
-    ///     double-execution, not recovery. Do NOT exempt — let the
-    ///     ancestor scan find the canonical inclusion and flag the
-    ///     repeat. The catchup gate (`should_admit_to_rejected_buffer`)
-    ///     is the primary defense against this; the validator-side
-    ///     check is the second line of defense.
-    /// Repeat-deploy validation, computed purely from the block's own ancestry.
-    ///
-    /// A deploy sig already included in an ancestor block is a REPEAT — invalid —
-    /// unless its most recent inclusion was subsequently rejected (a strictly
-    /// later-or-equal ancestor records the sig in `body.rejected_deploys`), in
-    /// which case re-inclusion is the recovery path re-proposing merge-rejected
-    /// work. Every input is an ancestor block BODY — consensus data — so every
-    /// node reaches the same verdict for the same block. (The previous form keyed
-    /// the recovery exemption on the validator's own `rejected_in_scope` snapshot
-    /// state and local finalization view, which split verdicts across nodes with
-    /// different attach times.)
+    /// Crucially, a body inclusion existing SOMEWHERE in the ancestry does NOT make a
+    /// deploy a repeat: under multi-parent keep-one a deploy can be kept on one branch
+    /// yet merged out of THIS block's base, in which case its effect is absent from the
+    /// pre-state and re-proposing it is the legitimate recovery path. The pre-state is
+    /// carried in the signed block, so the verdict is node-identical. (The previous
+    /// ancestry scan — and before it the node-local `rejected_in_scope` snapshot — keyed
+    /// the verdict on body inclusions / local view and split verdicts across nodes.)
     pub async fn repeat_deploy(
         block: &BlockMessage,
         s: &mut CasperSnapshot,

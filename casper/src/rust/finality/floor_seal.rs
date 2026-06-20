@@ -2,21 +2,26 @@
 //!
 //! The sealed finalized state for a finalized cut F is
 //! `FS(F) = merge(closure(F) \ closure(prev(F))  onto  FS(prev(F)))`,
-//! where `prev(F)` is the previous finalized cut below F on its main-parent
-//! chain ([`previous_finalized_cut`]) — the actual finalized frontier, not the
-//! lagging justification floor. Chaining the seal on the finalized frontier puts
-//! every write finalized at-or-below `prev(F)` into the base, so the seal never
-//! re-litigates an already-finalized write and `FS` grows monotonically.
+//! where `prev(F)` is the justification-derived floor of F ([`floor_of_block`]) —
+//! NOT the node-local finalized frontier. The floor is a pure function of F's signed
+//! justifications plus immutable ancestor metadata, so every node seals F from the
+//! same predecessor and `FS` is node-identical by construction. The floor lags F by
+//! the witnessing depth, so the recursion strictly descends to genesis (whose floor
+//! is itself, the terminal cut).
 //!
 //! Each step folds a newly finalized cone onto its predecessor's state, down to
 //! genesis (whose post-state IS its finalized state). Because the value is a
 //! function of the cut, the read path persists on a miss (write-through): there
 //! is no separate "seal at finalization" mechanism to keep consistent with.
 //!
-//! Open question: `previous_finalized_cut` keys on node-local `is_finalized`, so
-//! whether the resulting predecessor (and thus `FS`) is node-identical is not yet
-//! settled — tracked in notes/merge-lifecycle.md, separate from this module's
-//! recursion logic.
+//! The seal base MUST NOT key on node-local `is_finalized`: under finalization lag
+//! (e.g. contention) two nodes finalize the same floor F to different local frontiers,
+//! so an `is_finalized`-keyed predecessor walk seals F from different cuts. The
+//! base-dependent recovery dedup (`recovered_deploy_effect_in_base` reads the running
+//! base) then skips different re-proposals on each path and folds a divergent `FS` —
+//! the verified #71 cascade (divergent FS -> divergent multi-parent pre-state ->
+//! InvalidTransaction -> slash -> finalization stall). Chaining on the justification
+//! floor removes that node-local input entirely.
 
 use std::collections::HashSet;
 
@@ -30,7 +35,7 @@ use rholang::rust::interpreter::merging::rholang_merging_logic::RholangMergingLo
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::merger::state_change_merger;
 
-use super::floor::Floor;
+use super::floor::{floor_of_block, Floor};
 use crate::rust::errors::CasperError;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 
@@ -55,51 +60,6 @@ pub fn floor_closure(
     );
     runtime_manager.put_cached_floor_closure(floor_hash.clone(), closure.clone());
     Ok(closure)
-}
-
-/// The previous finalized cut below `cut` on its main-parent chain — the base the
-/// seal chains onto.
-///
-/// Unlike `floor_of_block` (justification-derived, lagging the cut by the witnessing
-/// depth), this is the actual finalized frontier below `cut`. Chaining the seal here
-/// puts every write finalized at-or-below it INTO the base, so the seal never
-/// re-litigates an already-finalized write — `FS` grows monotonically (the #71 fix).
-///
-/// Node-identical: every `FS` read is of a finalized cut (`floor ≤ LFB`), and
-/// finalization advances the whole cone, so when `cut` is finalized every finalized
-/// ancestor is already finalized. The main-parent walk to the first `is_finalized`
-/// block therefore yields the same predecessor on every node. Genesis (no main
-/// parent) is the terminal cut.
-fn previous_finalized_cut(
-    dag: &KeyValueDagRepresentation,
-    cut: &BlockHash,
-) -> Result<BlockHash, CasperError> {
-    const DEEP_WALK_WARN: usize = 256;
-    let mut current = cut.clone();
-    let mut walked: usize = 0;
-    loop {
-        match dag.main_parent(&current) {
-            Some(parent) => {
-                if dag.is_finalized(&parent) {
-                    return Ok(parent);
-                }
-                current = parent;
-                walked += 1;
-                if walked == DEEP_WALK_WARN {
-                    tracing::warn!(
-                        target: "f1r3.trace.fs_floor",
-                        cut = %PrettyPrinter::build_string_bytes(cut),
-                        walked,
-                        "previous_finalized_cut walk unusually deep; finalization lagging or cold start"
-                    );
-                }
-            }
-            None => {
-                // `current` is genesis: the terminal finalized cut.
-                return Ok(current);
-            }
-        }
-    }
 }
 
 /// `FS(floor_hash)`, from the store when present, else computed by the
@@ -156,7 +116,7 @@ pub async fn floor_state_get_or_compute(
             break seed;
         }
         unsealed.push(cursor.clone());
-        cursor = previous_finalized_cut(dag, &cursor)?;
+        cursor = floor_of_block(dag, &cursor, ft_threshold).await?.hash;
     };
 
     if !unsealed.is_empty() {
@@ -201,12 +161,11 @@ async fn seal_floor_cut(
     runtime_manager: &RuntimeManager,
     cut: &BlockHash,
     prev_state: &FloorData,
-    // Vestigial: the seal operates on already-finalized cuts (previous_finalized_cut
-    // walks is_finalized; the merge needs no FT), so no fault tolerance is computed here.
-    _ft_threshold: f32,
+    // Used to derive the node-identical justification floor of `cut` — the seal base.
+    ft_threshold: f32,
 ) -> Result<FloorData, CasperError> {
     let cut_number = dag.block_number_unsafe(cut)?;
-    let prev_hash = previous_finalized_cut(dag, cut)?;
+    let prev_hash = floor_of_block(dag, cut, ft_threshold).await?.hash;
     let prev = Floor {
         block_number: dag.block_number_unsafe(&prev_hash)?,
         hash: prev_hash,
@@ -255,21 +214,17 @@ async fn seal_floor_cut(
     )
     .await?;
 
-    // FS(cut) = deterministic re-execution of the newly-finalized cone onto
-    // FS(prev_finalized_cut) (the #71 fix). A keep-one merge drops concurrent writes
-    // to a single-value cell (e.g. the PoS state cell); instead we PLAY each finalized
-    // block's user deploys in topological order on the running FS, so concurrent writes
-    // become a linear chain and every finalized write is preserved. PLAY uses
-    // deterministic matching, so FS is node-identical across nodes (no proposer here to
-    // freeze a random match choice). FS is the canonical finalized state every consumer
-    // reads; it intentionally differs from any block's committed (lagging-floor) post-state.
-    //
-    // Dedup by signature: a deploy can be kept in more than one block (the "flip"), so a
-    // naive per-block replay would apply it twice. Playing each signature once (first
-    // topological appearance) makes the fold exactly-once.
-    //
-    // System deploys (close-block at epoch boundaries, slash) also write the PoS state
-    // cell; folding those in is the next step. User deploys are played here.
+    // FS(cut) = the deterministic op-fold of the newly-finalized cone onto
+    // FS(prev_finalized_cut) (the #71 fix). A keep-one merge would drop concurrent
+    // writes to a single-value cell (e.g. the PoS state cell); instead each finalized
+    // block's COMMITTED diff is folded onto the running FS in topological order — number
+    // channels by their commutative delta, non-foldable Map/Set/Int cells by a recursive
+    // structural 3-way merge — so every co-finalized concurrent write is preserved.
+    // Folding committed diffs is pure trie work (no reducer), so FS is node-identical
+    // across nodes. FS is the canonical finalized state every consumer reads; it
+    // intentionally differs from a block's committed (lagging-floor) post-state. User and
+    // system deploy chains are both folded; per-signature dedup (the "flip") and the
+    // cross-cut base-check keep each finalized effect applied exactly once (see below).
     let mut numbered: Vec<(i64, BlockHash)> = scope
         .iter()
         .map(|h| Ok::<_, CasperError>((dag.block_number_unsafe(h)?, h.clone())))

@@ -50,21 +50,6 @@ pub struct RSpaceStore {
     pub cold: Arc<dyn KeyValueStore>,
 }
 
-/// Ordering policy for matching candidate data/continuations in the COMM path.
-///
-/// `Random` (the default for all production runtimes) realizes the tuple space's
-/// non-deterministic matching: when several candidates are eligible, one is chosen
-/// by an entropy shuffle and the chosen index is recorded so replay can reproduce
-/// it. `Deterministic` skips the shuffle (identity order), so a fresh PLAY is
-/// bit-identical across nodes. It exists for finalized-state re-execution at the
-/// seal, which has no single proposer to freeze the random choice and therefore
-/// needs every node to derive the same state from the same finalized deploys.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum MatchOrder {
-    Random,
-    Deterministic,
-}
-
 #[repr(C)]
 #[derive(Clone)]
 pub struct RSpace<C, P, A, K> {
@@ -79,7 +64,6 @@ pub struct RSpace<C, P, A, K> {
     phase_b_locks: Arc<DashMap<u64, Arc<tokio::sync::Mutex<()>>>>,
     current_deploy_sig: Arc<std::sync::RwLock<Option<Vec<u8>>>>,
     this_exec_produces: Arc<std::sync::RwLock<HashSet<String>>>,
-    match_order: MatchOrder,
 }
 
 impl<C, P, A, K> RSpace<C, P, A, K>
@@ -519,7 +503,6 @@ where
             phase_b_locks: Arc::new(DashMap::new()),
             current_deploy_sig: Arc::new(std::sync::RwLock::new(None)),
             this_exec_produces: Arc::new(std::sync::RwLock::new(HashSet::new())),
-            match_order: MatchOrder::Random,
         }
     }
 
@@ -948,17 +931,6 @@ where
         Ok(rspace)
     }
 
-    /// Like [`spawn`](Self::spawn) but the spawned space matches candidates in a
-    /// deterministic (identity) order instead of an entropy shuffle. Used for
-    /// finalized-state re-execution at the seal, where every node must derive the
-    /// same state from the same finalized deploys with no proposer to freeze a
-    /// random match choice.
-    pub fn spawn_deterministic(&self) -> Result<Self, RSpaceError> {
-        let mut rspace = self.spawn()?;
-        rspace.match_order = MatchOrder::Deterministic;
-        Ok(rspace)
-    }
-
     /* RSpaceOps */
 
     fn store_waiting_continuation(
@@ -1321,13 +1293,10 @@ where
             .enumerate()
             .map(|(i, d)| (d, i as i32))
             .collect::<Vec<_>>();
-        // Deterministic mode (finalized-state seal): keep identity order so a fresh
-        // PLAY is bit-identical across nodes. Random mode (production): shuffle the
-        // match order, recording the chosen index for replay.
-        if self.match_order == MatchOrder::Random {
-            let mut rng = rand::rng();
-            indexed_vec.shuffle(&mut rng);
-        }
+        // Production tuple-space semantics: shuffle the match order, recording the
+        // chosen index so replay can reproduce the same COMM.
+        let mut rng = rand::rng();
+        indexed_vec.shuffle(&mut rng);
         indexed_vec
     }
 }
