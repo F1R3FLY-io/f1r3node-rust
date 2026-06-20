@@ -471,9 +471,20 @@ pub async fn check(
                 }
             }
         }
-        None => Err(CasperError::Other(
-            "Synchrony constraint checker: Validator does not have a latest message".to_string(),
-        )),
+        None => {
+            // A proposer with no latest message in this snapshot has not yet
+            // self-published — a freshly-bonded joiner whose genesis LM placeholder
+            // has not been registered on this node yet (or whose heartbeat fired
+            // before it). It cannot propose, so this is a graceful skip, not an
+            // error: erroring here propagated as the false ProposeFailure::BugError
+            // ("BugError (seqNum N)") on a just-bonded joiner. It retries on the
+            // next round once it has a latest message (genesis -> "may propose once").
+            tracing::debug!(
+                target: "f1r3fly.casper.proposer",
+                "Synchrony constraint: proposer has no latest message yet; skipping propose"
+            );
+            Ok(CheckProposeConstraintsResult::not_bonded())
+        }
     }
 }
 

@@ -794,13 +794,55 @@ impl BlockDagKeyValueStorage {
                 .collect();
 
             let mut result = HashMap::new();
-            for validator in newly_bonded_set.difference(&justification_validators) {
-                // This filter is required to enable adding blocks backward from higher height to lower
-                if let Ok(false) = self
-                    .latest_messages_index
-                    .contains_key(ValidatorSerde((*validator).clone()))
-                {
-                    result.insert((*validator).clone(), block_hash.clone());
+            // The filter (contains_key == false) is required to enable adding blocks
+            // backward from higher height to lower.
+            let newly_bonded_unseen: Vec<Validator> = newly_bonded_set
+                .difference(&justification_validators)
+                .filter_map(|validator| {
+                    match self
+                        .latest_messages_index
+                        .contains_key(ValidatorSerde((*validator).clone()))
+                    {
+                        Ok(false) => Some((*validator).clone()),
+                        _ => None,
+                    }
+                })
+                .collect();
+
+            if !newly_bonded_unseen.is_empty() {
+                // A freshly-bonded validator has authored no block yet, so it has no
+                // real latest message. Register a NODE-IDENTICAL placeholder — genesis,
+                // the height-0 block — rather than the inserting block: the inserting
+                // block is whichever bonding sibling each node happened to process first,
+                // so registering it makes the latest-messages map node-divergent ->
+                // divergent self-justification -> false equivocation -> slash. Genesis is
+                // what `Validate::sequence_number` (genesis creator-justification -> seq 1)
+                // and `synchrony_constraint_checker` ("latest block is genesis -> may
+                // propose once") already expect for a not-yet-self-published validator.
+                let placeholder = {
+                    let guard = self.block_metadata_index.read().unwrap();
+                    let dag_state = guard.dag_state().read().unwrap();
+                    dag_state
+                        .height_map
+                        .get(&0)
+                        .and_then(|blocks| blocks.iter().min().cloned())
+                        // Pre-genesis insert / tests with no initialized genesis: fall
+                        // back to the inserting block (historical behavior). In production
+                        // the height-0 block is always present once the chain advances.
+                        .unwrap_or_else(|| block_hash.clone())
+                };
+
+                for v in newly_bonded_unseen {
+                    tracing::debug!(
+                        target: "f1r3.trace.lm_register",
+                        via = "newly_bonded",
+                        validator = %PrettyPrinter::build_string_bytes(&v),
+                        registered_block = %PrettyPrinter::build_string_bytes(&placeholder),
+                        inserting_sender = %PrettyPrinter::build_string_bytes(&block.sender),
+                        inserting_seq = block.seq_num,
+                        "newly-bonded validator LM slot registered to genesis placeholder"
+                    );
+                    result.insert(v, placeholder.clone());
                 }
             }
 
@@ -880,6 +922,15 @@ impl BlockDagKeyValueStorage {
                     }
                     _ => true,
                 } {
+                    tracing::debug!(
+                        target: "f1r3.trace.lm_register",
+                        via = "sender",
+                        validator = %PrettyPrinter::build_string_bytes(&block.sender),
+                        registered_block = %PrettyPrinter::build_string_bytes(&block.block_hash),
+                        inserting_sender = %PrettyPrinter::build_string_bytes(&block.sender),
+                        inserting_seq = block.seq_num,
+                        "sender LM slot registered to own block"
+                    );
                     HashMap::from([senders_new_lm])
                 } else {
                     HashMap::new()
