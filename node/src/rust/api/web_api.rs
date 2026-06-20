@@ -753,16 +753,21 @@ impl WebApi for WebApiImpl {
 }"#
         .to_string();
 
-        let (resolved_hash, block_number) = self.resolve_block(block_hash).await?;
-
-        let (pars, _block, _cost) = BlockAPI::exploratory_deploy(
+        // Finalized truth: read bonds from FS(LFB) (the sealed finalized-floor
+        // fold), not the keep-one LFB post-state which can transiently drop a
+        // concurrently-bonded validator to recovery. Passing the request's
+        // block_hash through means None -> FS(LFB); an explicit hash still reads
+        // that block's post-state (exploratory_deploy handles both).
+        let (pars, block, _cost) = BlockAPI::exploratory_deploy(
             &self.engine_cell,
             term,
-            Some(resolved_hash.clone()),
+            block_hash,
             false,
             self.dev_mode,
         )
         .await?;
+        let resolved_hash = block.block_hash;
+        let block_number = block.block_number;
 
         let exprs: Vec<RhoExpr> = pars.into_iter().filter_map(expr_from_par_proto).collect();
 
@@ -858,16 +863,19 @@ impl WebApi for WebApiImpl {
 }"#
         .to_string();
 
-        let (resolved_hash, block_number) = self.resolve_block(block_hash).await?;
-
-        let (pars, _block, _cost) = BlockAPI::exploratory_deploy(
+        // Finalized truth: read epoch rewards from FS(LFB), not the keep-one LFB
+        // post-state. None -> FS(LFB); an explicit hash reads that block's
+        // post-state (exploratory_deploy handles both).
+        let (pars, block, _cost) = BlockAPI::exploratory_deploy(
             &self.engine_cell,
             term,
-            Some(resolved_hash.clone()),
+            block_hash,
             false,
             self.dev_mode,
         )
         .await?;
+        let resolved_hash = block.block_hash;
+        let block_number = block.block_number;
 
         let exprs: Vec<RhoExpr> = pars.into_iter().filter_map(expr_from_par_proto).collect();
         let rewards = exprs
@@ -895,16 +903,19 @@ impl WebApi for WebApiImpl {
 }"#
         .to_string();
 
-        let (resolved_hash, block_number) = self.resolve_block(block_hash).await?;
-
-        let (pars, _block, _cost) = BlockAPI::exploratory_deploy(
+        // Finalized truth: read bonds from FS(LFB), not the keep-one LFB
+        // post-state. None -> FS(LFB); an explicit hash reads that block's
+        // post-state (exploratory_deploy handles both).
+        let (pars, block, _cost) = BlockAPI::exploratory_deploy(
             &self.engine_cell,
             term,
-            Some(resolved_hash.clone()),
+            block_hash,
             false,
             self.dev_mode,
         )
         .await?;
+        let resolved_hash = block.block_hash;
+        let block_number = block.block_number;
 
         let exprs: Vec<RhoExpr> = pars.into_iter().filter_map(expr_from_par_proto).collect();
 
