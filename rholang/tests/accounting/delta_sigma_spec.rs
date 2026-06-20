@@ -242,25 +242,23 @@ fn sync_reply_receive_count(par: &Par) -> usize {
     for receive in &par.receives {
         // The hallmark of a sync-send reply receive: exactly one bind whose sole
         // pattern is a lone `Var::Wildcard` (`for(_ <- ret){…}`).
-        let lone_wildcard = receive.binds.len() == 1
-            && receive.binds[0].patterns.len() == 1
-            && {
-                let p = &receive.binds[0].patterns[0];
-                p.sends.is_empty()
-                    && p.receives.is_empty()
-                    && p.news.is_empty()
-                    && p.matches.is_empty()
-                    && p.bundles.is_empty()
-                    && p.exprs.len() == 1
-                    && matches!(
-                        &p.exprs[0].expr_instance,
-                        Some(ExprInstance::EVarBody(ev))
-                            if matches!(
-                                ev.v.as_ref().and_then(|v| v.var_instance.as_ref()),
-                                Some(VarInstance::Wildcard(_))
-                            )
-                    )
-            };
+        let lone_wildcard = receive.binds.len() == 1 && receive.binds[0].patterns.len() == 1 && {
+            let p = &receive.binds[0].patterns[0];
+            p.sends.is_empty()
+                && p.receives.is_empty()
+                && p.news.is_empty()
+                && p.matches.is_empty()
+                && p.bundles.is_empty()
+                && p.exprs.len() == 1
+                && matches!(
+                    &p.exprs[0].expr_instance,
+                    Some(ExprInstance::EVarBody(ev))
+                        if matches!(
+                            ev.v.as_ref().and_then(|v| v.var_instance.as_ref()),
+                            Some(VarInstance::Wildcard(_))
+                        )
+                )
+        };
         if lone_wildcard {
             n += 1;
         }
@@ -326,7 +324,10 @@ async fn sec_7_4_two_sided_desugar_pins_source_6_to_desugared_8() {
     // desugared `SEC_7_4_DEBIT_CREDIT` example exactly).
     let analysis = demand(&par, &envelope_sig());
     assert!(!analysis.unknown, "the §7.4 example is fully resolvable");
-    assert_eq!(analysis.known_lower_bound, 8, "Δ_s == 8 for the §7.4 two-sided desugar");
+    assert_eq!(
+        analysis.known_lower_bound, 8,
+        "Δ_s == 8 for the §7.4 two-sided desugar"
+    );
 
     // The runtime confirms the 8: the live reducer consumes exactly 8 COMM tokens.
     let runtime_consumed = runtime_consumed_token_count(SEC_7_4_SUGARED).await;
@@ -668,10 +669,12 @@ fn multi_lane_demand_static_equals_runtime() {
     // STATIC: a Par with 3 sends on Σ⟦s₀⟧, 2 on Σ⟦s₁⟧, 1 on a data channel.
     let mut par = Par::default();
     for _ in 0..3 {
-        par.sends.push(new_send(chan0.clone(), vec![], false, vec![], false));
+        par.sends
+            .push(new_send(chan0.clone(), vec![], false, vec![], false));
     }
     for _ in 0..2 {
-        par.sends.push(new_send(chan1.clone(), vec![], false, vec![], false));
+        par.sends
+            .push(new_send(chan1.clone(), vec![], false, vec![], false));
     }
     par.sends
         .push(new_send(data_chan.clone(), vec![], false, vec![], false));

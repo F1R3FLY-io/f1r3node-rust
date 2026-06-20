@@ -51,6 +51,8 @@
 //! live runtime.
 
 use models::rhoapi::Par;
+use proptest::prelude::*;
+use proptest::test_runner::{Config as ProptestConfig, TestRunner};
 use rholang::rust::interpreter::accounting::costs::Cost;
 use rholang::rust::interpreter::accounting::{
     funding_sig_compound, funding_sig_single, BillableKind, Sig,
@@ -60,9 +62,6 @@ use rholang::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
 use rholang::rust::interpreter::test_utils::resources::create_runtimes;
 use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
-
-use proptest::prelude::*;
-use proptest::test_runner::{Config as ProptestConfig, TestRunner};
 
 async fn fresh_runtime() -> RhoRuntimeImpl {
     let mut kvm = InMemoryStoreManager::new();
@@ -204,11 +203,21 @@ async fn observable_cost_strictly_increases_with_each_redex() {
         r#"new x, w in { x!(1) | for(y <- x){ Nil } | w!(2) | for(z <- w){ Nil } }"#,
     )
     .await;
-    assert!(one > 0, "every COMM interaction consumes a strictly positive cost");
+    assert!(
+        one > 0,
+        "every COMM interaction consumes a strictly positive cost"
+    );
     assert_eq!(one, 2, "one interaction = 2 COMMs");
     assert_eq!(two, 4, "two disjoint interactions = 4 COMMs");
-    assert!(two > one, "adding a redex strictly increases the consumed cost");
-    assert_eq!(two - one, 2, "the added interaction's quantum is exactly its 2 COMMs");
+    assert!(
+        two > one,
+        "adding a redex strictly increases the consumed cost"
+    );
+    assert_eq!(
+        two - one,
+        2,
+        "the added interaction's quantum is exactly its 2 COMMs"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -345,7 +354,8 @@ async fn binary_join_bills_one_receive_comm() {
 #[tokio::test]
 async fn join_receive_comm_is_one_regardless_of_arity() {
     let two = r#"new a, b in { a!(1) | b!(2) | for(x <- a & y <- b){ Nil } }"#;
-    let three = r#"new a, b, c in { a!(1) | b!(2) | c!(3) | for(x <- a & y <- b & z <- c){ Nil } }"#;
+    let three =
+        r#"new a, b, c in { a!(1) | b!(2) | c!(3) | for(x <- a & y <- b & z <- c){ Nil } }"#;
 
     // Each program's join is a SINGLE receive node (the join COMM), independent
     // of arity.
@@ -374,7 +384,10 @@ async fn join_receive_comm_is_one_regardless_of_arity() {
         two_join_cost, three_join_cost,
         "J1: the join's own COMM cost is invariant across arity"
     );
-    assert_eq!(two_join_cost, 1, "J1: the join consumes exactly ONE combined token");
+    assert_eq!(
+        two_join_cost, 1,
+        "J1: the join consumes exactly ONE combined token"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -426,7 +439,10 @@ fn prop_random_redex_consumes_rule_determined_comm_quantum() {
                 expected,
                 "runtime consumed COMM count must equal the rule-determined quantum"
             );
-            prop_assert!(runtime_comms > 0, "a non-empty redex consumes a positive quantum");
+            prop_assert!(
+                runtime_comms > 0,
+                "a non-empty redex consumes a positive quantum"
+            );
             // The quantum strictly decreases the available budget: consuming
             // `runtime_comms` from a budget B leaves B − runtime_comms < B.
             let budget = 1_000_000i64;

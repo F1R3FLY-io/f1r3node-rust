@@ -72,9 +72,7 @@ impl Join {
         }
     }
 
-    fn fired(&self) -> bool {
-        self.inner.lock().unwrap().fired
-    }
+    fn fired(&self) -> bool { self.inner.lock().unwrap().fired }
 
     fn present_count(&self) -> usize {
         self.inner.lock().unwrap().present_mask.count_ones() as usize
@@ -156,7 +154,10 @@ fn ternary_join_with_one_missing_surface_never_partially_debits() {
         t1.join().unwrap();
 
         assert!(!join.fired(), "missing the 3rd surface ⇒ never fires");
-        assert!(join.present_count() <= 2, "at most the two delivered surfaces");
+        assert!(
+            join.present_count() <= 2,
+            "at most the two delivered surfaces"
+        );
         assert_eq!(
             join.combined_token_debits.load(Ordering::Acquire),
             0,

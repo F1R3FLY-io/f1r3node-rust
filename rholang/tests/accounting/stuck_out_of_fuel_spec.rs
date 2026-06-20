@@ -164,8 +164,15 @@ async fn stuck_gate_body_consumes_nothing_versus_ungated_baseline() {
     assert!(baseline.errors.is_empty(), "baseline must not error");
     let baseline_comms = comm_count(&baseline_rt);
     let baseline_out = cell_values(&baseline_rt, "out").await;
-    assert_eq!(baseline_comms, 3, "the ungated body completes its full interaction (3 COMMs)");
-    assert_eq!(baseline_out, vec![5], "ungated, the body's effect lands on \"out\"");
+    assert_eq!(
+        baseline_comms, 3,
+        "the ungated body completes its full interaction (3 COMMs)"
+    );
+    assert_eq!(
+        baseline_out,
+        vec![5],
+        "ungated, the body's effect lands on \"out\""
+    );
 
     // STUCK: the SAME body, now GATED behind an empty supply channel. The gate
     // receiver installs (1 COMM) but never fires, so the body's inner

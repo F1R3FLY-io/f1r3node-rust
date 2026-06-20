@@ -111,11 +111,27 @@ fn disjoint_lanes_admit_concurrently_without_interference() {
             "both disjoint-pool deploys must be admitted"
         );
         // Each lane debited EXACTLY its own demand — no cross-lane corruption.
-        assert_eq!(lane_a.debited.load(Ordering::Acquire), 3, "lane A debited its own 3");
-        assert_eq!(lane_b.debited.load(Ordering::Acquire), 5, "lane B debited its own 5");
+        assert_eq!(
+            lane_a.debited.load(Ordering::Acquire),
+            3,
+            "lane A debited its own 3"
+        );
+        assert_eq!(
+            lane_b.debited.load(Ordering::Acquire),
+            5,
+            "lane B debited its own 5"
+        );
         // Balances reflect exactly the own-lane debit (conservation per pool).
-        assert_eq!(lane_a.balance.load(Ordering::Acquire), 7, "lane A: 10 − 3 = 7");
-        assert_eq!(lane_b.balance.load(Ordering::Acquire), 5, "lane B: 10 − 5 = 5");
+        assert_eq!(
+            lane_a.balance.load(Ordering::Acquire),
+            7,
+            "lane A: 10 − 3 = 7"
+        );
+        assert_eq!(
+            lane_b.balance.load(Ordering::Acquire),
+            5,
+            "lane B: 10 − 5 = 5"
+        );
     });
 }
 
@@ -153,9 +169,21 @@ fn disjoint_funded_and_underfunded_lanes_settle_independently() {
         b.join().unwrap();
 
         // Exactly the funded lane admitted.
-        assert_eq!(admitted.load(Ordering::Acquire), 1, "only the funded lane admits");
-        assert_eq!(funded.debited.load(Ordering::Acquire), 5, "funded lane debited 5");
-        assert_eq!(funded.balance.load(Ordering::Acquire), 3, "funded: 8 − 5 = 3");
+        assert_eq!(
+            admitted.load(Ordering::Acquire),
+            1,
+            "only the funded lane admits"
+        );
+        assert_eq!(
+            funded.debited.load(Ordering::Acquire),
+            5,
+            "funded lane debited 5"
+        );
+        assert_eq!(
+            funded.balance.load(Ordering::Acquire),
+            3,
+            "funded: 8 − 5 = 3"
+        );
         // NO SIDE EFFECT on the rejected lane.
         assert_eq!(
             underfunded.debited.load(Ordering::Acquire),
@@ -216,6 +244,10 @@ fn shared_admitted_counter_has_no_lost_update() {
             "both admits reflected — no lost update on the shared counter"
         );
         assert_eq!(*lane_a.lock().unwrap(), 6, "lane A (mutex): 10 − 4 = 6");
-        assert_eq!(lane_b.balance.load(Ordering::Acquire), 4, "lane B: 10 − 6 = 4");
+        assert_eq!(
+            lane_b.balance.load(Ordering::Acquire),
+            4,
+            "lane B: 10 − 6 = 4"
+        );
     });
 }

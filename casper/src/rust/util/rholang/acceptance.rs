@@ -71,8 +71,8 @@ pub use rholang::rust::interpreter::accounting::delta_sigma::SigKey;
 use rholang::rust::interpreter::accounting::delta_sigma::{self, Decomposition, DemandEntry};
 use rholang::rust::interpreter::accounting::resource_logic::{
     ApportionmentPolicy, DefaultApportionment, DefaultResourceLogic, FlatFeeApportionment,
-    GroupShape, GsltPresentation,
-    OslfResourceLogic, PoolDraw, PoolResidual, ResourceSignature, RhoGslt,
+    GroupShape, GsltPresentation, OslfResourceLogic, PoolDraw, PoolResidual, ResourceSignature,
+    RhoGslt,
 };
 use rholang::rust::interpreter::accounting::{self, Sig};
 use rholang::rust::interpreter::compiler::compiler::Compiler;
@@ -148,9 +148,7 @@ pub struct FeeCarve {
 impl FeeCarve {
     /// Total carved fee = Σ of the per-client debits — the amount credited to the
     /// proposer's `F_v` (conservation: clients debited == `F_v` credited).
-    pub fn total(&self) -> i64 {
-        self.debits.values().map(|d| d.amount).sum()
-    }
+    pub fn total(&self) -> i64 { self.debits.values().map(|d| d.amount).sum() }
 }
 
 /// The replay-recomputed debits: the COST settlement (burned) and the FEE carve
@@ -834,8 +832,13 @@ where
     //    Σ⟦s₁⟧, Σ⟦s₂⟧)`, bounding the shared component draws by a cross-group
     //    residual ledger. The SAME function (over identically-derived inputs)
     //    runs on replay ⇒ byte-identical `BTreeMap<SigKey, SettlementDebit>`.
-    outcome.debits =
-        compute_settlement_debits(&demand_by_group, &decompositions, &raw, &channels_by_key, policy);
+    outcome.debits = compute_settlement_debits(
+        &demand_by_group,
+        &decompositions,
+        &raw,
+        &channels_by_key,
+        policy,
+    );
 
     // FEE carve (Stage D): the per-pool fee debit is computed AFTER the cost
     // debit, against the POST-COST residual (raw − cost draws). It uses the FLAT
@@ -1108,16 +1111,21 @@ where
     // 3. Settle the per-pool COST debit via the SAME shared function the play side
     //    runs (combined-pool-first split + shared-component residual ledger).
     //    Same inputs + same function ⇒ a BYTE-IDENTICAL debit map (fork safety).
-    let settlement =
-        compute_settlement_debits(&demand_by_group, &decompositions, &raw, &channels_by_key, policy);
+    let settlement = compute_settlement_debits(
+        &demand_by_group,
+        &decompositions,
+        &raw,
+        &channels_by_key,
+        policy,
+    );
 
     // 4. Settle the FEE carve AFTER the cost, against the post-cost residual
     //    (raw − cost draws) — mirrors the play-side fee pass exactly ⇒ byte-identical.
     let raw_after_cost: BTreeMap<SigKey, i64> = channels_by_key
         .keys()
         .map(|k| {
-            let post = raw.get(k).copied().unwrap_or(0)
-                - settlement.get(k).map(|d| d.amount).unwrap_or(0);
+            let post =
+                raw.get(k).copied().unwrap_or(0) - settlement.get(k).map(|d| d.amount).unwrap_or(0);
             (*k, post)
         })
         .collect();
@@ -1166,7 +1174,10 @@ pub fn fee_carve(
     if debits.values().all(|d| d.amount <= 0) {
         return None;
     }
-    Some(FeeCarve { recipient_pk, debits })
+    Some(FeeCarve {
+        recipient_pk,
+        debits,
+    })
 }
 
 #[cfg(test)]
@@ -1364,21 +1375,37 @@ mod tests {
             match shape {
                 GroupShape::Single { own } => {
                     if k > 0 {
-                        vec![PoolDraw { key: own.key, amount: k }]
+                        vec![PoolDraw {
+                            key: own.key,
+                            amount: k,
+                        }]
                     } else {
                         Vec::new()
                     }
                 }
-                GroupShape::Compound { combined, left, right } => {
+                GroupShape::Compound {
+                    combined,
+                    left,
+                    right,
+                } => {
                     let draw_pair = k.min(left.residual).min(right.residual).max(0);
                     let draw_compound = (k - draw_pair).min(combined.residual).max(0);
                     let mut v = Vec::new();
                     if draw_pair > 0 {
-                        v.push(PoolDraw { key: left.key, amount: draw_pair });
-                        v.push(PoolDraw { key: right.key, amount: draw_pair });
+                        v.push(PoolDraw {
+                            key: left.key,
+                            amount: draw_pair,
+                        });
+                        v.push(PoolDraw {
+                            key: right.key,
+                            amount: draw_pair,
+                        });
                     }
                     if draw_compound > 0 {
-                        v.push(PoolDraw { key: combined.key, amount: draw_compound });
+                        v.push(PoolDraw {
+                            key: combined.key,
+                            amount: draw_compound,
+                        });
                     }
                     v
                 }
@@ -1402,10 +1429,18 @@ mod tests {
         demand.insert(fx.compound_key, (fx.compound_chan.clone(), 3));
 
         let default = compute_settlement_debits(
-            &demand, &[fx.decomposition], &raw, &fx.channels_by_key(), &DefaultApportionment,
+            &demand,
+            &[fx.decomposition],
+            &raw,
+            &fx.channels_by_key(),
+            &DefaultApportionment,
         );
         let alt = compute_settlement_debits(
-            &demand, &[fx.decomposition], &raw, &fx.channels_by_key(), &ComponentsFirstApportionment,
+            &demand,
+            &[fx.decomposition],
+            &raw,
+            &fx.channels_by_key(),
+            &ComponentsFirstApportionment,
         );
 
         // DEFAULT (combined-first): compound -= 1, then the pair -= 2 each.
@@ -1435,7 +1470,10 @@ mod tests {
         // NO-OVERDRAW under EITHER policy: no pool drawn past its residual.
         for m in [&default, &alt] {
             for (key, debit) in m {
-                assert!(debit.amount <= *raw.get(key).unwrap_or(&0), "pool overdrawn");
+                assert!(
+                    debit.amount <= *raw.get(key).unwrap_or(&0),
+                    "pool overdrawn"
+                );
             }
         }
     }
@@ -1490,7 +1528,10 @@ mod tests {
         // FEE carve (one token per ADMITTED deploy, carved to F_v): one admitted
         // deploy per present group ⇒ 1 each. cost ≠ fee: this is the separate
         // FeeExtract, not the burned cost above.
-        assert_eq!(outcome.fee_debits.get(&alice_key).map(|d| d.amount), Some(1));
+        assert_eq!(
+            outcome.fee_debits.get(&alice_key).map(|d| d.amount),
+            Some(1)
+        );
         assert_eq!(outcome.fee_debits.get(&bob_key).map(|d| d.amount), Some(1));
     }
 
@@ -1520,10 +1561,16 @@ mod tests {
         let default = admit_by_funding(vec![deploy.clone()], &reader, 0, false)
             .await
             .expect("default gate must not error");
-        let denied =
-            admit_by_funding_with_logic(vec![deploy.clone()], &reader, 0, false, &DenyLogic, &DefaultApportionment)
-                .await
-                .expect("injected gate must not error");
+        let denied = admit_by_funding_with_logic(
+            vec![deploy.clone()],
+            &reader,
+            0,
+            false,
+            &DenyLogic,
+            &DefaultApportionment,
+        )
+        .await
+        .expect("injected gate must not error");
 
         assert_eq!(default.admitted.len(), 1);
         assert!(default.rejected.is_empty());
@@ -1562,7 +1609,10 @@ mod tests {
         .await
         .expect("injected recompute must not error");
 
-        assert_eq!(default.settlement.get(&key).map(|debit| debit.amount), Some(2));
+        assert_eq!(
+            default.settlement.get(&key).map(|debit| debit.amount),
+            Some(2)
+        );
         assert!(injected.settlement.is_empty());
     }
 
@@ -1792,7 +1842,11 @@ mod tests {
             absent.admitted.is_empty(),
             "strict + absent pool + Δ=0 ⇒ rejected (cannot pay the +1 FeeExtract)"
         );
-        assert_eq!(absent.rejected.len(), 1, "the un-fee-fundable deploy is rejected");
+        assert_eq!(
+            absent.rejected.len(),
+            1,
+            "the un-fee-fundable deploy is rejected"
+        );
         assert!(absent.debits.is_empty(), "rejected ⇒ no cost debit");
         assert!(absent.fee_debits.is_empty(), "rejected ⇒ no fee carve");
 
@@ -1814,7 +1868,10 @@ mod tests {
             1,
             "strict + present pool (Σ=1) + Δ=0 ⇒ admitted (affords the FeeExtract)"
         );
-        assert!(funded.rejected.is_empty(), "fee-fundable Δ=0 ⇒ not rejected");
+        assert!(
+            funded.rejected.is_empty(),
+            "fee-fundable Δ=0 ⇒ not rejected"
+        );
         assert!(
             funded.debits.get(&zoe_key).is_none(),
             "Δ=0 ⇒ zero COST settlement debit"
@@ -2006,9 +2063,14 @@ mod tests {
         let mut reader = MockSupplyReader::new();
         reader.set_sig(&wallet_sig, PRE);
 
-        let outcome = admit_by_funding(vec![deploy.clone()], &reader, /* margin */ 1, /* strict */ true)
-            .await
-            .expect("gate must not error");
+        let outcome = admit_by_funding(
+            vec![deploy.clone()],
+            &reader,
+            /* margin */ 1,
+            /* strict */ true,
+        )
+        .await
+        .expect("gate must not error");
 
         assert_eq!(outcome.admitted.len(), 1, "funded signer admitted");
         assert!(outcome.rejected.is_empty());
@@ -2033,10 +2095,14 @@ mod tests {
     async fn unfunded_signer_rejected_under_strict() {
         let deploy = cosigned(&n_sends(2), b"poor", 0, 10);
         let reader = MockSupplyReader::new(); // the signer's wallet is ABSENT
-        let outcome =
-            admit_by_funding(vec![deploy.clone()], &reader, /* margin */ 1, /* strict */ true)
-                .await
-                .expect("gate must not error");
+        let outcome = admit_by_funding(
+            vec![deploy.clone()],
+            &reader,
+            /* margin */ 1,
+            /* strict */ true,
+        )
+        .await
+        .expect("gate must not error");
         assert!(
             outcome.admitted.is_empty(),
             "absent signer wallet ⇒ rejected under strict"
@@ -2063,7 +2129,11 @@ mod tests {
     #[tokio::test]
     async fn multi_sig_funds_balanced_over_cosigner_ground_pubkey_wallets() {
         let compound = compound_cosigned("@0!(0) | @0!(0)", 0, 10); // Δ = 2
-        let pks: Vec<Vec<u8>> = compound.signers().iter().map(|s| s.pk.bytes.to_vec()).collect();
+        let pks: Vec<Vec<u8>> = compound
+            .signers()
+            .iter()
+            .map(|s| s.pk.bytes.to_vec())
+            .collect();
         assert_eq!(pks.len(), 2, "two cosigners");
 
         // The funding signature is And(Ground(pk_a), Ground(pk_b)) over the
@@ -2098,9 +2168,10 @@ mod tests {
         assert_eq!(play.admitted.len(), 1, "admitted from the cosigner wallets");
         assert!(play.rejected.is_empty());
 
-        let replay = recompute_settlement_debits(play.admitted.clone(), &reader, /* strict */ true)
-            .await
-            .expect("recompute must not error");
+        let replay =
+            recompute_settlement_debits(play.admitted.clone(), &reader, /* strict */ true)
+                .await
+                .expect("recompute must not error");
         assert_eq!(
             play.debits, replay.settlement,
             "play == replay byte-identical over the cosigner wallets"
@@ -2108,8 +2179,16 @@ mod tests {
 
         // Balanced (P8): each cosigner's wallet is debited EQUALLY (a compound
         // token is a matched pair — one from each pool), and they actually fund.
-        let l = play.debits.get(&delta_sigma::sig_key(&left)).map(|d| d.amount).unwrap_or(0);
-        let r = play.debits.get(&delta_sigma::sig_key(&right)).map(|d| d.amount).unwrap_or(0);
+        let l = play
+            .debits
+            .get(&delta_sigma::sig_key(&left))
+            .map(|d| d.amount)
+            .unwrap_or(0);
+        let r = play
+            .debits
+            .get(&delta_sigma::sig_key(&right))
+            .map(|d| d.amount)
+            .unwrap_or(0);
         assert_eq!(l, r, "per-cosigner draw is balanced (P8)");
         assert!(l > 0, "the cosigner wallets actually fund the deploy");
     }
@@ -2155,12 +2234,9 @@ mod tests {
         };
 
         // 1-of-2 threshold: only the real signer's signature is required/valid.
-        let cosigned = Cosigned::from_signed_data_threshold(
-            data,
-            vec![real_signer, victim_placeholder],
-            1,
-        )
-        .expect("1-of-2 threshold with one valid signer");
+        let cosigned =
+            Cosigned::from_signed_data_threshold(data, vec![real_signer, victim_placeholder], 1)
+                .expect("1-of-2 threshold with one valid signer");
 
         // funding_sig EXCLUDES the placeholder ⇒ Ground(real_pk) ONLY — the
         // FILTERED funder count (1) drives the arity, NOT `is_compound()` (2).
@@ -2180,7 +2256,11 @@ mod tests {
         let outcome = admit_by_funding(vec![cosigned.clone()], &reader, 0, /* strict */ true)
             .await
             .expect("gate must not error");
-        assert_eq!(outcome.admitted.len(), 1, "the real signer funds the deploy");
+        assert_eq!(
+            outcome.admitted.len(),
+            1,
+            "the real signer funds the deploy"
+        );
         let real_key = delta_sigma::sig_key(&real_wallet);
         let victim_key = delta_sigma::sig_key(&victim_wallet);
         assert_eq!(
@@ -2219,7 +2299,9 @@ mod tests {
             .await
             .expect_err("compound over-admission (ΣΔ=8 > effectiveΣ=5) must be rejected on replay");
         match err {
-            CasperError::ReplayFailure(ReplayFailure::ReplayAdmissionMismatch { detail, .. }) => {
+            CasperError::ReplayFailure(ReplayFailure::ReplayAdmissionMismatch {
+                detail, ..
+            }) => {
                 assert!(
                     detail.contains("over-admission") || detail.contains("exceeds effective"),
                     "expected an over-admission diagnostic, got: {detail}"
@@ -2267,8 +2349,13 @@ mod tests {
         let mut demand = BTreeMap::new();
         demand.insert(fx.compound_key, (fx.compound_chan.clone(), k));
 
-        let debits =
-            compute_settlement_debits(&demand, &[fx.decomposition], &raw, &fx.channels_by_key(), &DefaultApportionment);
+        let debits = compute_settlement_debits(
+            &demand,
+            &[fx.decomposition],
+            &raw,
+            &fx.channels_by_key(),
+            &DefaultApportionment,
+        );
 
         // Components each debited k; compound NOT present (draw_compound = 0).
         assert_eq!(
@@ -2304,8 +2391,13 @@ mod tests {
         let mut demand = BTreeMap::new();
         demand.insert(fx.compound_key, (fx.compound_chan.clone(), 3));
 
-        let debits =
-            compute_settlement_debits(&demand, &[fx.decomposition], &raw, &fx.channels_by_key(), &DefaultApportionment);
+        let debits = compute_settlement_debits(
+            &demand,
+            &[fx.decomposition],
+            &raw,
+            &fx.channels_by_key(),
+            &DefaultApportionment,
+        );
 
         assert_eq!(
             debits.get(&fx.compound_key).map(|d| d.amount),
@@ -2343,8 +2435,13 @@ mod tests {
         let mut demand = BTreeMap::new();
         demand.insert(fx.compound_key, (fx.compound_chan.clone(), k));
 
-        let debits =
-            compute_settlement_debits(&demand, &[fx.decomposition], &raw, &fx.channels_by_key(), &DefaultApportionment);
+        let debits = compute_settlement_debits(
+            &demand,
+            &[fx.decomposition],
+            &raw,
+            &fx.channels_by_key(),
+            &DefaultApportionment,
+        );
 
         // draw_compound = min(5,2) = 2; draw_pair = min(3, 3, 4) = 3.
         let d_compound = debits.get(&fx.compound_key).map(|d| d.amount).unwrap_or(0);
@@ -2418,7 +2515,13 @@ mod tests {
         demand.insert(ab_key, (supply::supply_channel(&ab), 2));
         demand.insert(ac_key, (supply::supply_channel(&ac), 2));
 
-        let debits = compute_settlement_debits(&demand, &decompositions, &raw, &channels_by_key, &DefaultApportionment);
+        let debits = compute_settlement_debits(
+            &demand,
+            &decompositions,
+            &raw,
+            &channels_by_key,
+            &DefaultApportionment,
+        );
 
         let a_draw = debits.get(&a_key).map(|d| d.amount).unwrap_or(0);
         assert!(
@@ -2428,8 +2531,13 @@ mod tests {
         );
 
         // play == replay: the same function over the same inputs is deterministic.
-        let debits_again =
-            compute_settlement_debits(&demand, &decompositions, &raw, &channels_by_key, &DefaultApportionment);
+        let debits_again = compute_settlement_debits(
+            &demand,
+            &decompositions,
+            &raw,
+            &channels_by_key,
+            &DefaultApportionment,
+        );
         assert_eq!(debits, debits_again, "deterministic: play == replay");
     }
 
@@ -2451,7 +2559,8 @@ mod tests {
         demand.insert(key, (chan.clone(), k));
 
         // No decompositions ⇒ pure single-signer path.
-        let debits = compute_settlement_debits(&demand, &[], &raw, &channels_by_key, &DefaultApportionment);
+        let debits =
+            compute_settlement_debits(&demand, &[], &raw, &channels_by_key, &DefaultApportionment);
 
         assert_eq!(debits.len(), 1, "exactly one debit for the single group");
         let d = debits.get(&key).expect("solo pool debited");
@@ -2646,7 +2755,10 @@ mod tests {
         let recomputed = recompute_settlement_debits(outcome.admitted.clone(), &reader, true)
             .await
             .expect("boundary block re-verifies with no mismatch");
-        assert_eq!(outcome.debits, recomputed.settlement, "play == replay at the boundary");
+        assert_eq!(
+            outcome.debits, recomputed.settlement,
+            "play == replay at the boundary"
+        );
     }
 
     /// TM-CA-165 replay guard: a malicious proposer who admits BOTH `{A,s}` and
@@ -2749,9 +2861,16 @@ mod tests {
             .await
             .expect("gate must not error");
 
-        assert_eq!(outcome.admitted.len(), 2, "default shard early-admits both, unenforced");
+        assert_eq!(
+            outcome.admitted.len(),
+            2,
+            "default shard early-admits both, unenforced"
+        );
         assert!(outcome.rejected.is_empty(), "no enforcement ⇒ no rejection");
-        assert!(outcome.debits.is_empty(), "absent pools ⇒ no debit (byte-identical to pre-fix)");
+        assert!(
+            outcome.debits.is_empty(),
+            "absent pools ⇒ no debit (byte-identical to pre-fix)"
+        );
         assert!(outcome.fee_debits.is_empty(), "absent pools ⇒ no fee carve");
     }
 
@@ -2944,7 +3063,10 @@ mod tests {
             "drained combined pool ⇒ no compound fee draw"
         );
         let total_fee: i64 = outcome.fee_debits.values().map(|d| d.amount).sum();
-        assert_eq!(total_fee, 1, "F-1: a compound deploy's fee is FLAT (1), not 2");
+        assert_eq!(
+            total_fee, 1,
+            "F-1: a compound deploy's fee is FLAT (1), not 2"
+        );
         assert_eq!(
             outcome.fee_debits, recomputed.fee,
             "fee play == replay byte-identical (flat, pair-only regime)"
@@ -2985,27 +3107,31 @@ mod tests {
         reader.set(b"alpha", DEMAND as i64 + FEE); // exactly cost + fee
         reader.set(b"beta", DEMAND as i64 - 1); // below cost ⇒ reject
 
-        let outcome = admit_by_funding(
-            vec![funded.clone(), underfunded.clone()],
-            &reader,
-            0,
-            false,
-        )
-        .await
-        .expect("gate must not error");
+        let outcome =
+            admit_by_funding(vec![funded.clone(), underfunded.clone()], &reader, 0, false)
+                .await
+                .expect("gate must not error");
 
         let alpha_key = pool_key(b"alpha");
         let beta_key = pool_key(b"beta");
 
         // The funded deploy is admitted exactly once.
-        assert_eq!(outcome.admitted.len(), 1, "exactly the funded deploy is admitted");
+        assert_eq!(
+            outcome.admitted.len(),
+            1,
+            "exactly the funded deploy is admitted"
+        );
         assert_eq!(
             outcome.admitted[0].primary().sig,
             funded.primary().sig,
             "the ADMITTED deploy is the funded one (alpha)"
         );
         // The underfunded deploy is rejected.
-        assert_eq!(outcome.rejected.len(), 1, "exactly the underfunded deploy is rejected");
+        assert_eq!(
+            outcome.rejected.len(),
+            1,
+            "exactly the underfunded deploy is rejected"
+        );
         assert_eq!(
             outcome.rejected[0],
             underfunded.primary().sig,
@@ -3069,7 +3195,10 @@ mod tests {
         // Alpha is admitted in all three, with IDENTICAL cost + fee debits.
         for outcome in [&solo, &with_peer, &with_peer_rev] {
             assert!(
-                outcome.admitted.iter().any(|c| c.primary().sig == alpha.primary().sig),
+                outcome
+                    .admitted
+                    .iter()
+                    .any(|c| c.primary().sig == alpha.primary().sig),
                 "alpha is admitted regardless of the unfunded peer"
             );
         }
@@ -3090,7 +3219,11 @@ mod tests {
             alpha_fee(&with_peer),
             "alpha's fee carve is unchanged by the disjoint unfunded peer"
         );
-        assert_eq!(alpha_cost(&solo), Some(DEMAND as i64), "alpha cost = its own demand");
+        assert_eq!(
+            alpha_cost(&solo),
+            Some(DEMAND as i64),
+            "alpha cost = its own demand"
+        );
         assert_eq!(alpha_fee(&solo), Some(FEE), "alpha fee = one flat token");
     }
 
@@ -3118,10 +3251,22 @@ mod tests {
         assert_eq!(outcome.admitted.len(), 2, "both funded deploys admitted");
         assert!(outcome.rejected.is_empty(), "nothing rejected");
         // Each disjoint pool is debited exactly its OWN demand + fee.
-        assert_eq!(outcome.debits.get(&alpha_key).map(|d| d.amount), Some(DA as i64));
-        assert_eq!(outcome.debits.get(&beta_key).map(|d| d.amount), Some(DB as i64));
-        assert_eq!(outcome.fee_debits.get(&alpha_key).map(|d| d.amount), Some(FEE));
-        assert_eq!(outcome.fee_debits.get(&beta_key).map(|d| d.amount), Some(FEE));
+        assert_eq!(
+            outcome.debits.get(&alpha_key).map(|d| d.amount),
+            Some(DA as i64)
+        );
+        assert_eq!(
+            outcome.debits.get(&beta_key).map(|d| d.amount),
+            Some(DB as i64)
+        );
+        assert_eq!(
+            outcome.fee_debits.get(&alpha_key).map(|d| d.amount),
+            Some(FEE)
+        );
+        assert_eq!(
+            outcome.fee_debits.get(&beta_key).map(|d| d.amount),
+            Some(FEE)
+        );
     }
 
     // ════════════════════════════════════════════════════════════════════════
@@ -3154,9 +3299,9 @@ mod tests {
         runner
             .run(
                 &(
-                    1usize..=4,             // arity (number of distinct cosigners)
-                    1usize..=4,             // cost demand Δ (number of sends)
-                    0i64..=6,               // per-component surplus above the bound
+                    1usize..=4, // arity (number of distinct cosigners)
+                    1usize..=4, // cost demand Δ (number of sends)
+                    0i64..=6,   // per-component surplus above the bound
                 ),
                 |(arity, demand, surplus)| {
                     const FEE: i64 = 1;
@@ -3165,8 +3310,7 @@ mod tests {
                     // into `Sig::And(Ground(pk₀), …)`.
                     let keypairs: Vec<(PrivateKey, PublicKey)> =
                         (0..arity).map(|_| fresh_keypair()).collect();
-                    let deploy =
-                        cosigned_with_keypairs(&n_sends(demand), &keypairs, 0, 10);
+                    let deploy = cosigned_with_keypairs(&n_sends(demand), &keypairs, 0, 10);
                     let envelope = accounting::funding_sig(&deploy);
 
                     // Seed every pool the gate will read (the compound + each
@@ -3237,10 +3381,8 @@ mod tests {
                     // the residual is exactly pre minus the draws.
                     for (sig, pre) in &seeded {
                         let key = delta_sigma::sig_key(sig);
-                        let cost_draw =
-                            outcome.debits.get(&key).map(|d| d.amount).unwrap_or(0);
-                        let fee_draw =
-                            outcome.fee_debits.get(&key).map(|d| d.amount).unwrap_or(0);
+                        let cost_draw = outcome.debits.get(&key).map(|d| d.amount).unwrap_or(0);
+                        let fee_draw = outcome.fee_debits.get(&key).map(|d| d.amount).unwrap_or(0);
                         // No pool is over-drawn (no underflow at settlement).
                         prop_assert!(
                             cost_draw + fee_draw <= *pre,
