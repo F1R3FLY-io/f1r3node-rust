@@ -21,6 +21,7 @@ use models::rust::casper::protocol::casper_message::{
 use models::rust::validator::Validator;
 use prost::bytes::Bytes;
 use prost::Message;
+use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::history::Either;
 use shared::rust::dag::dag_ops;
 use shared::rust::store::key_value_store::KvStoreError;
@@ -376,95 +377,6 @@ impl Validate {
         Either::Right(ValidBlock::Valid)
     }
 
-    /// One BFS over the ancestry window (parents up to `expiration_threshold`
-    /// blocks back) returning, per sig in `sigs`, the highest block in which it
-    /// was INCLUDED (`body.deploys`) and the highest block in which it was
-    /// REJECTED (`body.rejected_deploys`). Every input is an ancestor block body
-    /// — consensus data — so the result is node-identical for the same parents.
-    ///
-    /// Shared by [`Self::repeat_deploy`] (block validation) and the proposer's
-    /// recovery gate (`block_creator::prepare_user_deploys`) so the two never
-    /// disagree about whether a deploy's effect is live in the ancestry. A
-    /// deploy is "live in the execution base" iff its latest inclusion height is
-    /// strictly greater than its latest rejection height (applied and not
-    /// merged away by a descendant) — see [`Self::is_live_in_ancestry`].
-    /// Per-sig acceptance over the block's cone (lifespan window). For each checked
-    /// sig, returns the set of ancestor blocks that INCLUDE it (`body.deploys`) and
-    /// the set whose inclusion was REJECTED (`body.rejected_deploys`, keyed
-    /// per-inclusion by `host`). Consumed by [`Self::is_live_in_ancestry`].
-    ///
-    /// Uses only cone bodies + per-inclusion hosts, so it is node-identical, and
-    /// being per-inclusion it recognizes an EARLIER surviving inclusion even when a
-    /// LATER inclusion of the same sig was rejected — the content-twin the previous
-    /// single-most-recent-height proxy missed.
-    pub fn ancestry_inclusion_rejection(
-        dag: &block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation,
-        block_store: &KeyValueBlockStore,
-        init_parents: Vec<BlockMetadata>,
-        expiration_threshold: i32,
-        sigs: &HashSet<prost::bytes::Bytes>,
-    ) -> (
-        HashMap<prost::bytes::Bytes, HashSet<BlockHash>>,
-        HashMap<prost::bytes::Bytes, HashSet<BlockHash>>,
-    ) {
-        let max_block_number = proto_util::max_block_number_metadata(&init_parents);
-        let earliest_block_number = max_block_number + 1 - expiration_threshold as i64;
-
-        let visited = dag_ops::bf_traverse(init_parents, |metadata| {
-            proto_util::get_parent_metadatas_above_block_number(
-                metadata,
-                earliest_block_number,
-                dag,
-            )
-            .unwrap_or_default()
-        });
-
-        let mut inclusion_hosts: HashMap<prost::bytes::Bytes, HashSet<BlockHash>> = HashMap::new();
-        let mut rejected_hosts: HashMap<prost::bytes::Bytes, HashSet<BlockHash>> = HashMap::new();
-        for metadata in &visited {
-            let ancestor = block_store.get_unsafe(&metadata.block_hash);
-            for pd in &ancestor.body.deploys {
-                if sigs.contains(&pd.deploy.sig) {
-                    inclusion_hosts
-                        .entry(pd.deploy.sig.clone())
-                        .or_default()
-                        .insert(metadata.block_hash.clone());
-                }
-            }
-            for rd in &ancestor.body.rejected_deploys {
-                if sigs.contains(&rd.sig) {
-                    rejected_hosts
-                        .entry(rd.sig.clone())
-                        .or_default()
-                        .insert(rd.host.clone());
-                }
-            }
-        }
-        (inclusion_hosts, rejected_hosts)
-    }
-
-    /// True iff `sig`'s effect is live in the cone: it has at least one inclusion
-    /// host whose inclusion was NOT rejected (no `(sig, host)` rejection record).
-    /// Such a deploy is already applied in the execution base a new block builds
-    /// on, so re-executing it double-applies its deterministic `new`-site cells
-    /// (the content-twin). Per-inclusion, so an earlier surviving inclusion keeps
-    /// the deploy live even when a later inclusion was rejected. The same predicate
-    /// decides `repeat_deploy` invalidity and recovery-gate admission, keeping
-    /// proposer and validator consistent — and uses only cone bodies + per-inclusion
-    /// hosts, so it is node-identical.
-    pub fn is_live_in_ancestry(
-        inclusion_hosts: &HashMap<prost::bytes::Bytes, HashSet<BlockHash>>,
-        rejected_hosts: &HashMap<prost::bytes::Bytes, HashSet<BlockHash>>,
-        sig: &prost::bytes::Bytes,
-    ) -> bool {
-        match inclusion_hosts.get(sig) {
-            Some(hosts) => match rejected_hosts.get(sig) {
-                Some(rejected) => hosts.iter().any(|h| !rejected.contains(h)),
-                None => true,
-            },
-            None => false,
-        }
-    }
 
     /// Validate no deploy with the same sig has been produced in the chain
     /// Agnostic of non-parent justifications.
@@ -506,84 +418,47 @@ impl Validate {
         block: &BlockMessage,
         s: &mut CasperSnapshot,
         block_store: &KeyValueBlockStore,
-        // Unused since repeat_deploy became body/ancestry-based (no replay); kept in
-        // the signature for call-site symmetry with the other validation steps.
-        _runtime_manager: &RuntimeManager,
-        expiration_threshold: i32,
+        runtime_manager: &RuntimeManager,
+        _expiration_threshold: i32,
     ) -> ValidBlockProcessing {
-        let checked_sigs: HashSet<prost::bytes::Bytes> = block
-            .body
-            .deploys
-            .iter()
-            .map(|pd| pd.deploy.sig.clone())
-            .collect();
-        if checked_sigs.is_empty() {
-            return Either::Right(ValidBlock::Valid);
-        }
-
-        let block_metadata = BlockMetadata::from_block(block, false, None, None);
-
-        tracing::debug!(target: "f1r3fly.casper", "before-repeat-deploy-get-parents");
-        let init_parents = match proto_util::get_parents_metadata(&s.dag, &block_metadata) {
-            Ok(parents) => parents,
-            Err(e) => return Either::Left(BlockError::BlockException(CasperError::from(e))),
-        };
-
-        // One traversal of the ancestry window collecting, per checked sig, the set
-        // of INCLUSION hosts (body.deploys) and the set of REJECTED hosts
-        // (body.rejected_deploys, keyed per-inclusion by host). Shared with the
-        // proposer's recovery gate via `ancestry_inclusion_rejection` + the
-        // `is_live_in_ancestry` predicate so the two never disagree about whether a
-        // deploy is live. Body-based + per-inclusion ⇒ node-identical.
-        tracing::debug!(target: "f1r3fly.casper", "before-repeat-deploy-ancestry-scan");
-        let (inclusion_hosts, rejected_hosts) = Self::ancestry_inclusion_rejection(
-            &s.dag,
-            block_store,
-            init_parents,
-            expiration_threshold,
-            &checked_sigs,
-        );
-
-        for sig in &checked_sigs {
-            // Live ⟺ some prior inclusion survived (its host has no (sig, host)
-            // rejection). Not-live ⟺ never included, or EVERY prior inclusion was
-            // rejected (the recovery path re-proposing a merge-rejected loser) —
-            // both legal re-inclusions.
-            if !Self::is_live_in_ancestry(&inclusion_hosts, &rejected_hosts, sig) {
-                continue;
+        // A deploy is a REPEAT iff its effect is already present in the block's
+        // declared PRE-state — i.e. a prior inclusion's per-deploy cells are in the
+        // base this block builds on, so re-executing it would double-apply. This is
+        // the SAME state-based criterion the proposer's recovery base-check uses
+        // (`recovered_deploy_effect_in_base`), so proposer and validator never
+        // disagree.
+        //
+        // Unlike the prior ancestry scan, a body inclusion existing SOMEWHERE in the
+        // cone does NOT make a deploy a repeat: a deploy kept on one branch but
+        // keep-one'd out of THIS merge base is legitimately re-proposable (the
+        // recovery path), and its effect is absent from the pre-state. The pre-state
+        // is carried in the signed block, so the verdict is node-identical.
+        tracing::debug!(target: "f1r3fly.casper", "before-repeat-deploy-base-check");
+        let pre_state = Blake2b256Hash::from_bytes_prost(&block.body.state.pre_state_hash);
+        for pd in &block.body.deploys {
+            let sig = &pd.deploy.sig;
+            match crate::rust::util::rholang::interpreter_util::recovered_deploy_effect_in_base(
+                &s.dag,
+                block_store,
+                runtime_manager,
+                &pre_state,
+                sig,
+            ) {
+                Ok(false) => {}
+                Ok(true) => {
+                    let message = format!(
+                        "deploy [{}] (user {}, millisecond timestamp {}) is a repeat: its effect \
+                         is already present in the block's pre-state {}",
+                        &pd.deploy.data.term,
+                        PrettyPrinter::build_string_bytes(&pd.deploy.pk.bytes),
+                        pd.deploy.data.time_stamp,
+                        PrettyPrinter::build_string_bytes(&block.body.state.pre_state_hash),
+                    );
+                    tracing::warn!("{}", Self::ignore(block, &message));
+                    return Either::Left(BlockError::Invalid(InvalidBlock::InvalidRepeatDeploy));
+                }
+                Err(e) => return Either::Left(BlockError::BlockException(e)),
             }
-
-            // A surviving (non-rejected) prior inclusion exists → its effect is in
-            // the base, so re-inclusion would double-apply (the content-twin).
-            let surviving_host = inclusion_hosts
-                .get(sig)
-                .and_then(|hosts| {
-                    hosts.iter().find(|h| {
-                        rejected_hosts
-                            .get(sig)
-                            .map(|rejected| !rejected.contains(*h))
-                            .unwrap_or(true)
-                    })
-                })
-                .expect("is_live_in_ancestry returned true, so a surviving inclusion host exists");
-            let duplicated_block = block_store.get_unsafe(surviving_host);
-            let duplicated_deploy = duplicated_block
-                .body
-                .deploys
-                .iter()
-                .map(|processed_deploy| &processed_deploy.deploy)
-                .find(|deploy| deploy.sig == *sig)
-                .expect("surviving host includes this sig");
-            let message = format!(
-                "found deploy [{}] (user {}, millisecond timestamp {}) with the same sig in surviving inclusion {} as current block {} (prior inclusion not rejected)",
-                &duplicated_deploy.data.term,
-                PrettyPrinter::build_string_bytes(&duplicated_deploy.pk.bytes),
-                duplicated_deploy.data.time_stamp,
-                PrettyPrinter::build_string_bytes(&duplicated_block.block_hash),
-                PrettyPrinter::build_string_bytes(&block.block_hash),
-            );
-            tracing::warn!("{}", Self::ignore(block, &message));
-            return Either::Left(BlockError::Invalid(InvalidBlock::InvalidRepeatDeploy));
         }
 
         Either::Right(ValidBlock::Valid)
@@ -1369,66 +1244,3 @@ impl Validate {
     }
 }
 
-#[cfg(test)]
-mod recovery_liveness_tests {
-    use std::collections::{HashMap, HashSet};
-
-    use models::rust::block_hash::BlockHash;
-    use prost::bytes::Bytes;
-
-    use super::Validate;
-
-    fn sig(b: u8) -> Bytes { Bytes::from(vec![b; 8]) }
-
-    fn host(b: u8) -> BlockHash { Bytes::from(vec![b; 32]) }
-
-    /// Two inclusions, only ONE rejected: the surviving inclusion keeps the effect
-    /// in the base, so the deploy is live and recovery must NOT re-execute it
-    /// (doing so is the content-twin). This is the exact wedge case the previous
-    /// single-most-recent-height proxy missed — it saw the later rejection and
-    /// called the deploy not-live.
-    #[test]
-    fn live_when_a_surviving_inclusion_exists() {
-        let s = sig(1);
-        let incl = HashMap::from([(s.clone(), HashSet::from([host(9), host(6)]))]);
-        let rej = HashMap::from([(s.clone(), HashSet::from([host(6)]))]);
-        assert!(Validate::is_live_in_ancestry(&incl, &rej, &s));
-    }
-
-    /// Every inclusion host was rejected: the effect is absent from the base, so
-    /// the deploy is a genuine recovery candidate — not live. Re-proposing it is
-    /// how a merge-rejected loser's effect re-lands (convergence).
-    #[test]
-    fn not_live_when_all_inclusions_rejected() {
-        let s = sig(2);
-        let incl = HashMap::from([(s.clone(), HashSet::from([host(4)]))]);
-        assert!(!Validate::is_live_in_ancestry(
-            &incl,
-            &HashMap::from([(s.clone(), HashSet::from([host(4)]))]),
-            &s
-        ));
-        // Multiple inclusions, all rejected → still not live.
-        let incl2 = HashMap::from([(s.clone(), HashSet::from([host(4), host(5)]))]);
-        assert!(!Validate::is_live_in_ancestry(
-            &incl2,
-            &HashMap::from([(s.clone(), HashSet::from([host(4), host(5)]))]),
-            &s
-        ));
-    }
-
-    /// Included with no rejection on record: live. Never included: not live.
-    #[test]
-    fn included_no_rejection_is_live_and_unseen_is_not() {
-        let s = sig(3);
-        assert!(Validate::is_live_in_ancestry(
-            &HashMap::from([(s.clone(), HashSet::from([host(9)]))]),
-            &HashMap::new(),
-            &s
-        ));
-        assert!(!Validate::is_live_in_ancestry(
-            &HashMap::new(),
-            &HashMap::new(),
-            &s
-        ));
-    }
-}

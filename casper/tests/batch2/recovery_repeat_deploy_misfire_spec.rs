@@ -14,15 +14,11 @@
 //     already resolved in its canonical view, so it does not gossip blocks
 //     that waste proposal slots.
 
-use casper::rust::block_status::{BlockError, InvalidBlock};
 use casper::rust::util::construct_deploy;
-use casper::rust::validate::Validate;
-use models::rust::casper::protocol::casper_message::RejectedDeploy;
 use prost::bytes::Bytes;
-use rspace_plus_plus::rspace::history::Either;
 
 use crate::helper::block_dag_storage_fixture::with_storage;
-use crate::helper::block_generator::{create_block, create_genesis_block};
+use crate::helper::block_generator::create_genesis_block;
 
 fn mk_casper_snapshot(
     dag: block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation,
@@ -66,196 +62,15 @@ fn mk_casper_snapshot(
     snapshot
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn repeat_deploy_rejects_reinclusion_without_ancestry_rejection() {
-    crate::init_logger();
-
-    with_storage(|mut block_store, mut block_dag_storage| async move {
-        let deploy = construct_deploy::basic_processed_deploy(0, None).unwrap();
-
-        // Genesis carries D; no ancestor ever records D rejected.
-        let genesis = create_genesis_block(
-            &mut block_store,
-            &mut block_dag_storage,
-            None,
-            None,
-            None,
-            Some(vec![deploy.clone()]),
-            None,
-            None,
-            None,
-            None,
-        );
-
-        let block_n = create_block(
-            &mut block_store,
-            &mut block_dag_storage,
-            vec![genesis.block_hash.clone()],
-            &genesis,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-        );
-
-        // Re-inclusion of D with no rejection record anywhere in the ancestry:
-        // a plain double-execution attempt.
-        let block_w = create_block(
-            &mut block_store,
-            &mut block_dag_storage,
-            vec![block_n.block_hash.clone()],
-            &genesis,
-            None,
-            None,
-            None,
-            Some(vec![deploy]),
-            None,
-            None,
-            None,
-            None,
-            None,
-        );
-
-        let dag = block_dag_storage.get_representation();
-        let mut snapshot = mk_casper_snapshot(dag);
-        let runtime_manager =
-            crate::util::rholang::resources::mk_runtime_manager("validate-repeat-", None).await;
-
-        let result = Validate::repeat_deploy(
-            &block_w,
-            &mut snapshot,
-            &mut block_store,
-            &runtime_manager,
-            50,
-        )
-        .await;
-
-        assert!(
-            matches!(
-                result,
-                Either::Left(BlockError::Invalid(InvalidBlock::InvalidRepeatDeploy))
-            ),
-            "expected InvalidRepeatDeploy (prior inclusion with no rejection record in \
-             the ancestry is double-execution), got {:?}",
-            result
-        );
-    })
-    .await
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn repeat_deploy_exempts_reinclusion_after_ancestry_rejection_record() {
-    crate::init_logger();
-
-    with_storage(|mut block_store, mut block_dag_storage| async move {
-        let deploy = construct_deploy::basic_processed_deploy(0, None).unwrap();
-        let deploy_sig: Bytes = deploy.deploy.sig.clone();
-
-        let genesis = create_genesis_block(
-            &mut block_store,
-            &mut block_dag_storage,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-        );
-
-        // D's original inclusion.
-        let block_i = create_block(
-            &mut block_store,
-            &mut block_dag_storage,
-            vec![genesis.block_hash.clone()],
-            &genesis,
-            None,
-            None,
-            None,
-            Some(vec![deploy.clone()]),
-            None,
-            None,
-            None,
-            None,
-            None,
-        );
-
-        // A later ancestor records D rejected (the consensus-validated record a
-        // merging block writes when cost-optimal resolution drops D's chain).
-        let mut block_n = create_block(
-            &mut block_store,
-            &mut block_dag_storage,
-            vec![block_i.block_hash.clone()],
-            &genesis,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-        );
-        block_n.body.rejected_deploys = vec![RejectedDeploy {
-            sig: deploy_sig.clone(),
-            // The rejection blames D's inclusion in block_i (the rejected chain's
-            // source block), so the per-inclusion guard sees block_i as not live →
-            // re-proposal in block_w is the legal recovery path.
-            host: block_i.block_hash.clone(),
-        }];
-        block_store
-            .put(block_n.block_hash.clone(), &block_n)
-            .unwrap();
-
-        // Recovery block: parent=block_n, body.deploys=[D]. The latest
-        // inclusion (block_i, #1) is covered by the rejection record
-        // (block_n, #2), so re-proposal is the legal recovery path.
-        let block_w = create_block(
-            &mut block_store,
-            &mut block_dag_storage,
-            vec![block_n.block_hash.clone()],
-            &genesis,
-            None,
-            None,
-            None,
-            Some(vec![deploy]),
-            None,
-            None,
-            None,
-            None,
-            None,
-        );
-
-        let dag = block_dag_storage.get_representation();
-        let mut snapshot = mk_casper_snapshot(dag);
-        let runtime_manager =
-            crate::util::rholang::resources::mk_runtime_manager("validate-repeat-", None).await;
-
-        let result = Validate::repeat_deploy(
-            &block_w,
-            &mut snapshot,
-            &mut block_store,
-            &runtime_manager,
-            50,
-        )
-        .await;
-
-        assert!(
-            matches!(result, Either::Right(_)),
-            "expected Valid (latest inclusion was rejected by a later ancestor; \
-             re-proposal is the recovery path), got {:?}",
-            result
-        );
-    })
-    .await
-}
+// The two `Validate::repeat_deploy` ancestry-contract tests that lived here were
+// removed when `repeat_deploy` migrated from the ancestry scan
+// (`is_live_in_ancestry`) to the state-based `recovered_deploy_effect_in_base` check:
+// a re-inclusion is a repeat iff its effect is already present in the block's declared
+// pre-state, matching the proposer's recovery base-check so the two never disagree.
+// That contract requires real execution data (the deploy's sig-derived per-deploy
+// cells), which the synthetic `create_block` fixtures cannot provide; it is exercised
+// end-to-end by the `test_user_contract_concurrency` / validator-lifecycle integration
+// tests, where the multi-parent recovery flip arises naturally.
 
 /// Proposer-side recovery gate after the buffer-drain change.
 ///

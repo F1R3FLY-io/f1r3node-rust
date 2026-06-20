@@ -1558,6 +1558,484 @@ async fn fs_seal_finalized_state_is_exact_operation_fold() {
     );
 }
 
+/// Proxy for the PoS `stateCh` NESTED-map shape. A single cell (`@7`) holds an OUTER
+/// map whose `"bonds"` key holds an INNER map, mutated by concurrent read-modify-writes
+/// that BOTH rewrite the same outer key with distinct inner keys — exactly PoS
+/// `state.set("allBonds", allBonds.set(pk, amt))`.
+///
+/// Two consequences this test measures:
+///   1. Co-finalization stale-consume signature: both concurrent writers consume the
+///      SAME outer-map base value, so each round's two `@7` writes carry an identical
+///      `removed` (the `f1r3.trace.seal_diff` probe records it) — a whole-value
+///      diff-apply would stale-consume the second, same as the flat map.
+///   2. Recursion requirement: both writers change the IDENTICAL top-level key
+///      `"bonds"`, so a SHALLOW (outer-key) structural diff collides and must keep one
+///      — dropping the other's finalized inner entry. Only a RECURSIVE merge into the
+///      inner map preserves both. The finalized inner map must hold every Ka_r/Kb_r.
+#[tokio::test]
+async fn fs_seal_nested_map_proxy_pos_statech() {
+    init_test_logging();
+    use casper::rust::finality::floor::floor_of_block;
+    use casper::rust::finality::floor_seal::floor_state_get_or_compute;
+    use std::collections::BTreeSet;
+
+    const FT_THRESHOLD: f32 = 0.1;
+
+    // Extract inner Ka*/Kb* keys from the serialized cell (the outer key "bonds" never
+    // matches the K[ab][digit] pattern, so this yields exactly the inner-map keys).
+    fn inner_keys(cell: &[String]) -> BTreeSet<String> {
+        let s = cell.join(" ");
+        let b = s.as_bytes();
+        let mut keys = BTreeSet::new();
+        let mut i = 0usize;
+        while i + 2 < b.len() {
+            if b[i] == b'K' && (b[i + 1] == b'a' || b[i + 1] == b'b') && b[i + 2].is_ascii_digit() {
+                let mut j = i + 2;
+                while j < b.len() && b[j].is_ascii_digit() {
+                    j += 1;
+                }
+                keys.insert(String::from_utf8_lossy(&b[i..j]).into_owned());
+                i = j;
+            } else {
+                i += 1;
+            }
+        }
+        keys
+    }
+
+    let genesis = GenesisBuilder::new()
+        .build_genesis_with_parameters(Some(
+            GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(3)),
+        ))
+        .await
+        .expect("Failed to build genesis");
+    let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None, None)
+        .await
+        .unwrap();
+    let shard_id = genesis.genesis_block.shard_id.clone();
+
+    // Outer map carrying a single "bonds" inner map — the PoS state-cell shape.
+    let seed = construct_deploy::source_deploy_now(
+        "@7!({\"bonds\" : {}})".to_string(),
+        None,
+        None,
+        Some(shard_id.clone()),
+    )
+    .unwrap();
+    nodes[0].add_block_from_deploys(&[seed]).await.unwrap();
+    {
+        let nodes_refs: Vec<&mut TestNode> = nodes.iter_mut().collect();
+        TestNode::propagate(&mut nodes_refs.into_iter().collect::<Vec<_>>())
+            .await
+            .unwrap();
+    }
+
+    let rounds = 6u32;
+    let mut all_keys: BTreeSet<String> = BTreeSet::new();
+    let mut fs_history: Vec<BTreeSet<String>> = Vec::new();
+
+    for r in 0..rounds {
+        // Both writers rewrite the SAME outer key "bonds" with a distinct inner key.
+        let set_a = construct_deploy::source_deploy_now(
+            format!(
+                "for (@m <- @7) {{ @7!(m.set(\"bonds\", m.getOrElse(\"bonds\", {{}}).set(\"Ka{}\", 1))) }}",
+                r
+            ),
+            None,
+            None,
+            Some(shard_id.clone()),
+        )
+        .unwrap();
+        let set_b = construct_deploy::source_deploy_now(
+            format!(
+                "for (@m <- @7) {{ @7!(m.set(\"bonds\", m.getOrElse(\"bonds\", {{}}).set(\"Kb{}\", 2))) }}",
+                r
+            ),
+            Some(construct_deploy::DEFAULT_SEC2.clone()),
+            None,
+            Some(shard_id.clone()),
+        )
+        .unwrap();
+        all_keys.insert(format!("Ka{}", r));
+        all_keys.insert(format!("Kb{}", r));
+        nodes[0].add_block_from_deploys(&[set_a]).await.unwrap();
+        nodes[1].add_block_from_deploys(&[set_b]).await.unwrap();
+        {
+            let nodes_refs: Vec<&mut TestNode> = nodes.iter_mut().collect();
+            TestNode::propagate(&mut nodes_refs.into_iter().collect::<Vec<_>>())
+                .await
+                .unwrap();
+        }
+        let noop = construct_deploy::source_deploy_now(
+            format!("@9!({})", r),
+            None,
+            None,
+            Some(shard_id.clone()),
+        )
+        .unwrap();
+        let merge = TestNode::propagate_block_at_index(&mut nodes, 2, &[noop])
+            .await
+            .unwrap();
+
+        let dag_now = nodes[0].block_dag_storage.get_representation();
+        if let Ok(floor) = floor_of_block(&dag_now, &merge.block_hash, FT_THRESHOLD).await {
+            if let Ok(fs) = floor_state_get_or_compute(
+                &dag_now,
+                &nodes[0].block_store,
+                &nodes[0].runtime_manager,
+                &floor.hash,
+                FT_THRESHOLD,
+            )
+            .await
+            {
+                let cell = rspace_util::get_data_at_public_channel(
+                    &fs.state_hash.0,
+                    7,
+                    &nodes[0].runtime_manager,
+                )
+                .await;
+                fs_history.push(inner_keys(&cell));
+            }
+        }
+    }
+
+    // Flush rounds: advance finality past every @7 op so the final cut folds all of
+    // them. These touch @9 only, never @7.
+    for f in 0..6u32 {
+        let noop_a = construct_deploy::source_deploy_now(
+            format!("@9!({})", 1000 + f),
+            None,
+            None,
+            Some(shard_id.clone()),
+        )
+        .unwrap();
+        let noop_b = construct_deploy::source_deploy_now(
+            format!("@9!({})", 2000 + f),
+            Some(construct_deploy::DEFAULT_SEC2.clone()),
+            None,
+            Some(shard_id.clone()),
+        )
+        .unwrap();
+        nodes[0].add_block_from_deploys(&[noop_a]).await.unwrap();
+        nodes[1].add_block_from_deploys(&[noop_b]).await.unwrap();
+        {
+            let nodes_refs: Vec<&mut TestNode> = nodes.iter_mut().collect();
+            TestNode::propagate(&mut nodes_refs.into_iter().collect::<Vec<_>>())
+                .await
+                .unwrap();
+        }
+        let noop_c = construct_deploy::source_deploy_now(
+            format!("@9!({})", 3000 + f),
+            None,
+            None,
+            Some(shard_id.clone()),
+        )
+        .unwrap();
+        let merge = TestNode::propagate_block_at_index(&mut nodes, 2, &[noop_c])
+            .await
+            .unwrap();
+
+        let dag_now = nodes[0].block_dag_storage.get_representation();
+        if let Ok(floor) = floor_of_block(&dag_now, &merge.block_hash, FT_THRESHOLD).await {
+            if let Ok(fs) = floor_state_get_or_compute(
+                &dag_now,
+                &nodes[0].block_store,
+                &nodes[0].runtime_manager,
+                &floor.hash,
+                FT_THRESHOLD,
+            )
+            .await
+            {
+                let cell = rspace_util::get_data_at_public_channel(
+                    &fs.state_hash.0,
+                    7,
+                    &nodes[0].runtime_manager,
+                )
+                .await;
+                fs_history.push(inner_keys(&cell));
+            }
+        }
+    }
+
+    for (idx, keys) in fs_history.iter().enumerate() {
+        tracing::info!(
+            target: "f1r3.trace.cell",
+            idx,
+            fs = ?keys,
+            "nested-proxy: FS inner-bonds keys per cut",
+        );
+    }
+
+    // Monotonicity: no inner key may vanish (this test has no remove).
+    for w in fs_history.windows(2) {
+        for k in &w[0] {
+            assert!(
+                w[1].contains(k),
+                "nested-map REGRESSION: inner bonds key {} was finalized then dropped \
+                 between cuts — a shallow (outer-key) merge undid a finalized inner write. \
+                 FS sequence: {:?}",
+                k,
+                fs_history
+            );
+        }
+    }
+
+    // Exact fold: the finalized inner bonds map must hold EVERY Ka_r and Kb_r — both
+    // concurrent same-outer-key writes preserved. A shallow outer-key merge keeps one
+    // and drops the other's inner entry; only a recursive merge yields the full set.
+    let final_fs = fs_history.last().cloned().unwrap_or_default();
+    assert_eq!(
+        final_fs, all_keys,
+        "nested inner bonds map must equal the exact fold of all concurrent writes \
+         (recursive merge into the shared outer key); expected {:?}, got {:?}",
+        all_keys, final_fs
+    );
+}
+
+/// Proxy for the PoS `activeValidators : Set[Validator]` shape: a Map cell whose
+/// `"validators"` key holds a nested **Set**, mutated by concurrent `.add`s of
+/// distinct elements (and a `.delete` for the remove path). This is the exact PoS
+/// shape — `state.set("activeValidators", state.get("activeValidators").add/delete(pk))`
+/// — and the only path that exercises `merge3_set` through the recursive `merge3_map`.
+/// Both concurrent adds consume the same base Set, so a whole-value apply would
+/// stale-consume the second; the structural set fold (element-union onto base) must
+/// preserve both, and a `.delete` must remove exactly its element.
+#[tokio::test]
+async fn fs_seal_nested_set_proxy_pos_activevalidators() {
+    init_test_logging();
+    use casper::rust::finality::floor::floor_of_block;
+    use casper::rust::finality::floor_seal::floor_state_get_or_compute;
+    use std::collections::BTreeSet;
+
+    const FT_THRESHOLD: f32 = 0.1;
+    const REMOVED_KEY: &str = "Kb0";
+
+    fn set_elems(cell: &[String]) -> BTreeSet<String> {
+        let s = cell.join(" ");
+        let b = s.as_bytes();
+        let mut keys = BTreeSet::new();
+        let mut i = 0usize;
+        while i + 2 < b.len() {
+            if b[i] == b'K' && (b[i + 1] == b'a' || b[i + 1] == b'b') && b[i + 2].is_ascii_digit() {
+                let mut j = i + 2;
+                while j < b.len() && b[j].is_ascii_digit() {
+                    j += 1;
+                }
+                keys.insert(String::from_utf8_lossy(&b[i..j]).into_owned());
+                i = j;
+            } else {
+                i += 1;
+            }
+        }
+        keys
+    }
+
+    let genesis = GenesisBuilder::new()
+        .build_genesis_with_parameters(Some(
+            GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(3)),
+        ))
+        .await
+        .expect("Failed to build genesis");
+    let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None, None)
+        .await
+        .unwrap();
+    let shard_id = genesis.genesis_block.shard_id.clone();
+
+    // Outer map carrying a single "validators" nested Set — the PoS activeValidators shape.
+    let seed = construct_deploy::source_deploy_now(
+        "@7!({\"validators\" : Set()})".to_string(),
+        None,
+        None,
+        Some(shard_id.clone()),
+    )
+    .unwrap();
+    nodes[0].add_block_from_deploys(&[seed]).await.unwrap();
+    {
+        let nodes_refs: Vec<&mut TestNode> = nodes.iter_mut().collect();
+        TestNode::propagate(&mut nodes_refs.into_iter().collect::<Vec<_>>())
+            .await
+            .unwrap();
+    }
+
+    let rounds = 6u32;
+    let mut all_keys: BTreeSet<String> = BTreeSet::new();
+    let mut fs_history: Vec<BTreeSet<String>> = Vec::new();
+
+    for r in 0..rounds {
+        let add_a = construct_deploy::source_deploy_now(
+            format!(
+                "for (@m <- @7) {{ @7!(m.set(\"validators\", m.get(\"validators\").add(\"Ka{}\"))) }}",
+                r
+            ),
+            None,
+            None,
+            Some(shard_id.clone()),
+        )
+        .unwrap();
+        let add_b = construct_deploy::source_deploy_now(
+            format!(
+                "for (@m <- @7) {{ @7!(m.set(\"validators\", m.get(\"validators\").add(\"Kb{}\"))) }}",
+                r
+            ),
+            Some(construct_deploy::DEFAULT_SEC2.clone()),
+            None,
+            Some(shard_id.clone()),
+        )
+        .unwrap();
+        all_keys.insert(format!("Ka{}", r));
+        all_keys.insert(format!("Kb{}", r));
+        nodes[0].add_block_from_deploys(&[add_a]).await.unwrap();
+        nodes[1].add_block_from_deploys(&[add_b]).await.unwrap();
+        {
+            let nodes_refs: Vec<&mut TestNode> = nodes.iter_mut().collect();
+            TestNode::propagate(&mut nodes_refs.into_iter().collect::<Vec<_>>())
+                .await
+                .unwrap();
+        }
+        let noop = construct_deploy::source_deploy_now(
+            format!("@9!({})", r),
+            None,
+            None,
+            Some(shard_id.clone()),
+        )
+        .unwrap();
+        let merge = TestNode::propagate_block_at_index(&mut nodes, 2, &[noop])
+            .await
+            .unwrap();
+
+        let dag_now = nodes[0].block_dag_storage.get_representation();
+        if let Ok(floor) = floor_of_block(&dag_now, &merge.block_hash, FT_THRESHOLD).await {
+            if let Ok(fs) = floor_state_get_or_compute(
+                &dag_now,
+                &nodes[0].block_store,
+                &nodes[0].runtime_manager,
+                &floor.hash,
+                FT_THRESHOLD,
+            )
+            .await
+            {
+                let cell = rspace_util::get_data_at_public_channel(
+                    &fs.state_hash.0,
+                    7,
+                    &nodes[0].runtime_manager,
+                )
+                .await;
+                fs_history.push(set_elems(&cell));
+            }
+        }
+    }
+
+    // Explicit remove of a previously-added element — the Set delete path.
+    let remove = construct_deploy::source_deploy_now(
+        format!(
+            "for (@m <- @7) {{ @7!(m.set(\"validators\", m.get(\"validators\").delete(\"{}\"))) }}",
+            REMOVED_KEY
+        ),
+        None,
+        None,
+        Some(shard_id.clone()),
+    )
+    .unwrap();
+    nodes[0].add_block_from_deploys(&[remove]).await.unwrap();
+    {
+        let nodes_refs: Vec<&mut TestNode> = nodes.iter_mut().collect();
+        TestNode::propagate(&mut nodes_refs.into_iter().collect::<Vec<_>>())
+            .await
+            .unwrap();
+    }
+
+    for f in 0..6u32 {
+        let noop_a = construct_deploy::source_deploy_now(
+            format!("@9!({})", 1000 + f),
+            None,
+            None,
+            Some(shard_id.clone()),
+        )
+        .unwrap();
+        let noop_b = construct_deploy::source_deploy_now(
+            format!("@9!({})", 2000 + f),
+            Some(construct_deploy::DEFAULT_SEC2.clone()),
+            None,
+            Some(shard_id.clone()),
+        )
+        .unwrap();
+        nodes[0].add_block_from_deploys(&[noop_a]).await.unwrap();
+        nodes[1].add_block_from_deploys(&[noop_b]).await.unwrap();
+        {
+            let nodes_refs: Vec<&mut TestNode> = nodes.iter_mut().collect();
+            TestNode::propagate(&mut nodes_refs.into_iter().collect::<Vec<_>>())
+                .await
+                .unwrap();
+        }
+        let noop_c = construct_deploy::source_deploy_now(
+            format!("@9!({})", 3000 + f),
+            None,
+            None,
+            Some(shard_id.clone()),
+        )
+        .unwrap();
+        let merge = TestNode::propagate_block_at_index(&mut nodes, 2, &[noop_c])
+            .await
+            .unwrap();
+
+        let dag_now = nodes[0].block_dag_storage.get_representation();
+        if let Ok(floor) = floor_of_block(&dag_now, &merge.block_hash, FT_THRESHOLD).await {
+            if let Ok(fs) = floor_state_get_or_compute(
+                &dag_now,
+                &nodes[0].block_store,
+                &nodes[0].runtime_manager,
+                &floor.hash,
+                FT_THRESHOLD,
+            )
+            .await
+            {
+                let cell = rspace_util::get_data_at_public_channel(
+                    &fs.state_hash.0,
+                    7,
+                    &nodes[0].runtime_manager,
+                )
+                .await;
+                fs_history.push(set_elems(&cell));
+            }
+        }
+    }
+
+    for (idx, keys) in fs_history.iter().enumerate() {
+        tracing::info!(
+            target: "f1r3.trace.cell",
+            idx,
+            fs = ?keys,
+            "nested-set-proxy: FS validators-set elements per cut",
+        );
+    }
+
+    // Monotonicity: no non-removed element may vanish.
+    for w in fs_history.windows(2) {
+        for k in &w[0] {
+            if k != REMOVED_KEY {
+                assert!(
+                    w[1].contains(k),
+                    "nested-set REGRESSION: element {} was finalized then dropped between \
+                     cuts — a shallow merge undid a finalized set-add. FS sequence: {:?}",
+                    k,
+                    fs_history
+                );
+            }
+        }
+    }
+
+    // Exact fold: the finalized Set must equal {all added} minus {the removed element}.
+    let final_fs = fs_history.last().cloned().unwrap_or_default();
+    let mut expected = all_keys.clone();
+    expected.remove(REMOVED_KEY);
+    assert_eq!(
+        final_fs, expected,
+        "nested validators Set must equal the exact element fold (every add minus the \
+         removed {}); expected {:?}, got {:?}",
+        REMOVED_KEY, expected, final_fs
+    );
+}
+
 /// Non-zero accumulation through the seal: concurrent read-modify-write additions to
 /// a single-value number cell seeded at a NON-ZERO base, finalized. The seal must
 /// sequence the writes to the exact total `base + sum(deltas)`. This is the

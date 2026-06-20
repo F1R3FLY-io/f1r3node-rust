@@ -22,14 +22,13 @@ use std::collections::HashSet;
 
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
-use crypto::rust::signatures::signed::Signed;
 use models::rust::block::floor_data::FloorData;
 use models::rust::block::state_hash::{StateHash, StateHashSerde};
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
-use models::rust::casper::protocol::casper_message::DeployData;
-use rholang::rust::interpreter::system_processes::BlockData;
+use rholang::rust::interpreter::merging::rholang_merging_logic::RholangMergingLogic;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+use rspace_plus_plus::rspace::merger::state_change_merger;
 
 use super::floor::Floor;
 use crate::rust::errors::CasperError;
@@ -277,54 +276,171 @@ async fn seal_floor_cut(
         .collect::<Result<Vec<_>, _>>()?;
     numbered.sort_by(|(na, ha), (nb, hb)| na.cmp(nb).then_with(|| ha.cmp(hb)));
 
+    // ── Read-only diff probe (f1r3.trace.seal_diff) ──────────────────────────────
+    // For each cone block, dump every NON-foldable datum-channel change (the value
+    // cells the seal cannot delta-fold via a tagged number channel) as fingerprints
+    // of the removed/added datums, alongside the seal-base value at that channel.
+    // Two co-finalized writers carrying the SAME `removed` fingerprint as `base`
+    // prove a whole-value diff-apply would stale-consume the second (the structural
+    // delta is then mandatory). Purely diagnostic; mutates nothing.
+    {
+        let fp = |bytes: &[u8]| -> String {
+            hex::encode(&Blake2b256Hash::new(bytes).bytes()[..6])
+        };
+        let base_hash = Blake2b256Hash::from_bytes_prost(&prev_state.state_hash.0);
+        let base_reader = runtime_manager
+            .history_repo
+            .get_history_reader(&base_hash)
+            .map_err(CasperError::HistoryError)?;
+        for (block_number, block_hash) in &numbered {
+            let idx = match crate::rust::util::rholang::interpreter_util::build_block_index(
+                runtime_manager,
+                block_store,
+                block_hash,
+            ) {
+                Ok(idx) => idx,
+                Err(e) => {
+                    tracing::debug!(target: "f1r3.trace.seal_diff", block_number, error = %e, "probe: block index unavailable");
+                    continue;
+                }
+            };
+            for chain in &idx.deploy_chains {
+                for e in chain.state_changes.datums_changes.iter() {
+                    let ch = e.key();
+                    if chain.event_log_index.number_channels_data.contains_key(ch) {
+                        continue; // foldable (tagged number channel) — not the value-cell case
+                    }
+                    let change = e.value();
+                    if change.removed.is_empty() && change.added.is_empty() {
+                        continue;
+                    }
+                    let removed: Vec<String> = change.removed.iter().map(|d| fp(d)).collect();
+                    let added: Vec<String> = change.added.iter().map(|d| fp(d)).collect();
+                    let base_vals: Vec<String> = base_reader
+                        .get_data_proj_binary(ch)
+                        .map(|v| v.iter().map(|d| fp(d)).collect())
+                        .unwrap_or_default();
+                    tracing::debug!(
+                        target: "f1r3.trace.seal_diff",
+                        event = "seal_diff_probe",
+                        cut = %PrettyPrinter::build_string_bytes(cut),
+                        block_number,
+                        channel = %hex::encode(&ch.bytes()[..6]),
+                        removed = %removed.join(","),
+                        added = %added.join(","),
+                        base = %base_vals.join(","),
+                        "non-foldable datum-channel diff vs seal base"
+                    );
+                }
+            }
+        }
+    }
+
     // FS(cut) is the deterministic op-fold of the finalized cone: PLAY each finalized
     // deploy in topological order onto the running FS. Sequencing turns concurrent
     // writes into a linear chain, so it folds with NO content-awareness — commutative
-    // number channels accumulate as ordered read-modify-writes, non-foldable cells
-    // apply in order. Determinism comes from `compute_state_deterministic` (identity
-    // match order). Two dedups keep each finalized effect applied EXACTLY ONCE:
+    // number channels fold their commutative delta, non-foldable Map/Set/Int cells
+    // fold STRUCTURALLY (recursive 3-way merge deriving the key/element/arithmetic
+    // delta), so co-finalized concurrent writes are preserved instead of dropped or
+    // stale-consumed. Determinism comes from applying COMMITTED diffs (pure trie ops,
+    // no reducer). Two dedups keep each finalized effect applied EXACTLY ONCE:
     //   - `played_sigs`: a sig kept in more than one block in THIS cone (the "flip").
     //   - the base-check: a recovery re-proposal whose effect is already folded into
-    //     FS(prev_cut) from an EARLIER cut. It reuses the proposer's session-20
-    //     base-check — value-agnostic presence of the deploy's own sig-derived created
-    //     cells in the base — querying the actual running FS, so there is no separate
-    //     ledger to drift. Without it the same deploy applies once per cut it appears
-    //     in (the cross-cut double-count: e.g. a `+N` counted twice).
+    //     FS(prev_cut) from an EARLIER cut. Structural map/set merges are idempotent,
+    //     but Int-delta folds are not, so the check still prevents a cross-cut
+    //     double-count (e.g. a numeric `+N` counted twice).
     let mut played_sigs: HashSet<prost::bytes::Bytes> = HashSet::new();
     let mut fs_state: StateHash = prev_state.state_hash.0.clone();
-    let mut deploys_played = 0usize;
-    let mut deploys_skipped = 0usize;
+    let mut chains_applied = 0usize;
+    let mut chains_skipped = 0usize;
     for (_block_number, block_hash) in &numbered {
-        let block = block_store.get_unsafe(block_hash);
-        let block_data = BlockData::from_block(&block);
-        for pd in &block.body.deploys {
-            // Within-cut exact dedup: a sig kept in more than one cone block.
-            if !played_sigs.insert(pd.deploy.sig.clone()) {
+        let idx = crate::rust::util::rholang::interpreter_util::build_block_index(
+            runtime_manager,
+            block_store,
+            block_hash,
+        )?;
+        for chain in &idx.deploy_chains {
+            let sigs: Vec<prost::bytes::Bytes> = chain
+                .deploys_with_cost
+                .0
+                .iter()
+                .map(|d| d.deploy_id.clone())
+                .collect();
+            // Within-cut dedup: a deploy-chain whose sig was already folded (the "flip":
+            // the same deploy kept in more than one cone block).
+            if sigs.iter().any(|s| played_sigs.contains(s)) {
+                chains_skipped += 1;
                 continue;
             }
-            // Cross-cut dedup: skip if this deploy's effect is already in FS(prev_cut).
+            // Cross-cut dedup: a recovery re-proposal whose effect is already folded into
+            // FS from an earlier cut. Value-cell merges are idempotent, but Int-delta
+            // folds are not, so the session-20 base-check still matters here.
             let base_hash = Blake2b256Hash::from_bytes_prost(&fs_state);
-            if crate::rust::util::rholang::interpreter_util::recovered_deploy_effect_in_base(
-                dag,
-                block_store,
-                runtime_manager,
-                &base_hash,
-                &pd.deploy.sig,
-            )? {
-                deploys_skipped += 1;
+            let already_in_base = sigs.iter().any(|sig| {
+                !crate::rust::system_deploy::is_system_deploy_id(sig)
+                    && crate::rust::util::rholang::interpreter_util::recovered_deploy_effect_in_base(
+                        dag,
+                        block_store,
+                        runtime_manager,
+                        &base_hash,
+                        sig,
+                    )
+                    .unwrap_or(false)
+            });
+            if already_in_base {
+                chains_skipped += 1;
                 continue;
             }
-            deploys_played += 1;
-            let (next_fs, _processed, _sys) = runtime_manager
-                .compute_state_deterministic(
-                    &fs_state,
-                    vec![pd.deploy.clone()],
-                    vec![],
-                    block_data.clone(),
-                    None,
-                )
-                .await?;
-            fs_state = next_fs;
+
+            // Apply this chain's COMMITTED diff onto the running FS via the trie
+            // machinery: foldable number channels fold through the merge primitive;
+            // non-foldable Map/Set/Int cells fold structurally (recursive 3-way merge,
+            // preserving co-finalized concurrent writes); everything else applies its
+            // recorded remove/add through `make_trie_action` (stale-consume backstop).
+            let base_reader = std::sync::Arc::new(
+                runtime_manager
+                    .history_repo
+                    .get_history_reader(&base_hash)
+                    .map_err(CasperError::HistoryError)?,
+            );
+            let reader_for_fold = std::sync::Arc::clone(&base_reader);
+            let actions = state_change_merger::compute_trie_actions(
+                &chain.state_changes,
+                &*base_reader,
+                &chain.event_log_index.number_channels_data,
+                move |hash: &Blake2b256Hash, channel_changes, number_chs| {
+                    if let Some(number_ch_val) = number_chs.get(hash) {
+                        let (diff, merge_type) = *number_ch_val;
+                        let base_get_data = |h: &Blake2b256Hash| reader_for_fold.get_data(h);
+                        Ok(Some(RholangMergingLogic::calculate_number_channel_merge(
+                            hash,
+                            diff,
+                            merge_type,
+                            channel_changes,
+                            base_get_data,
+                        )?))
+                    } else {
+                        let base_get_data = |h: &Blake2b256Hash| reader_for_fold.get_data(h);
+                        RholangMergingLogic::calculate_map_channel_merge(
+                            hash,
+                            channel_changes,
+                            base_get_data,
+                        )
+                    }
+                },
+            )
+            .map_err(CasperError::HistoryError)?;
+            let new_root = runtime_manager
+                .history_repo
+                .reset(&base_hash)
+                .map(|repo| repo.do_checkpoint(actions))
+                .map(|checkpoint| checkpoint.root())
+                .map_err(CasperError::HistoryError)?;
+            fs_state = prost::bytes::Bytes::copy_from_slice(&new_root.bytes());
+            for s in sigs {
+                played_sigs.insert(s);
+            }
+            chains_applied += 1;
         }
     }
 
@@ -359,9 +475,9 @@ async fn seal_floor_cut(
         prev_fs_block = prev.block_number,
         fs_state = %PrettyPrinter::build_string_bytes(&fs_state),
         cone_blocks = numbered.len(),
-        deploys_played,
-        deploys_skipped,
-        "sealed floor state (deterministic re-execution of the finalized cone)"
+        chains_applied,
+        chains_skipped,
+        "sealed floor state (deterministic structural diff-fold of the finalized cone)"
     );
 
     Ok(FloorData {
