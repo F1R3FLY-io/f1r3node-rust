@@ -48,6 +48,28 @@ fn is_sub_multiset(sub: &[Vec<u8>], sup: &[Vec<u8>]) -> bool {
         .all(|(d, &need)| sup_counts.get(*d).copied().unwrap_or(0) >= need)
 }
 
+/// Deterministic order for the single-value-cell serialization keep-one. Block number is
+/// PRIMARY so a producer precedes its consumers (a consumer of another chain's produce is
+/// in a strictly higher block). Among same-height siblings — where a single-value-cell
+/// fork actually is — higher TOTAL COST wins (pay-more-wins), with (block hash, sorted
+/// sigs) as the final node-identical tiebreak. Extracted for unit testing.
+fn serialize_keep_one_order(a: &DeployChainIndex, b: &DeployChainIndex) -> std::cmp::Ordering {
+    fn cost(c: &DeployChainIndex) -> u64 {
+        c.deploys_with_cost.0.iter().map(|d| d.cost).sum()
+    }
+    fn sig_key(c: &DeployChainIndex) -> Vec<Vec<u8>> {
+        let mut sigs: Vec<Vec<u8>> =
+            c.deploys_with_cost.0.iter().map(|d| d.deploy_id.to_vec()).collect();
+        sigs.sort();
+        sigs
+    }
+    a.source_block_number
+        .cmp(&b.source_block_number)
+        .then_with(|| cost(b).cmp(&cost(a))) // higher cost first (pay-more-wins)
+        .then_with(|| a.source_block_hash.cmp(&b.source_block_hash))
+        .then_with(|| sig_key(a).cmp(&sig_key(b)))
+}
+
 /// Finalized counterparties for a merge — the enforcement window between the
 /// base floor and the fork-point cover of the conflict scope. Currently unused:
 /// its only producer (`floor_seal::enforcement_window`) was removed in the
@@ -771,10 +793,12 @@ pub fn merge(
         }
 
         // Decide which chains to reject. Order all surviving chains so a producer
-        // always precedes its consumers: deploy_chains are dependency-grouped per
-        // block, so a chain consuming another's produce is in a strictly higher
-        // block; ordering by block number — with (block hash, sorted sigs) as a
-        // total-order tiebreak — respects producer-before-consumer without a
+        // always precedes its consumers (block number PRIMARY: deploy_chains are
+        // dependency-grouped per block, so a chain consuming another's produce is in a
+        // strictly higher block), and among same-height SIBLINGS — where a single-value-
+        // cell fork actually is — keep the higher-COST chain (pay-more-wins), with
+        // (block hash, sorted sigs) as the final node-identical tiebreak. See
+        // `serialize_keep_one_order`. This respects producer-before-consumer without a
         // topological sort and is identical on every node.
         // `mutable_key_type`: DeployChainIndex contains a DashMap (interior
         // mutability) but is hashed by its stable content, as elsewhere in this
@@ -786,22 +810,7 @@ pub fn merge(
                 .iter()
                 .flat_map(|branch| branch.0.iter())
                 .collect();
-            let sig_key = |chain: &DeployChainIndex| -> Vec<Vec<u8>> {
-                let mut sigs: Vec<Vec<u8>> = chain
-                    .deploys_with_cost
-                    .0
-                    .iter()
-                    .map(|d| d.deploy_id.to_vec())
-                    .collect();
-                sigs.sort();
-                sigs
-            };
-            ordered.sort_by(|a, b| {
-                a.source_block_number
-                    .cmp(&b.source_block_number)
-                    .then_with(|| a.source_block_hash.cmp(&b.source_block_hash))
-                    .then_with(|| sig_key(a).cmp(&sig_key(b)))
-            });
+            ordered.sort_by(|a, b| serialize_keep_one_order(a, b));
 
             // Running available-datum multiset per non-foldable channel, seeded
             // lazily from the merge base.
@@ -1185,4 +1194,58 @@ pub fn merge(
         rejected_user_deploys,
         rejected_slashes,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use prost::bytes::Bytes;
+    use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+    use rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex;
+    use rspace_plus_plus::rspace::merger::state_change::StateChange;
+    use shared::rust::hashable_set::HashableSet;
+
+    use super::*;
+    use crate::rust::merging::deploy_chain_index::DeployIdWithCost;
+
+    fn chain(block_num: i64, seed: u8, deploys: &[(u8, u64)]) -> DeployChainIndex {
+        let set: std::collections::HashSet<DeployIdWithCost> = deploys
+            .iter()
+            .map(|(id, cost)| DeployIdWithCost {
+                deploy_id: Bytes::from(vec![*id]),
+                cost: *cost,
+            })
+            .collect();
+        DeployChainIndex::from_parts(
+            HashableSet(set),
+            Blake2b256Hash::from_bytes(vec![seed; 32]),
+            EventLogIndex::empty(),
+            StateChange::empty(),
+            Bytes::from(vec![seed; 32]),
+            block_num,
+        )
+    }
+
+    /// Pay-more-wins: among same-height siblings (the real single-value-cell fork), the
+    /// higher-total-cost chain sorts first and therefore survives the keep-one. This is
+    /// the #2 fix — the prior order was (block#, hash) and ignored cost.
+    #[test]
+    fn serialize_keep_one_prefers_higher_cost_among_siblings() {
+        let high = chain(5, 1, &[(1, 100)]);
+        let low = chain(5, 2, &[(2, 10)]);
+        assert_eq!(serialize_keep_one_order(&high, &low), std::cmp::Ordering::Less);
+        assert_eq!(serialize_keep_one_order(&low, &high), std::cmp::Ordering::Greater);
+    }
+
+    /// Producer-before-consumer is preserved: a lower-block producer sorts before a
+    /// higher-block, higher-cost consumer, so the available-multiset seeding stays valid
+    /// (block number remains the primary key).
+    #[test]
+    fn serialize_keep_one_preserves_producer_before_consumer() {
+        let producer = chain(5, 1, &[(1, 10)]);
+        let consumer = chain(7, 2, &[(2, 100)]);
+        assert_eq!(
+            serialize_keep_one_order(&producer, &consumer),
+            std::cmp::Ordering::Less
+        );
+    }
 }

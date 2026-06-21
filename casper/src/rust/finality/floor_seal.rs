@@ -304,6 +304,21 @@ async fn seal_floor_cut(
     //     FS(prev_cut) from an EARLIER cut. Structural map/set merges are idempotent,
     //     but Int-delta folds are not, so the check still prevents a cross-cut
     //     double-count (e.g. a numeric `+N` counted twice).
+    // Construction-rejected inclusions across the cone. A deploy keep-one'd at (sig, host)
+    // is NOT folded from that host: folding the loser's raw committed diff double-applies
+    // it — an Int conflict folds as a delta to the wrong value, a non-foldable value
+    // stale-consumes (its base was already rewritten by the winner). The loser's effect
+    // instead lands via its ACCEPTED recovery inclusion, which the seal folds normally
+    // (built on the invariant that a keep-one'd deploy re-lands through recovery; if it
+    // does not, that is a recovery-system bug, not a reason to double-apply here).
+    // `body.rejected_deploys` is the construction merge's per-inclusion keep-one record.
+    let mut rejected_inclusions: HashSet<(prost::bytes::Bytes, BlockHash)> = HashSet::new();
+    for (_n, bh) in &numbered {
+        for rd in &block_store.get_unsafe(bh).body.rejected_deploys {
+            rejected_inclusions.insert((rd.sig.clone(), rd.host.clone()));
+        }
+    }
+
     let mut played_sigs: HashSet<prost::bytes::Bytes> = HashSet::new();
     let mut fs_state: StateHash = prev_state.state_hash.0.clone();
     let mut chains_applied = 0usize;
@@ -321,6 +336,17 @@ async fn seal_floor_cut(
                 .iter()
                 .map(|d| d.deploy_id.clone())
                 .collect();
+            // Skip a chain whose inclusion at THIS block was construction keep-one'd:
+            // its effect is folded from its accepted (recovery) inclusion elsewhere, not
+            // from this rejected original. Folding the rejected original is the verified
+            // root cause of the seal double-apply / stale-consume bugs.
+            if sigs
+                .iter()
+                .any(|s| rejected_inclusions.contains(&(s.clone(), block_hash.clone())))
+            {
+                chains_skipped += 1;
+                continue;
+            }
             // Within-cut dedup: a deploy-chain whose sig was already folded (the "flip":
             // the same deploy kept in more than one cone block).
             if sigs.iter().any(|s| played_sigs.contains(s)) {

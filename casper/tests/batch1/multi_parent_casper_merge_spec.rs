@@ -1436,6 +1436,413 @@ async fn fs_seal_finalized_state_is_exact_operation_fold() {
     );
 }
 
+/// SEAL NEGATIVE-FOLD reproduction — the minimal analog of the dormant "Bug B:
+/// negative bonds" mechanism.
+///
+/// The seal folds EVERY finalized block's committed diff via `merge3_par`, whose Int
+/// arm is bare `base + (new - old)` with NO balance check (the construction path guards
+/// this with `cal_merged_result`/`fold_rejection`; the seal does not). Two concurrent
+/// GUARDED decrements on one untagged Int cell (`@8`, seeded 100; guard: only subtract
+/// if the value can take it) each commit `100 -> 40`. Construction keep-ones one; the
+/// loser recovers, sees the already-decremented 40, and its guard makes the re-execution
+/// a no-op — so the canonical chain settles at 40 (one decrement). But the seal folds
+/// BOTH committed `100 -> 40` diffs: `100 -> 40`, then a `-60` delta -> `-20`.
+///
+/// Asserts `FS(floor) @8 == the canonical merge post-state @8`. On the current seal this
+/// FAILS (FS double-applies the keep-one'd decrement, going below the guard floor) — the
+/// vault-overdraft / negative-balance hole. A passing run means the seal gained the
+/// cost-ordered conflict rejection it currently lacks. This is a deliberate red
+/// reproduction.
+///
+/// CONFIRMED red (session 30): canonical=["40"] fs_cell=["-20"], floor finalized,
+/// merge_rejected=1. Ignored so the suite stays green; un-ignore when the seal folds
+/// canonical/accepted effects (honoring construction's keep-one via body.rejected_deploys)
+/// instead of every block's raw committed diff.
+#[tokio::test]
+async fn fs_seal_must_not_double_apply_guarded_conflicting_decrement() {
+    init_test_logging();
+    use casper::rust::finality::floor::floor_of_block;
+    use casper::rust::finality::floor_seal::floor_state_get_or_compute;
+
+    const FT_THRESHOLD: f32 = 0.1;
+
+    let genesis = GenesisBuilder::new()
+        .build_genesis_with_parameters(Some(
+            GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(3)),
+        ))
+        .await
+        .expect("Failed to build genesis");
+    let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None, None)
+        .await
+        .unwrap();
+    let shard_id = genesis.genesis_block.shard_id.clone();
+
+    // Seed an untagged single-value Int cell @8 = 100. Untagged => construction
+    // keep-ones it (not a mergeable number channel) and the seal folds it via
+    // merge3_par's Int arm — the path with no balance check.
+    let seed =
+        construct_deploy::source_deploy_now("@8!(100)".to_string(), None, None, Some(shard_id.clone()))
+            .unwrap();
+    nodes[0].add_block_from_deploys(&[seed]).await.unwrap();
+    {
+        let nodes_refs: Vec<&mut TestNode> = nodes.iter_mut().collect();
+        TestNode::propagate(&mut nodes_refs.into_iter().collect::<Vec<_>>())
+            .await
+            .unwrap();
+    }
+
+    // Two sibling GUARDED decrements: subtract 60 only if the value can take it.
+    let dec_src = "for (@n <- @8) { if (n >= 60) { @8!(n - 60) } else { @8!(n) } }".to_string();
+    let dec_a =
+        construct_deploy::source_deploy_now(dec_src.clone(), None, None, Some(shard_id.clone()))
+            .unwrap();
+    let dec_b = construct_deploy::source_deploy_now(
+        dec_src,
+        Some(construct_deploy::DEFAULT_SEC2.clone()),
+        None,
+        Some(shard_id.clone()),
+    )
+    .unwrap();
+    // Siblings: not propagated between creation, so both consume the seeded 100.
+    nodes[0].add_block_from_deploys(&[dec_a]).await.unwrap();
+    nodes[1].add_block_from_deploys(&[dec_b]).await.unwrap();
+    {
+        let nodes_refs: Vec<&mut TestNode> = nodes.iter_mut().collect();
+        TestNode::propagate(&mut nodes_refs.into_iter().collect::<Vec<_>>())
+            .await
+            .unwrap();
+    }
+    let merge = TestNode::propagate_block_at_index(
+        &mut nodes,
+        2,
+        &[construct_deploy::source_deploy_now("@9!(0)".to_string(), None, None, Some(shard_id.clone()))
+            .unwrap()],
+    )
+    .await
+    .unwrap();
+    // Canonical @8 after the merge that keep-one'd one decrement (one applied -> 40).
+    let canonical =
+        rspace_util::get_data_at_public_channel_block(&merge, 8, &nodes[0].runtime_manager).await;
+
+    // Advance finalization well past the decrement round so it is deeply finalized.
+    let mut last = merge.clone();
+    for r in 1..=6u32 {
+        last = TestNode::propagate_block_at_index(
+            &mut nodes,
+            2,
+            &[construct_deploy::source_deploy_now(
+                format!("@9!({})", r),
+                None,
+                None,
+                Some(shard_id.clone()),
+            )
+            .unwrap()],
+        )
+        .await
+        .unwrap();
+    }
+
+    // FS(floor) @8 — independently re-folded finalized state.
+    let dag_now = nodes[0].block_dag_storage.get_representation();
+    let floor = floor_of_block(&dag_now, &last.block_hash, FT_THRESHOLD)
+        .await
+        .expect("floor");
+    let fs = floor_state_get_or_compute(
+        &dag_now,
+        &nodes[0].block_store,
+        &nodes[0].runtime_manager,
+        &floor.hash,
+        FT_THRESHOLD,
+    )
+    .await
+    .expect("FS");
+    let fs_cell =
+        rspace_util::get_data_at_public_channel(&fs.state_hash.0, 8, &nodes[0].runtime_manager).await;
+
+    tracing::info!(
+        target: "f1r3.trace.cell",
+        canonical = ?canonical,
+        fs_cell = ?fs_cell,
+        floor_number = floor.block_number,
+        merge_rejected = merge.body.rejected_deploys.len(),
+        "seal negative-fold reproduction: canonical @8 vs FS(@8)",
+    );
+
+    assert_eq!(
+        fs_cell, canonical,
+        "FS(floor) @8 must equal the canonical post-state @8: the seal folded BOTH \
+         conflicting decrements (double-applying a keep-one'd write below the guard floor) \
+         instead of rejecting one. canonical={:?} FS={:?}",
+        canonical, fs_cell,
+    );
+}
+
+/// SEAL NON-FOLDABLE-FORK reproduction. Two concurrent divergent writes of a
+/// NON-foldable value (a string) to one single-value cell. The seal's `merge3_par`
+/// cannot structurally merge two strings. CONFIRMED (session 30): the symptom is NOT a
+/// silent `deterministic_pick` (that arm is only reached for a mergeable TOP value whose
+/// leaf diverges) — for a top-level string cell the seal falls to `make_trie_action`'s
+/// stale-consume backstop and HARD-ERRORS: "removed datum absent from base ... must be
+/// rejected upstream, not composed". Root cause is the SAME as the Int negative-fold
+/// test: the seal plays EVERY finalized block's diff, including the loser construction
+/// keep-one'd; playing the loser's rejected original (`seed -> "BBB"`) onto a base already
+/// rewritten to `"AAA"` stale-consumes. So the seal cannot even COMPUTE `FS(floor)` for a
+/// non-foldable fork — a hard finalization failure, worse than silent divergence.
+///
+/// Reproduction: `floor_state_get_or_compute` returns `Err`. Un-ignore once the seal
+/// stops folding construction-rejected originals (the unified seal fix).
+#[tokio::test]
+async fn fs_seal_non_foldable_fork_must_match_canonical() {
+    init_test_logging();
+    use casper::rust::finality::floor::floor_of_block;
+    use casper::rust::finality::floor_seal::floor_state_get_or_compute;
+
+    const FT_THRESHOLD: f32 = 0.1;
+
+    let genesis = GenesisBuilder::new()
+        .build_genesis_with_parameters(Some(
+            GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(3)),
+        ))
+        .await
+        .expect("Failed to build genesis");
+    let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None, None)
+        .await
+        .unwrap();
+    let shard_id = genesis.genesis_block.shard_id.clone();
+
+    // Seed a single-value STRING cell @12 (non-foldable).
+    let seed = construct_deploy::source_deploy_now(
+        "@12!(\"seed\")".to_string(),
+        None,
+        None,
+        Some(shard_id.clone()),
+    )
+    .unwrap();
+    nodes[0].add_block_from_deploys(&[seed]).await.unwrap();
+    {
+        let nodes_refs: Vec<&mut TestNode> = nodes.iter_mut().collect();
+        TestNode::propagate(&mut nodes_refs.into_iter().collect::<Vec<_>>())
+            .await
+            .unwrap();
+    }
+
+    // Two sibling divergent string writes (RMW: consume current, produce a constant).
+    let set_a = construct_deploy::source_deploy_now(
+        "for (@_ <- @12) { @12!(\"AAA\") }".to_string(),
+        None,
+        None,
+        Some(shard_id.clone()),
+    )
+    .unwrap();
+    let set_b = construct_deploy::source_deploy_now(
+        "for (@_ <- @12) { @12!(\"BBB\") }".to_string(),
+        Some(construct_deploy::DEFAULT_SEC2.clone()),
+        None,
+        Some(shard_id.clone()),
+    )
+    .unwrap();
+    nodes[0].add_block_from_deploys(&[set_a]).await.unwrap();
+    nodes[1].add_block_from_deploys(&[set_b]).await.unwrap();
+    {
+        let nodes_refs: Vec<&mut TestNode> = nodes.iter_mut().collect();
+        TestNode::propagate(&mut nodes_refs.into_iter().collect::<Vec<_>>())
+            .await
+            .unwrap();
+    }
+
+    // Advance finalization several rounds so the fork round is deeply finalized, then
+    // read the canonical cell from the latest block.
+    let mut last = TestNode::propagate_block_at_index(
+        &mut nodes,
+        2,
+        &[construct_deploy::source_deploy_now("@13!(0)".to_string(), None, None, Some(shard_id.clone()))
+            .unwrap()],
+    )
+    .await
+    .unwrap();
+    for r in 1..=6u32 {
+        last = TestNode::propagate_block_at_index(
+            &mut nodes,
+            2,
+            &[construct_deploy::source_deploy_now(
+                format!("@13!({})", r),
+                None,
+                None,
+                Some(shard_id.clone()),
+            )
+            .unwrap()],
+        )
+        .await
+        .unwrap();
+    }
+    let canonical =
+        rspace_util::get_data_at_public_channel_block(&last, 12, &nodes[0].runtime_manager).await;
+
+    // FS(floor) @12.
+    let dag_now = nodes[0].block_dag_storage.get_representation();
+    let floor = floor_of_block(&dag_now, &last.block_hash, FT_THRESHOLD)
+        .await
+        .expect("floor");
+    let fs = floor_state_get_or_compute(
+        &dag_now,
+        &nodes[0].block_store,
+        &nodes[0].runtime_manager,
+        &floor.hash,
+        FT_THRESHOLD,
+    )
+    .await
+    .unwrap_or_else(|e| {
+        panic!(
+            "seal FAILED to compute FS for a non-foldable single-value fork — it played \
+             construction's rejected original whose base was already rewritten (stale-consume). \
+             canonical @12 = {:?}; err = {}",
+            canonical, e
+        )
+    });
+    let fs_cell =
+        rspace_util::get_data_at_public_channel(&fs.state_hash.0, 12, &nodes[0].runtime_manager).await;
+
+    tracing::info!(
+        target: "f1r3.trace.cell",
+        canonical = ?canonical,
+        fs_cell = ?fs_cell,
+        floor_number = floor.block_number,
+        "seal non-foldable-fork reproduction: canonical @12 vs FS(@12)",
+    );
+
+    assert_eq!(
+        fs_cell, canonical,
+        "FS(floor) @12 must equal the canonical finalized @12: the seal's deterministic_pick \
+         chose a non-foldable survivor inconsistent with the chain's keep-one+recovery. \
+         canonical={:?} FS={:?}",
+        canonical, fs_cell,
+    );
+}
+
+/// SEAL LAG-EDGE reproduction attempt. The skip-rejected fix reads rejections from the
+/// cone's block bodies. Open question: can a finalized cut land between a rejected
+/// original B and its rejecter C — so the seal folds B's rejected original because C
+/// (its rejection record) is not yet in that cut's cone — permanently storing a
+/// double-applied `FS(cut)`? This drives many rounds of a guarded single-value Int
+/// conflict and, AT EVERY floor, asserts `FS(floor) @8` equals that floor block's own
+/// committed post-state. A lag double-apply makes `FS(floor)` lower than `floor.post`
+/// at some intermediate cut. Green across all floors is evidence the lag is not
+/// reachable on the canonical chain in the multi-parent merge pattern.
+#[tokio::test]
+async fn fs_seal_no_lag_double_apply_across_floors() {
+    init_test_logging();
+    use casper::rust::finality::floor::floor_of_block;
+    use casper::rust::finality::floor_seal::floor_state_get_or_compute;
+    const FT_THRESHOLD: f32 = 0.1;
+
+    let genesis = GenesisBuilder::new()
+        .build_genesis_with_parameters(Some(
+            GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(3)),
+        ))
+        .await
+        .expect("genesis");
+    let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None, None)
+        .await
+        .unwrap();
+    let shard_id = genesis.genesis_block.shard_id.clone();
+
+    let seed = construct_deploy::source_deploy_now(
+        "@8!(100000)".to_string(),
+        None,
+        None,
+        Some(shard_id.clone()),
+    )
+    .unwrap();
+    nodes[0].add_block_from_deploys(&[seed]).await.unwrap();
+    {
+        let r: Vec<&mut TestNode> = nodes.iter_mut().collect();
+        TestNode::propagate(&mut r.into_iter().collect::<Vec<_>>())
+            .await
+            .unwrap();
+    }
+
+    let dec_src = "for (@n <- @8) { if (n >= 60) { @8!(n - 60) } else { @8!(n) } }".to_string();
+    for r in 0..8u32 {
+        let dec_a =
+            construct_deploy::source_deploy_now(dec_src.clone(), None, None, Some(shard_id.clone()))
+                .unwrap();
+        let dec_b = construct_deploy::source_deploy_now(
+            dec_src.clone(),
+            Some(construct_deploy::DEFAULT_SEC2.clone()),
+            None,
+            Some(shard_id.clone()),
+        )
+        .unwrap();
+        nodes[0].add_block_from_deploys(&[dec_a]).await.unwrap();
+        nodes[1].add_block_from_deploys(&[dec_b]).await.unwrap();
+        {
+            let rr: Vec<&mut TestNode> = nodes.iter_mut().collect();
+            TestNode::propagate(&mut rr.into_iter().collect::<Vec<_>>())
+                .await
+                .unwrap();
+        }
+        let merge = TestNode::propagate_block_at_index(
+            &mut nodes,
+            2,
+            &[construct_deploy::source_deploy_now(
+                format!("@9!({})", r),
+                None,
+                None,
+                Some(shard_id.clone()),
+            )
+            .unwrap()],
+        )
+        .await
+        .unwrap();
+
+        let dag = nodes[0].block_dag_storage.get_representation();
+        if let Ok(floor) = floor_of_block(&dag, &merge.block_hash, FT_THRESHOLD).await {
+            if let Ok(fs) = floor_state_get_or_compute(
+                &dag,
+                &nodes[0].block_store,
+                &nodes[0].runtime_manager,
+                &floor.hash,
+                FT_THRESHOLD,
+            )
+            .await
+            {
+                let fs_cell = rspace_util::get_data_at_public_channel(
+                    &fs.state_hash.0,
+                    8,
+                    &nodes[0].runtime_manager,
+                )
+                .await;
+                let floor_post = match nodes[0].block_store.get(&floor.hash) {
+                    Ok(Some(fb)) => {
+                        rspace_util::get_data_at_public_channel(
+                            &fb.body.state.post_state_hash,
+                            8,
+                            &nodes[0].runtime_manager,
+                        )
+                        .await
+                    }
+                    _ => vec!["<missing>".to_string()],
+                };
+                tracing::info!(
+                    target: "f1r3.trace.cell",
+                    round = r,
+                    floor_number = floor.block_number,
+                    fs_cell = ?fs_cell,
+                    floor_post = ?floor_post,
+                    "lag check: FS(floor) vs floor.post @8",
+                );
+                assert_eq!(
+                    fs_cell, floor_post,
+                    "LAG double-apply at floor #{} (round {}): FS(floor) != floor block post-state — \
+                     the seal folded a rejected original because its rejecter was not yet in this \
+                     cut's cone. FS={:?} floor.post={:?}",
+                    floor.block_number, r, fs_cell, floor_post
+                );
+            }
+        }
+    }
+}
+
 /// Proxy for the PoS `stateCh` NESTED-map shape. A single cell (`@7`) holds an OUTER
 /// map whose `"bonds"` key holds an INNER map, mutated by concurrent read-modify-writes
 /// that BOTH rewrite the same outer key with distinct inner keys — exactly PoS

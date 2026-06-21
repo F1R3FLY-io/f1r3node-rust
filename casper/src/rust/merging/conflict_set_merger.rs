@@ -321,6 +321,7 @@ pub fn resolve_conflicts<R: Clone + Eq + std::hash::Hash + PartialOrd + Ord>(
         &rejection_options,
         base_mergeable_ch_res.clone(),
         mergeable_channels,
+        cost,
     );
 
     // Compute optimal rejection using cost function
@@ -755,10 +756,18 @@ fn fold_rejection<R: Clone + Eq + std::hash::Hash + Ord>(
     base_balance: HashMap<Blake2b256Hash, i64>,
     branches: &HashableSet<Branch<R>>,
     mergeable_channels: impl Fn(&R) -> NumberChannelsDiff,
+    cost: impl Fn(&R) -> u64,
 ) -> HashableSet<Branch<R>> {
-    // Sort branches to ensure deterministic processing order
+    // Pay-more-wins: fold higher-COST branches FIRST, so they apply while the balance is
+    // healthy and a lower-cost branch that would then overdraw/overflow is the one
+    // rejected. `compare_branches` is the deterministic node-identical tiebreak.
+    let branch_cost = |b: &Branch<R>| -> u64 { b.0.iter().map(|r| cost(r)).sum() };
     let mut sorted_branches: Vec<&Branch<R>> = branches.0.iter().collect();
-    sorted_branches.sort_by(|a, b| compare_branches(a, b));
+    sorted_branches.sort_by(|a, b| {
+        branch_cost(b)
+            .cmp(&branch_cost(a))
+            .then_with(|| compare_branches(a, b))
+    });
 
     // Fold branches to find which ones would result in negative or overflow balances
     let (_, rejected) = sorted_branches.iter().fold(
@@ -786,10 +795,11 @@ fn get_merged_result_rejection<R: Clone + Eq + std::hash::Hash + Ord>(
     reject_options: &HashableSet<HashableSet<Branch<R>>>,
     base: HashMap<Blake2b256Hash, i64>,
     mergeable_channels: impl Fn(&R) -> NumberChannelsDiff,
+    cost: impl Fn(&R) -> u64,
 ) -> HashableSet<HashableSet<Branch<R>>> {
     if reject_options.0.is_empty() {
         // If no rejection options, fold the branches and return as single option
-        let rejected = fold_rejection(base, branches, &mergeable_channels);
+        let rejected = fold_rejection(base, branches, &mergeable_channels, &cost);
         let mut result = HashSet::new();
         result.insert(rejected);
         HashableSet(result)
@@ -818,7 +828,7 @@ fn get_merged_result_rejection<R: Clone + Eq + std::hash::Hash + Ord>(
                 );
 
                 // Get branches that should be rejected from the diff
-                let rejected = fold_rejection(base.clone(), &diff, &mergeable_channels);
+                let rejected = fold_rejection(base.clone(), &diff, &mergeable_channels, &cost);
 
                 // Combine rejected with normal_reject_options
                 let mut result = HashableSet(normal_reject_options.0.clone());
@@ -899,6 +909,34 @@ mod tests {
                 "tie-break must resolve identically regardless of insertion order"
             );
         }
+    }
+
+    /// Pay-more-wins (#3): two singleton branches each debit the same channel past half
+    /// its balance, so together they overdraw. `fold_rejection` must reject the LOWER-cost
+    /// branch and keep the higher-cost one — not pick by `compare_branches` order.
+    #[test]
+    fn fold_rejection_rejects_lower_cost_branch_on_overdraft() {
+        let ch = Blake2b256Hash::from_bytes(vec![5u8; 32]);
+        let mut base = HashMap::new();
+        base.insert(ch.clone(), 100i64);
+        let high = branch(&[1]); // cost 100
+        let low = branch(&[2]); // cost 10
+        let branches = HashableSet(HashSet::from([high.clone(), low.clone()]));
+        let mergeable = |_r: &i32| {
+            let mut m = NumberChannelsDiff::new();
+            m.insert(ch.clone(), (-80, MergeType::IntegerAdd));
+            m
+        };
+        let cost = |r: &i32| if *r == 1 { 100u64 } else { 10u64 };
+        let rejected = fold_rejection(base, &branches, mergeable, cost);
+        assert!(
+            rejected.0.contains(&low),
+            "lower-cost branch must be rejected on overdraft (pay-more-wins)"
+        );
+        assert!(
+            !rejected.0.contains(&high),
+            "higher-cost branch must survive the overdraft rejection"
+        );
     }
 
     #[test]
