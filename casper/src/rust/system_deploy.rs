@@ -29,3 +29,10 @@ pub fn is_system_deploy_id(id: &Bytes) -> bool {
 pub fn is_slash_deploy_id(id: &Bytes) -> bool {
     id.len() == SYSTEM_DEPLOY_ID_LEN && id[32] == SLASH_MARKER
 }
+
+/// Detect if a deploy ID is specifically a close-block system deploy. CloseBlock is stamped on
+/// every block (so its count equals DAG width); the seal keep-ones it per height so its replicated
+/// epoch-reward effect is applied once per epoch position, not once per concurrent sibling.
+pub fn is_close_block_deploy_id(id: &Bytes) -> bool {
+    id.len() == SYSTEM_DEPLOY_ID_LEN && id[32] == CLOSE_BLOCK_MARKER
+}

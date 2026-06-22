@@ -1640,7 +1640,13 @@ impl BlockAPI {
                     );
                     (fs.state_hash.0.clone(), Some(lfb))
                 } else {
-                    // Specific block requested: use its post-state
+                    // Specific block requested: read the SEALED finalized state at that
+                    // cut — FS(block_hash), via the same seal recursion as the no-block
+                    // (LFB) path above — NOT the block's raw construction-merge post-state,
+                    // which is keep-one'd and therefore non-monotone as the read cut
+                    // advances through a merge that keep-one'd a concurrent write. A read at
+                    // any block must return finalized truth, exactly as the LFB read does.
+                    // (A pre-state read is block inspection, so it keeps the raw pre-state.)
                     let hash_str = block_hash.as_ref().unwrap();
                     let padded_hash = pad_hex_string(hash_str);
                     let hash_byte_string = hex::decode(&padded_hash).map_err(|_| {
@@ -1653,7 +1659,18 @@ impl BlockAPI {
                             let state = if use_pre_state_hash {
                                 proto_util::pre_state_hash(&b)
                             } else {
-                                proto_util::post_state_hash(&b)
+                                let dag = casper.block_dag().await?;
+                                let ft = casper.casper_shard_conf().fault_tolerance_threshold;
+                                let fs =
+                                    crate::rust::finality::floor_seal::floor_state_get_or_compute(
+                                        &dag,
+                                        casper.block_store(),
+                                        &runtime_manager,
+                                        &b.block_hash,
+                                        ft,
+                                    )
+                                    .await?;
+                                fs.state_hash.0.clone()
                             };
                             (state, Some(b))
                         }

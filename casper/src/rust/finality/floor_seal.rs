@@ -1,27 +1,34 @@
-//! Canonical floor-state recursion — `FS(F)` as a function of the finalized cut.
+//! Advance-only finalized-state ledger — `FS(B)` as a function of the finalized cut.
 //!
-//! The sealed finalized state for a finalized cut F is
-//! `FS(F) = merge(closure(F) \ closure(prev(F))  onto  FS(prev(F)))`,
-//! where `prev(F)` is the justification-derived floor of F ([`floor_of_block`]) —
-//! NOT the node-local finalized frontier. The floor is a pure function of F's signed
-//! justifications plus immutable ancestor metadata, so every node seals F from the
-//! same predecessor and `FS` is node-identical by construction. The floor lags F by
-//! the witnessing depth, so the recursion strictly descends to genesis (whose floor
-//! is itself, the terminal cut).
+//! The sealed finalized state for a finalized block B is built FORWARD from its
+//! immediate main parent:
+//! `FS(B) = apply(closure(B) \ closure(main_parent(B))  onto  FS(main_parent(B)))`,
+//! recursing down the main-parent chain to genesis (whose post-state IS its finalized
+//! state). Each step applies only the block's INCREMENTAL delta — its own block plus its
+//! co-finalized secondary-parent subtrees — ACCEPTED inclusions only, once each.
 //!
-//! Each step folds a newly finalized cone onto its predecessor's state, down to
-//! genesis (whose post-state IS its finalized state). Because the value is a
-//! function of the cut, the read path persists on a miss (write-through): there
-//! is no separate "seal at finalization" mechanism to keep consistent with.
+//! Why build-forward (not re-fold a lagging cone): every block enters exactly ONE delta
+//! (the cut where it first joins the main-chain closure), so a finalized op is applied
+//! once and then lives below every later main parent — never re-derived. `FS` is therefore
+//! MONOTONE by construction: a value, once applied, cannot be dropped by a later cut (only
+//! a finalized delete/slash op removes it). The prior design re-folded the whole
+//! `closure(cut) \ closure(floor)` cone onto `FS(floor)` every cut, with a cone-rebuilt
+//! skip set — so a larger cone could re-skip an already-applied inclusion. That stateless
+//! re-derivation was the verified flicker (a finalized value present at one cut, gone at
+//! the next). Advancing from the immediate parent removes the re-derivation entirely.
 //!
-//! The seal base MUST NOT key on node-local `is_finalized`: under finalization lag
-//! (e.g. contention) two nodes finalize the same floor F to different local frontiers,
-//! so an `is_finalized`-keyed predecessor walk seals F from different cuts. The
-//! base-dependent recovery dedup (`recovered_deploy_effect_in_base` reads the running
-//! base) then skips different re-proposals on each path and folds a divergent `FS` —
-//! the verified #71 cascade (divergent FS -> divergent multi-parent pre-state ->
-//! InvalidTransaction -> slash -> finalization stall). Chaining on the justification
-//! floor removes that node-local input entirely.
+//! Node-identity: `main_parent(B)` is a pure function of B's signed parents (NOT node-local
+//! `is_finalized`), and the delta + accepted-only fold + dedup are pure functions of
+//! `closure(B)`, with no reducer (recorded committed diffs only). So every node computes
+//! the same `FS(B)`. This preserves the #71 guard — a node-local base would diverge
+//! (different recovery dedup per node -> divergent FS -> divergent multi-parent pre-state ->
+//! InvalidTransaction -> slash -> finalization stall); chaining on the main parent keeps the
+//! base node-identical, exactly as the justification floor did, but without the lag that
+//! forced the re-derivation.
+//!
+//! Because the value is a pure function of the cut, the read path persists on a miss
+//! (write-through); there is no separate "seal at finalization" mechanism to keep
+//! consistent with.
 
 use std::collections::HashSet;
 
@@ -35,7 +42,7 @@ use rholang::rust::interpreter::merging::rholang_merging_logic::RholangMergingLo
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::merger::state_change_merger;
 
-use super::floor::{floor_of_block, Floor};
+use super::floor::Floor;
 use crate::rust::errors::CasperError;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 
@@ -116,7 +123,18 @@ pub async fn floor_state_get_or_compute(
             break seed;
         }
         unsealed.push(cursor.clone());
-        cursor = floor_of_block(dag, &cursor, ft_threshold).await?.hash;
+        // Advance-only ledger: chain on the IMMEDIATE main parent (a node-identical block
+        // fact), not the lagging justification floor. `FS(block) = FS(main_parent) ⊕` the
+        // block's incremental delta, so a finalized value applied once is never re-derived
+        // by a later cut (build-forward) — which is what removes the flicker. main_parent is
+        // a pure function of the signed block, so the base stays node-identical (no
+        // node-local `is_finalized` input; the #71 divergence guard holds).
+        cursor = dag.main_parent(&cursor).ok_or_else(|| {
+            CasperError::Other(format!(
+                "main_parent missing for non-genesis cut {}",
+                PrettyPrinter::build_string_bytes(&cursor),
+            ))
+        })?;
     };
 
     if !unsealed.is_empty() {
@@ -148,24 +166,37 @@ pub async fn floor_state_get_or_compute(
     Ok(state)
 }
 
-/// Seal one floor cut: merge the newly finalized cone
-/// `closure(cut) \ closure(floor(cut))` onto `FS(floor(cut))`.
+/// Advance one cut: apply the incremental delta `closure(cut) \ closure(main_parent(cut))`
+/// onto `FS(main_parent(cut))`.
 ///
-/// `prev_state` must be the floor state of `floor(cut)` — the caller resolves
-/// the chain; this function performs exactly one canonical step. Rejection
-/// decisions made by the seal accumulate into `rejected_deploys` (deduplicated,
-/// ordered), so a deploy rejected at any cut stays enforceable at later cuts.
+/// `prev_state` must be the finalized state of `main_parent(cut)` — the caller resolves the
+/// main-parent chain; this function performs exactly one forward step. Because the delta is
+/// only the blocks newly reachable through `cut` (its own block + co-finalized
+/// secondary-parent subtrees), each finalized op is applied in exactly one step and never
+/// re-derived, so the ledger is monotone.
 async fn seal_floor_cut(
     dag: &KeyValueDagRepresentation,
     block_store: &KeyValueBlockStore,
     runtime_manager: &RuntimeManager,
     cut: &BlockHash,
     prev_state: &FloorData,
-    // Used to derive the node-identical justification floor of `cut` — the seal base.
-    ft_threshold: f32,
+    // Retained for signature stability; the advance-only base is the main parent, so the
+    // justification-floor derivation (which needed the FT threshold) is no longer used here.
+    _ft_threshold: f32,
 ) -> Result<FloorData, CasperError> {
     let cut_number = dag.block_number_unsafe(cut)?;
-    let prev_hash = floor_of_block(dag, cut, ft_threshold).await?.hash;
+    // Advance-only base = the cut's main parent (node-identical), not its justification
+    // floor. The delta `closure(cut) \ closure(main_parent)` is the cut's own block plus its
+    // co-finalized secondary-parent subtrees — applied ACCEPTED-only, once, onto
+    // FS(main_parent). Because every block enters exactly one such delta (the cut where it
+    // first joins the main-chain closure), a finalized op is evaluated once and then lives
+    // below every later main_parent — never re-folded, so FS is monotone by construction.
+    let prev_hash = dag.main_parent(cut).ok_or_else(|| {
+        CasperError::Other(format!(
+            "main_parent missing for non-genesis cut {}",
+            PrettyPrinter::build_string_bytes(cut),
+        ))
+    })?;
     let prev = Floor {
         block_number: dag.block_number_unsafe(&prev_hash)?,
         hash: prev_hash,
@@ -291,39 +322,36 @@ async fn seal_floor_cut(
         }
     }
 
-    // FS(cut) is the deterministic op-fold of the finalized cone: PLAY each finalized
-    // deploy in topological order onto the running FS. Sequencing turns concurrent
-    // writes into a linear chain, so it folds with NO content-awareness — commutative
-    // number channels fold their commutative delta, non-foldable Map/Set/Int cells
-    // fold STRUCTURALLY (recursive 3-way merge deriving the key/element/arithmetic
-    // delta), so co-finalized concurrent writes are preserved instead of dropped or
-    // stale-consumed. Determinism comes from applying COMMITTED diffs (pure trie ops,
-    // no reducer). Two dedups keep each finalized effect applied EXACTLY ONCE:
-    //   - `played_sigs`: a sig kept in more than one block in THIS cone (the "flip").
-    //   - the base-check: a recovery re-proposal whose effect is already folded into
-    //     FS(prev_cut) from an EARLIER cut. Structural map/set merges are idempotent,
-    //     but Int-delta folds are not, so the check still prevents a cross-cut
-    //     double-count (e.g. a numeric `+N` counted twice).
-    // Construction-rejected inclusions across the cone. A deploy keep-one'd at (sig, host)
-    // is NOT folded from that host: folding the loser's raw committed diff double-applies
-    // it — an Int conflict folds as a delta to the wrong value, a non-foldable value
-    // stale-consumes (its base was already rewritten by the winner). The loser's effect
-    // instead lands via its ACCEPTED recovery inclusion, which the seal folds normally
-    // (built on the invariant that a keep-one'd deploy re-lands through recovery; if it
-    // does not, that is a recovery-system bug, not a reason to double-apply here).
-    // `body.rejected_deploys` is the construction merge's per-inclusion keep-one record.
+    // FS(cut) = the advance-only op-fold of THIS cut's incremental delta onto FS(main_parent).
+    // Apply each ACCEPTED finalized inclusion's committed diff once, in topological order:
+    // number channels fold their commutative delta; non-foldable Map/Set/Int cells fold
+    // STRUCTURALLY (recursive 3-way merge), preserving co-finalized concurrent writes. Pure
+    // trie work (no reducer) ⇒ node-identical.
+    //
+    // Dedup keeps each finalized effect applied EXACTLY ONCE via three orthogonal checks
+    // (restored from `2b9af7d6` — the session-36 persistent-ledger swap over-skipped and is
+    // reverted; the sig-rng base-check is the cross-cut dedup, immune to the build-forward
+    // cone/delta split because it reads the actual running FS, not carried verdicts):
+    //   - `rejected_inclusions` (sig, host): construction keep-one'd losers in THIS cone —
+    //     skip from that host; the effect lands via its ACCEPTED recovery inclusion.
+    //   - `played_sigs`: within-cut dedup (the "flip": a sig kept in >1 cone block).
+    //   - base-check (below): a recovery re-proposal whose sig-derived (pre-charge) cell is
+    //     already in FS from an earlier cut — non-idempotent Int-delta folds would double-count.
     let mut rejected_inclusions: HashSet<(prost::bytes::Bytes, BlockHash)> = HashSet::new();
     for (_n, bh) in &numbered {
         for rd in &block_store.get_unsafe(bh).body.rejected_deploys {
             rejected_inclusions.insert((rd.sig.clone(), rd.host.clone()));
         }
     }
-
     let mut played_sigs: HashSet<prost::bytes::Bytes> = HashSet::new();
+    // CloseBlock is stamped on every block (count = DAG width), so concurrent co-finalized
+    // siblings carry replica CloseBlocks. Apply one per height so its replicated epoch-reward
+    // (committedRewards) and withdrawal-payout (posVault) effects are not folded once per sibling.
+    let mut closeblock_heights: HashSet<i64> = HashSet::new();
     let mut fs_state: StateHash = prev_state.state_hash.0.clone();
     let mut chains_applied = 0usize;
     let mut chains_skipped = 0usize;
-    for (_block_number, block_hash) in &numbered {
+    for (block_number, block_hash) in &numbered {
         let idx = crate::rust::util::rholang::interpreter_util::build_block_index(
             runtime_manager,
             block_store,
@@ -336,10 +364,8 @@ async fn seal_floor_cut(
                 .iter()
                 .map(|d| d.deploy_id.clone())
                 .collect();
-            // Skip a chain whose inclusion at THIS block was construction keep-one'd:
-            // its effect is folded from its accepted (recovery) inclusion elsewhere, not
-            // from this rejected original. Folding the rejected original is the verified
-            // root cause of the seal double-apply / stale-consume bugs.
+            // Construction keep-one'd at THIS host: its effect lands via its accepted recovery
+            // inclusion, not this rejected original (folding the loser double-applies/stale-consumes).
             if sigs
                 .iter()
                 .any(|s| rejected_inclusions.contains(&(s.clone(), block_hash.clone())))
@@ -347,15 +373,15 @@ async fn seal_floor_cut(
                 chains_skipped += 1;
                 continue;
             }
-            // Within-cut dedup: a deploy-chain whose sig was already folded (the "flip":
-            // the same deploy kept in more than one cone block).
+            // Within-cut "flip": the same deploy kept in more than one cone block.
             if sigs.iter().any(|s| played_sigs.contains(s)) {
                 chains_skipped += 1;
                 continue;
             }
-            // Cross-cut dedup: a recovery re-proposal whose effect is already folded into
-            // FS from an earlier cut. Value-cell merges are idempotent, but Int-delta
-            // folds are not, so the session-20 base-check still matters here.
+            // Cross-cut: a recovery re-proposal whose sig-derived (pre-charge/own) cell is already
+            // folded into FS from an earlier cut. Value-cell merges are idempotent, but Int-delta
+            // folds are not, so this base-check prevents a cross-cut double-count. System deploys
+            // (CloseBlock/Slash) are excluded — they share no per-deploy cell, deduped by height.
             let base_hash = Blake2b256Hash::from_bytes_prost(&fs_state);
             let already_in_base = sigs.iter().any(|sig| {
                 !crate::rust::system_deploy::is_system_deploy_id(sig)
@@ -369,6 +395,19 @@ async fn seal_floor_cut(
                     .unwrap_or(false)
             });
             if already_in_base {
+                chains_skipped += 1;
+                continue;
+            }
+            // CloseBlock dedup-by-height: a CloseBlock chain whose height was already applied is
+            // a replica sibling — skip it. Covers BOTH its committedRewards Map write AND its
+            // posVault withdrawal number-channel transfer (a tagged number channel the value-type
+            // fold would otherwise sum across siblings). First at a height inserts and applies;
+            // replicas find the height present and skip.
+            if sigs
+                .iter()
+                .any(|s| crate::rust::system_deploy::is_close_block_deploy_id(s))
+                && !closeblock_heights.insert(*block_number)
+            {
                 chains_skipped += 1;
                 continue;
             }
@@ -425,10 +464,11 @@ async fn seal_floor_cut(
         }
     }
 
-    // The seal no longer keep-one rejects anything — every finalized deploy is played —
-    // so the rejected/accepted ledgers carry forward unchanged. They are
-    // retained-but-unconsumed (the FloorFateResolver that read them was removed); a
-    // follow-up cleanup can drop them from the FloorData model.
+    // The seal keep-one rejects nothing — every accepted finalized deploy is folded — so the
+    // FloorData rejected/accepted ledgers are retained-but-unconsumed (the dedup is cone-local
+    // rejected + within-cut played + the running-FS base-check, not these carried verdicts).
+    // They are carried forward unchanged in the return below.
+
     let committed_state_bytes = block_store
         .get_unsafe(cut)
         .body

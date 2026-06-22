@@ -313,10 +313,14 @@ impl RholangMergingLogic {
         let old_par = old_d.a.pars[0].clone();
         let new_par = new_d.a.pars[0].clone();
 
-        // Only Map/Set/Int values are structurally mergeable; others fall to backstop.
-        if !Self::is_mergeable_value(&old_par) || !Self::is_mergeable_value(&new_par) {
-            return Ok(None);
-        }
+        // Every single-value cell folds through the 3-way merge3_par: Map/Set merge structurally
+        // (preserve concurrent keys/elements); Int/String/Bool/List/Tuple resolve via standard
+        // resolution (new==old→base, base==old→new, else deterministic_pick = keep-one). This is the
+        // correct seal behavior for co-finalized concurrent writers to a NON-mergeable cell that were
+        // NOT keep-one'd at construction (e.g. two forks finalized together by the clique oracle):
+        // both are accepted, but the cell holds one value, so the seal deterministically keeps one.
+        // Routing non-mergeable cells to the raw make_trie_action backstop instead stale-consumes
+        // (the second writer's `removed` is gone from the rewritten base) and aborts the whole merge.
 
         // Base = FS-current value. Empty cell ⇒ the 3-way reduces to "apply new".
         let base_data = base_get_data(channel_hash)?;
@@ -357,12 +361,6 @@ impl RholangMergingLogic {
         )))
     }
 
-    fn is_mergeable_value(p: &Par) -> bool {
-        RhoMap::unapply(p).is_some()
-            || RhoSet::unapply(p).is_some()
-            || RhoNumber::unapply(p).is_some()
-    }
-
     /// 3-way merge of one Rholang value given the block's transition old→new onto base.
     fn merge3_par(base: &Par, old: &Par, new: &Par) -> Par {
         if let (Some(b), Some(o), Some(n)) =
@@ -375,18 +373,18 @@ impl RholangMergingLogic {
         {
             return RhoSet::create_par(Self::merge3_set(b, o, n));
         }
-        // Int leaf: the structural delta IS the arithmetic delta. Fold it onto base so
-        // concurrent numeric RMWs on an untagged value cell still sum (sequencing).
-        if let (Some(b), Some(o), Some(n)) =
-            (RhoNumber::unapply(base), RhoNumber::unapply(old), RhoNumber::unapply(new))
-        {
-            return RhoNumber::create_par(b.wrapping_add(n.wrapping_sub(o)));
-        }
-        // Other leaves / type mismatch.
+        // Standard resolution for every remaining leaf — untagged Int included. Additive folding
+        // is EXCLUSIVELY the IntegerAdd/BitmaskOr-tagged number-channel path (upstream of this fn,
+        // `calculate_number_channel_merge`); an untagged Int is NOT provably commutative, so it
+        // must NOT delta-fold (`base+(new−old)` over-applies a convergent RMW like committedRewards)
+        // and must NOT take unconditional last-writer (`new` clobbers a concurrent change when this
+        // block left the cell unchanged). The 3-way below is correct for all three cases; a
+        // genuinely additive untagged Int re-lands other writers via recovery, or the contract tags
+        // it IntegerAdd for an immediate commutative sum.
         if new == old {
-            base.clone() // block didn't change it
+            base.clone() // block didn't change it → keep the concurrent base
         } else if base == old {
-            new.clone() // only the block changed it
+            new.clone() // only this block changed it → take new
         } else {
             Self::deterministic_pick(base, new) // both diverged → deterministic last-writer
         }

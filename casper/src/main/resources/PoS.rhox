@@ -198,6 +198,7 @@ in {
                   accumulateItemInState!(*committedRewardsCh, "committedRewards", *accumulateSndNum) |
                   for (@posBalance <- posBalanceCh; @totalBond <- totalBondCh; @activeBonds <- totalActiveBondCh;
                        @totalWithdraw <- totalWithdrawCh; @totalCommittedRewards <- committedRewardsCh){
+                    posStdout!(["[CONTRACT-POS-REWARDS-POOL]", "posBalance=", posBalance, "totalBond=", totalBond, "activeBonds=", activeBonds, "totalWithdraw=", totalWithdraw, "totalCommittedRewards=", totalCommittedRewards, "pool=", posBalance - totalBond - totalWithdraw - totalCommittedRewards]) |
                     for (@state <<- stateCh) {
                       retCh!((posBalance , totalBond , activeBonds, totalWithdraw, totalCommittedRewards, state.get("allBonds"), state.get("activeValidators")))
                     }
@@ -531,6 +532,9 @@ in {
                           getBlockData!(*blockDataCh) |
                           for (@blockNumber, _, _ <- blockDataCh) {
                             posStdout!(["[CONTRACT-POS-CLOSEBLOCK-ENTER]", "blockNumber=", blockNumber, "epochLength=", $$epochLength$$, "isEpochBoundary=", blockNumber % $$epochLength$$ == 0]) |
+                            for (@s0 <<- stateCh) {
+                              posStdout!(["[CONTRACT-POS-CLOSEBLOCK-CR-IN]", "blockNumber=", blockNumber, "committedRewardsIn=", s0.get("committedRewards").toList()])
+                            } |
                             if (blockNumber % $$epochLength$$ != 0) {
                               // Epoch change does not occur.
                               posStdout!(["[CONTRACT-POS-CLOSEBLOCK-NOOP]", "blockNumber=", blockNumber]) |
