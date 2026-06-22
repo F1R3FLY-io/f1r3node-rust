@@ -137,9 +137,12 @@ jobs:
     runs-on: ubuntu-latest
     # gated=true (fork path) routes through the ephemeral-launch environment so
     # the required-reviewer approval releases OCI_* + RELEASE_PAT to the job.
-    # gated=false (internal path) runs unattended — internal events get secrets
-    # without an approval gate.
-    environment: ${{ inputs.gated && 'ephemeral-launch' || '' }}
+    # gated=false (internal path) uses ephemeral-launch-internal, an environment
+    # with NO protection rules, so internal events get secrets and run unattended.
+    # Both branches must name a real environment: an empty-string environment
+    # name fails workflow startup (the value is validated when the run graph is
+    # built), so the ungated path cannot fall back to ''.
+    environment: ${{ inputs.gated && 'ephemeral-launch' || 'ephemeral-launch-internal' }}
     permissions:
       actions: write
     timeout-minutes: 10
