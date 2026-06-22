@@ -14,6 +14,7 @@ new stdout(`rho:io:stdout`) in {
 
   // Float arithmetic (suffix: f64)
   stdout!(["Float addition:", 1.5f64 + 2.25f64]) |
+  stdout!(["Float addition:", 1.5 + 2.25]) |
   stdout!(["Float multiplication:", 3.0f64 * 4.5f64]) |
 
   // FixedPoint arithmetic (suffix: p<scale>)
