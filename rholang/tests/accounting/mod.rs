@@ -1,5 +1,6 @@
 mod cost_accounting_demo_spec;
 mod cost_accounting_frontier;
+mod cost_accounting_multisig_treasury_spec;
 mod cost_accounting_spec;
 mod delta_sigma_spec;
 mod ll_algebra_spec;
