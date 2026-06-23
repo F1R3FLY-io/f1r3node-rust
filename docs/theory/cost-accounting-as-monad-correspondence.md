@@ -141,3 +141,10 @@ axiom-free in the native four-sort grammar:
 The central structural claims (wrapping, the cost monad, GAP-2 dissolution, cost determinism, the modulus) are
 discharged axiom-free by `continued_gslt_cost_capstone`; the graded adequacy and both adjunctions above complete
 the categorical layer (CL5–CL6) in the native grammar.
+
+## References
+
+- S. Mac Lane, *Categories for the Working Mathematician*, Graduate Texts in Mathematics, vol. 5, Springer, 1978. DOI: [10.1007/978-1-4757-4721-8](https://doi.org/10.1007/978-1-4757-4721-8). The endofunctor / unit-and-multiplication monad / adjunction structure realized by the cost construction.
+- L. G. Meredith and M. Radestock, "A reflective higher-order calculus," *Electronic Notes in Theoretical Computer Science*, vol. 141, no. 5, pp. 49–67, 2005. DOI: [10.1016/j.entcs.2005.05.016](https://doi.org/10.1016/j.entcs.2005.05.016). The reflective rho substrate (`bang_encoding` / `D_encoding`).
+- Governing specifications (read-only law): `publications/cost-accounting/cost-accounted-rho.tex`; `publications/cost-accounting-as-monad/continued-gslt-cost-v2.tex`.
+- Full bibliographies (with DOIs): [`cost-accounted-rho-verification.md`](cost-accounted-rho-verification.md) §13 and [`cost-accounting-linear-logic.md`](cost-accounting-linear-logic.md) §References.

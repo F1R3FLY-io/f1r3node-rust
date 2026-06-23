@@ -1681,7 +1681,7 @@ contract in [`cost-accounting-impl/wd-d2-acceptance-gate.md`](cost-accounting-im
 
 [1] L. G. Meredith and M. Radestock, "A reflective higher-order calculus," *Electronic Notes in Theoretical Computer Science*, vol. 141, no. 5, pp. 49-67, 2005. DOI: [10.1016/j.entcs.2005.05.016](https://doi.org/10.1016/j.entcs.2005.05.016)
 
-[2] R. Milner, *Communicating and Mobile Systems: the pi-Calculus*. Cambridge University Press, 1999. ISBN: 978-0-521-65869-0.
+[2] R. Milner, *Communicating and Mobile Systems: the π-Calculus*. Cambridge University Press, 1999. ISBN: 978-0-521-65869-0.
 
 [3] L. G. Meredith *et al.*, "Rholang Specification," F1R3FLY.io, 2017-2026. The F1R3Node implementation currently lives in this repository (the standalone Rust port that replaces the prior Scala/Rust hybrid): [https://github.com/F1R3FLY-io/f1r3node-rust](https://github.com/F1R3FLY-io/f1r3node-rust). Historical upstream: [https://github.com/F1R3FLY-io/f1r3node](https://github.com/F1R3FLY-io/f1r3node).
 
@@ -1689,7 +1689,7 @@ contract in [`cost-accounting-impl/wd-d2-acceptance-gate.md`](cost-accounting-im
 
 [5] L. Lamport, *Specifying Systems: The TLA+ Language and Tools for Hardware and Software Engineers*. Addison-Wesley, 2002. ISBN: 0-321-14306-X.
 
-[6] D. Sangiorgi and D. Walker, *The pi-Calculus: A Theory of Mobile Processes*. Cambridge University Press, 2001. DOI: [10.1017/9781316134924](https://doi.org/10.1017/9781316134924)
+[6] D. Sangiorgi and D. Walker, *The π-Calculus: A Theory of Mobile Processes*. Cambridge University Press, 2001. DOI: [10.1017/9781316134924](https://doi.org/10.1017/9781316134924)
 
 [7] G. Winskel, *The Formal Semantics of Programming Languages: An Introduction*. MIT Press, 1993. ISBN: 0-262-23169-7.
 
