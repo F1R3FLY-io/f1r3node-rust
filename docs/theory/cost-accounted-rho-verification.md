@@ -393,6 +393,11 @@ The three axioms:
 | `⤳`       | Cost-accounted step      | One fuel-consuming COMM                                 |
 | `⤳*`      | Cost-accounted reachable | Reflexive-transitive closure of `⤳`                     |
 | `‖S‖`     | Token count              | `system_token_count(S)`: total fuel units in system *S* |
+| `Σ⟦s⟧`    | Supply pool              | Content-addressed fuel balance keyed by signature `s` (`from_sig(s)`); a ground signer's genesis-seeded wallet is `Σ⟦Ground(pk)⟧` (seeded from `wallets.txt` / `client_fuel_allocations`) |
+| `Δ`, `Δ_s`| Demand                   | Fuel a deploy (lane `s`) requires to run — the `known_lower_bound` of its source-token count |
+| `Σ ≥ Δ`   | Funding obligation       | The acceptance-gate admission predicate (paper Definition 19): a deploy is admitted iff its supply covers its demand |
+| `funding_sig` | Funding key          | The signer's ground-pubkey signature `Sig::Ground(pk)` (single) / `And`-fold over cosigners (multi); keys the wallet the gate proves `Σ ≥ Δ` against, so `Σ⟦signer⟧ == Σ⟦wallet⟧` (§D2.9). The wire-sig digest `Sig::Quote(…)` is then only the `deploy_id` |
+| phlogiston | The one system token    | The single consumable: *phlogiston / token / REV* all name it (REV is a legacy name, not a separate token); `Pay(τ)` is a *type* on it, not a second token; stake is a locked-token role (DR-27, Greg 2026-06-15) |
 
 ### 2.5 Translation Symbols
 
@@ -874,6 +879,50 @@ Per-rule exact decreases:
 | 3    | 1               |
 | 4    | 1               |
 | 5    | 2               |
+
+### 4.4 Funding, Supply, and the Acceptance Gate
+
+Token conservation (§4.3) governs *reduction*; **admission** governs which deploys a
+validator runs at all. Each signature `s` keys a content-addressed **supply pool**
+`Σ⟦s⟧` — for a ground signer, the genesis-seeded wallet `Σ⟦Ground(pk)⟧`. At block
+assembly the **acceptance gate** (`admit_by_funding`) re-sorts the nondeterministic
+deploy set into canonical order, groups deploys by their funding key, and admits the
+largest canonical-order prefix per group whose cumulative demand `Δ` fits the supply
+— the funding obligation `Σ ≥ Δ` (paper Definition 19; the `min_phlo_price` margin
+rides only the data-dependent `unknown` branch, F-B).
+
+**§D2.9 — the funding key (`Σ⟦signer⟧ == Σ⟦wallet⟧`).** A deploy's cost is debited
+from its *signer's own* wallet: the gate keys funding by `funding_sig = Sig::Ground(pk)`
+(single signer) / the `And`-fold of `Sig::Ground(pkᵢ)` over the non-placeholder
+cosigners (multi-sig), so the pool the gate proves `Σ ≥ Δ` against IS the signer's
+genesis wallet. The per-deploy wire-signature digest (`Sig::Quote(Blake2b256(…))`)
+survives only as the stable `deploy_id`. `WalletNaming.wallet_name_injective` proves
+distinct signers get distinct wallets, and `MintingInjection` proves only the system
+mint ever writes a supply balance (a user step never moves one) — the same pubkey
+keying that §12(iv) extends to user-deploy funding.
+
+**Cross-group cumulative demand (TM-CA-165).** Two distinct cosigner sets sharing a
+component wallet — `{A,s}` and `{B,s}` both drawing `Σ⟦Ground(s)⟧` — are admitted
+against a LIVE cross-group residual ledger drawn down in canonical `SigKey` order, so
+their combined draw on the shared wallet stays `≤ Σ⟦Ground(s)⟧` (linearity: no
+contraction). `LinearLogicResources.cross_group_draw_le_supply` /
+`cross_group_admission_sound` discharge the bound axiom-free; TLA+
+`Inv_CrossGroupAdmissionBounded` and a 12,605-trace Sage sweep corroborate it.
+
+**No-weakening (§D2.9-R2 / TM-CA-166).** A single component may not discharge its
+demand by consuming a compound token `s₁∘s₂` — that would discard the `s₂` authority
+(*weakening*, forbidden by the model and the paper). `CAJoinConservation.join_no_weakening`
+proves `s₁∘s₂` carries strictly more atoms than `s₁`; the gate's effective supply
+credits a single component only with its own pool, never the compound.
+
+Replay re-runs the identical (margin-free) ledger and raises `ReplayAdmissionMismatch`
+on any over-admitted block, and the settlement debit is byte-identical on play and
+replay (reconstructing the verified cosigner set via `Cosigned::to_cosigned()` and
+re-deriving the same `funding_sig`). These funding-side additions are recorded in
+[DR-28](cost-accounting-decision-records.md); their trust-base framing is §12(iv), and
+the implementation contract is
+[`cost-accounting-impl/wd-d2-acceptance-gate.md`](cost-accounting-impl/wd-d2-acceptance-gate.md)
+and [`cost-accounting-impl/d2-9-funding-flow.md`](cost-accounting-impl/d2-9-funding-flow.md).
 
 ---
 

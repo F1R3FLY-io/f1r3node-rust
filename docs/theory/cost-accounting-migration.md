@@ -93,6 +93,7 @@ Terms are defined here in the order they are needed. Every symbol, acronym, and 
 | **`RuntimeBudget`**                  | Current staged runtime-budget implementation in `rholang/src/rust/interpreter/accounting/mod.rs`. It records bounded billable source-token events, maintains consumed/remaining counters, and computes the consensus `total_cost` (clamped) plus a diagnostic cost-trace digest/count (the digest is not a consensus quantity — see §8.1's consensus-surface update and TM-CA-151). |
 | **`MeteredMachine`**                 | Current staged metering adapter in `rholang/src/rust/interpreter/metering.rs`. It routes billable, nonbillable, and system frames into `RuntimeBudget` without reintroducing a broad RSpace charging wrapper. |
 | **`Cost`**                           | A Rust struct with an `i64` value and a `Cow<'static, str>` operation label. Represents a phlogiston amount.                                                                                                    |
+| **phlogiston**                       | The one system token (canonical name). *phlogiston / token / REV* all name the single consumable — REV is a legacy NAME, not a separate token; `Pay(τ)` is a *type* on it, not a second token; stake is a locked-token role. Genesis supply is `wallets.txt` / `client_fuel_allocations` (DR-27, Greg 2026-06-15; see `cost-accounting-decision-records.md`). |
 | **`storage_cost_produce`**           | Function computing phlogiston for a produce: `storage_cost(channel) + storage_cost(data.pars)`.                                                                                                                 |
 | **`storage_cost_consume`**           | Function computing phlogiston for a consume: `storage_cost(channels) + storage_cost(patterns) + storage_cost(body)`.                                                                                            |
 | **`FuturesUnordered`**               | `futures::stream::FuturesUnordered`, a Rust combinator that polls futures in completion order rather than submission order, enabling true concurrent evaluation. The post-migration eval loop is built around `FuturesUnordered`. |
@@ -1643,6 +1644,38 @@ Implementation paths, formal-verification artifacts, and regression tests are co
 | TLA+ MC configs | `formal/tlaplus/cost_accounted_rho/MC*.tla`                           | this repository |
 
 ---
+
+### 8.5 The Acceptance Gate and the §D2.9 Funding Key
+
+Internalized cost accounting adds a consensus **admission** step. At block assembly
+the acceptance gate (`admit_by_funding`) groups the canonical-ordered deploys by their
+**funding key** and admits the largest prefix per group whose cumulative demand `Δ`
+fits the signer's supply `Σ` — the funding obligation `Σ ≥ Δ` (paper Definition 19).
+
+**§D2.9 — fund from the signer's wallet (`Σ⟦signer⟧ == Σ⟦wallet⟧`).** A deploy's cost
+is debited from the pool keyed by `funding_sig = Sig::Ground(pk)` (single signer) / the
+`And`-fold of `Sig::Ground(pkᵢ)` over the non-placeholder cosigners (multi-sig) — the
+signer's genesis-seeded wallet `Σ⟦Ground(pk)⟧`, not the per-deploy wire signature
+(which survives only as the `deploy_id`). `CloseBlockDeploy` settles the admitted
+demand once (`post = pre − ΣΔ`).
+
+**Cross-group bound + no-weakening.** A LIVE cross-group residual ledger bounds the
+combined draw of distinct cosigner sets sharing a component wallet at `≤ Σ⟦Ground(s)⟧`
+(TM-CA-165), and a single component may never discharge its demand from a compound
+token (no-weakening, §D2.9-R2 / TM-CA-166). Replay re-runs the identical margin-free
+ledger and raises `ReplayAdmissionMismatch` on over-admission; the debit map is
+byte-identical play↔replay.
+
+**Migration safety.** On a default (non-strict) shard every pool is genesis-absent, so
+the gate early-admits unenforced and the post-state is byte-identical to the
+pre-cost-accounting node; strict enforcement binds only once a signer's wallet is
+provisioned (`client_fuel_allocations` / `wallets.txt`). Verified full-stack: Rocq
+(`cross_group_draw_le_supply`, `join_no_weakening`, `settlement_conserves`, axiom-free),
+TLA+ (`Inv_CrossGroupAdmissionBounded`, TLC pass), and a 12,605-trace Sage sweep. See
+[DR-28](cost-accounting-decision-records.md), TM-CA-164/165/166 in
+[`cost-accounting-threat-model.md`](cost-accounting-threat-model.md), and the gate
+contract in [`cost-accounting-impl/wd-d2-acceptance-gate.md`](cost-accounting-impl/wd-d2-acceptance-gate.md)
+/ [`cost-accounting-impl/d2-9-funding-flow.md`](cost-accounting-impl/d2-9-funding-flow.md).
 
 ## 9. References
 
