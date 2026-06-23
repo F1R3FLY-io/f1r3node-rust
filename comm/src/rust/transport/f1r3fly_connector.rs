@@ -235,7 +235,7 @@ mod tests {
     fn create_valid_test_connector() -> F1r3flyConnector {
         use crypto::rust::util::certificate_helper::{CertificateHelper, CertificatePrinter};
 
-        let (secret_key, public_key) = CertificateHelper::generate_key_pair(true);
+        let (secret_key, public_key) = CertificateHelper::generate_key_pair();
         let cert_der = CertificateHelper::generate_certificate(&secret_key, &public_key)
             .expect("Failed to generate test certificate");
         let cert_pem = CertificatePrinter::print_certificate(&cert_der);
@@ -338,7 +338,7 @@ mod tests {
     fn test_connector_with_custom_timeout() {
         use crypto::rust::util::certificate_helper::{CertificateHelper, CertificatePrinter};
 
-        let (secret_key, public_key) = CertificateHelper::generate_key_pair(true);
+        let (secret_key, public_key) = CertificateHelper::generate_key_pair();
         let cert_der = CertificateHelper::generate_certificate(&secret_key, &public_key)
             .expect("Failed to generate test certificate");
         let cert_pem = CertificatePrinter::print_certificate(&cert_der);
