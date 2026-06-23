@@ -165,6 +165,10 @@ pub struct MockImpl {
     /// The actual LFS tuple space requester stream
     /// Scala equivalent: val stream: Stream[F, ST[StatePartPath]] = processingStream
     stream: Option<mpsc::UnboundedReceiver<ST<StatePartPath>>>,
+
+    /// Give-up / processing-failure reason surfaced by the stream, read after the
+    /// stream task ends (to assert the give-up bound surfaces a specific error).
+    err_handle: Arc<Mutex<Option<CasperError>>>,
 }
 
 impl MockImpl {
@@ -423,6 +427,7 @@ impl RSpaceImporter for MockRSpaceImporter {
 /// Scala equivalent: def createMock[F[_]: Concurrent: Time: Log](requestTimeout: FiniteDuration)(test: Mock[F] => F[Unit]): F[Unit]
 pub async fn create_mock<F, Fut>(
     request_timeout: std::time::Duration,
+    overall_deadline: std::time::Duration,
     test_fn: F,
 ) -> Result<(), TestError>
 where
@@ -464,12 +469,13 @@ where
         request_timeout,
         mock_ops,
         Arc::new(mock_importer),
+        overall_deadline,
     )
     .await;
 
     // Handle stream creation error
-    let lfs_stream = match stream_result {
-        Ok(stream) => stream,
+    let (lfs_stream, err_handle) = match stream_result {
+        Ok((stream, err_handle)) => (stream, err_handle),
         Err(e) => {
             eprintln!("Failed to create LFS tuple space requester stream: {:?}", e);
             return Err(TestError::ChannelClosed);
@@ -505,6 +511,7 @@ where
         data_receiver: data_rx,
         validation_state,
         stream: Some(stream_rx),
+        err_handle,
     };
 
     // Execute test function
@@ -531,7 +538,9 @@ where
     F: FnOnce(MockImpl) -> Fut,
     Fut: std::future::Future<Output = Result<(), TestError>>,
 {
-    create_mock(request_timeout, |mock| async move {
+    // Generous progress deadline: the bootstrap effect tests exercise the happy
+    // path and backoff, never the give-up bound.
+    create_mock(request_timeout, std::time::Duration::from_secs(60), |mock| async move {
         if !run_processing_stream {
             // Run test function without processing stream
             // Scala equivalent: if (!runProcessingStream) test(mock)
@@ -1179,5 +1188,44 @@ mod tests {
         })
         .await
         .expect("Test should complete successfully");
+    }
+
+    #[tokio::test]
+    async fn tuple_space_gives_up_and_surfaces_error_when_peer_silent() {
+        // A peer that never sends store items makes no progress, so the sync must
+        // give up after the (short) overall_deadline and surface a SPECIFIC error
+        // through the handle — not loop forever or silently complete. Mirrors the
+        // lfs_horizon_requester give-up unit tests for the tuple-space path.
+        let short_request_timeout = std::time::Duration::from_millis(5);
+        let short_deadline = std::time::Duration::from_millis(50);
+        create_mock(short_request_timeout, short_deadline, |mut mock| async move {
+            let mut stream_rx = mock.stream.take().expect("stream receiver present");
+            // Drain state snapshots to completion. The give-up break yields a final
+            // ST and ends the stream; bound with a timeout so a regression to an
+            // infinite loop fails the test instead of hanging.
+            let mut last_state = None;
+            let drained = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                while let Some(st) = stream_rx.recv().await {
+                    last_state = Some(st);
+                }
+            })
+            .await;
+            assert!(
+                drained.is_ok(),
+                "tuple-space sync must terminate via the give-up bound, not loop forever"
+            );
+            let final_state = last_state.expect("stream must yield a final state");
+            assert!(
+                !final_state.is_finished(),
+                "a silent peer must leave the sync unfinished after giving up"
+            );
+            assert!(
+                mock.err_handle.lock().unwrap().is_some(),
+                "give-up must surface a specific error through the returned handle"
+            );
+            Ok(())
+        })
+        .await
+        .expect("Test harness should complete");
     }
 }

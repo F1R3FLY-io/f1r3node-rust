@@ -174,6 +174,12 @@ impl<Key: Hash + Eq + Clone> ST<Key> {
     ///
     /// **Scala equivalent**: `def isFinished: Boolean`
     pub fn is_finished(&self) -> bool { !self.d.values().any(|status| *status != ReqStatus::Done) }
+
+    /// Number of chunk paths that have reached `Done`. Used as the give-up
+    /// deadline's progress signal (advances only on real completion).
+    pub fn done_count(&self) -> usize {
+        self.d.values().filter(|s| **s == ReqStatus::Done).count()
+    }
 }
 
 /// Stream processor for tuple space requester operations
@@ -388,7 +394,11 @@ impl<T: TupleSpaceRequesterOps> TupleSpaceStreamProcessor<T> {
             resend
         );
 
-        // Send all requests in parallel (Scala: broadcastStreams(ids).parJoinUnbounded)
+        // Send all requests in parallel. A per-chunk send failure is TRANSIENT
+        // (the peer is slow/saturated): the path stays Requested, so the
+        // idle-timeout backoff resends it. Use join_all (not try_join_all) so one
+        // slow chunk send cannot abort the whole batch — that fail-fast previously
+        // terminated an otherwise-recoverable sync on a single transport timeout.
         if !is_end {
             let request_futures: Vec<_> = paths
                 .into_iter()
@@ -399,8 +409,16 @@ impl<T: TupleSpaceRequesterOps> TupleSpaceStreamProcessor<T> {
                 })
                 .collect();
 
-            // Execute all requests in parallel, short-circuit on first error
-            futures::future::try_join_all(request_futures).await?;
+            let results = futures::future::join_all(request_futures).await;
+            let failed = results.iter().filter(|r| r.is_err()).count();
+            if failed > 0 {
+                tracing::warn!(
+                    "LFS tuple-space: {}/{} chunk send(s) failed (transient); \
+                     paths remain pending for backoff resend",
+                    failed,
+                    results.len()
+                );
+            }
 
             tracing::debug!("Completed broadcasting state chunk requests");
         }
@@ -525,7 +543,18 @@ pub async fn stream<T: TupleSpaceRequesterOps>(
     request_timeout: Duration,
     request_ops: T,
     state_importer: Arc<dyn RSpaceImporter>,
-) -> Result<impl Stream<Item = ST<StatePartPath>>, CasperError> {
+    // Overall wall-clock budget for making PROGRESS (see lfs_horizon_requester).
+    // Tolerates a slow peer via backoff/resend as long as chunks keep completing;
+    // gives up cleanly if none completes within this window. The returned handle
+    // carries the specific give-up / processing-failure reason for the caller.
+    overall_deadline: Duration,
+) -> Result<
+    (
+        impl Stream<Item = ST<StatePartPath>>,
+        Arc<Mutex<Option<CasperError>>>,
+    ),
+    CasperError,
+> {
     use crate::rust::util::proto_util;
 
     // 1. Extract state hash (Scala: Blake2b256Hash.fromByteString(ProtoUtil.postStateHash(approvedBlock.candidate.block)))
@@ -559,6 +588,12 @@ pub async fn stream<T: TupleSpaceRequesterOps>(
     // Default max timeout is 128 seconds
     let max_request_timeout = Duration::from_secs(128);
 
+    // Specific give-up / processing-failure reason, written by the async block on
+    // a fatal break and read by the caller after draining (the stream yields ST
+    // snapshots only). Same mechanism as `lfs_horizon_requester::stream`.
+    let last_error: Arc<Mutex<Option<CasperError>>> = Arc::new(Mutex::new(None));
+    let last_error_for_stream = last_error.clone();
+
     // 7. Create and return the main stream (Scala: createStream equivalent)
     let stream = async_stream::stream! {
         // Exponential backoff: current timeout starts at request_timeout,
@@ -566,6 +601,13 @@ pub async fn stream<T: TupleSpaceRequesterOps>(
         // resets to request_timeout when a response is received.
         let mut current_timeout = request_timeout;
         let mut idle_timeout = Box::pin(tokio::time::sleep(current_timeout));
+        // Give-up bound: tolerate a slow peer (backoff + resend) for as long as
+        // chunks keep completing, but give up if none completes within
+        // `overall_deadline`. `last_progress` advances only on REAL progress (a
+        // chunk reaching Done), so a stale/duplicate-chunk flood can't keep a
+        // stalled sync alive past the deadline.
+        let mut last_progress = std::time::Instant::now();
+        let mut last_done: usize = 0;
 
         // Main stream processing loop (Scala: requestStream.evalMap(_ => st.get).onIdle(...).terminateAfter(...) concurrently responseStream)
         loop {
@@ -594,6 +636,7 @@ pub async fn stream<T: TupleSpaceRequesterOps>(
                         }
                         Err(e) => {
                             tracing::error!(error = ?e, "store items message processing failed; terminating stream");
+                            *last_error_for_stream.lock().expect("last_error lock") = Some(e);
                             break;
                         }
                     }
@@ -608,6 +651,15 @@ pub async fn stream<T: TupleSpaceRequesterOps>(
                             }
                         }
                     };
+
+                    // Advance the give-up deadline only on REAL progress (a chunk
+                    // completed), not on any message — so a stale/duplicate-chunk
+                    // flood can't keep a stalled sync alive past the deadline.
+                    let done = current_state.done_count();
+                    if done > last_done {
+                        last_done = done;
+                        last_progress = std::time::Instant::now();
+                    }
 
                     // Check termination condition
                     let is_finished = current_state.is_finished();
@@ -667,10 +719,26 @@ pub async fn stream<T: TupleSpaceRequesterOps>(
 
                 // Timeout handling with exponential backoff (Scala: .onIdleWithBackoff)
                 _ = &mut idle_timeout => {
+                    let stalled_for = last_progress.elapsed();
+                    if stalled_for >= overall_deadline {
+                        tracing::error!(
+                            "LFS tuple-space: no progress for {:?} (deadline {:?}); \
+                             giving up (peer unresponsive or stalled)",
+                            stalled_for, overall_deadline
+                        );
+                        *last_error_for_stream.lock().expect("last_error lock") =
+                            Some(CasperError::RuntimeError(format!(
+                                "LFS tuple-space: peer made no progress within {:?}",
+                                overall_deadline
+                            )));
+                        break;
+                    }
                     let next_timeout = current_timeout.saturating_mul(2).min(max_request_timeout);
                     tracing::warn!(
-                        "No tuple space state responses for {:?}. Resending requests. (backoff: {:?} -> {:?})",
+                        "No tuple space state responses for {:?} (stalled {:?} of {:?}). Resending requests. (backoff: {:?} -> {:?})",
                         current_timeout,
+                        stalled_for,
+                        overall_deadline,
                         current_timeout,
                         next_timeout
                     );
@@ -745,5 +813,5 @@ pub async fn stream<T: TupleSpaceRequesterOps>(
         tracing::info!("LFS Tuple Space Requester stream processing completed");
     };
 
-    Ok(stream)
+    Ok((stream, last_error))
 }

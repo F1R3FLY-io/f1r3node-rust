@@ -381,9 +381,11 @@ impl<T: HorizonRequesterOps> HorizonStreamProcessor<T> {
             );
         }
 
-        // Parallel fan-out. Same shape as
-        // `lfs_tuple_space_requester::request_next` (Scala:
-        // `broadcastStreams(ids).parJoinUnbounded`).
+        // Parallel fan-out. A per-chunk send failure is TRANSIENT (the peer is
+        // slow/saturated): the path stays `Requested`, so the idle-timeout
+        // backoff resends it. Use `join_all` (not `try_join_all`) so one slow
+        // chunk send cannot abort the whole batch — that fail-fast previously
+        // terminated an otherwise-recoverable sync on a single transport timeout.
         let request_futures: Vec<_> = paths
             .iter()
             .map(|path| async move {
@@ -392,7 +394,16 @@ impl<T: HorizonRequesterOps> HorizonStreamProcessor<T> {
                     .await
             })
             .collect();
-        futures::future::try_join_all(request_futures).await?;
+        let results = futures::future::join_all(request_futures).await;
+        let failed = results.iter().filter(|r| r.is_err()).count();
+        if failed > 0 {
+            tracing::warn!(
+                "LFS forward-horizon: {}/{} chunk send(s) failed (transient); \
+                 paths remain pending for backoff resend",
+                failed,
+                results.len()
+            );
+        }
 
         Ok(())
     }
@@ -415,7 +426,19 @@ pub async fn stream<T: HorizonRequesterOps>(
     request_ops: T,
     mut store_items_message_receiver: mpsc::Receiver<StoreItemsMessage>,
     request_timeout: Duration,
-) -> Result<impl Stream<Item = ST<StatePartPath>>, CasperError> {
+    // Overall wall-clock budget for making PROGRESS. The sync tolerates a slow
+    // peer (backoff + resend) for as long as chunks keep completing; if no chunk
+    // completes within this window it gives up cleanly, so a silent or stalled
+    // peer can't make the joiner loop forever. The returned handle carries the
+    // specific give-up reason for the caller to surface.
+    overall_deadline: Duration,
+) -> Result<
+    (
+        impl Stream<Item = ST<StatePartPath>>,
+        Arc<Mutex<Option<CasperError>>>,
+    ),
+    CasperError,
+> {
     let total_input = horizon_roots.len();
 
     // Pre-filter roots already present (LFB root is the typical hit, since
@@ -499,6 +522,14 @@ pub async fn stream<T: HorizonRequesterOps>(
 
         let mut current_timeout = request_timeout;
         let mut idle_timeout = Box::pin(tokio::time::sleep(current_timeout));
+        // Give-up bound: tolerate a slow peer (backoff + resend) for as long as
+        // chunks keep completing, but give up if no chunk completes within
+        // `overall_deadline`. `last_progress` advances only on REAL progress (a
+        // chunk reaching Done — `done_count` increases), so a peer flooding
+        // stale/duplicate chunks cannot keep a stalled sync alive past the
+        // deadline.
+        let mut last_progress = std::time::Instant::now();
+        let mut last_done: usize = 0;
 
         loop {
             tokio::select! {
@@ -512,11 +543,18 @@ pub async fn stream<T: HorizonRequesterOps>(
                         *last_error_for_stream.lock().expect("last_error lock") = Some(e);
                         break;
                     }
-
                     let current_state = st_for_stream
                         .lock()
                         .expect("ST lock")
                         .clone();
+                    // Advance the give-up deadline only on REAL progress (a chunk
+                    // completed), not on any message — so a stale/duplicate-chunk
+                    // flood can't keep a stalled sync alive past the deadline.
+                    let done = current_state.done_count();
+                    if done > last_done {
+                        last_done = done;
+                        last_progress = std::time::Instant::now();
+                    }
                     let is_finished = current_state.is_finished();
 
                     if is_finished {
@@ -535,31 +573,52 @@ pub async fn stream<T: HorizonRequesterOps>(
                 }
 
                 Some(resend_flag) = request_rx.recv() => {
-                    if let Err(e) = processor.request_next(resend_flag).await {
-                        tracing::error!(error = ?e, "LFS forward-horizon request processing failed; terminating stream");
-                        *last_error_for_stream.lock().expect("last_error lock") = Some(e);
-                        break;
+                    // A dispatch error is TRANSIENT (the send failed; the path stays
+                    // Requested). Log and let the idle-timeout backoff resend it —
+                    // do NOT terminate the stream (that fail-fast was the fragility).
+                    match processor.request_next(resend_flag).await {
+                        Ok(()) => {
+                            let current_state = st_for_stream
+                                .lock()
+                                .expect("ST lock")
+                                .clone();
+                            if current_state.is_finished() {
+                                yield current_state;
+                                break;
+                            }
+                            current_timeout = request_timeout;
+                            idle_timeout = Box::pin(tokio::time::sleep(current_timeout));
+                            yield current_state;
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                error = ?e,
+                                "LFS forward-horizon request dispatch error (transient); \
+                                 backoff resend will retry"
+                            );
+                        }
                     }
-
-                    let current_state = st_for_stream
-                        .lock()
-                        .expect("ST lock")
-                        .clone();
-                    if current_state.is_finished() {
-                        yield current_state;
-                        break;
-                    }
-
-                    current_timeout = request_timeout;
-                    idle_timeout = Box::pin(tokio::time::sleep(current_timeout));
-                    yield current_state;
                 }
 
                 _ = &mut idle_timeout => {
+                    let stalled_for = last_progress.elapsed();
+                    if stalled_for >= overall_deadline {
+                        tracing::error!(
+                            "LFS forward-horizon: no progress for {:?} (deadline {:?}); \
+                             giving up (peer unresponsive or stalled)",
+                            stalled_for, overall_deadline
+                        );
+                        *last_error_for_stream.lock().expect("last_error lock") =
+                            Some(CasperError::RuntimeError(format!(
+                                "LFS forward-horizon: peer made no progress within {:?}",
+                                overall_deadline
+                            )));
+                        break;
+                    }
                     let next_timeout = current_timeout.saturating_mul(2).min(max_request_timeout);
                     tracing::warn!(
-                        "LFS forward-horizon: no responses for {:?}; resending. backoff -> {:?}",
-                        current_timeout, next_timeout
+                        "LFS forward-horizon: no responses for {:?}; resending (stalled {:?} of {:?}). backoff -> {:?}",
+                        current_timeout, stalled_for, overall_deadline, next_timeout
                     );
                     if request_tx.try_send(true).is_err() {
                         tracing::warn!(
@@ -581,20 +640,12 @@ pub async fn stream<T: HorizonRequesterOps>(
         yield final_state;
     };
 
-    // Keep last_error alive in the same scope as the stream by wrapping it
-    // in a struct... actually, the stream already captures last_error_for_stream
-    // by move and writes to it. The wrapper below reads it. We stash an Arc
-    // clone in the stream's parent scope (here) — but stream() returns the
-    // stream and drops the local Arc. That's fine: last_error_for_stream
-    // (moved into the async block) shares the Arc with the wrapper's clone.
-
-    // last_error is captured by the async block via last_error_for_stream;
-    // however, we don't expose it through this stream's public surface.
-    // Callers detect failure via `final ST.is_finished() == false`.
-    // Specific error context is logged via `tracing::error!` in the loop.
-    let _ = last_error;
-
-    Ok(stream)
+    // Return the error handle alongside the stream. The async block writes the
+    // specific give-up / byzantine reason through the shared Arc
+    // (`last_error_for_stream` is a clone of `last_error`); after draining the
+    // stream the caller reads this handle to distinguish an unresponsive or
+    // byzantine peer from a merely incomplete sync.
+    Ok((stream, last_error))
 }
 
 #[cfg(test)]
@@ -856,13 +907,14 @@ mod tests {
         let (sends, _) = ops.handles();
         let (_tx, rx) = test_mpsc::channel::<StoreItemsMessage>(2);
 
-        let stream = stream(
+        let (stream, _err_handle) = stream(
             vec![r1, r2],
             has_root,
             importer,
             ops,
             rx,
             Duration::from_secs(5),
+            Duration::from_secs(60),
         )
         .await
         .unwrap();
@@ -913,13 +965,14 @@ mod tests {
         // doesn't terminate via is_finished.
         drop(tx);
 
-        let stream = stream(
+        let (stream, _err_handle) = stream(
             vec![root],
             post_import_has_root,
             importer,
             ops,
             rx,
             Duration::from_secs(5),
+            Duration::from_secs(60),
         )
         .await
         .unwrap();
@@ -948,13 +1001,14 @@ mod tests {
             .unwrap();
         drop(tx);
 
-        let stream = stream(
+        let (stream, _err_handle) = stream(
             vec![root],
             has_root,
             importer,
             ops,
             rx,
             Duration::from_secs(5),
+            Duration::from_secs(60),
         )
         .await
         .unwrap();
@@ -1028,13 +1082,14 @@ mod tests {
             drop(tx);
         });
 
-        let stream = stream(
+        let (stream, _err_handle) = stream(
             vec![root],
             post_import_has_root,
             importer,
             ops,
             rx,
             Duration::from_secs(5),
+            Duration::from_secs(60),
         )
         .await
         .unwrap();
@@ -1066,13 +1121,14 @@ mod tests {
         let (_tx, rx) = test_mpsc::channel::<StoreItemsMessage>(8);
 
         // Launch the stream and let it pump the initial request cycle.
-        let stream = stream(
+        let (stream, _err_handle) = stream(
             roots.clone(),
             has_root,
             importer,
             ops,
             rx,
             Duration::from_secs(1),
+            Duration::from_secs(60),
         )
         .await
         .unwrap();
@@ -1165,13 +1221,14 @@ mod tests {
             drop(tx);
         });
 
-        let stream = stream(
+        let (stream, _err_handle) = stream(
             vec![r1.clone(), r2.clone()],
             has_root,
             importer,
             ops,
             rx,
             Duration::from_secs(5),
+            Duration::from_secs(60),
         )
         .await
         .unwrap();
@@ -1200,6 +1257,119 @@ mod tests {
             2,
             "exactly 2 roots should have been recorded; recorded = {:?}",
             recorded
+        );
+    }
+
+    // ── robustness: transient send failures + give-up bound ──────────────
+    // (the joiner-attach LFS forward-horizon resilience fix)
+
+    /// Send ops that record every attempt and ALWAYS fail — simulates a
+    /// saturated/unreachable serving peer at the send layer.
+    struct FailingSendOps {
+        sends: Arc<Mutex<Vec<StatePartPath>>>,
+    }
+
+    impl FailingSendOps {
+        fn new() -> Self {
+            Self { sends: Arc::new(Mutex::new(Vec::new())) }
+        }
+        fn sends(&self) -> Arc<Mutex<Vec<StatePartPath>>> {
+            self.sends.clone()
+        }
+    }
+
+    #[async_trait]
+    impl HorizonRequesterOps for FailingSendOps {
+        async fn request_for_horizon_chunk(
+            &self,
+            path: &StatePartPath,
+            _page_size: i32,
+        ) -> Result<(), CasperError> {
+            self.sends.lock().unwrap().push(path.clone());
+            Err(CasperError::RuntimeError(
+                "simulated transient send failure".to_string(),
+            ))
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn stream_does_not_abort_on_send_failure() {
+        // Every send fails and no response ever arrives. The orchestrator must
+        // NOT terminate on the first send error (the old try_join_all fail-fast);
+        // it keeps resending across backoff cycles (Parts 1+2) until the give-up
+        // bound (Part 3). Proven by more than one recorded send attempt.
+        let root = hash_for(40);
+        let has_root: HasRootFn = Arc::new(|_| Ok(false));
+        let importer: Arc<dyn RSpaceImporter> = Arc::new(NoopImporter);
+        let ops = FailingSendOps::new();
+        let sends = ops.sends();
+        let (_tx, rx) = test_mpsc::channel::<StoreItemsMessage>(2); // never fed
+
+        let (stream, _err_handle) = stream(
+            vec![root],
+            has_root,
+            importer,
+            ops,
+            rx,
+            Duration::from_millis(5),
+            Duration::from_millis(50), // tiny progress deadline so give-up fires fast
+        )
+        .await
+        .unwrap();
+        // Must TERMINATE via the give-up bound, not hang; the timeout catches a
+        // regression to infinite-loop behavior.
+        let final_st = tokio::time::timeout(Duration::from_secs(10), drain(stream))
+            .await
+            .expect("stream must terminate via the give-up bound, not loop forever")
+            .expect("stream yields a final state");
+        assert!(
+            !final_st.is_finished(),
+            "send failures leave the sync unfinished"
+        );
+        let attempts = sends.lock().unwrap().len();
+        assert!(
+            attempts > 1,
+            "a send failure must be retried across backoff cycles (got {} attempt(s); \
+             the old fail-fast would stop at 1)",
+            attempts
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn stream_gives_up_when_peer_never_responds() {
+        // Sends succeed but NO response ever arrives (silent peer). The stream
+        // must give up after MAX_CONSECUTIVE_IDLE_RESENDS backoff cycles (Part 3)
+        // rather than loop forever.
+        let root = hash_for(41);
+        let has_root: HasRootFn = Arc::new(|_| Ok(false));
+        let importer: Arc<dyn RSpaceImporter> = Arc::new(NoopImporter);
+        let ops = MockOps::new();
+        let (_tx, rx) = test_mpsc::channel::<StoreItemsMessage>(2); // never fed
+
+        let (stream, _err_handle) = stream(
+            vec![root],
+            has_root,
+            importer,
+            ops,
+            rx,
+            Duration::from_millis(5),
+            Duration::from_millis(50),
+        )
+        .await
+        .unwrap();
+        let final_st = tokio::time::timeout(Duration::from_secs(10), drain(stream))
+            .await
+            .expect("stream must terminate (give-up bound), not loop forever")
+            .expect("stream yields a final state");
+        assert!(
+            !final_st.is_finished(),
+            "a never-responding peer must leave the sync unfinished after giving up"
+        );
+        // The give-up reason must be surfaced to the caller via the handle (not
+        // swallowed behind a generic "incomplete sync").
+        assert!(
+            _err_handle.lock().unwrap().is_some(),
+            "give-up must surface a specific error through the returned handle"
         );
     }
 }
