@@ -22,12 +22,9 @@ The design is therefore: **(COST) `CostObj`/`CostCI` is the decoration → (OSLF
 
 P4's sentence maps onto three existing arrows:
 
-```
-        COST  (the cost endofunctor)            OSLF  (apply OSLF to the graded LTS)
-GSLT  ───────────────────────────────▶  Cost(GSLT)  ───────────────────────────────▶  cost-AWARE
-(naked)        Rocq: CostCI                 (cost-decorated)    Rocq: graded_step +        spatial+modal+linear
- CICat       CACostFunctorCI.v               CostObj Rho_ciGSLT   GForm/gsat (skeleton)      type system
-```
+![The P4 pipeline as a two-arrow categorical chain. A naked GSLT object is decorated by the COST endofunctor (blue; Rocq CostObj in CACostFunctorCI.v) into a cost-decorated Cost(GSLT); OSLF is then applied over the graded LTS (blue; Rocq graded_step + GForm/gsat) to yield the cost-AWARE spatial+modal+linear type system.](../diagrams/gslt-cost-pipeline.svg)
+
+(*Source: [`diagrams/gslt-cost-pipeline.tex`](../diagrams/gslt-cost-pipeline.tex) — render with `lualatex --output-format=dvi docs/theory/diagrams/gslt-cost-pipeline.tex && dvisvgm --font-format=woff --exact docs/theory/diagrams/gslt-cost-pipeline.dvi -o docs/theory/diagrams/gslt-cost-pipeline.svg` (or `./render.sh gslt-cost-pipeline.tex`).*)
 
 ### 1.1 Arrow 1 — COST: what "cost decorates the context" means precisely
 
@@ -105,11 +102,9 @@ mint-authority(τ, C)  :=  ⟨C⟩ ⊸ Mint(τ)            ( an ll_formula: LLLo
 
 read "consuming a witness that the constructor satisfies behavioral contract `C` yields the authority to mint one `τ`-token." The mint judgment is then a derived rule over `Γ ; Δ ⊢ P : φ`:
 
-```
-            Γ ⊢ cap : ⟨C⟩ ⊸ Mint(τ)        Γ ; Δ ⊢ K : ⟨C⟩
-   (T-Mint) ───────────────────────────────────────────────────────
-            Γ ; Δ  ⊢  mint_K(τ)  :  Mint(τ)
-```
+![The (T-Mint) typing rule. From the premises Γ ⊢ cap : ⟨C⟩ ⊸ Mint(τ) (the reusable mint authority in the unrestricted zone Γ, blue) and Γ ; Δ ⊢ K : ⟨C⟩ (the constructor K satisfies behavioral contract C), conclude Γ ; Δ ⊢ mint_K(τ) : Mint(τ) (green). A token with no mint capability in scope is provably unmintable — there is no axiom introducing Mint(τ).](../diagrams/t-mint-rule.svg)
+
+(*Source: [`diagrams/t-mint-rule.tex`](../diagrams/t-mint-rule.tex) — render with `lualatex --output-format=dvi docs/theory/diagrams/t-mint-rule.tex && dvisvgm --font-format=woff --exact docs/theory/diagrams/t-mint-rule.dvi -o docs/theory/diagrams/t-mint-rule.svg` (or `./render.sh t-mint-rule.tex`).*)
 
 - The mint capability `⟨C⟩ ⊸ Mint(τ)` lives in `Γ` (unrestricted: an authority may be reused), discharged by `dill_lolly_elim` (`LinearLogicResources.v:162-165`) — the existing resource-consuming `⊸`-elimination.
 - The premise `Γ ; Δ ⊢ K : ⟨C⟩` requires the **constructor `K` to satisfy the behavioral contract `C`** as an OSLF spatial+modal formula `φ_C` (the §1.3 formers). A constructor that does not exhibit the `C`-shape is not derivable, so `mint_K(τ)` is **not typeable** — the token cannot be minted.
