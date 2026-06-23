@@ -25,7 +25,7 @@
 '   reconcile() function : teal         (#B2DFDB)
 '   Consensus reader     : blue         (#BBDEFB)
 '   phase notes          : amber/blue/green (#FFF8E1 / #E3F2FD / #E8F5E9)
-'   alt fragment (control/decision): amber (#FFECB3)
+'   alt fragment (control/decision): body amber (#FFECB3) · label box darker amber (#FFE082)
 '   Lock-free CAS attempt: red  (#C62828) · Canonical sort + walk: green (#2E7D32)
 '
 ' (Styling uses the `skinparam sequence {…}` block — the ParticipantPadding /
@@ -46,6 +46,7 @@ skinparam sequence {
   NoteBorderColor         #666666
   NoteBackgroundColor     #FFF8E1
   DividerBackgroundColor  #ECEFF1
+  GroupBackgroundColor    #FFE082
 }
 skinparam defaultFontName "sans-serif"
 skinparam defaultFontSize 12
