@@ -56,6 +56,18 @@
 //  used inside a `for( ... & ... )` join: each leg is metered on its OWN lane --
 //  fuel is NEVER folded into the data join (that would be combinatorial in arity).
 //
+//  THE DELEGATION MECHANIC  (-o lollipop -- separate WHO AUTHORIZES from WHO EXECUTES).
+//  `s1 -o s2` is linear-logic implication. On a signed `for`:
+//      {% for(y<-x){ P } %}[ s1 -o s2 ]   ⟿   {% for(y<-x){ {% P %}[ s2 ] } %}[ s1 ]
+//  the LEFT s1 funds the RENDEZVOUS (opening the interaction), the RIGHT s2 funds the
+//  CONTINUATION P (the work) -- two distinct fuels; the body MUST be a `for`. It
+//  composes with `(*)` by precedence (`(*)` binds TIGHTER than `-o`; signatures take
+//  NO parens):
+//      alice (*) bob -o paymaster      parses as  (alice (*) bob) -o paymaster
+//      treasurer -o clerkA (*) clerkB  parses as  treasurer -o (clerkA (*) clerkB)
+//  Chaining is NESTED `for`s (one lollipop per hop); a single-`for` `a -o b -o c` is
+//  NOT well-formed (its inner non-`for` body has no comm to transfer through).
+//
 //  THE STORY.  The Acme Collective is a worker co-op whose shared TREASURY is
 //  governed by three trustees -- ALICE, BOB, and CAROL. No trustee can move funds
 //  alone; every disbursement is authorized by a JOINT SIGNATURE -- the cost-
@@ -68,7 +80,7 @@
 //
 //  THREE NON-CROSSING MONEY POOLS (the pools never exchange, so the sum is constant):
 //    * TREASURY pool  -- Treasury(500) funds the vendor / grant / delegated /
-//                        endorsement / governance disbursements (worst-case draw 190).
+//                        endorsement / governance disbursements (worst-case draw 234).
 //    * QUORUM pool    -- Quorum_grant(40) is released once to Grace by any 2-of-3 pair.
 //    * RESERVE pool   -- Reserve(100) is ring-fenced; a thief's drain (if it runs
 //                        natively) only redistributes WITHIN this pool.
@@ -82,7 +94,9 @@
 //    4  2-of-3 QUORUM via racing pairs ....... ANY two trustees release a one-shot community grant;
 //                                              `(*)` is AND -- the 2-of-3 is the ENUMERATED pairs +
 //                                              the one-shot cell, NOT a threshold operator
-//    5  -o  LOLLIPOP delegation .............. Alice (travelling) delegates a payment to her agent
+//    5  -o  LOLLIPOP delegation (4 forms) .... (a) plain p -o a; (b) co-authorized (alice (*) bob) -o
+//                                              paymaster; (c) delegate-to-a-pair p -o (clerkA (*) clerkB);
+//                                              (d) multi-hop pipeline via NESTED lollipops
 //    6  new-bound sig (RING-FENCING) ......... the emergency Reserve key; a free-name thief is shut out
 //    7  {% y<-x %}[s] per-clause signed JOIN .. receive-side multi-sig: a payment settles only once
 //                                              BOTH trustees' endorsements are collected (each metered)
@@ -101,7 +115,8 @@ new stdout(`rho:io:stdout`) in {
   // ---- TREASURY pool (cash cells); funds disbursements 1,2,3,5,7,8 -----------
   @"Treasury"!(500)
   | @"Dave_cash"!(0) | @"Doug_cash"!(0) | @"Frank_cash"!(0) | @"Erin_cash"!(0)
-  | @"Heidi_cash"!(0) | @"Ivan_cash"!(0) | @"Judy_cash"!(0)
+  | @"Heidi_cash"!(0) | @"Niaj_cash"!(0) | @"Olivia_cash"!(0) | @"Peggy_cash"!(0)
+  | @"Ivan_cash"!(0) | @"Judy_cash"!(0)
 
   // ---- QUORUM pool : a one-shot community grant ------------------------------
   | @"Quorum_grant"!(40) | @"Grace_cash"!(0)
@@ -200,15 +215,51 @@ new stdout(`rho:io:stdout`) in {
   | bob :: () | carol :: ()
 
   // ===========================================================================
-  //  5.  -o  LOLLIPOP DELEGATION.  Alice is travelling, so she delegates a routine
-  //  supplier payment to her agent. `[ alicePrincipal -o aliceAgent ]` funds the
-  //  OUTER order rendezvous with `alicePrincipal` and re-signs the settlement so it
-  //  needs a SEPARATE `aliceAgent` token -- two distinct fuels. (The lollipop body
-  //  MUST contain a receive: the principal funds the rendezvous, the agent the work.)
+  //  5.  DELEGATION -- the  -o  LOLLIPOP  (separate WHO AUTHORIZES from WHO EXECUTES).
+  //  `[ s1 -o s2 ]` on a signed `for`: s1 funds the order RENDEZVOUS, s2 funds the
+  //  SETTLEMENT (the pay) -- two distinct fuels. Four useful delegation shapes follow.
   // ===========================================================================
-  | new r in { {% for (@q <- @"aliceOrder") { @"pay"!("Treasury", "Heidi_cash", q, *r) } %}[ alicePrincipal -o aliceAgent ] | for (@ok <- r) { @"audit"!(("Heidi supplier-paid (delegated by Alice to her agent)", ok)) } }
+
+  //  (a) PLAIN delegation -- Alice is travelling, so she delegates a supplier payment
+  //      to her agent. Alice (principal) funds the order intake; her agent funds the
+  //      pay. The body is a `for` -- the comm the authority transfers through.
+  | new r in { {% for (@q <- @"aliceOrder") { @"pay"!("Treasury", "Heidi_cash", q, *r) } %}[ alicePrincipal -o aliceAgent ] | for (@ok <- r) { @"audit"!(("Heidi supplier-paid 20 (Alice -o her agent)", ok)) } }
   | alicePrincipal :: () | aliceAgent :: ()
   | @"aliceOrder"!(20)
+
+  //  (b) CO-AUTHORIZED delegation (compound on the LEFT) -- the board (Alice AND Bob)
+  //      jointly authorizes the standing PAYMASTER to execute a vendor payment.
+  //      `alice (*) bob -o paymaster` parses as `(alice (*) bob) -o paymaster` (`(*)`
+  //      binds tighter): the JOINT board authority (2-of-2) funds the order intake,
+  //      the paymaster funds execution. Governance authorizes; operations execute.
+  | new r in { {% for (@amt <- @"boardPayOrder") { @"pay"!("Treasury", "Niaj_cash", amt, *r) } %}[ alice (*) bob -o paymaster ] | for (@ok <- r) { @"audit"!(("Niaj vendor-paid 18 (board [Alice (*) Bob] -o paymaster)", ok)) } }
+  | alice :: () | bob :: () | paymaster :: ()
+  | @"boardPayOrder"!(18)
+
+  //  (c) DELEGATE-TO-A-PAIR / dual control (compound on the RIGHT) -- the treasurer
+  //      delegates a disbursement to a TWO-PERSON team that must BOTH act.
+  //      `treasurer -o clerkA (*) clerkB` parses as `treasurer -o (clerkA (*) clerkB)`:
+  //      the treasurer funds the order intake, the JOINT clerk pair funds the
+  //      settlement (four-eyes execution).
+  | new r in { {% for (@amt <- @"clerkOrder") { @"pay"!("Treasury", "Olivia_cash", amt, *r) } %}[ treasurer -o clerkA (*) clerkB ] | for (@ok <- r) { @"audit"!(("Olivia contractor-paid 12 (treasurer -o dual-control clerks)", ok)) } }
+  | treasurer :: () | clerkA :: () | clerkB :: ()
+  | @"clerkOrder"!(12)
+
+  //  (d) MULTI-HOP PIPELINE (NESTED lollipops) -- a field-office expense threads
+  //      through a TWO-HOP authorization chain. Chaining MUST be nested `for`s (a
+  //      single-`for` `a -o b -o c` is not well-formed): the OUTER [ regionalDir -o
+  //      deptHead ] funds the regional intake and hands authority to the dept head;
+  //      the INNER [ deptHead -o disburser ] funds the department intake and hands
+  //      the settlement to the disburser. Each hop receives its own instruction --
+  //      genuine causal delegation, the one nested scene in an otherwise flat file.
+  | new r in {
+      {% for (@req <- @"fieldRequest") {
+           {% for (@amt <- @"deptApproval") { @"pay"!("Treasury", "Peggy_cash", amt, *r) } %}[ deptHead -o disburser ]
+         } %}[ regionalDir -o deptHead ]
+    | for (@ok <- r) { @"audit"!(("Peggy field-office-paid 14 (2-hop pipeline regionalDir -o deptHead -o disburser)", ok)) }
+    }
+  | regionalDir :: () | deptHead :: () | disburser :: ()
+  | @"fieldRequest"!("expense claim #42") | @"deptApproval"!(14)
 
   // ===========================================================================
   //  6.  RING-FENCING via a `new`-bound signature -- the emergency RESERVE key.

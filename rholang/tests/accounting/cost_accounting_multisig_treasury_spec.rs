@@ -95,7 +95,7 @@ async fn treasury_runs_and_conserves_money() {
         &[
             // Treasury pool
             "Treasury", "Dave_cash", "Doug_cash", "Frank_cash", "Erin_cash", "Heidi_cash",
-            "Ivan_cash", "Judy_cash",
+            "Niaj_cash", "Olivia_cash", "Peggy_cash", "Ivan_cash", "Judy_cash",
             // Quorum pool
             "Quorum_grant", "Grace_cash",
             // Reserve pool
