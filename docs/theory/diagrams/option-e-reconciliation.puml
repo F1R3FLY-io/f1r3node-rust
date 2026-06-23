@@ -25,6 +25,7 @@
 '   reconcile() function : teal         (#B2DFDB)
 '   Consensus reader     : blue         (#BBDEFB)
 '   phase notes          : amber/blue/green (#FFF8E1 / #E3F2FD / #E8F5E9)
+'   alt fragment (control/decision): amber (#FFECB3)
 '   Lock-free CAS attempt: red  (#C62828) · Canonical sort + walk: green (#2E7D32)
 '
 ' (Styling uses the `skinparam sequence {…}` block — the ParticipantPadding /
@@ -86,7 +87,7 @@ note over Caller, Reconcile #E3F2FD: ── Phase 2: Canonical reconciliation (s
 
 Caller -> Reconcile: cost_trace_digest()\nor total_cost()\nor last_oop_event()
 Reconcile -> Cache: lock, check cache
-alt Cache miss
+alt #FFECB3 Cache miss
     Reconcile -> Log: snapshot-clone all attempts
     Log -[#2E7D32]-> Reconcile: Vec<AttemptRecord>
     Reconcile -> Reconcile: sort by canonical rank\n(deploy_id, source_path,\nredex_id, local_index, kind, weight)
