@@ -1,0 +1,55 @@
+' CoFixpoint bisim flow — the proof structure of post_gate_bisim_strong, the
+' guarded coinductive construction behind the translation bisimulation. From the
+' bisim_intro constructor the proof forks into a Forward arm (a W-step is matched
+' by a P-step) and a Backward arm (a P-step is matched by a W-step); each arm's
+' recursive call sits immediately under the bisim constructor, satisfying Rocq's
+' guardedness condition.
+'
+' (Converted from the former Mermaid source to PlantUML; PlantUML is preferred
+'  over Mermaid wherever their capabilities overlap.)
+'
+' Source of truth for Figure 8.1 in cost-accounted-rho-verification.md §8.1.
+' Palette:  entry/hypothesis blue #BBDEFB · lemma step teal #B2DFDB ·
+'           guarded RECURSE green-fill #C8E6C9 · note green #E8F5E9
+' Render:  plantuml -tsvg docs/theory/diagrams/cofixpoint-bisim-flow.puml
+'          (or: ./render.sh cofixpoint-bisim-flow.puml)
+
+@startuml cofixpoint-bisim-flow
+!theme plain
+skinparam defaultFontName "sans-serif"
+skinparam shadowing false
+skinparam ActivityBorderColor #333333
+skinparam ActivityDiamondBorderColor #444444
+skinparam NoteBackgroundColor #E8F5E9
+skinparam NoteBorderColor #666666
+title Figure 8.1 — post_gate_bisim_strong as a guarded CoFixpoint
+
+#BBDEFB:bisim_intro — coinductive constructor\nInputs: P, W, H : W ≡ P ∣ *(@0);
+note right
+  W is the post-gate state: the
+  original P in parallel with the
+  stuck residue *(@0).
+end note
+
+fork
+  -[#2E7D32]->
+  :**Forward arm** — a W-step matched by a P-step;
+  :W ⇝ W'   (given);
+  #B2DFDB:backward_sim_par_stuck;
+  :P ⇝ P'   and   W' ≡ P' ∣ *(@0);
+  #C8E6C9:RECURSE  post_gate_bisim_strong P' W' H_eq'\n(guarded — under the bisim constructor);
+  :P' ~~ W';
+fork again
+  -[#2E7D32]->
+  :**Backward arm** — a P-step matched by a W-step;
+  :P ⇝ P'   (given);
+  #B2DFDB:rs_par_l + rs_struct;
+  :W ⇝ W'   where   W' := P' ∣ *(@0);
+  #C8E6C9:RECURSE  post_gate_bisim_strong P' W' refl\n(guarded — under the bisim constructor);
+  :P' ~~ W';
+end fork
+
+#E8F5E9:both arms re-enter `bisim` under its constructor\n⇒ Rocq guardedness met ⇒ productive CoFixpoint;
+stop
+
+@enduml

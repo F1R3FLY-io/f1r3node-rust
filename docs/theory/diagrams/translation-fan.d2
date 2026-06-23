@@ -1,0 +1,39 @@
+# Compositional translation fan — the four mutually-recursive functions
+# N⟦·⟧ / T⟦·⟧ / S⟦·⟧ (and P⟦·⟧) map the cost-accounted calculus (signatures,
+# tokens, systems) back into pure rho (proc, name only). The blue dashed arrows
+# are the "translates-into" (model→code) instantiations.
+#
+# Source of truth for Figure 5.0 in cost-accounted-rho-verification.md §5.
+# Render:  d2 --layout elk translation-fan.d2 translation-fan.svg
+#          (or: ./render.sh translation-fan.d2)
+...@palette
+direction: down
+
+ca: "Cost-Accounted Calculus  (signatures · tokens · systems)" { class: surface }
+
+sorts: "" {
+  grid-columns: 3
+  style.stroke-width: 0
+  sig: "Signatures   s ↦ name" { class: capability }
+  tok: "Tokens   T ↦ proc" { class: pool }
+  sys: "Systems   S ↦ proc" { class: process }
+}
+
+tr: "compositional translation" {
+  grid-columns: 3
+  Ntr: "N⟦·⟧" { class: gate }
+  Ttr: "T⟦·⟧  (paper K⟦·⟧)" { class: gate }
+  Str: "S⟦·⟧  (via P⟦·⟧)" { class: gate }
+}
+
+rho: "Pure Rho Calculus  (proc · name only)" { class: supply }
+
+ca -> sorts.sig
+ca -> sorts.tok
+ca -> sorts.sys
+sorts.sig -> tr.Ntr: translates { class: instantiate }
+sorts.tok -> tr.Ttr: translates { class: instantiate }
+sorts.sys -> tr.Str: translates { class: instantiate }
+tr.Ntr -> rho
+tr.Ttr -> rho
+tr.Str -> rho

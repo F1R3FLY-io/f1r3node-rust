@@ -269,6 +269,12 @@ parallel deploy compositions, and recursive whole-system backward
 reflection are not stated or sketched in [4]; they are introduced and
 proved in this development.
 
+The cost-determinism chain rests on a single local-confluence diamond:
+
+![Local-confluence diamond. A system S (amber) takes two divergent one-step `ca_step` reductions to S₁ and S₂ (blue), which rejoin in one green `ca_step` each at S′ — the diamond property (`ca_local_confluence`, `Confluence.v:269`). A side note records Newman's lemma (`Confluence.v:364`): strong normalization (`StrongNormalization.v`) plus local confluence lift to full confluence (`ca_confluent`), then to a unique normal form (`ca_normal_form_unique`), and hence to a schedule-independent total cost (`ca_cost_deterministic`, `Confluence.v:474`).](diagrams/confluence-diamond.svg)
+
+(*Source: [`diagrams/confluence-diamond.dot`](diagrams/confluence-diamond.dot) — render with `tred docs/theory/diagrams/confluence-diamond.dot | dot -Tsvg -o docs/theory/diagrams/confluence-diamond.svg` (or `./render.sh confluence-diamond.dot`).*)
+
 (d) **Replication-support results.** The one-step reflective unfold
 (`bang_encoding_unfolds`) and body-to-wrapper weak-barb propagation
 (`preplicate_bang_encoding_body_barbs_sound`,
@@ -879,30 +885,9 @@ must consume a token (fuel) from the channel associated with its
 signature. This protocol is expressible entirely within the pure rho
 calculus.
 
-```
-       ┌─────────────────────┐
-       │  Cost-Accounted     │
-       │  Calculus           │
-       │ (sigs, tokens, sys) │
-       └─────────┬───────────┘
-                 │
-    ┌────────────┼────────────────┐
-    │            │                │
- Signatures   Tokens          Systems
-  s → name   T → proc        S → proc
-    │            │                │
-    ▼            ▼                ▼
-  N⟦·⟧         T⟦·⟧             S⟦·⟧
-    │            │                │
-    └────────────┼────────────────┘
-                 │
-                 ▼
-       ┌─────────────────────┐
-       │    Pure Rho         │
-       │    Calculus         │
-       │  (proc, name only)  │
-       └─────────────────────┘
-```
+![Compositional translation fan — the Cost-Accounted Calculus (signatures, tokens, systems) at the top fans into three sort lanes: Signatures (s ↦ name), Tokens (T ↦ proc), and Systems (S ↦ proc). Each lane is fed through its translation function — N⟦·⟧, T⟦·⟧ (the paper's K⟦·⟧), and S⟦·⟧ (via P⟦·⟧) — along a blue dashed 'translates' arrow, and all three converge into the Pure Rho Calculus (proc and name only) at the bottom. The figure shows that cost accounting adds no new runtime primitive: every signature, token and system is compiled away into ordinary pure-rho processes and names.](diagrams/translation-fan.svg)
+
+(*Source: [`diagrams/translation-fan.d2`](diagrams/translation-fan.d2) — render with `d2 --layout elk docs/theory/diagrams/translation-fan.d2 docs/theory/diagrams/translation-fan.svg` (or `./render.sh translation-fan.d2`).*)
 
 ### 5.1 Signature Translation `N⟦·⟧`
 
@@ -1264,15 +1249,9 @@ regenerated encoding:
 
 **Process diagram** (one step from `bang_encoding x P`):
 
-```
-   bang_encoding x P                 =  x⟨∣D(x) ∣ P∣⟩ ∣ D(x)
-                                     =  (send on x) ∣ (receive on x)
-                                                  │
-                                                  │  rs_comm on x
-                                                  ▼
-   bang_encoding x P ∣ P             =  x⟨∣D(x) ∣ P∣⟩ ∣ D(x) ∣ P
-                                         └── regenerated ──┘  └new P┘
-```
+![One-step unfold of Meredith–Radestock's reflective replication encoding. The pre-COMM state `bang_encoding x P = x⟨∣ D(x) ∣ P ∣⟩ ∣ D(x)` = (send on x) ∣ (receive on x) reduces by a single green billable `rs_comm` on x to the post-COMM state `bang_encoding x P ∣ P`: the self-receiver `D(x)` consumes the payload `D(x) ∣ P`, re-posts it (the regenerated encoding) and dereferences it (a fresh copy of `P`). The encoding re-emerges intact, so `!P` is realised using pure-rho COMM only.](diagrams/bang-encoding-onestep.svg)
+
+(*Source: [`diagrams/bang-encoding-onestep.puml`](diagrams/bang-encoding-onestep.puml) — render with `plantuml -tsvg docs/theory/diagrams/bang-encoding-onestep.puml` (or `./render.sh bang-encoding-onestep.puml`).*)
 
 The "regenerated encoding" re-emerges because the payload
 `D(x) ∣ P` sent on *x* is received by `D(x)`, which then re-posts it
@@ -1482,29 +1461,9 @@ Both recursive calls to `post_gate_bisim_strong` appear directly under
 equivalence parameter `H : W ≡ P ∣ *(@0)` is threaded through to handle
 the `STRUCT` rule's output, which may differ from the canonical form.
 
-```
-    ┌──────────────────────────────────────────┐
-    │              bisim_intro                 │
-    │                                          │
-    │  Forward:                                │
-    │    W ⇝ W'                                │
-    │      │                                   │
-    │      ▼ backward_sim_par_stuck            │
-    │    P ⇝ P', W' ≡ P' ∣ *(@0)               │
-    │      │                                   │
-    │      ▼ RECURSE (guarded)                 │
-    │    P' ~~ W'                              │
-    │                                          │
-    │  Backward:                               │
-    │    P ⇝ P'                                │
-    │      │                                   │
-    │      ▼ rs_par_l + rs_struct              │
-    │    W ⇝ P' ∣ *(@0) = W'                   │
-    │      │                                   │
-    │      ▼ RECURSE (guarded)                 │
-    │    P' ~~ W'                              │
-    └──────────────────────────────────────────┘
-```
+![Proof structure of `post_gate_bisim_strong` as a guarded CoFixpoint. From the `bisim_intro` coinductive constructor (inputs P, W, and the hypothesis H : W ≡ P ∣ *(@0)) the proof forks into two arms. The Forward arm matches a W-step (W ⇝ W', given) by a P-step: `backward_sim_par_stuck` yields P ⇝ P' with W' ≡ P' ∣ *(@0), then a guarded recursive call produces P' ~~ W'. The Backward arm matches a P-step (P ⇝ P', given) by a W-step: `rs_par_l` + `rs_struct` give W ⇝ W' with W' := P' ∣ *(@0), then a guarded recursive call produces P' ~~ W'. Both recursive calls sit immediately under the bisim constructor, so Rocq's guardedness condition is met and the CoFixpoint is productive.](diagrams/cofixpoint-bisim-flow.svg)
+
+(*Source: [`diagrams/cofixpoint-bisim-flow.puml`](diagrams/cofixpoint-bisim-flow.puml) — render with `plantuml -tsvg docs/theory/diagrams/cofixpoint-bisim-flow.puml` (or `./render.sh cofixpoint-bisim-flow.puml`). Converted from the former Mermaid source — PlantUML is preferred over Mermaid where their capabilities overlap.*)
 
 ### 8.2 Heads-List Permutation Characterization
 
@@ -4278,6 +4237,10 @@ retained as **diagnostics/telemetry only** (see TM-CA-151 in
 [`cost-accounting-threat-model.md`](cost-accounting-threat-model.md), and
 **DR-9**/**DR-16** in
 [`cost-accounting-decision-records.md`](cost-accounting-decision-records.md)).
+
+![Option-E post-hoc canonical reconciliation, as a three-phase sequence. Phase 1 (schedule-dependent): the deploy caller spawns N parallel reducer tasks that each push an attempt record to a brief-locked `attempt_log` and race a lock-free CAS on the `consumed_tokens` atomic (red arrows; grant if it fits, Oop on overflow). Phase 2 (single-threaded, post-execution): at deploy join, `reconcile()` snapshot-clones the attempt log, sorts it by the canonical rank (deploy_id, source_path, redex_id, local_index, kind, weight), walks once accumulating weight until it would exceed the initial budget (the out-of-phlo boundary), and caches the result (green arrows). Phase 3 (schedule-independent): consensus reads only `total_cost` = consumed_units; the `cost_trace_digest`, event count and `last_oop_event` are diagnostic-only (TM-CA-151). Because the reconciliation is a pure function of (initial budget, multiset of attempts), play and replay yield a byte-identical consensus value regardless of which CAS race winners occurred.](diagrams/option-e-reconciliation.svg)
+
+(*Source: [`diagrams/option-e-reconciliation.puml`](diagrams/option-e-reconciliation.puml) — render with `plantuml -tsvg docs/theory/diagrams/option-e-reconciliation.puml` (or `./render.sh option-e-reconciliation.puml`).*)
 The post-hoc canonical reconciliation below is therefore the bounded-`K`
 machinery that computes the consensus `total_cost` and a *diagnostic*
 boundary (the multi-parent merge dispatcher this reconciliation feeds is
