@@ -1152,11 +1152,10 @@ impl RuntimeOps {
         }
 
         let validators = Self::to_validator_vec(validators_pars[0].to_owned())?;
-        let vlds: Vec<String> = validators.iter().map(|v| hex::encode(v)).collect();
         tracing::info!(
             "*** ACTIVE VALIDATORS FOR StateHash {}: {}",
             hex::encode(start_hash),
-            vlds.join("\n")
+            validators.iter().map(|v| hex::encode(v)).collect::<Vec<String>>().join("\n")
         );
 
         Ok(validators)

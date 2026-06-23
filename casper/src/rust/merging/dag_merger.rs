@@ -112,20 +112,14 @@ pub fn merge(
     ),
     CasperError,
 > {
-    let lfb_hex = hex::encode(lfb_post_state.bytes());
     tracing::debug!(
         target: "f1r3fly.merge.dag",
-        lfb_post_state = %lfb_hex,
+        lfb_post_state = %hex::encode(lfb_post_state.bytes()),
         "dag merge lfb post-state"
     );
 
-    let lfb_hex = hex::encode(lfb_post_state.bytes());
-    tracing::debug!(
-        target: "f1r3fly.merge.dag",
-        lfb_post_state = %lfb_hex,
-        "dag merge lfb post-state"
-    );
-
+    // Time the actual-blocks / late-blocks set computation (is_in_main_chain per scope block).
+    let actual_blocks_start = std::time::Instant::now();
     let actual_blocks: HashSet<BlockHash> = match &scope {
         Some(scope_blocks) => {
             // Avoid unbounded full-DAG ancestor scans. Check each scope block against LFB directly.
@@ -158,6 +152,11 @@ pub fn merge(
             .cloned()
             .collect()
     };
+    metrics::histogram!(
+        crate::rust::metrics_constants::DAG_MERGE_ACTUAL_BLOCKS_TIME_METRIC,
+        "source" => crate::rust::metrics_constants::CASPER_METRICS_SOURCE
+    )
+    .record(actual_blocks_start.elapsed().as_secs_f64());
 
     // Log the block sets for debugging
     tracing::info!(
@@ -174,7 +173,9 @@ pub fn merge(
     let mut actual_set_vec = Vec::new();
     let mut late_set_vec = Vec::new();
 
-    // Process actual blocks (sorted for determinism)
+    // Process actual blocks (sorted for determinism). Building each block's
+    // DeployChainIndex (index()) dominates the merge for fat blocks — timed here.
+    let index_build_start = std::time::Instant::now();
     let mut actual_blocks_sorted: Vec<_> = actual_blocks.iter().collect();
     actual_blocks_sorted.sort();
     for block_hash in actual_blocks_sorted {
@@ -189,6 +190,11 @@ pub fn merge(
         let indices = index(block_hash)?;
         late_set_vec.extend(indices);
     }
+    metrics::histogram!(
+        crate::rust::metrics_constants::DAG_MERGE_INDEX_BUILD_TIME_METRIC,
+        "source" => crate::rust::metrics_constants::CASPER_METRICS_SOURCE
+    )
+    .record(index_build_start.elapsed().as_secs_f64());
 
     // Accumulator for deploys that lose their chain via dedup but have no
     // fresher copy elsewhere. These are treated the same as conflict-rejected
@@ -203,6 +209,7 @@ pub fn merge(
     // hash as a deterministic tiebreak. A chain containing any deploy whose
     // freshest source is a different chain is dropped; its diffs were computed
     // against a pre-state that the fresh execution replaces.
+    let dedup_start = std::time::Instant::now();
     if !actual_set_vec.is_empty() {
         // Find the freshest source for each deploy_id across all chains.
         let mut latest_for_deploy: HashMap<Bytes, (i64, BlockHash)> = HashMap::new();
@@ -281,6 +288,11 @@ pub fn merge(
             );
         }
     }
+    metrics::histogram!(
+        crate::rust::metrics_constants::DAG_MERGE_DEDUP_TIME_METRIC,
+        "source" => crate::rust::metrics_constants::CASPER_METRICS_SOURCE
+    )
+    .record(dedup_start.elapsed().as_secs_f64());
 
     // Sort the deploy chain indices for deterministic iteration order
     actual_set_vec.sort();
@@ -443,10 +455,9 @@ pub fn merge(
                 &*reader,
                 &mergeable_chs,
                 |hash: &Blake2b256Hash, channel_changes, number_chs: &NumberChannelsDiff| {
-                    let ch_hex = hex::encode(hash.bytes());
                     tracing::trace!(
                         target: "f1r3fly.rholang.dispatcher",
-                        channel = %ch_hex,
+                        channel = %hex::encode(hash.bytes()),
                         in_mergeable_chs = number_chs.get(hash).is_some(),
                         number_chs_size = number_chs.len(),
                         "merge dispatcher channel"
@@ -455,7 +466,7 @@ pub fn merge(
                         let (diff, merge_type) = *number_ch_val;
                         tracing::trace!(
                             target: "f1r3fly.rholang.dispatcher",
-                            channel = %ch_hex,
+                            channel = %hex::encode(hash.bytes()),
                             merge_type = ?merge_type,
                             diff,
                             "merge dispatcher fold path"
@@ -471,31 +482,33 @@ pub fn merge(
                     } else {
                         tracing::trace!(
                             target: "f1r3fly.rholang.dispatcher",
-                            channel = %ch_hex,
+                            channel = %hex::encode(hash.bytes()),
                             "merge dispatcher fallback path"
                         );
                         // DIAG: identify the non-mergeable channel by decoding its
-                        // base value(s) — numeric (a vault/number cell) vs a Par
-                        // (a coordination/lock channel).
-                        if let Ok(base) = reader.get_data(hash) {
-                            let vals: Vec<String> = base
-                                .iter()
-                                .map(
-                                    |d| match RholangMergingLogic::try_get_number_with_rnd(&d.a) {
-                                        Some((n, _)) => format!("num:{}", n),
-                                        None => "par".to_string(),
-                                    },
-                                )
-                                .collect();
-                            tracing::debug!(
-                                target: "f1r3fly.merge.channel_id",
-                                channel = %ch_hex,
-                                base_count = base.len(),
-                                base_values = %vals.join(","),
-                                added = channel_changes.added.len(),
-                                removed = channel_changes.removed.len(),
-                                "non-mergeable channel base values"
-                            );
+                        // base value(s). Gated so the base read + per-datum decode
+                        // only run when the diagnostic target is enabled.
+                        if tracing::enabled!(target: "f1r3fly.merge.channel_id", tracing::Level::DEBUG) {
+                            if let Ok(base) = reader.get_data(hash) {
+                                let vals: Vec<String> = base
+                                    .iter()
+                                    .map(
+                                        |d| match RholangMergingLogic::try_get_number_with_rnd(&d.a) {
+                                            Some((n, _)) => format!("num:{}", n),
+                                            None => "par".to_string(),
+                                        },
+                                    )
+                                    .collect();
+                                tracing::debug!(
+                                    target: "f1r3fly.merge.channel_id",
+                                    channel = %hex::encode(hash.bytes()),
+                                    base_count = base.len(),
+                                    base_values = %vals.join(","),
+                                    added = channel_changes.added.len(),
+                                    removed = channel_changes.removed.len(),
+                                    "non-mergeable channel base values"
+                                );
+                            }
                         }
                         Ok(None)
                     }
@@ -638,6 +651,9 @@ pub fn merge(
                                conflicts_final: bool,
                                enforced_sig: bool,
                                depends_rej: bool| {
+        if !tracing::enabled!(target: "f1r3.trace.fs_floor", tracing::Level::INFO) {
+            return;
+        }
         use rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex;
         let branch_log = branch
             .0
@@ -737,7 +753,7 @@ pub fn merge(
     // the user writes were dropped here (and by which sub-pass: force-rejection /
     // cost-optimal keep-one / late-dependency) versus a later pass (serialize /
     // expansion).
-    {
+    if tracing::enabled!(target: "f1r3.trace.fs_floor", tracing::Level::INFO) {
         let resolve_rejected_user: Vec<String> = resolved
             .rejected
             .0
@@ -944,7 +960,9 @@ pub fn merge(
     // user (U) chain. Lets a run confirm whether a dropped user write descends
     // from a rejected SYSTEM chain's block (the suspected expansion over-reach)
     // rather than from a conflicting user write.
-    if !rejected_source_blocks.is_empty() {
+    if !rejected_source_blocks.is_empty()
+        && tracing::enabled!(target: "f1r3.trace.fs_floor", tracing::Level::INFO)
+    {
         use std::collections::BTreeMap;
         let mut by_block: BTreeMap<(i64, String), (bool, bool)> = BTreeMap::new();
         for chain in resolved.rejected.0.iter() {
@@ -1023,6 +1041,7 @@ pub fn merge(
     // rejected_chain_channels but INCLUDES system chains, so a run reveals
     // whether the chain CREATING a doubled cell is a user pre-charge chain (and
     // which deployer sig owns it) or a system (CloseBlock/Slash) chain.
+    if tracing::enabled!(target: "f1r3.trace.fs_floor", tracing::Level::INFO) {
     for branch in resolved.to_merge.iter() {
         for chain in branch.0.iter() {
             let user_sigs: Vec<String> = chain
@@ -1062,6 +1081,7 @@ pub fn merge(
             );
         }
     }
+    }
 
     let rejected = resolved.rejected;
 
@@ -1069,6 +1089,7 @@ pub fn merge(
     // non-foldable, F = foldable/number) with removed/added counts. Lets a
     // post-run trace attribute WHY a user deploy lost the merge — i.e. which
     // cell its chain conflicted on (the map cell vs a vault/PoS cell).
+    if tracing::enabled!(target: "f1r3.trace.fs_floor", tracing::Level::INFO) {
     for chain in rejected.0.iter() {
         let sigs: Vec<String> = chain
             .deploys_with_cost
@@ -1099,6 +1120,7 @@ pub fn merge(
             channels = %chans.join(" "),
             "rejected user chain touched channels"
         );
+    }
     }
 
     // Extract (rejected deploy ID, source block hash) pairs, split by kind.

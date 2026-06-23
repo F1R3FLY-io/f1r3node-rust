@@ -474,13 +474,12 @@ where
         let item_channels = mergeable_channels(item);
         for (key, value) in item_channels.iter() {
             let (incoming_diff, incoming_mt) = *value;
-            let ch_hex = hex::encode(key.bytes());
             match all_mergeable_channels.get_mut(key) {
                 Some(existing) => {
                     if existing.1 != incoming_mt {
                         tracing::warn!(
                             target: "f1r3fly.merge.dag",
-                            channel = %ch_hex,
+                            channel = %hex::encode(key.bytes()),
                             existing = ?existing.1,
                             incoming = ?incoming_mt,
                             "merge-type mismatch on channel"
@@ -494,7 +493,7 @@ where
                     existing.0 = combine_mergeable_value(existing.0, incoming_diff, incoming_mt);
                     tracing::trace!(
                         target: "f1r3fly.merge.dag",
-                        channel = %ch_hex,
+                        channel = %hex::encode(key.bytes()),
                         merge_type = ?incoming_mt,
                         prev_diff = prev,
                         incoming_diff,
@@ -505,7 +504,7 @@ where
                 None => {
                     tracing::trace!(
                         target: "f1r3fly.merge.dag",
-                        channel = %ch_hex,
+                        channel = %hex::encode(key.bytes()),
                         merge_type = ?incoming_mt,
                         diff = incoming_diff,
                         "mergeable channel first occurrence"

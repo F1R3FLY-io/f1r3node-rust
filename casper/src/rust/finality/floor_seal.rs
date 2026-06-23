@@ -269,7 +269,7 @@ async fn seal_floor_cut(
     // Two co-finalized writers carrying the SAME `removed` fingerprint as `base`
     // prove a whole-value diff-apply would stale-consume the second (the structural
     // delta is then mandatory). Purely diagnostic; mutates nothing.
-    {
+    if tracing::enabled!(target: "f1r3.trace.seal_diff", tracing::Level::DEBUG) {
         let fp = |bytes: &[u8]| -> String {
             hex::encode(&Blake2b256Hash::new(bytes).bytes()[..6])
         };

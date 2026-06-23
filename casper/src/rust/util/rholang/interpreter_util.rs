@@ -936,6 +936,7 @@ pub async fn compute_parents_post_state(
             // floor(B): the justification-derived finalized cut this block
             // builds on — a pure function of (parents, latest_messages).
             let ft_threshold = s.on_chain_state.shard_conf.fault_tolerance_threshold;
+            let floor_compute_start = std::time::Instant::now();
             let floor = crate::rust::finality::floor::finalized_floor(
                 &s.dag,
                 &parent_hashes,
@@ -943,6 +944,11 @@ pub async fn compute_parents_post_state(
                 ft_threshold,
             )
             .await?;
+            metrics::histogram!(
+                crate::rust::metrics_constants::BLOCK_PROCESSING_PPS_FLOOR_COMPUTE_TIME_METRIC,
+                "source" => crate::rust::metrics_constants::CASPER_METRICS_SOURCE
+            )
+            .record(floor_compute_start.elapsed().as_secs_f64());
 
             let mut parent_hashes_for_key = parent_hashes.clone();
             parent_hashes_for_key.sort();
@@ -981,6 +987,7 @@ pub async fn compute_parents_post_state(
 
             // FS(floor): the sealed merge base. Finalized effects live in the
             // base and never re-enter the conflict scope.
+            let fs_seal_start = std::time::Instant::now();
             let fs = crate::rust::finality::floor_seal::floor_state_get_or_compute(
                 &s.dag,
                 block_store,
@@ -989,6 +996,11 @@ pub async fn compute_parents_post_state(
                 ft_threshold,
             )
             .await?;
+            metrics::histogram!(
+                crate::rust::metrics_constants::BLOCK_PROCESSING_PPS_FS_SEAL_TIME_METRIC,
+                "source" => crate::rust::metrics_constants::CASPER_METRICS_SOURCE
+            )
+            .record(fs_seal_start.elapsed().as_secs_f64());
             let base_state = Blake2b256Hash::from_bytes_prost(&fs.state_hash.0);
 
             // Conflict scope = closure(parents) \ closure(floor). Straddler
@@ -1041,7 +1053,13 @@ pub async fn compute_parents_post_state(
                     }
                 }
             }
-            let collect_scope_ms = collect_scope_started.elapsed().as_millis();
+            let scope_elapsed = collect_scope_started.elapsed();
+            let collect_scope_ms = scope_elapsed.as_millis();
+            metrics::histogram!(
+                crate::rust::metrics_constants::BLOCK_PROCESSING_PPS_SCOPE_BUILD_TIME_METRIC,
+                "source" => crate::rust::metrics_constants::CASPER_METRICS_SOURCE
+            )
+            .record(scope_elapsed.as_secs_f64());
 
             tracing::debug!(
                 target: "f1r3.trace.fs_floor",
@@ -1057,7 +1075,13 @@ pub async fn compute_parents_post_state(
 
             // Every scope block's mergeable entry must be loadable before the
             // merge builds indices; recompute any the node never replayed.
+            let ensure_mergeable_start = std::time::Instant::now();
             ensure_scope_mergeable_present(block_store, runtime_manager, &s.dag, &scope).await?;
+            metrics::histogram!(
+                crate::rust::metrics_constants::BLOCK_PROCESSING_PPS_ENSURE_MERGEABLE_TIME_METRIC,
+                "source" => crate::rust::metrics_constants::CASPER_METRICS_SOURCE
+            )
+            .record(ensure_mergeable_start.elapsed().as_secs_f64());
 
             // Construction merge resolves the cone by keep-one + recovery on the
             // sealed FS(floor) base. The enforcement window is intentionally not
@@ -1078,7 +1102,13 @@ pub async fn compute_parents_post_state(
                 disable_late_block_filtering,
                 None,
             )?;
-            let merge_ms = merge_started.elapsed().as_millis();
+            let merge_elapsed = merge_started.elapsed();
+            let merge_ms = merge_elapsed.as_millis();
+            metrics::histogram!(
+                crate::rust::metrics_constants::BLOCK_PROCESSING_PPS_MERGE_TIME_METRIC,
+                "source" => crate::rust::metrics_constants::CASPER_METRICS_SOURCE
+            )
+            .record(merge_elapsed.as_secs_f64());
 
             // `_applied_user` is consumed only by the seal (FloorData accepted
             // ledger); the proposer's pre-state merge does not need it.

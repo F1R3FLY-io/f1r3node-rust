@@ -311,17 +311,18 @@ fn make_trie_action<C: Clone, P: Clone, A: Clone, K: Clone>(
         result
     };
 
-    let ch_hex = hex::encode(history_pointer.bytes());
     tracing::trace!(
         target: "f1r3fly.merge.dag",
-        channel = %ch_hex,
+        channel = %hex::encode(history_pointer.bytes()),
         init_len = init.len(),
         added_len = changes.added.len(),
         removed_len = changes.removed.len(),
         new_val_len = new_val.len(),
         "make-trie-action"
     );
-    if new_val.len() > 1 {
+    if new_val.len() > 1
+        && tracing::enabled!(target: "f1r3fly.rspace.multidatum", tracing::Level::DEBUG)
+    {
         let init_hashes: Vec<String> = init.iter().map(hex::encode).collect();
         let added_hashes: Vec<String> = changes.added.iter().map(hex::encode).collect();
         let removed_hashes: Vec<String> = changes.removed.iter().map(hex::encode).collect();
@@ -329,7 +330,7 @@ fn make_trie_action<C: Clone, P: Clone, A: Clone, K: Clone>(
         tracing::debug!(
             target: "f1r3fly.rspace.multidatum",
             site = "merge",
-            channel = %ch_hex,
+            channel = %hex::encode(history_pointer.bytes()),
             new_val_len = new_val.len(),
             init_hashes = ?init_hashes,
             added_hashes = ?added_hashes,
@@ -352,7 +353,7 @@ fn make_trie_action<C: Clone, P: Clone, A: Clone, K: Clone>(
         // trie — rather than failing the whole merge.
         tracing::debug!(
             target: "f1r3fly.merge.dag",
-            channel = %ch_hex,
+            channel = %hex::encode(history_pointer.bytes()),
             "channel changes cancel to the base value; idempotent update"
         );
         Ok(update_action(history_pointer, new_val))

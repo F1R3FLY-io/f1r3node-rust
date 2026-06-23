@@ -67,6 +67,19 @@ pub const BLOCK_PROCESSING_STORAGE_TIME_METRIC: &str = "block.processing.stage.s
 pub const BLOCK_PROCESSING_REPLAY_TIME_METRIC: &str = "block.processing.stage.replay.time";
 pub const BLOCK_PROCESSING_PARENTS_POST_STATE_TIME_METRIC: &str =
     "block.processing.stage.parents-post-state.time";
+// Sub-stages of parents-post-state — attribute the multi-parent merge cost so the
+// O(cone) climbers (floor / FS seal / scope walk / mergeable recompute / dag merge)
+// are individually visible, not lumped under the single parents-post-state timer.
+pub const BLOCK_PROCESSING_PPS_FLOOR_COMPUTE_TIME_METRIC: &str =
+    "block.processing.stage.parents-post-state.floor-compute.time";
+pub const BLOCK_PROCESSING_PPS_FS_SEAL_TIME_METRIC: &str =
+    "block.processing.stage.parents-post-state.fs-seal.time";
+pub const BLOCK_PROCESSING_PPS_SCOPE_BUILD_TIME_METRIC: &str =
+    "block.processing.stage.parents-post-state.scope-build.time";
+pub const BLOCK_PROCESSING_PPS_ENSURE_MERGEABLE_TIME_METRIC: &str =
+    "block.processing.stage.parents-post-state.ensure-mergeable.time";
+pub const BLOCK_PROCESSING_PPS_MERGE_TIME_METRIC: &str =
+    "block.processing.stage.parents-post-state.merge.time";
 pub const DAG_MERGE_TOTAL_TIME_METRIC: &str = "dag.merge.total.time";
 pub const DAG_MERGE_INDEX_TIME_METRIC: &str = "dag.merge.index.time";
 pub const DAG_MERGE_CONFLICT_TIME_METRIC: &str = "dag.merge.conflict.time";
@@ -76,6 +89,11 @@ pub const DAG_MERGE_SCOPE_METRIC: &str = "dag.merge.scope";
 pub const DAG_MERGE_BRANCHES_TIME_METRIC: &str = "dag.merge.branches.time";
 pub const DAG_MERGE_CONFLICTS_MAP_TIME_METRIC: &str = "dag.merge.conflicts-map.time";
 pub const DAG_MERGE_REJECTION_OPTIONS_TIME_METRIC: &str = "dag.merge.rejection-options.time";
+// dag_merger::merge phases that precede conflict-resolution — fully attribute the merge
+// (these were the large un-timed remainder of parents-post-state.merge).
+pub const DAG_MERGE_ACTUAL_BLOCKS_TIME_METRIC: &str = "dag.merge.actual-blocks.time";
+pub const DAG_MERGE_INDEX_BUILD_TIME_METRIC: &str = "dag.merge.index-build.time";
+pub const DAG_MERGE_DEDUP_TIME_METRIC: &str = "dag.merge.dedup.time";
 pub const BLOCK_REPLAY_SYSDEPLOY_EVAL_TIME_METRIC: &str = "block.replay.sysdeploy.eval.time";
 pub const BLOCK_REPLAY_SYSDEPLOY_CHECK_TIME_METRIC: &str = "block.replay.sysdeploy.check.time";
 pub const CASPER_INIT_TIME_TO_APPROVED_BLOCK_METRIC: &str = "casper.init.time-to-approved-block";

@@ -97,21 +97,9 @@ impl RholangMergingLogic {
         HotStoreTrieAction<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
         HistoryError,
     > {
-        let ch_hex = hex::encode(channel_hash.bytes());
         tracing::debug!(
             target: "f1r3fly.merge.provenance",
-            channel = %ch_hex,
-            merge_type = ?merge_type,
-            diff,
-            added_len = changes.added.len(),
-            removed_len = changes.removed.len(),
-            "number-channel merge fold entry"
-        );
-
-        let ch_hex = hex::encode(channel_hash.bytes());
-        tracing::debug!(
-            target: "f1r3fly.merge.provenance",
-            channel = %ch_hex,
+            channel = %hex::encode(channel_hash.bytes()),
             merge_type = ?merge_type,
             diff,
             added_len = changes.added.len(),
@@ -127,17 +115,7 @@ impl RholangMergingLogic {
 
         tracing::debug!(
             target: "f1r3fly.merge.provenance",
-            channel = %ch_hex,
-            merge_type = ?merge_type,
-            init_num,
-            diff,
-            new_val,
-            "number-channel merge fold result"
-        );
-
-        tracing::debug!(
-            target: "f1r3fly.merge.provenance",
-            channel = %ch_hex,
+            channel = %hex::encode(channel_hash.bytes()),
             merge_type = ?merge_type,
             init_num,
             diff,
