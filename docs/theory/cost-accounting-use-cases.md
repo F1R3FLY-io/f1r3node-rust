@@ -9,6 +9,35 @@ use case binds an operational scenario to the formal result that justifies it
 and to the Rust test target that exercises the production boundary. The
 external paper remains unchanged; this document records repo-local coverage.
 
+## The end-to-end demo — a cost-accounted ecosystem
+
+The headline acceptance test is `examples/cost_accounting_demo.rho`: a token-gated
+buyer–seller supply chain. Factories produce widgets; carriers ship them to a
+warehouse; sellers wholesale them into stores; buyers retail them home; some return
+for resale. Every operation is a fuel-gated atomic **SWAP** (money ↔ goods) or
+**MOVE** (goods only) whose guard conserves both resources all-or-nothing. The one
+program exercises every cost-accounting feature — R1 retail, R2 compound shipping,
+R3 combined-token wholesale, R4 production, `::` budgets, `⊸` lollipop delegation,
+ring-fencing, per-clause signed joins, the N-ary atomic join, guards, and a mutex
+restock — and the integration test `rholang/tests/accounting/cost_accounting_demo_spec.rs`
+asserts the conservation invariants below in every interleaving.
+
+![Cost-accounted buyer–seller ecosystem. The supply-chain spine flows top to bottom: Factories (R4 production, minting +16 widgets) → Warehouse (Whse_stk 24, Whse_cash 0) → Stores (Sue and Sam, each stk 20 / cash 50, plus the scarce Flash_stk = 1) → Buyers (Ada, Ben, Cy, Di, Fae, Gus). Green edges are the funded operations: ship (R2 fab1 ∘ carrier compound gate, MOVE), wholesale (R3 combined token + auto-splitter, SWAP), and retail (R1 single-sig, the atomic 4-cell SWAP); a dashed edge is the return-for-resale. The two amber flash-sale edges from Flash_stk to Fae and Gus race for the single last unit — exactly one wins, the other is told out of stock. The red actors are unfunded — the free-diSig thief (its attempt on Di's ring-fenced wallet is blocked) and the unfunded Zed order desk — which natively are rejected at the acceptance gate rather than parked in-program. The banner records the invariants: MONEY Σ = 410, WIDGET Σ = 67 + 16 = 83, no cell negative, exactly one flash-sale winner.](diagrams/demo-ecosystem-map.svg)
+
+(*Source: [`diagrams/demo-ecosystem-map.d2`](diagrams/demo-ecosystem-map.d2) — render with `d2 --layout elk docs/theory/diagrams/demo-ecosystem-map.d2 docs/theory/diagrams/demo-ecosystem-map.svg` (or `./render.sh demo-ecosystem-map.d2`).*)
+
+The two conserved quantities are visible at a glance — the supply pools are written
+`Σ⟦·⟧` in the calculus:
+
+![Conservation snapshot as two Sankey columns. The MONEY column sums the nine opening cash cells — Ada 100, Ben 60, Cy 50, Di 40, Sue 50, Sam 50, Whse 0, Fae 30, Gus 30 — to the conserved total 410; payments only relocate money between cells, so the sum is invariant. The WIDGET column sums the opening inventory (Whse_stk 24, Sue_stk 20, Sam_stk 20, Flash_stk 1, Ada_home 2 = 67) and the factory production (+16) to the conserved total 83. Flow widths are the exact opening balances; no path-dependent per-cell closing balance is asserted.](diagrams/demo-conservation-sankey.svg)
+
+(*Source: [`diagrams/demo-conservation-sankey.mmd`](diagrams/demo-conservation-sankey.mmd) — render with `mmdc -i docs/theory/diagrams/demo-conservation-sankey.mmd -o docs/theory/diagrams/demo-conservation-sankey.svg -c docs/theory/diagrams/palette.mermaid.json` (or `./render.sh demo-conservation-sankey.mmd`). Node labels are ASCII because mermaid sankey-beta cannot tokenize Unicode; the `Σ⟦·⟧` reading is in the prose.*)
+
+Natively there is no in-program parking (the §"Native semantics note" in the demo
+header): an unfunded signer's deploy is rejected at the acceptance gate
+(`admit_by_funding` / `is_funded`), not parked mid-program — admission-rejection
+replaces PARK, while the conservation guards hold verbatim.
+
 ## Coverage Matrix
 
 | ID | Scenario | Formal anchor | Rust coverage target | Acceptance condition |

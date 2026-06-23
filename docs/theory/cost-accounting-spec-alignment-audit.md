@@ -284,3 +284,11 @@ multi-sig deploy pays:
 ![FlatFee vs balanced split — the FeeExtract (F-C/F-D, left) is ONE client token per admitted deploy, drawn via FlatFeeApportionment from Σ⟦c⟧ and credited to the validator fee pool F_v (a conserving transfer, shown as a paired red-carve / green-credit), never doubled for a compound deploy. The multi-sig COST (P8, right) is the demand Δ debited EQUALLY across each cosigner's wallet Σ⟦Ground(pkᵢ)⟧ via DefaultApportionment (a burn). The divider note: FEE = transfer (conserving, flat-per-deploy); COST = burn (balanced-per-cosigner); cost ≠ fee, flat ≠ balanced.](diagrams/flatfee-vs-balanced-split.svg)
 
 (*Source: [`diagrams/flatfee-vs-balanced-split.puml`](diagrams/flatfee-vs-balanced-split.puml) — render with `plantuml -tsvg docs/theory/diagrams/flatfee-vs-balanced-split.puml`.*)
+
+Where the diagram above shows the *kinds* of token movement, the Sankey below shows
+the fee path's *conservation of mass* — `Σ⟦c⟧ → F_v → Σ⟦v⟧` is balanced
+left-to-right (Σ in = Σ out), exactly `fee_collect_then_convert_conserves`:
+
+![Fee conservation Sankey. For each admitted client deploy a flat one-token FeeExtract is carved from that client's supply pool (left: three representative clients c1, c2, c3, one token each) into the validator fee pool F_v — a conserving transfer, client debited equals F_v credited, never a mint. At the epoch boundary F_v (now 3) is converted 1:1, backed by the carve, into the validator pool v. The diagram is balanced left to right (3 in, 3 out), which is the conservation theorem; the flat fee is one token per admitted deploy regardless of arity.](diagrams/fee-conservation-sankey.svg)
+
+(*Source: [`diagrams/fee-conservation-sankey.mmd`](diagrams/fee-conservation-sankey.mmd) — render with `mmdc -i docs/theory/diagrams/fee-conservation-sankey.mmd -o docs/theory/diagrams/fee-conservation-sankey.svg -c docs/theory/diagrams/palette.mermaid.json` (or `./render.sh fee-conservation-sankey.mmd`). Node labels are ASCII (`c1`/`Fv`/`v` for `Σ⟦c⟧`/`F_v`/`Σ⟦v⟧`) because mermaid sankey-beta cannot tokenize Unicode.*)
