@@ -737,7 +737,7 @@ impl's choice is consistent with every behavioral law the paper fixes. Recorded 
 
 ## DR-21 — Option B EXECUTED: the native four-sort grammar; GAP-2 dissolved; native SN is conditional on the linearly-funded fragment
 
-**Status.** In progress (the `continued-gslt-cost-v2` alignment). The DR-17/DR-20 Option-B native-grammar
+**Status.** EXECUTED + landed natively (the `continued-gslt-cost-v2` alignment; see DR-22). The DR-17/DR-20 Option-B native-grammar
 migration — previously recorded-but-not-performed — is now being **executed**, triggered by the sibling paper
 `publications/cost-accounting-as-monad/continued-gslt-cost-v2.tex` ("Continued Interactive GSLTs and the Cost
 Endofunctor"), whose central revision **"wrapping by construction"** (continuation slots sorted as wrapped

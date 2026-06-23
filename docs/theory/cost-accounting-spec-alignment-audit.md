@@ -144,8 +144,7 @@ decision record / the register · **C** = still-open scope-boundary.
 
 ### 3.2 (B) Resolved via a decision record or the ambiguity register
 
-The 21 decision records (`docs/theory/cost-accounting-decision-records.md`, DR-1…DR-21, plus
-DR-22 from this audit) and the 38-entry pgmcp ambiguity register (root id 87) record the
+The 28 decision records (`docs/theory/cost-accounting-decision-records.md`, DR-1…DR-28) and the 40-entry pgmcp ambiguity register (root id 87) record the
 judgement calls. Load-bearing examples:
 
 - **DR-5** — runtime precharge/refund removed; deploys draw directly from `Σ⟦s⟧`. The §8 refund
@@ -158,7 +157,7 @@ judgement calls. Load-bearing examples:
 - **DR-20/DR-21** — Rule-4/5 re-seal proved cost-benign (GAP-2 dissolved); native four-sort
   grammar executed; native SN conditional on the linearly-funded fragment.
 - Register epics A–H cover syntax/quotation, reduction, sugar, signatures, acceptance,
-  pure-rho-vs-impl, economic/supply, governance/validator — 36 resolved + 2 reclassified
+  pure-rho-vs-impl, economic/supply, governance/validator — 38 resolved + 2 reclassified
   resolved after a normative re-reading.
 
 ### 3.3 (C) Still-open / scope-boundary (with the precise reason)

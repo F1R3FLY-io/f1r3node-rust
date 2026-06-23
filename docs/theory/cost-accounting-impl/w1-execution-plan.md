@@ -62,7 +62,7 @@ Confirmed by reading both worktrees on 2026-06-15:
   `self.signature` / the signer channels + supply key come from
   `funding_sig = Sig::Ground(pk)` (single) / the `And`-fold of `Ground(pkᵢ)` (multi)
   — the signer's genesis-seeded wallet `Σ⟦Ground(pk)⟧`, so `Σ⟦signer⟧ == Σ⟦wallet⟧`
-  (cross-ref `wd-d2-acceptance-gate.md` §D2.9 + the forthcoming `d2-9-funding-flow.md`).
+  (cross-ref `wd-d2-acceptance-gate.md` §D2.9 + `d2-9-funding-flow.md`).
   The legacy `set_deploy_signature(s)` are now thin wrappers passing the wire-sig
   `envelope_sig*` for byte-identical test/bench callers. **This split shapes Phase 3
   (riskiest).**

@@ -1,6 +1,6 @@
 # Native Translation Faithfulness & Bisimulation — Proof Design (Stage 4b)
 
-**Status:** in progress. Foundation (`CATranslation.v`) committed (1a958972). This
+**Status:** Landed (reconciled). Foundation (`CATranslation.v`) committed (1a958972); the design below is realized and gate-green (every box is resolved, none open), and predates / is orthogonal to §D2.9 (the acceptance-gate funding-key correction). This
 document records the rigorous design (arbitrated by a Plan agent against the old
 4379-line `TranslationFaithfulness.v`) so the development is reconstructable, and
 tracks progress lemma-by-lemma.

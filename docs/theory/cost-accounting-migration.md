@@ -1,13 +1,19 @@
 # Migrating F1R3Node to Internalized Cost Accounting: A Design for Mechanized Cost Determinism via the Cost-Accounted Rho Calculus
 
-**Version:** 1.0
-**Date:** 2026-04-08
+**Version:** 1.1
+**Date:** 2026-06-23
 **Authors:** Dylon Edwards, with formal verification contributions from L. Gregory Meredith
 **Status:** Implementation-aligned design document
 
 **Scope of this revision:** this document aligns the repo-local
 verification record with the staged `f1r3node-rust` implementation.
 It does not modify the external paper.
+
+This 1.1 revision reflects the §D2.9 funding-key correction (a deploy funds from the
+signer's ground-pubkey wallet `Σ⟦Ground(pk)⟧`, so `Σ⟦signer⟧ == Σ⟦wallet⟧`), the
+TM-CA-151 demotion of the per-operation cost-trace digest to a diagnostic (consensus
+is the conserved `total_cost` + status + post-state hash), and renders the design's
+diagrams from the shared `docs/theory/diagrams/` sources.
 
 ---
 
@@ -624,6 +630,8 @@ deploy based on the deploy's cryptographic signature, which is part of the deplo
 metadata (deployer public key, timestamp, term, signature) — **not** from the Rholang source
 code. For most deploys, this will be `Sig::Hash(blake2b256("f1r3node:cost-accounted-rho:deploy-signature:v1" || deploy.sig))`, where `deploy.sig` is the deploy's Ed25519/Secp256k1 signature (unique per deploy by construction — it signs `hash(term) + timestamp` with the deployer's private key). Domain separation prevents raw signature bytes from being reused accidentally as another protocol hash. This ensures per-deploy signature channel isolation (see Section 5.8.1 for the rationale and security analysis). The deploy's phlogiston limit initializes the bounded token budget (Section 5.3); the implementation must not materialize one runtime object per phlo.
 
+> **§D2.9 — funding key vs. isolation channel.** The `Sig::Hash(blake2b256(… ‖ deploy.sig))` above (the legacy spelling of the current `Sig::Quote` wire-signature digest) is the per-deploy **`deploy_id` + fuel-artifact-isolation** basis (§5.8.1) — it is NOT the funding key. The consensus FUNDING/SUPPLY pool a user deploy reads and debits is keyed by `funding_sig = Sig::Ground(pk)` (the signer's ground public key), so it is the genesis-seeded wallet `Σ⟦Ground(pk)⟧` (`Σ⟦signer⟧ == Σ⟦wallet⟧`). See [`cost-accounting-impl/d2-9-funding-flow.md`](cost-accounting-impl/d2-9-funding-flow.md) and `cost-accounting-impl/wd-d2-acceptance-gate.md` §D2.9.
+
 **System deploy exemption.** System deploys (genesis, slash, close-block, heartbeat), identified by `is_system_deploy_id(deploy_id)`, are exempt from the user-deploy cost-accounting translation. They run directly as plain `Par` terms under an explicit unmetered/no-op budget, not under the legacy `CostManager` framework. The Signature Annotator skips the translation pipeline for system deploy execution, while user-deploy fee settlement still uses system deploys as described in Section 5.9.2. Slash system deploys remain outside user metering, but their cost-invalid evidence must be current at the slashing boundary and authorized by the parent pre-state bond view.
 
 ### 5.3 New Cost Model: TokenBudget
@@ -868,7 +876,7 @@ The formal calculus treats unconsumed tokens and stuck residues as inert terms i
 
 #### 5.8.1 Per-Deploy Signature Scoping
 
-> **Superseded for the FUNDING/SUPPLY pool by §D2.9 (the funding-key correction); retained for the per-deploy FUEL-ARTIFACT channel.** This subsection's "derive the signature channel from the per-deploy wire signature `deploy.sig`" rationale governs the per-deploy ISOLATION of internal fuel artifacts + the post-eval sweep (§5.8.2) — that channel stays wire-sig-derived. But the consensus FUNDING/SUPPLY pool a USER deploy reads + debits is now keyed by `funding_sig = Sig::Ground(pk)` (single-sig) / the `And`-fold of `Sig::Ground(pkᵢ)` (multi-sig) — the signer's GROUND public key, so the pool the gate proves `Σ ≥ Δ` against IS the genesis-seeded wallet `Σ⟦Ground(pk)⟧` (`Σ⟦signer⟧ == Σ⟦wallet⟧`). See `cost-accounting-impl/wd-d2-acceptance-gate.md` §D2.9 (+ the forthcoming `cost-accounting-impl/d2-9-funding-flow.md`). The `deploy_id` and the system-deploy exemption (`is_system_deploy_id`, §5.8.2 / the System deploy exemption note) stay wire-sig-derived and are UNCHANGED.
+> **Superseded for the FUNDING/SUPPLY pool by §D2.9 (the funding-key correction); retained for the per-deploy FUEL-ARTIFACT channel.** This subsection's "derive the signature channel from the per-deploy wire signature `deploy.sig`" rationale governs the per-deploy ISOLATION of internal fuel artifacts + the post-eval sweep (§5.8.2) — that channel stays wire-sig-derived. But the consensus FUNDING/SUPPLY pool a USER deploy reads + debits is now keyed by `funding_sig = Sig::Ground(pk)` (single-sig) / the `And`-fold of `Sig::Ground(pkᵢ)` (multi-sig) — the signer's GROUND public key, so the pool the gate proves `Σ ≥ Δ` against IS the genesis-seeded wallet `Σ⟦Ground(pk)⟧` (`Σ⟦signer⟧ == Σ⟦wallet⟧`). See `cost-accounting-impl/wd-d2-acceptance-gate.md` §D2.9 (+ `cost-accounting-impl/d2-9-funding-flow.md`). The `deploy_id` and the system-deploy exemption (`is_system_deploy_id`, §5.8.2 / the System deploy exemption note) stay wire-sig-derived and are UNCHANGED.
 
 The Signature Annotator (Section 5.2) derives the deploy's signature from the deploy's cryptographic signature field. If the signature channel were derived solely from the deployer's public key (`Sig::Hash(deployer_public_key_hash)`), then signature channels would be **per-deployer, not per-deploy**: unconsumed tokens from deploy A would sit on the same channel as tokens from deploy B (same deployer), and a later deploy could consume leftover tokens from an earlier deploy — effectively receiving "free" fuel that was never allocated to it.
 
