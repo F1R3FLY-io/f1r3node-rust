@@ -228,20 +228,17 @@ Three facts pin `1` down, and all three are mechanized:
 
 ### 3.7 The nine connectives at a glance
 
-```
- multiplicative │ ⊗  tensor      both, disjoint witnesses     cost = c(σ)+c(τ)
-                │ 1  unit         the empty requirement         cost = 0
-                │ ⊸  lollipop     consume σ to yield τ          cost = c(σ)+c(τ)
- ───────────────┼──────────────────────────────────────────────────────────────
- additive       │ &  with         verifier's choice (both)      cost = c(σ)+c(τ)
-                │ ⊕  plus         signer's choice (one)         cost = c(chosen)
- ───────────────┼──────────────────────────────────────────────────────────────
- exponential    │ !  of-course    reusable (unbounded)          cost = c(σ)
-                │ ?  why-not       optional (zero-or-more)       cost = 0
- ───────────────┼──────────────────────────────────────────────────────────────
- derived        │ Threshold k     any k of N members            cost = k
-                │ atom            one concrete signer            cost = 1
-```
+| zone | connective | meaning | cost |
+|------|-----------|---------|------|
+| **multiplicative** | `⊗`  tensor | both, with disjoint witnesses | `c(σ) + c(τ)` |
+|                    | `1`  unit | the empty requirement | `0` |
+|                    | `⊸`  lollipop | consume `σ` to yield `τ` | `c(σ) + c(τ)` |
+| **additive** | `&`  with | verifier's choice (both available) | `c(σ) + c(τ)` |
+|              | `⊕`  plus | signer's choice (one branch) | `c(chosen)` |
+| **exponential** | `!`  of-course | reusable (unbounded) | `c(σ)` |
+|                 | `?`  why-not | optional (zero-or-more) | `0` |
+| **derived** | `Threshold k` | any `k` of `N` members | `k` |
+|             | `atom` | one concrete signer | `1` |
 
 ---
 
@@ -439,20 +436,9 @@ Collecting [§3](#3-linear-logic-from-first-principles)–[§5](#5-the-runtime-s
 
 The recursion bottoms out at `1` (cost 0) and atoms (cost 1); every composite folds these by sum, by chosen-branch, or by quorum. The following inline derivation shows the cost of a small authorization computed structurally — note how `1` contributes 0 and drops out:
 
-```
-authorization:  ((a ⊗ b) ⊗ c)  ⊗  (1 ⊕ d)        a,b,c,d atomic; signer chose RIGHT
-                               │
-              ┌────────────────┴────────┐
-      (a ⊗ b) ⊗ c                    (1 ⊕ d)     (chosen branch = d)
-              │                         │
-       ┌──────┴──────┐                  cost = c(d) = 1     ← ⊕ pays only the chosen branch
-     a ⊗ b           c
-       │
-    ┌──┴──┐
-    a     b
+![Structural cost-derivation tree for the authorization ((a⊗b)⊗c)⊗(1⊕d), with the signer choosing the RIGHT branch of the ⊕. The recursion bottoms out at the atoms a, b, c, d (each cost 1, green) and at the unit 1 (cost 0, greyed — it drops out). Each `⊗` sums its children's costs; the `⊕` pays only the chosen branch (d), not 1. Folding upward gives ll_required_units = ((1 + 1) + 1) + 1 = 4.](diagrams/cost-derivation-tree.svg)
 
-   ll_required_units = ((1 + 1) + 1) + 1  =  4
-```
+(*Source: [`diagrams/cost-derivation-tree.tex`](diagrams/cost-derivation-tree.tex) — render with `lualatex --output-format=dvi docs/theory/diagrams/cost-derivation-tree.tex && dvisvgm --font-format=woff --exact docs/theory/diagrams/cost-derivation-tree.dvi -o docs/theory/diagrams/cost-derivation-tree.svg` (or `./render.sh cost-derivation-tree.tex`).*)
 
 ### 6.2 Linear zone = spendable fuel
 

@@ -36,6 +36,23 @@ wrapper" is a sorting invariant — the paper's *wrapping by construction*. The 
 | Located resource stacks / purses; nearness `near(I,J)` | `ChannelSeparation.v` `lane_pool_disjoint` (disjoint per-signature pools); `near` = name-equality `≡_N` (DR-20 (ii)) | **TLA+** `LocatedPurse` (`Inv_NoUnderflow`, `Inv_LocalSufficiencyComposes`); runtime `DashMap<Sig,…>` lane pool |
 | The calculus IS a continued interactive GSLT with the cost structure | **`ContinuedGSLTCapstone.v` `continued_gslt_cost_capstone`** (axiom-free, "Closed under the global context") | — |
 
+### Categorical-structure figures
+
+The categorical constructs in the table above are rendered in four companion figures
+(each a rendered diagram with a detailed caption):
+
+- **Cost endofunctor & monad** — the functor `𝔠 = (· × grade)`, the unit/associativity
+  laws, and the two source monoids the laws descend from:
+  [cost-endofunctor-monad](diagrams/cost-endofunctor-monad.md).
+- **The two adjunctions** — Free ⊣ Forget (structural install/strip) and the
+  internalisation `St` of `Cost(ρ)` into pure `ρ`, with the force-point over-gating
+  limit recorded: [cost-two-adjunctions](diagrams/cost-two-adjunctions.md).
+- **Gated interaction-cut** — a cost-accounted COMM and the five gated rules R1–R5:
+  [interaction-cut](diagrams/interaction-cut.md).
+- **Located capabilities in space–time** — disjoint per-surface capability pools (space)
+  consumed in temporal order along the free token-stack monoid (time):
+  [located-capabilities-spacetime](diagrams/located-capabilities-spacetime.md).
+
 ## Token-source model — clean-slate realignment (DR-27, 2026-06-15; CORRECTED same day by Greg's authoritative answers)
 
 A re-reading of the source `.tex` re-derived the token model; **Greg's 2026-06-15 SOLUTIONs then made it

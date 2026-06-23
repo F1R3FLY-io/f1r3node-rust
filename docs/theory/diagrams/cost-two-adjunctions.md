@@ -3,35 +3,9 @@
 `continued-gslt-cost-v2`'s adjunctions, as realized in Rocq (`CAAdjunctions.v`,
 CL5) and the faithfulness stack (`CATranslationFaithfulness.v` / `CABisimulation.v`).
 
-```
-   ADJUNCTION I  —  Free ⊣ Forget   (the detachable apparatus)         CL5 ✓
-   ┌──────────────────────────────────────────────────────────────────────┐
-   │                  Free = cost_install  (install the unit grade)        │
-   │          G ◀───────────────────────────────────────────▶ Cost(G)     │
-   │                  Forget = cost_forget  (strip the grade)              │
-   │                                                                       │
-   │   Forget ∘ Free = id          cost_forget_install      ✓ (round-trip) │
-   │   Free   ∘ Forget ≠ id        cost_install_forget_alters ✓            │
-   │             "structure-preserving, behaviour-altering"                │
-   │   both natural: cost_install_natural / cost_forget_natural            │
-   └──────────────────────────────────────────────────────────────────────┘
+![The two adjunctions of the cost construction. Adjunction I (Free ⊣ Forget): the objects G and Cost(G) with Free = cost_install (green) and Forget = cost_forget (blue); the round-trip Forget ∘ Free = id holds, while Free ∘ Forget ≠ id (structure-preserving, behaviour-altering), both natural. Adjunction II: Cost(ρ) maps into pure ρ via the gate translation St; the achievable strengths (ca_translation_progresses, rule1..5_reachable, ca_single_gate_bisimilar) are listed in green, and the force-limit — St over-gates at a force *x, blocking a full bisimulation across a general ca_step — is boxed in red as an out-of-scope refinement.](cost-two-adjunctions.svg)
 
-   ADJUNCTION II — internalisation of Cost(G) into the TC base, up to ≈     CL5
-   ┌──────────────────────────────────────────────────────────────────────┐
-   │      Cost(rho) ──── St = st_tr (the gate translation) ────▶ pure rho   │
-   │                                                                       │
-   │   ACHIEVABLE STRENGTH (delivered):                                    │
-   │     · ca_translation_progresses   — every ca_step's image steps       │
-   │     · rule1..5_reachable          — the full per-rule reductions      │
-   │     · ca_single_gate_bisimilar    — single-gate strong bisimulation   │
-   │                  (matches the old model's guarantee)                  │
-   │                                                                       │
-   │   FORCE-LIMIT (docs §3a) ▓▓▓ a full strong/weak bisimulation across a │
-   │     general ca_step is blocked: the gate translation OVER-GATES at a   │
-   │     force *x  —  St U (gated, stuck)  ≁  Pt(st_to_proc U) (stripped).  │
-   │     Needs a force-cashing translation refinement (research-grade).     │
-   └──────────────────────────────────────────────────────────────────────┘
-```
+(*Source: [`cost-two-adjunctions.tex`](cost-two-adjunctions.tex) — render with `lualatex --output-format=dvi docs/theory/diagrams/cost-two-adjunctions.tex && dvisvgm --font-format=woff --exact docs/theory/diagrams/cost-two-adjunctions.dvi -o docs/theory/diagrams/cost-two-adjunctions.svg` (or `./render.sh cost-two-adjunctions.tex`).*)
 
 Adjunction I is the *structural* split (install/strip the apparatus); Adjunction
 II is the *behavioural* internalisation (the cost calculus simulates into the

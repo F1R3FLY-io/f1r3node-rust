@@ -1,0 +1,42 @@
+% The two adjunctions of the cost construction. Adjunction I (Free ⊣ Forget) is
+% the structural install/strip apparatus with a round-trip (Forget ∘ Free = id);
+% Adjunction II is the behavioural internalisation of Cost(rho) into pure rho via
+% the gate translation St, delivered at the old model's strength, with the
+% force-point over-gating limit recorded (red).
+%
+% Source of truth for the adjunctions figure (CAAdjunctions.v / CAInternalisation.v).
+% Render:  lualatex --output-format=dvi cost-two-adjunctions.tex && dvisvgm ...
+%          (or: ./render.sh cost-two-adjunctions.tex)
+\documentclass[border=8pt]{standalone}
+\usepackage{amsmath,amssymb}
+\input{palette.tex}
+\usepackage{tikz-cd}
+\usetikzlibrary{arrows.meta,positioning}
+\begin{document}
+\begin{tikzpicture}
+  \node[font=\sffamily\bfseries] (title) {Two adjunctions of the cost construction};
+
+  \node[below=4mm of title, font=\sffamily\footnotesize\bfseries, anchor=north] (l1) {Adjunction I --- Free $\dashv$ Forget (structural; CL5 \checkmark)};
+  \node[below=1mm of l1] (adj1) {%
+    \begin{tikzcd}[ampersand replacement=\&, column sep=6.5cm]
+      G \ar[r, bend left=22, "\mathrm{Free} = \mathrm{cost\_install}", caCredit]
+        \& \mathrm{Cost}(G) \ar[l, bend left=22, "\mathrm{Forget} = \mathrm{cost\_forget}", caInstantiate]
+    \end{tikzcd}};
+  \node[below=2mm of adj1, align=left, font=\sffamily\small,
+        fill=caNoteGreen, draw=caCredit, rounded corners, inner sep=5pt] (n1) {%
+    Forget $\circ$ Free $=$ id \quad(round-trip; \texttt{cost\_forget\_install}) \checkmark\\
+    Free $\circ$ Forget $\neq$ id \quad(\texttt{cost\_install\_forget\_alters}): \emph{structure-preserving, behaviour-altering}\\
+    both natural: \texttt{cost\_install\_natural} / \texttt{cost\_forget\_natural}};
+
+  \node[below=8mm of n1, font=\sffamily\footnotesize\bfseries, anchor=north] (l2) {Adjunction II --- internalisation of $\mathrm{Cost}(G)$ into the TC base, up to $\approx$ (CL5/CL6)};
+  \node[below=1mm of l2] (adj2) {%
+    \begin{tikzcd}[ampersand replacement=\&, column sep=5.5cm]
+      \mathrm{Cost}(\rho) \ar[r, "\mathrm{St} = \mathrm{st\_tr}\ \text{(gate translation)}", caCredit] \& \text{pure } \rho
+    \end{tikzcd}};
+  \node[below=2mm of adj2, align=left, font=\sffamily\small] (n2) {%
+    \textcolor{caCredit}{\textbf{Achievable (delivered):}} \texttt{ca\_translation\_progresses}; \texttt{rule1..5\_reachable};\\
+    \quad\texttt{ca\_single\_gate\_bisimilar} (matches the old model's guarantee).\\[3pt]
+    \colorbox{caRejectFill}{\textbf{Force-limit (§3a):}} a full strong/weak bisimulation across a general \texttt{ca\_step} is\\
+    \quad blocked --- St \emph{over-gates} at a force $*x$; a force-cashing refinement is out of scope.};
+\end{tikzpicture}
+\end{document}

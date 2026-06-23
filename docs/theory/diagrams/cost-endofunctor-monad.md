@@ -4,43 +4,9 @@
 CL3+CL4): cost accounting is an endofunctor 𝔠 — indeed a monad — whose laws
 descend from the two constituent monoids (`SignatureMonoid.v`, CL2).
 
-```
-                        the Cost endofunctor  𝔠 = (· × grade)
-                        grade = (sig, token)   [ authority × temporal stack ]
+![The cost endofunctor 𝔠 = (· × grade) and its monad structure, as three commutative diagrams: the naturality square for the unit η (X → 𝔠X over f, with 𝔠f); the unit laws (the two triangles μ ∘ η_{𝔠X} = id and μ ∘ 𝔠η = id); and the associativity square (μ ∘ μ_{𝔠X} = μ ∘ 𝔠μ). η arrows are green (the cost-free embedding), μ arrows blue (grade combination). The side panel records grade = (sig, token), that the laws (cost_left_unit, cost_right_unit, cost_assoc) descend from the signature commutative monoid and the token-stack free monoid, and that the monad is non-idempotent — metering twice ≠ once.](cost-endofunctor-monad.svg)
 
-        X ───────────────────────────────────────────────▶ 𝔠 X = X × grade
-        │  cost_map f                                          │
-   f ↓  │  (functor: cost_map_id, cost_map_compose)            │  cost_map f
-        ▼                                                      ▼
-        Y ───────────────────────────────────────────────▶ 𝔠 Y = Y × grade
-
-
-   unit  η = cost_eta            multiplication  μ = cost_mu
-   ┌─────────────────┐          ┌──────────────────────────────────────┐
-   │  X ──η──▶ 𝔠 X    │          │   𝔠²X = X × grade × grade              │
-   │  x ↦ (x, ())     │          │   ──μ──▶ 𝔠 X = X × (grade ∘ grade)     │
-   │  (unmetered      │          │   (combine the two grades:            │
-   │   embedding)     │          │    SAnd on sigs, ++ on token stacks)  │
-   └─────────────────┘          └──────────────────────────────────────┘
-
-   monad laws  (all up to cost_equiv, pointwise ⇒ NO funext)
-   ┌────────────────────────────────────────────────────────────────────┐
-   │  μ ∘ η_{𝔠X}   = id      cost_left_unit    ◀── grade_op_unit_r        │
-   │  μ ∘ 𝔠(η)     = id      cost_right_unit   ◀── grade_op_unit_l        │
-   │  μ ∘ μ_𝔠      = μ ∘ 𝔠(μ) cost_assoc        ◀── grade_op_assoc         │
-   └────────────────────────────────────────────────────────────────────┘
-                                       ╎
-                  the two monoids the laws descend from (CL2)
-        ┌──────────────────────────────┐  ┌─────────────────────────────┐
-        │ signature commutative monoid │  │ token-stack FREE monoid     │
-        │ (sig, SAnd, SUnit)  up to ≡sig│  │ (token, ++, TUnit)  Leibniz │
-        │   — the authority, ∧-fused    │  │   — the temporal modulus,   │
-        │   sig_monoid_comm/assoc/unit  │  │   NEVER commutative          │
-        └──────────────────────────────┘  └─────────────────────────────┘
-
-   NON-IDEMPOTENT:  cost_mu_modulus_accumulates (token_size adds under μ),
-                    cost_monad_not_idempotent — metering twice ≠ metering once.
-```
+(*Source: [`cost-endofunctor-monad.tex`](cost-endofunctor-monad.tex) — render with `lualatex --output-format=dvi docs/theory/diagrams/cost-endofunctor-monad.tex && dvisvgm --font-format=woff --exact docs/theory/diagrams/cost-endofunctor-monad.dvi -o docs/theory/diagrams/cost-endofunctor-monad.svg` (or `./render.sh cost-endofunctor-monad.tex`).*)
 
 The `μ`-flatten of nested wrappers `𝔠²X ⇒ 𝔠X` is exactly the move the old
 bare-proc `SSigned : proc → sig → system` could **not** even type (it carries a
