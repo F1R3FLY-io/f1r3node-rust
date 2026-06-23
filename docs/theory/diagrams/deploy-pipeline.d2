@@ -1,0 +1,24 @@
+# Deploy pipeline (migration §5.2) — the deployer's Rholang source is parsed and
+# normalized unchanged, then two NEW internal compiler passes (Signature
+# Annotator, Cost-Accounted Metering Pass) wrap it as a SignedProcess and build
+# the recursive metered work queue before the (existing) evaluator runs it. No
+# new surface syntax: cost accounting is added entirely on the internal Par.
+#
+# Source of truth for Figure 5.2 in cost-accounting-migration.md §5.2.
+# Render:  d2 --layout elk deploy-pipeline.d2 deploy-pipeline.svg
+#          (or: ./render.sh deploy-pipeline.d2)
+...@palette
+direction: down
+
+src:   "User Rholang Source\n(unchanged — no new syntax)" { class: surface }
+parse: "Parser + Normalizer\n(existing, unchanged)" { class: process }
+annot: "Signature Annotator   (NEW pass)\nwraps Par in SignedProcess from the deploy's\nmetadata key — not from the Rholang source" { class: gate }
+meter: "Cost-Accounted Metering Pass   (NEW pass)\nbuilds recursive metered continuations" { class: gate }
+eval:  "Evaluator (reduce.rs)\n(existing, now driven by FuturesUnordered)" { class: process }
+out:   "Result + Cost" { class: pool }
+
+src -> parse
+parse -> annot: "Plain Par\n(standard Rholang AST)"
+annot -> meter: "SignedProcess\n(internal IR, never seen by the programmer)"
+meter -> eval: "Metered Work Queue\n(Par gates + continuations)"
+eval -> out

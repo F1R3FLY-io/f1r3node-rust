@@ -615,45 +615,9 @@ The pass sits in the deploy pipeline as follows. Note that the Rholang
 source code is **unchanged** — the new stages operate on the compiler's
 internal `Par` representation, not on the source text:
 
-```
-  User Rholang Source              ◄── unchanged; no new syntax
-          │
-          v
-  ┌───────────────┐
-  │ Parser +      │  (existing, unchanged)
-  │ Normalizer    │
-  └───────────────┘
-          │
-          v
-     Plain Par                     ◄── standard Rholang AST
-          │
-          v
-  ┌───────────────┐
-  │ Signature     │  (NEW: internal compiler pass)
-  │ Annotator     │  Wraps Par in SignedProcess using deployer's key
-  └───────────────┘  from deploy metadata — not from Rholang source
-          │
-          v
-   SignedProcess                   ◄── internal IR, never seen by programmer
-          │
-          v
-  ┌───────────────┐
-  │ Cost-Accounted│  (NEW: internal compiler pass)
-  │ Metering Pass │  Builds recursive metered continuations
-  └───────────────┘
-          │
-          v
-   Metered Work Queue              ◄── standard Par gates plus continuations
-          │
-          v
-  ┌───────────────┐
-  │ Evaluator     │  (existing, but with FuturesUnordered)
-  │ (reduce.rs)   │
-  └───────────────┘
-          │
-          v
-     Result + Cost
-```
+![Deploy pipeline. The deployer's User Rholang Source (unchanged — no new syntax) is parsed and normalized by the existing Parser + Normalizer into a Plain Par (standard Rholang AST). Two NEW internal compiler passes then act on it: the Signature Annotator wraps the Par in a SignedProcess using the deploy's metadata key (not the Rholang source), and the Cost-Accounted Metering Pass builds the recursive metered continuations into a Metered Work Queue. The existing Evaluator (reduce.rs), now driven by FuturesUnordered, runs it to a Result + Cost. The two new passes (teal) sit entirely between parse and eval, so cost accounting adds no surface syntax.](diagrams/deploy-pipeline.svg)
+
+(*Source: [`diagrams/deploy-pipeline.d2`](diagrams/deploy-pipeline.d2) — render with `d2 --layout elk docs/theory/diagrams/deploy-pipeline.d2 docs/theory/diagrams/deploy-pipeline.svg` (or `./render.sh deploy-pipeline.d2`).*)
 
 The Signature Annotator determines the appropriate signature for each
 deploy based on the deploy's cryptographic signature, which is part of the deploy's
@@ -721,6 +685,13 @@ Key differences from `CostManager`:
 5. If the reservation would exceed `initial_tokens`, evaluation raises `OutOfPhlogistonsError` at that canonical event and rejects later events.
 
 The body after an atomic fuel gate fires becomes `P ∣ *(@PNil) ≡ P ∣ PNil ≡ P` (the stuck residue is elided per Section 5.8.3). For atomic deploy-signature chains, the budgeted implementation is bisimilar to the nested-stack model at the cost boundary: both accept exactly the same prefix of canonical source-token events and report the same consumed total. Compound signatures add non-billable routing markers for Split/Join, but the billable count remains the source-token count proven by `TokenConservation.v`. The formal calculus uses nested stacks for proof simplicity; `RuntimeBudgetRefinement.v` proves the coalesced counter obligations used by the implementation: consumed/remaining conservation, successful weighted reservation, out-of-phlo boundary commitment, reset-from-token trace clearing, finalization-read cost trace windows, and replay-payload trace sensitivity.
+
+The budget's lifecycle is summarized below; the conservation invariant
+`consumed + remaining == initial` is the heart of `RuntimeBudgetRefinement.v`:
+
+![RuntimeBudget / TokenBudget lifecycle state machine. From new(initial_tokens) the budget enters the Funded state (consumed = 0, remaining = initial). When a metered gate fires it transitions to Reserving (reserve_canonical(w)); if the weight fits it returns to Funded, appending a billable event and adding w to consumed; if it would exceed initial it moves to OutOfPhlo, fixing the first canonical, schedule-independent out-of-phlo boundary (later over-budget attempts preserve that first boundary). A finalization read from either Funded or OutOfPhlo yields the Finalized state with total_cost = min(consumed, initial) and a derived diagnostic digest; reset_from_token re-funds with a new initial, zeroes consumed and clears the trace and OOP boundary. The invariant consumed + remaining == initial holds in every state; consensus reads only total_cost, the digest, event-count and last_oop being diagnostic (TM-CA-151).](diagrams/runtime-budget-lifecycle.svg)
+
+(*Source: [`diagrams/runtime-budget-lifecycle.puml`](diagrams/runtime-budget-lifecycle.puml) — render with `plantuml -tsvg docs/theory/diagrams/runtime-budget-lifecycle.puml` (or `./render.sh runtime-budget-lifecycle.puml`).*)
 
 **Rust implementation names.** In `f1r3node-rust`, the bounded-memory
 `TokenBudget` is implemented as `RuntimeBudget`; the reducer-facing
@@ -848,51 +819,9 @@ In practice, most deploys use atomic signatures (`Sig::Hash`), so Split/Join are
 
 ### 5.6 Component Diagram: New Architecture
 
-```
-  ┌─────────────────────────────────────────────────────────────────────┐
-  │                        Deploy Pipeline                              │
-  │                                                                     │
-  │  ┌────────────────┐    ┌────────────────┐    ┌────────────────────┐ │
-  │  │   Parser +     ├───▶│ Signature      ├───▶│ Recursive Metering │ │
-  │  │   Normalizer   │    │ Annotator      │    │ Pass               │ │
-  │  └──────┬─────────┘    └───────┬────────┘    └─────────┬──────────┘ │
-  │         │                      │                       │            │
-  │    Plain Par           SignedProcess            Metered Work Queue  │
-  │                                                        │            │
-  └────────────────────────────────────────────────────────┊────────────┘
-                                                           │
-                                                           ▼
-  ┌─────────────────────────────────────────────────────────────────────┐
-  │                        Evaluator (reduce.rs)                        │
-  │                                                                     │
-  │  ┌────────────────────┐                                             │
-  │  │ DebruijnInterpreter│                                             │
-  │  │                    │                                             │
-  │  │  eval_inner()      │     ┌───────────────────┐                   │
-  │  │  FuturesUnordered  │◀───▶│  RSpace (ISpace)  │                   │
-  │  │  (no Phase 1/2)    │     │ raw + metered hook│                   │
-  │  │                    │     └────────┬──────────┘                   │
-  │  └──────┬─────────────┘              │                              │
-  │         │                            │                              │
-  │         ▼                            ▼                              │
-  │  ┌────────────────────┐     ┌───────────────────┐                   │
-  │  │ TokenBudget        │     │ LMDB Backing      │                   │
-  │  │ (weighted tokens)  │     │ Store             │                   │
-  │  └────────────────────┘     └───────────────────┘                   │
-  │                                                                     │
-  └─────────────────┬───────────────────────────────────────────────────┘
-                    │
-                    ▼
-  ┌─────────────────────────────────────────────────────────────────────┐
-  │                    Persistent Infrastructure                        │
-  │                                                                     │
-  │  ┌──────────────────┐  ┌──────────────────┐  ┌───────────────────┐  │
-  │  │ Split(s₁, s₂)    │  │ Join(s₁, s₂)     │  │ (installed once   │  │
-  │  │ mediator procs   │  │ mediator procs   │  │  at genesis)      │  │
-  │  └──────────────────┘  └──────────────────┘  └───────────────────┘  │
-  │                                                                     │
-  └─────────────────────────────────────────────────────────────────────┘
-```
+![Component diagram of the migrated architecture, in three tiers. The Deploy Pipeline tier holds Parser + Normalizer → Signature Annotator → Recursive Metering Pass, producing Plain Par, then SignedProcess, then a Metered Work Queue. The Evaluator (reduce.rs) tier holds the DebruijnInterpreter with eval_inner() and a FuturesUnordered driver (no Phase 1/2 barrier), bridged to RSpace (ISpace) by a raw + metered hook, alongside TokenBudget (weighted tokens) and the LMDB backing store. The Persistent Infrastructure tier holds the Split(s₁, s₂) and Join(s₁, s₂) mediator processes installed once at genesis. There is no broad ChargingRSpace wrapper; TokenBudget replaces CostManager for user-deploy consensus charging.](diagrams/migration-component-diagram.svg)
+
+(*Source: [`diagrams/migration-component-diagram.puml`](diagrams/migration-component-diagram.puml) — render with `plantuml -tsvg docs/theory/diagrams/migration-component-diagram.puml` (or `./render.sh migration-component-diagram.puml`).*)
 
 Key architectural changes visible in the diagram:
 
