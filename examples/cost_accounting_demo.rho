@@ -104,23 +104,40 @@
 new stdout(`rho:io:stdout`) in {
 
   // ---- MONEY ledger (cash cells); total = 410, conserved ---------------------
-  @"Ada_cash"!(100) | @"Ben_cash"!(60) | @"Cy_cash"!(50) | @"Di_cash"!(40)
-  | @"Sue_cash"!(50) | @"Sam_cash"!(50) | @"Whse_cash"!(0)
-  | @"Fae_cash"!(30) | @"Gus_cash"!(30)
+  @"Ada_cash"!(100)
+  | @"Ben_cash"!(60)
+  | @"Cy_cash"!(50)
+  | @"Di_cash"!(40)
+  | @"Sue_cash"!(50)
+  | @"Sam_cash"!(50)
+  | @"Whse_cash"!(0)
+  | @"Fae_cash"!(30)
+  | @"Gus_cash"!(30)
 
   // ---- INVENTORY ledger (widget counts); opening total = 67 ------------------
   //  Factories start empty (production mints); stores/warehouse pre-stocked so
   //  every authorized buy succeeds in any interleaving (only Flash_stk is scarce).
-  | @"Fab1_out"!(0) | @"Fab2_out"!(0) | @"Whse_stk"!(24)
-  | @"Sue_stk"!(20) | @"Sam_stk"!(20) | @"Flash_stk"!(1)
-  | @"Ada_home"!(2) | @"Ben_home"!(0) | @"Cy_home"!(0)
-  | @"Fae_home"!(0) | @"Gus_home"!(0)
+  | @"Fab1_out"!(0)
+  | @"Fab2_out"!(0)
+  | @"Whse_stk"!(24)
+  | @"Sue_stk"!(20)
+  | @"Sam_stk"!(20)
+  | @"Flash_stk"!(1)
+  | @"Ada_home"!(2)
+  | @"Ben_home"!(0)
+  | @"Cy_home"!(0)
+  | @"Fae_home"!(0)
+  | @"Gus_home"!(0)
 
   // ---- Consoles : forward every announcement to the terminal -----------------
   //  NOTE: @"display" and @"audit" are ORDINARY Rholang channels (plain stdout forwarders),
   //  NOT cost-accounting machinery. The persistent `<=` receive reprints each send once.
-  | for (@line <= @"display") { stdout!(line) }
-  | for (@line <= @"audit")   { stdout!(("AUDIT", line)) }
+  | for (@line <= @"display") {
+    stdout!(line)
+  }
+  | for (@line <= @"audit") {
+    stdout!(("AUDIT", line))
+  }
 
   // ===========================================================================
   //  INFRASTRUCTURE CONTRACTS (unmetered; only the request *sends* are token-wrapped)
@@ -130,37 +147,56 @@ new stdout(`rho:io:stdout`) in {
   //    ONE N-ary JOIN reads all 4 cells; the guard checks funds AND stock;
   //    all-or-nothing across BOTH resources. price * qty is the multiplication.
   | for (@payer, @payee, @src, @dst, @price, @qty, @ret <= @"swap") {
-      for (@pm <- @payer & @ym <- @payee & @ss <- @src & @ds <- @dst) {
-        match (pm >= price * qty and ss >= qty) {
-          true => {
-            @payer!(pm - price * qty) | @payee!(ym + price * qty)
-            | @src!(ss - qty) | @dst!(ds + qty)
-            | @ret!(true)
-            | @"display"!(("SWAP-OK", payer, "paid", price * qty, "to", payee, "for", qty, "units"))
-          }
-          false => {
-            @payer!(pm) | @payee!(ym) | @src!(ss) | @dst!(ds)
-            | @ret!(false)
-            | @"display"!(("SWAP-DENIED", payer, "->", payee, "(funds or stock short)"))
-          }
+    for (@pm <- @payer & @ym <- @payee & @ss <- @src & @ds <- @dst) {
+      match (pm >= price * qty and ss >= qty) {
+        true => {
+          @payer!(pm - price * qty)
+          | @payee!(ym + price * qty)
+          | @src!(ss - qty)
+          | @dst!(ds + qty)
+          | @ret!(true)
+          | @"display"!(("SWAP-OK", payer, "paid", price * qty, "to", payee, "for", qty, "units"))
+        }
+        false => {
+          @payer!(pm)
+          | @payee!(ym)
+          | @src!(ss)
+          | @dst!(ds)
+          | @ret!(false)
+          | @"display"!(("SWAP-DENIED", payer, "->", payee, "(funds or stock short)"))
         }
       }
     }
+  }
 
   // -- MOVE : pure inventory transfer (no money) -- shipping & internal moves.
   | for (@src, @dst, @qty, @ret <= @"move") {
-      for (@ss <- @src & @ds <- @dst) {
-        match (ss >= qty) {
-          true  => { @src!(ss - qty) | @dst!(ds + qty) | @ret!(true)  | @"display"!(("SHIP-OK", src, "->", dst, qty)) }
-          false => { @src!(ss) | @dst!(ds) | @ret!(false) | @"display"!(("SHIP-DENIED", src, qty)) }
+    for (@ss <- @src & @ds <- @dst) {
+      match (ss >= qty) {
+        true  => {
+          @src!(ss - qty)
+          | @dst!(ds + qty)
+          | @ret!(true)
+          | @"display"!(("SHIP-OK", src, "->", dst, qty))
+        }
+        false => {
+          @src!(ss)
+          | @dst!(ds)
+          | @ret!(false)
+          | @"display"!(("SHIP-DENIED", src, qty))
         }
       }
     }
+  }
 
   // -- PRODUCE : factories MINT inventory (the only op that creates widgets).
   | for (@bin, @qty, @ret <= @"produce") {
-      for (@n <- @bin) { @bin!(n + qty) | @ret!(true) | @"display"!(("PRODUCED", qty, "into", bin)) }
+    for (@n <- @bin) {
+      @bin!(n + qty)
+      | @ret!(true)
+      | @"display"!(("PRODUCED", qty, "into", bin))
     }
+  }
 
   // -- RESTOCK : a MULTI-STEP critical section (read warehouse -> announce ->
   //    conditionally move to a store), serialized by a single-token MUTEX lock.
@@ -171,13 +207,22 @@ new stdout(`rho:io:stdout`) in {
         for (@wh <- @"Whse_stk") {
           @"display"!(("RESTOCK-CS: warehouse holds", wh, "moving", amt))   // announce mid-CS
           | match (wh >= amt) {
-              true => {
-                @"Whse_stk"!(wh - amt)
-                | for (@s <- @"Sam_stk") { @"Sam_stk"!(s + amt) }
-                | @ret!(true) | @"display"!(("RESTOCK done", amt)) | @"restockLock"!(Nil)   // RELEASE
+            true => {
+              @"Whse_stk"!(wh - amt)
+              | for (@s <- @"Sam_stk") {
+                @"Sam_stk"!(s + amt)
               }
-              false => { @"Whse_stk"!(wh) | @ret!(false) | @"display"!(("RESTOCK skip", wh)) | @"restockLock"!(Nil) }
+              | @ret!(true)
+              | @"display"!(("RESTOCK done", amt))
+              | @"restockLock"!(Nil)   // RELEASE
             }
+            false => {
+              @"Whse_stk"!(wh)
+              | @ret!(false)
+              | @"display"!(("RESTOCK skip", wh))
+              | @"restockLock"!(Nil)
+            }
+          }
         }
       }
     }
@@ -188,9 +233,19 @@ new stdout(`rho:io:stdout`) in {
   //    # "Fab1"  ⟿  Σ keyed on the HASH of "Fab1": only code that can name "Fab1" mints its
   //    fuel. The token `# "Fab1" :: ()` and the gate `[ # "Fab1" ]` rendezvous on that channel.
   // ===========================================================================
-  | new r in { {% @"produce"!("Fab1_out", 10, *r) %}[ # "Fab1" ] | for (@ok <- r) { @"audit"!(("Fab1 produced 10", ok)) } }
+  | new r in {
+    {% @"produce"!("Fab1_out", 10, *r) %}[ # "Fab1" ]
+    | for (@ok <- r) {
+      @"audit"!(("Fab1 produced 10", ok))
+    }
+  }
   | # "Fab1" :: ()
-  | new r in { {% @"produce"!("Fab2_out", 6, *r) %}[ # "Fab2" ] | for (@ok <- r) { @"audit"!(("Fab2 produced 6", ok)) } }
+  | new r in {
+    {% @"produce"!("Fab2_out", 6, *r) %}[ # "Fab2" ]
+    | for (@ok <- r) {
+      @"audit"!(("Fab2 produced 6", ok))
+    }
+  }
   | # "Fab2" :: ()
 
   // ===========================================================================
@@ -199,10 +254,22 @@ new stdout(`rho:io:stdout`) in {
   //  AND a `carrier` token arrive. Here each is minted SEPARATELY: `fab1 :: () | carrier :: ()`.
   //  CONTRAST WHOLESALE (R3) below -- the same joint gate, funded by ONE combined-cell token.
   // ===========================================================================
-  | new r in { {% @"move"!("Fab1_out", "Whse_stk", 10, *r) %}[ fab1 (*) carrier ] | for (@ok <- r) { @"audit"!(("ship Fab1->Whse 10", ok)) } }
-  | fab1 :: () | carrier :: ()
-  | new r in { {% @"move"!("Fab2_out", "Whse_stk", 6, *r) %}[ fab2 (*) carrier ] | for (@ok <- r) { @"audit"!(("ship Fab2->Whse 6", ok)) } }
-  | fab2 :: () | carrier :: ()
+  | new r in {
+    {% @"move"!("Fab1_out", "Whse_stk", 10, *r) %}[ fab1 (*) carrier ]
+    | for (@ok <- r) {
+      @"audit"!(("ship Fab1->Whse 10", ok))
+    }
+  }
+  | fab1 :: ()
+  | carrier :: ()
+  | new r in {
+    {% @"move"!("Fab2_out", "Whse_stk", 6, *r) %}[ fab2 (*) carrier ]
+    | for (@ok <- r) {
+      @"audit"!(("ship Fab2->Whse 6", ok))
+    }
+  }
+  | fab2 :: ()
+  | carrier :: ()
 
   // ===========================================================================
   //  WHOLESALE -- R3 combined-cell token + splitter (seller buys from warehouse).
@@ -212,26 +279,61 @@ new stdout(`rho:io:stdout`) in {
   //  combined token into the two component tokens the gates consume. Same authority, different
   //  token packaging.
   // ===========================================================================
-  | new r in { {% @"swap"!("Sue_cash","Whse_cash","Whse_stk","Sue_stk", 2, 8, *r) %}[ sueMkt1 (*) sueMkt2 ] | for (@ok <- r) { @"audit"!(("Sue wholesale 8 @2", ok)) } }
+  | new r in {
+    {% @"swap"!("Sue_cash","Whse_cash","Whse_stk","Sue_stk", 2, 8, *r) %}[ sueMkt1 (*) sueMkt2 ]
+    | for (@ok <- r) {
+      @"audit"!(("Sue wholesale 8 @2", ok))
+    }
+  }
   | sueMkt1 (*) sueMkt2 :: ()
-  | new r in { {% @"swap"!("Sam_cash","Whse_cash","Whse_stk","Sam_stk", 2, 6, *r) %}[ samMkt1 (*) samMkt2 ] | for (@ok <- r) { @"audit"!(("Sam wholesale 6 @2", ok)) } }
+  | new r in {
+    {% @"swap"!("Sam_cash","Whse_cash","Whse_stk","Sam_stk", 2, 6, *r) %}[ samMkt1 (*) samMkt2 ]
+    | for (@ok <- r) {
+      @"audit"!(("Sam wholesale 6 @2", ok))
+    }
+  }
   | samMkt1 (*) samMkt2 :: ()
 
   // ===========================================================================
   //  RETAIL -- Ada: R1 single sig + a depth-2 BUDGET funding TWO distinct buys
   // ===========================================================================
   | ada :: ada :: ()                                           // budget = 2 purchases
-  | new r in { {% @"swap"!("Ada_cash","Sue_cash","Sue_stk","Ada_home", 5, 3, *r) %}[ ada ] | for (@ok <- r) { @"audit"!(("Ada buy 3 @5", ok)) } }
-  | new r in { {% @"swap"!("Ada_cash","Sue_cash","Sue_stk","Ada_home", 5, 2, *r) %}[ ada ] | for (@ok <- r) { @"audit"!(("Ada buy 2 @5", ok)) } }
+  | new r in {
+    {% @"swap"!("Ada_cash","Sue_cash","Sue_stk","Ada_home", 5, 3, *r) %}[ ada ]
+    | for (@ok <- r) {
+      @"audit"!(("Ada buy 3 @5", ok))
+    }
+  }
+  | new r in {
+    {% @"swap"!("Ada_cash","Sue_cash","Sue_stk","Ada_home", 5, 2, *r) %}[ ada ]
+    | for (@ok <- r) {
+      @"audit"!(("Ada buy 2 @5", ok))
+    }
+  }
 
   // ===========================================================================
   //  RETAIL -- Ben: a depth-2 budget, THREE identical buys => exactly 2 fire,
   //  the third is METERED OUT (its fuel is gone; the handler parks -- bottom)
   // ===========================================================================
   | ben :: ben :: ()                                           // budget = 2; demand = 3
-  | new r in { {% @"swap"!("Ben_cash","Sam_cash","Sam_stk","Ben_home", 4, 1, *r) %}[ ben ] | for (@ok <- r) { @"audit"!(("Ben micro-buy 1 @4", ok)) } }
-  | new r in { {% @"swap"!("Ben_cash","Sam_cash","Sam_stk","Ben_home", 4, 1, *r) %}[ ben ] | for (@ok <- r) { @"audit"!(("Ben micro-buy 1 @4", ok)) } }
-  | new r in { {% @"swap"!("Ben_cash","Sam_cash","Sam_stk","Ben_home", 4, 1, *r) %}[ ben ] | for (@ok <- r) { @"audit"!(("Ben micro-buy 1 @4", ok)) } }
+  | new r in {
+    {% @"swap"!("Ben_cash","Sam_cash","Sam_stk","Ben_home", 4, 1, *r) %}[ ben ]
+    | for (@ok <- r) {
+      @"audit"!(("Ben micro-buy 1 @4", ok))
+    }
+  }
+  | new r in {
+    {% @"swap"!("Ben_cash","Sam_cash","Sam_stk","Ben_home", 4, 1, *r) %}[ ben ]
+    | for (@ok <- r) {
+      @"audit"!(("Ben micro-buy 1 @4", ok))
+    }
+  }
+  | new r in {
+    {% @"swap"!("Ben_cash","Sam_cash","Sam_stk","Ben_home", 4, 1, *r) %}[ ben ]
+    | for (@ok <- r) {
+      @"audit"!(("Ben micro-buy 1 @4", ok))
+    }
+  }
 
   // ===========================================================================
   //  RETAIL -- Cy: -o LOLLIPOP delegation (principal funds the order rendezvous,
@@ -240,8 +342,16 @@ new stdout(`rho:io:stdout`) in {
   //  rendezvous is funded by `cyPrincipal`, the continuation re-signed so the settlement needs a
   //  SEPARATE `cyAgent` token -- two distinct fuels, hence `cyPrincipal :: () | cyAgent :: ()`.
   // ===========================================================================
-  | new r in { {% for (@q <- @"cyOrder") { @"swap"!("Cy_cash","Sue_cash","Sue_stk","Cy_home", 5, q, *r) } %}[ cyPrincipal -o cyAgent ] | for (@ok <- r) { @"audit"!(("Cy delegated buy", ok)) } }
-  | cyPrincipal :: () | cyAgent :: ()
+  | new r in {
+    {% for (@q <- @"cyOrder") {
+      @"swap"!("Cy_cash","Sue_cash","Sue_stk","Cy_home", 5, q, *r)
+    } %}[ cyPrincipal -o cyAgent ]
+    | for (@ok <- r) {
+      @"audit"!(("Cy delegated buy", ok))
+    }
+  }
+  | cyPrincipal :: ()
+  | cyAgent :: ()
   | @"cyOrder"!(2)
 
   // ===========================================================================
@@ -253,17 +363,34 @@ new stdout(`rho:io:stdout`) in {
   //  ARE the unforgeable capability.) Under --unmatched-sends-only you can SEE Di's ring-fenced
   //  token resting unconsumed -- direct evidence the thief's free-`diSig` gate never fired.
   // ===========================================================================
-  | new diSig in { diSig :: () }
-  | new r in { {% @"swap"!("Di_cash","Whse_cash","Sue_stk","Cy_home", 5, 2, *r) %}[ diSig ] | for (@ok <- r) { @"audit"!(("Di-drain by a thief (must never run)", ok)) } }
+  | new diSig in {
+    diSig :: ()
+  }
+  | new r in {
+    {% @"swap"!("Di_cash","Whse_cash","Sue_stk","Cy_home", 5, 2, *r) %}[ diSig ]
+    | for (@ok <- r) {
+      @"audit"!(("Di-drain by a thief (must never run)", ok))
+    }
+  }
 
   // ===========================================================================
   //  CONTENTION (embraced) -- Fae & Gus both want the LAST flash-sale unit.
   //  Both are funded and can afford it; Flash_stk = 1. Exactly ONE swap wins
   //  (nondeterministic which); the other reads stock 0 and is DENIED.
   // ===========================================================================
-  | new r in { {% @"swap"!("Fae_cash","Sue_cash","Flash_stk","Fae_home", 20, 1, *r) %}[ faeSig ] | for (@ok <- r) { @"audit"!(("Fae flash-buy", ok)) } }
+  | new r in {
+    {% @"swap"!("Fae_cash","Sue_cash","Flash_stk","Fae_home", 20, 1, *r) %}[ faeSig ]
+    | for (@ok <- r) {
+      @"audit"!(("Fae flash-buy", ok))
+    }
+  }
   | faeSig :: ()
-  | new r in { {% @"swap"!("Gus_cash","Sue_cash","Flash_stk","Gus_home", 20, 1, *r) %}[ gusSig ] | for (@ok <- r) { @"audit"!(("Gus flash-buy", ok)) } }
+  | new r in {
+    {% @"swap"!("Gus_cash","Sue_cash","Flash_stk","Gus_home", 20, 1, *r) %}[ gusSig ]
+    | for (@ok <- r) {
+      @"audit"!(("Gus flash-buy", ok))
+    }
+  }
   | gusSig :: ()
 
   // ===========================================================================
@@ -271,21 +398,36 @@ new stdout(`rho:io:stdout`) in {
   //  far beyond any balance he can ever hold. The gate FIRES (funded), but the
   //  funds guard fails in every interleaving => SWAP-DENIED, ret = false.
   // ===========================================================================
-  | new r in { {% @"swap"!("Ben_cash","Sue_cash","Sue_stk","Ben_home", 100, 5, *r) %}[ benBig ] | for (@ok <- r) { @"audit"!(("Ben BIG buy 5 @100 (must be denied)", ok)) } }
+  | new r in {
+    {% @"swap"!("Ben_cash","Sue_cash","Sue_stk","Ben_home", 100, 5, *r) %}[ benBig ]
+    | for (@ok <- r) {
+      @"audit"!(("Ben BIG buy 5 @100 (must be denied)", ok))
+    }
+  }
   | benBig :: ()
 
   // ===========================================================================
   //  METERING (unfunded) -- Eve forges a drain of Sue's stock but funds nothing.
   //  No token on Sigma[eve] => the gate parks forever, the swap never runs.
   // ===========================================================================
-  | new r in { {% @"swap"!("Sue_cash","Whse_cash","Sue_stk","Cy_home", 5, 3, *r) %}[ eve ] | for (@ok <- r) { @"audit"!(("Eve theft (must never run)", ok)) } }
+  | new r in {
+    {% @"swap"!("Sue_cash","Whse_cash","Sue_stk","Cy_home", 5, 3, *r) %}[ eve ]
+    | for (@ok <- r) {
+      @"audit"!(("Eve theft (must never run)", ok))
+    }
+  }
 
   // ===========================================================================
   //  RETURN (reverse swap) -- Ada returns 1 widget to Sue for a 4 refund
   //  (a restocking fee: she paid 5, gets 4 back). Goods home->store, money
   //  seller->buyer. Ada_home opened at 2 so a return always has something to give.
   // ===========================================================================
-  | new r in { {% @"swap"!("Sue_cash","Ada_cash","Ada_home","Sue_stk", 4, 1, *r) %}[ adaRet ] | for (@ok <- r) { @"audit"!(("Ada return 1 (refund 4)", ok)) } }
+  | new r in {
+    {% @"swap"!("Sue_cash","Ada_cash","Ada_home","Sue_stk", 4, 1, *r) %}[ adaRet ]
+    | for (@ok <- r) {
+      @"audit"!(("Ada return 1 (refund 4)", ok))
+    }
+  }
   | adaRet :: ()
 
   // ===========================================================================
@@ -302,31 +444,47 @@ new stdout(`rho:io:stdout`) in {
   //  (a) single per-clause bind -- Sue's desk pulls ONE buyer order off its queue,
   //      the intake metered by `sueDesk`. Funded => the order is taken & audited.
   | @"Sue_orders"!("ada: 3 widgets")
-  | for ( {% @ord <- @"Sue_orders" %}[ sueDesk ] ) { @"audit"!(("Sue desk intake", ord)) }
+  | for ( {% @ord <- @"Sue_orders" %}[ sueDesk ] ) {
+    @"audit"!(("Sue desk intake", ord))
+  }
   | sueDesk :: ()
 
   //  (b) two-clause signed JOIN (the Axis-C product bidSig (*) askSig) -- a deal
   //      matcher atomically pairs a buyer BID and a seller ASK, EACH leg metered
   //      independently. Fires only when both messages AND both fuels are present.
-  | @"bids"!("Cy bids 50") | @"asks"!("Sue asks 48")
+  | @"bids"!("Cy bids 50")
+  | @"asks"!("Sue asks 48")
   | for ( {% @bid <- @"bids" %}[ bidSig ] & {% @ask <- @"asks" %}[ askSig ] ) {
-      @"audit"!(("deal matched", bid, ask))
-    }
-  | bidSig :: () | askSig :: ()
+    @"audit"!(("deal matched", bid, ask))
+  }
+  | bidSig :: ()
+  | askSig :: ()
 
   //  (c) UNFUNDED per-clause bind (metering / bottom) -- Zed's desk has an order
   //      waiting but NO intake fuel, so the rendezvous PARKS: the order rests
   //      unconsumed (visible under --unmatched-sends-only) and is never audited,
   //      even though the queue HAS a message. This is the receive-side metering.
   | @"Zed_orders"!("ben: 1 widget (never intaken)")
-  | for ( {% @ord <- @"Zed_orders" %}[ zedDesk ] ) { @"audit"!(("Zed desk intake (must never run)", ord)) }
+  | for ( {% @ord <- @"Zed_orders" %}[ zedDesk ] ) {
+    @"audit"!(("Zed desk intake (must never run)", ord))
+  }
 
   // ===========================================================================
   //  MUTEX -- two RESTOCK requests; the lock serializes their critical sections
   //  so the two read->announce->move sequences never interleave.
   // ===========================================================================
-  | new r in { {% @"restock"!(3, *r) %}[ restock1 ] | for (@ok <- r) { @"audit"!(("restock #1 of 3", ok)) } }
+  | new r in {
+    {% @"restock"!(3, *r) %}[ restock1 ]
+    | for (@ok <- r) {
+      @"audit"!(("restock #1 of 3", ok))
+    }
+  }
   | restock1 :: ()
-  | new r in { {% @"restock"!(3, *r) %}[ restock2 ] | for (@ok <- r) { @"audit"!(("restock #2 of 3", ok)) } }
+  | new r in {
+    {% @"restock"!(3, *r) %}[ restock2 ]
+    | for (@ok <- r) {
+      @"audit"!(("restock #2 of 3", ok))
+    }
+  }
   | restock2 :: ()
 }

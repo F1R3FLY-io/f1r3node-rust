@@ -114,21 +114,34 @@ new stdout(`rho:io:stdout`) in {
 
   // ---- TREASURY pool (cash cells); funds disbursements 1,2,3,5,7,8 -----------
   @"Treasury"!(500)
-  | @"Dave_cash"!(0) | @"Doug_cash"!(0) | @"Frank_cash"!(0) | @"Erin_cash"!(0)
-  | @"Heidi_cash"!(0) | @"Niaj_cash"!(0) | @"Olivia_cash"!(0) | @"Peggy_cash"!(0)
-  | @"Ivan_cash"!(0) | @"Judy_cash"!(0)
+  | @"Dave_cash"!(0)
+  | @"Doug_cash"!(0)
+  | @"Frank_cash"!(0)
+  | @"Erin_cash"!(0)
+  | @"Heidi_cash"!(0)
+  | @"Niaj_cash"!(0)
+  | @"Olivia_cash"!(0)
+  | @"Peggy_cash"!(0)
+  | @"Ivan_cash"!(0)
+  | @"Judy_cash"!(0)
 
   // ---- QUORUM pool : a one-shot community grant ------------------------------
-  | @"Quorum_grant"!(40) | @"Grace_cash"!(0)
+  | @"Quorum_grant"!(40)
+  | @"Grace_cash"!(0)
 
   // ---- RESERVE pool : ring-fenced emergency funds + the thief's sink ---------
-  | @"Reserve"!(100) | @"Mallory_cash"!(0)
+  | @"Reserve"!(100)
+  | @"Mallory_cash"!(0)
 
   // ---- Consoles : forward every announcement to the terminal -----------------
   //  @"display" and @"audit" are ORDINARY Rholang channels (plain stdout forwarders),
   //  NOT cost-accounting machinery. The persistent `<=` receive reprints each send once.
-  | for (@line <= @"display") { stdout!(line) }
-  | for (@line <= @"audit")   { stdout!(("AUDIT", line)) }
+  | for (@line <= @"display") {
+    stdout!(line)
+  }
+  | for (@line <= @"audit") {
+    stdout!(("AUDIT", line))
+  }
 
   // ===========================================================================
   //  INFRASTRUCTURE CONTRACTS (unmetered; only the request *sends* are token-wrapped)
@@ -138,30 +151,46 @@ new stdout(`rho:io:stdout`) in {
   //    the source and destination; the guard checks funds; both cells are re-emitted
   //    on BOTH branches, so `from + to` is invariant in every interleaving.
   | for (@from, @to, @amt, @ret <= @"pay") {
-      for (@f <- @from & @t <- @to) {
-        match (f >= amt) {
-          true  => { @from!(f - amt) | @to!(t + amt) | @ret!(true)
-                   | @"display"!(("PAY-OK", from, "->", to, amt)) }
-          false => { @from!(f) | @to!(t) | @ret!(false)
-                   | @"display"!(("PAY-DENIED", from, "->", to, amt, "(insufficient funds)")) }
+    for (@f <- @from & @t <- @to) {
+      match (f >= amt) {
+        true  => {
+          @from!(f - amt)
+          | @to!(t + amt)
+          | @ret!(true)
+          | @"display"!(("PAY-OK", from, "->", to, amt))
+        }
+        false => {
+          @from!(f)
+          | @to!(t)
+          | @ret!(false)
+          | @"display"!(("PAY-DENIED", from, "->", to, amt, "(insufficient funds)"))
         }
       }
     }
+  }
 
   // -- RELEASE : a ONE-SHOT guarded draw used by the quorum. Same conservative
   //    2-cell move as PAY, but the `amt > 0` guard + the racing callers make it a
   //    once-only release: the first caller drains the grant cell, every later caller
   //    reads it short and is denied -- so a 2-of-3 grant is paid out exactly once.
   | for (@grantCell, @to, @amt, @ret <= @"release") {
-      for (@g <- @grantCell & @rec <- @to) {
-        match (g >= amt and amt > 0) {
-          true  => { @grantCell!(g - amt) | @to!(rec + amt) | @ret!(true)
-                   | @"display"!(("RELEASE-OK", grantCell, "->", to, amt)) }
-          false => { @grantCell!(g) | @to!(rec) | @ret!(false)
-                   | @"display"!(("RELEASE-DENIED", grantCell, "(already released)")) }
+    for (@g <- @grantCell & @rec <- @to) {
+      match (g >= amt and amt > 0) {
+        true  => {
+          @grantCell!(g - amt)
+          | @to!(rec + amt)
+          | @ret!(true)
+          | @"display"!(("RELEASE-OK", grantCell, "->", to, amt))
+        }
+        false => {
+          @grantCell!(g)
+          | @to!(rec)
+          | @ret!(false)
+          | @"display"!(("RELEASE-DENIED", grantCell, "(already released)"))
         }
       }
     }
+  }
 
   // ===========================================================================
   //  1.  2-OF-2 JOINT  alice (*) bob  + depth-2 BUDGETS (SEPARATE tokens).
@@ -171,8 +200,18 @@ new stdout(`rho:io:stdout`) in {
   //  `alice :: alice :: ()` (two operations' worth). CONTRAST scene 2 -- the same
   //  joint authority funded by ONE combined token instead of separate budgets.
   // ===========================================================================
-  | new r in { {% @"pay"!("Treasury", "Dave_cash", 30, *r) %}[ alice (*) bob ] | for (@ok <- r) { @"audit"!(("Dave vendor-paid 30 [2-of-2 Alice (*) Bob]", ok)) } }
-  | new r in { {% @"pay"!("Treasury", "Doug_cash", 20, *r) %}[ alice (*) bob ] | for (@ok <- r) { @"audit"!(("Doug vendor-paid 20 [2-of-2 Alice (*) Bob]", ok)) } }
+  | new r in {
+    {% @"pay"!("Treasury", "Dave_cash", 30, *r) %}[ alice (*) bob ]
+    | for (@ok <- r) {
+      @"audit"!(("Dave vendor-paid 30 [2-of-2 Alice (*) Bob]", ok))
+    }
+  }
+  | new r in {
+    {% @"pay"!("Treasury", "Doug_cash", 20, *r) %}[ alice (*) bob ]
+    | for (@ok <- r) {
+      @"audit"!(("Doug vendor-paid 20 [2-of-2 Alice (*) Bob]", ok))
+    }
+  }
   | alice :: alice :: ()                                       // Alice's budget = 2 co-signs
   | bob :: bob :: ()                                           // Bob's budget   = 2 co-signs
 
@@ -184,7 +223,12 @@ new stdout(`rho:io:stdout`) in {
   //  joint authority and identical BALANCED per-wallet cost -- only the packaging
   //  differs from scene 1.
   // ===========================================================================
-  | new r in { {% @"pay"!("Treasury", "Frank_cash", 25, *r) %}[ alice (*) bob ] | for (@ok <- r) { @"audit"!(("Frank contractor-paid 25 [2-of-2, ONE combined token]", ok)) } }
+  | new r in {
+    {% @"pay"!("Treasury", "Frank_cash", 25, *r) %}[ alice (*) bob ]
+    | for (@ok <- r) {
+      @"audit"!(("Frank contractor-paid 25 [2-of-2, ONE combined token]", ok))
+    }
+  }
   | alice (*) bob :: ()
 
   // ===========================================================================
@@ -193,8 +237,15 @@ new stdout(`rho:io:stdout`) in {
   //  3-of-3 is just the order-independent compound of three component authorities,
   //  each funded by its own token.
   // ===========================================================================
-  | new r in { {% @"pay"!("Treasury", "Erin_cash", 45, *r) %}[ alice (*) bob (*) carol ] | for (@ok <- r) { @"audit"!(("Erin grant 45 [3-of-3 Alice (*) Bob (*) Carol]", ok)) } }
-  | alice :: () | bob :: () | carol :: ()
+  | new r in {
+    {% @"pay"!("Treasury", "Erin_cash", 45, *r) %}[ alice (*) bob (*) carol ]
+    | for (@ok <- r) {
+      @"audit"!(("Erin grant 45 [3-of-3 Alice (*) Bob (*) Carol]", ok))
+    }
+  }
+  | alice :: ()
+  | bob :: ()
+  | carol :: ()
 
   // ===========================================================================
   //  4.  2-OF-3 QUORUM via racing pairs + a ONE-SHOT grant.
@@ -207,12 +258,30 @@ new stdout(`rho:io:stdout`) in {
   //  valid signers is the admission gate's business (each pair balanced-apportioned
   //  across its two wallets); here the one-shot cell + conservation are what hold.
   // ===========================================================================
-  | new r in { {% @"release"!("Quorum_grant", "Grace_cash", 40, *r) %}[ alice (*) bob ]   | for (@ok <- r) { @"audit"!(("community grant -- release by Alice (*) Bob", ok)) } }
-  | alice :: () | bob :: ()
-  | new r in { {% @"release"!("Quorum_grant", "Grace_cash", 40, *r) %}[ alice (*) carol ] | for (@ok <- r) { @"audit"!(("community grant -- release by Alice (*) Carol", ok)) } }
-  | alice :: () | carol :: ()
-  | new r in { {% @"release"!("Quorum_grant", "Grace_cash", 40, *r) %}[ bob (*) carol ]   | for (@ok <- r) { @"audit"!(("community grant -- release by Bob (*) Carol", ok)) } }
-  | bob :: () | carol :: ()
+  | new r in {
+    {% @"release"!("Quorum_grant", "Grace_cash", 40, *r) %}[ alice (*) bob ]
+    | for (@ok <- r) {
+      @"audit"!(("community grant -- release by Alice (*) Bob", ok))
+    }
+  }
+  | alice :: ()
+  | bob :: ()
+  | new r in {
+    {% @"release"!("Quorum_grant", "Grace_cash", 40, *r) %}[ alice (*) carol ]
+    | for (@ok <- r) {
+      @"audit"!(("community grant -- release by Alice (*) Carol", ok))
+    }
+  }
+  | alice :: ()
+  | carol :: ()
+  | new r in {
+    {% @"release"!("Quorum_grant", "Grace_cash", 40, *r) %}[ bob (*) carol ]
+    | for (@ok <- r) {
+      @"audit"!(("community grant -- release by Bob (*) Carol", ok))
+    }
+  }
+  | bob :: ()
+  | carol :: ()
 
   // ===========================================================================
   //  5.  DELEGATION -- the  -o  LOLLIPOP  (separate WHO AUTHORIZES from WHO EXECUTES).
@@ -223,8 +292,16 @@ new stdout(`rho:io:stdout`) in {
   //  (a) PLAIN delegation -- Alice is travelling, so she delegates a supplier payment
   //      to her agent. Alice (principal) funds the order intake; her agent funds the
   //      pay. The body is a `for` -- the comm the authority transfers through.
-  | new r in { {% for (@q <- @"aliceOrder") { @"pay"!("Treasury", "Heidi_cash", q, *r) } %}[ alicePrincipal -o aliceAgent ] | for (@ok <- r) { @"audit"!(("Heidi supplier-paid 20 (Alice -o her agent)", ok)) } }
-  | alicePrincipal :: () | aliceAgent :: ()
+  | new r in {
+    {% for (@q <- @"aliceOrder") {
+      @"pay"!("Treasury", "Heidi_cash", q, *r)
+    } %}[ alicePrincipal -o aliceAgent ]
+    | for (@ok <- r) {
+      @"audit"!(("Heidi supplier-paid 20 (Alice -o her agent)", ok))
+    }
+  }
+  | alicePrincipal :: ()
+  | aliceAgent :: ()
   | @"aliceOrder"!(20)
 
   //  (b) CO-AUTHORIZED delegation (compound on the LEFT) -- the board (Alice AND Bob)
@@ -232,8 +309,17 @@ new stdout(`rho:io:stdout`) in {
   //      `alice (*) bob -o paymaster` parses as `(alice (*) bob) -o paymaster` (`(*)`
   //      binds tighter): the JOINT board authority (2-of-2) funds the order intake,
   //      the paymaster funds execution. Governance authorizes; operations execute.
-  | new r in { {% for (@amt <- @"boardPayOrder") { @"pay"!("Treasury", "Niaj_cash", amt, *r) } %}[ alice (*) bob -o paymaster ] | for (@ok <- r) { @"audit"!(("Niaj vendor-paid 18 (board [Alice (*) Bob] -o paymaster)", ok)) } }
-  | alice :: () | bob :: () | paymaster :: ()
+  | new r in {
+    {% for (@amt <- @"boardPayOrder") {
+      @"pay"!("Treasury", "Niaj_cash", amt, *r)
+    } %}[ alice (*) bob -o paymaster ]
+    | for (@ok <- r) {
+      @"audit"!(("Niaj vendor-paid 18 (board [Alice (*) Bob] -o paymaster)", ok))
+    }
+  }
+  | alice :: ()
+  | bob :: ()
+  | paymaster :: ()
   | @"boardPayOrder"!(18)
 
   //  (c) DELEGATE-TO-A-PAIR / dual control (compound on the RIGHT) -- the treasurer
@@ -241,8 +327,17 @@ new stdout(`rho:io:stdout`) in {
   //      `treasurer -o clerkA (*) clerkB` parses as `treasurer -o (clerkA (*) clerkB)`:
   //      the treasurer funds the order intake, the JOINT clerk pair funds the
   //      settlement (four-eyes execution).
-  | new r in { {% for (@amt <- @"clerkOrder") { @"pay"!("Treasury", "Olivia_cash", amt, *r) } %}[ treasurer -o clerkA (*) clerkB ] | for (@ok <- r) { @"audit"!(("Olivia contractor-paid 12 (treasurer -o dual-control clerks)", ok)) } }
-  | treasurer :: () | clerkA :: () | clerkB :: ()
+  | new r in {
+    {% for (@amt <- @"clerkOrder") {
+      @"pay"!("Treasury", "Olivia_cash", amt, *r)
+    } %}[ treasurer -o clerkA (*) clerkB ]
+    | for (@ok <- r) {
+      @"audit"!(("Olivia contractor-paid 12 (treasurer -o dual-control clerks)", ok))
+    }
+  }
+  | treasurer :: ()
+  | clerkA :: ()
+  | clerkB :: ()
   | @"clerkOrder"!(12)
 
   //  (d) MULTI-HOP PIPELINE (NESTED lollipops) -- a field-office expense threads
@@ -254,12 +349,19 @@ new stdout(`rho:io:stdout`) in {
   //      genuine causal delegation, the one nested scene in an otherwise flat file.
   | new r in {
       {% for (@req <- @"fieldRequest") {
-           {% for (@amt <- @"deptApproval") { @"pay"!("Treasury", "Peggy_cash", amt, *r) } %}[ deptHead -o disburser ]
-         } %}[ regionalDir -o deptHead ]
-    | for (@ok <- r) { @"audit"!(("Peggy field-office-paid 14 (2-hop pipeline regionalDir -o deptHead -o disburser)", ok)) }
+        {% for (@amt <- @"deptApproval") {
+          @"pay"!("Treasury", "Peggy_cash", amt, *r)
+        } %}[ deptHead -o disburser ]
+      } %}[ regionalDir -o deptHead ]
+    | for (@ok <- r) {
+      @"audit"!(("Peggy field-office-paid 14 (2-hop pipeline regionalDir -o deptHead -o disburser)", ok))
     }
-  | regionalDir :: () | deptHead :: () | disburser :: ()
-  | @"fieldRequest"!("expense claim #42") | @"deptApproval"!(14)
+  }
+  | regionalDir :: ()
+  | deptHead :: ()
+  | disburser :: ()
+  | @"fieldRequest"!("expense claim #42")
+  | @"deptApproval"!(14)
 
   // ===========================================================================
   //  6.  RING-FENCING via a `new`-bound signature -- the emergency RESERVE key.
@@ -271,8 +373,15 @@ new stdout(`rho:io:stdout`) in {
   //  but the Reserve pool is non-crossing, so the move only shuffles Reserve into
   //  Mallory_cash WITHIN the pool: the total stays 640 and the Treasury is untouched.)
   // ===========================================================================
-  | new reserveSig in { reserveSig :: () }
-  | new r in { {% @"pay"!("Reserve", "Mallory_cash", 100, *r) %}[ reserveSig ] | for (@ok <- r) { @"audit"!(("Mallory reserve-drain attempt (admission rejects this)", ok)) } }
+  | new reserveSig in {
+    reserveSig :: ()
+  }
+  | new r in {
+    {% @"pay"!("Reserve", "Mallory_cash", 100, *r) %}[ reserveSig ]
+    | for (@ok <- r) {
+      @"audit"!(("Mallory reserve-drain attempt (admission rejects this)", ok))
+    }
+  }
 
   // ===========================================================================
   //  7.  RECEIVE-SIDE MULTI-SIG -- per-clause signed JOIN  {% y <- x %}[ s ]  (Axis-C).
@@ -283,14 +392,18 @@ new stdout(`rho:io:stdout`) in {
   //  clause). Fuel is NEVER folded into the data join. Only when both endorsements
   //  are present does the desk pay Ivan from the Treasury.
   // ===========================================================================
-  | @"alice_ok"!("Alice endorses Ivan's invoice") | @"bob_ok"!("Bob endorses Ivan's invoice")
+  | @"alice_ok"!("Alice endorses Ivan's invoice")
+  | @"bob_ok"!("Bob endorses Ivan's invoice")
   | new r in {
-      for ( {% @e1 <- @"alice_ok" %}[ alice ] & {% @e2 <- @"bob_ok" %}[ bob ] ) {
-        @"pay"!("Treasury", "Ivan_cash", 15, *r)
-      }
-    | for (@ok <- r) { @"audit"!(("Ivan invoice-paid 15 [receive-side 2-endorsement join]", ok)) }
+    for ( {% @e1 <- @"alice_ok" %}[ alice ] & {% @e2 <- @"bob_ok" %}[ bob ] ) {
+      @"pay"!("Treasury", "Ivan_cash", 15, *r)
     }
-  | alice :: () | bob :: ()
+    | for (@ok <- r) {
+      @"audit"!(("Ivan invoice-paid 15 [receive-side 2-endorsement join]", ok))
+    }
+  }
+  | alice :: ()
+  | bob :: ()
 
   // ===========================================================================
   //  8.  # P  HASH / CHARTER SIGNATURE -- a governance payout authorized by the
@@ -298,6 +411,11 @@ new stdout(`rho:io:stdout`) in {
   //  the charter principal: only code that can name the charter mints its fuel. The
   //  token `# "OrgCharter" :: ()` and the gate `[ # "OrgCharter" ]` rendezvous there.
   // ===========================================================================
-  | new r in { {% @"pay"!("Treasury", "Judy_cash", 35, *r) %}[ # "OrgCharter" ] | for (@ok <- r) { @"audit"!(("Judy governance-paid 35 [charter-signed hash sig]", ok)) } }
+  | new r in {
+    {% @"pay"!("Treasury", "Judy_cash", 35, *r) %}[ # "OrgCharter" ]
+    | for (@ok <- r) {
+      @"audit"!(("Judy governance-paid 35 [charter-signed hash sig]", ok))
+    }
+  }
   | # "OrgCharter" :: ()
 }
