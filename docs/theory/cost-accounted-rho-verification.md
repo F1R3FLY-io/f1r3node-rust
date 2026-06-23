@@ -304,94 +304,26 @@ on any axiom from Section 12.2.1.
 
 ### 1.7 Module Dependency Graph
 
-Arrows point from dependency to dependent (`A ──► B` means "module `B`
-imports module `A`"). The 32 modules organize into seven dependency
-tiers corresponding to the proof layers of §7.1.
+The 32 Rocq modules of the formalization
+(`formal/rocq/cost_accounted_rho/theories`) organize into **seven dependency
+tiers**. Figure 1.7 renders the complete dependency graph, transitively reduced
+(`tred`) to its minimal skeleton: an edge `A → B` reads "module `B` imports
+module `A`," so every arrow points from a dependency to its dependent and the
+graph flows strictly downward across tiers (no upward references). A module's
+tier is its depth in the import order; the tiers refine — and are colour-keyed
+cool→warm to match — the proof-layer narrative of
+[§7.1](#71-the-proof-layers).
 
-```
-                         ┌─────────────┐
-                         │  RhoSyntax  │
-                         └──────┬──────┘
-                 ┌──────────────┼────────────────────────────────┐
-                 │              │                                │
-    ┌────────────▼─────────┐    │            ┌───────────────────▼────────┐
-    │ StructEquivInversion │    │            │    CostAccountedSyntax     │
-    └────────────┬─────────┘    │            └───────────────────┬────────┘
-                 │              │                                │
-    ┌────────────▼─────────┐    │            ┌───────────────────▼────────┐
-    │   StructEquivHeads   │    │            │   CostAccountedReduction   │
-    └────────────┬─────────┘    │            └───────────────────┬────────┘
-                 │              │                                │
-                 └──────┬───────┘                                │
-                        │                                        │
-               ┌────────▼───────┐                                │
-               │  RhoReduction  │───────────┐                    │
-               └────┬─────┬─────┘           │                    │
-                    │     │          ┌──────▼──────────┐         │
-                    │     │          │ WeakBarbedEquiv │         │
-                    │     │          └─────────────────┘         │
-           ┌────────▼─────▼────────────────┐                     │
-           │          Translation          │                     │
-           └──┬─────┬──────────┬───────────┘                     │
-              │     │          │                                 │
-    ┌─────────┘     │          └────────┐                        │
-    │               │                   │                        │
-┌───▼──────┐ ┌──────▼────────┐  ┌───────▼───────────────────┐    │
-│ TokenCon.│ │ FuelGateSafety│  │  TranslationFaithfulness  │◄───┘
-└──────────┘ └───────────────┘  └──────────────┬────────────┘
-                                               │
-                                      ┌────────▼────────┐
-                                      │  Bisimulation   │
-                                      └────────┬────────┘
-                                               │
-                                      ┌────────▼──────┐
-                                      │  Replication  │
-                                      └───────────────┘
-```
+![Module dependency graph of the cost-accounted-rho formalization — all 32 Rocq modules arranged in seven cool-to-warm dependency tiers, transitively reduced. Tier 1 (lavender) is the syntactic foundation: RhoSyntax, StructEquivInversion, StructEquivHeads, RhoReduction. Tier 2 (blue) is the cost-accounting calculus, translation and signature algebra: CostAccountedSyntax, CostAccountedReduction, Translation, ChannelSeparation, SystemStructEquiv, SyntacticSugar, WalletNaming, LinearLogicResources, LLIdentities. Tier 3 (green) is conservation and determinism: TokenConservation, FuelEventDecomposition, StrongNormalization, Confluence, StepDeterminism. Tier 4 (amber) is faithfulness and bisimulation: TranslationFaithfulness, FuelGateSafety, Bisimulation. Tier 5 (orange) is settlement, minting and the economic layer: Settlement, SlashingComposition, MergeableChannelAccounting, MintingInjection, MintingHalt, Exchange. Tier 6 (pink) is the weak-barb and replication leaves, WeakBarbedEquiv and Replication, which nothing in Tiers 1 to 4 imports. Tier 7 (purple) is the runtime-budget refinement and use-case adequacy capstones: RuntimeBudgetRefinement, MultiSignerRefinement, UseCaseAdequacy. Every edge is an actual Require Import dependency extracted from the .v sources, with arrows flowing strictly downward.](diagrams/module-dependency-graph.svg)
 
-**Edges shown are a representative subset chosen for clarity; several
-direct-import edges are omitted. In particular:**
+(*Source: [`diagrams/module-dependency-graph.dot`](diagrams/module-dependency-graph.dot) — render with `tred docs/theory/diagrams/module-dependency-graph.dot | dot -Tsvg -o docs/theory/diagrams/module-dependency-graph.svg` (or `./render.sh module-dependency-graph.dot`). Edges are extracted verbatim from each module's `Require Import` statements; `tred` removes the transitively-redundant edges, leaving the minimal dependency skeleton. The full per-module table is [§11.1](#111-file-listing).*)
 
-- `CostAccountedReduction` → `TokenConservation`, `FuelEventDecomposition`,
-  `Confluence` (the cost-determinism stack is drawn separately below).
-- `TokenConservation` → `Settlement` → `SlashingComposition`
-  and `MergeableChannelAccounting`
-  (post-evaluation fee settlement and slash-system composition are drawn
-  separately from reduction and translation).
-- `WeakBarbedEquiv` → `Replication` (the weak-barb framework consumed
-  by the replication-encoding equivalence of §6.6).
-- Multiple Layer-1 imports descend directly into `Bisimulation`
-  (`RhoSyntax`, `StructEquivInversion`, `StructEquivHeads`,
-  `RhoReduction`) and into `Replication` (the same four plus
-  `WeakBarbedEquiv`), in addition to the indirect paths shown.
-- `TranslationFaithfulness` also imports `CostAccountedSyntax`,
-  `RhoReduction`, and others not drawn individually.
-
-See §11.1 File Listing for the complete per-module dependency set.
-
-**Cost-determinism stack** (built on top of `TokenConservation`):
-
-```
-  TokenConservation ──► StrongNormalization ──► Confluence ──► StepDeterminism
-                                                     │
-                                                     ▼
-                                          ca_cost_deterministic
-                                            (Confluence.v:474)
-```
-
-**Auxiliary modules** (independent leaves):
-
-```
-  CostAccountedReduction ──► FuelEventDecomposition   (event multiset determinism)
-  CostAccountedSyntax    ──► ChannelSeparation        (signature channels are quotations)
-  CostAccountedSyntax    ──► RuntimeBudgetRefinement  (coalesced runtime budget and replay trace)
-  TokenConservation      ──► Settlement ──► SlashingComposition ──► UseCaseAdequacy
-                                      └────► MergeableChannelAccounting ──┘
-                                      (fee settlement, slash-system composition,
-                                       typed mergeable channels, and proof-backed
-                                       use-case anchors)
-  RhoSyntax              ──┘
-```
+**Cost-determinism critical path.** The consensus-critical determinism result
+threads Tier 3: `TokenConservation → StrongNormalization → Confluence →
+StepDeterminism`, with `Confluence` discharging `ca_cost_deterministic`
+(`Confluence.v:474`). Because this chain depends only on Tiers 1–3, it is
+independent of the weak-barb / replication leaves (Tier 6) and the economic and
+capstone tiers (Tiers 5 and 7).
 
 **Critical paths:**
 
@@ -1425,93 +1357,38 @@ add weak-observation infrastructure and replication-encoding support;
 Layers 6 and 7 add runtime-budget refinement and use-case adequacy.
 No layer introduces theorem-level axioms.
 
-```
-Layer 1 ── Syntactic Foundation
-  ├── RhoSyntax (855 lines, 31 thms)
-  │     Types, substitution, lifting, structural equivalence.
-  │     Key: subst_lift_zero, head_count_se.
-  ├── StructEquivInversion (253 lines, 7 thms)
-  │     head_count, count_inputs, count_outputs, count_derefs, count_replicates.
-  ├── StructEquivHeads (1,470 lines, 45 thms)
-  │     heads, list_equiv, perm_equiv, struct_equiv_heads_perm,
-  │     se_PInput_inj, se_POutput_inj, se_PReplicate_inj,
-  │     only_replicate + onlyreplicate_se_both (Section 8.7).
-  └── RhoReduction (442 lines, 17 thms)
-        rho_step, rho_reachable, conflated barb, split input_barb /
-        output_barb (§3.6), stuck lemmas.
+![Proof architecture as seven monotone UML-package layers, coloured cool to warm by depth, each package holding its principal modules with kernel-checked line and theorem counts. Layer 1 (lavender) Syntactic Foundation: RhoSyntax (855 lines, 31 thms), StructEquivInversion (253, 7), StructEquivHeads (1,470, 45), RhoReduction (442, 17). Layer 2 (blue) Cost-Accounting, Translation and Settlement: CostAccountedSyntax (231, 4), CostAccountedReduction (283, 5), Translation (580, 12), TokenConservation (234, 9), Settlement (140, 8), SlashingComposition (570, 30), MergeableChannelAccounting (274, 14). Layer 3 (amber) Faithfulness and Strong Bisimulation: TranslationFaithfulness (4,183, 84), FuelGateSafety (357, 6), Bisimulation (1,248, 36). Layer 4 (pink) Weak Barbed Observables: WeakBarbedEquiv (259, 17). Layer 5 (pink) Replication Encoding Support, a leaf: Replication (2,071, 56). Layer 6 (purple) Runtime Budget Refinement: RuntimeBudgetRefinement (2,084, 86). Layer 7 (purple) Use-Case Adequacy: UseCaseAdequacy (1,985, 88). Downward edges show the monotone dependency direction; a note records that Layers 4 and 5 are leaves that nothing in Layers 1 to 3 imports.](diagrams/proof-layers.svg)
 
-Layer 2 ── Cost-Accounting and Translation
-  ├── CostAccountedSyntax (231 lines, 4 thms)
-  │     sig, token, system, sig_size, token_size.
-  ├── CostAccountedReduction (283 lines, 5 thms)
-  │     ca_step (5 rules), ca_reachable.
-  ├── Translation (580 lines, 12 thms)
-  │     N_tr, T_tr, P_tr, S_tr, Split, Join, closure properties.
-  ├── TokenConservation (234 lines, 9 thms)
-  │     token_monotone_step, token_monotone_reachable,
-  │     per-rule exact decreases.
-  ├── Settlement (140 lines, 8 thms)
-  │     post-evaluation escrow/refund arithmetic and no mid-evaluation
-  │     refund fuel.
-  └── SlashingComposition (389 lines, 20 thms)
-        adopts the slashing-side boundary from f1r3node-rust
-        analysis/slashing and proves slash system effects preserve
-        user fuel, settlement inputs, and settlement arithmetic.
-  └── MergeableChannelAccounting (274 lines, 14 thms)
-        models `IntegerAdd` and `BitmaskOr` mergeable-channel accounting,
-        proves bitmask diff/merge round trips, order-independent OR
-        folding, non-numeric fallback classification, merge-type
-        preservation, and cost-boundary isolation.
+(*Source: [`diagrams/proof-layers.puml`](diagrams/proof-layers.puml) — render with `plantuml -tsvg docs/theory/diagrams/proof-layers.puml` (or `./render.sh proof-layers.puml`). Line/theorem counts are the kernel-checked (`Qed.`+`Defined.`) totals of [§11.1](#111-file-listing).*)
 
-Layer 3 ── Faithfulness and Strong Bisimulation
-  ├── TranslationFaithfulness (4,183 lines, 84 thms)
-  │     Per-rule simulation (all 5 × all sig shapes),
-  │     per-step reverse (unit, hash, compound, generic),
-  │     phased reflection and recursive whole-system reflection,
-  │     channel distinctness (N_tr_size_eq, N_tr_signature_strict),
-  │     stuck-process infrastructure.
-  ├── FuelGateSafety (357 lines, 6 thms)
-  │     no_send_on predicate, fuel-gate capability security.
-  └── Bisimulation (1,248 lines, 36 thms)
-        bisim (coinductive), post_gate_bisim (CoFixpoint),
-        multi_stuck_residue_bisim,
-        translation_strong_bisimilar_generic.
+The principal modules of each layer, with kernel-checked counts (§11.1):
 
-Layer 4 ── Weak Barbed Observables
-  └── WeakBarbedEquiv (259 lines, 17 thms)
-        weak_barb_input, weak_barb_output (reachability- +
-        ≡ₙ-closed observables; see Section 3.6 and Glossary §2.7),
-        weak_barbed_equiv_except x  (four-way iff on channels
-        distinct from hidden x),
-        parallel-congruence and replication-ingress lemmas.
+- **Layer 1 — Syntactic Foundation.**
+  - `RhoSyntax` (855 lines, 31 thms) — types (incl. `PReplicate`), substitution, lifting, structural equivalence; key `subst_lift_zero`, `head_count_se`.
+  - `StructEquivInversion` (253, 7) — `head_count`, `count_inputs`/`outputs`/`derefs`/`replicates`.
+  - `StructEquivHeads` (1,470, 45) — heads lists, permutation characterization, `se_PInput`/`POutput`/`PReplicate_inj`, `only_replicate` (§8.7).
+  - `RhoReduction` (442, 17) — `rho_step`, `rho_reachable`, conflated `barb` + split `input_barb`/`output_barb` (§3.6), stuck lemmas.
+- **Layer 2 — Cost-Accounting, Translation & Settlement.**
+  - `CostAccountedSyntax` (231, 4) — `sig`, `token`, `system`, size functions.
+  - `CostAccountedReduction` (283, 5) — `ca_step` (five rules), `ca_reachable`.
+  - `Translation` (580, 12) — `N⟦·⟧`, `T⟦·⟧`, `P⟦·⟧`, `S⟦·⟧`, Split, Join, closure properties.
+  - `TokenConservation` (234, 9) — `token_monotone_step`/`_reachable`, per-rule exact decreases.
+  - `Settlement` (140, 8) — post-evaluation escrow/refund arithmetic; no mid-evaluation refund fuel.
+  - `SlashingComposition` (570, 30) — slash-system effects preserve user fuel, settlement inputs, and settlement arithmetic.
+  - `MergeableChannelAccounting` (274, 14) — `IntegerAdd`/`BitmaskOr` round-trips, order-independent OR folding, cost-boundary isolation.
+- **Layer 3 — Faithfulness & Strong Bisimulation.**
+  - `TranslationFaithfulness` (4,183, 84) — per-rule simulation (all 5 × all signature shapes), per-step reverse, phased + recursive whole-system reflection, channel distinctness.
+  - `FuelGateSafety` (357, 6) — `no_send_on` predicate, fuel-gate capability security.
+  - `Bisimulation` (1,248, 36) — coinductive `bisim`, `post_gate_bisim`, `multi_stuck_residue_bisim`, generic dispatcher.
+- **Layer 4 — Weak Barbed Observables.**
+  - `WeakBarbedEquiv` (259, 17) — `weak_barb_input`/`weak_barb_output`, `weak_barbed_equiv_except x`, parallel-congruence + replication-ingress lemmas (§6.5–§6.6).
+- **Layer 5 — Replication Encoding Support (leaf).**
+  - `Replication` (2,071, 56) — Meredith's reflective `bang_encoding`/`D_encoding`, operational unfold, step-inversion (§8.7), forward barb propagation, closed `replication_encoding_forward_barb_sound` (§6.6).
+- **Layer 6 — Runtime Budget Refinement.**
+  - `RuntimeBudgetRefinement` (2,084, 86) — bounded-memory budget conservation (`consumed + remaining == initial`), weighted reservation, out-of-phlo boundary commitment, reset-from-token trace clearing, finalization-read cost traces, block/cache authentication, replay-payload sensitivity.
+- **Layer 7 — Use-Case Adequacy.**
+  - `UseCaseAdequacy` (1,985, 88) — proof-backed UC-CA semantic anchors over token conservation, unit-token expansion, settlement, slashing composition, typed mergeable channels, recursive reflection, runtime-budget refinement, and replay-payload equivalence.
 
-Layer 5 ── Replication Encoding Support
-  └── Replication (2,071 lines, 56 thms)
-        Reflective encoding (D_encoding, bang_encoding), operational
-        unfold (bang_encoding_unfolds), step-inversion machinery
-        (step_PReplicate_inv_se, step_PPar_PReplicate_inv_se),
-        forward barb propagation
-        (preplicate_bang_encoding_body_barbs_sound),
-        closed verification-boundary theorem
-        (replication_encoding_forward_barb_sound, Section 6.6).
-
-Layer 6 ── Runtime Budget Refinement
-  └── RuntimeBudgetRefinement (2,024 lines, 83 thms)
-        bounded-memory budget conservation, successful weighted
-        reservation refinement, out-of-phlo boundary commitment,
-        reset-from-token trace clearing, finalization-read cost traces,
-        zero-event commitments, block/cache authentication,
-        and replay-payload trace sensitivity.
-
-Layer 7 ── Use-Case Adequacy
-  └── UseCaseAdequacy (1,895 lines, 84 thms)
-        named UC-CA semantic anchors over token conservation,
-        unit-token expansion, confluence, settlement, slashing
-        composition, typed mergeable channels, recursive reflection,
-        runtime-budget refinement, finalization-read trace digests,
-        block/cache authentication, zero-event commitments, and replay
-        payload equivalence.
-```
 
 **Dependency property.** Layers 4 and 5 depend on Layers 1–3 but are
 *not* depended on by anything in Layers 1–3. In particular, the
