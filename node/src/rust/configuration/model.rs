@@ -183,8 +183,6 @@ pub struct TlsConf {
     pub certificate_path: PathBuf,
     #[serde(rename = "key-path")]
     pub key_path: PathBuf,
-    #[serde(rename = "secure-random-non-blocking")]
-    pub secure_random_non_blocking: bool,
     #[serde(rename = "custom-certificate-location")]
     pub custom_certificate_location: bool,
     #[serde(rename = "custom-key-location")]
@@ -196,7 +194,6 @@ impl From<TlsConf> for comm::rust::transport::tls_conf::TlsConf {
         comm::rust::transport::tls_conf::TlsConf {
             certificate_path: conf.certificate_path,
             key_path: conf.key_path,
-            secure_random_non_blocking: conf.secure_random_non_blocking,
             custom_certificate_location: conf.custom_certificate_location,
             custom_key_location: conf.custom_key_location,
         }

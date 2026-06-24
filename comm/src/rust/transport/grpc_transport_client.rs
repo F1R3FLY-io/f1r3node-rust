@@ -177,7 +177,7 @@ impl GrpcTransportClient {
             .connect_with_connector(f1r3fly_connector)
             .await
             .map_err(|e| {
-                tracing::warn!(uri = %endpoint_uri, error = %e, "F1r3flyConnector gRPC channel connect failed");
+                tracing::error!(uri = %endpoint_uri, error = %e, "F1r3flyConnector gRPC channel connect failed");
                 CommError::InternalCommunicationError(format!(
                     "Failed to establish gRPC connection: {}",
                     e
@@ -388,7 +388,7 @@ impl GrpcTransportClient {
         match timed_operation.await {
             Ok(Ok(success)) => Ok(success),
             Ok(Err(comm_error)) => {
-                tracing::warn!(peer = %peer.to_address(), error = %comm_error, "gRPC request failed");
+                tracing::error!(peer = %peer.to_address(), error = %comm_error, "gRPC request failed");
                 Err(comm_error)
             }
             Err(_timeout_error) => {

@@ -570,7 +570,7 @@ mod tests {
         let manager = HostnameTrustManager::new();
 
         // Generate test certificate
-        let (secret_key, public_key) = CertificateHelper::generate_key_pair(false);
+        let (secret_key, public_key) = CertificateHelper::generate_key_pair();
 
         if let Ok(cert_der) = CertificateHelper::generate_certificate(&secret_key, &public_key) {
             // Test client certificate validation
@@ -587,7 +587,7 @@ mod tests {
         let manager = HostnameTrustManager::new();
 
         // Generate test certificate
-        let (secret_key, public_key) = CertificateHelper::generate_key_pair(false);
+        let (secret_key, public_key) = CertificateHelper::generate_key_pair();
 
         if let (Ok(cert_der), Some(expected_address)) = (
             CertificateHelper::generate_certificate(&secret_key, &public_key),

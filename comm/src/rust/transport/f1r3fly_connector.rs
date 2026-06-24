@@ -171,7 +171,7 @@ impl Service<Uri> for F1r3flyConnector {
                     }) as Box<dyn StdError + Send + Sync>
                 })?
                 .map_err(|e| {
-                    tracing::warn!(addr = %addr, error = %e, "F1r3flyConnector TCP connection failed");
+                    tracing::error!(addr = %addr, error = %e, "F1r3flyConnector TCP connection failed");
                     Box::new(F1r3flyConnectorError::TcpConnectionError(e))
                         as Box<dyn StdError + Send + Sync>
                 })?;
@@ -223,7 +223,7 @@ mod tests {
     fn create_valid_test_connector() -> F1r3flyConnector {
         use crypto::rust::util::certificate_helper::{CertificateHelper, CertificatePrinter};
 
-        let (secret_key, public_key) = CertificateHelper::generate_key_pair(true);
+        let (secret_key, public_key) = CertificateHelper::generate_key_pair();
         let cert_der = CertificateHelper::generate_certificate(&secret_key, &public_key)
             .expect("Failed to generate test certificate");
         let cert_pem = CertificatePrinter::print_certificate(&cert_der);
@@ -326,7 +326,7 @@ mod tests {
     fn test_connector_with_custom_timeout() {
         use crypto::rust::util::certificate_helper::{CertificateHelper, CertificatePrinter};
 
-        let (secret_key, public_key) = CertificateHelper::generate_key_pair(true);
+        let (secret_key, public_key) = CertificateHelper::generate_key_pair();
         let cert_der = CertificateHelper::generate_certificate(&secret_key, &public_key)
             .expect("Failed to generate test certificate");
         let cert_pem = CertificatePrinter::print_certificate(&cert_der);

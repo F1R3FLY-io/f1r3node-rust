@@ -440,6 +440,8 @@ impl CliqueOracle {
         dag: &KeyValueDagRepresentation,
         latest_messages: &BTreeMap<V, M>,
     ) -> Result<f32, KvStoreError> {
+        // Using tracing events for async - Span[F].traceI("normalized-fault-tolerance") from Scala
+        tracing::debug!(target: "f1r3fly.casper.safety.clique_oracle", "normalized-fault-tolerance-started");
         /// weight map containing only validators that agree on the message
         async fn agreeing_weight_map_f(
             weight_map: &WeightMap,
@@ -500,14 +502,14 @@ impl CliqueOracle {
             .await?;
 
             tracing::debug!(
-                target: "f1r3.trace.ft_debug",
+                target: "f1r3fly.casper.safety.clique_oracle",
                 ft = result,
                 agreeing_weight = agreeing_weight_map.values().sum::<i64>(),
                 total_weight = full_weight_map.values().sum::<i64>(),
                 agreeing_n = agreeing_weight_map.len(),
                 total_n = full_weight_map.len(),
                 target_msg = ?target_msg,
-                "FT_DEBUG"
+                "normalized-fault-tolerance-computed"
             );
 
             Ok(result)
