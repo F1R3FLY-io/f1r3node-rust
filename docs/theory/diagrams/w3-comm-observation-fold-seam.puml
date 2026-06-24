@@ -1,0 +1,49 @@
+@startuml
+title W3: Live single-step COMM observation + OSLF fold seam (default-build byte-identical)
+
+skinparam backgroundColor #FEFEFE
+skinparam shadowing false
+skinparam componentStyle rectangle
+skinparam rectangle {
+  BorderColor #2C3E50
+  FontColor #1B2631
+}
+skinparam ArrowColor #2C3E50
+skinparam NoteBackgroundColor #FCF3CF
+skinparam NoteBorderColor #B7950B
+
+rectangle "Stock Rho reducer\n(reduce.rs)" as Red #AED6F1
+rectangle "RSpace::log_comm\n(rspace.rs)" as Log #AED6F1
+rectangle "step_observer: Option<Arc<dyn StepCommObserver>>\nstep_gate(): Option<Arc<StepGate>>" as Seam #F9E79F
+rectangle "extra_system_processes:\n&mut Vec<Definition>\n(existing DI seam)" as DI #A9DFBF
+
+rectangle "MeTTaIL StepObserver\n+ held-fold Definitions\n(injected as DATA)" as Mtl #D2B4DE
+
+Red --> Log : produce / consume (a COMM)
+Log --> Seam : if Some(observer): emit COMM Pars (lock-free)
+Red --> Seam : if Some(gate): pause() after await,\nno RSpace lock held
+DI --> Red : install fold contracts\n(introduce_system_process)
+
+Mtl ..> Seam : install observer + gate\n(live-step session only)
+Mtl ..> DI : append fold Definitions\n(Tier-3 only)
+
+note bottom of Seam
+  DEFAULT BUILD: observer = None, gate = None.
+  One is_none check + one None-returning call per COMM.
+  No alloc, no lock, no task park => byte-identical RSpace events.
+end note
+
+note bottom of DI
+  No held fold => empty Vec => empty iterator chained.
+  f1r3node gains NO MeTTaIL cargo dependency (handler is data):
+  host-guard mettail_rust_is_not_a_cargo_dependency stays green.
+end note
+
+legend right
+  | Color | Layer |
+  |<#AED6F1>| stock f1r3node reducer + RSpace (unchanged logic) |
+  |<#F9E79F>| W3 None-gated observation seam (additive) |
+  |<#A9DFBF>| existing extra_system_processes DI (reused) |
+  |<#D2B4DE>| MeTTaIL as the OSLF adapter (data only, DR-24) |
+endlegend
+@enduml

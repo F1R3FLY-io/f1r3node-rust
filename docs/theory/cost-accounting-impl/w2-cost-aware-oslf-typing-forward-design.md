@@ -2,6 +2,8 @@
 
 Status: forward design (no code). Branch: `feature/cost-accounted-rho`. NOT yet implementable (blocked on the OSLF framework); this is the additive, forward-compatible blueprint Greg requested in P4 ("we cannot implement support for this yet but should implement a forward-thinking design"). Consensus-neutral by construction: nothing here touches the live linear funding path.
 
+Companion (runtime side): [W3 — Live Single-Step COMM Observation + OSLF Fold Seam](w3-live-single-step-comm-observation-oslf-fold-seam.md) is the runtime-observation half of the same OSLF-adapter boundary (DR-24) — where W2 is the OSLF *typing* seam, W3 is the OSLF *runtime-observation* seam that makes MeTTaIL-defined reductions first-class cost-metered RSpace events.
+
 > Grounding mandate. This design is a forward EXTENSION of the existing, Qed-closed formalization, not a reinvention. Each construction below is tied to a concrete Rocq object or Rust seam that was read and verified. Paper citations: `typed_value.tex` line anchors were **confirmed** (read from `publications/TypedCurrency/typed_value.tex`, 2026-06-15 — see §4/§7-R2); `continued-gslt-cost-v2.tex` is cited **by name only** and its line anchors remain **unconfirmed (S0)** (not read).
 
 ## 0. Executive summary
