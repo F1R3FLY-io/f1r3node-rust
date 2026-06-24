@@ -557,6 +557,8 @@ mod tests {
             },
             valid_after_block_number: if is_full { Some(0) } else { None },
             transfers: if is_full { Some(vec![]) } else { None },
+            finalization_state: "Finalized".to_string(),
+            rejection_count: 0,
         }
     }
 

@@ -2838,13 +2838,6 @@ async fn fs_seal_epoch_reward_is_dag_invariant_under_multiparent() {
     // two concurrent CloseBlocks per boundary → the seal folds both → the over-fold fires.
     const EPOCH_LENGTH: i32 = 3;
 
-    // PoS `getRewards` on a given state — the committedRewards (+ current-epoch) reward map. The
-    // simple single-lookup form (confirmed readable/parseable). Equal across two states iff the
-    // reward state matches; diverges when the seal double-folds the replicated epoch reward.
-    const GET_REWARDS: &str = "new return, rl(`rho:registry:lookup`), posCh in { \
-         rl!(`rho:rchain:pos`, *posCh) | \
-         for (@(_, pos) <- posCh) { @pos!(\"getRewards\", *return) } }";
-
     let mut params = GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(3));
     params.2.proof_of_stake.epoch_length = EPOCH_LENGTH;
     let genesis = GenesisBuilder::new()

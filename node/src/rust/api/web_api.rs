@@ -1890,6 +1890,8 @@ mod tests {
             sig_algorithm: Some("secp256k1".to_string()),
             valid_after_block_number: Some(0),
             transfers: Some(vec![]),
+            finalization_state: "Finalized".to_string(),
+            rejection_count: 0,
         };
 
         let json = serde_json::to_value(&response).unwrap();
@@ -1924,6 +1926,8 @@ mod tests {
             sig_algorithm: None,
             valid_after_block_number: None,
             transfers: None,
+            finalization_state: "Finalized".to_string(),
+            rejection_count: 0,
         };
 
         let json = serde_json::to_value(&response).unwrap();
