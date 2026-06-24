@@ -362,7 +362,7 @@ impl DebruijnInterpreter {
                 // in production — one observer `is_none` check, no await.
                 if let Some(gate) = self.space.step_gate() {
                     gate.pause().await.map_err(|_| {
-                        InterpreterError::ReduceError("live-step session aborted".to_string())
+                        InterpreterError::ReduceError("single-step session aborted".to_string())
                     })?;
                 }
                 let dispatch_type = self
@@ -466,7 +466,7 @@ impl DebruijnInterpreter {
         if consume_result.is_some() {
             if let Some(gate) = self.space.step_gate() {
                 gate.pause().await.map_err(|_| {
-                    InterpreterError::ReduceError("live-step session aborted".to_string())
+                    InterpreterError::ReduceError("single-step session aborted".to_string())
                 })?;
             }
         }

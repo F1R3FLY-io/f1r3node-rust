@@ -94,9 +94,10 @@ pub trait RSpaceLogger<C, P: Clone, A: Clone, K: Clone>: Send + Sync {
     }
 }
 
-/// Observer for live single-step COMM tracing — the feature-gated emit seam the MeTTaIL reactive
-/// stepper installs on the base [`super::rspace::RSpace`] (distinct from [`RSpaceLogger`], which
-/// `ReplayRSpace` uses for replay determinism). It is invoked once per committed COMM from
+/// Observer for live single-step COMM tracing — the emit seam the MeTTaIL reactive stepper installs
+/// on the base [`super::rspace::RSpace`] at runtime (distinct from [`RSpaceLogger`], which
+/// `ReplayRSpace` uses for replay determinism). Off by default with no `#[cfg]`: a production
+/// `RSpace` simply has no observer installed. It is invoked once per committed COMM from
 /// `RSpace::log_comm` with the full rendezvous payload, already extracted to slices so this trait
 /// carries no `Clone` bounds on its type parameters — that keeps the generic `RSpace` struct
 /// definition bound-free (the struct stores an `Option<Arc<dyn StepCommObserver<..>>>`). The base
