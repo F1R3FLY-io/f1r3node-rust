@@ -24,7 +24,7 @@ use super::errors::{HistoryRepositoryError, RSpaceError};
 use super::hashing::blake2b256_hash::Blake2b256Hash;
 use super::history::history_reader::HistoryReader;
 use super::history::instances::radix_history::RadixHistory;
-use super::logging::BasicLogger;
+use super::logging::{BasicLogger, StepCommObserver};
 use super::r#match::Match;
 use super::metrics_constants::{
     CHANGES_SPAN, CONSUME_COMM_LABEL, HISTORY_CHECKPOINT_SPAN, LOCKED_CONSUME_SPAN,
@@ -63,6 +63,12 @@ pub struct RSpace<C, P, A, K> {
     matcher: Arc<Box<dyn Match<P, A, K>>>,
     phase_a_locks: Arc<DashMap<u64, Arc<tokio::sync::Mutex<()>>>>,
     phase_b_locks: Arc<DashMap<u64, Arc<tokio::sync::Mutex<()>>>>,
+    /// Live single-step COMM observer (MeTTaIL reactive stepper). `None` in production: the
+    /// `log_comm` seam then pays only one branch-predicted `is_none` check per COMM — zero
+    /// allocation, no vtable. Installed via [`RSpace::set_step_observer`]. Not part of any FFI
+    /// surface (RSpace has no `extern "C"` consumers); appended last so existing field offsets
+    /// are unchanged.
+    step_observer: Option<Arc<dyn StepCommObserver<C, P, A, K>>>,
 }
 
 impl<C, P, A, K> RSpace<C, P, A, K>
@@ -289,6 +295,13 @@ where
         curr_event_log
     }
 
+    /// Forward the reactive single-step gate from the installed observer (if any). `None` in
+    /// production (no observer) — the reducer then never pauses. The same `StepGate` the stepper
+    /// `release_one`s after publishing each COMM event.
+    fn step_gate(&self) -> Option<Arc<super::logging::StepGate>> {
+        self.step_observer.as_ref().and_then(|observer| observer.step_gate())
+    }
+
     async fn revert_to_soft_checkpoint(
         &self,
         checkpoint: SoftCheckpoint<C, P, A, K>,
@@ -487,7 +500,15 @@ where
             produce_counter: Arc::new(std::sync::Mutex::new(BTreeMap::new())),
             phase_a_locks: Arc::new(DashMap::new()),
             phase_b_locks: Arc::new(DashMap::new()),
+            step_observer: None,
         }
+    }
+
+    /// Install (or clear) the live single-step COMM observer. Off (`None`) by default; the MeTTaIL
+    /// reactive stepper sets `Some(..)` before running `inj`, and the `log_comm` seam then emits
+    /// each committed COMM to it. Idempotent; pass `None` to detach.
+    pub fn set_step_observer(&mut self, observer: Option<Arc<dyn StepCommObserver<C, P, A, K>>>) {
+        self.step_observer = observer;
     }
 
     pub fn create(
@@ -673,6 +694,7 @@ where
                 self.log_comm(
                     channels,
                     &wk,
+                    &data_candidates,
                     COMM::new(
                         &data_candidates,
                         consume_ref.clone(),
@@ -838,6 +860,7 @@ where
         self.log_comm(
             &channels,
             &continuation,
+            &data_candidates,
             COMM::new(
                 &data_candidates,
                 consume_ref.clone(),
@@ -857,7 +880,14 @@ where
         self.wrap_result(&channels, &continuation, consume_ref, &data_candidates)
     }
 
-    fn log_comm(&self, _channels: &[C], _wk: &WaitingContinuation<P, K>, comm: COMM, label: &str) {
+    fn log_comm(
+        &self,
+        channels: &[C],
+        wk: &WaitingContinuation<P, K>,
+        data_candidates: &[ConsumeCandidate<C, A>],
+        comm: COMM,
+        label: &str,
+    ) {
         // Increment counter FIRST (matching Scala) using constants to avoid memory
         // leaks Labels are always "comm.consume" or "comm.produce" based on the
         // RSpace implementation
@@ -874,6 +904,23 @@ where
                 // This should never happen, but log if it does
                 tracing::warn!("Unexpected label in log_comm: {}", label);
             }
+        }
+
+        // Live single-step emit seam. `None` in production (one branch-predicted `is_none`, no
+        // alloc/vtable). When a StepCommObserver is installed, hand it the full COMM payload —
+        // the rendezvous channels, the consumed data, and the firing waiting-continuation
+        // (patterns + continuation) — extracted to slices so the observer can clone lock-free.
+        if let Some(observer) = &self.step_observer {
+            let consumed: Vec<A> =
+                data_candidates.iter().map(|candidate| candidate.datum.a.clone()).collect();
+            observer.observe_comm(
+                channels,
+                &consumed,
+                &wk.patterns,
+                &wk.continuation,
+                &comm,
+                label,
+            );
         }
 
         // Then update event log (RSpace-specific behavior)

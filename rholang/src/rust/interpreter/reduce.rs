@@ -354,6 +354,17 @@ impl DebruijnInterpreter {
 
         match produce_result {
             Some((c, s, produce_event)) => {
+                // Reactive single-step back-pressure (MeTTaIL OSLF stepper). The COMM has committed
+                // and its event was already emitted by the observer inside `space.produce`; the
+                // per-channel tuplespace lock was dropped when `produce` returned, so we hold no
+                // lock here. If a live step session is active, pause (cooperative async yield,
+                // parks the task not the thread) until the stepper releases the next step. `None`
+                // in production — one observer `is_none` check, no await.
+                if let Some(gate) = self.space.step_gate() {
+                    gate.pause().await.map_err(|_| {
+                        InterpreterError::ReduceError("live-step session aborted".to_string())
+                    })?;
+                }
                 let dispatch_type = self
                     .continue_produce_process(
                         unpack_option_with_peek(Some((c, s))),
@@ -448,6 +459,17 @@ impl DebruijnInterpreter {
             )
             .await?;
         let is_replay = self.space.is_replay().await;
+
+        // Reactive single-step back-pressure (MeTTaIL OSLF stepper): pause only when this consume
+        // actually fired a COMM (matched waiting produces) — its event was already emitted inside
+        // `space.consume`, and no tuplespace lock is held here. `None` in production.
+        if consume_result.is_some() {
+            if let Some(gate) = self.space.step_gate() {
+                gate.pause().await.map_err(|_| {
+                    InterpreterError::ReduceError("live-step session aborted".to_string())
+                })?;
+            }
+        }
 
         self.continue_consume_process(
             unpack_option_with_peek(consume_result),

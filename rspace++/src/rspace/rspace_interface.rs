@@ -105,6 +105,15 @@ pub trait ISpace<
     /// needed.
     async fn take_event_log(&self) -> Log;
 
+    /// The MeTTaIL reactive single-stepper's back-pressure gate, if a step session is active on
+    /// this space. Default `None` (production and replay never pause). `RSpace` overrides this to
+    /// forward to its installed [`super::logging::StepCommObserver`], letting the reducer pause
+    /// after each committed COMM with no construction-path threading. Synchronous and cheap — a
+    /// `None` return is one observer `is_none` check.
+    fn step_gate(&self) -> Option<std::sync::Arc<super::logging::StepGate>> {
+        None
+    }
+
     /**
     Reverts the ISpace to the state checkpointed using {@link #createSoftCheckpoint()}
     */
