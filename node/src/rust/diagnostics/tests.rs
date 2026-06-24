@@ -144,7 +144,6 @@ mod tests {
             tls: TlsConf {
                 certificate_path: PathBuf::from("/tmp/cert.pem"),
                 key_path: PathBuf::from("/tmp/key.pem"),
-                secure_random_non_blocking: false,
                 custom_certificate_location: false,
                 custom_key_location: false,
             },
@@ -158,6 +157,7 @@ mod tests {
                 tick_interval: Duration::from_secs(10),
                 influxdb_endpoint: InfluxDbEndpoint::default(),
             },
+            logging: Default::default(),
             dev_mode: false,
             dev: DevConf {
                 deployer_private_key: None,

@@ -18,41 +18,39 @@ block-storage = { path = "../block-storage" }
 shared = { path = "../shared" }
 tokio = { workspace = true }
 prost = { workspace = true }
-lz4_flex = "0.11.3"
-lazy_static = "1.5.0"
+lz4_flex = { workspace = true }
+lazy_static = { workspace = true }
 hex = { workspace = true }
 dashmap = { workspace = true }
 imbl = { workspace = true }
-indexmap = "2.8.0"
+indexmap = { workspace = true }
 bincode = { workspace = true }
 serde = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-byteorder = "1.5.0"
-env_logger = "0.11.8"
+byteorder = { workspace = true }
 rand = { workspace = true }
 futures = { workspace = true }
-uuid = "1.16.0"
+uuid = { workspace = true }
 itertools = { workspace = true }
 regex = { workspace = true }
 thiserror = { workspace = true }
 # LFS Block Requester dependencies
 num_cpus = "1.0"
 async-stream = "0.3"
-tokio-stream = "0.1"
-humantime = "2.3.0"
+tokio-stream = { workspace = true }
+humantime = { workspace = true }
 tonic = { workspace = true }
 eyre = { workspace = true }
 metrics = { workspace = true }
-proptest = "1.6.0"
-tempfile = { version = "3.24.0", optional = true }
+tempfile = { workspace = true, optional = true }
 
 [dev-dependencies]
-metrics-util = "0.17"
-k256 = { version = "0.13.4", features = ["ecdsa"] }
-serial_test = "3.1"
-env_logger = "0.11.8"
-tempfile = "3.24.0"
+metrics-util = { workspace = true }
+proptest = { workspace = true }
+k256 = { workspace = true }
+serial_test = { workspace = true }
+tempfile = { workspace = true }
 
 
 

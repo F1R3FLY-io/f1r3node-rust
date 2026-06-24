@@ -10,6 +10,5 @@ pub fn create_udp_influx_db_reporter(
     _port: u16,
     _interval: Duration,
 ) -> Result<(), String> {
-    tracing::warn!("InfluxDB UDP reporter not yet implemented - TODO: port from Scala");
     Ok(())
 }

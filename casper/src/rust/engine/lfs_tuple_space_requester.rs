@@ -593,10 +593,7 @@ pub async fn stream<T: TupleSpaceRequesterOps>(
                             tracing::debug!("Store items message processed successfully");
                         }
                         Err(e) => {
-                            tracing::error!("Failed to process store items message: {:?}", e);
-                            // On validation or processing error, terminate the stream
-                            // Scala equivalent: Stream fails with validation error and terminates
-                            tracing::error!("Stream terminating due to store items processing error");
+                            tracing::error!(error = ?e, "store items message processing failed; terminating stream");
                             break;
                         }
                     }
@@ -606,7 +603,7 @@ pub async fn stream<T: TupleSpaceRequesterOps>(
                         match st.lock() {
                             Ok(state) => state.clone(),
                             Err(e) => {
-                                tracing::error!("Failed to acquire state lock for response processing: {:?}", e);
+                                tracing::error!(error = ?e, "state lock acquisition failed during response processing");
                                 continue;
                             }
                         }
@@ -636,7 +633,7 @@ pub async fn stream<T: TupleSpaceRequesterOps>(
                             tracing::debug!("Request processing completed (resend: {})", resend_flag);
                         }
                         Err(e) => {
-                            tracing::error!("Failed to process request: {:?}", e);
+                            tracing::error!(error = ?e, "tuple space request processing failed");
                             // Continue processing other arms instead of breaking
                             continue;
                         }
@@ -647,7 +644,7 @@ pub async fn stream<T: TupleSpaceRequesterOps>(
                         match st.lock() {
                             Ok(state) => state.clone(),
                             Err(e) => {
-                                tracing::error!("Failed to acquire state lock: {:?}", e);
+                                tracing::error!(error = ?e, "state lock acquisition failed during request processing");
                                 continue;
                             }
                         }
@@ -687,7 +684,7 @@ pub async fn stream<T: TupleSpaceRequesterOps>(
                             idle_timeout = Box::pin(tokio::time::sleep(current_timeout));
                         }
                         Err(e) => {
-                            tracing::error!("Failed to enqueue resend request - channel error or full: {:?}", e);
+                            tracing::error!(error = ?e, "resend request enqueue failed: channel error or full");
                             tracing::warn!("Request queue channel appears closed or full, checking if stream should terminate");
 
                             // Check if we should terminate gracefully
@@ -695,7 +692,7 @@ pub async fn stream<T: TupleSpaceRequesterOps>(
                                 match st.lock() {
                                     Ok(state) => state.is_finished(),
                                     Err(_) => {
-                                        tracing::error!("Cannot acquire state lock to check termination condition");
+                                        tracing::error!("state lock acquisition failed while checking stream termination");
                                         true // Assume termination if we can't check state
                                     }
                                 }
@@ -734,7 +731,7 @@ pub async fn stream<T: TupleSpaceRequesterOps>(
                     Some(state.clone())
                 }
                 Err(e) => {
-                    tracing::error!("Failed to acquire final state lock: {:?}", e);
+                    tracing::error!(error = ?e, "final state lock acquisition failed");
                     None
                 }
             }

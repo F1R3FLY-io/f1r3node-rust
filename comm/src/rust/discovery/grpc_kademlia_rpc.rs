@@ -72,7 +72,7 @@ impl GrpcKademliaRPC {
         let channel = match self.client_channel(peer).await {
             Ok(c) => c,
             Err(_) => {
-                tracing::error!("Failed to connect to peer for ping");
+                tracing::debug!("Failed to connect to peer for ping");
                 return Ok(false); // Return false for connection failures
             }
         };
@@ -105,11 +105,11 @@ impl GrpcKademliaRPC {
                 }
             }
             Ok(Err(status)) => {
-                tracing::error!("Ping failed: {:?}", status);
+                tracing::debug!("Ping failed: {:?}", status);
                 Ok(false)
             }
             Err(_) => {
-                tracing::error!("Ping timed out");
+                tracing::debug!("Ping timed out");
                 Ok(false)
             }
         }
@@ -126,7 +126,7 @@ impl GrpcKademliaRPC {
         let channel = match self.client_channel(peer).await {
             Ok(c) => c,
             Err(e) => {
-                tracing::error!("Failed to connect to peer for lookup: {}", e);
+                tracing::debug!("Failed to connect to peer for lookup: {}", e);
                 return Ok(Vec::new()); // Return empty list for connection failures
             }
         };
@@ -167,11 +167,11 @@ impl GrpcKademliaRPC {
                 }
             }
             Ok(Err(status)) => {
-                tracing::error!("Lookup failed: {:?}", status);
+                tracing::debug!("Lookup failed: {:?}", status);
                 Ok(Vec::new())
             }
             Err(_) => {
-                tracing::error!("Lookup timed out");
+                tracing::debug!("Lookup timed out");
                 Ok(Vec::new())
             }
         }
@@ -217,39 +217,12 @@ impl KademliaRPC for GrpcKademliaRPC {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Once;
     use std::time::Duration;
-
-    use tracing::level_filters::LevelFilter;
-    use tracing_subscriber::layer::SubscriberExt;
-    use tracing_subscriber::util::SubscriberInitExt;
-    use tracing_subscriber::EnvFilter;
 
     use super::*;
     use crate::rust::peer_node::{Endpoint, NodeIdentifier};
 
-    static INIT: Once = Once::new();
-
-    fn init_logger() {
-        INIT.call_once(|| {
-            let filter = EnvFilter::builder()
-                .with_default_directive(LevelFilter::DEBUG.into())
-                .parse("")
-                .unwrap();
-
-            tracing_subscriber::registry()
-                .with(filter)
-                .with(
-                    tracing_subscriber::fmt::layer()
-                        .json()
-                        .with_current_span(false) // logs only
-                        .with_span_list(false) // logs only
-                        .flatten_event(true), // put event fields at top level
-                )
-                .try_init()
-                .unwrap();
-        });
-    }
+    fn init_logger() { shared::rust::tracing_init::init_for_tests(); }
 
     fn test_peer() -> PeerNode {
         let id = NodeIdentifier {

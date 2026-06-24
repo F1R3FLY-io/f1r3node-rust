@@ -64,7 +64,7 @@ pub async fn resolve_hostname_to_ip(host: &str, port: u32) -> Result<SocketAddr,
         Err(_) => {
             let addr_str = format!("{}:{}", host, port);
             let mut addrs = lookup_host(&addr_str).await.map_err(|e| {
-                tracing::error!("DNS resolution failed for '{}': {}", addr_str, e);
+                tracing::error!(addr = %addr_str, error = %e, "DNS resolution failed");
                 CommError::InternalCommunicationError(format!(
                     "Failed to resolve hostname '{}': {}",
                     host, e
@@ -72,7 +72,7 @@ pub async fn resolve_hostname_to_ip(host: &str, port: u32) -> Result<SocketAddr,
             })?;
 
             let resolved_addr = addrs.next().ok_or_else(|| {
-                tracing::error!("No addresses resolved for '{}'", addr_str);
+                tracing::error!(addr = %addr_str, "DNS resolution returned no addresses");
                 CommError::InternalCommunicationError(format!("No address resolved for '{}'", host))
             })?;
 

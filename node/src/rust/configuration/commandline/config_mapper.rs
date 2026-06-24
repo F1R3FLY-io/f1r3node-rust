@@ -155,10 +155,6 @@ impl ConfigMapper<Options> for NodeConf {
             Self::try_override_value(&mut self.storage.data_dir, run.data_dir);
 
             // TLS fields
-            Self::try_override_bool(
-                &mut self.tls.secure_random_non_blocking,
-                run.tls_secure_random_non_blocking,
-            );
             Self::try_override_value(&mut self.tls.key_path, run.tls_key_path);
             Self::try_override_value(&mut self.tls.certificate_path, run.tls_certificate_path);
 
@@ -440,7 +436,6 @@ mod tests {
         "--disable-state-exporter",
         "--tls-certificate-path=/var/lib/rnode/node.certificate.pem",
         "--tls-key-path=/var/lib/rnode/node.key.pem",
-        "--tls-secure-random-non-blocking",
         "--api-host=localhost",
         "--api-port-grpc-external=11111",
         "--api-port-grpc-internal=11111",
@@ -579,6 +574,9 @@ mod tests {
             grpc_port: Some(40401),
             grpc_max_recv_message_size: 16777216,
             profile: Some("docker".to_string()),
+            log_level: None,
+            log_format: None,
+            log_sink: None,
             subcommand: Some(OptionsSubCommand::Run(RunOptions {
                 config_file: None,
                 thread_pool_size: None,
@@ -608,7 +606,6 @@ mod tests {
                 protocol_max_message_consumers: Some(111111),
                 tls_key_path: Some(PathBuf::from("/var/lib/rnode/node.key.pem")),
                 tls_certificate_path: Some(PathBuf::from("/var/lib/rnode/node.certificate.pem")),
-                tls_secure_random_non_blocking: true,
                 api_host: Some("localhost".to_string()),
                 api_port_grpc_external: Some(11111),
                 api_port_grpc_internal: Some(11111),
@@ -740,7 +737,6 @@ mod tests {
             tls: crate::rust::configuration::model::TlsConf {
                 certificate_path: PathBuf::from("/var/lib/rnode/node.certificate.pem"),
                 key_path: PathBuf::from("/var/lib/rnode/node.key.pem"),
-                secure_random_non_blocking: false,
                 custom_certificate_location: false,
                 custom_key_location: false,
             },
@@ -819,6 +815,7 @@ mod tests {
                 tick_interval: std::time::Duration::from_secs(10),
                 influxdb_endpoint: crate::rust::configuration::model::InfluxDbEndpoint::default(),
             },
+            logging: Default::default(),
             dev_mode: false,
             dev: crate::rust::configuration::model::DevConf {
                 deployer_private_key: None,
@@ -935,7 +932,6 @@ mod tests {
         );
 
         // TLS fields
-        assert_eq!(default_config.tls.secure_random_non_blocking, true);
         assert_eq!(
             default_config.tls.key_path,
             PathBuf::from("/var/lib/rnode/node.key.pem")

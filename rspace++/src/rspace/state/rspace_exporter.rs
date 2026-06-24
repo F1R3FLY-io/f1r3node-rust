@@ -120,8 +120,6 @@ impl RSpaceExporterInstance {
                 (path_vec.first().unwrap(), path_vec.split_first().map(|(_, tail)| tail).unwrap());
 
             let last_prefix = create_last_prefix(prefix_vec.to_vec());
-            // println!("\nroot_hash bytes: {:?}", root_hash.bytes());
-            // println!("\nlast_prefix: {:?}", last_prefix);
 
             let exp_res = sequential_export(
                 root_hash.bytes(),
@@ -132,8 +130,6 @@ impl RSpaceExporterInstance {
                 settings,
             )
             .expect("RSpace Exporter: Failed to export");
-
-            // println!("\nexported: {:?}", exp_res);
 
             let (data, new_last_prefix_opt) = exp_res;
             let ExportData {

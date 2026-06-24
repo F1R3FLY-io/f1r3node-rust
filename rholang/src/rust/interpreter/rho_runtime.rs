@@ -1177,7 +1177,7 @@ where
     for (tag_par, merge_type) in mergeable_tags.iter() {
         if let MergeType::BitmaskOr = merge_type {
             tracing::info!(
-                target: "f1r3fly.merge.tag_check",
+                target: "f1r3fly.merge.tag_check.validation",
                 "URI binding inserted: rho:system:bitmaskMergeableTag -> Par(unforgeables={}, exprs={}, bundles={})",
                 tag_par.unforgeables.len(),
                 tag_par.exprs.len(),

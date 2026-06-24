@@ -213,7 +213,7 @@ impl StreamHandler {
         let init_stmd = match Self::init(cache) {
             Ok(stmd) => stmd,
             Err(e) => {
-                tracing::error!("Failed to initialize stream: {}", e);
+                tracing::error!(error = %e, "stream handler initialization failed");
                 return Err(StreamError::unexpected(format!(
                     "Initialization failed: {}",
                     e
@@ -380,7 +380,7 @@ impl StreamHandler {
             Some(entry) => entry.value().clone(),
             None => {
                 let error = format!("Could not read streamed data from cache (key: {})", msg.key);
-                tracing::error!("{}", error);
+                tracing::error!(key = %msg.key, "blob stream cache read failed: data not found");
                 return Err(CommError::InternalCommunicationError(error));
             }
         };
@@ -390,8 +390,7 @@ impl StreamHandler {
             match Self::decompress_content(content, msg.compressed, msg.content_length).await {
                 Ok(data) => data,
                 Err(e) => {
-                    let error = format!("Could not decompress data (key: {}): {}", msg.key, e);
-                    tracing::error!("{}", error);
+                    tracing::error!(key = %msg.key, error = %e, "blob stream decompression failed");
                     cache.remove(&msg.key);
                     Self::update_stream_cache_metrics(cache);
                     return Err(e);

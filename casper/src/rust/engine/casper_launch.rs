@@ -233,8 +233,6 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
                 BlockMessage,
             )>,
         ) -> Result<(), CasperError> {
-            println!("sendBufferPendantsToCasper");
-
             let pendants = casper_buffer_storage.get_pendants();
 
             // Filter pendants to only those that exist in BlockStore
@@ -433,9 +431,8 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
         Ok(())
     }
 
+    #[tracing::instrument(level = "info", skip(self))]
     async fn connect_as_genesis_validator(&self) -> Result<(), CasperError> {
-        println!("connectAsGenesisValidator");
-
         // As a genesis validator, native-token-* values from local config are
         // what will be baked into the TokenMetadata contract at genesis (via
         // default_blessed_terms). On-chain state cannot disagree with local
@@ -533,9 +530,8 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
         Ok(())
     }
 
+    #[tracing::instrument(level = "info", skip(self))]
     async fn init_bootstrap(&self, disable_state_exporter: bool) -> Result<(), CasperError> {
-        println!("initBootstrap");
-
         let validator_id = ValidatorIdentity::from_private_key_with_logging(
             self.conf.validator_private_key.as_deref(),
         );
@@ -555,37 +551,23 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             "Ceremony master: native token metadata will be baked into genesis from local config"
         );
 
-        tracing::warn!("=== BOOTSTRAP GENESIS INPUT DEBUG START ===");
-
-        tracing::warn!(bonds_file = %self.conf.genesis_block_data.bonds_file);
-        tracing::warn!(wallets_file = %self.conf.genesis_block_data.wallets_file);
-
-        tracing::warn!(
+        tracing::info!(
+            bonds_file = %self.conf.genesis_block_data.bonds_file,
+            wallets_file = %self.conf.genesis_block_data.wallets_file,
             bond_minimum = self.conf.genesis_block_data.bond_minimum,
             bond_maximum = self.conf.genesis_block_data.bond_maximum,
             epoch_length = self.conf.genesis_block_data.epoch_length,
             quarantine_length = self.conf.genesis_block_data.quarantine_length,
             number_of_active_validators = self.conf.genesis_block_data.number_of_active_validators,
-        );
-
-        tracing::warn!(
             shard_name = %self.casper_shard_conf.shard_name,
             deploy_timestamp = self.conf.genesis_block_data.deploy_timestamp,
             genesis_block_number = self.conf.genesis_block_data.genesis_block_number,
-        );
-
-        tracing::warn!(
             required_signatures = self.conf.genesis_ceremony.required_signatures,
             approve_duration_ms = self.conf.genesis_ceremony.approve_duration.as_millis(),
             approve_interval_ms = self.conf.genesis_ceremony.approve_interval.as_millis(),
-        );
-
-        tracing::warn!(
             pos_multi_sig_quorum = self.conf.genesis_block_data.pos_multi_sig_quorum,
-            pos_multi_sig_keys = ?self.conf.genesis_block_data.pos_multi_sig_public_keys,
+            "bootstrap genesis input",
         );
-
-        tracing::warn!("=== BOOTSTRAP GENESIS INPUT DEBUG END ===");
 
         // Scala equivalent: abp <- ApproveBlockProtocol.of[F](...)
         let abp = ApproveBlockProtocolFactory::create(
@@ -667,7 +649,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
                 )
                 .await
                 {
-                    tracing::error!("waitingForApprovedBlockLoop failed: {:?}", e);
+                    tracing::error!(error = ?e, "waiting for approved block loop failed");
                 }
             }
         });

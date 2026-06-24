@@ -109,21 +109,14 @@ impl Substitute {
         depth: i32,
         env: &Env<Par>,
     ) -> Result<Either<Var, Par>, InterpreterError> {
-        // println!("\nenv in maybe_substitute_var: {:?}", env);
         if depth != 0 {
             Ok(Either::Left(term))
         } else {
             match unwrap_option_safe(term.clone().var_instance)? {
-                VarInstance::BoundVar(index) => {
-                    // println!("\nindex in maybe_substitute_var: {:?}", index);
-                    match env.get(&index) {
-                        Some(p) => {
-                            // println!("\np in maybe_substitute_var: {:?}", p);
-                            Ok(Either::Right(p))
-                        }
-                        None => Ok(Either::Left(term)),
-                    }
-                }
+                VarInstance::BoundVar(index) => match env.get(&index) {
+                    Some(p) => Ok(Either::Right(p)),
+                    None => Ok(Either::Left(term)),
+                },
                 _ => Err(InterpreterError::SubstituteError(format!(
                     "Illegal Substitution [{:?}]",
                     term
@@ -210,16 +203,13 @@ impl Substitute {
         exprs.into_iter().try_fold(Par::default(), |par, expr| {
             match unwrap_option_safe(expr.clone().expr_instance)? {
                 ExprInstance::EVarBody(e) => match self.maybe_substitute_evar(e, depth, env)? {
-                    Either::Left(_e) => {
-                        // println!("\npar in sub_expr: {:?}", par);
-                        Ok(prepend_expr(
-                            par,
-                            Expr {
-                                expr_instance: Some(ExprInstance::EVarBody(_e)),
-                            },
-                            depth,
-                        ))
-                    }
+                    Either::Left(_e) => Ok(prepend_expr(
+                        par,
+                        Expr {
+                            expr_instance: Some(ExprInstance::EVarBody(_e)),
+                        },
+                        depth,
+                    )),
                     Either::Right(_par) => Ok(concatenate_pars(_par, par)),
                 },
                 _ => match self.substitute_no_sort(expr, depth, env) {
@@ -341,9 +331,7 @@ impl SubstituteTrait<Par> for Substitute {
         depth: i32,
         env: &Env<Par>,
     ) -> Result<Par, InterpreterError> {
-        // println!("\nterm in substitute_no_sort for par: {:?}", term);
         let exprs = self.sub_exp(term.exprs, depth, env)?;
-        // println!("\nexprs in substitute_no_sort for par: {:?}", exprs);
         let connectives = self.sub_conn(term.connectives, depth, env)?;
 
         let sends = term
@@ -387,10 +375,7 @@ impl SubstituteTrait<Par> for Substitute {
                 unforgeables: term.unforgeables,
                 bundles,
                 connectives: Vec::new(),
-                locally_free: {
-                    // println!("\nenv.shift in substitute_no_sort for par: {}", env.shift);
-                    set_bits_until(term.locally_free, env.shift)
-                },
+                locally_free: set_bits_until(term.locally_free, env.shift),
                 connective_used: term.connective_used,
             }),
         ))
@@ -418,8 +403,6 @@ impl SubstituteTrait<Send> for Substitute {
             .iter()
             .map(|p| self.substitute_no_sort(p.clone(), depth, env))
             .collect::<Result<Vec<Par>, InterpreterError>>()?;
-
-        // println!("\nterm in substitute_no_sort for Send {:?}", term);
 
         Ok(Send {
             chan: Some(channels_sub),

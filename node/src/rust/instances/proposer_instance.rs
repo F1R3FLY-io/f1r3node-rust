@@ -246,7 +246,7 @@ impl<T: TransportLayer + Send + Sync + 'static> ProposerInstance<T> {
                                     {
                                         Ok(_) => {}
                                         Err(e) => {
-                                            tracing::error!("Failed to send propose result: {}", e);
+                                            tracing::error!(error = %e, "propose result send failed");
                                         }
                                     }
                                 }
@@ -255,8 +255,8 @@ impl<T: TransportLayer + Send + Sync + 'static> ProposerInstance<T> {
                                         tracing::info!("Propose: {}", propose_result.propose_status)
                                     } else {
                                         tracing::error!(
-                                            "Propose failed: {}",
-                                            propose_result.propose_status
+                                            status = %propose_result.propose_status,
+                                            "propose failed"
                                         )
                                     }
                                 }
@@ -265,7 +265,7 @@ impl<T: TransportLayer + Send + Sync + 'static> ProposerInstance<T> {
                             should_retry_on_trigger
                         }
                         Err(e) => {
-                            tracing::error!("Error proposing: {}", e);
+                            tracing::error!(error = %e, "propose call failed");
 
                             let failure_seq_number = match casper.get_snapshot().await {
                                 Ok(snapshot) => snapshot
@@ -362,10 +362,7 @@ impl<T: TransportLayer + Send + Sync + 'static> ProposerInstance<T> {
                                         "source" => VALIDATOR_METRICS_SOURCE
                                     )
                                     .set(propose_queue_pending.load(Ordering::Relaxed) as f64);
-                                    tracing::error!(
-                                        "Failed to enqueue retry propose (channel closed): {}",
-                                        e
-                                    );
+                                    tracing::error!(error = %e, "retry propose enqueue failed: channel closed");
                                     // Channel closed means we're shutting down - this is expected
                                     break;
                                 }

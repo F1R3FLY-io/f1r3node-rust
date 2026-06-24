@@ -1,5 +1,3 @@
-pub fn mem_profile_enabled() -> bool { false }
-
 #[cfg(target_os = "linux")]
 pub fn read_vm_rss_kb() -> Option<usize> {
     let status = std::fs::read_to_string("/proc/self/status").ok()?;
