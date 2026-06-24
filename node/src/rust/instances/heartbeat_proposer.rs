@@ -14,6 +14,7 @@ use casper::rust::validator_identity::ValidatorIdentity;
 use casper::rust::ProposeFunction;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
+use models::rust::validator::Validator;
 use rand::Rng;
 use tokio::sync::Notify;
 
@@ -259,10 +260,24 @@ async fn do_heartbeat_check(
 ) -> Result<HeartbeatCheckResult, casper::rust::errors::CasperError> {
     let snapshot: CasperSnapshot = casper.get_snapshot().await?;
 
+    // Consensus participation = membership in the main parent's finalized-floor bonds
+    // (`block.bonds`), the set whose stake the clique oracle weights. rchain gates the
+    // proposer on bonds (`Proposer.scala` checkValidatorIsActive = `bondsMap.contains`);
+    // f1r3node diverged this gate to the PoS `activeValidators` set, which lags bonds by
+    // an epoch and fractures production from weighting -> finality wedge. The main
+    // parent's bonds field IS `bonds(FS(floor(main_parent)))` (block_creator writes it),
+    // so this read is free and self-consistent with the block this validator would sign.
     let is_bonded = snapshot
-        .on_chain_state
-        .active_validators
-        .contains(&validator_identity.public_key.bytes);
+        .parents
+        .first()
+        .map(|p| {
+            p.body
+                .state
+                .bonds
+                .iter()
+                .any(|b| b.validator == validator_identity.public_key.bytes)
+        })
+        .unwrap_or(false);
 
     if !is_bonded {
         tracing::info!("Heartbeat: Validator is not bonded, skipping heartbeat propose");
@@ -827,19 +842,30 @@ fn is_lag_recovery_leader(
     snapshot: &CasperSnapshot,
     validator_identity: &ValidatorIdentity,
 ) -> bool {
-    let mut active_validators = snapshot.on_chain_state.active_validators.clone();
-    if active_validators.is_empty() {
+    // Leader rotation over the consensus set = the main parent's finalized-floor bonds
+    // (`block.bonds`), not the PoS `activeValidators` set. Node-identical whenever the
+    // bonded set is stable, which holds during the frozen stall where recovery fires.
+    let mut validators: Vec<Validator> = match snapshot.parents.first() {
+        Some(p) => p
+            .body
+            .state
+            .bonds
+            .iter()
+            .map(|b| b.validator.clone())
+            .collect(),
+        None => return true,
+    };
+    if validators.is_empty() {
         return true;
     }
 
     // Deterministic ordering across validators.
-    active_validators.sort();
+    validators.sort();
 
     // Rotate leader by next block number so recovery proposes are spread across validators.
     let next_block_number = snapshot.max_block_num.saturating_add(1);
-    let leader_index = (next_block_number as usize) % active_validators.len();
-    let leader = &active_validators[leader_index];
-    *leader == validator_identity.public_key.bytes
+    let leader_index = (next_block_number as usize) % validators.len();
+    validators[leader_index] == validator_identity.public_key.bytes
 }
 
 /// Unit tests for HeartbeatProposer configuration validation.
@@ -1031,10 +1057,10 @@ mod tests {
             // Snapshot with bonded validator
             let mut snapshot =
                 casper::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
-            snapshot
-                .on_chain_state
-                .active_validators
-                .push(validator_id.into());
+            casper::rust::casper::test_helpers::TestCasperWithSnapshot::bond_validator_in_snapshot(
+                &mut snapshot,
+                validator_id.into(),
+            );
 
             // Fresh LFB (100ms old)
             let lfb = create_lfb_with_age(100);
@@ -1079,10 +1105,10 @@ mod tests {
             // Create snapshot with no deploys but validator is bonded
             let mut snapshot =
                 casper::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
-            snapshot
-                .on_chain_state
-                .active_validators
-                .push(validator_id.into());
+            casper::rust::casper::test_helpers::TestCasperWithSnapshot::bond_validator_in_snapshot(
+                &mut snapshot,
+                validator_id.into(),
+            );
 
             // Stale LFB (60 seconds old)
             let lfb = create_lfb_with_age(60000);
@@ -1165,10 +1191,10 @@ mod tests {
             // Create snapshot with no deploys but validator is bonded
             let mut snapshot =
                 casper::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
-            snapshot
-                .on_chain_state
-                .active_validators
-                .push(validator_id.into());
+            casper::rust::casper::test_helpers::TestCasperWithSnapshot::bond_validator_in_snapshot(
+                &mut snapshot,
+                validator_id.into(),
+            );
 
             // Fresh LFB (100ms old)
             let lfb = create_lfb_with_age(100);
@@ -1214,10 +1240,10 @@ mod tests {
             // Snapshot with EMPTY deploys_in_scope but validator is bonded
             let mut snapshot =
                 casper::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
-            snapshot
-                .on_chain_state
-                .active_validators
-                .push(validator_id.into());
+            casper::rust::casper::test_helpers::TestCasperWithSnapshot::bond_validator_in_snapshot(
+                &mut snapshot,
+                validator_id.into(),
+            );
 
             // Fresh LFB so LFB is NOT stale
             let lfb = create_lfb_with_age(100);

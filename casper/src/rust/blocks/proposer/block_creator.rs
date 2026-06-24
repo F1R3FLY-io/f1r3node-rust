@@ -890,16 +890,34 @@ pub async fn create(
         )
         .await?;
         let fs_bonds = runtime_manager.compute_bonds(&fs.state_hash.0).await?;
-        if fs_bonds.len() != new_bonds.len() {
+        // The bonds FIELD is the consensus committee, not the full economic bonded set.
+        // Every consensus reader keys off it — the clique oracle's weight map, fork-choice
+        // weighting, the `justification_follows` bonded-set, and the proposer/synchrony
+        // gates. So it must be the validators that actually validate this epoch:
+        // `activeValidators` (the capped, epoch-rotated committee) intersected with the
+        // finalized-floor bonds. The intersection drops both bonded-not-active validators
+        // (capped out or not yet activated) and active-not-bonded validators (e.g. a
+        // withdrawing validator still in the frozen active set). Economic state lives in
+        // PoS `allBonds`, read separately. At numberOfActiveValidators=10000 the committee
+        // is every bonded validator, so this is a no-op today; it becomes the real cap when
+        // N < bonded count (Phase 2 / Issue J).
+        let active = runtime_manager
+            .get_active_validators(&fs.state_hash.0)
+            .await?;
+        let committee: Vec<Bond> = fs_bonds
+            .into_iter()
+            .filter(|b| active.contains(&b.validator))
+            .collect();
+        if committee.len() != new_bonds.len() {
             tracing::info!(
                 target: "f1r3fly.casper.bonds_validation",
                 floor_number = floor.block_number,
-                fs_bonds = fs_bonds.len(),
+                committee = committee.len(),
                 post_state_bonds = new_bonds.len(),
-                "block bonds field set from FS(floor); differs from post-state bonds (finality delay)"
+                "block bonds field = active committee ∩ FS(floor) bonds; differs from post-state bonds (finality delay / inactive bonded)"
             );
         }
-        fs_bonds
+        committee
     };
 
     let casper_version = casper_snapshot.on_chain_state.shard_conf.casper_version;

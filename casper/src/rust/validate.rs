@@ -1178,12 +1178,26 @@ impl Validate {
 
         match runtime_manager.compute_bonds(&reference_state).await {
             Ok(computed_bonds) => {
+                // Match block_creator: the bonds field is the consensus committee =
+                // active(FS) ∩ bonds(FS), not the full economic bonded set. Filter the
+                // computed FS bonds by the active-validator set at the same state.
+                let active = match runtime_manager.get_active_validators(&reference_state).await {
+                    Ok(a) => a,
+                    Err(ex) => {
+                        tracing::warn!(
+                            "Failed to compute active validators from FS(floor) state: {}",
+                            ex
+                        );
+                        return Either::Left(BlockError::BlockException(ex));
+                    }
+                };
                 let bonds_set: HashSet<_> = bonds
                     .iter()
                     .map(|bond| (&bond.validator, bond.stake))
                     .collect();
                 let computed_bonds_set: HashSet<_> = computed_bonds
                     .iter()
+                    .filter(|bond| active.contains(&bond.validator))
                     .map(|bond| (&bond.validator, bond.stake))
                     .collect();
 
