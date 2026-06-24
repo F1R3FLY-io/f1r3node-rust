@@ -78,12 +78,20 @@ fn compute_rejected_buffer_admits(
             .into_iter()
             .filter_map(|(sig, status)| {
                 if status.state == DeployFinalizationState::Pending {
+                    tracing::debug!(
+                        target: "f1r3.trace.recovery_gate",
+                        event = "gate_admit",
+                        sig = %hex::encode(&sig[..sig.len().min(16)]),
+                        "rejected deploy admitted to recovery buffer (status=Pending)"
+                    );
                     Some(sig)
                 } else {
                     tracing::debug!(
-                        "RejectedDeployBuffer populate: skipping sig {} (state={:?}) — already resolved in canonical view",
-                        hex::encode(&sig),
-                        status.state
+                        target: "f1r3.trace.recovery_gate",
+                        event = "gate_skip",
+                        sig = %hex::encode(&sig[..sig.len().min(16)]),
+                        state = ?status.state,
+                        "rejected deploy NOT admitted to recovery buffer (terminal status — dropped from recovery)"
                     );
                     None
                 }
@@ -1061,6 +1069,27 @@ pub async fn compute_parents_post_state(
             )
             .record(scope_elapsed.as_secs_f64());
 
+            // Diagnostic digest of the block's justification snapshot. Gated so the
+            // map/format/sort only runs when a consuming trace is enabled — zero cost
+            // at production log levels (f1r3.trace=warn).
+            let lm_key: Vec<String> = if tracing::enabled!(target: "f1r3.trace.fs_floor", tracing::Level::DEBUG)
+                || tracing::enabled!(target: "f1r3.trace.merge_verdict", tracing::Level::INFO)
+            {
+                let mut v: Vec<String> = latest_messages
+                    .iter()
+                    .map(|(val, h)| {
+                        format!(
+                            "{}:{}",
+                            hex::encode(&val[..val.len().min(3)]),
+                            hex::encode(&h[..h.len().min(6)])
+                        )
+                    })
+                    .collect();
+                v.sort();
+                v
+            } else {
+                Vec::new()
+            };
             tracing::debug!(
                 target: "f1r3.trace.fs_floor",
                 event = "stage2_base",
@@ -1070,6 +1099,7 @@ pub async fn compute_parents_post_state(
                 parents = parent_hashes.len(),
                 scope = scope.len(),
                 straddler_blocks,
+                lm_key = ?lm_key,
                 "multi-parent merge based on sealed floor state"
             );
 
@@ -1127,6 +1157,8 @@ pub async fn compute_parents_post_state(
                 floor_number = floor.block_number,
                 parents = parent_hashes.len(),
                 parent_hashes = ?parent_hashes.iter().map(|h| hex::encode(&h[..h.len().min(6)])).collect::<Vec<_>>(),
+                lm_key = ?lm_key,
+                new_state = %hex::encode(&state.bytes()[..state.bytes().len().min(6)]),
                 rejected_sigs = ?rejected_user_pairs.iter().map(|(s, _)| hex::encode(&s[..s.len().min(8)])).collect::<Vec<_>>(),
                 "MERGE_VERDICT",
             );

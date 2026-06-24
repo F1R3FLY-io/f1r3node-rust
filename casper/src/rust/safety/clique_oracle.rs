@@ -499,6 +499,17 @@ impl CliqueOracle {
             )
             .await?;
 
+            tracing::debug!(
+                target: "f1r3.trace.ft_debug",
+                ft = result,
+                agreeing_weight = agreeing_weight_map.values().sum::<i64>(),
+                total_weight = full_weight_map.values().sum::<i64>(),
+                agreeing_n = agreeing_weight_map.len(),
+                total_n = full_weight_map.len(),
+                target_msg = ?target_msg,
+                "FT_DEBUG"
+            );
+
             Ok(result)
         } else {
             tracing::warn!(
