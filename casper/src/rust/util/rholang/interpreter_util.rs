@@ -1249,6 +1249,85 @@ pub async fn compute_parents_post_state(
                 }
             }
 
+            // Seal keep-one losers: the finalized seal ledger's rejected deploys (concurrent
+            // single-value-cell writers the seal did NOT fold). Unlike the construction
+            // rejections above, these are NOT in any block's body.rejected_deploys, so
+            // `resolve_batch` would report them Finalized (clean inclusion) and the deploy-status
+            // admit-gate would drop them. Gate instead on the effect-in-FS base-check — the same
+            // oracle `repeat_deploy` and the proposer's recovery filter use: admit a loser iff its
+            // effect is NOT in FS and it is NOT superseded by an accepted inclusion (accepted-wins).
+            // Re-feeding the cumulative ledger each call is absorbed by the gate (an already-
+            // recovered loser reads in-FS → skipped), so the loser re-executes against the updated
+            // FS exactly once and lands a cut later — monotone, no orphan.
+            if let Some(buffer) = rejected_deploy_buffer {
+                if !fs.rejected_deploys.is_empty() {
+                    let mut by_block: HashMap<BlockHash, Vec<Bytes>> = HashMap::new();
+                    for r in &fs.rejected_deploys {
+                        let sig = r.sig.clone();
+                        // accepted-wins: a loser also accepted at some inclusion is already in FS.
+                        if fs.accepted_deploys.iter().any(|a| a.sig == sig) {
+                            continue;
+                        }
+                        // effect-in-FS base-check: skip already-recovered (or otherwise in-FS) losers.
+                        if recovered_deploy_effect_in_base(
+                            &s.dag,
+                            block_store,
+                            runtime_manager,
+                            &base_state,
+                            &sig,
+                        )
+                        .unwrap_or(false)
+                        {
+                            continue;
+                        }
+                        by_block.entry(r.host.0.clone()).or_default().push(sig);
+                    }
+                    let mut deploys_to_buffer: Vec<Signed<DeployData>> = Vec::new();
+                    for (src_block, sigs) in by_block {
+                        let sig_set: HashSet<Bytes> = sigs.into_iter().collect();
+                        match block_store.get(&src_block) {
+                            Ok(Some(block)) => {
+                                for pd in &block.body.deploys {
+                                    if sig_set.contains(&pd.deploy.sig) {
+                                        deploys_to_buffer.push(pd.deploy.clone());
+                                    }
+                                }
+                            }
+                            Ok(None) => {
+                                tracing::warn!(
+                                    "RejectedDeployBuffer (seal losers): source block {} not in store",
+                                    PrettyPrinter::build_string_bytes(&src_block)
+                                );
+                            }
+                            Err(err) => {
+                                tracing::warn!(
+                                    "RejectedDeployBuffer (seal losers): failed to load {}: {}",
+                                    PrettyPrinter::build_string_bytes(&src_block),
+                                    err
+                                );
+                            }
+                        }
+                    }
+                    if !deploys_to_buffer.is_empty() {
+                        match buffer.lock() {
+                            Ok(mut guard) => {
+                                if let Err(err) = guard.add(deploys_to_buffer) {
+                                    tracing::warn!(
+                                        "RejectedDeployBuffer (seal losers) add failed: {}",
+                                        err
+                                    );
+                                }
+                            }
+                            Err(_) => {
+                                tracing::warn!(
+                                    "RejectedDeployBuffer (seal losers): lock poisoned; skipping populate"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+
             // Recover rejected-slash metadata by reading each source block's
             // system_deploys once. The block creator uses these to dedup
             // slashes into the merge block's body; without this the slash

@@ -30,7 +30,7 @@
 //! (write-through); there is no separate "seal at finalization" mechanism to keep
 //! consistent with.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
@@ -364,128 +364,234 @@ async fn seal_floor_cut(
     let mut fs_state: StateHash = prev_state.state_hash.0.clone();
     let mut chains_applied = 0usize;
     let mut chains_skipped = 0usize;
+    // Flatten the cone's deploy chains and order them by the shared keep-one order (CloseBlock
+    // PRIMARY so the non-recoverable epoch deploy wins, then block# producer-before-consumer,
+    // then cost/hash/sigs). The fold below is gated by a whole-cell keep-one: the seal cone is
+    // the UNION of all finalized blocks across forks, so it can hold concurrent writers to one
+    // single-value cell that no single construction merge ever saw together (each finalized on
+    // its own fork). Folding both splits a coupled entity (the orphan); instead apply ONE writer
+    // per cell and route the rest to recovery, exactly as construction's serialize keep-one does
+    // within a single merge.
+    let mut ordered_chains: Vec<(i64, BlockHash, crate::rust::merging::deploy_chain_index::DeployChainIndex)> =
+        Vec::new();
     for (block_number, block_hash) in &numbered {
         let idx = crate::rust::util::rholang::interpreter_util::build_block_index(
             runtime_manager,
             block_store,
             block_hash,
         )?;
-        for chain in &idx.deploy_chains {
-            let sigs: Vec<prost::bytes::Bytes> = chain
-                .deploys_with_cost
-                .0
-                .iter()
-                .map(|d| d.deploy_id.clone())
-                .collect();
-            // Construction keep-one'd at THIS host: its effect lands via its accepted recovery
-            // inclusion, not this rejected original (folding the loser double-applies/stale-consumes).
-            if sigs
-                .iter()
-                .any(|s| rejected_inclusions.contains(&(s.clone(), block_hash.clone())))
-            {
-                chains_skipped += 1;
-                continue;
-            }
-            // Within-cut "flip": the same deploy kept in more than one cone block.
-            if sigs.iter().any(|s| played_sigs.contains(s)) {
-                chains_skipped += 1;
-                continue;
-            }
-            // Cross-cut: a recovery re-proposal whose sig-derived (pre-charge/own) cell is already
-            // folded into FS from an earlier cut. Value-cell merges are idempotent, but Int-delta
-            // folds are not, so this base-check prevents a cross-cut double-count. System deploys
-            // (CloseBlock/Slash) are excluded — they share no per-deploy cell, deduped by height.
-            let base_hash = Blake2b256Hash::from_bytes_prost(&fs_state);
-            let already_in_base = sigs.iter().any(|sig| {
-                !crate::rust::system_deploy::is_system_deploy_id(sig)
-                    && crate::rust::util::rholang::interpreter_util::recovered_deploy_effect_in_base(
-                        dag,
-                        block_store,
-                        runtime_manager,
-                        &base_hash,
-                        sig,
-                    )
-                    .unwrap_or(false)
-            });
-            if already_in_base {
-                chains_skipped += 1;
-                continue;
-            }
-            // CloseBlock dedup-by-height: a CloseBlock chain whose height was already applied is
-            // a replica sibling — skip it. Covers BOTH its committedRewards Map write AND its
-            // posVault withdrawal number-channel transfer (a tagged number channel the value-type
-            // fold would otherwise sum across siblings). First at a height inserts and applies;
-            // replicas find the height present and skip.
-            if sigs
-                .iter()
-                .any(|s| crate::rust::system_deploy::is_close_block_deploy_id(s))
-                && !closeblock_heights.insert(*block_number)
-            {
-                chains_skipped += 1;
-                continue;
-            }
-
-            // Apply this chain's COMMITTED diff onto the running FS via the trie
-            // machinery: foldable number channels fold through the merge primitive;
-            // non-foldable Map/Set/Int cells fold structurally (recursive 3-way merge,
-            // preserving co-finalized concurrent writes); everything else applies its
-            // recorded remove/add through `make_trie_action` (stale-consume backstop).
-            let base_reader = std::sync::Arc::new(
-                runtime_manager
-                    .history_repo
-                    .get_history_reader(&base_hash)
-                    .map_err(CasperError::HistoryError)?,
-            );
-            let reader_for_fold = std::sync::Arc::clone(&base_reader);
-            let actions = state_change_merger::compute_trie_actions(
-                &chain.state_changes,
-                &*base_reader,
-                &chain.event_log_index.number_channels_data,
-                move |hash: &Blake2b256Hash, channel_changes, number_chs| {
-                    if let Some(number_ch_val) = number_chs.get(hash) {
-                        let (diff, merge_type) = *number_ch_val;
-                        let base_get_data = |h: &Blake2b256Hash| reader_for_fold.get_data(h);
-                        Ok(Some(RholangMergingLogic::calculate_number_channel_merge(
-                            hash,
-                            diff,
-                            merge_type,
-                            channel_changes,
-                            base_get_data,
-                        )?))
-                    } else {
-                        let base_get_data = |h: &Blake2b256Hash| reader_for_fold.get_data(h);
-                        RholangMergingLogic::calculate_map_channel_merge(
-                            hash,
-                            channel_changes,
-                            base_get_data,
-                        )
-                    }
-                },
-            )
-            .map_err(CasperError::HistoryError)?;
-            let new_root = runtime_manager
-                .history_repo
-                .reset(&base_hash)
-                .map(|repo| repo.do_checkpoint(actions))
-                .map(|checkpoint| checkpoint.root())
-                .map_err(CasperError::HistoryError)?;
-            fs_state = prost::bytes::Bytes::copy_from_slice(&new_root.bytes());
-            for s in sigs {
-                accepted_ledger.push(SealedAcceptance {
-                    sig: s.clone(),
-                    host: BlockHashSerde(block_hash.clone()),
-                    host_number: *block_number,
-                });
-                played_sigs.insert(s);
-            }
-            chains_applied += 1;
+        for chain in idx.deploy_chains {
+            ordered_chains.push((*block_number, block_hash.clone(), chain));
         }
     }
+    ordered_chains.sort_by(|(_, _, a), (_, _, b)| {
+        crate::rust::merging::dag_merger::serialize_keep_one_order(a, b)
+    });
 
-    // The seal keep-one rejects nothing — every accepted finalized deploy is folded — so the
-    // FloorData rejected/accepted ledgers are retained-but-unconsumed (the dedup is cone-local
-    // rejected + within-cut played + the running-FS base-check, not these carried verdicts).
-    // They are carried forward unchanged in the return below.
+    // Foldable (mergeable number) channels compose via the dispatcher fold and are exempt from
+    // the keep-one — only non-foldable single-value cells serialize.
+    let mut foldable: HashSet<Blake2b256Hash> = HashSet::new();
+    for (_, _, chain) in &ordered_chains {
+        for (ch, _) in chain.event_log_index.number_channels_data.iter() {
+            foldable.insert(ch.clone());
+        }
+    }
+    // Running available-datum multiset per non-foldable channel, seeded lazily from the FIXED
+    // floor base (prev FS) and advanced only for chains actually applied — so it mirrors the
+    // running fs_state's single-value cells (each gets exactly one folded writer under keep-one).
+    let avail_base_hash = Blake2b256Hash::from_bytes_prost(&prev_state.state_hash.0);
+    let avail_reader = runtime_manager
+        .history_repo
+        .get_history_reader(&avail_base_hash)
+        .map_err(CasperError::HistoryError)?;
+    let mut available: HashMap<Blake2b256Hash, Vec<Vec<u8>>> = HashMap::new();
+    // Seal keep-one losers (sig, host): concurrent single-value-cell writers the seal did NOT
+    // apply this cut. Routed to recovery (re-executed against the updated FS a cut later), and
+    // recorded in the rejected ledger below.
+    let mut seal_rejected: Vec<(prost::bytes::Bytes, BlockHash)> = Vec::new();
+
+    for (block_number, block_hash, chain) in &ordered_chains {
+        let sigs: Vec<prost::bytes::Bytes> = chain
+            .deploys_with_cost
+            .0
+            .iter()
+            .map(|d| d.deploy_id.clone())
+            .collect();
+        // Construction keep-one'd at THIS host: its effect lands via its accepted recovery
+        // inclusion, not this rejected original (folding the loser double-applies/stale-consumes).
+        if sigs
+            .iter()
+            .any(|s| rejected_inclusions.contains(&(s.clone(), block_hash.clone())))
+        {
+            chains_skipped += 1;
+            continue;
+        }
+        // Within-cut "flip": the same deploy kept in more than one cone block.
+        if sigs.iter().any(|s| played_sigs.contains(s)) {
+            chains_skipped += 1;
+            continue;
+        }
+        // Cross-cut: a recovery re-proposal whose sig-derived (pre-charge/own) cell is already
+        // folded into FS from an earlier cut. Value-cell merges are idempotent, but Int-delta
+        // folds are not, so this base-check prevents a cross-cut double-count. System deploys
+        // (CloseBlock/Slash) are excluded — they share no per-deploy cell, deduped by height.
+        // Skipped (not rejected): the effect is already in FS, so it needs no recovery.
+        let base_hash = Blake2b256Hash::from_bytes_prost(&fs_state);
+        let already_in_base = sigs.iter().any(|sig| {
+            !crate::rust::system_deploy::is_system_deploy_id(sig)
+                && crate::rust::util::rholang::interpreter_util::recovered_deploy_effect_in_base(
+                    dag,
+                    block_store,
+                    runtime_manager,
+                    &base_hash,
+                    sig,
+                )
+                .unwrap_or(false)
+        });
+        if already_in_base {
+            chains_skipped += 1;
+            continue;
+        }
+        // CloseBlock dedup-by-height: a CloseBlock chain whose height was already applied is
+        // a replica sibling — skip it. Covers BOTH its committedRewards Map write AND its
+        // posVault withdrawal number-channel transfer (a tagged number channel the value-type
+        // fold would otherwise sum across siblings). First at a height inserts and applies;
+        // replicas find the height present and skip.
+        if sigs
+            .iter()
+            .any(|s| crate::rust::system_deploy::is_close_block_deploy_id(s))
+            && !closeblock_heights.insert(*block_number)
+        {
+            chains_skipped += 1;
+            continue;
+        }
+        // Whole-cell keep-one: serializable iff every non-foldable channel this chain consumes
+        // from still has those datums available in the running cell state. A concurrent
+        // single-value-cell writer whose consumed datum an earlier winner already took is
+        // REJECTED to recovery — NOT folded, because folding two writers into one coupled cell
+        // splits the entity (the orphan). The CloseBlock-PRIMARY order makes the non-recoverable
+        // epoch deploy the winner; the user writer it displaces re-executes against the updated FS.
+        let mut serializable = true;
+        for e in chain.state_changes.datums_changes.iter() {
+            let ch = e.key();
+            if foldable.contains(ch) {
+                continue;
+            }
+            let removed = &e.value().removed;
+            if removed.is_empty() {
+                continue;
+            }
+            if !available.contains_key(ch) {
+                let base = avail_reader
+                    .get_data_proj_binary(ch)
+                    .map_err(CasperError::HistoryError)?;
+                available.insert(ch.clone(), base);
+            }
+            if !crate::rust::merging::dag_merger::is_sub_multiset(
+                removed,
+                available.get(ch).expect("seeded above"),
+            ) {
+                serializable = false;
+                break;
+            }
+        }
+        if !serializable {
+            for s in &sigs {
+                seal_rejected.push((s.clone(), block_hash.clone()));
+            }
+            tracing::info!(
+                target: "f1r3.trace.fs_floor",
+                event = "seal_serialize_reject",
+                block = *block_number,
+                sigs = ?sigs.iter().map(|s| hex::encode(&s[..s.len().min(8)])).collect::<Vec<_>>(),
+                "seal keep-one: chain's consumed single-value-cell datum no longer available (cross-fork concurrent writer) — rejecting to recovery"
+            );
+            chains_skipped += 1;
+            continue;
+        }
+
+        // Apply this chain's COMMITTED diff onto the running FS via the trie
+        // machinery: foldable number channels fold through the merge primitive;
+        // non-foldable Map/Set/Int cells fold structurally (recursive 3-way merge,
+        // preserving co-finalized concurrent writes); everything else applies its
+        // recorded remove/add through `make_trie_action` (stale-consume backstop).
+        let base_reader = std::sync::Arc::new(
+            runtime_manager
+                .history_repo
+                .get_history_reader(&base_hash)
+                .map_err(CasperError::HistoryError)?,
+        );
+        let reader_for_fold = std::sync::Arc::clone(&base_reader);
+        let actions = state_change_merger::compute_trie_actions(
+            &chain.state_changes,
+            &*base_reader,
+            &chain.event_log_index.number_channels_data,
+            move |hash: &Blake2b256Hash, channel_changes, number_chs| {
+                if let Some(number_ch_val) = number_chs.get(hash) {
+                    let (diff, merge_type) = *number_ch_val;
+                    let base_get_data = |h: &Blake2b256Hash| reader_for_fold.get_data(h);
+                    Ok(Some(RholangMergingLogic::calculate_number_channel_merge(
+                        hash,
+                        diff,
+                        merge_type,
+                        channel_changes,
+                        base_get_data,
+                    )?))
+                } else {
+                    let base_get_data = |h: &Blake2b256Hash| reader_for_fold.get_data(h);
+                    RholangMergingLogic::calculate_map_channel_merge(
+                        hash,
+                        channel_changes,
+                        base_get_data,
+                    )
+                }
+            },
+        )
+        .map_err(CasperError::HistoryError)?;
+        let new_root = runtime_manager
+            .history_repo
+            .reset(&base_hash)
+            .map(|repo| repo.do_checkpoint(actions))
+            .map(|checkpoint| checkpoint.root())
+            .map_err(CasperError::HistoryError)?;
+        fs_state = prost::bytes::Bytes::copy_from_slice(&new_root.bytes());
+        // Advance `available` for this applied chain so later chains see its writes:
+        // available = (available -- removed) ++ added, per touched non-foldable channel.
+        for e in chain.state_changes.datums_changes.iter() {
+            let ch = e.key();
+            if foldable.contains(ch) {
+                continue;
+            }
+            if !available.contains_key(ch) {
+                let base = avail_reader
+                    .get_data_proj_binary(ch)
+                    .map_err(CasperError::HistoryError)?;
+                available.insert(ch.clone(), base);
+            }
+            let avail = available.get_mut(ch).expect("seeded above");
+            let mut next =
+                rspace_plus_plus::rspace::merger::state_change::StateChange::multiset_diff(
+                    avail,
+                    &e.value().removed,
+                );
+            next.extend(e.value().added.iter().cloned());
+            *avail = next;
+        }
+        for s in sigs {
+            accepted_ledger.push(SealedAcceptance {
+                sig: s.clone(),
+                host: BlockHashSerde(block_hash.clone()),
+                host_number: *block_number,
+            });
+            played_sigs.insert(s);
+        }
+        chains_applied += 1;
+    }
+
+    // The seal now keep-ones single-value cells: `seal_rejected` holds the concurrent cross-fork
+    // writers it did NOT fold this cut. They feed the rejected ledger (below) and the recovery
+    // buffer (in compute_parents_post_state, gated by the running-FS base-check), so each loser
+    // re-executes against the updated FS and lands a cut later — monotone, no orphan.
 
     let committed_state_bytes = block_store
         .get_unsafe(cut)
@@ -519,10 +625,12 @@ async fn seal_floor_cut(
         "sealed floor state (deterministic structural diff-fold of the finalized cone)"
     );
 
-    // Rejected ledger: this cut's construction keep-one'd inclusions (sig, host),
-    // extending the carried set. host_number (from the DAG) drives retention pruning.
+    // Rejected ledger: this cut's construction keep-one'd inclusions AND the seal's own
+    // keep-one losers (sig, host), extending the carried set. host_number (from the DAG) drives
+    // retention pruning. Both feed the recovery buffer; the seal losers re-execute against the
+    // updated FS, the construction losers land via their accepted recovery inclusion.
     let mut rejected_ledger: Vec<SealedRejection> = prev_state.rejected_deploys.clone();
-    for (sig, host) in &rejected_inclusions {
+    for (sig, host) in rejected_inclusions.iter().chain(seal_rejected.iter()) {
         rejected_ledger.push(SealedRejection {
             sig: sig.clone(),
             host: BlockHashSerde(host.clone()),

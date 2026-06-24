@@ -17,7 +17,9 @@ use shared::rust::hashable_set::HashableSet;
 use super::conflict_set_merger;
 use super::deploy_chain_index::DeployChainIndex;
 use crate::rust::errors::CasperError;
-use crate::rust::system_deploy::{is_slash_deploy_id, is_system_deploy_id};
+use crate::rust::system_deploy::{
+    is_close_block_deploy_id, is_slash_deploy_id, is_system_deploy_id,
+};
 
 pub fn cost_optimal_rejection_alg() -> impl Fn(&DeployChainIndex) -> u64 {
     |deploy_chain_index: &DeployChainIndex| {
@@ -33,8 +35,8 @@ pub fn cost_optimal_rejection_alg() -> impl Fn(&DeployChainIndex) -> u64 {
 /// True iff `sub` is a sub-multiset of `sup`: every datum appears in `sup` at
 /// least as many times as in `sub`. The single-value-cell serialization uses
 /// this to decide whether a chain's consumed (`removed`) datums are still
-/// available in the running cell state.
-fn is_sub_multiset(sub: &[Vec<u8>], sup: &[Vec<u8>]) -> bool {
+/// available in the running cell state. Shared with the seal keep-one.
+pub(crate) fn is_sub_multiset(sub: &[Vec<u8>], sup: &[Vec<u8>]) -> bool {
     let mut sup_counts: HashMap<&Vec<u8>, usize> = HashMap::new();
     for d in sup {
         *sup_counts.entry(d).or_insert(0) += 1;
@@ -48,12 +50,21 @@ fn is_sub_multiset(sub: &[Vec<u8>], sup: &[Vec<u8>]) -> bool {
         .all(|(d, &need)| sup_counts.get(*d).copied().unwrap_or(0) >= need)
 }
 
-/// Deterministic order for the single-value-cell serialization keep-one. Block number is
-/// PRIMARY so a producer precedes its consumers (a consumer of another chain's produce is
-/// in a strictly higher block). Among same-height siblings — where a single-value-cell
-/// fork actually is — higher TOTAL COST wins (pay-more-wins), with (block hash, sorted
-/// sigs) as the final node-identical tiebreak. Extracted for unit testing.
-fn serialize_keep_one_order(a: &DeployChainIndex, b: &DeployChainIndex) -> std::cmp::Ordering {
+/// Deterministic order for the single-value-cell serialization keep-one. CloseBlock chains
+/// are PRIMARY (sort first): a CloseBlock is non-recoverable (system deploy, no owner,
+/// exact-boundary gating won't re-fire), so it must win the cell and route concurrent user
+/// writers to recovery rather than be rejected itself — losing it would drop a whole epoch's
+/// processing. It consumes only base data (the stateCh + rho:block:data), never a concurrent
+/// cone chain's produce, so promoting it ahead of block number cannot violate
+/// producer-before-consumer. Then block number is the next key so a producer precedes its
+/// consumers (a consumer of another chain's produce is in a strictly higher block). Among
+/// same-height siblings — where a single-value-cell fork actually is — higher TOTAL COST wins
+/// (pay-more-wins), with (block hash, sorted sigs) as the final node-identical tiebreak.
+/// Shared with the seal keep-one; unit tested.
+pub(crate) fn serialize_keep_one_order(
+    a: &DeployChainIndex,
+    b: &DeployChainIndex,
+) -> std::cmp::Ordering {
     fn cost(c: &DeployChainIndex) -> u64 {
         c.deploys_with_cost.0.iter().map(|d| d.cost).sum()
     }
@@ -63,8 +74,15 @@ fn serialize_keep_one_order(a: &DeployChainIndex, b: &DeployChainIndex) -> std::
         sigs.sort();
         sigs
     }
-    a.source_block_number
-        .cmp(&b.source_block_number)
+    fn is_close_block(c: &DeployChainIndex) -> bool {
+        c.deploys_with_cost
+            .0
+            .iter()
+            .any(|d| is_close_block_deploy_id(&d.deploy_id))
+    }
+    is_close_block(b)
+        .cmp(&is_close_block(a)) // CloseBlock chains first (non-recoverable: must win the cell)
+        .then_with(|| a.source_block_number.cmp(&b.source_block_number))
         .then_with(|| cost(b).cmp(&cost(a))) // higher cost first (pay-more-wins)
         .then_with(|| a.source_block_hash.cmp(&b.source_block_hash))
         .then_with(|| sig_key(a).cmp(&sig_key(b)))
@@ -1258,9 +1276,9 @@ mod tests {
         assert_eq!(serialize_keep_one_order(&low, &high), std::cmp::Ordering::Greater);
     }
 
-    /// Producer-before-consumer is preserved: a lower-block producer sorts before a
-    /// higher-block, higher-cost consumer, so the available-multiset seeding stays valid
-    /// (block number remains the primary key).
+    /// Producer-before-consumer is preserved among USER chains: a lower-block producer sorts
+    /// before a higher-block, higher-cost consumer, so the available-multiset seeding stays
+    /// valid (block number is the primary key once CloseBlock priority is not in play).
     #[test]
     fn serialize_keep_one_preserves_producer_before_consumer() {
         let producer = chain(5, 1, &[(1, 10)]);
@@ -1268,6 +1286,38 @@ mod tests {
         assert_eq!(
             serialize_keep_one_order(&producer, &consumer),
             std::cmp::Ordering::Less
+        );
+    }
+
+    /// CloseBlock priority: a CloseBlock chain sorts before any user chain regardless of block
+    /// number or cost. It is non-recoverable, so it must win the single-value cell and route
+    /// concurrent user writers to recovery rather than be rejected itself.
+    #[test]
+    fn serialize_keep_one_closeblock_wins_over_user() {
+        let mut cb_id = vec![9u8; 32];
+        cb_id.push(crate::rust::system_deploy::CLOSE_BLOCK_MARKER);
+        let cb_set: std::collections::HashSet<DeployIdWithCost> = std::iter::once(DeployIdWithCost {
+            deploy_id: Bytes::from(cb_id),
+            cost: 0,
+        })
+        .collect();
+        let close_block = DeployChainIndex::from_parts(
+            HashableSet(cb_set),
+            Blake2b256Hash::from_bytes(vec![3; 32]),
+            EventLogIndex::empty(),
+            StateChange::empty(),
+            Bytes::from(vec![3; 32]),
+            9, // higher block number than the user chain below
+        );
+        // A user chain at a LOWER block number with HIGHER cost — would win without priority.
+        let user = chain(5, 1, &[(1, 1000)]);
+        assert_eq!(
+            serialize_keep_one_order(&close_block, &user),
+            std::cmp::Ordering::Less
+        );
+        assert_eq!(
+            serialize_keep_one_order(&user, &close_block),
+            std::cmp::Ordering::Greater
         );
     }
 }
