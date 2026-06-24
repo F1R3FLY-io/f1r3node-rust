@@ -487,6 +487,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             self.conf.genesis_block_data.epoch_length,
             self.conf.genesis_block_data.quarantine_length,
             self.conf.genesis_block_data.number_of_active_validators,
+            ((self.conf.fault_tolerance_threshold as f64) * 1_000_000.0).round() as i64,
             self.conf.genesis_ceremony.required_signatures,
             self.conf
                 .genesis_block_data
@@ -579,6 +580,9 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             self.conf.genesis_block_data.epoch_length,
             self.conf.genesis_block_data.quarantine_length,
             self.conf.genesis_block_data.number_of_active_validators,
+            // Bake the shard fault-tolerance threshold on-chain (scaled x1e6) so every
+            // node sources its finalized-floor threshold from genesis, not local config.
+            ((self.conf.fault_tolerance_threshold as f64) * 1_000_000.0).round() as i64,
             self.casper_shard_conf.shard_name.clone(),
             self.conf.genesis_block_data.deploy_timestamp,
             self.conf.genesis_ceremony.required_signatures,

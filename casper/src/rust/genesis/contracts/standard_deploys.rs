@@ -252,6 +252,10 @@ pub fn pos_generator(pos: &ProofOfStake, shard_id: &str) -> Signed<DeployData> {
                 &pos.number_of_active_validators.to_string(),
             ),
             (
+                "faultToleranceThreshold",
+                &pos.fault_tolerance_threshold_ppm.to_string(),
+            ),
+            (
                 "posMultiSigPublicKeys",
                 &ProofOfStake::public_keys(&pos.pos_multi_sig_public_keys),
             ),

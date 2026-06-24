@@ -75,6 +75,48 @@ fn parse_all_tuple(par: &Par) -> Option<(String, String, u32)> {
     Some((name, symbol, decimals as u32))
 }
 
+const FAULT_TOLERANCE_THRESHOLD_QUERY: &str = r#"
+    new ret, rl(`rho:registry:lookup`), posCh in {
+      rl!(`rho:system:pos`, *posCh) |
+      for (@(_, PoS) <- posCh) {
+        @PoS!("getFaultToleranceThreshold", *ret)
+      }
+    }
+"#;
+
+/// Reads the shard fault-tolerance threshold baked into genesis (the PoS
+/// contract stores it scaled by 1e6) and returns it as the `f32` fraction.
+///
+/// Every node calls this at startup and uses the result for its finalized-floor
+/// threshold, so the floor's threshold is sourced from shared chain state rather
+/// than local config — making the floor (and thus block pre-states) node-identical.
+pub async fn read_on_chain_fault_tolerance_threshold(
+    runtime_manager: &RuntimeManager,
+    post_state_hash: &StateHash,
+) -> Result<f32, CasperError> {
+    let (result, _cost) = runtime_manager
+        .play_exploratory_deploy(FAULT_TOLERANCE_THRESHOLD_QUERY.to_string(), post_state_hash)
+        .await?;
+
+    let ppm = result.first().and_then(RhoNumber::unapply).ok_or_else(|| {
+        CasperError::RuntimeError(
+            "PoS getFaultToleranceThreshold returned no value or a non-integer".to_string(),
+        )
+    })?;
+
+    // Valid fault-tolerance thresholds are ft in [-1, 1] -> ppm in [-1e6, 1e6].
+    // ft = -1 is the "instant finalization" sentinel (finalize as soon as a block
+    // has any agreement); used by tests and valid on-chain.
+    if !(-1_000_000..=1_000_000).contains(&ppm) {
+        return Err(CasperError::RuntimeError(format!(
+            "on-chain fault-tolerance-threshold (ppm) out of range [-1_000_000, 1_000_000]: {}",
+            ppm
+        )));
+    }
+
+    Ok((ppm as f64 / 1_000_000.0) as f32)
+}
+
 /// Compares the on-chain token metadata against the node's local config.
 /// Returns `Err` with a descriptive message if any field disagrees.
 ///

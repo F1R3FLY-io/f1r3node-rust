@@ -300,6 +300,11 @@ in {
               contract PoS(@"getQuarantineLength", returnCh) = {
                 returnCh!($$quarantineLength$$)
               } |
+              // Exposes the shard fault-tolerance threshold (scaled x1e6) so every
+              // node sources the finalized-floor threshold from genesis, not local config.
+              contract PoS(@"getFaultToleranceThreshold", returnCh) = {
+                returnCh!($$faultToleranceThreshold$$)
+              } |
               contract PoS(@"posVaultTransfer", @targetAddress, @amount, @deployerID, @transferRet) = {
                 // human transfer would just use this method
                 @humanControlHandle!("transfer", targetAddress, amount, deployerID, transferRet)
