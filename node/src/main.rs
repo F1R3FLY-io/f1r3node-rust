@@ -23,13 +23,8 @@ use node::rust::repl::ReplRuntime;
 use node::rust::web::version_info::get_version_info_str;
 use tokio::runtime::{Builder, Runtime};
 use tracing::{info, warn};
-use tracing_subscriber::layer::SubscriberExt;
-use tracing_subscriber::util::SubscriberInitExt;
-use tracing_subscriber::EnvFilter;
 
 fn main() -> Result<()> {
-    init_json_logging()?;
-
     // Parse CLI arguments, handling help/version display gracefully
     let options = match Options::try_parse() {
         Ok(opts) => opts,
@@ -58,6 +53,9 @@ fn main() -> Result<()> {
             Ok::<_, eyre::Error>(())
         })?;
     } else {
+        let mut logging_cfg = shared::rust::tracing_init::LoggingConfig::default();
+        apply_log_cli_overrides(&options, &mut logging_cfg);
+        let _log_guards = init_logging(&logging_cfg, None)?;
         // we should not bother about blocking calls in this case since we are expecting consecutive execution
         let rt = Builder::new_current_thread().enable_all().build()?;
         run_cli(options, &rt)?;
@@ -68,9 +66,24 @@ fn main() -> Result<()> {
 
 /// Starts the F1r3fly node instance
 async fn start_node(options: Options) -> Result<()> {
+    let log_overrides = (
+        options.log_level.clone(),
+        options.log_format.clone(),
+        options.log_sink.clone(),
+    );
     // Defaults are baked into the binary via include_str!; the optional
     // <data-dir>/rnode.conf override and CLI flags layer on top.
-    let (node_conf, profile, config_file) = node::rust::configuration::builder::build(options)?;
+    let (mut node_conf, profile, config_file, deferred_warnings) =
+        node::rust::configuration::builder::build(options)?;
+
+    apply_log_cli_overrides_raw(log_overrides, &mut node_conf.logging);
+
+    let data_dir = node_conf.storage.data_dir.clone();
+    let _log_guards = init_logging(&node_conf.logging, Some(&data_dir))?;
+
+    for w in deferred_warnings {
+        warn!("{}", w);
+    }
 
     // Set system property for data directory (equivalent to Scala's System.setProperty)
     // SAFETY: This is called early in node startup before spawning threads that read env vars
@@ -241,23 +254,46 @@ fn run_cli(options: Options, rt: &Runtime) -> Result<()> {
     Ok(())
 }
 
-pub fn init_json_logging() -> eyre::Result<()> {
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+pub fn init_logging(
+    cfg: &shared::rust::tracing_init::LoggingConfig,
+    data_dir: Option<&std::path::Path>,
+) -> eyre::Result<shared::rust::tracing_init::TracingGuards> {
+    shared::rust::tracing_init::init(cfg, data_dir)
+}
 
-    tracing_subscriber::registry()
-        .with(filter)
-        .with(
-            tracing_subscriber::fmt::layer()
-                .json()
-                .with_target(true)
-                .with_file(true)
-                .with_line_number(true)
-                .with_current_span(false) // logs only for now
-                .with_span_list(false) // logs only for now
-                .flatten_event(true), // put event fields at top level
-        )
-        .try_init()?;
-    Ok(())
+fn apply_log_cli_overrides(options: &Options, cfg: &mut shared::rust::tracing_init::LoggingConfig) {
+    apply_log_cli_overrides_raw(
+        (
+            options.log_level.clone(),
+            options.log_format.clone(),
+            options.log_sink.clone(),
+        ),
+        cfg,
+    );
+}
+
+fn apply_log_cli_overrides_raw(
+    overrides: (Option<String>, Option<String>, Option<String>),
+    cfg: &mut shared::rust::tracing_init::LoggingConfig,
+) {
+    use shared::rust::tracing_init::{LogFormat, LogSink};
+    let (level, format, sink) = overrides;
+    if let Some(l) = level {
+        cfg.filter = l;
+    }
+    if let Some(f) = format {
+        cfg.format = match f.to_lowercase().as_str() {
+            "pretty" => LogFormat::Pretty,
+            _ => LogFormat::Json,
+        };
+    }
+    if let Some(s) = sink {
+        cfg.sink = match s.to_lowercase().as_str() {
+            "file" => LogSink::File,
+            "both" => LogSink::Both,
+            _ => LogSink::Stdout,
+        };
+    }
 }
 
 /// Generate a new key pair and save to file (equivalent to generateKey)

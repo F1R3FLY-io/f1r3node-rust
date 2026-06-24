@@ -294,7 +294,7 @@ pub async fn fair_dispatcher(
         let engine_cell = engine_cell_for_handle.clone();
         Box::pin(async move {
             if let Err(e) = handle_message(&engine_cell, block_creator, message).await {
-                tracing::error!("Error handling message: {}", e);
+                tracing::error!(error = %e, "casper message dispatch failed");
             }
         }) as std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
     };

@@ -246,7 +246,7 @@ pub fn merge(
     // Log state change details for debugging merge issues
     for (i, chain) in actual_set_vec.iter().enumerate() {
         tracing::debug!(
-            target: "f1r3fly.dag_merger.state_changes",
+            target: "f1r3fly.merge.dag_merger.state_changes",
             "deploy_chain[{}]: datums={}, conts={}, joins={}, deploys={}, cost={}",
             i,
             chain.state_changes.datums_changes.len(),

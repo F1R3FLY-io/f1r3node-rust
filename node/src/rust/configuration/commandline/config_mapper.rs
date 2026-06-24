@@ -574,6 +574,9 @@ mod tests {
             grpc_port: Some(40401),
             grpc_max_recv_message_size: 16777216,
             profile: Some("docker".to_string()),
+            log_level: None,
+            log_format: None,
+            log_sink: None,
             subcommand: Some(OptionsSubCommand::Run(RunOptions {
                 config_file: None,
                 thread_pool_size: None,
@@ -812,6 +815,7 @@ mod tests {
                 tick_interval: std::time::Duration::from_secs(10),
                 influxdb_endpoint: crate::rust::configuration::model::InfluxDbEndpoint::default(),
             },
+            logging: Default::default(),
             dev_mode: false,
             dev: crate::rust::configuration::model::DevConf {
                 deployer_private_key: None,

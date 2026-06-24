@@ -205,8 +205,6 @@ impl TestResultCollector {
             dispatcher: ctx.dispatcher.clone(),
         };
 
-        // println!("\nhit handle_message");
-
         if let Some((produce, _, _, assert_par)) = is_contract_call.unapply(message) {
             if let Some((test_name, attempt, assertion, clue, ack_channel)) =
                 IsAssert::unapply(assert_par.clone())

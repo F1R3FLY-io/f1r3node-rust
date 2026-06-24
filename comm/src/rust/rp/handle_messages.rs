@@ -46,7 +46,7 @@ pub async fn handle(
 
         None => {
             let msg_str = format!("{:?}", protocol.message);
-            tracing::error!("Unexpected message type {}", msg_str);
+            tracing::error!(message = %msg_str, "unrecognized protocol message type");
 
             Ok(CommunicationResponse::not_handled(
                 CommError::UnexpectedMessage(msg_str),
@@ -107,11 +107,7 @@ pub async fn handle_protocol_handshake(
                     );
                 }
                 Err(e) => {
-                    tracing::error!(
-                        "Failed to add {} to connections after handshake response: {}",
-                        peer,
-                        e
-                    );
+                    tracing::error!(peer = %peer, error = %e, "failed to add peer to connections after handshake response");
                 }
             }
         }

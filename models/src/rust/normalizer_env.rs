@@ -21,7 +21,7 @@ fn insert_legacy_alias(
     value: Par,
 ) {
     tracing::debug!(
-        target: "f1r3fly.legacy-uri",
+        target: "f1r3fly.models.legacy_uri",
         "Resolved legacy URI alias `{}` via canonical `{}`",
         legacy_uri,
         canonical_uri

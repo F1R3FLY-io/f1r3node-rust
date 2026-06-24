@@ -588,7 +588,7 @@ impl NodeRuntime {
                     Ok(())
                 }
                 Err(e) => {
-                    tracing::error!("Engine initialization failed: {}", e);
+                    tracing::error!(error = %e, "engine initialization failed");
                     Err(eyre::eyre!("Engine init failed: {}", e))
                 }
             }
@@ -653,7 +653,7 @@ impl NodeRuntime {
                         Ok(())
                     }
                     Err(e) => {
-                        tracing::error!("Block processor instance failed: {}", e);
+                        tracing::error!(error = %e, "block processor instance failed");
                         Err(eyre::eyre!("Block processor failed: {}", e))
                     }
                 }
@@ -694,7 +694,7 @@ impl NodeRuntime {
                         Ok(())
                     }
                     Err(e) => {
-                        tracing::error!("Proposer instance failed to start: {}", e);
+                        tracing::error!(error = %e, "proposer instance failed to start");
                         Err(eyre::eyre!("Proposer instance failed: {}", e))
                     }
                 }
@@ -724,7 +724,7 @@ impl NodeRuntime {
                             Ok(())
                         }
                         Err(e) => {
-                            tracing::error!("Heartbeat proposer panicked: {}", e);
+                            tracing::error!(error = %e, "heartbeat proposer task panicked");
                             Err(eyre::eyre!("Heartbeat proposer failed: {}", e))
                         }
                     }
@@ -792,14 +792,14 @@ impl NodeRuntime {
                                     );
                                 }
                                 Err(e) => {
-                                    tracing::error!("Critical task '{}' failed: {}", task_name, e);
+                                    tracing::error!(task = %task_name, error = %e, "critical task failed");
                                     // Trigger shutdown
                                     break;
                                 }
                             }
                         }
                         Err(e) => {
-                            tracing::error!("Critical task panicked: {}", e);
+                            tracing::error!(error = %e, "critical task panicked");
                             // Trigger shutdown
                             break;
                         }
@@ -819,12 +819,12 @@ impl NodeRuntime {
                         }
                         Some(Ok(Err(e))) => {
                             event_bus_for_seal.seal_startup();
-                            tracing::error!("Engine initialization failed: {}", e);
+                            tracing::error!(error = %e, "engine initialization failed");
                             // Engine init failure is critical - trigger shutdown
                             break;
                         }
                         Some(Err(e)) => {
-                            tracing::error!("Engine initialization task panicked: {}", e);
+                            tracing::error!(error = %e, "engine initialization task panicked");
                             // Task panic is critical - trigger shutdown
                             break;
                         }
@@ -843,7 +843,7 @@ impl NodeRuntime {
 
                 // If all tasks complete (shouldn't happen), exit
                 else => {
-                    tracing::error!("All tasks completed - this should never happen");
+                    tracing::error!("all critical tasks completed unexpectedly — node is shutting down");
                     break;
                 }
             }
@@ -869,7 +869,7 @@ impl NodeRuntime {
         match Self::perform_shutdown_cleanup().await {
             Ok(_) => info!("Resource cleanup completed successfully"),
             Err(e) => {
-                tracing::error!("Resource cleanup failed: {}", e);
+                tracing::error!(error = %e, "resource cleanup during shutdown failed");
                 // Continue anyway - we've already stopped the tasks
             }
         }
@@ -1048,7 +1048,7 @@ async fn clear_connections_loop(
 
                     // Update RPConf with new local peer
                     if let Err(e) = rp_conf_cell.update_local(new_local.clone()) {
-                        tracing::error!("Failed to update RPConf with new local peer: {}", e);
+                        tracing::error!(error = %e, "RPConf local peer update failed");
                     } else {
                         info!("Successfully updated RPConf with new local peer");
 
@@ -1172,7 +1172,7 @@ async fn run_casper_loop(casper_loop: CasperLoop) -> eyre::Result<()> {
                 // Casper loop iteration completed successfully
             }
             Err(e) => {
-                tracing::error!("Casper loop iteration failed: {}", e);
+                tracing::error!(error = %e, "casper loop iteration failed");
                 // Sleep a bit before retrying to avoid tight error loops
                 tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
             }
@@ -1191,7 +1191,7 @@ async fn run_update_fork_choice_loop(update_fork_choice_loop: CasperLoop) -> eyr
                 // Fork choice update iteration completed successfully
             }
             Err(e) => {
-                tracing::error!("Update fork choice loop iteration failed: {}", e);
+                tracing::error!(error = %e, "fork choice update loop iteration failed");
                 // Sleep a bit before retrying to avoid tight error loops
                 tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
             }
@@ -1212,7 +1212,7 @@ async fn run_mergeable_channels_gc_loop(gc_loop: CasperLoop) -> eyre::Result<()>
                 // GC iteration completed successfully
             }
             Err(e) => {
-                tracing::error!("Mergeable channels GC loop iteration failed: {}", e);
+                tracing::error!(error = %e, "mergeable channels GC loop iteration failed");
                 // Sleep a bit before retrying to avoid tight error loops
                 tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
             }
@@ -1247,12 +1247,12 @@ async fn await_server_task(
         }
         Ok(Err(e)) => {
             let err = eyre::eyre!("{} server failed: {}", server_name, e);
-            tracing::error!("{}", err);
+            tracing::error!(server = server_name, error = %e, "gRPC server task failed");
             Err(err)
         }
         Err(e) => {
             let err = eyre::eyre!("{} server panicked: {}", server_name, e);
-            tracing::error!("{}", err);
+            tracing::error!(server = server_name, error = %e, "gRPC server task panicked");
             Err(err)
         }
     }
@@ -1285,12 +1285,12 @@ async fn await_http_server_task(
         }
         Ok(Err(e)) => {
             let err = eyre::eyre!("{} server failed: {}", server_name, e);
-            tracing::error!("{}", err);
+            tracing::error!(server = server_name, error = %e, "HTTP server task failed");
             Err(err)
         }
         Err(e) => {
             let err = eyre::eyre!("{} server panicked: {}", server_name, e);
-            tracing::error!("{}", err);
+            tracing::error!(server = server_name, error = %e, "HTTP server task panicked");
             Err(err)
         }
     }
@@ -1343,7 +1343,7 @@ where F: Future<Output = eyre::Result<()>> {
             std::process::exit(0);
         }
         Err(e) => {
-            tracing::error!("Caught unhandable error. Exiting. Error: {:?}", e);
+            tracing::error!(error = ?e, "unhandled fatal error; exiting");
             std::process::exit(1);
         }
     }

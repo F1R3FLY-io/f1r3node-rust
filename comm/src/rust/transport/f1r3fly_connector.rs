@@ -157,11 +157,7 @@ impl Service<Uri> for F1r3flyConnector {
             };
 
             let addr = connector.extract_address(&uri).await.map_err(|e| {
-                tracing::error!(
-                    "F1r3flyConnector: Address resolution failed for {}: {}",
-                    uri,
-                    e
-                );
+                tracing::error!(uri = %uri, error = %e, "F1r3flyConnector address resolution failed");
                 Box::new(e) as Box<dyn StdError + Send + Sync>
             })?;
 
@@ -169,17 +165,13 @@ impl Service<Uri> for F1r3flyConnector {
             let tcp_stream = tokio::time::timeout(connect_timeout, TcpStream::connect(addr))
                 .await
                 .map_err(|_| {
-                    tracing::error!(
-                        "F1r3flyConnector: TCP connection timeout after {:?} to {}",
-                        connect_timeout,
-                        addr
-                    );
+                    tracing::error!(addr = %addr, timeout = ?connect_timeout, "F1r3flyConnector TCP connection timed out");
                     Box::new(F1r3flyConnectorError::ConnectionTimeout {
                         timeout: connect_timeout,
                     }) as Box<dyn StdError + Send + Sync>
                 })?
                 .map_err(|e| {
-                    tracing::error!("F1r3flyConnector: TCP connection failed to {}: {}", addr, e);
+                    tracing::error!(addr = %addr, error = %e, "F1r3flyConnector TCP connection failed");
                     Box::new(F1r3flyConnectorError::TcpConnectionError(e))
                         as Box<dyn StdError + Send + Sync>
                 })?;
@@ -191,17 +183,13 @@ impl Service<Uri> for F1r3flyConnector {
             )
             .await
             .map_err(|_| {
-                tracing::error!(
-                    "F1r3flyConnector: TLS handshake timeout after {:?} to {}",
-                    connect_timeout,
-                    addr
-                );
+                tracing::error!(addr = %addr, timeout = ?connect_timeout, "F1r3flyConnector TLS handshake timed out");
                 Box::new(F1r3flyConnectorError::ConnectionTimeout {
                     timeout: connect_timeout,
                 }) as Box<dyn StdError + Send + Sync>
             })?
             .map_err(|e| {
-                tracing::error!("F1r3flyConnector: TLS handshake failed to {}: {}", addr, e);
+                tracing::error!(addr = %addr, error = %e, "F1r3flyConnector TLS handshake failed");
                 Box::new(F1r3flyConnectorError::TlsConnectionError(e))
                     as Box<dyn StdError + Send + Sync>
             })?;

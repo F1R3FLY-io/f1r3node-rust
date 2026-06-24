@@ -85,7 +85,6 @@ pub fn create_bit_vector(indices: &[usize]) -> BitSet {
     for &index in indices {
         bit_vector[index] = 1;
     }
-    // println!("\nbitvector: {:?}", bit_vector);
     bit_vector
 }
 

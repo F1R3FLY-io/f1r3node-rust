@@ -77,7 +77,12 @@ pub fn new(
             mrg_count,
             deploy_count
         );
-        tracing::error!("{}", msg);
+        tracing::error!(
+            block_hash = %hex::encode(&block_hash[..std::cmp::min(10, block_hash.len())]),
+            mergeable_maps = mrg_count,
+            deploys = deploy_count,
+            "mergeable channel count does not match deploy count"
+        );
         return Err(CasperError::RuntimeError(msg));
     }
     let aligned_mergeable_chs = mergeable_chs.clone();

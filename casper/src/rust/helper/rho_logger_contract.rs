@@ -29,23 +29,23 @@ impl RhoLoggerContract {
 
                         match log_level.as_str() {
                             "trace" => {
-                                println!("trace: {}", msg);
+                                tracing::trace!("{}", msg);
                                 Ok(vec![])
                             }
                             "debug" => {
-                                println!("debug: {}", msg);
+                                tracing::debug!("{}", msg);
                                 Ok(vec![])
                             }
                             "info" => {
-                                println!("info: {}", msg);
+                                tracing::info!("{}", msg);
                                 Ok(vec![])
                             }
                             "warn" => {
-                                println!("warn: {}", msg);
+                                tracing::warn!("{}", msg);
                                 Ok(vec![])
                             }
                             "error" => {
-                                println!("error: {}", msg);
+                                tracing::error!("{}", msg);
                                 Ok(vec![])
                             }
                             _ => Err(illegal_argument_error("std_log")),

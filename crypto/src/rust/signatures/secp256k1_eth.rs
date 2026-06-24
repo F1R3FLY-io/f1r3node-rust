@@ -73,7 +73,7 @@ fn decode_signature_der_to_rs(signature_der: &[u8]) -> Option<Vec<u8>> {
 
             // Ensure R and S are exactly 32 bytes long
             if r_bytes.len() > 32 || s_bytes.len() > 32 {
-                eprintln!(
+                tracing::warn!(
                     "Decoded R or S length exceeds 32 bytes: R = {}, S = {}",
                     r_bytes.len(),
                     s_bytes.len()

@@ -175,7 +175,7 @@ fn run_prelude(
         Ok(Some(b)) => b,
         Ok(None) => {
             tracing::warn!(
-                target: "f1r3fly.deploy_finalization_status.corruption",
+                target: "f1r3fly.casper.deploy_finalization.validation",
                 "sig {} indexed at block {} but block body absent from store",
                 hex::encode(&sig_bytes),
                 PrettyPrinter::build_string_bytes(&first_seen_block_hash)
@@ -208,7 +208,7 @@ fn run_prelude(
             // (`BlockAPI::deploy_finalization_status`) downcasts and
             // converts to `pending_unknown` for callers.
             tracing::warn!(
-                target: "f1r3fly.deploy_finalization_status.corruption",
+                target: "f1r3fly.casper.deploy_finalization.validation",
                 "sig {} indexed at block {} but missing from that block's \
                  body.deploys — check deploy index vs block store consistency",
                 hex::encode(&sig_bytes),

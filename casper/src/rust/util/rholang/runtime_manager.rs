@@ -392,40 +392,15 @@ impl RuntimeManager {
         ),
         CasperError,
     > {
-        let mem_profile_enabled = crate::rust::util::rholang::mem_profiler::mem_profile_enabled();
-        let read_vm_rss_kb =
-            || -> Option<usize> { crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() };
-        let mut rss_baseline = if mem_profile_enabled {
-            read_vm_rss_kb()
-        } else {
-            None
-        };
-        let mut rss_prev = rss_baseline;
-        let mut log_mem_step = |step: &str| {
-            if !mem_profile_enabled {
-                return;
-            }
-            if let Some(curr) = read_vm_rss_kb() {
-                let prev = rss_prev.unwrap_or(curr);
-                let baseline = rss_baseline.unwrap_or(curr);
-                eprintln!(
-                    "compute_state_with_bonds.mem step={} rss_kb={} delta_prev_kb={} delta_total_kb={}",
-                    step,
-                    curr,
-                    curr as i64 - prev as i64,
-                    curr as i64 - baseline as i64
-                );
-                rss_prev = Some(curr);
-                if rss_baseline.is_none() {
-                    rss_baseline = Some(curr);
-                }
-            }
-        };
-        log_mem_step("start");
+        if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
+            tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "start", rss_kb);
+        }
 
         let invalid_blocks = invalid_blocks.unwrap_or_default();
         let runtime = self.spawn_runtime().await;
-        log_mem_step("after_spawn_runtime");
+        if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
+            tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_spawn_runtime", rss_kb);
+        }
         let mut runtime_ops = RuntimeOps::new(runtime);
 
         // Block data used for mergeable key
@@ -441,7 +416,9 @@ impl RuntimeManager {
                 invalid_blocks,
             )
             .await?;
-        log_mem_step("after_compute_state");
+        if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
+            tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_compute_state", rss_kb);
+        }
 
         let (usr_processed, usr_mergeable): (Vec<ProcessedDeploy>, Vec<NumberChannelsEndVal>) =
             usr_deploy_res.into_iter().unzip();
@@ -469,7 +446,9 @@ impl RuntimeManager {
             mergeable_chs,
             &pre_state_hash,
         )?;
-        log_mem_step("after_save_mergeable_channels");
+        if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
+            tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_save_mergeable_channels", rss_kb);
+        }
 
         // Cache replay result for potential replay shortcut (including event logs)
         if let Some(ref cache) = self.replay_cache {
@@ -504,13 +483,19 @@ impl RuntimeManager {
             cache.put(start_hash.clone(), state_hash.clone());
             tracing::debug!("[CACHE] Stored state hash mapping");
         }
-        log_mem_step("after_cache_updates");
+        if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
+            tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_cache_updates", rss_kb);
+        }
 
         // Reuse the same spawned runtime for bonds query to avoid a second runtime init.
         let bonds = runtime_ops.compute_bonds(&state_hash).await?;
-        log_mem_step("after_compute_bonds");
+        if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
+            tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_compute_bonds", rss_kb);
+        }
         drop(runtime_ops);
-        log_mem_step("after_drop_runtime_ops");
+        if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
+            tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_drop_runtime_ops", rss_kb);
+        }
 
         Ok((state_hash, usr_processed, sys_processed, bonds))
     }
@@ -919,7 +904,7 @@ impl RuntimeManager {
                     creator.encode_hex::<String>(),
                     seq_num
                 );
-                tracing::error!("{}", msg);
+                tracing::error!(state_hash = %state_hash.bytes().encode_hex::<String>(), creator = %creator.encode_hex::<String>(), seq_num, "mergeable entry missing for block");
                 Err(CasperError::KvStoreError(KvStoreError::KeyNotFound(msg)))
             }
         }

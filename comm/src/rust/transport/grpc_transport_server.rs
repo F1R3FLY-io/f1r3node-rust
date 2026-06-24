@@ -290,7 +290,7 @@ impl TransportLayerServer for GrpcTransportServer {
                                 Ok(())
                             }
                             Err(e) => {
-                                tracing::error!("Sending gRPC message failed: {}", e);
+                                tracing::error!(error = %e, "gRPC message dispatch failed");
                                 Err(e)
                             }
                         }
@@ -315,17 +315,13 @@ impl TransportLayerServer for GrpcTransportServer {
                                         Ok(())
                                     }
                                     Err(e) => {
-                                        tracing::error!("Error in stream handler: {}", e);
+                                        tracing::error!(error = %e, "blob stream handler failed");
                                         Err(e)
                                     }
                                 }
                             }
                             Err(e) => {
-                                tracing::error!(
-                                    "Could not restore data from file while handling stream for key {}: {}",
-                                    stream_msg.key,
-                                    e
-                                );
+                                tracing::error!(key = %stream_msg.key, error = %e, "blob stream data restore failed");
                                 Err(e)
                             }
                         }

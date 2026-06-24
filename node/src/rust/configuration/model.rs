@@ -9,6 +9,7 @@ use std::time::Duration;
 use casper::rust::casper_conf::{de_duration, CasperConf};
 use clap::Subcommand;
 use serde::{Deserialize, Serialize};
+use shared::rust::tracing_init::LoggingConfig;
 
 use crate::rust::configuration::commandline::options::{
     BondStatusOptions, ContAtNameOptions, DataAtNameOptions, DeployOptions, EvalOptions,
@@ -36,6 +37,9 @@ pub struct NodeConf {
     pub tls: TlsConf,
     pub casper: CasperConf,
     pub metrics: Metrics,
+
+    #[serde(default)]
+    pub logging: LoggingConfig,
 
     #[serde(rename = "dev-mode")]
     pub dev_mode: bool,
