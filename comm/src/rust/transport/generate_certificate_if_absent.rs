@@ -53,8 +53,7 @@ async fn read_key_pair(tls: &TlsConf) -> Result<(), CertificateError> {
 async fn generate_secret_key(tls: &TlsConf) -> Result<(), CertificateError> {
     info!("Generating a PEM secret key for the node");
 
-    let (secret_key, public_key) =
-        CertificateHelper::generate_key_pair(tls.secure_random_non_blocking);
+    let (secret_key, public_key) = CertificateHelper::generate_key_pair();
 
     write_cert(tls, &secret_key, &public_key).await?;
     write_key(tls, &secret_key).await?;

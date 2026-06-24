@@ -68,14 +68,6 @@ pub mod rhoapi {
     include!(concat!(env!("OUT_DIR"), "/rhoapi.rs"));
 }
 
-pub mod rholang_scala_rust_types {
-    include!(concat!(env!("OUT_DIR"), "/rholang_scala_rust_types.rs"));
-}
-
-pub mod rspace_plus_plus_types {
-    include!(concat!(env!("OUT_DIR"), "/rspace_plus_plus_types.rs"));
-}
-
 pub mod servicemodelapi {
     include!(concat!(env!("OUT_DIR"), "/servicemodelapi.rs"));
 }

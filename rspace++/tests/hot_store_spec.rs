@@ -7,7 +7,6 @@ use proptest::collection::vec;
 use proptest::prelude::*;
 use proptest_derive::Arbitrary;
 use rand::prelude::SliceRandom;
-use rand::thread_rng;
 use rspace_plus_plus::rspace::history::history_reader::HistoryReaderBase;
 use rspace_plus_plus::rspace::hot_store::{HotStore, HotStoreInstances, HotStoreState};
 use rspace_plus_plus::rspace::hot_store_action::{
@@ -390,7 +389,7 @@ proptest! {
       hot_store.set_state(HotStoreState { continuations: HashMap::new(), installed_continuations: HashMap::new(), data: HashMap::new(), joins: HashMap::from_iter(vec![(channel.clone(), cached_joins.clone())]),
         installed_joins: HashMap::from_iter(vec![(channel.clone(), installed_joins.clone())]) });
 
-      let mut rng = thread_rng();
+      let mut rng = rand::rng();
       let mut shuffled_joins = installed_joins.clone();
       shuffled_joins.shuffle(&mut rng);
       let to_remove = shuffled_joins.first().unwrap().clone();
@@ -417,7 +416,7 @@ proptest! {
       hot_store.set_state(HotStoreState { continuations: HashMap::new(), installed_continuations: HashMap::new(), data: HashMap::new(), joins: HashMap::from_iter(vec![(channel.clone(), cached_joins.clone())]),
         installed_joins: HashMap::new() });
 
-      let mut rng = thread_rng();
+      let mut rng = rand::rng();
       let mut shuffled_joins = cached_joins.clone();
       shuffled_joins.shuffle(&mut rng);
       let to_remove = shuffled_joins.first().unwrap().clone();

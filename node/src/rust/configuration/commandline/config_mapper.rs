@@ -155,10 +155,6 @@ impl ConfigMapper<Options> for NodeConf {
             Self::try_override_value(&mut self.storage.data_dir, run.data_dir);
 
             // TLS fields
-            Self::try_override_bool(
-                &mut self.tls.secure_random_non_blocking,
-                run.tls_secure_random_non_blocking,
-            );
             Self::try_override_value(&mut self.tls.key_path, run.tls_key_path);
             Self::try_override_value(&mut self.tls.certificate_path, run.tls_certificate_path);
 
@@ -440,7 +436,6 @@ mod tests {
         "--disable-state-exporter",
         "--tls-certificate-path=/var/lib/rnode/node.certificate.pem",
         "--tls-key-path=/var/lib/rnode/node.key.pem",
-        "--tls-secure-random-non-blocking",
         "--api-host=localhost",
         "--api-port-grpc-external=11111",
         "--api-port-grpc-internal=11111",
@@ -608,7 +603,6 @@ mod tests {
                 protocol_max_message_consumers: Some(111111),
                 tls_key_path: Some(PathBuf::from("/var/lib/rnode/node.key.pem")),
                 tls_certificate_path: Some(PathBuf::from("/var/lib/rnode/node.certificate.pem")),
-                tls_secure_random_non_blocking: true,
                 api_host: Some("localhost".to_string()),
                 api_port_grpc_external: Some(11111),
                 api_port_grpc_internal: Some(11111),
@@ -740,7 +734,6 @@ mod tests {
             tls: crate::rust::configuration::model::TlsConf {
                 certificate_path: PathBuf::from("/var/lib/rnode/node.certificate.pem"),
                 key_path: PathBuf::from("/var/lib/rnode/node.key.pem"),
-                secure_random_non_blocking: false,
                 custom_certificate_location: false,
                 custom_key_location: false,
             },
@@ -935,7 +928,6 @@ mod tests {
         );
 
         // TLS fields
-        assert_eq!(default_config.tls.secure_random_non_blocking, true);
         assert_eq!(
             default_config.tls.key_path,
             PathBuf::from("/var/lib/rnode/node.key.pem")
