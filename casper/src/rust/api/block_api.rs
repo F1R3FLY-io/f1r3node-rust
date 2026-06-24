@@ -1552,7 +1552,19 @@ impl BlockAPI {
         )
         .await?;
         let sealed_accepted = fs.accepted_deploys.iter().any(|a| a.sig.as_ref() == sig);
-        let sealed_rejected = fs.rejected_deploys.iter().any(|r| r.sig.as_ref() == sig);
+        // `resolved.rejection_count` comes from the BFS, which only scans the last
+        // `deploy_lifespan` finalized blocks — so it reads 0 for a deploy rejected in
+        // an older block (the floor seal still knows). Source the count from the
+        // cumulative floor-seal `rejected_deploys` (the same authority the state uses)
+        // and take the richer of the two, so `Expired`/`Pending` never contradicts
+        // itself with `rejection_count = 0` for a deploy the seal recorded as rejected.
+        let sealed_rejection_count = fs
+            .rejected_deploys
+            .iter()
+            .filter(|r| r.sig.as_ref() == sig)
+            .count() as u32;
+        let sealed_rejected = sealed_rejection_count > 0;
+        let rejection_count = resolved.rejection_count.max(sealed_rejection_count);
         let state = if sealed_accepted {
             DeployFinalizationState::Finalized
         } else if resolved.state == DeployFinalizationState::Finalized && sealed_rejected {
@@ -1562,7 +1574,7 @@ impl BlockAPI {
         };
         Ok(DeployFinalizationStatus {
             state,
-            rejection_count: resolved.rejection_count,
+            rejection_count,
             latest_block_hash: resolved.latest_block_hash,
         })
     }

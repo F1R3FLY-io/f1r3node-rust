@@ -1060,25 +1060,44 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
                 })?
                 .remove(deploys.clone())?;
 
-            // The rejected-deploy (recovery) buffer is the merge-loser pool; a
-            // deploy that lands in an accepted block is applied, so it leaves the
-            // buffer exactly as it leaves the pending pool. Re-entry happens only
-            // when a later merge rejects it (the populate in
-            // compute_parents_post_state). This keeps the buffer invariant
-            // "membership == not in the execution base", so recovery never
-            // re-executes an already-applied deploy (the content-twin).
-            self.rejected_deploy_buffer
-                .lock()
-                .map_err(|_| {
-                    CasperError::RuntimeError(
-                        "Failed to acquire rejected_deploy_buffer lock".to_string(),
-                    )
-                })?
-                .remove(deploys)?;
+            // The rejected-deploy (recovery) buffer is the merge-loser pool. A
+            // deploy in `body.deploys` whose sig is in `body.rejected_deploys`
+            // was executed (cost charged) but had its effects DISCARDED by the
+            // construction merge — it is not in the execution base, so it must
+            // REMAIN in the recovery buffer for re-proposal. Removing it here on
+            // block-accept evicts a still-pending merge-loser from recovery, and
+            // the re-add in compute_parents_post_state races this purge, so the
+            // deploy stops being re-proposed and starves to expiry. Remove only
+            // the APPLIED deploys; this keeps the buffer invariant "membership ==
+            // not in the execution base" so recovery never re-executes an
+            // already-applied deploy (the content-twin) yet never drops a loser.
+            let rejected_sigs: HashSet<_> = block
+                .body
+                .rejected_deploys
+                .iter()
+                .map(|rd| rd.sig.clone())
+                .collect();
+            let applied_deploys: Vec<_> = deploys
+                .into_iter()
+                .filter(|d| !rejected_sigs.contains(&d.sig))
+                .collect();
+            let applied_count = applied_deploys.len();
+            if !applied_deploys.is_empty() {
+                self.rejected_deploy_buffer
+                    .lock()
+                    .map_err(|_| {
+                        CasperError::RuntimeError(
+                            "Failed to acquire rejected_deploy_buffer lock".to_string(),
+                        )
+                    })?
+                    .remove(applied_deploys)?;
+            }
 
             tracing::debug!(
-                "Removed {} deploys from pending pool and recovery buffer for accepted block {} at {}.",
+                "Removed {} deploys from pending pool ({} applied cleared from recovery buffer, {} rejected retained) for accepted block {} at {}.",
                 deploys_count,
+                applied_count,
+                deploys_count - applied_count,
                 block_hash,
                 block_number
             );

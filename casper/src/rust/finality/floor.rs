@@ -102,6 +102,14 @@ async fn derive_floor(
         .expect("candidates is non-empty: one frontier per parent and parents is non-empty")
         .clone();
 
+    tracing::debug!(
+        target: "f1r3.trace.floor_walk",
+        candidates = ?candidates.iter().map(|c| format!("{}#{}", PrettyPrinter::build_string_bytes(&c.hash), c.block_number)).collect::<Vec<_>>(),
+        chosen = %PrettyPrinter::build_string_bytes(&floor.hash),
+        chosen_number = floor.block_number,
+        "derive_floor candidates + chosen"
+    );
+
     // Linear-finality safety: every other finalized candidate must be COMPATIBLE
     // with the chosen floor. Two cases are compatible:
     //
@@ -296,8 +304,18 @@ async fn parent_frontier(
     let mut current = parent.clone();
     let mut walked: usize = 0;
     loop {
-        let finalized =
-            CliqueOracle::ft_witnessed(&current, dag, latest_messages).await? >= ft_threshold;
+        let ft = CliqueOracle::ft_witnessed(&current, dag, latest_messages).await?;
+        let finalized = ft >= ft_threshold;
+        tracing::debug!(
+            target: "f1r3.trace.floor_walk",
+            parent = %PrettyPrinter::build_string_bytes(parent),
+            current = %PrettyPrinter::build_string_bytes(&current),
+            current_number = dag.block_number_unsafe(&current)?,
+            ft,
+            finalized,
+            walked,
+            "floor walk step"
+        );
         if finalized {
             let block_number = dag.block_number_unsafe(&current)?;
             trace_frontier(

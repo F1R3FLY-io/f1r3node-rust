@@ -315,6 +315,7 @@ async fn recovery_cycle_rejected_deploy_is_buffered_and_re_proposed() {
             rejected_deploys: vec![SealedRejection {
                 sig: conflict_sig.clone(),
                 host: BlockHashSerde(conflict_host.clone()),
+                host_number: merge_block.body.state.block_number,
             }],
             // Recovery scenario: the deploy is sealed-rejected, not accepted.
             accepted_deploys: vec![],

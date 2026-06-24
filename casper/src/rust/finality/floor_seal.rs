@@ -34,9 +34,9 @@ use std::collections::HashSet;
 
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
-use models::rust::block::floor_data::FloorData;
+use models::rust::block::floor_data::{FloorData, SealedAcceptance, SealedRejection};
 use models::rust::block::state_hash::{StateHash, StateHashSerde};
-use models::rust::block_hash::BlockHash;
+use models::rust::block_hash::{BlockHash, BlockHashSerde};
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use rholang::rust::interpreter::merging::rholang_merging_logic::RholangMergingLogic;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
@@ -174,6 +174,13 @@ pub async fn floor_state_get_or_compute(
 /// only the blocks newly reachable through `cut` (its own block + co-finalized
 /// secondary-parent subtrees), each finalized op is applied in exactly one step and never
 /// re-derived, so the ledger is monotone.
+/// Retention window for the FloorData reporting ledgers (accepted/rejected deploy
+/// sigs). Past the deploy lifespan below the floor a deploy is terminally
+/// finalized-or-expired, so its reporting entry is prunable. Generous so a still-
+/// queryable deploy is never dropped early, while bounding the cumulative ledger so
+/// it cannot grow without limit across cuts.
+const LEDGER_RETENTION_BLOCKS: i64 = 1024;
+
 async fn seal_floor_cut(
     dag: &KeyValueDagRepresentation,
     block_store: &KeyValueBlockStore,
@@ -344,6 +351,12 @@ async fn seal_floor_cut(
         }
     }
     let mut played_sigs: HashSet<prost::bytes::Bytes> = HashSet::new();
+    // Reporting ledger: every sig whose effect we fold into FS this cut, cumulative
+    // over cuts (carried prev ledger + this cut's applied chains), pruned below. This
+    // is the authoritative effect-level deploy ledger that deploy_finalization_status
+    // reads; the seal's DEDUP still uses the running-FS base-check above (not this
+    // ledger), so populating it cannot reintroduce the persistent-ledger over-skip.
+    let mut accepted_ledger: Vec<SealedAcceptance> = prev_state.accepted_deploys.clone();
     // CloseBlock is stamped on every block (count = DAG width), so concurrent co-finalized
     // siblings carry replica CloseBlocks. Apply one per height so its replicated epoch-reward
     // (committedRewards) and withdrawal-payout (posVault) effects are not folded once per sibling.
@@ -458,6 +471,11 @@ async fn seal_floor_cut(
                 .map_err(CasperError::HistoryError)?;
             fs_state = prost::bytes::Bytes::copy_from_slice(&new_root.bytes());
             for s in sigs {
+                accepted_ledger.push(SealedAcceptance {
+                    sig: s.clone(),
+                    host: BlockHashSerde(block_hash.clone()),
+                    host_number: *block_number,
+                });
                 played_sigs.insert(s);
             }
             chains_applied += 1;
@@ -501,10 +519,31 @@ async fn seal_floor_cut(
         "sealed floor state (deterministic structural diff-fold of the finalized cone)"
     );
 
+    // Rejected ledger: this cut's construction keep-one'd inclusions (sig, host),
+    // extending the carried set. host_number (from the DAG) drives retention pruning.
+    let mut rejected_ledger: Vec<SealedRejection> = prev_state.rejected_deploys.clone();
+    for (sig, host) in &rejected_inclusions {
+        rejected_ledger.push(SealedRejection {
+            sig: sig.clone(),
+            host: BlockHashSerde(host.clone()),
+            host_number: dag.block_number_unsafe(host).unwrap_or(cut_number),
+        });
+    }
+    // Bound both ledgers: drop entries whose host is far below the floor — past the
+    // retention window a deploy is terminally finalized-or-expired, so its reporting
+    // entry is no longer needed. Sort+dedup keeps the cumulative carry idempotent.
+    let retention_floor = cut_number - LEDGER_RETENTION_BLOCKS;
+    accepted_ledger.retain(|a| a.host_number >= retention_floor);
+    rejected_ledger.retain(|r| r.host_number >= retention_floor);
+    accepted_ledger.sort();
+    accepted_ledger.dedup();
+    rejected_ledger.sort();
+    rejected_ledger.dedup();
+
     Ok(FloorData {
         state_hash: StateHashSerde(fs_state),
-        rejected_deploys: prev_state.rejected_deploys.clone(),
-        accepted_deploys: prev_state.accepted_deploys.clone(),
+        rejected_deploys: rejected_ledger,
+        accepted_deploys: accepted_ledger,
         block_number: cut_number,
     })
 }

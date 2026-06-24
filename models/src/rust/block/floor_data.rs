@@ -23,6 +23,8 @@ pub struct SealedRejection {
     #[serde(with = "shared::rust::serde_bytes")]
     pub sig: Bytes,
     pub host: BlockHashSerde,
+    /// Block number of `host`, for retention pruning of the cumulative ledger.
+    pub host_number: i64,
 }
 
 /// One seal-acceptance record: the chain hosting `sig` in block `host` was
@@ -46,6 +48,8 @@ pub struct SealedAcceptance {
     #[serde(with = "shared::rust::serde_bytes")]
     pub sig: Bytes,
     pub host: BlockHashSerde,
+    /// Block number of `host`, for retention pruning of the cumulative ledger.
+    pub host_number: i64,
 }
 
 /// The sealed finalized state at one floor cut, keyed (in storage) by the

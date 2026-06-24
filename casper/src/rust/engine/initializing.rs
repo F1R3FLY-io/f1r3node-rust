@@ -899,6 +899,28 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             .take()
             .ok_or_else(|| CasperError::RuntimeError("Estimator not available".to_string()))?;
 
+        // Source the finalized-floor fault-tolerance threshold from genesis, not local
+        // config. A joining node's local --fault-tolerance-threshold may differ from what
+        // this shard baked at genesis; the on-chain value is authoritative for the floor so
+        // every node computes node-identical block pre-states (issue #71 / node-identity).
+        let on_chain_ftt =
+            crate::rust::util::token_metadata_check::read_on_chain_fault_tolerance_threshold(
+                &runtime_manager,
+                &genesis_post_state_hash,
+            )
+            .await?;
+        let mut casper_shard_conf = self.casper_shard_conf.clone();
+        if (on_chain_ftt - casper_shard_conf.fault_tolerance_threshold).abs() > 1e-6 {
+            tracing::warn!(
+                event = "fault_tolerance_threshold_sourced_from_genesis",
+                local = casper_shard_conf.fault_tolerance_threshold,
+                on_chain = on_chain_ftt,
+                "local fault-tolerance-threshold differs from the value baked into genesis; \
+                 using the on-chain value for the finalized floor (node-identity)"
+            );
+        }
+        casper_shard_conf.fault_tolerance_threshold = on_chain_ftt;
+
         // Pass Arc<RuntimeManager> directly to hash_set_casper
         let casper = crate::rust::casper::hash_set_casper(
             self.block_retriever.clone(),
@@ -911,7 +933,7 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             self.rejected_deploy_buffer.clone(),
             self.casper_buffer_storage.clone(),
             self.validator_id.clone(),
-            self.casper_shard_conf.clone(),
+            casper_shard_conf,
             ab,
             self.heartbeat_signal_ref.clone(),
         )?;

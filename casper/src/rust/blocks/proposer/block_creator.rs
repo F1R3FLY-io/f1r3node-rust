@@ -172,13 +172,24 @@ pub async fn prepare_user_deploys(
             };
             if !is_owner {
                 recoveries_not_owned += 1;
+                tracing::debug!(
+                    target: "f1r3.trace.recovery_gate",
+                    event = "recovery_not_owned",
+                    block = block_number,
+                    sig = %hex::encode(&deploy.sig[..deploy.sig.len().min(16)]),
+                    owner = ?owner.as_ref().map(|o| hex::encode(&o[..o.len().min(8)])),
+                    self_validator = ?self_validator.map(|me| hex::encode(&me[..me.len().min(8)])),
+                    "recovered loser NOT re-proposed this round (not owner / owner unknown)"
+                );
                 continue;
             }
             recoveries_admitted += 1;
             tracing::debug!(
-                target: "f1r3.trace.fateprobe",
+                target: "f1r3.trace.recovery_gate",
                 event = "recovery_admitted",
+                block = block_number,
                 sig = %hex::encode(&deploy.sig[..deploy.sig.len().min(16)]),
+                owner = ?owner.as_ref().map(|o| hex::encode(&o[..o.len().min(8)])),
                 "recovered loser admitted for re-execution (owned, not in base)"
             );
             valid_unique.insert(deploy);
@@ -289,6 +300,15 @@ pub async fn prepare_user_deploys(
         .max_user_deploys_per_block as usize;
     let max_user_deploys = max_deploys;
     if valid_unique.len() <= max_user_deploys {
+        tracing::debug!(
+            target: "f1r3.trace.recovery_gate",
+            event = "block_selected",
+            block = block_number,
+            cap_hit = false,
+            n_selected = valid_unique.len(),
+            selected = ?valid_unique.iter().map(|d| hex::encode(&d.sig[..d.sig.len().min(16)])).collect::<Vec<_>>(),
+            "deploys selected for this block (uncapped)"
+        );
         return Ok(PreparedUserDeploys {
             deploys: valid_unique,
             effective_cap: max_user_deploys,
@@ -351,6 +371,15 @@ pub async fn prepare_user_deploys(
         selection_strategy
     );
 
+    tracing::debug!(
+        target: "f1r3.trace.recovery_gate",
+        event = "block_selected",
+        block = block_number,
+        cap_hit = true,
+        n_selected = selected.len(),
+        selected = ?selected.iter().map(|d| hex::encode(&d.sig[..d.sig.len().min(16)])).collect::<Vec<_>>(),
+        "deploys selected for this block (capped)"
+    );
     Ok(PreparedUserDeploys {
         deploys: selected,
         effective_cap: max_user_deploys,
