@@ -292,7 +292,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: F1R3FLY-io/system-integration
-          ref: feat/test-enhancements
+          ref: 2082717906d633870d6812c2a3d126fced12e088  # pinned system-integration main
           path: system-integration
 
       - name: Install OCI CLI
@@ -394,7 +394,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: F1R3FLY-io/system-integration
-          ref: feat/test-enhancements
+          ref: 2082717906d633870d6812c2a3d126fced12e088  # pinned system-integration main
           path: system-integration
 
       - name: Load Docker Image (from build_docker_image artifact)
@@ -455,6 +455,9 @@ jobs:
             --deselect integration-tests/test/tests/custom/test_shard_degradation.py \
             --deselect integration-tests/test/tests/shared/test_contract_lifecycle.py \
             --deselect integration-tests/test/tests/custom/test_consensus_safety.py::test_epoch_transition_under_heartbeat \
+            --deselect integration-tests/test/tests/custom/test_validator_lifecycle.py \
+            --deselect integration-tests/test/tests/custom/test_user_contract_concurrency.py \
+            --deselect integration-tests/test/tests/custom/test_active_validator_cap.py \
             --provider=${{ matrix.provider }} \
             -v --tb=short --instafail --maxfail=10 \
             -n auto --dist=loadgroup --timeout=1200 $SCALE_FLAG

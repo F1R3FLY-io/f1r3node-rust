@@ -144,7 +144,6 @@ mod tests {
             tls: TlsConf {
                 certificate_path: PathBuf::from("/tmp/cert.pem"),
                 key_path: PathBuf::from("/tmp/key.pem"),
-                secure_random_non_blocking: false,
                 custom_certificate_location: false,
                 custom_key_location: false,
             },

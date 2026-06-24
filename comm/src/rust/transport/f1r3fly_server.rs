@@ -317,7 +317,7 @@ mod tests {
     #[test]
     fn test_f1r3fly_server_builder_creation() {
         // Generate test certificates
-        let (secret_key, public_key) = CertificateHelper::generate_key_pair(true);
+        let (secret_key, public_key) = CertificateHelper::generate_key_pair();
         let cert_der = CertificateHelper::generate_certificate(&secret_key, &public_key)
             .expect("Failed to generate test certificate");
         let cert_pem = CertificatePrinter::print_certificate(&cert_der);
@@ -339,7 +339,7 @@ mod tests {
     #[test]
     fn test_f1r3fly_server_configuration() {
         // Generate test certificates
-        let (secret_key, public_key) = CertificateHelper::generate_key_pair(true);
+        let (secret_key, public_key) = CertificateHelper::generate_key_pair();
         let cert_der = CertificateHelper::generate_certificate(&secret_key, &public_key)
             .expect("Failed to generate test certificate");
         let cert_pem = CertificatePrinter::print_certificate(&cert_der);

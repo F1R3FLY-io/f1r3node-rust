@@ -168,15 +168,8 @@ impl CertificateHelper {
         Ok((secret_key, public_key))
     }
 
-    /// Generate a new secp256r1 key pair
-    ///
-    /// When useNonBlockingRandom is true, uses a non-blocking random source (equivalent to /dev/urandom)
-    /// When false, uses a blocking secure random source (equivalent to /dev/random)
-    /// See crypto/src/main/scala/coop/rchain/crypto/util/SecureRandomUtil.scala
-    pub fn generate_key_pair(use_non_blocking_random: bool) -> (P256SecretKey, P256PublicKey) {
-        // Both branches use OsRng; the `use_non_blocking_random` flag is retained for API
-        // compatibility but `rand_core::OsRng` is the only RNG type k256/p256 0.13 accept.
-        let _ = use_non_blocking_random;
+    /// Generate a new secp256r1 key pair using the OS CSPRNG (`OsRng`).
+    pub fn generate_key_pair() -> (P256SecretKey, P256PublicKey) {
         let secret_key = P256SecretKey::random(&mut OsRng);
 
         let public_key = secret_key.public_key();

@@ -243,10 +243,6 @@ pub struct RunOptions {
     #[arg(long = "tls-certificate-path")]
     pub tls_certificate_path: Option<PathBuf>,
 
-    /// Use a non blocking secure random instance
-    #[arg(long = "tls-secure-random-non-blocking", action = ArgAction::SetTrue)]
-    pub tls_secure_random_non_blocking: bool,
-
     /// Address to bind API servers
     #[arg(long = "api-host")]
     pub api_host: Option<String>,
