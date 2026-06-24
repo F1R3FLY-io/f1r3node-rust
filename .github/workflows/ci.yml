@@ -292,6 +292,11 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: F1R3FLY-io/system-integration
+          # TODO(temporary, DO NOT MERGE to staging as-is): revert this ref to a pinned
+          # system-integration main commit (as on staging) once the system-integration
+          # feat/test-enhancements changes are merged into main. This branch ref + the
+          # removal of the test_user_contract_concurrency deselect below exist only to
+          # validate the ucc suite in CI on this branch.
           ref: feat/test-enhancements
           path: system-integration
 
@@ -394,6 +399,11 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: F1R3FLY-io/system-integration
+          # TODO(temporary, DO NOT MERGE to staging as-is): revert this ref to a pinned
+          # system-integration main commit (as on staging) once the system-integration
+          # feat/test-enhancements changes are merged into main. This branch ref + the
+          # removal of the test_user_contract_concurrency deselect below exist only to
+          # validate the ucc suite in CI on this branch.
           ref: feat/test-enhancements
           path: system-integration
 
