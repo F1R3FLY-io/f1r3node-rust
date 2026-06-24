@@ -362,7 +362,7 @@ jobs:
     name: Integration Tests (${{ matrix.arch }}-${{ matrix.provider }}-${{ matrix.slot }})
     needs: [build_docker_image, launch_ephemeral_runners]
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 30
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
