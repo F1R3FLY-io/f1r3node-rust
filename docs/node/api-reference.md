@@ -144,7 +144,9 @@ curl http://localhost:40403/api/blocks
 
 #### `GET /api/is-finalized/{hash}`
 
-Check if a block is finalized. Returns `true` or `false`.
+Check if a **block** is finalized. Returns `true` or `false`.
+
+> **Block-level only.** Reports whether the *block* is in the finalized chain. This is **not** deploy finality — a deploy inside a finalized block can still have had its effects merge-rejected. For a deploy, use `GET /api/deploy-finalization-status/{deploy_sig_hex}`.
 
 | Parameter | Location | Required | Description |
 |-----------|----------|----------|-------------|
@@ -198,6 +200,8 @@ curl -X POST http://localhost:40413/api/deploy \
 
 Get deploy execution details.
 
+> **`isFinalized` is block-level; `finalizationState` is effect-level.** `isFinalized=true` only means the *containing block* is finalized — the deploy's effects may have been rejected during the construction-merge (then `finalizationState` is `Pending`/`Expired`). Use `finalizationState` (or `/api/deploy-finalization-status/{sig}`) to know whether the deploy's work is in canonical state.
+
 | Parameter | Location | Required | Description |
 |-----------|----------|----------|-------------|
 | `id` | path | yes | Deploy ID (hex signature) |
@@ -218,7 +222,9 @@ curl "http://localhost:40403/api/deploy/abc123...?view=summary"
 | `timestamp` | int | Block timestamp |
 | `cost` | int | Phlogiston consumed |
 | `errored` | bool | Whether execution failed |
-| `isFinalized` | bool | Whether the containing block is finalized |
+| `isFinalized` | bool | Whether the **containing block** is finalized (block-level — see warning above) |
+| `finalizationState` | string | **Effect-level** deploy finality: `Finalized` \| `Failed` \| `Pending` \| `Expired` |
+| `rejectionCount` | int | Number of finalized blocks whose merge rejected this deploy's effects |
 | `deployer` | string | Deployer public key (full only) |
 | `term` | string | Rholang source (full only) |
 | `systemDeployError` | string | System deploy error message (full only) |
@@ -228,7 +234,34 @@ curl "http://localhost:40403/api/deploy/abc123...?view=summary"
 | `validAfterBlockNumber` | int | Valid-after constraint (full only) |
 | `transfers` | array/null | Transfer list or null on validators (full only) |
 
-**Summary** returns only: `deployId`, `blockHash`, `blockNumber`, `timestamp`, `cost`, `errored`, `isFinalized`.
+**Summary** returns only: `deployId`, `blockHash`, `blockNumber`, `timestamp`, `cost`, `errored`, `isFinalized`, `finalizationState`, `rejectionCount`.
+
+#### `GET /api/deploy-finalization-status/{deploy_sig_hex}`
+
+**Effect-level** deploy finalization — use this (not `isFinalized`) to know whether a deploy's work reached canonical finalized state. Re-homing / merge-rejection aware: a deploy whose first block lost a merge but was re-included into a finalized descendant reports `Finalized`; a deploy whose effects were rejected in every finalized inclusion and whose lifespan passed reports `Expired`.
+
+| Parameter | Location | Required | Description |
+|-----------|----------|----------|-------------|
+| `deploy_sig_hex` | path | yes | Deploy signature (hex; leading `0x` optional) |
+
+**Response:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `state` | string | `Finalized` \| `Failed` \| `Pending` \| `Expired` |
+| `rejection_count` | int | Finalized blocks whose merge rejected the deploy's effects |
+| `latest_block_hash` | string/null | Highest-numbered block containing the sig, or `null` if never included |
+
+| State | Meaning |
+|-------|---------|
+| `Finalized` | Effects are in canonical finalized state |
+| `Failed` | Rholang execution failed (errored) in a finalized block |
+| `Pending` | Not yet cleanly finalized, or invalidated by a downstream rejection |
+| `Expired` | Lifespan passed (`validAfterBlockNumber + deployLifespan` below the LFB) without clean finalized inclusion |
+
+```bash
+curl http://localhost:40403/api/deploy-finalization-status/3045022100...
+```
 
 #### `GET /api/prepare-deploy`
 
@@ -516,8 +549,9 @@ curl -X POST http://localhost:40415/api/propose
 | `showMainChain` | `BlocksQuery` | `stream BlockInfoResponse` | Walk the main chain path from tip. Streaming. Returns `LightBlockInfo` |
 | `getBlocksByHeights` | `BlocksQueryByHeight` | `stream BlockInfoResponse` | Get blocks in a height range. Streaming. Clamped by `api_max_blocks_limit` |
 | `lastFinalizedBlock` | `LastFinalizedBlockQuery` | `LastFinalizedBlockResponse` | Get the last finalized block. Returns full `BlockInfo` with deploys |
-| `isFinalized` | `IsFinalizedQuery` | `IsFinalizedResponse` | Check if a block is finalized. Returns bool |
-| `findDeploy` | `FindDeployQuery` | `FindDeployResponse` | Find block containing a deploy. Retries up to 80x with 100ms intervals while deploy propagates through DAG |
+| `isFinalized` | `IsFinalizedQuery` | `IsFinalizedResponse` | Check if a **block** is finalized. Returns bool. Block-level — not deploy finality (use `deployFinalizationStatus`) |
+| `deployFinalizationStatus` | `DeployFinalizationStatusQuery` | `DeployFinalizationStatusResponse` | **Effect-level** deploy finality (`Finalized`/`Failed`/`Pending`/`Expired` + `rejectionCount`). Re-homing / merge-rejection aware. Prefer over `isFinalized` for deploy tracking |
+| `findDeploy` | `FindDeployQuery` | `FindDeployResponse` | Find block containing a deploy. Retries up to 80x while the deploy propagates. `blockInfo.isFinalized` is block-level; the response also carries `finalizationState` + `rejectionCount` (effect-level) |
 | `getDataAtName` | `DataAtNameByBlockQuery` | `RhoDataResponse` | Query data at a Rholang name in a specific block's post-state. Takes `Par` + block hash + `usePreStateHash` |
 | `listenForContinuationAtName` | `ContinuationAtNameQuery` | `ContinuationAtNameResponse` | Find processes waiting to receive on given channel names. Returns matching patterns and continuation bodies |
 | `exploratoryDeploy` | `ExploratoryDeployQuery` | `ExploratoryDeployResponse` | Execute Rholang read-only. No block created, no phlo consumed. Returns result `Par`s, block context, and cost. Readonly only |

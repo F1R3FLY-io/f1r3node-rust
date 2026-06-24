@@ -537,6 +537,11 @@ impl WebApi for WebApiImpl {
 
         let is_full = view == ViewMode::Full;
 
+        // Effect-level finalization (merge-rejection / re-homing aware), independent
+        // of the block-level `is_finalized` above. Always computed.
+        let finalization =
+            BlockAPI::deploy_finalization_status(&self.engine_cell, &deploy_id_bytes).await?;
+
         Ok(DeployResponse {
             deploy_id,
             block_hash: light_block.block_hash,
@@ -545,6 +550,8 @@ impl WebApi for WebApiImpl {
             cost: deploy.cost,
             errored: deploy.errored,
             is_finalized: light_block.is_finalized,
+            finalization_state: deploy_state_json_label(finalization.state).to_string(),
+            rejection_count: finalization.rejection_count,
             deployer: if is_full {
                 Some(deploy.deployer.clone())
             } else {
@@ -1299,6 +1306,16 @@ pub struct DeployResponse {
     pub errored: bool,
     #[serde(rename = "isFinalized")]
     pub is_finalized: bool,
+    /// Effect-level deploy finalization: "Finalized" | "Failed" | "Pending" | "Expired".
+    /// Unlike `isFinalized` (which is BLOCK-level — true once the containing block is
+    /// finalized), this reflects whether the deploy's EFFECTS reached canonical
+    /// finalized state. A deploy can be `isFinalized=true` yet `Pending`/`Expired`
+    /// here if its effects were rejected during the construction-merge.
+    #[serde(rename = "finalizationState")]
+    pub finalization_state: String,
+    /// Number of finalized blocks whose merge rejected this deploy's effects.
+    #[serde(rename = "rejectionCount")]
+    pub rejection_count: u32,
 
     // === Full view only (omitted in summary) ===
     #[serde(skip_serializing_if = "Option::is_none")]
