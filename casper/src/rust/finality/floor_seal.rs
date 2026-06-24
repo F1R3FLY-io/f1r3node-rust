@@ -277,9 +277,7 @@ async fn seal_floor_cut(
     // prove a whole-value diff-apply would stale-consume the second (the structural
     // delta is then mandatory). Purely diagnostic; mutates nothing.
     if tracing::enabled!(target: "f1r3.trace.seal_diff", tracing::Level::DEBUG) {
-        let fp = |bytes: &[u8]| -> String {
-            hex::encode(&Blake2b256Hash::new(bytes).bytes()[..6])
-        };
+        let fp = |bytes: &[u8]| -> String { hex::encode(&Blake2b256Hash::new(bytes).bytes()[..6]) };
         let base_hash = Blake2b256Hash::from_bytes_prost(&prev_state.state_hash.0);
         let base_reader = runtime_manager
             .history_repo
@@ -372,8 +370,11 @@ async fn seal_floor_cut(
     // its own fork). Folding both splits a coupled entity (the orphan); instead apply ONE writer
     // per cell and route the rest to recovery, exactly as construction's serialize keep-one does
     // within a single merge.
-    let mut ordered_chains: Vec<(i64, BlockHash, crate::rust::merging::deploy_chain_index::DeployChainIndex)> =
-        Vec::new();
+    let mut ordered_chains: Vec<(
+        i64,
+        BlockHash,
+        crate::rust::merging::deploy_chain_index::DeployChainIndex,
+    )> = Vec::new();
     for (block_number, block_hash) in &numbered {
         let idx = crate::rust::util::rholang::interpreter_util::build_block_index(
             runtime_manager,

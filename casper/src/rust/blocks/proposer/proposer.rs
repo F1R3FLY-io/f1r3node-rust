@@ -592,9 +592,7 @@ pub struct ProductionStakeChecker {
 }
 
 impl ProductionStakeChecker {
-    pub fn new(validator: Arc<ValidatorIdentity>) -> Self {
-        Self { validator }
-    }
+    pub fn new(validator: Arc<ValidatorIdentity>) -> Self { Self { validator } }
 }
 
 impl StakeChecker for ProductionStakeChecker {

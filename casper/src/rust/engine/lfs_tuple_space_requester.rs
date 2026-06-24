@@ -177,9 +177,7 @@ impl<Key: Hash + Eq + Clone> ST<Key> {
 
     /// Number of chunk paths that have reached `Done`. Used as the give-up
     /// deadline's progress signal (advances only on real completion).
-    pub fn done_count(&self) -> usize {
-        self.d.values().filter(|s| **s == ReqStatus::Done).count()
-    }
+    pub fn done_count(&self) -> usize { self.d.values().filter(|s| **s == ReqStatus::Done).count() }
 }
 
 /// Stream processor for tuple space requester operations

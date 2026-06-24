@@ -1155,7 +1155,11 @@ impl RuntimeOps {
         tracing::info!(
             "*** ACTIVE VALIDATORS FOR StateHash {}: {}",
             hex::encode(start_hash),
-            validators.iter().map(|v| hex::encode(v)).collect::<Vec<String>>().join("\n")
+            validators
+                .iter()
+                .map(|v| hex::encode(v))
+                .collect::<Vec<String>>()
+                .join("\n")
         );
 
         Ok(validators)

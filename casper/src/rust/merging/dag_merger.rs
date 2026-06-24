@@ -65,12 +65,14 @@ pub(crate) fn serialize_keep_one_order(
     a: &DeployChainIndex,
     b: &DeployChainIndex,
 ) -> std::cmp::Ordering {
-    fn cost(c: &DeployChainIndex) -> u64 {
-        c.deploys_with_cost.0.iter().map(|d| d.cost).sum()
-    }
+    fn cost(c: &DeployChainIndex) -> u64 { c.deploys_with_cost.0.iter().map(|d| d.cost).sum() }
     fn sig_key(c: &DeployChainIndex) -> Vec<Vec<u8>> {
-        let mut sigs: Vec<Vec<u8>> =
-            c.deploys_with_cost.0.iter().map(|d| d.deploy_id.to_vec()).collect();
+        let mut sigs: Vec<Vec<u8>> = c
+            .deploys_with_cost
+            .0
+            .iter()
+            .map(|d| d.deploy_id.to_vec())
+            .collect();
         sigs.sort();
         sigs
     }
@@ -506,16 +508,17 @@ pub fn merge(
                         // DIAG: identify the non-mergeable channel by decoding its
                         // base value(s). Gated so the base read + per-datum decode
                         // only run when the diagnostic target is enabled.
-                        if tracing::enabled!(target: "f1r3fly.merge.channel_id", tracing::Level::DEBUG) {
+                        if tracing::enabled!(target: "f1r3fly.merge.channel_id", tracing::Level::DEBUG)
+                        {
                             if let Ok(base) = reader.get_data(hash) {
                                 let vals: Vec<String> = base
                                     .iter()
-                                    .map(
-                                        |d| match RholangMergingLogic::try_get_number_with_rnd(&d.a) {
+                                    .map(|d| {
+                                        match RholangMergingLogic::try_get_number_with_rnd(&d.a) {
                                             Some((n, _)) => format!("num:{}", n),
                                             None => "par".to_string(),
-                                        },
-                                    )
+                                        }
+                                    })
                                     .collect();
                                 tracing::debug!(
                                     target: "f1r3fly.merge.channel_id",
@@ -1060,20 +1063,65 @@ pub fn merge(
     // whether the chain CREATING a doubled cell is a user pre-charge chain (and
     // which deployer sig owns it) or a system (CloseBlock/Slash) chain.
     if tracing::enabled!(target: "f1r3.trace.fs_floor", tracing::Level::INFO) {
-    for branch in resolved.to_merge.iter() {
-        for chain in branch.0.iter() {
-            let user_sigs: Vec<String> = chain
+        for branch in resolved.to_merge.iter() {
+            for chain in branch.0.iter() {
+                let user_sigs: Vec<String> = chain
+                    .deploys_with_cost
+                    .0
+                    .iter()
+                    .filter(|d| !is_system_deploy_id(&d.deploy_id))
+                    .map(|d| hex::encode(&d.deploy_id[..d.deploy_id.len().min(8)]))
+                    .collect();
+                let is_sys = chain
+                    .deploys_with_cost
+                    .0
+                    .iter()
+                    .any(|d| is_system_deploy_id(&d.deploy_id));
+                let mut chans: Vec<String> = Vec::new();
+                for e in chain.state_changes.datums_changes.iter() {
+                    let ch = e.key();
+                    let foldable = chain.event_log_index.number_channels_data.contains_key(ch);
+                    chans.push(format!(
+                        "{}:{}r{}a{}",
+                        hex::encode(&ch.bytes()[..6]),
+                        if foldable { "F" } else { "N" },
+                        e.value().removed.len(),
+                        e.value().added.len(),
+                    ));
+                }
+                if chans.is_empty() {
+                    continue;
+                }
+                tracing::info!(
+                    target: "f1r3.trace.fs_floor",
+                    event = "kept_chain_channels",
+                    is_sys,
+                    sigs = %user_sigs.join(","),
+                    channels = %chans.join(" "),
+                    "kept chain touched channels (is_sys = system deploy)"
+                );
+            }
+        }
+    }
+
+    let rejected = resolved.rejected;
+
+    // DIAG: per rejected user chain, dump the datum channels it touched (N =
+    // non-foldable, F = foldable/number) with removed/added counts. Lets a
+    // post-run trace attribute WHY a user deploy lost the merge — i.e. which
+    // cell its chain conflicted on (the map cell vs a vault/PoS cell).
+    if tracing::enabled!(target: "f1r3.trace.fs_floor", tracing::Level::INFO) {
+        for chain in rejected.0.iter() {
+            let sigs: Vec<String> = chain
                 .deploys_with_cost
                 .0
                 .iter()
                 .filter(|d| !is_system_deploy_id(&d.deploy_id))
                 .map(|d| hex::encode(&d.deploy_id[..d.deploy_id.len().min(8)]))
                 .collect();
-            let is_sys = chain
-                .deploys_with_cost
-                .0
-                .iter()
-                .any(|d| is_system_deploy_id(&d.deploy_id));
+            if sigs.is_empty() {
+                continue;
+            }
             let mut chans: Vec<String> = Vec::new();
             for e in chain.state_changes.datums_changes.iter() {
                 let ch = e.key();
@@ -1086,59 +1134,14 @@ pub fn merge(
                     e.value().added.len(),
                 ));
             }
-            if chans.is_empty() {
-                continue;
-            }
             tracing::info!(
                 target: "f1r3.trace.fs_floor",
-                event = "kept_chain_channels",
-                is_sys,
-                sigs = %user_sigs.join(","),
+                event = "rejected_chain_channels",
+                sigs = %sigs.join(","),
                 channels = %chans.join(" "),
-                "kept chain touched channels (is_sys = system deploy)"
+                "rejected user chain touched channels"
             );
         }
-    }
-    }
-
-    let rejected = resolved.rejected;
-
-    // DIAG: per rejected user chain, dump the datum channels it touched (N =
-    // non-foldable, F = foldable/number) with removed/added counts. Lets a
-    // post-run trace attribute WHY a user deploy lost the merge — i.e. which
-    // cell its chain conflicted on (the map cell vs a vault/PoS cell).
-    if tracing::enabled!(target: "f1r3.trace.fs_floor", tracing::Level::INFO) {
-    for chain in rejected.0.iter() {
-        let sigs: Vec<String> = chain
-            .deploys_with_cost
-            .0
-            .iter()
-            .filter(|d| !is_system_deploy_id(&d.deploy_id))
-            .map(|d| hex::encode(&d.deploy_id[..d.deploy_id.len().min(8)]))
-            .collect();
-        if sigs.is_empty() {
-            continue;
-        }
-        let mut chans: Vec<String> = Vec::new();
-        for e in chain.state_changes.datums_changes.iter() {
-            let ch = e.key();
-            let foldable = chain.event_log_index.number_channels_data.contains_key(ch);
-            chans.push(format!(
-                "{}:{}r{}a{}",
-                hex::encode(&ch.bytes()[..6]),
-                if foldable { "F" } else { "N" },
-                e.value().removed.len(),
-                e.value().added.len(),
-            ));
-        }
-        tracing::info!(
-            target: "f1r3.trace.fs_floor",
-            event = "rejected_chain_channels",
-            sigs = %sigs.join(","),
-            channels = %chans.join(" "),
-            "rejected user chain touched channels"
-        );
-    }
     }
 
     // Extract (rejected deploy ID, source block hash) pairs, split by kind.
@@ -1272,8 +1275,14 @@ mod tests {
     fn serialize_keep_one_prefers_higher_cost_among_siblings() {
         let high = chain(5, 1, &[(1, 100)]);
         let low = chain(5, 2, &[(2, 10)]);
-        assert_eq!(serialize_keep_one_order(&high, &low), std::cmp::Ordering::Less);
-        assert_eq!(serialize_keep_one_order(&low, &high), std::cmp::Ordering::Greater);
+        assert_eq!(
+            serialize_keep_one_order(&high, &low),
+            std::cmp::Ordering::Less
+        );
+        assert_eq!(
+            serialize_keep_one_order(&low, &high),
+            std::cmp::Ordering::Greater
+        );
     }
 
     /// Producer-before-consumer is preserved among USER chains: a lower-block producer sorts
@@ -1296,11 +1305,12 @@ mod tests {
     fn serialize_keep_one_closeblock_wins_over_user() {
         let mut cb_id = vec![9u8; 32];
         cb_id.push(crate::rust::system_deploy::CLOSE_BLOCK_MARKER);
-        let cb_set: std::collections::HashSet<DeployIdWithCost> = std::iter::once(DeployIdWithCost {
-            deploy_id: Bytes::from(cb_id),
-            cost: 0,
-        })
-        .collect();
+        let cb_set: std::collections::HashSet<DeployIdWithCost> =
+            std::iter::once(DeployIdWithCost {
+                deploy_id: Bytes::from(cb_id),
+                cost: 0,
+            })
+            .collect();
         let close_block = DeployChainIndex::from_parts(
             HashableSet(cb_set),
             Blake2b256Hash::from_bytes(vec![3; 32]),

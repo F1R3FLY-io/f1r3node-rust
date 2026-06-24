@@ -377,7 +377,6 @@ impl Validate {
         Either::Right(ValidBlock::Valid)
     }
 
-
     /// Validate that no deploy in the block re-applies an effect already present in
     /// the block's declared PRE-state.
     ///
@@ -1181,7 +1180,10 @@ impl Validate {
                 // Match block_creator: the bonds field is the consensus committee =
                 // active(FS) ∩ bonds(FS), not the full economic bonded set. Filter the
                 // computed FS bonds by the active-validator set at the same state.
-                let active = match runtime_manager.get_active_validators(&reference_state).await {
+                let active = match runtime_manager
+                    .get_active_validators(&reference_state)
+                    .await
+                {
                     Ok(a) => a,
                     Err(ex) => {
                         tracing::warn!(
@@ -1236,4 +1238,3 @@ impl Validate {
         }
     }
 }
-

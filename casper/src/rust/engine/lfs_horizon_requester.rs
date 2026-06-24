@@ -1271,11 +1271,11 @@ mod tests {
 
     impl FailingSendOps {
         fn new() -> Self {
-            Self { sends: Arc::new(Mutex::new(Vec::new())) }
+            Self {
+                sends: Arc::new(Mutex::new(Vec::new())),
+            }
         }
-        fn sends(&self) -> Arc<Mutex<Vec<StatePartPath>>> {
-            self.sends.clone()
-        }
+        fn sends(&self) -> Arc<Mutex<Vec<StatePartPath>>> { self.sends.clone() }
     }
 
     #[async_trait]

@@ -765,14 +765,9 @@ impl WebApi for WebApiImpl {
         // concurrently-bonded validator to recovery. Passing the request's
         // block_hash through means None -> FS(LFB); an explicit hash still reads
         // that block's post-state (exploratory_deploy handles both).
-        let (pars, block, _cost) = BlockAPI::exploratory_deploy(
-            &self.engine_cell,
-            term,
-            block_hash,
-            false,
-            self.dev_mode,
-        )
-        .await?;
+        let (pars, block, _cost) =
+            BlockAPI::exploratory_deploy(&self.engine_cell, term, block_hash, false, self.dev_mode)
+                .await?;
         let resolved_hash = block.block_hash;
         let block_number = block.block_number;
 
@@ -873,14 +868,9 @@ impl WebApi for WebApiImpl {
         // Finalized truth: read epoch rewards from FS(LFB), not the keep-one LFB
         // post-state. None -> FS(LFB); an explicit hash reads that block's
         // post-state (exploratory_deploy handles both).
-        let (pars, block, _cost) = BlockAPI::exploratory_deploy(
-            &self.engine_cell,
-            term,
-            block_hash,
-            false,
-            self.dev_mode,
-        )
-        .await?;
+        let (pars, block, _cost) =
+            BlockAPI::exploratory_deploy(&self.engine_cell, term, block_hash, false, self.dev_mode)
+                .await?;
         let resolved_hash = block.block_hash;
         let block_number = block.block_number;
 
@@ -913,14 +903,9 @@ impl WebApi for WebApiImpl {
         // Finalized truth: read bonds from FS(LFB), not the keep-one LFB
         // post-state. None -> FS(LFB); an explicit hash reads that block's
         // post-state (exploratory_deploy handles both).
-        let (pars, block, _cost) = BlockAPI::exploratory_deploy(
-            &self.engine_cell,
-            term,
-            block_hash,
-            false,
-            self.dev_mode,
-        )
-        .await?;
+        let (pars, block, _cost) =
+            BlockAPI::exploratory_deploy(&self.engine_cell, term, block_hash, false, self.dev_mode)
+                .await?;
         let resolved_hash = block.block_hash;
         let block_number = block.block_number;
 

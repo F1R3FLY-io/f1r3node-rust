@@ -272,9 +272,7 @@ impl RholangMergingLogic {
     pub fn calculate_map_channel_merge(
         channel_hash: &Blake2b256Hash,
         changes: &ChannelChange<Vec<u8>>,
-        base_get_data: impl Fn(
-            &Blake2b256Hash,
-        ) -> Result<Vec<Datum<ListParWithRandom>>, HistoryError>,
+        base_get_data: impl Fn(&Blake2b256Hash) -> Result<Vec<Datum<ListParWithRandom>>, HistoryError>,
     ) -> Result<
         Option<HotStoreTrieAction<Par, BindPattern, ListParWithRandom, TaggedContinuation>>,
         HistoryError,
@@ -303,9 +301,7 @@ impl RholangMergingLogic {
         // Base = FS-current value. Empty cell ⇒ the 3-way reduces to "apply new".
         let base_data = base_get_data(channel_hash)?;
         let (base_par, base_rnd) = match base_data.first() {
-            Some(d) if d.a.pars.len() == 1 => {
-                (d.a.pars[0].clone(), Some(d.a.random_state.clone()))
-            }
+            Some(d) if d.a.pars.len() == 1 => (d.a.pars[0].clone(), Some(d.a.random_state.clone())),
             Some(_) => return Ok(None), // multi-par base — bail to backstop
             None => (old_par.clone(), None),
         };
@@ -322,8 +318,10 @@ impl RholangMergingLogic {
         }
         rand_bytes.sort();
         rand_bytes.dedup();
-        let rnds: Vec<Blake2b512Random> =
-            rand_bytes.iter().map(|b| Blake2b512Random::from_bytes(b)).collect();
+        let rnds: Vec<Blake2b512Random> = rand_bytes
+            .iter()
+            .map(|b| Blake2b512Random::from_bytes(b))
+            .collect();
         let merged_rnd = if rnds.len() == 1 {
             rnds.into_iter().next().unwrap()
         } else {
@@ -341,14 +339,18 @@ impl RholangMergingLogic {
 
     /// 3-way merge of one Rholang value given the block's transition old→new onto base.
     fn merge3_par(base: &Par, old: &Par, new: &Par) -> Par {
-        if let (Some(b), Some(o), Some(n)) =
-            (RhoMap::unapply(base), RhoMap::unapply(old), RhoMap::unapply(new))
-        {
+        if let (Some(b), Some(o), Some(n)) = (
+            RhoMap::unapply(base),
+            RhoMap::unapply(old),
+            RhoMap::unapply(new),
+        ) {
             return RhoMap::create_par(Self::merge3_map(b, o, n));
         }
-        if let (Some(b), Some(o), Some(n)) =
-            (RhoSet::unapply(base), RhoSet::unapply(old), RhoSet::unapply(new))
-        {
+        if let (Some(b), Some(o), Some(n)) = (
+            RhoSet::unapply(base),
+            RhoSet::unapply(old),
+            RhoSet::unapply(new),
+        ) {
             return RhoSet::create_par(Self::merge3_set(b, o, n));
         }
         // Standard resolution for every remaining leaf — untagged Int included. Additive folding

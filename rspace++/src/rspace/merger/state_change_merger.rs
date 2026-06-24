@@ -320,8 +320,8 @@ fn make_trie_action<C: Clone, P: Clone, A: Clone, K: Clone>(
         new_val_len = new_val.len(),
         "make-trie-action"
     );
-    if new_val.len() > 1
-        && tracing::enabled!(target: "f1r3fly.rspace.multidatum", tracing::Level::DEBUG)
+    if new_val.len() > 1 &&
+        tracing::enabled!(target: "f1r3fly.rspace.multidatum", tracing::Level::DEBUG)
     {
         let init_hashes: Vec<String> = init.iter().map(hex::encode).collect();
         let added_hashes: Vec<String> = changes.added.iter().map(hex::encode).collect();

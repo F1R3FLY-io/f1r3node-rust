@@ -949,9 +949,12 @@ async fn fs_seal_keepones_concurrent_single_value_writes_and_queues_losers() {
         // is monotone-but-never-converges, and how far the floor trails the tip.
         {
             let dag_now = nodes[0].block_dag_storage.get_representation();
-            if let Ok(floor) =
-                casper::rust::finality::floor::floor_of_block(&dag_now, &merge.block_hash, FT_THRESHOLD)
-                    .await
+            if let Ok(floor) = casper::rust::finality::floor::floor_of_block(
+                &dag_now,
+                &merge.block_hash,
+                FT_THRESHOLD,
+            )
+            .await
             {
                 if let Ok(fs) = casper::rust::finality::floor_seal::floor_state_get_or_compute(
                     &dag_now,
@@ -1206,9 +1209,10 @@ async fn recovery_base_check_skips_only_when_effect_is_in_base() {
 #[tokio::test]
 async fn fs_seal_finalized_state_is_exact_operation_fold() {
     init_test_logging();
+    use std::collections::BTreeSet;
+
     use casper::rust::finality::floor::floor_of_block;
     use casper::rust::finality::floor_seal::floor_state_get_or_compute;
-    use std::collections::BTreeSet;
 
     const FT_THRESHOLD: f32 = 0.1;
     const REMOVED_KEY: &str = "Kb0";
@@ -1482,9 +1486,13 @@ async fn fs_seal_must_not_double_apply_guarded_conflicting_decrement() {
     // Seed an untagged single-value Int cell @8 = 100. Untagged => construction
     // keep-ones it (not a mergeable number channel) and the seal folds it via
     // merge3_par's Int arm — the path with no balance check.
-    let seed =
-        construct_deploy::source_deploy_now("@8!(100)".to_string(), None, None, Some(shard_id.clone()))
-            .unwrap();
+    let seed = construct_deploy::source_deploy_now(
+        "@8!(100)".to_string(),
+        None,
+        None,
+        Some(shard_id.clone()),
+    )
+    .unwrap();
     nodes[0].add_block_from_deploys(&[seed]).await.unwrap();
     {
         let nodes_refs: Vec<&mut TestNode> = nodes.iter_mut().collect();
@@ -1514,14 +1522,16 @@ async fn fs_seal_must_not_double_apply_guarded_conflicting_decrement() {
             .await
             .unwrap();
     }
-    let merge = TestNode::propagate_block_at_index(
-        &mut nodes,
-        2,
-        &[construct_deploy::source_deploy_now("@9!(0)".to_string(), None, None, Some(shard_id.clone()))
-            .unwrap()],
-    )
-    .await
-    .unwrap();
+    let merge =
+        TestNode::propagate_block_at_index(&mut nodes, 2, &[construct_deploy::source_deploy_now(
+            "@9!(0)".to_string(),
+            None,
+            None,
+            Some(shard_id.clone()),
+        )
+        .unwrap()])
+        .await
+        .unwrap();
     // Canonical @8 after the merge that keep-one'd one decrement (one applied -> 40).
     let canonical =
         rspace_util::get_data_at_public_channel_block(&merge, 8, &nodes[0].runtime_manager).await;
@@ -1529,17 +1539,15 @@ async fn fs_seal_must_not_double_apply_guarded_conflicting_decrement() {
     // Advance finalization well past the decrement round so it is deeply finalized.
     let mut last = merge.clone();
     for r in 1..=6u32 {
-        last = TestNode::propagate_block_at_index(
-            &mut nodes,
-            2,
-            &[construct_deploy::source_deploy_now(
+        last = TestNode::propagate_block_at_index(&mut nodes, 2, &[
+            construct_deploy::source_deploy_now(
                 format!("@9!({})", r),
                 None,
                 None,
                 Some(shard_id.clone()),
             )
-            .unwrap()],
-        )
+            .unwrap(),
+        ])
         .await
         .unwrap();
     }
@@ -1559,7 +1567,8 @@ async fn fs_seal_must_not_double_apply_guarded_conflicting_decrement() {
     .await
     .expect("FS");
     let fs_cell =
-        rspace_util::get_data_at_public_channel(&fs.state_hash.0, 8, &nodes[0].runtime_manager).await;
+        rspace_util::get_data_at_public_channel(&fs.state_hash.0, 8, &nodes[0].runtime_manager)
+            .await;
 
     tracing::info!(
         target: "f1r3.trace.cell",
@@ -1652,26 +1661,26 @@ async fn fs_seal_collapses_non_foldable_fork_to_one_value() {
 
     // Advance finalization several rounds so the fork round is deeply finalized, then
     // read the canonical cell from the latest block.
-    let mut last = TestNode::propagate_block_at_index(
-        &mut nodes,
-        2,
-        &[construct_deploy::source_deploy_now("@13!(0)".to_string(), None, None, Some(shard_id.clone()))
-            .unwrap()],
-    )
-    .await
-    .unwrap();
+    let mut last =
+        TestNode::propagate_block_at_index(&mut nodes, 2, &[construct_deploy::source_deploy_now(
+            "@13!(0)".to_string(),
+            None,
+            None,
+            Some(shard_id.clone()),
+        )
+        .unwrap()])
+        .await
+        .unwrap();
     for r in 1..=6u32 {
-        last = TestNode::propagate_block_at_index(
-            &mut nodes,
-            2,
-            &[construct_deploy::source_deploy_now(
+        last = TestNode::propagate_block_at_index(&mut nodes, 2, &[
+            construct_deploy::source_deploy_now(
                 format!("@13!({})", r),
                 None,
                 None,
                 Some(shard_id.clone()),
             )
-            .unwrap()],
-        )
+            .unwrap(),
+        ])
         .await
         .unwrap();
     }
@@ -1700,7 +1709,8 @@ async fn fs_seal_collapses_non_foldable_fork_to_one_value() {
         )
     });
     let fs_cell =
-        rspace_util::get_data_at_public_channel(&fs.state_hash.0, 12, &nodes[0].runtime_manager).await;
+        rspace_util::get_data_at_public_channel(&fs.state_hash.0, 12, &nodes[0].runtime_manager)
+            .await;
 
     tracing::info!(
         target: "f1r3.trace.cell",
@@ -1788,9 +1798,13 @@ async fn fs_seal_no_lag_double_apply_across_floors() {
     // FS @8 across floors — asserted monotone non-increasing after the loop.
     let mut fs_seq: Vec<i64> = Vec::new();
     for r in 0..8u32 {
-        let dec_a =
-            construct_deploy::source_deploy_now(dec_src.clone(), None, None, Some(shard_id.clone()))
-                .unwrap();
+        let dec_a = construct_deploy::source_deploy_now(
+            dec_src.clone(),
+            None,
+            None,
+            Some(shard_id.clone()),
+        )
+        .unwrap();
         let dec_b = construct_deploy::source_deploy_now(
             dec_src.clone(),
             Some(construct_deploy::DEFAULT_SEC2.clone()),
@@ -1806,17 +1820,15 @@ async fn fs_seal_no_lag_double_apply_across_floors() {
                 .await
                 .unwrap();
         }
-        let merge = TestNode::propagate_block_at_index(
-            &mut nodes,
-            2,
-            &[construct_deploy::source_deploy_now(
+        let merge = TestNode::propagate_block_at_index(&mut nodes, 2, &[
+            construct_deploy::source_deploy_now(
                 format!("@9!({})", r),
                 None,
                 None,
                 Some(shard_id.clone()),
             )
-            .unwrap()],
-        )
+            .unwrap(),
+        ])
         .await
         .unwrap();
 
@@ -1866,7 +1878,8 @@ async fn fs_seal_no_lag_double_apply_across_floors() {
                 // so an FS ahead of floor.post is an accepted finalized decrement, not an over-apply.
                 // @8 may be empty at very early floors (not yet written/finalized) — nothing to
                 // check there; the seed and decrements appear once finalization reaches them.
-                let Some(fs_val) = fs_cell.first().and_then(|s| s.trim().parse::<i64>().ok()) else {
+                let Some(fs_val) = fs_cell.first().and_then(|s| s.trim().parse::<i64>().ok())
+                else {
                     continue;
                 };
                 // Run-independent invariants only. FS is NOT compared to floor.post: FS != floor.post
@@ -1901,7 +1914,9 @@ async fn fs_seal_no_lag_double_apply_across_floors() {
             w[1] <= w[0],
             "FS @8 REGRESSED (less decremented) between floors: {} -> {} — a finalized decrement \
              vanished. FS sequence: {:?}",
-            w[0], w[1], fs_seq
+            w[0],
+            w[1],
+            fs_seq
         );
     }
 }
@@ -1923,9 +1938,10 @@ async fn fs_seal_no_lag_double_apply_across_floors() {
 #[tokio::test]
 async fn fs_seal_nested_map_proxy_pos_statech() {
     init_test_logging();
+    use std::collections::BTreeSet;
+
     use casper::rust::finality::floor::floor_of_block;
     use casper::rust::finality::floor_seal::floor_state_get_or_compute;
-    use std::collections::BTreeSet;
 
     const FT_THRESHOLD: f32 = 0.1;
 
@@ -2151,9 +2167,10 @@ async fn fs_seal_nested_map_proxy_pos_statech() {
 #[tokio::test]
 async fn fs_seal_nested_set_proxy_pos_activevalidators() {
     init_test_logging();
+    use std::collections::BTreeSet;
+
     use casper::rust::finality::floor::floor_of_block;
     use casper::rust::finality::floor_seal::floor_state_get_or_compute;
-    use std::collections::BTreeSet;
 
     const FT_THRESHOLD: f32 = 0.1;
     const REMOVED_KEY: &str = "Kb0";
@@ -2855,22 +2872,33 @@ async fn fs_seal_epoch_reward_is_dag_invariant_under_multiparent() {
     // keep-one-CloseBlock-per-height the reward stays bounded and production runs clean.
     let mut last_merge = None;
     for r in 0..16u32 {
-        let a = construct_deploy::source_deploy_now(
-            heavy(r), None, None, Some(shard_id.clone()),
-        ).unwrap();
+        let a = construct_deploy::source_deploy_now(heavy(r), None, None, Some(shard_id.clone()))
+            .unwrap();
         let b = construct_deploy::source_deploy_now(
-            heavy(1000 + r), Some(construct_deploy::DEFAULT_SEC2.clone()), None, Some(shard_id.clone()),
-        ).unwrap();
+            heavy(1000 + r),
+            Some(construct_deploy::DEFAULT_SEC2.clone()),
+            None,
+            Some(shard_id.clone()),
+        )
+        .unwrap();
         nodes[0].add_block_from_deploys(&[a]).await.unwrap();
         nodes[1].add_block_from_deploys(&[b]).await.unwrap();
         {
             let refs: Vec<&mut TestNode> = nodes.iter_mut().collect();
-            TestNode::propagate(&mut refs.into_iter().collect::<Vec<_>>()).await.unwrap();
+            TestNode::propagate(&mut refs.into_iter().collect::<Vec<_>>())
+                .await
+                .unwrap();
         }
         let noop = construct_deploy::source_deploy_now(
-            format!("@9!({})", r), None, None, Some(shard_id.clone()),
-        ).unwrap();
-        let merge = TestNode::propagate_block_at_index(&mut nodes, 2, &[noop]).await.unwrap();
+            format!("@9!({})", r),
+            None,
+            None,
+            Some(shard_id.clone()),
+        )
+        .unwrap();
+        let merge = TestNode::propagate_block_at_index(&mut nodes, 2, &[noop])
+            .await
+            .unwrap();
         last_merge = Some(merge.block_hash.clone());
     }
 
@@ -2878,33 +2906,55 @@ async fn fs_seal_epoch_reward_is_dag_invariant_under_multiparent() {
     // land inside the floor cone.
     for f in 0..10u32 {
         let noop_a = construct_deploy::source_deploy_now(
-            heavy(2000 + f), None, None, Some(shard_id.clone()),
-        ).unwrap();
+            heavy(2000 + f),
+            None,
+            None,
+            Some(shard_id.clone()),
+        )
+        .unwrap();
         let noop_b = construct_deploy::source_deploy_now(
-            heavy(3000 + f), Some(construct_deploy::DEFAULT_SEC2.clone()), None, Some(shard_id.clone()),
-        ).unwrap();
+            heavy(3000 + f),
+            Some(construct_deploy::DEFAULT_SEC2.clone()),
+            None,
+            Some(shard_id.clone()),
+        )
+        .unwrap();
         nodes[0].add_block_from_deploys(&[noop_a]).await.unwrap();
         nodes[1].add_block_from_deploys(&[noop_b]).await.unwrap();
         {
             let refs: Vec<&mut TestNode> = nodes.iter_mut().collect();
-            TestNode::propagate(&mut refs.into_iter().collect::<Vec<_>>()).await.unwrap();
+            TestNode::propagate(&mut refs.into_iter().collect::<Vec<_>>())
+                .await
+                .unwrap();
         }
         let noop_c = construct_deploy::source_deploy_now(
-            format!("@9!({})", 9000 + f), None, None, Some(shard_id.clone()),
-        ).unwrap();
-        let merge = TestNode::propagate_block_at_index(&mut nodes, 2, &[noop_c]).await.unwrap();
+            format!("@9!({})", 9000 + f),
+            None,
+            None,
+            Some(shard_id.clone()),
+        )
+        .unwrap();
+        let merge = TestNode::propagate_block_at_index(&mut nodes, 2, &[noop_c])
+            .await
+            .unwrap();
         last_merge = Some(merge.block_hash.clone());
     }
 
     let merge_hash = last_merge.unwrap();
     let dag = nodes[0].block_dag_storage.get_representation();
-    let floor = floor_of_block(&dag, &merge_hash, FT_THRESHOLD).await.unwrap();
+    let floor = floor_of_block(&dag, &merge_hash, FT_THRESHOLD)
+        .await
+        .unwrap();
     assert_ne!(
         floor.hash, genesis.genesis_block.block_hash,
         "test needs floors past genesis; raise the round count if this fires",
     );
     let fs = floor_state_get_or_compute(
-        &dag, &nodes[0].block_store, &nodes[0].runtime_manager, &floor.hash, FT_THRESHOLD,
+        &dag,
+        &nodes[0].block_store,
+        &nodes[0].runtime_manager,
+        &floor.hash,
+        FT_THRESHOLD,
     )
     .await
     .unwrap();

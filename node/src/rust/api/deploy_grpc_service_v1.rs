@@ -584,7 +584,7 @@ impl DeployService for DeployGrpcServiceV1Impl {
                         ),
                         finalization_state,
                         rejection_count,
-                    }))
+                    }));
                 }
                 Err(e) => {
                     let not_found = e
