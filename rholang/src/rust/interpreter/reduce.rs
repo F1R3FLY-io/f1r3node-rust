@@ -32,6 +32,7 @@ use models::rust::utils::{
     new_elist_par, new_emap_par, new_gint_expr, new_gint_par, new_gstring_par, union,
 };
 use prost::Message;
+use rspace_plus_plus::rspace::logging::ReductionKind;
 use rspace_plus_plus::rspace::merger::merging_logic::MergeType;
 use rspace_plus_plus::rspace::util::unpack_option_with_peek;
 use tokio::sync::RwLock;
@@ -339,6 +340,25 @@ impl DebruijnInterpreter {
         })
     }
 
+    /// Reactive single-step per-reduction seam (MeTTaIL OSLF stepper): emit `redex` to the installed
+    /// observer, then — if a live step session is active — pause on the shared [`StepGate`] until the
+    /// stepper releases the next step. `None` in production: two branch-predicted `is_none` checks, no
+    /// emit, no await. The redex is borrowed (the observer clones only when it captures). This is the
+    /// non-COMM twin of the COMM gate pause in `produce_inner`/`consume_inner`.
+    async fn observe_and_pause(
+        &self,
+        redex: &Par,
+        kind: ReductionKind,
+    ) -> Result<(), InterpreterError> {
+        self.space.observe_reduction(redex, kind);
+        if let Some(gate) = self.space.step_gate() {
+            gate.pause().await.map_err(|_| {
+                InterpreterError::ReduceError("single-step session aborted".to_string())
+            })?;
+        }
+        Ok(())
+    }
+
     async fn produce_inner(
         &self,
         chan: Par,
@@ -403,6 +423,12 @@ impl DebruijnInterpreter {
                     _ => Ok(dispatch_type),
                 }
             }
+            // A `produce` with no matching consumer deposits the send and returns Skip. This is NOT
+            // a per-reduction step: it fires for an internal send awaiting a future receive (whose
+            // rendezvous IS the COMM step) just as much as for a truly-resting output, and the order
+            // is non-deterministic — so emitting here would spuriously show consumed sends. A resting
+            // output is the residual of the reduction, surfaced as the final reduction's result (the
+            // dereferenced/continuation body), not as its own reduction.
             None => Ok(DispatchType::Skip),
         }
     }
@@ -980,6 +1006,9 @@ impl DebruijnInterpreter {
                 Some(expr_instance) => match expr_instance {
                     ExprInstance::EVarBody(e) => {
                         let res = self.eval_var(&e.clone().v.unwrap(), env)?;
+                        // Reactive per-reduction seam: dereference `*N` — `res` is the resolved quoted
+                        // process about to be evaluated. Two `is_none` checks, no alloc in production.
+                        self.observe_and_pause(&res, ReductionKind::Deref).await?;
                         self.eval(res, env, rand).await
                     }
                     ExprInstance::EMethodBody(e) => {
@@ -989,6 +1018,8 @@ impl DebruijnInterpreter {
                             },
                             env,
                         )?;
+                        // Reactive per-reduction seam: method call re-eval. None-op in production.
+                        self.observe_and_pause(&res, ReductionKind::Method).await?;
                         self.eval(res, env, rand).await
                     }
                     other => Err(InterpreterError::BugFoundError(format!(
@@ -1243,15 +1274,14 @@ impl DebruijnInterpreter {
                                         continue;
                                     }
 
-                                    self.eval(
-                                        single_case
-                                            .source
-                                            .clone()
-                                            .expect("MatchCase.source: protobuf no_box invariant"),
-                                        &case_env,
-                                        rand,
-                                    )
-                                    .await?;
+                                    let case_body = single_case
+                                        .source
+                                        .clone()
+                                        .expect("MatchCase.source: protobuf no_box invariant");
+                                    // Reactive per-reduction seam: a `match` case body firing.
+                                    // None-op in production.
+                                    self.observe_and_pause(&case_body, ReductionKind::Match).await?;
+                                    self.eval(case_body, &case_env, rand).await?;
 
                                     return Ok(());
                                 }
@@ -1301,26 +1331,22 @@ impl DebruijnInterpreter {
 
         match extract_bool(&subst_cond) {
             Some(true) => {
-                self.eval(
-                    conditional
-                        .if_true
-                        .clone()
-                        .expect("If.if_true: normalizer post-condition"),
-                    env,
-                    rand,
-                )
-                .await
+                let branch = conditional
+                    .if_true
+                    .clone()
+                    .expect("If.if_true: normalizer post-condition");
+                // Reactive per-reduction seam: an `if` true-branch firing. None-op in production.
+                self.observe_and_pause(&branch, ReductionKind::If).await?;
+                self.eval(branch, env, rand).await
             }
             Some(false) => {
-                self.eval(
-                    conditional
-                        .if_false
-                        .clone()
-                        .expect("If.if_false: normalizer post-condition"),
-                    env,
-                    rand,
-                )
-                .await
+                let branch = conditional
+                    .if_false
+                    .clone()
+                    .expect("If.if_false: normalizer post-condition");
+                // Reactive per-reduction seam: an `if` false-branch firing. None-op in production.
+                self.observe_and_pause(&branch, ReductionKind::If).await?;
+                self.eval(branch, env, rand).await
             }
             None => Err(InterpreterError::IfConditionTypeError {
                 actual_type: describe_par_type(&subst_cond),
@@ -1428,8 +1454,11 @@ impl DebruijnInterpreter {
             .reserve_reduction(new_bindings_cost(new.bind_count as i64))?;
         match alloc(new.bind_count as usize, new.uri.clone()) {
             Ok(env) => {
-                self.eval(unwrap_option_safe(new.p.clone())?, &env, rand)
-                    .await
+                let body = unwrap_option_safe(new.p.clone())?;
+                // Reactive per-reduction seam: a `new` scope body, after fresh-name allocation.
+                // None-op in production.
+                self.observe_and_pause(&body, ReductionKind::New).await?;
+                self.eval(body, &env, rand).await
             }
             Err(e) => Err(e),
         }
@@ -1461,8 +1490,10 @@ impl DebruijnInterpreter {
         env: &Env<Par>,
         rand: Blake2b512Random,
     ) -> Result<(), InterpreterError> {
-        self.eval(unwrap_option_safe(bundle.body.clone())?, env, rand)
-            .await
+        let body = unwrap_option_safe(bundle.body.clone())?;
+        // Reactive per-reduction seam: a `bundle` body, after unwrapping. None-op in production.
+        self.observe_and_pause(&body, ReductionKind::Bundle).await?;
+        self.eval(body, env, rand).await
     }
 
     // Public here for testing purposes

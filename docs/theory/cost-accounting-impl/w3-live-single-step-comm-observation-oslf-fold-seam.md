@@ -6,15 +6,16 @@ Status: implementation design (shipped behind a runtime gate). Branch: `feature/
 
 ## 0. Executive summary
 
-A MeTTaIL `language!` reduction is evaluated on two engines: the Dovetail rewrite engine (folds, casts) and **this** Rho machine (COMM, par, contracts). To make those reductions **observable and accountable** on the metered machine — the purpose of integrating MeTTaIL as the OSLF component of cost-accounting — W3 adds three small, additive, `None`-gated seams to `f1r3node`:
+A MeTTaIL `language!` reduction is evaluated on two engines: the Dovetail rewrite engine (folds, casts) and **this** Rho machine (COMM, par, contracts). To make those reductions **observable and accountable** on the metered machine — the purpose of integrating MeTTaIL as the OSLF component of cost-accounting — W3 adds four small, additive, `None`-gated seams to `f1r3node`:
 
 1. a **lock-free COMM emit seam** in `RSpace::log_comm` (publish the COMM `Par`s as they fire);
 2. an **async back-pressure step-gate** in `reduce.rs` (pause the reducer between COMMs, holding no RSpace lock);
-3. **reuse** of the existing `extra_system_processes` dependency-injection seam to install MeTTaIL **Tier-3 fold contracts** — the OSLF adapter that runs a MeTTaIL-native fold over a COMM-received value on this machine, post-substitution, as a metered contract COMM.
+3. **reuse** of the existing `extra_system_processes` dependency-injection seam to install MeTTaIL **Tier-3 fold contracts** — the OSLF adapter that runs a MeTTaIL-native fold over a COMM-received value on this machine, post-substitution, as a metered contract COMM;
+4. a **per-reduction emit + gate** at the structural reducer arms — an `observe_reduction(redex, kind)` twin of `observe_comm` on the same `StepCommObserver`, forwarded through a new `None`-default `ISpace::observe_reduction` (symmetric to `step_gate`), so the stepper observes EVERY meaningful Rho-machine reduction (the COMM plus the structural dereference / method / `match` / `if` / `new` / `bundle` bodies), not only COMM rendezvous. A resting output is the *residual* of the last reduction, not a step; a `produce` with no consumer is therefore not observed (it would spuriously surface internal sends that the COMM later consumes, and its ordering is non-deterministic).
 
 The load-bearing facts that make this "additive, not invasive":
 
-- The COMM emit and the step-gate are `Option` fields defaulting to `None`; when not single-stepping, each COMM costs one branch-predicted `is_none` check plus one `None`-returning call. No allocation, no extra lock, no task park. RSpace events are unchanged.
+- The COMM emit, the step-gate, and the per-reduction emit are reached through `Option` / default-`None` forwarders; when not single-stepping, each COMM costs one branch-predicted `is_none` check plus one `None`-returning call, and each structural reduction costs two (the `observe_reduction` forwarder + the `step_gate` forwarder, both `None`). No allocation, no extra lock, no task park. RSpace events and reduction order are unchanged.
 - `extra_system_processes: &mut Vec<Definition>` already threads `create_rho_runtime → setup_maps_and_refs → introduce_system_process`. MeTTaIL fills that `Vec`; the empty case (no held fold) chains an empty iterator — identical maps and dispatch table.
 - The MeTTaIL fold handler is a boxed closure handed in as data. `f1r3node` never names MeTTaIL; the host-guard test `mettail_rust_is_not_a_cargo_dependency` (`accounting/resource_logic.rs`) stays green.
 
@@ -29,6 +30,8 @@ The load-bearing facts that make this "additive, not invasive":
 ## 2. The async back-pressure step-gate (`rholang/src/rust/interpreter/reduce.rs`)
 
 `StepGate` (a `tokio::sync::Semaphore`, defined in `logging.rs`) provides `pause` / `release_one` / `abort`. In `produce_inner` and `consume_inner`, **after** `space.{produce,consume}().await` returns a match and **before** continuing the process — an `await` boundary at which the per-channel RSpace lock has already been dropped — the reducer calls `self.space.step_gate()` and, if `Some`, `pause()`s (acquires a permit). This parks the **task**, not the OS thread, and holds **no lock**, so a single-step session can resume the reducer one COMM at a time with no deadlock. When `step_gate()` is `None` (the default), the call returns immediately. The hook is plain control flow, not feature-gated, so the fork stays a single build.
+
+The same gate also drives the **per-reduction** seam (seam 4). A private `observe_and_pause(redex, kind)` helper — `self.space.observe_reduction(redex, kind)` then the identical `if let Some(gate) = self.space.step_gate() { gate.pause().await }` — is called at the six structural reducer arms (the `EVarBody` dereference and `EMethodBody` method in `generated_message_eval`, the `match` case body, the two `if` branches, the `new` body, and the `bundle` body), immediately before each re-enters `eval`. Because the stepper's worker runs `new_current_thread`, the single-permit gate forces **one reduction at a time** across the concurrently-spawned par-member tasks, giving a deterministic, navigable linear trace under the fixed seed + content-hash match order. When no observer is installed, each call is the same two `None` forwarders — no emit, no pause, no allocation. A `produce` reaching quiescence is deliberately NOT a hook site: depositing a send is not a reduction (the COMM that later consumes it is the step), and observing it would surface spurious, order-dependent internal sends.
 
 ## 3. Tier-3 fold contracts — the OSLF adapter (DR-24)
 
@@ -48,7 +51,7 @@ Soundness is proven mettail-side (zero-admission): `lift(C[fold(*x)]) ; COMM ; f
 
 The default build is **byte-identical** to the pre-W3 machine on every path that does not single-step and does not lift a held fold:
 
-- `step_observer = None`, `step_gate() = None` ⇒ `log_comm` and `reduce.rs` execute the prior instructions plus two predicted branches; no allocation, no lock, no park.
+- `step_observer = None`, `step_gate() = None` ⇒ `log_comm` and the COMM gate execute the prior instructions plus two predicted branches; the six per-reduction arms each add two more `None`-returning forwarder calls (`observe_reduction` + `step_gate`); no allocation, no lock, no park, and the reduction order is unchanged.
 - no held fold ⇒ the `extra_system_processes` `Vec` is empty ⇒ `combined_processes` chains an empty iterator ⇒ identical maps, dispatch table, and RSpace events.
 
 So nothing here touches the live linear funding path or the consensus-relevant reduction order; observation is strictly a superset activated only by a live-step session.
@@ -61,7 +64,7 @@ So nothing here touches the live linear funding path or the consensus-relevant r
 
 ## 6. Upstream-maintenance notes
 
-- The two reducer hooks (`produce_inner`, `consume_inner`) are the only edits to the hottest path; both are additive and `None`-guarded, so a rebase conflict is localized and reversible.
+- The reducer hooks on the hottest path now number eight: the two COMM gate pauses (`produce_inner`, `consume_inner`) plus the six per-reduction `observe_and_pause` calls (the dereference / method / `match` / two `if` branches / `new` / `bundle` arms). All are additive, `None`-guarded one-liners before an existing `self.eval(...)`, centralized through the single `observe_and_pause` helper, so a rebase conflict is localized, mechanical, and reversible. The `observe_reduction` emit is the symmetric twin of the existing `step_gate` forwarder (a default-`None` `ISpace` method + an `RSpace` override), so it needs no construction-path plumbing.
 - The `step_observer` field is appended last on `RSpace` and threaded through the existing `ISpace::step_gate` default — no positional constructor break.
 - Making the stock `PrettyPrinter` / interpreter stack-safe is a separate, independently-scheduled f1r3node change; W3's stepper renders COMM payloads on an enlarged stack so it does not depend on that work.
 

@@ -302,6 +302,15 @@ where
         self.step_observer.as_ref().and_then(|observer| observer.step_gate())
     }
 
+    /// Forward a non-COMM structural reduction to the installed observer (if any) — the symmetric
+    /// emit twin of `step_gate`. `None`-op in production (one branch-predicted `is_none` check, no
+    /// allocation, no vtable). `redex` is borrowed; the observer clones only when it captures.
+    fn observe_reduction(&self, redex: &C, kind: super::logging::ReductionKind) {
+        if let Some(observer) = &self.step_observer {
+            observer.observe_reduction(redex, kind);
+        }
+    }
+
     async fn revert_to_soft_checkpoint(
         &self,
         checkpoint: SoftCheckpoint<C, P, A, K>,

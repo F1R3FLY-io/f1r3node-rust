@@ -114,6 +114,14 @@ pub trait ISpace<
         None
     }
 
+    /// Forward a non-COMM structural reduction (dereference, method, match/if/new/bundle body, or a
+    /// produce reaching quiescence) to the installed [`super::logging::StepCommObserver`], if any.
+    /// The symmetric twin of [`Self::step_gate`]: default `None`-op (production and replay never
+    /// observe), `RSpace` overrides it to forward to its observer, and the reducer reaches it through
+    /// `self.space` with no construction-path threading. Synchronous and cheap — the default is a
+    /// no-op, the `RSpace` override is one observer `is_none` check.
+    fn observe_reduction(&self, _redex: &C, _kind: super::logging::ReductionKind) {}
+
     /**
     Reverts the ISpace to the state checkpointed using {@link #createSoftCheckpoint()}
     */

@@ -94,6 +94,31 @@ pub trait RSpaceLogger<C, P: Clone, A: Clone, K: Clone>: Send + Sync {
     }
 }
 
+/// The kind of a single *non-COMM* Rho-machine reduction, for the live per-reduction stepper. The
+/// COMM rendezvous keeps its rich [`StepCommObserver::observe_comm`] event; every *other* structural
+/// reduction the reducer performs — dereference `*N`, method call, and a `match`/`if`/`new`/`bundle`
+/// body — is reported through [`StepCommObserver::observe_reduction`] with one of these tags. (A
+/// resting output is the *residual* of a reduction, not a reduction itself — it is the result of the
+/// last reduction, not a separate step — so it is intentionally not a kind here; nor is the post-COMM
+/// continuation body, whose own constituent reductions are observed one level down.) Off by default
+/// with no `#[cfg]`, exactly like the COMM seam (see
+/// `docs/theory/cost-accounting-impl/w3-live-single-step-comm-observation-oslf-fold-seam.md`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReductionKind {
+    /// Dereference `*N` — the `EVarBody` reducer arm resolves a bound name to its quoted process.
+    Deref,
+    /// A `match` case body firing.
+    Match,
+    /// An `if` branch firing.
+    If,
+    /// A `new` scope body, after fresh-name allocation.
+    New,
+    /// A `bundle` body, after unwrapping.
+    Bundle,
+    /// A method call (`EMethodBody`) re-eval.
+    Method,
+}
+
 /// Observer for live single-step COMM tracing — the emit seam the MeTTaIL reactive stepper installs
 /// on the base [`super::rspace::RSpace`] at runtime (distinct from [`RSpaceLogger`], which
 /// `ReplayRSpace` uses for replay determinism). Off by default with no `#[cfg]`: a production
@@ -130,6 +155,18 @@ pub trait StepCommObserver<C, P, A, K>: Send + Sync {
     fn step_gate(&self) -> Option<Arc<StepGate>> {
         None
     }
+
+    /// Invoked once per *non-COMM* structural reduction the reducer is about to perform — the
+    /// dereference `*N`, a method call, a `match`/`if`/`new`/`bundle` body, or a `produce` that
+    /// reaches quiescence (`OutputAtQuiescence`). `redex` is the process (`C` = `Par` at the reducer's
+    /// instantiation) about to be evaluated (or the resting send). The observer self-numbers the
+    /// step ordinal (a single monotone counter shared with `observe_comm`), so no ordinal is passed.
+    /// Default no-op: a production `RSpace` installs no observer, so the reducer's forwarder is one
+    /// branch-predicted `is_none` check — zero allocation, no vtable. Implementations MUST be
+    /// lock-free / non-blocking, same contract as `observe_comm` (the call sites run inside the
+    /// reducer task; the COMM emit site may hold a tuplespace lock). The async back-pressure pause
+    /// lives in the reducer (the same [`StepGate`] returned by [`Self::step_gate`]), not here.
+    fn observe_reduction(&self, _redex: &C, _kind: ReductionKind) {}
 }
 
 /// Default logger that mirrors current ReplayRSpace behavior (no-op
