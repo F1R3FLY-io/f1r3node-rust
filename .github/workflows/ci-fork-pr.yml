@@ -19,9 +19,6 @@ on:
       - dev
       - master
       - trying
-      # TEST-ONLY: remove before merging to staging. Lets a fork PR targeting
-      # the ci/fork-runner-fix branch exercise this workflow during validation.
-      - ci/fork-runner-fix
 
 # Minimal token. The privileged launch job uses RELEASE_PAT (not GITHUB_TOKEN)
 # to mint runner registration tokens; the aggregators need actions:read to
