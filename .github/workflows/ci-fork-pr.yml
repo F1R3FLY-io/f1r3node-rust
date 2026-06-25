@@ -1,0 +1,114 @@
+# Fork PR entrypoint. Fork pull_request workflows get NO secrets, so the
+# secret-bearing heavy pipeline (ephemeral OCI runner launch + integration
+# matrix) cannot run under the normal `pull_request` ci.yml for forks.
+#
+# pull_request_target runs in the BASE-repo context (secrets available) and,
+# critically, executes the workflow file FROM THE BASE BRANCH — a fork cannot
+# alter what this privileged workflow does. The ephemeral-launch environment's
+# required-reviewer approval is what releases the secrets, after a maintainer
+# has reviewed the PR diff.
+#
+# Cheap checks (lint/test/etc.) still run for forks via ci.yml's normal
+# `pull_request` trigger, unprivileged. This workflow only adds the heavy path.
+name: CI (fork PRs)
+
+on:
+  pull_request_target:
+    branches:
+      - staging
+      - dev
+      - master
+      - trying
+
+# Minimal token. The privileged launch job uses RELEASE_PAT (not GITHUB_TOKEN)
+# to mint runner registration tokens; the aggregators need actions:read to
+# query sibling job conclusions.
+permissions:
+  contents: read
+  actions: read
+
+# One group across ALL fork PRs: fork heavy runs (real OCI VMs) never run in
+# parallel — a second fork run queues rather than cancelling the in-flight one.
+concurrency:
+  group: ci-fork-pr
+  cancel-in-progress: false
+
+jobs:
+  # Run the shared heavy pipeline against the FORK's head commit, gated behind
+  # the ephemeral-launch environment so the OCI runner launch only proceeds after
+  # a maintainer (one of the environment's reviewers) approves. Reviewers may
+  # approve their own PRs. Only fires for genuine fork PRs — internal PRs also
+  # trigger pull_request_target but are handled by ci.yml's pull_request path, so
+  # this job (and the aggregators below) skip for them.
+  pipeline:
+    name: Heavy Pipeline
+    if: github.event.pull_request.head.repo.fork == true
+    uses: ./.github/workflows/_integration-pipeline.yml
+    with:
+      checkout_repository: ${{ github.event.pull_request.head.repo.full_name }}
+      checkout_ref: ${{ github.event.pull_request.head.sha }}
+      gated: true
+    secrets: inherit
+
+  # Per-arch aggregators. The branch ruleset requires status checks named
+  # exactly `Integration Tests (amd64)` / `(arm64)`. These collapse the reusable
+  # pipeline's 10 per-arch matrix slots into one ruleset gate per arch. They use
+  # `contains(...)` (not `startswith`) because reusable-workflow job names are
+  # prefixed with the caller job id ("Heavy Pipeline / Integration Tests (...)").
+  integration_tests_amd64:
+    name: Integration Tests (amd64)
+    needs: pipeline
+    if: always() && github.event.pull_request.head.repo.fork == true
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+    steps:
+      - name: Check amd64 matrix slots
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash -e {0}
+        run: |
+          if [ "${{ needs.pipeline.result }}" != "success" ]; then
+            echo "Heavy Pipeline did not succeed (result: ${{ needs.pipeline.result }}); failing gate."
+            exit 1
+          fi
+          failures=$(gh api \
+            "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}/jobs" \
+            --paginate \
+            --jq '.jobs[] | select(.name | contains("Integration Tests (amd64-")) | select(.conclusion != "success") | "\(.conclusion)\t\(.name)"')
+          if [ -n "$failures" ]; then
+            echo "amd64 integration test failures:"
+            echo "$failures"
+            exit 1
+          fi
+          echo "All amd64 integration test slots succeeded"
+
+  integration_tests_arm64:
+    name: Integration Tests (arm64)
+    needs: pipeline
+    if: always() && github.event.pull_request.head.repo.fork == true
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+    steps:
+      - name: Check arm64 matrix slots
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash -e {0}
+        run: |
+          if [ "${{ needs.pipeline.result }}" != "success" ]; then
+            echo "Heavy Pipeline did not succeed (result: ${{ needs.pipeline.result }}); failing gate."
+            exit 1
+          fi
+          failures=$(gh api \
+            "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}/jobs" \
+            --paginate \
+            --jq '.jobs[] | select(.name | contains("Integration Tests (arm64-")) | select(.conclusion != "success") | "\(.conclusion)\t\(.name)"')
+          if [ -n "$failures" ]; then
+            echo "arm64 integration test failures:"
+            echo "$failures"
+            exit 1
+          fi
+          echo "All arm64 integration test slots succeeded"
