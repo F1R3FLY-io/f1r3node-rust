@@ -1,5 +1,6 @@
 // See node/src/main/scala/coop/rchain/node/runtime/APIServers.scala
 
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
@@ -16,7 +17,6 @@ use crate::rust::api::deploy_grpc_service_v1::DeployGrpcServiceV1Impl;
 use crate::rust::api::lsp_grpc_service::LspGrpcServiceImpl;
 use crate::rust::api::propose_grpc_service_v1::ProposeGrpcServiceV1Impl;
 use crate::rust::api::repl_grpc_service::ReplGrpcServiceImpl;
-use crate::rust::web::block_info_enricher::BlockEnricher;
 
 /// Container for all gRPC API service implementations
 ///
@@ -72,9 +72,13 @@ impl APIServers {
         dev_mode: bool,
         propose_f_opt: Option<Arc<ProposeFunction>>,
         block_report_api: BlockReportAPI,
+        transfer_unforgeable: models::rhoapi::Par,
         network_id: String,
         shard_id: String,
         min_phlo_price: i64,
+        native_token_name: String,
+        native_token_symbol: String,
+        native_token_decimals: u32,
         is_node_read_only: bool,
         // Shared dependencies
         engine_cell: EngineCell,
@@ -82,7 +86,8 @@ impl APIServers {
         rp_conf_cell: comm::rust::rp::rp_conf::RPConfCell,
         connections_cell: ConnectionsCell,
         node_discovery: Arc<dyn NodeDiscovery + Send + Sync>,
-        block_enricher: Option<Arc<dyn BlockEnricher>>,
+        epoch_length: i32,
+        is_ready: Arc<AtomicBool>,
     ) -> Self {
         // Create REPL service
         let repl = ReplGrpcServiceImpl::new(runtime);
@@ -102,14 +107,19 @@ impl APIServers {
             network_id,
             shard_id,
             min_phlo_price,
+            native_token_name,
+            native_token_symbol,
+            native_token_decimals,
             is_node_read_only,
             engine_cell,
             block_report_api,
+            transfer_unforgeable,
             key_value_block_store,
             rp_conf_cell.clone(),
             connections_cell,
             node_discovery,
-            block_enricher,
+            epoch_length,
+            is_ready,
         );
 
         // Create LSP service (stateless)

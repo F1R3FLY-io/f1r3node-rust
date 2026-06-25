@@ -65,15 +65,14 @@ impl GrpcKademliaRPC {
     }
 
     /// Execute a function with a gRPC client, handling resource management
-    /// This includes: channel creation, deadline setting on client, and proper
-    /// cleanup
+    /// This includes: channel creation, deadline setting on client, and proper cleanup
     async fn with_client_ping(&self, peer: &PeerNode, ping_msg: Ping) -> Result<bool, CommError> {
         let start = Instant::now();
         // Create channel
         let channel = match self.client_channel(peer).await {
             Ok(c) => c,
             Err(_) => {
-                tracing::error!("Failed to connect to peer for ping");
+                tracing::debug!("Failed to connect to peer for ping");
                 return Ok(false); // Return false for connection failures
             }
         };
@@ -106,11 +105,11 @@ impl GrpcKademliaRPC {
                 }
             }
             Ok(Err(status)) => {
-                tracing::error!("Ping failed: {:?}", status);
+                tracing::debug!("Ping failed: {:?}", status);
                 Ok(false)
             }
             Err(_) => {
-                tracing::error!("Ping timed out");
+                tracing::debug!("Ping timed out");
                 Ok(false)
             }
         }
@@ -127,9 +126,8 @@ impl GrpcKademliaRPC {
         let channel = match self.client_channel(peer).await {
             Ok(c) => c,
             Err(e) => {
-                tracing::error!("Failed to connect to peer for lookup: {}", e);
-                return Ok(Vec::new()); // Return empty list for connection
-                                       // failures
+                tracing::debug!("Failed to connect to peer for lookup: {}", e);
+                return Ok(Vec::new()); // Return empty list for connection failures
             }
         };
 
@@ -169,11 +167,11 @@ impl GrpcKademliaRPC {
                 }
             }
             Ok(Err(status)) => {
-                tracing::error!("Lookup failed: {:?}", status);
+                tracing::debug!("Lookup failed: {:?}", status);
                 Ok(Vec::new())
             }
             Err(_) => {
-                tracing::error!("Lookup timed out");
+                tracing::debug!("Lookup timed out");
                 Ok(Vec::new())
             }
         }
@@ -219,39 +217,12 @@ impl KademliaRPC for GrpcKademliaRPC {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Once;
     use std::time::Duration;
-
-    use tracing::level_filters::LevelFilter;
-    use tracing_subscriber::layer::SubscriberExt;
-    use tracing_subscriber::util::SubscriberInitExt;
-    use tracing_subscriber::EnvFilter;
 
     use super::*;
     use crate::rust::peer_node::{Endpoint, NodeIdentifier};
 
-    static INIT: Once = Once::new();
-
-    fn init_logger() {
-        INIT.call_once(|| {
-            let filter = EnvFilter::builder()
-                .with_default_directive(LevelFilter::DEBUG.into())
-                .parse("")
-                .unwrap();
-
-            tracing_subscriber::registry()
-                .with(filter)
-                .with(
-                    tracing_subscriber::fmt::layer()
-                        .json()
-                        .with_current_span(false) // logs only
-                        .with_span_list(false) // logs only
-                        .flatten_event(true), // put event fields at top level
-                )
-                .try_init()
-                .unwrap();
-        });
-    }
+    fn init_logger() { shared::rust::tracing_init::init_for_tests(); }
 
     fn test_peer() -> PeerNode {
         let id = NodeIdentifier {
@@ -305,8 +276,7 @@ mod tests {
             id: NodeIdentifier {
                 key: Bytes::from("other_key".as_bytes().to_vec()),
             },
-            endpoint: Endpoint::new("127.0.0.1".to_string(), 65432, 65432), /* Localhost with
-                                                                             * high port */
+            endpoint: Endpoint::new("127.0.0.1".to_string(), 65432, 65432), // Localhost with high port
         };
 
         // Test that ping returns false for non-existent peer (should fail quickly)
@@ -330,8 +300,7 @@ mod tests {
             id: NodeIdentifier {
                 key: Bytes::from("other_key".as_bytes().to_vec()),
             },
-            endpoint: Endpoint::new("127.0.0.1".to_string(), 65433, 65433), /* Localhost with
-                                                                             * high port */
+            endpoint: Endpoint::new("127.0.0.1".to_string(), 65433, 65433), // Localhost with high port
         };
 
         let key = b"lookup_key";

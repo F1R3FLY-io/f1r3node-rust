@@ -20,30 +20,27 @@ ignore = [
     # reachable only after signature verification and require certificate
     # misissuance to exploit. Cannot be patched without bumping hocon /
     # opentelemetry — out of scope for this sync.
+    "RUSTSEC-2026-0049", # CRL distributionPoint matching (multi-dp certs ignore all but first)
     "RUSTSEC-2026-0098", # URI name constraints
     "RUSTSEC-2026-0099", # wildcard-name constraints
     "RUSTSEC-2026-0104", # CRL parsing panic
 
     # Unmaintained advisories accepted for now (transitive deps from upstream
     # crates we don't own). Track upstream remediation; revisit on next sync.
+    "RUSTSEC-2024-0437", # protobuf 2.x stack overflow on untrusted input (transitive via rust-bert -> rust_tokenizers; rust-bert hasn't bumped)
+    "RUSTSEC-2025-0119", # number_prefix unmaintained (transitive via indicatif; upstream uses it for human-readable byte formatting)
     "RUSTSEC-2025-0134", # rustls-pemfile (transitive via reqwest/tonic)
     "RUSTSEC-2024-0387", # opentelemetry_api merged into opentelemetry
     "RUSTSEC-2025-0141", # bincode 1.x (workspace dep; bincode 2.0 is breaking)
     "RUSTSEC-2021-0141", # dotenv (transitive via openai-api-rs)
     "RUSTSEC-2021-0153", # encoding (transitive via hocon -> nom)
     "RUSTSEC-2024-0436", # paste proc-macro (transitive via metrics)
+    "RUSTSEC-2026-0173", # proc-macro-error2 unmaintained (transitive via getset -> neli -> local-ip-address; no safe upgrade available)
 
-    # === MASTER-ONLY DEBT — REMOVE BEFORE MERGING TO STAGING/DEV ===
-    # These advisories are tripped by master's older transitive deps but NOT by
-    # staging/dev. If this block survives a merge into staging or dev, those
-    # branches will silently mask advisories they would otherwise catch. Strip
-    # the entire block (banner-to-banner) when reconciling deny.toml during a
-    # merge, and verify with `cargo deny check advisories` on the merge result.
-    "RUSTSEC-2026-0044", # AWS-LC X.509 name-constraints bypass; cleared by aws-lc bump on staging/dev
-    "RUSTSEC-2026-0048", # AWS-LC CRL distribution-point scope; cleared by aws-lc bump on staging/dev
-    "RUSTSEC-2026-0049", # CRLs not authoritative; cleared by aws-lc bump on staging/dev
-    "RUSTSEC-2026-0097", # rand unsound w/ custom logger; cleared by heed-0.22 dep tree on staging/dev
-    # === END MASTER-ONLY DEBT ===
+    # Rand unsoundness with custom-logger + rand::rng(). We don't override
+    # the global rng with a custom logger; the unsafe path is unreachable in
+    # this codebase. Track upstream rand fix.
+    "RUSTSEC-2026-0097",
 ]
 
 # ---------------------------------------------------------------------------

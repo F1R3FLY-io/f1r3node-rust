@@ -1,7 +1,6 @@
 // See comm/src/main/scala/coop/rchain/comm/transport/GrpcTransportClient.scala
 
 use std::collections::HashMap;
-use std::error::Error as StdError;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -134,12 +133,10 @@ impl GrpcTransportClient {
         tracing::info!("Creating new F1r3fly channel to peer {}", peer.to_address());
 
         // **F1r3fly Custom TLS Integration Architecture**
-        // This method creates tonic gRPC channels using F1r3flyConnector with
-        // connect_with_connector() providing direct integration of F1r3fly TLS
-        // verification with tonic's gRPC layer
+        // This method creates tonic gRPC channels using F1r3flyConnector with connect_with_connector()
+        // providing direct integration of F1r3fly TLS verification with tonic's gRPC layer
 
-        // Step 1: Create F1r3flyConnector with peer's F1r3fly address for TLS hostname
-        // verification
+        // Step 1: Create F1r3flyConnector with peer's F1r3fly address for TLS hostname verification
         let f1r3fly_id_hex = hex::encode(&peer.id.key);
         tracing::debug!(
             "Creating F1r3flyConnector with F1r3fly address for TLS hostname: {}",
@@ -170,30 +167,17 @@ impl GrpcTransportClient {
         );
 
         let endpoint = Channel::from_shared(endpoint_uri.clone()).map_err(|e| {
-            tracing::error!(
-                "Failed to create gRPC endpoint: {} {} {}",
-                e,
-                endpoint_uri,
-                peer.endpoint.host
-            );
+            tracing::error!(uri = %endpoint_uri, host = %peer.endpoint.host, error = %e, "gRPC endpoint creation failed");
             CommError::InternalCommunicationError(format!("Invalid endpoint URI: {}", e))
         })?;
 
         // Step 3: Use F1r3flyConnector with tonic's connect_with_connector API
-        // The F1r3flyConnector will handle TLS hostname verification against the
-        // F1r3fly address
+        // The F1r3flyConnector will handle TLS hostname verification against the F1r3fly address
         let grpc_channel = endpoint
             .connect_with_connector(f1r3fly_connector)
             .await
             .map_err(|e| {
-                tracing::error!(
-                    "Failed to connect with F1r3flyConnector to {}: {}",
-                    endpoint_uri,
-                    e
-                );
-                if let Some(source) = e.source() {
-                    tracing::error!("Error source: {}", source);
-                }
+                tracing::error!(uri = %endpoint_uri, error = %e, "F1r3flyConnector gRPC channel connect failed");
                 CommError::InternalCommunicationError(format!(
                     "Failed to establish gRPC connection: {}",
                     e
@@ -404,11 +388,7 @@ impl GrpcTransportClient {
         match timed_operation.await {
             Ok(Ok(success)) => Ok(success),
             Ok(Err(comm_error)) => {
-                tracing::error!(
-                    "Request failed for peer {}: {}",
-                    peer.to_address(),
-                    comm_error
-                );
+                tracing::error!(peer = %peer.to_address(), error = %comm_error, "gRPC request failed");
                 Err(comm_error)
             }
             Err(_timeout_error) => {
@@ -417,7 +397,7 @@ impl GrpcTransportClient {
                     peer.to_address(),
                     timeout.as_millis()
                 ));
-                tracing::error!("Request timeout: {}", timeout_error);
+                tracing::warn!("Request timeout: {}", timeout_error);
                 Err(timeout_error)
             }
         }
@@ -425,8 +405,8 @@ impl GrpcTransportClient {
 
     /// Stream a blob file from cache to a peer using pre-created client
     ///
-    /// This method uses a pre-created transport client, eliminating the need
-    /// for complex connection management in spawned tasks.
+    /// This method uses a pre-created transport client, eliminating the need for
+    /// complex connection management in spawned tasks.
     async fn stream_blob_file_with_client(
         key: &str,
         peer: &PeerNode,
@@ -493,12 +473,7 @@ impl GrpcTransportClient {
                 Ok(())
             }
             Err(error) => {
-                tracing::error!(
-                    "Error while streaming packet {} to {}: {}",
-                    key,
-                    peer.to_address(),
-                    error
-                );
+                tracing::error!(key = %key, peer = %peer.to_address(), error = %error, "packet streaming failed");
                 Ok(())
             }
         }

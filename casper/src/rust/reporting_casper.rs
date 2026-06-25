@@ -79,11 +79,11 @@ impl ReportingCasper for RhoReporterCasper {
         let reporting_rspace = ReportingRuntime::create_reporting_rspace(self.rspace_store.clone())
             .map_err(|e| format!("Failed to create reporting rspace: {}", e))?;
 
-        let mergeable_tag_name = Genesis::non_negative_mergeable_tag_name();
+        let mergeable_tags = std::sync::Arc::new(Genesis::default_mergeable_tags());
         let mut extra_system_processes = Vec::new();
         let mut reporting_runtime = ReportingRuntime::create_reporting_runtime(
             reporting_rspace,
-            mergeable_tag_name,
+            mergeable_tags,
             &mut extra_system_processes,
             self.external_services.clone(),
         )
@@ -155,6 +155,7 @@ impl RhoReporterCasper {
     ) -> Result<ReplayResult, String> {
         runtime
             .reset(start_hash)
+            .await
             .map_err(|error| format!("Failed to reset reporting runtime: {}", error))?;
 
         runtime.set_block_data(block_data.clone()).await;
@@ -227,7 +228,7 @@ impl RhoReporterCasper {
             });
         }
 
-        let checkpoint = runtime.create_checkpoint();
+        let checkpoint = runtime.create_checkpoint().await;
         let post_state_hash = ByteString::from(checkpoint.root.to_bytes_prost());
 
         Ok(ReplayResult {
@@ -256,8 +257,7 @@ pub fn rho_reporter(
     })
 }
 
-/// ReportingRuntime wraps RhoRuntimeImpl with ReportingRspace to enable event
-/// collection
+/// ReportingRuntime wraps RhoRuntimeImpl with ReportingRspace to enable event collection
 pub struct ReportingRuntime {
     runtime: rholang::rust::interpreter::rho_runtime::RhoRuntimeImpl,
     space: RhoReportingRspace,
@@ -275,11 +275,11 @@ impl ReportingRuntime {
     }
 
     /// Reset the runtime to a specific state hash
-    pub fn reset(
+    pub async fn reset(
         &mut self,
         root: &Blake2b256Hash,
     ) -> Result<(), rholang::rust::interpreter::errors::InterpreterError> {
-        self.runtime.reset(root)
+        self.runtime.reset(root).await
     }
 
     /// Set block data for the runtime
@@ -299,8 +299,8 @@ impl ReportingRuntime {
     }
 
     /// Create a checkpoint and return the root hash
-    pub fn create_checkpoint(&mut self) -> rspace_plus_plus::rspace::checkpoint::Checkpoint {
-        RhoRuntime::create_checkpoint(&mut self.runtime)
+    pub async fn create_checkpoint(&mut self) -> rspace_plus_plus::rspace::checkpoint::Checkpoint {
+        RhoRuntime::create_checkpoint(&mut self.runtime).await
     }
 
     /// Replay a deploy and collect reporting events
@@ -362,11 +362,15 @@ impl ReportingRuntime {
     ///
     /// Bootstraps registry without checkpoint
     /// `createCheckpoint` is called at the end of `replayDeploys`, not here.
-    /// The reporting space is ephemeral and reset to `preStateHash` before
-    /// replay.
+    /// The reporting space is ephemeral and reset to `preStateHash` before replay.
     pub async fn create_reporting_runtime(
         reporting_space: RhoReportingRspace,
-        mergeable_tag_name: Par,
+        mergeable_tags: std::sync::Arc<
+            std::collections::HashMap<
+                Par,
+                rspace_plus_plus::rspace::merger::merging_logic::MergeType,
+            >,
+        >,
         extra_system_processes: &mut Vec<Definition>,
         external_services: rholang::rust::interpreter::external_services::ExternalServices,
     ) -> Result<Self, String> {
@@ -374,7 +378,7 @@ impl ReportingRuntime {
 
         let runtime = create_replay_rho_runtime(
             reporting_space.clone(),
-            mergeable_tag_name,
+            mergeable_tags,
             false,
             extra_system_processes,
             external_services,

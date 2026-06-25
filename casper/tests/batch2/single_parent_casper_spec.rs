@@ -1,5 +1,4 @@
-// See casper/src/test/scala/coop/rchain/casper/batch2/SingleParentCasperSpec.
-// scala
+// See casper/src/test/scala/coop/rchain/casper/batch2/SingleParentCasperSpec.scala
 
 use casper::rust::block_status::{BlockError, InvalidBlock};
 use casper::rust::casper::Casper;
@@ -35,8 +34,7 @@ async fn single_parent_casper_should_create_blocks_with_a_single_parent() {
 
     // Note: We create deploys one by one with sleep to ensure unique timestamps.
     // In Scala, the Time effect provides unique timestamps automatically,
-    // but in Rust we need to explicitly wait between deploys to avoid NoNewDeploys
-    // error.
+    // but in Rust we need to explicitly wait between deploys to avoid NoNewDeploys error.
     let mut deploy_datas = Vec::new();
     for i in 0..=2 {
         tokio::time::sleep(tokio::time::Duration::from_millis(1)).await;
@@ -86,10 +84,9 @@ async fn single_parent_casper_should_create_blocks_with_a_single_parent() {
 
 // NOTE: Storage isolation in test nodes
 // Both Scala and Rust TestNodes have isolated LMDB storage (via copyStorage).
-// When add_block_from_deploys() is called, blocks are stored ONLY in the
-// creating node's storage. The syncWith() mechanism exchanges blocks via
-// BlockRequest/BlockMessage protocol. This test now correctly matches Scala's
-// approach: addBlock() + syncWith().
+// When add_block_from_deploys() is called, blocks are stored ONLY in the creating node's storage.
+// The syncWith() mechanism exchanges blocks via BlockRequest/BlockMessage protocol.
+// This test now correctly matches Scala's approach: addBlock() + syncWith().
 #[tokio::test]
 async fn should_reject_multi_parent_blocks() {
     let ctx = TestContext::new().await;
@@ -155,13 +152,14 @@ async fn should_reject_multi_parent_blocks() {
         &ctx.genesis.genesis_block,
         &mut snapshot,
         max_number_of_parents,
-        false, // disable_validator_progress_check
+        i32::MAX, // max_parent_depth: disable depth check for this test
+        0,        // depth_buffer
+        false,    // disable_validator_progress_check
     );
 
     assert_eq!(
         validate_result,
         Either::Left(BlockError::Invalid(InvalidBlock::InvalidParents)),
-        "Block with multiple parents should be rejected as InvalidParents when \
-         max_number_of_parents=1"
+        "Block with multiple parents should be rejected as InvalidParents when max_number_of_parents=1"
     );
 }

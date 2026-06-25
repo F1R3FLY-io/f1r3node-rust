@@ -33,9 +33,9 @@ pub enum InvalidBlock {
     // AdmissibleEquivocation are blocks that would create an equivocation but are
     // pulled in through a justification of another block
     AdmissibleEquivocation,
-    // TODO: Make IgnorableEquivocation slashable again and remember to add an entry to the
-    // equivocation record. For now we won't eagerly slash equivocations that we can just
-    // ignore, as we aren't forced to add it to our view as a dependency.
+    // TODO: Make IgnorableEquivocation slashable again and remember to add an entry to the equivocation record.
+    // For now we won't eagerly slash equivocations that we can just ignore,
+    // as we aren't forced to add it to our view as a dependency.
     // TODO: The above will become a DOS vector if we don't fix.
     IgnorableEquivocation,
 

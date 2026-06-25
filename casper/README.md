@@ -1,52 +1,26 @@
-# casper
+# Casper
 
-Consensus and block-processing engine for the Rust node.
+CBC Casper consensus engine: block creation, validation, DAG management, safety oracle, and finalization.
 
-## Responsibilities
-
-- Genesis creation and validator ceremony flows
-- Block processing, validation, and finalization
-- Safety and synchrony checks
-- Approved block, block retrieval, and last-finalized-state recovery logic
-- Casper-facing APIs used by the node crate
-
-## Build
+## Building
 
 ```bash
-cargo build -p casper
 cargo build --release -p casper
+cargo build --profile dev -p casper   # debug mode
 ```
 
-## Test
+## Testing
 
 ```bash
-cargo test -p casper
-cargo test -p casper --release
+cargo test -p casper                             # all tests
+cargo test --release -p casper                   # release mode
+cargo test --test <test_file_name>               # specific test file
+cargo test --test <folder>::<test_file_name>      # specific test in folder
 ```
 
-To expose the crate's test helpers to other workspace members:
+## Documentation
 
-```bash
-cargo test -p casper --features test-utils
-```
-
-## Key Source Areas
-
-| Path | Purpose |
-| --- | --- |
-| `src/rust/engine/` | Node state machine, LFS recovery, genesis startup |
-| `src/rust/blocks/` | Block processing |
-| `src/rust/finality/` | Finalization logic |
-| `src/rust/safety/` | Safety oracle and clique logic |
-| `src/rust/api/` | Block and DAG API helpers |
-| `src/rust/util/` | Genesis, deploy, DAG, and RSpace utilities |
-| `src/main/resources/` | Contracts and runtime resources used by genesis and system deploys |
-
-## Dependencies
-
-This crate coordinates closely with:
-
-- `block-storage` for persistence
-- `comm` for network messaging
-- `models` for protocol structures
-- `rholang` and `rspace++` for contract execution and tuple space state
+- [Consensus Protocol](../docs/casper/CONSENSUS_PROTOCOL.md) — End-to-end protocol walkthrough
+- [Casper Module Overview](../docs/casper/README.md) — Block creation, validation, DAG, safety oracle, finalization
+- [Byzantine Fault Tolerance](../docs/casper/BYZANTINE_FAULT_TOLERANCE.md) — BFT architecture, clique oracle, slashing
+- [Synchrony Constraint](../docs/casper/SYNC_CONSTRAINT.md) — Synchrony constraint mechanism and configuration

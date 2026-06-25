@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use models::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
@@ -26,13 +26,13 @@ where T: ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation> {
     let mut kvm = InMemoryStoreManager::new();
     let store = kvm.r_space_stores().await.unwrap();
     let space = RSpace::create(store, Arc::new(Box::new(Matcher))).unwrap();
-    let rspace: RhoISpace = Arc::new(tokio::sync::Mutex::new(Box::new(space.clone())));
+    let rspace: RhoISpace = Arc::new(Box::new(space.clone()));
 
     let reducer = DebruijnInterpreter::new(
         rspace,
         Arc::new(HashMap::new()),
-        Arc::new(std::sync::RwLock::new(HashSet::new())),
-        Par::default(),
+        Arc::new(tokio::sync::RwLock::new(HashMap::new())),
+        Arc::new(HashMap::new()),
         cost.clone(),
     );
 
@@ -49,7 +49,7 @@ pub async fn create_test_runtime_with_genesis_contracts() -> RhoRuntimeImpl {
     let store = kvm.r_space_stores().await.unwrap();
     let runtime = create_runtime_from_kv_store(
         store,
-        Par::default(),
+        Arc::new(HashMap::new()),
         true,
         &mut test_framework_contracts(),
         Arc::new(Box::new(Matcher)),

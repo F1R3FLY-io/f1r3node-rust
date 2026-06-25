@@ -1,3 +1,5 @@
+#![allow(clippy::new_ret_no_self)]
+
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -89,10 +91,7 @@ impl KeyValueStoreManager for LmdbDirStoreManager {
                 )))
             })?;
 
-            (
-                db.name_override.clone().unwrap_or(db.id.clone()),
-                (*cfg).clone(),
-            )
+            (db.name_override.clone().unwrap_or(db.id.clone()), (*cfg).clone())
         };
 
         let manager_arc = {

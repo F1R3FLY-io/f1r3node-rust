@@ -15,25 +15,18 @@ pub struct Matcher;
 unsafe impl Send for Matcher {}
 unsafe impl Sync for Matcher {}
 
-// See rholang/src/main/scala/coop/rchain/rholang/interpreter/storage/package.
-// scala - matchListPar
+// See rholang/src/main/scala/coop/rchain/rholang/interpreter/storage/package.scala - matchListPar
 impl Match<BindPattern, ListParWithRandom> for Matcher {
     fn get(&self, pattern: BindPattern, data: ListParWithRandom) -> Option<ListParWithRandom> {
         let mut spatial_matcher = SpatialMatcherContext::new();
 
-        // println!("\npattern in get: {:?}", pattern);
-        // println!("\ndata in get: {:?}", data);
-
         let fold_match_result =
-            spatial_matcher.fold_match(data.pars, pattern.patterns, pattern.remainder);
+            spatial_matcher.fold_match(data.pars, pattern.patterns, pattern.remainder.clone());
         let match_result = match fold_match_result {
             Some(pars) => Some((spatial_matcher.free_map, pars)),
             None => None,
         };
 
-        // println!("\nmatch_result: {:?}", match_result);
-
-        // println!("\nresult: {:?}", result);
         match match_result {
             Some((mut free_map, caught_rem)) => {
                 let remainder_map = match pattern.remainder {

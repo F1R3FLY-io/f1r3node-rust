@@ -112,9 +112,9 @@ impl F1r3flyServer {
 
     /// Create the custom incoming stream for tonic server
     ///
-    /// This creates a stream of TLS-authenticated connections that tonic can
-    /// use to serve gRPC requests. Each connection is pre-authenticated
-    /// using F1r3fly's custom certificate verification.
+    /// This creates a stream of TLS-authenticated connections that tonic can use
+    /// to serve gRPC requests. Each connection is pre-authenticated using F1r3fly's
+    /// custom certificate verification.
     pub async fn incoming(self) -> Result<F1r3flyIncoming, F1r3flyServerError> {
         // Bind TCP listener
         let listener = TcpListener::bind(&self.bind_addr).await.map_err(|e| {
@@ -145,10 +145,7 @@ impl F1r3flyServer {
                         }
 
                         if tcp_keepalive.is_some() {
-                            tracing::debug!(
-                                "TCP keepalive configuration requested but not implemented in \
-                                 tokio TcpStream"
-                            );
+                            tracing::debug!("TCP keepalive configuration requested but not implemented in tokio TcpStream");
                         }
 
                         // Get peer address
@@ -188,7 +185,7 @@ impl F1r3flyServer {
                         });
                     }
                     Some(Err(e)) => {
-                        tracing::error!("TCP listener error: {}", e);
+                        tracing::error!(error = %e, "TCP listener accept failed");
                         let _ = tx.send(Err(F1r3flyServerError::Io(e))).await;
                     }
                     None => {
@@ -320,7 +317,7 @@ mod tests {
     #[test]
     fn test_f1r3fly_server_builder_creation() {
         // Generate test certificates
-        let (secret_key, public_key) = CertificateHelper::generate_key_pair(true);
+        let (secret_key, public_key) = CertificateHelper::generate_key_pair();
         let cert_der = CertificateHelper::generate_certificate(&secret_key, &public_key)
             .expect("Failed to generate test certificate");
         let cert_pem = CertificatePrinter::print_certificate(&cert_der);
@@ -342,7 +339,7 @@ mod tests {
     #[test]
     fn test_f1r3fly_server_configuration() {
         // Generate test certificates
-        let (secret_key, public_key) = CertificateHelper::generate_key_pair(true);
+        let (secret_key, public_key) = CertificateHelper::generate_key_pair();
         let cert_der = CertificateHelper::generate_certificate(&secret_key, &public_key)
             .expect("Failed to generate test certificate");
         let cert_pem = CertificatePrinter::print_certificate(&cert_der);

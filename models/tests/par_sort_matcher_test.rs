@@ -1,5 +1,4 @@
-// See models/src/test/scala/coop/rchain/models/rholang/SortTest.scala -
-// ParSortMatcherSpec
+// See models/src/test/scala/coop/rchain/models/rholang/SortTest.scala - ParSortMatcherSpec
 
 use std::collections::BTreeMap;
 
@@ -1029,10 +1028,9 @@ fn par_should_sort_exprs_in_order_of_ground_vars_arithmetic_comparisons_logical(
     let result = ParSortMatcher::sort_match(&par_expr);
 
     assert_eq!(
-        result.term, sorted_par_expr,
-        "Expressions were not sorted in the correct order: ground, vars, arithmetic, comparisons, \
-         logical"
-    );
+    result.term, sorted_par_expr,
+    "Expressions were not sorted in the correct order: ground, vars, arithmetic, comparisons, logical"
+  );
 }
 
 #[test]
@@ -1295,10 +1293,9 @@ fn par_should_sort_logical_connectives_in_varref_bool_int_string_uri_bytearray_o
     let result = ParSortMatcher::sort_match(&par_expr);
 
     assert_eq!(
-        result.term, sorted_par_expr,
-        "Logical connectives were not sorted in 'varref', 'bool', 'int', 'string', 'uri', \
-         'bytearray' order"
-    );
+    result.term, sorted_par_expr,
+    "Logical connectives were not sorted in 'varref', 'bool', 'int', 'string', 'uri', 'bytearray' order"
+  );
 }
 
 #[test]

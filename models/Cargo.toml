@@ -1,8 +1,12 @@
 [package]
 name = "models"
 version = "0.1.0"
-publish = false  # internal workspace crate; not published to crates.io
 edition = "2021"
+publish = false
+
+[features]
+default = []
+schnorr_secp256k1_experimental = ["crypto/schnorr_secp256k1_experimental"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -14,15 +18,15 @@ pathmap = "0.2.2"
 hex = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
-uuid = { version = "1.2", features = ["v4"] }
+uuid = { workspace = true }
 itertools = { workspace = true }
-proptest-derive = "0.5.1"
-proptest = "1.4.0"
-rand = "0.9.0"
+proptest-derive = { workspace = true }
+proptest = { workspace = true }
+rand = { workspace = true }
 tonic = { workspace = true }
 prost = { workspace = true }
 tonic-prost = { workspace = true }
-utoipa = "5"
+utoipa = { workspace = true }
 tracing = { workspace = true }
 
 [[test]]

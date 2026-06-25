@@ -154,8 +154,7 @@ impl ProposeEffectHandler for TestProposeEffectHandler {
 
 use std::sync::atomic::{AtomicI32, Ordering};
 
-// Global variable to track propose effects (similar to proposeEffectVar in
-// Scala)
+// Global variable to track propose effects (similar to proposeEffectVar in Scala)
 static PROPOSE_EFFECT_VAR: AtomicI32 = AtomicI32::new(0);
 
 pub struct TrackingProposeEffectHandler {
@@ -214,7 +213,7 @@ async fn proposer_should_reject_to_propose_if_proposer_is_not_active_validator()
         let casper = Arc::new(NoOpsCasperEffect::new(
             Some(HashMap::new()),
             None,
-            Arc::new(tokio::sync::Mutex::new(runtime_manager)),
+            Arc::new(runtime_manager),
             block_store,
             dag_representation,
         ));
@@ -272,7 +271,7 @@ async fn proposer_should_reject_to_propose_if_synchrony_constraint_not_met() {
         let casper = Arc::new(NoOpsCasperEffect::new(
             Some(HashMap::new()),
             None,
-            Arc::new(tokio::sync::Mutex::new(runtime_manager)),
+            Arc::new(runtime_manager),
             block_store,
             dag_representation,
         ));
@@ -330,7 +329,7 @@ async fn proposer_should_reject_to_propose_if_last_finalized_height_constraint_n
         let casper = Arc::new(NoOpsCasperEffect::new(
             Some(HashMap::new()),
             None,
-            Arc::new(tokio::sync::Mutex::new(runtime_manager)),
+            Arc::new(runtime_manager),
             block_store,
             dag_representation,
         ));
@@ -388,7 +387,7 @@ async fn proposer_should_shut_down_the_node_if_block_created_is_not_successfully
         let casper = Arc::new(NoOpsCasperEffect::new_with_self_created_validation_failure(
             Some(HashMap::new()),
             None,
-            Arc::new(tokio::sync::Mutex::new(runtime_manager)),
+            Arc::new(runtime_manager),
             block_store,
             dag_representation,
         ));
@@ -437,7 +436,7 @@ async fn proposer_should_execute_propose_effects_if_block_created_successfully_r
         let casper = Arc::new(NoOpsCasperEffect::new(
             Some(HashMap::new()),
             None,
-            Arc::new(tokio::sync::Mutex::new(runtime_manager)),
+            Arc::new(runtime_manager),
             block_store,
             dag_representation,
         ));

@@ -1,5 +1,4 @@
-// See comm/src/main/scala/coop/rchain/comm/transport/
-// SslSessionServerInterceptor.scala
+// See comm/src/main/scala/coop/rchain/comm/transport/SslSessionServerInterceptor.scala
 
 use crypto::rust::util::certificate_helper::CertificateHelper;
 use hex;
@@ -10,26 +9,22 @@ use tonic::{Request, Status};
 
 /// SSL Session Server Interceptor for validating incoming gRPC requests
 ///
-/// This interceptor validates incoming TLS connections and gRPC messages to
-/// ensure they:
+/// This interceptor validates incoming TLS connections and gRPC messages to ensure they:
 /// 1. Come from the correct network (network ID validation)
 /// 2. Have valid TLS certificates that match the sender identity
 /// 3. Are properly formatted gRPC messages
 ///
 /// # Architecture Notes
 ///
-/// Unlike Scala's ServerInterceptor which can intercept the actual message
-/// content, tonic's Interceptor trait only operates on metadata. Our F1r3fly
-/// architecture solves this with a two-phase validation approach:
+/// Unlike Scala's ServerInterceptor which can intercept the actual message content,
+/// tonic's Interceptor trait only operates on metadata. Our F1r3fly architecture
+/// solves this with a two-phase validation approach:
 ///
-/// 1. **Interceptor Phase**: F1r3flyServer extracts TLS certificates and stores
-///    validation context
-/// 2. **Service Phase**: This interceptor validates message content using the
-///    TLS context
+/// 1. **Interceptor Phase**: F1r3flyServer extracts TLS certificates and stores validation context
+/// 2. **Service Phase**: This interceptor validates message content using the TLS context
 ///
-/// This design enables full F1r3fly certificate verification while maintaining
-/// compatibility with tonic's interceptor system and providing the same
-/// security guarantees as the Scala implementation.
+/// This design enables full F1r3fly certificate verification while maintaining compatibility
+/// with tonic's interceptor system and providing the same security guarantees as the Scala implementation.
 #[derive(Clone, Debug)]
 pub struct SslSessionServerInterceptor {
     network_id: String,
@@ -55,9 +50,9 @@ impl SslSessionServerInterceptor {
 
     /// Validate a TLRequest message against TLS session context
     ///
-    /// This method should be called from the gRPC service implementation to
-    /// validate the actual message content against the TLS certificate
-    /// validation performed by the interceptor.
+    /// This method should be called from the gRPC service implementation to validate
+    /// the actual message content against the TLS certificate validation performed
+    /// by the interceptor.
     ///
     /// # Arguments
     /// * `request` - The gRPC request containing TLRequest and extensions
@@ -213,8 +208,7 @@ impl SslSessionServerInterceptor {
         let public_key_info = cert.public_key();
         let public_key_bytes = &public_key_info.subject_public_key.data;
 
-        // Validate secp256r1 uncompressed format (0x04 + 32-byte x + 32-byte y = 65
-        // bytes)
+        // Validate secp256r1 uncompressed format (0x04 + 32-byte x + 32-byte y = 65 bytes)
         if public_key_bytes.len() == 65 && public_key_bytes[0] == 0x04 {
             PublicKey::from_sec1_bytes(public_key_bytes).map_err(|e| {
                 tracing::warn!("Failed to parse secp256r1 public key: {}", e);
@@ -235,10 +229,9 @@ impl SslSessionServerInterceptor {
 
     /// Validate a streaming request against TLS session context
     ///
-    /// For streaming requests, we can only validate the TLS session itself
-    /// since the request doesn't contain a TlRequest with protocol headers.
-    /// The actual message validation happens when processing the stream
-    /// chunks.
+    /// For streaming requests, we can only validate the TLS session itself since
+    /// the request doesn't contain a TlRequest with protocol headers. The actual
+    /// message validation happens when processing the stream chunks.
     ///
     /// # Arguments
     /// * `request` - The gRPC streaming request
@@ -273,8 +266,8 @@ impl SslSessionServerInterceptor {
 impl Interceptor for SslSessionServerInterceptor {
     /// Implement tonic Interceptor trait
     ///
-    /// Validates TLS certificates and stores validation context in request
-    /// extensions for later use by the service implementation.
+    /// Validates TLS certificates and stores validation context in request extensions
+    /// for later use by the service implementation.
     fn call(&mut self, mut request: Request<()>) -> Result<Request<()>, Status> {
         // Extract peer certificates from F1r3fly connection info
         let peer_certificates = if let Some(connect_info) =

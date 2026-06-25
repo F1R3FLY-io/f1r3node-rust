@@ -224,8 +224,7 @@ mod tests {
         let final_connections = connections.read().unwrap();
         assert_eq!(final_connections.len(), 3);
 
-        // The order should be: D (not pinged), B, C (pinged and successful, moved to
-        // end)
+        // The order should be: D (not pinged), B, C (pinged and successful, moved to end)
         let connection_vec = final_connections.as_slice();
         assert_eq!(connection_vec[0], peer("D"));
         assert_eq!(connection_vec[1], peer("B"));

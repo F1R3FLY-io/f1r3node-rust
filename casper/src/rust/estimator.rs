@@ -1,6 +1,6 @@
 // See casper/src/main/scala/coop/rchain/casper/Estimator.scala
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
 use futures::stream::{self, StreamExt, TryStreamExt};
@@ -8,7 +8,6 @@ use models::rust::block_hash::BlockHash;
 use models::rust::block_metadata::BlockMetadata;
 use models::rust::casper::protocol::casper_message::BlockMessage;
 use models::rust::validator::Validator;
-use shared::rust::dag::dag_ops;
 use shared::rust::shared::list_ops::ListOps;
 use shared::rust::store::key_value_store::KvStoreError;
 
@@ -50,13 +49,12 @@ impl Estimator {
             .iter()
             .map(|(validator, hash)| (validator.clone(), hash.clone()))
             .collect();
-        tracing::debug!(target: "f1r3fly.casper.estimator.tips0", "latest-message-hashes");
+        tracing::debug!(target: "f1r3fly.casper.estimator.tips_primary", "latest-message-hashes");
         self.tips_with_latest_messages(dag, genesis, latest_message_hashes)
             .await
     }
 
-    /// When the BlockDag has an empty latestMessages, tips will return
-    /// IndexedSeq(genesis.blockHash)
+    /// When the BlockDag has an empty latestMessages, tips will return IndexedSeq(genesis.blockHash)
     #[tracing::instrument(name = "tips1", target = "f1r3fly.casper.estimator.tips1", skip_all)]
     pub async fn tips_with_latest_messages(
         &self,
@@ -73,19 +71,19 @@ impl Estimator {
 
         let genesis_metadata = BlockMetadata::from_block(genesis, false, None, None);
 
-        tracing::debug!(target: "f1r3fly.casper.estimator.tips1", "lca");
+        tracing::debug!(target: "f1r3fly.casper.estimator.tips_fallback", "lca");
         let lca =
             Self::calculate_lca(dag, &genesis_metadata, &filtered_latest_messages_hashes).await?;
 
-        tracing::debug!(target: "f1r3fly.casper.estimator.tips1", "score-map");
+        tracing::debug!(target: "f1r3fly.casper.estimator.tips_fallback", "score-map");
         let scores_map =
             Self::build_scores_map(dag, &filtered_latest_messages_hashes, &lca).await?;
 
-        tracing::debug!(target: "f1r3fly.casper.estimator.tips1", "ranked-latest-messages-hashes");
+        tracing::debug!(target: "f1r3fly.casper.estimator.tips_fallback", "ranked-latest-messages-hashes");
         let ranked_latest_messages_hashes =
             Self::rank_forkchoices(vec![lca.clone()], dag, &scores_map).await?;
 
-        tracing::debug!(target: "f1r3fly.casper.estimator.tips1", "filtered-deep-parents");
+        tracing::debug!(target: "f1r3fly.casper.estimator.tips_fallback", "filtered-deep-parents");
         let ranked_shallow_hashes = self
             .filter_deep_parents(ranked_latest_messages_hashes, dag)
             .await?;
@@ -189,10 +187,21 @@ impl Estimator {
                 .lookup_unsafe(lowest_common_ancestor)?
                 .block_number;
 
-            let traversed_hashes: Vec<BlockHash> =
-                dag_ops::bf_traverse(vec![latest_block_hash.clone()], |hash| {
-                    hash_parents(hash, lca_block_num, block_dag).expect("Failed to get parents")
-                });
+            let mut traversed_hashes: Vec<BlockHash> = Vec::new();
+            let mut queue: VecDeque<BlockHash> = VecDeque::from(vec![latest_block_hash.clone()]);
+            let mut visited: HashSet<BlockHash> = HashSet::new();
+
+            while let Some(hash) = queue.pop_front() {
+                if !visited.insert(hash.clone()) {
+                    continue;
+                }
+                traversed_hashes.push(hash.clone());
+                for parent in hash_parents(&hash, lca_block_num, block_dag)? {
+                    if !visited.contains(&parent) {
+                        queue.push_back(parent);
+                    }
+                }
+            }
 
             let mut result = score_map;
             for hash in traversed_hashes {
@@ -205,8 +214,7 @@ impl Estimator {
             Ok(result)
         }
 
-        // TODO: Scala message - Since map scores are additive it should be possible to
-        // do this in parallel
+        // TODO: Scala message - Since map scores are additive it should be possible to do this in parallel
         let mut scores_map: HashMap<BlockHash, i64> = HashMap::new();
         for (validator, latest_block_hash) in latest_messages_hashes.iter() {
             scores_map = add_validator_weight_down_supporting_chain(

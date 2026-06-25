@@ -47,8 +47,6 @@ impl RholangAndScalaDispatcher {
         is_replay: bool,
         previous_output: Vec<Par>,
     ) -> Result<DispatchType, InterpreterError> {
-        // println!("\ndispatcher dispatch");
-        // println!("continuation: {:?}", continuation);
         match continuation.tagged_cont {
             Some(cont) => match cont {
                 TaggedCont::ParBody(par_with_rand) => {
@@ -76,12 +74,7 @@ impl RholangAndScalaDispatcher {
                 }
                 TaggedCont::ScalaBodyRef(_ref) => {
                     let is_non_deterministic = non_deterministic_ops().contains(&_ref);
-                    // println!("self {:p}", self);
                     let dispatch_table = self._dispatch_table.read().await;
-                    // println!(
-                    //     "dispatch_table at ScalaBodyRef: {:?}",
-                    //     dispatch_table.keys()
-                    // );
                     match dispatch_table.get(&_ref) {
                         Some(f) => {
                             match f((data_list, is_replay, previous_output)).await {
@@ -90,10 +83,8 @@ impl RholangAndScalaDispatcher {
                                     output,
                                 ),
                                 Err(e) if is_non_deterministic => {
-                                    // Non-deterministic process failed - return
-                                    // FailedNonDeterministicCall
-                                    // so the produce event can be marked as failed for replay
-                                    // safety
+                                    // Non-deterministic process failed - return FailedNonDeterministicCall
+                                    // so the produce event can be marked as failed for replay safety
                                     Ok(DispatchType::FailedNonDeterministicCall(e))
                                 }
                                 Err(e) => Err(e),

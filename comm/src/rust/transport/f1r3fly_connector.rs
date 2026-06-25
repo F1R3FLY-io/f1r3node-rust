@@ -30,8 +30,7 @@ const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 pub struct F1r3flyConnector {
     tls_connector: F1r3flyTlsConnector,
     connect_timeout: Duration,
-    /// F1r3fly address to use for TLS hostname verification (instead of IP
-    /// address)
+    /// F1r3fly address to use for TLS hostname verification (instead of IP address)
     peer_f1r3fly_address: String,
 }
 
@@ -57,8 +56,7 @@ impl F1r3flyConnector {
     /// * `network_id` - The network identifier
     /// * `cert` - PEM-encoded client certificate
     /// * `key` - PEM-encoded private key
-    /// * `peer_f1r3fly_address` - The peer's F1r3fly address (hex-encoded) to
-    ///   use for TLS hostname verification
+    /// * `peer_f1r3fly_address` - The peer's F1r3fly address (hex-encoded) to use for TLS hostname verification
     pub fn new(
         network_id: String,
         cert: &str,
@@ -80,8 +78,7 @@ impl F1r3flyConnector {
     /// * `network_id` - The network identifier
     /// * `cert` - PEM-encoded client certificate
     /// * `key` - PEM-encoded private key
-    /// * `peer_f1r3fly_address` - The peer's F1r3fly address (hex-encoded) to
-    ///   use for TLS hostname verification
+    /// * `peer_f1r3fly_address` - The peer's F1r3fly address (hex-encoded) to use for TLS hostname verification
     /// * `connect_timeout` - Maximum time to wait for connection establishment
     pub fn new_with_timeout(
         network_id: String,
@@ -111,8 +108,7 @@ impl F1r3flyConnector {
             .ok_or_else(|| F1r3flyConnectorError::UriParseError("Missing port".to_string()))?;
 
         // For hostnames, we need to resolve to an IP address
-        // Try parsing as IP address first (fast path), if that fails, use async DNS
-        // resolution
+        // Try parsing as IP address first (fast path), if that fails, use async DNS resolution
         let addr_str = format!("{}:{}", host, port);
 
         match addr_str.parse::<SocketAddr>() {
@@ -161,11 +157,7 @@ impl Service<Uri> for F1r3flyConnector {
             };
 
             let addr = connector.extract_address(&uri).await.map_err(|e| {
-                tracing::error!(
-                    "F1r3flyConnector: Address resolution failed for {}: {}",
-                    uri,
-                    e
-                );
+                tracing::error!(uri = %uri, error = %e, "F1r3flyConnector address resolution failed");
                 Box::new(e) as Box<dyn StdError + Send + Sync>
             })?;
 
@@ -173,17 +165,13 @@ impl Service<Uri> for F1r3flyConnector {
             let tcp_stream = tokio::time::timeout(connect_timeout, TcpStream::connect(addr))
                 .await
                 .map_err(|_| {
-                    tracing::error!(
-                        "F1r3flyConnector: TCP connection timeout after {:?} to {}",
-                        connect_timeout,
-                        addr
-                    );
+                    tracing::error!(addr = %addr, timeout = ?connect_timeout, "F1r3flyConnector TCP connection timed out");
                     Box::new(F1r3flyConnectorError::ConnectionTimeout {
                         timeout: connect_timeout,
                     }) as Box<dyn StdError + Send + Sync>
                 })?
                 .map_err(|e| {
-                    tracing::error!("F1r3flyConnector: TCP connection failed to {}: {}", addr, e);
+                    tracing::error!(addr = %addr, error = %e, "F1r3flyConnector TCP connection failed");
                     Box::new(F1r3flyConnectorError::TcpConnectionError(e))
                         as Box<dyn StdError + Send + Sync>
                 })?;
@@ -195,17 +183,13 @@ impl Service<Uri> for F1r3flyConnector {
             )
             .await
             .map_err(|_| {
-                tracing::error!(
-                    "F1r3flyConnector: TLS handshake timeout after {:?} to {}",
-                    connect_timeout,
-                    addr
-                );
+                tracing::error!(addr = %addr, timeout = ?connect_timeout, "F1r3flyConnector TLS handshake timed out");
                 Box::new(F1r3flyConnectorError::ConnectionTimeout {
                     timeout: connect_timeout,
                 }) as Box<dyn StdError + Send + Sync>
             })?
             .map_err(|e| {
-                tracing::error!("F1r3flyConnector: TLS handshake failed to {}: {}", addr, e);
+                tracing::error!(addr = %addr, error = %e, "F1r3flyConnector TLS handshake failed");
                 Box::new(F1r3flyConnectorError::TlsConnectionError(e))
                     as Box<dyn StdError + Send + Sync>
             })?;
@@ -229,13 +213,8 @@ mod tests {
     ) -> Result<F1r3flyConnector, F1r3flyTlsTransportError> {
         let network_id = "test".to_string();
         // Use properly formatted but invalid certificate data
-        let cert = "-----BEGIN CERTIFICATE-----\\
-                    nMIIBkTCB+wIJAMlyFqk69v+9MA0GCSqGSIb3DQEBCwUAMBQxEjAQBgNVBAMMCWxvY2FsaG9zdDAe\\
-                    nFw0yMzAxMDEwMDAwMDBaFw0yNDAxMDEwMDAwMDBaMA0GCSqGSIb3DQEBCwUAA4GBQAA=\\
-                    n-----END CERTIFICATE-----";
-        let key = "-----BEGIN PRIVATE \
-                   KEY-----\nMIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgABCDEFGHIJKLMNOP\\
-                   nQRSTUVWXYZ0123456789+/=\n-----END PRIVATE KEY-----";
+        let cert = "-----BEGIN CERTIFICATE-----\nMIIBkTCB+wIJAMlyFqk69v+9MA0GCSqGSIb3DQEBCwUAMBQxEjAQBgNVBAMMCWxvY2FsaG9zdDAe\nFw0yMzAxMDEwMDAwMDBaFw0yNDAxMDEwMDAwMDBaMA0GCSqGSIb3DQEBCwUAA4GBQAA=\n-----END CERTIFICATE-----";
+        let key = "-----BEGIN PRIVATE KEY-----\nMIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgABCDEFGHIJKLMNOP\nQRSTUVWXYZ0123456789+/=\n-----END PRIVATE KEY-----";
 
         F1r3flyConnector::new(network_id, cert, key, "test_f1r3fly_address".to_string())
     }
@@ -244,7 +223,7 @@ mod tests {
     fn create_valid_test_connector() -> F1r3flyConnector {
         use crypto::rust::util::certificate_helper::{CertificateHelper, CertificatePrinter};
 
-        let (secret_key, public_key) = CertificateHelper::generate_key_pair(true);
+        let (secret_key, public_key) = CertificateHelper::generate_key_pair();
         let cert_der = CertificateHelper::generate_certificate(&secret_key, &public_key)
             .expect("Failed to generate test certificate");
         let cert_pem = CertificatePrinter::print_certificate(&cert_der);
@@ -299,8 +278,8 @@ mod tests {
 
         let result = connector.extract_address(&uri).await;
 
-        // This should either succeed (if localhost resolves) or fail with a resolution
-        // error Both are acceptable outcomes depending on the test environment
+        // This should either succeed (if localhost resolves) or fail with a resolution error
+        // Both are acceptable outcomes depending on the test environment
         match result {
             Ok(addr) => {
                 assert_eq!(addr.port(), 8080);
@@ -347,7 +326,7 @@ mod tests {
     fn test_connector_with_custom_timeout() {
         use crypto::rust::util::certificate_helper::{CertificateHelper, CertificatePrinter};
 
-        let (secret_key, public_key) = CertificateHelper::generate_key_pair(true);
+        let (secret_key, public_key) = CertificateHelper::generate_key_pair();
         let cert_der = CertificateHelper::generate_certificate(&secret_key, &public_key)
             .expect("Failed to generate test certificate");
         let cert_pem = CertificatePrinter::print_certificate(&cert_der);

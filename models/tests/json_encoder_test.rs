@@ -63,8 +63,7 @@ fn test_par_set_json_serialization() {
         json
     );
 
-    // Verify each element is a proper Par object (should have 'exprs' field for
-    // GInt/GString)
+    // Verify each element is a proper Par object (should have 'exprs' field for GInt/GString)
     for element in json_array {
         assert!(
             element.is_object(),

@@ -1,6 +1,5 @@
-// See comm/src/test/scala/coop/rchain/comm/transport/TransportLayerRuntime.
-// scala See comm/src/test/scala/coop/rchain/comm/transport/
-// TcpTransportLayerSpec.scala
+// See comm/src/test/scala/coop/rchain/comm/transport/TransportLayerRuntime.scala
+// See comm/src/test/scala/coop/rchain/comm/transport/TcpTransportLayerSpec.scala
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -54,7 +53,7 @@ impl TransportLayerTestRuntime {
     pub async fn create_environment(&self, port: u16) -> Result<TlsEnvironment, CommError> {
         let host = "127.0.0.1".to_string();
 
-        let (secret_key, public_key) = CertificateHelper::generate_key_pair(true);
+        let (secret_key, public_key) = CertificateHelper::generate_key_pair();
 
         let cert_der = CertificateHelper::generate_certificate(&secret_key, &public_key)
             .map_err(|e| CommError::ConfigError(format!("Certificate generation failed: {}", e)))?;
@@ -377,8 +376,7 @@ impl TestProtocolDispatcher {
         }
     }
 
-    /// Convert to the required DispatchFn type for
-    /// TransportLayerServer::handle_receive
+    /// Convert to the required DispatchFn type for TransportLayerServer::handle_receive
     pub fn to_handler(
         &self,
         receiver_peer: PeerNode,
@@ -451,8 +449,7 @@ impl TestStreamDispatcher {
         }
     }
 
-    /// Convert to the required HandleStreamedFn type for
-    /// TransportLayerServer::handle_receive
+    /// Convert to the required HandleStreamedFn type for TransportLayerServer::handle_receive
     pub fn to_handler(
         &self,
         receiver_peer: PeerNode,

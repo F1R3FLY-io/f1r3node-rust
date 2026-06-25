@@ -94,8 +94,7 @@ impl Par {
         }
     }
 
-    // See models/src/main/scala/coop/rchain/models/rholang/implicits.scala -
-    // prepend
+    // See models/src/main/scala/coop/rchain/models/rholang/implicits.scala - prepend
     pub fn prepend_send(&mut self, s: Send) -> Par {
         let mut new_sends = vec![s.clone()];
         new_sends.append(&mut self.sends);
@@ -201,21 +200,19 @@ impl Par {
     }
 }
 
-// See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/package.
-// scala - FreeMap
+// See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/package.scala - FreeMap
 pub type FreeMap = BTreeMap<i32, Par>;
 pub fn new_free_map() -> FreeMap { BTreeMap::new() }
 
-// See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/package.
-// scala - runFirst STUBBED OUT
+// See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/package.scala - runFirst
+// STUBBED OUT
 pub fn run_first<A>() -> Option<(FreeMap, A)> { None }
 
-// See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/package.
-// scala - attemptOpt NOT FULLY IMPLEMENTED
+// See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/package.scala - attemptOpt
+// NOT FULLY IMPLEMENTED
 pub fn attempt_opt(operation: Option<()>) -> Option<()> { operation.map(|_| ()) }
 
-// See rholang/src/main/scala/coop/rchain/rholang/interpreter/storage/package.
-// scala - toSeq
+// See rholang/src/main/scala/coop/rchain/rholang/interpreter/storage/package.scala - toSeq
 pub fn to_vec(fm: FreeMap, max: i32) -> Vec<Par> {
     (0..max)
         .map(|i| match fm.get(&i) {
@@ -238,17 +235,15 @@ pub fn union(bitset1: Vec<u8>, bitset2: Vec<u8>) -> Vec<u8> {
     result
 }
 
-// See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/
-// ParSpatialMatcherUtils.scala - noFrees[Par]
-pub fn no_frees(par: Par) -> Par { par.with_exprs(no_frees_exprs(par.exprs.clone())) }
+// See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/ParSpatialMatcherUtils.scala - noFrees[Par]
+pub fn no_frees(par: &Par) -> Par { par.with_exprs(no_frees_exprs(&par.exprs)) }
 
-// See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/
-// ParSpatialMatcherUtils.scala - noFrees[Seq[Expr]]
-pub fn no_frees_exprs(exprs: Vec<Expr>) -> Vec<Expr> {
+// See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/ParSpatialMatcherUtils.scala - noFrees[Seq[Expr]]
+pub fn no_frees_exprs(exprs: &[Expr]) -> Vec<Expr> {
     exprs
         .iter()
-        .filter(|expr| match expr.expr_instance.clone() {
-            Some(EVarBody(EVar { v })) => match v.unwrap().var_instance {
+        .filter(|expr| match &expr.expr_instance {
+            Some(EVarBody(EVar { v: Some(v) })) => match &v.var_instance {
                 Some(FreeVar(_)) => false,
                 Some(Wildcard(_)) => false,
                 _ => true,
@@ -412,10 +407,6 @@ pub fn new_eset_expr(
     _connective_used: bool,
     _remainder: Option<Var>,
 ) -> Expr {
-    // println!("new_eset_expr: _ps: {:?}", _ps);
-    // println!("new_eset_expr: _locally_free: {:?}", _locally_free);
-    // println!("new_eset_expr: _connective_used: {:?}", _connective_used);
-    // println!("new_eset_expr: _remainder: {:?}", _remainder);
     Expr {
         expr_instance: Some(ESetBody(ParSetTypeMapper::par_set_to_eset(ParSet::new(
             _ps,

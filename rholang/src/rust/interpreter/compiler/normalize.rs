@@ -313,8 +313,7 @@ pub fn normalize_ann_proc<'ast>(
         } => {
             use crate::rust::interpreter::compiler::normalizer::processes::p_if_normalizer::normalize_p_if;
 
-            // Follow same pattern as original IfElse: use empty Par for normalization, then
-            // append original Par
+            // Follow same pattern as original IfElse: use empty Par for normalization, then append original Par
             let mut empty_par_input = input.clone();
             empty_par_input.par = Par::default();
 
@@ -423,8 +422,7 @@ pub fn normalize_ann_proc<'ast>(
         // Select - handle select expressions (choice constructs)
         Proc::Select { branches: _ } => {
             // TODO: Implement select normalizer when needed
-            // This corresponds to Choice in the old AST which was also not implemented
-            // (todo!())
+            // This corresponds to Choice in the old AST which was also not implemented (todo!())
             Err(InterpreterError::ParserError(
                 "Select (choice) constructs not yet implemented in normalizer".to_string(),
             ))
@@ -437,9 +435,8 @@ pub fn normalize_ann_proc<'ast>(
     }
 }
 
-// See rholang/src/test/scala/coop/rchain/rholang/interpreter/compiler/
-// normalizer/ProcMatcherSpec.scala inside this source file we tested unary and
-// binary operations, because we don't have separate normalizers for them.
+// See rholang/src/test/scala/coop/rchain/rholang/interpreter/compiler/normalizer/ProcMatcherSpec.scala
+// inside this source file we tested unary and binary operations, because we don't have separate normalizers for them.
 #[cfg(test)]
 mod tests {
     use models::create_bit_vector;

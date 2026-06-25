@@ -1,5 +1,4 @@
-// See rholang/src/test/scala/coop/rchain/rholang/interpreter/SubstituteTest.
-// scala
+// See rholang/src/test/scala/coop/rchain/rholang/interpreter/SubstituteTest.scala
 
 use std::collections::BTreeMap;
 
@@ -13,8 +12,8 @@ use models::rhoapi::{
 };
 use models::rust::rholang::implicits::GPrivateBuilder;
 use models::rust::utils::{new_boundvar_par, new_freevar_var, new_gstring_par};
-use rand::seq::SliceRandom;
-use rand::{thread_rng, Rng};
+use rand::seq::IndexedRandom;
+use rand::Rng;
 use rholang::rust::interpreter::accounting::costs::Cost;
 use rholang::rust::interpreter::accounting::CostManager;
 use rholang::rust::interpreter::env::Env;
@@ -28,15 +27,15 @@ fn env() -> Env<Par> { Env::new() }
 
 fn substitute_instance() -> Substitute {
     let cost = Cost::create(0, "substitute_test".to_string());
-    let cost_manager = CostManager::new(cost, 1);
+    let cost_manager = CostManager::new(cost);
     let substitute = Substitute { cost: cost_manager };
     substitute
 }
 
 fn generate_random_subsequence<T: Clone>(items: &[T]) -> Vec<T> {
-    let mut rng = thread_rng();
+    let mut rng = rand::rng();
     let subset: Vec<T> = items
-        .choose_multiple(&mut rng.clone(), rng.gen_range(0..=items.len()))
+        .choose_multiple(&mut rng.clone(), rng.random_range(0..=items.len()))
         .cloned()
         .collect();
     // subset.sort();

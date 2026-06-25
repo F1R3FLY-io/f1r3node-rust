@@ -1,5 +1,4 @@
-// See casper/src/main/scala/coop/rchain/casper/storage/
-// RNodeKeyValueStoreManager.scala
+// See casper/src/main/scala/coop/rchain/casper/storage/RNodeKeyValueStoreManager.scala
 
 use std::path::PathBuf;
 
@@ -107,6 +106,13 @@ pub fn rnode_db_mapping(legacy_rspace_paths: Option<bool>) -> Vec<(Db, LmdbEnvCo
         // Deploy storage
         (
             Db::new("deploy_storage".to_string(), None),
+            deploy_storage_env_config(),
+        ),
+        // Buffer of deploys rejected during multi-parent merge; shares sizing
+        // with deploy_storage since its entries are the same value type
+        // (Signed<DeployData>) and it is bounded by `deployLifespan`.
+        (
+            Db::new("rejected_deploy_buffer".to_string(), None),
             deploy_storage_env_config(),
         ),
         // Reporting (trace) cache

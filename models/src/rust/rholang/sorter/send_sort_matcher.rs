@@ -1,5 +1,4 @@
-// See models/src/main/scala/coop/rchain/models/rholang/sorter/SendSortMatcher.
-// scala
+// See models/src/main/scala/coop/rchain/models/rholang/sorter/SendSortMatcher.scala
 
 use super::par_sort_matcher::ParSortMatcher;
 use super::score_tree::{Score, ScoreAtom, ScoredTerm, Tree};
@@ -16,8 +15,11 @@ impl Sortable<Send> for SendSortMatcher {
                 .expect("channel field on Send was None, should be Some"),
         );
 
-        let sorted_data: Vec<ScoredTerm<Par>> =
-            s.data.iter().map(ParSortMatcher::sort_match).collect();
+        let sorted_data: Vec<ScoredTerm<Par>> = s
+            .data
+            .iter()
+            .map(|p| ParSortMatcher::sort_match(p))
+            .collect();
 
         let sorted_send = Send {
             chan: Some(sorted_chan.term),

@@ -5,8 +5,7 @@ use models::rust::validator;
 
 use super::address_tools::{Address, AddressTools};
 
-// See rholang/src/main/scala/coop/rchain/rholang/interpreter/util/VaultAddress.
-// scala
+// See rholang/src/main/scala/coop/rchain/rholang/interpreter/util/VaultAddress.scala
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct VaultAddress {
     address: Address,

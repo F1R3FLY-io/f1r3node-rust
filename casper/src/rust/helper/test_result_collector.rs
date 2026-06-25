@@ -136,13 +136,13 @@ impl TestResult {
             .assertions
             .get(assertion.test_name())
             .cloned()
-            .unwrap_or_else(HashMap::new);
+            .unwrap_or_else(|| HashMap::new());
 
         let new_assertion = (attempt, {
             let mut new_assertions = current_attempt_assertions
                 .get(&attempt)
                 .cloned()
-                .unwrap_or_else(Vec::new);
+                .unwrap_or_else(|| Vec::new());
 
             new_assertions.insert(0, assertion.clone());
             new_assertions
@@ -179,10 +179,6 @@ pub struct TestResultCollector {
     result: Mutex<TestResult>,
 }
 
-impl Default for TestResultCollector {
-    fn default() -> Self { Self::new() }
-}
-
 impl TestResultCollector {
     pub fn new() -> Self {
         Self {
@@ -208,8 +204,6 @@ impl TestResultCollector {
             space: ctx.space.clone(),
             dispatcher: ctx.dispatcher.clone(),
         };
-
-        // println!("\nhit handle_message");
 
         if let Some((produce, _, _, assert_par)) = is_contract_call.unapply(message) {
             if let Some((test_name, attempt, assertion, clue, ack_channel)) =

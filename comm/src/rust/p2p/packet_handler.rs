@@ -15,10 +15,6 @@ pub trait PacketHandler: Send + Sync {
 /// A no-operation packet handler that does nothing
 pub struct NOPPacketHandler;
 
-impl Default for NOPPacketHandler {
-    fn default() -> Self { Self::new() }
-}
-
 impl NOPPacketHandler {
     pub fn new() -> Self { Self }
 }
@@ -52,7 +48,7 @@ where F: Fn(&PeerNode, &Packet) -> Option<Result<(), CommError>> + Send + Sync
             Some(result) => result,
             None => {
                 let error_msg = format!("Unable to handle packet {:?}", packet);
-                tracing::error!("{}", error_msg);
+                tracing::error!(packet_type = %packet.type_id, "no handler matched incoming packet");
                 Err(unknown_protocol(error_msg))
             }
         }

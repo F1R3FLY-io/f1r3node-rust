@@ -1,43 +1,17 @@
 // See comm/src/test/scala/coop/rchain/comm/transport/TransportLayerSpec.scala
 
-use std::sync::{Arc, Once};
+use std::sync::Arc;
 
 use comm::rust::transport::transport_layer::{Blob, TransportLayer};
 use models::routing::Packet;
 use prost::bytes::Bytes;
-use tracing::level_filters::LevelFilter;
-use tracing_subscriber::layer::SubscriberExt;
-use tracing_subscriber::util::SubscriberInitExt;
-use tracing_subscriber::EnvFilter;
 
 use crate::transport::transport_layer_runtime::{
     broadcast_heartbeat, send_heartbeat, TestProtocolDispatcher, TestStreamDispatcher,
     TransportLayerTestRuntime,
 };
 
-static INIT: Once = Once::new();
-
-fn init_logger() {
-    INIT.call_once(|| {
-        let filter = EnvFilter::builder()
-            .with_default_directive(LevelFilter::DEBUG.into())
-            .parse("")
-            .unwrap();
-
-        tracing_subscriber::registry()
-            .with(filter)
-            .with(
-                tracing_subscriber::fmt::layer()
-                    .json()
-                    .with_target(false)
-                    .with_current_span(false) // logs only
-                    .with_span_list(false) // logs only
-                    .flatten_event(true), // put event fields at top level
-            )
-            .try_init()
-            .unwrap();
-    });
-}
+fn init_logger() { shared::rust::tracing_init::init_for_tests(); }
 
 /// Create big content for streaming tests
 pub fn create_big_content(max_message_size: i32) -> Bytes {
@@ -254,12 +228,10 @@ async fn sending_message_to_unavailable_peer_should_fail_with_peer_unavailable()
         .await
         .expect("Test should succeed");
 
-    // Should fail with some error (could be PeerUnavailable or other connection
-    // error)
+    // Should fail with some error (could be PeerUnavailable or other connection error)
     assert!(result.result.is_err());
     println!("Error received: {:?}", result.result);
-    // Accept any communication error type since dead peer can manifest as
-    // different errors
+    // Accept any communication error type since dead peer can manifest as different errors
 }
 
 #[tokio::test]
@@ -283,12 +255,10 @@ async fn streaming_to_unavailable_peer_should_fail_with_peer_unavailable() {
         .await
         .expect("Test should succeed");
 
-    // Should fail with some error (could be PeerUnavailable or other connection
-    // error)
+    // Should fail with some error (could be PeerUnavailable or other connection error)
     assert!(result.result.is_err());
     println!("Error received: {:?}", result.result);
-    // Accept any communication error type since dead peer can manifest as
-    // different errors
+    // Accept any communication error type since dead peer can manifest as different errors
 }
 
 // **Edge Cases and Boundary Tests**
@@ -415,8 +385,7 @@ async fn concurrent_sends_to_same_peer_should_all_succeed() {
                         let local = &local;
                         let remote = &remote;
                         async move {
-                            // Use packet with unique content to avoid RecentHashFilter
-                            // deduplication
+                            // Use packet with unique content to avoid RecentHashFilter deduplication
                             let packet = models::routing::Packet {
                                 content: prost::bytes::Bytes::from(format!("concurrent_msg_{}", i)),
                                 type_id: "test".to_string(),

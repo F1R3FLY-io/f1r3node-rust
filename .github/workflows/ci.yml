@@ -6,25 +6,77 @@ on:
     branches:
       - dev
       - master
+      - staging
+      - trying
+    tags: "**"
   pull_request:
     branches:
       - dev
       - master
+      - staging
+      - trying
       - "feature/**"
 
+# Concurrency: PRs run in parallel (one group per ref) for fast feedback; pushes
+# (dev/master/staging/trying/tags) share a single group so merge and release runs
+# serialize rather than piling up independent 20-VM OCI matrices. Nothing is
+# cancelled mid-flight — a re-push queues behind its own in-flight run, so release
+# jobs and long integration runs always reach completion.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || 'push' }}
+  cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
   # AES/SSE2 CPU features for gxhash (required by PathMap crate)
   RUSTFLAGS: "-C target-feature=+aes,+sse2"
+  DOCKER_IMAGE_NAME: "f1r3flyindustries/f1r3fly-rust"
 
 jobs:
+  # Resolve version + branch env vars once for downstream jobs.
+  # Skip release-bump commits on branch pushes — the tag push handles publish.
+  build_base:
+    name: Build Base
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    if: >-
+      !startsWith(github.event.head_commit.message, 'chore(release)')
+      || startsWith(github.ref, 'refs/tags/')
+    outputs:
+      VERSION: ${{ steps.env.outputs.VERSION }}
+      BRANCH: ${{ steps.env.outputs.BRANCH }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Initialize Environment
+        id: env
+        shell: bash -exu -o pipefail {0}
+        run: |
+          git fetch origin --tags --force
+
+          # Version from latest matching tag (falls back to short SHA if no tag yet)
+          VERSION="$(git describe --tags --always)"
+          echo "VERSION=$VERSION" >> "$GITHUB_OUTPUT"
+
+          # Derive BRANCH for image tag suffix logic downstream
+          if [[ "$GITHUB_REF" =~ ^refs/tags/ ]]; then
+            # Tag push: treat as master release path
+            BRANCH="master"
+          else
+            BRANCH="${GITHUB_REF#refs/heads/}"
+          fi
+          echo "BRANCH=$BRANCH" >> "$GITHUB_OUTPUT"
+
+          echo "Version: $VERSION | Branch: $BRANCH"
+
   lint:
     name: Lint
+    needs: build_base
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -41,7 +93,7 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y $(cat .github/apt-dependencies.txt)
+          xargs -r -a .github/apt-dependencies.txt sudo apt-get install -y
 
       - name: Check formatting
         run: cargo fmt --all -- --check
@@ -53,6 +105,7 @@ jobs:
 
   deny:
     name: cargo-deny
+    needs: build_base
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -64,10 +117,32 @@ jobs:
         with:
           command: check advisories bans licenses sources
 
+  markdown_link_check:
+    name: Markdown Link Check
+    needs: build_base
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Link Checker
+        uses: lycheeverse/lychee-action@v2
+        with:
+          args: >-
+            --no-progress
+            --exclude-loopback
+            --max-retries 2
+            --retry-wait-time 5
+            --accept 200..=299,429
+            './**/*.md'
+          fail: true
+
   test:
     name: Test (${{ matrix.crate }})
     needs: lint
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -99,7 +174,7 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y $(cat .github/apt-dependencies.txt)
+          xargs -r -a .github/apt-dependencies.txt sudo apt-get install -y
 
       - name: Run tests
         env:
@@ -107,9 +182,10 @@ jobs:
           RUST_BACKTRACE: "1"
           RUST_MIN_STACK: "8388608"
         run: |
+          ulimit -n 65536
           mkdir -p /tmp/test-logs
           cargo test --release -p ${{ matrix.crate }} 2>&1 | tee /tmp/test-logs/${{ matrix.crate }}.txt
-          exit ${PIPESTATUS[0]}
+          exit "${PIPESTATUS[0]}"
 
       - name: Upload test logs
         if: failure()
@@ -118,3 +194,340 @@ jobs:
           name: test-logs-${{ matrix.crate }}
           path: /tmp/test-logs/
           retention-days: 7
+
+  # Heavy pipeline (native Docker build -> ephemeral OCI runner launch ->
+  # integration matrix -> smoke) lives in the reusable _integration-pipeline.yml.
+  # This call runs it for INTERNAL events only (pushes + same-repo PRs), which
+  # receive secrets normally and need no approval gate (gated: false). Fork PRs
+  # cannot get secrets on a `pull_request` event, so they skip this job and are
+  # served by ci-fork-pr.yml (pull_request_target, maintainer-gated) instead.
+  pipeline:
+    name: Heavy Pipeline
+    needs: lint
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.fork == false
+    uses: ./.github/workflows/_integration-pipeline.yml
+    with:
+      gated: false
+    secrets: inherit
+
+  # Per-arch aggregators. The branch ruleset requires status checks named
+  # exactly `Integration Tests (amd64)` / `(arm64)`. These collapse the reusable
+  # pipeline's 10 per-arch matrix slots into one ruleset gate per arch. They use
+  # `contains(...)` (not `startswith`) because reusable-workflow job names are
+  # prefixed with the caller job id ("Heavy Pipeline / Integration Tests (...)").
+  # Internal-only: fork PRs get this check from ci-fork-pr.yml instead, so this
+  # one skips for them (a skipped required check is treated as passing).
+  integration_tests_amd64:
+    name: Integration Tests (amd64)
+    needs: pipeline
+    if: always() && (github.event_name == 'push' || github.event.pull_request.head.repo.fork == false)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+    steps:
+      - name: Check amd64 matrix slots
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash -e {0}
+        run: |
+          if [ "${{ needs.pipeline.result }}" != "success" ]; then
+            echo "Heavy Pipeline did not succeed (result: ${{ needs.pipeline.result }}); failing gate."
+            exit 1
+          fi
+          failures=$(gh api \
+            "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}/jobs" \
+            --paginate \
+            --jq '.jobs[] | select(.name | contains("Integration Tests (amd64-")) | select(.conclusion != "success") | "\(.conclusion)\t\(.name)"')
+          if [ -n "$failures" ]; then
+            echo "amd64 integration test failures:"
+            echo "$failures"
+            exit 1
+          fi
+          echo "All amd64 integration test slots succeeded"
+
+  integration_tests_arm64:
+    name: Integration Tests (arm64)
+    needs: pipeline
+    if: always() && (github.event_name == 'push' || github.event.pull_request.head.repo.fork == false)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+    steps:
+      - name: Check arm64 matrix slots
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash -e {0}
+        run: |
+          if [ "${{ needs.pipeline.result }}" != "success" ]; then
+            echo "Heavy Pipeline did not succeed (result: ${{ needs.pipeline.result }}); failing gate."
+            exit 1
+          fi
+          failures=$(gh api \
+            "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}/jobs" \
+            --paginate \
+            --jq '.jobs[] | select(.name | contains("Integration Tests (arm64-")) | select(.conclusion != "success") | "\(.conclusion)\t\(.name)"')
+          if [ -n "$failures" ]; then
+            echo "arm64 integration test failures:"
+            echo "$failures"
+            exit 1
+          fi
+          echo "All arm64 integration test slots succeeded"
+
+  # Publish Docker image to Docker Hub + OCIR.
+  # Runs on tag pushes and on push to dev/master/staging/trying (with suffix).
+  release_docker_image:
+    name: Release Docker Image
+    timeout-minutes: 15
+    needs:
+      - build_base
+      - lint
+      - deny
+      - markdown_link_check
+      - test
+      - pipeline
+    if: >-
+      github.event_name == 'push' && (
+        startsWith(github.ref, 'refs/tags/') ||
+        github.ref == 'refs/heads/master' ||
+        github.ref == 'refs/heads/dev' ||
+        github.ref == 'refs/heads/staging' ||
+        github.ref == 'refs/heads/trying'
+      )
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (for version)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Load AMD64 Docker Image
+        uses: actions/download-artifact@v4
+        with:
+          name: artifacts-docker-amd64
+          path: /tmp/amd64
+
+      - name: Import AMD64 Docker Image
+        shell: bash -ex {0}
+        run: zcat /tmp/amd64/rust-node-docker.tar.gz | docker image load
+
+      - name: Load ARM64 Docker Image
+        uses: actions/download-artifact@v4
+        with:
+          name: artifacts-docker-arm64
+          path: /tmp/arm64
+
+      - name: Import ARM64 Docker Image
+        shell: bash -ex {0}
+        run: zcat /tmp/arm64/rust-node-docker.tar.gz | docker image load
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Publish Docker Image
+        env:
+          VERSION: ${{ needs.build_base.outputs.VERSION }}
+          BRANCH: ${{ needs.build_base.outputs.BRANCH }}
+        shell: bash -exu -o pipefail {0}
+        run: |
+          SOURCE_AMD64="${DOCKER_IMAGE_NAME}:amd64"
+          SOURCE_ARM64="${DOCKER_IMAGE_NAME}:arm64"
+
+          SUFFIX=""
+          CI_RUN=""
+          TAG_PREFIX=""
+          IS_TAG_PUSH="false"
+
+          if [[ "$GITHUB_REF" =~ ^refs/tags/ ]]; then
+            IS_TAG_PUSH="true"
+          fi
+
+          # Branch-based tagging:
+          #   trying  → separate image stream `${IMAGE}-trying`, per-CI-run tags
+          #   dev     → version tag prefixed `dev-${VERSION}`, channel pointer :dev
+          #   staging → version tag prefixed `staging-${VERSION}`, channel pointer :staging
+          #   master  → plain :${VERSION}, channel pointer :latest only on tag push
+          if [[ "$BRANCH" == "trying" ]]; then
+            SUFFIX="-trying"
+            CI_RUN="-ci-${GITHUB_RUN_NUMBER}"
+          elif [[ "$BRANCH" == "dev" && "$IS_TAG_PUSH" == "false" ]]; then
+            TAG_PREFIX="dev-"
+          elif [[ "$BRANCH" == "staging" ]]; then
+            TAG_PREFIX="staging-"
+          fi
+
+          IMAGE_NAME="${DOCKER_IMAGE_NAME}${SUFFIX}"
+          IMG_VERSION_RAW="${IMAGE_NAME}:${TAG_PREFIX}${VERSION}${CI_RUN}"
+          IMG_VERSION="${IMG_VERSION_RAW//[+]/__}"
+
+          # Channel pointer ("latest of this channel")
+          if [[ "$BRANCH" == "dev" && "$IS_TAG_PUSH" == "false" ]]; then
+            IMG_LATEST="${IMAGE_NAME}:dev"
+          elif [[ "$BRANCH" == "staging" ]]; then
+            IMG_LATEST="${IMAGE_NAME}:staging"
+          else
+            IMG_LATEST="${IMAGE_NAME}:latest"
+          fi
+
+          # Tag and push arch-specific images
+          docker tag "$SOURCE_AMD64" "${IMG_VERSION}-amd64"
+          docker tag "$SOURCE_ARM64" "${IMG_VERSION}-arm64"
+          docker push "${IMG_VERSION}-amd64"
+          docker push "${IMG_VERSION}-arm64"
+
+          docker tag "$SOURCE_AMD64" "${IMG_LATEST}-amd64"
+          docker tag "$SOURCE_ARM64" "${IMG_LATEST}-arm64"
+          docker push "${IMG_LATEST}-amd64"
+          docker push "${IMG_LATEST}-arm64"
+
+          # Multi-arch manifests
+          docker manifest create "${IMG_VERSION}" --amend "${IMG_VERSION}-amd64" "${IMG_VERSION}-arm64"
+          docker manifest push "${IMG_VERSION}"
+          docker manifest create "${IMG_LATEST}" --amend "${IMG_LATEST}-amd64" "${IMG_LATEST}-arm64"
+          docker manifest push "${IMG_LATEST}"
+
+      - name: Log in to OCIR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ secrets.OCIR_REGISTRY }}
+          username: ${{ secrets.OCIR_USERNAME }}
+          password: ${{ secrets.OCIR_AUTH_TOKEN }}
+
+      - name: Publish to OCIR
+        env:
+          VERSION: ${{ needs.build_base.outputs.VERSION }}
+          BRANCH: ${{ needs.build_base.outputs.BRANCH }}
+        shell: bash -exu -o pipefail {0}
+        run: |
+          OCIR_BASE="${{ secrets.OCIR_REGISTRY }}/${{ secrets.OCIR_NAMESPACE }}/${{ secrets.OCIR_REPO }}"
+          SOURCE_AMD64="${DOCKER_IMAGE_NAME}:amd64"
+          SOURCE_ARM64="${DOCKER_IMAGE_NAME}:arm64"
+
+          SUFFIX=""
+          CI_RUN=""
+          TAG_PREFIX=""
+          IS_TAG_PUSH="false"
+
+          if [[ "$GITHUB_REF" =~ ^refs/tags/ ]]; then
+            IS_TAG_PUSH="true"
+          fi
+
+          if [[ "$BRANCH" == "trying" ]]; then
+            SUFFIX="-trying"
+            CI_RUN="-ci-${GITHUB_RUN_NUMBER}"
+          elif [[ "$BRANCH" == "dev" && "$IS_TAG_PUSH" == "false" ]]; then
+            TAG_PREFIX="dev-"
+          elif [[ "$BRANCH" == "staging" ]]; then
+            TAG_PREFIX="staging-"
+          fi
+
+          OCIR_IMAGE="${OCIR_BASE}${SUFFIX}"
+          IMG_VERSION_RAW="${OCIR_IMAGE}:${TAG_PREFIX}${VERSION}${CI_RUN}"
+          IMG_VERSION="${IMG_VERSION_RAW//[+]/__}"
+
+          if [[ "$BRANCH" == "dev" && "$IS_TAG_PUSH" == "false" ]]; then
+            IMG_LATEST="${OCIR_IMAGE}:dev"
+          elif [[ "$BRANCH" == "staging" ]]; then
+            IMG_LATEST="${OCIR_IMAGE}:staging"
+          else
+            IMG_LATEST="${OCIR_IMAGE}:latest"
+          fi
+
+          docker tag "$SOURCE_AMD64" "${IMG_VERSION}-amd64"
+          docker tag "$SOURCE_ARM64" "${IMG_VERSION}-arm64"
+          docker push "${IMG_VERSION}-amd64"
+          docker push "${IMG_VERSION}-arm64"
+
+          docker tag "$SOURCE_AMD64" "${IMG_LATEST}-amd64"
+          docker tag "$SOURCE_ARM64" "${IMG_LATEST}-arm64"
+          docker push "${IMG_LATEST}-amd64"
+          docker push "${IMG_LATEST}-arm64"
+
+          docker manifest create "${IMG_VERSION}" --amend "${IMG_VERSION}-amd64" "${IMG_VERSION}-arm64"
+          docker manifest push "${IMG_VERSION}"
+          docker manifest create "${IMG_LATEST}" --amend "${IMG_LATEST}-amd64" "${IMG_LATEST}-arm64"
+          docker manifest push "${IMG_LATEST}"
+
+  # GitHub release with multi-arch binaries attached (tag pushes only).
+  release_packages:
+    name: Release Packages
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    needs:
+      - lint
+      - deny
+      - markdown_link_check
+      - test
+      - pipeline
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout (for CHANGELOG.md)
+        uses: actions/checkout@v4
+
+      - name: Load Docker artifact (amd64)
+        uses: actions/download-artifact@v4
+        with:
+          name: artifacts-docker-amd64
+          path: /tmp/amd64
+
+      - name: Load Docker artifact (arm64)
+        uses: actions/download-artifact@v4
+        with:
+          name: artifacts-docker-arm64
+          path: /tmp/arm64
+
+      - name: Extract amd64 binary from Docker image
+        shell: bash -ex {0}
+        run: |
+          mkdir -p /tmp/artifacts
+          zcat /tmp/amd64/rust-node-docker.tar.gz | docker image load
+          CONTAINER_ID=$(docker create ${{ env.DOCKER_IMAGE_NAME }}:amd64)
+          docker cp "$CONTAINER_ID:/opt/docker/bin/node" /tmp/artifacts/f1r3node-linux-amd64
+          docker rm "$CONTAINER_ID"
+          test -f /tmp/artifacts/f1r3node-linux-amd64 || { echo 'amd64 binary extraction failed'; exit 1; }
+
+      - name: Extract arm64 binary from Docker image
+        shell: bash -ex {0}
+        run: |
+          zcat /tmp/arm64/rust-node-docker.tar.gz | docker image load
+          CONTAINER_ID=$(docker create --platform linux/arm64 ${{ env.DOCKER_IMAGE_NAME }}:arm64)
+          docker cp "$CONTAINER_ID:/opt/docker/bin/node" /tmp/artifacts/f1r3node-linux-arm64
+          docker rm "$CONTAINER_ID"
+          test -f /tmp/artifacts/f1r3node-linux-arm64 || { echo 'arm64 binary extraction failed'; exit 1; }
+
+      - name: Determine release type
+        id: release_type
+        shell: bash -ex {0}
+        run: |
+          # Tag format: refs/tags/v{MAJOR}.{MINOR}.{PATCH}
+          # PATCH == 0 → stable (prerelease=false); PATCH > 0 → prerelease=true
+          TAG="${GITHUB_REF#refs/tags/v}"
+          PATCH=$(echo "$TAG" | cut -d. -f3)
+          if [ "$PATCH" = "0" ]; then
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Extract release notes for this version
+        shell: bash -ex {0}
+        run: |
+          # Extract the latest version section from CHANGELOG.md
+          awk '/^## \[/{if(found) exit; found=1} found' CHANGELOG.md > RELEASE_NOTES.md
+
+      - name: Update release and release artifacts
+        uses: ncipollo/release-action@v1
+        with:
+          artifacts: /tmp/artifacts/f1r3node-linux-amd64,/tmp/artifacts/f1r3node-linux-arm64
+          prerelease: ${{ steps.release_type.outputs.prerelease }}
+          draft: false
+          allowUpdates: true
+          omitBodyDuringUpdate: true
+          bodyFile: RELEASE_NOTES.md
+          token: ${{ secrets.GITHUB_TOKEN }}

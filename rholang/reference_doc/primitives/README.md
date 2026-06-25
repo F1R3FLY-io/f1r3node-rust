@@ -11,7 +11,7 @@ Rholang's integers are 64-bit signed, represented internally as two's compliment
 | Integer Min Value | -9223372036854775808 |
 
 #### Arithmetic
-Integers support basic arithmetic operations natively, and other operations are being written in the [standard library](https://github.com/JoshOrndorff/librho/UnsafeMath)
+Integers support basic arithmetic operations natively, and other operations are being written in the standard library.
 
 ```rholang
 new stdout(`rho:io:stdout`) in {
@@ -66,7 +66,7 @@ new stdout(`rho:io:stdout`) in {
 ### URIs
 A unique aspect of rholang is its URI primitives. Which are colon-delimited hierarchical names surrounded by backticks.
 
-Some URIs have special powers attached such as this example. Read more about rholang's [system powerbox](../powerbox/).
+Some URIs have special powers attached such as this example. Read more about rholang's [system powerbox](../system_powerbox/).
 ```rholang
 new stdout(`rho:io:stdout`) in {
 
@@ -74,7 +74,7 @@ new stdout(`rho:io:stdout`) in {
 }
 ```
 
-URIs are also used with rholangs name registry. Read more about the [name registry](../registry/).
+URIs are also used with rholangs name registry.
 ```rholang
 new someNameCh, lookup(`rho:registry:lookup`) in {
   lookup!(`rho:registry:edcaf122143g13241gd34132b4324b213b4gd`, *answerCh) |

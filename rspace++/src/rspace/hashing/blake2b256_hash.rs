@@ -1,3 +1,5 @@
+#![allow(clippy::derived_hash_with_manual_eq)]
+
 use std::cmp::Ordering;
 use std::fmt::{Debug, Display, Formatter};
 

@@ -1,20 +1,10 @@
 ---
 doc_type: backlog
 version: "1.0"
-last_updated: [DATE]
+last_updated: 2026-04-15
 ---
 
 # Backlog
-
-<!--
-TEMPLATE USAGE INSTRUCTIONS:
-0. Update the frontmatter date when modifying this file
-   (Update version only for significant structural changes to template)
-1. Replace all [PROJECT_NAME] and [PROJECT_SPECIFIC] markers
-2. Add deferred or low-priority items here
-3. Move items to docs/ToDos.md when ready to work on them
-4. Remove these usage instruction comments before committing
--->
 
 This document captures deferred work, future ideas, and low-priority items that aren't ready for active development.
 
@@ -23,12 +13,6 @@ This document captures deferred work, future ideas, and low-priority items that 
 - User stories: `docs/UserStories.md`
 - Completed work: `docs/CompletedTasks.md`
 - Deferred work: This file (`docs/Backlog.md`)
-
-**For LLM assistance in multi-repo workspace:**
-See [Task Tracking Standard]([RELATIVE_PATH]/top-level-gitlab-profile/docs/common/task-tracking-standard.md)
-
-**For reference (GitLab):**
-[Task Tracking Standard](https://gitlab.com/smart-assets.io/gitlab-profile/-/blob/master/docs/common/task-tracking-standard.md)
 
 ---
 
@@ -40,128 +24,105 @@ Items are organized by category and rough priority within each category.
 
 ### Technical Debt
 
-Items that improve code quality, performance, or maintainability but aren't blocking active development.
-
----
-
-#### BACKLOG-TD-001: [PROJECT_SPECIFIC: Item Title]
-
-```yaml
----
-backlog_id: BACKLOG-TD-001
-title: "[PROJECT_SPECIFIC: Item Title]"
-category: technical_debt
-priority: p3
-added_at: [DATE]
-reason_deferred: "[PROJECT_SPECIFIC: Why this isn't active yet]"
-promotion_criteria:
-  - "[PROJECT_SPECIFIC: When should this become active?]"
----
-```
-
-**Description:** [PROJECT_SPECIFIC: What needs to be done?]
-
-**Benefit:** [PROJECT_SPECIFIC: Why is this valuable?]
+<!-- Items that improve code quality, performance, or maintainability -->
 
 ---
 
 ### Feature Ideas
 
-Future features that have been identified but aren't yet prioritized.
+<!-- Future features that have been identified but aren't yet prioritized -->
+
+#### BACKLOG-FI-002: Genericize testbed scripts for AWS / GCP
+
+```yaml
+---
+backlog_id: BACKLOG-FI-002
+title: "Abstract provisioning layer so testbed can run on AWS or GCP, not just OCI"
+category: feature_idea
+priority: p3
+added_at: 2026-04-13
+related_epoch: EPOCH-009
+---
+```
+
+**Description:** Today `scripts/remote/oci-*.sh` directly call the `oci` CLI for VCN / subnet / security list / instance creation. The cloud-agnostic scripts (`deploy.sh`, `status.sh`, `teardown.sh`, `image-transfer.sh`) already work over generic SSH once a state file with public IPs exists, so only the provisioning/teardown layer needs abstraction. The `vps-*` Justfile prefix is deliberately neutral to keep the user-facing interface stable across providers.
+
+**Probable approach:**
+1. Define a provider interface (bash functions or a minimal YAML contract) — create_vcn, create_subnet, launch_instance, terminate_instance, destroy_vcn — with inputs/outputs matching the existing state-file schema
+2. Rename `oci-*.sh` to `provision/oci.sh` and add peers `provision/aws.sh` (via `aws ec2 ...`) and `provision/gcp.sh` (via `gcloud compute ...`)
+3. Front-end dispatcher (`scripts/remote/provision.sh`) picks a provider from `$TESTBED_PROVIDER` env (default `oci`)
+4. Update `docs/vps-cloud-testing.md` Part C to one section per provider (OCI/AWS/GCP)
+5. Justfile recipes (`vps-up`, `vps-down`) stay untouched — they call `provision.sh` which delegates
+
+**When Unblocked:** After a second concrete deployment target is requested (e.g. user explicitly wants AWS for a production benchmark). Premature to abstract against one known provider only.
+
+**Related work:** EPOCH-009 establishes the OCI implementation that this would generalize. `vps-*` Justfile prefix is already chosen to outlive OCI-only.
 
 ---
 
-#### BACKLOG-FI-001: [PROJECT_SPECIFIC: Feature Idea Title]
+#### BACKLOG-FI-001: Inter-Shard Consensus (Option B)
 
 ```yaml
 ---
 backlog_id: BACKLOG-FI-001
-title: "[PROJECT_SPECIFIC: Feature Idea Title]"
+title: "Inter-shard consensus (cross-shard bridge between two independent shards)"
 category: feature_idea
 priority: p3
-added_at: [DATE]
-user_story: null         # Link when user story is created
-reason_deferred: "[PROJECT_SPECIFIC: Why this isn't active yet]"
-promotion_criteria:
-  - "[PROJECT_SPECIFIC: When should this become active?]"
+added_at: 2026-04-13
+related_epoch: EPOCH-009
 ---
 ```
 
-**Description:** [PROJECT_SPECIFIC: What is the feature?]
+**Description:** Make two independent F1R3FLY shards (e.g. `/root/east` and `/root/west`) agree on cross-shard state — relaying finalized blocks, bridging value, or anchoring child-shard finality into a parent shard. Today the `shard-name` and `parent-shard-id` config fields exist, blocks carry a `shard_id`, and bootstrap validates the shard name at genesis, but there is **zero** cross-shard consensus coordination. Two independent shards running simultaneously ignore each other entirely.
 
-**Value Proposition:** [PROJECT_SPECIFIC: Who benefits and how?]
+**Current state (as of 2026-04-13 research):**
+- `shard-name` and `parent-shard-id` in `docker/conf/default.conf:214-215` — wired ✓
+- `casper/src/rust/casper_conf.rs:19-22` — config struct deserialized ✓
+- Block `shard_id` field in `models/src/rust/casper/protocol/casper_message.rs` — set at creation, validated at genesis only ✓
+- `parent_shard_id` read after initialization — **never**
+- Cross-shard routing in `comm/` — **not implemented**
+- Bridge contracts in `rholang/` — **not implemented**
+- Cross-shard deploy routing in `node/src/rust/api/` — **not implemented**
+
+**Estimated scope:** ~1,500+ lines of net-new code across:
+1. Bridge protocol + Rholang bridge contracts (~500 lines)
+2. Cross-shard routing in `comm/` transport layer (~200 lines)
+3. Fork-choice modifications for parent-shard ancestry weighting (~300 lines)
+4. Deploy API shard routing (~150 lines)
+5. Multi-shard genesis ceremony + configuration schema (~50 lines)
+6. Integration tests for multi-shard deployments (~400 lines)
+
+**When Unblocked:** Requires design doc + architectural review. Not ready for promotion to active epoch until the hierarchical-shard model is fully specified and the bridge protocol has a reviewed spec.
+
+**Related work:** EPOCH-009 stands up a **single-shard** distributed testbed on OCI. If BACKLOG-FI-001 is promoted, the testbed from EPOCH-009 would extend naturally to a 4-VPS multi-shard topology.
 
 ---
 
 ### Research & Exploration
 
-Items that need investigation before they can become actionable tasks.
-
----
-
-#### BACKLOG-RE-001: [PROJECT_SPECIFIC: Research Topic]
-
-```yaml
----
-backlog_id: BACKLOG-RE-001
-title: "[PROJECT_SPECIFIC: Research Topic]"
-category: research
-priority: p3
-added_at: [DATE]
-questions:
-  - "[PROJECT_SPECIFIC: Question to answer]"
-  - "[PROJECT_SPECIFIC: Another question]"
----
-```
-
-**Context:** [PROJECT_SPECIFIC: Why is this research needed?]
-
-**Expected Outcomes:** [PROJECT_SPECIFIC: What decisions will this inform?]
+<!-- Items that need investigation before they can become actionable -->
 
 ---
 
 ### Dependencies & Blockers
 
-Items waiting on external factors (upstream releases, third-party APIs, etc.)
-
----
-
-#### BACKLOG-DB-001: [PROJECT_SPECIFIC: Blocked Item]
+#### BACKLOG-DB-001: system-integration Branch Reference
 
 ```yaml
 ---
 backlog_id: BACKLOG-DB-001
-title: "[PROJECT_SPECIFIC: Blocked Item]"
+title: "system-integration services.yml targets branch dev, repo uses master"
 category: blocked_external
 priority: p2
-added_at: [DATE]
-blocked_by_external: "[PROJECT_SPECIFIC: What external factor?]"
-expected_resolution: "[PROJECT_SPECIFIC: When might this unblock?]"
+added_at: 2026-03-19
+blocked_by_external: "system-integration migration Phase 2"
+expected_resolution: "When system-integration updates services.yml to point to f1r3node-rust.git"
 ---
 ```
 
-**Description:** [PROJECT_SPECIFIC: What is blocked?]
+**Description:** system-integration's `services.yml` currently references `branch: rust/dev` on the old `f1r3node.git` repo. When it switches to `f1r3node-rust.git` (Phase 2 of migration), it needs to target `master` instead of `dev`.
 
-**When Unblocked:** [PROJECT_SPECIFIC: What should happen when this unblocks?]
-
----
-
-## Backlog Template
-
-Use this template when adding new backlog items:
-
-```yaml
----
-backlog_id: BACKLOG-XX-XXX
-title: "Short descriptive title"
-category: technical_debt | feature_idea | research | blocked_external
-priority: p3
-added_at: YYYY-MM-DD
-reason_deferred: "Why this isn't active yet"
-promotion_criteria:
-  - "Condition that would make this active"
----
-```
+**When Unblocked:** Coordinate with system-integration to ensure `services.yml` uses `branch: master`.
 
 ---
 

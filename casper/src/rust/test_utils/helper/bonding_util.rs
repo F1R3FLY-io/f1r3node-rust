@@ -1,7 +1,6 @@
 // See casper/src/test/scala/coop/rchain/casper/helper/BondingUtil.scala
-// Moved from casper/tests/helper/bonding_util.rs to
-// casper/src/rust/test_utils/helper/bonding_util.rs All imports fixed for
-// library crate context
+// Moved from casper/tests/helper/bonding_util.rs to casper/src/rust/test_utils/helper/bonding_util.rs
+// All imports fixed for library crate context
 
 use crypto::rust::private_key::PrivateKey;
 use crypto::rust::signatures::signed::Signed;

@@ -1,7 +1,7 @@
 //! Command-line argument parsing module
 //!
-//! This module provides command-line argument parsing functionality using the
-//! `clap` crate, replacing the Scala Scallop library.
+//! This module provides command-line argument parsing functionality using the `clap` crate,
+//! replacing the Scala Scallop library.
 
 pub mod config_mapper;
 pub mod converters;

@@ -44,8 +44,7 @@ pub enum BlockReportError {
 
 pub type ApiErr<T> = Result<T, BlockReportError>;
 
-/// BlockReportAPI provides functionality to replay blocks and generate event
-/// reports
+/// BlockReportAPI provides functionality to replay blocks and generate event reports
 #[derive(Clone)]
 pub struct BlockReportAPI {
     reporting_casper: Arc<dyn ReportingCasper>,
@@ -56,13 +55,11 @@ pub struct BlockReportAPI {
     #[allow(dead_code)] // Part of constructor signature matching Scala, not directly used
     oracle: CliqueOracleImpl,
     /// Thread-safe map of block hashes to semaphores for per-block locking
-    /// Equivalent to Scala's `blockLockMap: TrieMap[BlockHash,
-    /// MetricsSemaphore[F]]`
+    /// Equivalent to Scala's `blockLockMap: TrieMap[BlockHash, MetricsSemaphore[F]]`
     block_lock_map: Arc<DashMap<BlockHash, Arc<Semaphore>>>,
     /// Transformer for converting reporting events to protobuf format
     report_transformer: Arc<ReportingProtoTransformer>,
-    /// When true, allows block reports on validator nodes (bypasses read-only
-    /// check)
+    /// When true, allows block reports on validator nodes (bypasses read-only check)
     dev_mode: bool,
 }
 
@@ -98,7 +95,7 @@ impl BlockReportAPI {
             .reporting_casper
             .trace(block)
             .await
-            .map_err(BlockReportError::ReplayFailed)?;
+            .map_err(|e| BlockReportError::ReplayFailed(e))?;
 
         let light_block = BlockAPI::get_light_block_info(casper.as_ref(), block)
             .await
@@ -111,15 +108,14 @@ impl BlockReportAPI {
 
         let post_state_hash_bytes: Bytes = report_result.post_state_hash.into();
         Ok(BlockEventInfo {
-            block_info: Some(light_block),
+            block_info: Some(light_block).into(),
             deploys,
             system_deploys: sys_deploys,
             post_state_hash: post_state_hash_bytes,
         })
     }
 
-    /// Get block report with locking to prevent concurrent replays of the same
-    /// block
+    /// Get block report with locking to prevent concurrent replays of the same block
     async fn block_report_within_lock(
         &self,
         force_replay: bool,
@@ -149,15 +145,14 @@ impl BlockReportAPI {
         result
     }
 
-    /// Inner block report logic (separated to ensure lock map cleanup on all
-    /// paths)
+    /// Inner block report logic (separated to ensure lock map cleanup on all paths)
     async fn block_report_inner(
         &self,
         force_replay: bool,
         block: &BlockMessage,
         casper: &Arc<dyn crate::rust::casper::MultiParentCasper + Send + Sync>,
     ) -> ApiErr<BlockEventInfo> {
-        let block_hash_bytes: ByteString = block.block_hash.to_vec();
+        let block_hash_bytes: ByteString = block.block_hash.to_vec().into();
         let cached = self
             .report_store
             .get(&vec![block_hash_bytes.clone()])
@@ -235,7 +230,7 @@ impl BlockReportAPI {
                     .collect();
 
                 SystemDeployInfoWithEventData {
-                    system_deploy: Some(system_deploy_proto),
+                    system_deploy: Some(system_deploy_proto).into(),
                     report,
                 }
             })
@@ -271,7 +266,7 @@ impl BlockReportAPI {
                     .collect();
 
                 DeployInfoWithEventData {
-                    deploy_info: Some(deploy_info),
+                    deploy_info: Some(deploy_info).into(),
                     report,
                 }
             })

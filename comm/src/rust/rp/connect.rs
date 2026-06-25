@@ -122,10 +122,6 @@ pub struct ConnectionsCell {
     pub peers: Arc<Mutex<Connections>>,
 }
 
-impl Default for ConnectionsCell {
-    fn default() -> Self { Self::new() }
-}
-
 impl ConnectionsCell {
     pub fn new() -> Self {
         Self {

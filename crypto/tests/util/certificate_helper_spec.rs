@@ -4,13 +4,13 @@ use p256::pkcs8::EncodePrivateKey;
 
 #[test]
 fn test_generate_key_pair() {
-    let (_secret_key, public_key) = CertificateHelper::generate_key_pair(false);
+    let (_secret_key, public_key) = CertificateHelper::generate_key_pair();
     assert!(CertificateHelper::is_expected_elliptic_curve(&public_key));
 }
 
 #[test]
 fn test_public_address_computation() {
-    let (_secret_key, public_key) = CertificateHelper::generate_key_pair(false);
+    let (_secret_key, public_key) = CertificateHelper::generate_key_pair();
     let address = CertificateHelper::public_address(&public_key);
     assert!(address.is_some());
     let addr = address.unwrap();
@@ -66,7 +66,7 @@ fn test_private_key_printing() {
 
 #[test]
 fn test_certificate_generation() {
-    let (secret_key, public_key) = CertificateHelper::generate_key_pair(false);
+    let (secret_key, public_key) = CertificateHelper::generate_key_pair();
     let cert_result = CertificateHelper::generate_certificate(&secret_key, &public_key);
 
     // Certificate generation might fail due to dependencies, but should not panic
@@ -75,56 +75,18 @@ fn test_certificate_generation() {
             assert!(!cert_der.is_empty());
             // Try to parse it back
             let _parse_result = CertificateHelper::parse_certificate(&cert_der);
-            // Parsing might also fail due to format differences, but should not
-            // panic
+            // Parsing might also fail due to format differences, but should not panic
         }
         Err(_) => {
-            // Certificate generation failed, which is acceptable in test
-            // environment where we might not have all the required
-            // dependencies properly configured
+            // Certificate generation failed, which is acceptable in test environment
+            // where we might not have all the required dependencies properly configured
         }
     }
 }
 
 #[test]
-fn test_generate_key_pair_blocking_and_non_blocking() {
-    // Test non-blocking key generation (should be fast)
-    let start = std::time::Instant::now();
-    let (_secret_key1, public_key1) = CertificateHelper::generate_key_pair(true);
-    let non_blocking_duration = start.elapsed();
-
-    // Test blocking key generation
-    let start = std::time::Instant::now();
-    let (_secret_key2, public_key2) = CertificateHelper::generate_key_pair(false);
-    let blocking_duration = start.elapsed();
-
-    // Both should produce valid keys
-    assert!(CertificateHelper::is_expected_elliptic_curve(&public_key1));
-    assert!(CertificateHelper::is_expected_elliptic_curve(&public_key2));
-
-    // Both should be able to compute addresses
-    let address1 = CertificateHelper::public_address(&public_key1);
-    let address2 = CertificateHelper::public_address(&public_key2);
-    assert!(address1.is_some());
-    assert!(address2.is_some());
-    assert_eq!(address1.unwrap().len(), 20);
-    assert_eq!(address2.unwrap().len(), 20);
-
-    // Keys should be different (extremely unlikely to be the same)
-    assert_ne!(
-        public_key1.to_encoded_point(false),
-        public_key2.to_encoded_point(false)
-    );
-
-    // Both operations should complete reasonably quickly
-    // (This is just a basic sanity check - actual timing may vary)
-    assert!(non_blocking_duration.as_millis() < 1000);
-    assert!(blocking_duration.as_millis() < 1000);
-}
-
-#[test]
 fn test_public_address_coordinate_extraction() {
-    let (_, public_key) = CertificateHelper::generate_key_pair(false);
+    let (_, public_key) = CertificateHelper::generate_key_pair();
 
     // Get the SEC1 uncompressed point (what our Rust implementation uses)
     let encoded_point = public_key.to_encoded_point(false);
@@ -159,7 +121,7 @@ fn test_public_address_coordinate_extraction() {
 #[test]
 fn test_from_file_method() {
     // Generate a test certificate
-    let (secret_key, public_key) = CertificateHelper::generate_key_pair(false);
+    let (secret_key, public_key) = CertificateHelper::generate_key_pair();
 
     // Create a temporary certificate
     match CertificateHelper::generate_certificate(&secret_key, &public_key) {
@@ -206,12 +168,12 @@ fn test_from_file_method() {
 #[test]
 fn test_read_key_pair_from_file() {
     // Generate a test key pair
-    let (secret_key, _public_key) = CertificateHelper::generate_key_pair(false);
+    let (secret_key, _public_key) = CertificateHelper::generate_key_pair();
 
     // Convert to PEM format
     match secret_key.to_pkcs8_der() {
         Ok(der_bytes) => {
-            let pem_content = CertificatePrinter::print_private_key(der_bytes.as_bytes());
+            let pem_content = CertificatePrinter::print_private_key(&der_bytes.as_bytes());
 
             // Write to a temporary file
             let temp_dir = std::env::temp_dir();
@@ -232,10 +194,7 @@ fn test_read_key_pair_from_file() {
                             assert!(address.is_some());
                             assert_eq!(address.unwrap().len(), 20);
 
-                            println!(
-                                "✓ read_key_pair_from_file test passed - successfully read key \
-                                 pair from file"
-                            );
+                            println!("✓ read_key_pair_from_file test passed - successfully read key pair from file");
                         }
                         Err(e) => {
                             println!(

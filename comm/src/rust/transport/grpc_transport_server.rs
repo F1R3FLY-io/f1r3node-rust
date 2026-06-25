@@ -48,8 +48,8 @@ pub type HandleStreamedFn =
 pub trait TransportLayerServer {
     /// Set up message handlers and start receiving connections
     ///
-    /// This method configures the server with handlers for different types of
-    /// messages and starts listening for incoming gRPC connections.
+    /// This method configures the server with handlers for different types of messages
+    /// and starts listening for incoming gRPC connections.
     async fn handle_receive(
         &self,
         dispatch: DispatchFn,
@@ -57,8 +57,7 @@ pub trait TransportLayerServer {
     ) -> Result<Cancelable, CommError>;
 }
 
-/// GrpcTransportServer - gRPC server implementation for handling transport
-/// layer messages
+/// GrpcTransportServer - gRPC server implementation for handling transport layer messages
 #[derive(Debug, Clone)]
 pub struct GrpcTransportServer {
     /// Local peer node
@@ -165,9 +164,8 @@ impl TransportServer {
 
     /// Start the server with the given message handlers
     ///
-    /// This method is idempotent - if the server is already running, it returns
-    /// immediately. If a previous server instance exists, it will be
-    /// stopped before starting the new one.
+    /// This method is idempotent - if the server is already running, it returns immediately.
+    /// If a previous server instance exists, it will be stopped before starting the new one.
     pub async fn start(
         &self,
         dispatch: DispatchFn,
@@ -206,8 +204,7 @@ impl TransportServer {
 
     /// Stop the server
     ///
-    /// This method is idempotent - if the server is not running, it returns
-    /// immediately.
+    /// This method is idempotent - if the server is not running, it returns immediately.
     pub async fn stop(&self) -> Result<(), CommError> {
         // Check if not running
         if !self.is_running.load(Ordering::Acquire) {
@@ -240,8 +237,7 @@ impl TransportServer {
     ///
     /// Returns a new JoinHandle that will complete when the server stops.
     /// This allows external code to monitor the server without taking ownership
-    /// of the internal handle, preserving the server's ability to manage
-    /// itself.
+    /// of the internal handle, preserving the server's ability to manage itself.
     ///
     /// Returns None if the server is not currently running.
     pub async fn get_monitor_handle(&self) -> Option<JoinHandle<()>> {
@@ -266,8 +262,8 @@ impl TransportServer {
 impl TransportLayerServer for GrpcTransportServer {
     /// Set up message handlers and start receiving connections
     ///
-    /// This method configures the server with handlers for different types of
-    /// messages and starts listening for incoming gRPC connections.
+    /// This method configures the server with handlers for different types of messages
+    /// and starts listening for incoming gRPC connections.
     async fn handle_receive(
         &self,
         dispatch: DispatchFn,
@@ -294,7 +290,7 @@ impl TransportLayerServer for GrpcTransportServer {
                                 Ok(())
                             }
                             Err(e) => {
-                                tracing::error!("Sending gRPC message failed: {}", e);
+                                tracing::error!(error = %e, "gRPC message dispatch failed");
                                 Err(e)
                             }
                         }
@@ -319,18 +315,13 @@ impl TransportLayerServer for GrpcTransportServer {
                                         Ok(())
                                     }
                                     Err(e) => {
-                                        tracing::error!("Error in stream handler: {}", e);
+                                        tracing::error!(error = %e, "blob stream handler failed");
                                         Err(e)
                                     }
                                 }
                             }
                             Err(e) => {
-                                tracing::error!(
-                                    "Could not restore data from file while handling stream for \
-                                     key {}: {}",
-                                    stream_msg.key,
-                                    e
-                                );
+                                tracing::error!(key = %stream_msg.key, error = %e, "blob stream data restore failed");
                                 Err(e)
                             }
                         }

@@ -16,20 +16,15 @@ use node::rust::configuration::commandline::options::{
 use node::rust::configuration::config_check::{
     check_host, check_ports, load_private_key_from_file,
 };
-use node::rust::configuration::{KamonConf, NodeConf, Options, Profile};
+use node::rust::configuration::{NodeConf, Options, Profile};
 use node::rust::effects::console_io::{console_io, decrypt_key_from_file};
 use node::rust::effects::repl_client::GrpcReplClient;
 use node::rust::repl::ReplRuntime;
 use node::rust::web::version_info::get_version_info_str;
 use tokio::runtime::{Builder, Runtime};
 use tracing::{info, warn};
-use tracing_subscriber::layer::SubscriberExt;
-use tracing_subscriber::util::SubscriberInitExt;
-use tracing_subscriber::EnvFilter;
 
 fn main() -> Result<()> {
-    init_json_logging()?;
-
     // Parse CLI arguments, handling help/version display gracefully
     let options = match Options::try_parse() {
         Ok(opts) => opts,
@@ -58,8 +53,10 @@ fn main() -> Result<()> {
             Ok::<_, eyre::Error>(())
         })?;
     } else {
-        // we should not bother about blocking calls in this case since we are expecting
-        // consecutive execution
+        let mut logging_cfg = shared::rust::tracing_init::LoggingConfig::default();
+        apply_log_cli_overrides(&options, &mut logging_cfg);
+        let _log_guards = init_logging(&logging_cfg, None)?;
+        // we should not bother about blocking calls in this case since we are expecting consecutive execution
         let rt = Builder::new_current_thread().enable_all().build()?;
         run_cli(options, &rt)?;
     }
@@ -69,17 +66,27 @@ fn main() -> Result<()> {
 
 /// Starts the F1r3fly node instance
 async fn start_node(options: Options) -> Result<()> {
-    // Create merged configuration from CLI options and config file
-    let default_dir = std::env::var("DEFAULT_DIR")
-        .map(PathBuf::from)
-        .or_else(|_| std::env::current_dir().map(|path| path.join("node/src/main/resources")))?;
+    let log_overrides = (
+        options.log_level.clone(),
+        options.log_format.clone(),
+        options.log_sink.clone(),
+    );
+    // Defaults are baked into the binary via include_str!; the optional
+    // <data-dir>/rnode.conf override and CLI flags layer on top.
+    let (mut node_conf, profile, config_file, deferred_warnings) =
+        node::rust::configuration::builder::build(options)?;
 
-    let (node_conf, profile, config_file, kamon_conf) =
-        node::rust::configuration::builder::build(&default_dir, options)?;
+    apply_log_cli_overrides_raw(log_overrides, &mut node_conf.logging);
 
-    // Set system property for data directory (equivalent to Scala's
-    // System.setProperty) SAFETY: This is called early in node startup before
-    // spawning threads that read env vars
+    let data_dir = node_conf.storage.data_dir.clone();
+    let _log_guards = init_logging(&node_conf.logging, Some(&data_dir))?;
+
+    for w in deferred_warnings {
+        warn!("{}", w);
+    }
+
+    // Set system property for data directory (equivalent to Scala's System.setProperty)
+    // SAFETY: This is called early in node startup before spawning threads that read env vars
     unsafe {
         std::env::set_var(
             "RNODE_DATA_DIR",
@@ -95,7 +102,7 @@ async fn start_node(options: Options) -> Result<()> {
     log_configuration(&conf_with_decrypt, &profile, config_file.as_ref()).await?;
 
     // Create and start node runtime
-    start_node_runtime(conf_with_decrypt, kamon_conf).await?;
+    start_node_runtime(conf_with_decrypt).await?;
 
     Ok(())
 }
@@ -225,13 +232,6 @@ fn run_cli(options: Options, rt: &Runtime) -> Result<()> {
                 rt.block_on(DeployRuntime::bond_status(&mut deploy_client, &public_key));
                 Ok(())
             }
-            OptionsSubCommand::DataAtName { name } => {
-                rt.block_on(DeployRuntime::listen_for_data_at_name(
-                    &mut deploy_client,
-                    name,
-                ));
-                Ok(())
-            }
             OptionsSubCommand::ContAtName { names } => {
                 rt.block_on(DeployRuntime::listen_for_continuation_at_name(
                     &mut deploy_client,
@@ -254,23 +254,46 @@ fn run_cli(options: Options, rt: &Runtime) -> Result<()> {
     Ok(())
 }
 
-pub fn init_json_logging() -> eyre::Result<()> {
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+pub fn init_logging(
+    cfg: &shared::rust::tracing_init::LoggingConfig,
+    data_dir: Option<&std::path::Path>,
+) -> eyre::Result<shared::rust::tracing_init::TracingGuards> {
+    shared::rust::tracing_init::init(cfg, data_dir)
+}
 
-    tracing_subscriber::registry()
-        .with(filter)
-        .with(
-            tracing_subscriber::fmt::layer()
-                .json()
-                .with_target(true)
-                .with_file(true)
-                .with_line_number(true)
-                .with_current_span(false) // logs only for now
-                .with_span_list(false) // logs only for now
-                .flatten_event(true), // put event fields at top level
-        )
-        .try_init()?;
-    Ok(())
+fn apply_log_cli_overrides(options: &Options, cfg: &mut shared::rust::tracing_init::LoggingConfig) {
+    apply_log_cli_overrides_raw(
+        (
+            options.log_level.clone(),
+            options.log_format.clone(),
+            options.log_sink.clone(),
+        ),
+        cfg,
+    );
+}
+
+fn apply_log_cli_overrides_raw(
+    overrides: (Option<String>, Option<String>, Option<String>),
+    cfg: &mut shared::rust::tracing_init::LoggingConfig,
+) {
+    use shared::rust::tracing_init::{LogFormat, LogSink};
+    let (level, format, sink) = overrides;
+    if let Some(l) = level {
+        cfg.filter = l;
+    }
+    if let Some(f) = format {
+        cfg.format = match f.to_lowercase().as_str() {
+            "pretty" => LogFormat::Pretty,
+            _ => LogFormat::Json,
+        };
+    }
+    if let Some(s) = sink {
+        cfg.sink = match s.to_lowercase().as_str() {
+            "file" => LogSink::File,
+            "both" => LogSink::Both,
+            _ => LogSink::Stdout,
+        };
+    }
 }
 
 /// Generate a new key pair and save to file (equivalent to generateKey)
@@ -321,8 +344,7 @@ fn generate_key(
     Ok(())
 }
 
-/// Get private key from either direct key or file path (equivalent to Scala's
-/// getPrivateKey)
+/// Get private key from either direct key or file path (equivalent to Scala's getPrivateKey)
 fn get_private_key(
     maybe_private_key: Option<PrivateKey>,
     maybe_private_key_path: Option<PathBuf>,
@@ -338,10 +360,10 @@ fn get_private_key(
 }
 
 /// Start node runtime (equivalent to Scala's NodeRuntime.start)
-async fn start_node_runtime(conf: NodeConf, kamon_conf: KamonConf) -> Result<()> {
+async fn start_node_runtime(conf: NodeConf) -> Result<()> {
     // --- Observability Setup ---
     #[allow(unused_variables)]
-    let prometheus_reporter = node::rust::diagnostics::initialize_diagnostics(&conf, &kamon_conf)?;
+    let prometheus_reporter = node::rust::diagnostics::initialize_diagnostics(&conf)?;
 
     node::rust::runtime::node_runtime::start(conf).await
 }

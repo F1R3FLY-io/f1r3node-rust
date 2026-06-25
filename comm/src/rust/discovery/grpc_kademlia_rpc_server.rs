@@ -1,5 +1,4 @@
-// See comm/src/main/scala/coop/rchain/comm/discovery/GrpcKademliaRPCServer.
-// scala
+// See comm/src/main/scala/coop/rchain/comm/discovery/GrpcKademliaRPCServer.scala
 
 use std::future::Future;
 use std::pin::Pin;
@@ -169,8 +168,7 @@ mod tests {
 
         // Verify response
         assert_eq!(pong.network_id, network_id);
-        assert!(*ping_called.lock().unwrap()); // Handler should have been
-                                               // called
+        assert!(*ping_called.lock().unwrap()); // Handler should have been called
     }
 
     #[tokio::test]
@@ -206,8 +204,7 @@ mod tests {
 
         // Verify response - should return our network ID, not the request's
         assert_eq!(pong.network_id, network_id);
-        assert!(!*ping_called.lock().unwrap()); // Handler should NOT have been
-                                                // called
+        assert!(!*ping_called.lock().unwrap()); // Handler should NOT have been called
     }
 
     #[tokio::test]
@@ -245,8 +242,7 @@ mod tests {
         // Verify response
         assert_eq!(lookup_response.network_id, network_id);
         assert_eq!(lookup_response.nodes.len(), 1); // Should return one peer
-        assert!(*lookup_called.lock().unwrap()); // Handler should have been
-                                                 // called
+        assert!(*lookup_called.lock().unwrap()); // Handler should have been called
     }
 
     #[tokio::test]
@@ -284,8 +280,7 @@ mod tests {
         // Verify response
         assert_eq!(lookup_response.network_id, network_id); // Should return our network ID
         assert_eq!(lookup_response.nodes.len(), 0); // Should return empty list
-        assert!(!*lookup_called.lock().unwrap()); // Handler should NOT have
-                                                  // been called
+        assert!(!*lookup_called.lock().unwrap()); // Handler should NOT have been called
     }
 
     #[tokio::test]

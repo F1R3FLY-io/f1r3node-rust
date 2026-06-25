@@ -1,7 +1,5 @@
-// Rust port of
-// casper/src/test/scala/coop/rchain/casper/util/comm/TransportLayerTestImpl.
-// scala Moved from casper/tests/util/comm/transport_layer_test_impl.rs to
-// casper/src/rust/test_utils/util/comm/transport_layer_test_impl.rs
+// Rust port of casper/src/test/scala/coop/rchain/casper/util/comm/TransportLayerTestImpl.scala
+// Moved from casper/tests/util/comm/transport_layer_test_impl.rs to casper/src/rust/test_utils/util/comm/transport_layer_test_impl.rs
 // No import changes needed - this file doesn't use casper:: or crate::util::
 
 use std::collections::{HashMap, VecDeque};
@@ -81,8 +79,7 @@ pub mod test_network {
             Ok(())
         }
 
-        /// Handle all queued messages for a peer using the provided dispatch
-        /// function
+        /// Handle all queued messages for a peer using the provided dispatch function
         pub async fn handle_queue<F, Fut>(
             &self,
             dispatch: F,
@@ -221,7 +218,7 @@ impl TransportLayerServer for TransportLayerServerTestImpl {
 
             // Process all messages in the queue for this peer
             if let Err(e) = test_network.handle_queue(dispatch_fn, &identity).await {
-                tracing::error!("Error handling queue for peer {}: {}", identity, e);
+                tracing::error!(peer = %identity, error = %e, "test transport queue processing failed");
             }
         });
 

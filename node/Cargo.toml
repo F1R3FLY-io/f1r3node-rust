@@ -1,8 +1,16 @@
 [package]
 name = "node"
-version = "0.1.0"
-publish = false  # internal workspace crate; not published to crates.io
+version = "0.4.15"
 edition = "2021"
+publish = false
+
+[features]
+default = []
+schnorr_secp256k1_experimental = [
+    "crypto/schnorr_secp256k1_experimental",
+    "casper/schnorr_secp256k1_experimental",
+    "models/schnorr_secp256k1_experimental",
+]
 
 [lib]
 doctest = false
@@ -17,23 +25,24 @@ comm = { path = "../comm" }
 rspace_plus_plus = { path = "../rspace++" }
 graphz = { path = "../graphz" }
 block-storage = { path = "../block-storage" }
-base64 = "0.22"
+base64 = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 itertools = { workspace = true }
 async-trait = { workspace = true }
 hex = { workspace = true }
-clap = { version = "4.0", features = ["derive"] }
+num-bigint = { workspace = true }
+clap = { workspace = true }
 hocon = "0.9.0"
 eyre = { workspace = true }
-humantime = "2.3.0"
+humantime = { workspace = true }
 byte-unit = "5.1.6"
 futures = { workspace = true }
 tonic = { workspace = true }
 prost = { workspace = true }
 tonic-prost = { workspace = true }
 colored = "3.0"
-rholang-parser = { git = "https://github.com/F1R3FLY-io/rholang-rs", rev = "d25f953a" }
+rholang-parser = { workspace = true }
 rustyline = "13.0"
 rpassword = "7.4"
 tracing = { workspace = true }
@@ -44,19 +53,19 @@ dashmap = { workspace = true }
 regex = { workspace = true }
 rand = { workspace = true }
 # Web framework dependencies
-axum = {version = "0.8", features = ["macros", "ws"]}
-tower = { workspace = true}
+axum = { workspace = true, features = ["macros", "ws"] }
+tower = { workspace = true }
 tower-http = { version = "0.6", features = ["cors", "trace"] }
 thiserror = { workspace = true }
-uuid = { version = "1.0", features = ["v4"] }
+uuid = { workspace = true }
 tokio = { workspace = true }
 tokio-tungstenite = "0.28"
 futures-util = "0.3"
-tokio-stream = { version = "0.1", features = ["sync"] }
-utoipa = { version = "5", features = ["axum_extras"] }
+tokio-stream = { workspace = true }
+utoipa = { workspace = true, features = ["axum_extras"] }
 utoipa-swagger-ui = { version = "9", features = ["axum"] }
 # Metrics dependencies (analog of Scala's Kamon + NewPrometheusReporter)
-metrics = "0.23"
+metrics = { workspace = true }
 metrics-exporter-prometheus = "0.15"
 metrics-exporter-influx = "0.2.2"
 opentelemetry = { version = "0.20", features = ["rt-tokio"] }
@@ -66,11 +75,11 @@ sysinfo = "0.28"
 tonic-reflection = "0.14"
 
 [dev-dependencies]
-tokio = { version = "1.0", features = ["full"] }
+tokio = { workspace = true }
 rspace_plus_plus = { path = "../rspace++" }
 casper = { path = "../casper", features = ["test-utils"] }
 tower = { workspace = true }
-serial_test = "3.1"
+serial_test = { workspace = true }
 
 [build-dependencies]
 tonic-prost-build = { workspace = true }

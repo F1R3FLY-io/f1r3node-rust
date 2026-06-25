@@ -1,7 +1,6 @@
 // See casper/src/test/scala/coop/rchain/casper/helper/NoOpsCasperEffect.scala
-// Moved from casper/tests/helper/no_ops_casper_effect.rs to
-// casper/src/rust/test_utils/helper/no_ops_casper_effect.rs All imports fixed
-// for library crate context
+// Moved from casper/tests/helper/no_ops_casper_effect.rs to casper/src/rust/test_utils/helper/no_ops_casper_effect.rs
+// All imports fixed for library crate context
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -20,7 +19,9 @@ use rspace_plus_plus::rspace::history::Either;
 use rspace_plus_plus::rspace::state::rspace_exporter::RSpaceExporter;
 
 use crate::rust::block_status::{BlockError, InvalidBlock, ValidBlock};
-use crate::rust::casper::{Casper, CasperSnapshot, DeployError, MultiParentCasper};
+use crate::rust::casper::{
+    Casper, CasperShardConf, CasperSnapshot, DeployError, MultiParentCasper,
+};
 use crate::rust::errors::CasperError;
 use crate::rust::test_utils::util::test_mocks::MockKeyValueStore;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
@@ -28,21 +29,20 @@ use crate::rust::validator_identity::ValidatorIdentity;
 
 pub struct NoOpsCasperEffect {
     estimator_func: Vec<BlockHash>,
-    pub runtime_manager: Arc<tokio::sync::Mutex<RuntimeManager>>,
+    pub runtime_manager: Arc<RuntimeManager>,
     block_store: KeyValueBlockStore,
     // Shared data for block store to ensure clones can access the same blocks
     shared_block_data: Arc<Mutex<HashMap<Vec<u8>, Vec<u8>>>>,
     shared_approved_block_data: Arc<Mutex<HashMap<Vec<u8>, Vec<u8>>>>,
     block_dag_storage: KeyValueDagRepresentation,
+    shard_conf: CasperShardConf,
 }
 
-// For testing purposes, we'll implement Clone manually by creating stub
-// instances
+// For testing purposes, we'll implement Clone manually by creating stub instances
 impl Clone for NoOpsCasperEffect {
     fn clone(&self) -> Self {
-        // Create a clone that shares the same underlying storage so that blocks added
-        // to one instance are visible to cloned instances (which is necessary
-        // for the engine tests to work)
+        // Create a clone that shares the same underlying storage so that blocks added to one instance
+        // are visible to cloned instances (which is necessary for the engine tests to work)
 
         // Create new KeyValueBlockStore with shared underlying storage
         // Note: We need to share the underlying data between clones for tests to work
@@ -62,6 +62,7 @@ impl Clone for NoOpsCasperEffect {
             shared_block_data: self.shared_block_data.clone(),
             shared_approved_block_data: self.shared_approved_block_data.clone(),
             block_dag_storage: self.block_dag_storage.clone(),
+            shard_conf: self.shard_conf.clone(),
         }
     }
 }
@@ -70,10 +71,9 @@ impl Clone for NoOpsCasperEffect {
 
 impl NoOpsCasperEffect {
     pub fn new(
-        _blocks: Option<HashMap<BlockHash, BlockMessage>>, /* No longer used - blocks stored in
-                                                            * actual KeyValueBlockStore */
+        _blocks: Option<HashMap<BlockHash, BlockMessage>>, // No longer used - blocks stored in actual KeyValueBlockStore
         estimator_func: Option<Vec<BlockHash>>,
-        runtime_manager: Arc<tokio::sync::Mutex<RuntimeManager>>,
+        runtime_manager: Arc<RuntimeManager>,
         _block_store: KeyValueBlockStore, // We'll ignore this and create our own with shared data
         block_dag_storage: KeyValueDagRepresentation,
     ) -> Self {
@@ -98,21 +98,21 @@ impl NoOpsCasperEffect {
             shared_block_data,
             shared_approved_block_data,
             block_dag_storage,
+            shard_conf: CasperShardConf::new(),
         }
     }
 
     /// Create NoOpsCasperEffect with externally provided shared kvm data
-    /// This ensures all storages use the SAME kvm (like Scala's
-    /// InMemoryStoreManager)
+    /// This ensures all storages use the SAME kvm (like Scala's InMemoryStoreManager)
     pub fn new_with_shared_kvm(
         estimator_func: Option<Vec<BlockHash>>,
-        runtime_manager: Arc<tokio::sync::Mutex<RuntimeManager>>,
+        runtime_manager: Arc<RuntimeManager>,
         _block_store: KeyValueBlockStore, // We'll ignore this and create our own with shared data
         block_dag_storage: KeyValueDagRepresentation,
         shared_kvm_data: Arc<Mutex<HashMap<Vec<u8>, Vec<u8>>>>,
     ) -> Self {
-        // Use the provided shared kvm data for BOTH block store and approved block
-        // store This matches Scala's behavior where all storages share one kvm
+        // Use the provided shared kvm data for BOTH block store and approved block store
+        // This matches Scala's behavior where all storages share one kvm
         let block_store = KeyValueBlockStore::new(
             Arc::new(MockKeyValueStore::with_shared_data(shared_kvm_data.clone())),
             Arc::new(MockKeyValueStore::with_shared_data(shared_kvm_data.clone())),
@@ -125,6 +125,7 @@ impl NoOpsCasperEffect {
             shared_block_data: shared_kvm_data.clone(),
             shared_approved_block_data: shared_kvm_data.clone(),
             block_dag_storage,
+            shard_conf: CasperShardConf::new(),
         }
     }
 }
@@ -150,13 +151,13 @@ impl MultiParentCasper for NoOpsCasperEffect {
 
     fn block_store(&self) -> &KeyValueBlockStore { &self.block_store }
 
+    fn casper_shard_conf(&self) -> &CasperShardConf { &self.shard_conf }
+
     fn get_validator(&self) -> Option<ValidatorIdentity> { None }
 
     async fn get_history_exporter(&self) -> Arc<dyn RSpaceExporter> { todo!() }
 
-    fn runtime_manager(&self) -> Arc<tokio::sync::Mutex<RuntimeManager>> {
-        self.runtime_manager.clone()
-    }
+    fn runtime_manager(&self) -> Arc<RuntimeManager> { self.runtime_manager.clone() }
 
     async fn has_pending_deploys_in_storage(&self) -> Result<bool, CasperError> { Ok(false) }
 }
@@ -165,15 +166,12 @@ impl MultiParentCasper for NoOpsCasperEffect {
 impl Casper for NoOpsCasperEffect {
     async fn get_snapshot(&self) -> Result<CasperSnapshot, CasperError> {
         Err(CasperError::RuntimeError(
-            "get_snapshot not implemented for NoOpsCasperEffect - use TestCasperWithSnapshot for \
-             heartbeat tests"
-                .to_string(),
+            "get_snapshot not implemented for NoOpsCasperEffect - use TestCasperWithSnapshot for heartbeat tests".to_string(),
         ))
     }
 
     fn contains(&self, hash: &BlockHash) -> bool {
-        // Use actual KeyValueBlockStore instead of HashMap (preserving Scala test
-        // logic)
+        // Use actual KeyValueBlockStore instead of HashMap (preserving Scala test logic)
         match self.block_store.get(hash) {
             Ok(maybe_block) => maybe_block.is_some(),
             Err(_) => false,
@@ -242,22 +240,18 @@ impl Casper for NoOpsCasperEffect {
 
     fn get_approved_block(&self) -> Result<&BlockMessage, CasperError> {
         // For test purposes, this is not used by our tests but we need to implement it
-        // In a real implementation, this would return the actual approved block from
-        // storage
+        // In a real implementation, this would return the actual approved block from storage
         Err(CasperError::RuntimeError(
             "get_approved_block not implemented for NoOpsCasperEffect test helper".to_string(),
         ))
     }
 }
 
-// Additional test-friendly methods for compatibility with the old MockCasper
-// API
+// Additional test-friendly methods for compatibility with the old MockCasper API
 impl NoOpsCasperEffect {
-    /// Add a block to the actual KeyValueBlockStore (preserving Scala test
-    /// logic)
+    /// Add a block to the actual KeyValueBlockStore (preserving Scala test logic)
     pub fn add_block_to_store(&mut self, block: BlockMessage) {
-        // Store in the KeyValueBlockStore (the actual block storage) - no HashMap
-        // fallback
+        // Store in the KeyValueBlockStore (the actual block storage) - no HashMap fallback
         match self.block_store.put_block_message(&block) {
             Ok(_) => {
                 tracing::debug!(
@@ -265,17 +259,15 @@ impl NoOpsCasperEffect {
                     hex::encode(&block.block_hash)
                 );
             }
-            Err(e) => tracing::error!("Failed to store block in KeyValueBlockStore: {:?}", e),
+            Err(e) => tracing::error!(error = ?e, "block store put failed"),
         }
     }
 
-    /// Add block to DAG storage and update latest messages (like Scala
-    /// blockDagStorage.insert)
+    /// Add block to DAG storage and update latest messages (like Scala blockDagStorage.insert)
     pub fn add_to_dag(&mut self, block_hash: BlockHash) {
         use shared::rust::store::key_value_typed_store::KeyValueTypedStore;
 
-        // Get the block from actual KeyValueBlockStore to add to DAG (preserving Scala
-        // test logic)
+        // Get the block from actual KeyValueBlockStore to add to DAG (preserving Scala test logic)
         if let Ok(Some(block)) = self.block_store.get(&block_hash) {
             // Add to DAG set
             self.block_dag_storage.dag_set.insert(block_hash.clone());
@@ -290,7 +282,7 @@ impl NoOpsCasperEffect {
                         hex::encode(&block_hash)
                     );
                 }
-                Err(e) => tracing::error!("Failed to add block metadata to DAG storage: {:?}", e),
+                Err(e) => tracing::error!(error = ?e, "block metadata DAG storage insert failed"),
             }
             drop(metadata_guard);
 
@@ -307,7 +299,7 @@ impl NoOpsCasperEffect {
                 .collect();
             let deploy_index_guard = self.block_dag_storage.deploy_index.write().unwrap();
             if let Err(e) = deploy_index_guard.put(deploy_entries) {
-                tracing::error!("Failed to add deploy mappings to DAG storage: {:?}", e);
+                tracing::error!(error = ?e, "deploy index put failed");
             }
             drop(deploy_index_guard);
 
@@ -352,19 +344,14 @@ impl NoOpsCasperEffect {
                 }
             }
         } else {
-            tracing::error!(
-                "Cannot add block {} to DAG - block not found in store",
-                hex::encode(&block_hash)
-            );
+            tracing::error!(block_hash = %hex::encode(&block_hash), "block not found in store; cannot add to DAG");
         }
     }
 
-    /// Insert block to both block store and DAG (matches Scala
-    /// blockDagStorage.insert pattern)
+    /// Insert block to both block store and DAG (matches Scala blockDagStorage.insert pattern)
     ///
-    /// This method provides a more Scala-like API that combines storage and DAG
-    /// operations matching the pattern: blockDagStorage.insert(block,
-    /// approved)
+    /// This method provides a more Scala-like API that combines storage and DAG operations
+    /// matching the pattern: blockDagStorage.insert(block, approved)
     pub fn insert_block(&mut self, block: BlockMessage, approved: bool) {
         // First add to block store
         self.add_block_to_store(block.clone());

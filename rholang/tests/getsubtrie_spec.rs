@@ -22,7 +22,7 @@ async fn execute(
     runtime.evaluate_with_term(term).await
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_get_subtrie_at_prefix() {
     with_runtime("get-subtrie-prefix-", |mut runtime| async move {
         let rho_code = r#"
@@ -42,7 +42,7 @@ async fn test_get_subtrie_at_prefix() {
     .await
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_get_subtrie_at_root() {
     with_runtime("get-subtrie-root-", |mut runtime| async move {
         let rho_code = r#"
@@ -62,7 +62,7 @@ async fn test_get_subtrie_at_root() {
     .await
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_get_subtrie_on_direct_pathmap() {
     with_runtime("get-subtrie-direct-", |mut runtime| async move {
         let rho_code = r#"
@@ -80,7 +80,7 @@ async fn test_get_subtrie_on_direct_pathmap() {
     .await
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_get_subtrie_empty_result() {
     with_runtime("get-subtrie-empty-", |mut runtime| async move {
         let rho_code = r#"

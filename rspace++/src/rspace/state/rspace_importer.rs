@@ -2,8 +2,8 @@ use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 use std::sync::Arc;
 
-use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use rayon::ThreadPoolBuilder;
+use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use shared::rust::ByteVector;
 
 use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
@@ -134,8 +134,6 @@ impl RSpaceImporterInstance {
         // modified.
         let history_item_keys: Vec<Blake2b256Hash> =
             history_items.into_iter().map(|item| item.0).collect();
-        // println!("\nhistory_item_keys: {:?}", history_item_keys);
-        // println!("\nhistory_keys: {:?}", history_keys);
         // TODO: This might need to check ordering too
         if !check_same_elements(history_item_keys, history_keys) {
             panic!("RSpace Importer: History items are corrupted")
@@ -143,8 +141,6 @@ impl RSpaceImporterInstance {
 
         let data_item_keys: Vec<Blake2b256Hash> =
             data_items.clone().into_iter().map(|item| item.0).collect();
-        // println!("\ndata_item_keys: {:?}", data_item_keys);
-        // println!("\ndata_keys: {:?}", data_keys);
         // TODO: This might need to check ordering too
         if !check_same_elements(data_item_keys, data_keys) {
             panic!("RSpace Importer: Data items are corrupted")

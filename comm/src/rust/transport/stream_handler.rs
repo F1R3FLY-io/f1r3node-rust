@@ -191,8 +191,7 @@ impl StreamHandler {
     }
 
     /// Initialize a new streaming operation
-    /// Creates a cache entry with "packet_send/" prefix and returns a new
-    /// Streamed instance.
+    /// Creates a cache entry with "packet_send/" prefix and returns a new Streamed instance.
     pub fn init(cache: &StreamCache) -> Result<Streamed, CommError> {
         let key = PacketOps::create_cache_entry("packet_send", cache)?;
         Ok(Streamed::new(key))
@@ -200,9 +199,8 @@ impl StreamHandler {
 
     /// Handle a stream of chunks with proper resource management
     ///
-    /// This method processes a stream of chunks using the circuit breaker
-    /// pattern and provides proper cleanup in all scenarios (success,
-    /// failure, errors).
+    /// This method processes a stream of chunks using the circuit breaker pattern
+    /// and provides proper cleanup in all scenarios (success, failure, errors).
     pub async fn handle_stream<S>(
         stream: S,
         circuit_breaker: CircuitBreaker,
@@ -215,7 +213,7 @@ impl StreamHandler {
         let init_stmd = match Self::init(cache) {
             Ok(stmd) => stmd,
             Err(e) => {
-                tracing::error!("Failed to initialize stream: {}", e);
+                tracing::error!(error = %e, "stream handler initialization failed");
                 return Err(StreamError::unexpected(format!(
                     "Initialization failed: {}",
                     e
@@ -374,15 +372,15 @@ impl StreamHandler {
 
     /// Restore a blob from cache using a StreamMessage
     ///
-    /// Retrieves the cached data, decompresses if necessary, and creates a
-    /// Blob. Cleans up the cache entry after processing.
+    /// Retrieves the cached data, decompresses if necessary, and creates a Blob.
+    /// Cleans up the cache entry after processing.
     pub async fn restore(msg: &StreamMessage, cache: &StreamCache) -> Result<Blob, CommError> {
         // Read data from cache
         let content = match cache.get(&msg.key) {
             Some(entry) => entry.value().clone(),
             None => {
                 let error = format!("Could not read streamed data from cache (key: {})", msg.key);
-                tracing::error!("{}", error);
+                tracing::error!(key = %msg.key, "blob stream cache read failed: data not found");
                 return Err(CommError::InternalCommunicationError(error));
             }
         };
@@ -392,8 +390,7 @@ impl StreamHandler {
             match Self::decompress_content(content, msg.compressed, msg.content_length).await {
                 Ok(data) => data,
                 Err(e) => {
-                    let error = format!("Could not decompress data (key: {}): {}", msg.key, e);
-                    tracing::error!("{}", error);
+                    tracing::error!(key = %msg.key, error = %e, "blob stream decompression failed");
                     cache.remove(&msg.key);
                     Self::update_stream_cache_metrics(cache);
                     return Err(e);

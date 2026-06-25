@@ -1,11 +1,10 @@
 // See shared/src/test/scala/coop/rchain/store/InMemoryKeyValueStoreSpec.scala
 //
 // NOTE: This file is located in casper/tests/util instead of shared/tests/store
-// because adding rspace_plus_plus as a dependency to shared would create a
-// cyclic dependency: shared -> rspace_plus_plus -> shared
-// Since KeyValueStoreSut needs KeyValueStoreManager from rspace_plus_plus, and
-// casper already depends on both shared and rspace_plus_plus, we place it here
-// to avoid the cycle.
+// because adding rspace_plus_plus as a dependency to shared would create a cyclic dependency:
+// shared -> rspace_plus_plus -> shared
+// Since KeyValueStoreSut needs KeyValueStoreManager from rspace_plus_plus, and casper already
+// depends on both shared and rspace_plus_plus, we place it here to avoid the cycle.
 
 use std::collections::HashMap;
 use std::error::Error;
@@ -195,8 +194,7 @@ impl KeyValueStoreSut {
     }
 }
 
-// Scala: class InMemoryKeyValueStoreSpec extends FlatSpec with Matchers with
-// GeneratorDrivenPropertyChecks
+// Scala: class InMemoryKeyValueStoreSpec extends FlatSpec with Matchers with GeneratorDrivenPropertyChecks
 #[cfg(test)]
 mod tests {
     use lazy_static::lazy_static;
@@ -206,10 +204,9 @@ mod tests {
 
     use super::*;
 
-    // Optimization: proptest! macro generates sync functions but our tests are
-    // async. Creating a new Runtime for each test case is expensive (proptest
-    // runs 256 cases by default). Using a shared lazy_static Runtime is much
-    // more efficient.
+    // Optimization: proptest! macro generates sync functions but our tests are async.
+    // Creating a new Runtime for each test case is expensive (proptest runs 256 cases by default).
+    // Using a shared lazy_static Runtime is much more efficient.
     lazy_static! {
         static ref RUNTIME: tokio::runtime::Runtime = tokio::runtime::Runtime::new().unwrap();
     }

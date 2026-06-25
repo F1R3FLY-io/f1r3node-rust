@@ -183,16 +183,14 @@ mod stream_handler_spec {
         .await;
 
         // then
-        // The circuit breaker may cause either MaxSizeReached or NotFullMessage
-        // depending on timing
+        // The circuit breaker may cause either MaxSizeReached or NotFullMessage depending on timing
         match err {
             StreamError::MaxSizeReached => {
                 // Direct circuit breaker error
             }
             StreamError::NotFullMessage { .. } => {
-                // Circuit breaker stopped processing, resulting in incomplete
-                // message This is also a valid outcome for
-                // mid-stream circuit breaking
+                // Circuit breaker stopped processing, resulting in incomplete message
+                // This is also a valid outcome for mid-stream circuit breaking
             }
             other => {
                 panic!(

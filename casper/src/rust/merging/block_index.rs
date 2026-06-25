@@ -57,6 +57,7 @@ pub fn create_event_log_index(
 
 pub fn new(
     block_hash: &BlockHash,
+    block_number: i64,
     usr_processed_deploys: &Vec<ProcessedDeploy>,
     sys_processed_deploys: &Vec<ProcessedSystemDeploy>,
     pre_state_hash: &Blake2b256Hash,
@@ -76,7 +77,12 @@ pub fn new(
             mrg_count,
             deploy_count
         );
-        tracing::error!("{}", msg);
+        tracing::error!(
+            block_hash = %hex::encode(&block_hash[..std::cmp::min(10, block_hash.len())]),
+            mergeable_maps = mrg_count,
+            deploys = deploy_count,
+            "mergeable channel count does not match deploy count"
+        );
         return Err(CasperError::RuntimeError(msg));
     }
     let aligned_mergeable_chs = mergeable_chs.clone();
@@ -164,10 +170,9 @@ pub fn new(
     let mut all_deploy_indices = usr_deploy_indices;
     all_deploy_indices.extend(sys_deploy_indices);
 
-    // Here deploys from a single block are examined. Atm deploys in block are
-    // executed sequentially, so all conflicts are resolved according to order
-    // of sequential execution. Therefore there won't be any conflicts between
-    // event logs. But there can be dependencies.
+    // Here deploys from a single block are examined. Atm deploys in block are executed sequentially,
+    // so all conflicts are resolved according to order of sequential execution.
+    // Therefore there won't be any conflicts between event logs. But there can be dependencies.
     let deploy_chains = merging_logic::compute_related_sets(
         &all_deploy_indices.into_iter().collect(),
         |l: &DeployIndex, r: &DeployIndex| {
@@ -183,8 +188,10 @@ pub fn new(
             pre_state_hash,
             post_state_hash,
             history_repository.clone(),
+            block_hash.clone(),
+            block_number,
         )
-        .map_err(CasperError::HistoryError)?;
+        .map_err(|e| CasperError::HistoryError(e))?;
         deploy_chain_indices.push(chain_index);
     }
 

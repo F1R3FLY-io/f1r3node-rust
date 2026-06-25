@@ -5,6 +5,7 @@ use std::fmt::Debug;
 use std::hash::Hash;
 use std::sync::{Arc, Mutex};
 
+use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 use super::checkpoint::{Checkpoint, SoftCheckpoint};
@@ -16,8 +17,8 @@ use super::internal::{ConsumeCandidate, Datum, Row, WaitingContinuation};
 use super::r#match::Match;
 use super::replay_rspace::ReplayRSpace;
 use super::rspace::RSpace;
-use super::trace::event::{Consume, Produce, COMM};
 use super::trace::Log;
+use super::trace::event::{COMM, Consume, Produce};
 use crate::rspace::rspace_interface::{ISpace, MaybeConsumeResult, MaybeProduceResult};
 
 /// ReportingRspace works exactly like how ReplayRspace works. It can replay the
@@ -150,11 +151,8 @@ where
             RSpaceError::InterpreterError(format!("Failed to create history repo: {:?}", e))
         })?;
         let (history_repository, replay_store) = history;
-        let reporting_rspace = Self::apply(
-            Arc::new(history_repository),
-            Arc::new(replay_store),
-            matcher,
-        );
+        let reporting_rspace =
+            Self::apply(Arc::new(history_repository), Arc::new(replay_store), matcher);
         Ok(reporting_rspace)
     }
 
@@ -181,8 +179,8 @@ where
         Ok(self.soft_report.lock().unwrap().clone())
     }
 
-    pub fn create_checkpoint(&mut self) -> Result<Checkpoint, RSpaceError> {
-        let checkpoint = self.replay_rspace.create_checkpoint()?;
+    pub async fn create_checkpoint(&self) -> Result<Checkpoint, RSpaceError> {
+        let checkpoint = self.replay_rspace.create_checkpoint().await?;
 
         self.soft_report.lock().unwrap().clear();
         self.report.lock().unwrap().clear();
@@ -190,21 +188,21 @@ where
         Ok(checkpoint)
     }
 
-    pub fn create_soft_checkpoint(&mut self) -> Result<SoftCheckpoint<C, P, A, K>, RSpaceError> {
+    pub async fn create_soft_checkpoint(&self) -> Result<SoftCheckpoint<C, P, A, K>, RSpaceError> {
         self.collect_report()?;
-        Ok(self.replay_rspace.create_soft_checkpoint())
+        Ok(self.replay_rspace.create_soft_checkpoint().await)
     }
 
-    pub fn rig_and_reset(
-        &mut self,
+    pub async fn rig_and_reset(
+        &self,
         start_root: Blake2b256Hash,
         log: super::trace::Log,
     ) -> Result<(), RSpaceError> {
-        self.replay_rspace.rig_and_reset(start_root, log)
+        self.replay_rspace.rig_and_reset(start_root, log).await
     }
 
-    pub fn consume(
-        &mut self,
+    pub async fn consume(
+        &self,
         channels: Vec<C>,
         patterns: Vec<P>,
         continuation: K,
@@ -213,21 +211,23 @@ where
     ) -> Result<MaybeConsumeResult<C, P, A, K>, RSpaceError> {
         self.replay_rspace
             .consume(channels, patterns, continuation, persist, peeks)
+            .await
     }
 
-    pub fn produce(
-        &mut self,
+    pub async fn produce(
+        &self,
         channel: C,
         data: A,
         persist: bool,
     ) -> Result<MaybeProduceResult<C, P, A, K>, RSpaceError> {
-        self.replay_rspace.produce(channel, data, persist)
+        self.replay_rspace.produce(channel, data, persist).await
     }
 }
 
 /// Implement ISpace for ReportingRspace by delegating to the underlying
 /// ReplayRSpace This allows ReportingRspace to be used with create_rho_runtime
 /// and create_replay_rho_runtime
+#[async_trait]
 impl<C, P, A, K> ISpace<C, P, A, K> for ReportingRspace<C, P, A, K>
 where
     C: Clone
@@ -245,93 +245,101 @@ where
     A: Clone + Debug + Default + Send + Sync + Serialize + for<'a> Deserialize<'a> + 'static,
     K: Clone + Debug + Default + Send + Sync + Serialize + for<'a> Deserialize<'a> + 'static,
 {
-    fn create_checkpoint(&mut self) -> Result<Checkpoint, RSpaceError> {
-        // Use ReportingRspace's own create_checkpoint which clears reports
-        ReportingRspace::create_checkpoint(self)
+    async fn create_checkpoint(&self) -> Result<Checkpoint, RSpaceError> {
+        ReportingRspace::create_checkpoint(self).await
     }
 
-    fn get_data(&self, channel: &C) -> Vec<Datum<A>> { self.replay_rspace.get_data(channel) }
-
-    fn get_waiting_continuations(&self, channels: Vec<C>) -> Vec<WaitingContinuation<P, K>> {
-        self.replay_rspace.get_waiting_continuations(channels)
+    async fn get_data(&self, channel: &C) -> Vec<Datum<A>> {
+        self.replay_rspace.get_data(channel).await
     }
 
-    fn get_joins(&self, channel: C) -> Vec<Vec<C>> { self.replay_rspace.get_joins(channel) }
-
-    fn clear(&mut self) -> Result<(), RSpaceError> { self.replay_rspace.clear() }
-
-    fn get_root(&self) -> Blake2b256Hash { self.replay_rspace.get_root() }
-
-    fn reset(&mut self, root: &Blake2b256Hash) -> Result<(), RSpaceError> {
-        self.replay_rspace.reset(root)
+    async fn get_waiting_continuations(&self, channels: Vec<C>) -> Vec<WaitingContinuation<P, K>> {
+        self.replay_rspace.get_waiting_continuations(channels).await
     }
 
-    fn consume_result(
-        &mut self,
+    async fn get_joins(&self, channel: C) -> Vec<Vec<C>> {
+        self.replay_rspace.get_joins(channel).await
+    }
+
+    async fn clear(&self) -> Result<(), RSpaceError> { self.replay_rspace.clear().await }
+
+    async fn get_root(&self) -> Blake2b256Hash { self.replay_rspace.get_root().await }
+
+    async fn reset(&self, root: &Blake2b256Hash) -> Result<(), RSpaceError> {
+        self.replay_rspace.reset(root).await
+    }
+
+    async fn consume_result(
+        &self,
         channel: Vec<C>,
         pattern: Vec<P>,
     ) -> Result<Option<(K, Vec<A>)>, RSpaceError> {
-        self.replay_rspace.consume_result(channel, pattern)
+        self.replay_rspace.consume_result(channel, pattern).await
     }
 
-    fn to_map(&self) -> HashMap<Vec<C>, Row<P, A, K>> { self.replay_rspace.to_map() }
+    async fn to_map(&self) -> HashMap<Vec<C>, Row<P, A, K>> { self.replay_rspace.to_map().await }
 
-    fn create_soft_checkpoint(&mut self) -> SoftCheckpoint<C, P, A, K> {
-        // Use ReportingRspace's own create_soft_checkpoint which collects reports
-        ReportingRspace::create_soft_checkpoint(self).unwrap()
+    async fn create_soft_checkpoint(&self) -> SoftCheckpoint<C, P, A, K> {
+        ReportingRspace::create_soft_checkpoint(self).await.unwrap()
     }
 
-    fn take_event_log(&mut self) -> Log { self.replay_rspace.take_event_log() }
+    async fn take_event_log(&self) -> Log { self.replay_rspace.take_event_log().await }
 
-    fn revert_to_soft_checkpoint(
-        &mut self,
+    async fn revert_to_soft_checkpoint(
+        &self,
         checkpoint: SoftCheckpoint<C, P, A, K>,
     ) -> Result<(), RSpaceError> {
-        self.replay_rspace.revert_to_soft_checkpoint(checkpoint)
+        self.replay_rspace
+            .revert_to_soft_checkpoint(checkpoint)
+            .await
     }
 
-    fn consume(
-        &mut self,
+    async fn consume(
+        &self,
         channels: Vec<C>,
         patterns: Vec<P>,
         continuation: K,
         persist: bool,
         peeks: BTreeSet<i32>,
     ) -> Result<MaybeConsumeResult<C, P, A, K>, RSpaceError> {
-        ReportingRspace::consume(self, channels, patterns, continuation, persist, peeks)
+        ReportingRspace::consume(self, channels, patterns, continuation, persist, peeks).await
     }
 
-    fn produce(
-        &mut self,
+    async fn produce(
+        &self,
         channel: C,
         data: A,
         persist: bool,
     ) -> Result<MaybeProduceResult<C, P, A, K>, RSpaceError> {
-        ReportingRspace::produce(self, channel, data, persist)
+        ReportingRspace::produce(self, channel, data, persist).await
     }
 
-    fn install(
-        &mut self,
+    async fn install(
+        &self,
         channels: Vec<C>,
         patterns: Vec<P>,
         continuation: K,
     ) -> Result<Option<(K, Vec<A>)>, RSpaceError> {
-        self.replay_rspace.install(channels, patterns, continuation)
+        self.replay_rspace
+            .install(channels, patterns, continuation)
+            .await
     }
 
-    fn rig_and_reset(&mut self, start_root: Blake2b256Hash, log: Log) -> Result<(), RSpaceError> {
-        ReportingRspace::rig_and_reset(self, start_root, log)
+    async fn rig_and_reset(&self, start_root: Blake2b256Hash, log: Log) -> Result<(), RSpaceError> {
+        ReportingRspace::rig_and_reset(self, start_root, log).await
     }
 
-    fn rig(&self, log: Log) -> Result<(), RSpaceError> { self.replay_rspace.rig(log) }
+    async fn rig(&self, log: Log) -> Result<(), RSpaceError> { self.replay_rspace.rig(log).await }
 
-    fn check_replay_data(&self) -> Result<(), RSpaceError> {
-        self.replay_rspace.check_replay_data()
+    async fn check_replay_data(&self) -> Result<(), RSpaceError> {
+        self.replay_rspace.check_replay_data().await
     }
 
-    fn is_replay(&self) -> bool { self.replay_rspace.is_replay() }
+    async fn is_replay(&self) -> bool { self.replay_rspace.is_replay().await }
 
-    fn update_produce(&mut self, produce: Produce) { self.replay_rspace.update_produce(produce) }
+    async fn update_produce(&self, produce: Produce) -> () {
+        self.replay_rspace.update_produce(produce).await
+    }
 }
 
 /// Logger used to collect reporting events from underlying replay space
@@ -354,7 +362,7 @@ where
     K: Clone + Debug + Send,
 {
     fn log_comm(
-        &mut self,
+        &self,
         data_candidates: &Vec<ConsumeCandidate<C, A>>,
         channels: &Vec<C>,
         wk: WaitingContinuation<P, K>,
@@ -389,7 +397,7 @@ where
     }
 
     fn log_consume(
-        &mut self,
+        &self,
         consume_ref: Consume,
         channels: &Vec<C>,
         patterns: &Vec<P>,
@@ -411,13 +419,7 @@ where
         consume_ref
     }
 
-    fn log_produce(
-        &mut self,
-        produce_ref: Produce,
-        channel: &C,
-        data: &A,
-        _persist: bool,
-    ) -> Produce {
+    fn log_produce(&self, produce_ref: Produce, channel: &C, data: &A, _persist: bool) -> Produce {
         let reporting_produce = ReportingEvent::ReportingProduce(ReportingProduce {
             channel: channel.clone(),
             data: data.clone(),

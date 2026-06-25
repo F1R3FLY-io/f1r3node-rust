@@ -109,21 +109,14 @@ impl Substitute {
         depth: i32,
         env: &Env<Par>,
     ) -> Result<Either<Var, Par>, InterpreterError> {
-        // println!("\nenv in maybe_substitute_var: {:?}", env);
         if depth != 0 {
             Ok(Either::Left(term))
         } else {
-            match unwrap_option_safe(term.var_instance)? {
-                VarInstance::BoundVar(index) => {
-                    // println!("\nindex in maybe_substitute_var: {:?}", index);
-                    match env.get(&index) {
-                        Some(p) => {
-                            // println!("\np in maybe_substitute_var: {:?}", p);
-                            Ok(Either::Right(p))
-                        }
-                        None => Ok(Either::Left(term)),
-                    }
-                }
+            match unwrap_option_safe(term.clone().var_instance)? {
+                VarInstance::BoundVar(index) => match env.get(&index) {
+                    Some(p) => Ok(Either::Right(p)),
+                    None => Ok(Either::Left(term)),
+                },
                 _ => Err(InterpreterError::SubstituteError(format!(
                     "Illegal Substitution [{:?}]",
                     term
@@ -210,16 +203,13 @@ impl Substitute {
         exprs.into_iter().try_fold(Par::default(), |par, expr| {
             match unwrap_option_safe(expr.clone().expr_instance)? {
                 ExprInstance::EVarBody(e) => match self.maybe_substitute_evar(e, depth, env)? {
-                    Either::Left(_e) => {
-                        // println!("\npar in sub_expr: {:?}", par);
-                        Ok(prepend_expr(
-                            par,
-                            Expr {
-                                expr_instance: Some(ExprInstance::EVarBody(_e)),
-                            },
-                            depth,
-                        ))
-                    }
+                    Either::Left(_e) => Ok(prepend_expr(
+                        par,
+                        Expr {
+                            expr_instance: Some(ExprInstance::EVarBody(_e)),
+                        },
+                        depth,
+                    )),
                     Either::Right(_par) => Ok(concatenate_pars(_par, par)),
                 },
                 _ => match self.substitute_no_sort(expr, depth, env) {
@@ -241,7 +231,7 @@ impl Substitute {
             .try_fold(Par::default(), |par, conn| match conn.connective_instance {
                 Some(ref conn_instance) => match conn_instance {
                     ConnectiveInstance::VarRefBody(v) => {
-                        match self.maybe_substitute_var_ref(*v, depth, env)? {
+                        match self.maybe_substitute_var_ref(v.clone(), depth, env)? {
                             Either::Left(_) => Ok(prepend_connective(par, conn, depth)),
                             Either::Right(new_par) => Ok(concatenate_pars(new_par, par)),
                         }
@@ -341,39 +331,37 @@ impl SubstituteTrait<Par> for Substitute {
         depth: i32,
         env: &Env<Par>,
     ) -> Result<Par, InterpreterError> {
-        // println!("\nterm in substitute_no_sort for par: {:?}", term);
         let exprs = self.sub_exp(term.exprs, depth, env)?;
-        // println!("\nexprs in substitute_no_sort for par: {:?}", exprs);
         let connectives = self.sub_conn(term.connectives, depth, env)?;
 
         let sends = term
             .sends
-            .iter()
-            .map(|s| self.substitute_no_sort(s.clone(), depth, env))
+            .into_iter()
+            .map(|s| self.substitute_no_sort(s, depth, env))
             .collect::<Result<Vec<Send>, InterpreterError>>()?;
 
         let bundles = term
             .bundles
-            .iter()
-            .map(|b| self.substitute_no_sort(b.clone(), depth, env))
+            .into_iter()
+            .map(|b| self.substitute_no_sort(b, depth, env))
             .collect::<Result<Vec<Bundle>, InterpreterError>>()?;
 
         let receives = term
             .receives
-            .iter()
-            .map(|r| self.substitute_no_sort(r.clone(), depth, env))
+            .into_iter()
+            .map(|r| self.substitute_no_sort(r, depth, env))
             .collect::<Result<Vec<Receive>, InterpreterError>>()?;
 
         let news = term
             .news
-            .iter()
-            .map(|n| self.substitute_no_sort(n.clone(), depth, env))
+            .into_iter()
+            .map(|n| self.substitute_no_sort(n, depth, env))
             .collect::<Result<Vec<New>, InterpreterError>>()?;
 
         let matches = term
             .matches
-            .iter()
-            .map(|m| self.substitute_no_sort(m.clone(), depth, env))
+            .into_iter()
+            .map(|m| self.substitute_no_sort(m, depth, env))
             .collect::<Result<Vec<Match>, InterpreterError>>()?;
 
         Ok(concatenate_pars(
@@ -387,10 +375,7 @@ impl SubstituteTrait<Par> for Substitute {
                 unforgeables: term.unforgeables,
                 bundles,
                 connectives: Vec::new(),
-                locally_free: {
-                    // println!("\nenv.shift in substitute_no_sort for par: {}", env.shift);
-                    set_bits_until(term.locally_free, env.shift)
-                },
+                locally_free: set_bits_until(term.locally_free, env.shift),
                 connective_used: term.connective_used,
             }),
         ))
@@ -418,8 +403,6 @@ impl SubstituteTrait<Send> for Substitute {
             .iter()
             .map(|p| self.substitute_no_sort(p.clone(), depth, env))
             .collect::<Result<Vec<Par>, InterpreterError>>()?;
-
-        // println!("\nterm in substitute_no_sort for Send {:?}", term);
 
         Ok(Send {
             chan: Some(channels_sub),
@@ -1277,20 +1260,10 @@ impl SubstituteTrait<Expr> for Substitute {
 }
 
 fn set_bits_until(bits: Vec<u8>, until: i32) -> Vec<u8> {
-    // println!("\nbits in set_bits_until: {:?}", bits);
-    // println!("\nuntil in set_bits_until: {:?}", until);
     if until <= 0 {
         return Vec::new();
     }
-    let until_usize = until as usize;
-
-    let result = bits
-        .iter()
-        .enumerate()
-        .filter(|&(i, &bit)| i < until_usize && bit == 1)
-        .map(|(_, &bit)| bit)
-        .collect();
-
-    // println!("\nresult bits in set_bits_until: {:?}", result);
-    result
+    // Truncate the bitvector at `until` positions, preserving bit positions.
+    // Matches Scala's BitSet.until(n).
+    bits.into_iter().take(until as usize).collect()
 }

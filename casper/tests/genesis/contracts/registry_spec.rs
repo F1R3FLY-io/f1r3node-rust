@@ -1,5 +1,4 @@
-// See casper/src/test/scala/coop/rchain/casper/genesis/contracts/RegistrySpec.
-// scala
+// See casper/src/test/scala/coop/rchain/casper/genesis/contracts/RegistrySpec.scala
 
 use std::collections::HashMap;
 
@@ -10,7 +9,7 @@ use crate::helper::rho_spec::RhoSpec;
 
 #[tokio::test]
 async fn registry_spec() {
-    let test_object = CompiledRholangSource::load_source("RegistryTest.rho")
+    let test_object = crate::util::rholang::test_rho_loader::load_test_rho("RegistryTest.rho")
         .expect("Failed to load RegistryTest.rho");
 
     let compiled =
