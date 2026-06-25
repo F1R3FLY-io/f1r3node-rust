@@ -753,6 +753,179 @@ async fn finalized_floor_admits_mergeable_cofinalized_siblings() {
     .await;
 }
 
+/// RED reproduction of the test_trim_state propose BugError, structured to MATCH the
+/// live repro (CI run 28135973777 + local subprocess repro, session f33edb9e). In that
+/// shard (FTT=-1, immediate finality) a just-bonded joiner lagged and proposed a block
+/// whose two DIRECT parents were co-finalized SIBLINGS at the same height — its own #11
+/// `b480dfe3` and the network's #11 `dcb68108` — both forked off a shared finalized #10
+/// cut `76ba3f3e`. The live `floor_walk` trace showed:
+///   candidates = [76ba3f3e#10, 76ba3f3e#10, b480dfe3#11, dcb68108#11]  chosen = dcb68108#11
+/// `derive_floor` builds one frontier per parent (each sibling) plus each parent's
+/// inherited floor (the shared #10), picks the MAX sibling as the floor, and the safety
+/// check then rejects the OTHER sibling — two sibling-parents have no common descendant
+/// in the DAG yet (only the block being CREATED is one) → `finalized-floor safety
+/// violation: ... incompatible finalized fork` → ProposeFailure::BugError on every node
+/// that tries to merge them.
+///
+/// This rebuilds that exact candidate shape: genesis → `base` (the shared finalized cut,
+/// like #10) → two siblings `b1`,`b2` forked off `base` (like the #11 pair), both passed
+/// as DIRECT parents to `finalized_floor` at ft_threshold = -1 (immediate finality,
+/// mirroring FTT=-1). Each parent's inherited floor is `base` and each parent's own
+/// frontier is itself, so the candidate set is [base, base, b1, b2]. A sound floor EXISTS
+/// — `base`, the shared finalized ancestor, a general-ancestor of BOTH parents (the live
+/// repro's #10) — and the block being proposed IS the siblings' common descendant.
+///
+/// FIX: when the max candidate is not a clean tip (another candidate — here the other
+/// sibling — is not in its past), the floor must descend to the highest candidate that is
+/// a general-ancestor of every parent (here `base`), instead of erroring. (`fs_seal`'s max
+/// #8 stays put because every other candidate there IS in its past — see
+/// `finalized_floor_admits_mergeable_cofinalized_siblings`.)
+#[tokio::test]
+async fn finalized_floor_admits_sibling_parents_being_merged() {
+    with_storage(|mut block_store, mut block_dag_storage| async move {
+        let v1 = generate_validator(Some("Sib Parents V1"));
+        let v2 = generate_validator(Some("Sib Parents V2"));
+        let v3 = generate_validator(Some("Sib Parents V3"));
+        let bonds = vec![
+            Bond {
+                validator: v1.clone(),
+                stake: 100,
+            },
+            Bond {
+                validator: v2.clone(),
+                stake: 100,
+            },
+            Bond {
+                validator: v3.clone(),
+                stake: 100,
+            },
+        ];
+        let genesis = create_genesis_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            None,
+            Some(bonds.clone()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        let mk = |store: &mut KeyValueBlockStore,
+                  dag: &mut IndexedBlockDagStorage,
+                  parents: Vec<BlockHash>,
+                  creator: &Validator,
+                  just: HashMap<Validator, BlockHash>|
+         -> BlockMessage {
+            crate::helper::block_generator::create_block(
+                store,
+                dag,
+                parents,
+                &genesis,
+                Some(creator.clone()),
+                Some(bonds.clone()),
+                Some(just),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+        };
+
+        // Immediate finality, mirroring test_trim_state's FTT=-1 (the repro shard): every
+        // block is a finalized frontier the instant it is created.
+        const TT_FT: f32 = -1.0;
+
+        // `base`: the shared finalized cut BELOW the fork — the repro's #10 `76ba3f3e`,
+        // which appeared twice in the live candidate set as both parents' inherited floor.
+        let gj = HashMap::from([
+            (v1.clone(), genesis.block_hash.clone()),
+            (v2.clone(), genesis.block_hash.clone()),
+            (v3.clone(), genesis.block_hash.clone()),
+        ]);
+        let base = mk(
+            &mut block_store,
+            &mut block_dag_storage,
+            vec![genesis.block_hash.clone()],
+            &v1,
+            gj.clone(),
+        );
+
+        // Two siblings forked off `base` (the repro's #11 pair b480dfe3 / dcb68108), each
+        // by its own validator. At ft = -1 both are finalized frontiers of their parent.
+        let saw_base = HashMap::from([
+            (v1.clone(), base.block_hash.clone()),
+            (v2.clone(), genesis.block_hash.clone()),
+            (v3.clone(), genesis.block_hash.clone()),
+        ]);
+        let b1 = mk(
+            &mut block_store,
+            &mut block_dag_storage,
+            vec![base.block_hash.clone()],
+            &v1,
+            saw_base.clone(),
+        );
+        let b2 = mk(
+            &mut block_store,
+            &mut block_dag_storage,
+            vec![base.block_hash.clone()],
+            &v2,
+            saw_base.clone(),
+        );
+
+        let dag = block_dag_storage.get_representation();
+        let latest_messages = snapshot(&[(&v1, &b1), (&v2, &b2)]);
+
+        // Sanity on the DAG shape: `base` is the shared ancestor of both siblings, and the
+        // siblings are a genuine fork (neither is an ancestor of the other) — exactly the
+        // live repro's #10 → {#11, #11}.
+        assert!(
+            dag.is_dag_ancestor(&base.block_hash, &b1.block_hash)
+                .unwrap()
+                && dag
+                    .is_dag_ancestor(&base.block_hash, &b2.block_hash)
+                    .unwrap(),
+            "precondition: `base` must be the shared ancestor of both sibling parents"
+        );
+        assert!(
+            !dag.is_dag_ancestor(&b1.block_hash, &b2.block_hash).unwrap()
+                && !dag.is_dag_ancestor(&b2.block_hash, &b1.block_hash).unwrap(),
+            "precondition: b1 and b2 must be siblings (neither an ancestor of the other)"
+        );
+
+        // Propose a block whose DIRECT parents are the two finalized siblings — the
+        // joiner's lagging multi-parent propose. The candidate set is [base, base, b1, b2]
+        // (each parent's inherited floor is `base` plus each parent's own frontier), so the
+        // floor must descend to `base`, not error on the loser sibling.
+        let floor = finalized_floor(
+            &dag,
+            &[b1.block_hash.clone(), b2.block_hash.clone()],
+            &latest_messages,
+            TT_FT,
+        )
+        .await
+        .expect(
+            "two finalized siblings that are BOTH direct parents must yield a valid floor, not a \
+             'finalized-floor safety violation: incompatible finalized fork' — the block being \
+             proposed is their common descendant; the sound floor is their shared finalized cut \
+             `base` (test_trim_state BugError repro: live candidates [#10, #10, #11, #11])",
+        );
+
+        // The floor must be the shared finalized cut `base` (the repro's #10) — a
+        // general-ancestor of BOTH sibling parents, never one of the sibling tips.
+        assert_eq!(
+            floor.hash, base.block_hash,
+            "floor must descend to the shared finalized cut `base` below both sibling parents \
+             (the repro's #10 `76ba3f3e`), not a sibling tip"
+        );
+    })
+    .await;
+}
+
 // `fate_any_accepted_inclusion_overrides_a_later_rejection` (the regression lock
 // for the recover-an-already-finalized-deploy content-twin) removed: it
 // regression-locked `FloorFateResolver` / `DeployFateAtFloor`, which the

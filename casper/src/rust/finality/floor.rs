@@ -92,15 +92,97 @@ async fn derive_floor(
         candidates.push(parent_frontier(dag, parent, latest_messages, ft_threshold).await?);
     }
 
-    let floor = candidates
-        .iter()
-        .max_by(|a, b| {
-            a.block_number
-                .cmp(&b.block_number)
-                .then_with(|| a.hash.cmp(&b.hash))
-        })
-        .expect("candidates is non-empty: one frontier per parent and parents is non-empty")
-        .clone();
+    // The floor is the merge base the block being created re-bases every parent onto.
+    // Pick the HIGHEST candidate that is a SOUND base, considering candidates from the
+    // top down. A candidate `c` is sound when EITHER:
+    //
+    //   A. `c` is a general DAG-ancestor of EVERY parent (or is one). Then `c` lies below
+    //      all inputs, and since the new block merges every parent it descends from `c`
+    //      and from every (parent-derived) candidate — nothing finalized is dropped. This
+    //      is the multi-parent co-finalization case where two co-finalized siblings are
+    //      both DIRECT parents (test_trim_state / run 28135973777): neither sibling is a
+    //      base for the other, so the floor descends to their shared finalized cut.
+    //
+    //   B. every OTHER finalized candidate is compatible with `c` — it lies in `c`'s
+    //      general DAG past (a lower cut whose state `c` already captures), or it is
+    //      MERGEABLE with `c` via an EXISTING common-descendant parent (run 8c2952a8).
+    //      This keeps the highest finalized tip as the floor when it dominates the rest
+    //      (the in-place finalization-advance case).
+    //
+    // The highest candidate satisfying neither A nor B is skipped; if NO candidate is a
+    // sound base (no finalized cut common to all parents), that is a genuinely
+    // incompatible fork and is surfaced as an error, never papered over.
+    let mut ordered: Vec<&Floor> = candidates.iter().collect();
+    ordered.sort_by(|a, b| {
+        b.block_number
+            .cmp(&a.block_number)
+            .then_with(|| b.hash.cmp(&a.hash))
+    });
+
+    let mut chosen: Option<Floor> = None;
+    for cand in ordered {
+        // Case A: general-ancestor of every parent.
+        let mut covers_all_parents = true;
+        for parent in parents {
+            if cand.hash != *parent
+                && !is_general_ancestor(dag, &cand.hash, cand.block_number, parent)?
+            {
+                covers_all_parents = false;
+                break;
+            }
+        }
+        if covers_all_parents {
+            chosen = Some(cand.clone());
+            break;
+        }
+        // Case B: every other candidate is in `cand`'s past or mergeable via a parent.
+        let mut all_compatible = true;
+        for other in &candidates {
+            if other.hash == cand.hash
+                || is_general_ancestor(dag, &other.hash, other.block_number, &cand.hash)?
+            {
+                continue;
+            }
+            let mut mergeable_via_parent = false;
+            for parent in parents {
+                if is_general_ancestor(dag, &other.hash, other.block_number, parent)?
+                    && is_general_ancestor(dag, &cand.hash, cand.block_number, parent)?
+                {
+                    mergeable_via_parent = true;
+                    break;
+                }
+            }
+            if !mergeable_via_parent {
+                all_compatible = false;
+                break;
+            }
+        }
+        if all_compatible {
+            chosen = Some(cand.clone());
+            break;
+        }
+    }
+
+    let floor = chosen.ok_or_else(|| {
+        CasperError::Other(format!(
+            "finalized-floor safety violation: no finalized candidate is a sound merge base over \
+             parents [{}] (candidates [{}]) — incompatible finalized fork",
+            parents
+                .iter()
+                .map(|p| PrettyPrinter::build_string_bytes(p))
+                .collect::<Vec<_>>()
+                .join(", "),
+            candidates
+                .iter()
+                .map(|c| format!(
+                    "{}#{}",
+                    PrettyPrinter::build_string_bytes(&c.hash),
+                    c.block_number
+                ))
+                .collect::<Vec<_>>()
+                .join(", "),
+        ))
+    })?;
 
     tracing::debug!(
         target: "f1r3.trace.floor_walk",
@@ -109,53 +191,6 @@ async fn derive_floor(
         chosen_number = floor.block_number,
         "derive_floor candidates + chosen"
     );
-
-    // Linear-finality safety: every other finalized candidate must be COMPATIBLE
-    // with the chosen floor. Two cases are compatible:
-    //
-    //   1. The candidate lies in the floor's GENERAL DAG past (reachable via any
-    //      parent path) — a lower cut merged in as a secondary parent; its state
-    //      is preserved.
-    //   2. The candidate is MERGEABLE with the floor — some parent has merged
-    //      BOTH (each is a general DAG-ancestor of that parent), so the parent is
-    //      a common descendant and both states coexist. This is the multi-parent
-    //      co-finalization case: equal-weight siblings that every block merges are
-    //      co-finalized, neither lying on the other's ancestry, yet neither lost.
-    //      The earlier rule recognized only case 1 and rejected case 2 as a
-    //      "safety violation", wedging the proposer (integration run 8c2952a8).
-    //
-    // A candidate that is neither is a finalized block with no common descendant
-    // — a genuinely incompatible fork — and is surfaced as an error, never
-    // papered over.
-    for candidate in &candidates {
-        if candidate.hash == floor.hash
-            || is_general_ancestor(dag, &candidate.hash, candidate.block_number, &floor.hash)?
-        {
-            continue;
-        }
-        let mergeable_via_parent = {
-            let mut found = false;
-            for parent in parents {
-                if is_general_ancestor(dag, &candidate.hash, candidate.block_number, parent)?
-                    && is_general_ancestor(dag, &floor.hash, floor.block_number, parent)?
-                {
-                    found = true;
-                    break;
-                }
-            }
-            found
-        };
-        if !mergeable_via_parent {
-            return Err(CasperError::Other(format!(
-                "finalized-floor safety violation: finalized cut {} (#{}) is neither in floor {} \
-                 (#{})'s past nor merged with it by any parent — incompatible finalized fork",
-                PrettyPrinter::build_string_bytes(&candidate.hash),
-                candidate.block_number,
-                PrettyPrinter::build_string_bytes(&floor.hash),
-                floor.block_number,
-            )));
-        }
-    }
 
     tracing::debug!(
         target: "f1r3.trace.floor",
