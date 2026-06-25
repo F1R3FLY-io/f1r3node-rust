@@ -180,7 +180,7 @@ impl TestContext {
             StateHash,
             StateHash,
             Vec<ProcessedDeploy>,
-            Vec<Bytes>,
+            Vec<(Bytes, models::rust::block_hash::BlockHash)>,
             Vec<ProcessedSystemDeploy>,
             Vec<Bond>,
         ),
@@ -200,6 +200,14 @@ impl TestContext {
             seq_num,
         };
 
+        // The live latest-message view stands in for a proposer's justification
+        // snapshot in these single-chain checkpoint tests.
+        let latest_messages: std::collections::BTreeMap<_, _> = casper_snapshot
+            .dag
+            .latest_message_hashes()
+            .into_iter()
+            .collect();
+
         // Note: In Scala .attempt wraps result in Either[Throwable, T]
         // In Rust, we return Result which is equivalent
         interpreter_util::compute_deploys_checkpoint(
@@ -211,6 +219,7 @@ impl TestContext {
             runtime_manager,
             block_data,
             HashMap::new(),
+            &latest_messages,
             None,
         )
         .await
@@ -926,6 +935,7 @@ async fn validate_block_checkpoint_should_return_a_checkpoint_with_the_right_has
                 &mut runtime_manager,
                 block_data,
                 HashMap::new(),
+                &std::collections::BTreeMap::new(),
                 None,
             )
             .await
@@ -1039,6 +1049,7 @@ contract @"recursionTest"(@list) = {
                 &mut runtime_manager,
                 block_data,
                 HashMap::new(),
+                &std::collections::BTreeMap::new(),
                 None,
             )
             .await
@@ -1156,6 +1167,7 @@ async fn validate_block_checkpoint_should_pass_persistent_produce_test_with_caus
                 &mut runtime_manager,
                 block_data,
                 HashMap::new(),
+                &std::collections::BTreeMap::new(),
                 None,
             )
             .await
@@ -1269,6 +1281,7 @@ new loop, primeCheck, stdoutAck(`rho:io:stdoutAck`) in {
                 &mut runtime_manager,
                 block_data,
                 HashMap::new(),
+                &std::collections::BTreeMap::new(),
                 None,
             )
             .await
@@ -1374,6 +1387,7 @@ async fn validate_block_checkpoint_should_pass_tests_involving_races() {
                     &mut runtime_manager,
                     block_data,
                     HashMap::new(),
+                    &std::collections::BTreeMap::new(),
                     None,
                 )
                 .await
@@ -1470,6 +1484,7 @@ async fn validate_block_checkpoint_should_return_none_for_logs_containing_extra_
                 &mut runtime_manager,
                 block_data,
                 HashMap::new(),
+                &std::collections::BTreeMap::new(),
                 None,
             )
             .await
@@ -1597,6 +1612,7 @@ async fn validate_block_checkpoint_should_pass_map_update_test() {
                     &mut runtime_manager,
                     block_data,
                     HashMap::new(),
+                    &std::collections::BTreeMap::new(),
                     None,
                 )
                 .await

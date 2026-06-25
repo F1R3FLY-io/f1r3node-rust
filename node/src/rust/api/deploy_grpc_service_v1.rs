@@ -31,7 +31,7 @@ use models::casper::{
 };
 use models::servicemodelapi::ServiceError;
 use tokio::time::{sleep, Duration};
-use tracing::error;
+use tracing::{debug, error};
 
 use crate::rust::web::version_info::get_version_info_str;
 
@@ -290,7 +290,11 @@ impl DeployService for DeployGrpcServiceV1Impl {
                 Self::create_success_block_response(block_info)
             }
             Err(e) => {
-                error!("Deploy service method error get_block: {}", e);
+                if e.to_string().contains("Failure to find block") {
+                    debug!("get_block query for absent block: {}", e);
+                } else {
+                    error!("Deploy service method error get_block: {}", e);
+                }
                 Self::create_error_block_response(e.into_service_error())
             }
         }
@@ -559,13 +563,28 @@ impl DeployService for DeployGrpcServiceV1Impl {
         loop {
             match BlockAPI::find_deploy(&self.engine_cell, &request.deploy_id.to_vec()).await {
                 Ok(block_info) => {
+                    // Effect-level finalization, independent of blockInfo.isFinalized.
+                    // Fall back to UNSPECIFIED if the status can't be computed rather
+                    // than failing the (successful) lookup.
+                    let (finalization_state, rejection_count) =
+                        match BlockAPI::deploy_finalization_status(
+                            &self.engine_cell,
+                            &request.deploy_id.to_vec(),
+                        )
+                        .await
+                        {
+                            Ok(s) => (deploy_state_to_proto(s.state) as i32, s.rejection_count),
+                            Err(_) => (0, 0),
+                        };
                     return Ok(tonic::Response::new(FindDeployResponse {
                         message: Some(
                             models::casper::v1::find_deploy_response::Message::BlockInfo(
                                 block_info,
                             ),
                         ),
-                    }))
+                        finalization_state,
+                        rejection_count,
+                    }));
                 }
                 Err(e) => {
                     let not_found = e
@@ -579,6 +598,8 @@ impl DeployService for DeployGrpcServiceV1Impl {
                                     e.into_service_error(),
                                 ),
                             ),
+                            finalization_state: 0,
+                            rejection_count: 0,
                         }));
                     }
 

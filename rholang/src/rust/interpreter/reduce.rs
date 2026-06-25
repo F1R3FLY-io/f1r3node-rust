@@ -163,6 +163,25 @@ impl DebruijnInterpreter {
         env: &Env<Par>,
         rand: Blake2b512Random,
     ) -> Result<(), InterpreterError> {
+        {
+            let par_hash = rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash::new(
+                &par.encode_to_vec(),
+            );
+            let rand_path_hex =
+                hex::encode(&rand.path_view[..rand.path_position.min(rand.path_view.len())]);
+            tracing::trace!(
+                target: "f1r3fly.rholang.reduce.par_eval",
+                par_hash = %hex::encode(&par_hash.bytes()[..8]),
+                rand_path = %rand_path_hex,
+                sends = par.sends.len(),
+                receives = par.receives.len(),
+                news = par.news.len(),
+                matches = par.matches.len(),
+                bundles = par.bundles.len(),
+                exprs = par.exprs.len(),
+                "par eval",
+            );
+        }
         let terms: Vec<GeneratedMessage> = vec![
             par.sends
                 .into_iter()
@@ -318,6 +337,17 @@ impl DebruijnInterpreter {
         data: ListParWithRandom,
         persistent: bool,
     ) -> Result<DispatchType, InterpreterError> {
+        // DIAG: map a produce's channel blake-hash (the merge/rspace channel key)
+        // to its decoded Rholang identity, so a doubled merge cell (e.g. 593edd3f)
+        // can be tied to the name/registry/vault it actually is.
+        tracing::trace!(
+            target: "f1r3.trace.chanid",
+            blake = %hex::encode(
+                rspace_plus_plus::rspace::hashing::stable_hash_provider::hash(&chan).bytes()
+            ),
+            chan = ?chan,
+            "produce channel identity"
+        );
         self.update_mergeable_channels(&chan).await;
         let produce_result = self
             .space
@@ -742,6 +772,12 @@ impl DebruijnInterpreter {
         is_replay: bool,
         previous_output: Vec<Par>,
     ) -> Result<DispatchType, InterpreterError> {
+        tracing::trace!(
+            target: "f1r3fly.rholang.reduce.comm",
+            produce_count = data_list.len(),
+            is_replay,
+            "comm dispatch",
+        );
         self.dispatcher
             .dispatch(
                 continuation,
@@ -785,6 +821,12 @@ impl DebruijnInterpreter {
         if let Some(merge_type) = self.is_mergeable_channel(chan) {
             let mut merge_chs_write = self.merge_chs.write().await;
             merge_chs_write.insert(chan.clone(), merge_type);
+            tracing::trace!(
+                target: "f1r3fly.rholang.reduce.classify",
+                channel = %hex::encode(chan.encode_to_vec()),
+                merge_type = ?merge_type,
+                "mergeable channel classified by tag match",
+            );
         }
     }
 
@@ -993,6 +1035,26 @@ impl DebruijnInterpreter {
             })
             .collect::<Result<Vec<_>, InterpreterError>>()?;
 
+        tracing::trace!(
+            target: "f1r3fly.rholang.reduce.send",
+            channel_hash = %hex::encode(unbundled.encode_to_vec()),
+            data_count = send.data.len(),
+            persistent = send.persistent,
+            rand_path = %hex::encode(
+                &rand.path_view[..rand.path_position.min(rand.path_view.len())],
+            ),
+            "send eval",
+        );
+        tracing::trace!(
+            target: "f1r3fly.rholang.reduce.send",
+            channel_hash = %hex::encode(unbundled.encode_to_vec()),
+            data_count = send.data.len(),
+            persistent = send.persistent,
+            rand_path = %hex::encode(
+                &rand.path_view[..rand.path_position.min(rand.path_view.len())],
+            ),
+            "send eval",
+        );
         self.produce(
             unbundled,
             ListParWithRandom {
@@ -1011,6 +1073,17 @@ impl DebruijnInterpreter {
         env: &Env<Par>,
         rand: Blake2b512Random,
     ) -> Result<(), InterpreterError> {
+        tracing::trace!(
+            target: "f1r3fly.rholang.reduce.receive",
+            persistent = receive.persistent,
+            peek = receive.peek,
+            binds_count = receive.binds.len(),
+            bind_count = receive.bind_count,
+            rand_path = %hex::encode(
+                &rand.path_view[..rand.path_position.min(rand.path_view.len())],
+            ),
+            "receive eval",
+        );
         self.cost.charge(receive_eval_cost())?;
         let binds = receive
             .binds
@@ -1107,7 +1180,20 @@ impl DebruijnInterpreter {
             .substitute
             .substitute_and_charge(&evaled_target, 0, env)?;
 
-        for single_case in mat.cases.iter() {
+        let target_hash = rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash::new(
+            &subst_target.encode_to_vec(),
+        );
+        let match_rand_path =
+            hex::encode(&rand.path_view[..rand.path_position.min(rand.path_view.len())]);
+        tracing::trace!(
+            target: "f1r3fly.rholang.reduce.match_entry",
+            target_hash = %hex::encode(&target_hash.bytes()[..8]),
+            cases_total = mat.cases.len(),
+            rand_path = %match_rand_path,
+            "match entry",
+        );
+
+        for (case_idx, single_case) in mat.cases.iter().enumerate() {
             let pattern = self.substitute.substitute_and_charge(
                 &unwrap_option_safe(single_case.pattern.clone())?,
                 1,
@@ -1118,15 +1204,40 @@ impl DebruijnInterpreter {
             if let Some(free_map) =
                 spatial_matcher.spatial_match_result(subst_target.clone(), pattern)
             {
+                let body_par = single_case.source.clone().unwrap();
+                let body_hash =
+                    rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash::new(
+                        &body_par.encode_to_vec(),
+                    );
+                tracing::trace!(
+                    target: "f1r3fly.rholang.reduce.match_dispatch",
+                    target_hash = %hex::encode(&target_hash.bytes()[..8]),
+                    case_idx,
+                    cases_total = mat.cases.len(),
+                    body_hash = %hex::encode(&body_hash.bytes()[..8]),
+                    body_sends = body_par.sends.len(),
+                    body_news = body_par.news.len(),
+                    body_matches = body_par.matches.len(),
+                    rand_path = %match_rand_path,
+                    "match dispatch",
+                );
                 return self
                     .eval(
-                        single_case.source.clone().unwrap(),
+                        body_par,
                         &add_to_env(env, free_map.clone(), single_case.free_count),
                         rand,
                     )
                     .await;
             }
         }
+
+        tracing::trace!(
+            target: "f1r3fly.rholang.reduce.match_no_match",
+            target_hash = %hex::encode(&target_hash.bytes()[..8]),
+            cases_total = mat.cases.len(),
+            rand_path = %match_rand_path,
+            "match no match",
+        );
 
         Ok(())
     }
@@ -1142,6 +1253,31 @@ impl DebruijnInterpreter {
         env: Env<Par>,
         mut rand: Blake2b512Random,
     ) -> Result<(), InterpreterError> {
+        {
+            let body_hex = new
+                .p
+                .as_ref()
+                .map(|p| {
+                    hex::encode(
+                        &rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash::new(
+                            &p.encode_to_vec(),
+                        )
+                        .bytes()[..8],
+                    )
+                })
+                .unwrap_or_default();
+            let path_hex =
+                hex::encode(&rand.path_view[..rand.path_position.min(rand.path_view.len())]);
+            tracing::trace!(
+                target: "f1r3fly.rholang.reduce.new_entry",
+                thread = ?std::thread::current().id(),
+                bind_count = new.bind_count,
+                uri_count = new.uri.len(),
+                body_hash = %body_hex,
+                path = %path_hex,
+                "new entry",
+            );
+        }
         let mut alloc = |count: usize, urns: Vec<String>| {
             let simple_news =
                 (0..(count - urns.len()))

@@ -289,6 +289,41 @@ async fn recovery_cycle_rejected_deploy_is_buffered_and_re_proposed() {
         );
     }
 
+    // Re-proposal is gated on the SEALED verdict, not on merge_block's
+    // record alone: seal the rejection at merge_block — whose closure
+    // contains block_a/block_b, the rejected inclusion, exactly the geometry
+    // finalization produces — and pin merge_block as its own floor so the
+    // recovery proposal's floor derivation resolves there.
+    let conflict_host = if conflict_sig == sig_a {
+        block_a.block_hash.clone()
+    } else {
+        block_b.block_hash.clone()
+    };
+    {
+        use models::rust::block::floor_data::{FloorData, SealedRejection};
+        use models::rust::block::state_hash::StateHashSerde;
+        use models::rust::block_hash::BlockHashSerde;
+
+        let dag = nodes[0].block_dag_storage.get_representation();
+        dag.put_cached_floor(
+            merge_block.block_hash.clone(),
+            merge_block.block_hash.clone(),
+        )
+        .expect("seed floor cache");
+        dag.put_floor_state(merge_block.block_hash.clone(), FloorData {
+            state_hash: StateHashSerde(merge_block.body.state.post_state_hash.clone()),
+            rejected_deploys: vec![SealedRejection {
+                sig: conflict_sig.clone(),
+                host: BlockHashSerde(conflict_host.clone()),
+                host_number: merge_block.body.state.block_number,
+            }],
+            // Recovery scenario: the deploy is sealed-rejected, not accepted.
+            accepted_deploys: vec![],
+            block_number: merge_block.body.state.block_number,
+        })
+        .expect("seed sealed floor state");
+    }
+
     // Drive the recovery: validator 0 proposes recovery_block.
     // `collect_self_chain_deploy_sigs` walks validator 0's prior latest
     // (block_a) and finds deploy_a's sig there. Without the

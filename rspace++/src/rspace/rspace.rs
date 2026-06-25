@@ -4,7 +4,7 @@
 // the functions are not async-compatible with Span trait's closure pattern.
 // This matches Scala's Span[F].traceI() and withMarks() semantics.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt::Debug;
 use std::hash::Hash;
 use std::sync::Arc;
@@ -62,6 +62,8 @@ pub struct RSpace<C, P, A, K> {
     matcher: Arc<Box<dyn Match<P, A>>>,
     phase_a_locks: Arc<DashMap<u64, Arc<tokio::sync::Mutex<()>>>>,
     phase_b_locks: Arc<DashMap<u64, Arc<tokio::sync::Mutex<()>>>>,
+    current_deploy_sig: Arc<std::sync::RwLock<Option<Vec<u8>>>>,
+    this_exec_produces: Arc<std::sync::RwLock<HashSet<String>>>,
 }
 
 impl<C, P, A, K> RSpace<C, P, A, K>
@@ -73,6 +75,32 @@ where
 {
     pub fn get_store(&self) -> Arc<Box<dyn HotStore<C, P, A, K>>> {
         self.store.read().expect("store read lock").clone()
+    }
+
+    pub fn set_current_deploy_sig(&self, sig: Vec<u8>) {
+        *self
+            .current_deploy_sig
+            .write()
+            .expect("current_deploy_sig write lock") = Some(sig);
+        self.this_exec_produces
+            .write()
+            .expect("this_exec_produces write lock")
+            .clear();
+    }
+
+    pub fn current_deploy_sig_short(&self) -> String {
+        match self
+            .current_deploy_sig
+            .read()
+            .expect("current_deploy_sig read lock")
+            .as_ref()
+        {
+            Some(sig) => {
+                let h = hex::encode(sig);
+                h[..16.min(h.len())].to_string()
+            }
+            None => "none".to_string(),
+        }
     }
 
     fn channel_hash(channel: &C) -> u64 {
@@ -161,17 +189,31 @@ where
     K: Clone + Debug + Default + Serialize + 'static + Sync + Send,
 {
     async fn create_checkpoint(&self) -> Result<Checkpoint, RSpaceError> {
-        // Span[F].withMarks("create-checkpoint") from Scala - works because this is NOT
-        // async
         let _span = tracing::info_span!(target: "f1r3fly.rspace", "create-checkpoint").entered();
         tracing::trace!(target: "f1r3fly.rspace.ops", mark = "started-create-checkpoint", "create_checkpoint");
 
-        // Get changes with span
+        let hsid = Arc::as_ptr(&self.get_store()) as usize;
+        tracing::debug!(
+            target: "f1r3fly.rspace.checkpoint",
+            path = "play",
+            phase = "entry",
+            thread = ?std::thread::current().id(),
+            hsid = %format!("{:x}", hsid),
+            "create_checkpoint entry",
+        );
+
         let changes = {
             let _changes_span =
                 tracing::info_span!(target: "f1r3fly.rspace", CHANGES_SPAN).entered();
             self.get_store().changes()
         };
+        tracing::debug!(
+            target: "f1r3fly.rspace.checkpoint",
+            path = "play",
+            phase = "changes",
+            changes_count = changes.len(),
+            "create_checkpoint hot-store changes",
+        );
 
         // Create history checkpoint with span
         let next_history = {
@@ -459,6 +501,8 @@ where
             produce_counter: Arc::new(std::sync::Mutex::new(BTreeMap::new())),
             phase_a_locks: Arc::new(DashMap::new()),
             phase_b_locks: Arc::new(DashMap::new()),
+            current_deploy_sig: Arc::new(std::sync::RwLock::new(None)),
+            this_exec_produces: Arc::new(std::sync::RwLock::new(HashSet::new())),
         }
     }
 
@@ -908,6 +952,63 @@ where
         persist: bool,
         produce_ref: Produce,
     ) -> MaybeProduceResult<C, P, A, K> {
+        let hsid = Arc::as_ptr(&self.get_store()) as usize;
+        let existing = self.get_store().get_data(&channel);
+        let pre_count = existing.len();
+        tracing::trace!(
+            target: "f1r3fly.rspace.hotstore",
+            op = "produce",
+            path = "play",
+            thread = ?std::thread::current().id(),
+            hsid = %format!("{:x}", hsid),
+            deploy_sig = %self.current_deploy_sig_short(),
+            channel_hash = %hex::encode(produce_ref.channel_hash.bytes()),
+            produce_hash = %hex::encode(produce_ref.hash.bytes()),
+            persistent = persist,
+            pre_count,
+            "store_data invoked from deploy execution",
+        );
+        if pre_count >= 1 {
+            let existing_sources: Vec<String> = existing
+                .iter()
+                .map(|d| hex::encode(d.source.hash.bytes()))
+                .collect();
+            let new_hash = hex::encode(produce_ref.hash.bytes());
+            let this_exec = self
+                .this_exec_produces
+                .read()
+                .expect("this_exec_produces read lock");
+            let existing_provenance: Vec<&str> = existing_sources
+                .iter()
+                .map(|h| {
+                    if this_exec.contains(h) {
+                        "this-exec"
+                    } else {
+                        "inherited-from-pre-state"
+                    }
+                })
+                .collect();
+            tracing::debug!(
+                target: "f1r3fly.rspace.multidatum",
+                path = "play",
+                thread = ?std::thread::current().id(),
+                hsid = %format!("{:x}", hsid),
+                deploy_sig = %self.current_deploy_sig_short(),
+                channel_hash = %hex::encode(produce_ref.channel_hash.bytes()),
+                pre_count,
+                post_count = pre_count + 1,
+                new_produce_hash = %new_hash,
+                existing_produce_hashes = ?existing_sources,
+                existing_provenance = ?existing_provenance,
+                channel_par = ?channel,
+                value = ?data,
+                "multi-datum transition on channel",
+            );
+        }
+        self.this_exec_produces
+            .write()
+            .expect("this_exec_produces write lock")
+            .insert(hex::encode(produce_ref.hash.bytes()));
         self.get_store().put_datum(&channel, Datum {
             a: data,
             persist,
@@ -930,14 +1031,40 @@ where
             .map(|consume_candidate| {
                 let ConsumeCandidate {
                     channel,
-                    datum: Datum { persist, .. },
+                    datum: Datum {
+                        persist, source, ..
+                    },
                     removed_datum: _,
                     datum_index,
                 } = consume_candidate;
 
                 if !persist {
+                    tracing::trace!(
+                        target: "f1r3fly.rspace.hotstore",
+                        op = "consume",
+                        path = "play",
+                        site = "store_persistent_data",
+                        deploy_sig = %self.current_deploy_sig_short(),
+                        channel_hash = %hex::encode(source.channel_hash.bytes()),
+                        produce_hash = %hex::encode(source.hash.bytes()),
+                        datum_index = *datum_index,
+                        persistent = *persist,
+                        "store_persistent_data removed datum",
+                    );
                     self.get_store().remove_datum(channel, *datum_index).ok()
                 } else {
+                    tracing::trace!(
+                        target: "f1r3fly.rspace.hotstore",
+                        op = "consume",
+                        path = "play",
+                        site = "store_persistent_data",
+                        skip = "persistent",
+                        deploy_sig = %self.current_deploy_sig_short(),
+                        channel_hash = %hex::encode(source.channel_hash.bytes()),
+                        produce_hash = %hex::encode(source.hash.bytes()),
+                        datum_index = *datum_index,
+                        "persistent datum not removed",
+                    );
                     Some(())
                 }
             })
@@ -1072,11 +1199,25 @@ where
             .map(|consume_candidate| {
                 let ConsumeCandidate {
                     channel,
-                    datum: Datum { persist, .. },
+                    datum: Datum {
+                        persist, source, ..
+                    },
                     removed_datum: _,
                     datum_index,
                 } = consume_candidate;
 
+                tracing::trace!(
+                    target: "f1r3fly.rspace.hotstore",
+                    op = "consume",
+                    path = "play",
+                    site = "remove_matched_datum_and_join",
+                    deploy_sig = %self.current_deploy_sig_short(),
+                    channel_hash = %hex::encode(source.channel_hash.bytes()),
+                    produce_hash = %hex::encode(source.hash.bytes()),
+                    datum_index = *datum_index,
+                    persistent = *persist,
+                    "remove_datum on matched join",
+                );
                 if *datum_index >= 0 &&
                     !persist &&
                     self.get_store()
@@ -1147,12 +1288,14 @@ where
     }
 
     fn shuffle_with_index<D>(&self, t: Vec<D>) -> Vec<(D, i32)> {
-        let mut rng = rand::rng();
         let mut indexed_vec = t
             .into_iter()
             .enumerate()
             .map(|(i, d)| (d, i as i32))
             .collect::<Vec<_>>();
+        // Production tuple-space semantics: shuffle the match order, recording the
+        // chosen index so replay can reproduce the same COMM.
+        let mut rng = rand::rng();
         indexed_vec.shuffle(&mut rng);
         indexed_vec
     }

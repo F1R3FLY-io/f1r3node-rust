@@ -1,11 +1,12 @@
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/merging/RholangMergingLogic.scala
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::hash::Hash;
 
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use indexmap::IndexSet;
 use models::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
+use prost::Message;
 use rspace_plus_plus::rspace::errors::HistoryError;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::hashing::stable_hash_provider;
@@ -18,7 +19,7 @@ use rspace_plus_plus::rspace::merger::merging_logic::MergeType;
 use rspace_plus_plus::rspace::serializers::serializers;
 use rspace_plus_plus::rspace::trace::event::Produce;
 
-use crate::rust::interpreter::rho_type::RhoNumber;
+use crate::rust::interpreter::rho_type::{RhoMap, RhoNumber, RhoSet};
 
 pub struct RholangMergingLogic;
 
@@ -96,15 +97,31 @@ impl RholangMergingLogic {
         HotStoreTrieAction<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
         HistoryError,
     > {
-        // Read initial value of number channel from base state.
-        // None = channel doesn't exist yet (treat as 0); Err = invariant
-        // violation (non-numeric or multi-value pre-state) — propagate so the
-        // merge is rejected rather than silently substituting 0.
+        tracing::debug!(
+            target: "f1r3fly.merge.provenance",
+            channel = %hex::encode(channel_hash.bytes()),
+            merge_type = ?merge_type,
+            diff,
+            added_len = changes.added.len(),
+            removed_len = changes.removed.len(),
+            "number-channel merge fold entry"
+        );
+
         let init_num = Self::convert_to_read_number(get_base_data)(channel_hash)?.unwrap_or(0);
         let new_val = match merge_type {
             MergeType::IntegerAdd => init_num.wrapping_add(diff),
             MergeType::BitmaskOr => ((init_num as u64) | (diff as u64)) as i64,
         };
+
+        tracing::debug!(
+            target: "f1r3fly.merge.provenance",
+            channel = %hex::encode(channel_hash.bytes()),
+            merge_type = ?merge_type,
+            init_num,
+            diff,
+            new_val,
+            "number-channel merge fold result"
+        );
 
         // Calculate merged random generator (use only unique changes as input)
         let new_rnd = if changes.added.iter().collect::<HashSet<_>>().len() == 1 {
@@ -238,6 +255,231 @@ impl RholangMergingLogic {
                 },
             }
         }
+    }
+
+    /// Recursive 3-way structural merge of a non-foldable single-value cell onto the
+    /// running base (FS-current), given the block's committed transition. The recorded
+    /// `removed`/`added` are whole values (`old`/`new`); applying them raw stale-consumes
+    /// a co-finalized concurrent write, so instead we derive the structural operation
+    /// (added/removed keys, set elements, numeric delta) and fold it onto the base —
+    /// preserving every concurrent finalized write. Returns `Some` for Map/Set/Int
+    /// cells; `None` for everything else (string/bool/list/tuple/bag), which falls
+    /// through to `make_trie_action` and its stale-consume backstop.
+    ///
+    /// Determinism: every step is a pure function of the decoded values (sorted via
+    /// `SortedParMap`/`SortedParHashSet`) plus a deterministically-merged rand, so FS
+    /// is node-identical — unlike re-execution.
+    pub fn calculate_map_channel_merge(
+        channel_hash: &Blake2b256Hash,
+        changes: &ChannelChange<Vec<u8>>,
+        base_get_data: impl Fn(&Blake2b256Hash) -> Result<Vec<Datum<ListParWithRandom>>, HistoryError>,
+    ) -> Result<
+        Option<HotStoreTrieAction<Par, BindPattern, ListParWithRandom, TaggedContinuation>>,
+        HistoryError,
+    > {
+        // Single-value cell: exactly one removed (old) and one added (new) datum.
+        if changes.removed.len() != 1 || changes.added.len() != 1 {
+            return Ok(None);
+        }
+        let old_d: Datum<ListParWithRandom> = serializers::decode_datum(&changes.removed[0]);
+        let new_d: Datum<ListParWithRandom> = serializers::decode_datum(&changes.added[0]);
+        if old_d.a.pars.len() != 1 || new_d.a.pars.len() != 1 {
+            return Ok(None);
+        }
+        let old_par = old_d.a.pars[0].clone();
+        let new_par = new_d.a.pars[0].clone();
+
+        // Every single-value cell folds through the 3-way merge3_par: Map/Set merge structurally
+        // (preserve concurrent keys/elements); Int/String/Bool/List/Tuple resolve via standard
+        // resolution (new==old→base, base==old→new, else deterministic_pick = keep-one). This is the
+        // correct seal behavior for co-finalized concurrent writers to a NON-mergeable cell that were
+        // NOT keep-one'd at construction (e.g. two forks finalized together by the clique oracle):
+        // both are accepted, but the cell holds one value, so the seal deterministically keeps one.
+        // Routing non-mergeable cells to the raw make_trie_action backstop instead stale-consumes
+        // (the second writer's `removed` is gone from the rewritten base) and aborts the whole merge.
+
+        // Base = FS-current value. Empty cell ⇒ the 3-way reduces to "apply new".
+        let base_data = base_get_data(channel_hash)?;
+        let (base_par, base_rnd) = match base_data.first() {
+            Some(d) if d.a.pars.len() == 1 => (d.a.pars[0].clone(), Some(d.a.random_state.clone())),
+            Some(_) => return Ok(None), // multi-par base — bail to backstop
+            None => (old_par.clone(), None),
+        };
+
+        let merged = Self::merge3_par(&base_par, &old_par, &new_par);
+
+        // Deterministic merged rand: merge the contributing datums' rands (sorted,
+        // deduped), mirroring `calculate_number_channel_merge`. The cone and its
+        // datums are node-identical, so the result is node-identical.
+        let mut rand_bytes: Vec<Vec<u8>> =
+            vec![old_d.a.random_state.clone(), new_d.a.random_state.clone()];
+        if let Some(b) = base_rnd {
+            rand_bytes.push(b);
+        }
+        rand_bytes.sort();
+        rand_bytes.dedup();
+        let rnds: Vec<Blake2b512Random> = rand_bytes
+            .iter()
+            .map(|b| Blake2b512Random::from_bytes(b))
+            .collect();
+        let merged_rnd = if rnds.len() == 1 {
+            rnds.into_iter().next().unwrap()
+        } else {
+            Blake2b512Random::merge(rnds)
+        };
+
+        let datum_encoded = Self::value_datum_encoded(channel_hash, merged, merged_rnd);
+        Ok(Some(HotStoreTrieAction::TrieInsertAction(
+            TrieInsertAction::TrieInsertBinaryProduce(TrieInsertBinaryProduce {
+                hash: channel_hash.clone(),
+                data: vec![datum_encoded],
+            }),
+        )))
+    }
+
+    /// 3-way merge of one Rholang value given the block's transition old→new onto base.
+    fn merge3_par(base: &Par, old: &Par, new: &Par) -> Par {
+        if let (Some(b), Some(o), Some(n)) = (
+            RhoMap::unapply(base),
+            RhoMap::unapply(old),
+            RhoMap::unapply(new),
+        ) {
+            return RhoMap::create_par(Self::merge3_map(b, o, n));
+        }
+        if let (Some(b), Some(o), Some(n)) = (
+            RhoSet::unapply(base),
+            RhoSet::unapply(old),
+            RhoSet::unapply(new),
+        ) {
+            return RhoSet::create_par(Self::merge3_set(b, o, n));
+        }
+        // Standard resolution for every remaining leaf — untagged Int included. Additive folding
+        // is EXCLUSIVELY the IntegerAdd/BitmaskOr-tagged number-channel path (upstream of this fn,
+        // `calculate_number_channel_merge`); an untagged Int is NOT provably commutative, so it
+        // must NOT delta-fold (`base+(new−old)` over-applies a convergent RMW like committedRewards)
+        // and must NOT take unconditional last-writer (`new` clobbers a concurrent change when this
+        // block left the cell unchanged). The 3-way below is correct for all three cases; a
+        // genuinely additive untagged Int re-lands other writers via recovery, or the contract tags
+        // it IntegerAdd for an immediate commutative sum.
+        if new == old {
+            base.clone() // block didn't change it → keep the concurrent base
+        } else if base == old {
+            new.clone() // only this block changed it → take new
+        } else {
+            Self::deterministic_pick(base, new) // both diverged → deterministic last-writer
+        }
+    }
+
+    fn merge3_map(
+        mut base: HashMap<Par, Par>,
+        old: HashMap<Par, Par>,
+        new: HashMap<Par, Par>,
+    ) -> HashMap<Par, Par> {
+        let keys: HashSet<Par> = old.keys().chain(new.keys()).cloned().collect();
+        for k in keys {
+            match (old.get(&k), new.get(&k)) {
+                (None, Some(nv)) => match base.get(&k) {
+                    None => {
+                        base.insert(k, nv.clone()); // block added a fresh key
+                    }
+                    Some(bv) => {
+                        // concurrent same-key add, no common ancestor → 2-way union
+                        let m = Self::merge2_par(bv, nv);
+                        base.insert(k, m);
+                    }
+                },
+                (Some(_), None) => {
+                    base.remove(&k); // block deleted the key
+                }
+                (Some(ov), Some(nv)) if ov == nv => {} // block didn't touch it
+                (Some(ov), Some(nv)) => {
+                    let bv = base.get(&k).cloned().unwrap_or_else(|| ov.clone());
+                    let m = Self::merge3_par(&bv, ov, nv); // block changed it → recurse
+                    base.insert(k, m);
+                }
+                // Unreachable: every key comes from old∪new.
+                (None, None) => {}
+            }
+        }
+        base
+    }
+
+    fn merge3_set(base: Vec<Par>, old: Vec<Par>, new: Vec<Par>) -> Vec<Par> {
+        let old_s: HashSet<Par> = old.into_iter().collect();
+        let new_s: HashSet<Par> = new.into_iter().collect();
+        let mut base_s: HashSet<Par> = base.into_iter().collect();
+        for e in new_s.difference(&old_s) {
+            base_s.insert(e.clone()); // block added
+        }
+        for e in old_s.difference(&new_s) {
+            base_s.remove(e); // block removed
+        }
+        base_s.into_iter().collect() // RhoSet::create_par sorts, so order is irrelevant
+    }
+
+    /// 2-way union of two values that concurrently appeared at the same key with no
+    /// common ancestor (Maps/Sets union recursively; leaves take a deterministic pick).
+    fn merge2_par(a: &Par, b: &Par) -> Par {
+        if let (Some(ma), Some(mb)) = (RhoMap::unapply(a), RhoMap::unapply(b)) {
+            let mut out = ma;
+            for (k, vb) in mb {
+                match out.get(&k) {
+                    None => {
+                        out.insert(k, vb);
+                    }
+                    Some(va) => {
+                        let m = Self::merge2_par(va, &vb);
+                        out.insert(k, m);
+                    }
+                }
+            }
+            return RhoMap::create_par(out);
+        }
+        if let (Some(sa), Some(sb)) = (RhoSet::unapply(a), RhoSet::unapply(b)) {
+            let mut s: HashSet<Par> = sa.into_iter().collect();
+            s.extend(sb);
+            return RhoSet::create_par(s.into_iter().collect());
+        }
+        if a == b {
+            a.clone()
+        } else {
+            Self::deterministic_pick(a, b)
+        }
+    }
+
+    fn deterministic_pick(a: &Par, b: &Par) -> Par {
+        if a.encode_to_vec() <= b.encode_to_vec() {
+            a.clone()
+        } else {
+            b.clone()
+        }
+    }
+
+    fn value_datum_encoded(
+        channel_hash: &Blake2b256Hash,
+        value: Par,
+        rnd: Blake2b512Random,
+    ) -> Vec<u8> {
+        let par_with_rnd = ListParWithRandom {
+            pars: vec![value],
+            random_state: rnd.to_bytes(),
+        };
+        let data_hash =
+            stable_hash_provider::hash_produce(channel_hash.bytes(), &par_with_rnd, false);
+        let produce = Produce {
+            channel_hash: channel_hash.clone(),
+            hash: data_hash,
+            persistent: false,
+            is_deterministic: true,
+            output_value: vec![],
+            failed: false,
+        };
+        let datum = Datum {
+            a: par_with_rnd,
+            persist: false,
+            source: produce,
+        };
+        serializers::encode_datum(&datum)
     }
 }
 

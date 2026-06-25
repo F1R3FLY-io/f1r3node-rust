@@ -253,6 +253,33 @@ pub fn conflicts(a: &EventLogIndex, b: &EventLogIndex) -> HashableSet<Blake2b256
             .cloned()
             .collect();
 
+        // DIAG: channels both branches touched on the same datum that were
+        // EXEMPTED from conflict because they're mergeable. Cross-referenced
+        // with the dispatcher's in_mergeable_chs flag, this reveals a channel
+        // that is conflict-exempt (mergeable in the event log) yet NOT folded
+        // by the dispatcher (absent from number_chs) — the gap that lets two
+        // identical produces land raw as multi-value.
+        {
+            let exempt_p: Vec<String> = shared_produces
+                .0
+                .intersection(&mergeable_produces.0)
+                .map(|p| hex::encode(p.channel_hash.bytes()))
+                .collect();
+            let exempt_c: Vec<String> = shared_consumes
+                .0
+                .intersection(&mergeable_consumes.0)
+                .flat_map(|c| c.channel_hashes.iter().map(|h| hex::encode(h.bytes())))
+                .collect();
+            if !exempt_p.is_empty() || !exempt_c.is_empty() {
+                tracing::debug!(
+                    target: "f1r3fly.merge.mergeable_exempt",
+                    exempt_produce_channels = %exempt_p.join(","),
+                    exempt_consume_channels = %exempt_c.join(","),
+                    "conflict exempted as mergeable"
+                );
+            }
+        }
+
         let mut result = HashSet::new();
         for consume in consume_races {
             result.extend(consume.channel_hashes.iter().cloned());
@@ -630,12 +657,30 @@ where
         }
     }
 
+    tracing::debug!(
+        target: "f1r3fly.merge.dag",
+        n_branches = n,
+        pc_keys = produces_consumed_by_branches.len(),
+        pm_keys = produces_mergeable_by_branches.len(),
+        cp_keys = consumes_produced_by_branches.len(),
+        cm_keys = consumes_mergeable_by_branches.len(),
+        "conflict map built"
+    );
+
     // Collect conflict pairs (i, j) with i < j; duplicate insertions into
     // the result HashSets are idempotent so we don't dedupe pairs upfront.
     let mut pairs: Vec<(usize, usize)> = Vec::new();
 
     // #1 race on produces_consumed.
     for (produce, branches_set) in &produces_consumed_by_branches {
+        tracing::trace!(
+            target: "f1r3fly.merge.dag",
+            channel = %hex::encode(produce.channel_hash.bytes()),
+            produce_hash = %hex::encode(produce.hash.bytes()),
+            persistent = produce.persistent,
+            branch_count = branches_set.len(),
+            "conflict-map produce branch count"
+        );
         if produce.persistent || branches_set.len() < 2 {
             continue;
         }

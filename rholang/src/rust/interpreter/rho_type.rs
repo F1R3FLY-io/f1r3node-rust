@@ -10,6 +10,8 @@ use models::rhoapi::{
 };
 use models::rust::par_map::ParMap;
 use models::rust::par_map_type_mapper::ParMapTypeMapper;
+use models::rust::par_set::ParSet;
+use models::rust::par_set_type_mapper::ParSetTypeMapper;
 use models::rust::rholang::implicits::{single_expr, single_unforgeable};
 use models::rust::sorted_par_map::SortedParMap;
 use rspace_plus_plus::rspace::history::Either;
@@ -189,6 +191,30 @@ impl RhoMap {
             } = expr
             {
                 return Some(ParMapTypeMapper::emap_to_par_map(emap).ps.ps);
+            }
+        }
+        None
+    }
+}
+
+pub struct RhoSet;
+
+impl RhoSet {
+    pub fn create_par(elements: Vec<Par>) -> Par {
+        Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::ESetBody(ParSetTypeMapper::par_set_to_eset(
+                ParSet::create_from_vec(elements),
+            ))),
+        }])
+    }
+
+    pub fn unapply(p: &Par) -> Option<Vec<Par>> {
+        if let Some(expr) = single_expr(p) {
+            if let Expr {
+                expr_instance: Some(ExprInstance::ESetBody(eset)),
+            } = expr
+            {
+                return Some(ParSetTypeMapper::eset_to_par_set(eset).ps.sorted_pars);
             }
         }
         None

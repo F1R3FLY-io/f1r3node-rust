@@ -13,6 +13,12 @@ pub struct ProofOfStake {
     pub epoch_length: i32,
     pub quarantine_length: i32,
     pub number_of_active_validators: u32,
+    /// Shard fault-tolerance threshold, scaled by 1e6 (parts-per-million) so the
+    /// value is an integer (keeps `Eq`/`Hash`, round-trips cleanly through the
+    /// PoS contract). The `f32` fraction is reconstructed as `ppm as f32 / 1e6`
+    /// when read back from genesis. This is the shard's consensus safety bound
+    /// and is baked on-chain so every node's finalized-floor uses the same value.
+    pub fault_tolerance_threshold_ppm: i64,
     pub pos_multi_sig_public_keys: Vec<String>,
     pub pos_multi_sig_quorum: u32,
 }

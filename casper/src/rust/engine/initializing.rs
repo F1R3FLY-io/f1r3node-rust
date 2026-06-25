@@ -405,6 +405,11 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
                 PrettyPrinter::build_string(CasperMessage::BlockMessage(block.clone()), true)
             );
 
+            // LFS bootstrap: the approved block's post-state has NOT been imported yet
+            // (`request_approved_state` below performs the import), so the PoS active-validator
+            // set cannot be queried here (UnknownRootError on an un-imported root). The 3-arg
+            // insert's bonded-validator default is correct at the finalized anchor; the running
+            // engine records the precise active set for later blocks (see `handle_valid_block`).
             initializing.block_dag_storage.insert(block, false, true)?;
 
             initializing.request_approved_state(approved_block).await?;
@@ -591,6 +596,13 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         // Falls back to 5s when env var is absent or invalid.
         let lfs_request_timeout = Duration::from_secs(5);
 
+        // Overall wall-clock budget for making PROGRESS in either LFS state sync
+        // (tuple-space subtree + forward-horizon). A slow peer is tolerated via
+        // backoff/resend for as long as chunks keep completing; if none completes
+        // within this window the sync gives up cleanly rather than looping
+        // forever. Shared by both requesters so the give-up policy is one value.
+        const LFS_SYNC_DEADLINE: Duration = Duration::from_secs(600);
+
         // **Scala equivalent**: Create both streams (blockRequestStream and tupleSpaceStream)
         let (block_request_stream_result, tuple_space_stream_result) = tokio::join!(
             lfs_block_requester::stream(
@@ -610,11 +622,12 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
                 lfs_request_timeout,
                 tuple_space_requester,
                 self.rspace_state_manager.importer.clone(),
+                LFS_SYNC_DEADLINE,
             )
         );
 
         let block_request_stream = block_request_stream_result?;
-        let tuple_space_stream = tuple_space_stream_result?;
+        let (tuple_space_stream, tuple_space_err) = tuple_space_stream_result?;
 
         // **Scala equivalent**: `blockRequestAddDagStream = blockRequestStream.last.unNoneTerminate.evalMap { st => populateDag(...) }`
         // Process block request stream and return the final state for later DAG population
@@ -634,6 +647,12 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             // Stream items are processed by the stream itself, we just consume them to completion
             let mut stream = Box::pin(tuple_space_stream);
             while let Some(_) = stream.next().await {}
+            // Surface a give-up / processing-failure recorded by the stream (an
+            // unresponsive or byzantine peer) rather than silently proceeding
+            // with incomplete state.
+            if let Some(e) = tuple_space_err.lock().unwrap().take() {
+                return Err(e);
+            }
             tracing::info!("Rholang state received and saved to store.");
             Ok::<(), CasperError>(())
         };
@@ -712,25 +731,33 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
                     horizon_requester,
                     horizon_rx,
                     request_timeout,
+                    LFS_SYNC_DEADLINE,
                 )
                 .await;
 
                 // Drop the temporary sender so subsequent StoreItemsMessages
                 // (none expected once Running) don't queue indefinitely.
-                let final_horizon_state = match horizon_stream {
-                    Ok(stream) => {
+                let (final_horizon_state, horizon_err) = match horizon_stream {
+                    Ok((stream, err_handle)) => {
                         let mut stream = Box::pin(stream);
                         let mut final_state = None;
                         while let Some(st) = stream.next().await {
                             final_state = Some(st);
                         }
-                        Ok(final_state)
+                        (Ok(final_state), err_handle.lock().unwrap().take())
                     }
-                    Err(e) => Err(e),
+                    Err(e) => (Err(e), None),
                 };
                 {
                     let mut sender_slot = self.tuple_space_tx.lock().unwrap();
                     *sender_slot = None;
+                }
+
+                // Surface the specific give-up / byzantine reason if the stream
+                // recorded one — distinguishes an unresponsive or byzantine peer
+                // from a merely incomplete sync.
+                if let Some(e) = horizon_err {
+                    return Err(e);
                 }
 
                 // Loud failure: cannot transition to Running without a
@@ -798,6 +825,9 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             );
 
             // Scala equivalent: `BlockDagStorage[F].insert(block, invalid = isInvalid)`
+            // LFS bootstrap: post-states for these synced blocks are imported by the
+            // forward-horizon pass AFTER this DAG population — do not query the PoS
+            // active set here; the bonded-validator default is the correct one.
             initializing
                 .block_dag_storage
                 .insert(block, is_invalid, false)?;
@@ -869,6 +899,28 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             .take()
             .ok_or_else(|| CasperError::RuntimeError("Estimator not available".to_string()))?;
 
+        // Source the finalized-floor fault-tolerance threshold from genesis, not local
+        // config. A joining node's local --fault-tolerance-threshold may differ from what
+        // this shard baked at genesis; the on-chain value is authoritative for the floor so
+        // every node computes node-identical block pre-states (issue #71 / node-identity).
+        let on_chain_ftt =
+            crate::rust::util::token_metadata_check::read_on_chain_fault_tolerance_threshold(
+                &runtime_manager,
+                &genesis_post_state_hash,
+            )
+            .await?;
+        let mut casper_shard_conf = self.casper_shard_conf.clone();
+        if (on_chain_ftt - casper_shard_conf.fault_tolerance_threshold).abs() > 1e-6 {
+            tracing::warn!(
+                event = "fault_tolerance_threshold_sourced_from_genesis",
+                local = casper_shard_conf.fault_tolerance_threshold,
+                on_chain = on_chain_ftt,
+                "local fault-tolerance-threshold differs from the value baked into genesis; \
+                 using the on-chain value for the finalized floor (node-identity)"
+            );
+        }
+        casper_shard_conf.fault_tolerance_threshold = on_chain_ftt;
+
         // Pass Arc<RuntimeManager> directly to hash_set_casper
         let casper = crate::rust::casper::hash_set_casper(
             self.block_retriever.clone(),
@@ -881,7 +933,7 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             self.rejected_deploy_buffer.clone(),
             self.casper_buffer_storage.clone(),
             self.validator_id.clone(),
-            self.casper_shard_conf.clone(),
+            casper_shard_conf,
             ab,
             self.heartbeat_signal_ref.clone(),
         )?;

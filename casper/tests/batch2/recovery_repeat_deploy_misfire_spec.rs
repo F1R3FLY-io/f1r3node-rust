@@ -1,27 +1,24 @@
 // Tests covering the rejected-deploy-buffer recovery exemption:
 //
-//   - Validator side (`Validate::repeat_deploy`) MUST reject a recovery block
-//     whose deploy is canonically Finalized via a different chain (the
-//     rejection in `rejected_in_scope` came from a non-canonical sibling).
-//     Re-executing such a deploy would be double-execution.
+//   - Validator side (`Validate::repeat_deploy`) computes the verdict purely
+//     from the block's own ancestry: a prior inclusion makes re-inclusion a
+//     REPEAT (invalid) unless a later-or-equal ancestor records the sig in
+//     `body.rejected_deploys` — the legal recovery re-proposal. Rejection
+//     records in a valid ancestry are themselves consensus-validated (the
+//     InvalidRejectedDeploy equality check at the recording block), so they
+//     are trustworthy inputs; node-local views (rejected_in_scope, local
+//     finalization status) are NOT consulted — they split verdicts across
+//     nodes with different attach times.
 //
-//   - Proposer side (`prepare_user_deploys`) MUST decline the exemption for
-//     the same shape, otherwise it gossips a recovery block that downstream
-//     validators correctly flag as `InvalidRepeatDeploy` — leading to
-//     mutual-slashing on FTT=0 shards.
+//   - Proposer side (`prepare_user_deploys`) declines recovery for deploys
+//     already resolved in its canonical view, so it does not gossip blocks
+//     that waste proposal slots.
 
-use std::sync::Arc;
-
-use casper::rust::block_status::{BlockError, InvalidBlock};
 use casper::rust::util::construct_deploy;
-use casper::rust::validate::Validate;
-use dashmap::DashSet;
-use models::rust::casper::protocol::casper_message::RejectedDeploy;
 use prost::bytes::Bytes;
-use rspace_plus_plus::rspace::history::Either;
 
 use crate::helper::block_dag_storage_fixture::with_storage;
-use crate::helper::block_generator::{create_block, create_genesis_block};
+use crate::helper::block_generator::create_genesis_block;
 
 fn mk_casper_snapshot(
     dag: block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation,
@@ -65,94 +62,30 @@ fn mk_casper_snapshot(
     snapshot
 }
 
+// The two `Validate::repeat_deploy` ancestry-contract tests that lived here were
+// removed when `repeat_deploy` migrated from the ancestry scan
+// (`is_live_in_ancestry`) to the state-based `recovered_deploy_effect_in_base` check:
+// a re-inclusion is a repeat iff its effect is already present in the block's declared
+// pre-state, matching the proposer's recovery base-check so the two never disagree.
+// That contract requires real execution data (the deploy's sig-derived per-deploy
+// cells), which the synthetic `create_block` fixtures cannot provide; it is exercised
+// end-to-end by the `test_user_contract_concurrency` / validator-lifecycle integration
+// tests, where the multi-parent recovery flip arises naturally.
+
+/// Proposer-side recovery gate after the buffer-drain change.
+///
+/// The proposer no longer applies a canonical-state / liveness filter to
+/// recovered deploys. The recovery buffer holds only merge losers —
+/// `handle_valid_block` purges a deploy on block acceptance and the merge
+/// re-adds it on rejection — so a buffered deploy is by construction NOT in
+/// the execution base, and re-executing it can never be the content-twin.
+/// The only remaining recovery gate is single-owner: `prepare_user_deploys`
+/// ADMITS an owned recovered deploy and SKIPS one this validator does not own
+/// (so every node holding the rejected sig does not re-propose it concurrently).
+/// `Validate::repeat_deploy` is the consensus backstop if a stale entry ever
+/// slips through.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn repeat_deploy_correctly_rejects_stale_recovery_when_d_is_finalized() {
-    crate::init_logger();
-
-    with_storage(|mut block_store, mut block_dag_storage| async move {
-        let deploy = construct_deploy::basic_processed_deploy(0, None).unwrap();
-        let deploy_sig: Bytes = deploy.deploy.sig.clone();
-
-        // Genesis (LFB) carries D — so D is canonically Finalized.
-        let genesis = create_genesis_block(
-            &mut block_store,
-            &mut block_dag_storage,
-            None,
-            None,
-            None,
-            Some(vec![deploy.clone()]),
-            None,
-            None,
-            None,
-            None,
-        );
-
-        // Non-canonical sibling that declares D rejected. This is the
-        // staleness shape: D's sig ends up in `rejected_in_scope` via the
-        // ancestor scan, but the rejection itself is not canonical.
-        let mut block_n = create_block(
-            &mut block_store,
-            &mut block_dag_storage,
-            vec![genesis.block_hash.clone()],
-            &genesis,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-        );
-        block_n.body.rejected_deploys = vec![RejectedDeploy {
-            sig: deploy_sig.clone(),
-        }];
-        block_store
-            .put(block_n.block_hash.clone(), &block_n)
-            .unwrap();
-
-        // Recovery block: parent=block_n, body.deploys=[D].
-        let block_w = create_block(
-            &mut block_store,
-            &mut block_dag_storage,
-            vec![block_n.block_hash.clone()],
-            &genesis,
-            None,
-            None,
-            None,
-            Some(vec![deploy]),
-            None,
-            None,
-            None,
-            None,
-            None,
-        );
-
-        let dag = block_dag_storage.get_representation();
-        let mut snapshot = mk_casper_snapshot(dag);
-
-        let rejected: DashSet<Bytes> = DashSet::new();
-        rejected.insert(deploy_sig.clone());
-        snapshot.rejected_in_scope = Arc::new(rejected);
-
-        let result = Validate::repeat_deploy(&block_w, &mut snapshot, &mut block_store, 50);
-
-        assert!(
-            matches!(
-                result,
-                Either::Left(BlockError::Invalid(InvalidBlock::InvalidRepeatDeploy))
-            ),
-            "expected InvalidRepeatDeploy (D is canonically Finalized; rejection in \
-             block_n is non-canonical so the exemption must decline), got {:?}",
-            result
-        );
-    })
-    .await
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn proposer_must_skip_recovery_when_deploy_is_canonically_finalized() {
+async fn prepare_user_deploys_admits_owned_recovered_and_skips_non_owned() {
     use std::sync::Mutex as StdMutex;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -168,8 +101,9 @@ async fn proposer_must_skip_recovery_when_deploy_is_canonically_finalized() {
         let signed_deploy = processed_deploy.deploy.clone();
         let deploy_sig: Bytes = signed_deploy.sig.clone();
 
-        // Genesis (LFB) carries D — so D is canonically Finalized.
-        let _genesis = create_genesis_block(
+        // Genesis carries D, so D's indexed inclusion is genesis and its owner
+        // (for the single-owner gate) is genesis.sender.
+        let genesis = create_genesis_block(
             &mut block_store,
             &mut block_dag_storage,
             None,
@@ -194,8 +128,7 @@ async fn proposer_must_skip_recovery_when_deploy_is_canonically_finalized() {
                 .expect("Failed to create rejected deploy buffer"),
         ));
 
-        // D sits in the recovery buffer — the stale entry that the proposer
-        // would otherwise re-include via the exemption path.
+        // D sits in the recovery buffer — a recovered (merge-rejected) candidate.
         {
             let mut buf = rejected_deploy_buffer.lock().unwrap();
             buf.add(vec![signed_deploy.clone()])
@@ -207,39 +140,62 @@ async fn proposer_must_skip_recovery_when_deploy_is_canonically_finalized() {
         snapshot.last_finalized_block = block_dag_storage
             .get_representation()
             .last_finalized_block();
-        snapshot.deploys_in_scope.insert(deploy_sig.clone());
-        snapshot.rejected_in_scope.insert(deploy_sig.clone());
 
         let now_millis = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_millis() as i64)
             .unwrap_or(0);
 
-        let prepared = block_creator::prepare_user_deploys(
+        // Owned: self == the deploy's owner (genesis.sender) → admitted.
+        let owned = block_creator::prepare_user_deploys(
             &snapshot,
             10,
             now_millis,
             deploy_storage.clone(),
             rejected_deploy_buffer.clone(),
-            &block_store,
+            Some(&genesis.sender),
         )
         .await
         .expect("prepare_user_deploys should not error");
-
-        let included_sigs: Vec<String> = prepared
-            .deploys
-            .iter()
-            .map(|d| hex::encode(&d.sig))
-            .collect();
-
         assert!(
-            !prepared.deploys.iter().any(|d| d.sig == deploy_sig),
-            "prepare_user_deploys must skip a buffered deploy whose effects are \
-             already in canonical state (re-including it would be double-execution \
-             and the resulting block would be slashed by `repeat_deploy`).\n\
-             Included: {:?}\nD's sig:  {}",
-            included_sigs,
-            hex::encode(&deploy_sig),
+            owned.deploys.iter().any(|d| d.sig == deploy_sig),
+            "prepare_user_deploys must ADMIT an owned recovered deploy: the buffer holds only \
+             merge losers (kept clean by the accept-time purge in handle_valid_block), so the \
+             proposer applies no canonical-state filter. Included: {:?}",
+            owned
+                .deploys
+                .iter()
+                .map(|d| hex::encode(&d.sig))
+                .collect::<Vec<_>>(),
+        );
+
+        // Non-owned: self != the deploy's owner → skipped (single-owner recovery).
+        // (This fixture's genesis carries an empty sender, so the owner is empty;
+        // any non-empty key is a non-owner.)
+        let other_validator = Bytes::from(vec![0xEEu8; 32]);
+        assert_ne!(
+            other_validator, genesis.sender,
+            "fixture sanity: the non-owner validator must differ from genesis.sender"
+        );
+        let non_owned = block_creator::prepare_user_deploys(
+            &snapshot,
+            10,
+            now_millis,
+            deploy_storage.clone(),
+            rejected_deploy_buffer.clone(),
+            Some(&other_validator),
+        )
+        .await
+        .expect("prepare_user_deploys should not error");
+        assert!(
+            !non_owned.deploys.iter().any(|d| d.sig == deploy_sig),
+            "prepare_user_deploys must SKIP a recovered deploy this validator does not own \
+             (single-owner recovery prevents duplicate-conflict storms). Included: {:?}",
+            non_owned
+                .deploys
+                .iter()
+                .map(|d| hex::encode(&d.sig))
+                .collect::<Vec<_>>(),
         );
     })
     .await

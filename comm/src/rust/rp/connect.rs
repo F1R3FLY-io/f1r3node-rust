@@ -4,7 +4,7 @@ use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
 use rand::seq::SliceRandom;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::rust::discovery::node_discovery::NodeDiscovery;
 use crate::rust::errors::CommError;
@@ -305,7 +305,7 @@ where
                 warn!("Can't connect to peer {}. {}", peer_addr, msg);
             }
             Err(_) => {
-                warn!(
+                debug!(
                     "An error occurred while trying to connect to peer: {:?}",
                     peer
                 );

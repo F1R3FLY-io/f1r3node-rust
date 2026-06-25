@@ -537,6 +537,11 @@ impl WebApi for WebApiImpl {
 
         let is_full = view == ViewMode::Full;
 
+        // Effect-level finalization (merge-rejection / re-homing aware), independent
+        // of the block-level `is_finalized` above. Always computed.
+        let finalization =
+            BlockAPI::deploy_finalization_status(&self.engine_cell, &deploy_id_bytes).await?;
+
         Ok(DeployResponse {
             deploy_id,
             block_hash: light_block.block_hash,
@@ -545,6 +550,8 @@ impl WebApi for WebApiImpl {
             cost: deploy.cost,
             errored: deploy.errored,
             is_finalized: light_block.is_finalized,
+            finalization_state: deploy_state_json_label(finalization.state).to_string(),
+            rejection_count: finalization.rejection_count,
             deployer: if is_full {
                 Some(deploy.deployer.clone())
             } else {
@@ -753,16 +760,16 @@ impl WebApi for WebApiImpl {
 }"#
         .to_string();
 
-        let (resolved_hash, block_number) = self.resolve_block(block_hash).await?;
-
-        let (pars, _block, _cost) = BlockAPI::exploratory_deploy(
-            &self.engine_cell,
-            term,
-            Some(resolved_hash.clone()),
-            false,
-            self.dev_mode,
-        )
-        .await?;
+        // Finalized truth: read bonds from FS(LFB) (the sealed finalized-floor
+        // fold), not the keep-one LFB post-state which can transiently drop a
+        // concurrently-bonded validator to recovery. Passing the request's
+        // block_hash through means None -> FS(LFB); an explicit hash still reads
+        // that block's post-state (exploratory_deploy handles both).
+        let (pars, block, _cost) =
+            BlockAPI::exploratory_deploy(&self.engine_cell, term, block_hash, false, self.dev_mode)
+                .await?;
+        let resolved_hash = block.block_hash;
+        let block_number = block.block_number;
 
         let exprs: Vec<RhoExpr> = pars.into_iter().filter_map(expr_from_par_proto).collect();
 
@@ -858,16 +865,14 @@ impl WebApi for WebApiImpl {
 }"#
         .to_string();
 
-        let (resolved_hash, block_number) = self.resolve_block(block_hash).await?;
-
-        let (pars, _block, _cost) = BlockAPI::exploratory_deploy(
-            &self.engine_cell,
-            term,
-            Some(resolved_hash.clone()),
-            false,
-            self.dev_mode,
-        )
-        .await?;
+        // Finalized truth: read epoch rewards from FS(LFB), not the keep-one LFB
+        // post-state. None -> FS(LFB); an explicit hash reads that block's
+        // post-state (exploratory_deploy handles both).
+        let (pars, block, _cost) =
+            BlockAPI::exploratory_deploy(&self.engine_cell, term, block_hash, false, self.dev_mode)
+                .await?;
+        let resolved_hash = block.block_hash;
+        let block_number = block.block_number;
 
         let exprs: Vec<RhoExpr> = pars.into_iter().filter_map(expr_from_par_proto).collect();
         let rewards = exprs
@@ -895,16 +900,14 @@ impl WebApi for WebApiImpl {
 }"#
         .to_string();
 
-        let (resolved_hash, block_number) = self.resolve_block(block_hash).await?;
-
-        let (pars, _block, _cost) = BlockAPI::exploratory_deploy(
-            &self.engine_cell,
-            term,
-            Some(resolved_hash.clone()),
-            false,
-            self.dev_mode,
-        )
-        .await?;
+        // Finalized truth: read bonds from FS(LFB), not the keep-one LFB
+        // post-state. None -> FS(LFB); an explicit hash reads that block's
+        // post-state (exploratory_deploy handles both).
+        let (pars, block, _cost) =
+            BlockAPI::exploratory_deploy(&self.engine_cell, term, block_hash, false, self.dev_mode)
+                .await?;
+        let resolved_hash = block.block_hash;
+        let block_number = block.block_number;
 
         let exprs: Vec<RhoExpr> = pars.into_iter().filter_map(expr_from_par_proto).collect();
 
@@ -1288,6 +1291,16 @@ pub struct DeployResponse {
     pub errored: bool,
     #[serde(rename = "isFinalized")]
     pub is_finalized: bool,
+    /// Effect-level deploy finalization: "Finalized" | "Failed" | "Pending" | "Expired".
+    /// Unlike `isFinalized` (which is BLOCK-level — true once the containing block is
+    /// finalized), this reflects whether the deploy's EFFECTS reached canonical
+    /// finalized state. A deploy can be `isFinalized=true` yet `Pending`/`Expired`
+    /// here if its effects were rejected during the construction-merge.
+    #[serde(rename = "finalizationState")]
+    pub finalization_state: String,
+    /// Number of finalized blocks whose merge rejected this deploy's effects.
+    #[serde(rename = "rejectionCount")]
+    pub rejection_count: u32,
 
     // === Full view only (omitted in summary) ===
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1877,6 +1890,8 @@ mod tests {
             sig_algorithm: Some("secp256k1".to_string()),
             valid_after_block_number: Some(0),
             transfers: Some(vec![]),
+            finalization_state: "Finalized".to_string(),
+            rejection_count: 0,
         };
 
         let json = serde_json::to_value(&response).unwrap();
@@ -1911,6 +1926,8 @@ mod tests {
             sig_algorithm: None,
             valid_after_block_number: None,
             transfers: None,
+            finalization_state: "Finalized".to_string(),
+            rejection_count: 0,
         };
 
         let json = serde_json::to_value(&response).unwrap();

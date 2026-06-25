@@ -115,6 +115,11 @@ async fn step_block(
         .into_iter()
         .map(|d| d.deploy)
         .collect::<Vec<_>>();
+    let latest_messages: std::collections::BTreeMap<_, _> = block
+        .justifications
+        .iter()
+        .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
+        .collect();
 
     let (_, post_state_hash, processed_deploys, _, processed_system_deploys, bonds) =
         compute_deploys_checkpoint(
@@ -126,6 +131,7 @@ async fn step_block(
             runtime_manager,
             BlockData::from_block(block),
             HashMap::new(),
+            &latest_messages,
             None,
         )
         .await?;
@@ -212,6 +218,7 @@ async fn run_compute_parents_post_state_finalized_skew_regression() {
             epoch_length: 1000,
             quarantine_length: 50000,
             number_of_active_validators: 1,
+            fault_tolerance_threshold_ppm: 0,
             pos_multi_sig_public_keys: vec![
                 "04db91a53a2b72fcdcb201031772da86edad1e4979eb6742928d27731b1771e0bc40c9e9c9fa6554bdec041a87cee423d6f2e09e9dfb408b78e85a4aa611aad20c".to_string(),
                 "042a736b30fffcc7d5a58bb9416f7e46180818c82b15542d0a7819d1a437aa7f4b6940c50db73a67bfc5f5ec5b5fa555d24ef8339b03edaa09c096de4ded6eae14".to_string(),
@@ -301,6 +308,11 @@ async fn run_compute_parents_post_state_finalized_skew_regression() {
     .expect("Failed to step b3");
 
     let parents = vec![b2.clone(), b3.clone()];
+    // One fixed justification snapshot for both computations: the floor (and
+    // therefore the merge) must be a function of (parents, justifications),
+    // never of node-local finalized state.
+    let latest_messages: std::collections::BTreeMap<_, _> =
+        std::iter::once((validator.clone(), b2.block_hash.clone())).collect();
 
     let mut snapshot_without_skew = mk_snapshot(
         dag_storage.get_representation(),
@@ -316,9 +328,11 @@ async fn run_compute_parents_post_state_finalized_skew_regression() {
             parents.clone(),
             &snapshot_without_skew,
             &runtime_manager,
+            &latest_messages,
             None,
             None,
         )
+        .await
         .expect("Failed to compute parents post-state without finalized skew");
 
     runtime_manager.parents_post_state_cache.clear();
@@ -341,9 +355,11 @@ async fn run_compute_parents_post_state_finalized_skew_regression() {
         parents,
         &snapshot_with_skew,
         &runtime_manager,
+        &latest_messages,
         None,
         None,
     )
+    .await
     .expect("Failed to compute parents post-state with finalized skew");
 
     assert_eq!(
@@ -422,6 +438,7 @@ async fn run_compute_parents_post_state_missing_mergeable_regression() {
             epoch_length: 1000,
             quarantine_length: 50000,
             number_of_active_validators: 1,
+            fault_tolerance_threshold_ppm: 0,
             pos_multi_sig_public_keys: vec![
                 "04db91a53a2b72fcdcb201031772da86edad1e4979eb6742928d27731b1771e0bc40c9e9c9fa6554bdec041a87cee423d6f2e09e9dfb408b78e85a4aa611aad20c".to_string(),
                 "042a736b30fffcc7d5a58bb9416f7e46180818c82b15542d0a7819d1a437aa7f4b6940c50db73a67bfc5f5ec5b5fa555d24ef8339b03edaa09c096de4ded6eae14".to_string(),
@@ -522,6 +539,13 @@ async fn run_compute_parents_post_state_missing_mergeable_regression() {
         "Expected parent mergeable entry to exist before deletion."
     );
 
+    // Force the merge to consult the store rather than a cached BlockIndex or a
+    // cached parents-post-state, so the recompute-on-demand pre-pass is exercised.
+    runtime_manager.parents_post_state_cache.clear();
+    runtime_manager.block_index_cache.clear();
+
+    let latest_messages: std::collections::BTreeMap<_, _> =
+        std::iter::once((validator.clone(), b2.block_hash.clone())).collect();
     let mut snapshot = mk_snapshot(
         dag_storage.get_representation(),
         validator,
@@ -532,16 +556,29 @@ async fn run_compute_parents_post_state_missing_mergeable_regression() {
 
     let result = compute_parents_post_state(
         &block_store,
-        vec![b2, b3],
+        vec![b2.clone(), b3],
         &snapshot,
         &runtime_manager,
+        &latest_messages,
         None,
         None,
-    );
+    )
+    .await;
 
+    // A missing-but-recomputable mergeable entry must no longer fail the merge:
+    // the pre-pass replays the source block to materialize it (the LFS-imported-
+    // without-replay / locally-rejected recovery path that makes merge validity
+    // node-uniform).
     assert!(
-        matches!(result, Err(CasperError::KvStoreError(_))),
-        "Expected compute_parents_post_state to fail when a required mergeable entry is missing; got {result:?}"
+        result.is_ok(),
+        "compute_parents_post_state should recover a missing-but-recomputable \
+         mergeable entry by replaying the source block; got {result:?}"
+    );
+    assert!(
+        runtime_manager
+            .has_mergeable_entry(&b2)
+            .expect("has_mergeable_entry query failed"),
+        "The missing mergeable entry should have been recomputed by the merge pre-pass."
     );
 }
 
@@ -629,6 +666,7 @@ async fn run_visible_blocks_scope_test() {
             epoch_length: 1000,
             quarantine_length: 50000,
             number_of_active_validators: 3,
+            fault_tolerance_threshold_ppm: 0,
             pos_multi_sig_public_keys: vec![
                 "04db91a53a2b72fcdcb201031772da86edad1e4979eb6742928d27731b1771e0bc40c9e9c9fa6554bdec041a87cee423d6f2e09e9dfb408b78e85a4aa611aad20c".to_string(),
                 "042a736b30fffcc7d5a58bb9416f7e46180818c82b15542d0a7819d1a437aa7f4b6940c50db73a67bfc5f5ec5b5fa555d24ef8339b03edaa09c096de4ded6eae14".to_string(),

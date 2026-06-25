@@ -425,9 +425,42 @@ pub mod test_helpers {
                 deploy_index: Arc::new(RwLock::new(KeyValueTypedStoreImpl::new(Arc::new(
                     InMemoryKeyValueStore::new(),
                 )))),
+                floor_state_index: KeyValueTypedStoreImpl::new(Arc::new(
+                    InMemoryKeyValueStore::new(),
+                )),
+                floor_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
             };
 
             CasperSnapshot::new(dag)
+        }
+
+        /// Seed the consensus committee for a test snapshot. `is_bonded`, the proposer
+        /// active-validator gate, and the lag-recovery leader all read the committee
+        /// from the main parent's bonds field (`block.bonds` = active(FS) ∩ bonds(FS)),
+        /// so mark a validator "bonded" by adding it to a parent block's bonds.
+        pub fn bond_validator_in_snapshot(
+            snapshot: &mut CasperSnapshot,
+            validator: models::rust::validator::Validator,
+        ) {
+            use models::rust::casper::protocol::casper_message::Bond;
+            if snapshot.parents.is_empty() {
+                snapshot
+                    .parents
+                    .push(models::rust::block_implicits::get_random_block_default());
+            }
+            let parent = &mut snapshot.parents[0];
+            if !parent
+                .body
+                .state
+                .bonds
+                .iter()
+                .any(|b| b.validator == validator)
+            {
+                parent.body.state.bonds.push(Bond {
+                    validator,
+                    stake: 100,
+                });
+            }
         }
     }
 

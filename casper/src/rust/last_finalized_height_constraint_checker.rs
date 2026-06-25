@@ -18,10 +18,22 @@ pub fn check(
 
     let last_finalized_block = snapshot.dag.lookup_unsafe(&last_finalized_block_hash)?;
     let latest_message_opt = snapshot.dag.latest_message(&validator)?;
-    let latest_message = latest_message_opt.ok_or(CasperError::Other(
-        "Last finalized height constraint checker: Validator does not have a latest message"
-            .to_string(),
-    ))?;
+    let latest_message = match latest_message_opt {
+        Some(lm) => lm,
+        None => {
+            // Same as the synchrony checker: a proposer with no latest message yet
+            // (a freshly-bonded joiner before its genesis LM placeholder is registered
+            // on this node, or whose heartbeat fired before it) cannot propose. This is
+            // a graceful skip, not an error -- erroring here propagated as the false
+            // ProposeFailure::BugError ("BugError (seqNum N)") on a just-bonded joiner.
+            // It retries once it has a latest message.
+            tracing::debug!(
+                target: "f1r3fly.casper.proposer",
+                "Height constraint: proposer has no latest message yet; skipping propose"
+            );
+            return Ok(CheckProposeConstraintsResult::not_bonded());
+        }
+    };
 
     let height_difference = latest_message.block_number - last_finalized_block.block_number;
     let global_height_difference = snapshot.max_block_num - last_finalized_block.block_number;

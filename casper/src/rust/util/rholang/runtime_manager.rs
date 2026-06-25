@@ -77,6 +77,11 @@ pub struct RuntimeManager {
     /// Cache for merged parent post-state computation keyed by parent-set snapshot context.
     pub parents_post_state_cache: Arc<DashMap<ParentsPostStateCacheKey, ParentsPostStateCacheVal>>,
     pub parents_post_state_cache_order: Arc<Mutex<VecDeque<ParentsPostStateCacheKey>>>,
+    /// Materialized floor closures (floor hash -> ancestors-and-self), shared by
+    /// the conflict-scope computation and the floor seal. One BFS per floor
+    /// advance, amortized over every merge built on that floor.
+    pub floor_closure_cache: Arc<DashMap<BlockHash, Arc<std::collections::HashSet<BlockHash>>>>,
+    pub floor_closure_cache_order: Arc<Mutex<VecDeque<BlockHash>>>,
     /// Optional replay cache for delta replay optimization
     pub replay_cache: Option<Arc<InMemoryReplayCache>>,
     /// Optional state hash cache for skipping known replays
@@ -87,20 +92,27 @@ pub struct RuntimeManager {
 #[derive(Clone, Hash, PartialEq, Eq)]
 pub struct ParentsPostStateCacheKey {
     pub sorted_parent_hashes: Vec<BlockHash>,
-    // Snapshot LFB participates in visible-ancestor filtering, so cache key must include it.
-    pub snapshot_lfb_hash: BlockHash,
+    // The justification-derived floor is the merge base and scope boundary, so
+    // the cache key must include it: the same parent set under a different
+    // justification snapshot merges differently.
+    pub floor_hash: BlockHash,
     pub disable_late_block_filtering: bool,
 }
 
 pub type ParentsPostStateCacheVal = (
     StateHash,
-    Vec<prost::bytes::Bytes>,
+    // Rejected user deploys as (sig, host) — host is the rejected inclusion's
+    // source block, carried into the block body for the per-inclusion guard.
+    Vec<(prost::bytes::Bytes, models::rust::block_hash::BlockHash)>,
     Vec<crate::rust::merging::rejected_slash::RejectedSlash>,
 );
 
 impl RuntimeManager {
     const MAX_BLOCK_INDEX_CACHE_ENTRIES: usize = 128;
     const MAX_PARENTS_POST_STATE_CACHE_ENTRIES: usize = 64;
+    // Floor closures are large (full ancestry sets) but only the current floor
+    // and its recent predecessors are live at any moment.
+    const MAX_FLOOR_CLOSURE_CACHE_ENTRIES: usize = 4;
     const MAX_ACTIVE_VALIDATORS_CACHE_ENTRIES: usize = 256;
     const MAX_BONDS_CACHE_ENTRIES: usize = 64;
     const MAX_REPLAY_CACHE_ENTRIES: usize = 192;
@@ -294,8 +306,28 @@ impl RuntimeManager {
         block_data: BlockData,
         invalid_blocks: Option<HashMap<BlockHash, Validator>>,
     ) -> Result<(StateHash, Vec<ProcessedDeploy>, Vec<ProcessedSystemDeploy>), CasperError> {
-        let invalid_blocks = invalid_blocks.unwrap_or_default();
         let runtime = self.spawn_runtime().await;
+        self.compute_state_with_runtime(
+            runtime,
+            start_hash,
+            terms,
+            system_deploys,
+            block_data,
+            invalid_blocks,
+        )
+        .await
+    }
+
+    async fn compute_state_with_runtime(
+        &self,
+        runtime: RhoRuntimeImpl,
+        start_hash: &StateHash,
+        terms: Vec<Signed<DeployData>>,
+        system_deploys: Vec<super::system_deploy_enum::SystemDeployEnum>,
+        block_data: BlockData,
+        invalid_blocks: Option<HashMap<BlockHash, Validator>>,
+    ) -> Result<(StateHash, Vec<ProcessedDeploy>, Vec<ProcessedSystemDeploy>), CasperError> {
+        let invalid_blocks = invalid_blocks.unwrap_or_default();
         let mut runtime_ops = RuntimeOps::new(runtime);
 
         // Block data used for mergeable key
@@ -395,6 +427,19 @@ impl RuntimeManager {
         if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
             tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "start", rss_kb);
         }
+
+        tracing::debug!(
+            target: "f1r3fly.casper.divergence",
+            phase = "entry",
+            thread = ?std::thread::current().id(),
+            start_hash = %hex::encode(start_hash),
+            sender = %hex::encode(&block_data.sender.bytes),
+            seq_num = block_data.seq_num,
+            block_number = block_data.block_number,
+            time_stamp = block_data.time_stamp,
+            user_deploys = terms.len(),
+            "compute-state entry",
+        );
 
         let invalid_blocks = invalid_blocks.unwrap_or_default();
         let runtime = self.spawn_runtime().await;
@@ -497,6 +542,16 @@ impl RuntimeManager {
             tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_drop_runtime_ops", rss_kb);
         }
 
+        tracing::debug!(
+            target: "f1r3fly.casper.divergence",
+            phase = "exit",
+            thread = ?std::thread::current().id(),
+            start_hash = %hex::encode(start_hash),
+            post_state = %hex::encode(&state_hash),
+            sender = %hex::encode(&sender.bytes),
+            seq_num,
+            "compute-state exit",
+        );
         Ok((state_hash, usr_processed, sys_processed, bonds))
     }
 
@@ -542,6 +597,19 @@ impl RuntimeManager {
         let sender = block_data.sender.clone();
         let seq_num = block_data.seq_num;
         let replay_payload_hash = Self::replay_payload_hash(&terms, &system_deploys, is_genesis);
+
+        tracing::debug!(
+            target: "f1r3fly.casper.divergence",
+            phase = "replay_entry",
+            thread = ?std::thread::current().id(),
+            start_hash = %hex::encode(start_hash),
+            sender = %hex::encode(&sender.bytes),
+            seq_num,
+            block_number = block_data.block_number,
+            user_deploys = terms.len(),
+            system_deploys = system_deploys.len(),
+            "replay-compute-state entry",
+        );
 
         // Step 1: Check state-hash cache.
         //
@@ -619,6 +687,14 @@ impl RuntimeManager {
         if let Some(ref cache) = self.replay_cache {
             if let Some(entry) = cache.get(&replay_cache_key) {
                 tracing::info!("[CACHE] ReplayCache hit for sender seq={}", seq_num);
+                tracing::debug!(
+                    target: "f1r3fly.rspace.replay.cache",
+                    event = "hit",
+                    sender_seq = seq_num,
+                    post_state = %hex::encode(&entry.post_state),
+                    event_log_count = entry.event_log.len(),
+                    "replay cache hit; returning without save_mergeable_channels",
+                );
 
                 // Rig the replay runtime with cached event log
                 let replay_runtime = self.spawn_replay_runtime().await;
@@ -710,7 +786,18 @@ impl RuntimeManager {
     }
 
     pub async fn compute_bonds(&self, hash: &StateHash) -> Result<Vec<Bond>, CasperError> {
+        tracing::debug!(
+            target: "f1r3fly.casper.bonds_validation",
+            state = %hex::encode(hash),
+            "compute_bonds entry",
+        );
         if let Some(cached) = self.bonds_cache.get(hash) {
+            tracing::debug!(
+                target: "f1r3fly.casper.bonds_validation",
+                state = %hex::encode(hash),
+                bonds_count = cached.len(),
+                "compute_bonds cache hit",
+            );
             Self::touch_cache_key(&self.bonds_cache_order, hash);
             return Ok(cached.clone());
         }
@@ -718,6 +805,21 @@ impl RuntimeManager {
         let runtime = self.spawn_runtime().await;
         let mut runtime_ops = RuntimeOps::new(runtime);
         let computed = runtime_ops.compute_bonds(hash).await?;
+        tracing::debug!(
+            target: "f1r3fly.casper.bonds_validation",
+            state = %hex::encode(hash),
+            bonds_count = computed.len(),
+            "compute_bonds runtime",
+        );
+        for bond in computed.iter() {
+            tracing::trace!(
+                target: "f1r3fly.casper.bonds_validation",
+                state = %hex::encode(hash),
+                validator = %hex::encode(&bond.validator),
+                stake = bond.stake,
+                "computed bond",
+            );
+        }
 
         let max_entries = Self::max_bonds_cache_entries();
         if self.bonds_cache.len() >= max_entries {
@@ -863,6 +965,29 @@ impl RuntimeManager {
             .set(self.parents_post_state_cache.len() as f64);
     }
 
+    pub fn get_cached_floor_closure(
+        &self,
+        floor_hash: &BlockHash,
+    ) -> Option<Arc<std::collections::HashSet<BlockHash>>> {
+        self.floor_closure_cache.get(floor_hash).map(|entry| {
+            Self::touch_cache_key(&self.floor_closure_cache_order, floor_hash);
+            entry.value().clone()
+        })
+    }
+
+    pub fn put_cached_floor_closure(
+        &self,
+        floor_hash: BlockHash,
+        closure: Arc<std::collections::HashSet<BlockHash>>,
+    ) {
+        let max_entries = Self::MAX_FLOOR_CLOSURE_CACHE_ENTRIES;
+        if self.floor_closure_cache.len() >= max_entries {
+            Self::evict_fifo_entry(&self.floor_closure_cache, &self.floor_closure_cache_order);
+        }
+        self.floor_closure_cache.insert(floor_hash.clone(), closure);
+        Self::touch_cache_key(&self.floor_closure_cache_order, &floor_hash);
+    }
+
     /**
      * Load mergeable channels from store
      */
@@ -923,6 +1048,69 @@ impl RuntimeManager {
             .map_err(|e| CasperError::KvStoreError(KvStoreError::SerializationError(e.to_string())))
     }
 
+    /// True iff this node already holds the mergeable-channels entry for `block`.
+    ///
+    /// The entry is content-keyed by `(post_state_hash, creator, seq_num)`, but its
+    /// presence is a byproduct of whether this node executed/replayed the block.
+    /// Blocks imported via LFS without replay — or rejected locally and never
+    /// replayed — lack it, while the multi-parent merge requires it for every
+    /// scope block, which made merge validity node-local.
+    pub fn has_mergeable_entry(
+        &self,
+        block: &models::rust::casper::protocol::casper_message::BlockMessage,
+    ) -> Result<bool, CasperError> {
+        let key = Self::mergeable_key_bytes_for_block(block)?;
+        Ok(self.mergeable_store.contains_key(key)?)
+    }
+
+    /// Materialize the mergeable-channels entry for `block` by replaying it, unless
+    /// already present. The mergeable diffs are a deterministic function of the
+    /// block's content (pre-state + deploys + system deploys) reduced against the
+    /// static mergeable-tag registry, so a full replay reconstructs exactly the
+    /// entry the proposer stored — making mergeable presence a function of consensus
+    /// data on every node rather than of local execution history.
+    ///
+    /// `invalid_blocks` MUST be the block's *seen* invalid-block set (the set its
+    /// original validation used); otherwise the replay computes a different
+    /// post-state and the entry would be stored under the wrong key.
+    pub async fn ensure_mergeable_entry(
+        &self,
+        block: &models::rust::casper::protocol::casper_message::BlockMessage,
+        invalid_blocks: HashMap<BlockHash, Validator>,
+    ) -> Result<(), CasperError> {
+        if self.has_mergeable_entry(block)? {
+            return Ok(());
+        }
+
+        let block_data = BlockData::from_block(block);
+        let is_genesis = block.header.parents_hash_list.is_empty();
+        self.replay_compute_state(
+            &block.body.state.pre_state_hash,
+            block.body.deploys.clone(),
+            block.body.system_deploys.clone(),
+            &block_data,
+            Some(invalid_blocks),
+            is_genesis,
+        )
+        .await?;
+
+        // Fail closed: the full-replay path persists the entry. The only no-save
+        // path is an in-memory ReplayCache hit, which cannot occur for a block this
+        // node never executed (ReplayCache is populated only by local
+        // compute/propose, alongside the persistent save). If it is still absent the
+        // merge would diverge across nodes, so surface it rather than proceed.
+        if !self.has_mergeable_entry(block)? {
+            return Err(CasperError::RuntimeError(format!(
+                "mergeable entry still absent after recompute for block {} (seq={}); \
+                 replay returned without persisting mergeable channels",
+                hex::encode(&block.block_hash),
+                block.seq_num,
+            )));
+        }
+
+        Ok(())
+    }
+
     /// Look up a block's mergeable-channels entry and return its over-the-wire
     /// byte form. Returns `(key_bytes, Some(value_bytes))` if present,
     /// `(key_bytes, None)` if absent. Re-serializes via bincode at the typed
@@ -951,12 +1139,41 @@ impl RuntimeManager {
         key_bytes: Vec<u8>,
         value_bytes: Vec<u8>,
     ) -> Result<(), CasperError> {
+        tracing::debug!(
+            target: "f1r3fly.rspace.lfs_import",
+            key_bytes_len = key_bytes.len(),
+            value_bytes_len = value_bytes.len(),
+            "lfs put mergeable entry",
+        );
         if value_bytes.is_empty() {
+            tracing::debug!(
+                target: "f1r3fly.rspace.lfs_import",
+                "lfs put mergeable entry empty (peer had no entry)",
+            );
             return Ok(());
         }
         let value: Vec<DeployMergeableData> = bincode::deserialize(&value_bytes).map_err(|e| {
             CasperError::KvStoreError(KvStoreError::SerializationError(e.to_string()))
         })?;
+        let total_channels: usize = value.iter().map(|d| d.channels.len()).sum();
+        tracing::debug!(
+            target: "f1r3fly.rspace.lfs_import",
+            deploys = value.len(),
+            total_channels,
+            "lfs mergeable entry decoded",
+        );
+        for (deploy_idx, d) in value.iter().enumerate() {
+            for ch in d.channels.iter() {
+                tracing::trace!(
+                    target: "f1r3fly.rspace.lfs_import",
+                    deploy_idx,
+                    channel = %hex::encode(ch.hash.bytes()),
+                    merge_type = ?ch.merge_type,
+                    diff = ch.diff,
+                    "lfs mergeable channel",
+                );
+            }
+        }
         self.mergeable_store
             .put_one(key_bytes, value)
             .map_err(CasperError::KvStoreError)
@@ -1148,6 +1365,8 @@ impl RuntimeManager {
             bonds_cache_order: Arc::new(Mutex::new(VecDeque::new())),
             parents_post_state_cache: Arc::new(DashMap::new()),
             parents_post_state_cache_order: Arc::new(Mutex::new(VecDeque::new())),
+            floor_closure_cache: Arc::new(DashMap::new()),
+            floor_closure_cache_order: Arc::new(Mutex::new(VecDeque::new())),
             replay_cache: (replay_cache_size > 0)
                 .then(|| Arc::new(InMemoryReplayCache::new(replay_cache_size))),
             state_hash_cache: (state_hash_cache_size > 0)

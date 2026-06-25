@@ -13,7 +13,7 @@
  8.  | 4,         | registry           | uri = rho:id:hxyadh1ffypra47ry9mk6b8r1i33ar1w9wjsez4khfe9huzrfcytx9
  ----+------------+--------------------+-----------------------------------------------------------------------------------------------------------------------------------------------------
  */
-new  NonNegativeNumber, MergeableTag, rs(`rho:registry:insertSigned:secp256k1`), uriOut in {
+new  NonNegativeNumber, MergeableTag, rs(`rho:registry:insertSigned:secp256k1`), uriOut, stdout(`rho:io:stdout`) in {
   contract NonNegativeNumber(@init, return) = {
     new this, valueStore in {
       contract this(@"add", @x, success) = {
@@ -36,6 +36,7 @@ new  NonNegativeNumber, MergeableTag, rs(`rho:registry:insertSigned:secp256k1`),
             if (x <= v) {
               @(*MergeableTag, *valueStore)!(v - x) | success!(true)
             } else {
+              stdout!(["[CONTRACT-NN-SUB-INSUFFICIENT]", "v=", v, "x=", x]) |
               @(*MergeableTag, *valueStore)!(v) | success!(false)
             }
           }

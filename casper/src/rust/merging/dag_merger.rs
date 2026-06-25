@@ -17,7 +17,9 @@ use shared::rust::hashable_set::HashableSet;
 use super::conflict_set_merger;
 use super::deploy_chain_index::DeployChainIndex;
 use crate::rust::errors::CasperError;
-use crate::rust::system_deploy::{is_slash_deploy_id, is_system_deploy_id};
+use crate::rust::system_deploy::{
+    is_close_block_deploy_id, is_slash_deploy_id, is_system_deploy_id,
+};
 
 pub fn cost_optimal_rejection_alg() -> impl Fn(&DeployChainIndex) -> u64 {
     |deploy_chain_index: &DeployChainIndex| {
@@ -30,35 +32,81 @@ pub fn cost_optimal_rejection_alg() -> impl Fn(&DeployChainIndex) -> u64 {
     }
 }
 
-/// BFS walk of DAG descendants of `start_blocks`, restricted to `scope`.
-///
-/// When the merge rejects the deploy chains of a block, any descendant block
-/// in scope has diffs that were computed against the rejected block's
-/// post-state and are therefore stale. This walk identifies the affected
-/// descendants so their chains can be rejected as well.
-///
-/// Returns the strict descendants; the start blocks themselves are not included.
-fn descendants_within_scope(
-    dag: &KeyValueDagRepresentation,
-    start_blocks: &HashSet<BlockHash>,
-    scope: &HashSet<BlockHash>,
-) -> HashSet<BlockHash> {
-    let mut result = HashSet::new();
-    let mut queue: Vec<BlockHash> = start_blocks.iter().cloned().collect();
-    let mut visited: HashSet<BlockHash> = start_blocks.clone();
-
-    while let Some(current) = queue.pop() {
-        if let Some(children) = dag.children(&current) {
-            for child in children {
-                if scope.contains(&child) && visited.insert(child.clone()) {
-                    result.insert(child.clone());
-                    queue.push(child);
-                }
-            }
-        }
+/// True iff `sub` is a sub-multiset of `sup`: every datum appears in `sup` at
+/// least as many times as in `sub`. The single-value-cell serialization uses
+/// this to decide whether a chain's consumed (`removed`) datums are still
+/// available in the running cell state. Shared with the seal keep-one.
+pub(crate) fn is_sub_multiset(sub: &[Vec<u8>], sup: &[Vec<u8>]) -> bool {
+    let mut sup_counts: HashMap<&Vec<u8>, usize> = HashMap::new();
+    for d in sup {
+        *sup_counts.entry(d).or_insert(0) += 1;
     }
+    let mut sub_counts: HashMap<&Vec<u8>, usize> = HashMap::new();
+    for d in sub {
+        *sub_counts.entry(d).or_insert(0) += 1;
+    }
+    sub_counts
+        .iter()
+        .all(|(d, &need)| sup_counts.get(*d).copied().unwrap_or(0) >= need)
+}
 
-    result
+/// Deterministic order for the single-value-cell serialization keep-one. CloseBlock chains
+/// are PRIMARY (sort first): a CloseBlock is non-recoverable (system deploy, no owner,
+/// exact-boundary gating won't re-fire), so it must win the cell and route concurrent user
+/// writers to recovery rather than be rejected itself — losing it would drop a whole epoch's
+/// processing. It consumes only base data (the stateCh + rho:block:data), never a concurrent
+/// cone chain's produce, so promoting it ahead of block number cannot violate
+/// producer-before-consumer. Then block number is the next key so a producer precedes its
+/// consumers (a consumer of another chain's produce is in a strictly higher block). Among
+/// same-height siblings — where a single-value-cell fork actually is — higher TOTAL COST wins
+/// (pay-more-wins), with (block hash, sorted sigs) as the final node-identical tiebreak.
+/// Shared with the seal keep-one; unit tested.
+pub(crate) fn serialize_keep_one_order(
+    a: &DeployChainIndex,
+    b: &DeployChainIndex,
+) -> std::cmp::Ordering {
+    fn cost(c: &DeployChainIndex) -> u64 { c.deploys_with_cost.0.iter().map(|d| d.cost).sum() }
+    fn sig_key(c: &DeployChainIndex) -> Vec<Vec<u8>> {
+        let mut sigs: Vec<Vec<u8>> = c
+            .deploys_with_cost
+            .0
+            .iter()
+            .map(|d| d.deploy_id.to_vec())
+            .collect();
+        sigs.sort();
+        sigs
+    }
+    fn is_close_block(c: &DeployChainIndex) -> bool {
+        c.deploys_with_cost
+            .0
+            .iter()
+            .any(|d| is_close_block_deploy_id(&d.deploy_id))
+    }
+    is_close_block(b)
+        .cmp(&is_close_block(a)) // CloseBlock chains first (non-recoverable: must win the cell)
+        .then_with(|| a.source_block_number.cmp(&b.source_block_number))
+        .then_with(|| cost(b).cmp(&cost(a))) // higher cost first (pay-more-wins)
+        .then_with(|| a.source_block_hash.cmp(&b.source_block_hash))
+        .then_with(|| sig_key(a).cmp(&sig_key(b)))
+}
+
+/// Finalized counterparties for a merge — the enforcement window between the
+/// base floor and the fork-point cover of the conflict scope. Currently unused:
+/// its only producer (`floor_seal::enforcement_window`) was removed in the
+/// buffer-drain change, so every live caller passes `None`. Retained (dead-but-
+/// wired through `merge`/`resolve_conflicts`) pending the follow-up that strips
+/// the `final_context` parameter end-to-end.
+pub struct FinalContext {
+    /// Seal-accepted chains in the window: conflict counterparties whose
+    /// effects are in the base. Never merged, never re-litigated.
+    pub accepted_chains: Vec<DeployChainIndex>,
+    /// Seal-rejected chains in the window: depends-sources for force-rejection.
+    pub rejected_chains: Vec<DeployChainIndex>,
+    /// User-deploy sigs of accepted window chains: a conflict chain carrying
+    /// one is a duplicate of finalized work and is force-rejected. Deliberately
+    /// NOT the cumulative finalization-rejected set — a rejected deploy must
+    /// stay re-proposable above the floor (the recovery path).
+    pub enforce_sigs: HashSet<Bytes>,
 }
 
 pub fn merge(
@@ -70,19 +118,28 @@ pub fn merge(
     rejection_cost_f: impl Fn(&DeployChainIndex) -> u64,
     scope: Option<HashSet<BlockHash>>,
     disable_late_block_filtering: bool,
+    final_context: Option<&FinalContext>,
 ) -> Result<
     (
         Blake2b256Hash,
+        // Applied (kept-chain) user-deploy (sig, source block) pairs — the
+        // deploys whose effect IS in this merged state. The seal records these
+        // as FS's accepted ledger so a deploy finalized-accepted at any
+        // inclusion is never re-proposed (the content-twin fix).
+        Vec<(Bytes, BlockHash)>,
         Vec<(Bytes, BlockHash)>,
         Vec<(Bytes, BlockHash)>,
     ),
     CasperError,
 > {
-    // Blocks to merge are all blocks in scope that are NOT the LFB or its ancestors.
-    // This includes:
-    // 1. Descendants of LFB (blocks built on top of LFB)
-    // 2. Siblings of LFB (blocks at same height but different branch) that are ancestors of the tips
-    // Previously we only included descendants, which missed deploy effects from sibling branches.
+    tracing::debug!(
+        target: "f1r3fly.merge.dag",
+        lfb_post_state = %hex::encode(lfb_post_state.bytes()),
+        "dag merge lfb post-state"
+    );
+
+    // Time the actual-blocks / late-blocks set computation (is_in_main_chain per scope block).
+    let actual_blocks_start = std::time::Instant::now();
     let actual_blocks: HashSet<BlockHash> = match &scope {
         Some(scope_blocks) => {
             // Avoid unbounded full-DAG ancestor scans. Check each scope block against LFB directly.
@@ -115,6 +172,11 @@ pub fn merge(
             .cloned()
             .collect()
     };
+    metrics::histogram!(
+        crate::rust::metrics_constants::DAG_MERGE_ACTUAL_BLOCKS_TIME_METRIC,
+        "source" => crate::rust::metrics_constants::CASPER_METRICS_SOURCE
+    )
+    .record(actual_blocks_start.elapsed().as_secs_f64());
 
     // Log the block sets for debugging
     tracing::info!(
@@ -131,7 +193,9 @@ pub fn merge(
     let mut actual_set_vec = Vec::new();
     let mut late_set_vec = Vec::new();
 
-    // Process actual blocks (sorted for determinism)
+    // Process actual blocks (sorted for determinism). Building each block's
+    // DeployChainIndex (index()) dominates the merge for fat blocks — timed here.
+    let index_build_start = std::time::Instant::now();
     let mut actual_blocks_sorted: Vec<_> = actual_blocks.iter().collect();
     actual_blocks_sorted.sort();
     for block_hash in actual_blocks_sorted {
@@ -146,6 +210,11 @@ pub fn merge(
         let indices = index(block_hash)?;
         late_set_vec.extend(indices);
     }
+    metrics::histogram!(
+        crate::rust::metrics_constants::DAG_MERGE_INDEX_BUILD_TIME_METRIC,
+        "source" => crate::rust::metrics_constants::CASPER_METRICS_SOURCE
+    )
+    .record(index_build_start.elapsed().as_secs_f64());
 
     // Accumulator for deploys that lose their chain via dedup but have no
     // fresher copy elsewhere. These are treated the same as conflict-rejected
@@ -160,6 +229,7 @@ pub fn merge(
     // hash as a deterministic tiebreak. A chain containing any deploy whose
     // freshest source is a different chain is dropped; its diffs were computed
     // against a pre-state that the fresh execution replaces.
+    let dedup_start = std::time::Instant::now();
     if !actual_set_vec.is_empty() {
         // Find the freshest source for each deploy_id across all chains.
         let mut latest_for_deploy: HashMap<Bytes, (i64, BlockHash)> = HashMap::new();
@@ -238,6 +308,11 @@ pub fn merge(
             );
         }
     }
+    metrics::histogram!(
+        crate::rust::metrics_constants::DAG_MERGE_DEDUP_TIME_METRIC,
+        "source" => crate::rust::metrics_constants::CASPER_METRICS_SOURCE
+    )
+    .record(dedup_start.elapsed().as_secs_f64());
 
     // Sort the deploy chain indices for deterministic iteration order
     actual_set_vec.sort();
@@ -286,15 +361,16 @@ pub fn merge(
             .map(|deploy| deploy.deploy_id.clone())
             .collect();
 
+        // ALL chains contribute to the branch's combined event log, system-deploy
+        // chains included. CloseBlock writes the whole PoS state cell at epoch
+        // boundaries; excluding system chains here made two sibling boundary
+        // writes invisible to conflict detection, so both whole-cell deltas were
+        // applied and the single-value cell went multi-datum (then getBonds reads
+        // diverged per node -> InvalidBondsCache). RChain indexes system deploys
+        // as first-class conflict participants for the same reason.
         let combined_event_log = branch
             .0
             .iter()
-            .filter(|idx| {
-                idx.deploys_with_cost
-                    .0
-                    .iter()
-                    .all(|d| !is_system_deploy_id(&d.deploy_id))
-            })
             .map(|chain| &chain.event_log_index)
             .try_fold(
                 rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex::empty(),
@@ -399,8 +475,22 @@ pub fn merge(
                 &*reader,
                 &mergeable_chs,
                 |hash: &Blake2b256Hash, channel_changes, number_chs: &NumberChannelsDiff| {
+                    tracing::trace!(
+                        target: "f1r3fly.rholang.dispatcher",
+                        channel = %hex::encode(hash.bytes()),
+                        in_mergeable_chs = number_chs.get(hash).is_some(),
+                        number_chs_size = number_chs.len(),
+                        "merge dispatcher channel"
+                    );
                     if let Some(number_ch_val) = number_chs.get(hash) {
                         let (diff, merge_type) = *number_ch_val;
+                        tracing::trace!(
+                            target: "f1r3fly.rholang.dispatcher",
+                            channel = %hex::encode(hash.bytes()),
+                            merge_type = ?merge_type,
+                            diff,
+                            "merge dispatcher fold path"
+                        );
                         let base_get_data = |h: &Blake2b256Hash| reader.get_data(h);
                         Ok(Some(RholangMergingLogic::calculate_number_channel_merge(
                             hash,
@@ -410,6 +500,37 @@ pub fn merge(
                             base_get_data,
                         )?))
                     } else {
+                        tracing::trace!(
+                            target: "f1r3fly.rholang.dispatcher",
+                            channel = %hex::encode(hash.bytes()),
+                            "merge dispatcher fallback path"
+                        );
+                        // DIAG: identify the non-mergeable channel by decoding its
+                        // base value(s). Gated so the base read + per-datum decode
+                        // only run when the diagnostic target is enabled.
+                        if tracing::enabled!(target: "f1r3fly.merge.channel_id", tracing::Level::DEBUG)
+                        {
+                            if let Ok(base) = reader.get_data(hash) {
+                                let vals: Vec<String> = base
+                                    .iter()
+                                    .map(|d| {
+                                        match RholangMergingLogic::try_get_number_with_rnd(&d.a) {
+                                            Some((n, _)) => format!("num:{}", n),
+                                            None => "par".to_string(),
+                                        }
+                                    })
+                                    .collect();
+                                tracing::debug!(
+                                    target: "f1r3fly.merge.channel_id",
+                                    channel = %hex::encode(hash.bytes()),
+                                    base_count = base.len(),
+                                    base_values = %vals.join(","),
+                                    added = channel_changes.added.len(),
+                                    removed = channel_changes.removed.len(),
+                                    "non-mergeable channel base values"
+                                );
+                            }
+                        }
                         Ok(None)
                     }
                 },
@@ -417,7 +538,12 @@ pub fn merge(
         }
     };
 
-    let apply_trie_actions_fn = |actions| {
+    let apply_trie_actions_fn = |actions: Vec<_>| {
+        tracing::debug!(
+            target: "f1r3fly.merge.dag",
+            actions_count = actions.len(),
+            "dag merge apply actions"
+        );
         history_repository
             .reset(lfb_post_state)
             .map(|reset_repo| reset_repo.do_checkpoint(actions))
@@ -516,7 +642,119 @@ pub fn merge(
             merging_logic::gather_related_sets(&depends_map)
         };
 
-    // Resolve conflicts: detect conflicts and select the cost-optimal rejection set.
+    // Enforcement inputs: finalized window chains as counterparties + the
+    // duplicate-of-finalized sig predicate.
+    let empty_final_set = conflict_set_merger::FinalSet::empty();
+    let final_set = final_context.map_or(empty_final_set, |ctx| conflict_set_merger::FinalSet {
+        accepted: ctx.accepted_chains.clone(),
+        rejected: ctx.rejected_chains.clone(),
+    });
+    let carries_enforced_sig = |chain: &DeployChainIndex| -> bool {
+        final_context.is_some_and(|ctx| {
+            !ctx.enforce_sigs.is_empty()
+                && chain.deploys_with_cost.0.iter().any(|deploy| {
+                    !is_system_deploy_id(&deploy.deploy_id)
+                        && ctx.enforce_sigs.contains(&deploy.deploy_id)
+                })
+        })
+    };
+
+    // DIAG: attribute enforcement-window force-rejections. For each force-
+    // rejected branch, classify its relationship to the finalized window chains:
+    //   succ_acc  — branch CONSUMED an accepted final chain's OUTPUT produce
+    //               (a legitimate RMW successor building on finalized state);
+    //   race_acc  — branch CONSUMED the SAME INPUT produce an accepted final
+    //               chain consumed (a genuine double-spend race);
+    //   succ_rej / race_rej — same vs the rejected window chains.
+    // This discriminates "successor force-rejected (the bug)" from "genuine race
+    // / stale-base recovery (force-rejection correct, bug elsewhere)".
+    let force_reject_logger = |branch: &HashableSet<DeployChainIndex>,
+                               conflicts_final: bool,
+                               enforced_sig: bool,
+                               depends_rej: bool| {
+        if !tracing::enabled!(target: "f1r3.trace.fs_floor", tracing::Level::INFO) {
+            return;
+        }
+        use rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex;
+        let branch_log = branch
+            .0
+            .iter()
+            .map(|c| &c.event_log_index)
+            .try_fold(EventLogIndex::empty(), |acc, x| {
+                EventLogIndex::combine(&acc, x)
+            })
+            .ok();
+        let consumed: std::collections::HashSet<_> = branch_log
+            .as_ref()
+            .map(|bl| bl.produces_consumed.0.iter().cloned().collect())
+            .unwrap_or_default();
+        let fc_sig = |fc: &DeployChainIndex| -> String {
+            fc.deploys_with_cost
+                .0
+                .iter()
+                .filter(|d| !is_system_deploy_id(&d.deploy_id))
+                .map(|d| hex::encode(&d.deploy_id[..d.deploy_id.len().min(8)]))
+                .collect::<Vec<_>>()
+                .join("/")
+        };
+        let classify = |chains: &[DeployChainIndex]| -> (Vec<String>, Vec<String>) {
+            let (mut succ, mut race) = (Vec::new(), Vec::new());
+            for fc in chains {
+                let out = merging_logic::produces_created_and_not_destroyed(&fc.event_log_index);
+                let inp: std::collections::HashSet<_> =
+                    fc.event_log_index.produces_consumed.0.iter().collect();
+                let label = fc_sig(fc);
+                if label.is_empty() {
+                    continue;
+                }
+                if consumed.iter().any(|p| out.0.contains(p)) {
+                    succ.push(label.clone());
+                }
+                if consumed.iter().any(|p| inp.contains(p)) {
+                    race.push(label);
+                }
+            }
+            (succ, race)
+        };
+        let (succ_acc, race_acc) = classify(&final_set.accepted);
+        let (succ_rej, race_rej) = classify(&final_set.rejected);
+        for chain in branch.0.iter() {
+            let sigs: Vec<String> = chain
+                .deploys_with_cost
+                .0
+                .iter()
+                .filter(|d| !is_system_deploy_id(&d.deploy_id))
+                .map(|d| hex::encode(&d.deploy_id[..d.deploy_id.len().min(8)]))
+                .collect();
+            if sigs.is_empty() {
+                continue;
+            }
+            let mut nonfold_chans: Vec<String> = Vec::new();
+            for e in chain.state_changes.datums_changes.iter() {
+                let ch = e.key();
+                if !chain.event_log_index.number_channels_data.contains_key(ch) {
+                    nonfold_chans.push(hex::encode(&ch.bytes()[..6]));
+                }
+            }
+            tracing::info!(
+                target: "f1r3.trace.fs_floor",
+                event = "force_rejected_branch",
+                sigs = %sigs.join(","),
+                conflicts_final,
+                enforced_sig,
+                depends_rej,
+                nonfold_channels = %nonfold_chans.join(" "),
+                succ_acc = %succ_acc.join(","),
+                race_acc = %race_acc.join(","),
+                succ_rej = %succ_rej.join(","),
+                race_rej = %race_rej.join(","),
+                "enforcement force-rejected branch"
+            );
+        }
+    };
+
+    // Resolve conflicts: enforce finalized decisions, then select the
+    // cost-optimal rejection set among the survivors.
     let mut resolved = conflict_set_merger::resolve_conflicts(
         actual_seq,
         late_seq,
@@ -526,18 +764,211 @@ pub fn merge(
         &get_data_fn,
         &compute_branches_fn,
         &compute_conflict_map_fn,
+        &final_set,
+        &carries_enforced_sig,
+        &force_reject_logger,
     )
     .map_err(|e| CasperError::HistoryError(e))?;
 
-    // Rejection expansion. Any chain whose source block is a DAG descendant
-    // of a rejected chain's source block (within merge scope) has pre-computed
-    // diffs against a pre-state that the merge is about to drop. Expand the
-    // rejection set to include those chains before applying diffs.
-    //
-    // All descendant chains are rejected unconditionally; an event-log
-    // read/write analysis could narrow this, but event logs miss indirect
-    // dependencies through system contracts (the very condition the expansion
-    // exists to catch), so we prefer conservative correctness.
+    // DIAG: per-pass attribution of resolve_conflicts. Lets a run tell whether
+    // the user writes were dropped here (and by which sub-pass: force-rejection /
+    // cost-optimal keep-one / late-dependency) versus a later pass (serialize /
+    // expansion).
+    if tracing::enabled!(target: "f1r3.trace.fs_floor", tracing::Level::INFO) {
+        let resolve_rejected_user: Vec<String> = resolved
+            .rejected
+            .0
+            .iter()
+            .flat_map(|c| c.deploys_with_cost.0.iter())
+            .filter(|d| !is_system_deploy_id(&d.deploy_id))
+            .map(|d| hex::encode(&d.deploy_id[..d.deploy_id.len().min(8)]))
+            .collect();
+        tracing::info!(
+            target: "f1r3.trace.fs_floor",
+            event = "resolve_breakdown",
+            late = resolved.late_set_size,
+            dependents = resolved.rejected_as_dependents_count,
+            forced = resolved.force_rejected_final_count,
+            optimal = resolved.optimal_rejection_count,
+            branches = resolved.branches_count,
+            to_merge = resolved.to_merge.len(),
+            rejected_user = %resolve_rejected_user.join(","),
+            "resolve_conflicts result (before serialize/expand)"
+        );
+    }
+
+    if resolved.force_rejected_final_count > 0 {
+        tracing::info!(
+            target: "f1r3.trace.fs_floor",
+            event = "enforce_rejected",
+            forced_branches = resolved.force_rejected_final_count,
+            window_accepted = final_set.accepted.len(),
+            window_rejected = final_set.rejected.len(),
+            "finalized decisions force-rejected conflict branches"
+        );
+    }
+
+    // Single-value-cell serialization. After conflict resolution the surviving
+    // chains may still contain CONCURRENT writes to one non-foldable single-value
+    // cell — a fork where two chains consumed the same base datum. Conflict
+    // detection misses this when both writers share a dependency on the producer
+    // (they land in one branch, and the combined event log hides the double
+    // consume as internal COMMs). A single-value cell cannot hold both writes;
+    // keep one linear write path and reject the rest to recovery, where they
+    // re-execute against the updated base. Generalizes the prior stale-consume
+    // pass: a stale rebased consume is the degenerate fork whose consumed datum
+    // was never available. Foldable (mergeable number) channels compose via the
+    // dispatcher fold and are exempt.
+    {
+        let mut foldable: HashSet<Blake2b256Hash> = HashSet::new();
+        for branch in resolved.to_merge.iter() {
+            for chain in branch.0.iter() {
+                for (ch, _) in chain.event_log_index.number_channels_data.iter() {
+                    foldable.insert(ch.clone());
+                }
+            }
+        }
+
+        // Decide which chains to reject. Order all surviving chains so a producer
+        // always precedes its consumers (block number PRIMARY: deploy_chains are
+        // dependency-grouped per block, so a chain consuming another's produce is in a
+        // strictly higher block), and among same-height SIBLINGS — where a single-value-
+        // cell fork actually is — keep the higher-COST chain (pay-more-wins), with
+        // (block hash, sorted sigs) as the final node-identical tiebreak. See
+        // `serialize_keep_one_order`. This respects producer-before-consumer without a
+        // topological sort and is identical on every node.
+        // `mutable_key_type`: DeployChainIndex contains a DashMap (interior
+        // mutability) but is hashed by its stable content, as elsewhere in this
+        // module — the keys are never mutated while in the set.
+        #[allow(clippy::mutable_key_type)]
+        let rejected: HashSet<DeployChainIndex> = {
+            let mut ordered: Vec<&DeployChainIndex> = resolved
+                .to_merge
+                .iter()
+                .flat_map(|branch| branch.0.iter())
+                .collect();
+            ordered.sort_by(|a, b| serialize_keep_one_order(a, b));
+
+            // Running available-datum multiset per non-foldable channel, seeded
+            // lazily from the merge base.
+            let mut available: HashMap<Blake2b256Hash, Vec<Vec<u8>>> = HashMap::new();
+            #[allow(clippy::mutable_key_type)]
+            let mut rejected: HashSet<DeployChainIndex> = HashSet::new();
+
+            for chain in ordered.iter() {
+                let chain: &DeployChainIndex = chain;
+                // Serializable iff every non-foldable channel it consumes from
+                // still has those datums available in the running cell state.
+                let mut serializable = true;
+                let mut detail: Option<(String, String)> = None;
+                for e in chain.state_changes.datums_changes.iter() {
+                    let ch = e.key();
+                    if foldable.contains(ch) {
+                        continue;
+                    }
+                    let removed = &e.value().removed;
+                    if removed.is_empty() {
+                        continue;
+                    }
+                    if !available.contains_key(ch) {
+                        let base = history_reader
+                            .get_data_proj_binary(ch)
+                            .map_err(CasperError::HistoryError)?;
+                        available.insert(ch.clone(), base);
+                    }
+                    if !is_sub_multiset(removed, available.get(ch).expect("seeded above")) {
+                        serializable = false;
+                        detail = Some((
+                            hex::encode(ch.bytes()),
+                            removed
+                                .first()
+                                .map(|d| hex::encode(&d[..d.len().min(8)]))
+                                .unwrap_or_default(),
+                        ));
+                        break;
+                    }
+                }
+                if !serializable {
+                    if let Some((ch_hex, removed_hash)) = detail {
+                        let sigs: Vec<String> = chain
+                            .deploys_with_cost
+                            .0
+                            .iter()
+                            .filter(|dp| !is_system_deploy_id(&dp.deploy_id))
+                            .map(|dp| hex::encode(&dp.deploy_id[..dp.deploy_id.len().min(8)]))
+                            .collect();
+                        tracing::info!(
+                            target: "f1r3.trace.fs_floor",
+                            event = "serialize_reject_chain",
+                            channel = %ch_hex,
+                            removed_hash = %removed_hash,
+                            sigs = %sigs.join(","),
+                            "single-value-cell serialization: chain's consumed datum no longer available (fork sibling or stale rebase) — rejecting to recovery"
+                        );
+                    }
+                    rejected.insert(DeployChainIndex::clone(chain));
+                    continue;
+                }
+                // Apply this chain's writes so later chains see them:
+                // available = (available -- removed) ++ added, per touched channel.
+                for e in chain.state_changes.datums_changes.iter() {
+                    let ch = e.key();
+                    if foldable.contains(ch) {
+                        continue;
+                    }
+                    if !available.contains_key(ch) {
+                        let base = history_reader
+                            .get_data_proj_binary(ch)
+                            .map_err(CasperError::HistoryError)?;
+                        available.insert(ch.clone(), base);
+                    }
+                    let avail = available.get_mut(ch).expect("seeded above");
+                    let mut next =
+                        rspace_plus_plus::rspace::merger::state_change::StateChange::multiset_diff(
+                            avail,
+                            &e.value().removed,
+                        );
+                    next.extend(e.value().added.iter().cloned());
+                    *avail = next;
+                }
+            }
+            rejected
+        };
+
+        if !rejected.is_empty() {
+            let pre = resolved.to_merge.len();
+            let mut kept_branches: Vec<HashableSet<DeployChainIndex>> = Vec::new();
+            for branch in std::mem::take(&mut resolved.to_merge) {
+                #[allow(clippy::mutable_key_type)]
+                let mut kept: HashSet<DeployChainIndex> = HashSet::new();
+                for chain in branch.0 {
+                    if rejected.contains(&chain) {
+                        resolved.rejected.0.insert(chain);
+                    } else {
+                        kept.insert(chain);
+                    }
+                }
+                if !kept.is_empty() {
+                    kept_branches.push(HashableSet(kept));
+                }
+            }
+            resolved.to_merge = kept_branches;
+            tracing::info!(
+                target: "f1r3.trace.fs_floor",
+                event = "serialize_rejected",
+                chains = rejected.len(),
+                branches_before = pre,
+                branches_after = resolved.to_merge.len(),
+                "single-value-cell serialization rejected fork/stale chains; one linear path kept per cell"
+            );
+        }
+    }
+
+    // Source blocks of the rejected chains, classified system/user for merge
+    // tracing only. The former rejection-expansion pass that consumed this set
+    // (rejecting any chain whose block DAG-descended from a rejected chain) was
+    // removed: it dropped channel-disjoint descendants — keep-one's survivor —
+    // on block-descent rather than data dependency.
     let rejected_source_blocks: HashSet<BlockHash> = resolved
         .rejected
         .0
@@ -545,52 +976,49 @@ pub fn merge(
         .map(|chain| chain.source_block_hash.clone())
         .collect();
 
-    let pre_expansion_rejected = resolved.rejected.0.len();
-
-    let __exp_start = std::time::Instant::now();
-    if !rejected_source_blocks.is_empty() {
-        let descendant_blocks =
-            descendants_within_scope(dag, &rejected_source_blocks, &actual_blocks);
-
-        if !descendant_blocks.is_empty() {
-            // Rebuild to_merge: any branch containing a chain from a descendant
-            // block gets moved whole into rejected. Branches are dependency
-            // clusters — rejecting partial branches would leave internally
-            // inconsistent diffs.
-            let mut new_to_merge: Vec<HashableSet<DeployChainIndex>> = Vec::new();
-            for branch in resolved.to_merge.drain(..) {
-                let has_stale = branch
-                    .0
-                    .iter()
-                    .any(|chain| descendant_blocks.contains(&chain.source_block_hash));
-                if has_stale {
-                    for chain in branch.0 {
-                        resolved.rejected.0.insert(chain);
-                    }
+    // DIAG: dump the rejected source blocks that feed the descendant walk, with
+    // block number and whether each carries a system (S, e.g. CloseBlock) and/or
+    // user (U) chain. Lets a run confirm whether a dropped user write descends
+    // from a rejected SYSTEM chain's block (the suspected expansion over-reach)
+    // rather than from a conflicting user write.
+    if !rejected_source_blocks.is_empty()
+        && tracing::enabled!(target: "f1r3.trace.fs_floor", tracing::Level::INFO)
+    {
+        use std::collections::BTreeMap;
+        let mut by_block: BTreeMap<(i64, String), (bool, bool)> = BTreeMap::new();
+        for chain in resolved.rejected.0.iter() {
+            let key = (
+                chain.source_block_number,
+                hex::encode(&chain.source_block_hash[..chain.source_block_hash.len().min(6)]),
+            );
+            let entry = by_block.entry(key).or_insert((false, false));
+            for d in chain.deploys_with_cost.0.iter() {
+                if is_system_deploy_id(&d.deploy_id) {
+                    entry.0 = true;
                 } else {
-                    new_to_merge.push(branch);
+                    entry.1 = true;
                 }
             }
-            resolved.to_merge = new_to_merge;
-
-            tracing::info!(
-                "DagMerger rejection expansion: {} descendant blocks, rejected grew from {} to {} chains",
-                descendant_blocks.len(),
-                pre_expansion_rejected,
-                resolved.rejected.0.len()
-            );
-            metrics::counter!(
-                crate::rust::metrics_constants::DAG_MERGE_REJECTION_EXPANSION_FIRED_METRIC,
-                "source" => crate::rust::metrics_constants::MERGING_METRICS_SOURCE
-            )
-            .increment(1);
         }
+        let summary: Vec<String> = by_block
+            .iter()
+            .map(|((num, hash), (sys, usr))| {
+                format!(
+                    "#{}:{}:{}{}",
+                    num,
+                    hash,
+                    if *sys { "S" } else { "" },
+                    if *usr { "U" } else { "" }
+                )
+            })
+            .collect();
+        tracing::info!(
+            target: "f1r3.trace.fs_floor",
+            event = "rejected_source_blocks",
+            blocks = %summary.join(" "),
+            "rejected chains' source blocks (S=system, U=user)"
+        );
     }
-    metrics::histogram!(
-        crate::rust::metrics_constants::DAG_MERGE_REJECTION_EXPANSION_TIME_METRIC,
-        "source" => crate::rust::metrics_constants::MERGING_METRICS_SOURCE
-    )
-    .record(__exp_start.elapsed().as_secs_f64());
 
     // Combine surviving diffs and apply to the LFB post-state.
     let new_state = conflict_set_merger::compute_merged_state(
@@ -602,7 +1030,119 @@ pub fn merge(
     )
     .map_err(|e| CasperError::HistoryError(e))?;
 
+    tracing::debug!(
+        target: "f1r3fly.merge.dag",
+        new_root = %hex::encode(new_state.bytes()),
+        "dag merge apply result"
+    );
+
+    // Applied (kept-chain) user-deploy (sig, source block) pairs — the deploys
+    // whose effect IS in this merged state. Mirrors the rejected extraction but
+    // reads `resolved.to_merge` (the survivors). The seal accumulates these into
+    // FloorData.accepted_deploys so a deploy finalized-accepted at any inclusion
+    // is never re-proposed, even if a later re-inclusion is rejected.
+    let mut applied_user: Vec<(Bytes, BlockHash)> = resolved
+        .to_merge
+        .iter()
+        .flat_map(|branch| branch.0.iter())
+        .flat_map(|chain| {
+            let src = chain.source_block_hash.clone();
+            chain
+                .deploys_with_cost
+                .0
+                .iter()
+                .map(move |deploy| (deploy.deploy_id.clone(), src.clone()))
+        })
+        .filter(|(id, _)| !is_system_deploy_id(id))
+        .collect();
+    applied_user.sort();
+    applied_user.dedup();
+
+    // DIAG: kept (applied) chains' channels + system status — symmetric to
+    // rejected_chain_channels but INCLUDES system chains, so a run reveals
+    // whether the chain CREATING a doubled cell is a user pre-charge chain (and
+    // which deployer sig owns it) or a system (CloseBlock/Slash) chain.
+    if tracing::enabled!(target: "f1r3.trace.fs_floor", tracing::Level::INFO) {
+        for branch in resolved.to_merge.iter() {
+            for chain in branch.0.iter() {
+                let user_sigs: Vec<String> = chain
+                    .deploys_with_cost
+                    .0
+                    .iter()
+                    .filter(|d| !is_system_deploy_id(&d.deploy_id))
+                    .map(|d| hex::encode(&d.deploy_id[..d.deploy_id.len().min(8)]))
+                    .collect();
+                let is_sys = chain
+                    .deploys_with_cost
+                    .0
+                    .iter()
+                    .any(|d| is_system_deploy_id(&d.deploy_id));
+                let mut chans: Vec<String> = Vec::new();
+                for e in chain.state_changes.datums_changes.iter() {
+                    let ch = e.key();
+                    let foldable = chain.event_log_index.number_channels_data.contains_key(ch);
+                    chans.push(format!(
+                        "{}:{}r{}a{}",
+                        hex::encode(&ch.bytes()[..6]),
+                        if foldable { "F" } else { "N" },
+                        e.value().removed.len(),
+                        e.value().added.len(),
+                    ));
+                }
+                if chans.is_empty() {
+                    continue;
+                }
+                tracing::info!(
+                    target: "f1r3.trace.fs_floor",
+                    event = "kept_chain_channels",
+                    is_sys,
+                    sigs = %user_sigs.join(","),
+                    channels = %chans.join(" "),
+                    "kept chain touched channels (is_sys = system deploy)"
+                );
+            }
+        }
+    }
+
     let rejected = resolved.rejected;
+
+    // DIAG: per rejected user chain, dump the datum channels it touched (N =
+    // non-foldable, F = foldable/number) with removed/added counts. Lets a
+    // post-run trace attribute WHY a user deploy lost the merge — i.e. which
+    // cell its chain conflicted on (the map cell vs a vault/PoS cell).
+    if tracing::enabled!(target: "f1r3.trace.fs_floor", tracing::Level::INFO) {
+        for chain in rejected.0.iter() {
+            let sigs: Vec<String> = chain
+                .deploys_with_cost
+                .0
+                .iter()
+                .filter(|d| !is_system_deploy_id(&d.deploy_id))
+                .map(|d| hex::encode(&d.deploy_id[..d.deploy_id.len().min(8)]))
+                .collect();
+            if sigs.is_empty() {
+                continue;
+            }
+            let mut chans: Vec<String> = Vec::new();
+            for e in chain.state_changes.datums_changes.iter() {
+                let ch = e.key();
+                let foldable = chain.event_log_index.number_channels_data.contains_key(ch);
+                chans.push(format!(
+                    "{}:{}r{}a{}",
+                    hex::encode(&ch.bytes()[..6]),
+                    if foldable { "F" } else { "N" },
+                    e.value().removed.len(),
+                    e.value().added.len(),
+                ));
+            }
+            tracing::info!(
+                target: "f1r3.trace.fs_floor",
+                event = "rejected_chain_channels",
+                sigs = %sigs.join(","),
+                channels = %chans.join(" "),
+                "rejected user chain touched channels"
+            );
+        }
+    }
 
     // Extract (rejected deploy ID, source block hash) pairs, split by kind.
     // User deploys feed the rejected-deploy buffer for re-proposal. Slash
@@ -672,9 +1212,11 @@ pub fn merge(
             .map(|(sig, _)| hex::encode(&sig[..std::cmp::min(8, sig.len())]))
             .collect();
         tracing::info!(
-            "DagMerger rejected {} user deploys: {}",
-            rejected_user_deploys.len(),
-            rejected_str.join(", ")
+            target: "f1r3.trace.fs_floor",
+            event = "merge_rejected_user",
+            count = rejected_user_deploys.len(),
+            sigs = %rejected_str.join(","),
+            "DagMerger rejected user deploys (span distinguishes construction vs seal merge)"
         );
     }
     if !rejected_slashes.is_empty() {
@@ -689,5 +1231,103 @@ pub fn merge(
         );
     }
 
-    Ok((new_state, rejected_user_deploys, rejected_slashes))
+    Ok((
+        new_state,
+        applied_user,
+        rejected_user_deploys,
+        rejected_slashes,
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use prost::bytes::Bytes;
+    use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+    use rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex;
+    use rspace_plus_plus::rspace::merger::state_change::StateChange;
+    use shared::rust::hashable_set::HashableSet;
+
+    use super::*;
+    use crate::rust::merging::deploy_chain_index::DeployIdWithCost;
+
+    fn chain(block_num: i64, seed: u8, deploys: &[(u8, u64)]) -> DeployChainIndex {
+        let set: std::collections::HashSet<DeployIdWithCost> = deploys
+            .iter()
+            .map(|(id, cost)| DeployIdWithCost {
+                deploy_id: Bytes::from(vec![*id]),
+                cost: *cost,
+            })
+            .collect();
+        DeployChainIndex::from_parts(
+            HashableSet(set),
+            Blake2b256Hash::from_bytes(vec![seed; 32]),
+            EventLogIndex::empty(),
+            StateChange::empty(),
+            Bytes::from(vec![seed; 32]),
+            block_num,
+        )
+    }
+
+    /// Pay-more-wins: among same-height siblings (the real single-value-cell fork), the
+    /// higher-total-cost chain sorts first and therefore survives the keep-one. This is
+    /// the #2 fix — the prior order was (block#, hash) and ignored cost.
+    #[test]
+    fn serialize_keep_one_prefers_higher_cost_among_siblings() {
+        let high = chain(5, 1, &[(1, 100)]);
+        let low = chain(5, 2, &[(2, 10)]);
+        assert_eq!(
+            serialize_keep_one_order(&high, &low),
+            std::cmp::Ordering::Less
+        );
+        assert_eq!(
+            serialize_keep_one_order(&low, &high),
+            std::cmp::Ordering::Greater
+        );
+    }
+
+    /// Producer-before-consumer is preserved among USER chains: a lower-block producer sorts
+    /// before a higher-block, higher-cost consumer, so the available-multiset seeding stays
+    /// valid (block number is the primary key once CloseBlock priority is not in play).
+    #[test]
+    fn serialize_keep_one_preserves_producer_before_consumer() {
+        let producer = chain(5, 1, &[(1, 10)]);
+        let consumer = chain(7, 2, &[(2, 100)]);
+        assert_eq!(
+            serialize_keep_one_order(&producer, &consumer),
+            std::cmp::Ordering::Less
+        );
+    }
+
+    /// CloseBlock priority: a CloseBlock chain sorts before any user chain regardless of block
+    /// number or cost. It is non-recoverable, so it must win the single-value cell and route
+    /// concurrent user writers to recovery rather than be rejected itself.
+    #[test]
+    fn serialize_keep_one_closeblock_wins_over_user() {
+        let mut cb_id = vec![9u8; 32];
+        cb_id.push(crate::rust::system_deploy::CLOSE_BLOCK_MARKER);
+        let cb_set: std::collections::HashSet<DeployIdWithCost> =
+            std::iter::once(DeployIdWithCost {
+                deploy_id: Bytes::from(cb_id),
+                cost: 0,
+            })
+            .collect();
+        let close_block = DeployChainIndex::from_parts(
+            HashableSet(cb_set),
+            Blake2b256Hash::from_bytes(vec![3; 32]),
+            EventLogIndex::empty(),
+            StateChange::empty(),
+            Bytes::from(vec![3; 32]),
+            9, // higher block number than the user chain below
+        );
+        // A user chain at a LOWER block number with HIGHER cost — would win without priority.
+        let user = chain(5, 1, &[(1, 1000)]);
+        assert_eq!(
+            serialize_keep_one_order(&close_block, &user),
+            std::cmp::Ordering::Less
+        );
+        assert_eq!(
+            serialize_keep_one_order(&user, &close_block),
+            std::cmp::Ordering::Greater
+        );
+    }
 }

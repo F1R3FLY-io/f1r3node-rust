@@ -4,6 +4,7 @@ use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 
+use models::rust::block::floor_data::FloorData;
 use models::rust::block_hash::{self, BlockHash, BlockHashSerde};
 use models::rust::block_metadata::BlockMetadata;
 use models::rust::casper::pretty_printer::PrettyPrinter;
@@ -35,6 +36,13 @@ pub struct KeyValueDagRepresentation {
     pub finalized_blocks_set: imbl::HashSet<BlockHash>,
     pub block_metadata_index: Arc<RwLock<BlockMetadataStore>>,
     pub deploy_index: Arc<RwLock<KeyValueTypedStoreImpl<DeployId, BlockHashSerde>>>,
+    /// Sealed finalized state per floor cut (floor block hash -> FloorData).
+    /// Written when a floor is sealed, read as the merge base at propose/validate.
+    pub floor_state_index: KeyValueTypedStoreImpl<BlockHashSerde, FloorData>,
+    /// Persisted floor cache (block hash -> its justification-derived floor hash).
+    /// The floor is a pure function of the block, so write-through caching from
+    /// any reader is safe.
+    pub floor_index: KeyValueTypedStoreImpl<BlockHashSerde, BlockHashSerde>,
 }
 
 impl KeyValueDagRepresentation {
@@ -64,6 +72,49 @@ impl KeyValueDagRepresentation {
     }
 
     pub fn invalid_blocks(&self) -> imbl::HashSet<BlockMetadata> { self.invalid_blocks_set.clone() }
+
+    /// Sealed finalized state for a floor cut, if present. A miss is filled by
+    /// the canonical get-or-compute recursion at the call site.
+    pub fn get_floor_state(
+        &self,
+        floor_hash: &BlockHash,
+    ) -> Result<Option<FloorData>, KvStoreError> {
+        self.floor_state_index
+            .get_one(&BlockHashSerde(floor_hash.clone()))
+    }
+
+    /// Persist the sealed finalized state for a floor cut. The value is a pure
+    /// function of the floor block, so writing from the read path on a compute
+    /// miss is safe.
+    pub fn put_floor_state(
+        &self,
+        floor_hash: BlockHash,
+        value: FloorData,
+    ) -> Result<(), KvStoreError> {
+        self.floor_state_index
+            .put_one(BlockHashSerde(floor_hash), value)
+    }
+
+    /// Cached justification-derived floor of a block, if already computed.
+    pub fn get_cached_floor(
+        &self,
+        block_hash: &BlockHash,
+    ) -> Result<Option<BlockHash>, KvStoreError> {
+        Ok(self
+            .floor_index
+            .get_one(&BlockHashSerde(block_hash.clone()))?
+            .map(|serde| serde.0))
+    }
+
+    /// Cache a block's justification-derived floor (pure function of the block).
+    pub fn put_cached_floor(
+        &self,
+        block_hash: BlockHash,
+        floor_hash: BlockHash,
+    ) -> Result<(), KvStoreError> {
+        self.floor_index
+            .put_one(BlockHashSerde(block_hash), BlockHashSerde(floor_hash))
+    }
 
     pub fn last_finalized_block(&self) -> BlockHash { self.last_finalized_block_hash.clone() }
 
@@ -354,6 +405,52 @@ impl KeyValueDagRepresentation {
         }
     }
 
+    /// True iff `ancestor` is reachable from `descendant` by following ANY
+    /// parent edge (full DAG ancestry), not only the main-parent chain.
+    ///
+    /// This is the multi-parent generalization of [`Self::is_in_main_chain`]: in
+    /// a multi-parent merge DAG, a block whose state has merged `ancestor` — via
+    /// any parent path — has committed to it, regardless of which parent is the
+    /// main one. For single-parent blocks the two predicates coincide (the only
+    /// parent IS the main parent), so this changes finalization agreement only
+    /// for merge blocks. The walk is bounded exactly like `is_in_main_chain`: it
+    /// prunes any branch once it drops to or below `ancestor`'s block height, so
+    /// cost is bounded by the blocks in the height window between the two.
+    pub fn is_dag_ancestor(
+        &self,
+        ancestor: &BlockHash,
+        descendant: &BlockHash,
+    ) -> Result<bool, KvStoreError> {
+        if ancestor == descendant {
+            return Ok(true);
+        }
+
+        let stop_height = self.block_number_unsafe(ancestor)?;
+        let mut visited: HashSet<BlockHash> = HashSet::new();
+        let mut queue: VecDeque<BlockHash> = VecDeque::new();
+        visited.insert(descendant.clone());
+        queue.push_back(descendant.clone());
+
+        while let Some(current) = queue.pop_front() {
+            if current == *ancestor {
+                return Ok(true);
+            }
+            // A block at or below the ancestor's height cannot have `ancestor`
+            // among its (strictly lower) parents; prune this branch without
+            // descending. Other branches still in the queue are unaffected.
+            if self.block_number_unsafe(&current)? <= stop_height {
+                continue;
+            }
+            for parent in self.parents_unsafe(&current)? {
+                if visited.insert(parent.clone()) {
+                    queue.push_back(parent);
+                }
+            }
+        }
+
+        Ok(false)
+    }
+
     pub fn parents_unsafe(&self, block_hash: &BlockHash) -> Result<Vec<BlockHash>, KvStoreError> {
         let metadata = self.lookup_unsafe(block_hash)?;
         Ok(metadata.parents)
@@ -462,6 +559,10 @@ pub struct BlockDagKeyValueStorage {
     pub deploy_index: Arc<RwLock<KeyValueTypedStoreImpl<DeployId, BlockHashSerde>>>,
     pub invalid_blocks_index: KeyValueTypedStoreImpl<BlockHashSerde, BlockMetadata>,
     pub equivocation_tracker_index: EquivocationTrackerStore,
+    /// Sealed finalized state per floor cut (floor block hash -> FloorData).
+    pub floor_state_index: KeyValueTypedStoreImpl<BlockHashSerde, FloorData>,
+    /// Persisted floor cache (block hash -> its justification-derived floor hash).
+    pub floor_index: KeyValueTypedStoreImpl<BlockHashSerde, BlockHashSerde>,
     /// Monotonically increasing counter incremented on every successful block insert.
     /// Used by caches to detect when the DAG has changed.
     pub dag_generation: Arc<AtomicU64>,
@@ -493,6 +594,14 @@ impl BlockDagKeyValueStorage {
         let deploy_index_db: KeyValueTypedStoreImpl<DeployId, BlockHashSerde> =
             KeyValueTypedStoreImpl::new(deploy_index_kv_store);
 
+        let floor_state_kv_store = kvm.store("floor-state".to_string()).await?;
+        let floor_state_db: KeyValueTypedStoreImpl<BlockHashSerde, FloorData> =
+            KeyValueTypedStoreImpl::new(floor_state_kv_store);
+
+        let floor_index_kv_store = kvm.store("floor-index".to_string()).await?;
+        let floor_index_db: KeyValueTypedStoreImpl<BlockHashSerde, BlockHashSerde> =
+            KeyValueTypedStoreImpl::new(floor_index_kv_store);
+
         Ok(Self {
             global_lock: Arc::new(std::sync::Mutex::new(())),
             block_metadata_index: Arc::new(RwLock::new(block_metadata_store)),
@@ -500,6 +609,8 @@ impl BlockDagKeyValueStorage {
             invalid_blocks_index: invalid_blocks_db,
             equivocation_tracker_index: equivocation_tracker_store,
             latest_messages_index: latest_messages_db,
+            floor_state_index: floor_state_db,
+            floor_index: floor_index_db,
             dag_generation: Arc::new(AtomicU64::new(0)),
         })
     }
@@ -589,6 +700,8 @@ impl BlockDagKeyValueStorage {
             finalized_blocks_set: finalized_blocks,
             block_metadata_index: self.block_metadata_index.clone(),
             deploy_index: self.deploy_index.clone(),
+            floor_state_index: self.floor_state_index.clone(),
+            floor_index: self.floor_index.clone(),
         }
     }
 
@@ -681,13 +794,55 @@ impl BlockDagKeyValueStorage {
                 .collect();
 
             let mut result = HashMap::new();
-            for validator in newly_bonded_set.difference(&justification_validators) {
-                // This filter is required to enable adding blocks backward from higher height to lower
-                if let Ok(false) = self
-                    .latest_messages_index
-                    .contains_key(ValidatorSerde((*validator).clone()))
-                {
-                    result.insert((*validator).clone(), block_hash.clone());
+            // The filter (contains_key == false) is required to enable adding blocks
+            // backward from higher height to lower.
+            let newly_bonded_unseen: Vec<Validator> = newly_bonded_set
+                .difference(&justification_validators)
+                .filter_map(|validator| {
+                    match self
+                        .latest_messages_index
+                        .contains_key(ValidatorSerde((*validator).clone()))
+                    {
+                        Ok(false) => Some((*validator).clone()),
+                        _ => None,
+                    }
+                })
+                .collect();
+
+            if !newly_bonded_unseen.is_empty() {
+                // A freshly-bonded validator has authored no block yet, so it has no
+                // real latest message. Register a NODE-IDENTICAL placeholder — genesis,
+                // the height-0 block — rather than the inserting block: the inserting
+                // block is whichever bonding sibling each node happened to process first,
+                // so registering it makes the latest-messages map node-divergent ->
+                // divergent self-justification -> false equivocation -> slash. Genesis is
+                // what `Validate::sequence_number` (genesis creator-justification -> seq 1)
+                // and `synchrony_constraint_checker` ("latest block is genesis -> may
+                // propose once") already expect for a not-yet-self-published validator.
+                let placeholder = {
+                    let guard = self.block_metadata_index.read().unwrap();
+                    let dag_state = guard.dag_state().read().unwrap();
+                    dag_state
+                        .height_map
+                        .get(&0)
+                        .and_then(|blocks| blocks.iter().min().cloned())
+                        // Pre-genesis insert / tests with no initialized genesis: fall
+                        // back to the inserting block (historical behavior). In production
+                        // the height-0 block is always present once the chain advances.
+                        .unwrap_or_else(|| block_hash.clone())
+                };
+
+                for v in newly_bonded_unseen {
+                    tracing::debug!(
+                        target: "f1r3.trace.lm_register",
+                        via = "newly_bonded",
+                        validator = %PrettyPrinter::build_string_bytes(&v),
+                        registered_block = %PrettyPrinter::build_string_bytes(&placeholder),
+                        inserting_sender = %PrettyPrinter::build_string_bytes(&block.sender),
+                        inserting_seq = block.seq_num,
+                        "newly-bonded validator LM slot registered to genesis placeholder"
+                    );
+                    result.insert(v, placeholder.clone());
                 }
             }
 
@@ -767,6 +922,15 @@ impl BlockDagKeyValueStorage {
                     }
                     _ => true,
                 } {
+                    tracing::debug!(
+                        target: "f1r3.trace.lm_register",
+                        via = "sender",
+                        validator = %PrettyPrinter::build_string_bytes(&block.sender),
+                        registered_block = %PrettyPrinter::build_string_bytes(&block.block_hash),
+                        inserting_sender = %PrettyPrinter::build_string_bytes(&block.sender),
+                        inserting_seq = block.seq_num,
+                        "sender LM slot registered to own block"
+                    );
                     HashMap::from([senders_new_lm])
                 } else {
                     HashMap::new()

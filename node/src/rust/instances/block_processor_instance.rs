@@ -32,13 +32,11 @@ fn maybe_trim_allocator_after_block() {
     }
 
     let count = PROCESSED_BLOCKS.fetch_add(1, Ordering::Relaxed) + 1;
-    if !count.is_multiple_of(interval) {
-        return;
-    }
-
-    #[cfg(target_os = "linux")]
-    unsafe {
-        let _ = malloc_trim(0);
+    if count.is_multiple_of(interval) {
+        #[cfg(target_os = "linux")]
+        unsafe {
+            let _ = malloc_trim(0);
+        }
     }
 }
 
@@ -184,10 +182,13 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorInstance<T> {
                         }
                         Err(e) => match &e {
                             CasperError::Other(msg) if msg == "Missing dependencies" => {
-                                tracing::warn!(
+                                tracing::debug!(
                                     "Block {} delayed: missing dependencies.",
                                     block_str
                                 );
+                            }
+                            CasperError::Other(msg) if msg == "Block not of interest" => {
+                                tracing::debug!("Block {} dropped: not of interest.", block_str);
                             }
                             _ => {
                                 tracing::error!(block = %block_str, error = %e, "block processing failed");

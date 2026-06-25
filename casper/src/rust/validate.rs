@@ -21,6 +21,7 @@ use models::rust::casper::protocol::casper_message::{
 use models::rust::validator::Validator;
 use prost::bytes::Bytes;
 use prost::Message;
+use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::history::Either;
 use shared::rust::dag::dag_ops;
 use shared::rust::store::key_value_store::KvStoreError;
@@ -245,6 +246,7 @@ impl Validate {
         max_parent_depth: i32,
         depth_buffer: i32,
         block_store: &KeyValueBlockStore,
+        runtime_manager: &RuntimeManager,
         disable_validator_progress_check: bool,
     ) -> ValidBlockProcessing {
         use crate::rust::metrics_constants::*;
@@ -293,7 +295,7 @@ impl Validate {
         tracing::debug!(target: "f1r3fly.casper", "before-repeat-deploy-validation");
         match __step!(
             BLOCK_VALIDATION_REPEAT_DEPLOY_TIME_METRIC,
-            Self::repeat_deploy(block, s, block_store, expiration_threshold)
+            Self::repeat_deploy(block, s, block_store, runtime_manager, expiration_threshold).await
         ) {
             Either::Left(err) => return Either::Left(err),
             Either::Right(_) => {}
@@ -375,156 +377,69 @@ impl Validate {
         Either::Right(ValidBlock::Valid)
     }
 
-    /// Validate no deploy with the same sig has been produced in the chain
-    /// Agnostic of non-parent justifications.
+    /// Validate that no deploy in the block re-applies an effect already present in
+    /// the block's declared PRE-state.
     ///
-    /// Recovery exemption: sigs present in `s.rejected_in_scope` (rejected
-    /// by a descendant merge within deploy_lifespan) may be legitimate
-    /// recovery candidates — the rejected-deploy buffer pipeline re-includes
-    /// them so their effects can land in canonical state. Without this
-    /// exemption, every recovery-path block would fail `InvalidRepeatDeploy`.
+    /// A deploy is a REPEAT iff its own per-deploy cells are already in the base this
+    /// block builds on, so re-executing it would double-apply (the content-twin). This
+    /// is the SAME state-based criterion the proposer's recovery base-check uses
+    /// (`recovered_deploy_effect_in_base`), so proposer and validator never disagree.
     ///
-    /// The exemption is gated on the sig's current finalization status. A
-    /// sig in `rejected_in_scope` falls into one of two cases:
-    ///
-    ///   - `Pending` / `Expired` / `Failed`: the deploy's effects are NOT
-    ///     in canonical state (no clean canonical inclusion that survived
-    ///     descendant rejection). Re-inclusion is the only way to land
-    ///     them. Exempt from the repeat check.
-    ///
-    ///   - `Finalized`: the deploy has a clean canonical inclusion that
-    ///     was NOT invalidated by a canonical-descendant rejection. Its
-    ///     effects ARE already in canonical state. Re-inclusion would be
-    ///     double-execution, not recovery. Do NOT exempt — let the
-    ///     ancestor scan find the canonical inclusion and flag the
-    ///     repeat. The catchup gate (`should_admit_to_rejected_buffer`)
-    ///     is the primary defense against this; the validator-side
-    ///     check is the second line of defense.
-    pub fn repeat_deploy(
+    /// Crucially, a body inclusion existing SOMEWHERE in the ancestry does NOT make a
+    /// deploy a repeat: under multi-parent keep-one a deploy can be kept on one branch
+    /// yet merged out of THIS block's base, in which case its effect is absent from the
+    /// pre-state and re-proposing it is the legitimate recovery path. The pre-state is
+    /// carried in the signed block, so the verdict is node-identical. (The previous
+    /// ancestry scan — and before it the node-local `rejected_in_scope` snapshot — keyed
+    /// the verdict on body inclusions / local view and split verdicts across nodes.)
+    pub async fn repeat_deploy(
         block: &BlockMessage,
         s: &mut CasperSnapshot,
         block_store: &KeyValueBlockStore,
-        expiration_threshold: i32,
+        runtime_manager: &RuntimeManager,
+        _expiration_threshold: i32,
     ) -> ValidBlockProcessing {
-        use crate::rust::api::deploy_finalization_status::{
-            resolve as resolve_finalization_status, DeployFinalizationState,
-        };
-
-        let deploy_key_set: HashSet<Vec<u8>> = block
-            .body
-            .deploys
-            .iter()
-            .filter(|pd| {
-                if !s.rejected_in_scope.contains(&pd.deploy.sig) {
-                    return true; // not rejected — must check
+        // A deploy is a REPEAT iff its effect is already present in the block's
+        // declared PRE-state — i.e. a prior inclusion's per-deploy cells are in the
+        // base this block builds on, so re-executing it would double-apply. This is
+        // the SAME state-based criterion the proposer's recovery base-check uses
+        // (`recovered_deploy_effect_in_base`), so proposer and validator never
+        // disagree.
+        //
+        // Unlike the prior ancestry scan, a body inclusion existing SOMEWHERE in the
+        // cone does NOT make a deploy a repeat: a deploy kept on one branch but
+        // keep-one'd out of THIS merge base is legitimately re-proposable (the
+        // recovery path), and its effect is absent from the pre-state. The pre-state
+        // is carried in the signed block, so the verdict is node-identical.
+        tracing::debug!(target: "f1r3fly.casper", "before-repeat-deploy-base-check");
+        let pre_state = Blake2b256Hash::from_bytes_prost(&block.body.state.pre_state_hash);
+        for pd in &block.body.deploys {
+            let sig = &pd.deploy.sig;
+            match crate::rust::util::rholang::interpreter_util::recovered_deploy_effect_in_base(
+                &s.dag,
+                block_store,
+                runtime_manager,
+                &pre_state,
+                sig,
+            ) {
+                Ok(false) => {}
+                Ok(true) => {
+                    let message = format!(
+                        "deploy [{}] (user {}, millisecond timestamp {}) is a repeat: its effect \
+                         is already present in the block's pre-state {}",
+                        &pd.deploy.data.term,
+                        PrettyPrinter::build_string_bytes(&pd.deploy.pk.bytes),
+                        pd.deploy.data.time_stamp,
+                        PrettyPrinter::build_string_bytes(&block.body.state.pre_state_hash),
+                    );
+                    tracing::warn!("{}", Self::ignore(block, &message));
+                    return Either::Left(BlockError::Invalid(InvalidBlock::InvalidRepeatDeploy));
                 }
-                // Sig is in rejected_in_scope. Apply the exemption only if
-                // the sig is NOT Finalized — otherwise re-inclusion is
-                // double-execution and the repeat check must catch it.
-                match resolve_finalization_status(
-                    &s.dag,
-                    block_store,
-                    expiration_threshold as i64,
-                    &pd.deploy.sig,
-                ) {
-                    Ok(status) if status.state == DeployFinalizationState::Finalized => {
-                        let canonical_block_str = status
-                            .latest_block_hash
-                            .as_ref()
-                            .map(|h| PrettyPrinter::build_string_bytes(h))
-                            .unwrap_or_else(|| "<none>".to_string());
-                        tracing::warn!(
-                            "repeat_deploy: sig {} is in rejected_in_scope but \
-                             resolves to Finalized (clean canonical inclusion at \
-                             {}); declining the recovery exemption to prevent \
-                             double-execution",
-                            hex::encode(&pd.deploy.sig),
-                            canonical_block_str,
-                        );
-                        true // keep in check set so the ancestor scan finds the repeat
-                    }
-                    Ok(_) => false, // status != Finalized → exempt (recovery)
-                    Err(err) => {
-                        // Resolver failures are conservative-fail: keep the sig
-                        // in the check set so an inconsistency surfaces as
-                        // InvalidRepeatDeploy rather than being silently
-                        // exempted as a recovery candidate.
-                        tracing::warn!(
-                            "repeat_deploy: deploy_finalization_status::resolve \
-                             failed for sig {}: {} — keeping sig in check set \
-                             rather than granting recovery exemption",
-                            hex::encode(&pd.deploy.sig),
-                            err,
-                        );
-                        true
-                    }
-                }
-            })
-            .map(|pd| pd.deploy.sig.to_vec())
-            .collect();
-        if deploy_key_set.is_empty() {
-            return Either::Right(ValidBlock::Valid);
+                Err(e) => return Either::Left(BlockError::BlockException(e)),
+            }
         }
 
-        let block_metadata = BlockMetadata::from_block(block, false, None, None);
-
-        tracing::debug!(target: "f1r3fly.casper", "before-repeat-deploy-get-parents");
-        let init_parents = match proto_util::get_parents_metadata(&s.dag, &block_metadata) {
-            Ok(parents) => parents,
-            Err(e) => return Either::Left(BlockError::BlockException(CasperError::from(e))),
-        };
-
-        // Calculate max block number and earliest acceptable block number
-        let max_block_number = proto_util::max_block_number_metadata(&init_parents);
-        let earliest_block_number = max_block_number + 1 - expiration_threshold as i64;
-
-        tracing::debug!(target: "f1r3fly.casper", "before-repeat-deploy-duplicate-block");
-        let maybe_duplicated_block_metadata = dag_ops::bf_traverse_find(
-            init_parents,
-            |block_metadata| {
-                proto_util::get_parent_metadatas_above_block_number(
-                    block_metadata,
-                    earliest_block_number,
-                    &s.dag,
-                )
-                .unwrap_or_default()
-            },
-            |block_metadata| {
-                block_store.has_any_deploy_sig_unsafe(&block_metadata.block_hash, &deploy_key_set)
-            },
-        );
-
-        tracing::debug!(target: "f1r3fly.casper", "before-repeat-deploy-duplicate-block-log");
-        let maybe_error = maybe_duplicated_block_metadata.map(|duplicated_block_metadata| {
-      let duplicated_block = block_store.get_unsafe(&duplicated_block_metadata.block_hash);
-      let current_block_hash_string = PrettyPrinter::build_string_bytes(&block.block_hash);
-      let block_hash_string = PrettyPrinter::build_string_bytes(&duplicated_block.block_hash);
-
-      let duplicated_deploys = proto_util::deploys(&duplicated_block);
-      let duplicated_deploy = duplicated_deploys
-        .iter()
-        .map(|processed_deploy| &processed_deploy.deploy)
-        .find(|deploy| deploy_key_set.contains(deploy.sig.as_ref()))
-        .expect("Duplicated deploy should exist");
-
-      let term = &duplicated_deploy.data.term;
-      let deployer_string = PrettyPrinter::build_string_bytes(&duplicated_deploy.pk.bytes);
-      let timestamp_string = duplicated_deploy.data.time_stamp.to_string();
-
-      let message = format!(
-        "found deploy [{}] (user {}, millisecond timestamp {})] with the same sig in the block {} as current block {}",
-        term,
-        &deployer_string,
-        timestamp_string,
-        block_hash_string,
-        current_block_hash_string
-      );
-
-      tracing::warn!("{}", Self::ignore(block, &message));
-      BlockError::Invalid(InvalidBlock::InvalidRepeatDeploy)
-    });
-
-        maybe_error.map_or(Either::Right(ValidBlock::Valid), Either::Left)
+        Either::Right(ValidBlock::Valid)
     }
 
     // This is not a slashable offence
@@ -1204,33 +1119,107 @@ impl Validate {
 
     pub async fn bonds_cache(
         b: &BlockMessage,
+        dag: &block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation,
+        block_store: &KeyValueBlockStore,
         runtime_manager: &RuntimeManager,
+        ft_threshold: f32,
     ) -> ValidBlockProcessing {
         let bonds = proto_util::bonds(b);
-        let tuplespace_hash = proto_util::post_state_hash(b);
 
-        match runtime_manager.compute_bonds(&tuplespace_hash).await {
+        // Finality = FS: the block's bonds FIELD must equal the bonds of the
+        // FINALIZED-floor state (the cut B builds on), exactly as the proposer
+        // set it (`BlockCreator: bonds = FS(floor)`). The post-state PoS bonds
+        // are the execution result and may legitimately differ from the field
+        // (finality delay / speculative merge), so they are NOT the validation
+        // reference — the field is validated against the finalized fringe bonds,
+        // not the post-state. Genesis has no parents: its floor is itself and
+        // FS(genesis) == its post-state by definition.
+        let reference_state = if b.header.parents_hash_list.is_empty() {
+            proto_util::post_state_hash(b)
+        } else {
+            let latest_messages: std::collections::BTreeMap<_, _> = b
+                .justifications
+                .iter()
+                .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
+                .collect();
+            let floor = match crate::rust::finality::floor::finalized_floor(
+                dag,
+                &b.header.parents_hash_list,
+                &latest_messages,
+                ft_threshold,
+            )
+            .await
+            {
+                Ok(floor) => floor,
+                Err(e) => return Either::Left(BlockError::BlockException(e)),
+            };
+            match crate::rust::finality::floor_seal::floor_state_get_or_compute(
+                dag,
+                block_store,
+                runtime_manager,
+                &floor.hash,
+                ft_threshold,
+            )
+            .await
+            {
+                Ok(fs) => fs.state_hash.0,
+                Err(e) => return Either::Left(BlockError::BlockException(e)),
+            }
+        };
+
+        tracing::debug!(
+            target: "f1r3fly.casper.bonds_validation",
+            block = %hex::encode(&b.block_hash),
+            reference_state = %hex::encode(&reference_state),
+            block_bonds_count = bonds.len(),
+            "bonds cache validate entry (FS floor)",
+        );
+
+        match runtime_manager.compute_bonds(&reference_state).await {
             Ok(computed_bonds) => {
+                // Match block_creator: the bonds field is the consensus committee =
+                // active(FS) ∩ bonds(FS), not the full economic bonded set. Filter the
+                // computed FS bonds by the active-validator set at the same state.
+                let active = match runtime_manager
+                    .get_active_validators(&reference_state)
+                    .await
+                {
+                    Ok(a) => a,
+                    Err(ex) => {
+                        tracing::warn!(
+                            "Failed to compute active validators from FS(floor) state: {}",
+                            ex
+                        );
+                        return Either::Left(BlockError::BlockException(ex));
+                    }
+                };
                 let bonds_set: HashSet<_> = bonds
                     .iter()
                     .map(|bond| (&bond.validator, bond.stake))
                     .collect();
                 let computed_bonds_set: HashSet<_> = computed_bonds
                     .iter()
+                    .filter(|bond| active.contains(&bond.validator))
                     .map(|bond| (&bond.validator, bond.stake))
                     .collect();
 
                 if bonds_set == computed_bonds_set {
                     Either::Right(ValidBlock::Valid)
                 } else {
+                    tracing::warn!("Block bonds field does not match FS(floor) bonds.");
                     tracing::warn!(
-                        "Bonds in proof of stake contract do not match block's bond cache."
+                        target: "f1r3fly.casper.bonds_validation",
+                        block = %hex::encode(&b.block_hash),
+                        reference_state = %hex::encode(&reference_state),
+                        block_count = bonds_set.len(),
+                        computed_count = computed_bonds_set.len(),
+                        "bonds cache mismatch (InvalidBondsCache)",
                     );
                     Either::Left(BlockError::Invalid(InvalidBlock::InvalidBondsCache))
                 }
             }
             Err(ex) => {
-                tracing::warn!("Failed to compute bonds from tuplespace hash: {}", ex);
+                tracing::warn!("Failed to compute bonds from FS(floor) state: {}", ex);
                 Either::Left(BlockError::BlockException(ex))
             }
         }

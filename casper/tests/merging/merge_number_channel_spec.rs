@@ -534,3 +534,91 @@ async fn multiple_branches_should_merge_number_channels() {
     )
     .await;
 }
+
+/// Content-twin mechanism pin (bug-d / the vault refund cycle).
+///
+/// A deploy's `new`-site randomness is derived purely from its signature
+/// (`Tools::rng(sig)`), block-independent. So executing the SAME deploy twice
+/// re-allocates the SAME deterministic channel and re-runs its init produce —
+/// the exact shape of `NonNegativeNumber`'s `new this, valueStore in {
+/// @(*MergeableTag, *valueStore)!(init) }`. The tagged single-value cell then
+/// holds TWO datums, which `NonNegativeNumber.sub`'s read misreads (→ "insufficient
+/// funds" → refund fail → re-buffer → re-execute → compounds).
+///
+/// This reproduces the duplication deterministically at the runtime layer: run
+/// the allocator term once (single value, OK), then again on the result (same
+/// seed) — the tagged number channel must STILL be single-valued, and it is not.
+///
+/// NOTE: this is a MECHANISM PIN, not a CI gate. The runtime faithfully
+/// re-executes by design (required for replay), so it duplicates by design; the
+/// safe fix is EXACTLY-ONCE EXECUTION at consensus (repeat_deploy + recovery
+/// gate), which prevents the second execution from ever happening on canonical
+/// state — a runtime-level "heal" instead breaks consensus (verified prior). The
+/// gate for the consensus fix is a consensus-level test; this documents what
+/// that fix must make unreachable.
+#[tokio::test]
+#[ignore = "mechanism pin for bug-d / vault content-twin; the fix is exactly-once at consensus, see arc"]
+async fn content_twin_same_deploy_re_execution_duplicates_tagged_number_channel() {
+    use rholang::rust::interpreter::accounting::costs::Cost;
+
+    let mergeable_tags = {
+        let mut m = std::collections::HashMap::new();
+        m.insert(
+            unforgeable_name_seed(),
+            rspace_plus_plus::rspace::merger::merging_logic::MergeType::IntegerAdd,
+        );
+        std::sync::Arc::new(m)
+    };
+    let rm = mk_runtime_manager("content-twin-test", Some(mergeable_tags)).await;
+    let mut runtime = rm.spawn_runtime().await;
+
+    // Allocate a deterministic tagged number channel and init it to 0. Run with
+    // `base_rho_seed` so `new MergeableTag` resolves to the registered tag — the
+    // exact NonNegativeNumber `valueStore` init shape.
+    let alloc_term = "new MergeableTag, vs in { @(*MergeableTag, *vs)!(0) }";
+
+    // First execution: the tagged channel holds a single value.
+    let r1 = runtime
+        .evaluate(
+            alloc_term,
+            Cost::unsafe_max(),
+            HashMap::new(),
+            base_rho_seed(),
+        )
+        .await
+        .unwrap();
+    assert!(r1.errors.is_empty(), "first eval errors: {:?}", r1.errors);
+    let cp1 = runtime.create_checkpoint().await;
+    let ops1 = RuntimeOps::new(runtime.clone());
+    let nc1 = ops1.get_number_channels_data(&r1.mergeable).await;
+    assert!(
+        nc1.is_ok(),
+        "after ONE execution the tagged channel must be single-valued; got {:?}",
+        nc1.err()
+    );
+
+    // Second execution of the SAME deploy (same sig-derived seed) on the result.
+    // The deterministic `new` re-allocates the SAME `vs`, so the init produces a
+    // second datum on the same tagged channel — the content-twin.
+    runtime.reset(&cp1.root).await.unwrap();
+    let r2 = runtime
+        .evaluate(
+            alloc_term,
+            Cost::unsafe_max(),
+            HashMap::new(),
+            base_rho_seed(),
+        )
+        .await
+        .unwrap();
+    assert!(r2.errors.is_empty(), "second eval errors: {:?}", r2.errors);
+    let ops2 = RuntimeOps::new(runtime.clone());
+    let nc2 = ops2.get_number_channels_data(&r2.mergeable).await;
+
+    assert!(
+        nc2.is_ok(),
+        "re-executing the same deploy duplicated its deterministic tagged-channel init \
+         (the content-twin): the single-value cell now holds multiple datums, which the \
+         single-value read rejects. This is bug-d / the vault refund cycle. error: {:?}",
+        nc2.err()
+    );
+}

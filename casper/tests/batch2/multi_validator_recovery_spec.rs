@@ -205,6 +205,9 @@ for(@_v <- @"multi-validator-shared") { Nil }
         Some(shard_name.clone()),
         None,
     );
+    // Fixture blocks carry EMPTY justifications, so the matching floor
+    // snapshot is empty: floor = genesis, both siblings stay in scope.
+    let latest_messages = std::collections::BTreeMap::new();
     let (_, post_state_r0, pd_r0, _, sys_pd_r0, bonds_r0) = compute_deploys_checkpoint(
         &mut block_store,
         vec![genesis_block.clone()],
@@ -217,6 +220,7 @@ for(@_v <- @"multi-validator-shared") { Nil }
         &mut rm,
         BlockData::from_block(&r0_raw),
         HashMap::new(),
+        &latest_messages,
         None,
     )
     .await
@@ -269,6 +273,7 @@ for(@_v <- @"multi-validator-shared") { Nil }
         &mut rm,
         BlockData::from_block(&r1_raw),
         HashMap::new(),
+        &latest_messages,
         None,
     )
     .await
@@ -311,10 +316,15 @@ for(@_v <- @"multi-validator-shared") { Nil }
         vec![r0.clone(), r1.clone()],
         &snapshot,
         &rm,
+        &latest_messages,
         None,
         Some(&rejected_deploy_buffer),
     )
+    .await
     .expect("compute_parents_post_state over [R0, R1]");
+    // The merge now returns (sig, host); this spec asserts on the rejected sigs.
+    let rejected_sigs: Vec<prost::bytes::Bytes> =
+        rejected_sigs.into_iter().map(|(sig, _host)| sig).collect();
 
     assert!(
         rejected_slashes.is_empty(),

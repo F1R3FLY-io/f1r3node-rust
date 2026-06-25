@@ -59,6 +59,11 @@ async fn compute_block_checkpoint(
         .into_iter()
         .map(|d| d.deploy)
         .collect();
+    let latest_messages: std::collections::BTreeMap<_, _> = block
+        .justifications
+        .iter()
+        .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
+        .collect();
 
     let (_, post_state_hash, processed_deploys, _, _, _) = compute_deploys_checkpoint(
         block_store,
@@ -69,6 +74,7 @@ async fn compute_block_checkpoint(
         runtime_manager,
         BlockData::from_block(block),
         HashMap::new(),
+        &latest_messages,
         None,
     )
     .await?;

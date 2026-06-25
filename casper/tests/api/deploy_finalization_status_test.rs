@@ -476,6 +476,8 @@ async fn resolve_and_resolve_batch_agree_across_states() {
     );
     block_b.body.rejected_deploys = vec![RejectedDeploy {
         sig: sig_clean_canonical_reject_canonical.clone(),
+        // host unused by the status resolver (keys on sig); placeholder.
+        host: prost::bytes::Bytes::new(),
     }];
 
     // Block S: non-canonical sibling of B at h=2. Has main parent A
@@ -512,6 +514,7 @@ async fn resolve_and_resolve_batch_agree_across_states() {
     );
     block_s.body.rejected_deploys = vec![RejectedDeploy {
         sig: sig_clean_canonical_reject_sibling.clone(),
+        host: prost::bytes::Bytes::new(),
     }];
 
     // Block C: LFB. Multi-parent merge of [B, S]. Main parent = B,
@@ -1105,6 +1108,7 @@ async fn resolve_returns_finalized_when_canonical_clean_supersedes_canonical_fai
     );
     block_b.body.rejected_deploys = vec![RejectedDeploy {
         sig: sig_under_test.clone(),
+        host: prost::bytes::Bytes::new(),
     }];
 
     // Block C: h=3 LFB, canonical descendant of B. sig clean (recovery
@@ -1414,6 +1418,7 @@ async fn resolve_returns_pending_for_non_canonical_clean_with_canonical_reject()
     );
     block_c.body.rejected_deploys = vec![RejectedDeploy {
         sig: sig_under_test.clone(),
+        host: prost::bytes::Bytes::new(),
     }];
 
     block_store.put_block_message(&block_a).expect("store A");

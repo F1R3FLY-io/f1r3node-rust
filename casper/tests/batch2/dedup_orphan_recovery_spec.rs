@@ -209,6 +209,10 @@ for(@_v <- @"dedup-orphan-shared") { Nil }
         Some(shard_name.clone()),
         None,
     );
+    // These fixture blocks carry EMPTY justifications, so the matching floor
+    // snapshot is empty: the derived floor is genesis and both siblings stay
+    // in the conflict scope, preserving the dedup semantics under test.
+    let latest_messages = std::collections::BTreeMap::new();
     let (_, post_state_a, pd_a, _, sys_pd_a, bonds_a) = compute_deploys_checkpoint(
         &mut block_store,
         vec![genesis_block.clone()],
@@ -221,6 +225,7 @@ for(@_v <- @"dedup-orphan-shared") { Nil }
         &mut rm,
         BlockData::from_block(&block_a_raw),
         HashMap::new(),
+        &latest_messages,
         None,
     )
     .await
@@ -273,6 +278,7 @@ for(@_v <- @"dedup-orphan-shared") { Nil }
         &mut rm,
         BlockData::from_block(&block_b_raw),
         HashMap::new(),
+        &latest_messages,
         None,
     )
     .await
@@ -312,10 +318,15 @@ for(@_v <- @"dedup-orphan-shared") { Nil }
         vec![block_a.clone(), block_b.clone()],
         &snapshot,
         &rm,
+        &latest_messages,
         None,
         Some(&rejected_deploy_buffer),
     )
+    .await
     .expect("compute_parents_post_state over [block_a, block_b]");
+    // The merge now returns (sig, host); this spec asserts on the rejected sigs.
+    let rejected_sigs: Vec<prost::bytes::Bytes> =
+        rejected_sigs.into_iter().map(|(sig, _host)| sig).collect();
 
     assert!(
         rejected_slashes.is_empty(),

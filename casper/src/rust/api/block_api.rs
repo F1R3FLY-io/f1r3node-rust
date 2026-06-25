@@ -621,7 +621,7 @@ impl BlockAPI {
         if let Some(casper) = eng.with_casper() {
             casper_response(casper.as_ref(), effective_depth, listening_name).await
         } else {
-            tracing::warn!("{}", error_message);
+            tracing::debug!("{}", error_message);
             Err(eyre::eyre!("Error: {}", error_message))
         }
     }
@@ -677,7 +677,7 @@ impl BlockAPI {
         if let Some(casper) = eng.with_casper() {
             casper_response(casper.as_ref(), effective_depth, listening_names).await
         } else {
-            tracing::warn!("{}", error_message);
+            tracing::debug!("{}", error_message);
             Err(eyre::eyre!("Error: {}", error_message))
         }
     }
@@ -849,7 +849,7 @@ impl BlockAPI {
         if let Some(casper) = eng.with_casper() {
             casper_response(casper.as_ref(), effective_depth, do_it).await
         } else {
-            tracing::warn!("{}", error_message);
+            tracing::debug!("{}", error_message);
             Err(eyre::eyre!("Error: {}", error_message))
         }
     }
@@ -939,7 +939,7 @@ impl BlockAPI {
             )
             .await
         } else {
-            tracing::warn!("{}", error_message);
+            tracing::debug!("{}", error_message);
             Err(eyre::eyre!("Error: {}", error_message))
         }
     }
@@ -1000,7 +1000,7 @@ impl BlockAPI {
             )
             .await
         } else {
-            tracing::warn!("{}", error_message);
+            tracing::debug!("{}", error_message);
             Err(eyre::eyre!("Error: {}", error_message))
         }
     }
@@ -1166,7 +1166,7 @@ impl BlockAPI {
                 .await
                 .unwrap_or_else(|_| Vec::new())
         } else {
-            tracing::warn!("{}", error_message);
+            tracing::debug!("{}", error_message);
             Vec::new()
         }
     }
@@ -1452,7 +1452,7 @@ impl BlockAPI {
             )
             .await?)
         } else {
-            tracing::warn!("{}", error_message);
+            tracing::debug!("{}", error_message);
             Err(eyre::eyre!("Error: {}", error_message))
         }
     }
@@ -1469,7 +1469,7 @@ impl BlockAPI {
             let result = dag.is_finalized(&given_block_hash.into());
             Ok(result)
         } else {
-            tracing::warn!("{}", error_message);
+            tracing::debug!("{}", error_message);
             Err(eyre::eyre!("Error: {}", error_message))
         }
     }
@@ -1494,18 +1494,21 @@ impl BlockAPI {
             "Could not compute deploy finalization status, casper instance was not available yet.";
         let eng = engine_cell.get().await;
         let Some(casper) = eng.with_casper() else {
-            tracing::warn!("{}", error_message);
+            tracing::debug!("{}", error_message);
             return Err(eyre::eyre!("Error: {}", error_message));
         };
 
         let dag = casper.block_dag().await?;
-        match crate::rust::api::deploy_finalization_status::resolve(
+        use crate::rust::api::deploy_finalization_status::{
+            DeployFinalizationState, DeployFinalizationStatus,
+        };
+        let resolved = match crate::rust::api::deploy_finalization_status::resolve(
             &dag,
             casper.block_store(),
             casper.casper_shard_conf().deploy_lifespan,
             sig,
         ) {
-            Ok(status) => Ok(status),
+            Ok(status) => status,
             Err(err) => {
                 // Convert deploy-index inconsistency to `pending_unknown`
                 // so HTTP/gRPC callers see a tractable response. The
@@ -1516,12 +1519,64 @@ impl BlockAPI {
                     .downcast_ref::<crate::rust::api::deploy_finalization_status::DeployFinalizationCorruption>()
                     .is_some()
                 {
-                    Ok(crate::rust::api::deploy_finalization_status::DeployFinalizationStatus::pending_unknown())
-                } else {
-                    Err(err)
+                    return Ok(DeployFinalizationStatus::pending_unknown());
                 }
+                return Err(err);
             }
+        };
+
+        // Effect-finality from the sealed floor at the LFB is the AUTHORITY;
+        // the body-scan `resolve` judges by the most-recent inclusion and so
+        // misreports a deploy that was sealed-accepted at one inclusion and
+        // sealed-rejected at a later one (it returns `Pending`). "Any accepted
+        // inclusion wins":
+        //   - sig in FS accepted ledger  -> Finalized (overrides resolve);
+        //   - sig in FS rejected ledger and NOT accepted -> not effect-final,
+        //     so a body-inclusion `Finalized` is downgraded to Pending.
+        // A sig never seen in any block (no latest_block_hash and not Finalized)
+        // cannot be sealed-accepted, so skip the FS read on that hot path.
+        if resolved.latest_block_hash.is_none()
+            && resolved.state != DeployFinalizationState::Finalized
+        {
+            return Ok(resolved);
         }
+        let ft = casper.casper_shard_conf().fault_tolerance_threshold;
+        let lfb_hash = dag.last_finalized_block();
+        let rm = casper.runtime_manager();
+        let fs = crate::rust::finality::floor_seal::floor_state_get_or_compute(
+            &dag,
+            casper.block_store(),
+            &rm,
+            &lfb_hash,
+            ft,
+        )
+        .await?;
+        let sealed_accepted = fs.accepted_deploys.iter().any(|a| a.sig.as_ref() == sig);
+        // `resolved.rejection_count` comes from the BFS, which only scans the last
+        // `deploy_lifespan` finalized blocks — so it reads 0 for a deploy rejected in
+        // an older block (the floor seal still knows). Source the count from the
+        // cumulative floor-seal `rejected_deploys` (the same authority the state uses)
+        // and take the richer of the two, so `Expired`/`Pending` never contradicts
+        // itself with `rejection_count = 0` for a deploy the seal recorded as rejected.
+        let sealed_rejection_count = fs
+            .rejected_deploys
+            .iter()
+            .filter(|r| r.sig.as_ref() == sig)
+            .count() as u32;
+        let sealed_rejected = sealed_rejection_count > 0;
+        let rejection_count = resolved.rejection_count.max(sealed_rejection_count);
+        let state = if sealed_accepted {
+            DeployFinalizationState::Finalized
+        } else if resolved.state == DeployFinalizationState::Finalized && sealed_rejected {
+            DeployFinalizationState::Pending
+        } else {
+            resolved.state
+        };
+        Ok(DeployFinalizationStatus {
+            state,
+            rejection_count,
+            latest_block_hash: resolved.latest_block_hash,
+        })
     }
 
     pub async fn bond_status(engine_cell: &EngineCell, public_key: &ByteString) -> ApiErr<bool> {
@@ -1531,12 +1586,23 @@ impl BlockAPI {
         if let Some(casper) = eng.with_casper() {
             let last_finalized_block = casper.last_finalized_block().await?;
             let runtime_manager = casper.runtime_manager();
-            let post_state_hash = &last_finalized_block.body.state.post_state_hash;
-            let bonds = runtime_manager.compute_bonds(post_state_hash).await?;
+            let dag = casper.block_dag().await?;
+            let ft = casper.casper_shard_conf().fault_tolerance_threshold;
+            // Finality = FS: bonded status reflects the sealed finalized state at
+            // the LFB cut, not the speculative post-state.
+            let fs = crate::rust::finality::floor_seal::floor_state_get_or_compute(
+                &dag,
+                casper.block_store(),
+                &runtime_manager,
+                &last_finalized_block.block_hash,
+                ft,
+            )
+            .await?;
+            let bonds = runtime_manager.compute_bonds(&fs.state_hash.0).await?;
             let validator_bond_opt = bonds.iter().find(|bond| bond.validator == *public_key);
             Ok(validator_bond_opt.is_some())
         } else {
-            tracing::warn!("{}", error_message);
+            tracing::debug!("{}", error_message);
             Err(eyre::eyre!("Error: {}", error_message))
         }
     }
@@ -1564,53 +1630,35 @@ impl BlockAPI {
 
                 // When no block specified, compute merged state from all DAG tips
                 let (state_hash, target_block) = if block_hash.is_none() {
-                    let snapshot = casper.get_snapshot().await?;
                     let lfb = casper.last_finalized_block().await?;
-                    let parents = &snapshot.parents;
-
-                    tracing::warn!(
-                        "exploratoryDeploy: parents.size={}, LFB=#{} {}",
-                        parents.len(),
+                    let dag = casper.block_dag().await?;
+                    let ft = casper.casper_shard_conf().fault_tolerance_threshold;
+                    // Finality = FS: no-block exploratory reads (including
+                    // /validators) reflect the sealed finalized state at the LFB
+                    // cut — finalized truth, not the speculative tip view.
+                    let fs = crate::rust::finality::floor_seal::floor_state_get_or_compute(
+                        &dag,
+                        casper.block_store(),
+                        &runtime_manager,
+                        &lfb.block_hash,
+                        ft,
+                    )
+                    .await?;
+                    tracing::info!(
+                        "exploratoryDeploy: FS(LFB=#{} {}) state={}",
                         lfb.body.state.block_number,
-                        PrettyPrinter::build_string_bytes(&lfb.block_hash)
+                        PrettyPrinter::build_string_bytes(&lfb.block_hash),
+                        PrettyPrinter::build_string_bytes(&fs.state_hash.0)
                     );
-
-                    let merged_state = if parents.len() <= 1 {
-                        // Single parent or no parents: use LFB post-state directly
-                        let lfb_state = proto_util::post_state_hash(&lfb);
-                        tracing::warn!(
-                            "exploratoryDeploy: Using LFB post-state={} (single parent)",
-                            PrettyPrinter::build_string_bytes(&lfb_state)
-                        );
-                        lfb_state
-                    } else {
-                        // Multiple parents: compute merged state using DAG merger
-                        // For exploratory deploy (read-only queries), always disable
-                        // late block filtering to see the full merged state
-                        tracing::warn!(
-                            "exploratoryDeploy: Computing merged state from {} parents",
-                            parents.len()
-                        );
-                        let (merged_state_hash, _rejected, _rejected_slashes) =
-                            crate::rust::util::rholang::interpreter_util::compute_parents_post_state(
-                                casper.block_store(),
-                                parents.clone(),
-                                &snapshot,
-                                &runtime_manager,
-                                Some(true), // disable_late_block_filtering = true for exploratory deploy
-                                None,       // exploratory deploy: no buffer populate needed
-                            )?;
-                        merged_state_hash
-                    };
-
-                    tracing::warn!(
-                        "exploratoryDeploy: Final state={}",
-                        PrettyPrinter::build_string_bytes(&merged_state)
-                    );
-
-                    (merged_state, Some(lfb))
+                    (fs.state_hash.0.clone(), Some(lfb))
                 } else {
-                    // Specific block requested: use its post-state
+                    // Specific block requested: read the SEALED finalized state at that
+                    // cut — FS(block_hash), via the same seal recursion as the no-block
+                    // (LFB) path above — NOT the block's raw construction-merge post-state,
+                    // which is keep-one'd and therefore non-monotone as the read cut
+                    // advances through a merge that keep-one'd a concurrent write. A read at
+                    // any block must return finalized truth, exactly as the LFB read does.
+                    // (A pre-state read is block inspection, so it keeps the raw pre-state.)
                     let hash_str = block_hash.as_ref().unwrap();
                     let padded_hash = pad_hex_string(hash_str);
                     let hash_byte_string = hex::decode(&padded_hash).map_err(|_| {
@@ -1623,7 +1671,18 @@ impl BlockAPI {
                             let state = if use_pre_state_hash {
                                 proto_util::pre_state_hash(&b)
                             } else {
-                                proto_util::post_state_hash(&b)
+                                let dag = casper.block_dag().await?;
+                                let ft = casper.casper_shard_conf().fault_tolerance_threshold;
+                                let fs =
+                                    crate::rust::finality::floor_seal::floor_state_get_or_compute(
+                                        &dag,
+                                        casper.block_store(),
+                                        &runtime_manager,
+                                        &b.block_hash,
+                                        ft,
+                                    )
+                                    .await?;
+                                fs.state_hash.0.clone()
                             };
                             (state, Some(b))
                         }
@@ -1650,7 +1709,7 @@ impl BlockAPI {
                 ))
             }
         } else {
-            tracing::warn!("{}", error_message);
+            tracing::debug!("{}", error_message);
             Err(eyre::eyre!("Error: {}", error_message))
         }
     }
@@ -1670,7 +1729,7 @@ impl BlockAPI {
                 .ok_or_else(|| eyre::eyre!("{}", LatestBlockMessageError::NoBlockMessageError))?;
             Ok(latest_message)
         } else {
-            tracing::warn!("{}", error_message);
+            tracing::debug!("{}", error_message);
             Err(eyre::eyre!("Error: {}", error_message))
         }
     }
@@ -1712,7 +1771,7 @@ impl BlockAPI {
         if let Some(casper) = eng.with_casper() {
             casper_response(casper.as_ref(), par, &block_hash).await
         } else {
-            tracing::warn!("{}", error_message);
+            tracing::debug!("{}", error_message);
             Err(eyre::eyre!("Error: {}", error_message))
         }
     }

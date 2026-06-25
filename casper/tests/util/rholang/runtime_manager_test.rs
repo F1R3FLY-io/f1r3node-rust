@@ -1910,6 +1910,7 @@ async fn bridge_query_survives_multi_parent_merge() {
         &mut rm,
         BlockData::from_block(&block_a_raw),
         HashMap::new(),
+        &std::collections::BTreeMap::new(),
         None,
     )
     .await
@@ -1990,6 +1991,7 @@ async fn bridge_query_survives_multi_parent_merge() {
         &mut rm,
         BlockData::from_block(&block_b_raw),
         HashMap::new(),
+        &std::collections::BTreeMap::new(),
         None,
     )
     .await
@@ -2006,9 +2008,17 @@ async fn bridge_query_survives_multi_parent_merge() {
     // --- Merge [A, B] ---
     let parents = vec![block_a.clone(), block_b.clone()];
     let snapshot_merge = mk_snapshot(&genesis_hash);
-    let (merged_state, rejected, rejected_slashes) =
-        compute_parents_post_state(&block_store, parents, &snapshot_merge, &rm, None, None)
-            .expect("merge parents");
+    let (merged_state, rejected, rejected_slashes) = compute_parents_post_state(
+        &block_store,
+        parents,
+        &snapshot_merge,
+        &rm,
+        &std::collections::BTreeMap::new(),
+        None,
+        None,
+    )
+    .await
+    .expect("merge parents");
 
     assert!(
         rejected.is_empty(),
@@ -2076,6 +2086,7 @@ in {{
         &mut rm,
         BlockData::from_block(&query_block_raw),
         HashMap::new(),
+        &std::collections::BTreeMap::new(),
         None,
     )
     .await
@@ -2246,6 +2257,7 @@ async fn concurrent_registry_inserts_should_not_conflict() {
         &mut rm,
         BlockData::from_block(&block_a_raw),
         HashMap::new(),
+        &std::collections::BTreeMap::new(),
         None,
     )
     .await
@@ -2307,6 +2319,7 @@ async fn concurrent_registry_inserts_should_not_conflict() {
         &mut rm,
         BlockData::from_block(&block_b_raw),
         HashMap::new(),
+        &std::collections::BTreeMap::new(),
         None,
     )
     .await
@@ -2482,9 +2495,17 @@ async fn concurrent_registry_inserts_should_not_conflict() {
     // --- Merge [A, B] ---
     let parents = vec![block_a.clone(), block_b.clone()];
     let snapshot_merge = mk_snapshot(&genesis_hash);
-    let (merged_state, rejected, _rejected_slashes) =
-        compute_parents_post_state(&block_store, parents, &snapshot_merge, &rm, None, None)
-            .expect("merge parents");
+    let (merged_state, rejected, _rejected_slashes) = compute_parents_post_state(
+        &block_store,
+        parents,
+        &snapshot_merge,
+        &rm,
+        &std::collections::BTreeMap::new(),
+        None,
+        None,
+    )
+    .await
+    .expect("merge parents");
 
     tracing::info!(
         "Merge result: rejected={}, merged_state={}",
@@ -2495,7 +2516,7 @@ async fn concurrent_registry_inserts_should_not_conflict() {
     if !rejected.is_empty() {
         let rejected_sigs: Vec<String> = rejected
             .iter()
-            .map(|d| hex::encode(&d[..std::cmp::min(8, d.len())]))
+            .map(|(sig, _host)| hex::encode(&sig[..std::cmp::min(8, sig.len())]))
             .collect();
         tracing::warn!(
             "CONFLICT DETECTED: {} deploys rejected: {:?}",
@@ -2984,6 +3005,7 @@ new deployId(`rho:system:deployId`) in {
         &mut rm,
         BlockData::from_block(&block_a_raw),
         HashMap::new(),
+        &std::collections::BTreeMap::new(),
         None,
     )
     .await
@@ -3039,6 +3061,7 @@ new deployId(`rho:system:deployId`) in {
         &mut rm,
         BlockData::from_block(&block_b_raw),
         HashMap::new(),
+        &std::collections::BTreeMap::new(),
         None,
     )
     .await
@@ -3094,6 +3117,7 @@ new deployId(`rho:system:deployId`) in {
         &mut rm,
         BlockData::from_block(&block_c_raw),
         HashMap::new(),
+        &std::collections::BTreeMap::new(),
         None,
     )
     .await
@@ -3143,6 +3167,7 @@ new deployId(`rho:system:deployId`) in {
         &mut rm,
         BlockData::from_block(&block_d_raw),
         HashMap::new(),
+        &std::collections::BTreeMap::new(),
         None,
     )
     .await
@@ -3167,12 +3192,15 @@ new deployId(`rho:system:deployId`) in {
         vec![block_c.clone(), block_d.clone()],
         &mk_snapshot(&genesis_hash),
         &rm,
+        &std::collections::BTreeMap::new(),
         None,
         None,
     )
+    .await
     .expect("merge [C, D]");
 
-    let rejected_set: HashSet<prost::bytes::Bytes> = rejected.iter().cloned().collect();
+    let rejected_set: HashSet<prost::bytes::Bytes> =
+        rejected.iter().map(|(sig, _host)| sig.clone()).collect();
     let ba_rejected = rejected_set.contains(&pd_a[0].deploy.sig);
     let bb_rejected = rejected_set.contains(&pd_b[0].deploy.sig);
     let bc_rejected = rejected_set.contains(&pd_c[0].deploy.sig);
