@@ -30,18 +30,19 @@ permissions:
   contents: read
   actions: read
 
-# Serialize per-PR; queue re-pushes rather than cancel mid-flight (the heavy
-# path launches real OCI VMs).
+# One group across ALL fork PRs: fork heavy runs (real OCI VMs) never run in
+# parallel — a second fork run queues rather than cancelling the in-flight one.
 concurrency:
-  group: ci-fork-${{ github.event.pull_request.number }}
+  group: ci-fork-pr
   cancel-in-progress: false
 
 jobs:
   # Run the shared heavy pipeline against the FORK's head commit, gated behind
-  # the ephemeral-launch environment so secrets only flow after maintainer
-  # approval. Only fires for genuine fork PRs — internal PRs also trigger
-  # pull_request_target but are handled by ci.yml's pull_request path, so this
-  # job (and the aggregators below) skip for them.
+  # the ephemeral-launch environment so the OCI runner launch only proceeds after
+  # a maintainer (one of the environment's reviewers) approves. Reviewers may
+  # approve their own PRs. Only fires for genuine fork PRs — internal PRs also
+  # trigger pull_request_target but are handled by ci.yml's pull_request path, so
+  # this job (and the aggregators below) skip for them.
   pipeline:
     name: Heavy Pipeline
     if: github.event.pull_request.head.repo.fork == true
@@ -71,6 +72,10 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash -e {0}
         run: |
+          if [ "${{ needs.pipeline.result }}" != "success" ]; then
+            echo "Heavy Pipeline did not succeed (result: ${{ needs.pipeline.result }}); failing gate."
+            exit 1
+          fi
           failures=$(gh api \
             "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}/jobs" \
             --paginate \
@@ -96,6 +101,10 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash -e {0}
         run: |
+          if [ "${{ needs.pipeline.result }}" != "success" ]; then
+            echo "Heavy Pipeline did not succeed (result: ${{ needs.pipeline.result }}); failing gate."
+            exit 1
+          fi
           failures=$(gh api \
             "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}/jobs" \
             --paginate \

@@ -143,8 +143,10 @@ jobs:
     # name fails workflow startup (the value is validated when the run graph is
     # built), so the ungated path cannot fall back to ''.
     environment: ${{ inputs.gated && 'ephemeral-launch' || 'ephemeral-launch-internal' }}
+    # Runner registration uses RELEASE_PAT (admin scope); the default GITHUB_TOKEN
+    # mints nothing here, so this job needs only read access for the checkout.
     permissions:
-      actions: write
+      contents: read
     timeout-minutes: 10
     steps:
       - name: Clone system-integration

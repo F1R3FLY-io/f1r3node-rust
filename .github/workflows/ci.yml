@@ -17,16 +17,13 @@ on:
       - trying
       - "feature/**"
 
-# Workflow-wide serialization. Only one CI run executes at a time; subsequent
-# triggers queue rather than running in parallel. Prevents OCI ephemeral-runner
-# starvation when a single user action produces multiple events (e.g. dev merge
-# fires both the merge-commit push and the release-tag push from release.yml,
-# each kicking off an independent 20-VM matrix). At this team scale serializing
-# is acceptable — adds at most one full pipeline (~30-45 min) of wait when two
-# triggers land back-to-back, and no run gets cancelled mid-flight so release
-# jobs always reach completion.
+# Concurrency: PRs run in parallel (one group per ref) for fast feedback; pushes
+# (dev/master/staging/trying/tags) share a single group so merge and release runs
+# serialize rather than piling up independent 20-VM OCI matrices. Nothing is
+# cancelled mid-flight — a re-push queues behind its own in-flight run, so release
+# jobs and long integration runs always reach completion.
 concurrency:
-  group: ${{ github.workflow }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || 'push' }}
   cancel-in-progress: false
 
 env:
@@ -96,7 +93,7 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y $(cat .github/apt-dependencies.txt)
+          xargs -r -a .github/apt-dependencies.txt sudo apt-get install -y
 
       - name: Check formatting
         run: cargo fmt --all -- --check
@@ -177,7 +174,7 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y $(cat .github/apt-dependencies.txt)
+          xargs -r -a .github/apt-dependencies.txt sudo apt-get install -y
 
       - name: Run tests
         env:
@@ -188,7 +185,7 @@ jobs:
           ulimit -n 65536
           mkdir -p /tmp/test-logs
           cargo test --release -p ${{ matrix.crate }} 2>&1 | tee /tmp/test-logs/${{ matrix.crate }}.txt
-          exit ${PIPESTATUS[0]}
+          exit "${PIPESTATUS[0]}"
 
       - name: Upload test logs
         if: failure()
@@ -234,6 +231,10 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash -e {0}
         run: |
+          if [ "${{ needs.pipeline.result }}" != "success" ]; then
+            echo "Heavy Pipeline did not succeed (result: ${{ needs.pipeline.result }}); failing gate."
+            exit 1
+          fi
           failures=$(gh api \
             "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}/jobs" \
             --paginate \
@@ -259,6 +260,10 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash -e {0}
         run: |
+          if [ "${{ needs.pipeline.result }}" != "success" ]; then
+            echo "Heavy Pipeline did not succeed (result: ${{ needs.pipeline.result }}); failing gate."
+            exit 1
+          fi
           failures=$(gh api \
             "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}/jobs" \
             --paginate \
