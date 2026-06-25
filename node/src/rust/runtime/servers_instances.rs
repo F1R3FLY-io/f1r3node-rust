@@ -259,9 +259,11 @@ impl ServersInstances {
             startup_events,
         );
 
-        // Create HTTP server router
-        let http_router = Routes::create_main_routes(node_conf.api_server.enable_reporting)
-            .with_state(app_state.clone());
+        let http_router = Routes::create_main_routes(
+            node_conf.api_server.enable_reporting,
+            node_conf.api_server.http_max_body_bytes as usize,
+        )
+        .with_state(app_state.clone());
 
         // Start HTTP server
 

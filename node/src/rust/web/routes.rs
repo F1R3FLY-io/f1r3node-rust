@@ -1,3 +1,4 @@
+use axum::extract::DefaultBodyLimit;
 use axum::http::{header, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::get;
@@ -18,7 +19,7 @@ use crate::rust::web::{events_info, status_info, version_info};
 pub struct Routes;
 
 impl Routes {
-    pub fn create_main_routes(reporting_enabled: bool) -> Router<AppState> {
+    pub fn create_main_routes(reporting_enabled: bool, http_max_body_bytes: usize) -> Router<AppState> {
         let cors = CorsLayer::new()
             .allow_origin(Any)
             .allow_methods(Any)
@@ -52,7 +53,9 @@ impl Routes {
             router = router.nest("/reporting", ReportingRoutes::create_router());
         }
 
-        router.layer(cors)
+        router
+            .layer(DefaultBodyLimit::max(http_max_body_bytes))
+            .layer(cors)
     }
 
     pub fn create_admin_routes() -> Router<AppState> {
