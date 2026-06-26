@@ -145,6 +145,8 @@ pub struct ApiServer {
     pub port_http: u16,
     #[serde(rename = "port-admin-http")]
     pub port_admin_http: u16,
+    #[serde(rename = "http-max-body-bytes", deserialize_with = "de_bytes")]
+    pub http_max_body_bytes: u32,
 
     #[serde(rename = "max-blocks-limit")]
     pub max_blocks_limit: u32,

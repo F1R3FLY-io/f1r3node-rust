@@ -259,9 +259,11 @@ impl ServersInstances {
             startup_events,
         );
 
-        // Create HTTP server router
-        let http_router = Routes::create_main_routes(node_conf.api_server.enable_reporting)
-            .with_state(app_state.clone());
+        let http_router = Routes::create_main_routes(
+            node_conf.api_server.enable_reporting,
+            node_conf.api_server.http_max_body_bytes as usize,
+        )
+        .with_state(app_state.clone());
 
         // Start HTTP server
 
@@ -293,7 +295,7 @@ impl ServersInstances {
         );
 
         // Create admin HTTP server router
-        let admin_http_router = Routes::create_admin_routes().with_state(app_state);
+        let admin_http_router = Routes::create_admin_routes(node_conf.api_server.http_max_body_bytes as usize).with_state(app_state);
 
         let ip_admin_http = IpAddr::from_str(&node_conf.api_server.host)
             .map_err(|e| eyre::eyre!("Invalid HTTP server address: {}", e))?;
