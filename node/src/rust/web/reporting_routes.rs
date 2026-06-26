@@ -1,13 +1,15 @@
-use axum::extract::{Query, State};
+use axum::extract::State;
+use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::get;
 use axum::Router;
+use casper::rust::api::block_report_api::BlockReportError;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 use crate::rust::api::serde_types::block_event_info::BlockEventInfoSerde;
-use crate::rust::web::shared_handlers::AppState;
+use crate::rust::web::shared_handlers::{AppQuery, AppState};
 
 pub struct ReportingRoutes;
 
@@ -38,45 +40,65 @@ impl ReportingRoutes {
         get,
         path = "/reporting/trace",
         params(
-            ("blockHash" = String, Query, description = "Block hash"),
-            ("forceReplay" = Option<bool>, Query, description = "Force replay"),
+            ("blockHash" = String, Query, description = "Block hash to generate the trace report for"),
+            ("forceReplay" = Option<bool>, Query, description = "If `true`, discards any cached trace and re-replays the block from scratch (default: `false`)"),
         ),
         responses(
-            (status = 200, description = "Block trace report", body = ReportResponse),
+            (status = 200, description = "Block trace report (tagged: block-traces-report or block-report-error)", body = ReportResponse),
             (status = 400, description = "Invalid parameters"),
         ),
         tag = "Reporting"
     )]
-async fn trace_handler(
+pub async fn trace_handler(
     State(app_state): State<AppState>,
-    Query(params): Query<TraceQuery>,
+    AppQuery(params): AppQuery<TraceQuery>,
 ) -> Response {
-    // Validate block hash parameter - equivalent to Scala's BlockHashParam validation
     if params.block_hash.is_empty() {
         let error_response = ReportResponse::BlockReportError {
-            error_message: "block_hash parameter is required".to_string(),
+            error_message: "blockHash query parameter is required and must not be empty"
+                .to_string(),
         };
-        return Json(error_response).into_response();
+        return (StatusCode::BAD_REQUEST, Json(error_response)).into_response();
     }
+
+    let block_hash = match Blake2b256Hash::try_from_hex(&params.block_hash) {
+        Ok(hash) => hash,
+        Err(_) => {
+            let error_response = ReportResponse::BlockReportError {
+                error_message: format!("'{}' is not a valid hex hash", params.block_hash),
+            };
+            return (StatusCode::BAD_REQUEST, Json(error_response)).into_response();
+        }
+    };
 
     let force_replay = params.force_replay.unwrap_or(false);
 
-    let result = app_state
+    match app_state
         .block_report_api
-        .block_report(
-            Blake2b256Hash::from_hex(&params.block_hash).to_bytes_prost(),
-            force_replay,
-        )
-        .await;
-
-    let response = match result {
-        Ok(block_event_info) => ReportResponse::BlockTracesReport {
+        .block_report(block_hash.to_bytes_prost(), force_replay)
+        .await
+    {
+        Ok(block_event_info) => Json(ReportResponse::BlockTracesReport {
             report: block_event_info.into(),
-        },
-        Err(error) => ReportResponse::BlockReportError {
-            error_message: error.to_string(),
-        },
-    };
-
-    Json(response).into_response()
+        })
+        .into_response(),
+        Err(e) => {
+            let status = match &e {
+                BlockReportError::BlockNotFound(_) => StatusCode::NOT_FOUND,
+                BlockReportError::ReadOnlyRequired => StatusCode::BAD_REQUEST,
+                BlockReportError::CasperNotInitialized => StatusCode::INTERNAL_SERVER_ERROR,
+                BlockReportError::ReplayFailed(_) => StatusCode::INTERNAL_SERVER_ERROR,
+                BlockReportError::BlockInfoError(_) => StatusCode::INTERNAL_SERVER_ERROR,
+                BlockReportError::StoreError(_) => StatusCode::INTERNAL_SERVER_ERROR,
+                BlockReportError::SemaphoreError(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            };
+            (
+                status,
+                Json(ReportResponse::BlockReportError {
+                    error_message: e.to_string(),
+                }),
+            )
+                .into_response()
+        }
+    }
 }
