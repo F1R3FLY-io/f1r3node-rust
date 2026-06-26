@@ -231,7 +231,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash -e {0}
         run: |
-          if [ "${{ needs.pipeline.result }}" != "success" ]; then
+          if [ "${{ needs.pipeline.result }}" = "failure" ] || [ "${{ needs.pipeline.result }}" = "cancelled" ]; then
             echo "Heavy Pipeline did not succeed (result: ${{ needs.pipeline.result }}); failing gate."
             exit 1
           fi
@@ -260,7 +260,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash -e {0}
         run: |
-          if [ "${{ needs.pipeline.result }}" != "success" ]; then
+          if [ "${{ needs.pipeline.result }}" = "failure" ] || [ "${{ needs.pipeline.result }}" = "cancelled" ]; then
             echo "Heavy Pipeline did not succeed (result: ${{ needs.pipeline.result }}); failing gate."
             exit 1
           fi
@@ -501,20 +501,6 @@ jobs:
           docker rm "$CONTAINER_ID"
           test -f /tmp/artifacts/f1r3node-linux-arm64 || { echo 'arm64 binary extraction failed'; exit 1; }
 
-      - name: Determine release type
-        id: release_type
-        shell: bash -ex {0}
-        run: |
-          # Tag format: refs/tags/v{MAJOR}.{MINOR}.{PATCH}
-          # PATCH == 0 → stable (prerelease=false); PATCH > 0 → prerelease=true
-          TAG="${GITHUB_REF#refs/tags/v}"
-          PATCH=$(echo "$TAG" | cut -d. -f3)
-          if [ "$PATCH" = "0" ]; then
-            echo "prerelease=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "prerelease=true" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Extract release notes for this version
         shell: bash -ex {0}
         run: |
@@ -525,7 +511,7 @@ jobs:
         uses: ncipollo/release-action@v1
         with:
           artifacts: /tmp/artifacts/f1r3node-linux-amd64,/tmp/artifacts/f1r3node-linux-arm64
-          prerelease: ${{ steps.release_type.outputs.prerelease }}
+          prerelease: false
           draft: false
           allowUpdates: true
           omitBodyDuringUpdate: true
