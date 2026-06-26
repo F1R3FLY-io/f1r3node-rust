@@ -1492,9 +1492,10 @@ impl DebruijnInterpreter {
                         (ExprInstance::GInt(lhs), ExprInstance::GInt(rhs)) => {
                             self.cost.charge(multiplication_cost())?;
                             let result = lhs.checked_mul(rhs).ok_or_else(|| {
-                                InterpreterError::ReduceError(
-                                    "Arithmetic overflow in multiplication".to_string(),
-                                )
+                                InterpreterError::ReduceError(format!(
+                                    "Arithmetic overflow in multiplication: {} * {}",
+                                    lhs, rhs
+                                ))
                             })?;
                             Ok(Expr {
                                 expr_instance: Some(ExprInstance::GInt(result)),
