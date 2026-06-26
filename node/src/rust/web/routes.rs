@@ -58,23 +58,24 @@ impl Routes {
             .layer(cors)
     }
 
-    pub fn create_admin_routes() -> Router<AppState> {
-        let cors = CorsLayer::new()
-            .allow_origin(Any)
-            .allow_methods(Any)
-            .allow_headers(Any)
-            .allow_credentials(false);
+    pub fn create_admin_routes(http_max_body_bytes: usize) -> Router<AppState> {
+            let cors = CorsLayer::new()
+                .allow_origin(Any)
+                .allow_methods(Any)
+                .allow_headers(Any)
+                .allow_credentials(false);
 
-        let admin_routes = AdminWebApiRoutes::create_router();
-        let reporting_routes = ReportingRoutes::create_router();
+            let admin_routes = AdminWebApiRoutes::create_router();
+            let reporting_routes = ReportingRoutes::create_router();
 
-        Router::new()
-            .nest("/api", admin_routes.merge(reporting_routes))
-            .nest("/api/v1", WebApiRoutesV1::create_admin_router())
-            .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", AdminApi::openapi()))
-            .layer(cors)
+            Router::new()
+                .nest("/api", admin_routes.merge(reporting_routes))
+                .nest("/api/v1", WebApiRoutesV1::create_admin_router())
+                .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", AdminApi::openapi()))
+                .layer(DefaultBodyLimit::max(http_max_body_bytes))
+                .layer(cors)
+        }
     }
-}
 
 #[utoipa::path(
     get,
