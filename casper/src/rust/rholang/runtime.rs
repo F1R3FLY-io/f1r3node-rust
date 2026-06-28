@@ -614,8 +614,9 @@ impl RuntimeOps {
 
                 tracing::warn!(
                     target: "f1r3fly.merge.mergeable_channel.sanitize",
-                    "NumberChannel has {} values; merge_type={:?} dispatched value={} for channel {}",
+                    "NumberChannel has {} values {:?}; merge_type={:?} dispatched value={} for channel {}",
                     ch_values.len(),
+                    nums,
                     merge_type,
                     num,
                     hex::encode(ch_hash.clone().bytes()),

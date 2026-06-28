@@ -683,6 +683,13 @@ pub async fn compute_parents_post_state(
     // No entered span guard here: the function is async (it awaits floor
     // derivation), and an `.entered()` guard is not `Send` across an await.
     // The individual tracing events below carry their own targets.
+    tracing::debug!(
+        target: "f1r3fly.merge.step",
+        step = "compute_parents_post_state.ENTER",
+        n_parents = parents.len(),
+        latest_messages = latest_messages.len(),
+        "merge.step: enter compute_parents_post_state"
+    );
     match parents.len() {
         // For genesis, use empty trie's root hash
         0 => {
@@ -691,6 +698,13 @@ pub async fn compute_parents_post_state(
                 target: "f1r3fly.casper.compute_parents_post_state.timing",
                 "compute_parents_post_state timing: path=genesis, parents=0, total_ms={}",
                 total_started.elapsed().as_millis()
+            );
+            tracing::debug!(
+                target: "f1r3fly.merge.step",
+                step = "compute_parents_post_state.EXIT",
+                path = "genesis",
+                post_state = %hex::encode(&state[..8.min(state.len())]),
+                "merge.step: exit compute_parents_post_state"
             );
             Ok((state, Vec::new(), Vec::new()))
         }
@@ -703,6 +717,13 @@ pub async fn compute_parents_post_state(
                 target: "f1r3fly.casper.compute_parents_post_state.timing",
                 "compute_parents_post_state timing: path=single_parent, parents=1, total_ms={}",
                 total_started.elapsed().as_millis()
+            );
+            tracing::debug!(
+                target: "f1r3fly.merge.step",
+                step = "compute_parents_post_state.EXIT",
+                path = "single_parent",
+                post_state = %hex::encode(&state[..8.min(state.len())]),
+                "merge.step: exit compute_parents_post_state"
             );
             Ok((state, Vec::new(), Vec::new()))
         }
@@ -737,6 +758,13 @@ pub async fn compute_parents_post_state(
                         parents.len(),
                         cache_lookup_started.elapsed().as_millis(),
                         total_started.elapsed().as_millis()
+                    );
+                    tracing::debug!(
+                        target: "f1r3fly.merge.step",
+                        step = "compute_parents_post_state.EXIT",
+                        path = "descendant_fast_path",
+                        post_state = %hex::encode(&state[..8.min(state.len())]),
+                        "merge.step: exit compute_parents_post_state"
                     );
                     return Ok((state, Vec::new(), Vec::new()));
                 }
@@ -777,6 +805,13 @@ pub async fn compute_parents_post_state(
                             cache_lookup_started.elapsed().as_millis(),
                             total_started.elapsed().as_millis()
                         );
+                        tracing::debug!(
+                            target: "f1r3fly.merge.step",
+                            step = "compute_parents_post_state.EXIT",
+                            path = "dag_descendant_fast_path",
+                            post_state = %hex::encode(&state[..8.min(state.len())]),
+                            "merge.step: exit compute_parents_post_state"
+                        );
                         return Ok((state, Vec::new(), Vec::new()));
                     }
                 }
@@ -808,6 +843,15 @@ pub async fn compute_parents_post_state(
                     cache_key.sorted_parent_hashes.len(),
                     cache_lookup_started.elapsed().as_millis(),
                     total_started.elapsed().as_millis()
+                );
+                tracing::debug!(
+                    target: "f1r3fly.merge.step",
+                    step = "compute_parents_post_state.CACHE_SKIP",
+                    path = "cache_hit",
+                    post_state = %hex::encode(&cached_state[..8.min(cached_state.len())]),
+                    n_rejected = cached_rejected.len(),
+                    n_rejected_slash = cached_slashes.len(),
+                    "merge.step: cache hit, merge skipped"
                 );
                 return Ok((cached_state, cached_rejected, cached_slashes));
             }
@@ -942,10 +986,39 @@ pub async fn compute_parents_post_state(
             // DAG/justification facts.
             let floor_block_number = floor_block.body.state.block_number;
             let pre_filter_count = visible_blocks.len();
+            let pre_filter_blocks: Option<Vec<BlockHash>> = if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG)
+            {
+                Some(visible_blocks.iter().cloned().collect())
+            } else {
+                None
+            };
             visible_blocks.retain(|bh| match s.dag.lookup_unsafe(bh) {
                 Ok(meta) => meta.block_number >= floor_block_number,
                 Err(_) => true, // keep on lookup error (conservative)
             });
+            if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
+                let dropped: Vec<String> = match &pre_filter_blocks {
+                    Some(pre) => pre
+                        .iter()
+                        .filter(|bh| !visible_blocks.contains(*bh))
+                        .map(|bh| hex::encode(&bh[..8.min(bh.len())]))
+                        .collect(),
+                    None => Vec::new(),
+                };
+                tracing::debug!(
+                    target: "f1r3fly.merge.step",
+                    step = "compute_parents_post_state.FLOOR",
+                    floor = %hex::encode(&floor_hash[..8.min(floor_hash.len())]),
+                    floor_block = floor_block_number,
+                    base_state = %hex::encode(&floor_block.body.state.post_state_hash[..8.min(floor_block.body.state.post_state_hash.len())]),
+                    scope_before = pre_filter_count,
+                    scope_after = visible_blocks.len(),
+                    n_dropped = dropped.len(),
+                    dropped = ?dropped,
+                    n_parents = parents.len(),
+                    "merge.step: floor derived; base=floor.post_state; scope filtered to >= floor block"
+                );
+            }
             tracing::debug!(target: "f1r3fly.casper.compute_parents_post_state", floor = %hex::encode(&floor_hash[..8.min(floor_hash.len())]), floor_block = floor_block_number, base_state = %hex::encode(&floor_block.body.state.post_state_hash[..8.min(floor_block.body.state.post_state_hash.len())]), scope_blocks = visible_blocks.len(), n_parents = parents.len(), "merge.compute_parents_post_state: floor+base+scope computed");
             if visible_blocks.len() < pre_filter_count {
                 tracing::debug!(
@@ -1005,6 +1078,13 @@ pub async fn compute_parents_post_state(
                 )
                 .increment(1);
                 let fallback_state = proto_util::post_state_hash(fallback_parent);
+                tracing::debug!(
+                    target: "f1r3fly.merge.step",
+                    step = "compute_parents_post_state.CACHE_PUT",
+                    path = "fallback_latest_parent",
+                    post_state = %hex::encode(&fallback_state[..8.min(fallback_state.len())]),
+                    "merge.step: cache put fallback parents-post-state"
+                );
                 runtime_manager.put_cached_parents_post_state(
                     cache_key,
                     (fallback_state.clone(), Vec::new(), Vec::new()),
@@ -1021,16 +1101,44 @@ pub async fn compute_parents_post_state(
                     floor_distance,
                     total_started.elapsed().as_millis()
                 );
+                tracing::debug!(
+                    target: "f1r3fly.merge.step",
+                    step = "compute_parents_post_state.EXIT",
+                    path = "fallback_latest_parent",
+                    post_state = %hex::encode(&fallback_state[..8.min(fallback_state.len())]),
+                    "merge.step: exit compute_parents_post_state"
+                );
                 return Ok((fallback_state, Vec::new(), Vec::new()));
             }
 
             // Every scope block's mergeable entry must be loadable before the
             // merge builds indices; recompute any this node never replayed
             // (otherwise a missing entry makes the merge fail node-locally → fork).
+            tracing::debug!(
+                target: "f1r3fly.merge.step",
+                step = "compute_parents_post_state.ENSURE_MERGEABLE_PRE",
+                scope_blocks = visible_blocks_len,
+                "merge.step: ensure_scope_mergeable_present begin"
+            );
             ensure_scope_mergeable_present(block_store, runtime_manager, &s.dag, &visible_blocks)
                 .await?;
+            tracing::debug!(
+                target: "f1r3fly.merge.step",
+                step = "compute_parents_post_state.ENSURE_MERGEABLE_POST",
+                scope_blocks = visible_blocks_len,
+                "merge.step: ensure_scope_mergeable_present done"
+            );
 
             // Use DagMerger to merge parent states with scope
+            tracing::debug!(
+                target: "f1r3fly.merge.step",
+                step = "compute_parents_post_state.MERGE_PRE",
+                floor = %hex::encode(&floor_hash[..8.min(floor_hash.len())]),
+                base_state = %hex::encode(&floor_state.bytes()[..8.min(floor_state.bytes().len())]),
+                scope_blocks = visible_blocks_len,
+                disable_late_block_filtering,
+                "merge.step: dag_merger::merge begin"
+            );
             let merge_started = std::time::Instant::now();
             let merger_result = dag_merger::merge(
                 &s.dag,
@@ -1048,6 +1156,15 @@ pub async fn compute_parents_post_state(
             let merge_ms = merge_started.elapsed().as_millis();
 
             let (state, rejected_user_pairs, rejected_slash_pairs) = merger_result;
+            tracing::debug!(
+                target: "f1r3fly.merge.step",
+                step = "compute_parents_post_state.MERGE_POST",
+                new_state = %hex::encode(&state.bytes()[..8.min(state.bytes().len())]),
+                n_rejected_user = rejected_user_pairs.len(),
+                n_rejected_slash = rejected_slash_pairs.len(),
+                merge_ms,
+                "merge.step: dag_merger::merge returned"
+            );
             tracing::debug!(target: "f1r3fly.casper.compute_parents_post_state", merged_state = %hex::encode(&state.bytes()[..8.min(state.bytes().len())]), n_rejected_user = rejected_user_pairs.len(), n_rejected_slash = rejected_slash_pairs.len(), merge_ms, "merge.compute_parents_post_state: DagMerger produced merged state");
 
             // Populate the rejected-deploy buffer from (sig, source_block_hash) pairs.
@@ -1202,6 +1319,15 @@ pub async fn compute_parents_post_state(
             let computed_state = prost::bytes::Bytes::copy_from_slice(&state.bytes());
             // The floor is a deterministic function of the block's justifications,
             // so the merged state is always cacheable (no snapshot-LFB fallback).
+            tracing::debug!(
+                target: "f1r3fly.merge.step",
+                step = "compute_parents_post_state.CACHE_PUT",
+                path = "merged",
+                post_state = %hex::encode(&computed_state[..8.min(computed_state.len())]),
+                n_rejected = rejected.len(),
+                n_rejected_slash = rejected_slashes.len(),
+                "merge.step: cache put merged parents-post-state"
+            );
             runtime_manager.put_cached_parents_post_state(
                 cache_key,
                 (
@@ -1223,6 +1349,15 @@ pub async fn compute_parents_post_state(
                 rejected.len(),
                 rejected_slashes.len(),
                 total_started.elapsed().as_millis()
+            );
+            tracing::debug!(
+                target: "f1r3fly.merge.step",
+                step = "compute_parents_post_state.EXIT",
+                path = "merged",
+                post_state = %hex::encode(&computed_state[..8.min(computed_state.len())]),
+                n_rejected = rejected.len(),
+                n_rejected_slash = rejected_slashes.len(),
+                "merge.step: exit compute_parents_post_state"
             );
             Ok((computed_state, rejected, rejected_slashes))
         }

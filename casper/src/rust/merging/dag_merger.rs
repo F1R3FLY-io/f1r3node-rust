@@ -21,12 +21,20 @@ use crate::rust::system_deploy::{is_slash_deploy_id, is_system_deploy_id};
 
 pub fn cost_optimal_rejection_alg() -> impl Fn(&DeployChainIndex) -> u64 {
     |deploy_chain_index: &DeployChainIndex| {
-        deploy_chain_index
+        let cost: u64 = deploy_chain_index
             .deploys_with_cost
             .0
             .iter()
             .map(|deploy| deploy.cost)
-            .sum()
+            .sum();
+        if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
+            tracing::debug!(target: "f1r3fly.merge.step", step = "cost_optimal_rejection_alg.RESULT",
+                src_block = %hex::encode(&deploy_chain_index.source_block_hash[..]),
+                src_block_number = deploy_chain_index.source_block_number,
+                n_deploys = deploy_chain_index.deploys_with_cost.0.len(),
+                cost = cost);
+        }
+        cost
     }
 }
 
@@ -43,6 +51,12 @@ fn descendants_within_scope(
     start_blocks: &HashSet<BlockHash>,
     scope: &HashSet<BlockHash>,
 ) -> HashSet<BlockHash> {
+    if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
+        let starts: Vec<String> = start_blocks.iter().map(|b| hex::encode(&b[..])).collect();
+        tracing::debug!(target: "f1r3fly.merge.step", step = "descendants_within_scope.ENTER",
+            n_start = start_blocks.len(), n_scope = scope.len(), start_blocks = ?starts);
+    }
+
     let mut result = HashSet::new();
     let mut queue: Vec<BlockHash> = start_blocks.iter().cloned().collect();
     let mut visited: HashSet<BlockHash> = start_blocks.clone();
@@ -51,11 +65,22 @@ fn descendants_within_scope(
         if let Some(children) = dag.children(&current) {
             for child in children {
                 if scope.contains(&child) && visited.insert(child.clone()) {
+                    if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
+                        tracing::debug!(target: "f1r3fly.merge.step", step = "descendants_within_scope.DESCENDANT_FOUND",
+                            parent = %hex::encode(&current[..]),
+                            child = %hex::encode(&child[..]));
+                    }
                     result.insert(child.clone());
                     queue.push(child);
                 }
             }
         }
+    }
+
+    if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
+        let res: Vec<String> = result.iter().map(|b| hex::encode(&b[..])).collect();
+        tracing::debug!(target: "f1r3fly.merge.step", step = "descendants_within_scope.EXIT",
+            n_descendants = result.len(), descendants = ?res);
     }
 
     result
@@ -78,6 +103,16 @@ pub fn merge(
     ),
     CasperError,
 > {
+    if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
+        tracing::debug!(target: "f1r3fly.merge.step", step = "merge.ENTER",
+            lfb = %hex::encode(&lfb[..]),
+            lfb_post_state = %hex::encode(lfb_post_state.clone().bytes()),
+            scope = %scope
+                .as_ref()
+                .map_or("ALL".to_string(), |s| format!("{} blocks", s.len())),
+            disable_late_block_filtering = disable_late_block_filtering);
+    }
+
     // Blocks to merge are all blocks in scope that are NOT the LFB or its ancestors.
     // This includes:
     // 1. Descendants of LFB (blocks built on top of LFB)
@@ -92,11 +127,32 @@ pub fn merge(
                     result.insert(candidate.clone());
                 }
             }
+            if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
+                let included: Vec<String> = result.iter().map(|b| hex::encode(&b[..])).collect();
+                // Scope blocks excluded from the merge set because they ARE in the
+                // LFB main chain (i.e. the LFB or its ancestors).
+                let excluded_in_main: Vec<String> = scope_blocks
+                    .iter()
+                    .filter(|b| !result.contains(*b))
+                    .map(|b| hex::encode(&b[..]))
+                    .collect();
+                tracing::debug!(target: "f1r3fly.merge.step", step = "merge.actual_blocks.SCOPED",
+                    n_scope = scope_blocks.len(),
+                    n_included = result.len(),
+                    n_excluded_in_main_chain = scope_blocks.len() - result.len(),
+                    included = ?included,
+                    excluded_in_main_chain = ?excluded_in_main);
+            }
             result
         }
         None => {
             // Legacy behavior: use descendants of LFB
-            dag.descendants(lfb)?
+            let descendants = dag.descendants(lfb)?;
+            if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
+                tracing::debug!(target: "f1r3fly.merge.step", step = "merge.actual_blocks.LEGACY_DESCENDANTS",
+                    n_descendants = descendants.len());
+            }
+            descendants
         }
     };
 
@@ -127,6 +183,14 @@ pub fn merge(
         late_blocks.len()
     );
 
+    if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
+        let actual: Vec<String> = actual_blocks.iter().map(|b| hex::encode(&b[..])).collect();
+        let late: Vec<String> = late_blocks.iter().map(|b| hex::encode(&b[..])).collect();
+        tracing::debug!(target: "f1r3fly.merge.step", step = "merge.block_sets",
+            n_actual = actual_blocks.len(), n_late = late_blocks.len(),
+            actual_blocks = ?actual, late_blocks = ?late);
+    }
+
     // Get indices for actual and late blocks, converting to sorted vectors for determinism
     let mut actual_set_vec = Vec::new();
     let mut late_set_vec = Vec::new();
@@ -145,6 +209,11 @@ pub fn merge(
     for block_hash in late_blocks_sorted {
         let indices = index(block_hash)?;
         late_set_vec.extend(indices);
+    }
+
+    if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
+        tracing::debug!(target: "f1r3fly.merge.step", step = "merge.indices_loaded",
+            n_actual_chains = actual_set_vec.len(), n_late_chains = late_set_vec.len());
     }
 
     // Accumulator for deploys that lose their chain via dedup but have no
@@ -182,6 +251,17 @@ pub fn merge(
             }
         }
 
+        if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
+            tracing::debug!(target: "f1r3fly.merge.step", step = "merge.dedup.latest_for_deploy.ENTER",
+                n_deploy_ids = latest_for_deploy.len(), n_chains = actual_set_vec.len());
+            for (deploy_id, (num, hash)) in latest_for_deploy.iter() {
+                tracing::debug!(target: "f1r3fly.merge.step", step = "merge.dedup.latest_for_deploy",
+                    deploy_id = %hex::encode(&deploy_id[..8.min(deploy_id.len())]),
+                    freshest_block_number = *num,
+                    freshest_block_hash = %hex::encode(&hash[..]));
+            }
+        }
+
         // Retain chains only if every deploy in the chain points back to THIS chain
         // as the freshest source. A chain with even one stale deploy is discarded —
         // its diffs are against a pre-state that includes the stale deploy's effects,
@@ -208,6 +288,24 @@ pub fn merge(
         actual_set_vec = retained;
         let post_dedup_count = actual_set_vec.len();
 
+        if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
+            tracing::debug!(target: "f1r3fly.merge.step", step = "merge.dedup.partition",
+                pre_dedup = pre_dedup_count, retained = post_dedup_count, dropped = dropped.len());
+            for chain in &actual_set_vec {
+                let sigs: Vec<String> = chain
+                    .deploys_with_cost
+                    .0
+                    .iter()
+                    .map(|d| hex::encode(&d.deploy_id[..8.min(d.deploy_id.len())]))
+                    .collect();
+                tracing::debug!(target: "f1r3fly.merge.step", step = "merge.dedup.retained_chain",
+                    src_block = %hex::encode(&chain.source_block_hash[..]),
+                    src_block_number = chain.source_block_number,
+                    n_deploys = chain.deploys_with_cost.0.len(),
+                    sigs = ?sigs);
+            }
+        }
+
         for chain in &dropped {
             for deploy in chain.deploys_with_cost.0.iter() {
                 if is_system_deploy_id(&deploy.deploy_id) {
@@ -222,9 +320,42 @@ pub fn merge(
                     None => true,
                 };
                 if is_collateral {
+                    if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
+                        tracing::debug!(target: "f1r3fly.merge.step", step = "merge.dedup.collateral_lost",
+                            deploy_id = %hex::encode(&deploy.deploy_id[..8.min(deploy.deploy_id.len())]),
+                            src_block = %hex::encode(&chain.source_block_hash[..]));
+                    }
                     collateral_lost_pairs
                         .push((deploy.deploy_id.clone(), chain.source_block_hash.clone()));
                 }
+            }
+        }
+
+        if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
+            for chain in &dropped {
+                let sigs: Vec<String> = chain
+                    .deploys_with_cost
+                    .0
+                    .iter()
+                    .map(|d| hex::encode(&d.deploy_id[..8.min(d.deploy_id.len())]))
+                    .collect();
+                let channels: Vec<String> = chain
+                    .state_changes
+                    .datums_changes
+                    .iter()
+                    .map(|e| {
+                        let chg = e.value();
+                        format!(
+                            "{}:r{}a{}",
+                            hex::encode(e.key().clone().bytes()),
+                            chg.removed.len(),
+                            chg.added.len()
+                        )
+                    })
+                    .collect();
+                tracing::debug!(target: "f1r3fly.merge.step", step = "merge.dedup_dropped_chain",
+                    src_block = %hex::encode(&chain.source_block_hash[..8.min(chain.source_block_hash.len())]),
+                    sigs = ?sigs, channels = ?channels);
             }
         }
 
@@ -255,6 +386,33 @@ pub fn merge(
             chain.deploys_with_cost.0.len(),
             chain.deploys_with_cost.0.iter().map(|d| d.cost).sum::<u64>(),
         );
+    }
+
+    // STEP TRACE: per-chain inputs to conflict resolution — each chain's deploy
+    // sigs and its per-channel datum delta (removed/added counts + bytes). Lets
+    // the @"m" cell be followed by size across chains. Gated, zero cost when off.
+    if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
+        tracing::debug!(target: "f1r3fly.merge.step", step = "merge.resolve_inputs",
+            n_actual_chains = actual_set_vec.len(), n_late = late_set_vec.len(),
+            collateral_lost = collateral_lost_pairs.len());
+        for (i, chain) in actual_set_vec.iter().enumerate() {
+            let sigs: Vec<String> = chain
+                .deploys_with_cost
+                .0
+                .iter()
+                .map(|d| hex::encode(&d.deploy_id[..8.min(d.deploy_id.len())]))
+                .collect();
+            for entry in chain.state_changes.datums_changes.iter() {
+                let chg = entry.value();
+                let rb: usize = chg.removed.iter().map(|d| d.len()).sum();
+                let ab: usize = chg.added.iter().map(|d| d.len()).sum();
+                tracing::debug!(target: "f1r3fly.merge.step", step = "merge.chain_channel",
+                    chain = i, sigs = ?sigs,
+                    channel = %hex::encode(entry.key().clone().bytes()),
+                    removed = chg.removed.len(), added = chg.added.len(),
+                    removed_bytes = rb, added_bytes = ab);
+            }
+        }
     }
 
     // Keep as Vec for deterministic processing (ConflictSetMerger expects sorted Vecs)
@@ -375,15 +533,32 @@ pub fn merge(
             .next()
             .is_some()
         {
+            if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
+                tracing::debug!(target: "f1r3fly.merge.step", step = "depends_fn.TRUE_PRODUCE_INTERSECTION",
+                    target_src = %hex::encode(&target.source_block_hash[..]),
+                    source_src = %hex::encode(&source.source_block_hash[..]),
+                    n_produce_overlap = produces_source.intersection(&produces_target).count());
+            }
             return true;
         }
 
-        derived
+        let consume_dep = derived
             .consumes_created
             .0
             .intersection(&target.event_log_index.consumes_produced.0)
             .next()
-            .is_some()
+            .is_some();
+        if consume_dep && tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
+            tracing::debug!(target: "f1r3fly.merge.step", step = "depends_fn.TRUE_CONSUME_INTERSECTION",
+                target_src = %hex::encode(&target.source_block_hash[..]),
+                source_src = %hex::encode(&source.source_block_hash[..]),
+                n_consume_overlap = derived
+                    .consumes_created
+                    .0
+                    .intersection(&target.event_log_index.consumes_produced.0)
+                    .count());
+        }
+        consume_dep
     };
 
     let state_changes_fn = |chain: &DeployChainIndex| Ok(chain.state_changes.clone());
@@ -393,8 +568,30 @@ pub fn merge(
 
     let compute_trie_actions_fn = {
         let reader = Arc::clone(&history_reader);
-        move |changes, mergeable_chs| {
-            state_change_merger::compute_trie_actions(
+        move |changes: rspace_plus_plus::rspace::merger::state_change::StateChange,
+              mergeable_chs| {
+            // Per-channel datum-delta trace: surfaces a clobber (a base datum
+            // removed with nothing added) and a multi-datum land (added > 1) in
+            // the merged state change, gated so it costs nothing when disabled.
+            if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
+                tracing::debug!(target: "f1r3fly.merge.step", step = "merge.merged_state.ENTER",
+                    n_channels = changes.datums_changes.len());
+                for entry in changes.datums_changes.iter() {
+                    let chg = entry.value();
+                    let removed_bytes: usize = chg.removed.iter().map(|d| d.len()).sum();
+                    let added_bytes: usize = chg.added.iter().map(|d| d.len()).sum();
+                    tracing::debug!(
+                        target: "f1r3fly.merge.step",
+                        step = "merge.merged_result_channel",
+                        channel = %hex::encode(entry.key().clone().bytes()),
+                        removed = chg.removed.len(),
+                        added = chg.added.len(),
+                        removed_bytes,
+                        added_bytes,
+                    );
+                }
+            }
+            let trie_actions = state_change_merger::compute_trie_actions(
                 &changes,
                 &*reader,
                 &mergeable_chs,
@@ -413,7 +610,20 @@ pub fn merge(
                         Ok(None)
                     }
                 },
-            )
+            );
+            if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
+                match &trie_actions {
+                    Ok(actions) => {
+                        tracing::debug!(target: "f1r3fly.merge.step", step = "merge.merged_state.EXIT",
+                        n_trie_actions = actions.len())
+                    }
+                    Err(e) => {
+                        tracing::debug!(target: "f1r3fly.merge.step", step = "merge.merged_state.ERROR",
+                        error = ?e)
+                    }
+                }
+            }
+            trie_actions
         }
     };
 
@@ -493,6 +703,18 @@ pub fn merge(
         let mut conflict_map =
             merging_logic::compute_conflict_map_event_indexed(&branches_owned, &event_logs);
 
+        // STEP TRACE: event-log conflict edges by branch index, before the
+        // same-user-deploy-id pass augments them below.
+        if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
+            tracing::debug!(target: "f1r3fly.merge.step", step = "compute_conflict_map_fn.ENTER",
+                n_branches = branches_refs.len());
+            for (idx, b) in branches_refs.iter().enumerate() {
+                let n = conflict_map.get(*b).map(|s| s.0.len()).unwrap_or(0);
+                tracing::debug!(target: "f1r3fly.merge.step", step = "compute_conflict_map_fn.EVENT_LOG_EDGE",
+                    branch = idx, conflicts_with_n_branches = n);
+            }
+        }
+
         // MSTACK merge-trace: the resulting conflict map by branch idx (gated).
         if tracing::enabled!(target: "f1r3fly.merge.mstack", tracing::Level::DEBUG) {
             for (idx, b) in branches_refs.iter().enumerate() {
@@ -515,6 +737,16 @@ pub fn merge(
                 deploy_to_branches.entry(d.clone()).or_default().push(idx);
             }
         }
+        if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
+            for (deploy_id, branch_ids) in deploy_to_branches.iter() {
+                if branch_ids.len() >= 2 {
+                    tracing::debug!(target: "f1r3fly.merge.step", step = "compute_conflict_map_fn.SHARED_DEPLOY_ID",
+                        deploy_id = %hex::encode(&deploy_id[..8.min(deploy_id.len())]),
+                        branch_indices = ?branch_ids);
+                }
+            }
+        }
+
         for branch_ids in deploy_to_branches.values() {
             if branch_ids.len() < 2 {
                 continue;
@@ -533,6 +765,14 @@ pub fn merge(
             }
         }
 
+        if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
+            for (idx, b) in branches_refs.iter().enumerate() {
+                let n = conflict_map.get(*b).map(|s| s.0.len()).unwrap_or(0);
+                tracing::debug!(target: "f1r3fly.merge.step", step = "compute_conflict_map_fn.EXIT",
+                    branch = idx, conflicts_with_n_branches_final = n);
+            }
+        }
+
         Ok(conflict_map)
     };
 
@@ -548,7 +788,22 @@ pub fn merge(
             #[allow(clippy::mutable_key_type)]
             let depends_map =
                 merging_logic::compute_depends_map_event_indexed(&chains_vec, &event_logs);
-            merging_logic::gather_related_sets(&depends_map)
+            let branches = merging_logic::gather_related_sets(&depends_map);
+            if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
+                tracing::debug!(target: "f1r3fly.merge.step", step = "compute_branches_fn.ENTER",
+                    n_chains = chains_vec.len(), n_branches = branches.0.len());
+                for (idx, branch) in branches.0.iter().enumerate() {
+                    let sigs: Vec<String> = branch
+                        .0
+                        .iter()
+                        .flat_map(|dci| dci.deploys_with_cost.0.iter())
+                        .map(|d| hex::encode(&d.deploy_id[..8.min(d.deploy_id.len())]))
+                        .collect();
+                    tracing::debug!(target: "f1r3fly.merge.step", step = "compute_branches_fn.BRANCH",
+                        branch = idx, n_chains = branch.0.len(), sigs = ?sigs);
+                }
+            }
+            branches
         };
 
     // Resolve conflicts: detect conflicts and select the cost-optimal rejection set.
@@ -563,6 +818,43 @@ pub fn merge(
         &compute_conflict_map_fn,
     )
     .map_err(|e| CasperError::HistoryError(e))?;
+
+    if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
+        let log_chain = |tag: &str, c: &DeployChainIndex| {
+            let sigs: Vec<String> = c
+                .deploys_with_cost
+                .0
+                .iter()
+                .map(|d| hex::encode(&d.deploy_id[..8.min(d.deploy_id.len())]))
+                .collect();
+            let chans: Vec<String> = c
+                .state_changes
+                .datums_changes
+                .iter()
+                .map(|e| {
+                    let chg = e.value();
+                    format!(
+                        "{}:r{}a{}",
+                        hex::encode(e.key().clone().bytes()),
+                        chg.removed.len(),
+                        chg.added.len()
+                    )
+                })
+                .collect();
+            tracing::debug!(target: "f1r3fly.merge.step", step = "resolve_conflicts.RESULT",
+                verdict = tag,
+                src = %hex::encode(&c.source_block_hash[..8.min(c.source_block_hash.len())]),
+                sigs = ?sigs, chans = ?chans);
+        };
+        for branch in &resolved.to_merge {
+            for c in &branch.0 {
+                log_chain("KEEP", c);
+            }
+        }
+        for c in &resolved.rejected.0 {
+            log_chain("REJECT", c);
+        }
+    }
 
     // Rejection expansion. Any chain whose source block is a DAG descendant
     // of a rejected chain's source block (within merge scope) has pre-computed
@@ -582,10 +874,30 @@ pub fn merge(
 
     let pre_expansion_rejected = resolved.rejected.0.len();
 
+    if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
+        let srcs: Vec<String> = rejected_source_blocks
+            .iter()
+            .map(|b| hex::encode(&b[..]))
+            .collect();
+        tracing::debug!(target: "f1r3fly.merge.step", step = "merge.rejection_expansion.ENTER",
+            n_rejected_source_blocks = rejected_source_blocks.len(),
+            pre_expansion_rejected = pre_expansion_rejected,
+            rejected_source_blocks = ?srcs);
+    }
+
     let __exp_start = std::time::Instant::now();
     if !rejected_source_blocks.is_empty() {
         let descendant_blocks =
             descendants_within_scope(dag, &rejected_source_blocks, &actual_blocks);
+
+        if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
+            let desc: Vec<String> = descendant_blocks
+                .iter()
+                .map(|b| hex::encode(&b[..]))
+                .collect();
+            tracing::debug!(target: "f1r3fly.merge.step", step = "merge.rejection_expansion.DESCENDANTS",
+                n_descendants = descendant_blocks.len(), descendant_blocks = ?desc);
+        }
 
         if !descendant_blocks.is_empty() {
             // Rebuild to_merge: any branch containing a chain from a descendant
@@ -598,6 +910,19 @@ pub fn merge(
                     .0
                     .iter()
                     .any(|chain| descendant_blocks.contains(&chain.source_block_hash));
+                if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
+                    let sigs: Vec<String> = branch
+                        .0
+                        .iter()
+                        .flat_map(|c| c.deploys_with_cost.0.iter())
+                        .map(|d| hex::encode(&d.deploy_id[..8.min(d.deploy_id.len())]))
+                        .collect();
+                    tracing::debug!(target: "f1r3fly.merge.step", step = "merge.rejection_expansion.BRANCH",
+                        has_stale_descendant = has_stale,
+                        disposition = if has_stale { "MOVED_TO_REJECTED" } else { "KEPT" },
+                        n_chains = branch.0.len(),
+                        sigs = ?sigs);
+                }
                 if has_stale {
                     for chain in branch.0 {
                         resolved.rejected.0.insert(chain);
@@ -626,6 +951,43 @@ pub fn merge(
         "source" => crate::rust::metrics_constants::MERGING_METRICS_SOURCE
     )
     .record(__exp_start.elapsed().as_secs_f64());
+
+    if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
+        let log_final = |verdict: &str, c: &DeployChainIndex| {
+            let sigs: Vec<String> = c
+                .deploys_with_cost
+                .0
+                .iter()
+                .map(|d| hex::encode(&d.deploy_id[..8.min(d.deploy_id.len())]))
+                .collect();
+            let chans: Vec<String> = c
+                .state_changes
+                .datums_changes
+                .iter()
+                .map(|e| {
+                    let chg = e.value();
+                    format!(
+                        "{}:r{}a{}",
+                        hex::encode(e.key().clone().bytes()),
+                        chg.removed.len(),
+                        chg.added.len()
+                    )
+                })
+                .collect();
+            tracing::debug!(target: "f1r3fly.merge.step", step = "merge.final_verdict",
+                verdict = verdict,
+                src = %hex::encode(&c.source_block_hash[..8.min(c.source_block_hash.len())]),
+                sigs = ?sigs, chans = ?chans);
+        };
+        for branch in &resolved.to_merge {
+            for c in &branch.0 {
+                log_final("KEEP", c);
+            }
+        }
+        for c in &resolved.rejected.0 {
+            log_final("REJECT", c);
+        }
+    }
 
     // Combine surviving diffs and apply to the LFB post-state.
     let new_state = conflict_set_merger::compute_merged_state(
@@ -722,6 +1084,13 @@ pub fn merge(
             rejected_slashes.len(),
             rejected_str.join(", ")
         );
+    }
+
+    if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
+        tracing::debug!(target: "f1r3fly.merge.step", step = "merge.EXIT",
+            new_state = %hex::encode(new_state.clone().bytes()),
+            n_rejected_user = rejected_user_deploys.len(),
+            n_rejected_slash = rejected_slashes.len());
     }
 
     Ok((new_state, rejected_user_deploys, rejected_slashes))

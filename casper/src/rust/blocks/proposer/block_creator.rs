@@ -78,16 +78,31 @@ pub async fn prepare_user_deploys(
     };
 
     let recovered_count = recovered.len();
+    if recovered_count > 0 {
+        let recovered_sigs: Vec<String> = recovered
+            .iter()
+            .map(|d| hex::encode(&d.sig[..d.sig.len().min(8)]))
+            .collect();
+        tracing::info!(
+            target: "f1r3fly.casper.recovery",
+            "Prepare user deploys: {} recovered from rejected-deploy buffer; sigs={:?}",
+            recovered_count,
+            recovered_sigs
+        );
+    }
     let unfinalized: HashSet<Signed<DeployData>> = unfinalized
         .into_iter()
         .chain(recovered.into_iter())
         .collect();
-    if recovered_count > 0 {
-        tracing::info!(
-            "Prepare user deploys: {} recovered from rejected-deploy buffer",
-            recovered_count
-        );
-    }
+
+    tracing::debug!(
+        target: "f1r3fly.merge.step",
+        step = "prepare_user_deploys.POOL",
+        block_number,
+        unfinalized_pool = unfinalized.len(),
+        recovered = recovered_count,
+        "merge.step: deploy pool assembled (unfinalized + recovered re-admits)"
+    );
 
     let earliest_block_number =
         block_number - casper_snapshot.on_chain_state.shard_conf.deploy_lifespan;
@@ -197,6 +212,59 @@ pub async fn prepare_user_deploys(
 
     let already_in_scope_count = already_in_scope.len();
 
+    if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
+        for d in &future_deploys {
+            tracing::debug!(
+                target: "f1r3fly.merge.step",
+                step = "prepare_user_deploys.FILTER",
+                deploy = %hex::encode(&d.sig[..8.min(d.sig.len())]),
+                decision = "filtered",
+                reason = "future",
+                "merge.step: deploy filter decision"
+            );
+        }
+        for d in &block_expired_deploys {
+            tracing::debug!(
+                target: "f1r3fly.merge.step",
+                step = "prepare_user_deploys.FILTER",
+                deploy = %hex::encode(&d.sig[..8.min(d.sig.len())]),
+                decision = "filtered",
+                reason = "block-expired",
+                "merge.step: deploy filter decision"
+            );
+        }
+        for d in &time_expired_deploys {
+            tracing::debug!(
+                target: "f1r3fly.merge.step",
+                step = "prepare_user_deploys.FILTER",
+                deploy = %hex::encode(&d.sig[..8.min(d.sig.len())]),
+                decision = "filtered",
+                reason = "time-expired",
+                "merge.step: deploy filter decision"
+            );
+        }
+        for d in &already_in_scope {
+            tracing::debug!(
+                target: "f1r3fly.merge.step",
+                step = "prepare_user_deploys.FILTER",
+                deploy = %hex::encode(&d.sig[..8.min(d.sig.len())]),
+                decision = "filtered",
+                reason = "already-in-scope (repeat_deploy / deploys_in_scope, non-stale)",
+                "merge.step: deploy filter decision"
+            );
+        }
+        for d in &valid_unique {
+            tracing::debug!(
+                target: "f1r3fly.merge.step",
+                step = "prepare_user_deploys.FILTER",
+                deploy = %hex::encode(&d.sig[..8.min(d.sig.len())]),
+                decision = "selected-candidate",
+                reason = "passed expiry + scope filters",
+                "merge.step: deploy filter decision"
+            );
+        }
+    }
+
     // Log deploy selection details when there are any deploys in the pool
     if !unfinalized.is_empty() || !casper_snapshot.deploys_in_scope.is_empty() {
         tracing::info!(
@@ -282,6 +350,21 @@ pub async fn prepare_user_deploys(
         .max_user_deploys_per_block as usize;
     let max_user_deploys = max_deploys;
     if valid_unique.len() <= max_user_deploys {
+        if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
+            let chosen: Vec<String> = valid_unique
+                .iter()
+                .map(|d| hex::encode(&d.sig[..8.min(d.sig.len())]))
+                .collect();
+            tracing::debug!(
+                target: "f1r3fly.merge.step",
+                step = "prepare_user_deploys.CHOSEN",
+                block_number,
+                count = valid_unique.len(),
+                cap_hit = false,
+                chosen = ?chosen,
+                "merge.step: final deploy set chosen for block"
+            );
+        }
         return Ok(PreparedUserDeploys {
             deploys: valid_unique,
             effective_cap: max_user_deploys,
@@ -342,6 +425,23 @@ pub async fn prepare_user_deploys(
         max_user_deploys,
         selection_strategy
     );
+
+    if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
+        let chosen: Vec<String> = selected
+            .iter()
+            .map(|d| hex::encode(&d.sig[..8.min(d.sig.len())]))
+            .collect();
+        tracing::debug!(
+            target: "f1r3fly.merge.step",
+            step = "prepare_user_deploys.CHOSEN",
+            block_number,
+            count = selected.len(),
+            cap_hit = true,
+            strategy = selection_strategy,
+            chosen = ?chosen,
+            "merge.step: final deploy set chosen for block (capped)"
+        );
+    }
 
     Ok(PreparedUserDeploys {
         deploys: selected,
