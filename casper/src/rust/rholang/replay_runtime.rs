@@ -87,6 +87,19 @@ impl ReplayRuntimeOps {
         is_genesis: bool, //FIXME have a better way of knowing this. Pass the replayDeploy function maybe? - OLD
     ) -> Result<(Blake2b256Hash, Vec<NumberChannelsEndVal>), CasperError> {
         let invalid_blocks = invalid_blocks.unwrap_or_default();
+        if tracing::enabled!(target: "f1r3fly.casper.invalid_blocks", tracing::Level::DEBUG) {
+            let entries: Vec<String> = invalid_blocks
+                .iter()
+                .map(|(bh, v)| {
+                    format!(
+                        "{}=>{}",
+                        hex::encode(&bh[..8.min(bh.len())]),
+                        hex::encode(&v[..8.min(v.len())])
+                    )
+                })
+                .collect();
+            tracing::debug!(target: "f1r3fly.casper.invalid_blocks", n = invalid_blocks.len(), seq = block_data.seq_num, "REPLAY compute_state invalid_blocks: [{}]", entries.join(", "));
+        }
 
         self.runtime_ops
             .runtime
@@ -114,6 +127,7 @@ impl ReplayRuntimeOps {
         with_cost_accounting: bool,
         block_data: &BlockData,
     ) -> Result<(Blake2b256Hash, Vec<NumberChannelsEndVal>), CasperError> {
+        tracing::debug!(target: "f1r3fly.casper.replay_rho_runtime", start_hash = %hex::encode(&start_hash[..8.min(start_hash.len())]), n_user = terms.len(), n_system = system_deploys.len(), "replay.replay_deploys ENTER (reset to pre-state, then replay deploys vs recorded COMMs)");
         // Time reset phase - Span[F].traceI("reset") from Scala
         let reset_start = Instant::now();
         self.runtime_ops
@@ -124,6 +138,7 @@ impl ReplayRuntimeOps {
             .record(reset_start.elapsed().as_secs_f64());
 
         // Time user deploys phase
+        tracing::debug!(target: "f1r3fly.casper.replay_rho_runtime", n_user = terms.len(), "replay.replay_deploys: USER-deploy phase");
         let user_deploys_start = Instant::now();
         let mut deploy_results = Vec::new();
         for term in terms {
@@ -134,6 +149,7 @@ impl ReplayRuntimeOps {
             .record(user_deploys_start.elapsed().as_secs_f64());
 
         // Time system deploys phase
+        tracing::debug!(target: "f1r3fly.casper.replay_rho_runtime", n_system = system_deploys.len(), "replay.replay_deploys: SYSTEM-deploy phase (closeBlock etc.)");
         let system_deploys_start = Instant::now();
         let mut system_deploy_results = Vec::new();
         for system_deploy in system_deploys {
@@ -157,6 +173,7 @@ impl ReplayRuntimeOps {
         metrics::histogram!(BLOCK_REPLAY_PHASE_CREATE_CHECKPOINT_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
             .record(checkpoint_start.elapsed().as_secs_f64());
 
+        tracing::debug!(target: "f1r3fly.casper.replay_rho_runtime", computed_root = %hex::encode(&checkpoint.root.bytes()[..8.min(checkpoint.root.bytes().len())]), "replay.replay_deploys DONE (computed final replay root)");
         Ok((checkpoint.root, all_mergeable))
     }
 
@@ -185,6 +202,13 @@ impl ReplayRuntimeOps {
     ) -> Result<NumberChannelsEndVal, CasperError> {
         let mut mergeable_channels: HashMap<Par, MergeType> = HashMap::new();
 
+        let dsig = if tracing::enabled!(target: "f1r3fly.casper.replay_rho_runtime", tracing::Level::DEBUG)
+        {
+            hex::encode(&processed_deploy.deploy.sig[..8.min(processed_deploy.deploy.sig.len())])
+        } else {
+            String::new()
+        };
+        tracing::debug!(target: "f1r3fly.casper.replay_rho_runtime", deploy = %dsig, "replay.deploy ENTER (rig recorded COMMs)");
         let rig_start = Instant::now();
         self.rig(processed_deploy).await?;
         metrics::histogram!(BLOCK_REPLAY_DEPLOY_RIG_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
@@ -197,9 +221,13 @@ impl ReplayRuntimeOps {
             self.process_deploy_without_cost_accounting(processed_deploy, &mut mergeable_channels)
                 .await?
         };
+        tracing::debug!(target: "f1r3fly.casper.replay_rho_runtime", deploy = %dsig, eval_successful, "replay.deploy eval done");
 
         let check_start = Instant::now();
-        self.check_replay_data_with_fix(eval_successful).await?;
+        if let Err(e) = self.check_replay_data_with_fix(eval_successful).await {
+            tracing::debug!(target: "f1r3fly.casper.replay_rho_runtime", deploy = %dsig, "replay.deploy check_replay_data FAILED -> {}", e);
+            return Err(e.into());
+        }
         metrics::histogram!(BLOCK_REPLAY_DEPLOY_CHECK_REPLAY_DATA_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
             .record(check_start.elapsed().as_secs_f64());
 

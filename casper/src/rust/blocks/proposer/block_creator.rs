@@ -736,7 +736,18 @@ pub async fn create(
     // Use the adjusted `now_millis` captured at the start of create for block timestamp.
     // The value is clamped to the max parent timestamp to avoid InvalidTimestamp from clock skew.
     // This ensures the same time is used for deploy filtering and block creation.
-    let invalid_blocks = casper_snapshot.invalid_blocks.clone();
+    // Invalid-blocks map (hash -> sender) for the PoS slash deploys: derived from
+    // this block's own slash targets so it is byte-identical at creation and
+    // replay (see proto_util::slashed_block_senders). A DAG-derived view is
+    // node-view-dependent and makes the slash deploy fail replay (ConsumeFailed).
+    let slashed_hashes: Vec<models::rust::block_hash::BlockHash> = system_deploys_converted
+        .iter()
+        .filter_map(|sd| sd.as_slash().map(|s| s.invalid_block_hash.clone()))
+        .collect();
+    let invalid_blocks = crate::rust::util::proto_util::slashed_block_senders(
+        &casper_snapshot.dag,
+        &slashed_hashes,
+    )?;
     let block_data = BlockData {
         time_stamp: now_millis,
         block_number: next_block_num,

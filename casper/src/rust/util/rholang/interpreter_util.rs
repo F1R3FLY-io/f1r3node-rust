@@ -10,7 +10,7 @@ use models::rust::block::state_hash::StateHash;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{
-    BlockMessage, Bond, DeployData, ProcessedDeploy, ProcessedSystemDeploy,
+    BlockMessage, Bond, DeployData, ProcessedDeploy, ProcessedSystemDeploy, SystemDeployData,
 };
 use models::rust::validator::Validator;
 use prost::bytes::Bytes;
@@ -148,6 +148,7 @@ pub async fn validate_block_checkpoint(
     tracing::trace!(target: "f1r3fly.casper.block_validation", "before-unsafe-get-parents");
     let incoming_pre_state_hash = proto_util::pre_state_hash(block);
     let parents = proto_util::get_parents(block_store, block);
+    tracing::debug!(target: "f1r3fly.casper.block_validation", block = %hex::encode(&block.block_hash[..8.min(block.block_hash.len())]), seq = block.seq_num, n_parents = parents.len(), "validate.block_checkpoint ENTER (recompute parents post-state, then replay)");
     tracing::trace!(target: "f1r3fly.casper.block_validation", parent_count = parents.len(), "before-compute-parents-post-state");
     let parents_post_state_start = std::time::Instant::now();
     // Validate: the floor must be derived from the BLOCK's own recorded
@@ -189,6 +190,7 @@ pub async fn validate_block_checkpoint(
                 .collect();
 
             if incoming_pre_state_hash != computed_pre_state_hash {
+                tracing::debug!(target: "f1r3fly.casper.block_validation", block = %hex::encode(&block.block_hash[..8.min(block.block_hash.len())]), computed = %hex::encode(&computed_pre_state_hash[..8.min(computed_pre_state_hash.len())]), incoming = %hex::encode(&incoming_pre_state_hash[..8.min(incoming_pre_state_hash.len())]), "validate.block_checkpoint: PRE-STATE MISMATCH (recomputed merge != block's recorded pre-state) -> reject, NO replay");
                 // TODO: at this point we may just as well terminate the replay, there's no way it will succeed.
                 tracing::warn!(
                     "Computed pre-state hash {} does not equal block's pre-state hash {}.",
@@ -312,25 +314,28 @@ async fn replay_block(
         );
     }
 
-    // Get invalid blocks set from DAG
-    let invalid_blocks_set = dag.invalid_blocks();
-
-    // Get unseen block hashes
-    let unseen_blocks_set = proto_util::unseen_block_hashes(dag, block)?;
-
-    // Filter out invalid blocks that are unseen
-    let seen_invalid_blocks_set: Vec<_> = invalid_blocks_set
+    // Invalid-blocks map (hash -> sender) for the PoS slash deploys: derived from
+    // this block's own recorded slash targets so it is byte-identical at block
+    // creation and replay (see proto_util::slashed_block_senders). A DAG-derived
+    // view is node-view-dependent and makes the slash deploy fail replay
+    // (ConsumeFailed) because the map is produced into a content-addressed COMM.
+    let slashed_hashes: Vec<BlockHash> = block
+        .body
+        .system_deploys
         .iter()
-        .filter(|invalid_block| !unseen_blocks_set.contains(&invalid_block.block_hash))
-        .cloned()
+        .filter_map(|psd| match psd {
+            ProcessedSystemDeploy::Succeeded {
+                system_deploy:
+                    SystemDeployData::Slash {
+                        invalid_block_hash, ..
+                    },
+                ..
+            } => Some(invalid_block_hash.clone()),
+            _ => None,
+        })
         .collect();
-    // TODO: Write test in which switching this to .filter makes it fail
-
-    // Convert to invalid blocks map
-    let invalid_blocks: HashMap<BlockHash, Validator> = seen_invalid_blocks_set
-        .into_iter()
-        .map(|invalid_block| (invalid_block.block_hash, invalid_block.sender))
-        .collect();
+    let invalid_blocks: HashMap<BlockHash, Validator> =
+        proto_util::slashed_block_senders(dag, &slashed_hashes)?;
 
     // Create block data and check if genesis
     let block_data = BlockData::from_block(block);
@@ -517,6 +522,7 @@ pub async fn compute_deploys_checkpoint(
     let checkpoint_started = std::time::Instant::now();
     // Using tracing events for async - Span[F] equivalent from Scala
     tracing::debug!(target: "f1r3fly.casper.compute_deploys_checkpoint", "compute-deploys-checkpoint-started");
+    tracing::debug!(target: "f1r3fly.casper.compute_deploys_checkpoint", n_deploys = deploys.len(), n_parents = parents.len(), "propose.compute_deploys_checkpoint ENTER (merge parents, then run deploys)");
     // Ensure parents are not empty
     if parents.is_empty() {
         return Err(CasperError::RuntimeError(
@@ -868,6 +874,7 @@ pub async fn compute_parents_post_state(
                 Ok(meta) => meta.block_number >= floor_block_number,
                 Err(_) => true, // keep on lookup error (conservative)
             });
+            tracing::debug!(target: "f1r3fly.casper.compute_parents_post_state", floor = %hex::encode(&lfb_for_descendants[..8.min(lfb_for_descendants.len())]), floor_block = floor_block_number, base_state = %hex::encode(&lfb_block.body.state.post_state_hash[..8.min(lfb_block.body.state.post_state_hash.len())]), scope_blocks = visible_blocks.len(), n_parents = parents.len(), "merge.compute_parents_post_state: floor+base+scope computed");
             if visible_blocks.len() < pre_filter_count {
                 tracing::debug!(
                     target: "f1r3fly.casper.compute_parents_post_state",
@@ -965,6 +972,7 @@ pub async fn compute_parents_post_state(
             let merge_ms = merge_started.elapsed().as_millis();
 
             let (state, rejected_user_pairs, rejected_slash_pairs) = merger_result;
+            tracing::debug!(target: "f1r3fly.casper.compute_parents_post_state", merged_state = %hex::encode(&state.bytes()[..8.min(state.bytes().len())]), n_rejected_user = rejected_user_pairs.len(), n_rejected_slash = rejected_slash_pairs.len(), merge_ms, "merge.compute_parents_post_state: DagMerger produced merged state");
 
             // Populate the rejected-deploy buffer from (sig, source_block_hash) pairs.
             // Looking up the `Signed<DeployData>` from the block store lets the block

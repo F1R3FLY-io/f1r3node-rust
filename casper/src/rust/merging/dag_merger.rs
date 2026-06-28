@@ -463,12 +463,47 @@ pub fn merge(
                 })
                 .collect();
 
+        // MSTACK merge-trace: per-branch deploy sigs + event-log sizes. Gated
+        // behind the `f1r3fly.merge.mstack` target so the sig/format work (and the
+        // loop) is skipped entirely unless that target is enabled — zero cost in
+        // normal operation.
+        if tracing::enabled!(target: "f1r3fly.merge.mstack", tracing::Level::DEBUG) {
+            for (idx, e) in event_logs.iter().enumerate() {
+                let sigs: Vec<String> = branches_owned[idx]
+                    .0
+                    .iter()
+                    .flat_map(|dci| dci.deploys_with_cost.0.iter())
+                    .map(|d| hex::encode(&d.deploy_id[..20.min(d.deploy_id.len())]))
+                    .collect();
+                tracing::debug!(
+                    target: "f1r3fly.merge.mstack",
+                    "branch[{}] sigs={:?} |produces_consumed|={} |consumes_produced|={}",
+                    idx,
+                    sigs,
+                    e.produces_consumed.0.len(),
+                    e.consumes_produced.0.len()
+                );
+            }
+        }
+
         // Event-log conflicts: races, potential COMMs, base-join touches.
         // `mutable_key_type` is a false positive here: prost::bytes::Bytes uses an
         // internal Arc, not interior mutability, but clippy can't distinguish.
         #[allow(clippy::mutable_key_type)]
         let mut conflict_map =
             merging_logic::compute_conflict_map_event_indexed(&branches_owned, &event_logs);
+
+        // MSTACK merge-trace: the resulting conflict map by branch idx (gated).
+        if tracing::enabled!(target: "f1r3fly.merge.mstack", tracing::Level::DEBUG) {
+            for (idx, b) in branches_refs.iter().enumerate() {
+                let n = conflict_map.get(*b).map(|s| s.0.len()).unwrap_or(0);
+                tracing::debug!(
+                    target: "f1r3fly.merge.mstack",
+                    "conflict_map branch[{}] conflicts_with_n_branches={}",
+                    idx, n
+                );
+            }
+        }
 
         // Same-user-deploy-id pass: for any user deploy ID appearing in
         // multiple branches, mark all such branches as mutual conflicts.

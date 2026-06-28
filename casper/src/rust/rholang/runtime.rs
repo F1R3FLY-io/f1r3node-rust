@@ -86,6 +86,24 @@ fn system_deploy_consume_all_pattern() -> BindPattern {
     }
 }
 
+/// Diagnostic label for a system deploy (closeBlock / slash / precharge /
+/// refund). Called lazily inside tracing field evaluation, so it costs nothing
+/// unless the event is enabled.
+fn system_deploy_kind<S: SystemDeployTrait>(sd: &S) -> &'static str {
+    let any = sd.as_any();
+    if any.downcast_ref::<CloseBlockDeploy>().is_some() {
+        "closeBlock"
+    } else if any.downcast_ref::<SlashDeploy>().is_some() {
+        "slash"
+    } else if any.downcast_ref::<PreChargeDeploy>().is_some() {
+        "precharge"
+    } else if any.downcast_ref::<RefundDeploy>().is_some() {
+        "refund"
+    } else {
+        "other"
+    }
+}
+
 impl RuntimeOps {
     /**
      * Because of the history legacy, the emptyStateHash does not really represent an empty trie.
@@ -127,6 +145,19 @@ impl RuntimeOps {
         tracing::info!(target: "f1r3fly.casper.runtime", "compute-state-started");
         if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
             tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "start", rss_kb);
+        }
+        if tracing::enabled!(target: "f1r3fly.casper.invalid_blocks", tracing::Level::DEBUG) {
+            let entries: Vec<String> = invalid_blocks
+                .iter()
+                .map(|(bh, v)| {
+                    format!(
+                        "{}=>{}",
+                        hex::encode(&bh[..8.min(bh.len())]),
+                        hex::encode(&v[..8.min(v.len())])
+                    )
+                })
+                .collect();
+            tracing::debug!(target: "f1r3fly.casper.invalid_blocks", n = invalid_blocks.len(), seq = block_data.seq_num, "PLAY compute_state invalid_blocks: [{}]", entries.join(", "));
         }
         self.runtime.set_block_data(block_data).await;
         if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
@@ -716,6 +747,7 @@ impl RuntimeOps {
         &mut self,
         system_deploy: &mut S,
     ) -> Result<SysEvalResult<S>, CasperError> {
+        tracing::debug!(target: "f1r3fly.casper.replay_rho_runtime", kind = system_deploy_kind(system_deploy), "eval_system_deploy ENTER (eval system source, then consume its result)");
         let wrapper_pre_start = Instant::now();
         if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
             tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "start", rss_kb);
@@ -728,7 +760,9 @@ impl RuntimeOps {
         }
 
         let wrapper_mid_start = Instant::now();
+        tracing::debug!(target: "f1r3fly.casper.replay_rho_runtime", n_eval_errors = eval_result.errors.len(), "eval_system_deploy: system source evaluated");
         if !eval_result.errors.is_empty() {
+            tracing::debug!(target: "f1r3fly.casper.replay_rho_runtime", "eval_system_deploy: UnexpectedSystemErrors (system deploy eval ERRORED)");
             return Err(CasperError::SystemRuntimeError(
                 SystemDeployPlatformFailure::UnexpectedSystemErrors(eval_result.errors),
             ));
@@ -762,9 +796,16 @@ impl RuntimeOps {
                     ),
                 )),
             },
-            None => Err(CasperError::SystemRuntimeError(
-                SystemDeployPlatformFailure::ConsumeFailed,
-            )),
+            None => {
+                // INSTRUMENT (temporary): dump the leftover replay COMMs — names
+                // the consume the closeBlock stalled on at replay.
+                if let Err(e) = self.runtime.check_replay_data().await {
+                    tracing::error!(target: "f1r3fly.casper.replay_block", kind = system_deploy_kind(system_deploy), "system-deploy ConsumeFailed replay stall (THIS is the deploy that returned None): {}", e);
+                }
+                Err(CasperError::SystemRuntimeError(
+                    SystemDeployPlatformFailure::ConsumeFailed,
+                ))
+            }
         }?;
         if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
             tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_match_result", rss_kb);
