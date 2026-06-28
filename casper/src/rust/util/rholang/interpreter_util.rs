@@ -588,6 +588,69 @@ pub async fn compute_deploys_checkpoint(
     ))
 }
 
+/// Ensure every block in the merge `scope` has its mergeable-channels entry
+/// materialized before `dag_merger::merge` reads them through the (synchronous)
+/// `block_index_f` closure. A block imported via LFS without replay — or rejected
+/// locally and never replayed — lacks it, and `load_mergeable_channels`
+/// hard-errors `KeyNotFound`, which made merge validity node-local (the same
+/// block could finalize on nodes that replayed it and be rejected on nodes that
+/// did not — forking the DAG). Recomputing the missing entries here (a
+/// deterministic full replay) makes mergeable presence a function of block
+/// content on every node. Healthy nodes pay only a cached-presence check.
+pub(crate) async fn ensure_scope_mergeable_present(
+    block_store: &KeyValueBlockStore,
+    runtime_manager: &RuntimeManager,
+    dag: &KeyValueDagRepresentation,
+    scope: &HashSet<BlockHash>,
+) -> Result<(), CasperError> {
+    for hash in scope {
+        // Fast path: a cached BlockIndex implies load_mergeable_channels already
+        // succeeded for this block, so its persistent entry is present.
+        if runtime_manager.block_index_cache.contains_key(hash) {
+            continue;
+        }
+        let block = block_store.get_unsafe(hash);
+        if runtime_manager.has_mergeable_entry(&block)? {
+            continue;
+        }
+
+        // The recompute replays the block; its invalid-blocks map must match the
+        // one validation/creation used (slashed_block_senders — the block's own
+        // slash targets) so the replay reproduces the block's post_state_hash and
+        // the entry is stored under the correct key.
+        let slashed_hashes: Vec<BlockHash> = block
+            .body
+            .system_deploys
+            .iter()
+            .filter_map(|psd| match psd {
+                ProcessedSystemDeploy::Succeeded {
+                    system_deploy:
+                        SystemDeployData::Slash {
+                            invalid_block_hash, ..
+                        },
+                    ..
+                } => Some(invalid_block_hash.clone()),
+                _ => None,
+            })
+            .collect();
+        let invalid_blocks: HashMap<BlockHash, Validator> =
+            proto_util::slashed_block_senders(dag, &slashed_hashes)?;
+
+        runtime_manager
+            .ensure_mergeable_entry(&block, invalid_blocks)
+            .await?;
+
+        tracing::info!(
+            target: "f1r3fly.casper.mergeable_recompute",
+            block_hash = %hex::encode(&hash[..hash.len().min(8)]),
+            seq_num = block.seq_num,
+            "recomputed missing mergeable entry for merge-scope block",
+        );
+    }
+
+    Ok(())
+}
+
 /// Compute the merged post-state from multiple parent blocks.
 ///
 /// For exploratory deploy, pass `disable_late_block_filtering_override = Some(true)` to
@@ -953,6 +1016,12 @@ pub async fn compute_parents_post_state(
                 );
                 return Ok((fallback_state, Vec::new(), Vec::new()));
             }
+
+            // Every scope block's mergeable entry must be loadable before the
+            // merge builds indices; recompute any this node never replayed
+            // (otherwise a missing entry makes the merge fail node-locally → fork).
+            ensure_scope_mergeable_present(block_store, runtime_manager, &s.dag, &visible_blocks)
+                .await?;
 
             // Use DagMerger to merge parent states with scope
             let merge_started = std::time::Instant::now();
