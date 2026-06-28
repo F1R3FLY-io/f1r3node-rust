@@ -1,6 +1,6 @@
 // See casper/src/main/scala/coop/rchain/casper/util/rholang/InterpreterUtil.scala
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
@@ -150,14 +150,23 @@ pub async fn validate_block_checkpoint(
     let parents = proto_util::get_parents(block_store, block);
     tracing::trace!(target: "f1r3fly.casper.block_validation", parent_count = parents.len(), "before-compute-parents-post-state");
     let parents_post_state_start = std::time::Instant::now();
+    // Validate: the floor must be derived from the BLOCK's own recorded
+    // justifications (node-identical), not the validating node's live view.
+    let latest_messages: BTreeMap<Validator, BlockHash> = block
+        .justifications
+        .iter()
+        .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
+        .collect();
     let computed_parents_info = compute_parents_post_state(
         block_store,
         parents.clone(),
         s,
         runtime_manager,
+        &latest_messages,
         None,
         rejected_deploy_buffer,
-    );
+    )
+    .await;
     metrics::histogram!(
         crate::rust::metrics_constants::BLOCK_PROCESSING_PARENTS_POST_STATE_TIME_METRIC,
         "source" => crate::rust::metrics_constants::CASPER_METRICS_SOURCE
@@ -517,14 +526,24 @@ pub async fn compute_deploys_checkpoint(
 
     // Compute parents post state
     let parents_started = std::time::Instant::now();
+    // Propose: the floor is derived from the proposer's justification snapshot,
+    // which is exactly what gets packaged into this block's header — so the floor
+    // the proposer builds on equals the floor every validator re-derives.
+    let latest_messages: BTreeMap<Validator, BlockHash> = s
+        .justifications
+        .iter()
+        .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
+        .collect();
     let computed_parents_info = compute_parents_post_state(
         block_store,
         parents,
         s,
         runtime_manager,
+        &latest_messages,
         None,
         rejected_deploy_buffer,
-    )?;
+    )
+    .await?;
     let parents_ms = parents_started.elapsed().as_millis();
     let (pre_state_hash, rejected_deploys, _rejected_slashes) = computed_parents_info;
 
@@ -568,11 +587,15 @@ pub async fn compute_deploys_checkpoint(
 /// For exploratory deploy, pass `disable_late_block_filtering_override = Some(true)` to
 /// always disable late block filtering (see full merged state).
 /// For normal block creation, pass `None` to use the shard config value.
-pub fn compute_parents_post_state(
+pub async fn compute_parents_post_state(
     block_store: &KeyValueBlockStore,
     parents: Vec<BlockMessage>,
     s: &CasperSnapshot,
     runtime_manager: &RuntimeManager,
+    // The block's frozen justification snapshot (proposer's justifications at
+    // propose, the block's recorded justifications at validate) — NEVER the live
+    // DAG view. The finalized floor is derived from this so it is node-identical.
+    latest_messages: &BTreeMap<Validator, BlockHash>,
     disable_late_block_filtering_override: Option<bool>,
     rejected_deploy_buffer: Option<&std::sync::Arc<std::sync::Mutex<block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer>>>,
 ) -> Result<
@@ -588,8 +611,9 @@ pub fn compute_parents_post_state(
     const MAX_LCA_DISTANCE_BLOCKS: i64 = 256;
     const MAX_FULL_ANCESTOR_SCAN_NODES: usize = 8_192;
 
-    // Span guard must live until end of scope to maintain tracing context
-    let _span = tracing::debug_span!(target: "f1r3fly.casper.compute_parents_post_state", "compute-parents-post-state").entered();
+    // No entered span guard here: the function is async (it awaits floor
+    // derivation), and an `.entered()` guard is not `Send` across an await.
+    // The individual tracing events below carry their own targets.
     match parents.len() {
         // For genesis, use empty trie's root hash
         0 => {
@@ -789,24 +813,10 @@ pub fn compute_parents_post_state(
                         Err(_) => false,
                     }
                 };
-            let include_lca_ancestor =
-                |hash: &BlockHash, dag: &KeyValueDagRepresentation| -> bool {
-                    if ancestor_min_block_number == i64::MIN {
-                        return true;
-                    }
-
-                    match dag.lookup(hash) {
-                        Ok(Some(meta)) => meta.block_number >= ancestor_min_block_number,
-                        Ok(None) => false,
-                        Err(_) => false,
-                    }
-                };
-
             // Get all ancestors of all parents (including the parents themselves)
             // Use bounded traversal that stops at finalized blocks to prevent O(chain_length) growth
             let collect_ancestors_started = std::time::Instant::now();
             let mut visible_ancestor_sets_with_parents: Vec<HashSet<BlockHash>> = Vec::new();
-            let mut lca_ancestor_sets_with_parents: Vec<HashSet<BlockHash>> = Vec::new();
             for parent_hash in &parent_hashes {
                 let visible_ancestors = s.dag.with_ancestors(parent_hash.clone(), |bh| {
                     include_visible_ancestor(bh, &s.dag)
@@ -814,13 +824,6 @@ pub fn compute_parents_post_state(
                 let mut visible_ancestors_with_parent = visible_ancestors;
                 visible_ancestors_with_parent.insert(parent_hash.clone());
                 visible_ancestor_sets_with_parents.push(visible_ancestors_with_parent);
-
-                let lca_ancestors = s
-                    .dag
-                    .with_ancestors(parent_hash.clone(), |bh| include_lca_ancestor(bh, &s.dag))?;
-                let mut lca_ancestors_with_parent = lca_ancestors;
-                lca_ancestors_with_parent.insert(parent_hash.clone());
-                lca_ancestor_sets_with_parents.push(lca_ancestors_with_parent);
             }
             let collect_ancestors_ms = collect_ancestors_started.elapsed().as_millis();
 
@@ -832,104 +835,46 @@ pub fn compute_parents_post_state(
                 .collect();
             let flatten_visible_ms = flatten_visible_started.elapsed().as_millis();
 
-            // Find the lowest common ancestor of all parents.
-            // This is the highest block that is an ancestor of ALL parents.
-            // This is deterministic because it depends only on DAG structure, not finalization state.
+            // Node-deterministic finalized floor, derived from the block's frozen
+            // justification snapshot — the cut the merge builds on. Replaces the
+            // LCA base: the floor is finalization-aware and advance-only, so the
+            // merged state is MONOTONE, where the LCA base let it churn
+            // (path-dependent FS). The `lfb_*` names are kept so the downstream
+            // scope filter, fallback, and merge call are unchanged (now
+            // floor-anchored rather than LCA-anchored).
             let lca_started = std::time::Instant::now();
-            let mut common_ancestors: HashSet<BlockHash> =
-                if lca_ancestor_sets_with_parents.is_empty() {
-                    HashSet::new()
-                } else {
-                    let first = lca_ancestor_sets_with_parents[0].clone();
-                    lca_ancestor_sets_with_parents
-                        .iter()
-                        .skip(1)
-                        .fold(first, |acc, set| acc.intersection(set).cloned().collect())
-                };
-
-            // Deterministic fallback: if bounded LCA search misses a common ancestor,
-            // perform a full ancestry intersection that is independent of finalized state.
-            if common_ancestors.is_empty() {
-                let mut full_ancestor_sets_with_parents: Vec<HashSet<BlockHash>> = Vec::new();
-                let mut full_fallback_capped = false;
-                for parent_hash in &parent_hashes {
-                    match with_ancestors_capped(&s.dag, parent_hash, MAX_FULL_ANCESTOR_SCAN_NODES)?
-                    {
-                        Some(ancestors) => full_ancestor_sets_with_parents.push(ancestors),
-                        None => {
-                            full_fallback_capped = true;
-                            break;
-                        }
-                    }
-                }
-
-                if full_fallback_capped {
-                    tracing::warn!(
-                        target: "f1r3fly.casper.compute_parents_post_state.fallback",
-                        "Skipping full LCA fallback due to capped ancestor scan (cap={} per parent); falling back to snapshot LFB",
-                        MAX_FULL_ANCESTOR_SCAN_NODES
-                    );
-                } else if !full_ancestor_sets_with_parents.is_empty() {
-                    let first = full_ancestor_sets_with_parents[0].clone();
-                    common_ancestors = full_ancestor_sets_with_parents
-                        .iter()
-                        .skip(1)
-                        .fold(first, |acc, set| acc.intersection(set).cloned().collect());
-                }
-            }
-
-            // Get block numbers for common ancestors to find LCA (highest block number)
-            let mut common_ancestors_with_height: Vec<(BlockHash, i64)> = Vec::new();
-            for h in &common_ancestors {
-                if let Some(metadata) = s.dag.lookup(h)? {
-                    common_ancestors_with_height.push((h.clone(), metadata.block_number));
-                }
-            }
-
-            // The LCA is the common ancestor with the highest block number.
-            // Tie-break deterministically by block hash to avoid cross-node
-            // divergence when multiple LCAs share the same block height.
-            // Fall back to genesis/snapshot LFB if no common ancestor found
-            let lca_opt = common_ancestors_with_height
-                .iter()
-                .max_by(|(hash_a, height_a), (hash_b, height_b)| {
-                    height_a
-                        .cmp(height_b)
-                        // Prefer lexicographically smaller hash on equal height
-                        // (reverse compare because we are using max_by).
-                        .then_with(|| hash_b.cmp(hash_a))
-                })
-                .map(|(hash, _)| hash.clone());
+            let floor = crate::rust::finality::floor::finalized_floor(
+                &s.dag,
+                &parent_hashes,
+                latest_messages,
+                s.on_chain_state.shard_conf.fault_tolerance_threshold,
+            )
+            .await?;
             let lca_ms = lca_started.elapsed().as_millis();
-            let used_snapshot_lfb_fallback = lca_opt.is_none();
+            let lfb_for_descendants = floor.hash.clone();
 
-            // Use LCA as the LFB for computing descendants, fall back to snapshot LFB
-            let lfb_for_descendants = lca_opt.unwrap_or_else(|| s.last_finalized_block.clone());
-
-            // Get the LFB block to use its post-state as the merge base
+            // The floor block's committed post-state is FS(floor) — the merge base.
             let lfb_block = block_store.get_unsafe(&lfb_for_descendants);
             let lfb_state = Blake2b256Hash::from_bytes_prost(&lfb_block.body.state.post_state_hash);
 
-            // Scope visible_blocks to only include blocks at or above the LCA.
-            // Blocks below the LCA are common ancestors of all parents — their
-            // state is already reflected in the LCA's post-state and merging
-            // them is redundant O(n²) work. This is deterministic because both
-            // the LCA and block numbers come from the DAG structure.
-            let lca_block_number = lfb_block.body.state.block_number;
+            // Scope visible_blocks to blocks at or above the floor: the
+            // unfinalized band the merge resolves. Blocks at or below the floor
+            // are already sealed into the floor's post-state, so merging them is
+            // redundant. Deterministic — the floor and block numbers are pure
+            // DAG/justification facts.
+            let floor_block_number = lfb_block.body.state.block_number;
             let pre_filter_count = visible_blocks.len();
-            visible_blocks.retain(|bh| {
-                match s.dag.lookup_unsafe(bh) {
-                    Ok(meta) => meta.block_number >= lca_block_number,
-                    Err(_) => true, // keep on lookup error (conservative)
-                }
+            visible_blocks.retain(|bh| match s.dag.lookup_unsafe(bh) {
+                Ok(meta) => meta.block_number >= floor_block_number,
+                Err(_) => true, // keep on lookup error (conservative)
             });
             if visible_blocks.len() < pre_filter_count {
                 tracing::debug!(
                     target: "f1r3fly.casper.compute_parents_post_state",
-                    "LCA-scoped merge: reduced visible_blocks from {} to {} (LCA at block #{})",
+                    "floor-scoped merge: reduced visible_blocks from {} to {} (floor at block #{})",
                     pre_filter_count,
                     visible_blocks.len(),
-                    lca_block_number,
+                    floor_block_number,
                 );
             }
 
@@ -938,26 +883,14 @@ pub fn compute_parents_post_state(
                     .iter()
                     .map(|h| hex::encode(&h[..std::cmp::min(10, h.len())]))
                     .collect();
-                let lca_str = hex::encode(
-                    &lfb_for_descendants[..std::cmp::min(10, lfb_for_descendants.len())],
-                );
-                let lca_state_str = hex::encode(
-                    &lfb_block.body.state.post_state_hash
-                        [..std::cmp::min(10, lfb_block.body.state.post_state_hash.len())],
-                );
-                let snapshot_lfb_str = hex::encode(
-                    &s.last_finalized_block[..std::cmp::min(10, s.last_finalized_block.len())],
-                );
-
                 tracing::debug!(
-                    "computeParentsPostState: parents=[{}], commonAncestors={}, LCA={} (block {}), LCA state={}..., visibleBlocks={}, snapshotLFB={}",
+                    "computeParentsPostState: parents=[{}], floor={} (block {}), visibleBlocks={}",
                     parent_hash_str.join(", "),
-                    common_ancestors.len(),
-                    lca_str,
-                    lfb_block.body.state.block_number,
-                    lca_state_str,
-                    visible_blocks.len(),
-                    snapshot_lfb_str
+                    hex::encode(
+                        &lfb_for_descendants[..std::cmp::min(10, lfb_for_descendants.len())]
+                    ),
+                    floor_block_number,
+                    visible_blocks.len()
                 );
             }
 
@@ -1183,21 +1116,16 @@ pub fn compute_parents_post_state(
                 .collect();
 
             let computed_state = prost::bytes::Bytes::copy_from_slice(&state.bytes());
-            if used_snapshot_lfb_fallback {
-                tracing::warn!(
-                    target: "f1r3fly.casper.compute_parents_post_state.cache",
-                    "Skipping parents_post_state cache store because merge used snapshot LFB fallback"
-                );
-            } else {
-                runtime_manager.put_cached_parents_post_state(
-                    cache_key,
-                    (
-                        computed_state.clone(),
-                        rejected.clone(),
-                        rejected_slashes.clone(),
-                    ),
-                );
-            }
+            // The floor is a deterministic function of the block's justifications,
+            // so the merged state is always cacheable (no snapshot-LFB fallback).
+            runtime_manager.put_cached_parents_post_state(
+                cache_key,
+                (
+                    computed_state.clone(),
+                    rejected.clone(),
+                    rejected_slashes.clone(),
+                ),
+            );
             tracing::debug!(
                 target: "f1r3fly.casper.compute_parents_post_state.timing",
                 "compute_parents_post_state timing: path=merged, parents={}, cache_lookup_ms={}, collect_ancestors_ms={}, flatten_visible_ms={}, lca_ms={}, merge_ms={}, visible_blocks={}, rejected_deploys={}, rejected_slashes={}, total_ms={}",

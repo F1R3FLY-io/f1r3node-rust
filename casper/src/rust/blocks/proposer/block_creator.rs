@@ -1,6 +1,6 @@
 // See casper/src/main/scala/coop/rchain/casper/blocks/proposer/BlockCreator.scala
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
@@ -641,14 +641,21 @@ pub async fn create(
     // The merge result is cached so the downstream compute_deploys_checkpoint
     // call hits the cache.
     let __merge_pre_t = std::time::Instant::now();
+    let latest_messages: BTreeMap<Validator, BlockHash> = casper_snapshot
+        .justifications
+        .iter()
+        .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
+        .collect();
     let merge_pre_info = interpreter_util::compute_parents_post_state(
         block_store,
         parents.clone(),
         casper_snapshot,
         runtime_manager,
+        &latest_messages,
         None,
         Some(&rejected_deploy_buffer),
-    )?;
+    )
+    .await?;
     metrics::histogram!(
         BLOCK_CREATOR_COMPUTE_PARENTS_POST_STATE_TIME_METRIC,
         "source" => CASPER_METRICS_SOURCE

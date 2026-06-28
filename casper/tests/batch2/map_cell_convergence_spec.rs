@@ -136,7 +136,7 @@ async fn run_convergence(n_validators: usize, write_rounds: usize, drain_rounds:
     let mut prev_fs: Vec<String> = Vec::new();
     let mut fs_violation: Option<String> = None;
 
-    let mut check_fs =
+    let check_fs =
         |label: &str, fs_now: &[String], prev: &mut Vec<String>, violation: &mut Option<String>| {
             for k in prev.iter() {
                 if !fs_now.contains(k) && violation.is_none() {
