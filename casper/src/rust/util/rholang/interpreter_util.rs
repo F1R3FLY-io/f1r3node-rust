@@ -677,7 +677,7 @@ pub async fn compute_parents_post_state(
 > {
     let total_started = std::time::Instant::now();
     const MAX_PARENT_MERGE_SCOPE_BLOCKS: usize = 512;
-    const MAX_LCA_DISTANCE_BLOCKS: i64 = 256;
+    const MAX_FLOOR_DISTANCE_BLOCKS: i64 = 256;
     const MAX_FULL_ANCESTOR_SCAN_NODES: usize = 8_192;
 
     // No entered span guard here: the function is async (it awaits floor
@@ -911,7 +911,7 @@ pub async fn compute_parents_post_state(
             // (path-dependent FS). The `lfb_*` names are kept so the downstream
             // scope filter, fallback, and merge call are unchanged (now
             // floor-anchored rather than LCA-anchored).
-            let lca_started = std::time::Instant::now();
+            let floor_derive_started = std::time::Instant::now();
             let floor = crate::rust::finality::floor::finalized_floor(
                 &s.dag,
                 &parent_hashes,
@@ -919,25 +919,34 @@ pub async fn compute_parents_post_state(
                 s.on_chain_state.shard_conf.fault_tolerance_threshold,
             )
             .await?;
-            let lca_ms = lca_started.elapsed().as_millis();
-            let lfb_for_descendants = floor.hash.clone();
+            let floor_derive_ms = floor_derive_started.elapsed().as_millis();
+            let floor_hash = floor.hash.clone();
 
             // The floor block's committed post-state is FS(floor) — the merge base.
-            let lfb_block = block_store.get_unsafe(&lfb_for_descendants);
-            let lfb_state = Blake2b256Hash::from_bytes_prost(&lfb_block.body.state.post_state_hash);
+            // The floor is an ancestor of the parents (which are stored), so this is
+            // present in normal operation; surface a clear error instead of panicking
+            // if the block store and DAG ever desynchronize.
+            let floor_block = block_store.get(&floor_hash)?.ok_or_else(|| {
+                CasperError::RuntimeError(format!(
+                    "finalized-floor block {} not in block store (DAG/store desync)",
+                    hex::encode(&floor_hash[..8.min(floor_hash.len())])
+                ))
+            })?;
+            let floor_state =
+                Blake2b256Hash::from_bytes_prost(&floor_block.body.state.post_state_hash);
 
             // Scope visible_blocks to blocks at or above the floor: the
             // unfinalized band the merge resolves. Blocks at or below the floor
             // are already sealed into the floor's post-state, so merging them is
             // redundant. Deterministic — the floor and block numbers are pure
             // DAG/justification facts.
-            let floor_block_number = lfb_block.body.state.block_number;
+            let floor_block_number = floor_block.body.state.block_number;
             let pre_filter_count = visible_blocks.len();
             visible_blocks.retain(|bh| match s.dag.lookup_unsafe(bh) {
                 Ok(meta) => meta.block_number >= floor_block_number,
                 Err(_) => true, // keep on lookup error (conservative)
             });
-            tracing::debug!(target: "f1r3fly.casper.compute_parents_post_state", floor = %hex::encode(&lfb_for_descendants[..8.min(lfb_for_descendants.len())]), floor_block = floor_block_number, base_state = %hex::encode(&lfb_block.body.state.post_state_hash[..8.min(lfb_block.body.state.post_state_hash.len())]), scope_blocks = visible_blocks.len(), n_parents = parents.len(), "merge.compute_parents_post_state: floor+base+scope computed");
+            tracing::debug!(target: "f1r3fly.casper.compute_parents_post_state", floor = %hex::encode(&floor_hash[..8.min(floor_hash.len())]), floor_block = floor_block_number, base_state = %hex::encode(&floor_block.body.state.post_state_hash[..8.min(floor_block.body.state.post_state_hash.len())]), scope_blocks = visible_blocks.len(), n_parents = parents.len(), "merge.compute_parents_post_state: floor+base+scope computed");
             if visible_blocks.len() < pre_filter_count {
                 tracing::debug!(
                     target: "f1r3fly.casper.compute_parents_post_state",
@@ -956,9 +965,7 @@ pub async fn compute_parents_post_state(
                 tracing::debug!(
                     "computeParentsPostState: parents=[{}], floor={} (block {}), visibleBlocks={}",
                     parent_hash_str.join(", "),
-                    hex::encode(
-                        &lfb_for_descendants[..std::cmp::min(10, lfb_for_descendants.len())]
-                    ),
+                    hex::encode(&floor_hash[..std::cmp::min(10, floor_hash.len())]),
                     floor_block_number,
                     visible_blocks.len()
                 );
@@ -968,11 +975,11 @@ pub async fn compute_parents_post_state(
                 .iter()
                 .map(|p| p.body.state.block_number)
                 .max()
-                .unwrap_or(lfb_block.body.state.block_number);
-            let lca_distance = max_parent_block_number - lfb_block.body.state.block_number;
+                .unwrap_or(floor_block.body.state.block_number);
+            let floor_distance = max_parent_block_number - floor_block.body.state.block_number;
             let visible_blocks_len = visible_blocks.len();
             if visible_blocks.len() > MAX_PARENT_MERGE_SCOPE_BLOCKS
-                || lca_distance > MAX_LCA_DISTANCE_BLOCKS
+                || floor_distance > MAX_FLOOR_DISTANCE_BLOCKS
             {
                 let fallback_parent = parents
                     .iter()
@@ -986,9 +993,9 @@ pub async fn compute_parents_post_state(
                     .expect("parents is non-empty in multi-parent branch");
                 tracing::warn!(
                     target: "f1r3fly.casper.compute_parents_post_state.fallback",
-                    "compute_parents_post_state fallback: visibleBlocks={}, lca_distance={}, chosen_parent={} (block {}), reason=merge_scope_too_large",
+                    "compute_parents_post_state fallback: visibleBlocks={}, floor_distance={}, chosen_parent={} (block {}), reason=merge_scope_too_large",
                     visible_blocks.len(),
-                    lca_distance,
+                    floor_distance,
                     PrettyPrinter::build_string_bytes(&fallback_parent.block_hash),
                     fallback_parent.body.state.block_number
                 );
@@ -1004,14 +1011,14 @@ pub async fn compute_parents_post_state(
                 );
                 tracing::debug!(
                     target: "f1r3fly.casper.compute_parents_post_state.timing",
-                    "compute_parents_post_state timing: path=fallback_latest_parent, parents={}, cache_lookup_ms={}, collect_ancestors_ms={}, flatten_visible_ms={}, lca_ms={}, visible_blocks={}, lca_distance={}, total_ms={}",
+                    "compute_parents_post_state timing: path=fallback_latest_parent, parents={}, cache_lookup_ms={}, collect_ancestors_ms={}, flatten_visible_ms={}, floor_derive_ms={}, visible_blocks={}, floor_distance={}, total_ms={}",
                     parents.len(),
                     cache_lookup_ms,
                     collect_ancestors_ms,
                     flatten_visible_ms,
-                    lca_ms,
+                    floor_derive_ms,
                     visible_blocks_len,
-                    lca_distance,
+                    floor_distance,
                     total_started.elapsed().as_millis()
                 );
                 return Ok((fallback_state, Vec::new(), Vec::new()));
@@ -1027,8 +1034,8 @@ pub async fn compute_parents_post_state(
             let merge_started = std::time::Instant::now();
             let merger_result = dag_merger::merge(
                 &s.dag,
-                &lfb_for_descendants,
-                &lfb_state,
+                &floor_hash,
+                &floor_state,
                 |hash: &BlockHash| -> Result<Vec<DeployChainIndex>, CasperError> {
                     let block_index = block_index_f(hash)?;
                     Ok(block_index.deploy_chains)
@@ -1205,12 +1212,12 @@ pub async fn compute_parents_post_state(
             );
             tracing::debug!(
                 target: "f1r3fly.casper.compute_parents_post_state.timing",
-                "compute_parents_post_state timing: path=merged, parents={}, cache_lookup_ms={}, collect_ancestors_ms={}, flatten_visible_ms={}, lca_ms={}, merge_ms={}, visible_blocks={}, rejected_deploys={}, rejected_slashes={}, total_ms={}",
+                "compute_parents_post_state timing: path=merged, parents={}, cache_lookup_ms={}, collect_ancestors_ms={}, flatten_visible_ms={}, floor_derive_ms={}, merge_ms={}, visible_blocks={}, rejected_deploys={}, rejected_slashes={}, total_ms={}",
                 parents.len(),
                 cache_lookup_ms,
                 collect_ancestors_ms,
                 flatten_visible_ms,
-                lca_ms,
+                floor_derive_ms,
                 merge_ms,
                 visible_blocks_len,
                 rejected.len(),

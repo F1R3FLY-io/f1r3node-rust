@@ -8,7 +8,7 @@
 //! node-local finality state participates. This is the linear-finality analog
 //! of RChain's per-message fringe: the cut the block's merge builds on.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
 use models::rust::block_hash::BlockHash;
@@ -124,9 +124,7 @@ async fn derive_floor(
         // Case A: general-ancestor of every parent.
         let mut covers_all_parents = true;
         for parent in parents {
-            if cand.hash != *parent
-                && !is_general_ancestor(dag, &cand.hash, cand.block_number, parent)?
-            {
+            if cand.hash != *parent && !dag.is_dag_ancestor(&cand.hash, parent)? {
                 covers_all_parents = false;
                 break;
             }
@@ -138,15 +136,13 @@ async fn derive_floor(
         // Case B: every other candidate is in `cand`'s past or mergeable via a parent.
         let mut all_compatible = true;
         for other in &candidates {
-            if other.hash == cand.hash
-                || is_general_ancestor(dag, &other.hash, other.block_number, &cand.hash)?
-            {
+            if other.hash == cand.hash || dag.is_dag_ancestor(&other.hash, &cand.hash)? {
                 continue;
             }
             let mut mergeable_via_parent = false;
             for parent in parents {
-                if is_general_ancestor(dag, &other.hash, other.block_number, parent)?
-                    && is_general_ancestor(dag, &cand.hash, cand.block_number, parent)?
+                if dag.is_dag_ancestor(&other.hash, parent)?
+                    && dag.is_dag_ancestor(&cand.hash, parent)?
                 {
                     mergeable_via_parent = true;
                     break;
@@ -202,44 +198,6 @@ async fn derive_floor(
     );
 
     Ok(floor)
-}
-
-/// True if `candidate` (at height `candidate_number`) is a general DAG ancestor
-/// of `descendant` — reachable by following ANY parent, not just the main
-/// parent. Walks up from `descendant`, pruning branches once they drop to or
-/// below the candidate's height, so the search covers only the cone between
-/// them (cheap when the floor is near the candidate, as in steady state).
-pub(crate) fn is_general_ancestor(
-    dag: &KeyValueDagRepresentation,
-    candidate: &BlockHash,
-    candidate_number: i64,
-    descendant: &BlockHash,
-) -> Result<bool, CasperError> {
-    if candidate == descendant {
-        return Ok(true);
-    }
-    let mut seen: HashSet<BlockHash> = HashSet::new();
-    let mut stack: Vec<BlockHash> = vec![descendant.clone()];
-    while let Some(hash) = stack.pop() {
-        if !seen.insert(hash.clone()) {
-            continue;
-        }
-        if hash == *candidate {
-            return Ok(true);
-        }
-        let meta = dag.lookup_unsafe(&hash)?;
-        // At or below the candidate's height (and not the candidate itself):
-        // every parent is strictly lower, so this branch cannot reach it.
-        if meta.block_number <= candidate_number {
-            continue;
-        }
-        for parent in meta.parents {
-            if !seen.contains(&parent) {
-                stack.push(parent);
-            }
-        }
-    }
-    Ok(false)
 }
 
 /// `floor(B)` for an already-inserted block, resolved through the persisted

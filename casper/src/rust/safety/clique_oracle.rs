@@ -19,16 +19,16 @@ type WeightMap = HashMap<V, i64>; // stakes per message creator
 const COOPERATIVE_YIELD_CHECK_INTERVAL: usize = 8;
 const COOPERATIVE_YIELD_TIMESLICE_MS: u64 = 1;
 const MAX_SELF_JUSTIFICATION_CACHE_ENTRIES: usize = 10_000;
-const MAX_IN_MAIN_CHAIN_CACHE_ENTRIES: usize = 10_000;
+const MAX_ANCESTOR_CACHE_ENTRIES: usize = 10_000;
 
 pub struct CliqueOracleRunCache {
     latest_justifications_cache: BTreeMap<V, BTreeMap<V, M>>,
     self_justification_cache: BTreeMap<M, Option<M>>,
-    in_main_chain_cache: BTreeMap<(M, M), bool>,
+    ancestor_cache: BTreeMap<(M, M), bool>,
     yield_check_interval: usize,
     yield_timeslice: Duration,
     max_self_justification_cache_entries: usize,
-    max_in_main_chain_cache_entries: usize,
+    max_ancestor_cache_entries: usize,
 }
 
 impl CliqueOracle {
@@ -36,11 +36,11 @@ impl CliqueOracle {
         CliqueOracleRunCache {
             latest_justifications_cache: BTreeMap::new(),
             self_justification_cache: BTreeMap::new(),
-            in_main_chain_cache: BTreeMap::new(),
+            ancestor_cache: BTreeMap::new(),
             yield_check_interval: COOPERATIVE_YIELD_CHECK_INTERVAL,
             yield_timeslice: Duration::from_millis(COOPERATIVE_YIELD_TIMESLICE_MS),
             max_self_justification_cache_entries: MAX_SELF_JUSTIFICATION_CACHE_ENTRIES,
-            max_in_main_chain_cache_entries: MAX_IN_MAIN_CHAIN_CACHE_ENTRIES,
+            max_ancestor_cache_entries: MAX_ANCESTOR_CACHE_ENTRIES,
         }
     }
 
@@ -103,9 +103,9 @@ impl CliqueOracle {
         yield_check_interval: usize,
         yield_timeslice: Duration,
         self_justification_cache: &mut BTreeMap<M, Option<M>>,
-        in_main_chain_cache: &mut BTreeMap<(M, M), bool>,
+        ancestor_cache: &mut BTreeMap<(M, M), bool>,
         max_self_justification_cache_entries: usize,
-        max_in_main_chain_cache_entries: usize,
+        max_ancestor_cache_entries: usize,
     ) -> Result<bool, KvStoreError> {
         /// Check if there might be eventual disagreement between validators
         async fn might_eventually_disagree(
@@ -114,11 +114,11 @@ impl CliqueOracle {
             dag: &KeyValueDagRepresentation,
             target_msg: &M,
             self_justification_cache: &mut BTreeMap<M, Option<M>>,
-            in_main_chain_cache: &mut BTreeMap<(M, M), bool>,
+            ancestor_cache: &mut BTreeMap<(M, M), bool>,
             yield_check_interval: usize,
             yield_timeslice: Duration,
             max_self_justification_cache_entries: usize,
-            max_in_main_chain_cache_entries: usize,
+            max_ancestor_cache_entries: usize,
         ) -> Result<bool, KvStoreError> {
             // self justification of lmAjB or lmAjB itself. Used as a stopper for traversal
             // TODO not completely clear why try to use self justification and not just message itself
@@ -168,23 +168,22 @@ impl CliqueOracle {
                 // single-main-parent check, a merge block whose main parent was a
                 // sibling looked like a disagreement even though it had merged
                 // the target — collapsing the clique on equal-weight forks.
-                // (`in_main_chain_cache` now memoizes this DAG-ancestry result,
+                // (`ancestor_cache` now memoizes this DAG-ancestry result,
                 // keyed by (target, hash); for single-parent histories it is
                 // identical to the prior main-chain result.)
                 let ancestor_key = (target_msg.clone(), hash.clone());
-                let target_is_ancestor =
-                    if let Some(cached) = in_main_chain_cache.get(&ancestor_key) {
-                        *cached
-                    } else {
-                        let value = dag.is_dag_ancestor(target_msg, &hash)?;
-                        CliqueOracle::bounded_cache_insert(
-                            in_main_chain_cache,
-                            ancestor_key,
-                            value,
-                            max_in_main_chain_cache_entries,
-                        );
-                        value
-                    };
+                let target_is_ancestor = if let Some(cached) = ancestor_cache.get(&ancestor_key) {
+                    *cached
+                } else {
+                    let value = dag.is_dag_ancestor(target_msg, &hash)?;
+                    CliqueOracle::bounded_cache_insert(
+                        ancestor_cache,
+                        ancestor_key,
+                        value,
+                        max_ancestor_cache_entries,
+                    );
+                    value
+                };
                 if !target_is_ancestor {
                     return Ok(true);
                 }
@@ -211,11 +210,11 @@ impl CliqueOracle {
             dag,
             target_msg,
             self_justification_cache,
-            in_main_chain_cache,
+            ancestor_cache,
             yield_check_interval,
             yield_timeslice,
             max_self_justification_cache_entries,
-            max_in_main_chain_cache_entries,
+            max_ancestor_cache_entries,
         )
         .await
         .map(|r| !r)
@@ -330,9 +329,9 @@ impl CliqueOracle {
                         yield_check_interval,
                         yield_timeslice,
                         &mut run_cache.self_justification_cache,
-                        &mut run_cache.in_main_chain_cache,
+                        &mut run_cache.ancestor_cache,
                         run_cache.max_self_justification_cache_entries,
-                        run_cache.max_in_main_chain_cache_entries,
+                        run_cache.max_ancestor_cache_entries,
                     )
                     .await?;
                     let no_b_a_disagreement = CliqueOracle::never_eventually_see_disagreement(
@@ -343,9 +342,9 @@ impl CliqueOracle {
                         yield_check_interval,
                         yield_timeslice,
                         &mut run_cache.self_justification_cache,
-                        &mut run_cache.in_main_chain_cache,
+                        &mut run_cache.ancestor_cache,
                         run_cache.max_self_justification_cache_entries,
-                        run_cache.max_in_main_chain_cache_entries,
+                        run_cache.max_ancestor_cache_entries,
                     )
                     .await?;
 
