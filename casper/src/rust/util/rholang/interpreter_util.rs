@@ -105,6 +105,43 @@ fn compute_rejected_buffer_admits(
     result
 }
 
+/// Sigs whose LATEST canonical disposition is a WIN. Walks the main-parent chain
+/// (the canonical lineage) from `main_parent` down through the deploy-lifespan
+/// window, recording each sig's first-seen (= highest-block = latest) disposition:
+/// a sig in a block's `body.deploys` is a WIN, in `body.rejected_deploys` is a
+/// REJECTION. Returns the sigs whose latest disposition is a WIN — those have
+/// their effect in the canonical lineage, so re-proposing them would
+/// double-execute. Walking only the main-parent chain (not the whole cone) keeps
+/// a non-canonical sibling's disposition from stranding the answer.
+pub fn canonical_won_sigs(
+    block_store: &KeyValueBlockStore,
+    main_parent: Option<&BlockHash>,
+    earliest_block_number: i64,
+) -> Result<HashSet<Bytes>, CasperError> {
+    let mut won: HashSet<Bytes> = HashSet::new();
+    let mut seen: HashSet<Bytes> = HashSet::new();
+    let mut current: Option<BlockHash> = main_parent.cloned();
+    while let Some(hash) = current {
+        let Some(block) = block_store.get(&hash)? else {
+            break;
+        };
+        if block.body.state.block_number < earliest_block_number {
+            break;
+        }
+        for pd in &block.body.deploys {
+            let sig: Bytes = pd.deploy.sig.clone();
+            if seen.insert(sig.clone()) {
+                won.insert(sig);
+            }
+        }
+        for rd in &block.body.rejected_deploys {
+            seen.insert(rd.sig.clone());
+        }
+        current = block.header.parents_hash_list.first().cloned();
+    }
+    Ok(won)
+}
+
 fn with_ancestors_capped(
     dag: &KeyValueDagRepresentation,
     block_hash: &BlockHash,

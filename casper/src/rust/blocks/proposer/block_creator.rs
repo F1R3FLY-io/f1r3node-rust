@@ -147,67 +147,27 @@ pub async fn prepare_user_deploys(
     // would be double-execution and the resulting block would be flagged
     // `InvalidRepeatDeploy` by `validate.rs::repeat_deploy` — too late to
     // avoid the slashable proposal. Mirror the validator-side gate here.
-    let exemption_candidates: HashSet<Bytes> = valid
-        .iter()
-        .filter(|d| {
-            casper_snapshot.deploys_in_scope.contains(&d.sig)
-                && casper_snapshot.rejected_in_scope.contains(&d.sig)
-        })
-        .map(|d| d.sig.clone())
-        .collect();
-
-    let stale_recoveries: HashSet<Bytes> = if exemption_candidates.is_empty() {
-        HashSet::new()
-    } else {
-        use crate::rust::api::deploy_finalization_status::{
-            resolve_batch, DeployFinalizationState,
-        };
-        let lifespan = casper_snapshot.on_chain_state.shard_conf.deploy_lifespan;
-        match resolve_batch(
-            &casper_snapshot.dag,
-            block_store,
-            lifespan,
-            &exemption_candidates,
-        ) {
-            Ok(statuses) => statuses
-                .into_iter()
-                .filter_map(|(sig, st)| match st.state {
-                    DeployFinalizationState::Finalized => Some(sig),
-                    _ => None,
-                })
-                .collect(),
-            // Resolver failure: decline the exemption for all candidates
-            // rather than risk double-execution. They'll be retried next cycle.
-            Err(err) => {
-                tracing::warn!(
-                    "prepare_user_deploys: resolve_batch failed: {} — declining \
-                     recovery exemption for all {} candidate(s) this cycle",
-                    err,
-                    exemption_candidates.len()
-                );
-                exemption_candidates.clone()
-            }
-        }
-    };
+    // Record-driven recovery: a deploy is re-includable unless its LATEST
+    // canonical disposition is a WIN (its effect is already in the canonical
+    // lineage — re-proposing would double-execute). A keep-one loser (latest
+    // disposition = rejection) or a never-seen deploy is eligible. This reads the
+    // merge's keep-one record on the main-parent chain, not the cross-cone
+    // `rejected_in_scope` union or the finalization-status resolver, so a
+    // won-but-unfinalized deploy is correctly treated as done.
+    let canonical_won = interpreter_util::canonical_won_sigs(
+        block_store,
+        casper_snapshot.parents.first().map(|p| &p.block_hash),
+        earliest_block_number,
+    )?;
 
     let already_in_scope: Vec<Signed<DeployData>> = valid
         .iter()
-        .filter(|deploy| {
-            let sig = &deploy.sig;
-            casper_snapshot.deploys_in_scope.contains(sig)
-                && (!casper_snapshot.rejected_in_scope.contains(sig)
-                    || stale_recoveries.contains(sig))
-        })
+        .filter(|deploy| canonical_won.contains(&deploy.sig))
         .map(|deploy| (*deploy).clone())
         .collect();
     let valid_unique: HashSet<Signed<DeployData>> = valid
         .into_iter()
-        .filter(|deploy| {
-            let sig = &deploy.sig;
-            !casper_snapshot.deploys_in_scope.contains(sig)
-                || (casper_snapshot.rejected_in_scope.contains(sig)
-                    && !stale_recoveries.contains(sig))
-        })
+        .filter(|deploy| !canonical_won.contains(&deploy.sig))
         .collect();
 
     let already_in_scope_count = already_in_scope.len();
