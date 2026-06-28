@@ -21,7 +21,8 @@ use casper::rust::casper::{Casper, MultiParentCasper};
 use casper::rust::util::construct_deploy;
 use crypto::rust::private_key::PrivateKey;
 use crypto::rust::signatures::signed::Signed;
-use models::rhoapi::{expr::ExprInstance, Par};
+use models::rhoapi::expr::ExprInstance;
+use models::rhoapi::Par;
 use models::rust::casper::protocol::casper_message::DeployData;
 use serial_test::serial;
 
@@ -105,9 +106,10 @@ async fn run_convergence(n_validators: usize, write_rounds: usize, drain_rounds:
     let ctx = TestContext::new().await;
     let shard_id = ctx.genesis.genesis_block.shard_id.clone();
 
-    let mut nodes = TestNode::create_network(ctx.genesis.clone(), n_validators, None, None, None, None)
-        .await
-        .expect("create_network");
+    let mut nodes =
+        TestNode::create_network(ctx.genesis.clone(), n_validators, None, None, None, None)
+            .await
+            .expect("create_network");
     let secs: Vec<PrivateKey> = (0..n_validators).map(signer_key).collect();
 
     // Initialize the single-value cell on node 0 and distribute.
@@ -134,20 +136,18 @@ async fn run_convergence(n_validators: usize, write_rounds: usize, drain_rounds:
     let mut prev_fs: Vec<String> = Vec::new();
     let mut fs_violation: Option<String> = None;
 
-    let mut check_fs = |label: &str,
-                        fs_now: &[String],
-                        prev: &mut Vec<String>,
-                        violation: &mut Option<String>| {
-        for k in prev.iter() {
-            if !fs_now.contains(k) && violation.is_none() {
-                *violation = Some(format!(
-                    "FS REGRESSED at {}: key {} was finalized then disappeared (fs_now={:?})",
-                    label, k, fs_now
-                ));
+    let mut check_fs =
+        |label: &str, fs_now: &[String], prev: &mut Vec<String>, violation: &mut Option<String>| {
+            for k in prev.iter() {
+                if !fs_now.contains(k) && violation.is_none() {
+                    *violation = Some(format!(
+                        "FS REGRESSED at {}: key {} was finalized then disappeared (fs_now={:?})",
+                        label, k, fs_now
+                    ));
+                }
             }
-        }
-        *prev = fs_now.to_vec();
-    };
+            *prev = fs_now.to_vec();
+        };
 
     // Write rounds: each validator writes a distinct key concurrently (siblings),
     // then node 0 proposes a merge.
@@ -175,7 +175,10 @@ async fn run_convergence(n_validators: usize, write_rounds: usize, drain_rounds:
             construct_deploy::basic_deploy_data(round as i32, None, Some(shard_id.clone()))
                 .expect("marker");
         nodes[0].casper.deploy(marker).expect("marker deploy");
-        let merge = nodes[0].create_block_unsafe(&[]).await.expect("merge block");
+        let merge = nodes[0]
+            .create_block_unsafe(&[])
+            .await
+            .expect("merge block");
         for j in 0..n_validators {
             nodes[j].process_block(merge.clone()).await.ok();
         }
@@ -237,12 +240,8 @@ async fn run_convergence(n_validators: usize, write_rounds: usize, drain_rounds:
         .create_block_unsafe(&[])
         .await
         .expect("final block");
-    let final_keys = present_keys(
-        &nodes[0],
-        &final_block.body.state.post_state_hash,
-        &writes,
-    )
-    .await;
+    let final_keys =
+        present_keys(&nodes[0], &final_block.body.state.post_state_hash, &writes).await;
     let missing: Vec<&(String, i64)> = writes
         .iter()
         .filter(|(k, _)| !final_keys.contains(k))
@@ -266,20 +265,14 @@ async fn run_convergence(n_validators: usize, write_rounds: usize, drain_rounds:
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[serial]
 #[ignore = "green-gate target for the sealed-floor / record-recovery design (run with --ignored)"]
-async fn two_writers_converge() {
-    run_convergence(2, 1, 7).await;
-}
+async fn two_writers_converge() { run_convergence(2, 1, 7).await; }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[serial]
 #[ignore = "green-gate target for the sealed-floor / record-recovery design (run with --ignored)"]
-async fn three_writers_converge() {
-    run_convergence(3, 1, 21).await;
-}
+async fn three_writers_converge() { run_convergence(3, 1, 21).await; }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[serial]
 #[ignore = "green-gate target for the sealed-floor / record-recovery design (run with --ignored)"]
-async fn three_writers_converge_under_load() {
-    run_convergence(3, 3, 21).await;
-}
+async fn three_writers_converge_under_load() { run_convergence(3, 3, 21).await; }
