@@ -53,7 +53,7 @@ lazy_static! {
 
   // Extra genesis vault key pairs (beyond DEFAULT_SEC/DEFAULT_PUB and DEFAULT_SEC2/DEFAULT_PUB2)
   // These are used for additional validators (indices 3+) and must be static for cache consistency
-  static ref EXTRA_GENESIS_VAULT_KEY_PAIRS: [(PrivateKey, PublicKey); 4] = {
+  pub static ref EXTRA_GENESIS_VAULT_KEY_PAIRS: [(PrivateKey, PublicKey); 4] = {
     std::array::from_fn(|_| {
       let secp = Secp256k1;
       let (secret_key, public_key) = secp.new_key_pair();

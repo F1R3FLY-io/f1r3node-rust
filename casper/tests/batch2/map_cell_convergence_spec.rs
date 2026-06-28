@@ -45,11 +45,16 @@ impl TestContext {
 
 /// Distinct, genesis-funded deployer keys (one per validator) so the only conflict is
 /// the single-value-cell keep-one, not a shared-vault precharge. Supports up to 3.
+/// All three MUST be genesis-funded: 0/1 are DEFAULT_SEC/SEC2; 2 is the first EXTRA
+/// genesis vault key (funded 9M Rev for the default 4-validator genesis). An UNFUNDED
+/// key here fails precharge and never writes — which silently breaks the test.
 fn signer_key(v: usize) -> PrivateKey {
     match v {
         0 => construct_deploy::DEFAULT_SEC.clone(),
         1 => construct_deploy::DEFAULT_SEC2.clone(),
-        2 => PrivateKey::from_bytes(&[0x33u8; 32]),
+        2 => crate::util::genesis_builder::EXTRA_GENESIS_VAULT_KEY_PAIRS[0]
+            .0
+            .clone(),
         _ => panic!("convergence ladder supports up to 3 distinct funded deployer keys"),
     }
 }
@@ -159,11 +164,22 @@ async fn run_convergence(n_validators: usize, write_rounds: usize, drain_rounds:
             tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
             let d = map_set_deploy(&key, val, &secs[v], &shard_id);
             nodes[v].casper.deploy(d).expect("deploy write");
-            writes.push((key, val));
+            writes.push((key.clone(), val));
             let blk = nodes[v]
                 .create_block_unsafe(&[])
                 .await
                 .expect("propose sibling");
+            let own = present_keys(&nodes[v], &blk.body.state.post_state_hash, &[(
+                key.clone(),
+                val,
+            )])
+            .await;
+            println!(
+                "MSTACK-SIBLING v{} key={} wrote_own_key_in_own_sibling={}",
+                v + 1,
+                key,
+                own.contains(&key)
+            );
             sibling_blocks.push(blk);
         }
         for blk in &sibling_blocks {
