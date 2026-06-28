@@ -351,6 +351,13 @@ impl Finalizer {
         // expensive full-scan FT computation on long chains.
         let clique_started = std::time::Instant::now();
         let mut clique_run_cache = CliqueOracle::new_run_cache();
+        // Snapshot the DAG's latest messages once for this finalization pass; the
+        // FT computation reads agreement from this frozen snapshot, matching the
+        // node-deterministic `ft_witnessed` parametrization.
+        let latest_messages_snapshot = dag
+            .latest_message_hashes()
+            .into_iter()
+            .collect::<std::collections::BTreeMap<_, _>>();
         let mut clique_eval_count: usize = 0;
         let mut upper_bound_pruned_count: usize = 0;
         let mut upper_bound_passed_count: usize = 0;
@@ -378,6 +385,7 @@ impl Finalizer {
                     &agreeing_weight_map,
                     dag,
                     &mut clique_run_cache,
+                    &latest_messages_snapshot,
                 ),
             )
             .await;
