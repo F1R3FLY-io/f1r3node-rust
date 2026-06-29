@@ -22,7 +22,7 @@ use casper::rust::util::construct_deploy;
 use crypto::rust::private_key::PrivateKey;
 use crypto::rust::signatures::signed::Signed;
 use models::rhoapi::expr::ExprInstance;
-use models::rhoapi::Par;
+use models::rhoapi::{Expr, Par};
 use models::rust::casper::protocol::casper_message::DeployData;
 use serial_test::serial;
 
@@ -104,6 +104,24 @@ async fn present_keys(
     keys
 }
 
+/// Number of datums currently on `@"m"` at `state_hash`. A single-value cell must hold
+/// EXACTLY ONE; more than one is a multi-datum merge defect (the keep-one did not collapse
+/// concurrent writes) — and is precisely what makes a peek read sample non-deterministically
+/// across nodes. `get_data` returns every datum on the channel, so the count is exact.
+async fn m_datum_count(node: &TestNode, state_hash: &prost::bytes::Bytes) -> usize {
+    let m_channel = Par {
+        exprs: vec![Expr {
+            expr_instance: Some(ExprInstance::GString("m".to_string())),
+        }],
+        ..Default::default()
+    };
+    node.runtime_manager
+        .get_data(state_hash.clone(), &m_channel)
+        .await
+        .expect("get_data @\"m\"")
+        .len()
+}
+
 /// Finalized cell keys read on EVERY node at its own LFB. Asserts all nodes agree on
 /// the LFB block AND the finalized key set — a divergence is the #71 node-identity
 /// break (a node-local finalized-state corruption that need not itself stall
@@ -118,10 +136,26 @@ async fn finalized_keys_all_nodes(
         .last_finalized_block()
         .await
         .expect("lfb node0");
+    // Single-value-cell invariant (the integration's node-log check, made explicit and
+    // deterministic): @"m" must hold EXACTLY ONE datum. A multi-datum cell is the merge
+    // defect; checked before the peek read, it turns the flaky cross-node coin-flip into a
+    // precise "N datums at block #B" failure.
+    let n0 = m_datum_count(&nodes[0], &lfb0.body.state.post_state_hash).await;
+    assert_eq!(
+        n0, 1,
+        "SINGLE-VALUE-CELL: @\"m\" holds {} datums (expected 1) on node 0 at LFB #{} — keep-one did not collapse concurrent writes",
+        n0, lfb0.body.state.block_number,
+    );
     let mut fs0 = present_keys(&nodes[0], &lfb0.body.state.post_state_hash, writes).await;
     fs0.sort();
     for (j, node) in nodes.iter().enumerate().skip(1) {
         let lfbj = node.casper.last_finalized_block().await.expect("lfb");
+        let nj = m_datum_count(node, &lfbj.body.state.post_state_hash).await;
+        assert_eq!(
+            nj, 1,
+            "SINGLE-VALUE-CELL: @\"m\" holds {} datums (expected 1) on node {} at LFB #{} — keep-one did not collapse concurrent writes",
+            nj, j, lfbj.body.state.block_number,
+        );
         let mut fsj = present_keys(node, &lfbj.body.state.post_state_hash, writes).await;
         fsj.sort();
         assert_eq!(
@@ -203,6 +237,11 @@ async fn run_convergence(n_validators: usize, write_rounds: usize, drain_rounds:
             let val = (round * n_validators + v + 1) as i64;
             tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
             let d = map_set_deploy(&key, val, &secs[v], &shard_id);
+            println!(
+                "WRITE-SIG key={} sig={}",
+                key,
+                hex::encode(&d.sig[..8.min(d.sig.len())])
+            );
             nodes[v].casper.deploy(d).expect("deploy write");
             writes.push((key.clone(), val));
             let blk = nodes[v]
