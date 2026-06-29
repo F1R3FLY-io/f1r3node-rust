@@ -1,6 +1,5 @@
 // See casper/src/main/scala/coop/rchain/casper/merging/DagMerger.scala
 
-use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -669,15 +668,6 @@ pub fn merge(
     let actual_seq_all = actual_set_vec;
     let late_seq_all = late_set_vec;
 
-    // Pre-computed data for a single DeployChainIndex, cached by pointer address
-    // to avoid recomputing on every O(D²) depends() call.
-    struct ChainDerived {
-        produces_created: HashableSet<rspace_plus_plus::rspace::trace::event::Produce>,
-        consumes_created: HashableSet<rspace_plus_plus::rspace::trace::event::Consume>,
-    }
-
-    // Pre-computed data for a branch (HashableSet<DeployChainIndex>), cached by
-    // pointer address to avoid recomputing on every O(B²) conflicts() call.
     struct BranchDerived {
         user_deploy_ids: HashSet<Bytes>,
         combined_all_event_log: rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex,
@@ -732,37 +722,6 @@ pub fn merge(
         })
     }
 
-    // Lazy caches keyed by pointer address. Safe because:
-    // - References come from HashSet iteration, addresses stable during iteration
-    // - DerivedSets/BranchDerived are pure functions of the item
-    let chain_cache: RefCell<HashMap<usize, ChainDerived>> = RefCell::new(HashMap::new());
-    let branch_cache: RefCell<HashMap<usize, BranchDerived>> = RefCell::new(HashMap::new());
-
-    let get_chain_derived = |chain: &DeployChainIndex| -> usize {
-        let addr = std::ptr::addr_of!(*chain) as usize;
-        let mut cache = chain_cache.borrow_mut();
-        cache.entry(addr).or_insert_with(|| ChainDerived {
-            produces_created: merging_logic::produces_created_and_not_destroyed(
-                &chain.event_log_index,
-            ),
-            consumes_created: merging_logic::consumes_created_and_not_destroyed(
-                &chain.event_log_index,
-            ),
-        });
-        addr
-    };
-
-    let get_branch_derived =
-        |branch: &HashableSet<DeployChainIndex>| -> Result<usize, rspace_plus_plus::rspace::errors::HistoryError> {
-            let addr = std::ptr::addr_of!(*branch) as usize;
-            let mut cache = branch_cache.borrow_mut();
-            if !cache.contains_key(&addr) {
-                let derived = compute_branch_derived(branch)?;
-                cache.insert(addr, derived);
-            }
-            Ok(addr)
-        };
-
     // Create history reader for base state
     let history_reader = std::sync::Arc::new(
         history_repository
@@ -774,13 +733,12 @@ pub fn merge(
     // and compute_merged_state can take them by reference, with the rejection
     // expansion step interposed between the two calls.
     let depends_fn = |target: &DeployChainIndex, source: &DeployChainIndex| -> bool {
-        // Cached depends: pre-computes source's derived sets on first access
-        let source_addr = get_chain_derived(source);
-        let cache = chain_cache.borrow();
-        let derived = cache.get(&source_addr).unwrap();
+        let produces_created =
+            merging_logic::produces_created_and_not_destroyed(&source.event_log_index);
+        let consumes_created =
+            merging_logic::consumes_created_and_not_destroyed(&source.event_log_index);
 
-        let produces_source: HashSet<_> = derived
-            .produces_created
+        let produces_source: HashSet<_> = produces_created
             .0
             .difference(&source.event_log_index.produces_mergeable.0)
             .collect();
@@ -805,8 +763,7 @@ pub fn merge(
             return true;
         }
 
-        let consume_dep = derived
-            .consumes_created
+        let consume_dep = consumes_created
             .0
             .intersection(&target.event_log_index.consumes_produced.0)
             .next()
@@ -815,8 +772,7 @@ pub fn merge(
             tracing::debug!(target: "f1r3fly.merge.step", step = "depends_fn.TRUE_CONSUME_INTERSECTION",
                 target_src = %hex::encode(&target.source_block_hash[..]),
                 source_src = %hex::encode(&source.source_block_hash[..]),
-                n_consume_overlap = derived
-                    .consumes_created
+                n_consume_overlap = consumes_created
                     .0
                     .intersection(&target.event_log_index.consumes_produced.0)
                     .count());
@@ -905,35 +861,28 @@ pub fn merge(
     // same-user-deploy-id check: two branches that share any user deploy
     // ID must be flagged as conflicting regardless of their event logs.
     //
-    // `EventLogIndex::combine` inside `get_branch_derived` is fallible —
+    // Branch event-log combination is fallible —
     // a MergeType mismatch propagates as a hard error so the merge is
     // rejected rather than silently absorbing the invariant violation.
     let compute_conflict_map_fn = |branches_set: &HashableSet<HashableSet<DeployChainIndex>>| -> Result<
         HashMap<HashableSet<DeployChainIndex>, HashableSet<HashableSet<DeployChainIndex>>>,
         rspace_plus_plus::rspace::errors::HistoryError,
     > {
-        // Populate `branch_cache` for every branch so the borrow below can
-        // read combined event logs without recomputing, and any combine
-        // failure surfaces here before we read.
-        for branch in branches_set.0.iter() {
-            get_branch_derived(branch)?;
-        }
-
         // Snapshot branch references in a stable order so the parallel
         // arrays passed into the indexed map and the deploy-id pass below
         // line up.
         let branches_refs: Vec<&HashableSet<DeployChainIndex>> = branches_set.0.iter().collect();
         let branches_owned: Vec<HashableSet<DeployChainIndex>> =
             branches_refs.iter().map(|b| (*b).clone()).collect();
+        let branch_derived: Vec<BranchDerived> = branches_refs
+            .iter()
+            .map(|branch| compute_branch_derived(branch))
+            .collect::<Result<Vec<_>, _>>()?;
 
-        let cache = branch_cache.borrow();
         let event_logs: Vec<&rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex> =
-            branches_refs
+            branch_derived
                 .iter()
-                .map(|b| {
-                    let addr = std::ptr::addr_of!(**b) as usize;
-                    &cache.get(&addr).unwrap().combined_all_event_log
-                })
+                .map(|derived| &derived.combined_all_event_log)
                 .collect();
 
         // MSTACK merge-trace: per-branch deploy sigs + event-log sizes. Gated
@@ -993,9 +942,7 @@ pub fn merge(
         // Same-user-deploy-id pass: for any user deploy ID appearing in
         // multiple branches, mark all such branches as mutual conflicts.
         let mut deploy_to_branches: HashMap<prost::bytes::Bytes, Vec<usize>> = HashMap::new();
-        for (idx, b) in branches_refs.iter().enumerate() {
-            let addr = std::ptr::addr_of!(**b) as usize;
-            let derived = cache.get(&addr).unwrap();
+        for (idx, derived) in branch_derived.iter().enumerate() {
             for d in &derived.user_deploy_ids {
                 deploy_to_branches.entry(d.clone()).or_default().push(idx);
             }
@@ -1561,6 +1508,103 @@ mod tests {
 
         assert_eq!(unavailable_count, 1);
         assert!(resolved.rejected.0.contains(&unavailable_winner));
+        assert!(!resolved.rejected.0.contains(&rescued_branch));
+        assert!(resolved
+            .to_merge
+            .iter()
+            .any(|branch| branch.0.contains(&rescued_branch)));
+    }
+
+    #[test]
+    fn unavailable_retry_rejects_dependents_of_removed_winner() {
+        let channel = Blake2b256Hash::from_bytes(vec![0x55; 32]);
+        let unavailable_winner = chain(
+            1,
+            10,
+            1,
+            datum_change(channel.clone(), vec![vec![0xaa; 32]], vec![vec![0xbb; 32]]),
+        );
+        let dependent = chain(2, 9, 2, StateChange::empty());
+        let rescued_branch = chain(3, 1, 1, StateChange::empty());
+        let actual_seq_all = vec![
+            unavailable_winner.clone(),
+            dependent.clone(),
+            rescued_branch.clone(),
+        ];
+        let late_seq_all = Vec::new();
+
+        let compute_branches = |merge_set: &HashableSet<DeployChainIndex>| {
+            HashableSet(
+                merge_set
+                    .0
+                    .iter()
+                    .map(|chain| HashableSet(HashSet::from([chain.clone()])))
+                    .collect(),
+            )
+        };
+        let compute_conflict_map = |branches: &HashableSet<HashableSet<DeployChainIndex>>| {
+            let mut map: HashMap<
+                HashableSet<DeployChainIndex>,
+                HashableSet<HashableSet<DeployChainIndex>>,
+            > = branches
+                .0
+                .iter()
+                .map(|branch| (branch.clone(), HashableSet(HashSet::new())))
+                .collect();
+            let winner_branch = branches
+                .0
+                .iter()
+                .find(|branch| branch.0.contains(&unavailable_winner))
+                .cloned();
+            let rescued = branches
+                .0
+                .iter()
+                .find(|branch| branch.0.contains(&rescued_branch))
+                .cloned();
+            if let (Some(winner), Some(rescued)) = (winner_branch, rescued) {
+                map.get_mut(&winner).unwrap().0.insert(rescued.clone());
+                map.get_mut(&rescued).unwrap().0.insert(winner);
+            }
+            Ok(map)
+        };
+        let depends = |target: &DeployChainIndex, source: &DeployChainIndex| {
+            target == &dependent && source == &unavailable_winner
+        };
+        let resolve_once = |actual_seq: Vec<DeployChainIndex>, late_seq: Vec<DeployChainIndex>| {
+            conflict_set_merger::resolve_conflicts(
+                actual_seq,
+                late_seq,
+                &depends,
+                &cost_optimal_rejection_alg(),
+                &|_| BTreeMap::new(),
+                &|_| Ok(Vec::new()),
+                &compute_branches,
+                &compute_conflict_map,
+            )
+        };
+        let split_unavailable =
+            |resolved: &mut conflict_set_merger::ResolvedConflicts<DeployChainIndex>| {
+                split_unavailable_resolved_branches(
+                    resolved,
+                    &depends,
+                    &|chain| Ok(chain.state_changes.clone()),
+                    &|_| BTreeMap::new(),
+                    &|_| Ok(Vec::new()),
+                    &|_| Ok(Vec::new()),
+                )
+            };
+
+        let (resolved, unavailable_count) = resolve_conflicts_with_unavailable_retry(
+            &actual_seq_all,
+            &late_seq_all,
+            &resolve_once,
+            &split_unavailable,
+        )
+        .expect("retrying unavailable conflicts should reject dependents");
+
+        assert_eq!(unavailable_count, 1);
+        assert!(resolved.rejected.0.contains(&unavailable_winner));
+        assert!(resolved.rejected.0.contains(&dependent));
         assert!(!resolved.rejected.0.contains(&rescued_branch));
         assert!(resolved
             .to_merge
