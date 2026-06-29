@@ -91,6 +91,13 @@ impl EventLogIndex {
         produce_touch_pre_state_join: impl Fn(&Produce) -> bool,
         mergeable_chs: NumberChannelsDiff,
     ) -> Self {
+        tracing::debug!(
+            target: "f1r3fly.merge.step",
+            step = "new.ENTER",
+            n_events = event_log.len(),
+            mergeable_chs = mergeable_chs.len(),
+        );
+
         // Use Arc<Mutex<>> for thread-safe collections that will be updated in parallel
         let produces_linear = Arc::new(Mutex::new(HashSet::new()));
         let produces_persistent = Arc::new(Mutex::new(HashSet::new()));
@@ -124,6 +131,26 @@ impl EventLogIndex {
                     all_comms.push((comm.consume.clone(), comm.produces.clone(), has_peeks));
                 }
             }
+        }
+
+        if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
+            let produces_exist_in_pre_state =
+                all_produces.iter().filter(|(_, exists, _)| *exists).count();
+            let produces_touching_joins = all_produces
+                .iter()
+                .filter(|(_, _, touches)| *touches)
+                .count();
+            let comms_with_peeks = all_comms.iter().filter(|(_, _, peeks)| *peeks).count();
+            tracing::debug!(
+                target: "f1r3fly.merge.step",
+                step = "new.CLASSIFY",
+                n_produces = all_produces.len(),
+                n_consumes = all_consumes.len(),
+                n_comms = all_comms.len(),
+                produces_exist_in_pre_state,
+                produces_touching_joins,
+                comms_with_peeks,
+            );
         }
 
         // Process the collected events in parallel
@@ -258,6 +285,25 @@ impl EventLogIndex {
                 .collect(),
         );
 
+        if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
+            tracing::debug!(
+                target: "f1r3fly.merge.step",
+                step = "new.EXIT",
+                produces_linear = produces_linear.0.len(),
+                produces_persistent = produces_persistent.0.len(),
+                produces_consumed = produces_consumed.0.len(),
+                produces_peeked = produces_peeked.0.len(),
+                produces_copied_by_peek = produces_copied_by_peek.0.len(),
+                produces_touching_base_joins = produces_touching_base_joins.0.len(),
+                consumes_linear_and_peeks = consumes_linear_and_peeks.0.len(),
+                consumes_persistent = consumes_persistent.0.len(),
+                consumes_produced = consumes_produced.0.len(),
+                produces_mergeable = produces_mergeable.0.len(),
+                consumes_mergeable = consumes_mergeable.0.len(),
+                number_channels_data = mergeable_chs.len(),
+            );
+        }
+
         EventLogIndex {
             produces_linear,
             produces_persistent,
@@ -275,7 +321,8 @@ impl EventLogIndex {
     }
 
     pub fn empty() -> Self {
-        EventLogIndex {
+        tracing::debug!(target: "f1r3fly.merge.step", step = "empty.ENTER");
+        let result = EventLogIndex {
             produces_linear: HashableSet(HashSet::new()),
             produces_persistent: HashableSet(HashSet::new()),
             produces_consumed: HashableSet(HashSet::new()),
@@ -288,7 +335,9 @@ impl EventLogIndex {
             produces_mergeable: HashableSet(HashSet::new()),
             consumes_mergeable: HashableSet(HashSet::new()),
             number_channels_data: NumberChannelsDiff::new(),
-        }
+        };
+        tracing::debug!(target: "f1r3fly.merge.step", step = "empty.EXIT");
+        result
     }
 
     pub fn combine(x: &Self, y: &Self) -> Result<Self, HistoryError> {
@@ -297,6 +346,33 @@ impl EventLogIndex {
         // bitwise OR through u64). Both branches must agree on merge_type for
         // a given channel; disagreement yields a tagged error so callers can
         // reject the merge instead of crashing the validator.
+        tracing::debug!(
+            target: "f1r3fly.merge.step",
+            step = "combine.ENTER",
+            x_produces_linear = x.produces_linear.0.len(),
+            x_produces_persistent = x.produces_persistent.0.len(),
+            x_produces_consumed = x.produces_consumed.0.len(),
+            x_produces_peeked = x.produces_peeked.0.len(),
+            x_produces_touching_base_joins = x.produces_touching_base_joins.0.len(),
+            x_consumes_linear_and_peeks = x.consumes_linear_and_peeks.0.len(),
+            x_consumes_persistent = x.consumes_persistent.0.len(),
+            x_consumes_produced = x.consumes_produced.0.len(),
+            x_produces_mergeable = x.produces_mergeable.0.len(),
+            x_consumes_mergeable = x.consumes_mergeable.0.len(),
+            x_number_channels_data = x.number_channels_data.len(),
+            y_produces_linear = y.produces_linear.0.len(),
+            y_produces_persistent = y.produces_persistent.0.len(),
+            y_produces_consumed = y.produces_consumed.0.len(),
+            y_produces_peeked = y.produces_peeked.0.len(),
+            y_produces_touching_base_joins = y.produces_touching_base_joins.0.len(),
+            y_consumes_linear_and_peeks = y.consumes_linear_and_peeks.0.len(),
+            y_consumes_persistent = y.consumes_persistent.0.len(),
+            y_consumes_produced = y.consumes_produced.0.len(),
+            y_produces_mergeable = y.produces_mergeable.0.len(),
+            y_consumes_mergeable = y.consumes_mergeable.0.len(),
+            y_number_channels_data = y.number_channels_data.len(),
+        );
+
         let mut number_channels_data = NumberChannelsDiff::new();
         for (key, value) in x
             .number_channels_data
@@ -307,20 +383,52 @@ impl EventLogIndex {
             match number_channels_data.get_mut(key) {
                 Some(existing) => {
                     if existing.1 != incoming_mt {
+                        if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
+                            tracing::debug!(
+                                target: "f1r3fly.merge.step",
+                                step = "combine.NUMCHAN_MISMATCH",
+                                key = %hex::encode(key.clone().bytes()),
+                                existing_diff = existing.0,
+                                existing_merge_type = ?existing.1,
+                                incoming_diff,
+                                incoming_merge_type = ?incoming_mt,
+                            );
+                        }
                         return Err(HistoryError::MergeError(format!(
                             "MergeType mismatch on channel {:?}: {:?} vs {:?}",
                             key, existing.1, incoming_mt,
                         )));
                     }
+                    let prev_diff = existing.0;
                     existing.0 = combine_mergeable_value(existing.0, incoming_diff, incoming_mt);
+                    if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
+                        tracing::debug!(
+                            target: "f1r3fly.merge.step",
+                            step = "combine.NUMCHAN_FOLD",
+                            key = %hex::encode(key.clone().bytes()),
+                            existing_diff = prev_diff,
+                            incoming_diff,
+                            merge_type = ?incoming_mt,
+                            result_diff = existing.0,
+                        );
+                    }
                 }
                 None => {
+                    if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
+                        tracing::debug!(
+                            target: "f1r3fly.merge.step",
+                            step = "combine.NUMCHAN_INSERT",
+                            key = %hex::encode(key.clone().bytes()),
+                            incoming_diff,
+                            merge_type = ?incoming_mt,
+                        );
+                    }
                     number_channels_data.insert(key.clone(), (incoming_diff, incoming_mt));
                 }
             }
         }
 
-        Ok(EventLogIndex {
+        let result = EventLogIndex {
             produces_linear: HashableSet(
                 x.produces_linear
                     .0
@@ -396,7 +504,72 @@ impl EventLogIndex {
                     .collect(),
             ),
             number_channels_data,
-        })
+        };
+
+        // EXIT: report the combined per-field set sizes. For each union-built set
+        // field, x.len + y.len > result.len means `.union()` discarded duplicate
+        // members across the two inputs — a multiplicity COLLAPSE.
+        // produces_copied_by_peek is built via combine_produces_copied_by_peek
+        // (not a plain union), so its size is reported without a collapse
+        // verdict.
+        if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
+            macro_rules! collapse_check {
+                ($field:ident) => {{
+                    let x_len = x.$field.0.len();
+                    let y_len = y.$field.0.len();
+                    let result_len = result.$field.0.len();
+                    tracing::debug!(
+                        target: "f1r3fly.merge.step",
+                        step = "combine.EXIT",
+                        field = stringify!($field),
+                        x_len,
+                        y_len,
+                        result_len,
+                    );
+                    if x_len + y_len > result_len {
+                        tracing::debug!(
+                            target: "f1r3fly.merge.step",
+                            step = "combine.COLLAPSE",
+                            field = stringify!($field),
+                            x_len,
+                            y_len,
+                            result_len,
+                            collapsed = x_len + y_len - result_len,
+                        );
+                    }
+                }};
+            }
+
+            collapse_check!(produces_linear);
+            collapse_check!(produces_persistent);
+            collapse_check!(produces_consumed);
+            collapse_check!(produces_peeked);
+            collapse_check!(produces_touching_base_joins);
+            collapse_check!(consumes_linear_and_peeks);
+            collapse_check!(consumes_persistent);
+            collapse_check!(consumes_produced);
+            collapse_check!(produces_mergeable);
+            collapse_check!(consumes_mergeable);
+
+            tracing::debug!(
+                target: "f1r3fly.merge.step",
+                step = "combine.EXIT",
+                field = "produces_copied_by_peek",
+                x_len = x.produces_copied_by_peek.0.len(),
+                y_len = y.produces_copied_by_peek.0.len(),
+                result_len = result.produces_copied_by_peek.0.len(),
+            );
+            tracing::debug!(
+                target: "f1r3fly.merge.step",
+                step = "combine.EXIT",
+                field = "number_channels_data",
+                x_len = x.number_channels_data.len(),
+                y_len = y.number_channels_data.len(),
+                result_len = result.number_channels_data.len(),
+            );
+        }
+
+        Ok(result)
     }
 }
 

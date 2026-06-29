@@ -310,15 +310,22 @@ async fn run_compute_parents_post_state_finalized_skew_regression() {
     );
     snapshot_without_skew.dag.last_finalized_block_hash = genesis_block.block_hash.clone();
 
+    let latest_messages_without: std::collections::BTreeMap<_, _> = snapshot_without_skew
+        .justifications
+        .iter()
+        .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
+        .collect();
     let (state_without_skew, rejected_without_skew, _rejected_slashes) =
         compute_parents_post_state(
             &block_store,
             parents.clone(),
             &snapshot_without_skew,
             &runtime_manager,
+            &latest_messages_without,
             None,
             None,
         )
+        .await
         .expect("Failed to compute parents post-state without finalized skew");
 
     runtime_manager.parents_post_state_cache.clear();
@@ -336,14 +343,21 @@ async fn run_compute_parents_post_state_finalized_skew_regression() {
         .finalized_blocks_set
         .insert(b1.block_hash.clone());
 
+    let latest_messages_with: std::collections::BTreeMap<_, _> = snapshot_with_skew
+        .justifications
+        .iter()
+        .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
+        .collect();
     let (state_with_skew, rejected_with_skew, _rejected_slashes) = compute_parents_post_state(
         &block_store,
         parents,
         &snapshot_with_skew,
         &runtime_manager,
+        &latest_messages_with,
         None,
         None,
     )
+    .await
     .expect("Failed to compute parents post-state with finalized skew");
 
     assert_eq!(
@@ -530,18 +544,41 @@ async fn run_compute_parents_post_state_missing_mergeable_regression() {
     );
     snapshot.dag.last_finalized_block_hash = genesis_block.block_hash;
 
+    let latest_messages: std::collections::BTreeMap<_, _> = snapshot
+        .justifications
+        .iter()
+        .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
+        .collect();
+    // Force the merge to consult the store rather than a cached BlockIndex or a
+    // cached parents-post-state, so the recompute-on-demand pre-pass is exercised.
+    runtime_manager.parents_post_state_cache.clear();
+    runtime_manager.block_index_cache.clear();
+
     let result = compute_parents_post_state(
         &block_store,
-        vec![b2, b3],
+        vec![b2.clone(), b3],
         &snapshot,
         &runtime_manager,
+        &latest_messages,
         None,
         None,
-    );
+    )
+    .await;
 
+    // A missing-but-recomputable mergeable entry must no longer fail the merge:
+    // the pre-pass replays the source block to materialize it (the LFS-imported-
+    // without-replay / locally-rejected recovery path that makes merge validity
+    // node-uniform).
     assert!(
-        matches!(result, Err(CasperError::KvStoreError(_))),
-        "Expected compute_parents_post_state to fail when a required mergeable entry is missing; got {result:?}"
+        result.is_ok(),
+        "compute_parents_post_state should recover a missing-but-recomputable \
+         mergeable entry by replaying the source block; got {result:?}"
+    );
+    assert!(
+        runtime_manager
+            .has_mergeable_entry(&b2)
+            .expect("has_mergeable_entry query failed"),
+        "The missing mergeable entry should have been recomputed by the merge pre-pass."
     );
 }
 

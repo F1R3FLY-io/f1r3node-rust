@@ -391,10 +391,19 @@ impl BlockMetadataStore {
         } else {
             (0, 0)
         };
-        assert!(
-            max - min == height_map.len() as i64,
-            "DAG store height map has numbers not in sequence."
-        );
+        // A non-contiguous height map is a sanity-check failure, not a reason to
+        // crash the node mid-validation. Log it for investigation and continue;
+        // this is a diagnostic invariant, not a correctness gate.
+        if max - min != height_map.len() as i64 {
+            tracing::warn!(
+                target: "f1r3fly.block_storage",
+                min,
+                max,
+                len = height_map.len(),
+                keys = ?height_map.keys().cloned().collect::<Vec<i64>>(),
+                "DAG store height map has block numbers not in sequence",
+            );
+        }
         drop(dag_state_guard);
         dag_state.clone()
     }

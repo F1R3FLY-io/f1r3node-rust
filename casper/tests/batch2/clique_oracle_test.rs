@@ -747,11 +747,14 @@ async fn clique_oracle_growth_feedback_loop_stale_justification_chain() {
                         }
                     }
                 }
+                let latest_messages: std::collections::BTreeMap<_, _> =
+                    dag.latest_message_hashes().into_iter().collect();
                 let fault_tolerance = CliqueOracle::compute_output(
                     &target_hash,
                     &message_weight_map,
                     &agreeing_weight_map,
                     &dag,
+                    &latest_messages,
                 )
                 .await
                 .expect("Clique oracle should compute fault tolerance");

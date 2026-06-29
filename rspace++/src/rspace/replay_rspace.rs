@@ -375,9 +375,16 @@ where
         if replay_data.is_empty() {
             Ok(())
         } else {
+            let leftover: Vec<String> = replay_data
+                .map
+                .iter()
+                .take(8)
+                .map(|e| format!("{:?}", e.key()))
+                .collect();
             Err(RSpaceError::BugFoundError(format!(
-                "Unused COMM event: replayData multimap has {} elements left",
-                replay_data.map.len()
+                "Unused COMM event: replayData multimap has {} elements left; leftover={:?}",
+                replay_data.map.len(),
+                leftover
             )))
         }
     }
@@ -610,6 +617,7 @@ where
         tracing::trace!(target: "f1r3fly.rspace.ops", mark = "started-locked-consume", "locked_consume");
 
         self.log_consume(consume_ref.clone(), &channels, &patterns, &continuation, persist, &peeks);
+        tracing::trace!(target: "f1r3fly.rspace.ops", channels = ?consume_ref.channel_hashes, persist, "replay.consume ENTER");
 
         let wk = WaitingContinuation {
             patterns: patterns.clone(),
@@ -632,14 +640,20 @@ where
                     .collect::<Vec<_>>()
             });
         match comms_option {
-            None => Ok(self.store_waiting_continuation(channels, wk)),
+            None => {
+                tracing::trace!(target: "f1r3fly.rspace.ops", channels = ?consume_ref.channel_hashes, "replay.consume STALL-A: no recorded COMM for this consume (validator did a consume absent from the proposer's trace -> execution diverged)");
+                Ok(self.store_waiting_continuation(channels, wk))
+            }
             Some(comms_list) => {
                 match self.get_comm_and_consume_candidates(
                     channels.clone(),
                     patterns,
                     comms_list.clone(),
                 ) {
-                    None => Ok(self.store_waiting_continuation(channels, wk)),
+                    None => {
+                        tracing::trace!(target: "f1r3fly.rspace.ops", channels = ?consume_ref.channel_hashes, n_recorded_comms = comms_list.len(), "replay.consume STALL-B: recorded COMM exists but matching produce data not present (produce diverged / missing in merged pre-state)");
+                        Ok(self.store_waiting_continuation(channels, wk))
+                    }
                     Some((_, data_candidates)) => {
                         let produce_counters_closure =
                             |produces: &[Produce]| self.produce_counters(produces);
@@ -670,6 +684,7 @@ where
 
                         let _ = self.store_persistent_data(data_candidates.clone(), &peeks);
                         self.remove_bindings_for(comm_ref);
+                        tracing::trace!(target: "f1r3fly.rspace.ops", channels = ?consume_ref.channel_hashes, "replay.consume OK: COMM reproduced");
                         Ok(self.wrap_result(channels, wk, consume_ref, data_candidates))
                     }
                 }
@@ -755,6 +770,7 @@ where
         let grouped_channels = self.get_store().get_joins(&channel);
 
         self.log_produce(produce_ref.clone(), &channel, &data, persist);
+        tracing::trace!(target: "f1r3fly.rspace.ops", channel = ?produce_ref.channel_hash, persist, "replay.produce ENTER");
 
         // O(1) hash lookup. `IOEvent` derives `Hash`/`Eq`, and `Produce`'s
         // manual impls hash/compare on `self.hash` only — the metadata
@@ -774,7 +790,10 @@ where
                     .collect::<Vec<_>>()
             });
         match comms_option {
-            None => Ok(self.store_data(channel, data, persist, produce_ref)),
+            None => {
+                tracing::trace!(target: "f1r3fly.rspace.ops", channel = ?produce_ref.channel_hash, "replay.produce: stored (no recorded COMM for this produce)");
+                Ok(self.store_data(channel, data, persist, produce_ref))
+            }
             Some(comms) => {
                 match self.get_comm_or_produce_candidate(
                     channel.clone(),
@@ -784,14 +803,20 @@ where
                     produce_ref.clone(),
                     grouped_channels,
                 ) {
-                    Some((comm, pc)) => Ok(self.handle_match(pc, comms).map(|consume_result| {
-                        let p = comm
-                            .produces
-                            .into_iter()
-                            .find(|p| p.hash == produce_ref.hash);
-                        (consume_result.0, consume_result.1, p.unwrap_or(produce_ref))
-                    })),
-                    None => Ok(self.store_data(channel, data, persist, produce_ref)),
+                    Some((comm, pc)) => {
+                        tracing::trace!(target: "f1r3fly.rspace.ops", channel = ?produce_ref.channel_hash, "replay.produce OK: matched a recorded COMM (fired a waiting consume)");
+                        Ok(self.handle_match(pc, comms).map(|consume_result| {
+                            let p = comm
+                                .produces
+                                .into_iter()
+                                .find(|p| p.hash == produce_ref.hash);
+                            (consume_result.0, consume_result.1, p.unwrap_or(produce_ref))
+                        }))
+                    }
+                    None => {
+                        tracing::trace!(target: "f1r3fly.rspace.ops", channel = ?produce_ref.channel_hash, "replay.produce: stored (recorded COMM exists but no matching consume waiting yet)");
+                        Ok(self.store_data(channel, data, persist, produce_ref))
+                    }
                 }
             }
         }

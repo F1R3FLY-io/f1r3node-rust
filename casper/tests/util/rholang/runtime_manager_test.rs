@@ -2006,9 +2006,22 @@ async fn bridge_query_survives_multi_parent_merge() {
     // --- Merge [A, B] ---
     let parents = vec![block_a.clone(), block_b.clone()];
     let snapshot_merge = mk_snapshot(&genesis_hash);
-    let (merged_state, rejected, rejected_slashes) =
-        compute_parents_post_state(&block_store, parents, &snapshot_merge, &rm, None, None)
-            .expect("merge parents");
+    let latest_messages: std::collections::BTreeMap<_, _> = snapshot_merge
+        .justifications
+        .iter()
+        .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
+        .collect();
+    let (merged_state, rejected, rejected_slashes) = compute_parents_post_state(
+        &block_store,
+        parents,
+        &snapshot_merge,
+        &rm,
+        &latest_messages,
+        None,
+        None,
+    )
+    .await
+    .expect("merge parents");
 
     assert!(
         rejected.is_empty(),
@@ -2482,9 +2495,22 @@ async fn concurrent_registry_inserts_should_not_conflict() {
     // --- Merge [A, B] ---
     let parents = vec![block_a.clone(), block_b.clone()];
     let snapshot_merge = mk_snapshot(&genesis_hash);
-    let (merged_state, rejected, _rejected_slashes) =
-        compute_parents_post_state(&block_store, parents, &snapshot_merge, &rm, None, None)
-            .expect("merge parents");
+    let latest_messages: std::collections::BTreeMap<_, _> = snapshot_merge
+        .justifications
+        .iter()
+        .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
+        .collect();
+    let (merged_state, rejected, _rejected_slashes) = compute_parents_post_state(
+        &block_store,
+        parents,
+        &snapshot_merge,
+        &rm,
+        &latest_messages,
+        None,
+        None,
+    )
+    .await
+    .expect("merge parents");
 
     tracing::info!(
         "Merge result: rejected={}, merged_state={}",
@@ -3162,14 +3188,22 @@ new deployId(`rho:system:deployId`) in {
 
     // ── Merge [C, D] — simulates what a validator would compute when proposing
     //    a multi-parent block with parents [BC, BD]. LCA is genesis.
+    let snapshot_cd = mk_snapshot(&genesis_hash);
+    let latest_messages: std::collections::BTreeMap<_, _> = snapshot_cd
+        .justifications
+        .iter()
+        .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
+        .collect();
     let (merged_state, rejected, _rejected_slashes) = compute_parents_post_state(
         &block_store,
         vec![block_c.clone(), block_d.clone()],
-        &mk_snapshot(&genesis_hash),
+        &snapshot_cd,
         &rm,
+        &latest_messages,
         None,
         None,
     )
+    .await
     .expect("merge [C, D]");
 
     let rejected_set: HashSet<prost::bytes::Bytes> = rejected.iter().cloned().collect();
