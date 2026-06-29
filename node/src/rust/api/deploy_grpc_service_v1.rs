@@ -559,10 +559,14 @@ impl DeployService for DeployGrpcServiceV1Impl {
         loop {
             match BlockAPI::find_deploy(&self.engine_cell, &request.deploy_id.to_vec()).await {
                 Ok(block_info) => {
+                    let known_block_hash = hex::decode(&block_info.block_hash)
+                        .ok()
+                        .map(prost::bytes::Bytes::from);
                     let (finalization_state, rejection_count) =
-                        match BlockAPI::deploy_finalization_status(
+                        match BlockAPI::deploy_finalization_status_with_known_block(
                             &self.engine_cell,
                             &request.deploy_id.to_vec(),
+                            known_block_hash.as_ref(),
                         )
                         .await
                         {

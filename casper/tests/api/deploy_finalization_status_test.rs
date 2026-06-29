@@ -1266,6 +1266,98 @@ async fn resolve_returns_typed_err_for_indexed_but_missing_from_body() {
     );
 }
 
+#[tokio::test]
+async fn resolve_with_known_block_uses_fallback_block_when_deploy_index_misses() {
+    use block_storage::rust::key_value_block_store::KeyValueBlockStore;
+    use casper::rust::util::construct_deploy;
+    use models::rust::block_implicits;
+    use models::rust::casper::protocol::casper_message::ProcessedDeploy;
+    use prost::bytes::Bytes;
+    use shared::rust::store::key_value_typed_store::KeyValueTypedStore;
+
+    use crate::util::rholang::resources::{
+        block_dag_storage_from_dyn, mk_test_rnode_store_manager_from_genesis,
+    };
+
+    let ctx = TestContext::new().await;
+    let genesis_block = ctx.genesis.genesis_block.clone();
+    let genesis_hash = genesis_block.block_hash.clone();
+
+    let mut kvm = mk_test_rnode_store_manager_from_genesis(&ctx.genesis);
+    let block_store = KeyValueBlockStore::create_from_kvm(&mut *kvm)
+        .await
+        .expect("block store");
+    let dag_storage = block_dag_storage_from_dyn(&mut *kvm)
+        .await
+        .expect("dag storage");
+
+    block_store
+        .put_block_message(&genesis_block)
+        .expect("store genesis");
+    dag_storage
+        .insert(&genesis_block, false, true)
+        .expect("dag genesis");
+
+    let deploy =
+        construct_deploy::source_deploy_now_full("Nil".to_string(), None, None, None, None, None)
+            .expect("construct deploy");
+    let deploy_sig = deploy.sig.to_vec();
+    let block_a = block_implicits::get_random_block(
+        Some(1),
+        Some(1),
+        None,
+        None,
+        None,
+        None,
+        Some(0),
+        Some(vec![genesis_hash.clone()]),
+        Some(Vec::new()),
+        Some(vec![ProcessedDeploy::empty(deploy)]),
+        Some(Vec::new()),
+        Some(genesis_block.body.state.bonds.clone()),
+        Some(genesis_block.shard_id.clone()),
+        None,
+    );
+
+    block_store.put_block_message(&block_a).expect("store A");
+    dag_storage
+        .insert(&block_a, false, false)
+        .expect("dag insert A");
+
+    {
+        let deploy_index_guard = dag_storage.deploy_index.write().unwrap();
+        deploy_index_guard
+            .delete(vec![Bytes::from(deploy_sig.clone()).into()])
+            .expect("remove deploy index entry");
+    }
+
+    let mut dag = dag_storage.get_representation();
+    dag.last_finalized_block_hash = block_a.block_hash.clone();
+    let deploy_lifespan = 50i64;
+
+    let without_known_block =
+        deploy_finalization_status::resolve(&dag, &block_store, deploy_lifespan, &deploy_sig)
+            .expect("index-miss resolve should not fail");
+    assert_eq!(without_known_block.state, DeployFinalizationState::Pending);
+    assert!(without_known_block.latest_block_hash.is_none());
+
+    let with_known_block = deploy_finalization_status::resolve_with_known_block(
+        &dag,
+        &block_store,
+        deploy_lifespan,
+        &deploy_sig,
+        Some(&block_a.block_hash),
+    )
+    .expect("known-block resolve should not fail");
+
+    assert_eq!(with_known_block.state, DeployFinalizationState::Finalized);
+    assert_eq!(
+        with_known_block.latest_block_hash.as_ref(),
+        Some(&block_a.block_hash),
+    );
+    assert_eq!(with_known_block.rejection_count, 0);
+}
+
 /// Symmetric clean-side canonical-descendant gate.
 ///
 /// A clean inclusion in a non-main-chain finalized sibling whose effects

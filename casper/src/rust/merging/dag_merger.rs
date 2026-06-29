@@ -38,18 +38,210 @@ pub fn cost_optimal_rejection_alg() -> impl Fn(&DeployChainIndex) -> u64 {
     }
 }
 
-fn is_sub_multiset(sub: &[Vec<u8>], sup: &[Vec<u8>]) -> bool {
-    let mut sup_counts: HashMap<&Vec<u8>, usize> = HashMap::new();
-    for item in sup {
-        *sup_counts.entry(item).or_insert(0) += 1;
+fn remove_from_available(available: &mut Vec<Vec<u8>>, removed: &[Vec<u8>]) -> bool {
+    for item in removed {
+        let Some(pos) = available.iter().position(|existing| existing == item) else {
+            return false;
+        };
+        available.remove(pos);
     }
-    let mut sub_counts: HashMap<&Vec<u8>, usize> = HashMap::new();
-    for item in sub {
-        *sub_counts.entry(item).or_insert(0) += 1;
+    true
+}
+
+fn dependency_ordered_branch_items<'a>(
+    branch: &'a HashableSet<DeployChainIndex>,
+    depends: &impl Fn(&DeployChainIndex, &DeployChainIndex) -> bool,
+) -> Vec<&'a DeployChainIndex> {
+    let mut pending: Vec<&DeployChainIndex> = branch.0.iter().collect();
+    let mut ordered = Vec::with_capacity(pending.len());
+
+    while !pending.is_empty() {
+        let selected_idx = (0..pending.len())
+            .filter(|candidate_idx| {
+                !(0..pending.len()).any(|source_idx| {
+                    source_idx != *candidate_idx
+                        && depends(pending[*candidate_idx], pending[source_idx])
+                })
+            })
+            .min_by(|left_idx, right_idx| pending[*left_idx].cmp(pending[*right_idx]))
+            .unwrap_or_else(|| {
+                (0..pending.len())
+                    .min_by(|left_idx, right_idx| pending[*left_idx].cmp(pending[*right_idx]))
+                    .expect("pending is non-empty")
+            });
+        ordered.push(pending.remove(selected_idx));
     }
-    sub_counts
-        .iter()
-        .all(|(item, need)| sup_counts.get(*item).copied().unwrap_or(0) >= *need)
+
+    ordered
+}
+
+fn branch_mergeable_channels(
+    branch_items: &[&DeployChainIndex],
+    mergeable_channels: &impl Fn(&DeployChainIndex) -> NumberChannelsDiff,
+) -> Result<NumberChannelsDiff, rspace_plus_plus::rspace::errors::HistoryError> {
+    let mut branch_mergeable = NumberChannelsDiff::new();
+    for chain in branch_items {
+        for (key, value) in mergeable_channels(chain).iter() {
+            let (incoming_diff, incoming_mt) = *value;
+            match branch_mergeable.get_mut(key) {
+                Some(existing) => {
+                    if existing.1 != incoming_mt {
+                        return Err(rspace_plus_plus::rspace::errors::HistoryError::MergeError(
+                            format!(
+                                "MergeType mismatch on channel {:?}: {:?} vs {:?}",
+                                key, existing.1, incoming_mt
+                            ),
+                        ));
+                    }
+                    existing.0 = merging_logic::combine_mergeable_value(
+                        existing.0,
+                        incoming_diff,
+                        incoming_mt,
+                    );
+                }
+                None => {
+                    branch_mergeable.insert(key.clone(), (incoming_diff, incoming_mt));
+                }
+            }
+        }
+    }
+    Ok(branch_mergeable)
+}
+
+fn split_unavailable_branch_consumes(
+    branch: HashableSet<DeployChainIndex>,
+    depends: &impl Fn(&DeployChainIndex, &DeployChainIndex) -> bool,
+    state_changes: &impl Fn(
+        &DeployChainIndex,
+    ) -> Result<
+        rspace_plus_plus::rspace::merger::state_change::StateChange,
+        rspace_plus_plus::rspace::errors::HistoryError,
+    >,
+    mergeable_channels: &impl Fn(&DeployChainIndex) -> NumberChannelsDiff,
+    base_data: &impl Fn(
+        &Blake2b256Hash,
+    ) -> Result<Vec<Vec<u8>>, rspace_plus_plus::rspace::errors::HistoryError>,
+    base_continuations: &impl Fn(
+        &Vec<Blake2b256Hash>,
+    )
+        -> Result<Vec<Vec<u8>>, rspace_plus_plus::rspace::errors::HistoryError>,
+) -> Result<
+    (
+        Option<HashableSet<DeployChainIndex>>,
+        HashableSet<DeployChainIndex>,
+    ),
+    rspace_plus_plus::rspace::errors::HistoryError,
+> {
+    let branch_items = dependency_ordered_branch_items(&branch, depends);
+    let branch_mergeable = branch_mergeable_channels(&branch_items, mergeable_channels)?;
+    let mut available_data: HashMap<Blake2b256Hash, Vec<Vec<u8>>> = HashMap::new();
+    let mut available_continuations: HashMap<Vec<Blake2b256Hash>, Vec<Vec<u8>>> = HashMap::new();
+    let mut accepted = HashSet::new();
+    let mut rejected = HashableSet(HashSet::new());
+
+    for chain in branch_items {
+        if rejected
+            .0
+            .iter()
+            .any(|rejected_chain| depends(chain, rejected_chain))
+        {
+            rejected.0.insert(chain.clone());
+            continue;
+        }
+
+        let changes = state_changes(chain)?;
+        let mut next_data = available_data.clone();
+        let mut next_continuations = available_continuations.clone();
+        let mut applicable = true;
+
+        for entry in changes.datums_changes.iter() {
+            let channel = entry.key();
+            if branch_mergeable.contains_key(channel) {
+                continue;
+            }
+            let removed = &entry.value().removed;
+            if removed.is_empty() {
+                continue;
+            }
+            if !next_data.contains_key(channel) {
+                next_data.insert(channel.clone(), base_data(channel)?);
+            }
+            if !remove_from_available(next_data.get_mut(channel).unwrap(), removed) {
+                applicable = false;
+                break;
+            }
+        }
+
+        if applicable {
+            for entry in changes.cont_changes.iter() {
+                let consume_channels = entry.key();
+                let removed = &entry.value().removed;
+                if removed.is_empty() {
+                    continue;
+                }
+                if !next_continuations.contains_key(consume_channels) {
+                    next_continuations.insert(
+                        consume_channels.clone(),
+                        base_continuations(consume_channels)?,
+                    );
+                }
+                if !remove_from_available(
+                    next_continuations.get_mut(consume_channels).unwrap(),
+                    removed,
+                ) {
+                    applicable = false;
+                    break;
+                }
+            }
+        }
+
+        if applicable {
+            for entry in changes.datums_changes.iter() {
+                let channel = entry.key();
+                if branch_mergeable.contains_key(channel) {
+                    continue;
+                }
+                let added = &entry.value().added;
+                if added.is_empty() {
+                    continue;
+                }
+                if !next_data.contains_key(channel) {
+                    next_data.insert(channel.clone(), base_data(channel)?);
+                }
+                next_data.get_mut(channel).unwrap().extend(added.clone());
+            }
+            for entry in changes.cont_changes.iter() {
+                let consume_channels = entry.key();
+                let added = &entry.value().added;
+                if added.is_empty() {
+                    continue;
+                }
+                if !next_continuations.contains_key(consume_channels) {
+                    next_continuations.insert(
+                        consume_channels.clone(),
+                        base_continuations(consume_channels)?,
+                    );
+                }
+                next_continuations
+                    .get_mut(consume_channels)
+                    .unwrap()
+                    .extend(added.clone());
+            }
+            available_data = next_data;
+            available_continuations = next_continuations;
+            accepted.insert(chain.clone());
+        } else {
+            rejected.0.insert(chain.clone());
+        }
+    }
+
+    let accepted = if accepted.is_empty() {
+        None
+    } else {
+        Some(HashableSet(accepted))
+    };
+
+    Ok((accepted, rejected))
 }
 
 pub fn merge(
@@ -798,70 +990,31 @@ pub fn merge(
     )
     .map_err(|e| CasperError::HistoryError(e))?;
 
-    let stale_rejected_count =
+    let unavailable_rejected_count =
         (|| -> Result<usize, rspace_plus_plus::rspace::errors::HistoryError> {
             let mut kept_branches = Vec::new();
             let mut rejected_count = 0;
             for branch in std::mem::take(&mut resolved.to_merge) {
-                let mut branch_items: Vec<_> = branch.0.iter().collect();
-                branch_items.sort();
-
-                let mut branch_changes =
-                    rspace_plus_plus::rspace::merger::state_change::StateChange::empty();
-                let mut branch_mergeable = NumberChannelsDiff::new();
-                for chain in &branch_items {
-                    branch_changes = branch_changes.combine(state_changes_fn(chain)?);
-                    for (key, value) in mergeable_channels_fn(chain).iter() {
-                        let (incoming_diff, incoming_mt) = *value;
-                        match branch_mergeable.get_mut(key) {
-                            Some(existing) => {
-                                if existing.1 != incoming_mt {
-                                    return Err(
-                                        rspace_plus_plus::rspace::errors::HistoryError::MergeError(
-                                            format!(
-                                                "MergeType mismatch on channel {:?}: {:?} vs {:?}",
-                                                key, existing.1, incoming_mt
-                                            ),
-                                        ),
-                                    );
-                                }
-                                existing.0 = merging_logic::combine_mergeable_value(
-                                    existing.0,
-                                    incoming_diff,
-                                    incoming_mt,
-                                );
-                            }
-                            None => {
-                                branch_mergeable.insert(key.clone(), (incoming_diff, incoming_mt));
-                            }
-                        }
-                    }
+                let (kept, rejected) = split_unavailable_branch_consumes(
+                    branch,
+                    &depends_fn,
+                    &state_changes_fn,
+                    &mergeable_channels_fn,
+                    &|channel| history_reader.get_data_proj_binary(channel),
+                    &|consume_channels| {
+                        let history_pointer =
+                            rspace_plus_plus::rspace::hashing::stable_hash_provider::hash_from_hashes(
+                                consume_channels,
+                            );
+                        history_reader.get_continuations_proj_binary(&history_pointer)
+                    },
+                )?;
+                rejected_count += rejected.0.len();
+                for chain in rejected.0 {
+                    resolved.rejected.0.insert(chain);
                 }
-
-                let mut applicable = true;
-                for entry in branch_changes.datums_changes.iter() {
-                    let channel = entry.key();
-                    if branch_mergeable.contains_key(channel) {
-                        continue;
-                    }
-                    let removed = &entry.value().removed;
-                    if removed.is_empty() {
-                        continue;
-                    }
-                    let base = history_reader.get_data_proj_binary(channel)?;
-                    if !is_sub_multiset(removed, &base) {
-                        applicable = false;
-                        break;
-                    }
-                }
-
-                if applicable {
-                    kept_branches.push(branch);
-                } else {
-                    rejected_count += branch.0.len();
-                    for chain in branch.0 {
-                        resolved.rejected.0.insert(chain);
-                    }
+                if let Some(kept) = kept {
+                    kept_branches.push(kept);
                 }
             }
             resolved.to_merge = kept_branches;
@@ -869,11 +1022,11 @@ pub fn merge(
         })()
         .map_err(CasperError::HistoryError)?;
 
-    if stale_rejected_count > 0 {
+    if unavailable_rejected_count > 0 {
         tracing::debug!(
             target: "f1r3fly.merge.step",
             step = "merge.reject_unavailable_floor_consumes",
-            rejected_chains = stale_rejected_count,
+            rejected_chains = unavailable_rejected_count,
             remaining_branches = resolved.to_merge.len()
         );
     }
@@ -1057,4 +1210,187 @@ pub fn merge(
     }
 
     Ok((new_state, rejected_user_deploys, rejected_slashes))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::{BTreeMap, HashSet};
+
+    use dashmap::DashMap;
+    use rspace_plus_plus::rspace::merger::channel_change::ChannelChange;
+    use rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex;
+    use rspace_plus_plus::rspace::merger::state_change::StateChange;
+
+    use super::*;
+    use crate::rust::merging::deploy_chain_index::{DeployChainIndex, DeployIdWithCost};
+
+    fn datum_change(
+        channel: Blake2b256Hash,
+        removed: Vec<Vec<u8>>,
+        added: Vec<Vec<u8>>,
+    ) -> StateChange {
+        let datums_changes = DashMap::new();
+        datums_changes.insert(channel, ChannelChange { added, removed });
+        StateChange {
+            datums_changes,
+            cont_changes: DashMap::new(),
+            consume_channels_to_join_serialized_map: DashMap::new(),
+        }
+    }
+
+    fn chain(
+        deploy_id: u8,
+        cost: u64,
+        source_block_number: i64,
+        state_changes: StateChange,
+    ) -> DeployChainIndex {
+        let deploys_with_cost = HashableSet(HashSet::from([DeployIdWithCost {
+            deploy_id: Bytes::from(vec![deploy_id]),
+            cost,
+        }]));
+        DeployChainIndex::from_parts(
+            deploys_with_cost,
+            Blake2b256Hash::from_bytes(vec![deploy_id; 32]),
+            EventLogIndex::empty(),
+            state_changes,
+            Bytes::from(vec![deploy_id; 32]),
+            source_block_number,
+        )
+    }
+
+    fn split_branch(
+        branch: HashableSet<DeployChainIndex>,
+        base_channel: Blake2b256Hash,
+        base_data_value: Vec<u8>,
+        depends: impl Fn(&DeployChainIndex, &DeployChainIndex) -> bool,
+    ) -> (
+        Option<HashableSet<DeployChainIndex>>,
+        HashableSet<DeployChainIndex>,
+    ) {
+        split_unavailable_branch_consumes(
+            branch,
+            &depends,
+            &|chain| Ok(chain.state_changes.clone()),
+            &|_| BTreeMap::new(),
+            &|channel| {
+                if channel == &base_channel {
+                    Ok(vec![base_data_value.clone()])
+                } else {
+                    Ok(Vec::new())
+                }
+            },
+            &|_| Ok(Vec::new()),
+        )
+        .expect("split unavailable branch consumes")
+    }
+
+    #[test]
+    fn unavailable_floor_consumes_reject_lower_priority_same_cell_writer() {
+        let channel = Blake2b256Hash::from_bytes(vec![0x11; 32]);
+        let datum_a = vec![0xaa; 32];
+        let datum_b = vec![0xbb; 32];
+        let datum_c = vec![0xcc; 32];
+        let high_cost = chain(
+            1,
+            10,
+            1,
+            datum_change(channel.clone(), vec![datum_a.clone()], vec![datum_b]),
+        );
+        let low_cost = chain(
+            2,
+            1,
+            1,
+            datum_change(channel.clone(), vec![datum_a.clone()], vec![datum_c]),
+        );
+        let branch = HashableSet(HashSet::from([high_cost.clone(), low_cost.clone()]));
+
+        let (kept, rejected) = split_branch(branch, channel, datum_a, |_, _| false);
+
+        let kept = kept.expect("one writer must survive");
+        assert!(kept.0.contains(&high_cost));
+        assert!(!kept.0.contains(&low_cost));
+        assert!(rejected.0.contains(&low_cost));
+        assert!(!rejected.0.contains(&high_cost));
+    }
+
+    #[test]
+    fn unavailable_floor_consumes_allow_dependent_chain_intermediate() {
+        let channel = Blake2b256Hash::from_bytes(vec![0x22; 32]);
+        let datum_a = vec![0xaa; 32];
+        let datum_b = vec![0xbb; 32];
+        let datum_c = vec![0xcc; 32];
+        let first = chain(
+            1,
+            1,
+            1,
+            datum_change(
+                channel.clone(),
+                vec![datum_a.clone()],
+                vec![datum_b.clone()],
+            ),
+        );
+        let second = chain(
+            2,
+            10,
+            2,
+            datum_change(channel.clone(), vec![datum_b], vec![datum_c]),
+        );
+        let branch = HashableSet(HashSet::from([first.clone(), second.clone()]));
+
+        let (kept, rejected) = split_branch(branch, channel, datum_a, |target, source| {
+            target == &second && source == &first
+        });
+
+        let kept = kept.expect("dependent chain must survive");
+        assert!(kept.0.contains(&first));
+        assert!(kept.0.contains(&second));
+        assert!(rejected.0.is_empty());
+    }
+
+    #[test]
+    fn unavailable_floor_consumes_reject_dependents_of_rejected_chain() {
+        let channel = Blake2b256Hash::from_bytes(vec![0x33; 32]);
+        let datum_a = vec![0xaa; 32];
+        let datum_b = vec![0xbb; 32];
+        let datum_c = vec![0xcc; 32];
+        let datum_d = vec![0xdd; 32];
+        let high_cost = chain(
+            1,
+            10,
+            1,
+            datum_change(channel.clone(), vec![datum_a.clone()], vec![datum_d]),
+        );
+        let losing_source = chain(
+            2,
+            1,
+            1,
+            datum_change(
+                channel.clone(),
+                vec![datum_a.clone()],
+                vec![datum_b.clone()],
+            ),
+        );
+        let dependent = chain(
+            3,
+            20,
+            2,
+            datum_change(channel.clone(), vec![datum_b], vec![datum_c]),
+        );
+        let branch = HashableSet(HashSet::from([
+            high_cost.clone(),
+            losing_source.clone(),
+            dependent.clone(),
+        ]));
+
+        let (kept, rejected) = split_branch(branch, channel, datum_a, |target, source| {
+            target == &dependent && source == &losing_source
+        });
+
+        let kept = kept.expect("high-cost writer must survive");
+        assert!(kept.0.contains(&high_cost));
+        assert!(!kept.0.contains(&losing_source));
+        assert!(!kept.0.contains(&dependent));
+        assert!(rejected.0.contains(&losing_source));
+        assert!(rejected.0.contains(&dependent));
+    }
 }

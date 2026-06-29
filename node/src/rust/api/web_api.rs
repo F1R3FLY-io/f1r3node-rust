@@ -491,11 +491,11 @@ impl WebApi for WebApiImpl {
         let max_attempts = find_deploy_max_attempts();
 
         // Retry loop: deploy may not be visible in DAG immediately after submission
-        let light_block: LightBlockInfoSerde = {
+        let light_block: LightBlockInfo = {
             let mut attempt: u16 = 1;
             loop {
                 match BlockAPI::find_deploy(&self.engine_cell, &deploy_id_bytes).await {
-                    Ok(block) => break LightBlockInfoSerde::from(block),
+                    Ok(block) => break block,
                     Err(err) => {
                         let not_found = err.downcast_ref::<DeployNotFoundError>().is_some();
 
@@ -516,6 +516,10 @@ impl WebApi for WebApiImpl {
                 }
             }
         };
+        let known_block_hash = hex::decode(&light_block.block_hash)
+            .map(prost::bytes::Bytes::from)
+            .map_err(|e| eyre!("Invalid block hash returned by findDeploy: {}", e))?;
+        let light_block = LightBlockInfoSerde::from(light_block);
 
         // Always fetch full block to get deploy execution details
         let block_info = self
@@ -536,8 +540,12 @@ impl WebApi for WebApiImpl {
         })?;
 
         let is_full = view == ViewMode::Full;
-        let finalization =
-            BlockAPI::deploy_finalization_status(&self.engine_cell, &deploy_id_bytes).await?;
+        let finalization = BlockAPI::deploy_finalization_status_with_known_block(
+            &self.engine_cell,
+            &deploy_id_bytes,
+            Some(&known_block_hash),
+        )
+        .await?;
 
         Ok(DeployResponse {
             deploy_id,
