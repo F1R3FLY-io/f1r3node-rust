@@ -134,31 +134,22 @@ pub async fn prepare_user_deploys(
 
     let valid_count = valid.len();
 
-    // Remove deploys that are already in scope to prevent resending.
-    //
-    // Exception: a deploy whose sig appears in a descendant's `rejected_deploys`
-    // is eligible for re-inclusion — its state effects never made it into
-    // canonical state, so re-proposing it is correct.
-    //
-    // The exemption MUST decline when the rejection is non-canonical: a sibling
-    // block can put the sig in `rejected_in_scope` (the ancestor scan unions
-    // all blocks' `rejected_deploys`) while the deploy's effects are already
-    // in canonical state via a different chain. Re-including in that case
-    // would be double-execution and the resulting block would be flagged
-    // `InvalidRepeatDeploy` by `validate.rs::repeat_deploy` — too late to
-    // avoid the slashable proposal. Mirror the validator-side gate here.
-    // Record-driven recovery: a deploy is re-includable unless its LATEST
-    // canonical disposition is a WIN (its effect is already in the canonical
-    // lineage — re-proposing would double-execute). A keep-one loser (latest
-    // disposition = rejection) or a never-seen deploy is eligible. This reads the
-    // merge's keep-one record on the main-parent chain, not the cross-cone
-    // `rejected_in_scope` union or the finalization-status resolver, so a
-    // won-but-unfinalized deploy is correctly treated as done.
-    let canonical_won = interpreter_util::canonical_won_sigs(
-        block_store,
-        casper_snapshot.parents.first().map(|p| &p.block_hash),
-        earliest_block_number,
-    )?;
+    // Record-driven recovery. A deploy is re-includable unless its LATEST canonical
+    // disposition across the FULL merge scope (closure of ALL parents, via
+    // `canonical_won_sigs`) is a WIN — its effect is then already in the merge base
+    // this block builds on, so re-proposing it would double-execute. A keep-one loser
+    // (latest disposition = rejection) or a never-seen deploy is eligible. Walking all
+    // parents (not just the main-parent chain) catches a deploy already won on a
+    // co-parent. `validate.rs::repeat_deploy` applies the SAME canonical-won record,
+    // so proposer and validator never disagree (no recovery block is flagged
+    // InvalidRepeatDeploy).
+    let parent_hashes: Vec<BlockHash> = casper_snapshot
+        .parents
+        .iter()
+        .map(|p| p.block_hash.clone())
+        .collect();
+    let canonical_won =
+        interpreter_util::canonical_won_sigs(block_store, &parent_hashes, earliest_block_number)?;
 
     let already_in_scope: Vec<Signed<DeployData>> = valid
         .iter()

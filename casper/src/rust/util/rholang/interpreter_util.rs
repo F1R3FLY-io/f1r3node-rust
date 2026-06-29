@@ -105,41 +105,71 @@ fn compute_rejected_buffer_admits(
     result
 }
 
-/// Sigs whose LATEST canonical disposition is a WIN. Walks the main-parent chain
-/// (the canonical lineage) from `main_parent` down through the deploy-lifespan
-/// window, recording each sig's first-seen (= highest-block = latest) disposition:
-/// a sig in a block's `body.deploys` is a WIN, in `body.rejected_deploys` is a
-/// REJECTION. Returns the sigs whose latest disposition is a WIN — those have
-/// their effect in the canonical lineage, so re-proposing them would
-/// double-execute. Walking only the main-parent chain (not the whole cone) keeps
-/// a non-canonical sibling's disposition from stranding the answer.
+/// Sigs whose LATEST canonical disposition across the FULL merge scope is a WIN.
+/// BFS-walks the closure of ALL `parents` (not just the main-parent chain) down to
+/// the deploy-lifespan floor, recording each sig's highest-block disposition: in a
+/// block's `body.deploys` it is a WIN, in `body.rejected_deploys` a REJECTION.
+/// Returns the sigs whose highest-block disposition is a WIN — their effect is in
+/// the merge base the proposing block builds on, so re-proposing them would
+/// double-apply. Walking ALL parents (not only `parents[0]`) catches a deploy
+/// already won on a CO-PARENT of a multi-parent merge, which a main-parent-only
+/// walk misses and re-proposes into a double-apply; a real recovery loser is still
+/// exempt because the merge that rejected it sits at a strictly higher block than
+/// its inclusion. Reads only signed block bodies, so the result is node-identical.
 pub fn canonical_won_sigs(
     block_store: &KeyValueBlockStore,
-    main_parent: Option<&BlockHash>,
+    parents: &[BlockHash],
     earliest_block_number: i64,
 ) -> Result<HashSet<Bytes>, CasperError> {
-    let mut won: HashSet<Bytes> = HashSet::new();
-    let mut seen: HashSet<Bytes> = HashSet::new();
-    let mut current: Option<BlockHash> = main_parent.cloned();
-    while let Some(hash) = current {
+    // sig -> (highest block_number observed, won at that height?). A win and a
+    // rejection never share a height (a merge sits one block above its siblings),
+    // so the highest-block disposition is the latest; a same-height tie prefers
+    // REJECTION so a keep-one loser stays re-proposable.
+    let mut disposition: HashMap<Bytes, (i64, bool)> = HashMap::new();
+    let mut visited: HashSet<BlockHash> = HashSet::new();
+    let mut queue: VecDeque<BlockHash> = parents.iter().cloned().collect();
+    while let Some(hash) = queue.pop_front() {
+        if !visited.insert(hash.clone()) {
+            continue;
+        }
         let Some(block) = block_store.get(&hash)? else {
-            break;
+            continue;
         };
-        if block.body.state.block_number < earliest_block_number {
-            break;
+        let bn = block.body.state.block_number;
+        if bn < earliest_block_number {
+            continue;
         }
         for pd in &block.body.deploys {
-            let sig: Bytes = pd.deploy.sig.clone();
-            if seen.insert(sig.clone()) {
-                won.insert(sig);
-            }
+            record_disposition(&mut disposition, pd.deploy.sig.clone(), bn, true);
         }
         for rd in &block.body.rejected_deploys {
-            seen.insert(rd.sig.clone());
+            record_disposition(&mut disposition, rd.sig.clone(), bn, false);
         }
-        current = block.header.parents_hash_list.first().cloned();
+        for p in &block.header.parents_hash_list {
+            queue.push_back(p.clone());
+        }
     }
-    Ok(won)
+    Ok(disposition
+        .into_iter()
+        .filter_map(|(sig, (_, won))| won.then_some(sig))
+        .collect())
+}
+
+/// Update `disposition[sig]` toward the latest (highest-block) verdict. A higher
+/// block wins; at a tie a REJECTION overrides a WIN (a loser must stay re-proposable).
+fn record_disposition(
+    disposition: &mut HashMap<Bytes, (i64, bool)>,
+    sig: Bytes,
+    bn: i64,
+    won: bool,
+) {
+    match disposition.get(&sig) {
+        Some((best_bn, _)) if *best_bn > bn => {}
+        Some((best_bn, best_won)) if *best_bn == bn && !*best_won => {}
+        _ => {
+            disposition.insert(sig, (bn, won));
+        }
+    }
 }
 
 fn with_ancestors_capped(
