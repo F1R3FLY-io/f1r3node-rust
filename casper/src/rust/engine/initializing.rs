@@ -45,6 +45,7 @@ use crate::rust::engine::engine::{
 use crate::rust::engine::engine_cell::EngineCell;
 use crate::rust::engine::lfs_block_requester::{self, BlockRequesterOps};
 use crate::rust::engine::lfs_tuple_space_requester::{self, StatePartPath, TupleSpaceRequesterOps};
+use crate::rust::engine::running::RunningRecoveryContext;
 use crate::rust::errors::CasperError;
 use crate::rust::estimator::Estimator;
 use crate::rust::metrics_constants::{
@@ -868,6 +869,7 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             .unwrap()
             .take()
             .ok_or_else(|| CasperError::RuntimeError("Estimator not available".to_string()))?;
+        let recovery_estimator = estimator.clone();
 
         // Pass Arc<RuntimeManager> directly to hash_set_casper
         let casper = crate::rust::casper::hash_set_casper(
@@ -909,6 +911,22 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             Arc::new(self.transport_layer.clone()),
             self.rp_conf_ask.clone(),
             self.block_retriever.clone(),
+            Some(RunningRecoveryContext {
+                connections_cell: self.connections_cell.clone(),
+                last_approved_block: self.last_approved_block.clone(),
+                block_store: self.block_store.clone(),
+                block_dag_storage: self.block_dag_storage.clone(),
+                deploy_storage: self.deploy_storage.clone(),
+                rejected_deploy_buffer: self.rejected_deploy_buffer.clone(),
+                casper_buffer_storage: self.casper_buffer_storage.clone(),
+                rspace_state_manager: self.rspace_state_manager.clone(),
+                event_publisher: self.event_publisher.clone(),
+                engine_cell: self.engine_cell.clone(),
+                runtime_manager: self.runtime_manager.clone(),
+                estimator: recovery_estimator,
+                casper_shard_conf: self.casper_shard_conf.clone(),
+                heartbeat_signal_ref: self.heartbeat_signal_ref.clone(),
+            }),
             &self.engine_cell,
             &self.event_publisher,
         )
