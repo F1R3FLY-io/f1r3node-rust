@@ -4,7 +4,7 @@ use std::error::Error;
 use std::sync::Arc;
 
 use rand::Rng;
-use rand::distributions::{Alphanumeric, DistString};
+use rand::distr::{Alphanumeric, SampleString};
 use rand::seq::SliceRandom;
 use rspace_plus_plus::rspace::errors::{HistoryError, RadixTreeError};
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
@@ -397,10 +397,10 @@ fn create_empty_history_and_store() -> (Box<dyn History>, Arc<dyn KeyValueStore>
 }
 
 fn random_key(size: usize) -> Vec<u8> {
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
     (0..size)
         .map(|_| {
-            let num = rng.gen_range(-128..=127) as i8;
+            let num = rng.random_range(-128..=127) as i8;
             num as u8
         })
         .collect()
@@ -422,7 +422,7 @@ fn generate_random_delete_from_insert(
     size: usize,
     inserts: Vec<HistoryAction>,
 ) -> Vec<HistoryAction> {
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
     let mut shuffled_inserts = inserts;
     shuffled_inserts.shuffle(&mut rng);
     shuffled_inserts
@@ -436,7 +436,7 @@ fn generate_random_insert_from_insert(
     size: usize,
     inserts: &Vec<HistoryAction>,
 ) -> Vec<HistoryAction> {
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
     let mut shuffled_inserts = inserts.clone();
     shuffled_inserts.shuffle(&mut rng);
     shuffled_inserts
@@ -492,7 +492,7 @@ fn history_delete(k: KeyPath) -> (HistoryAction, DeleteAction) {
 pub fn random_blake() -> Blake2b256Hash {
     Blake2b256Hash::new(
         &Alphanumeric
-            .sample_string(&mut rand::thread_rng(), 32)
+            .sample_string(&mut rand::rng(), 32)
             .into_bytes(),
     )
 }

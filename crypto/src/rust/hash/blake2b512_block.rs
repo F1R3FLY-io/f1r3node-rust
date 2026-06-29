@@ -35,7 +35,6 @@ pub struct Blake2b512Block {
 impl Blake2b512Block {
     pub fn new_from_fanout(fanout: u8) -> Blake2b512Block {
         let param0_with_fanout: i64 = Self::PARAM_VALUE_0 | ((fanout as i64 & 0xff) << 16);
-        // println!("\nparam0_with_fanout: {:?}", param0_with_fanout);
 
         let mut result = Blake2b512Block {
             chain_value: vec![0; Self::CHAIN_VALUE_LENGTH],
@@ -46,7 +45,6 @@ impl Blake2b512Block {
         result
             .chain_value
             .copy_from_slice(&Self::IV[0..Self::CHAIN_VALUE_LENGTH]);
-        // println!("\nchain_value: {:?}", result.chain_value);
         result.chain_value[0] ^= param0_with_fanout;
         result.chain_value[2] ^= Self::PARAM_VALUE_2;
         // result.debug_str();
@@ -85,11 +83,6 @@ impl Blake2b512Block {
     ) {
         let mut temp_chain_value = vec![0i64; 8];
         self.compress(block, in_offset, &mut temp_chain_value, true, true, true);
-        // println!(
-        //     "\ntemp_chain_value in peek_final_root: {:?}",
-        //     temp_chain_value
-        // );
-        // println!("\noutput in peek_final_root: {:?}", output);
         self.long_vec_to_little_endian(&temp_chain_value, output, out_offset);
     }
 
@@ -128,7 +121,6 @@ impl Blake2b512Block {
         finalize: bool,
         root_finalize: bool,
     ) {
-        // println!("\nhit compress");
         let mut internal_state = [0i64; 16];
         let new_t0 = self.t0 + Self::BLOCK_LENGTH_BYTES;
         let new_t1 = if new_t0 == 0 { self.t1 + 1 } else { self.t1 };
@@ -153,10 +145,6 @@ impl Blake2b512Block {
         internal_state[14] = f0 ^ Self::IV[6];
         internal_state[15] = f1 ^ Self::IV[7];
 
-        // println!("\ninternal_state: {:?}", internal_state);
-        // println!("\nchain_value: {:?}", self.chain_value);
-        // println!("\nmsg: {:?}", msg);
-
         let mut m = [0i64; 16];
 
         for i in 0..Self::BLOCK_LENGTH_LONGS {
@@ -174,8 +162,6 @@ impl Blake2b512Block {
                 m[i] = 0; // Ensure uninitialized values are set to 0
             }
         }
-
-        // println!("\ninternal_state: {:?}", internal_state);
 
         for round in 0..Self::ROUNDS {
             // Columns
@@ -255,8 +241,6 @@ impl Blake2b512Block {
             );
         }
 
-        // println!("\ninternal_state: {:?}", internal_state);
-
         if !peek {
             self.t0 = new_t0;
             self.t1 = new_t1;
@@ -283,13 +267,7 @@ impl Blake2b512Block {
         pos_d: usize,
         internal_state: &mut [i64; 16],
     ) {
-        let rotr64 = |x: i64, rot: u32| {
-            // println!("\nx: {:?}", x);
-            // println!("rot: {:?}", rot);
-
-            // println!("result: {:?}", result);
-            x.rotate_right(rot)
-        };
+        let rotr64 = |x: i64, rot: u32| x.rotate_right(rot);
 
         internal_state[pos_a] = internal_state[pos_a]
             .wrapping_add(internal_state[pos_b])
@@ -306,8 +284,6 @@ impl Blake2b512Block {
         internal_state[pos_d] = rotr64(internal_state[pos_d] ^ internal_state[pos_a], 16);
         internal_state[pos_c] = internal_state[pos_c].wrapping_add(internal_state[pos_d]);
         internal_state[pos_b] = rotr64(internal_state[pos_b] ^ internal_state[pos_c], 63);
-
-        // println!("\ninternal_state: {:?}", internal_state);
     }
 
     // Produced from the square root of primes 2, 3, 5, 7, 11, 13, 17, 19.

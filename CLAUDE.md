@@ -22,7 +22,7 @@
 brew install protobuf openssl pkg-config just
 ```
 
-### Workspace Crates (11 crates)
+### Workspace Crates (10 crates)
 | Crate | Purpose |
 |-------|---------|
 | `node` | Main binary: CLI, gRPC server, HTTP API, REPL, metrics |
@@ -35,7 +35,6 @@ brew install protobuf openssl pkg-config just
 | `block-storage` | Block persistence and retrieval |
 | `shared` | Common utilities, middleware, metrics helpers |
 | `graphz` | DAG traversal and graph algorithms |
-| `rspace_plus_plus_rhotypes` | Type bridge between RSpace and Rholang |
 
 ### Multi-Consensus Design
 Four consensus mechanisms, all implemented in Rholang:
@@ -129,7 +128,7 @@ Three crates have `build.rs` for protobuf code generation:
 ## Relationship to f1r3node
 This repo was extracted from `F1R3FLY-io/f1r3fly` (`rust/dev` branch). Key differences:
 - **Removed**: Nix flake, SBT build, Scala source, `.envrc`, JVM tooling
-- **Kept**: All 11 Rust crates, Cargo workspace, protobuf definitions, Docker configs, docs
+- **Kept**: All 10 Rust crates, Cargo workspace, protobuf definitions, Docker configs, docs
 - **Added**: Native dependency install instructions (Homebrew, apt)
 
 ### Key Principles

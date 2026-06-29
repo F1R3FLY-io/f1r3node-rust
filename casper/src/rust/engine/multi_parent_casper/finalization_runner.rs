@@ -92,6 +92,7 @@ pub(crate) fn build_finalization_context<
     }
 }
 
+#[tracing::instrument(level = "info", skip_all)]
 pub(crate) async fn run_queued_finalizer(
     ctx: FinalizationContext,
     finalizer_task_in_progress: Arc<AtomicBool>,

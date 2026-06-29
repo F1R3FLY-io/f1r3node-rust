@@ -199,24 +199,6 @@ trigger the same COMM.
 
 `ChannelChange<A>` tracks `added` and `removed` items per channel for merge analysis.
 
-## FFI Sub-crate: rspace_rhotypes
-
-**Path**: `rspace++/libs/rspace_rhotypes/`
-
-C FFI bindings for Scala JNA interop:
-
-```
-Type aliases:
-  Channel = Par
-  Pattern = BindPattern
-  Data = ListParWithRandom
-  Continuation = TaggedContinuation
-```
-
-Exports: `create_rspace()`, `produce()`, `consume()`, `install()`, `spatial_match_result()`, `reset_rspace()`, `free_space()`, etc.
-
-Memory management: Rust allocates via `Box::leak()`, returns raw pointer. Scala must call `free_allocated_memory()`. `ALLOCATED_BYTES` atomic counter tracks leaked memory.
-
 ## Tests
 
 Extensive test suites in `tests/`: `hot_store_spec.rs` (property-based), `storage_actions_test.rs`, `replay_rspace_tests.rs`, `reporting_rspace_tests.rs`, `export_import_tests.rs`, `install_test.rs`, plus `history/` subdirectory tests.

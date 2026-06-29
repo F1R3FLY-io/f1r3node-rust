@@ -8,7 +8,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 #[cfg(test)]
 use proptest::prelude::*;
 #[cfg(test)]
-use rand::{Rng, thread_rng};
+use rand::Rng;
 use tracing::warn;
 
 use super::errors::RSpaceError;
@@ -105,13 +105,13 @@ where
 {
     fn random_vec<T>(size: usize) -> Vec<T>
     where T: Default + Clone {
-        let mut rng = thread_rng();
+        let mut rng = rand::rng();
         (0..size)
             .map(|_| T::default())
             .collect::<Vec<T>>()
             .iter()
             .cloned()
-            .take(rng.gen_range(0..size + 1))
+            .take(rng.random_range(0..size + 1))
             .collect()
     }
 
