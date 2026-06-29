@@ -104,6 +104,40 @@ async fn present_keys(
     keys
 }
 
+/// Finalized cell keys read on EVERY node at its own LFB. Asserts all nodes agree on
+/// the LFB block AND the finalized key set — a divergence is the #71 node-identity
+/// break (a node-local finalized-state corruption that need not itself stall
+/// finalization, which a node-0-only read would miss). Returns the agreed
+/// (lfb_block_number, sorted keys).
+async fn finalized_keys_all_nodes(
+    nodes: &[TestNode],
+    writes: &[(String, i64)],
+) -> (i64, Vec<String>) {
+    let lfb0 = nodes[0]
+        .casper
+        .last_finalized_block()
+        .await
+        .expect("lfb node0");
+    let mut fs0 = present_keys(&nodes[0], &lfb0.body.state.post_state_hash, writes).await;
+    fs0.sort();
+    for (j, node) in nodes.iter().enumerate().skip(1) {
+        let lfbj = node.casper.last_finalized_block().await.expect("lfb");
+        let mut fsj = present_keys(node, &lfbj.body.state.post_state_hash, writes).await;
+        fsj.sort();
+        assert_eq!(
+            lfbj.block_hash, lfb0.block_hash,
+            "NODE-IDENTITY: node {} finalized #{} but node 0 finalized #{} — LFB divergence",
+            j, lfbj.body.state.block_number, lfb0.body.state.block_number,
+        );
+        assert_eq!(
+            fsj, fs0,
+            "NODE-IDENTITY: node {} finalized cell {:?} != node 0 {:?} at LFB #{}",
+            j, fsj, fs0, lfb0.body.state.block_number,
+        );
+    }
+    (lfb0.body.state.block_number, fs0)
+}
+
 /// Run `n_validators` concurrent distinct-key writers across `write_rounds` rounds,
 /// then `drain_rounds` quiet rounds, and assert convergence + FS monotonicity.
 async fn run_convergence(n_validators: usize, write_rounds: usize, drain_rounds: usize) {
@@ -115,6 +149,12 @@ async fn run_convergence(n_validators: usize, write_rounds: usize, drain_rounds:
         TestNode::create_network(ctx.genesis.clone(), n_validators, None, None, None, None)
             .await
             .expect("create_network");
+    // Heartbeat/liveness like a production shard: a proposer with no user deploys
+    // (its write recovered or already canonical) emits an empty CloseBlock block
+    // instead of erroring NoNewDeploys, so the chain keeps advancing.
+    for node in nodes.iter_mut() {
+        node.allow_empty_blocks = true;
+    }
     let secs: Vec<PrivateKey> = (0..n_validators).map(signer_key).collect();
 
     // Initialize the single-value cell on node 0 and distribute.
@@ -198,12 +238,11 @@ async fn run_convergence(n_validators: usize, write_rounds: usize, drain_rounds:
         for j in 0..n_validators {
             nodes[j].process_block(merge.clone()).await.ok();
         }
-        let lfb = nodes[0].casper.last_finalized_block().await.expect("lfb");
-        let fs = present_keys(&nodes[0], &lfb.body.state.post_state_hash, &writes).await;
+        let (lfb_num, fs) = finalized_keys_all_nodes(&nodes, &writes).await;
         let tip = present_keys(&nodes[0], &merge.body.state.post_state_hash, &writes).await;
         println!(
             "write {}: tip=#{} LFB=#{} tip_keys={:?} fs_keys={:?}",
-            round, merge.body.state.block_number, lfb.body.state.block_number, tip, fs
+            round, merge.body.state.block_number, lfb_num, tip, fs
         );
         check_fs(
             &format!("write {}", round),
@@ -227,15 +266,14 @@ async fn run_convergence(n_validators: usize, write_rounds: usize, drain_rounds:
             for j in 0..n_validators {
                 nodes[j].process_block(blk.clone()).await.ok();
             }
-            let lfb = nodes[0].casper.last_finalized_block().await.expect("lfb");
-            let fs = present_keys(&nodes[0], &lfb.body.state.post_state_hash, &writes).await;
+            let (lfb_num, fs) = finalized_keys_all_nodes(&nodes, &writes).await;
             let tip = present_keys(&nodes[0], &blk.body.state.post_state_hash, &writes).await;
             println!(
                 "drain {} (proposer v{}): tip=#{} LFB=#{} tip_keys={:?} fs_keys={:?}",
                 extra,
                 proposer + 1,
                 blk.body.state.block_number,
-                lfb.body.state.block_number,
+                lfb_num,
                 tip,
                 fs
             );
