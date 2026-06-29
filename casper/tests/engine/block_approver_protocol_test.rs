@@ -71,6 +71,7 @@ impl TestContext {
             genesis_params.proof_of_stake.epoch_length,
             genesis_params.proof_of_stake.quarantine_length,
             genesis_params.proof_of_stake.number_of_active_validators,
+            genesis_params.proof_of_stake.fault_tolerance_threshold_ppm,
             required_sigs,
             genesis_params.proof_of_stake.pos_multi_sig_public_keys,
             genesis_params.proof_of_stake.pos_multi_sig_quorum,
@@ -198,6 +199,7 @@ async fn block_approver_protocol_should_successfully_validate_correct_candidate(
         ctx.protocol.epoch_length,
         ctx.protocol.quarantine_length,
         ctx.protocol.number_of_active_validators,
+        ctx.protocol.fault_tolerance_threshold_ppm,
         SHARD_ID,
         &ctx.protocol.pos_multi_sig_public_keys,
         ctx.protocol.pos_multi_sig_quorum,
@@ -232,6 +234,7 @@ async fn block_approver_protocol_should_reject_candidate_with_incorrect_bonds() 
         ctx.protocol.epoch_length,
         ctx.protocol.quarantine_length,
         ctx.protocol.number_of_active_validators,
+        ctx.protocol.fault_tolerance_threshold_ppm,
         SHARD_ID,
         &ctx.protocol.pos_multi_sig_public_keys,
         ctx.protocol.pos_multi_sig_quorum,
@@ -266,6 +269,7 @@ async fn block_approver_protocol_should_reject_candidate_with_incorrect_vaults()
         ctx.protocol.epoch_length,
         ctx.protocol.quarantine_length,
         ctx.protocol.number_of_active_validators,
+        ctx.protocol.fault_tolerance_threshold_ppm,
         SHARD_ID,
         &ctx.protocol.pos_multi_sig_public_keys,
         ctx.protocol.pos_multi_sig_quorum,
@@ -299,11 +303,12 @@ async fn block_approver_protocol_should_reject_candidate_with_incorrect_blessed_
         ctx.protocol.deploy_timestamp,
         &ctx.protocol.vaults,
         &ctx.protocol.bonds_bytes,
-        ctx.protocol.minimum_bond + 1,                // incorrect
-        ctx.protocol.maximum_bond - 1,                // incorrect
-        ctx.protocol.epoch_length + 1,                // incorrect
-        ctx.protocol.quarantine_length + 1,           // incorrect
-        ctx.protocol.number_of_active_validators + 1, // incorrect
+        ctx.protocol.minimum_bond + 1,                  // incorrect
+        ctx.protocol.maximum_bond - 1,                  // incorrect
+        ctx.protocol.epoch_length + 1,                  // incorrect
+        ctx.protocol.quarantine_length + 1,             // incorrect
+        ctx.protocol.number_of_active_validators + 1,   // incorrect
+        ctx.protocol.fault_tolerance_threshold_ppm + 1, // incorrect
         SHARD_ID,
         &ctx.protocol.pos_multi_sig_public_keys,
         ctx.protocol.pos_multi_sig_quorum,

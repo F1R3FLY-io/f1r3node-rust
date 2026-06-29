@@ -536,6 +536,8 @@ impl WebApi for WebApiImpl {
         })?;
 
         let is_full = view == ViewMode::Full;
+        let finalization =
+            BlockAPI::deploy_finalization_status(&self.engine_cell, &deploy_id_bytes).await?;
 
         Ok(DeployResponse {
             deploy_id,
@@ -545,6 +547,8 @@ impl WebApi for WebApiImpl {
             cost: deploy.cost,
             errored: deploy.errored,
             is_finalized: light_block.is_finalized,
+            finalization_state: deploy_state_json_label(finalization.state).to_string(),
+            rejection_count: finalization.rejection_count,
             deployer: if is_full {
                 Some(deploy.deployer.clone())
             } else {
@@ -1288,6 +1292,10 @@ pub struct DeployResponse {
     pub errored: bool,
     #[serde(rename = "isFinalized")]
     pub is_finalized: bool,
+    #[serde(rename = "finalizationState")]
+    pub finalization_state: String,
+    #[serde(rename = "rejectionCount")]
+    pub rejection_count: u32,
 
     // === Full view only (omitted in summary) ===
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1869,6 +1877,8 @@ mod tests {
             cost: 500,
             errored: false,
             is_finalized: true,
+            finalization_state: "Finalized".to_string(),
+            rejection_count: 0,
             deployer: Some("deployer1".to_string()),
             term: Some("new ret in { ret!(42) }".to_string()),
             system_deploy_error: Some(String::new()),
@@ -1886,6 +1896,8 @@ mod tests {
         assert_eq!(json["blockNumber"], 100);
         assert_eq!(json["cost"], 500);
         assert_eq!(json["isFinalized"], true);
+        assert_eq!(json["finalizationState"], "Finalized");
+        assert_eq!(json["rejectionCount"], 0);
         assert!(json.get("deployer").is_some());
         assert!(json.get("term").is_some());
         assert!(json.get("phloPrice").is_some());
@@ -1903,6 +1915,8 @@ mod tests {
             cost: 500,
             errored: false,
             is_finalized: true,
+            finalization_state: "Pending".to_string(),
+            rejection_count: 2,
             deployer: None,
             term: None,
             system_deploy_error: None,
@@ -1920,6 +1934,8 @@ mod tests {
         assert_eq!(json["blockHash"], "hash1");
         assert_eq!(json["cost"], 500);
         assert_eq!(json["isFinalized"], true);
+        assert_eq!(json["finalizationState"], "Pending");
+        assert_eq!(json["rejectionCount"], 2);
 
         // Optional fields omitted
         assert!(json.get("deployer").is_none());

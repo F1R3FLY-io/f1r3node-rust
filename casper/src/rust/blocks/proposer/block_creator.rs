@@ -855,6 +855,50 @@ pub async fn create(
         new_bonds,
     ) = checkpoint_data;
 
+    let block_bonds = {
+        let parent_hashes: Vec<BlockHash> = parents.iter().map(|p| p.block_hash.clone()).collect();
+        let latest_messages: BTreeMap<Validator, BlockHash> = casper_snapshot
+            .justifications
+            .iter()
+            .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
+            .collect();
+        let floor = crate::rust::finality::floor::finalized_floor(
+            &casper_snapshot.dag,
+            &parent_hashes,
+            &latest_messages,
+            casper_snapshot
+                .on_chain_state
+                .shard_conf
+                .fault_tolerance_threshold,
+        )
+        .await?;
+        let floor_block = block_store.get(&floor.hash)?.ok_or_else(|| {
+            CasperError::RuntimeError(format!(
+                "finalized-floor block {} not in block store for block bonds",
+                pretty_printer::PrettyPrinter::build_string_bytes(&floor.hash)
+            ))
+        })?;
+        let floor_state_hash = &floor_block.body.state.post_state_hash;
+        let floor_bonds = runtime_manager.compute_bonds(floor_state_hash).await?;
+        let active = runtime_manager
+            .get_active_validators(floor_state_hash)
+            .await?;
+        let committee: Vec<Bond> = floor_bonds
+            .into_iter()
+            .filter(|bond| active.contains(&bond.validator))
+            .collect();
+        if committee.len() != new_bonds.len() {
+            tracing::info!(
+                target: "f1r3fly.casper.bonds_validation",
+                floor_number = floor.block_number,
+                committee = committee.len(),
+                post_state_bonds = new_bonds.len(),
+                "block bonds field differs from post-state bonds"
+            );
+        }
+        committee
+    };
+
     let casper_version = casper_snapshot.on_chain_state.shard_conf.casper_version;
 
     // Span[F].trace(ProcessDeploysAndCreateBlockMetricsSource) from Scala
@@ -876,7 +920,7 @@ pub async fn create(
         processed_deploys,
         rejected_deploys,
         processed_system_deploys,
-        new_bonds,
+        block_bonds,
         shard_id,
         casper_version,
     );

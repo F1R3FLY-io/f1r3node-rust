@@ -38,50 +38,18 @@ pub fn cost_optimal_rejection_alg() -> impl Fn(&DeployChainIndex) -> u64 {
     }
 }
 
-/// True iff every datum in `sub` (with multiplicity) is present in `sup` (with
-/// multiplicity). The multiplicity-aware containment check the single-value-cell
-/// keep-one needs: a chain may consume a datum only as many times as it remains
-/// available in the running cell state.
-pub(crate) fn is_sub_multiset(sub: &[Vec<u8>], sup: &[Vec<u8>]) -> bool {
+fn is_sub_multiset(sub: &[Vec<u8>], sup: &[Vec<u8>]) -> bool {
     let mut sup_counts: HashMap<&Vec<u8>, usize> = HashMap::new();
-    for d in sup {
-        *sup_counts.entry(d).or_insert(0) += 1;
+    for item in sup {
+        *sup_counts.entry(item).or_insert(0) += 1;
     }
     let mut sub_counts: HashMap<&Vec<u8>, usize> = HashMap::new();
-    for d in sub {
-        *sub_counts.entry(d).or_insert(0) += 1;
+    for item in sub {
+        *sub_counts.entry(item).or_insert(0) += 1;
     }
     sub_counts
         .iter()
-        .all(|(d, &need)| sup_counts.get(*d).copied().unwrap_or(0) >= need)
-}
-
-/// Deterministic order for the single-value-cell serialization keep-one. Block
-/// number is PRIMARY so a producer precedes its consumers (a consumer of another
-/// chain's produce is in a strictly higher block), keeping the available-multiset
-/// seeding valid without a topological sort. Among same-height siblings — where a
-/// single-value-cell fork actually is — higher TOTAL COST wins (pay-more-wins),
-/// with (block hash, sorted sigs) as the final node-identical tiebreak.
-pub(crate) fn serialize_keep_one_order(
-    a: &DeployChainIndex,
-    b: &DeployChainIndex,
-) -> std::cmp::Ordering {
-    fn cost(c: &DeployChainIndex) -> u64 { c.deploys_with_cost.0.iter().map(|d| d.cost).sum() }
-    fn sig_key(c: &DeployChainIndex) -> Vec<Vec<u8>> {
-        let mut sigs: Vec<Vec<u8>> = c
-            .deploys_with_cost
-            .0
-            .iter()
-            .map(|d| d.deploy_id.to_vec())
-            .collect();
-        sigs.sort();
-        sigs
-    }
-    a.source_block_number
-        .cmp(&b.source_block_number)
-        .then_with(|| cost(b).cmp(&cost(a))) // higher cost first (pay-more-wins)
-        .then_with(|| a.source_block_hash.cmp(&b.source_block_hash))
-        .then_with(|| sig_key(a).cmp(&sig_key(b)))
+        .all(|(item, need)| sup_counts.get(*item).copied().unwrap_or(0) >= *need)
 }
 
 pub fn merge(
@@ -428,7 +396,7 @@ pub fn merge(
     // pointer address to avoid recomputing on every O(B²) conflicts() call.
     struct BranchDerived {
         user_deploy_ids: HashSet<Bytes>,
-        combined_event_log: rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex,
+        combined_all_event_log: rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex,
     }
 
     fn compute_branch_derived(
@@ -442,16 +410,10 @@ pub fn merge(
             .map(|deploy| deploy.deploy_id.clone())
             .collect();
 
-        let combined_event_log = branch
+        let combined_user_event_log = branch
             .0
             .iter()
-            .filter(|idx| {
-                idx.deploys_with_cost
-                    .0
-                    .iter()
-                    .all(|d| !is_system_deploy_id(&d.deploy_id))
-            })
-            .map(|chain| &chain.event_log_index)
+            .map(|chain| &chain.user_event_log_index)
             .try_fold(
                 rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex::empty(),
                 |acc, index| {
@@ -461,9 +423,28 @@ pub fn merge(
                 },
             )?;
 
+        let combined_system_event_log = branch
+            .0
+            .iter()
+            .map(|chain| &chain.system_event_log_index)
+            .try_fold(
+                rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex::empty(),
+                |acc, index| {
+                    rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex::combine(
+                        &acc, index,
+                    )
+                },
+            )?;
+
+        let combined_all_event_log =
+            rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex::combine(
+                &combined_user_event_log,
+                &combined_system_event_log,
+            )?;
+
         Ok(BranchDerived {
             user_deploy_ids,
-            combined_event_log,
+            combined_all_event_log,
         })
     }
 
@@ -667,7 +648,7 @@ pub fn merge(
                 .iter()
                 .map(|b| {
                     let addr = std::ptr::addr_of!(**b) as usize;
-                    &cache.get(&addr).unwrap().combined_event_log
+                    &cache.get(&addr).unwrap().combined_all_event_log
                 })
                 .collect();
 
@@ -817,6 +798,86 @@ pub fn merge(
     )
     .map_err(|e| CasperError::HistoryError(e))?;
 
+    let stale_rejected_count =
+        (|| -> Result<usize, rspace_plus_plus::rspace::errors::HistoryError> {
+            let mut kept_branches = Vec::new();
+            let mut rejected_count = 0;
+            for branch in std::mem::take(&mut resolved.to_merge) {
+                let mut branch_items: Vec<_> = branch.0.iter().collect();
+                branch_items.sort();
+
+                let mut branch_changes =
+                    rspace_plus_plus::rspace::merger::state_change::StateChange::empty();
+                let mut branch_mergeable = NumberChannelsDiff::new();
+                for chain in &branch_items {
+                    branch_changes = branch_changes.combine(state_changes_fn(chain)?);
+                    for (key, value) in mergeable_channels_fn(chain).iter() {
+                        let (incoming_diff, incoming_mt) = *value;
+                        match branch_mergeable.get_mut(key) {
+                            Some(existing) => {
+                                if existing.1 != incoming_mt {
+                                    return Err(
+                                        rspace_plus_plus::rspace::errors::HistoryError::MergeError(
+                                            format!(
+                                                "MergeType mismatch on channel {:?}: {:?} vs {:?}",
+                                                key, existing.1, incoming_mt
+                                            ),
+                                        ),
+                                    );
+                                }
+                                existing.0 = merging_logic::combine_mergeable_value(
+                                    existing.0,
+                                    incoming_diff,
+                                    incoming_mt,
+                                );
+                            }
+                            None => {
+                                branch_mergeable.insert(key.clone(), (incoming_diff, incoming_mt));
+                            }
+                        }
+                    }
+                }
+
+                let mut applicable = true;
+                for entry in branch_changes.datums_changes.iter() {
+                    let channel = entry.key();
+                    if branch_mergeable.contains_key(channel) {
+                        continue;
+                    }
+                    let removed = &entry.value().removed;
+                    if removed.is_empty() {
+                        continue;
+                    }
+                    let base = history_reader.get_data_proj_binary(channel)?;
+                    if !is_sub_multiset(removed, &base) {
+                        applicable = false;
+                        break;
+                    }
+                }
+
+                if applicable {
+                    kept_branches.push(branch);
+                } else {
+                    rejected_count += branch.0.len();
+                    for chain in branch.0 {
+                        resolved.rejected.0.insert(chain);
+                    }
+                }
+            }
+            resolved.to_merge = kept_branches;
+            Ok(rejected_count)
+        })()
+        .map_err(CasperError::HistoryError)?;
+
+    if stale_rejected_count > 0 {
+        tracing::debug!(
+            target: "f1r3fly.merge.step",
+            step = "merge.reject_unavailable_floor_consumes",
+            rejected_chains = stale_rejected_count,
+            remaining_branches = resolved.to_merge.len()
+        );
+    }
+
     if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
         let log_chain = |tag: &str, c: &DeployChainIndex| {
             let sigs: Vec<String> = c
@@ -853,131 +914,6 @@ pub fn merge(
             log_chain("REJECT", c);
         }
     }
-
-    // Single-value-cell serialization (keep-one). After conflict resolution the
-    // surviving chains may still contain CONCURRENT writes to one non-foldable
-    // single-value cell — a fork where two chains consumed the same base datum.
-    // Conflict detection misses this when both writers share a dependency on the
-    // producer (they land in one branch, and the combined event log hides the
-    // double consume as internal COMMs). A single-value cell cannot hold both
-    // writes; keep one linear write path and reject the rest to recovery, where
-    // they re-execute against the updated base. A stale rebased consume is the
-    // degenerate fork whose consumed datum was never available. Foldable
-    // (mergeable number) channels compose via the dispatcher fold and are exempt.
-    //
-    // This replaces the prior block-descendant "rejection expansion", which
-    // dropped channel-disjoint descendants (keep-one's own survivor) on block
-    // descent rather than data dependency.
-    let __keep_one_start = std::time::Instant::now();
-    {
-        let mut foldable: HashSet<Blake2b256Hash> = HashSet::new();
-        for branch in resolved.to_merge.iter() {
-            for chain in branch.0.iter() {
-                for (ch, _) in chain.event_log_index.number_channels_data.iter() {
-                    foldable.insert(ch.clone());
-                }
-            }
-        }
-
-        #[allow(clippy::mutable_key_type)]
-        let rejected: HashSet<DeployChainIndex> = {
-            let mut ordered: Vec<&DeployChainIndex> = resolved
-                .to_merge
-                .iter()
-                .flat_map(|branch| branch.0.iter())
-                .collect();
-            ordered.sort_by(|a, b| serialize_keep_one_order(a, b));
-
-            // Running available-datum multiset per non-foldable channel, seeded
-            // lazily from the merge (floor) base.
-            let mut available: HashMap<Blake2b256Hash, Vec<Vec<u8>>> = HashMap::new();
-            #[allow(clippy::mutable_key_type)]
-            let mut rejected: HashSet<DeployChainIndex> = HashSet::new();
-
-            for chain in ordered.iter() {
-                let chain: &DeployChainIndex = chain;
-                // Serializable iff every non-foldable channel it consumes from
-                // still has those datums available in the running cell state.
-                let mut serializable = true;
-                for e in chain.state_changes.datums_changes.iter() {
-                    let ch = e.key();
-                    if foldable.contains(ch) {
-                        continue;
-                    }
-                    let removed = &e.value().removed;
-                    if removed.is_empty() {
-                        continue;
-                    }
-                    if !available.contains_key(ch) {
-                        let base = history_reader
-                            .get_data_proj_binary(ch)
-                            .map_err(CasperError::HistoryError)?;
-                        available.insert(ch.clone(), base);
-                    }
-                    if !is_sub_multiset(removed, available.get(ch).expect("seeded above")) {
-                        serializable = false;
-                        break;
-                    }
-                }
-                if !serializable {
-                    rejected.insert(DeployChainIndex::clone(chain));
-                    continue;
-                }
-                // Apply this chain's writes so later chains see them:
-                // available = (available -- removed) ++ added, per touched channel.
-                for e in chain.state_changes.datums_changes.iter() {
-                    let ch = e.key();
-                    if foldable.contains(ch) {
-                        continue;
-                    }
-                    if !available.contains_key(ch) {
-                        let base = history_reader
-                            .get_data_proj_binary(ch)
-                            .map_err(CasperError::HistoryError)?;
-                        available.insert(ch.clone(), base);
-                    }
-                    let avail = available.get_mut(ch).expect("seeded above");
-                    let mut next =
-                        rspace_plus_plus::rspace::merger::state_change::StateChange::multiset_diff(
-                            avail,
-                            &e.value().removed,
-                        );
-                    next.extend(e.value().added.iter().cloned());
-                    *avail = next;
-                }
-            }
-            rejected
-        };
-
-        if !rejected.is_empty() {
-            let pre = resolved.to_merge.len();
-            let mut kept_branches: Vec<HashableSet<DeployChainIndex>> = Vec::new();
-            for branch in std::mem::take(&mut resolved.to_merge) {
-                #[allow(clippy::mutable_key_type)]
-                let mut kept: HashSet<DeployChainIndex> = HashSet::new();
-                for chain in branch.0 {
-                    if rejected.contains(&chain) {
-                        resolved.rejected.0.insert(chain);
-                    } else {
-                        kept.insert(chain);
-                    }
-                }
-                if !kept.is_empty() {
-                    kept_branches.push(HashableSet(kept));
-                }
-            }
-            resolved.to_merge = kept_branches;
-            tracing::debug!(target: "f1r3fly.merge.step", step = "merge.serialize_keep_one",
-                rejected_chains = rejected.len(),
-                branches_before = pre,
-                branches_after = resolved.to_merge.len());
-        }
-    }
-    metrics::histogram!(
-        crate::rust::metrics_constants::DAG_MERGE_REJECTION_EXPANSION_TIME_METRIC,
-        "source" => crate::rust::metrics_constants::MERGING_METRICS_SOURCE
-    )
-    .record(__keep_one_start.elapsed().as_secs_f64());
 
     if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
         let log_final = |verdict: &str, c: &DeployChainIndex| {

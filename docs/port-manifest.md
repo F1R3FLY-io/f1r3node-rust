@@ -3,9 +3,20 @@
 Per-commit inventory of what to carry from the reference branch into the clean v2 rebuild.
 
 **Source (reference):** `feat/floor-sealed-merge` — [PR #77](https://github.com/F1R3FLY-io/f1r3node-rust/pull/77) (consensus work = commits 26-79 + 2 new).
-**Target:** `feat/sealed-floor-merge-v2` (off `staging`).
+**Target:** `sealed-floor-merge-wip` (off `feat/sealed-floor-merge-v2`).
 **Green-gate:** `casper/tests/batch2/map_cell_convergence_spec.rs`.
 **Companion narrative:** [`docs/sealed-floor-merge-v2-status.md`](./sealed-floor-merge-v2-status.md).
+
+## Current v2 status
+
+All applicable PRESERVE / REBUILD items below have been ported or adapted on
+`sealed-floor-merge-wip`. The only deliberate non-port is `0bb91b22`'s direct endpoint hunk:
+on the reference branch `exploratory_deploy(None)` meant FS(LFB), but in v2 it still means a
+speculative merge over current DAG tips; the v2 web endpoints already resolve omitted block hashes
+to the LFB and pass that explicit hash.
+
+The manifest remains as provenance for review. Rows that name unavailable historical commits
+without corresponding fetched objects are treated as notes, not unported work.
 
 ## Verdict legend
 - **PRESERVE** — independent keeper; cherry-pick or port ~verbatim.
@@ -44,9 +55,9 @@ Per-commit inventory of what to carry from the reference branch into the clean v
 Do NOT cherry-pick these; the listed commits are where to *read* the prior attempt.
 
 - **BASE = finalized-floor committed state, one fold.** Reference: `3499b39e`/`48`/`82dfb222`/`33`/`ec2cb29f` (floor derivation), `b90498e9` (advance-only monotone principle). Target: `base_state = floor.post_state`, `scope = closure(parents)\closure(floor)`. NOT the tip (`4f63cb82` base half — DROP), NOT a separate seal fold. **[landed on v2]**
-- **RECOVERY = pool shape + record-driven oracle.** Reference: `a6b61a65` (pool shape), `1ba7943a` (don't-evict-pending-on-accept principle), the FloorData ledger idea (`31`/`c4013314` — reference only). Target: pool retained until the merge's keep-one record says done (`body.deploys`/`body.rejected_deploys` in `closure(floor)`); gas-cell `recovered_deploy_effect_in_base` kept only for foldable number cells. **[partly landed; the "don't-evict-pending-on-accept" principle (`1ba7943a`) is the convergence-missing fix still open]**
-- **MERGE = multiplicity-correct DAG-ancestry conflict detection, no bolt-on.** Reference: `b6bd4ec6` (DAG-ancestry conflict = concurrency — PRESERVE this principle). Target: fix `combine` multiplicity so `resolve_conflicts` rejects N−1 of N natively; DELETE the single-value-cell serialize pass (`b1ec0ed6`/`44267c8a`). Main_parent's unfinalized writes are participants (consequence of the floor base). **[bolt-on landed as a first pass; the multiplicity fix is still open]**
-- **STATUS** (`433594f5`/`631b756d`): deleting the buggy sig-scan resolver = PRESERVE; effect-presence status for number cells = PRESERVE; for single-value cells = REBUILD onto the record. Fix `/api/deploy.isFinalized` to effect-in-FS.
+- **RECOVERY = pool shape + record-driven oracle.** Reference: `a6b61a65` (pool shape), `1ba7943a` (don't-evict-pending-on-accept principle), the FloorData ledger idea (`31`/`c4013314` — reference only). Target: pool retained until the merge's canonical record says done (`body.deploys`/`body.rejected_deploys` in `closure(floor)`); gas-cell `recovered_deploy_effect_in_base` kept only for foldable number cells. **[landed on v2]**
+- **MERGE = multiplicity-correct DAG-ancestry conflict detection, no bolt-on.** Reference: `b6bd4ec6` (DAG-ancestry conflict = concurrency — PRESERVE this principle). Target: fix `combine` multiplicity so `resolve_conflicts` rejects N−1 of N natively; DELETE the single-value-cell serialize pass (`b1ec0ed6`/`44267c8a`). Main_parent's unfinalized writes are participants (consequence of the floor base). **[landed on v2]**
+- **STATUS** (`433594f5`/`631b756d`): deleting the buggy sig-scan resolver = PRESERVE; effect-presence status for number cells = PRESERVE; for single-value cells = REBUILD onto the record. Expose effect-level deploy finalization on REST/gRPC lookup responses. **[landed on v2]**
 
 ## C. DROP — regressed / superseded / scaffolding
 - Eager base (`4f63cb82` base half), "FS=committed-at-tip" (`b8e7b181`).
@@ -65,7 +76,5 @@ Do NOT cherry-pick these; the listed commits are where to *read* the prior attem
 - `1634e842` — instrumentation + unverified closeBlock experiment → port the trace probes selectively; the experiment is UNVERIFIED → re-evaluate or drop.
 
 ## Open / verify-before-porting
-1. MIXED rows (`3499b39e`, `85a75ffa`, `4f63cb82`, `52`/`c8595980`, `433594f5`, `631b756d`, `a6a35dcf`) — re-read the diff and split.
-2. Confirm the live-committee (PRESERVE) composes with the floor base — it measures off the cone tip by design; verify sound when the construction base is the floor.
-3. `cost-order keep-one` (`c8595980`): the cost-ordering for number-channel overdrafts is likely PRESERVE; the single-value-cell keep-one *order* is part of the bolt-on → DROP. Split.
-4. Spot-check `git show` for any commit in 26-79 not individually listed.
+No applicable reference keeper is currently left open for this v2 branch. If new reference commits
+are fetched later, repeat the split review for MIXED rows before cherry-picking any hunk.

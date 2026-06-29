@@ -1,6 +1,6 @@
 # Sealed-Floor Merge v2 — Status
 
-Branch: `feat/sealed-floor-merge-v2` (off `staging`). Companion to the reference-branch PR
+Branch: `sealed-floor-merge-wip` (off `feat/sealed-floor-merge-v2`). Companion to the reference-branch PR
 [F1R3FLY-io/f1r3node-rust#77](https://github.com/F1R3FLY-io/f1r3node-rust/pull/77)
 (`feat/floor-sealed-merge`), which this branch rebuilds cleanly per the sealed-floor design.
 
@@ -8,13 +8,14 @@ Branch: `feat/sealed-floor-merge-v2` (off `staging`). Companion to the reference
 
 This branch rebases the multi-parent merge on a **node-deterministic finalized floor** with
 **record-driven recovery**, replacing the reference branch's main_parent-tip base + gas-cell
-recovery (which let finalized state regress). BASE + RECOVERY + a first single-value-cell keep-one
-are landed and the unit/integration suite is green.
+recovery (which let finalized state regress). BASE + RECOVERY + native single-value-cell
+conflict handling are landed, and the green-gate convergence proxy is green through the
+under-load three-writer scenario.
 
 The green-gate proxy (`casper/tests/batch2/map_cell_convergence_spec.rs`) drives concurrent
 single-value-cell writes (the same shape as the PoS bonds map and the
-`test_user_contract_concurrency` / `test_validator_lifecycle` integration tests). Its two
-remaining failure modes under load are now **root-caused to specific functions** — see "Remaining".
+`test_user_contract_concurrency` / `test_validator_lifecycle` integration tests). Its previously
+known under-load failure modes are fixed.
 
 ## What we accomplished
 
@@ -32,15 +33,34 @@ remaining failure modes under load are now **root-caused to specific functions**
   double-apply closed. Walks all parents (not just the main-parent chain) so a deploy already won
   on a co-parent is caught.
 
-**Merge (§3c, first pass)**
-- Single-value-cell keep-one (`dag_merger.rs`): a chain-level available-multiset pass that rejects
-  concurrent writers of one non-foldable cell to recovery (the "bolt-on"), replacing the
-  over-rejecting rejection-expansion.
+**Merge (§3c)**
+- `ChannelChange::combine` nets dependent-chain intermediates instead of orphaning added/removed
+  datums onto the floor base.
+- `EventLogIndex` tracks user/system event logs separately while conflict detection combines both,
+  so user deploys and system deploys participate in the same deterministic conflict check.
+- Event-indexed conflict detection rejects concurrent consume+produce writers of one non-foldable
+  cell natively, while allowing identical emits and mergeable channels.
+- A floor-availability guard rejects stale non-mergeable removals that are no longer present on the
+  finalized floor base.
+
+**Recovery (§3b completion)**
+- Pending deploys are retained through block accept and removed only once finalized, preventing
+  accepted-but-orphaned deploys from being lost before record-driven recovery can re-propose them.
 
 **Determinism / robustness**
 - Deterministic slash-deploy replay (block-derived invalid-blocks map).
 - On-demand mergeable-entry recompute (`ensure_scope_mergeable_present`) to heal a cross-node
   merge-validity fork for LFS-imported blocks.
+- LMD-GHOST main-parent selection, bonds-equality parent-filter removal, total-order rejection
+  tiebreaking, fresh-joiner latest-message placeholders, poison-tolerant shared-LMDB test lock,
+  and LFS requester retry/deadline hardening are ported.
+- The FT threshold is sourced from genesis PoS state and the node config is overridden from the
+  on-chain value on startup.
+- Active-committee block bonds are read from the finalized-floor state and validation checks the
+  same floor-derived committee.
+- Multi-value `IntegerAdd` channels now fail loudly; `BitmaskOr` remains foldable.
+- REST/gRPC deploy lookup responses expose effect-level deploy finalization state and rejection
+  count in addition to block-level `isFinalized`.
 
 **Test infrastructure**
 - Green-gate proxy with production-like heartbeat (`TestNode.allow_empty_blocks`), a **cross-node
@@ -50,40 +70,30 @@ remaining failure modes under load are now **root-caused to specific functions**
 
 ## Remaining (known)
 
-### Two pinpointed fixes for the proxy's under-load failure modes
-Both root-caused by code reading; independent of each other and of the keep-one bolt-on.
+No sealed-floor merge correctness items are currently open on this branch.
 
-1. **Multi-datum single-value cell** (cross-node "node-identity" divergence) —
-   `ChannelChange::combine` (`rspace++/src/rspace/merger/channel_change.rs`) **unions** added/removed
-   instead of **netting** them, so a dependent-chain intermediate datum (added by one change,
-   removed by another) orphans onto the floor base → two datums on a single-value cell, which a peek
-   read then samples non-deterministically across nodes. **Fix:** net the intermediate —
-   `combined.added = (A.added ∪ B.added) \ (A.removed ∪ B.removed)` (symmetric for removed).
-   Latent in the reference branch too: its main_parent-**tip** base bakes the dependent writers into
-   the base, so they never reach `combine`; v2's **floor** base puts them in scope as chains.
+### Deliberate non-port
+- `0bb91b22` changed reference-branch web endpoints to call `exploratory_deploy(None)` because that
+  branch had redefined `None` as FS(LFB). In v2, `None` still means a speculative merge over current
+  DAG tips, while `/api/validators`, `/api/validator/{pk}`, and `/api/epoch/rewards` already resolve
+  `None` to the LFB and pass an explicit block hash. Directly porting `0bb91b22` here would make
+  those endpoints less finalized, not more. Revisit only if v2 later changes `exploratory_deploy(None)`
+  to mean finalized-floor state.
 
-2. **Convergence-missing** (a write silently lost) — deploys are evicted from the pending pool on
-   block-**accept** (`multi_parent_casper_impl.rs`), but recovery only re-proposes merge-**rejected**
-   deploys. An accepted-but-orphaned, never-rejected deploy is therefore in neither the pool nor the
-   recovery buffer → lost. **Fix:** evict on **finalize** (not accept), or extend the recovery net to
-   accepted-but-orphaned deploys.
+## Validation
 
-### Larger design item
-- **§3c proper** — fix `EventLogIndex::combine` multiplicity so `resolve_conflicts` natively rejects
-  N−1 of N concurrent single-cell writers, then **delete the keep-one bolt-on**. This is the
-  conflict-detection side and does **not** subsume fix (1) above (dependent chains are not conflicts).
-
-### Still to port from the reference branch (PR #77)
-The reference carries independent keepers not yet ported. The full per-commit
-PRESERVE / REBUILD / DROP / IN-STAGING / MIXED inventory is in
-[`docs/port-manifest.md`](./port-manifest.md). Highlights:
-
-- LMD-GHOST main-parent selection (`22299115`).
-- Genesis-sourced FT threshold (`97767045`) — required for a node-identical floor.
-- **LFS state-sync hardening (`ad0081d7`)** — networking resilience (join-all, deadline budget,
-  byzantine reason).
-- Full-bonds finality denominator (`f0decf13`, a safety fix); multi-value IntegerAdd reject
-  (`16b2e980`); DAG-ancestry finality agreement (`e349dc4e`); fresh-joiner latest-message fix
-  (`7ed761ab`); active/live-committee weighting (`e7efb39d`, `4f63cb82` committee half);
-  total-order rejection tiebreak (`9d1f5d1d`); bonds-equality parent-filter removal
-  (`3499b39e`, part).
+- `cargo fmt --all --check`
+- `PROTOC=... cargo test -p rspace_plus_plus -- --nocapture`
+- `PROTOC=... cargo test -p casper --no-run`
+- `PROTOC=... cargo test -p node --no-run`
+- `PROTOC=... cargo test -p casper fold_bitmask_or -- --nocapture`
+- `PROTOC=... cargo test -p casper optimal_rejection -- --nocapture`
+- `PROTOC=... cargo test -p casper tuple_space_gives_up_and_surfaces_error_when_peer_silent -- --nocapture`
+- `PROTOC=... cargo test -p casper lfs_horizon_requester -- --nocapture`
+- `PROTOC=... cargo test -p casper block_approver_protocol -- --nocapture`
+- `PROTOC=... cargo test -p casper deploy_finalization_status -- --nocapture`
+- `PROTOC=... cargo test -p node heartbeat -- --nocapture`
+- `PROTOC=... cargo test -p node deploy_response -- --nocapture`
+- `PROTOC=... cargo test -p node find_deploy -- --nocapture`
+- `PROTOC=... cargo test -p casper two_writers_converge -- --ignored --nocapture`
+- `PROTOC=... cargo test -p casper three_writers_converge -- --ignored --nocapture`

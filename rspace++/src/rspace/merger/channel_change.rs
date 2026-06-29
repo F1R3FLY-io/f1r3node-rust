@@ -14,29 +14,36 @@ impl<A> ChannelChange<A> {
         }
     }
 
-    /// Multiset union: self ++ (other diff self) = max(count_self, count_other)
-    /// per element.
-    ///
-    /// When two sibling blocks (same parent/LCA) execute identical system
-    /// deploys, plain concatenation would double entries. Multiset union
-    /// prevents this by only appending elements from `other` that are not
-    /// already present in `self` (accounting for multiplicities).
     pub fn combine(self, other: Self) -> Self
     where A: PartialEq {
-        let added_only_in_other = Self::vec_diff(other.added, &self.added);
-        let removed_only_in_other = Self::vec_diff(other.removed, &self.removed);
-        Self {
-            added: self.added.into_iter().chain(added_only_in_other).collect(),
-            removed: self
-                .removed
-                .into_iter()
-                .chain(removed_only_in_other)
-                .collect(),
+        let mut added = Self::vec_union(self.added, other.added);
+        let mut removed = Self::vec_union(self.removed, other.removed);
+        Self::cancel_common(&mut added, &mut removed);
+        Self { added, removed }
+    }
+
+    fn vec_union(left: Vec<A>, right: Vec<A>) -> Vec<A>
+    where A: PartialEq {
+        let mut result = left;
+        for item in Self::vec_diff(right, &result) {
+            result.push(item);
+        }
+        result
+    }
+
+    fn cancel_common(added: &mut Vec<A>, removed: &mut Vec<A>)
+    where A: PartialEq {
+        let mut idx = 0;
+        while idx < added.len() {
+            if let Some(pos) = removed.iter().position(|item| item == &added[idx]) {
+                added.remove(idx);
+                removed.remove(pos);
+            } else {
+                idx += 1;
+            }
         }
     }
 
-    /// Multiset difference: for each element in `to_remove`, removes at most
-    /// one matching element from `from`.
     fn vec_diff(mut from: Vec<A>, to_remove: &[A]) -> Vec<A>
     where A: PartialEq {
         for item in to_remove {
@@ -55,7 +62,6 @@ mod tests {
 
     #[test]
     fn combine_should_not_duplicate_when_combining_identical_changes_from_sibling_blocks() {
-        // Two sibling blocks both transition channel state: remove A, add B
         let datum_a: Vec<u8> = vec![0xaa; 32];
         let datum_b: Vec<u8> = vec![0xbb; 32];
 
@@ -65,12 +71,33 @@ mod tests {
         };
         let combined = change.clone().combine(change);
 
-        // Applying mkTrieAction formula: (init diff removed) ++ added
-        // With init = [A], correct result is [B] (not [B, B])
         let init = vec![datum_a];
         let mut merged_result = StateChange::multiset_diff(&init, &combined.removed);
         merged_result.extend(combined.added);
 
         assert_eq!(merged_result, vec![datum_b]);
+    }
+
+    #[test]
+    fn combine_should_net_dependent_chain_intermediate_data() {
+        let datum_a: Vec<u8> = vec![0xaa; 32];
+        let datum_b: Vec<u8> = vec![0xbb; 32];
+        let datum_c: Vec<u8> = vec![0xcc; 32];
+
+        let first = ChannelChange {
+            added: vec![datum_b.clone()],
+            removed: vec![datum_a.clone()],
+        };
+        let second = ChannelChange {
+            added: vec![datum_c.clone()],
+            removed: vec![datum_b],
+        };
+        let combined = first.combine(second);
+
+        let init = vec![datum_a];
+        let mut merged_result = StateChange::multiset_diff(&init, &combined.removed);
+        merged_result.extend(combined.added);
+
+        assert_eq!(merged_result, vec![datum_c]);
     }
 }

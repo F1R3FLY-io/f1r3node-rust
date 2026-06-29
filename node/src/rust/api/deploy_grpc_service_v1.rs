@@ -559,13 +559,34 @@ impl DeployService for DeployGrpcServiceV1Impl {
         loop {
             match BlockAPI::find_deploy(&self.engine_cell, &request.deploy_id.to_vec()).await {
                 Ok(block_info) => {
+                    let (finalization_state, rejection_count) =
+                        match BlockAPI::deploy_finalization_status(
+                            &self.engine_cell,
+                            &request.deploy_id.to_vec(),
+                        )
+                        .await
+                        {
+                            Ok(status) => (
+                                deploy_state_to_proto(status.state) as i32,
+                                status.rejection_count,
+                            ),
+                            Err(err) => {
+                                tracing::warn!(
+                                    "Could not compute deploy finalization status for findDeploy: {}",
+                                    err
+                                );
+                                (0, 0)
+                            }
+                        };
                     return Ok(tonic::Response::new(FindDeployResponse {
                         message: Some(
                             models::casper::v1::find_deploy_response::Message::BlockInfo(
                                 block_info,
                             ),
                         ),
-                    }))
+                        finalization_state,
+                        rejection_count,
+                    }));
                 }
                 Err(e) => {
                     let not_found = e
@@ -579,6 +600,8 @@ impl DeployService for DeployGrpcServiceV1Impl {
                                     e.into_service_error(),
                                 ),
                             ),
+                            finalization_state: 0,
+                            rejection_count: 0,
                         }));
                     }
 

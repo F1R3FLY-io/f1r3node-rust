@@ -663,22 +663,18 @@ fn get_optimal_rejection<R: Eq + std::hash::Hash + Clone + Ord>(
             return a_size.cmp(&b_size);
         }
 
-        // Third criterion: For tie-breaking, compare the first element of the first branch
-        // Use sorted branches and min element for deterministic tie-breaking
         let mut a_branches: Vec<_> = a.0.iter().collect();
         let mut b_branches: Vec<_> = b.0.iter().collect();
         a_branches.sort_by(|x, y| compare_branches(x, y));
         b_branches.sort_by(|x, y| compare_branches(x, y));
 
-        let a_first = a_branches.first().and_then(|branch| branch.0.iter().min());
-        let b_first = b_branches.first().and_then(|branch| branch.0.iter().min());
-
-        match (a_first, b_first) {
-            (Some(a_item), Some(b_item)) => a_item.cmp(b_item),
-            (Some(_), None) => std::cmp::Ordering::Greater,
-            (None, Some(_)) => std::cmp::Ordering::Less,
-            (None, None) => std::cmp::Ordering::Equal,
+        for (a_branch, b_branch) in a_branches.iter().zip(b_branches.iter()) {
+            let ord = compare_branches(a_branch, b_branch);
+            if ord != std::cmp::Ordering::Equal {
+                return ord;
+            }
         }
+        a_branches.len().cmp(&b_branches.len())
     });
 
     if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
@@ -962,6 +958,21 @@ mod tests {
         });
 
         assert_eq!(chosen, option_a);
+    }
+
+    #[test]
+    fn optimal_rejection_is_total_order_when_options_share_first_branch() {
+        let shared = branch(&[1, 2]);
+        let option_a = rejection_option(&[shared.clone(), branch(&[3, 4])]);
+        let option_b = rejection_option(&[shared, branch(&[3, 5])]);
+
+        for options in [
+            HashableSet(HashSet::from([option_a.clone(), option_b.clone()])),
+            HashableSet(HashSet::from([option_b.clone(), option_a.clone()])),
+        ] {
+            let chosen = get_optimal_rejection(options, |_branch| 0u64);
+            assert_eq!(chosen, option_a);
+        }
     }
 
     #[test]

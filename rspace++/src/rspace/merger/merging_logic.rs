@@ -784,6 +784,13 @@ where
     let mut unconsumed_consumes_by_channel: HashMap<&Blake2b256Hash, HashSet<usize>> =
         HashMap::new();
     let mut global_branches: HashSet<usize> = HashSet::new();
+    let mut consume_then_produce_by_channel: HashMap<&Blake2b256Hash, HashSet<usize>> =
+        HashMap::new();
+    let mut produces_emitted_by_channel_branch: HashMap<
+        (&Blake2b256Hash, usize),
+        HashSet<&Blake2b256Hash>,
+    > = HashMap::new();
+    let mut mergeable_chs_by_channel: HashMap<&Blake2b256Hash, HashSet<usize>> = HashMap::new();
 
     for (idx, e) in event_logs.iter().enumerate() {
         // #1 race candidates: events destroyed in COMM (consumed produces /
@@ -857,6 +864,42 @@ where
         // with every other branch unconditionally.
         if !e.produces_touching_base_joins.0.is_empty() {
             global_branches.insert(idx);
+        }
+
+        let consumed_channels: HashSet<&Blake2b256Hash> = e
+            .produces_consumed
+            .0
+            .iter()
+            .map(|p| &p.channel_hash)
+            .collect();
+        let produced_channels: HashSet<&Blake2b256Hash> = e
+            .produces_linear
+            .0
+            .iter()
+            .chain(e.produces_persistent.0.iter())
+            .map(|p| &p.channel_hash)
+            .collect();
+        for ch in consumed_channels.intersection(&produced_channels) {
+            consume_then_produce_by_channel
+                .entry(*ch)
+                .or_default()
+                .insert(idx);
+            let emitted_set = produces_emitted_by_channel_branch
+                .entry((*ch, idx))
+                .or_default();
+            for p in e
+                .produces_linear
+                .0
+                .iter()
+                .chain(e.produces_persistent.0.iter())
+            {
+                if &p.channel_hash == *ch {
+                    emitted_set.insert(&p.hash);
+                }
+            }
+        }
+        for ch in e.number_channels_data.keys() {
+            mergeable_chs_by_channel.entry(ch).or_default().insert(idx);
         }
     }
 
@@ -935,6 +978,36 @@ where
         }
     }
 
+    for (channel, branches_set) in &consume_then_produce_by_channel {
+        if branches_set.len() < 2 {
+            continue;
+        }
+        let mergeable_branches = mergeable_chs_by_channel.get(channel);
+        let pos: Vec<usize> = branches_set.iter().copied().collect();
+        for i in 0..pos.len() {
+            for j in (i + 1)..pos.len() {
+                let (a, b) = (pos[i], pos[j]);
+                let both_mergeable = mergeable_branches
+                    .map(|m| m.contains(&a) && m.contains(&b))
+                    .unwrap_or(false);
+                if both_mergeable {
+                    continue;
+                }
+                let empty: HashSet<&Blake2b256Hash> = HashSet::new();
+                let emitted_a = produces_emitted_by_channel_branch
+                    .get(&(*channel, a))
+                    .unwrap_or(&empty);
+                let emitted_b = produces_emitted_by_channel_branch
+                    .get(&(*channel, b))
+                    .unwrap_or(&empty);
+                if emitted_a != emitted_b {
+                    let (lo, hi) = if a < b { (a, b) } else { (b, a) };
+                    pairs.push((lo, hi));
+                }
+            }
+        }
+    }
+
     if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
         let comm_channels: Vec<String> = unconsumed_produces_by_channel
             .keys()
@@ -947,7 +1020,7 @@ where
             conflict_pairs = ?pairs,
             global_branches = ?global_branches,
             potential_comm_channels = ?comm_channels,
-            "conflicting (lo,hi) index pairs from checks #1/#2/#3"
+            "conflicting (lo,hi) index pairs from event-indexed checks"
         );
     }
 
@@ -1939,6 +2012,71 @@ mod tests {
 
         // Not affected since it's consumed but also created in the same log
         assert!(produces_affected(&e).0.is_empty());
+    }
+
+    fn roundtrip_index(
+        channel: Blake2b256Hash,
+        consumed_seed: u8,
+        emitted_seed: u8,
+    ) -> EventLogIndex {
+        let mut e = EventLogIndex::empty();
+        e.produces_consumed.0.insert(Produce {
+            channel_hash: channel.clone(),
+            persistent: false,
+            hash: Blake2b256Hash::from_bytes(vec![consumed_seed]),
+            is_deterministic: true,
+            output_value: vec![],
+            failed: false,
+        });
+        e.produces_linear.0.insert(Produce {
+            channel_hash: channel,
+            persistent: false,
+            hash: Blake2b256Hash::from_bytes(vec![emitted_seed]),
+            is_deterministic: true,
+            output_value: vec![],
+            failed: false,
+        });
+        e
+    }
+
+    #[test]
+    fn event_indexed_conflict_map_detects_roundtrip_channel_writers() {
+        let channel = Blake2b256Hash::from_bytes(vec![42]);
+        let a = roundtrip_index(channel.clone(), 1, 10);
+        let b = roundtrip_index(channel, 2, 11);
+        let branches = vec![0, 1];
+        let map = compute_conflict_map_event_indexed(&branches, &[&a, &b]);
+
+        assert!(map.get(&0).unwrap().0.contains(&1));
+        assert!(map.get(&1).unwrap().0.contains(&0));
+    }
+
+    #[test]
+    fn event_indexed_conflict_map_allows_identical_roundtrip_emits() {
+        let channel = Blake2b256Hash::from_bytes(vec![43]);
+        let a = roundtrip_index(channel.clone(), 1, 10);
+        let b = roundtrip_index(channel, 2, 10);
+        let branches = vec![0, 1];
+        let map = compute_conflict_map_event_indexed(&branches, &[&a, &b]);
+
+        assert!(map.get(&0).unwrap().0.is_empty());
+        assert!(map.get(&1).unwrap().0.is_empty());
+    }
+
+    #[test]
+    fn event_indexed_conflict_map_allows_mergeable_roundtrip_channel_writers() {
+        let channel = Blake2b256Hash::from_bytes(vec![44]);
+        let mut a = roundtrip_index(channel.clone(), 1, 10);
+        let mut b = roundtrip_index(channel.clone(), 2, 11);
+        a.number_channels_data
+            .insert(channel.clone(), (0, MergeType::IntegerAdd));
+        b.number_channels_data
+            .insert(channel, (0, MergeType::IntegerAdd));
+        let branches = vec![0, 1];
+        let map = compute_conflict_map_event_indexed(&branches, &[&a, &b]);
+
+        assert!(map.get(&0).unwrap().0.is_empty());
+        assert!(map.get(&1).unwrap().0.is_empty());
     }
 
     #[test]

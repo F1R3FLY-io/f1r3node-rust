@@ -34,9 +34,11 @@ struct TestContext {
 }
 
 impl TestContext {
-    async fn new() -> Self {
+    async fn new(n_validators: usize) -> Self {
+        let genesis_parameters =
+            GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(n_validators));
         let genesis = GenesisBuilder::new()
-            .build_genesis_with_parameters(None)
+            .build_genesis_with_parameters(Some(genesis_parameters))
             .await
             .unwrap();
         Self { genesis }
@@ -176,7 +178,7 @@ async fn finalized_keys_all_nodes(
 /// then `drain_rounds` quiet rounds, and assert convergence + FS monotonicity.
 async fn run_convergence(n_validators: usize, write_rounds: usize, drain_rounds: usize) {
     assert!((2..=3).contains(&n_validators));
-    let ctx = TestContext::new().await;
+    let ctx = TestContext::new(n_validators).await;
     let shard_id = ctx.genesis.genesis_block.shard_id.clone();
 
     let mut nodes =

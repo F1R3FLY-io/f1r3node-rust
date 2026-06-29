@@ -13,11 +13,16 @@ pub struct ProofOfStake {
     pub epoch_length: i32,
     pub quarantine_length: i32,
     pub number_of_active_validators: u32,
+    pub fault_tolerance_threshold_ppm: i64,
     pub pos_multi_sig_public_keys: Vec<String>,
     pub pos_multi_sig_quorum: u32,
 }
 
 impl ProofOfStake {
+    pub fn fault_tolerance_threshold_to_ppm(threshold: f32) -> i64 {
+        ((threshold as f64) * 1_000_000.0).round() as i64
+    }
+
     // TODO: Determine how the "initial bonds" map can simulate transferring stake into the PoS contract
     //       when this must be done during genesis, under the authority of the genesisPk, which calls the
     //       linear receive in PoS.rho - OLD
