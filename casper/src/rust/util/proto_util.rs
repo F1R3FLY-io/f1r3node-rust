@@ -314,7 +314,7 @@ pub fn to_latest_message_hashes(
 
 pub fn to_latest_message(
     justifications: &Vec<Justification>,
-    dag: &mut KeyValueDagRepresentation,
+    dag: &KeyValueDagRepresentation,
 ) -> Result<std::collections::HashMap<Validator, BlockMetadata>, KvStoreError> {
     let mut latest_messages = std::collections::HashMap::new();
     for justification in justifications {
@@ -433,11 +433,12 @@ pub fn dependencies_hashes_of(b: &BlockMessage) -> Vec<BlockHash> {
 
 // Return hashes of all blocks that are yet to be seen by the passed in block
 pub fn unseen_block_hashes(
-    dag: &mut KeyValueDagRepresentation,
-    block: &BlockMessage,
+    dag: &KeyValueDagRepresentation,
+    justifications: &Vec<Justification>,
+    current_block_hash: Option<&BlockHash>,
 ) -> Result<HashSet<BlockHash>, KvStoreError> {
     let dags_latest_messages = dag.latest_messages()?;
-    let blocks_latest_messages = to_latest_message(&block.justifications, dag)?;
+    let blocks_latest_messages = to_latest_message(justifications, dag)?;
 
     // From input block perspective we want to find what latest messages are not seen
     //  that are in the DAG latest messages.
@@ -475,14 +476,38 @@ pub fn unseen_block_hashes(
         all_unseen_blocks.remove(&block_metadata.block_hash);
     }
 
-    // Remove the current block hash
-    all_unseen_blocks.remove(&block.block_hash);
+    // Remove the current block hash (at block creation the block does not exist yet)
+    if let Some(h) = current_block_hash {
+        all_unseen_blocks.remove(h);
+    }
 
     Ok(all_unseen_blocks)
 }
 
+/// Deterministic invalid-blocks map (block_hash -> sender) for the PoS slash
+/// system deploys in a block: exactly the blocks this block slashes, each keyed
+/// to its immutable sender. Derived from the block's own recorded slash targets
+/// (NOT the node's DAG invalid-set view, which is node-view-dependent and so
+/// differs between the proposer and a validator), so block creation and replay
+/// produce a byte-identical map. That makes the slash deploy's
+/// `rho:casper:invalidBlocks` produce reproduce at replay (no slash
+/// ConsumeFailed). The slash contract only looks up its own target via
+/// `invalidBlocks.getOrElse(blockHash, ..)`, so this is exactly what it needs —
+/// and it makes the slash hit the block's true sender instead of falling back.
+pub fn slashed_block_senders(
+    dag: &KeyValueDagRepresentation,
+    slashed_hashes: &[BlockHash],
+) -> Result<std::collections::HashMap<BlockHash, Validator>, KvStoreError> {
+    let mut map = std::collections::HashMap::with_capacity(slashed_hashes.len());
+    for h in slashed_hashes {
+        let meta = dag.lookup_unsafe(h)?;
+        map.insert(h.clone(), meta.sender.clone());
+    }
+    Ok(map)
+}
+
 fn get_creator_blocks_between(
-    dag: &mut KeyValueDagRepresentation,
+    dag: &KeyValueDagRepresentation,
     top_block: &BlockMetadata,
     bottom_block: Option<&BlockMetadata>,
 ) -> Result<HashSet<BlockHash>, KvStoreError> {
@@ -511,7 +536,7 @@ fn get_creator_blocks_between(
 }
 
 fn get_creator_justification_unless_goal(
-    dag: &mut KeyValueDagRepresentation,
+    dag: &KeyValueDagRepresentation,
     block: &BlockMetadata,
     goal: &BlockMetadata,
 ) -> Result<Vec<BlockMetadata>, KvStoreError> {

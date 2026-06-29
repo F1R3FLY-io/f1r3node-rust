@@ -90,7 +90,7 @@ impl ReportingCasper for RhoReporterCasper {
         .await
         .map_err(|e| format!("Failed to create reporting runtime: {}", e))?;
 
-        let mut dag = self.block_dag_storage.get_representation();
+        let dag = self.block_dag_storage.get_representation();
 
         let genesis = self
             .block_store
@@ -109,8 +109,9 @@ impl ReportingCasper for RhoReporterCasper {
 
         let block_data = BlockData::from_block(block);
 
-        let unseen_blocks_set = proto_util::unseen_block_hashes(&mut dag, block)
-            .map_err(|e| format!("Failed to get unseen block hashes: {}", e))?;
+        let unseen_blocks_set =
+            proto_util::unseen_block_hashes(&dag, &block.justifications, Some(&block.block_hash))
+                .map_err(|e| format!("Failed to get unseen block hashes: {}", e))?;
 
         let seen_invalid_blocks: HashMap<
             models::rust::block_hash::BlockHash,
