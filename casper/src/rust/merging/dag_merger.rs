@@ -244,6 +244,98 @@ fn split_unavailable_branch_consumes(
     Ok((accepted, rejected))
 }
 
+fn split_unavailable_resolved_branches(
+    resolved: &mut conflict_set_merger::ResolvedConflicts<DeployChainIndex>,
+    depends: &impl Fn(&DeployChainIndex, &DeployChainIndex) -> bool,
+    state_changes: &impl Fn(
+        &DeployChainIndex,
+    ) -> Result<
+        rspace_plus_plus::rspace::merger::state_change::StateChange,
+        rspace_plus_plus::rspace::errors::HistoryError,
+    >,
+    mergeable_channels: &impl Fn(&DeployChainIndex) -> NumberChannelsDiff,
+    base_data: &impl Fn(
+        &Blake2b256Hash,
+    ) -> Result<Vec<Vec<u8>>, rspace_plus_plus::rspace::errors::HistoryError>,
+    base_continuations: &impl Fn(
+        &Vec<Blake2b256Hash>,
+    )
+        -> Result<Vec<Vec<u8>>, rspace_plus_plus::rspace::errors::HistoryError>,
+) -> Result<HashableSet<DeployChainIndex>, rspace_plus_plus::rspace::errors::HistoryError> {
+    let mut kept_branches = Vec::new();
+    let mut rejected_all = HashableSet(HashSet::new());
+
+    for branch in std::mem::take(&mut resolved.to_merge) {
+        let (kept, rejected) = split_unavailable_branch_consumes(
+            branch,
+            depends,
+            state_changes,
+            mergeable_channels,
+            base_data,
+            base_continuations,
+        )?;
+        for chain in rejected.0 {
+            rejected_all.0.insert(chain.clone());
+            resolved.rejected.0.insert(chain);
+        }
+        if let Some(kept) = kept {
+            kept_branches.push(kept);
+        }
+    }
+
+    resolved.to_merge = kept_branches;
+    Ok(rejected_all)
+}
+
+fn resolve_conflicts_with_unavailable_retry(
+    actual_seq_all: &[DeployChainIndex],
+    late_seq_all: &[DeployChainIndex],
+    resolve_once: &impl Fn(
+        Vec<DeployChainIndex>,
+        Vec<DeployChainIndex>,
+    ) -> Result<
+        conflict_set_merger::ResolvedConflicts<DeployChainIndex>,
+        rspace_plus_plus::rspace::errors::HistoryError,
+    >,
+    split_unavailable: &impl Fn(
+        &mut conflict_set_merger::ResolvedConflicts<DeployChainIndex>,
+    ) -> Result<
+        HashableSet<DeployChainIndex>,
+        rspace_plus_plus::rspace::errors::HistoryError,
+    >,
+) -> Result<
+    (
+        conflict_set_merger::ResolvedConflicts<DeployChainIndex>,
+        usize,
+    ),
+    rspace_plus_plus::rspace::errors::HistoryError,
+> {
+    let mut forced_rejected = HashableSet(HashSet::new());
+
+    loop {
+        let actual_seq: Vec<_> = actual_seq_all
+            .iter()
+            .filter(|chain| !forced_rejected.0.contains(*chain))
+            .cloned()
+            .collect();
+        let mut late_seq = late_seq_all.to_vec();
+        late_seq.extend(forced_rejected.0.iter().cloned());
+
+        let mut resolved = resolve_once(actual_seq, late_seq)?;
+        let unavailable = split_unavailable(&mut resolved)?;
+        let mut added = 0usize;
+        for chain in unavailable.0 {
+            if forced_rejected.0.insert(chain) {
+                added += 1;
+            }
+        }
+
+        if added == 0 {
+            return Ok((resolved, forced_rejected.0.len()));
+        }
+    }
+}
+
 pub fn merge(
     dag: &KeyValueDagRepresentation,
     lfb: &BlockHash,
@@ -574,8 +666,8 @@ pub fn merge(
     }
 
     // Keep as Vec for deterministic processing (ConflictSetMerger expects sorted Vecs)
-    let actual_seq = actual_set_vec;
-    let late_seq = late_set_vec;
+    let actual_seq_all = actual_set_vec;
+    let late_seq_all = late_set_vec;
 
     // Pre-computed data for a single DeployChainIndex, cached by pointer address
     // to avoid recomputing on every O(D²) depends() call.
@@ -977,50 +1069,44 @@ pub fn merge(
             branches
         };
 
-    // Resolve conflicts: detect conflicts and select the cost-optimal rejection set.
-    let mut resolved = conflict_set_merger::resolve_conflicts(
-        actual_seq,
-        late_seq,
-        &depends_fn,
-        &rejection_cost_f,
-        &mergeable_channels_fn,
-        &get_data_fn,
-        &compute_branches_fn,
-        &compute_conflict_map_fn,
-    )
-    .map_err(|e| CasperError::HistoryError(e))?;
+    let resolve_once = |actual_seq: Vec<DeployChainIndex>, late_seq: Vec<DeployChainIndex>| {
+        conflict_set_merger::resolve_conflicts(
+            actual_seq,
+            late_seq,
+            &depends_fn,
+            &rejection_cost_f,
+            &mergeable_channels_fn,
+            &get_data_fn,
+            &compute_branches_fn,
+            &compute_conflict_map_fn,
+        )
+    };
 
-    let unavailable_rejected_count =
-        (|| -> Result<usize, rspace_plus_plus::rspace::errors::HistoryError> {
-            let mut kept_branches = Vec::new();
-            let mut rejected_count = 0;
-            for branch in std::mem::take(&mut resolved.to_merge) {
-                let (kept, rejected) = split_unavailable_branch_consumes(
-                    branch,
-                    &depends_fn,
-                    &state_changes_fn,
-                    &mergeable_channels_fn,
-                    &|channel| history_reader.get_data_proj_binary(channel),
-                    &|consume_channels| {
-                        let history_pointer =
-                            rspace_plus_plus::rspace::hashing::stable_hash_provider::hash_from_hashes(
-                                consume_channels,
-                            );
-                        history_reader.get_continuations_proj_binary(&history_pointer)
-                    },
-                )?;
-                rejected_count += rejected.0.len();
-                for chain in rejected.0 {
-                    resolved.rejected.0.insert(chain);
-                }
-                if let Some(kept) = kept {
-                    kept_branches.push(kept);
-                }
-            }
-            resolved.to_merge = kept_branches;
-            Ok(rejected_count)
-        })()
-        .map_err(CasperError::HistoryError)?;
+    let split_unavailable =
+        |resolved: &mut conflict_set_merger::ResolvedConflicts<DeployChainIndex>| {
+            split_unavailable_resolved_branches(
+                resolved,
+                &depends_fn,
+                &state_changes_fn,
+                &mergeable_channels_fn,
+                &|channel| history_reader.get_data_proj_binary(channel),
+                &|consume_channels| {
+                    let history_pointer =
+                        rspace_plus_plus::rspace::hashing::stable_hash_provider::hash_from_hashes(
+                            consume_channels,
+                        );
+                    history_reader.get_continuations_proj_binary(&history_pointer)
+                },
+            )
+        };
+
+    let (resolved, unavailable_rejected_count) = resolve_conflicts_with_unavailable_retry(
+        &actual_seq_all,
+        &late_seq_all,
+        &resolve_once,
+        &split_unavailable,
+    )
+    .map_err(CasperError::HistoryError)?;
 
     if unavailable_rejected_count > 0 {
         tracing::debug!(
@@ -1392,5 +1478,93 @@ mod tests {
         assert!(!kept.0.contains(&dependent));
         assert!(rejected.0.contains(&losing_source));
         assert!(rejected.0.contains(&dependent));
+    }
+
+    #[test]
+    fn unavailable_retry_reconsiders_conflicts_after_winning_branch_is_removed() {
+        let channel = Blake2b256Hash::from_bytes(vec![0x44; 32]);
+        let unavailable_winner = chain(
+            1,
+            10,
+            1,
+            datum_change(channel.clone(), vec![vec![0xaa; 32]], vec![vec![0xbb; 32]]),
+        );
+        let rescued_branch = chain(2, 1, 1, StateChange::empty());
+        let actual_seq_all = vec![unavailable_winner.clone(), rescued_branch.clone()];
+        let late_seq_all = Vec::new();
+
+        let compute_branches = |merge_set: &HashableSet<DeployChainIndex>| {
+            HashableSet(
+                merge_set
+                    .0
+                    .iter()
+                    .map(|chain| HashableSet(HashSet::from([chain.clone()])))
+                    .collect(),
+            )
+        };
+        let compute_conflict_map = |branches: &HashableSet<HashableSet<DeployChainIndex>>| {
+            let mut map: HashMap<
+                HashableSet<DeployChainIndex>,
+                HashableSet<HashableSet<DeployChainIndex>>,
+            > = branches
+                .0
+                .iter()
+                .map(|branch| (branch.clone(), HashableSet(HashSet::new())))
+                .collect();
+            let winner_branch = branches
+                .0
+                .iter()
+                .find(|branch| branch.0.contains(&unavailable_winner))
+                .cloned();
+            let rescued = branches
+                .0
+                .iter()
+                .find(|branch| branch.0.contains(&rescued_branch))
+                .cloned();
+            if let (Some(winner), Some(rescued)) = (winner_branch, rescued) {
+                map.get_mut(&winner).unwrap().0.insert(rescued.clone());
+                map.get_mut(&rescued).unwrap().0.insert(winner);
+            }
+            Ok(map)
+        };
+        let resolve_once = |actual_seq: Vec<DeployChainIndex>, late_seq: Vec<DeployChainIndex>| {
+            conflict_set_merger::resolve_conflicts(
+                actual_seq,
+                late_seq,
+                &|_, _| false,
+                &cost_optimal_rejection_alg(),
+                &|_| BTreeMap::new(),
+                &|_| Ok(Vec::new()),
+                &compute_branches,
+                &compute_conflict_map,
+            )
+        };
+        let split_unavailable =
+            |resolved: &mut conflict_set_merger::ResolvedConflicts<DeployChainIndex>| {
+                split_unavailable_resolved_branches(
+                    resolved,
+                    &|_, _| false,
+                    &|chain| Ok(chain.state_changes.clone()),
+                    &|_| BTreeMap::new(),
+                    &|_| Ok(Vec::new()),
+                    &|_| Ok(Vec::new()),
+                )
+            };
+
+        let (resolved, unavailable_count) = resolve_conflicts_with_unavailable_retry(
+            &actual_seq_all,
+            &late_seq_all,
+            &resolve_once,
+            &split_unavailable,
+        )
+        .expect("retrying unavailable conflicts should succeed");
+
+        assert_eq!(unavailable_count, 1);
+        assert!(resolved.rejected.0.contains(&unavailable_winner));
+        assert!(!resolved.rejected.0.contains(&rescued_branch));
+        assert!(resolved
+            .to_merge
+            .iter()
+            .any(|branch| branch.0.contains(&rescued_branch)));
     }
 }
