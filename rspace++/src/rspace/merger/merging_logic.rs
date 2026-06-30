@@ -790,6 +790,10 @@ where
         (&Blake2b256Hash, usize),
         HashSet<&Blake2b256Hash>,
     > = HashMap::new();
+    let mut produces_consumed_by_channel_branch: HashMap<
+        (&Blake2b256Hash, usize),
+        HashSet<&Blake2b256Hash>,
+    > = HashMap::new();
     let mut mergeable_chs_by_channel: HashMap<&Blake2b256Hash, HashSet<usize>> = HashMap::new();
 
     for (idx, e) in event_logs.iter().enumerate() {
@@ -897,6 +901,14 @@ where
                     emitted_set.insert(&p.hash);
                 }
             }
+            let consumed_set = produces_consumed_by_channel_branch
+                .entry((*ch, idx))
+                .or_default();
+            for p in &e.produces_consumed.0 {
+                if &p.channel_hash == *ch {
+                    consumed_set.insert(&p.hash);
+                }
+            }
         }
         for ch in e.number_channels_data.keys() {
             mergeable_chs_by_channel.entry(ch).or_default().insert(idx);
@@ -987,13 +999,34 @@ where
         for i in 0..pos.len() {
             for j in (i + 1)..pos.len() {
                 let (a, b) = (pos[i], pos[j]);
-                let both_mergeable = mergeable_branches
-                    .map(|m| m.contains(&a) && m.contains(&b))
+                // A foldable number channel is intrinsically mergeable; its
+                // concurrent writers are reconciled by the number-channel fold,
+                // never rejected here. Channel type is intrinsic, so seeing it
+                // registered as a number channel in EITHER branch is sufficient
+                // to exclude the pair (the previous `&&` form missed it whenever
+                // only one branch's event log captured the mergeable diff).
+                let is_number_channel = mergeable_branches
+                    .map(|m| m.contains(&a) || m.contains(&b))
                     .unwrap_or(false);
-                if both_mergeable {
+                if is_number_channel {
                     continue;
                 }
                 let empty: HashSet<&Blake2b256Hash> = HashSet::new();
+                // A single-value-cell write race requires both branches to
+                // consume the SAME base datum (each replacing the one value).
+                // Branches that consume DIFFERENT data on a shared channel
+                // (e.g. distinct keys/sub-nodes of a TreeHashMap registry) are
+                // not racing on one cell and must still merge — so only flag a
+                // conflict when their consumed sets overlap.
+                let consumed_a = produces_consumed_by_channel_branch
+                    .get(&(*channel, a))
+                    .unwrap_or(&empty);
+                let consumed_b = produces_consumed_by_channel_branch
+                    .get(&(*channel, b))
+                    .unwrap_or(&empty);
+                if consumed_a.is_disjoint(consumed_b) {
+                    continue;
+                }
                 let emitted_a = produces_emitted_by_channel_branch
                     .get(&(*channel, a))
                     .unwrap_or(&empty);
@@ -2041,9 +2074,13 @@ mod tests {
 
     #[test]
     fn event_indexed_conflict_map_detects_roundtrip_channel_writers() {
+        // Genuine single-value-cell race: a cell holds ONE datum, so both
+        // concurrent writers consume that SAME base datum (seed 1) and emit
+        // different replacements. Only the same-consumed case is a real
+        // keep-one conflict.
         let channel = Blake2b256Hash::from_bytes(vec![42]);
         let a = roundtrip_index(channel.clone(), 1, 10);
-        let b = roundtrip_index(channel, 2, 11);
+        let b = roundtrip_index(channel, 1, 11);
         let branches = vec![0, 1];
         let map = compute_conflict_map_event_indexed(&branches, &[&a, &b]);
 
@@ -2052,7 +2089,26 @@ mod tests {
     }
 
     #[test]
+    fn event_indexed_conflict_map_allows_disjoint_consumed_writers() {
+        // Two writers consuming DIFFERENT data (seeds 1 and 2) on a shared
+        // channel are not racing on one cell — this is the registry /
+        // TreeHashMap shape (distinct keys/sub-nodes), which must merge even
+        // though the emitted produces differ.
+        let channel = Blake2b256Hash::from_bytes(vec![45]);
+        let a = roundtrip_index(channel.clone(), 1, 10);
+        let b = roundtrip_index(channel, 2, 11);
+        let branches = vec![0, 1];
+        let map = compute_conflict_map_event_indexed(&branches, &[&a, &b]);
+
+        assert!(map.get(&0).unwrap().0.is_empty());
+        assert!(map.get(&1).unwrap().0.is_empty());
+    }
+
+    #[test]
     fn event_indexed_conflict_map_allows_identical_roundtrip_emits() {
+        // Disjoint consumed data (seeds 1 and 2) with identical emit (seed 10):
+        // not a single-cell race, so no conflict. (Sharing the consumed datum
+        // would instead be a double-consume conflict, independent of the emit.)
         let channel = Blake2b256Hash::from_bytes(vec![43]);
         let a = roundtrip_index(channel.clone(), 1, 10);
         let b = roundtrip_index(channel, 2, 10);
