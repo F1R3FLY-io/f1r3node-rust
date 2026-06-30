@@ -784,17 +784,6 @@ where
     let mut unconsumed_consumes_by_channel: HashMap<&Blake2b256Hash, HashSet<usize>> =
         HashMap::new();
     let mut global_branches: HashSet<usize> = HashSet::new();
-    let mut consume_then_produce_by_channel: HashMap<&Blake2b256Hash, HashSet<usize>> =
-        HashMap::new();
-    let mut produces_emitted_by_channel_branch: HashMap<
-        (&Blake2b256Hash, usize),
-        HashSet<&Blake2b256Hash>,
-    > = HashMap::new();
-    let mut produces_consumed_by_channel_branch: HashMap<
-        (&Blake2b256Hash, usize),
-        HashSet<&Blake2b256Hash>,
-    > = HashMap::new();
-    let mut mergeable_chs_by_channel: HashMap<&Blake2b256Hash, HashSet<usize>> = HashMap::new();
 
     for (idx, e) in event_logs.iter().enumerate() {
         // #1 race candidates: events destroyed in COMM (consumed produces /
@@ -869,50 +858,6 @@ where
         if !e.produces_touching_base_joins.0.is_empty() {
             global_branches.insert(idx);
         }
-
-        let consumed_channels: HashSet<&Blake2b256Hash> = e
-            .produces_consumed
-            .0
-            .iter()
-            .map(|p| &p.channel_hash)
-            .collect();
-        let produced_channels: HashSet<&Blake2b256Hash> = e
-            .produces_linear
-            .0
-            .iter()
-            .chain(e.produces_persistent.0.iter())
-            .map(|p| &p.channel_hash)
-            .collect();
-        for ch in consumed_channels.intersection(&produced_channels) {
-            consume_then_produce_by_channel
-                .entry(*ch)
-                .or_default()
-                .insert(idx);
-            let emitted_set = produces_emitted_by_channel_branch
-                .entry((*ch, idx))
-                .or_default();
-            for p in e
-                .produces_linear
-                .0
-                .iter()
-                .chain(e.produces_persistent.0.iter())
-            {
-                if &p.channel_hash == *ch {
-                    emitted_set.insert(&p.hash);
-                }
-            }
-            let consumed_set = produces_consumed_by_channel_branch
-                .entry((*ch, idx))
-                .or_default();
-            for p in &e.produces_consumed.0 {
-                if &p.channel_hash == *ch {
-                    consumed_set.insert(&p.hash);
-                }
-            }
-        }
-        for ch in e.number_channels_data.keys() {
-            mergeable_chs_by_channel.entry(ch).or_default().insert(idx);
-        }
     }
 
     // Collect conflict pairs (i, j) with i < j; duplicate insertions into
@@ -986,57 +931,6 @@ where
             if o != g {
                 let (lo, hi) = if g < o { (g, o) } else { (o, g) };
                 pairs.push((lo, hi));
-            }
-        }
-    }
-
-    for (channel, branches_set) in &consume_then_produce_by_channel {
-        if branches_set.len() < 2 {
-            continue;
-        }
-        let mergeable_branches = mergeable_chs_by_channel.get(channel);
-        let pos: Vec<usize> = branches_set.iter().copied().collect();
-        for i in 0..pos.len() {
-            for j in (i + 1)..pos.len() {
-                let (a, b) = (pos[i], pos[j]);
-                // A foldable number channel is intrinsically mergeable; its
-                // concurrent writers are reconciled by the number-channel fold,
-                // never rejected here. Channel type is intrinsic, so seeing it
-                // registered as a number channel in EITHER branch is sufficient
-                // to exclude the pair (the previous `&&` form missed it whenever
-                // only one branch's event log captured the mergeable diff).
-                let is_number_channel = mergeable_branches
-                    .map(|m| m.contains(&a) || m.contains(&b))
-                    .unwrap_or(false);
-                if is_number_channel {
-                    continue;
-                }
-                let empty: HashSet<&Blake2b256Hash> = HashSet::new();
-                // A single-value-cell write race requires both branches to
-                // consume the SAME base datum (each replacing the one value).
-                // Branches that consume DIFFERENT data on a shared channel
-                // (e.g. distinct keys/sub-nodes of a TreeHashMap registry) are
-                // not racing on one cell and must still merge — so only flag a
-                // conflict when their consumed sets overlap.
-                let consumed_a = produces_consumed_by_channel_branch
-                    .get(&(*channel, a))
-                    .unwrap_or(&empty);
-                let consumed_b = produces_consumed_by_channel_branch
-                    .get(&(*channel, b))
-                    .unwrap_or(&empty);
-                if consumed_a.is_disjoint(consumed_b) {
-                    continue;
-                }
-                let emitted_a = produces_emitted_by_channel_branch
-                    .get(&(*channel, a))
-                    .unwrap_or(&empty);
-                let emitted_b = produces_emitted_by_channel_branch
-                    .get(&(*channel, b))
-                    .unwrap_or(&empty);
-                if emitted_a != emitted_b {
-                    let (lo, hi) = if a < b { (a, b) } else { (b, a) };
-                    pairs.push((lo, hi));
-                }
             }
         }
     }
