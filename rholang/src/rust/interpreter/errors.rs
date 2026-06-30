@@ -107,6 +107,8 @@ pub enum InterpreterError {
     },
     /// Raised during replay when we encounter a failed non-deterministic produce that we cannot replay.
     CanNotReplayFailedNonDeterministicProcess,
+    /// Raised while executing a MeTTa program with PeTTa/SWI-Prolog
+    SwiplError(String),
 }
 
 pub fn illegal_argument_error(method_name: &str) -> InterpreterError {
@@ -330,6 +332,10 @@ impl fmt::Display for InterpreterError {
 
             InterpreterError::CanNotReplayFailedNonDeterministicProcess => {
                 write!(f, "Cannot replay failed non-deterministic process")
+            }
+
+            InterpreterError::SwiplError(err) => {
+                write!(f, "Cannot execute MeTTa program: {}", err)
             }
         }
     }
