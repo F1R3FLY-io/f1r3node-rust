@@ -95,5 +95,5 @@ No sealed-floor merge correctness items are currently open on this branch.
 - `PROTOC=... cargo test -p node heartbeat -- --nocapture`
 - `PROTOC=... cargo test -p node deploy_response -- --nocapture`
 - `PROTOC=... cargo test -p node find_deploy -- --nocapture`
-- `PROTOC=... cargo test -p casper two_writers_converge -- --ignored --nocapture`
-- `PROTOC=... cargo test -p casper three_writers_converge -- --ignored --nocapture`
+- `PROTOC=... cargo test -p casper two_writers_converge -- --nocapture`
+- `PROTOC=... cargo test -p casper three_writers_converge -- --nocapture`

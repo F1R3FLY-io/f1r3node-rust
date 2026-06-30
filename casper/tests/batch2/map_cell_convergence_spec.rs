@@ -13,9 +13,9 @@
 //   - three_writers:      3-way contention (the case where a main_parent writer starves)
 //   - three_writers_load: 3-way contention sustained over multiple write rounds
 //
-// `#[ignore]`d for now: these are the green-gate TARGETS for the sealed-floor /
-// record-driven-recovery design, not yet expected to pass on every base. Run with
-// `-- --ignored`. Un-ignore each grade as it goes green.
+// These are the green-gate for the sealed-floor / record-driven-recovery design and
+// run as part of the normal `cargo test -p casper` suite (CI gate). They pass on the
+// floor-based merge with the channel_change netting fix.
 
 use casper::rust::casper::{Casper, MultiParentCasper};
 use casper::rust::util::construct_deploy;
@@ -359,15 +359,12 @@ async fn run_convergence(n_validators: usize, write_rounds: usize, drain_rounds:
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[serial]
-#[ignore = "green-gate target for the sealed-floor / record-recovery design (run with --ignored)"]
 async fn two_writers_converge() { run_convergence(2, 1, 7).await; }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[serial]
-#[ignore = "green-gate target for the sealed-floor / record-recovery design (run with --ignored)"]
 async fn three_writers_converge() { run_convergence(3, 1, 21).await; }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[serial]
-#[ignore = "green-gate target for the sealed-floor / record-recovery design (run with --ignored)"]
 async fn three_writers_converge_under_load() { run_convergence(3, 3, 21).await; }
