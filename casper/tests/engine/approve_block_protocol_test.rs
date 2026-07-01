@@ -468,19 +468,27 @@ async fn should_skip_duration_when_required_signatures_is_zero() {
 
     let fixture = TestFixture::new(
         0,
-        Duration::from_millis(30),
+        // Large approval duration (>> the 100ms timeout below). With
+        // required_sigs == 0 the protocol self-approves immediately and never
+        // consults this value; if that skip ever regressed to honoring the wait,
+        // run() would block for the full duration and exceed the timeout,
+        // surfacing deterministically as `result == Err`. This replaces a flaky
+        // `elapsed < 10ms` wall-clock bound that broke under RUST_LOG=debug +
+        // full-workspace parallelism, where the genesis-ceremony completion
+        // (block create + send + tracing) legitimately takes >10ms.
+        Duration::from_secs(30),
         Duration::from_millis(1),
         key_pairs,
     )
     .await;
 
     let baseline = get_baseline_genesis_counter(&snapshotter);
-    let start = std::time::Instant::now();
     let result = timeout(Duration::from_millis(100), fixture.protocol.run()).await;
 
-    let elapsed = start.elapsed();
-    assert!(elapsed < Duration::from_millis(10));
-    assert!(result.is_ok());
+    assert!(
+        result.is_ok(),
+        "required_sigs == 0 must self-approve immediately, not wait the approval duration"
+    );
     assert_eq!(
         get_genesis_counter(&snapshotter) - baseline,
         0,
