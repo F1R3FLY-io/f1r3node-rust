@@ -59,7 +59,7 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
         );
     }
 
-    let dag = this.block_dag_storage.get_representation()?;
+    let mut dag = this.block_dag_storage.get_representation()?;
 
     // Parent selection: Use latest block from EACH bonded validator.
     // Phase 12 (PERF-5): `latest_message_hashes()` returns an owned
@@ -112,109 +112,39 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
         parent_blocks_list.push(block);
     }
 
+    // Sealed-floor: LMD-GHOST main-parent selection. Compute the ghost
+    // main-parent from the fork-choice tips over this block's justification
+    // snapshot, then order parents so the ghost main-parent sorts first
+    // (then by block hash for determinism).
+    //
+    // The bonded-set ("most-slashed" intersection) parent filter that
+    // previously occupied the else-arm below was removed. Committee/bonds
+    // are now validated against the finalized floor
+    // (`Validate::bonds_cache_from_floor`) together with
+    // `neglected_invalid_block` — both validator-side and finalization-
+    // anchored. A proposer-side parent filter cannot be a consensus-safety
+    // mechanism (validators replay declared parents, not fork-choice), so it
+    // was redundant. See docs/sealed-floor-merge-v2-status.md.
+    let ghost_main_parent = this
+        .estimator
+        .tips_with_latest_messages(&mut dag, &this.approved_block, valid_latest_msgs.clone())
+        .await?
+        .tips
+        .into_iter()
+        .next();
     let mut sorted_parents_list = parent_blocks_list;
-    let max_parent_block_number = sorted_parents_list
-        .iter()
-        .map(|b| b.body.state.block_number)
-        .max()
-        .unwrap_or(0);
-    let near_tip_tolerance_blocks: i64 = 0;
     sorted_parents_list.sort_by(|a, b| {
-        let a_num = a.body.state.block_number;
-        let b_num = b.body.state.block_number;
-        let a_is_near_tip =
-            max_parent_block_number.saturating_sub(a_num) <= near_tip_tolerance_blocks;
-        let b_is_near_tip =
-            max_parent_block_number.saturating_sub(b_num) <= near_tip_tolerance_blocks;
-
-        if a_is_near_tip && b_is_near_tip {
-            a.block_hash.cmp(&b.block_hash)
-        } else {
-            let block_num_cmp = b_num.cmp(&a_num);
-            if block_num_cmp != std::cmp::Ordering::Equal {
-                block_num_cmp
-            } else {
-                a.block_hash.cmp(&b.block_hash)
-            }
-        }
+        let a_main = ghost_main_parent.as_ref() == Some(&a.block_hash);
+        let b_main = ghost_main_parent.as_ref() == Some(&b.block_hash);
+        b_main
+            .cmp(&a_main)
+            .then_with(|| a.block_hash.cmp(&b.block_hash))
     });
 
     let unfiltered_parents = if sorted_parents_list.is_empty() {
         vec![this.approved_block.clone()]
     } else {
-        // Filter parents to the most-slashed (smallest) consistent
-        // validator-set view.
-        //
-        // The original incarnation of this filter compared the full
-        // `Vec<Bond>` (including exact stake amounts) of every parent
-        // against the max-height parent's bonds. That had two bugs:
-        //
-        //   1. It conflated stake-amount drift with bond-set drift.
-        //      Each block's `CloseBlockDeploy` pays PoS rewards to its
-        //      creator, so sibling blocks from different creators never
-        //      have identical stake *amounts* even when the bonded set
-        //      is the same. The hazard the filter is meant to guard
-        //      against is a parent with a *stale view of who is
-        //      bonded* (e.g. a genesis slot sneaking in beside h=N
-        //      blocks where a slash has already zeroed an equivocator),
-        //      not stake-amount divergence.
-        //
-        //   2. Picking the max-height parent as the reference is unsafe
-        //      when siblings include both pre-slash and post-slash
-        //      blocks at the same height. The equivocator's own valid
-        //      block (e.g. `signed_block` in
-        //      `casper/tests/batch2/slash_recovery_spec.rs`) has the
-        //      pre-slash validator set as a *superset* of the
-        //      slashing-sibling's set; max-height tiebreaks via hash
-        //      can make the pre-slash block the reference and then
-        //      drop the post-slash siblings. The pre-slash block is
-        //      the stale one — we should drop *it*, not the
-        //      slashing-aware blocks.
-        //
-        // Fix: compute the intersection of all parents' bonded-validator
-        // sets. The intersection is the "most-slashed" view — any
-        // validator missing from one parent's set is taken to be
-        // slashed-out, regardless of which sibling chose to apply the
-        // slash. Then keep only parents whose bonded set equals this
-        // intersection, i.e. parents that have actually applied every
-        // slash visible to the consensus snapshot. Pre-slash siblings
-        // with extra validators are dropped as stale.
-        let validator_set_of = |block: &BlockMessage| -> std::collections::BTreeSet<
-            models::rust::validator::Validator,
-        > {
-            block
-                .body
-                .state
-                .bonds
-                .iter()
-                .filter(|b| b.stake > 0)
-                .map(|b| b.validator.clone())
-                .collect()
-        };
-
-        let parent_validator_sets: Vec<
-            std::collections::BTreeSet<models::rust::validator::Validator>,
-        > = sorted_parents_list.iter().map(validator_set_of).collect();
-
-        let intersection: std::collections::BTreeSet<models::rust::validator::Validator> =
-            parent_validator_sets
-                .iter()
-                .skip(1)
-                .fold(parent_validator_sets[0].clone(), |acc, set| {
-                    acc.intersection(set).cloned().collect()
-                });
-
         sorted_parents_list
-            .into_iter()
-            .zip(parent_validator_sets.into_iter())
-            .filter_map(|(block, set)| {
-                if set == intersection {
-                    Some(block)
-                } else {
-                    None
-                }
-            })
-            .collect()
     };
 
     let unfiltered_parents_count = unfiltered_parents.len();
@@ -278,7 +208,7 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
     let tips: Vec<BlockHash> = parents.iter().map(|b| b.block_hash.clone()).collect();
 
     tracing::debug!(
-        "Parent selection: {} validators, {} invalid, {} valid, {} after bond filter, {} parents",
+        "Parent selection: {} validators, {} invalid, {} valid, {} unfiltered, {} parents",
         latest_msgs_hashes.len(),
         invalid_latest_msgs.len(),
         valid_latest_msgs.len(),

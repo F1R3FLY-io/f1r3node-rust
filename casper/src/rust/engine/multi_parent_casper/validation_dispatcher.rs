@@ -132,7 +132,15 @@ async fn run_validation_steps<T: TransportLayer + Send + Sync>(
         let (bonds_cache_result, t3) = timed_step(
             "bonds-cache",
             BLOCK_VALIDATION_STEP_BONDS_CACHE_TIME_METRIC,
-            async { Ok(Validate::bonds_cache(block, &this.runtime_manager).await) },
+            async {
+                Ok(Validate::bonds_cache_from_floor(
+                    block,
+                    &this.block_store,
+                    snapshot,
+                    &this.runtime_manager,
+                )
+                .await)
+            },
         )
         .await?;
         tracing::debug!(target: "f1r3fly.casper", "bonds-cache-validated");

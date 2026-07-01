@@ -245,6 +245,171 @@ async fn slash_for_equivocator_survives_multi_parent_merge() {
     );
 }
 
+// Change 1c / Option A regression guard (sealed-floor merge). After removing
+// the proposer-side bonded-set "intersection" parent-filter, a multi-parent
+// merge that includes a PRE-slash-view sibling parent — one whose proposer had
+// NOT yet observed the equivocation, so it carries no SlashDeploy and still
+// shows the equivocator bonded — must NOT regress a slash carried on another
+// parent.
+//
+// This is the "pre-finalization window" corner surfaced during the merge
+// arbitration: the finalized floor may still predate the slash, so
+// `Validate::bonds_cache_from_floor` does not yet force it; safety in that
+// window comes from the merge combining the parents' bond-channel state without
+// netting a re-bond (and, on a node that has seen the equivocation,
+// `neglected_invalid_block` re-enforcing it). Either way the equivocator must
+// end at the bond floor. Contrast `slash_for_equivocator_survives_multi_parent_merge`,
+// where BOTH parents carry the slash.
+//
+// Coverage note: the sibling here is a normal user block that does not itself
+// write the equivocator's bond channel (the realistic case). A sibling that
+// explicitly re-writes the offender's bond is not producible through ordinary
+// deploys, so that deeper number-channel-netting path is out of scope here.
+#[tokio::test]
+async fn slash_survives_merge_with_pre_slash_sibling() {
+    let ctx = TestContext::new().await;
+
+    let mut nodes = TestNode::create_network(ctx.genesis.clone(), 3, None, None, None, None)
+        .await
+        .expect("create_network(3)");
+    let equivocator_pk = nodes[0]
+        .validator_id_opt
+        .as_ref()
+        .expect("node 0 has validator identity")
+        .public_key
+        .clone();
+
+    // V0 equivocates: a forged copy of node[0]'s block with a mutated seq_num.
+    let deploy_data = construct_deploy::basic_deploy_data(0, None, Some(ctx.shard_id.clone()))
+        .expect("build deploy");
+    nodes[0]
+        .casper
+        .deploy(deploy_data)
+        .expect("validator 0 deploy");
+    let signed_block = nodes[0]
+        .create_block_unsafe(&[])
+        .await
+        .expect("validator 0 creates signed_block");
+    let invalid_block = {
+        let mut b = signed_block.clone();
+        b.seq_num = 47;
+        b
+    };
+
+    // ONLY node 1 observes the equivocation → only node 1 will slash.
+    nodes[1]
+        .process_block(invalid_block.clone())
+        .await
+        .expect("node 1 processes invalid_block");
+
+    // Node 1 proposes a POST-slash block (auto-emitted SlashDeploy for V0).
+    let deploy_data_a = construct_deploy::basic_deploy_data(1, None, Some(ctx.shard_id.clone()))
+        .expect("build deploy a");
+    nodes[1]
+        .casper
+        .deploy(deploy_data_a)
+        .expect("validator 1 deploy");
+    let slash_block = nodes[1]
+        .create_block_unsafe(&[])
+        .await
+        .expect("validator 1 creates slash_block");
+    nodes[1]
+        .process_block(slash_block.clone())
+        .await
+        .expect("node 1 processes its own slash_block");
+
+    // Node 2 has NOT observed the equivocation → proposes a PRE-slash-view
+    // block: a normal user block with the equivocator still bonded, no slash.
+    let deploy_data_b = construct_deploy::basic_deploy_data(2, None, Some(ctx.shard_id.clone()))
+        .expect("build deploy b");
+    nodes[2]
+        .casper
+        .deploy(deploy_data_b)
+        .expect("validator 2 deploy");
+    let pre_slash_block = nodes[2]
+        .create_block_unsafe(&[])
+        .await
+        .expect("validator 2 creates pre_slash_block");
+
+    let slashes_in =
+        |block: &models::rust::casper::protocol::casper_message::BlockMessage| -> Vec<prost::bytes::Bytes> {
+            block
+                .body
+                .system_deploys
+                .iter()
+                .filter_map(|psd| match psd {
+                    ProcessedSystemDeploy::Succeeded {
+                        system_deploy:
+                            SystemDeployData::Slash {
+                                invalid_block_hash, ..
+                            },
+                        ..
+                    } => Some(invalid_block_hash.clone()),
+                    _ => None,
+                })
+                .collect()
+        };
+    assert!(
+        slashes_in(&slash_block).contains(&invalid_block.block_hash),
+        "slash_block must contain a SlashDeploy for the equivocator's invalid_block"
+    );
+    assert!(
+        slashes_in(&pre_slash_block).is_empty(),
+        "pre_slash_block must NOT carry a slash (node 2 never saw the equivocation)"
+    );
+
+    // Node 1 ingests the pre-slash sibling, then merges both parents.
+    nodes[1]
+        .process_block(pre_slash_block.clone())
+        .await
+        .expect("node 1 processes pre_slash_block");
+    let marker_deploy = construct_deploy::basic_deploy_data(3, None, Some(ctx.shard_id.clone()))
+        .expect("build marker deploy");
+    nodes[1]
+        .casper
+        .deploy(marker_deploy)
+        .expect("validator 1 deploys marker");
+    let merge_block = nodes[1]
+        .create_block_unsafe(&[])
+        .await
+        .expect("validator 1 creates merge_block");
+
+    // Both parents must be present — the removed intersection filter would have
+    // been the only thing that could drop the pre-slash sibling at select time.
+    let merge_parents: Vec<&prost::bytes::Bytes> =
+        merge_block.header.parents_hash_list.iter().collect();
+    assert!(
+        merge_parents.iter().any(|h| **h == slash_block.block_hash),
+        "merge_block parents must include slash_block"
+    );
+    assert!(
+        merge_parents
+            .iter()
+            .any(|h| **h == pre_slash_block.block_hash),
+        "merge_block parents must include the pre-slash sibling"
+    );
+
+    // The slash must not regress through the merge with a pre-slash sibling.
+    let post_merge_bonds = nodes[1]
+        .runtime_manager
+        .compute_bonds(&casper::rust::util::proto_util::post_state_hash(
+            &merge_block,
+        ))
+        .await
+        .expect("compute_bonds");
+    let equivocator_stake = post_merge_bonds
+        .iter()
+        .find(|b| b.validator == equivocator_pk.bytes)
+        .map(|b| b.stake)
+        .expect("equivocator must still appear in bonds map");
+    assert!(
+        equivocator_stake <= 1,
+        "post-merge equivocator stake must be at the bond floor (<=1) even when a \
+         pre-slash sibling is merged; got {}",
+        equivocator_stake
+    );
+}
+
 // Exercises the merge-rejected-slash recovery path
 // (block_creator.rs:594-609). A synthetic `RejectedSlash` is written
 // into the parents-post-state cache so the proposer's
@@ -359,15 +524,22 @@ async fn e1c_re_issues_merge_rejected_slash() {
             .disable_late_block_filtering,
     };
 
+    let latest_messages: std::collections::BTreeMap<_, _> = snapshot
+        .justifications
+        .iter()
+        .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
+        .collect();
     let (merged_state, merged_rejected, _) =
         casper::rust::util::rholang::interpreter_util::compute_parents_post_state(
             &nodes[1].block_store,
             snapshot.parents.clone(),
             &snapshot,
             &nodes[1].runtime_manager,
+            &latest_messages,
             None,
             Some(&nodes[1].rejected_deploy_buffer),
         )
+        .await
         .expect("real merge to seed cache value");
 
     let synthetic = RejectedSlash {
@@ -528,15 +700,22 @@ async fn rejected_slash_recovery_keeps_empty_proposer_alive() {
             .disable_late_block_filtering,
     };
 
+    let latest_messages: std::collections::BTreeMap<_, _> = snapshot
+        .justifications
+        .iter()
+        .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
+        .collect();
     let (merged_state, merged_rejected, _) =
         casper::rust::util::rholang::interpreter_util::compute_parents_post_state(
             &nodes[1].block_store,
             snapshot.parents.clone(),
             &snapshot,
             &nodes[1].runtime_manager,
+            &latest_messages,
             None,
             Some(&nodes[1].rejected_deploy_buffer),
         )
+        .await
         .expect("real merge to seed cache value");
 
     let synthetic = RejectedSlash {

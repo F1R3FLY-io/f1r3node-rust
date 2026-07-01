@@ -59,6 +59,13 @@ pub(crate) struct FinalizationContext {
     pub(crate) block_dag_storage: BlockDagKeyValueStorage,
     pub(crate) block_store: KeyValueBlockStore,
     pub(crate) deploy_storage: Arc<Mutex<KeyValueDeployStorage>>,
+    /// Held under `std::sync::Mutex` (see `types.rs`), NOT the parking_lot
+    /// `Mutex` aliased in this module — accessed only synchronously.
+    pub(crate) rejected_deploy_buffer: Arc<
+        std::sync::Mutex<
+            block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer,
+        >,
+    >,
     pub(crate) runtime_manager: Arc<RuntimeManager>,
     pub(crate) event_publisher: F1r3flyEvents,
     pub(crate) finalization_in_progress: Arc<AtomicBool>,
@@ -82,6 +89,7 @@ pub(crate) fn build_finalization_context<
         block_dag_storage: this.block_dag_storage.clone(),
         block_store: this.block_store.clone(),
         deploy_storage: this.deploy_storage.clone(),
+        rejected_deploy_buffer: this.rejected_deploy_buffer.clone(),
         runtime_manager: this.runtime_manager.clone(),
         event_publisher: this.event_publisher.clone(),
         finalization_in_progress: this.finalization_in_progress.clone(),
@@ -138,6 +146,7 @@ pub(crate) async fn compute_last_finalized_block(
         block_dag_storage,
         block_store,
         deploy_storage,
+        rejected_deploy_buffer,
         runtime_manager,
         event_publisher,
         finalization_in_progress,
@@ -157,6 +166,7 @@ pub(crate) async fn compute_last_finalized_block(
     let block_dag_storage_for_effect = block_dag_storage.clone();
     let block_store_for_effect = block_store.clone();
     let deploy_storage_for_effect = deploy_storage.clone();
+    let rejected_deploy_buffer_for_effect = rejected_deploy_buffer.clone();
     let runtime_manager_for_effect = runtime_manager.clone();
     let event_publisher_for_effect = event_publisher.clone();
     let finalization_in_progress_for_effect = finalization_in_progress.clone();
@@ -166,6 +176,7 @@ pub(crate) async fn compute_last_finalized_block(
         let block_dag_storage = block_dag_storage_for_effect.clone();
         let block_store = block_store_for_effect.clone();
         let deploy_storage = deploy_storage_for_effect.clone();
+        let rejected_deploy_buffer = rejected_deploy_buffer_for_effect.clone();
         let runtime_manager = runtime_manager_for_effect.clone();
         let event_publisher = event_publisher_for_effect.clone();
         let finalization_in_progress = finalization_in_progress_for_effect.clone();
@@ -176,6 +187,7 @@ pub(crate) async fn compute_last_finalized_block(
                     let finalized_set = finalized_set.clone();
                     let block_store = block_store.clone();
                     let deploy_storage = deploy_storage.clone();
+                    let rejected_deploy_buffer = rejected_deploy_buffer.clone();
                     let runtime_manager = runtime_manager.clone();
                     let event_publisher = event_publisher.clone();
                     let finalization_in_progress = finalization_in_progress.clone();
@@ -207,7 +219,39 @@ pub(crate) async fn compute_last_finalized_block(
                             // Remove block deploys from persistent store.
                             // Phase 9 (A-3): parking_lot::Mutex — no poison.
                             let deploys_count = deploys.len();
+                            let deploy_sigs_for_buffer: Vec<Vec<u8>> =
+                                deploys.iter().map(|d| d.sig.to_vec()).collect();
                             deploy_storage.lock().remove(deploys)?;
+
+                            // Purge the rejected-deploy buffer of any sig that
+                            // landed in a finalized block, so recovered deploys
+                            // don't linger after canonical inclusion. Also purge
+                            // any sig listed in `body.rejected_deploys` on this
+                            // finalized block — those are definitively lost and
+                            // must not be re-proposed from this node's buffer.
+                            //
+                            // Restored from the merge-base / sealed-floor: the
+                            // casper_engine split (HEAD) dropped this purge when
+                            // extracting `finalization_runner`. Without it,
+                            // record-driven recovery re-proposes already-finalized
+                            // deploys, double-applying them (e.g. a second write
+                            // to a single-value cell → IntegerAdd invariant
+                            // violation under the convergence green-gate).
+                            {
+                                let mut buffer_guard =
+                                    rejected_deploy_buffer.lock().map_err(|_| {
+                                        KvStoreError::LockError(
+                                            "Failed to acquire rejected_deploy_buffer lock"
+                                                .to_string(),
+                                        )
+                                    })?;
+                                for sig in &deploy_sigs_for_buffer {
+                                    let _ = buffer_guard.remove_by_sig(sig);
+                                }
+                                for rd in &block.body.rejected_deploys {
+                                    let _ = buffer_guard.remove_by_sig(&rd.sig);
+                                }
+                            }
                             let finalized_set_str = PrettyPrinter::build_string_hashes(
                                 &finalized_set.iter().map(|h| h.to_vec()).collect::<Vec<_>>(),
                             );

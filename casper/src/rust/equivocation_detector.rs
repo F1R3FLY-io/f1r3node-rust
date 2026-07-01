@@ -659,6 +659,7 @@ mod tests {
             finalized_blocks_set: imbl::HashSet::new(),
             block_metadata_index,
             deploy_index,
+            floor_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
         };
 
         for (index, block) in blocks.iter().enumerate() {

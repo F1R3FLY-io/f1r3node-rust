@@ -537,6 +537,8 @@ mod tests {
             cost: 100,
             errored: false,
             is_finalized: true,
+            finalization_state: "Finalized".to_string(),
+            rejection_count: 0,
             deployer: if is_full {
                 Some("0487def456".to_string())
             } else {

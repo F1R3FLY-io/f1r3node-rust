@@ -106,6 +106,10 @@ pub struct KeyValueDagRepresentation {
     pub block_metadata_index: Arc<PlRwLock<BlockMetadataStore>>,
     #[doc(hidden)]
     pub deploy_index: Arc<PlRwLock<KeyValueTypedStoreImpl<DeployId, BlockHashSerde>>>,
+    /// Memoized justification-derived floor per block (block hash -> floor hash).
+    /// Pure function of the block, so node-identical; persistent to avoid
+    /// re-walking to genesis on every floor query.
+    pub floor_index: KeyValueTypedStoreImpl<BlockHashSerde, BlockHashSerde>,
 }
 
 impl KeyValueDagRepresentation {
@@ -135,6 +139,27 @@ impl KeyValueDagRepresentation {
     }
 
     pub fn invalid_blocks(&self) -> imbl::HashSet<BlockMetadata> { self.invalid_blocks_set.clone() }
+
+    /// Cached justification-derived floor of a block, if already computed.
+    pub fn get_cached_floor(
+        &self,
+        block_hash: &BlockHash,
+    ) -> Result<Option<BlockHash>, KvStoreError> {
+        Ok(self
+            .floor_index
+            .get_one(&BlockHashSerde(block_hash.clone()))?
+            .map(|serde| serde.0))
+    }
+
+    /// Cache a block's justification-derived floor (pure function of the block).
+    pub fn put_cached_floor(
+        &self,
+        block_hash: BlockHash,
+        floor_hash: BlockHash,
+    ) -> Result<(), KvStoreError> {
+        self.floor_index
+            .put_one(BlockHashSerde(block_hash), BlockHashSerde(floor_hash))
+    }
 
     pub fn last_finalized_block(&self) -> BlockHash { self.last_finalized_block_hash.clone() }
 
@@ -454,6 +479,45 @@ impl KeyValueDagRepresentation {
         }
     }
 
+    /// Is `ancestor` reachable from `descendant` via ANY parent path (general
+    /// DAG ancestry), as opposed to `is_in_main_chain` which follows only the
+    /// main-parent spine. Used by multi-parent finality: a validator whose
+    /// latest message DAG-descends from a target counts as agreeing on it, even
+    /// when the target sits on a secondary (merged-in) branch. Height-pruned
+    /// BFS up the parents — a block at or below the ancestor's height cannot
+    /// have it among its strictly-lower parents, so that branch is pruned.
+    pub fn is_dag_ancestor(
+        &self,
+        ancestor: &BlockHash,
+        descendant: &BlockHash,
+    ) -> Result<bool, KvStoreError> {
+        if ancestor == descendant {
+            return Ok(true);
+        }
+
+        let stop_height = self.block_number_unsafe(ancestor)?;
+        let mut visited: HashSet<BlockHash> = HashSet::new();
+        let mut queue: VecDeque<BlockHash> = VecDeque::new();
+        visited.insert(descendant.clone());
+        queue.push_back(descendant.clone());
+
+        while let Some(current) = queue.pop_front() {
+            if current == *ancestor {
+                return Ok(true);
+            }
+            if self.block_number_unsafe(&current)? <= stop_height {
+                continue;
+            }
+            for parent in self.parents_unsafe(&current)? {
+                if visited.insert(parent.clone()) {
+                    queue.push_back(parent);
+                }
+            }
+        }
+
+        Ok(false)
+    }
+
     pub fn parents_unsafe(&self, block_hash: &BlockHash) -> Result<Vec<BlockHash>, KvStoreError> {
         let metadata = self.lookup_unsafe(block_hash)?;
         Ok(metadata.parents)
@@ -582,6 +646,8 @@ pub struct BlockDagKeyValueStorage {
     pub(crate) block_metadata_index: Arc<PlRwLock<BlockMetadataStore>>,
     pub(crate) deploy_index: Arc<PlRwLock<KeyValueTypedStoreImpl<DeployId, BlockHashSerde>>>,
     pub(crate) invalid_blocks_index: KeyValueTypedStoreImpl<BlockHashSerde, BlockMetadata>,
+    /// Memoized justification-derived floor per block (block hash -> floor hash).
+    pub(crate) floor_index: KeyValueTypedStoreImpl<BlockHashSerde, BlockHashSerde>,
     /// Equivocation tracker — RMW MUST route through
     /// `access_equivocations_tracker` (Bug #2 / T-9.2).
     pub(crate) equivocation_tracker_index: EquivocationTrackerStore,
@@ -613,6 +679,9 @@ impl BlockDagKeyValueStorage {
             KeyValueTypedStoreImpl::new(invalid_blocks_kv_store);
 
         let deploy_index_kv_store = kvm.store("deploy-index".to_string()).await?;
+        let floor_index_kv_store = kvm.store("floor-index".to_string()).await?;
+        let floor_index_db: KeyValueTypedStoreImpl<BlockHashSerde, BlockHashSerde> =
+            KeyValueTypedStoreImpl::new(floor_index_kv_store);
         let deploy_index_db: KeyValueTypedStoreImpl<DeployId, BlockHashSerde> =
             KeyValueTypedStoreImpl::new(deploy_index_kv_store);
 
@@ -621,6 +690,7 @@ impl BlockDagKeyValueStorage {
             block_metadata_index: Arc::new(PlRwLock::new(block_metadata_store)),
             deploy_index: Arc::new(PlRwLock::new(deploy_index_db)),
             invalid_blocks_index: invalid_blocks_db,
+            floor_index: floor_index_db,
             equivocation_tracker_index: equivocation_tracker_store,
             latest_messages_index: latest_messages_db,
             dag_generation: Arc::new(AtomicU64::new(0)),
@@ -678,6 +748,7 @@ impl BlockDagKeyValueStorage {
         block_metadata_index: Arc<PlRwLock<BlockMetadataStore>>,
         deploy_index: Arc<PlRwLock<KeyValueTypedStoreImpl<DeployId, BlockHashSerde>>>,
         invalid_blocks_index: KeyValueTypedStoreImpl<BlockHashSerde, BlockMetadata>,
+        floor_index: KeyValueTypedStoreImpl<BlockHashSerde, BlockHashSerde>,
         equivocation_tracker_index: EquivocationTrackerStore,
         dag_generation: Arc<AtomicU64>,
     ) -> Self {
@@ -687,6 +758,7 @@ impl BlockDagKeyValueStorage {
             block_metadata_index,
             deploy_index,
             invalid_blocks_index,
+            floor_index,
             equivocation_tracker_index,
             dag_generation,
         }
@@ -712,6 +784,16 @@ impl BlockDagKeyValueStorage {
     #[doc(hidden)]
     pub fn metadata_index_for_tests(&self) -> Arc<PlRwLock<BlockMetadataStore>> {
         self.block_metadata_index.clone()
+    }
+
+    /// Test-only accessor for the floor-index handle. Same rationale as
+    /// `deploy_index_for_tests`. `floor_index` is a plain memoization store
+    /// (block hash -> floor hash) with interior mutability, so a shared
+    /// reference suffices for the round-trip test.
+    #[cfg(any(test, feature = "test-internals"))]
+    #[doc(hidden)]
+    pub fn floor_index_for_tests(&self) -> &KeyValueTypedStoreImpl<BlockHashSerde, BlockHashSerde> {
+        &self.floor_index
     }
 
     /// Current DAG generation — incremented on every block insert.
@@ -776,6 +858,7 @@ impl BlockDagKeyValueStorage {
             finalized_blocks_set: finalized_blocks,
             block_metadata_index: self.block_metadata_index.clone(),
             deploy_index: self.deploy_index.clone(),
+            floor_index: self.floor_index.clone(),
         })
     }
 
@@ -874,14 +957,42 @@ impl BlockDagKeyValueStorage {
                 .map(|justification| &justification.validator)
                 .collect();
 
+            let newly_bonded_unseen: Vec<Validator> = newly_bonded_set
+                .difference(&justification_validators)
+                .filter_map(|validator| {
+                    match self
+                        .latest_messages_index
+                        .contains_key(ValidatorSerde((*validator).clone()))
+                    {
+                        Ok(false) => Some((*validator).clone()),
+                        _ => None,
+                    }
+                })
+                .collect();
+
             let mut result = HashMap::new();
-            for validator in newly_bonded_set.difference(&justification_validators) {
-                // This filter is required to enable adding blocks backward from higher height to lower
-                if let Ok(false) = self
-                    .latest_messages_index
-                    .contains_key(ValidatorSerde((*validator).clone()))
-                {
-                    result.insert((*validator).clone(), block_hash.clone());
+            if !newly_bonded_unseen.is_empty() {
+                let placeholder = {
+                    let guard = self.block_metadata_index.read();
+                    let dag_state = guard.dag_state().read();
+                    dag_state
+                        .height_map
+                        .get(&0)
+                        .and_then(|blocks| blocks.iter().min().cloned())
+                        .unwrap_or_else(|| block_hash.clone())
+                };
+
+                for validator in newly_bonded_unseen {
+                    tracing::debug!(
+                        target: "f1r3.trace.lm_register",
+                        via = "newly_bonded",
+                        validator = %PrettyPrinter::build_string_bytes(&validator),
+                        registered_block = %PrettyPrinter::build_string_bytes(&placeholder),
+                        inserting_sender = %PrettyPrinter::build_string_bytes(&block.sender),
+                        inserting_seq = block.seq_num,
+                        "newly bonded validator latest-message slot registered"
+                    );
+                    result.insert(validator, placeholder.clone());
                 }
             }
 
