@@ -1,0 +1,244 @@
+// VersionedRegistry.rho
+//
+// Sibling to Registry.rho. Implements the Versioned Registry FIP
+// surface (rho:lib:..., rho:serve:..., rho:registry:1.*) in stages.
+// The legacy registry (Registry.rho, _registryStore, and the
+// rho:registry:lookup / insertArbitrary / insertSigned / ops URNs)
+// is not touched.
+//
+// Step 3 added the mutation contracts (insertVersion, deprecateVersion,
+// approveVersion). Step 5 adds the resolver: a lookupVersion contract
+// that takes a versioned URN string, picks the highest matching
+// non-deprecated version per FIP semver rules, and returns the stored
+// code.
+//
+// Store layout (refactored at Step 5 to make iteration tractable):
+//
+//   _versionedRegistryStore  ↦
+//     {
+//       "lib":   Map[(deployerId, projectId) -> Map[version -> entry]],
+//       "serve": same
+//     }
+//
+// where entry = {"code": _, "deprecated": Bool, "notify": List}.
+//
+// Step 6 will replace `rho:registry:v1:internal` with the public
+// `rho:registry:1.0.0` entry point and call lookupVersion from the
+// `eval_new` URN resolver. Step 7 wires the notify-channel firing.
+
+new
+  _versionedRegistryStore,
+  bootstrapV1Api(`rho:registry:v1:internal`),
+  v1ApiCh,
+  bootstrapPublicV1(`rho:registry:1.0.0`),
+  publicV1Ch,
+  opsV1(`rho:registry:ops:1.0.0`),
+  collectNonDeprecated,
+  fireNotifications
+in {
+  _versionedRegistryStore!({"lib": {}, "serve": {}}) |
+
+  bootstrapV1Api!(*v1ApiCh) |
+  bootstrapPublicV1!(*publicV1Ch) |
+
+  // Recursive helper: walks a list of (version, entry) tuples and
+  // returns the list of versions whose entry is not deprecated.
+  contract collectNonDeprecated(@entries, @acc, ret) = {
+    match entries {
+      [] => ret!(acc)
+      [(version, entry) ...tail] => {
+        match entry.get("deprecated") {
+          true  => collectNonDeprecated!(tail, acc, *ret)
+          _     => collectNonDeprecated!(tail, acc ++ [version], *ret)
+        }
+      }
+    }
+  } |
+
+  // Recursive helper: walks a list of notify channels (stored as
+  // dereferenced processes) and sends `msg` on each. `done!(Nil)` once
+  // the list is empty so the caller can sequence on it.
+  contract fireNotifications(@notifyList, @msg, done) = {
+    match notifyList {
+      [] => done!(Nil)
+      [head ...tail] => {
+        @head!(msg) |
+        fireNotifications!(tail, msg, *done)
+      }
+    }
+  } |
+
+  for (v1Api <- v1ApiCh) {
+
+    // Public entry-point handler for `rho:registry:1.0.0`. The legacy
+    // bootstrap forwarder for byte_name(24) has already published the
+    // fixed channel onto publicV1Ch; once we receive it we install a
+    // persistent contract that responds to `getReg!?(*notify)` with
+    // a `bundle+{*v1Api}` of the v1 API surface. The notify channel
+    // is captured for Step 7's deprecation broadcast; ignored for now.
+    for (publicV1 <- publicV1Ch) {
+      contract publicV1(ret, _notify) = {
+        ret!(bundle+{*v1Api})
+      }
+    } |
+
+    contract v1Api(@"insertVersion", @ns, @deployerId, @projectId, @version, @code, ret) = {
+      if (ns == "lib" or ns == "serve") {
+        for (@store <- _versionedRegistryStore) {
+          match store.get(ns).getOrElse((deployerId, projectId), {}).get(version) {
+            Nil => {
+              _versionedRegistryStore!(
+                store.set(ns,
+                  store.get(ns).set((deployerId, projectId),
+                    store.get(ns).getOrElse((deployerId, projectId), {}).set(version,
+                      {"code": code, "deprecated": false, "notify": []})))
+              ) |
+              ret!(true)
+            }
+            _ => {
+              _versionedRegistryStore!(store) |
+              ret!(false)
+            }
+          }
+        }
+      } else {
+        ret!(false)
+      }
+    } |
+
+    contract v1Api(@"deprecateVersion", @ns, @deployerId, @projectId, @version, ret) = {
+      if (ns == "lib" or ns == "serve") {
+        for (@store <- _versionedRegistryStore) {
+          match store.get(ns).getOrElse((deployerId, projectId), {}).get(version) {
+            Nil => {
+              _versionedRegistryStore!(store) |
+              ret!(false)
+            }
+            entry => {
+              _versionedRegistryStore!(
+                store.set(ns,
+                  store.get(ns).set((deployerId, projectId),
+                    store.get(ns).get((deployerId, projectId)).set(version,
+                      entry.set("deprecated", true))))
+              ) |
+              // Fire warnings on every notify channel recorded at
+              // lookup time. The list stays in the entry — repeated
+              // deprecateVersion calls re-fire (idempotent at the
+              // contract level; clients dedupe).
+              new done in {
+                fireNotifications!(entry.get("notify"),
+                                   ("deprecated", deployerId, projectId, version),
+                                   *done) |
+                for (_ <- done) {
+                  ret!(true)
+                }
+              }
+            }
+          }
+        }
+      } else {
+        ret!(false)
+      }
+    } |
+
+    contract v1Api(@"approveVersion", @ns, @deployerId, @projectId, @version, ret) = {
+      if (ns == "lib" or ns == "serve") {
+        for (@store <- _versionedRegistryStore) {
+          match store.get(ns).getOrElse((deployerId, projectId), {}).get(version) {
+            Nil => {
+              _versionedRegistryStore!(store) |
+              ret!(false)
+            }
+            entry => {
+              _versionedRegistryStore!(
+                store.set(ns,
+                  store.get(ns).set((deployerId, projectId),
+                    store.get(ns).get((deployerId, projectId)).set(version,
+                      entry.set("deprecated", false))))
+              ) |
+              ret!(true)
+            }
+          }
+        }
+      } else {
+        ret!(false)
+      }
+    } |
+
+    // lookupVersion takes a versioned URN string, an optional notify
+    // channel (Nil if the caller doesn't want deprecation notices), and
+    // a return channel. Returns the stored `code` of the highest
+    // matching non-deprecated version, or Nil on miss / malformed input.
+    //
+    // If `notifyCh` is non-Nil, it is appended to the matched entry's
+    // notify list. A subsequent deprecateVersion on the same entry
+    // sends ("deprecated", deployerId, projectId, version) on it. The
+    // list is per-resolution (one entry per lookupVersion call), so
+    // multiple imports of the same version produce independent entries.
+    contract v1Api(@"lookupVersion", @urnStr, @notifyCh, ret) = {
+      new parsedCh in {
+        opsV1!("parseVersionedUri", urnStr, *parsedCh) |
+        for (@parsed <- parsedCh) {
+          match parsed {
+            Nil => ret!(Nil)
+            (ns, _, pk, proj, projVerPattern) => {
+              if (ns == "lib" or ns == "serve") {
+                for (@store <- _versionedRegistryStore) {
+                  match store.get(ns).get((pk, proj)) {
+                    Nil => {
+                      _versionedRegistryStore!(store) |
+                      ret!(Nil)
+                    }
+                    verMap => {
+                      new candidatesCh, bestCh in {
+                        collectNonDeprecated!(verMap.toList(), [], *candidatesCh) |
+                        for (@candidates <- candidatesCh) {
+                          opsV1!("selectBestVersion",
+                                 (projVerPattern, candidates), *bestCh) |
+                          for (@bestVer <- bestCh) {
+                            match bestVer {
+                              Nil => {
+                                _versionedRegistryStore!(store) |
+                                ret!(Nil)
+                              }
+                              v => {
+                                match notifyCh {
+                                  Nil => {
+                                    _versionedRegistryStore!(store) |
+                                    ret!(verMap.get(v).get("code"))
+                                  }
+                                  _ => {
+                                    _versionedRegistryStore!(
+                                      store.set(ns,
+                                        store.get(ns).set((pk, proj),
+                                          verMap.set(v,
+                                            verMap.get(v).set("notify",
+                                              verMap.get(v).get("notify") ++ [notifyCh]))))
+                                    ) |
+                                    ret!(verMap.get(v).get("code"))
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              } else {
+                // ns == "registry"; the v1 API itself is the entry point,
+                // exposed via `rho:registry:1.0.0`. No store entry to
+                // resolve here; the per-import notify channel passed via
+                // `getReg!?(*notify)` is captured in the public URN
+                // handler but currently has no registry-level
+                // deprecation mechanism backing it.
+                ret!(Nil)
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

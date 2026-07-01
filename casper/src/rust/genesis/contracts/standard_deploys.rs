@@ -36,6 +36,8 @@ pub use rholang::rust::interpreter::merging::mergeable_tags::{
 
 // Private keys used to sign blessed (standard) contracts
 pub const REGISTRY_PK: &str = "5a0bde2f5857124b1379c78535b07a278e3b9cefbcacc02e62ab3294c02765a1";
+pub const VERSIONED_REGISTRY_PK: &str =
+    "71fae159c934184222b4e6ae01247d17eceec6e5e48ef3808a91c1a30a99b365";
 pub const LIST_OPS_PK: &str = "867c21c6a3245865444d80e49cac08a1c11e23b35965b566bbe9f49bb9897511";
 pub const EITHER_PK: &str = "5248f8913f8572d8227a3c7787b54bd8263389f7209adc1422e36bb2beb160dc";
 pub const MAKE_MINT_PK: &str = "de19d53f28d4cdee74bad062342d8486a90a652055f3de4b2efa5eb2fccc9d53";
@@ -57,6 +59,7 @@ pub const TOKEN_METADATA_PK: &str =
 
 // Timestamps for each deploy
 pub const REGISTRY_TIMESTAMP: i64 = 1559156071321;
+pub const VERSIONED_REGISTRY_TIMESTAMP: i64 = 1781568000000;
 pub const LIST_OPS_TIMESTAMP: i64 = 1559156082324;
 pub const EITHER_TIMESTAMP: i64 = 1559156217509;
 pub const MAKE_MINT_TIMESTAMP: i64 = 1559156452968;
@@ -69,6 +72,7 @@ pub const TOKEN_METADATA_TIMESTAMP: i64 = 1737500000000;
 
 lazy_static! {
     pub static ref REGISTRY_PUB_KEY: PublicKey = to_public(REGISTRY_PK);
+    pub static ref VERSIONED_REGISTRY_PUB_KEY: PublicKey = to_public(VERSIONED_REGISTRY_PK);
     pub static ref LIST_OPS_PUB_KEY: PublicKey = to_public(LIST_OPS_PK);
     pub static ref EITHER_PUB_KEY: PublicKey = to_public(EITHER_PK);
     pub static ref NON_NEGATIVE_NUMBER_PUB_KEY: PublicKey = to_public(NON_NEGATIVE_NUMBER_PK);
@@ -85,6 +89,7 @@ lazy_static! {
 pub fn system_public_keys() -> Vec<&'static PublicKey> {
     vec![
         &REGISTRY_PUB_KEY,
+        &VERSIONED_REGISTRY_PUB_KEY,
         &LIST_OPS_PUB_KEY,
         &EITHER_PUB_KEY,
         &NON_NEGATIVE_NUMBER_PUB_KEY,
@@ -127,6 +132,15 @@ pub fn registry(shard_id: &str) -> Signed<DeployData> {
         embedded_source("Registry.rho", embedded_rho::REGISTRY),
         REGISTRY_PK,
         REGISTRY_TIMESTAMP,
+        shard_id,
+    )
+}
+
+pub fn versioned_registry(shard_id: &str) -> Signed<DeployData> {
+    to_deploy(
+        embedded_source("VersionedRegistry.rho", embedded_rho::VERSIONED_REGISTRY),
+        VERSIONED_REGISTRY_PK,
+        VERSIONED_REGISTRY_TIMESTAMP,
         shard_id,
     )
 }

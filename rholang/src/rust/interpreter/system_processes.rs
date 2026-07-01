@@ -15,7 +15,7 @@ use k256::ecdsa::signature::hazmat::PrehashSigner;
 use k256::ecdsa::{Signature, SigningKey};
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::g_unforgeable::UnfInstance::GPrivateBody;
-use models::rhoapi::{Bundle, Expr, GPrivate, GUnforgeable, ListParWithRandom, Par, Var};
+use models::rhoapi::{Bundle, ETuple, Expr, GPrivate, GUnforgeable, ListParWithRandom, Par, Var};
 use models::rust::casper::protocol::casper_message;
 use models::rust::casper::protocol::casper_message::BlockMessage;
 use models::rust::rholang::implicits::single_expr;
@@ -31,9 +31,10 @@ use super::ollama_service::{ChatMessage, SharedOllamaService};
 use super::openai_service::SharedOpenAIService;
 use super::pretty_printer::PrettyPrinter;
 use super::registry::registry::Registry;
+use super::registry::{semver, versioned_urn};
 use super::rho_runtime::RhoISpace;
 use super::rho_type::{
-    RhoBoolean, RhoByteArray, RhoDeployId, RhoDeployerId, RhoName, RhoNumber, RhoString,
+    RhoBoolean, RhoByteArray, RhoDeployId, RhoDeployerId, RhoList, RhoName, RhoNumber, RhoString,
     RhoSysAuthToken, RhoUri,
 };
 use super::util::vault_address::VaultAddress;
@@ -84,6 +85,92 @@ pub fn byte_name(b: Byte) -> Par {
     }])
 }
 
+/// Implementation of the `"matchesVersion"` op. Argument is a 2-tuple
+/// Par `(pattern_str, version_str)`; both fields are unwrapped, parsed
+/// through `semver`, and matched. Returns `false` on any malformed
+/// input so Rholang callers can safely skip non-conforming candidates
+/// rather than handling per-error states.
+fn matches_version(arg: &Par) -> bool {
+    let (pat_par, ver_par) = match unapply_tuple2(arg) {
+        Some(t) => t,
+        None => return false,
+    };
+    let (Some(pat_str), Some(ver_str)) =
+        (RhoString::unapply(&pat_par), RhoString::unapply(&ver_par))
+    else {
+        return false;
+    };
+    let (Ok(pattern), Ok(version)) = (
+        semver::parse_pattern(&pat_str),
+        semver::parse_version(&ver_str),
+    ) else {
+        return false;
+    };
+    pattern.matches(&version)
+}
+
+/// Implementation of `"selectBestVersion"`. Arg is a 2-tuple
+/// `(pattern_str, versions_list)`. Returns the highest matching
+/// version as a Rholang string, or `Nil` if none match or input is
+/// malformed.
+fn select_best_version(arg: &Par) -> Par {
+    let Some((pattern_par, versions_par)) = unapply_tuple2(arg) else {
+        return Par::default();
+    };
+    let Some(pattern_str) = RhoString::unapply(&pattern_par) else {
+        return Par::default();
+    };
+    let Ok(pattern) = semver::parse_pattern(&pattern_str) else {
+        return Par::default();
+    };
+    let Some(version_list) = RhoList::unapply(&versions_par) else {
+        return Par::default();
+    };
+
+    let mut versions = Vec::with_capacity(version_list.len());
+    for p in &version_list {
+        if let Some(s) = RhoString::unapply(p) {
+            if let Ok(v) = semver::parse_version(&s) {
+                versions.push(v);
+            }
+        }
+    }
+
+    match pattern.best_match(&versions) {
+        Some(best) => RhoString::create_par(best.to_string()),
+        None => Par::default(),
+    }
+}
+
+fn unapply_tuple2(p: &Par) -> Option<(Par, Par)> {
+    let expr = single_expr(p)?;
+    if let ExprInstance::ETupleBody(ETuple { ps, .. }) = expr.expr_instance? {
+        if ps.len() == 2 {
+            return Some((ps[0].clone(), ps[1].clone()));
+        }
+    }
+    None
+}
+
+/// Encode a parsed versioned-registry URN as a 5-tuple Par for the
+/// Rholang surface. Absent fields (`registry` shape) become `Nil`.
+fn parsed_urn_to_tuple(parsed: versioned_urn::ParsedUrn) -> Par {
+    let opt_string = |s: Option<String>| s.map(RhoString::create_par).unwrap_or_default();
+    Par::default().with_exprs(vec![Expr {
+        expr_instance: Some(ExprInstance::ETupleBody(ETuple {
+            ps: vec![
+                RhoString::create_par(parsed.namespace),
+                RhoString::create_par(parsed.service_version),
+                opt_string(parsed.pub_key),
+                opt_string(parsed.project_id),
+                opt_string(parsed.project_version),
+            ],
+            locally_free: Vec::new(),
+            connective_used: false,
+        })),
+    }])
+}
+
 pub struct FixedChannels;
 
 impl FixedChannels {
@@ -123,11 +210,33 @@ impl FixedChannels {
 
     pub fn sys_authtoken_ops() -> Par { byte_name(18) }
 
+    // TODO(Step 6): rename to `reg_v1` and re-URN to `rho:registry:1.0.0`
+    // once the public entry point of the Versioned Registry FIP lands.
+    // Step 3 uses this byte slot as a test-only handle so RhoSpec can
+    // exercise insertVersion / deprecateVersion / approveVersion before
+    // the resolver and entry-point are wired up.
+    pub fn reg_v1_internal() -> Par { byte_name(19) }
+
     pub fn gpt4() -> Par { byte_name(20) }
 
     pub fn dalle3() -> Par { byte_name(21) }
 
     pub fn text_to_audio() -> Par { byte_name(22) }
+
+    /// Versioned-registry helper URN (parses `rho:lib:…` / `rho:serve:…` /
+    /// `rho:registry:…` URNs, also supports the legacy `buildUri` op).
+    /// Lives alongside `rho:registry:ops` rather than extending it so the
+    /// legacy `Registry.rho` keeps calling the same handler.
+    pub fn reg_ops_v1() -> Par { byte_name(23) }
+
+    /// Public versioned-registry entry point (`rho:registry:1.0.0`).
+    /// The Rholang-side listener in VersionedRegistry.rho accepts a
+    /// `(returnCh, notifyCh)` pair and replies with `bundle+{v1Api}` for
+    /// the v1 API surface (insertVersion / deprecateVersion /
+    /// approveVersion / lookupVersion). The test-only
+    /// `rho:registry:v1:internal` URN (at byte 19) stays in place during
+    /// the rollout; a follow-up cleanup commit will remove it.
+    pub fn reg_v1() -> Par { byte_name(24) }
 
     pub fn grpc_tell() -> Par { byte_name(25) }
 
@@ -152,6 +261,20 @@ impl FixedChannels {
     pub fn chroma_query() -> Par { byte_name(35) }
 
     pub fn chroma_delete_documents() -> Par { byte_name(36) }
+
+    /// Unified URN-binding dispatcher. The handler `registry_lookup`
+    /// (see below) serves any URN: legacy URNs are resolved by
+    /// consulting `ProcessContext::urn_map`; versioned URNs
+    /// (`rho:lib:…` / `rho:serve:…` / `rho:registry:<ver>`) are
+    /// delegated to the Rholang-side `lookupVersion` contract on the
+    /// v1 API channel; unknown URNs raise a runtime error.
+    ///
+    /// Registered under `rho:internal:registry_lookup` so the upcoming
+    /// `eval_new` rewrite (a follow-up commit) can target it via that
+    /// URN. Exposed publicly for now to make the handler testable;
+    /// future cleanup may hide it behind the byte_name once eval_new
+    /// stops needing to resolve URNs through `urn_map` itself.
+    pub fn registry_lookup() -> Par { byte_name(37) }
 }
 
 pub struct BodyRefs;
@@ -172,6 +295,7 @@ impl BodyRefs {
     pub const DEPLOYER_ID_OPS: i64 = 14;
     pub const REG_OPS: i64 = 15;
     pub const SYS_AUTHTOKEN_OPS: i64 = 16;
+    pub const REG_OPS_V1: i64 = 17;
     pub const GPT4: i64 = 18;
     pub const DALLE3: i64 = 19;
     pub const TEXT_TO_AUDIO: i64 = 20;
@@ -187,6 +311,7 @@ impl BodyRefs {
     pub const CHROMA_UPSERT_ENTRIES: i64 = 34;
     pub const CHROMA_QUERY: i64 = 35;
     pub const CHROMA_DELETE_DOCUMENTS: i64 = 36;
+    pub const REGISTRY_LOOKUP: i64 = 30;
 }
 
 pub fn non_deterministic_ops() -> HashSet<i64> {
@@ -209,6 +334,11 @@ pub struct ProcessContext {
     pub block_data: Arc<tokio::sync::RwLock<BlockData>>,
     pub invalid_blocks: InvalidBlocks,
     pub deploy_data: Arc<tokio::sync::RwLock<DeployData>>,
+    /// The runtime's URN → Par binding table, shared with
+    /// `DebruijnInterpreter`. Plumbed in so a future
+    /// `registry_lookup` system process can serve legacy URNs by
+    /// consulting it directly instead of duplicating the table.
+    pub urn_map: Arc<HashMap<String, Par>>,
     pub system_processes: SystemProcesses,
 }
 
@@ -219,6 +349,7 @@ impl ProcessContext {
         block_data: Arc<tokio::sync::RwLock<BlockData>>,
         invalid_blocks: InvalidBlocks,
         deploy_data: Arc<tokio::sync::RwLock<DeployData>>,
+        urn_map: Arc<HashMap<String, Par>>,
         openai_service: SharedOpenAIService,
         ollama_service: SharedOllamaService,
         grpc_client_service: GrpcClientService,
@@ -230,11 +361,13 @@ impl ProcessContext {
             block_data: block_data.clone(),
             invalid_blocks,
             deploy_data: deploy_data.clone(),
+            urn_map: urn_map.clone(),
             system_processes: SystemProcesses::create(
                 dispatcher,
                 space,
                 block_data,
                 deploy_data,
+                urn_map,
                 openai_service,
                 ollama_service,
                 grpc_client_service,
@@ -391,6 +524,10 @@ pub struct SystemProcesses {
     pub space: RhoISpace,
     pub block_data: Arc<tokio::sync::RwLock<BlockData>>,
     pub deploy_data: Arc<tokio::sync::RwLock<DeployData>>,
+    /// Shared with `ProcessContext` and `DebruijnInterpreter`. The
+    /// upcoming `registry_lookup` handler consults this when serving
+    /// legacy URNs.
+    pub urn_map: Arc<HashMap<String, Par>>,
     openai_service: SharedOpenAIService,
     ollama_service: SharedOllamaService,
     grpc_client_service: GrpcClientService,
@@ -405,6 +542,7 @@ impl SystemProcesses {
         space: RhoISpace,
         block_data: Arc<tokio::sync::RwLock<BlockData>>,
         deploy_data: Arc<tokio::sync::RwLock<DeployData>>,
+        urn_map: Arc<HashMap<String, Par>>,
         openai_service: SharedOpenAIService,
         ollama_service: SharedOllamaService,
         grpc_client_service: GrpcClientService,
@@ -415,6 +553,7 @@ impl SystemProcesses {
             space,
             block_data,
             deploy_data,
+            urn_map,
             openai_service,
             ollama_service,
             grpc_client_service,
@@ -672,6 +811,136 @@ impl SystemProcesses {
             .unwrap_or_default();
 
         produce(&[response], ack).await
+    }
+
+    /// Handler for the versioned registry helper URN
+    /// (`rho:registry:ops:1.0.0`). Three ops:
+    ///
+    /// - `"buildUri"(bytes)` — identical to the legacy `rho:registry:ops`
+    ///   path, exposed here so contracts that prefer the versioned form
+    ///   don't need to mix surfaces. Returns the `rho:id:…` URI.
+    /// - `"parseVersionedUri"(urn)` — splits a `rho:lib:…` / `rho:serve:…`
+    ///   / `rho:registry:…` URN into a 5-tuple
+    ///   `(namespace, service_version, pub_key, project_id, project_version)`
+    ///   where the trailing three are `Nil` for the `rho:registry:` shape.
+    ///   Returns `Nil` (an empty Par) on malformed input.
+    /// - `"matchesVersion"((pattern, version))` — semver match. Returns
+    ///   `true` iff the version satisfies the pattern (`*`, `M.*`,
+    ///   `M.m.*`, or exact). Wildcards never match prereleases; an exact
+    ///   pattern matches whatever it spells. Returns `false` on
+    ///   malformed input rather than failing — the Rholang caller can
+    ///   then skip that candidate.
+    /// - `"selectBestVersion"((pattern, [version, …]))` — picks the
+    ///   highest matching version string from a Rholang list. Returns
+    ///   `Nil` if none match or on malformed input. Pushes the semver
+    ///   ordering into Rust so the Rholang resolver doesn't have to
+    ///   implement comparison itself.
+    ///
+    /// The legacy `registry_ops` handler is left untouched.
+    pub async fn registry_ops_v1(
+        &self,
+        contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
+    ) -> Result<Vec<Par>, InterpreterError> {
+        let Some((produce, _, _, args)) = self.is_contract_call().unapply(contract_args) else {
+            return Err(illegal_argument_error("registry_ops_v1"));
+        };
+
+        let [first_par, argument, ack] = args.as_slice() else {
+            return Err(illegal_argument_error("registry_ops_v1"));
+        };
+
+        let response = match RhoString::unapply(first_par).as_deref() {
+            Some("buildUri") => RhoByteArray::unapply(argument)
+                .map(|ba| {
+                    let hash_key_bytes = Blake2b256::hash(ba);
+                    RhoUri::create_par(Registry::build_uri(&hash_key_bytes))
+                })
+                .unwrap_or_default(),
+
+            Some("parseVersionedUri") => RhoString::unapply(argument)
+                .and_then(|s| versioned_urn::parse_urn(&s))
+                .map(parsed_urn_to_tuple)
+                .unwrap_or_default(),
+
+            Some("matchesVersion") => RhoBoolean::create_par(matches_version(argument)),
+
+            Some("selectBestVersion") => select_best_version(argument),
+
+            _ => return Err(illegal_argument_error("registry_ops_v1")),
+        };
+
+        produce(&[response], ack).await
+    }
+
+    /// Unified URN-binding dispatcher. Handles every URN shape:
+    ///
+    /// - **Legacy URN** (anything in `self.urn_map`, e.g. `rho:io:stdout`):
+    ///   produce the stored Par on `ret`. The stored Par is the
+    ///   write-only bundle around the URN's fixed channel, exactly what
+    ///   `eval_new`'s fast path used to bind directly.
+    /// - **Versioned URN** (`rho:lib:…`, `rho:serve:…`, `rho:registry:<ver>`):
+    ///   inject `("lookupVersion", urn, Nil, *ret)` onto the v1 API
+    ///   channel via the same `produce` capability we'd use to reply
+    ///   to `ret` directly. The Rholang `lookupVersion` contract picks
+    ///   it up, resolves the version, and produces the resulting `code`
+    ///   Par on `ret`. The original requester gets the result.
+    /// - **Unknown URN**: return `InterpreterError` — the deploy halts
+    ///   with a runtime error, matching the design directive that
+    ///   lookup failure is fatal.
+    ///
+    /// Once `eval_new` is rewritten (a follow-up commit) to synthesize
+    /// `new tmpRet in { registryLookup!(URN, *tmpRet) | for(x <- tmpRet) { P } }`
+    /// for every `new x(URN)` binding, this handler is the single
+    /// dispatch point for URN resolution.
+    pub async fn registry_lookup(
+        &self,
+        contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
+    ) -> Result<Vec<Par>, InterpreterError> {
+        let Some((produce, _, _, args)) = self.is_contract_call().unapply(contract_args) else {
+            return Err(illegal_argument_error("registry_lookup"));
+        };
+
+        let [urn_par, ret_par] = args.as_slice() else {
+            return Err(illegal_argument_error("registry_lookup"));
+        };
+
+        let urn_str = RhoString::unapply(urn_par)
+            .or_else(|| RhoUri::unapply(urn_par))
+            .ok_or_else(|| {
+                illegal_argument_error("registry_lookup: urn arg must be a String or Uri")
+            })?;
+
+        // 1. Legacy URN: serve directly from urn_map.
+        if let Some(stored) = self.urn_map.get(&urn_str) {
+            let stored_clone = stored.clone();
+            produce(&[stored_clone], ret_par).await?;
+            return Ok(vec![]);
+        }
+
+        // 2. Versioned URN: delegate to v1Api's lookupVersion contract.
+        //    The produce here goes to the v1Api channel, not to ret;
+        //    the contract will produce on ret itself. We re-encode the
+        //    URN as a String regardless of whether the caller sent a
+        //    String or a Uri Par, because v1Api's `parseVersionedUri`
+        //    only accepts String.
+        if versioned_urn::parse_urn(&urn_str).is_some() {
+            let msg = vec![
+                RhoString::create_par("lookupVersion".to_string()),
+                RhoString::create_par(urn_str.clone()),
+                Par::default(), // Nil notify — the upcoming eval_new
+                // rewrite will plumb a per-import
+                // notify channel through here.
+                ret_par.clone(),
+            ];
+            produce(&msg, &FixedChannels::reg_v1_internal()).await?;
+            return Ok(vec![]);
+        }
+
+        // 3. Unknown URN.
+        Err(InterpreterError::ReduceError(format!(
+            "registry_lookup: unknown URN: {}",
+            urn_str
+        )))
     }
 
     pub async fn sys_auth_token_ops(
