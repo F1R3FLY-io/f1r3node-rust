@@ -826,6 +826,22 @@ pub fn merge(
                             base_get_data,
                         )?))
                     } else {
+                        // §3c single-value-cell discriminator: reject a merge that would
+                        // over-fill a single-value (number) cell via a write this merge did
+                        // not fold. Registry / TreeHashMap nodes are non-numeric and exempt.
+                        // Prevents the RhoVM IntegerAdd single-value invariant tripping at
+                        // read time (RCA-asi-devnet-finality-halt). `added`-empty changes
+                        // skip the base read inside the helper.
+                        if !channel_changes.added.is_empty() {
+                            let base = reader.get_data(hash)?;
+                            let base_bin = reader.get_data_proj_binary(hash)?;
+                            RholangMergingLogic::check_single_value_cell_not_overfilled(
+                                hash,
+                                &base,
+                                &base_bin,
+                                channel_changes,
+                            )?;
+                        }
                         Ok(None)
                     }
                 },
