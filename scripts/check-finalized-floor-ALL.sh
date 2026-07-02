@@ -5,17 +5,19 @@
 # Runs every formal layer for the feature under a bounded memory envelope:
 #
 #   1. Rocq  (AUTHORITATIVE) — builds formal/rocq/finalized_floor and asserts the
-#      capstone `finalized_floor_merge_correct` is axiom-free. Any failure here
-#      fails the gate.
-#   2. TLA+  (fail-soft)     — TLC on the POST-fix MC_FinalizedFloor.cfg (must
-#      pass) and the PRE-fix MC_FinalizedFloor_pre_fix.cfg (must produce the
-#      write-loss counterexample). SKIPPED if no TLC jar is available.
-#   3. Wolfram (fail-soft)   — runs delta_ratchet.wl (ratchet instability).
-#      SKIPPED if no kernel is on PATH, or if the CLI kernel cannot bind the
-#      license in this shell (the model is validated via the licensed Wolfram
-#      MCP evaluator; a `mathpass` password is version-keyed, so a CLI kernel
-#      whose entry was issued for another major version reports "no valid
-#      password" even though the license itself is valid).
+#      three capstones (finalized_floor_merge_correct / _selection_correct /
+#      _arithmetic_correct) are axiom-free. Any failure here fails the gate.
+#   2. TLA+  (fail-soft)     — TLC on the POST-fix MC_FinalizedFloor.cfg + the
+#      H3/T-PS MC_FinalizedFloorScan.cfg (both must pass) and the two PRE-fix cfgs
+#      (both must reproduce their counterexample). SKIPPED if no TLC jar.
+#   3. Z3    (fail-soft)     — ft_algebra + BitVec-64 IntegerAdd launder witnesses.
+#   4. Sage  (fail-soft)     — FT-algebra identity + finalization-margin monotonicity.
+#   5. Wolfram (fail-soft)   — delta_ratchet.wl (ratchet instability). SKIPPED if
+#      no kernel is on PATH, or if the CLI kernel cannot bind the license in this
+#      shell (the model is validated via the licensed Wolfram MCP evaluator; a
+#      `mathpass` password is version-keyed, so a CLI kernel whose entry was
+#      issued for another major version reports "no valid password" even though
+#      the license itself is valid).
 #
 # POLICY: this script is for LOCAL use only. Do NOT wire it (or any Rocq/TLA+/
 # Wolfram step) into .github/workflows/* — an earlier formal-CI workflow was
@@ -49,7 +51,7 @@ capped() {
   fi
 }
 
-echo "== [1/3] Rocq (authoritative) =="
+echo "== [1/5] Rocq (authoritative) =="
 if command -v coqc >/dev/null 2>&1 || [[ -x "$HOME/.opam/default/bin/coqc" ]]; then
   # shellcheck disable=SC1090
   eval "$(opam env 2>/dev/null)" 2>/dev/null || true
@@ -63,13 +65,16 @@ if command -v coqc >/dev/null 2>&1 || [[ -x "$HOME/.opam/default/bin/coqc" ]]; t
     cat > "$chk" <<'EOF'
 From FinalizedFloor Require Import MainTheorem.
 Print Assumptions finalized_floor_merge_correct.
+Print Assumptions finalized_floor_selection_correct.
+Print Assumptions finalized_floor_arithmetic_correct.
 EOF
     out=$(coqc -Q "$ROCQ_DIR/theories" FinalizedFloor "$chk" 2>&1)
     rm -rf "$tmpd"
-    if grep -q "Closed under the global context" <<<"$out"; then
-      pass "capstone finalized_floor_merge_correct is axiom-free"
+    n_closed=$(grep -c "Closed under the global context" <<<"$out")
+    if [[ "$n_closed" == "3" ]]; then
+      pass "all 3 capstones axiom-free (merge_correct, selection_correct, arithmetic_correct)"
     else
-      fail "capstone is NOT axiom-free:"; echo "$out" | sed 's/^/      /'
+      fail "capstones NOT all axiom-free ($n_closed/3 Closed):"; echo "$out" | sed 's/^/      /'
     fi
   else
     fail "Rocq build failed (see /tmp/ff_rocq_build.log)"; tail -20 /tmp/ff_rocq_build.log | sed 's/^/      /'
@@ -78,7 +83,7 @@ else
   fail "coqc not found — Rocq is authoritative, cannot skip"
 fi
 
-echo "== [2/3] TLA+ (fail-soft) =="
+echo "== [2/5] TLA+ (fail-soft) =="
 TLC_JAR="${TLC_JAR:-/usr/share/java/tla2tools.jar}"
 if [[ -f "$TLC_JAR" ]] || command -v tlc >/dev/null 2>&1; then
   # shellcheck disable=SC1091
@@ -99,11 +104,55 @@ if [[ -f "$TLC_JAR" ]] || command -v tlc >/dev/null 2>&1; then
       fail "TLA+ pre-fix failed for the wrong reason (see /tmp/ff_tlc_pre.log)"
     fi
   fi
+  # H3 / T-PS scan model: post-fix (BadCut=0) must PASS.
+  if tlc_run "$(tlc_metadir ffscan_gate)" "$TLA_DIR/MC_FinalizedFloorScan.cfg" "$TLA_DIR/FinalizedFloorScan.tla" >/tmp/ff_tlc_scan.log 2>&1; then
+    pass "TLA+ scan post-fix (H3 no-drop for ANY parent set = T-PS)"
+  else
+    fail "TLA+ scan MC_FinalizedFloorScan.cfg did NOT pass (see /tmp/ff_tlc_scan.log)"
+  fi
+  # H3 bug (BadCut=1, cut above floor): must produce the drop counterexample.
+  if tlc_run "$(tlc_metadir ffscan_bug_gate)" "$TLA_DIR/MC_FinalizedFloorScan_bug.cfg" "$TLA_DIR/FinalizedFloorScan.tla" >/tmp/ff_tlc_scan_bug.log 2>&1; then
+    fail "TLA+ scan bug should VIOLATE Inv_NoParentWriteDropped but passed"
+  else
+    if grep -q "Inv_NoParentWriteDropped is violated" /tmp/ff_tlc_scan_bug.log; then
+      pass "TLA+ scan bug reproduces the H3 cut-above-floor drop"
+    else
+      fail "TLA+ scan bug failed for the wrong reason (see /tmp/ff_tlc_scan_bug.log)"
+    fi
+  fi
 else
   skip "no TLC jar (\$TLC_JAR) or 'tlc' on PATH"
 fi
 
-echo "== [3/3] Wolfram (fail-soft) =="
+echo "== [3/5] Z3 cross-witness (fail-soft) =="
+if command -v python3 >/dev/null 2>&1 && python3 -c 'import z3' >/dev/null 2>&1; then
+  if python3 "$REPO_ROOT/formal/z3/finalized_floor/ft_algebra_crosswitness.py" >/tmp/ff_z3_ft.log 2>&1; then
+    pass "Z3 FT-algebra + L-ANC/L-SNAP monotonicity + merge determinism"
+  else
+    fail "Z3 ft_algebra_crosswitness.py failed (see /tmp/ff_z3_ft.log)"
+  fi
+  if python3 "$REPO_ROOT/formal/z3/finalized_floor/integeradd_launder_bitvec.py" >/tmp/ff_z3_ia.log 2>&1; then
+    pass "Z3 BitVec-64 IntegerAdd launder (exists on wrap; checked_combine launder-free)"
+  else
+    fail "Z3 integeradd_launder_bitvec.py failed (see /tmp/ff_z3_ia.log)"
+  fi
+else
+  skip "no python3 z3 module"
+fi
+
+echo "== [4/5] Sage cross-witness (fail-soft) =="
+if command -v sage >/dev/null 2>&1; then
+  if sage "$REPO_ROOT/formal/sage/finalized_floor/ft_algebra.sage" >/tmp/ff_sage.log 2>&1 \
+       && grep -q "ALL PASS" /tmp/ff_sage.log; then
+    pass "Sage FT-algebra identity + finalization-margin monotonicity"
+  else
+    fail "Sage ft_algebra.sage failed (see /tmp/ff_sage.log)"
+  fi
+else
+  skip "no sage on PATH"
+fi
+
+echo "== [5/5] Wolfram (fail-soft) =="
 # Prefer wolframscript (WolframID/cloud licensing), then the classic `math`
 # kernel (reads $UserBaseDirectory/Licensing/mathpass), then `wolfram`.
 WL_BIN=""; WL_RUN=()

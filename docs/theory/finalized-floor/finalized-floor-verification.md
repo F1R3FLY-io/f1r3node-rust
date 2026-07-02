@@ -200,7 +200,16 @@ the ratchet collapses and over-cap is safe.
 | **Δ bound (driver)** | floor distance stays ≤ cap | TLA⁺ `Inv_DeltaWithinCap` |
 | **L3/L5 liveness** | chain still progresses despite the backstop | TLA⁺ `Liveness_Progress` |
 | **ratchet instability** | buggy advance is structurally unstable | Wolfram `delta_ratchet.wl` |
-| **capstone** | all of the above, axiom-free | Rocq `MainTheorem.finalized_floor_merge_correct` |
+| **T-SOUND** | chosen floor is a sound base; `None` ⇒ Err correct (S4) | Rocq `Selection.select_sound`, `select_none_correct` |
+| **T-LIN** | a Case-A base is a common DAG-ancestor (one chain) | Rocq `Selection.case_a_common_ancestor` |
+| **T-FIN** | the chosen floor is finalized | Rocq `Selection.select_finalized` |
+| **T-PS** | safety for ANY parent list (unconstrained oracle) | Rocq `Selection.T_PS`; TLA⁺ `FinalizedFloorScan` (nondeterministic parent set) |
+| **T-COMM** | committee = `bonds_of(floor)`, a pure fn of the floor (S8) | Rocq `Selection.committee_is_floor_bonds` |
+| **H3 coverage** | floor-bounded scan drops no parent write ≥ floor | Rocq `Selection.scope_covers_band`; TLA⁺ `FinalizedFloorScan` (`.cfg` PASS, `_bug.cfg` counterexample) |
+| **T-ALG (semilattice)** | BitmaskOr / keep-one fold laws | Rocq `Merge` (`Nat.lor` / `Nat.max`) |
+| **T-ALG (IntegerAdd c/d)** | wrapping-add group + checked-apply reject overflow/`<0` (S7) | Rocq `IntegerAdd.wadd_assoc`, `checked_apply_rejects_overflow`/`_negative` |
+| **IntegerAdd launder** | fail-loudly fix is launder-free + supply-cap bound | Rocq `IntegerAdd.launder_exhibit`/`checked_combine_sound`/`supply_cap_no_launder`; Z3 `integeradd_launder_bitvec.py`; Rust merger tests |
+| **capstone** | all of the above, axiom-free | Rocq `MainTheorem.{finalized_floor_merge_correct, finalized_floor_selection_correct, finalized_floor_arithmetic_correct}` |
 
 ---
 
@@ -218,7 +227,9 @@ Rocq/Coq 9.1.1, Stdlib-only. Every theorem is checked with `Print Assumptions`
 | `Floor.v` | CliqueOracle | **T-CACHE** (`warm_eq_cold`, `frontier_cache_transparent`) |
 | `Merge.v` | — | semilattice fold: **T-DETMERGE/T-CONV** (`merge_*_perm`), **T-K1** (`merge_or_no_lost_bit`) |
 | `Recovery.v` | — | **T-NDA** (`apply_idem`, `no_double_apply`) |
-| `MainTheorem.v` | all | capstone `finalized_floor_merge_correct` |
+| `Selection.v` | Floor, CliqueOracle | the Case-A/B sound-base pick: **T-SOUND**, **T-LIN**, **T-PS**, **T-FIN**, **T-COMM**, **H3** (`select_sound`, `select_none_correct`, `case_a_common_ancestor`, `T_PS`, `select_finalized`, `committee_is_floor_bonds`, `scope_covers_band`) |
+| `IntegerAdd.v` | — | signed-64 wrapping: **T-ALG(c)** (`wadd_assoc`), **T-ALG(d)** (`checked_apply_rejects_*`), launder `launder_exhibit`/`checked_combine_sound`/`supply_cap_no_launder` |
+| `MainTheorem.v` | all | capstones `finalized_floor_merge_correct`, `finalized_floor_selection_correct`, `finalized_floor_arithmetic_correct` |
 
 The finalization model is a faithful monotone abstraction of `ft_witnessed`:
 `Finalized c J b` := *some majority-weight sub-committee all agree on `b`* (a
@@ -247,6 +258,14 @@ systemd-run --user --scope -p MemoryMax=16G -p CPUQuota=1800% -p TasksMax=200 \
   (no lossy merge; scope-gate demoted). TLC **passes**: `Inv_NoLostParentWrite`,
   `Inv_DeltaWithinCap`, `Inv_FloorMonotone`, and the temporal `Liveness_Progress`
   all hold.
+
+`FinalizedFloorScan.tla` models the **H3 scan + T-PS** that `FinalizedFloor.tla`
+abstracts away: per-block writes collected by the floor-bounded scan over an
+**unconstrained** parent set (any nonempty subset). `MC_FinalizedFloorScan.cfg`
+(`BadCut = 0`, the fix) **passes** — `Inv_NoParentWriteDropped` + `Inv_BandCovered`
+hold for every parent set (H3 is now model-checked, not assumed; T-PS holds);
+`MC_FinalizedFloorScan_bug.cfg` (`BadCut = 1`, the old cut-above-floor bound) is
+**violated** (the H3 counterexample).
 
 Run under the bounded envelope:
 
@@ -307,34 +326,56 @@ decision — no fork.** The genuine residual is *precision*: for stakes `> 2²�
 cross-cutting to the whole clique oracle): decide finalization with exact integer
 arithmetic `2q·den ≥ S·(den+num)` for `θ = num/den`, removing the fuzz entirely.
 
-### IntegerAdd overflow-launder asymmetry
+### IntegerAdd overflow-launder asymmetry — **FIXED** (Phase 6, W2/W3)
 
-`merging_logic.rs:40` `combine_mergeable_value` folds `IntegerAdd` diffs with
+`merging_logic.rs` `combine_mergeable_value` folded `IntegerAdd` diffs with
 `wrapping_add` (silent), while `conflict_set_merger.rs:762` applies to the base
-with `checked_add` (rejects on overflow/negative). A diff sequence that wraps in
-`combine` can therefore launder an overflow past the `checked_add` guard. Reachable
-only when a diff sum exceeds `i64::MAX ≈ 9.2×10¹⁸` — not for realistic token
-supply. **Recommended hardening** (future, cross-cutting to the rspace++ merger):
-make `combine_mergeable_value` overflow-checked (return `Option`/`Result`) so
-overflow is detected consistently rather than laundered.
+with `checked_add` (rejects on overflow/negative). A branch whose diffs wrapped in
+`combine` could launder an overflow past the `checked_add` guard with a wrong
+value (reachable only above `i64::MAX ≈ 9.2×10¹⁸`, so not for realistic supply).
 
-> A9 and the overflow-launder are latent, out-of-scope-for-this-feature risks in
-> the shared clique-oracle / merge-algebra subsystems; each is documented with a
-> precise fix so it can be hardened as a separate, independently-verified change.
+Resolution (user decision: **both** — fix *and* prove bounded):
+- **Fix (fail loudly):** `combine_mergeable_value` now returns `Option<i64>` —
+  IntegerAdd uses `checked_add` (`None` on overflow), propagated through
+  `EventLogIndex::combine` (Level A) and `cal_merged_result` (Level B, the
+  confirmed launder) so a wrapping combine **rejects the branch** instead of
+  laundering. BitmaskOr is unchanged. Regression tests at both levels
+  (`combine_rejects_integer_add_overflow`,
+  `cal_merged_result_rejects_integer_add_overflow_launder`).
+- **Formal:** Rocq `IntegerAdd.v` `launder_exhibit` confirms the defect is real,
+  `checked_combine_sound` proves the fix is launder-free, `supply_cap_no_launder`
+  proves the defense-in-depth bound; the Z3 BitVec-64 witness confirms the same
+  against exact machine `i64` (`bvadd = wrapping_add`).
+
+### A9 — the `f32` fault-tolerance ratio is deterministic (residual precision only)
+
+Still a documented residual (not a fork bug — see above). The exact-integer
+hardening is cross-cutting to the whole clique oracle (all finalization, not the
+finalized-floor feature); it changes the finalization rule and so warrants its own
+coordinated, independently-verified change. Recorded here with the precise recipe
+(`2q·den ≥ S·(den+num)`); Z3/Sage already cross-witness that equivalence.
 
 ---
 
 ## 7. Verification status
 
+Run the whole suite with `scripts/check-finalized-floor-ALL.sh` (Rocq authoritative;
+TLA⁺/Z3/Sage/Wolfram fail-soft). Current result: **ALL GATES OK**.
+
 | Layer | Result |
 |---|---|
-| Rust build | `cargo check -p casper --all-targets` clean (no warnings) |
-| Convergence green-gate | 3/3 pass with the fix |
-| 400+-block soak | fix invariants hold across ~421 blocks (no fork / no write-loss / no backstop) |
-| Rocq | full development builds `-j1`; capstone axiom-free |
-| TLA⁺ | pre-fix counterexample reproduced; post-fix `SpecFixed` passes incl. liveness |
-| Wolfram | buggy advance structurally unstable; fixed advance stable |
+| Rust build | `cargo check -p casper --all-targets` / `-p rspace_plus_plus` clean |
+| Convergence green-gate | 3/3 pass; 400+-block soak holds all fix invariants (~421 blocks) |
+| Rust unit/regression | merger overflow, Level-A/B launder, backstop predicate, floor warm==cold + cache-transparent, frontier round-trip — all pass |
+| Rocq | full dev builds `-j1`; **3 capstones axiom-free** (merge/selection/arithmetic) |
+| TLA⁺ | `SpecFixed` + `FinalizedFloorScan` pass; both pre-fix cfgs reproduce their counterexample |
+| Z3 | FT-algebra + BitVec-64 IntegerAdd launder (exists on wrap; checked-combine launder-free) |
+| Sage | FT-algebra identity + finalization-margin monotonicity |
+| Wolfram | ratchet instability (buggy unstable / fixed stable) — via the licensed MCP evaluator |
 
-**Policy:** all of the above run **locally**. Do **not** add any Rocq / TLA⁺ /
-Wolfram / Sage step to `.github/workflows/*` (an earlier formal-CI workflow was
+**Coverage matrix (§4) has no ABSENT / assumed / prose-only row** — every catalog
+item maps to a Rocq/TLA⁺/Z3/Sage artifact or a Rust test.
+
+**Policy:** all of the above run **locally**. Do **not** add any Rocq / TLA⁺ / Z3 /
+Sage / Wolfram step to `.github/workflows/*` (an earlier formal-CI workflow was
 deliberately removed).
