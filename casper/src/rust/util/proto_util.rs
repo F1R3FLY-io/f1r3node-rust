@@ -582,3 +582,97 @@ pub fn justification_to_justification_info(justification: &Justification) -> Jus
         latest_block_hash: PrettyPrinter::build_string_no_limit(&justification.latest_block_hash),
     }
 }
+
+// ---------------------------------------------------------------------------
+// Fork-choice FV — Phase-0 reproduction of B1.
+//
+// `weight_from_validator_by_dag` (above) reads the traversed block's MAIN
+// PARENT weight map, and does so with `.expect("Parent metadata should
+// exist")`. On the fork-choice BFS hot path (`estimator::build_scores_map`)
+// a traversed block whose main parent is momentarily absent from the metadata
+// index — a sync / prune window — makes that `.expect` PANIC instead of
+// surfacing a typed error. This test reproduces the panic; Phase 2 replaces the
+// `.expect` with a typed `KvStoreError` and this test flips to a `Result`
+// assertion. See docs/theory/fork-choice/fork-choice-verification.md (B1).
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod fork_choice_b1_repro_tests {
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+
+    use block_storage::rust::dag::block_metadata_store::BlockMetadataStore;
+    use parking_lot::RwLock as PlRwLock;
+    use prost::bytes::Bytes;
+    use rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
+    use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
+
+    use super::*;
+
+    fn h(n: u8) -> Bytes { Bytes::from(vec![n; 32]) }
+
+    fn md(hash: Bytes, parents: Vec<Bytes>, num: i64, v: &Bytes) -> BlockMetadata {
+        let mut wm = BTreeMap::new();
+        wm.insert(v.clone(), 7i64);
+        BlockMetadata {
+            block_hash: hash,
+            parents,
+            sender: v.clone(),
+            justifications: vec![],
+            weight_map: wm,
+            block_number: num,
+            sequence_number: num as i32,
+            invalid: false,
+            directly_finalized: false,
+            finalized: false,
+            fault_tolerance_value: 0.0,
+        }
+    }
+
+    fn dag_with(blocks: Vec<BlockMetadata>) -> KeyValueDagRepresentation {
+        let store = KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new()));
+        let mut bms = BlockMetadataStore::new(store);
+        let mut dag_set = imbl::HashSet::new();
+        let mut bnum = imbl::HashMap::new();
+        let mut mp = imbl::HashMap::new();
+        for b in &blocks {
+            dag_set.insert(b.block_hash.clone());
+            bnum.insert(b.block_hash.clone(), b.block_number);
+            if let Some(p) = b.parents.first() {
+                mp.insert(b.block_hash.clone(), p.clone());
+            }
+        }
+        for b in blocks {
+            bms.add(b).unwrap();
+        }
+        KeyValueDagRepresentation {
+            dag_set,
+            latest_messages_map: imbl::HashMap::new(),
+            child_map: imbl::HashMap::new(),
+            height_map: imbl::OrdMap::new(),
+            block_number_map: bnum,
+            main_parent_map: mp,
+            self_justification_map: imbl::HashMap::new(),
+            invalid_blocks_set: imbl::HashSet::new(),
+            last_finalized_block_hash: Bytes::new(),
+            finalized_blocks_set: imbl::HashSet::new(),
+            block_metadata_index: Arc::new(PlRwLock::new(bms)),
+            deploy_index: Arc::new(PlRwLock::new(KeyValueTypedStoreImpl::new(Arc::new(
+                InMemoryKeyValueStore::new(),
+            )))),
+            floor_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
+            frontier_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "Parent metadata should exist")]
+    fn weight_from_validator_missing_parent_panics_b1() {
+        let v = h(9);
+        let child = h(1);
+        let missing = h(2); // deliberately NOT added to the index (sync/prune window)
+        let mut dag = dag_with(vec![md(child.clone(), vec![missing], 1, &v)]);
+        // `child` resolves; its declared main parent is absent, so the
+        // `.expect("Parent metadata should exist")` panics (B1 reproduced).
+        let _ = weight_from_validator_by_dag(&mut dag, &child, &v);
+    }
+}

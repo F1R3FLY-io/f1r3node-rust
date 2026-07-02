@@ -118,4 +118,34 @@ mod tests {
         // All have same score (0), so sorted by item ascending
         assert_eq!(sorted, vec!["a", "m", "z"]);
     }
+
+    // Fork-choice determinism (S1) linchpin — the tie-break is a TOTAL order on
+    // DISTINCT items: `(score desc, item asc)`. So every input permutation sorts to
+    // the identical output, which is exactly why the HashSet/HashMap iteration order
+    // upstream in the estimator (`estimator.rs` dedup + score map) can never leak
+    // into the fork-choice result. This is the confirming witness for TieBreak
+    // `sort_total_order` / `output_indep_of_input_perm` in the fork-choice FV.
+    #[test]
+    fn tie_break_is_total_shuffle_invariant_on_distinct() {
+        let mut scores = HashMap::new();
+        scores.insert("h1", 20);
+        scores.insert("h2", 20);
+        scores.insert("h3", 20); // deliberate score ties across distinct items
+        scores.insert("h4", 5);
+        scores.insert("h5", 5);
+        // Canonical total order: score desc, then item asc.
+        let expected = vec!["h1", "h2", "h3", "h4", "h5"];
+        for p in [
+            vec!["h1", "h2", "h3", "h4", "h5"],
+            vec!["h5", "h4", "h3", "h2", "h1"],
+            vec!["h3", "h1", "h5", "h2", "h4"],
+            vec!["h2", "h5", "h1", "h4", "h3"],
+        ] {
+            assert_eq!(
+                ListOps::sort_by_with_decreasing_order(p.clone(), &scores),
+                expected,
+                "tie-break must be total: permutation {p:?} must sort to the canonical order"
+            );
+        }
+    }
 }
