@@ -35,12 +35,20 @@ pub type NumberChannelsDiff = BTreeMap<Blake2b256Hash, (i64, MergeType)>;
 
 /// Combine two values according to the strategy. Used by
 /// `EventLogIndex::combine` to aggregate diffs within a chain and by the merge
-/// engine to combine across chains. For `IntegerAdd` semantics, this performs
-/// wrapping addition; for `BitmaskOr` it performs a bitwise OR through `u64`.
-pub fn combine_mergeable_value(a: i64, b: i64, merge_type: MergeType) -> i64 {
+/// engine to combine across chains.
+///
+/// `IntegerAdd` is OVERFLOW-CHECKED: it returns `None` when the addition would
+/// wrap `i64`, so the caller REJECTS the branch ("fails loudly") instead of
+/// laundering a silently-wrapped value past the apply-time `checked_add >= 0`
+/// gate in `conflict_set_merger::cal_merged_result`. (A wrapped combine could
+/// otherwise produce an in-range/non-negative value that the apply gate accepts
+/// with a wrong result — see IntegerAdd.v `launder_exhibit` / the Z3 BitVec-64
+/// cross-witness.) `BitmaskOr` is a bitwise OR through `u64` and never overflows,
+/// so it always returns `Some`.
+pub fn combine_mergeable_value(a: i64, b: i64, merge_type: MergeType) -> Option<i64> {
     let result = match merge_type {
-        MergeType::IntegerAdd => a.wrapping_add(b),
-        MergeType::BitmaskOr => ((a as u64) | (b as u64)) as i64,
+        MergeType::IntegerAdd => a.checked_add(b),
+        MergeType::BitmaskOr => Some(((a as u64) | (b as u64)) as i64),
     };
     tracing::debug!(
         target: "f1r3fly.merge.step",
@@ -48,7 +56,8 @@ pub fn combine_mergeable_value(a: i64, b: i64, merge_type: MergeType) -> i64 {
         a,
         b,
         merge_type = ?merge_type,
-        result,
+        result = ?result,
+        overflow = result.is_none(),
         "fold two mergeable number-channel values"
     );
     result
@@ -2076,9 +2085,10 @@ mod tests {
 
         #[test]
         fn bitmask_or_is_associative(a: i64, b: i64, c: i64) {
-            let ab = combine_mergeable_value(a, b, MergeType::BitmaskOr);
+            // BitmaskOr never overflows, so it is always Some — unwrap the fold.
+            let ab = combine_mergeable_value(a, b, MergeType::BitmaskOr).unwrap();
             let ab_c = combine_mergeable_value(ab, c, MergeType::BitmaskOr);
-            let bc = combine_mergeable_value(b, c, MergeType::BitmaskOr);
+            let bc = combine_mergeable_value(b, c, MergeType::BitmaskOr).unwrap();
             let a_bc = combine_mergeable_value(a, bc, MergeType::BitmaskOr);
             proptest::prop_assert_eq!(ab_c, a_bc);
         }
@@ -2087,14 +2097,14 @@ mod tests {
         fn bitmask_or_is_idempotent(a: i64) {
             proptest::prop_assert_eq!(
                 combine_mergeable_value(a, a, MergeType::BitmaskOr),
-                a,
+                Some(a),
             );
         }
 
         #[test]
         fn bitmask_or_dominates_each_input(a: i64, b: i64) {
             // a | b must have every bit that's set in a OR in b.
-            let combined = combine_mergeable_value(a, b, MergeType::BitmaskOr) as u64;
+            let combined = combine_mergeable_value(a, b, MergeType::BitmaskOr).unwrap() as u64;
             proptest::prop_assert_eq!(combined & (a as u64), a as u64);
             proptest::prop_assert_eq!(combined & (b as u64), b as u64);
         }
@@ -2109,11 +2119,45 @@ mod tests {
 
         #[test]
         fn integer_add_is_associative(a: i64, b: i64, c: i64) {
-            let ab = combine_mergeable_value(a, b, MergeType::IntegerAdd);
-            let ab_c = combine_mergeable_value(ab, c, MergeType::IntegerAdd);
-            let bc = combine_mergeable_value(b, c, MergeType::IntegerAdd);
-            let a_bc = combine_mergeable_value(a, bc, MergeType::IntegerAdd);
-            proptest::prop_assert_eq!(ab_c, a_bc);
+            // Overflow-checked add is associative only where both groupings
+            // succeed (one grouping can overflow while the other does not, e.g.
+            // a=MAX, b=1, c=-1); compare only when both are Some.
+            let l = combine_mergeable_value(a, b, MergeType::IntegerAdd)
+                .and_then(|ab| combine_mergeable_value(ab, c, MergeType::IntegerAdd));
+            let r = combine_mergeable_value(b, c, MergeType::IntegerAdd)
+                .and_then(|bc| combine_mergeable_value(a, bc, MergeType::IntegerAdd));
+            if let (Some(x), Some(y)) = (l, r) {
+                proptest::prop_assert_eq!(x, y);
+            }
         }
+
+        #[test]
+        fn integer_add_overflow_returns_none(a: i64, b: i64) {
+            // Matches i64::checked_add exactly: None iff the true sum is out of range.
+            proptest::prop_assert_eq!(
+                combine_mergeable_value(a, b, MergeType::IntegerAdd),
+                a.checked_add(b),
+            );
+        }
+    }
+
+    // Direct unit witnesses for the fail-loudly overflow behavior (the fix for
+    // the IntegerAdd overflow-launder).
+    #[test]
+    fn integer_add_rejects_overflow_and_underflow() {
+        assert_eq!(
+            combine_mergeable_value(i64::MAX, 1, MergeType::IntegerAdd),
+            None,
+            "IntegerAdd must reject (None) on positive overflow, not wrap"
+        );
+        assert_eq!(
+            combine_mergeable_value(i64::MIN, -1, MergeType::IntegerAdd),
+            None,
+            "IntegerAdd must reject (None) on negative overflow, not wrap"
+        );
+        assert!(
+            combine_mergeable_value(i64::MAX, 1, MergeType::BitmaskOr).is_some(),
+            "BitmaskOr never overflows"
+        );
     }
 }

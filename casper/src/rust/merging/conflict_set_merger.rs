@@ -477,7 +477,22 @@ where
                             key, existing.1, incoming_mt,
                         )));
                     }
-                    existing.0 = combine_mergeable_value(existing.0, incoming_diff, incoming_mt);
+                    existing.0 = match combine_mergeable_value(
+                        existing.0,
+                        incoming_diff,
+                        incoming_mt,
+                    ) {
+                        Some(v) => v,
+                        // Survivors already passed the per-branch overflow gate, so
+                        // this should be unreachable; error rather than write a
+                        // wrapped value if it ever is.
+                        None => {
+                            return Err(HistoryError::MergeError(format!(
+                                "IntegerAdd overflow combining mergeable channel {:?}",
+                                key,
+                            )))
+                        }
+                    };
                 }
                 None => {
                     all_mergeable_channels.insert(key.clone(), (incoming_diff, incoming_mt));
@@ -723,21 +738,35 @@ fn cal_merged_result<R: Clone + Eq + std::hash::Hash>(
         n_origin_channels = origin_result.len());
 
     // Combine all channel diffs from the branch using per-channel merge strategy.
-    let diff = branch.0.iter().map(|r| mergeable_channels(r)).fold(
-        NumberChannelsDiff::new(),
-        |mut acc, x| {
-            for (k, v) in x {
-                let (incoming_diff, incoming_mt) = v;
-                acc.entry(k)
-                    .and_modify(|existing| {
-                        existing.0 =
-                            combine_mergeable_value(existing.0, incoming_diff, incoming_mt);
-                    })
-                    .or_insert((incoming_diff, incoming_mt));
+    // IntegerAdd overflow HERE means the branch's per-channel diffs sum out of
+    // i64 range: reject the branch (fail loudly, return None) rather than fold a
+    // silently-wrapped value that could then pass the apply-time
+    // `checked_add >= 0` gate below with a wrong result (the overflow-launder;
+    // see IntegerAdd.v). BitmaskOr never overflows.
+    let mut diff = NumberChannelsDiff::new();
+    for r in branch.0.iter() {
+        for (k, v) in mergeable_channels(r) {
+            let (incoming_diff, incoming_mt) = v;
+            match diff.get_mut(&k) {
+                Some(existing) => {
+                    match combine_mergeable_value(existing.0, incoming_diff, incoming_mt) {
+                        Some(combined) => existing.0 = combined,
+                        None => {
+                            tracing::debug!(target: "f1r3fly.merge.step",
+                                step = "cal_merged_result.COMBINE_OVERFLOW",
+                                channel = %hex::encode(k.clone().bytes()),
+                                existing = existing.0,
+                                incoming = incoming_diff);
+                            return None;
+                        }
+                    }
+                }
+                None => {
+                    diff.insert(k, (incoming_diff, incoming_mt));
+                }
             }
-            acc
-        },
-    );
+        }
+    }
 
     if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
         let diff_channels: Vec<(String, i64)> = diff

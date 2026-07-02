@@ -400,7 +400,18 @@ impl EventLogIndex {
                         )));
                     }
                     let prev_diff = existing.0;
-                    existing.0 = combine_mergeable_value(existing.0, incoming_diff, incoming_mt);
+                    existing.0 = match combine_mergeable_value(existing.0, incoming_diff, incoming_mt)
+                    {
+                        Some(v) => v,
+                        // IntegerAdd overflow in the intra-chain fold: fail loudly
+                        // rather than construct a chain holding a wrapped value.
+                        None => {
+                            return Err(HistoryError::MergeError(format!(
+                                "IntegerAdd overflow combining mergeable channel {:?} ({} + {})",
+                                key, prev_diff, incoming_diff,
+                            )))
+                        }
+                    };
                     if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
                         tracing::debug!(
                             target: "f1r3fly.merge.step",
