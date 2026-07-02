@@ -100,11 +100,24 @@ Theorem fork_choice_ghost_correct :
          (map (fun e => weight d b (fst e))
               (filter (fun e => anc_ofb d fuel b (snd e)) lms)))
   /\
-  (* (d) the LCA is a common ancestor of every filtered latest message *)
-  (forall genesis lcua d top lms,
-     (forall e, In e (depth_filter d top lms) -> anc_of d lcua (snd e)) ->
+  (* (d) the LCA is a common ancestor of every filtered latest message. The old
+     `lcua_common` "assume the LCUA output is a common ancestor" hypothesis is
+     GONE: it is now DERIVED from the concrete LCUA-many fold model (Lca.reduce)
+     via the covering invariant, and the fold's TERMINATION is likewise DISCHARGED
+     (Lca.reduce_converges, a lexicographic (max_numof, count_at_max) measure —
+     no convergence premise remains). The remaining premises are the faithful
+     single-genesis blockchain facts (see Lca.v's RESIDUAL note): one genesis
+     `root` (single_root), which is a common ancestor of the real tips. Fully
+     UNCONDITIONAL common-ancestor is provably FALSE (a 2-genesis DAG makes the
+     Rust fold itself return a non-common-ancestor); these premises are the
+     strongest provable form. *)
+  (forall genesis root d top lms,
+     wf_dag d -> wf_lookup d ->
+     single_root d root ->
+     all_real d (map snd (depth_filter d top lms)) ->
+     common_ancestor d (map snd (depth_filter d top lms)) root ->
      forall lm, In lm (depth_filter d top lms) ->
-       anc_of d (lca genesis lcua d top lms) (snd lm)).
+       anc_of d (lca genesis (lcua_many d (map snd (depth_filter d top lms))) d top lms) (snd lm)).
 Proof.
   exact (conj rank_selects_heaviest
           (conj score_perm_invariant

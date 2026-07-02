@@ -135,7 +135,7 @@ Every catalog item maps to a concrete artifact — no "assumed"/"prose-only" row
 | **T-FILTER** | slashed/invalid latest messages add zero weight (S2) | Rocq `Filter.invalid_excluded` (cites slashing `ForkChoice.v`) |
 | **T-GHOST** | ranking returns the heaviest-subtree leaf | Rocq `Rank.rank_selects_heaviest`, `rank_head_is_argmax`; Wolfram `ghost_heaviest_subtree.wl` |
 | **T-TERM** | `rank_forkchoices` terminates | Rocq `Rank.rank_terminates`; Wolfram (measure monotone) |
-| **T-LCA** | LCA is a common ancestor (given the LCUA-many contract); depth filter deterministic (S6) | Rocq `Lca.lca_is_common_ancestor` (conditioned on the LCUA-many contract as a bridge-hypothesis — §6.1), `lca_depth_filter_deterministic`, `lca_empty_is_genesis`; TLA⁺ `ForkChoiceScan.Inv_LcaDeterministic` |
+| **T-LCA** | LCA is a common ancestor (modeled from the fold; termination proved); depth filter deterministic (S6) | Rocq `Lca.lca_is_common_ancestor` (+ `lcua_many_common_ancestor`, `reduce_converges`, `lca_is_lowest` — §6.1), `lca_depth_filter_deterministic`, `lca_empty_is_genesis`; TLA⁺ `ForkChoiceScan.Inv_LcaDeterministic` |
 | **T-BOUND** | count/depth/`i32::MAX` truncations keep the head, never panic (S3/S4) | Rocq `Bound.head_preserved`, `take_never_drops_head`, `empty_tips_typed_err`; Rust `filter_deep_parents` tests |
 | **B1** | missing metadata ⟹ typed error, not panic (S4) | Rust `weight_from_validator_missing_parent_is_typed_err`; bridged by `GuardBridge.weight_block_structural` |
 | **B3** | score overflow ⟹ typed error, not wrap (S5) | Rust (`checked_add`); Z3 `score_supply_cap_bitvec.py` |
@@ -161,7 +161,7 @@ each round (no effect-application/idempotence concern).
 | `Score.v` | Foundation | `weight_is_pure`, `score_perm_invariant`, `score_eq_support_sum` |
 | `Filter.v` | Foundation | `invalid_excluded`, `valid_preserved`, `filter_idempotent` (T-10 reuse) |
 | `TieBreak.v` | Foundation | **S1 proof**: `sort_total_order`, `output_indep_of_input_perm`, `sort_argmax_unique`, `sort_is_permutation` |
-| `Lca.v` | Foundation | `lca_is_common_ancestor` (conditioned on the LCUA-many contract, §6.1), `lca_depth_filter_deterministic`, `lca_empty_is_genesis` |
+| `Lca.v` | Foundation | `lcua_many` fold + `reduce_converges` (lex-measure termination); `lca_is_common_ancestor` (from the fold, no circular premise), `lca_is_lowest`, `lca_depth_filter_deterministic`, `lca_empty_is_genesis` |
 | `Rank.v` | Foundation, Score, TieBreak | `rank_terminates`, `rank_selects_heaviest`, `still_same_fixpoint` |
 | `Bound.v` | Foundation, Rank | `head_preserved`, `take_never_drops_head`, `cast_usize_safe`, `empty_tips_typed_err` |
 | `GuardBridge.v` | Foundation, Rank, Bound, Filter | the Rust-enforced seams: `validation_implies_wf_dag`, `weight_block_structural`, `main_parent_first_deterministic`, `honest_forkchoice_parents_validate` |
@@ -237,21 +237,29 @@ not assume a premise it doesn't) is therefore:
 Consensus safety of parents is anchored by the finalized-floor committee/bonds
 validation, not by re-running the estimator.
 
-### 6.1 One disclosed residual — the LCUA-many contract (Lca.v)
+### 6.1 The LCA is modeled from the fold — RESOLVED
 
-`Lca.lca_is_common_ancestor` proves the **fork-choice-relevant** LCA property — the
-computed LCA is a common ancestor of every depth-filtered latest message — but does so
-*conditioned on a hypothesis* that packages the contract of
-`DagOperations::lowest_universal_common_ancestor_many`: "the LCUA-many result is a
-common ancestor of the filtered messages." This is the **same bridge pattern** as
-GuardBridge (Rocq assumes exactly what the Rust routine enforces, as a premise, never an
-axiom — `Print Assumptions` remains Closed). The **interior pairwise-LCA fold** and the
-**lowest-ness** property (that no lower common ancestor exists) are **not** modeled.
-This is a disclosed, deliberate scope choice, not a gap: lowest-ness affects only the
-*depth* of the score BFS (a scope/efficiency concern), never the common-ancestor
-invariant the upward rank actually depends on, nor determinism (`lca_depth_filter_deterministic`
-+ `lca_empty_is_genesis` are modeled concretely). No lemma was `Admitted` or axiomatized
-to obtain this — the statement was scoped to what is provable and honest.
+`Lca.lca_is_common_ancestor` now proves the fork-choice-relevant LCA property — the
+computed LCA is a common ancestor of every depth-filtered latest message — from a
+**concrete model** of the `DagOperations::lowest_universal_common_ancestor_many` fold
+(`lcua_many`, a `BTreeSet`-faithful dedup fold), with **no** conditioning on "assume it
+is a common ancestor". The fold's **termination is proved** (`reduce_converges`, via a
+lexicographic `(max numof, count-at-max)` measure — not assumed), so the theorem is
+**non-vacuous** on the wide multi-validator DAGs the LCUA-many is actually run on
+(confirmed by `vm_compute` on a concrete DAG). Lowest-ness (`lca_is_lowest`) is proved on
+the main-parent-spine linear model.
+
+The circular `lcua_common` hypothesis and the fold-termination premise — the two things
+that constituted the residual — are **gone**. Three FAITHFUL bridge premises remain (Rocq
+assumes exactly what the DAG / Rust guarantees, as premises, never axioms — every result
+`Print Assumptions` Closed): `single_root` (one genesis, enforced by
+`validate.rs::block_number`), `common_ancestor … root` (genesis is a lower bound of the
+tips), and `all_real` (the tips resolve to real blocks). These are **necessary, not
+deferrals**: a DAG with two distinct parentless blocks makes fully-unconditional
+common-ancestor *false* — the Rust `BTreeSet` fold exhibits the same. `lca_is_lowest`
+additionally uses `spine_linear` (general-DAG lowest-ness is provably false — incomparable
+common ancestors are unordered). No lemma is `Admitted` or axiomatized; the one added
+hypothesis (`wf_dag` on `reduce_converges`) is mathematically required.
 
 ---
 
@@ -264,7 +272,7 @@ TLA⁺/Z3/Sage/Wolfram fail-soft; PlantUML render check). Target result: **ALL G
 |---|---|
 | Rust build | `cargo check -p casper --all-targets` clean |
 | Rust unit/regression | tie-break totality, B1 typed-error, fork-choice bisim (5), uc_16, convergence — all pass |
-| Rocq | full dev builds `-j1`; **7 headline results axiom-free** — 4 capstones + `validation_implies_wf_dag`, `honest_forkchoice_parents_validate`, `sort_total_order` |
+| Rocq | full dev builds `-j1`; **9 headline results axiom-free** — 4 capstones + `validation_implies_wf_dag`, `honest_forkchoice_parents_validate`, `sort_total_order`, `reduce_converges`, `lca_is_lowest` |
 | TLA⁺ | `MC_ForkChoice.cfg` + `MC_ForkChoiceScan.cfg` pass; both bug cfgs reproduce their counterexample |
 | Z3 | tie-break total order (5/5) + score supply-cap BitVec (4/4) |
 | Sage | fork-choice algebra ⇒ `ALL PASS` |
@@ -272,13 +280,13 @@ TLA⁺/Z3/Sage/Wolfram fail-soft; PlantUML render check). Target result: **ALL G
 | Diagrams | 6 PlantUML diagrams render clean (populated SVG, no stderr) |
 
 **Coverage matrix (§4).** Every catalog item maps to a concrete Rocq/TLA⁺/Z3/Sage/Wolfram
-artifact or a Rust test — no "prose-only" row. Two properties are **bridge-hypotheses**
-(Rocq derives/assumes exactly what the Rust enforces, as premises, never axioms — every
-headline result is `Print Assumptions` Closed): the DAG well-formedness the proofs rest on
-is *derived* from block validation (`GuardBridge.validation_implies_wf_dag`), and the LCA
-common-ancestor property is conditioned on the LCUA-many contract (§6.1, with lowest-ness a
-disclosed scope-out). Both are load-bearing seams the Rust guarantees, made explicit rather
-than silently assumed — the finalized-floor GuardBridge discipline.
+artifact or a Rust test — no "prose-only" row. The DAG well-formedness the proofs rest on is
+*derived* from block validation (`GuardBridge.validation_implies_wf_dag`), and the LCA
+common-ancestor property is now *modeled from the fold* with its termination *proved*
+(`reduce_converges`), no longer conditioned on the fold's contract (§6.1). The remaining
+`single_root` / `spine_linear` premises are faithful, counterexample-necessary DAG-shape
+bridges — Rocq assumes exactly what the DAG guarantees, as premises, never axioms (every
+headline result is `Print Assumptions` Closed) — the finalized-floor GuardBridge discipline.
 
 **Policy:** all of the above run **locally**. Do **not** add any Rocq / TLA⁺ / Z3 / Sage
 / Wolfram step to `.github/workflows/*` (an earlier formal-CI workflow was deliberately

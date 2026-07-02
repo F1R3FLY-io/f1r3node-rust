@@ -72,6 +72,7 @@ elif command -v coqc >/dev/null 2>&1 || [[ -x "$HOME/.opam/default/bin/coqc" ]];
 From ForkChoice Require Import MainTheorem.
 From ForkChoice Require Import GuardBridge.
 From ForkChoice Require Import TieBreak.
+From ForkChoice Require Import Lca.
 Print Assumptions fork_choice_determinism_correct.
 Print Assumptions fork_choice_ghost_correct.
 Print Assumptions fork_choice_bound_correct.
@@ -79,14 +80,16 @@ Print Assumptions fork_choice_bridge_correct.
 Print Assumptions validation_implies_wf_dag.
 Print Assumptions honest_forkchoice_parents_validate.
 Print Assumptions sort_total_order.
+Print Assumptions reduce_converges.
+Print Assumptions lca_is_lowest.
 EOF
     out=$(coqc -Q "$ROCQ_DIR/theories" ForkChoice "$chk" 2>&1)
     rm -rf "$tmpd"
     n_closed=$(grep -c "Closed under the global context" <<<"$out")
-    if [[ "$n_closed" == "7" ]]; then
-      pass "all 7 headline results axiom-free (4 capstones + validation⇒wf_dag, honest-parents-validate, sort_total_order)"
+    if [[ "$n_closed" == "9" ]]; then
+      pass "all 9 headline results axiom-free (4 capstones + validation⇒wf_dag, honest-parents-validate, sort_total_order, reduce_converges, lca_is_lowest)"
     else
-      fail "headline results NOT all axiom-free ($n_closed/7 Closed):"; echo "$out" | sed 's/^/      /'
+      fail "headline results NOT all axiom-free ($n_closed/9 Closed):"; echo "$out" | sed 's/^/      /'
     fi
   else
     fail "Rocq build failed (see /tmp/fc_rocq_build.log)"; tail -20 /tmp/fc_rocq_build.log | sed 's/^/      /'
