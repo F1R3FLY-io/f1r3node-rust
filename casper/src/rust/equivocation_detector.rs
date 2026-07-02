@@ -660,6 +660,7 @@ mod tests {
             block_metadata_index,
             deploy_index,
             floor_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
+            frontier_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
         };
 
         for (index, block) in blocks.iter().enumerate() {

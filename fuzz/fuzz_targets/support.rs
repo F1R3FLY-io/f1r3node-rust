@@ -163,6 +163,7 @@ fn empty_dag() -> KeyValueDagRepresentation {
         block_metadata_index: Arc::new(RwLock::new(BlockMetadataStore::new(metadata_store))),
         deploy_index: Arc::new(RwLock::new(deploy_store)),
         floor_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
+        frontier_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
     }
 }
 

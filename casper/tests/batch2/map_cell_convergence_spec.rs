@@ -368,3 +368,26 @@ async fn three_writers_converge() { run_convergence(3, 1, 21).await; }
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[serial]
 async fn three_writers_converge_under_load() { run_convergence(3, 3, 21).await; }
+
+/// 400+-block regression soak for the finalized-floor multi-parent-merge fix
+/// (H1 deterministic Δ backstop + H2 persisted frontier cache / warm up-walk +
+/// H3 floor-bounded merge scope). At ~422 blocks (1 init + 100×4 + 20 drain +
+/// 1 final) this runs an order of magnitude past
+/// `three_writers_converge_under_load` (~35 blocks) and well past the OLD silent
+/// `MERGE_SCOPE_TOO_LARGE` cliff (floor_distance 256 / scope 512).
+///
+/// Every merge round exercises the warm frontier up-walk (`incremental_frontier`)
+/// against the persisted `frontier-index`. Two implicit assertions ride on the
+/// existing harness: (1) a Δ-backstop `Err` would surface as a panic on
+/// `create_block_unsafe(...).expect("merge block")`, so completion proves the
+/// backstop never fired; (2) `finalized_keys_all_nodes` re-checks single-datum +
+/// cross-node LFB identity every round, so the frontier cache staying transparent
+/// (cold == warm, no fork) is enforced continuously — plus the terminal
+/// convergence + FS-monotonicity asserts.
+///
+/// `#[ignore]` because it is a multi-minute soak, not a per-commit gate. Run:
+///   cargo test -p casper --test mod -- --ignored finalized_floor_400_block_soak
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[serial]
+#[ignore = "multi-minute 400+-block soak; run explicitly with --ignored"]
+async fn finalized_floor_400_block_soak() { run_convergence(3, 100, 20).await; }

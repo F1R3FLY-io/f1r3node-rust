@@ -66,19 +66,28 @@ pub async fn finalized_floor(
     for parent in parents {
         inherited.push(floor_of_block(dag, parent, ft_threshold).await?);
     }
-    derive_floor(dag, parents, latest_messages, ft_threshold, inherited).await
+    let (floor, _main_parent_frontier) =
+        derive_floor(dag, parents, latest_messages, ft_threshold, inherited).await?;
+    Ok(floor)
 }
 
 /// Core derivation: max over (inherited parent floors ∪ oracle frontiers),
 /// with the one-chain safety check. `inherited` must hold the parents' own
 /// floors; the caller resolves them so this stays non-recursive.
+///
+/// Returns `(floor, F(B))` where `F(B)` is the main parent's frontier over this
+/// block's snapshot — i.e. `parent_frontier(parents[0], latest_messages)`. Since
+/// a block is never witnessed-finalized over its own justifications, this equals
+/// the block's OWN frontier `parent_frontier(B, just(B))`, a pure function of the
+/// block. `floor_of_block` persists it so later merges resolve their frontiers
+/// by an O(advance) up-walk from the cached pivot instead of an O(Δ) down-walk.
 async fn derive_floor(
     dag: &KeyValueDagRepresentation,
     parents: &[BlockHash],
     latest_messages: &BTreeMap<Validator, BlockHash>,
     ft_threshold: f32,
     inherited: Vec<Floor>,
-) -> Result<Floor, CasperError> {
+) -> Result<(Floor, Floor), CasperError> {
     if parents.is_empty() {
         return Err(CasperError::Other(
             "finalized_floor requires a non-empty parent set; genesis pre-state comes from config"
@@ -88,9 +97,13 @@ async fn derive_floor(
 
     let mut candidates = inherited;
     let inherited_max = candidates.iter().map(|f| f.block_number).max();
+    let mut frontiers: Vec<Floor> = Vec::with_capacity(parents.len());
     for parent in parents {
-        candidates.push(parent_frontier(dag, parent, latest_messages, ft_threshold).await?);
+        frontiers.push(parent_frontier(dag, parent, latest_messages, ft_threshold).await?);
     }
+    // parents[0] is the main parent; its frontier over this snapshot is F(B).
+    let main_parent_frontier = frontiers[0].clone();
+    candidates.extend(frontiers);
 
     // The floor is the merge base the block being created re-bases every parent onto.
     // Pick the HIGHEST candidate that is a SOUND base, considering candidates from the
@@ -197,7 +210,7 @@ async fn derive_floor(
         "finalized floor derived (inheritance + advancement)"
     );
 
-    Ok(floor)
+    Ok((floor, main_parent_frontier))
 }
 
 /// `floor(B)` for an already-inserted block, resolved through the persisted
@@ -258,7 +271,7 @@ pub async fn floor_of_block(
             .iter()
             .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
             .collect();
-        let floor = derive_floor(
+        let (floor, frontier) = derive_floor(
             dag,
             &metadata.parents,
             &latest_messages,
@@ -268,6 +281,10 @@ pub async fn floor_of_block(
         .await?;
 
         dag.put_cached_floor(current.clone(), floor.hash.clone())?;
+        // Persist F(current) = the block's own frontier over its own snapshot,
+        // a pure function of the block. Later merges read this as the up-walk
+        // pivot in `parent_frontier`, collapsing the O(Δ²·V) walk ratchet.
+        dag.put_cached_frontier(current.clone(), frontier.hash.clone())?;
         tracing::trace!(
             target: "f1r3.trace.floor",
             block = %PrettyPrinter::build_string_bytes(&current),
@@ -287,8 +304,156 @@ pub async fn floor_of_block(
     })
 }
 
-/// The highest witnessed-finalized block on one parent's main chain.
+/// The highest witnessed-finalized block on one parent's main chain, over the
+/// given justification snapshot.
+///
+/// Two paths, both yielding the identical frontier — the cache is a transparent
+/// optimization, proven so by L-ANC + L-SNAP (see
+/// `docs/theory/finalized-floor/finalized-floor-verification.md`):
+///
+/// * **Warm** ([`incremental_frontier`]) — when `parent`'s own frontier
+///   `F(parent)` is cached (persisted by [`floor_of_block`] on insertion).
+///   `F(parent)` is the frontier over `parent`'s OWN snapshot; the snapshot here
+///   (`latest_messages` = the child's justifications) is a superset, so by L-SNAP
+///   the true frontier sits at height ≥ `F(parent)`. We take it as a pivot and
+///   walk UP the spine toward `parent`, advancing while each block stays
+///   finalized. By L-ANC finalization is downward-closed on the spine, so the
+///   walk stops at the first non-finalized block after only O(advance) oracle
+///   calls — amortized O(1). The band itself is collected with cheap
+///   `main_parent` hops (no oracle calls).
+///
+/// * **Cold** ([`cold_parent_frontier`]) — no cached pivot, the pivot is off
+///   `parent`'s spine, the committee changed across the band (L-ANC's premise
+///   fails), or the pivot no longer finalizes over the larger snapshot (L-SNAP's
+///   premise fails): the original top-down walk from `parent`, one oracle call
+///   per step down to the first finalized block (or genesis).
 async fn parent_frontier(
+    dag: &KeyValueDagRepresentation,
+    parent: &BlockHash,
+    latest_messages: &BTreeMap<Validator, BlockHash>,
+    ft_threshold: f32,
+) -> Result<Floor, CasperError> {
+    if let Some(pivot_hash) = dag.get_cached_frontier(parent)? {
+        if let Some(frontier) =
+            incremental_frontier(dag, parent, &pivot_hash, latest_messages, ft_threshold).await?
+        {
+            metrics::counter!(
+                crate::rust::metrics_constants::FLOOR_FRONTIER_CACHE_HIT_METRIC,
+                "source" => crate::rust::metrics_constants::CASPER_METRICS_SOURCE
+            )
+            .increment(1);
+            return Ok(frontier);
+        }
+    }
+    metrics::counter!(
+        crate::rust::metrics_constants::FLOOR_FRONTIER_CACHE_MISS_METRIC,
+        "source" => crate::rust::metrics_constants::CASPER_METRICS_SOURCE
+    )
+    .increment(1);
+    cold_parent_frontier(dag, parent, latest_messages, ft_threshold).await
+}
+
+/// Warm frontier: resolve `parent`'s frontier over the (larger) `latest_messages`
+/// snapshot by an incremental UP-walk from the cached pivot `F(parent)`. Returns
+/// `Ok(None)` when a determinism guard trips, signalling the caller to fall back
+/// to the cold walk (which yields the identical result); the cache thus never
+/// changes the derived frontier, only the work done to find it.
+async fn incremental_frontier(
+    dag: &KeyValueDagRepresentation,
+    parent: &BlockHash,
+    pivot_hash: &BlockHash,
+    latest_messages: &BTreeMap<Validator, BlockHash>,
+    ft_threshold: f32,
+) -> Result<Option<Floor>, CasperError> {
+    let pivot_number = dag.block_number_unsafe(pivot_hash)?;
+
+    // Collect the spine band [parent .. pivot] with cheap `main_parent` hops
+    // (NO oracle calls). `spine[0]` = parent (top); the tail descends the main
+    // spine down to the block reached at the pivot's height.
+    let mut spine: Vec<BlockHash> = Vec::new();
+    spine.push(parent.clone());
+    spine.extend(dag.main_parent_chain(parent.clone(), pivot_number)?);
+    // The pivot must be exactly the bottom of the band; otherwise it is not on
+    // `parent`'s main spine (a fork at equal height) — fall back to cold.
+    match spine.last() {
+        Some(last) if last == pivot_hash => {}
+        _ => return Ok(None),
+    }
+
+    // L-ANC guard: the committee (corresponding weight map, exactly what
+    // `ft_witnessed` uses) must be constant across the band, else finalization
+    // need not be downward-closed and the up-walk could disagree with the cold
+    // walk. This is O(band) cheap metadata reads — bounded by the floor-distance
+    // backstop — and never an oracle call.
+    let pivot_committee = CliqueOracle::get_corresponding_weight_map(pivot_hash, dag).await?;
+    for block in &spine {
+        let committee = CliqueOracle::get_corresponding_weight_map(block, dag).await?;
+        if committee != pivot_committee {
+            metrics::counter!(
+                crate::rust::metrics_constants::FLOOR_INCREMENTAL_GUARD_FALLBACK_METRIC,
+                "source" => crate::rust::metrics_constants::CASPER_METRICS_SOURCE
+            )
+            .increment(1);
+            return Ok(None);
+        }
+    }
+
+    // L-SNAP guard: the pivot must still be witnessed-finalized over the larger
+    // snapshot. It was finalized over `parent`'s own snapshot, and a superset can
+    // only raise the fault tolerance — but a bonding event in the band can break
+    // that monotonicity, so we verify rather than assume.
+    let mut oracle_calls: u64 = 1;
+    let pivot_ft = CliqueOracle::ft_witnessed(pivot_hash, dag, latest_messages).await?;
+    if pivot_ft < ft_threshold {
+        metrics::counter!(
+            crate::rust::metrics_constants::FLOOR_INCREMENTAL_GUARD_FALLBACK_METRIC,
+            "source" => crate::rust::metrics_constants::CASPER_METRICS_SOURCE
+        )
+        .increment(1);
+        return Ok(None);
+    }
+
+    // Up-walk: from just above the pivot toward `parent`, advancing while each
+    // block stays finalized. By L-ANC (constant committee, verified above) the
+    // finalized blocks form a downward-closed prefix, so the first non-finalized
+    // block ends it and the highest finalized block is the frontier.
+    let mut best_hash = pivot_hash.clone();
+    let mut best_number = pivot_number;
+    let mut advance: u64 = 0;
+    for candidate in spine[..spine.len() - 1].iter().rev() {
+        let ft = CliqueOracle::ft_witnessed(candidate, dag, latest_messages).await?;
+        oracle_calls += 1;
+        if ft >= ft_threshold {
+            best_hash = candidate.clone();
+            best_number = dag.block_number_unsafe(candidate)?;
+            advance += 1;
+        } else {
+            break;
+        }
+    }
+
+    metrics::counter!(
+        crate::rust::metrics_constants::FLOOR_WALK_ORACLE_CALLS_METRIC,
+        "source" => crate::rust::metrics_constants::CASPER_METRICS_SOURCE
+    )
+    .increment(oracle_calls);
+    metrics::histogram!(
+        crate::rust::metrics_constants::FLOOR_FRONTIER_ADVANCE_METRIC,
+        "source" => crate::rust::metrics_constants::CASPER_METRICS_SOURCE
+    )
+    .record(advance as f64);
+    trace_frontier(parent, &best_hash, best_number, advance as usize, "warm-up-walk");
+    Ok(Some(Floor {
+        hash: best_hash,
+        block_number: best_number,
+    }))
+}
+
+/// Cold frontier: the top-down walk from `parent`, one clique-oracle call per
+/// step, returning the first witnessed-finalized block (or genesis). Used on a
+/// cache miss or when a warm-path determinism guard trips; also the genesis
+/// terminator. Always terminates — main-parent chains end at genesis.
+async fn cold_parent_frontier(
     dag: &KeyValueDagRepresentation,
     parent: &BlockHash,
     latest_messages: &BTreeMap<Validator, BlockHash>,
@@ -296,8 +461,10 @@ async fn parent_frontier(
 ) -> Result<Floor, CasperError> {
     let mut current = parent.clone();
     let mut walked: usize = 0;
+    let mut oracle_calls: u64 = 0;
     loop {
         let ft = CliqueOracle::ft_witnessed(&current, dag, latest_messages).await?;
+        oracle_calls += 1;
         let finalized = ft >= ft_threshold;
         tracing::debug!(
             target: "f1r3.trace.floor_walk",
@@ -311,6 +478,11 @@ async fn parent_frontier(
         );
         if finalized {
             let block_number = dag.block_number_unsafe(&current)?;
+            metrics::counter!(
+                crate::rust::metrics_constants::FLOOR_WALK_ORACLE_CALLS_METRIC,
+                "source" => crate::rust::metrics_constants::CASPER_METRICS_SOURCE
+            )
+            .increment(oracle_calls);
             trace_frontier(
                 parent,
                 &current,
@@ -339,6 +511,11 @@ async fn parent_frontier(
             None => {
                 // No main parent: `current` is genesis, finalized by definition.
                 let block_number = dag.block_number_unsafe(&current)?;
+                metrics::counter!(
+                    crate::rust::metrics_constants::FLOOR_WALK_ORACLE_CALLS_METRIC,
+                    "source" => crate::rust::metrics_constants::CASPER_METRICS_SOURCE
+                )
+                .increment(oracle_calls);
                 trace_frontier(parent, &current, block_number, walked, "genesis");
                 return Ok(Floor {
                     hash: current,

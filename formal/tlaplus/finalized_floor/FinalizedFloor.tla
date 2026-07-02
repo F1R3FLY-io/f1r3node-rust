@@ -85,6 +85,43 @@ Next == Propose \/ Finalize
 Spec == Init /\ [][Next]_vars
 
 ------------------------------------------------------------------------------
+(***************************************************************************)
+(* POST-FIX model (Phase 2).                                              *)
+(*                                                                         *)
+(* The fix, as implemented:                                                *)
+(*   H1  the silent single-parent fallback is replaced by a DETERMINISTIC  *)
+(*       backstop: when the floor distance Delta would exceed the cap,      *)
+(*       compute_parents_post_state returns Err -- the proposer PARKS       *)
+(*       (retries next round) instead of substituting a lossy state. Here   *)
+(*       that is a GUARD on ProposeFixed: it is simply disabled while        *)
+(*       Delta would exceed MaxDelta, so the model stutters until Finalize   *)
+(*       advances the floor.  interpreter_util.rs (backstop -> Err).         *)
+(*   Scope demotion: |visible_blocks| > MaxScope no longer gates admission   *)
+(*       (it is not node-deterministic); only Delta -- a pure function of    *)
+(*       the block's justifications -- gates. So MaxScope does not appear.    *)
+(*                                                                          *)
+(* Consequence: a successful ProposeFixed ALWAYS reflects the full parent    *)
+(* set (mergeKeys = Lanes), so Inv_NoLostParentWrite can never be violated,  *)
+(* and Delta can never exceed MaxDelta (Inv_DeltaWithinCap). Liveness is     *)
+(* preserved under weak fairness: parking is always resolved by Finalize.    *)
+(***************************************************************************)
+ProposeFixed ==
+    /\ tip < MaxTip
+    /\ ((tip + 1) - floor) <= MaxDelta   \* <-- H1 backstop as a park-guard
+    /\ tip' = tip + 1
+    /\ parentKeys' = Lanes
+    /\ mergeKeys' = Lanes                 \* <-- full multi-parent merge, never lossy
+    /\ floor' = floor
+
+NextFixed == ProposeFixed \/ Finalize
+
+\* Weak fairness on both actions: Finalize eventually resolves any park, and
+\* ProposeFixed eventually fires whenever it is continuously enabled, so the
+\* chain always makes progress (the runaway ratchet is gone).
+SpecFixed ==
+    Init /\ [][NextFixed]_vars /\ WF_vars(Finalize) /\ WF_vars(ProposeFixed)
+
+------------------------------------------------------------------------------
 TypeOK ==
     /\ tip \in 0..MaxTip
     /\ floor \in 0..MaxTip
@@ -95,7 +132,21 @@ TypeOK ==
 Inv_FloorMonotone == floor <= tip
 
 \* THE PROMISE (safety S5): a multi-parent merge reflects every committed
-\* parent write. TLC discovers this is violated once Delta crosses the cap
-\* and the silent single-parent fallback drops the other lane's key.
+\* parent write. On the PRE-FIX Spec, TLC discovers this is violated once Delta
+\* crosses the cap and the silent single-parent fallback drops the other lane's
+\* key. On the POST-FIX SpecFixed it holds for all reachable states.
 Inv_NoLostParentWrite == parentKeys \subseteq mergeKeys
+
+\* Post-fix safety: the deterministic backstop keeps the floor distance within
+\* the cap (T-L3 / the driver bound). Init has Delta = 0; ProposeFixed is guarded
+\* so it can never push Delta past MaxDelta; Finalize only shrinks it. Holds on
+\* SpecFixed; NOT an invariant of the buggy Spec (where Propose is unguarded).
+Inv_DeltaWithinCap == Delta <= MaxDelta
+
+\* Post-fix liveness (L3 / L5): despite the backstop parking Propose whenever the
+\* lag hits the cap, the chain always advances to the bound -- finality catches
+\* up (Finalize resolves the park) and proposing resumes. The runaway ratchet
+\* (Propose latency growing without bound in Delta) is gone: Delta is capped, so
+\* per-merge work is bounded and finalization keeps pace. Checked on SpecFixed.
+Liveness_Progress == (tip < MaxTip) ~> (tip = MaxTip)
 ==============================================================================

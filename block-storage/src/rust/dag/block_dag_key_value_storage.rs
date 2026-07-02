@@ -110,6 +110,13 @@ pub struct KeyValueDagRepresentation {
     /// Pure function of the block, so node-identical; persistent to avoid
     /// re-walking to genesis on every floor query.
     pub floor_index: KeyValueTypedStoreImpl<BlockHashSerde, BlockHashSerde>,
+    /// Memoized per-block finalized FRONTIER (block hash -> frontier hash):
+    /// F(X) = parent_frontier(X, just(X)), the highest witnessed-finalized block
+    /// on X's own main-parent spine over X's frozen justification snapshot. A
+    /// pure function of the block (like `floor_index`); caching it turns the
+    /// per-merge floor walk from O(Delta^2) into an amortized-O(1) incremental
+    /// up-walk (finalized-floor fix; see finality/floor.rs).
+    pub frontier_index: KeyValueTypedStoreImpl<BlockHashSerde, BlockHashSerde>,
 }
 
 impl KeyValueDagRepresentation {
@@ -159,6 +166,27 @@ impl KeyValueDagRepresentation {
     ) -> Result<(), KvStoreError> {
         self.floor_index
             .put_one(BlockHashSerde(block_hash), BlockHashSerde(floor_hash))
+    }
+
+    /// Cached per-block finalized frontier F(block), if already computed.
+    pub fn get_cached_frontier(
+        &self,
+        block_hash: &BlockHash,
+    ) -> Result<Option<BlockHash>, KvStoreError> {
+        Ok(self
+            .frontier_index
+            .get_one(&BlockHashSerde(block_hash.clone()))?
+            .map(|serde| serde.0))
+    }
+
+    /// Cache a block's finalized frontier F(block) (pure function of the block).
+    pub fn put_cached_frontier(
+        &self,
+        block_hash: BlockHash,
+        frontier_hash: BlockHash,
+    ) -> Result<(), KvStoreError> {
+        self.frontier_index
+            .put_one(BlockHashSerde(block_hash), BlockHashSerde(frontier_hash))
     }
 
     pub fn last_finalized_block(&self) -> BlockHash { self.last_finalized_block_hash.clone() }
@@ -648,6 +676,8 @@ pub struct BlockDagKeyValueStorage {
     pub(crate) invalid_blocks_index: KeyValueTypedStoreImpl<BlockHashSerde, BlockMetadata>,
     /// Memoized justification-derived floor per block (block hash -> floor hash).
     pub(crate) floor_index: KeyValueTypedStoreImpl<BlockHashSerde, BlockHashSerde>,
+    /// Memoized per-block finalized frontier (see `KeyValueDagRepresentation::frontier_index`).
+    pub(crate) frontier_index: KeyValueTypedStoreImpl<BlockHashSerde, BlockHashSerde>,
     /// Equivocation tracker — RMW MUST route through
     /// `access_equivocations_tracker` (Bug #2 / T-9.2).
     pub(crate) equivocation_tracker_index: EquivocationTrackerStore,
@@ -682,6 +712,9 @@ impl BlockDagKeyValueStorage {
         let floor_index_kv_store = kvm.store("floor-index".to_string()).await?;
         let floor_index_db: KeyValueTypedStoreImpl<BlockHashSerde, BlockHashSerde> =
             KeyValueTypedStoreImpl::new(floor_index_kv_store);
+        let frontier_index_kv_store = kvm.store("frontier-index".to_string()).await?;
+        let frontier_index_db: KeyValueTypedStoreImpl<BlockHashSerde, BlockHashSerde> =
+            KeyValueTypedStoreImpl::new(frontier_index_kv_store);
         let deploy_index_db: KeyValueTypedStoreImpl<DeployId, BlockHashSerde> =
             KeyValueTypedStoreImpl::new(deploy_index_kv_store);
 
@@ -691,6 +724,7 @@ impl BlockDagKeyValueStorage {
             deploy_index: Arc::new(PlRwLock::new(deploy_index_db)),
             invalid_blocks_index: invalid_blocks_db,
             floor_index: floor_index_db,
+            frontier_index: frontier_index_db,
             equivocation_tracker_index: equivocation_tracker_store,
             latest_messages_index: latest_messages_db,
             dag_generation: Arc::new(AtomicU64::new(0)),
@@ -749,6 +783,7 @@ impl BlockDagKeyValueStorage {
         deploy_index: Arc<PlRwLock<KeyValueTypedStoreImpl<DeployId, BlockHashSerde>>>,
         invalid_blocks_index: KeyValueTypedStoreImpl<BlockHashSerde, BlockMetadata>,
         floor_index: KeyValueTypedStoreImpl<BlockHashSerde, BlockHashSerde>,
+        frontier_index: KeyValueTypedStoreImpl<BlockHashSerde, BlockHashSerde>,
         equivocation_tracker_index: EquivocationTrackerStore,
         dag_generation: Arc<AtomicU64>,
     ) -> Self {
@@ -759,6 +794,7 @@ impl BlockDagKeyValueStorage {
             deploy_index,
             invalid_blocks_index,
             floor_index,
+            frontier_index,
             equivocation_tracker_index,
             dag_generation,
         }
@@ -794,6 +830,16 @@ impl BlockDagKeyValueStorage {
     #[doc(hidden)]
     pub fn floor_index_for_tests(&self) -> &KeyValueTypedStoreImpl<BlockHashSerde, BlockHashSerde> {
         &self.floor_index
+    }
+
+    /// Test-only accessor for the frontier-index handle. Same rationale as
+    /// `floor_index_for_tests`.
+    #[cfg(any(test, feature = "test-internals"))]
+    #[doc(hidden)]
+    pub fn frontier_index_for_tests(
+        &self,
+    ) -> &KeyValueTypedStoreImpl<BlockHashSerde, BlockHashSerde> {
+        &self.frontier_index
     }
 
     /// Current DAG generation — incremented on every block insert.
@@ -859,6 +905,7 @@ impl BlockDagKeyValueStorage {
             block_metadata_index: self.block_metadata_index.clone(),
             deploy_index: self.deploy_index.clone(),
             floor_index: self.floor_index.clone(),
+            frontier_index: self.frontier_index.clone(),
         })
     }
 
