@@ -1170,7 +1170,10 @@ impl RuntimeManager {
             initial_values.insert(ch, value);
         }
 
-        // Calculate difference values from final values on number channels
+        // Calculate difference values from final values on number channels. The diff is
+        // the wrapping group inverse (see calculate_num_channel_diff): it faithfully
+        // recovers each deploy's intended delta even when execution overflowed. Over-large
+        // deltas are rejected downstream at merge (combine checked_add / apply checked_add).
         Ok(RholangMergingLogic::calculate_num_channel_diff(
             channels_data,
             move |ch| initial_values.get(ch).copied(),
