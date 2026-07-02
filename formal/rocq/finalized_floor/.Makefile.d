@@ -4,6 +4,8 @@ theories/CliqueOracle.vo theories/CliqueOracle.glob theories/CliqueOracle.v.beau
 theories/CliqueOracle.vos theories/CliqueOracle.vok theories/CliqueOracle.required_vos: theories/CliqueOracle.v theories/Foundation.vos /home/dylon/.opam/default/lib/rocq-runtime/rocqworker
 theories/Floor.vo theories/Floor.glob theories/Floor.v.beautified theories/Floor.required_vo: theories/Floor.v theories/CliqueOracle.vo theories/Foundation.vo /home/dylon/.opam/default/lib/rocq-runtime/rocqworker
 theories/Floor.vos theories/Floor.vok theories/Floor.required_vos: theories/Floor.v theories/CliqueOracle.vos theories/Foundation.vos /home/dylon/.opam/default/lib/rocq-runtime/rocqworker
+theories/GuardBridge.vo theories/GuardBridge.glob theories/GuardBridge.v.beautified theories/GuardBridge.required_vo: theories/GuardBridge.v theories/CliqueOracle.vo theories/Floor.vo theories/Foundation.vo /home/dylon/.opam/default/lib/rocq-runtime/rocqworker
+theories/GuardBridge.vos theories/GuardBridge.vok theories/GuardBridge.required_vos: theories/GuardBridge.v theories/CliqueOracle.vos theories/Floor.vos theories/Foundation.vos /home/dylon/.opam/default/lib/rocq-runtime/rocqworker
 theories/Merge.vo theories/Merge.glob theories/Merge.v.beautified theories/Merge.required_vo: theories/Merge.v /home/dylon/.opam/default/lib/rocq-runtime/rocqworker
 theories/Merge.vos theories/Merge.vok theories/Merge.required_vos: theories/Merge.v /home/dylon/.opam/default/lib/rocq-runtime/rocqworker
 theories/Recovery.vo theories/Recovery.glob theories/Recovery.v.beautified theories/Recovery.required_vo: theories/Recovery.v /home/dylon/.opam/default/lib/rocq-runtime/rocqworker

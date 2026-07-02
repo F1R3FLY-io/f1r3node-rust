@@ -149,3 +149,32 @@ Proof.
 Qed.
 
 Close Scope Z_scope.
+
+(* ===========================================================================
+   Phase 7 capstone — the strengthened selection conjuncts (Case-B compatibility
+   + selection maximality). The guard⇒AdjDC bridge and the frontier-is-finalized
+   result live in GuardBridge.v (guard_constant_committee_transparent,
+   upgo_finalized); they are checked axiom-free by the gate.
+   =========================================================================== *)
+
+Theorem finalized_floor_phase7_correct :
+  (* Case-B compatibility: the precise guarantee of the all_compatible branch —
+     every other candidate is `c`, in `c`'s past, or mergeable via a common
+     descendant parent (no incompatible finalized fork). *)
+  (forall d fuel parents cands c,
+     case_b d fuel parents cands c = true ->
+     forall o, In o cands ->
+       o = c \/ anc_of d o c
+       \/ (exists p, In p parents /\ anc_of d o p /\ anc_of d c p))
+  /\
+  (* Selection maximality: on descending-sorted candidates the chosen floor is the
+     sound base of greatest block number — the canonical highest sound base. *)
+  (forall d fuel parents cands f,
+     DescSorted d cands ->
+     select_floor d fuel parents cands = Some f ->
+     is_sound d fuel parents cands f = true /\
+     (forall c, In c cands -> is_sound d fuel parents cands c = true ->
+        numof d c <= numof d f)).
+Proof.
+  exact (conj case_b_compatible select_highest_sound).
+Qed.

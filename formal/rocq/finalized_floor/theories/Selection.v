@@ -310,3 +310,115 @@ Theorem committee_deterministic :
     committee_used bonds_of d fuel parents cands = r2 ->
     r1 = r2.
 Proof. intros. subst. reflexivity. Qed.
+
+(* ===========================================================================
+   Section 9 (Phase 7) - Case-B compatibility + selection maximality
+   =========================================================================== *)
+
+(* Case-B, unpacked (mirrors case_a_common_ancestor). A Case-B base `c` is
+   COMPATIBLE with every other candidate: each is `c` itself, lies in `c`'s DAG
+   past, or is mergeable with `c` via a common descendant parent. This is the
+   precise Case-B guarantee — weaker than Case-A common-ancestry: it establishes
+   there is no incompatible finalized fork among the candidates, NOT that `c` is
+   below every parent. The full no-lost-write for a Case-B floor rests on the
+   merge-scope + common-descendant semantics (modeled in TLA+ FinalizedFloorScan
+   / exercised by the Rust merge tests), which this predicate feeds. *)
+Theorem case_b_compatible :
+  forall d fuel parents cands c,
+    case_b d fuel parents cands c = true ->
+    forall o, In o cands ->
+      o = c
+      \/ anc_of d o c
+      \/ (exists p, In p parents /\ anc_of d o p /\ anc_of d c p).
+Proof.
+  intros d fuel parents cands c H o Hin. unfold case_b in H.
+  rewrite forallb_forall in H. specialize (H o Hin).
+  apply orb_true_iff in H. destruct H as [H | Hex].
+  - apply orb_true_iff in H. destruct H as [Heq | Hoc].
+    + left. apply Nat.eqb_eq in Heq. exact Heq.
+    + right. left. exact (anc_ofb_sound d fuel o c Hoc).
+  - right. right. apply existsb_exists in Hex. destruct Hex as [p [Hpin Hp]].
+    apply andb_true_iff in Hp. destruct Hp as [Hop Hcp].
+    exists p. split; [exact Hpin |].
+    split; [exact (anc_ofb_sound d fuel o p Hop) | exact (anc_ofb_sound d fuel c p Hcp)].
+Qed.
+
+(* Candidates sorted highest-first by block number (models floor.rs:129-133's
+   `sort_by` descending; the hash tiebreak is omitted — it only orders equal-height
+   candidates and does not affect the height-maximality below). *)
+Inductive DescSorted (d : DAG) : list BlockHash -> Prop :=
+  | ds_nil  : DescSorted d []
+  | ds_one  : forall x, DescSorted d [x]
+  | ds_cons : forall x y r,
+      numof d y <= numof d x -> DescSorted d (y :: r) -> DescSorted d (x :: y :: r).
+
+Lemma descsorted_tail : forall d x l, DescSorted d (x :: l) -> DescSorted d l.
+Proof.
+  intros d x l H. inversion H; subst.
+  - apply ds_nil.
+  - assumption.
+Qed.
+
+Lemma descsorted_head_max :
+  forall d x l, DescSorted d (x :: l) -> forall c, In c l -> numof d c <= numof d x.
+Proof.
+  intros d x l. revert x. induction l as [| y r IH]; intros x H c Hin.
+  - contradiction.
+  - inversion H as [ | | x0 y0 r0 Hle Hds ]; subst.
+    destruct Hin as [Heq | Hin].
+    + subst c. exact Hle.
+    + (* c in r : numof c <= numof y <= numof x *)
+      assert (Hcy : numof d c <= numof d y) by (apply (IH y Hds c Hin)).
+      apply (Nat.le_trans _ (numof d y) _ Hcy Hle).
+Qed.
+
+(* Maximality: over a descending-sorted candidate list, `find` returns the
+   sound candidate of GREATEST block number — the highest sound base (the Rust
+   picks the first sound one after sorting descending). Generic in the predicate
+   so it applies to `is_sound … cands`. *)
+Lemma find_desc_max :
+  forall d (sound : BlockHash -> bool) l f,
+    DescSorted d l ->
+    find sound l = Some f ->
+    sound f = true /\ In f l /\
+    (forall c, In c l -> sound c = true -> numof d c <= numof d f).
+Proof.
+  intros d sound l. induction l as [| x tl IH]; intros f Hsorted Hfind.
+  - simpl in Hfind. discriminate.
+  - simpl in Hfind. destruct (sound x) eqn:Esx.
+    + (* x is the first sound → f = x, and x has max number over x::tl *)
+      injection Hfind as Hf. subst f. repeat split.
+      * exact Esx.
+      * left. reflexivity.
+      * intros c Hin _. destruct Hin as [Heq | Hin].
+        -- subst c. apply Nat.le_refl.
+        -- apply (descsorted_head_max d x tl Hsorted c Hin).
+    + (* x not sound → recurse on tl *)
+      assert (Htl : DescSorted d tl) by (apply (descsorted_tail d x tl Hsorted)).
+      destruct (IH f Htl Hfind) as [Hsf [Hinf Hmax]].
+      repeat split.
+      * exact Hsf.
+      * right. exact Hinf.
+      * intros c Hin Hsc. destruct Hin as [Heq | Hin].
+        -- subst c. rewrite Esx in Hsc. discriminate.
+        -- apply (Hmax c Hin Hsc).
+Qed.
+
+(* T-SOUND maximality / canonical choice: on descending-sorted candidates,
+   select_floor returns the sound base of greatest block number. Combined with the
+   candidate list being node-identical (parents are block-ordered; frontiers are
+   pure functions), every honest node selects the same floor — no fork from
+   candidate enumeration order. *)
+Theorem select_highest_sound :
+  forall d fuel parents cands f,
+    DescSorted d cands ->
+    select_floor d fuel parents cands = Some f ->
+    is_sound d fuel parents cands f = true /\
+    (forall c, In c cands -> is_sound d fuel parents cands c = true ->
+       numof d c <= numof d f).
+Proof.
+  intros d fuel parents cands f Hsorted Hsel. unfold select_floor in Hsel.
+  destruct (find_desc_max d (is_sound d fuel parents cands) cands f Hsorted Hsel)
+    as [Hsf [_ Hmax]].
+  split; [exact Hsf | exact Hmax].
+Qed.

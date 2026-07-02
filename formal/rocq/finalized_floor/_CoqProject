@@ -30,6 +30,7 @@
 theories/Foundation.v
 theories/CliqueOracle.v
 theories/Floor.v
+theories/GuardBridge.v
 theories/Merge.v
 theories/Recovery.v
 theories/Selection.v
