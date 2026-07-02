@@ -9,13 +9,25 @@
 #      `main_*` capstone in MainTheorem.v is axiom-free (`Print Assumptions` ⇒
 #      "Closed under the global context"), then re-checks the whole library through
 #      the trusted kernel (`coqchk`). Any failure fails the gate.
-#   2. TLA+  (fail-soft) — TLC on the slashing safety cfgs (equivocation detector,
-#      concurrent tracker, slash flow) + the pre-fix counterexample cfgs (must
-#      reproduce their violation). SKIPPED if no TLC jar.
-#   3. Deep tiers (fail-soft) — points at scripts/ci/slashing-search-horizon.sh for
+#   2. TLA+  (fail-soft) — TLC (BOUNDED, explicit-state) on the slashing safety cfgs
+#      (equivocation detector, concurrent tracker, slash flow) + the pre-fix
+#      counterexample cfgs (must reproduce their violation). Exhaustive only at the
+#      cfg bounds (detector eager: 2v/2s/2b). SKIPPED if no TLC jar.
+#   3. Apalache (fail-soft) — UNBOUNDED symbolic (SMT) inductive-invariant check on the
+#      EAGER equivocation detector, COMPLEMENTING the bounded TLC run: proves IndInv ==
+#      TypeOK /\ the five state-dependent safety invariants (Inv_DetectionSound,
+#      Inv_TaxonomyCorrect, Inv_NeglectedHasDetectableView, Inv_RecordHasWitness,
+#      Inv_LivenessAsSafety) is INDUCTIVE (holds on ALL reachable states, NO finite
+#      horizon) via BASE (Init |= IndInv) + STEP (Next preserves IndInv) on the
+#      type-annotated wrapper EquivocationDetectorEager_apalache.tla. Runs at 3v/3s/3b,
+#      strictly beyond the gate's 2v/2s/2b TLC run on every dimension (the inductive
+#      check is O(1) in trajectory length, so it scales where TLC's explicit 3-validator
+#      enumeration would blow up). Apalache ignores fairness, so the EAGER model
+#      (liveness-as-safety) is the right target. SKIPPED if apalache-mc is absent.
+#   4. Deep tiers (fail-soft) — points at scripts/ci/slashing-search-horizon.sh for
 #      the Kani / Miri / fuzz / Sage economic-safety tiers (heavier; run separately).
 #
-# POLICY: LOCAL-ONLY. Do NOT wire this (or any Rocq/TLA+ step) into
+# POLICY: LOCAL-ONLY. Do NOT wire this (or any Rocq/TLA+/Apalache step) into
 # .github/workflows/* — an earlier formal-CI workflow was deliberately removed.
 #
 # Env knobs: ROCQ_MEMMAX=16G (systemd MemoryMax for the Rocq build).
@@ -40,7 +52,7 @@ capped() {
   fi
 }
 
-echo "== [1/3] Rocq (authoritative) =="
+echo "== [1/4] Rocq (authoritative) =="
 if command -v coqc >/dev/null 2>&1 || [[ -x "$HOME/.opam/default/bin/coqc" ]]; then
   # shellcheck disable=SC1090
   eval "$(opam env 2>/dev/null)" 2>/dev/null || true
@@ -75,7 +87,7 @@ else
   fail "coqc not found — Rocq is authoritative, cannot skip"
 fi
 
-echo "== [2/3] TLA+ (fail-soft) =="
+echo "== [2/4] TLA+ TLC bounded (fail-soft) =="
 TLC_JAR="${TLC_JAR:-/usr/share/java/tla2tools.jar}"
 if [[ -f "$TLC_JAR" ]] || command -v tlc >/dev/null 2>&1; then
   # shellcheck disable=SC1091
@@ -157,7 +169,47 @@ else
   skip "no TLC jar (\$TLC_JAR) or 'tlc' on PATH"
 fi
 
-echo "== [3/3] Deep tiers (fail-soft, run separately) =="
+echo "== [3/4] Apalache unbounded symbolic (fail-soft) =="
+# UNBOUNDED (horizon-free) inductive-invariant check on the EAGER equivocation detector,
+# COMPLEMENTING the bounded TLC run above. On the type-annotated wrapper
+# EquivocationDetectorEager_apalache.tla (the TLC base module + MC_*.cfg are left intact),
+# Apalache proves IndInv == TypeOK /\ Inv_DetectionSound /\ Inv_TaxonomyCorrect /\
+# Inv_NeglectedHasDetectableView /\ Inv_RecordHasWitness /\ Inv_LivenessAsSafety is
+# INDUCTIVE — holds on ALL reachable states, NO finite horizon:
+#   BASE: --init=Init  --inv=IndInv --length=0   (every Init state |= IndInv)
+#   STEP: --init=IndInv --inv=IndInv --length=1   (Next preserves IndInv)
+# Runs at 3v/3s/3b, strictly beyond the gate's 2v/2s/2b TLC run on every dimension.
+# Apalache ignores fairness, so the EAGER model (liveness folded into the
+# Inv_LivenessAsSafety safety invariant) is the correct target. PASSES iff BOTH report
+# NoError. SKIPPED if apalache-mc is absent (mirrors the deep-tier fail-soft SKIPs). Runs
+# under the shared memory cap (`capped`); SMT scratch lands on-disk under target/ (NVMe).
+APALACHE_WRAP="$TLA_DIR/EquivocationDetectorEager_apalache.tla"
+if ! command -v apalache-mc >/dev/null 2>&1; then
+  skip "no apalache-mc on PATH — unbounded symbolic IndInv is defense-in-depth beyond the bounded TLC above"
+elif [[ ! -f "$APALACHE_WRAP" ]]; then
+  skip "no EquivocationDetectorEager_apalache.tla wrapper present"
+else
+  aout="$REPO_ROOT/target/apalache-slashing"; rm -rf "$aout" 2>/dev/null || true; mkdir -p "$aout"
+  a_base=0; a_step=0
+  if capped apalache-mc check --init=Init --inv=IndInv --length=0 --cinit=CInit \
+       --out-dir="$aout" "$APALACHE_WRAP" >/tmp/sl_apalache_base.log 2>&1 \
+       && grep -qE "The outcome is: NoError|No error found" /tmp/sl_apalache_base.log; then
+    a_base=1
+  fi
+  if capped apalache-mc check --init=IndInv --inv=IndInv --length=1 --cinit=CInit \
+       --out-dir="$aout" "$APALACHE_WRAP" >/tmp/sl_apalache_step.log 2>&1 \
+       && grep -qE "The outcome is: NoError|No error found" /tmp/sl_apalache_step.log; then
+    a_step=1
+  fi
+  if [[ "$a_base" == "1" && "$a_step" == "1" ]]; then
+    pass "Apalache UNBOUNDED IndInv inductive — BASE+STEP clean at 3v/3s/3b: detector safety + Inv_LivenessAsSafety hold on ALL reachable states (horizon-free; strictly beyond TLC's 2v/2s/2b)"
+  else
+    [[ "$a_base" == "1" ]] || fail "Apalache BASE (Init |= IndInv) did NOT report NoError (see /tmp/sl_apalache_base.log)"
+    [[ "$a_step" == "1" ]] || fail "Apalache STEP (Next preserves IndInv) did NOT report NoError (see /tmp/sl_apalache_step.log)"
+  fi
+fi
+
+echo "== [4/4] Deep tiers (fail-soft, run separately) =="
 if [[ -x "$REPO_ROOT/scripts/ci/slashing-search-horizon.sh" ]]; then
   skip "Kani / Miri / fuzz / Sage economic-safety tiers: run scripts/ci/slashing-search-horizon.sh (heavier; not part of this fast gate)"
 else

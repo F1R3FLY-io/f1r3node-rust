@@ -10,25 +10,34 @@
 #      plus the three seam lemmas the Rust ENFORCES (validation_implies_wf_dag,
 #      honest_forkchoice_parents_validate, sort_total_order) are axiom-free. Any failure
 #      here fails the gate. SKIPPED only while no theories/*.v exist yet (scaffold phase).
-#   2. TLA+  (fail-soft) — TLC on MC_ForkChoice.cfg + MC_ForkChoiceScan.cfg (both PASS)
-#      and the two counterexample cfgs (MC_ForkChoice_nontotal.cfg reproduces the S1
-#      non-total-sort fork; MC_ForkChoiceScan_bug.cfg reproduces the node-local-top LCA
-#      divergence). SKIPPED if no TLC jar.
-#   3. Z3    (fail-soft) — tiebreak_total_order + score_supply_cap BitVec witnesses.
-#   4. Sage  (fail-soft) — fork-choice algebra (score monoid + argmax uniqueness).
-#   5. Wolfram (fail-soft) — ghost_heaviest_subtree.wl (greedy == global heaviest;
+#   2. TLA+  (fail-soft) — TLC (BOUNDED, explicit-state) on MC_ForkChoice.cfg +
+#      MC_ForkChoiceScan.cfg (both PASS) and the two counterexample cfgs
+#      (MC_ForkChoice_nontotal.cfg reproduces the S1 non-total-sort fork;
+#      MC_ForkChoiceScan_bug.cfg reproduces the node-local-top LCA divergence).
+#      Exhaustive only up to MaxId=3/MaxScore=2. SKIPPED if no TLC jar.
+#   3. Apalache (fail-soft) — UNBOUNDED symbolic (SMT) inductive-invariant check that
+#      COMPLEMENTS the bounded TLC run: proves IndInv == TypeOK /\ Inv_Deterministic /\
+#      Inv_HeaviestSubtree is INDUCTIVE (holds on ALL reachable states, no finite
+#      horizon) for UNBOUNDED integer scores (score : Int -> Int, not 0..MaxScore), via
+#      BASE (Init |= IndInv) + STEP (Next preserves IndInv) on the type-annotated wrapper
+#      ForkChoice_apalache.tla. MaxId=6 (2x TLC's 3) is a finite tip-arena bound the
+#      Apalache set-encoding requires; only the tip-COUNT is bounded, scores are not.
+#      SKIPPED if apalache-mc is absent (mirrors the Wolfram fail-soft tier).
+#   4. Z3    (fail-soft) — tiebreak_total_order + score_supply_cap BitVec witnesses.
+#   5. Sage  (fail-soft) — fork-choice algebra (score monoid + argmax uniqueness).
+#   6. Wolfram (fail-soft) — ghost_heaviest_subtree.wl (greedy == global heaviest;
 #      measure monotone; LCA-drag cap-boundedness). SKIPPED if no kernel is on PATH, or
 #      if the CLI kernel cannot bind the license in this shell (the model is validated
 #      via the licensed Wolfram MCP evaluator; a `mathpass` password is version-keyed).
-#   6. Diagrams (fail-soft) — renders the dossier's PlantUML diagram set and asserts a
+#   7. Diagrams (fail-soft) — renders the dossier's PlantUML diagram set and asserts a
 #      populated SVG (closing </svg>) with no stderr. SKIPPED if plantuml is absent.
-#   7. Rust  (fail-soft) — `cargo test -p casper` the fork-choice verification proptests
+#   8. Rust  (fail-soft) — `cargo test -p casper` the fork-choice verification proptests
 #      (C12: the concrete Estimator::filter_deep_parents conforms to GuardBridge.v's
 #      within_depth/prop_filter — soundness + main-retention + completeness + exact-set).
 #      SKIPPED if cargo is absent; any proptest failure fails the gate.
 #
-# POLICY: this script is for LOCAL use only. Do NOT wire it (or any Rocq/TLA+/Wolfram
-# step) into .github/workflows/* — an earlier formal-CI workflow was deliberately
+# POLICY: this script is for LOCAL use only. Do NOT wire it (or any Rocq/TLA+/Apalache/
+# Wolfram step) into .github/workflows/* — an earlier formal-CI workflow was deliberately
 # removed. See docs/theory/fork-choice/fork-choice-verification.md.
 #
 # Env knobs:
@@ -60,7 +69,7 @@ capped() {
   fi
 }
 
-echo "== [1/7] Rocq (authoritative) =="
+echo "== [1/8] Rocq (authoritative) =="
 if ! ls "$ROCQ_DIR"/theories/*.v >/dev/null 2>&1; then
   skip "no Rocq theories yet (scaffold phase) — becomes AUTHORITATIVE once modules land"
 elif command -v coqc >/dev/null 2>&1 || [[ -x "$HOME/.opam/default/bin/coqc" ]]; then
@@ -114,7 +123,7 @@ else
   fail "coqc not found — Rocq is authoritative, cannot skip"
 fi
 
-echo "== [2/7] TLA+ (fail-soft) =="
+echo "== [2/8] TLA+ TLC bounded (fail-soft) =="
 TLC_JAR="${TLC_JAR:-/usr/share/java/tla2tools.jar}"
 if ! ls "$TLA_DIR"/*.tla >/dev/null 2>&1; then
   skip "no TLA+ modules yet"
@@ -149,7 +158,46 @@ else
   skip "no TLC jar (\$TLC_JAR) or 'tlc' on PATH"
 fi
 
-echo "== [3/7] Z3 cross-witness (fail-soft) =="
+echo "== [3/8] Apalache unbounded symbolic (fail-soft) =="
+# UNBOUNDED inductive-invariant check COMPLEMENTING the bounded TLC run above. On the
+# type-annotated wrapper ForkChoice_apalache.tla (the TLC base module + MC_*.cfg are
+# left intact), Apalache proves IndInv == TypeOK /\ Inv_Deterministic /\
+# Inv_HeaviestSubtree is INDUCTIVE — holds on ALL reachable states, NO finite horizon —
+# for UNBOUNDED integer scores (score : Int -> Int, not 0..MaxScore):
+#   BASE: --init=Init  --inv=IndInv --length=0   (every Init state |= IndInv)
+#   STEP: --init=IndInv --inv=IndInv --length=1   (Next preserves IndInv)
+# PASSES iff BOTH report "The outcome is: NoError". SKIPPED if apalache-mc is absent
+# (mirrors the Wolfram fail-soft tier). MaxId=6 (2x TLC's 3) is a finite tip-arena bound
+# the Apalache set-encoding requires — only the tip-COUNT is bounded; the scores are
+# genuinely unbounded, strictly stronger than the bounded MaxScore=2 TLC run. Runs under
+# the shared memory cap (`capped`); SMT scratch lands on-disk under target/ (NVMe).
+APALACHE_WRAP="$TLA_DIR/ForkChoice_apalache.tla"
+if ! command -v apalache-mc >/dev/null 2>&1; then
+  skip "no apalache-mc on PATH — unbounded symbolic IndInv is defense-in-depth beyond the bounded TLC above"
+elif [[ ! -f "$APALACHE_WRAP" ]]; then
+  skip "no ForkChoice_apalache.tla wrapper present"
+else
+  aout="$REPO_ROOT/target/apalache-fork-choice"; rm -rf "$aout" 2>/dev/null || true; mkdir -p "$aout"
+  a_base=0; a_step=0
+  if capped apalache-mc check --init=Init --inv=IndInv --length=0 --cinit=CInit \
+       --out-dir="$aout" "$APALACHE_WRAP" >/tmp/fc_apalache_base.log 2>&1 \
+       && grep -qE "The outcome is: NoError|No error found" /tmp/fc_apalache_base.log; then
+    a_base=1
+  fi
+  if capped apalache-mc check --init=IndInv --inv=IndInv --length=1 --cinit=CInit \
+       --out-dir="$aout" "$APALACHE_WRAP" >/tmp/fc_apalache_step.log 2>&1 \
+       && grep -qE "The outcome is: NoError|No error found" /tmp/fc_apalache_step.log; then
+    a_step=1
+  fi
+  if [[ "$a_base" == "1" && "$a_step" == "1" ]]; then
+    pass "Apalache UNBOUNDED IndInv inductive — BASE+STEP clean: Inv_Deterministic + Inv_HeaviestSubtree hold on ALL reachable states (unbounded Int scores; MaxId=6 > TLC's 3)"
+  else
+    [[ "$a_base" == "1" ]] || fail "Apalache BASE (Init |= IndInv) did NOT report NoError (see /tmp/fc_apalache_base.log)"
+    [[ "$a_step" == "1" ]] || fail "Apalache STEP (Next preserves IndInv) did NOT report NoError (see /tmp/fc_apalache_step.log)"
+  fi
+fi
+
+echo "== [4/8] Z3 cross-witness (fail-soft) =="
 if ! ls "$Z3_DIR"/*.py >/dev/null 2>&1; then
   skip "no Z3 scripts yet"
 elif command -v python3 >/dev/null 2>&1 && python3 -c 'import z3' >/dev/null 2>&1; then
@@ -167,7 +215,7 @@ else
   skip "no python3 z3 module"
 fi
 
-echo "== [4/7] Sage cross-witness (fail-soft) =="
+echo "== [5/8] Sage cross-witness (fail-soft) =="
 if ! ls "$SAGE_DIR"/*.sage >/dev/null 2>&1; then
   skip "no Sage scripts yet"
 elif command -v sage >/dev/null 2>&1; then
@@ -180,7 +228,7 @@ else
   skip "no sage on PATH"
 fi
 
-echo "== [5/7] Wolfram (fail-soft) =="
+echo "== [6/8] Wolfram (fail-soft) =="
 WL_BIN=""; WL_RUN=()
 if command -v wolframscript >/dev/null 2>&1; then WL_BIN=wolframscript; WL_RUN=(wolframscript -file)
 elif command -v math >/dev/null 2>&1;       then WL_BIN=math;          WL_RUN=(math -script)
@@ -200,7 +248,7 @@ else
   fi
 fi
 
-echo "== [6/7] PlantUML diagrams (fail-soft) =="
+echo "== [7/8] PlantUML diagrams (fail-soft) =="
 if command -v plantuml >/dev/null 2>&1; then
   n_puml=$(find "$DIAG_DIR" -name '*.puml' 2>/dev/null | wc -l)
   if [[ "$n_puml" -gt 0 ]]; then
@@ -222,7 +270,7 @@ else
   skip "no plantuml on PATH"
 fi
 
-echo "== [7/7] Rust proptests (fail-soft) =="
+echo "== [8/8] Rust proptests (fail-soft) =="
 # C12: the fork-choice verification proptests wired into the `mod` integration-test
 # binary (casper/tests/fork_choice/): prop_filter_deep_parents asserts the concrete
 # `Estimator::filter_deep_parents` (estimator.rs:133-182) conforms to GuardBridge.v's
