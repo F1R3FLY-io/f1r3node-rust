@@ -1452,29 +1452,21 @@ impl Validate {
         };
         let floor_state = proto_util::post_state_hash(&floor_block);
 
-        match runtime_manager.compute_bonds(&floor_state).await {
-            Ok(computed_bonds) => {
-                let active = match runtime_manager.get_active_validators(&floor_state).await {
-                    Ok(active) => active,
-                    Err(ex) => {
-                        tracing::warn!(
-                            "Failed to compute active validators for bonds cache: {}",
-                            ex
-                        );
-                        return Either::Left(BlockError::BlockException(ex));
-                    }
-                };
+        // Same shared helper the proposer uses to package `block.bonds`, called on
+        // the same floor state ⇒ the recomputed committee is identical by
+        // construction (PLAY≡REPLAY); a mismatching block-bonds set is rejected.
+        match crate::rust::finality::floor::floor_committee(runtime_manager, &floor_state).await {
+            Ok(committee) => {
                 let bonds_set: HashSet<_> = proto_util::bonds(b)
                     .iter()
                     .map(|bond| (bond.validator.clone(), bond.stake))
                     .collect();
-                let computed_bonds_set: HashSet<_> = computed_bonds
+                let committee_set: HashSet<_> = committee
                     .iter()
-                    .filter(|bond| active.contains(&bond.validator))
                     .map(|bond| (bond.validator.clone(), bond.stake))
                     .collect();
 
-                if bonds_set == computed_bonds_set {
+                if bonds_set == committee_set {
                     Either::Right(ValidBlock::Valid)
                 } else {
                     tracing::warn!(

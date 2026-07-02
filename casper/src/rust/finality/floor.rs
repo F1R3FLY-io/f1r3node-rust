@@ -11,12 +11,15 @@
 use std::collections::BTreeMap;
 
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
+use models::rust::block::state_hash::StateHash;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
+use models::rust::casper::protocol::casper_message::Bond;
 use models::rust::validator::Validator;
 
 use crate::rust::errors::CasperError;
 use crate::rust::safety::clique_oracle::{CliqueOracle, FtThreshold};
+use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 
 /// The finalized cut a block builds on. Under linear finality this is a single
 /// block: the highest witnessed-finalized ancestor across the block's parents.
@@ -24,6 +27,30 @@ use crate::rust::safety::clique_oracle::{CliqueOracle, FtThreshold};
 pub struct Floor {
     pub hash: BlockHash,
     pub block_number: i64,
+}
+
+/// The active committee derived from a finalized-floor block's post-state: the
+/// PoS bonds at that state, filtered to the currently-active validator set.
+///
+/// Both the proposer (packaging `block.bonds`, `block_creator.rs`) and the
+/// validator (recomputing the bonds cache, `validate.rs::bonds_cache_from_floor`)
+/// call THIS ONE function on the same floor state hash, so their committees are
+/// identical by construction — the PLAY≡REPLAY the `InvalidBondsCache` check
+/// relies on (a block whose `bonds` set differs from the floor committee is
+/// rejected). Extracting the two previously byte-identical inline copies into a
+/// single helper removes the standing risk that a future edit to one site
+/// silently diverges the two (the committee is `Selection.committee_is_floor_bonds`
+/// — a pure function of the floor — realized in Rust).
+pub async fn floor_committee(
+    runtime_manager: &RuntimeManager,
+    floor_state: &StateHash,
+) -> Result<Vec<Bond>, CasperError> {
+    let floor_bonds = runtime_manager.compute_bonds(floor_state).await?;
+    let active = runtime_manager.get_active_validators(floor_state).await?;
+    Ok(floor_bonds
+        .into_iter()
+        .filter(|bond| active.contains(&bond.validator))
+        .collect())
 }
 
 /// Walk depth past which a floor walk is reported as unusually deep (cold

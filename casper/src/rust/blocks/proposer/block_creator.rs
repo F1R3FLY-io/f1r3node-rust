@@ -1074,14 +1074,9 @@ pub async fn create(
             ))
         })?;
         let floor_state_hash = &floor_block.body.state.post_state_hash;
-        let floor_bonds = runtime_manager.compute_bonds(floor_state_hash).await?;
-        let active = runtime_manager
-            .get_active_validators(floor_state_hash)
-            .await?;
-        let committee: Vec<Bond> = floor_bonds
-            .into_iter()
-            .filter(|bond| active.contains(&bond.validator))
-            .collect();
+        let committee: Vec<Bond> =
+            crate::rust::finality::floor::floor_committee(runtime_manager, floor_state_hash)
+                .await?;
         if committee.len() != new_bonds.len() {
             tracing::info!(
                 target: "f1r3fly.casper.bonds_validation",
