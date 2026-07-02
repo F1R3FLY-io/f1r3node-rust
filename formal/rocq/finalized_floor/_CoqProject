@@ -19,10 +19,14 @@
 # Module dependency graph (-> = "depends on"):
 #
 #   Foundation             (standalone: DAG, block numbers, main-parent spine, ancestry)
+#   CliqueOracle -> Foundation   (agreeing sets, quorum finalization, L-ANC, L-SNAP)
+#   Floor -> CliqueOracle        (frontier-cache transparency: warm up-walk == cold walk)
 #
-# (further modules — CliqueOracle, Floor, Merge, Recovery, MainTheorem — added
-#  as each is proven, in topological order.)
+# (further modules — Merge, Recovery, MainTheorem — added as each is proven,
+#  in topological order.)
 
 -Q theories FinalizedFloor
 
 theories/Foundation.v
+theories/CliqueOracle.v
+theories/Floor.v
