@@ -21,12 +21,15 @@
 #   Foundation             (standalone: DAG, block numbers, main-parent spine, ancestry)
 #   CliqueOracle -> Foundation   (agreeing sets, quorum finalization, L-ANC, L-SNAP)
 #   Floor -> CliqueOracle        (frontier-cache transparency: warm up-walk == cold walk)
-#
-# (further modules — Merge, Recovery, MainTheorem — added as each is proven,
-#  in topological order.)
+#   Merge                        (semilattice merge algebra: determinism + no-lost-write)
+#   Recovery                     (record-driven recovery: no-double-apply, T-NDA)
+#   MainTheorem -> all           (end-to-end capstone, axiom-free)
 
 -Q theories FinalizedFloor
 
 theories/Foundation.v
 theories/CliqueOracle.v
 theories/Floor.v
+theories/Merge.v
+theories/Recovery.v
+theories/MainTheorem.v
