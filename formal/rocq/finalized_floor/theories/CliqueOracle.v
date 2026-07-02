@@ -56,11 +56,24 @@
    =========================================================================== *)
 
 From Stdlib Require Import Arith.Arith.
+From Stdlib Require Import ZArith.
 From Stdlib Require Import Lists.List.
 From Stdlib Require Import Lia.
+From Stdlib Require Import Psatz.
 Import ListNotations.
 
 From FinalizedFloor Require Import Foundation.
+From FinalizedFloor Require Import FtExact.
+
+(* The default parsing scope of THIS file is `nat`: every committee weight, quorum
+   bound (`2 * cweight Q > cweight c`), and agreement predicate is over `nat`.
+   `ZArith`/`Psatz` are required only so the θ-exact finalization test (Section 7)
+   can talk to `FtExact.ft_exact_ge`, which is stated over `Z` (i128 in Rust). We
+   force `nat_scope` back to the top of the scope stack so the existing quorum
+   arithmetic keeps its `nat` meaning, and annotate the handful of `Z` comparisons
+   with `%Z`. (`FtExact` opens then CLOSES `Z_scope`, so requiring it leaves the
+   scope stack unchanged.) *)
+Open Scope nat_scope.
 
 (* ===========================================================================
    Section 1 - DAG ancestry (general, over all parent edges)
@@ -247,4 +260,294 @@ Proof.
   intros d c J J' b b' Hext Hanc Hfin.
   eapply L_SNAP; [exact Hext |].
   eapply L_ANC; [exact Hanc | exact Hfin].
+Qed.
+
+(* ===========================================================================
+   Section 7 - C1 : the θ-exact fault-tolerance finalization test (Finalized_ft).
+
+   Sections 4-6 finalize a block when a strict-majority-weight quorum agrees on it
+   (`is_quorum`'s `2 * cweight Q > cweight c`). That strict-majority test is the
+   θ = 0 CORNER of the fault-tolerance threshold the NODE actually evaluates. The
+   real node decision (A9, FtExact.v) is the exact-integer test
+
+       ft_exact_ge q S num den   :=   2*q*den >= S*(den + num)      (over Z / i128)
+
+   with q = agreeing (clique) weight, S = total committee stake, θ = num/den =
+   ppm/1e6. For num > 0 this is STRICTER than strict majority: it demands a margin
+   S·θ ABOVE half, not merely above half. We lift finalization to this exact test
+   as `Finalized_ft`, re-prove L-ANC / L-SNAP for it (still quorum-OPAQUE — the
+   witnessing set Q, its `incl`, and the ft-inequality are carried through
+   untouched, exactly as for `Finalized`; committee weights never enter), and then
+   BRIDGE it back to the strict-majority `Finalized`, so every θ-finalized block
+   inherits L-ANC, L-SNAP, L-ANC-SNAP, T-CACHE (frontier_cache_transparent) and
+   every downstream capstone WITHOUT re-proof. Thus T-CACHE's no-fork guarantee
+   rests on the actual node test, not merely on the strict-majority proxy.
+
+   Rocq                           | Rust (safety/clique_oracle.rs)
+   -------------------------------+--------------------------------------------
+   is_quorum_ft / Finalized_ft    | ft_witnessed(b,J): 2q·den ≥ S(den+num)  (:437)
+   L_ANC_ft / L_SNAP_ft           | warm up-walk stop/pivot rules, exact test
+   Finalized_ft_refines_Finalized | θ-test ⇒ strict-majority proxy (num,den,stake>0)
+   =========================================================================== *)
+
+(* A θ-exact quorum: an included sub-committee whose weight clears the exact FT
+   test at threshold num/den. `Z.of_nat` injects the (nat) weights into Z, where
+   FtExact states the test. The `incl Q c` half is IDENTICAL to `is_quorum`. *)
+Definition is_quorum_ft (c Q : Committee) (num den : Z) : Prop :=
+  incl Q c /\ ft_exact_ge (Z.of_nat (cweight Q)) (Z.of_nat (cweight c)) num den.
+
+(* θ-exact finalization: some θ-exact quorum all agree on `b`. This is the test
+   the NODE runs; `Finalized` (Section 4) is its strict-majority (θ = 0⁺) proxy. *)
+Definition Finalized_ft (d : DAG) (c : Committee) (J : Snapshot) (b : BlockHash)
+                        (num den : Z) : Prop :=
+  exists Q, is_quorum_ft c Q num den /\ (forall v w, In (v, w) Q -> agrees d J v b).
+
+(* L-ANC for the exact test — SAME quorum, weight-free (mirrors L_ANC). *)
+Theorem L_ANC_ft :
+  forall d c J b b' num den,
+    anc_of d b' b -> Finalized_ft d c J b num den -> Finalized_ft d c J b' num den.
+Proof.
+  intros d c J b b' num den Hanc [Q [Hq Hag]].
+  exists Q. split; [exact Hq |].
+  intros v w Hin.
+  eapply agrees_anc_mono; [exact Hanc | apply (Hag v w Hin)].
+Qed.
+
+(* Spine specialization for the exact test: a θ-finalized block's main parent is
+   θ-finalized (mirrors L_ANC_mainparent) — the step the warm up-walk relies on. *)
+Corollary L_ANC_ft_mainparent :
+  forall d c J x b ph num den,
+    wf_mainparent d ->
+    lookup d x = Some b ->
+    blk_main_parent b = Some ph ->
+    Finalized_ft d c J x num den ->
+    Finalized_ft d c J ph num den.
+Proof.
+  intros d c J x b ph num den Hwf Hlook Hmp Hfin.
+  eapply L_ANC_ft; [eapply mainparent_anc; eauto | exact Hfin].
+Qed.
+
+(* L-SNAP for the exact test — SAME quorum, weight-free (mirrors L_SNAP). *)
+Theorem L_SNAP_ft :
+  forall d c J J' b num den,
+    snap_extends J' J -> Finalized_ft d c J b num den -> Finalized_ft d c J' b num den.
+Proof.
+  intros d c J J' b num den Hext [Q [Hq Hag]].
+  exists Q. split; [exact Hq |].
+  intros v w Hin.
+  eapply agrees_snap_mono; [exact Hext | apply (Hag v w Hin)].
+Qed.
+
+(* Combined monotonicity for the exact test (mirrors L_ANC_SNAP). *)
+Corollary L_ANC_SNAP_ft :
+  forall d c J J' b b' num den,
+    snap_extends J' J -> anc_of d b' b ->
+    Finalized_ft d c J b num den -> Finalized_ft d c J' b' num den.
+Proof.
+  intros d c J J' b b' num den Hext Hanc Hfin.
+  eapply L_SNAP_ft; [exact Hext |].
+  eapply L_ANC_ft; [exact Hanc | exact Hfin].
+Qed.
+
+(* ---------------------------------------------------------------------------
+   The refinement bridge:  θ-exact test  ⇒  strict-majority proxy.
+
+   ARITHMETIC CORE (pure Z). At θ = 0 (num = 0) the exact test is the NON-strict
+   `2q ≥ S`; for num > 0 it strengthens to the STRICT `2q > S`. We prove both.
+
+   NOTE (faithful, necessary side-condition — mirrors FtExact.v's `0 <= den` NOTE).
+   The strict form `2q > S` additionally needs `0 < S` (a committee with positive
+   total stake). It is GENUINELY necessary, not a convenience: with S = 0 the test
+   `2q·den ≥ 0` is trivially true (e.g. the empty quorum Q = []), yet strict
+   majority `2q > 0` fails, so `Finalized_ft` with a zero-stake committee does NOT
+   imply `Finalized`. In the system every committee has positive total stake — an
+   empty / zero-stake committee finalizes nothing — so `0 < S`, equivalently
+   `0 < cweight c`, is a faithful domain fact, not a weakening of the finalization
+   semantics. It is the ONLY hypothesis added beyond `0 < num` and `0 < den`
+   (θ = num/den ∈ (0,1) needs num, den > 0). `Finalized` and its proofs are left
+   entirely unchanged; the bridge only ADDS a route into them.
+   --------------------------------------------------------------------------- *)
+
+(* θ = 0 corner: the exact test is at least strict majority, NON-strictly. This
+   is the `>=`-finalizer boundary (FtExact `ft_exact_ge` is the floor test). *)
+Lemma ft_exact_ge_weak_majority :
+  forall q S num den,
+    (0 <= num)%Z -> (0 < den)%Z -> (0 <= S)%Z ->
+    ft_exact_ge q S num den -> (2 * q >= S)%Z.
+Proof. intros q S num den Hnum Hden HS Hft. unfold ft_exact_ge in Hft. nia. Qed.
+
+(* num > 0 : the exact test is STRICTLY above majority, given positive stake `0<S`
+   (see the NOTE above for why `0 < S` is faithful and necessary). *)
+Lemma ft_exact_ge_strict_majority :
+  forall q S num den,
+    (0 < num)%Z -> (0 < den)%Z -> (0 < S)%Z ->
+    ft_exact_ge q S num den -> (2 * q > S)%Z.
+Proof. intros q S num den Hnum Hden HS Hft. unfold ft_exact_ge in Hft. nia. Qed.
+
+(* THE BRIDGE. Every θ-finalized block (θ = num/den, num,den>0, positive committee
+   stake) is finalized under the strict-majority `Finalized`, hence enjoys L_ANC,
+   L_SNAP, L_ANC_SNAP, T-CACHE and every downstream capstone WITHOUT re-proof. The
+   quorum witness Q is reused verbatim; only its weight bound is upgraded from the
+   exact inequality to strict majority (`ft_exact_ge_strict_majority`, then a
+   linear nat↔Z step). *)
+Theorem Finalized_ft_refines_Finalized :
+  forall d c J b num den,
+    (0 < num)%Z -> (0 < den)%Z -> 0 < cweight c ->
+    Finalized_ft d c J b num den -> Finalized d c J b.
+Proof.
+  intros d c J b num den Hnum Hden Hc Hfin.
+  destruct Hfin as [Q [Hq Hag]].
+  unfold is_quorum_ft in Hq. destruct Hq as [Hincl Hft].
+  exists Q. split; [| exact Hag].
+  unfold is_quorum. split; [exact Hincl |].
+  assert (HS : (0 < Z.of_nat (cweight c))%Z) by lia.
+  pose proof (ft_exact_ge_strict_majority _ _ _ _ Hnum Hden HS Hft) as Hstrict.
+  lia.
+Qed.
+
+(* ---------------------------------------------------------------------------
+   Weight-monotonicity of the exact test (uses FtExact.ft_exact_mono_q): more
+   agreeing stake never un-finalizes. A faithful companion, at the quorum /
+   finalization level, of `ft_exact_mono_q`'s "more agreeing stake never
+   un-finalizes"; `0 <= den` is inherited from `ft_exact_mono_q` (den = 1e6 ≥ 0 in
+   the system). Kept because it is the natural monotonicity of the exact test.
+   --------------------------------------------------------------------------- *)
+Lemma is_quorum_ft_mono_weight :
+  forall c Q Q' num den,
+    (0 <= den)%Z ->
+    incl Q' c ->
+    cweight Q <= cweight Q' ->
+    is_quorum_ft c Q num den ->
+    is_quorum_ft c Q' num den.
+Proof.
+  intros c Q Q' num den Hden Hincl' Hle [Hincl Hft].
+  split; [exact Hincl' |].
+  eapply ft_exact_mono_q with (q := Z.of_nat (cweight Q));
+    [exact Hden | lia | exact Hft].
+Qed.
+
+(* Consequently: if a θ-exact quorum Q witnesses finalizability and a heavier (by
+   weight) included sub-committee Q' all agree on `b`, then `b` is θ-finalized via
+   Q'. Demonstrates that `Finalized_ft` is monotone in the agreeing weight. *)
+Lemma Finalized_ft_enlarge :
+  forall d c J b num den Q Q',
+    (0 <= den)%Z ->
+    incl Q' c ->
+    cweight Q <= cweight Q' ->
+    is_quorum_ft c Q num den ->
+    (forall v w, In (v, w) Q' -> agrees d J v b) ->
+    Finalized_ft d c J b num den.
+Proof.
+  intros d c J b num den Q Q' Hden Hincl' Hle Hq Hag'.
+  exists Q'. split; [| exact Hag'].
+  eapply is_quorum_ft_mono_weight with (Q := Q);
+    [exact Hden | exact Hincl' | exact Hle | exact Hq].
+Qed.
+
+(* ===========================================================================
+   Section 8 - C5 : snapshot ADVANCEMENT (latest-message monotonicity).
+
+   `snap_extends` (Section 3) models snapshot growth as binding PRESERVATION: a
+   validator keeps its EXACT latest message and new validators may appear. Real
+   justification snapshots ADVANCE — a validator's latest message moves FORWARD to
+   a DAG-DESCENDANT as it observes more of the DAG. We model that as
+   `snap_advances`: every binding of the old snapshot is superseded by a binding
+   of the new one on a DAG-descendant. Agreement, and hence finalization, is
+   monotone under advancement: the moved-forward latest message still DAG-descends
+   from any block it descended from before (`anc_of_trans`). Preservation is the
+   REFLEXIVE (h' = h) special case, so `snap_advances` GENERALIZES `snap_extends`,
+   and the Section-6 `L_SNAP` is recovered as a corollary (`L_SNAP_of_extends`).
+
+   Rocq                          | Rust (engine/.../snapshot.rs)
+   ------------------------------+-------------------------------------------
+   snap_advances                 | latest messages advance to descendants
+   agrees_snap_advance_mono      | an agreeing validator stays agreeing after advance
+   L_SNAP_advance                | a finalized pivot stays finalized as snapshots advance
+   snap_extends_snap_advances    | preservation ⇒ advancement (reflexive descendant)
+   =========================================================================== *)
+
+(* J' advances J over DAG d: every binding v ↦ h of J is superseded in J' by a
+   binding v ↦ h' on a DAG-DESCENDANT of h (`anc_of d h h'` reads "h is an
+   ancestor-or-self of h'"). New validators may still be added (they are simply
+   unconstrained here, exactly as `snap_extends` leaves them unconstrained). *)
+Definition snap_advances (d : DAG) (J' J : Snapshot) : Prop :=
+  forall v h, snap_get J v = Some h ->
+    exists h', snap_get J' v = Some h' /\ anc_of d h h'.
+
+(* Agreement is monotone under advancement: if v agrees on `b` over J (`b` is an
+   ancestor of v's latest message h) and h advances to a descendant h', then `b`
+   is still an ancestor of h' (`anc_of_trans`), so v agrees on `b` over J'. *)
+Lemma agrees_snap_advance_mono :
+  forall d J J' v b,
+    snap_advances d J' J -> agrees d J v b -> agrees d J' v b.
+Proof.
+  intros d J J' v b Hadv [h [Hh Hbh]].
+  destruct (Hadv v h Hh) as [h' [Hh' Hhh']].
+  exists h'. split; [exact Hh' |].
+  eapply anc_of_trans; [exact Hbh | exact Hhh'].
+Qed.
+
+(* Preservation ⇒ advancement: take the descendant to be the block itself
+   (`anc_refl`). Hence `snap_advances` GENERALIZES `snap_extends`. *)
+Lemma snap_extends_snap_advances :
+  forall d J' J, snap_extends J' J -> snap_advances d J' J.
+Proof.
+  intros d J' J Hext v h Hh.
+  exists h. split; [apply Hext; exact Hh | apply anc_refl].
+Qed.
+
+(* L-SNAP under ADVANCEMENT, for the strict-majority `Finalized` — SAME quorum,
+   weight-free (mirrors L_SNAP, with advancement in place of extension). *)
+Theorem L_SNAP_advance :
+  forall d c J J' b,
+    snap_advances d J' J -> Finalized d c J b -> Finalized d c J' b.
+Proof.
+  intros d c J J' b Hadv [Q [Hq Hag]].
+  exists Q. split; [exact Hq |].
+  intros v w Hin.
+  eapply agrees_snap_advance_mono; [exact Hadv | apply (Hag v w Hin)].
+Qed.
+
+Corollary L_ANC_SNAP_advance :
+  forall d c J J' b b',
+    snap_advances d J' J -> anc_of d b' b ->
+    Finalized d c J b -> Finalized d c J' b'.
+Proof.
+  intros d c J J' b b' Hadv Hanc Hfin.
+  eapply L_SNAP_advance; [exact Hadv |].
+  eapply L_ANC; [exact Hanc | exact Hfin].
+Qed.
+
+(* The Section-6 `L_SNAP` (preservation) is the REFLEXIVE-DESCENDANT corollary of
+   advancement: `snap_extends ⇒ snap_advances`, then `L_SNAP_advance`. The original
+   `L_SNAP` is retained verbatim (the capstone consumes it); this shows it is
+   SUBSUMED by the more faithful advancement model. *)
+Corollary L_SNAP_of_extends :
+  forall d c J J' b,
+    snap_extends J' J -> Finalized d c J b -> Finalized d c J' b.
+Proof.
+  intros d c J J' b Hext Hfin.
+  eapply L_SNAP_advance; [apply snap_extends_snap_advances; exact Hext | exact Hfin].
+Qed.
+
+(* L-SNAP under ADVANCEMENT, for the θ-exact test (mirrors L_SNAP_ft). *)
+Theorem L_SNAP_advance_ft :
+  forall d c J J' b num den,
+    snap_advances d J' J ->
+    Finalized_ft d c J b num den -> Finalized_ft d c J' b num den.
+Proof.
+  intros d c J J' b num den Hadv [Q [Hq Hag]].
+  exists Q. split; [exact Hq |].
+  intros v w Hin.
+  eapply agrees_snap_advance_mono; [exact Hadv | apply (Hag v w Hin)].
+Qed.
+
+Corollary L_ANC_SNAP_advance_ft :
+  forall d c J J' b b' num den,
+    snap_advances d J' J -> anc_of d b' b ->
+    Finalized_ft d c J b num den -> Finalized_ft d c J' b' num den.
+Proof.
+  intros d c J J' b b' num den Hadv Hanc Hfin.
+  eapply L_SNAP_advance_ft; [exact Hadv |].
+  eapply L_ANC_ft; [exact Hanc | exact Hfin].
 Qed.

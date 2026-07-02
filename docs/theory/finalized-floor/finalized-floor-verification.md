@@ -204,6 +204,8 @@ the ratchet collapses and over-cap is safe.
 | **T-TERM** | spine walk terminates | Rocq `Foundation.spine_walk_terminates` |
 | **T-MONO / L-ANC** | ancestor-monotone finalization (no floor regress, S2) | Rocq `CliqueOracle.L_ANC`, `L_ANC_mainparent` |
 | **L-SNAP** | snapshot-monotone finalization | Rocq `CliqueOracle.L_SNAP`, `L_ANC_SNAP` |
+| **C1 — θ-exact refinement** | the node's REAL θ-decision (`ft_exact_ge`, not the strict-majority θ=0 proxy) is ancestor- and snapshot-monotone, and every θ-finalized block (θ ∈ (0,1), positive stake) is strict-majority `Finalized` — so T-CACHE's no-fork rests on the test the node runs | Rocq `CliqueOracle.L_ANC_ft`, `L_SNAP_ft`, `L_ANC_SNAP_ft`, **`Finalized_ft_refines_Finalized`** (side-conditions `0<num`, `0<cweight c` disclosed + necessary), `is_quorum_ft_mono_weight`/`Finalized_ft_enlarge` (via `FtExact.ft_exact_mono_q`); capstone conjuncts of `finalized_floor_thetaexact_advance_correct` |
+| **C5 — snapshot advancement** | growth modeled as latest-message ADVANCEMENT (each binding → a DAG-descendant), not just preservation; L-SNAP holds for it, and preservation ⇒ advancement so the old L-SNAP is subsumed | Rocq `CliqueOracle.snap_advances`, `agrees_snap_advance_mono`, **`L_SNAP_advance`**, `L_ANC_SNAP_advance`, `L_SNAP_advance_ft`, `snap_extends_snap_advances`, `L_SNAP_of_extends` (original L-SNAP re-derived) |
 | **T-CACHE** | warm up-walk == cold walk (no fork from cache, S1) | Rocq `Floor.frontier_cache_transparent` (takes `AdjDC`) **+ `GuardBridge.chain_adj_AdjDC` / `guard_constant_committee_transparent`** — the committee-constancy guard *derives* `AdjDC` from L-ANC, so the seam is bridged, not assumed; Rust test `guard_trip_committee_change_falls_back_to_cold` |
 | **T-DETMERGE / T-CONV** | merge order-independent (no fork, S6) | Rocq `Merge.merge_or_perm`, `merge_max_perm` |
 | **T-K1** | no mergeable write lost (the 400-block loss, S5) | Rocq `Merge.merge_or_no_lost_bit`, `merge_absorbs` |
@@ -225,7 +227,7 @@ the ratchet collapses and over-cap is safe.
 | **IntegerAdd launder** | fail-loudly at BOTH combine **and terminal apply**; the diff (`end−prev`) stays wrapping — it is the group inverse that recovers the true delta; supply-cap bound | Rocq `IntegerAdd.launder_exhibit`/`checked_combine_sound`/`supply_cap_no_launder`; Z3 `integeradd_launder_bitvec.py`; Rust `combine_mergeable_value` (combine, `checked_add`), `calculate_number_channel_merge` (terminal apply, `checked_add`+`≥0`); tests `cal_merged_result_rejects_integer_add_true_launder_wraps_nonnegative`, `merge_integer_add_overflow_is_rejected`, `diff_integer_add_recovers_wrapped_delta` |
 | **A9 exact-integer FT** | finalization decides `2·q·den ⋛ S·(den+num)` in i128 (`≥` floor / `>` LFB), not the fuzzy f32 ratio — precise + node-identical | Rocq `MainTheorem.finalized_floor_ftexact_correct` (`FtExact.v`); Z3 `ft_exact_no_overflow.py`; Sage `ft_algebra.sage`; Rust `clique_oracle.ft_decides_exact`/`ft_witnessed_exact`; test `ft_decides_exact_tests` |
 | **ancestry precondition (GAP-2/GAP-4)** | `CliqueOracle.v`/`Selection.v` model DAG ancestry ABSTRACTLY (`anc_of`); the trusted realization `is_dag_ancestor` (`block_dag_key_value_storage.rs`, used by `floor.rs`) computes EXACTLY that relation. Its block-number prune is sound under strict per-edge monotonicity (`wf_dag`: `block_number = 1 + max parent`), which block validation enforces — **not** the global contiguity (`max−min==len`) that `block_metadata_store.rs` demoted to a `warn!` (GAP-4: a strictly stronger, separate diagnostic the prune never needed) | Rust property test `is_dag_ancestor_matches_reflexive_transitive_closure_over_parents` (`block-storage`, `--features test-internals`): on random well-formed DAGs, `is_dag_ancestor` (with the prune) ≡ the reflexive-transitive closure over parents |
-| **capstone** | all of the above, axiom-free | Rocq `MainTheorem.{finalized_floor_merge_correct, finalized_floor_selection_correct, finalized_floor_arithmetic_correct, finalized_floor_phase7_correct, finalized_floor_ftexact_correct}` |
+| **capstone** | all of the above, axiom-free | Rocq `MainTheorem.{finalized_floor_merge_correct, finalized_floor_selection_correct, finalized_floor_arithmetic_correct, finalized_floor_phase7_correct, finalized_floor_ftexact_correct, finalized_floor_thetaexact_advance_correct}` (the last bundles C1/C5) |
 
 ---
 
@@ -244,7 +246,7 @@ the trust root under every capstone.
 | Module | Depends on | Key results |
 |---|---|---|
 | `Foundation.v` | — | DAG, block numbers, main-parent spine, `walk_spine`, **T-TERM** |
-| `CliqueOracle.v` | Foundation | DAG ancestry, agreement, quorum `Finalized`, **L-ANC**, **L-SNAP** |
+| `CliqueOracle.v` | Foundation, FtExact | DAG ancestry, agreement, quorum `Finalized`, **L-ANC**, **L-SNAP**; **C1 θ-exact bridge** — `Finalized_ft` via `FtExact.ft_exact_ge` (the REAL node θ-decision), `L_ANC_ft`/`L_SNAP_ft` (quorum-opaque re-proofs), `Finalized_ft_refines_Finalized` (θ-finalized ⇒ strict-majority `Finalized`, so T-CACHE's no-fork rests on the node test not a proxy); **C5 advancement** — `snap_advances`, `L_SNAP_advance`, `snap_extends_snap_advances` (preservation ⇒ advancement; original L-SNAP is the corollary) |
 | `Floor.v` | CliqueOracle | **T-CACHE** (`warm_eq_cold`, `frontier_cache_transparent`) — takes `AdjDC` as a hypothesis |
 | `GuardBridge.v` | Foundation, CliqueOracle, Floor | **guard ⇒ AdjDC** (`chain_adj_AdjDC`): under a *constant* committee, finalization along the spine is downward-closed, so the Rust committee-constancy guard *derives* Floor.v's `AdjDC` premise (no longer assumed); `guard_constant_committee_transparent` (warm == cold with AdjDC derived); **T-FIN** (`upgo_finalized`: the warm up-walk's result is `Finalized`) |
 | `Merge.v` | — | semilattice fold: **T-DETMERGE/T-CONV** (`merge_*_perm`), **T-K1** (`merge_or_no_lost_bit`) |
@@ -252,7 +254,7 @@ the trust root under every capstone.
 | `Selection.v` | Floor, CliqueOracle | the Case-A/B sound-base pick: **T-SOUND**, **T-LIN**, **T-PS**, **T-FIN**, **T-COMM**, **H3**, **Case-B**, **maximality** (`select_sound`, `select_none_correct`, `case_a_common_ancestor`, `T_PS`, `select_finalized`, `committee_is_floor_bonds`, `scope_covers_band`, `case_b_compatible`, `select_highest_sound`) |
 | `IntegerAdd.v` | — | signed-64 wrapping: **T-ALG(c)** (`wadd_assoc`), **T-ALG(d)** (`checked_apply_rejects_*`), launder `launder_exhibit`/`checked_combine_sound`/`supply_cap_no_launder` |
 | `FtExact.v` | — | **A9 exact-integer FT** (`ft_exact_iff_ratio`/`_strict`, `ft_exact_mono_q`, `ft_exact_no_overflow`): the exact test `2q·den ≥ S(den+num)` IS the f32 ratio test cleared of denominators, monotone in `q`, overflow-free in i128 |
-| `MainTheorem.v` | all | capstones `finalized_floor_merge_correct`, `finalized_floor_selection_correct`, `finalized_floor_arithmetic_correct`, `finalized_floor_phase7_correct` |
+| `MainTheorem.v` | all | capstones `finalized_floor_merge_correct`, `finalized_floor_selection_correct`, `finalized_floor_arithmetic_correct`, `finalized_floor_phase7_correct`, `finalized_floor_ftexact_correct`, and **`finalized_floor_thetaexact_advance_correct`** (C1/C5 bundle: `L_ANC_ft` ∧ `L_SNAP_ft` ∧ `Finalized_ft_refines_Finalized` ∧ `L_SNAP_advance` ∧ `snap_extends_snap_advances`) |
 
 The finalization model is a faithful monotone abstraction of `ft_witnessed`:
 `Finalized c J b` := *some majority-weight sub-committee all agree on `b`* (a
@@ -260,6 +262,28 @@ clique is such a quorum). L-ANC/L-SNAP hold by the **same-quorum argument** — 
 identical validators that finalize `b` finalize every ancestor of `b`, and still
 do under a larger snapshot — which is exactly why they hold for the real oracle
 (the pairwise-clique refinement reuses the same witnessing set verbatim).
+
+**C1 — the strict-majority `Finalized` is no longer a proxy.** The node's REAL
+finalization decision is the θ-exact test `FtExact.ft_exact_ge` (θ = num/den =
+ppm/1e6), not the hard-coded strict-majority (θ=0) corner. `Finalized_ft` is
+`Finalized` with its quorum weight-condition replaced by that exact test; because
+L-ANC/L-SNAP are **quorum-opaque** (they carry the *same* `Q` through, never
+inspecting its weight bound) they re-prove verbatim as `L_ANC_ft`/`L_SNAP_ft`. The
+bridge `Finalized_ft_refines_Finalized` then shows every θ-finalized block (θ ∈
+(0,1) over a positive-stake committee) is also strict-majority `Finalized`, so it
+inherits T-CACHE and every downstream capstone with no re-proof — T-CACHE's no-fork
+guarantee now rests on the decision the node actually runs. **Disclosed side-
+condition** (faithful, necessary; documented in `CliqueOracle.v` §7): the strict
+bridge needs `0 < num` (θ>0 is *strictly* above majority) and `0 < cweight c`
+(positive committee stake) — a zero-stake committee's empty quorum vacuously
+"finalizes" everything under the exact test yet fails strict majority, so the
+side-condition is the minimal faithful fix, not a weakening. **C5 — snapshot
+growth is modeled as latest-message ADVANCEMENT** (`snap_advances`: each binding
+moves forward to a DAG-descendant), strictly more faithful than the preservation-
+only `snap_extends`; `L_SNAP_advance` re-proves L-SNAP for it (via
+`agrees_snap_advance_mono`/`anc_of_trans`), and `snap_extends_snap_advances`
+(preservation ⇒ advancement, `anc_refl`) makes the original `L_SNAP` its
+reflexive-descendant corollary — nothing existing is weakened.
 
 Build (memory-capped, per the 32 GB envelope):
 

@@ -197,3 +197,60 @@ Theorem finalized_floor_phase7_correct :
 Proof.
   exact (conj case_b_compatible select_highest_sound).
 Qed.
+
+(* ===========================================================================
+   C1 + C5 capstone — the θ-exact finalization test and snapshot advancement.
+
+   Strengthens the two "assumed/proxy" seams the earlier capstones rested on:
+
+     C1  The node's REAL fault-tolerance decision is the exact-integer test
+         `Finalized_ft` (2q·den ≥ S(den+num), θ = num/den), not merely strict
+         majority. It is ancestor- and snapshot-monotone (L-ANC/L-SNAP for the
+         exact test) and REFINES the strict-majority `Finalized` proxy for
+         θ ∈ (0,1) over a positive-stake committee — so every θ-finalized block
+         inherits T-CACHE (frontier_cache_transparent) and every capstone above.
+
+     C5  Finalization is monotone under snapshot ADVANCEMENT (a validator's latest
+         message moving forward to a DAG-descendant), which GENERALIZES the
+         preservation-only L-SNAP: `snap_extends ⇒ snap_advances`, so the original
+         L-SNAP is the reflexive-descendant corollary.
+
+   Each conjunct is discharged by `exact` against its CliqueOracle lemma, so this
+   capstone introduces NO new assumptions (verify with `Print Assumptions
+   finalized_floor_thetaexact_advance_correct`). The pre-existing five capstones
+   are unchanged; this only ADDS coverage of the real node test and the faithful
+   advancement model. The refinement side-condition `0 < cweight c` (positive
+   committee stake) is faithful and necessary — see the NOTE in CliqueOracle.v
+   Section 7 (a zero-stake committee finalizes nothing).
+   =========================================================================== *)
+Theorem finalized_floor_thetaexact_advance_correct :
+  (* C1 / L-ANC: θ-exact finalization is downward-closed along ancestry. *)
+  (forall d c J b b' num den,
+     anc_of d b' b -> Finalized_ft d c J b num den -> Finalized_ft d c J b' num den)
+  /\
+  (* C1 / L-SNAP: θ-exact finalization is monotone under snapshot growth. *)
+  (forall d c J J' b num den,
+     snap_extends J' J -> Finalized_ft d c J b num den -> Finalized_ft d c J' b num den)
+  /\
+  (* C1 / refinement: the θ-test (θ = num/den, num,den > 0, positive committee
+     stake) implies the strict-majority proxy — so T-CACHE's no-fork guarantee
+     rests on the REAL node test, and every θ-finalized block enjoys L-ANC,
+     L-SNAP and every downstream capstone. *)
+  (forall d c J b num den,
+     (0 < num)%Z -> (0 < den)%Z -> 0 < cweight c ->
+     Finalized_ft d c J b num den -> Finalized d c J b)
+  /\
+  (* C5 / advancement: finalization is monotone as latest messages advance to
+     DAG-descendants (generalizes the preservation-only L-SNAP). *)
+  (forall d c J J' b,
+     snap_advances d J' J -> Finalized d c J b -> Finalized d c J' b)
+  /\
+  (* C5 / generalization: preservation ⇒ advancement, so the existing L-SNAP is
+     the reflexive-descendant corollary of L_SNAP_advance. *)
+  (forall d J' J, snap_extends J' J -> snap_advances d J' J).
+Proof.
+  exact (conj L_ANC_ft
+          (conj L_SNAP_ft
+            (conj Finalized_ft_refines_Finalized
+              (conj L_SNAP_advance snap_extends_snap_advances)))).
+Qed.

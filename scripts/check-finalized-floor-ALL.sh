@@ -66,11 +66,15 @@ if command -v coqc >/dev/null 2>&1 || [[ -x "$HOME/.opam/default/bin/coqc" ]]; t
     # identifier (no dots) — use a fixed name inside a scratch dir.
     tmpd=$(mktemp -d)
     chk="$tmpd/GateCheck.v"
-    # The 4 capstones + the 3 Phase-7 GuardBridge lemmas that close the "Rocq
-    # assumes what Rust enforces" seam (guard⇒AdjDC bridge + frontier-is-finalized).
+    # The 5 original capstones + the 3 Phase-7 GuardBridge lemmas that close the
+    # "Rocq assumes what Rust enforces" seam (guard⇒AdjDC bridge + frontier-is-
+    # finalized) + the C1/C5 sweep: the 6th capstone (θ-exact + advancement) and
+    # its two load-bearing standalone lemmas (the θ→majority refinement bridge and
+    # preservation⇒advancement generalization).
     cat > "$chk" <<'EOF'
 From FinalizedFloor Require Import MainTheorem.
 From FinalizedFloor Require Import GuardBridge.
+From FinalizedFloor Require Import CliqueOracle.
 Print Assumptions finalized_floor_merge_correct.
 Print Assumptions finalized_floor_selection_correct.
 Print Assumptions finalized_floor_arithmetic_correct.
@@ -79,14 +83,17 @@ Print Assumptions finalized_floor_ftexact_correct.
 Print Assumptions guard_constant_committee_transparent.
 Print Assumptions upgo_finalized.
 Print Assumptions chain_adj_AdjDC.
+Print Assumptions finalized_floor_thetaexact_advance_correct.
+Print Assumptions Finalized_ft_refines_Finalized.
+Print Assumptions snap_extends_snap_advances.
 EOF
     out=$(coqc -Q "$ROCQ_DIR/theories" FinalizedFloor "$chk" 2>&1)
     rm -rf "$tmpd"
     n_closed=$(grep -c "Closed under the global context" <<<"$out")
-    if [[ "$n_closed" == "8" ]]; then
-      pass "all 8 headline results axiom-free (5 capstones incl. A9 ftexact + guard⇒AdjDC bridge, upgo_finalized, chain_adj_AdjDC)"
+    if [[ "$n_closed" == "11" ]]; then
+      pass "all 11 headline results axiom-free (5 capstones incl. A9 ftexact + guard⇒AdjDC bridge, upgo_finalized, chain_adj_AdjDC + C1/C5: thetaexact_advance capstone, Finalized_ft_refines_Finalized, snap_extends_snap_advances)"
     else
-      fail "headline results NOT all axiom-free ($n_closed/8 Closed):"; echo "$out" | sed 's/^/      /'
+      fail "headline results NOT all axiom-free ($n_closed/11 Closed):"; echo "$out" | sed 's/^/      /'
     fi
     # Independent kernel re-check (coqchk) — the TRUSTED kernel re-verifies every
     # capstone + dependency `.vo`, not just the elaborator's Print Assumptions.
