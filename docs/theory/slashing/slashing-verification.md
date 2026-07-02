@@ -2728,7 +2728,7 @@ T2 writes {h2}        store := {h2}     ← h1 lost
 ```
 
 **Implication.** This is the formal evidence for bug #2 (Rust
-regression at `engine/multi_parent_casper/mod.rs:1046-1075`). The post-fix
+regression at `engine/multi_parent_casper/validation_dispatcher.rs:459`). The post-fix
 configuration (`Locked = TRUE`) eliminates the violation, confirming
 the fix proven in Rocq as `t_9_2_atomic_no_overwrite`.
 
