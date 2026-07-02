@@ -262,6 +262,9 @@ impl TestFixture {
             block_metadata_index: Arc::new(std::sync::RwLock::new(block_metadata_store)),
             deploy_index: Arc::new(std::sync::RwLock::new(deploy_index_typed_store)),
             invalid_blocks_index: invalid_blocks_typed_store,
+            floor_index: KeyValueTypedStoreImpl::new(Arc::new(
+                rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore::new(),
+            )),
             equivocation_tracker_index: equivocation_tracker,
             dag_generation: Arc::new(AtomicU64::new(0)),
         };
@@ -421,6 +424,7 @@ impl TestFixture {
             genesis_params.proof_of_stake.epoch_length,
             genesis_params.proof_of_stake.quarantine_length,
             genesis_params.proof_of_stake.number_of_active_validators,
+            genesis_params.proof_of_stake.fault_tolerance_threshold_ppm,
             required_sigs,
             genesis_params
                 .proof_of_stake

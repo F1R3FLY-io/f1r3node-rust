@@ -865,12 +865,22 @@ async fn repeat_deploy_validation_should_not_accept_blocks_with_a_repeated_deplo
 /// covers the symmetric case where the sig has a clean canonical
 /// inclusion (status `Finalized`) and the recovery exemption must NOT
 /// apply.
+/// Re-store `block` under its existing hash with `sig` recorded in
+/// `body.rejected_deploys` — the keep-one loser record `canonical_won_sigs` reads.
+fn mark_deploy_rejected(
+    block_store: &mut KeyValueBlockStore,
+    block: &casper_message::BlockMessage,
+    sig: Bytes,
+) {
+    let mut patched = block.clone();
+    patched.body.rejected_deploys = vec![casper_message::RejectedDeploy { sig }];
+    block_store
+        .put(block.block_hash.clone(), &patched)
+        .expect("re-store patched block with rejected deploy");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn repeat_deploy_validation_allows_recovered_deploy_from_rejected_in_scope() {
-    use std::sync::Arc;
-
-    use dashmap::DashSet;
-
     with_storage(|mut block_store, mut block_dag_storage| async move {
         let deploy = construct_deploy::basic_processed_deploy(0, None).unwrap();
         let deploy_sig: Bytes = deploy.deploy.sig.clone();
@@ -914,10 +924,31 @@ async fn repeat_deploy_validation_allows_recovered_deploy_from_rejected_in_scope
         // ancestor chain and finds block_x with deploy in body.deploys —
         // an "ancestor occurrence" that without the exemption would be
         // flagged as repeat.
-        let block_w = create_block(
+        // block_r: a descendant merge that REJECTED the deploy (real
+        // body.rejected_deploys), one block above block_x — so the deploy's
+        // LATEST canonical disposition is the rejection, not the win in block_x.
+        let block_r = create_block(
             &mut block_store,
             &mut block_dag_storage,
             vec![block_x.block_hash.clone()],
+            &genesis,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        mark_deploy_rejected(&mut block_store, &block_r, deploy_sig);
+
+        // block_w (child of block_r) re-includes the deploy — the recovery path.
+        let block_w = create_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            vec![block_r.block_hash.clone()],
             &genesis,
             None,
             None,
@@ -932,13 +963,6 @@ async fn repeat_deploy_validation_allows_recovered_deploy_from_rejected_in_scope
 
         let dag = block_dag_storage.get_representation();
         let mut snapshot = mk_casper_snapshot(dag);
-
-        // Mark the sig as "rejected in a descendant merge within deploy_lifespan".
-        // This is the signal the block-creator and Phase D recovery pipelines use
-        // to justify re-inclusion; validation must honor it.
-        let rejected: DashSet<Bytes> = DashSet::new();
-        rejected.insert(deploy_sig);
-        snapshot.rejected_in_scope = Arc::new(rejected);
 
         let result = Validate::repeat_deploy(&block_w, &mut snapshot, &mut block_store, 50);
         assert_eq!(
@@ -976,13 +1000,8 @@ async fn repeat_deploy_validation_allows_recovered_deploy_from_rejected_in_scope
 /// passes.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn repeat_deploy_blocks_double_execution_when_finalized_and_in_rejected_in_scope() {
-    use std::sync::Arc;
-
-    use dashmap::DashSet;
-
     with_storage(|mut block_store, mut block_dag_storage| async move {
         let deploy = construct_deploy::basic_processed_deploy(0, None).unwrap();
-        let deploy_sig: Bytes = deploy.deploy.sig.clone();
 
         // Genesis IS the LFB and contains `deploy` clean in body.deploys.
         // The resolver therefore reports `Finalized` for this sig.
@@ -1019,14 +1038,6 @@ async fn repeat_deploy_blocks_double_execution_when_finalized_and_in_rejected_in
 
         let dag = block_dag_storage.get_representation();
         let mut snapshot = mk_casper_snapshot(dag);
-
-        // Same `rejected_in_scope` membership as the recovery test — the
-        // gap is exactly that the repeat_deploy filter cannot distinguish
-        // "rejected somewhere, recoverable" from "finalized somewhere,
-        // non-recoverable" via this set alone.
-        let rejected: DashSet<Bytes> = DashSet::new();
-        rejected.insert(deploy_sig);
-        snapshot.rejected_in_scope = Arc::new(rejected);
 
         let result = Validate::repeat_deploy(&block_w, &mut snapshot, &mut block_store, 50);
         assert_eq!(
@@ -2104,6 +2115,99 @@ async fn bonds_cache_validation_should_succeed_on_a_valid_block_and_fail_on_modi
         modified_genesis.body = modified_body;
 
         let result_invalid = Validate::bonds_cache(&modified_genesis, &runtime_manager).await;
+        assert_eq!(
+            result_invalid,
+            Either::Left(BlockError::Invalid(InvalidBlock::InvalidBondsCache))
+        );
+    })
+    .await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn bonds_cache_from_floor_uses_floor_state_for_child_block_bonds() {
+    with_storage(|mut block_store, mut block_dag_storage| async move {
+        let context = GenesisBuilder::new()
+            .build_genesis_with_parameters(None)
+            .await
+            .unwrap();
+        let genesis = context.genesis_block.clone();
+
+        block_store
+            .put(genesis.block_hash.clone(), &genesis)
+            .unwrap();
+        block_dag_storage.insert(&genesis, false, true).unwrap();
+
+        let mut kvm = mk_test_rnode_store_manager_from_genesis(&context);
+        let m_store = crate::util::rholang::resources::mergeable_store_from_dyn(&mut *kvm)
+            .await
+            .unwrap();
+        let mut runtime_manager = RuntimeManager::create_with_store(
+            (&mut *kvm).r_space_stores().await.unwrap(),
+            m_store,
+            std::sync::Arc::new(Genesis::default_mergeable_tags()),
+            rholang::rust::interpreter::external_services::ExternalServices::noop(),
+        );
+
+        let mut casper_snapshot = mk_casper_snapshot(block_dag_storage.get_representation());
+        interpreter_util::validate_block_checkpoint(
+            &genesis,
+            &mut block_store,
+            &mut casper_snapshot,
+            &mut runtime_manager,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let floor_state = proto_util::post_state_hash(&genesis);
+        let active = runtime_manager
+            .get_active_validators(&floor_state)
+            .await
+            .unwrap();
+        let floor_bonds: Vec<Bond> = runtime_manager
+            .compute_bonds(&floor_state)
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|bond| active.contains(&bond.validator))
+            .collect();
+        let justifications: HashMap<_, _> = floor_bonds
+            .iter()
+            .map(|bond| (bond.validator.clone(), genesis.block_hash.clone()))
+            .collect();
+
+        let child = create_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            vec![genesis.block_hash.clone()],
+            &genesis,
+            None,
+            Some(floor_bonds),
+            Some(justifications),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        let snapshot = mk_casper_snapshot(block_dag_storage.get_representation());
+
+        let result_valid =
+            Validate::bonds_cache_from_floor(&child, &block_store, &snapshot, &runtime_manager)
+                .await;
+        assert_eq!(result_valid, Either::Right(ValidBlock::Valid));
+
+        let mut modified_child = child.clone();
+        modified_child.body.state.bonds = Vec::new();
+
+        let result_invalid = Validate::bonds_cache_from_floor(
+            &modified_child,
+            &block_store,
+            &snapshot,
+            &runtime_manager,
+        )
+        .await;
         assert_eq!(
             result_invalid,
             Either::Left(BlockError::Invalid(InvalidBlock::InvalidBondsCache))

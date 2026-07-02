@@ -15,6 +15,7 @@ use rspace_plus_plus::rspace::merger::state_change::StateChange;
 use shared::rust::hashable_set::HashableSet;
 
 use super::deploy_index::DeployIndex;
+use crate::rust::system_deploy::is_system_deploy_id;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct DeployIdWithCost {
@@ -27,6 +28,8 @@ pub struct DeployIdWithCost {
 pub struct DeployChainIndex {
     pub deploys_with_cost: HashableSet<DeployIdWithCost>,
     post_state_hash: Blake2b256Hash,
+    pub user_event_log_index: EventLogIndex,
+    pub system_event_log_index: EventLogIndex,
     pub event_log_index: EventLogIndex,
     pub state_changes: StateChange,
     // Source block identity. Allows the merge algorithm to identify chains
@@ -64,11 +67,25 @@ impl DeployChainIndex {
             })
             .collect();
 
-        let event_log_index = deploys
-            .into_iter()
-            .try_fold(EventLogIndex::empty(), |acc, deploy| {
-                EventLogIndex::combine(&acc, &deploy.event_log_index)
-            })?;
+        let (user_event_log_index, system_event_log_index) = deploys.into_iter().try_fold(
+            (EventLogIndex::empty(), EventLogIndex::empty()),
+            |(user_acc, system_acc), deploy| -> Result<_, HistoryError> {
+                if is_system_deploy_id(&deploy.deploy_id) {
+                    Ok((
+                        user_acc,
+                        EventLogIndex::combine(&system_acc, &deploy.event_log_index)?,
+                    ))
+                } else {
+                    Ok((
+                        EventLogIndex::combine(&user_acc, &deploy.event_log_index)?,
+                        system_acc,
+                    ))
+                }
+            },
+        )?;
+
+        let event_log_index =
+            EventLogIndex::combine(&user_event_log_index, &system_event_log_index)?;
 
         let pre_history_reader = history_repository.get_history_reader_struct(pre_state_hash)?;
         let post_history_reader = history_repository.get_history_reader_struct(post_state_hash)?;
@@ -79,6 +96,8 @@ impl DeployChainIndex {
         Ok(Self {
             deploys_with_cost: HashableSet(deploys_with_cost),
             post_state_hash: post_state_hash.clone(),
+            user_event_log_index,
+            system_event_log_index,
             event_log_index,
             state_changes,
             source_block_hash,
@@ -95,9 +114,16 @@ impl DeployChainIndex {
         source_block_hash: BlockHash,
         source_block_number: i64,
     ) -> Self {
+        let user_event_log_index = event_log_index;
+        let system_event_log_index = EventLogIndex::empty();
+        let event_log_index =
+            EventLogIndex::combine(&user_event_log_index, &system_event_log_index)
+                .expect("EventLogIndex::combine in DeployChainIndex::from_parts must not fail");
         DeployChainIndex {
             deploys_with_cost,
             post_state_hash,
+            user_event_log_index,
+            system_event_log_index,
             event_log_index,
             state_changes,
             source_block_hash,
@@ -207,6 +233,8 @@ mod tests {
         DeployChainIndex {
             deploys_with_cost: HashableSet(deploys_with_cost),
             post_state_hash: Blake2b256Hash::from_bytes(vec![post_state_seed; 32]),
+            user_event_log_index: EventLogIndex::empty(),
+            system_event_log_index: EventLogIndex::empty(),
             event_log_index: EventLogIndex::empty(),
             state_changes: StateChange::empty(),
             source_block_hash: Bytes::from(vec![post_state_seed; 32]),

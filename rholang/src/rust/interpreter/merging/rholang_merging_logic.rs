@@ -15,6 +15,7 @@ use rspace_plus_plus::rspace::hot_store_trie_action::{
 use rspace_plus_plus::rspace::internal::Datum;
 use rspace_plus_plus::rspace::merger::channel_change::ChannelChange;
 use rspace_plus_plus::rspace::merger::merging_logic::MergeType;
+use rspace_plus_plus::rspace::merger::state_change::StateChange;
 use rspace_plus_plus::rspace::serializers::serializers;
 use rspace_plus_plus::rspace::trace::event::Produce;
 
@@ -150,6 +151,49 @@ impl RholangMergingLogic {
         Blake2b512Random::from_bytes(&datum.a.random_state)
     }
 
+    /// §3c single-value-cell discriminator (RCA-asi-devnet-finality-halt).
+    ///
+    /// A channel whose base state is a single NUMERIC datum is a single-value
+    /// (number) cell — even for a write this merge did not tag mergeable.
+    /// Registry / TreeHashMap nodes hold structured (Map/tuple) data, which is
+    /// non-numeric, so `try_get_number_with_rnd` returns None and they are
+    /// exempt (multi-key structures merge freely). This is the discriminator
+    /// that separates a purse/cell (conflict) from a registry (merge) among
+    /// disjoint-consumed / produce-only writes, which the consume-then-produce
+    /// conflict check cannot distinguish.
+    ///
+    /// Returns `Err` when applying `changes` to such a cell would leave it
+    /// holding more than one value — a genuine single-value conflict the merge
+    /// must reject, rather than persist a state the RhoVM rejects at read time
+    /// (the IntegerAdd single-value invariant), which halts block production.
+    pub fn check_single_value_cell_not_overfilled(
+        channel_hash: &Blake2b256Hash,
+        base_data: &[Datum<ListParWithRandom>],
+        base_binary: &[Vec<u8>],
+        changes: &ChannelChange<Vec<u8>>,
+    ) -> Result<(), HistoryError> {
+        // Only a produce (`added`) can grow the cell beyond its base cardinality.
+        if changes.added.is_empty() {
+            return Ok(());
+        }
+        let base_is_single_number = base_data.len() == 1
+            && Self::try_get_number_with_rnd(&base_data[0].a).is_some();
+        if !base_is_single_number {
+            return Ok(());
+        }
+        let kept = StateChange::multiset_diff(base_binary, &changes.removed);
+        let result_len = kept.len() + changes.added.len();
+        if result_len > 1 {
+            return Err(HistoryError::MergeError(format!(
+                "single-value cell {} would hold {} values after merge; concurrent \
+                 writes to a single-value (number) channel conflict",
+                hex::encode(channel_hash.clone().bytes()),
+                result_len,
+            )));
+        }
+        Ok(())
+    }
+
     /// Returns the i64 + RNG pair for a single-Par integer channel value, or
     /// None when the value isn't a single-Par integer (e.g., a Rholang Map on
     /// a registry leaf node tagged with the bitmask tag). Non-numeric values
@@ -259,6 +303,89 @@ mod tests {
     use std::collections::HashMap;
 
     use super::*;
+
+    fn num_datum(n: i64) -> Datum<ListParWithRandom> {
+        let lpwr = ListParWithRandom {
+            pars: vec![RhoNumber::create_par(n)],
+            random_state: vec![0u8; 32],
+        };
+        Datum::create(&"chan".to_string(), lpwr, false)
+    }
+
+    fn non_numeric_datum() -> Datum<ListParWithRandom> {
+        // Two Pars -> not a single-Par integer -> models a registry/Map leaf.
+        let lpwr = ListParWithRandom {
+            pars: vec![RhoNumber::create_par(1), RhoNumber::create_par(2)],
+            random_state: vec![0u8; 32],
+        };
+        Datum::create(&"chan".to_string(), lpwr, false)
+    }
+
+    fn change(added: Vec<Vec<u8>>, removed: Vec<Vec<u8>>) -> ChannelChange<Vec<u8>> {
+        ChannelChange { added, removed }
+    }
+
+    // The halt scenario: a single-value number cell (base [0]) receives a
+    // produce that does NOT consume the base -> would hold [0, 5e9] -> reject.
+    #[test]
+    fn single_value_cell_produce_only_is_rejected() {
+        let ch = Blake2b256Hash::from_bytes(vec![0x0d; 32]);
+        let base = vec![num_datum(0)];
+        let base_bin = vec![vec![0x00u8]];
+        let res = RholangMergingLogic::check_single_value_cell_not_overfilled(
+            &ch,
+            &base,
+            &base_bin,
+            &change(vec![vec![0x5eu8]], vec![]),
+        );
+        assert!(res.is_err(), "produce-only onto single-value number cell must be rejected");
+    }
+
+    // A proper read-modify-write consumes the base and produces one replacement
+    // -> stays single-valued -> allowed.
+    #[test]
+    fn single_value_cell_read_modify_write_is_allowed() {
+        let ch = Blake2b256Hash::from_bytes(vec![0x0d; 32]);
+        let base = vec![num_datum(0)];
+        let base_bin = vec![vec![0x00u8]];
+        let res = RholangMergingLogic::check_single_value_cell_not_overfilled(
+            &ch,
+            &base,
+            &base_bin,
+            &change(vec![vec![0x5eu8]], vec![vec![0x00u8]]),
+        );
+        assert!(res.is_ok(), "RMW that consumes the base must be allowed");
+    }
+
+    // A non-numeric base (registry / TreeHashMap leaf) is a multi-key structure,
+    // not a single-value cell -> concurrent produces merge freely.
+    #[test]
+    fn non_numeric_base_registry_merges_freely() {
+        let ch = Blake2b256Hash::from_bytes(vec![0x0d; 32]);
+        let base = vec![non_numeric_datum()];
+        let base_bin = vec![vec![0x00u8]];
+        let res = RholangMergingLogic::check_single_value_cell_not_overfilled(
+            &ch,
+            &base,
+            &base_bin,
+            &change(vec![vec![0xaau8]], vec![]),
+        );
+        assert!(res.is_ok(), "registry/non-numeric channel must merge, not conflict");
+    }
+
+    #[test]
+    fn no_produce_is_allowed() {
+        let ch = Blake2b256Hash::from_bytes(vec![0x0d; 32]);
+        let base = vec![num_datum(0)];
+        let base_bin = vec![vec![0x00u8]];
+        let res = RholangMergingLogic::check_single_value_cell_not_overfilled(
+            &ch,
+            &base,
+            &base_bin,
+            &change(vec![], vec![]),
+        );
+        assert!(res.is_ok());
+    }
 
     #[test]
     fn test_calculate_num_channel_diff() {

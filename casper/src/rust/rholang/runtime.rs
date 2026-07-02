@@ -86,6 +86,24 @@ fn system_deploy_consume_all_pattern() -> BindPattern {
     }
 }
 
+/// Diagnostic label for a system deploy (closeBlock / slash / precharge /
+/// refund). Called lazily inside tracing field evaluation, so it costs nothing
+/// unless the event is enabled.
+fn system_deploy_kind<S: SystemDeployTrait>(sd: &S) -> &'static str {
+    let any = sd.as_any();
+    if any.downcast_ref::<CloseBlockDeploy>().is_some() {
+        "closeBlock"
+    } else if any.downcast_ref::<SlashDeploy>().is_some() {
+        "slash"
+    } else if any.downcast_ref::<PreChargeDeploy>().is_some() {
+        "precharge"
+    } else if any.downcast_ref::<RefundDeploy>().is_some() {
+        "refund"
+    } else {
+        "other"
+    }
+}
+
 impl RuntimeOps {
     /**
      * Because of the history legacy, the emptyStateHash does not really represent an empty trie.
@@ -127,6 +145,19 @@ impl RuntimeOps {
         tracing::info!(target: "f1r3fly.casper.runtime", "compute-state-started");
         if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
             tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "start", rss_kb);
+        }
+        if tracing::enabled!(target: "f1r3fly.casper.invalid_blocks", tracing::Level::DEBUG) {
+            let entries: Vec<String> = invalid_blocks
+                .iter()
+                .map(|(bh, v)| {
+                    format!(
+                        "{}=>{}",
+                        hex::encode(&bh[..8.min(bh.len())]),
+                        hex::encode(&v[..8.min(v.len())])
+                    )
+                })
+                .collect();
+            tracing::debug!(target: "f1r3fly.casper.invalid_blocks", n = invalid_blocks.len(), seq = block_data.seq_num, "PLAY compute_state invalid_blocks: [{}]", entries.join(", "));
         }
         self.runtime.set_block_data(block_data).await;
         if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
@@ -536,22 +567,15 @@ impl RuntimeOps {
         Ok(result)
     }
 
-    /// Deterministic multi-value fold for a mergeable channel that holds more
-    /// than one numeric Datum at observation time. Dispatches by `MergeType`:
-    /// `IntegerAdd` picks the max (conservative for vault balances);
-    /// `BitmaskOr` OR-folds all bitmaps (no set bit is lost). Returns `None`
-    /// for an empty input.
-    pub fn fold_multi_value(values: &[i64], merge_type: MergeType) -> Option<i64> {
+    pub fn fold_bitmask_or(values: &[i64]) -> Option<i64> {
         if values.is_empty() {
             return None;
         }
-        let folded = match merge_type {
-            MergeType::IntegerAdd => *values.iter().max().unwrap(),
-            MergeType::BitmaskOr => values
+        Some(
+            values
                 .iter()
                 .fold(0i64, |acc, v| ((acc as u64) | (*v as u64)) as i64),
-        };
-        Some(folded)
+        )
     }
 
     pub async fn get_number_channel(
@@ -566,9 +590,6 @@ impl RuntimeOps {
         } else {
             let ch_hash = stable_hash_provider::hash(channel);
             if ch_values.len() != 1 {
-                // Liveness-first fallback: ambiguous mergeable channel values should not wedge
-                // proposing. Non-numeric values are skipped — they aren't candidates for the
-                // numeric merge path and fall through to existing conflict handling.
                 let nums: Vec<i64> = ch_values
                     .iter()
                     .filter_map(|datum| {
@@ -576,26 +597,23 @@ impl RuntimeOps {
                     })
                     .collect();
 
-                let num = match Self::fold_multi_value(&nums, merge_type) {
-                    Some(n) => n,
-                    None => return Ok(None),
-                };
-
-                tracing::warn!(
-                    target: "f1r3fly.merge.mergeable_channel.sanitize",
-                    "NumberChannel has {} values; merge_type={:?} dispatched value={} for channel {}",
-                    ch_values.len(),
-                    merge_type,
-                    num,
-                    hex::encode(ch_hash.clone().bytes()),
-                );
-                metrics::counter!(
-                    "mergeable_channel_number_sanitized_total",
-                    "source" => "casper_runtime"
-                )
-                .increment(1);
-
-                return Ok(Some((ch_hash, num)));
+                match merge_type {
+                    MergeType::IntegerAdd => {
+                        return Err(CasperError::RuntimeError(format!(
+                            "number channel {} holds {} values {:?}; IntegerAdd single-value invariant violated",
+                            hex::encode(ch_hash.bytes()),
+                            ch_values.len(),
+                            nums,
+                        )));
+                    }
+                    MergeType::BitmaskOr => {
+                        let num = match Self::fold_bitmask_or(&nums) {
+                            Some(n) => n,
+                            None => return Ok(None),
+                        };
+                        return Ok(Some((ch_hash, num)));
+                    }
+                }
             }
 
             // Single value: opportunistic numeric read. Non-numeric values
@@ -716,6 +734,7 @@ impl RuntimeOps {
         &mut self,
         system_deploy: &mut S,
     ) -> Result<SysEvalResult<S>, CasperError> {
+        tracing::debug!(target: "f1r3fly.casper.replay_rho_runtime", kind = system_deploy_kind(system_deploy), "eval_system_deploy ENTER (eval system source, then consume its result)");
         let wrapper_pre_start = Instant::now();
         if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
             tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "start", rss_kb);
@@ -728,7 +747,9 @@ impl RuntimeOps {
         }
 
         let wrapper_mid_start = Instant::now();
+        tracing::debug!(target: "f1r3fly.casper.replay_rho_runtime", n_eval_errors = eval_result.errors.len(), "eval_system_deploy: system source evaluated");
         if !eval_result.errors.is_empty() {
+            tracing::debug!(target: "f1r3fly.casper.replay_rho_runtime", "eval_system_deploy: UnexpectedSystemErrors (system deploy eval ERRORED)");
             return Err(CasperError::SystemRuntimeError(
                 SystemDeployPlatformFailure::UnexpectedSystemErrors(eval_result.errors),
             ));
@@ -762,9 +783,16 @@ impl RuntimeOps {
                     ),
                 )),
             },
-            None => Err(CasperError::SystemRuntimeError(
-                SystemDeployPlatformFailure::ConsumeFailed,
-            )),
+            None => {
+                // INSTRUMENT (temporary): dump the leftover replay COMMs — names
+                // the consume the closeBlock stalled on at replay.
+                if let Err(e) = self.runtime.check_replay_data().await {
+                    tracing::error!(target: "f1r3fly.casper.replay_block", kind = system_deploy_kind(system_deploy), "system-deploy ConsumeFailed replay stall (THIS is the deploy that returned None): {}", e);
+                }
+                Err(CasperError::SystemRuntimeError(
+                    SystemDeployPlatformFailure::ConsumeFailed,
+                ))
+            }
         }?;
         if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
             tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_match_result", rss_kb);
@@ -1278,77 +1306,40 @@ mod tests {
     use super::*;
 
     #[test]
-    fn fold_multi_value_empty_returns_none() {
-        assert_eq!(
-            RuntimeOps::fold_multi_value(&[], MergeType::IntegerAdd),
-            None
-        );
-        assert_eq!(
-            RuntimeOps::fold_multi_value(&[], MergeType::BitmaskOr),
-            None
-        );
+    fn fold_bitmask_or_empty_returns_none() {
+        assert_eq!(RuntimeOps::fold_bitmask_or(&[]), None);
     }
 
     #[test]
-    fn fold_multi_value_single_returns_value() {
-        assert_eq!(
-            RuntimeOps::fold_multi_value(&[42], MergeType::IntegerAdd),
-            Some(42)
-        );
-        assert_eq!(
-            RuntimeOps::fold_multi_value(&[42], MergeType::BitmaskOr),
-            Some(42)
-        );
+    fn fold_bitmask_or_single_returns_value() {
+        assert_eq!(RuntimeOps::fold_bitmask_or(&[42]), Some(42));
     }
 
     #[test]
-    fn fold_multi_value_integer_add_returns_max() {
-        // Vault-balance semantics: pick the largest observed value.
-        assert_eq!(
-            RuntimeOps::fold_multi_value(&[10, 5, 20, 15], MergeType::IntegerAdd),
-            Some(20)
-        );
-    }
-
-    #[test]
-    fn fold_multi_value_bitmask_or_returns_or_fold_not_max() {
-        // BitmaskOr must OR-fold all bitmaps; using max() would silently lose
-        // bits set only in non-max values.
-        let a = 0b00010001i64; // bits {0, 4}
-        let b = 0b00100010i64; // bits {1, 5}
-                               // max(a, b) = b = 0b00100010 — would lose bits {0, 4}.
-                               // OR fold = 0b00110011 — bits {0, 1, 4, 5}. Correct.
-        assert_eq!(
-            RuntimeOps::fold_multi_value(&[a, b], MergeType::BitmaskOr),
-            Some(0b00110011),
-        );
-        // Three-way fold sanity.
+    fn fold_bitmask_or_returns_or_fold_not_max() {
+        let a = 0b00010001i64;
+        let b = 0b00100010i64;
+        assert_eq!(RuntimeOps::fold_bitmask_or(&[a, b]), Some(0b00110011));
         let c = 0b01000000i64;
-        assert_eq!(
-            RuntimeOps::fold_multi_value(&[a, b, c], MergeType::BitmaskOr),
-            Some(0b01110011),
-        );
+        assert_eq!(RuntimeOps::fold_bitmask_or(&[a, b, c]), Some(0b01110011));
     }
 
     #[test]
-    fn fold_multi_value_bitmask_or_commutes() {
-        // Result must not depend on observation order.
+    fn fold_bitmask_or_commutes() {
         let xs = [0b0001_0001i64, 0b0010_0010, 0b0100_0100, 0b1000_1000];
         let mut ys = xs;
         ys.reverse();
         assert_eq!(
-            RuntimeOps::fold_multi_value(&xs, MergeType::BitmaskOr),
-            RuntimeOps::fold_multi_value(&ys, MergeType::BitmaskOr),
+            RuntimeOps::fold_bitmask_or(&xs),
+            RuntimeOps::fold_bitmask_or(&ys),
         );
     }
 
     #[test]
-    fn fold_multi_value_bitmask_or_negative_high_bits_preserved() {
-        // i64::MIN sets only the sign bit (bit 63). OR with a positive bitmap
-        // must keep bit 63 set — no narrowing or sign-extension surprise.
+    fn fold_bitmask_or_negative_high_bits_preserved() {
         let neg = i64::MIN;
         let pos = 0b1010i64;
-        let folded = RuntimeOps::fold_multi_value(&[neg, pos], MergeType::BitmaskOr).unwrap();
+        let folded = RuntimeOps::fold_bitmask_or(&[neg, pos]).unwrap();
         assert_eq!(folded as u64, (neg as u64) | (pos as u64));
         assert_ne!(folded & i64::MIN, 0, "sign bit must remain set");
     }

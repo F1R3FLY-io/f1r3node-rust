@@ -95,6 +95,10 @@ pub fn rnode_db_mapping(legacy_rspace_paths: Option<bool>) -> Vec<(Db, LmdbEnvCo
             dag_storage_env_config(),
         ),
         (
+            Db::new("floor-index".to_string(), None),
+            dag_storage_env_config(),
+        ),
+        (
             Db::new("last-finalized-block".to_string(), None),
             dag_storage_env_config(),
         ),

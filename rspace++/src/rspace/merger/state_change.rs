@@ -307,6 +307,14 @@ impl StateChange {
         let channels_of_consumes_affected: Vec<Vec<Blake2b256Hash>> =
             unique_consume_channels.into_iter().collect();
 
+        tracing::debug!(
+            target: "f1r3fly.merge.step",
+            step = "StateChange::new.ENTER",
+            unique_produce_channels = unique_produce_channels.len(),
+            unique_consume_channels = channels_of_consumes_affected.len(),
+            "computing state change diff from event log index",
+        );
+
         // Process produces in parallel - each unique channel is processed exactly once
         unique_produce_channels
             .par_iter()
@@ -385,6 +393,15 @@ impl StateChange {
         datums_diff.retain(|_, change| !(change.added.is_empty() && change.removed.is_empty()));
         cont_diff.retain(|_, change| !(change.added.is_empty() && change.removed.is_empty()));
 
+        tracing::debug!(
+            target: "f1r3fly.merge.step",
+            step = "StateChange::new.EXIT",
+            datums_changes = datums_diff.len(),
+            cont_changes = cont_diff.len(),
+            joins = joins_map.len(),
+            "state change diff computed (no-op channel changes dropped)",
+        );
+
         Ok(Self {
             datums_changes: datums_diff,
             cont_changes: cont_diff,
@@ -399,6 +416,14 @@ impl StateChange {
     /// complexity.
     pub fn multiset_diff(from: &[Vec<u8>], to_remove: &[Vec<u8>]) -> Vec<Vec<u8>> {
         use std::collections::HashMap;
+
+        tracing::debug!(
+            target: "f1r3fly.merge.step",
+            step = "multiset_diff.ENTER",
+            from_items = from.len(),
+            to_remove_items = to_remove.len(),
+            "multiset difference (remove each to_remove item once from from)",
+        );
 
         // Build occurrence count map - O(m)
         let mut remove_counts: HashMap<&Vec<u8>, usize> = HashMap::new();
@@ -417,6 +442,16 @@ impl StateChange {
             }
             result.push(item.clone());
         }
+
+        tracing::debug!(
+            target: "f1r3fly.merge.step",
+            step = "multiset_diff.EXIT",
+            from_items = from.len(),
+            removed = from.len() - result.len(),
+            result_items = result.len(),
+            "multiset difference result",
+        );
+
         result
     }
 
@@ -437,6 +472,19 @@ impl StateChange {
         // multiset)
         let deleted = Self::multiset_diff(&start, &end);
 
+        if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
+            tracing::debug!(
+                target: "f1r3fly.merge.step",
+                step = "compute_value_change.EXIT",
+                channel = %hex::encode(history_pointer.clone().bytes()),
+                start_items = start.len(),
+                end_items = end.len(),
+                added = added.len(),
+                removed = deleted.len(),
+                "computed per-channel pre/post diff",
+            );
+        }
+
         Ok(ChannelChange {
             added,
             removed: deleted,
@@ -444,6 +492,11 @@ impl StateChange {
     }
 
     pub fn empty() -> Self {
+        tracing::debug!(
+            target: "f1r3fly.merge.step",
+            step = "StateChange::empty",
+            "creating empty StateChange",
+        );
         Self {
             datums_changes: DashMap::new(),
             cont_changes: DashMap::new(),
@@ -452,6 +505,18 @@ impl StateChange {
     }
 
     pub fn combine(self, other: Self) -> Self {
+        tracing::debug!(
+            target: "f1r3fly.merge.step",
+            step = "StateChange::combine.ENTER",
+            self_datums = self.datums_changes.len(),
+            self_conts = self.cont_changes.len(),
+            self_joins = self.consume_channels_to_join_serialized_map.len(),
+            other_datums = other.datums_changes.len(),
+            other_conts = other.cont_changes.len(),
+            other_joins = other.consume_channels_to_join_serialized_map.len(),
+            "combining two StateChanges (multiset union per channel)",
+        );
+
         let datums_changes = self.datums_changes;
         let cont_changes = self.cont_changes;
         let consume_channels_to_join_serialized_map = self.consume_channels_to_join_serialized_map;
@@ -461,9 +526,42 @@ impl StateChange {
             match datums_changes.entry(key) {
                 dashmap::mapref::entry::Entry::Occupied(mut entry) => {
                     let current = std::mem::replace(entry.get_mut(), ChannelChange::empty());
-                    *entry.get_mut() = current.combine(value);
+                    if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
+                        tracing::debug!(
+                            target: "f1r3fly.merge.step",
+                            step = "StateChange::combine.DATUM_ACCUM",
+                            channel = %hex::encode(entry.key().clone().bytes()),
+                            existing_added = current.added.len(),
+                            existing_removed = current.removed.len(),
+                            incoming_added = value.added.len(),
+                            incoming_removed = value.removed.len(),
+                            "datum channel present on both sides -> accumulating",
+                        );
+                    }
+                    let merged = current.combine(value);
+                    if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
+                        tracing::debug!(
+                            target: "f1r3fly.merge.step",
+                            step = "StateChange::combine.DATUM_ACCUM_RESULT",
+                            channel = %hex::encode(entry.key().clone().bytes()),
+                            merged_added = merged.added.len(),
+                            merged_removed = merged.removed.len(),
+                            "datum channel accumulated total",
+                        );
+                    }
+                    *entry.get_mut() = merged;
                 }
                 dashmap::mapref::entry::Entry::Vacant(entry) => {
+                    if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
+                        tracing::debug!(
+                            target: "f1r3fly.merge.step",
+                            step = "StateChange::combine.DATUM_NEW",
+                            channel = %hex::encode(entry.key().clone().bytes()),
+                            added = value.added.len(),
+                            removed = value.removed.len(),
+                            "datum channel only on other side -> inserted as-is",
+                        );
+                    }
                     entry.insert(value);
                 }
             }
@@ -474,9 +572,47 @@ impl StateChange {
             match cont_changes.entry(key) {
                 dashmap::mapref::entry::Entry::Occupied(mut entry) => {
                     let current = std::mem::replace(entry.get_mut(), ChannelChange::empty());
-                    *entry.get_mut() = current.combine(value);
+                    if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
+                        tracing::debug!(
+                            target: "f1r3fly.merge.step",
+                            step = "StateChange::combine.CONT_ACCUM",
+                            consume_pointer =
+                                %hex::encode(stable_hash_provider::hash_from_hashes(entry.key()).bytes()),
+                            n_channels = entry.key().len(),
+                            existing_added = current.added.len(),
+                            existing_removed = current.removed.len(),
+                            incoming_added = value.added.len(),
+                            incoming_removed = value.removed.len(),
+                            "cont consume present on both sides -> accumulating",
+                        );
+                    }
+                    let merged = current.combine(value);
+                    if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
+                        tracing::debug!(
+                            target: "f1r3fly.merge.step",
+                            step = "StateChange::combine.CONT_ACCUM_RESULT",
+                            consume_pointer =
+                                %hex::encode(stable_hash_provider::hash_from_hashes(entry.key()).bytes()),
+                            merged_added = merged.added.len(),
+                            merged_removed = merged.removed.len(),
+                            "cont consume accumulated total",
+                        );
+                    }
+                    *entry.get_mut() = merged;
                 }
                 dashmap::mapref::entry::Entry::Vacant(entry) => {
+                    if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
+                        tracing::debug!(
+                            target: "f1r3fly.merge.step",
+                            step = "StateChange::combine.CONT_NEW",
+                            consume_pointer =
+                                %hex::encode(stable_hash_provider::hash_from_hashes(entry.key()).bytes()),
+                            n_channels = entry.key().len(),
+                            added = value.added.len(),
+                            removed = value.removed.len(),
+                            "cont consume only on other side -> inserted as-is",
+                        );
+                    }
                     entry.insert(value);
                 }
             }
@@ -486,6 +622,33 @@ impl StateChange {
         for (key, value) in other.consume_channels_to_join_serialized_map {
             consume_channels_to_join_serialized_map.insert(key, value);
         }
+
+        if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
+            for entry in datums_changes.iter() {
+                let value = entry.value();
+                let added_bytes: usize = value.added.iter().map(|d| d.len()).sum();
+                let removed_bytes: usize = value.removed.iter().map(|d| d.len()).sum();
+                tracing::debug!(
+                    target: "f1r3fly.merge.step",
+                    step = "StateChange::combine.EXIT_DATUM",
+                    channel = %hex::encode(entry.key().clone().bytes()),
+                    added = value.added.len(),
+                    added_bytes,
+                    removed = value.removed.len(),
+                    removed_bytes,
+                    "combined datum channel summary",
+                );
+            }
+        }
+
+        tracing::debug!(
+            target: "f1r3fly.merge.step",
+            step = "StateChange::combine.EXIT",
+            datums_changes = datums_changes.len(),
+            cont_changes = cont_changes.len(),
+            joins = consume_channels_to_join_serialized_map.len(),
+            "combined StateChange",
+        );
 
         Self {
             datums_changes,

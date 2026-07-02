@@ -1,6 +1,6 @@
 // See casper/src/main/scala/coop/rchain/casper/blocks/proposer/BlockCreator.scala
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
@@ -78,16 +78,31 @@ pub async fn prepare_user_deploys(
     };
 
     let recovered_count = recovered.len();
+    if recovered_count > 0 {
+        let recovered_sigs: Vec<String> = recovered
+            .iter()
+            .map(|d| hex::encode(&d.sig[..d.sig.len().min(8)]))
+            .collect();
+        tracing::info!(
+            target: "f1r3fly.casper.recovery",
+            "Prepare user deploys: {} recovered from rejected-deploy buffer; sigs={:?}",
+            recovered_count,
+            recovered_sigs
+        );
+    }
     let unfinalized: HashSet<Signed<DeployData>> = unfinalized
         .into_iter()
         .chain(recovered.into_iter())
         .collect();
-    if recovered_count > 0 {
-        tracing::info!(
-            "Prepare user deploys: {} recovered from rejected-deploy buffer",
-            recovered_count
-        );
-    }
+
+    tracing::debug!(
+        target: "f1r3fly.merge.step",
+        step = "prepare_user_deploys.POOL",
+        block_number,
+        unfinalized_pool = unfinalized.len(),
+        recovered = recovered_count,
+        "merge.step: deploy pool assembled (unfinalized + recovered re-admits)"
+    );
 
     let earliest_block_number =
         block_number - casper_snapshot.on_chain_state.shard_conf.deploy_lifespan;
@@ -119,83 +134,87 @@ pub async fn prepare_user_deploys(
 
     let valid_count = valid.len();
 
-    // Remove deploys that are already in scope to prevent resending.
-    //
-    // Exception: a deploy whose sig appears in a descendant's `rejected_deploys`
-    // is eligible for re-inclusion — its state effects never made it into
-    // canonical state, so re-proposing it is correct.
-    //
-    // The exemption MUST decline when the rejection is non-canonical: a sibling
-    // block can put the sig in `rejected_in_scope` (the ancestor scan unions
-    // all blocks' `rejected_deploys`) while the deploy's effects are already
-    // in canonical state via a different chain. Re-including in that case
-    // would be double-execution and the resulting block would be flagged
-    // `InvalidRepeatDeploy` by `validate.rs::repeat_deploy` — too late to
-    // avoid the slashable proposal. Mirror the validator-side gate here.
-    let exemption_candidates: HashSet<Bytes> = valid
+    // Record-driven recovery. A deploy is re-includable unless its LATEST canonical
+    // disposition across the FULL merge scope (closure of ALL parents, via
+    // `canonical_won_sigs`) is a WIN — its effect is then already in the merge base
+    // this block builds on, so re-proposing it would double-execute. A keep-one loser
+    // (latest disposition = rejection) or a never-seen deploy is eligible. Walking all
+    // parents (not just the main-parent chain) catches a deploy already won on a
+    // co-parent. `validate.rs::repeat_deploy` applies the SAME canonical-won record,
+    // so proposer and validator never disagree (no recovery block is flagged
+    // InvalidRepeatDeploy).
+    let parent_hashes: Vec<BlockHash> = casper_snapshot
+        .parents
         .iter()
-        .filter(|d| {
-            casper_snapshot.deploys_in_scope.contains(&d.sig)
-                && casper_snapshot.rejected_in_scope.contains(&d.sig)
-        })
-        .map(|d| d.sig.clone())
+        .map(|p| p.block_hash.clone())
         .collect();
-
-    let stale_recoveries: HashSet<Bytes> = if exemption_candidates.is_empty() {
-        HashSet::new()
-    } else {
-        use crate::rust::api::deploy_finalization_status::{
-            resolve_batch, DeployFinalizationState,
-        };
-        let lifespan = casper_snapshot.on_chain_state.shard_conf.deploy_lifespan;
-        match resolve_batch(
-            &casper_snapshot.dag,
-            block_store,
-            lifespan,
-            &exemption_candidates,
-        ) {
-            Ok(statuses) => statuses
-                .into_iter()
-                .filter_map(|(sig, st)| match st.state {
-                    DeployFinalizationState::Finalized => Some(sig),
-                    _ => None,
-                })
-                .collect(),
-            // Resolver failure: decline the exemption for all candidates
-            // rather than risk double-execution. They'll be retried next cycle.
-            Err(err) => {
-                tracing::warn!(
-                    "prepare_user_deploys: resolve_batch failed: {} — declining \
-                     recovery exemption for all {} candidate(s) this cycle",
-                    err,
-                    exemption_candidates.len()
-                );
-                exemption_candidates.clone()
-            }
-        }
-    };
+    let canonical_won =
+        interpreter_util::canonical_won_sigs(block_store, &parent_hashes, earliest_block_number)?;
 
     let already_in_scope: Vec<Signed<DeployData>> = valid
         .iter()
-        .filter(|deploy| {
-            let sig = &deploy.sig;
-            casper_snapshot.deploys_in_scope.contains(sig)
-                && (!casper_snapshot.rejected_in_scope.contains(sig)
-                    || stale_recoveries.contains(sig))
-        })
+        .filter(|deploy| canonical_won.contains(&deploy.sig))
         .map(|deploy| (*deploy).clone())
         .collect();
     let valid_unique: HashSet<Signed<DeployData>> = valid
         .into_iter()
-        .filter(|deploy| {
-            let sig = &deploy.sig;
-            !casper_snapshot.deploys_in_scope.contains(sig)
-                || (casper_snapshot.rejected_in_scope.contains(sig)
-                    && !stale_recoveries.contains(sig))
-        })
+        .filter(|deploy| !canonical_won.contains(&deploy.sig))
         .collect();
 
     let already_in_scope_count = already_in_scope.len();
+
+    if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
+        for d in &future_deploys {
+            tracing::debug!(
+                target: "f1r3fly.merge.step",
+                step = "prepare_user_deploys.FILTER",
+                deploy = %hex::encode(&d.sig[..8.min(d.sig.len())]),
+                decision = "filtered",
+                reason = "future",
+                "merge.step: deploy filter decision"
+            );
+        }
+        for d in &block_expired_deploys {
+            tracing::debug!(
+                target: "f1r3fly.merge.step",
+                step = "prepare_user_deploys.FILTER",
+                deploy = %hex::encode(&d.sig[..8.min(d.sig.len())]),
+                decision = "filtered",
+                reason = "block-expired",
+                "merge.step: deploy filter decision"
+            );
+        }
+        for d in &time_expired_deploys {
+            tracing::debug!(
+                target: "f1r3fly.merge.step",
+                step = "prepare_user_deploys.FILTER",
+                deploy = %hex::encode(&d.sig[..8.min(d.sig.len())]),
+                decision = "filtered",
+                reason = "time-expired",
+                "merge.step: deploy filter decision"
+            );
+        }
+        for d in &already_in_scope {
+            tracing::debug!(
+                target: "f1r3fly.merge.step",
+                step = "prepare_user_deploys.FILTER",
+                deploy = %hex::encode(&d.sig[..8.min(d.sig.len())]),
+                decision = "filtered",
+                reason = "already-in-scope (repeat_deploy / deploys_in_scope, non-stale)",
+                "merge.step: deploy filter decision"
+            );
+        }
+        for d in &valid_unique {
+            tracing::debug!(
+                target: "f1r3fly.merge.step",
+                step = "prepare_user_deploys.FILTER",
+                deploy = %hex::encode(&d.sig[..8.min(d.sig.len())]),
+                decision = "selected-candidate",
+                reason = "passed expiry + scope filters",
+                "merge.step: deploy filter decision"
+            );
+        }
+    }
 
     // Log deploy selection details when there are any deploys in the pool
     if !unfinalized.is_empty() || !casper_snapshot.deploys_in_scope.is_empty() {
@@ -282,6 +301,21 @@ pub async fn prepare_user_deploys(
         .max_user_deploys_per_block as usize;
     let max_user_deploys = max_deploys;
     if valid_unique.len() <= max_user_deploys {
+        if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
+            let chosen: Vec<String> = valid_unique
+                .iter()
+                .map(|d| hex::encode(&d.sig[..8.min(d.sig.len())]))
+                .collect();
+            tracing::debug!(
+                target: "f1r3fly.merge.step",
+                step = "prepare_user_deploys.CHOSEN",
+                block_number,
+                count = valid_unique.len(),
+                cap_hit = false,
+                chosen = ?chosen,
+                "merge.step: final deploy set chosen for block"
+            );
+        }
         return Ok(PreparedUserDeploys {
             deploys: valid_unique,
             effective_cap: max_user_deploys,
@@ -342,6 +376,23 @@ pub async fn prepare_user_deploys(
         max_user_deploys,
         selection_strategy
     );
+
+    if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
+        let chosen: Vec<String> = selected
+            .iter()
+            .map(|d| hex::encode(&d.sig[..8.min(d.sig.len())]))
+            .collect();
+        tracing::debug!(
+            target: "f1r3fly.merge.step",
+            step = "prepare_user_deploys.CHOSEN",
+            block_number,
+            count = selected.len(),
+            cap_hit = true,
+            strategy = selection_strategy,
+            chosen = ?chosen,
+            "merge.step: final deploy set chosen for block (capped)"
+        );
+    }
 
     Ok(PreparedUserDeploys {
         deploys: selected,
@@ -641,14 +692,21 @@ pub async fn create(
     // The merge result is cached so the downstream compute_deploys_checkpoint
     // call hits the cache.
     let __merge_pre_t = std::time::Instant::now();
+    let latest_messages: BTreeMap<Validator, BlockHash> = casper_snapshot
+        .justifications
+        .iter()
+        .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
+        .collect();
     let merge_pre_info = interpreter_util::compute_parents_post_state(
         block_store,
         parents.clone(),
         casper_snapshot,
         runtime_manager,
+        &latest_messages,
         None,
         Some(&rejected_deploy_buffer),
-    )?;
+    )
+    .await?;
     metrics::histogram!(
         BLOCK_CREATOR_COMPUTE_PARENTS_POST_STATE_TIME_METRIC,
         "source" => CASPER_METRICS_SOURCE
@@ -729,7 +787,18 @@ pub async fn create(
     // Use the adjusted `now_millis` captured at the start of create for block timestamp.
     // The value is clamped to the max parent timestamp to avoid InvalidTimestamp from clock skew.
     // This ensures the same time is used for deploy filtering and block creation.
-    let invalid_blocks = casper_snapshot.invalid_blocks.clone();
+    // Invalid-blocks map (hash -> sender) for the PoS slash deploys: derived from
+    // this block's own slash targets so it is byte-identical at creation and
+    // replay (see proto_util::slashed_block_senders). A DAG-derived view is
+    // node-view-dependent and makes the slash deploy fail replay (ConsumeFailed).
+    let slashed_hashes: Vec<models::rust::block_hash::BlockHash> = system_deploys_converted
+        .iter()
+        .filter_map(|sd| sd.as_slash().map(|s| s.invalid_block_hash.clone()))
+        .collect();
+    let invalid_blocks = crate::rust::util::proto_util::slashed_block_senders(
+        &casper_snapshot.dag,
+        &slashed_hashes,
+    )?;
     let block_data = BlockData {
         time_stamp: now_millis,
         block_number: next_block_num,
@@ -786,6 +855,50 @@ pub async fn create(
         new_bonds,
     ) = checkpoint_data;
 
+    let block_bonds = {
+        let parent_hashes: Vec<BlockHash> = parents.iter().map(|p| p.block_hash.clone()).collect();
+        let latest_messages: BTreeMap<Validator, BlockHash> = casper_snapshot
+            .justifications
+            .iter()
+            .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
+            .collect();
+        let floor = crate::rust::finality::floor::finalized_floor(
+            &casper_snapshot.dag,
+            &parent_hashes,
+            &latest_messages,
+            casper_snapshot
+                .on_chain_state
+                .shard_conf
+                .fault_tolerance_threshold,
+        )
+        .await?;
+        let floor_block = block_store.get(&floor.hash)?.ok_or_else(|| {
+            CasperError::RuntimeError(format!(
+                "finalized-floor block {} not in block store for block bonds",
+                pretty_printer::PrettyPrinter::build_string_bytes(&floor.hash)
+            ))
+        })?;
+        let floor_state_hash = &floor_block.body.state.post_state_hash;
+        let floor_bonds = runtime_manager.compute_bonds(floor_state_hash).await?;
+        let active = runtime_manager
+            .get_active_validators(floor_state_hash)
+            .await?;
+        let committee: Vec<Bond> = floor_bonds
+            .into_iter()
+            .filter(|bond| active.contains(&bond.validator))
+            .collect();
+        if committee.len() != new_bonds.len() {
+            tracing::info!(
+                target: "f1r3fly.casper.bonds_validation",
+                floor_number = floor.block_number,
+                committee = committee.len(),
+                post_state_bonds = new_bonds.len(),
+                "block bonds field differs from post-state bonds"
+            );
+        }
+        committee
+    };
+
     let casper_version = casper_snapshot.on_chain_state.shard_conf.casper_version;
 
     // Span[F].trace(ProcessDeploysAndCreateBlockMetricsSource) from Scala
@@ -807,7 +920,7 @@ pub async fn create(
         processed_deploys,
         rejected_deploys,
         processed_system_deploys,
-        new_bonds,
+        block_bonds,
         shard_id,
         casper_version,
     );

@@ -43,18 +43,36 @@ fn compare_branches<R: Ord>(a: &Branch<R>, b: &Branch<R>) -> std::cmp::Ordering 
     a_sorted.sort();
     b_sorted.sort();
 
+    if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
+        tracing::debug!(target: "f1r3fly.merge.step", step = "compare_branches.ENTER",
+            a_len = a_sorted.len(),
+            b_len = b_sorted.len());
+    }
+
     let len_cmp = a_sorted.len().cmp(&b_sorted.len());
     if len_cmp != std::cmp::Ordering::Equal {
+        if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
+            tracing::debug!(target: "f1r3fly.merge.step", step = "compare_branches.EXIT",
+                ordering = ?len_cmp);
+        }
         return len_cmp;
     }
 
     for (a_item, b_item) in a_sorted.iter().zip(b_sorted.iter()) {
         let cmp = a_item.cmp(b_item);
         if cmp != std::cmp::Ordering::Equal {
+            if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
+                tracing::debug!(target: "f1r3fly.merge.step", step = "compare_branches.EXIT",
+                    ordering = ?cmp);
+            }
             return cmp;
         }
     }
 
+    if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
+        tracing::debug!(target: "f1r3fly.merge.step", step = "compare_branches.EXIT",
+            ordering = "Equal");
+    }
     std::cmp::Ordering::Equal
 }
 
@@ -109,6 +127,8 @@ pub fn resolve_conflicts<R: Clone + Eq + std::hash::Hash + PartialOrd + Ord>(
         HistoryError,
     >,
 ) -> Result<ResolvedConflicts<R>, HistoryError> {
+    tracing::debug!(target: "f1r3fly.merge.step", step = "resolve_conflicts.ENTER",
+        n_actual = actual_seq.len(), n_late = late_seq.len());
     // Convert to Sets for set operations, but use Vec for ordered iteration
     let actual_set: HashSet<R> = actual_seq.iter().cloned().collect();
     let late_set: HashSet<R> = late_seq.iter().cloned().collect();
@@ -138,9 +158,19 @@ pub fn resolve_conflicts<R: Clone + Eq + std::hash::Hash + PartialOrd + Ord>(
     )
     .record(branches_time.as_secs_f64());
 
+    tracing::debug!(target: "f1r3fly.merge.step", step = "resolve_conflicts.branches",
+        n_branches = branches.0.len(),
+        branch_sizes = ?branches.0.iter().map(|b| b.0.len()).collect::<Vec<_>>(),
+        rejected_as_dependents = rejected_as_dependents.0.len());
+
     let branches_set = HashableSet(branches.0.iter().cloned().collect());
     let (conflict_map, conflicts_map_time) =
         measure_result_time(|| compute_conflict_map(&branches_set))?;
+    {
+        let total_edges: usize = conflict_map.values().map(|s| s.0.len()).sum();
+        tracing::debug!(target: "f1r3fly.merge.step", step = "resolve_conflicts.conflict_map",
+            n_keys = conflict_map.len(), total_edges = total_edges);
+    }
     metrics::histogram!(
         crate::rust::metrics_constants::DAG_MERGE_CONFLICTS_MAP_TIME_METRIC,
         "source" => crate::rust::metrics_constants::MERGING_METRICS_SOURCE
@@ -195,6 +225,21 @@ pub fn resolve_conflicts<R: Clone + Eq + std::hash::Hash + PartialOrd + Ord>(
     )
     .record(channel_reads_start.elapsed().as_secs_f64());
 
+    if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
+        let channel_reads: Vec<(String, i64)> = all_channel_keys
+            .iter()
+            .map(|h| {
+                (
+                    hex::encode(h.clone().bytes()),
+                    *base_mergeable_ch_res.get(h).unwrap_or(&0),
+                )
+            })
+            .collect();
+        tracing::debug!(target: "f1r3fly.merge.step", step = "resolve_conflicts.base_channels",
+            n_channels = all_channel_keys.len(),
+            channels = ?channel_reads);
+    }
+
     // Get merged result rejection options
     let rejection_options_with_overflow = get_merged_result_rejection(
         &branches_set,
@@ -203,10 +248,27 @@ pub fn resolve_conflicts<R: Clone + Eq + std::hash::Hash + PartialOrd + Ord>(
         mergeable_channels,
     );
 
+    if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
+        let option_branch_counts: Vec<usize> = rejection_options_with_overflow
+            .0
+            .iter()
+            .map(|o| o.0.len())
+            .collect();
+        tracing::debug!(target: "f1r3fly.merge.step", step = "resolve_conflicts.merged_result_rejection",
+            n_options = rejection_options_with_overflow.0.len(),
+            option_branch_counts = ?option_branch_counts);
+    }
+
     // Compute optimal rejection using cost function
     let optimal_rejection = get_optimal_rejection(rejection_options_with_overflow, |branch| {
         branch.0.iter().map(|item| cost(item)).sum()
     });
+
+    if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
+        tracing::debug!(target: "f1r3fly.merge.step", step = "resolve_conflicts.optimal_rejection",
+            n_rejected_branches = optimal_rejection.0.len(),
+            rejected_branch_sizes = ?optimal_rejection.0.iter().map(|b| b.0.len()).collect::<Vec<_>>());
+    }
 
     // Compute branches to merge (difference of branches and optimal_rejection)
     let to_merge: Vec<HashableSet<R>> = branches
@@ -221,6 +283,12 @@ pub fn resolve_conflicts<R: Clone + Eq + std::hash::Hash + PartialOrd + Ord>(
             })
         })
         .collect();
+
+    if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
+        tracing::debug!(target: "f1r3fly.merge.step", step = "resolve_conflicts.to_merge",
+            n_to_merge = to_merge.len(),
+            to_merge_sizes = ?to_merge.iter().map(|b| b.0.len()).collect::<Vec<_>>());
+    }
 
     // Flatten the optimal rejection set
     let mut optimal_rejection_flattened = HashableSet(HashSet::new());
@@ -242,6 +310,12 @@ pub fn resolve_conflicts<R: Clone + Eq + std::hash::Hash + PartialOrd + Ord>(
         rejected.0.insert(item.clone());
     }
 
+    tracing::debug!(target: "f1r3fly.merge.step", step = "resolve_conflicts.rejected_composition",
+        late = late_set.len(),
+        rejected_as_dependents = rejected_as_dependents.0.len(),
+        optimal_rejection_flattened = optimal_rejection_flattened.0.len(),
+        total_rejected = rejected.0.len());
+
     // Detailed INFO logging for rejection breakdown (always visible)
     let conflict_map_conflicts_count = conflict_map.iter().filter(|(_, v)| !v.0.is_empty()).count();
     info!(
@@ -258,6 +332,11 @@ pub fn resolve_conflicts<R: Clone + Eq + std::hash::Hash + PartialOrd + Ord>(
         rejection_options.0.len(),
         1  // rejectionOptionsWithOverflow.size - approximation
     );
+
+    tracing::debug!(target: "f1r3fly.merge.step", step = "resolve_conflicts.EXIT",
+        n_to_merge = to_merge.len(),
+        n_rejected = rejected.0.len(),
+        n_branches = branches_set.0.len());
 
     Ok(ResolvedConflicts {
         to_merge,
@@ -297,6 +376,10 @@ where
     A: Clone,
     K: Clone,
 {
+    tracing::debug!(target: "f1r3fly.merge.step", step = "compute_merged_state.ENTER",
+        n_to_merge = resolved.to_merge.len(),
+        n_total_items = resolved.to_merge.iter().map(|b| b.0.len()).sum::<usize>());
+
     // Sort toMerge for deterministic processing order
     let mut to_merge_sorted: Vec<&HashableSet<R>> = resolved.to_merge.iter().collect();
     to_merge_sorted.sort_by(|a, b| compare_branches(a, b));
@@ -309,13 +392,54 @@ where
         to_merge_items.extend(branch_items);
     }
 
+    tracing::debug!(target: "f1r3fly.merge.step", step = "compute_merged_state.items_sorted",
+        n_items = to_merge_items.len());
+
     // Combine state changes from all items to be merged with timing
     let (all_changes, combine_all_changes_time) =
         measure_result_time(|| -> Result<StateChange, HistoryError> {
             let mut combined = StateChange::empty();
-            for item in &to_merge_items {
+            for (idx, item) in to_merge_items.iter().enumerate() {
                 let item_changes = state_changes(item)?;
+                if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
+                    for entry in item_changes.datums_changes.iter() {
+                        let ch = entry.key();
+                        let change = entry.value();
+                        let removed_bytes: usize = change.removed.iter().map(|d| d.len()).sum();
+                        let added_bytes: usize = change.added.iter().map(|d| d.len()).sum();
+                        tracing::debug!(target: "f1r3fly.merge.step",
+                            step = "compute_merged_state.item_datums",
+                            item_idx = idx,
+                            channel = %hex::encode(ch.clone().bytes()),
+                            removed = change.removed.len(),
+                            removed_bytes = removed_bytes,
+                            added = change.added.len(),
+                            added_bytes = added_bytes);
+                    }
+                    tracing::debug!(target: "f1r3fly.merge.step",
+                        step = "compute_merged_state.item_summary",
+                        item_idx = idx,
+                        datums = item_changes.datums_changes.len(),
+                        conts = item_changes.cont_changes.len(),
+                        joins = item_changes.consume_channels_to_join_serialized_map.len());
+                }
                 combined = combined.combine(item_changes);
+                if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
+                    for entry in combined.datums_changes.iter() {
+                        let ch = entry.key();
+                        let change = entry.value();
+                        let removed_bytes: usize = change.removed.iter().map(|d| d.len()).sum();
+                        let added_bytes: usize = change.added.iter().map(|d| d.len()).sum();
+                        tracing::debug!(target: "f1r3fly.merge.step",
+                            step = "compute_merged_state.combined_running",
+                            after_item_idx = idx,
+                            channel = %hex::encode(ch.clone().bytes()),
+                            removed = change.removed.len(),
+                            removed_bytes = removed_bytes,
+                            added = change.added.len(),
+                            added_bytes = added_bytes);
+                    }
+                }
             }
             Ok(combined)
         })?;
@@ -329,6 +453,11 @@ where
     let combined_datums_count = all_changes.datums_changes.len();
     let combined_conts_count = all_changes.cont_changes.len();
     let combined_joins_count = all_changes.consume_channels_to_join_serialized_map.len();
+
+    tracing::debug!(target: "f1r3fly.merge.step", step = "compute_merged_state.combined_total",
+        datums = combined_datums_count,
+        conts = combined_conts_count,
+        joins = combined_joins_count);
 
     // Combine all mergeable channels (in sorted order). Per-channel `MergeType`
     // determines how diffs combine: integer-add uses wrapping addition; bitmask-OR
@@ -357,12 +486,36 @@ where
         }
     }
 
+    if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
+        let merged_channels: Vec<(String, i64)> = all_mergeable_channels
+            .iter()
+            .map(|(k, v)| (hex::encode(k.clone().bytes()), v.0))
+            .collect();
+        tracing::debug!(target: "f1r3fly.merge.step", step = "compute_merged_state.mergeable_channels",
+            n_channels = all_mergeable_channels.len(),
+            channels = ?merged_channels);
+    }
+
+    tracing::debug!(target: "f1r3fly.merge.step", step = "compute_merged_state.compute_trie_actions.ENTER",
+        datums = combined_datums_count,
+        conts = combined_conts_count,
+        joins = combined_joins_count,
+        n_mergeable_channels = all_mergeable_channels.len());
+
     // Compute and apply trie actions with timing
     let (trie_actions, compute_actions_time) =
         measure_result_time(|| compute_trie_actions(all_changes, all_mergeable_channels.clone()))?;
 
+    tracing::debug!(target: "f1r3fly.merge.step", step = "compute_merged_state.compute_trie_actions.EXIT",
+        n_trie_actions = trie_actions.len(),
+        elapsed = ?compute_actions_time);
+
     let (new_state, apply_actions_time) =
         measure_result_time(|| apply_trie_actions(trie_actions.clone()))?;
+
+    tracing::debug!(target: "f1r3fly.merge.step", step = "compute_merged_state.apply_trie_actions.EXIT",
+        new_state = %hex::encode(new_state.clone().bytes()),
+        elapsed = ?apply_actions_time);
 
     // Prepare log message
     let log_str = format!(
@@ -389,6 +542,10 @@ where
     );
 
     debug!("{}", log_str);
+
+    tracing::debug!(target: "f1r3fly.merge.step", step = "compute_merged_state.EXIT",
+        new_state = %hex::encode(new_state.clone().bytes()),
+        n_trie_actions = trie_actions.len());
 
     Ok(new_state)
 }
@@ -429,6 +586,10 @@ pub fn merge<
         HistoryError,
     >,
 ) -> Result<(Blake2b256Hash, HashableSet<R>), HistoryError> {
+    tracing::debug!(target: "f1r3fly.merge.step", step = "merge.ENTER",
+        n_actual = actual_seq.len(),
+        n_late = late_seq.len());
+
     let resolved = resolve_conflicts(
         actual_seq,
         late_seq,
@@ -446,6 +607,11 @@ pub fn merge<
         &compute_trie_actions,
         &apply_trie_actions,
     )?;
+
+    tracing::debug!(target: "f1r3fly.merge.step", step = "merge.EXIT",
+        new_state = %hex::encode(new_state.clone().bytes()),
+        n_rejected = resolved.rejected.0.len());
+
     Ok((new_state, resolved.rejected))
 }
 
@@ -475,6 +641,9 @@ fn get_optimal_rejection<R: Eq + std::hash::Hash + Clone + Ord>(
         "Same rejection unit is found in two rejection options. Please report this to code maintainer."
     );
 
+    tracing::debug!(target: "f1r3fly.merge.step", step = "get_optimal_rejection.ENTER",
+        n_options = options.0.len());
+
     // Convert to sorted list for deterministic processing
     let mut options_vec: Vec<_> = options.0.into_iter().collect();
     options_vec.sort_by(|a, b| {
@@ -494,28 +663,47 @@ fn get_optimal_rejection<R: Eq + std::hash::Hash + Clone + Ord>(
             return a_size.cmp(&b_size);
         }
 
-        // Third criterion: For tie-breaking, compare the first element of the first branch
-        // Use sorted branches and min element for deterministic tie-breaking
         let mut a_branches: Vec<_> = a.0.iter().collect();
         let mut b_branches: Vec<_> = b.0.iter().collect();
         a_branches.sort_by(|x, y| compare_branches(x, y));
         b_branches.sort_by(|x, y| compare_branches(x, y));
 
-        let a_first = a_branches.first().and_then(|branch| branch.0.iter().min());
-        let b_first = b_branches.first().and_then(|branch| branch.0.iter().min());
-
-        match (a_first, b_first) {
-            (Some(a_item), Some(b_item)) => a_item.cmp(b_item),
-            (Some(_), None) => std::cmp::Ordering::Greater,
-            (None, Some(_)) => std::cmp::Ordering::Less,
-            (None, None) => std::cmp::Ordering::Equal,
+        for (a_branch, b_branch) in a_branches.iter().zip(b_branches.iter()) {
+            let ord = compare_branches(a_branch, b_branch);
+            if ord != std::cmp::Ordering::Equal {
+                return ord;
+            }
         }
+        a_branches.len().cmp(&b_branches.len())
     });
 
-    options_vec
+    if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
+        let candidates: Vec<(usize, u64, usize)> = options_vec
+            .iter()
+            .map(|o| {
+                let cost: u64 = o.0.iter().map(|branch| target_f(branch)).sum();
+                let size: usize = o.0.iter().map(|branch| branch.0.len()).sum();
+                (o.0.len(), cost, size)
+            })
+            .collect();
+        tracing::debug!(target: "f1r3fly.merge.step", step = "get_optimal_rejection.candidates",
+            candidates_n_branches_cost_size = ?candidates);
+    }
+
+    let chosen = options_vec
         .into_iter()
         .next()
-        .unwrap_or_else(|| HashableSet(HashSet::new()))
+        .unwrap_or_else(|| HashableSet(HashSet::new()));
+
+    if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
+        let chosen_cost: u64 = chosen.0.iter().map(|branch| target_f(branch)).sum();
+        tracing::debug!(target: "f1r3fly.merge.step", step = "get_optimal_rejection.EXIT",
+            n_chosen_branches = chosen.0.len(),
+            chosen_cost = chosen_cost,
+            chosen_sizes = ?chosen.0.iter().map(|b| b.0.len()).collect::<Vec<_>>());
+    }
+
+    chosen
 }
 
 /// Calculate merged result for a branch with the origin result map.
@@ -530,6 +718,10 @@ fn cal_merged_result<R: Clone + Eq + std::hash::Hash>(
     origin_result: HashMap<Blake2b256Hash, i64>,
     mergeable_channels: impl Fn(&R) -> NumberChannelsDiff,
 ) -> Option<HashMap<Blake2b256Hash, i64>> {
+    tracing::debug!(target: "f1r3fly.merge.step", step = "cal_merged_result.ENTER",
+        n_branch_items = branch.0.len(),
+        n_origin_channels = origin_result.len());
+
     // Combine all channel diffs from the branch using per-channel merge strategy.
     let diff = branch.0.iter().map(|r| mergeable_channels(r)).fold(
         NumberChannelsDiff::new(),
@@ -547,8 +739,19 @@ fn cal_merged_result<R: Clone + Eq + std::hash::Hash>(
         },
     );
 
+    if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
+        let diff_channels: Vec<(String, i64)> = diff
+            .iter()
+            .map(|(k, v)| (hex::encode(k.clone().bytes()), v.0))
+            .collect();
+        tracing::debug!(target: "f1r3fly.merge.step", step = "cal_merged_result.diff",
+            n_channels = diff.len(),
+            channels = ?diff_channels);
+    }
+
     // Start with Some(origin_result) and fold over the diffs
-    diff.iter()
+    let out = diff
+        .iter()
         .fold(Some(origin_result), |ba_opt, (channel, value)| {
             ba_opt.and_then(|mut ba| {
                 let (diff_val, merge_type) = *value;
@@ -561,7 +764,14 @@ fn cal_merged_result<R: Clone + Eq + std::hash::Hash>(
                                 ba.insert(channel.clone(), result);
                                 Some(ba)
                             }
-                            _ => None,
+                            _ => {
+                                tracing::debug!(target: "f1r3fly.merge.step",
+                                    step = "cal_merged_result.REJECT",
+                                    channel = %hex::encode(channel.clone().bytes()),
+                                    current = current,
+                                    diff = diff_val);
+                                None
+                            }
                         }
                     }
                     MergeType::BitmaskOr => {
@@ -572,7 +782,15 @@ fn cal_merged_result<R: Clone + Eq + std::hash::Hash>(
                     }
                 }
             })
-        })
+        });
+
+    if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
+        tracing::debug!(target: "f1r3fly.merge.step", step = "cal_merged_result.EXIT",
+            accepted = out.is_some(),
+            n_result_channels = out.as_ref().map(|m| m.len()).unwrap_or(0));
+    }
+
+    out
 }
 
 /// Evaluate branches and return the set of branches that should be rejected.
@@ -582,6 +800,10 @@ fn fold_rejection<R: Clone + Eq + std::hash::Hash + Ord>(
     branches: &HashableSet<Branch<R>>,
     mergeable_channels: impl Fn(&R) -> NumberChannelsDiff,
 ) -> HashableSet<Branch<R>> {
+    tracing::debug!(target: "f1r3fly.merge.step", step = "fold_rejection.ENTER",
+        n_branches = branches.0.len(),
+        n_base_channels = base_balance.len());
+
     // Sort branches to ensure deterministic processing order
     let mut sorted_branches: Vec<&Branch<R>> = branches.0.iter().collect();
     sorted_branches.sort_by(|a, b| compare_branches(a, b));
@@ -592,8 +814,18 @@ fn fold_rejection<R: Clone + Eq + std::hash::Hash + Ord>(
         |(balances, mut rejected), branch| {
             // Check if the branch can be merged without overflow or negative results
             match cal_merged_result(branch, balances.clone(), &mergeable_channels) {
-                Some(new_balances) => (new_balances, rejected),
+                Some(new_balances) => {
+                    if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
+                        tracing::debug!(target: "f1r3fly.merge.step", step = "fold_rejection.accept",
+                            branch_size = branch.0.len());
+                    }
+                    (new_balances, rejected)
+                }
                 None => {
+                    if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
+                        tracing::debug!(target: "f1r3fly.merge.step", step = "fold_rejection.reject",
+                            branch_size = branch.0.len());
+                    }
                     // If merge calculation returns None, reject this branch
                     rejected.0.insert((*branch).clone());
                     (balances, rejected)
@@ -601,6 +833,9 @@ fn fold_rejection<R: Clone + Eq + std::hash::Hash + Ord>(
             }
         },
     );
+
+    tracing::debug!(target: "f1r3fly.merge.step", step = "fold_rejection.EXIT",
+        n_rejected = rejected.0.len());
 
     rejected
 }
@@ -613,7 +848,14 @@ fn get_merged_result_rejection<R: Clone + Eq + std::hash::Hash + Ord>(
     base: HashMap<Blake2b256Hash, i64>,
     mergeable_channels: impl Fn(&R) -> NumberChannelsDiff,
 ) -> HashableSet<HashableSet<Branch<R>>> {
-    if reject_options.0.is_empty() {
+    tracing::debug!(target: "f1r3fly.merge.step", step = "get_merged_result_rejection.ENTER",
+        n_branches = branches.0.len(),
+        n_reject_options = reject_options.0.len(),
+        n_base_channels = base.len());
+
+    let out = if reject_options.0.is_empty() {
+        tracing::debug!(target: "f1r3fly.merge.step", step = "get_merged_result_rejection.no_options",
+            n_branches = branches.0.len());
         // If no rejection options, fold the branches and return as single option
         let rejected = fold_rejection(base, branches, &mergeable_channels);
         let mut result = HashSet::new();
@@ -646,6 +888,13 @@ fn get_merged_result_rejection<R: Clone + Eq + std::hash::Hash + Ord>(
                 // Get branches that should be rejected from the diff
                 let rejected = fold_rejection(base.clone(), &diff, &mergeable_channels);
 
+                if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
+                    tracing::debug!(target: "f1r3fly.merge.step", step = "get_merged_result_rejection.option",
+                        n_in_diff = diff.0.len(),
+                        n_extra_rejected = rejected.0.len(),
+                        n_normal_reject = normal_reject_options.0.len());
+                }
+
                 // Combine rejected with normal_reject_options
                 let mut result = HashableSet(normal_reject_options.0.clone());
                 for reject in &rejected.0 {
@@ -657,7 +906,15 @@ fn get_merged_result_rejection<R: Clone + Eq + std::hash::Hash + Ord>(
             .collect();
 
         HashableSet(result)
+    };
+
+    if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
+        tracing::debug!(target: "f1r3fly.merge.step", step = "get_merged_result_rejection.EXIT",
+            n_options = out.0.len(),
+            option_sizes = ?out.0.iter().map(|o| o.0.len()).collect::<Vec<_>>());
     }
+
+    out
 }
 
 #[cfg(test)]
@@ -701,6 +958,21 @@ mod tests {
         });
 
         assert_eq!(chosen, option_a);
+    }
+
+    #[test]
+    fn optimal_rejection_is_total_order_when_options_share_first_branch() {
+        let shared = branch(&[1, 2]);
+        let option_a = rejection_option(&[shared.clone(), branch(&[3, 4])]);
+        let option_b = rejection_option(&[shared, branch(&[3, 5])]);
+
+        for options in [
+            HashableSet(HashSet::from([option_a.clone(), option_b.clone()])),
+            HashableSet(HashSet::from([option_b.clone(), option_a.clone()])),
+        ] {
+            let chosen = get_optimal_rejection(options, |_branch| 0u64);
+            assert_eq!(chosen, option_a);
+        }
     }
 
     #[test]
