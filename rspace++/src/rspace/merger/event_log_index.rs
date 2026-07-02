@@ -657,6 +657,30 @@ mod tests {
         assert_eq!(b.cmp(&a), result1.reverse(), "ordering must be antisymmetric");
     }
 
+    // --- IntegerAdd overflow (Level-A intra-chain combine, Phase 6 W3/W4) -----
+
+    #[test]
+    fn combine_rejects_integer_add_overflow() {
+        let a = empty_with_channels(BTreeMap::from([(mk_hash(1), i64::MAX)]));
+        let b = empty_with_channels(BTreeMap::from([(mk_hash(1), 1i64)]));
+        // i64::MAX + 1 overflows: combine must fail loudly (Err), not wrap.
+        assert!(
+            EventLogIndex::combine(&a, &b).is_err(),
+            "IntegerAdd overflow in the intra-chain combine must Err, not wrap"
+        );
+    }
+
+    #[test]
+    fn combine_accepts_non_overflowing_integer_add() {
+        let a = empty_with_channels(BTreeMap::from([(mk_hash(1), 100i64)]));
+        let b = empty_with_channels(BTreeMap::from([(mk_hash(1), 23i64)]));
+        let combined = EventLogIndex::combine(&a, &b).unwrap();
+        assert_eq!(
+            combined.number_channels_data.get(&mk_hash(1)).map(|v| v.0),
+            Some(123)
+        );
+    }
+
     // --- BitmaskOr merger property tests ----------------------------------
     //
     // When two event-log indices touch the same `BitmaskOr` channel, the

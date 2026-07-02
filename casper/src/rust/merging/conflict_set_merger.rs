@@ -1058,4 +1058,58 @@ mod tests {
         let (_new_state, rejected) = result.unwrap();
         assert!(!rejected.0.is_empty());
     }
+
+    // ---- IntegerAdd overflow-launder regression (Phase 6 W3/W4) --------------
+    // Two chains in the SAME branch contribute IntegerAdd diffs to one channel
+    // whose sum overflows i64. The intra-branch combine must REJECT the branch
+    // (return None) — "fail loudly" — rather than wrap the value and let it pass
+    // the apply-time checked_add >= 0 gate with a wrong result (the launder).
+
+    #[test]
+    fn cal_merged_result_rejects_integer_add_overflow_launder() {
+        let ch = Blake2b256Hash::from_bytes(vec![7u8; 32]);
+        let br = branch(&[1, 2]); // both items in ONE branch
+        let mergeable = |r: &i32| {
+            let mut d = NumberChannelsDiff::new();
+            let v = if *r == 1 { i64::MAX } else { 1 }; // MAX + 1 overflows
+            d.insert(ch.clone(), (v, MergeType::IntegerAdd));
+            d
+        };
+        assert_eq!(
+            cal_merged_result(&br, HashMap::new(), mergeable),
+            None,
+            "combine overflow must reject the branch (no silent wrap / launder)"
+        );
+    }
+
+    #[test]
+    fn cal_merged_result_accepts_non_overflowing_integer_add() {
+        let ch = Blake2b256Hash::from_bytes(vec![7u8; 32]);
+        let br = branch(&[1, 2]);
+        let mergeable = |r: &i32| {
+            let mut d = NumberChannelsDiff::new();
+            let v = if *r == 1 { 100 } else { 23 };
+            d.insert(ch.clone(), (v, MergeType::IntegerAdd));
+            d
+        };
+        // 100 + 23 = 123, applied to base 0, >= 0 -> accepted with the TRUE sum.
+        assert_eq!(
+            cal_merged_result(&br, HashMap::new(), mergeable),
+            Some(HashMap::from([(ch, 123)]))
+        );
+    }
+
+    #[test]
+    fn cal_merged_result_bitmask_or_never_rejects() {
+        let ch = Blake2b256Hash::from_bytes(vec![7u8; 32]);
+        let br = branch(&[1, 2]);
+        let mergeable = |r: &i32| {
+            let mut d = NumberChannelsDiff::new();
+            let v = if *r == 1 { i64::MAX } else { 1 };
+            d.insert(ch.clone(), (v, MergeType::BitmaskOr)); // OR never overflows
+            d
+        };
+        let out = cal_merged_result(&br, HashMap::new(), mergeable);
+        assert_eq!(out, Some(HashMap::from([(ch, i64::MAX)])));
+    }
 }

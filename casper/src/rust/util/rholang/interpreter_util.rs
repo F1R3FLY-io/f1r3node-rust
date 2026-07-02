@@ -718,6 +718,31 @@ pub(crate) async fn ensure_scope_mergeable_present(
     Ok(())
 }
 
+/// Cap on the finalized-floor distance Δ = num(maxParent) − num(floor) that a
+/// single multi-parent merge may span. The DETERMINISTIC backstop: Δ is a pure
+/// function of the block's frozen justifications, so every honest node computes
+/// the same Δ. Beyond the cap, `compute_parents_post_state` returns `Err` (the
+/// proposer parks; a validator deterministically rejects) instead of silently
+/// substituting one parent's post-state and dropping the others' writes.
+pub(crate) const MAX_FLOOR_DISTANCE_BLOCKS: i64 = 256;
+
+/// Advisory cap on the merge scope `|visible_blocks|`. This is NOT node-
+/// deterministic (branch width differs across each node's view), so it MUST NOT
+/// gate admission — a divergent reject would fork. Recorded as a metric/warning
+/// only; the deterministic Δ backstop above is what bounds the merge.
+pub(crate) const MAX_PARENT_MERGE_SCOPE_BLOCKS: usize = 512;
+
+/// Node cap on the lossless covering-parent fast-path ancestor scan.
+pub(crate) const MAX_FULL_ANCESTOR_SCAN_NODES: usize = 8_192;
+
+/// The deterministic merge-scope backstop decision: refuse (`Err`) iff the floor
+/// distance exceeds the cap. A pure function of Δ ONLY — the scope size never
+/// gates (see `MAX_PARENT_MERGE_SCOPE_BLOCKS`). Extracted for direct unit testing
+/// of the "reject on Δ only, never on scope" property.
+pub(crate) fn merge_scope_backstop_exceeded(floor_distance: i64) -> bool {
+    floor_distance > MAX_FLOOR_DISTANCE_BLOCKS
+}
+
 /// Compute the merged post-state from multiple parent blocks.
 ///
 /// For exploratory deploy, pass `disable_late_block_filtering_override = Some(true)` to
@@ -743,9 +768,6 @@ pub async fn compute_parents_post_state(
     CasperError,
 > {
     let total_started = std::time::Instant::now();
-    const MAX_PARENT_MERGE_SCOPE_BLOCKS: usize = 512;
-    const MAX_FLOOR_DISTANCE_BLOCKS: i64 = 256;
-    const MAX_FULL_ANCESTOR_SCAN_NODES: usize = 8_192;
 
     // No entered span guard here: the function is async (it awaits floor
     // derivation), and an `.entered()` guard is not `Send` across an await.
@@ -1150,7 +1172,7 @@ pub async fn compute_parents_post_state(
             // this `Err` parks the round (retried once finality advances and Δ
             // shrinks); on validate an over-Δ block is deterministically invalid —
             // both sides compute the same Δ, so there is no fork.
-            if floor_distance > MAX_FLOOR_DISTANCE_BLOCKS {
+            if merge_scope_backstop_exceeded(floor_distance) {
                 metrics::counter!(
                     crate::rust::metrics_constants::MERGE_SCOPE_BACKSTOP_ERROR_METRIC,
                     "source" => crate::rust::metrics_constants::CASPER_METRICS_SOURCE
@@ -1427,5 +1449,34 @@ pub async fn compute_parents_post_state(
             );
             Ok((computed_state, rejected, rejected_slashes))
         }
+    }
+}
+
+#[cfg(test)]
+mod backstop_tests {
+    use super::{merge_scope_backstop_exceeded, MAX_FLOOR_DISTANCE_BLOCKS};
+
+    #[test]
+    fn backstop_rejects_only_on_floor_distance_over_cap() {
+        // At or below the cap: proceed (no backstop, build the merge).
+        assert!(!merge_scope_backstop_exceeded(0));
+        assert!(!merge_scope_backstop_exceeded(MAX_FLOOR_DISTANCE_BLOCKS));
+        // Strictly above the cap: refuse — deterministic Err (propose parks;
+        // validate rejects), never a silent lossy single-parent substitution.
+        assert!(merge_scope_backstop_exceeded(MAX_FLOOR_DISTANCE_BLOCKS + 1));
+        assert!(merge_scope_backstop_exceeded(i64::MAX));
+    }
+
+    #[test]
+    fn backstop_decision_depends_on_floor_distance_only() {
+        // The backstop is a pure function of the (node-deterministic) floor
+        // distance Δ. The scope size |visible_blocks| is NOT a parameter — it
+        // cannot influence the decision by construction, which is exactly the
+        // anti-fork property (scope size is not node-deterministic, so gating on
+        // it could reject differently across nodes and fork). This test pins that
+        // the signature carries Δ only.
+        let below = merge_scope_backstop_exceeded(MAX_FLOOR_DISTANCE_BLOCKS);
+        let above = merge_scope_backstop_exceeded(MAX_FLOOR_DISTANCE_BLOCKS + 1);
+        assert!(!below && above);
     }
 }

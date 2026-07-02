@@ -543,3 +543,140 @@ fn trace_frontier(
         "per-parent finalized frontier"
     );
 }
+
+#[cfg(test)]
+mod frontier_determinism_tests {
+    //! The determinism linchpin's "tested" leg: on a real finalizing DAG the WARM
+    //! up-walk (`incremental_frontier` from a cached pivot) returns the identical
+    //! frontier as the COLD down-walk (`cold_parent_frontier`), and the floor a
+    //! block derives is invariant to whether the caches are cold or warm
+    //! (transparency ⇒ no fork). Complements the axiom-free Rocq proof
+    //! (Floor.frontier_cache_transparent) and the 400+-block soak.
+    use super::*;
+
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+
+    use block_storage::rust::dag::block_metadata_store::BlockMetadataStore;
+    use models::rust::block_metadata::BlockMetadata;
+    use parking_lot::RwLock as PlRwLock;
+    use prost::bytes::Bytes;
+    use rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
+    use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
+
+    fn h(n: u8) -> Bytes { Bytes::from(vec![n; 32]) }
+    fn val() -> Bytes { Bytes::from(vec![9; 65]) }
+
+    fn md(hash: Bytes, parents: Vec<Bytes>, num: i64, v: &Bytes) -> BlockMetadata {
+        let mut wm = BTreeMap::new();
+        wm.insert(v.clone(), 1i64);
+        BlockMetadata {
+            block_hash: hash,
+            parents,
+            sender: v.clone(),
+            justifications: vec![],
+            weight_map: wm,
+            block_number: num,
+            sequence_number: num as i32,
+            invalid: false,
+            directly_finalized: false,
+            finalized: false,
+            fault_tolerance_value: 0.0,
+        }
+    }
+
+    /// A single-validator linear chain genesis <- b1 <- b2 <- b3, committee {v:1}.
+    /// Over the snapshot J = {v -> b2}, the clique oracle finalizes genesis, b1,
+    /// and b2 (v's latest message b2 DAG-descends from each), but not b3. So the
+    /// frontier of b3 over J is b2.
+    fn mk_dag() -> (KeyValueDagRepresentation, Bytes, (Bytes, Bytes, Bytes, Bytes)) {
+        let v = val();
+        let (g, b1, b2, b3) = (h(0), h(1), h(2), h(3));
+
+        let store = KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new()));
+        let mut bms = BlockMetadataStore::new(store);
+        bms.add(md(g.clone(), vec![], 0, &v)).unwrap();
+        bms.add(md(b1.clone(), vec![g.clone()], 1, &v)).unwrap();
+        bms.add(md(b2.clone(), vec![b1.clone()], 2, &v)).unwrap();
+        bms.add(md(b3.clone(), vec![b2.clone()], 3, &v)).unwrap();
+
+        let mut dag_set = imbl::HashSet::new();
+        for x in [&g, &b1, &b2, &b3] {
+            dag_set.insert(x.clone());
+        }
+        let mut bnum = imbl::HashMap::new();
+        bnum.insert(g.clone(), 0);
+        bnum.insert(b1.clone(), 1);
+        bnum.insert(b2.clone(), 2);
+        bnum.insert(b3.clone(), 3);
+        let mut mp = imbl::HashMap::new();
+        mp.insert(b1.clone(), g.clone());
+        mp.insert(b2.clone(), b1.clone());
+        mp.insert(b3.clone(), b2.clone());
+
+        let dag = KeyValueDagRepresentation {
+            dag_set,
+            latest_messages_map: imbl::HashMap::new(),
+            child_map: imbl::HashMap::new(),
+            height_map: imbl::OrdMap::new(),
+            block_number_map: bnum,
+            main_parent_map: mp,
+            self_justification_map: imbl::HashMap::new(),
+            invalid_blocks_set: imbl::HashSet::new(),
+            last_finalized_block_hash: Bytes::new(),
+            finalized_blocks_set: imbl::HashSet::new(),
+            block_metadata_index: Arc::new(PlRwLock::new(bms)),
+            deploy_index: Arc::new(PlRwLock::new(KeyValueTypedStoreImpl::new(Arc::new(
+                InMemoryKeyValueStore::new(),
+            )))),
+            floor_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
+            frontier_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
+        };
+        (dag, v, (g, b1, b2, b3))
+    }
+
+    #[tokio::test]
+    async fn warm_up_walk_equals_cold_down_walk() {
+        let (dag, v, (_g, b1, b2, b3)) = mk_dag();
+        let mut j = BTreeMap::new();
+        j.insert(v, b2.clone());
+        let thr = 0.1f32;
+
+        // Cold: top-down from b3 → first finalized is b2.
+        let cold = cold_parent_frontier(&dag, &b3, &j, thr).await.unwrap();
+        assert_eq!(cold.hash, b2, "cold frontier of b3 over J must be b2");
+
+        // Warm: from a pivot BELOW the true frontier (b1) → the up-walk must
+        // advance to b2 and stop (b3 not finalized), matching the cold result.
+        let warm = incremental_frontier(&dag, &b3, &b1, &j, thr).await.unwrap();
+        assert!(
+            warm.is_some(),
+            "warm path must apply (committee constant across the band, pivot finalized)"
+        );
+        assert_eq!(
+            warm.unwrap().hash,
+            cold.hash,
+            "warm up-walk must equal the cold down-walk (frontier cache is transparent)"
+        );
+    }
+
+    #[tokio::test]
+    async fn finalized_floor_is_cache_transparent() {
+        let (dag, v, (_g, _b1, b2, b3)) = mk_dag();
+        let mut j = BTreeMap::new();
+        j.insert(v, b2.clone());
+        let thr = 0.1f32;
+
+        // First call populates the floor/frontier caches (cold internally);
+        // the second reads them (warm). The derived floor must be identical, and
+        // it must be the sound Case-A base b2 (the highest finalized ancestor of
+        // the single parent b3).
+        let floor_cold = finalized_floor(&dag, &[b3.clone()], &j, thr).await.unwrap();
+        let floor_warm = finalized_floor(&dag, &[b3.clone()], &j, thr).await.unwrap();
+        assert_eq!(floor_cold.hash, b2, "derive_floor must select the sound base b2");
+        assert_eq!(
+            floor_cold, floor_warm,
+            "enabling the caches must not change the derived floor (no fork)"
+        );
+    }
+}
