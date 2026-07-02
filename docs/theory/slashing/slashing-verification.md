@@ -3005,6 +3005,28 @@ Rocq's standard library and the slashing theories — no `Admitted`, no
 custom `Axiom`, no `Parameter`, no extracted assumption. Reproducible
 with the exact command above.
 
+**Independent kernel re-check (`coqchk`, C3) + a standing local gate (C7).**
+The `Print Assumptions` output above is produced by the *same* `coqc` that
+elaborated the `.vo` files. To close the elaborator-vs-kernel gap, the new
+`scripts/check-slashing-ALL.sh` gate — the LOCAL-ONLY parity gate that
+finalized-floor and fork-choice already have, so the slashing FV can no longer
+rot silently (its axiom-free claim previously lived only in this section, run by
+hand) — additionally re-verifies the whole library through the trusted kernel:
+`coqchk -Q theories Slashing Slashing.MainTheorem` ⇒ *"Modules were successfully
+checked"*. The gate is **authoritative on Rocq** (it auto-generates a
+`Print Assumptions` for *every* `main_*` capstone in `MainTheorem.v` and asserts
+the count of *"Closed under the global context"* equals the capstone count — 70
+at this writing — so a newly-added theorem that is not axiom-free fails the gate),
+and **fail-soft on TLA⁺**: the fast concurrent-tracker, slash-flow, and 1v
+detector-liveness models (the last exercising all detector safety invariants plus
+`Live_DetectionComplete`) must pass, the pre-fix tracker cfg must reproduce its
+race counterexample, and the heavy exhaustive 2v detector-safety run (§10.5,
+§12.4) is budgeted (`SL_DETECTOR_SAFETY_BUDGET`, default 300 s ⇒ skip-with-note;
+`0` ⇒ run to completion) since Rocq is authoritative for detection soundness
+(T-1/T-6) and that run is defense-in-depth. POLICY: this gate is **local-only** —
+it is never wired into `.github/workflows/*` (an earlier formal-CI workflow was
+deliberately removed).
+
 The complete theorem set (after all eleven audit-gap closures plus the
 sixteen-bug-fix completion in §9.10..§9.16) covers:
 
@@ -3035,7 +3057,7 @@ All return "Closed under the global context".
 | Rholang interpreter semantics                 | The `slash` Rholang contract is shared between Rust and Scala; we treat the Rholang execution as an abstract function `slash : PoSState → V → PoSState × bool`. |
 | Network-level message-passing                 | Out of scope; the LTS is on local state.                                                                                                                        |
 | Cryptographic signatures                      | Validators are abstract `nat`s; the PoS auth-token check is modeled as a Boolean oracle around slash-deploy execution.                                          |
-| Replay determinism over partial slash deploys | Adjacent (bug fix #8); the proof is structural, not replay-protocol-level.                                                                                      |
+| Replay determinism over partial slash deploys | Adjacent (bug fix #8); the proof is structural, not replay-protocol-level. **G1 (runtime slash-map view-independence):** the slash system-deploy's `invalid_blocks` map is built by `slashed_block_senders` (`casper/util/proto_util.rs`) from each slashed block's *own recorded* target and that target's *immutable* `sender`, never the node's divergent `dag.invalid_blocks` view — so the proposer's PLAY map ≡ the validator's REPLAY map (a byte-identical map ⇒ no `ConsumeFailed`/finalization stall). This runtime map-construction determinism is outside the Rocq detection/dispatch model and is instead pinned on the casper side by a differential example test and a 200-case ∀-views property test (`slashed_block_senders_is_view_independent_{g1,prop_g1}`) — the modality that actually catches a regression that consults the view.                                                                                      |
 | Validator-set genesis                         | Out of scope; we assume an initial `BondMap` and prove preservation under transitions.                                                                          |
 
 ### 14.4 Cited classical lemmas (none in critical path)

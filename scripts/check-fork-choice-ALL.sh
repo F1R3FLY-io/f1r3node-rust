@@ -67,7 +67,8 @@ elif command -v coqc >/dev/null 2>&1 || [[ -x "$HOME/.opam/default/bin/coqc" ]];
     pass "Rocq build (Foundation, Score, Filter, TieBreak, Lca, Rank, Bound, GuardBridge, MainTheorem)"
     tmpd=$(mktemp -d)
     chk="$tmpd/GateCheck.v"
-    # The 4 capstones + the 3 seam lemmas the Rust ENFORCES (bridge, not assume).
+    # The 4 capstones + the 3 seam lemmas the Rust ENFORCES (bridge, not assume) +
+    # lca_is_lowest + the C2/C4 derived LCA results (maximality + descends-from-root).
     cat > "$chk" <<'EOF'
 From ForkChoice Require Import MainTheorem.
 From ForkChoice Require Import GuardBridge.
@@ -82,14 +83,25 @@ Print Assumptions honest_forkchoice_parents_validate.
 Print Assumptions sort_total_order.
 Print Assumptions reduce_converges.
 Print Assumptions lca_is_lowest.
+Print Assumptions lcua_many_is_max.
+Print Assumptions descends_from_root.
+Print Assumptions common_ancestor_root.
 EOF
     out=$(coqc -Q "$ROCQ_DIR/theories" ForkChoice "$chk" 2>&1)
     rm -rf "$tmpd"
     n_closed=$(grep -c "Closed under the global context" <<<"$out")
-    if [[ "$n_closed" == "9" ]]; then
-      pass "all 9 headline results axiom-free (4 capstones + validation⇒wf_dag, honest-parents-validate, sort_total_order, reduce_converges, lca_is_lowest)"
+    if [[ "$n_closed" == "12" ]]; then
+      pass "all 12 headline results axiom-free (4 capstones + validation⇒wf_dag, honest-parents-validate, sort_total_order, reduce_converges, lca_is_lowest, lcua_many_is_max [C2], descends_from_root+common_ancestor_root [C4])"
     else
-      fail "headline results NOT all axiom-free ($n_closed/9 Closed):"; echo "$out" | sed 's/^/      /'
+      fail "headline results NOT all axiom-free ($n_closed/12 Closed):"; echo "$out" | sed 's/^/      /'
+    fi
+    # Independent kernel re-check (coqchk) — the TRUSTED kernel re-verifies every
+    # capstone + dependency `.vo`, not just the elaborator's Print Assumptions.
+    if capped coqchk -Q "$ROCQ_DIR/theories" ForkChoice ForkChoice.MainTheorem \
+         >/tmp/fc_coqchk.log 2>&1 && grep -q "Modules were successfully checked" /tmp/fc_coqchk.log; then
+      pass "coqchk kernel re-check (MainTheorem + all deps)"
+    else
+      fail "coqchk kernel re-check FAILED (see /tmp/fc_coqchk.log)"; tail -10 /tmp/fc_coqchk.log | sed 's/^/      /'
     fi
   else
     fail "Rocq build failed (see /tmp/fc_rocq_build.log)"; tail -20 /tmp/fc_rocq_build.log | sed 's/^/      /'

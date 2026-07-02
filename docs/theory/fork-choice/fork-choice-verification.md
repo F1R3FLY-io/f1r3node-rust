@@ -246,20 +246,41 @@ computed LCA is a common ancestor of every depth-filtered latest message — fro
 is a common ancestor". The fold's **termination is proved** (`reduce_converges`, via a
 lexicographic `(max numof, count-at-max)` measure — not assumed), so the theorem is
 **non-vacuous** on the wide multi-validator DAGs the LCUA-many is actually run on
-(confirmed by `vm_compute` on a concrete DAG). Lowest-ness (`lca_is_lowest`) is proved on
-the main-parent-spine linear model.
+(confirmed by `vm_compute` on a concrete DAG). Lowest-ness (`lca_is_lowest`) now
+**derives** — no longer assumes — the LCA's maximality (`lcua_many_is_max`), and concludes
+the strictly stronger `anc_of d c (lcua_many d ms)` (every common ancestor is *below* the
+LUCA), on the faithful main-parent-tree model.
 
 The circular `lcua_common` hypothesis and the fold-termination premise — the two things
-that constituted the residual — are **gone**. Three FAITHFUL bridge premises remain (Rocq
-assumes exactly what the DAG / Rust guarantees, as premises, never axioms — every result
-`Print Assumptions` Closed): `single_root` (one genesis, enforced by
-`validate.rs::block_number`), `common_ancestor … root` (genesis is a lower bound of the
-tips), and `all_real` (the tips resolve to real blocks). These are **necessary, not
-deferrals**: a DAG with two distinct parentless blocks makes fully-unconditional
-common-ancestor *false* — the Rust `BTreeSet` fold exhibits the same. `lca_is_lowest`
-additionally uses `spine_linear` (general-DAG lowest-ness is provably false — incomparable
-common ancestors are unordered). No lemma is `Admitted` or axiomatized; the one added
-hypothesis (`wf_dag` on `reduce_converges`) is mathematically required.
+that constituted the residual — are **gone**, and two further premises were **discharged**
+in the P0–P3 FV sweep:
+
+- **`common_ancestor … root` is now derived (C4).** `descends_from_root` proves, by
+  well-founded induction on `numof`, that under `wf_dag` + `single_root` every real block
+  descends from the genesis; `common_ancestor_root` lifts that to "genesis is a common
+  ancestor of any real tip set". The premise is dropped from `lcua_many_common_ancestor`,
+  `lca_is_common_ancestor`, and the `fork_choice_ghost_correct` capstone conjunct — all
+  still discharged, now internally.
+- **`lca_is_lowest` maximality is now derived (C2).** The old statement *took* the maximal-
+  ity `(∀c', common_ancestor c' → numof c' ≤ numof (lcua_many …))` as a hypothesis — i.e.
+  assumed the fold's survivor already was the LCA. It is now the **theorem** `lcua_many_is_max`,
+  proved via a `below_all` fold invariant. **Correction (disclosed residual):** the earlier
+  `spine_linear` premise is *provably insufficient* for maximality — a well-formed single-
+  genesis DAG with a *straddling* old parent satisfies `spine_linear` yet makes the fold
+  over-descend past the true common ancestor (making the old `lca_is_lowest` **vacuous**
+  there). The derivation instead uses `single_parent_spine` (each block's `blk_parents` is
+  exactly its main parent — the main-parent tree the LUCA descends) + `NoDup ms` (the
+  deduplicated `BTreeSet` input); both are faithful and both are necessary (a duplicate or a
+  multi-parent straddle each break lowest-ness). Non-vacuity is witnessed by an axiom-free
+  `Example` on a concrete tree.
+
+Two FAITHFUL bridge premises remain (Rocq assumes exactly what the DAG / Rust guarantees,
+as premises, never axioms — every result `Print Assumptions` Closed): `single_root` (one
+genesis, enforced by `validate.rs::block_number`) and `all_real` (the tips resolve to real
+blocks). These are **necessary, not deferrals**: a DAG with two distinct parentless blocks
+makes fully-unconditional common-ancestor *false* — the Rust `BTreeSet` fold exhibits the
+same. No lemma is `Admitted` or axiomatized; the one added hypothesis (`wf_dag` on
+`reduce_converges`) is mathematically required.
 
 ---
 
@@ -272,7 +293,8 @@ TLA⁺/Z3/Sage/Wolfram fail-soft; PlantUML render check). Target result: **ALL G
 |---|---|
 | Rust build | `cargo check -p casper --all-targets` clean |
 | Rust unit/regression | tie-break totality, B1 typed-error, fork-choice bisim (5), uc_16, convergence — all pass |
-| Rocq | full dev builds `-j1`; **9 headline results axiom-free** — 4 capstones + `validation_implies_wf_dag`, `honest_forkchoice_parents_validate`, `sort_total_order`, `reduce_converges`, `lca_is_lowest` |
+| Rocq | full dev builds `-j1`; **12 headline results axiom-free** — 4 capstones + `validation_implies_wf_dag`, `honest_forkchoice_parents_validate`, `sort_total_order`, `reduce_converges`, `lca_is_lowest`, and the P0–P3 derivations `lcua_many_is_max` (C2), `descends_from_root` + `common_ancestor_root` (C4) |
+| Rocq kernel (coqchk) | **independent kernel re-check** of `ForkChoice.MainTheorem` + all deps ⇒ "Modules were successfully checked" (C3 — the trust root under the `Print Assumptions` claim) |
 | TLA⁺ | `MC_ForkChoice.cfg` + `MC_ForkChoiceScan.cfg` pass; both bug cfgs reproduce their counterexample |
 | Z3 | tie-break total order (5/5) + score supply-cap BitVec (4/4) |
 | Sage | fork-choice algebra ⇒ `ALL PASS` |
@@ -281,12 +303,16 @@ TLA⁺/Z3/Sage/Wolfram fail-soft; PlantUML render check). Target result: **ALL G
 
 **Coverage matrix (§4).** Every catalog item maps to a concrete Rocq/TLA⁺/Z3/Sage/Wolfram
 artifact or a Rust test — no "prose-only" row. The DAG well-formedness the proofs rest on is
-*derived* from block validation (`GuardBridge.validation_implies_wf_dag`), and the LCA
-common-ancestor property is now *modeled from the fold* with its termination *proved*
-(`reduce_converges`), no longer conditioned on the fold's contract (§6.1). The remaining
-`single_root` / `spine_linear` premises are faithful, counterexample-necessary DAG-shape
-bridges — Rocq assumes exactly what the DAG guarantees, as premises, never axioms (every
-headline result is `Print Assumptions` Closed) — the finalized-floor GuardBridge discipline.
+*derived* from block validation (`GuardBridge.validation_implies_wf_dag`), the LCA
+common-ancestor property is *modeled from the fold* with its termination *proved*
+(`reduce_converges`), the genesis-common-ancestor fact is *derived* (`common_ancestor_root`,
+C4) rather than assumed, and the LCA's maximality is *derived* (`lcua_many_is_max`, C2)
+rather than taken as a premise (§6.1). The remaining `single_root` / `all_real` premises
+(and `single_parent_spine` + `NoDup ms` on the lowest-ness results — the faithful, sufficient
+replacement for the provably-insufficient `spine_linear`) are counterexample-necessary
+DAG-shape bridges — Rocq assumes exactly what the DAG guarantees, as premises, never axioms
+(every headline result is `Print Assumptions` Closed, and the whole library is re-checked by
+`coqchk`) — the finalized-floor GuardBridge discipline.
 
 **Policy:** all of the above run **locally**. Do **not** add any Rocq / TLA⁺ / Z3 / Sage
 / Wolfram step to `.github/workflows/*` (an earlier formal-CI workflow was deliberately

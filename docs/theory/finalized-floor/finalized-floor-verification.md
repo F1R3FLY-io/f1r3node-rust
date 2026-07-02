@@ -224,6 +224,7 @@ the ratchet collapses and over-cap is safe.
 | **T-ALG (IntegerAdd c/d)** | wrapping-add group + checked-apply reject overflow/`<0` (S7) | Rocq `IntegerAdd.wadd_assoc`, `checked_apply_rejects_overflow`/`_negative` |
 | **IntegerAdd launder** | fail-loudly at BOTH combine **and terminal apply**; the diff (`end−prev`) stays wrapping — it is the group inverse that recovers the true delta; supply-cap bound | Rocq `IntegerAdd.launder_exhibit`/`checked_combine_sound`/`supply_cap_no_launder`; Z3 `integeradd_launder_bitvec.py`; Rust `combine_mergeable_value` (combine, `checked_add`), `calculate_number_channel_merge` (terminal apply, `checked_add`+`≥0`); tests `cal_merged_result_rejects_integer_add_true_launder_wraps_nonnegative`, `merge_integer_add_overflow_is_rejected`, `diff_integer_add_recovers_wrapped_delta` |
 | **A9 exact-integer FT** | finalization decides `2·q·den ⋛ S·(den+num)` in i128 (`≥` floor / `>` LFB), not the fuzzy f32 ratio — precise + node-identical | Rocq `MainTheorem.finalized_floor_ftexact_correct` (`FtExact.v`); Z3 `ft_exact_no_overflow.py`; Sage `ft_algebra.sage`; Rust `clique_oracle.ft_decides_exact`/`ft_witnessed_exact`; test `ft_decides_exact_tests` |
+| **ancestry precondition (GAP-2/GAP-4)** | `CliqueOracle.v`/`Selection.v` model DAG ancestry ABSTRACTLY (`anc_of`); the trusted realization `is_dag_ancestor` (`block_dag_key_value_storage.rs`, used by `floor.rs`) computes EXACTLY that relation. Its block-number prune is sound under strict per-edge monotonicity (`wf_dag`: `block_number = 1 + max parent`), which block validation enforces — **not** the global contiguity (`max−min==len`) that `block_metadata_store.rs` demoted to a `warn!` (GAP-4: a strictly stronger, separate diagnostic the prune never needed) | Rust property test `is_dag_ancestor_matches_reflexive_transitive_closure_over_parents` (`block-storage`, `--features test-internals`): on random well-formed DAGs, `is_dag_ancestor` (with the prune) ≡ the reflexive-transitive closure over parents |
 | **capstone** | all of the above, axiom-free | Rocq `MainTheorem.{finalized_floor_merge_correct, finalized_floor_selection_correct, finalized_floor_arithmetic_correct, finalized_floor_phase7_correct, finalized_floor_ftexact_correct}` |
 
 ---
@@ -233,7 +234,12 @@ the ratchet collapses and over-cap is safe.
 ### 5.1 Rocq (`formal/rocq/finalized_floor/`) — axiom-free
 
 Rocq/Coq 9.1.1, Stdlib-only. Every theorem is checked with `Print Assumptions`
-⇒ *"Closed under the global context"* (no `Axiom`, `Parameter`, or `Admitted`).
+⇒ *"Closed under the global context"* (no `Axiom`, `Parameter`, or `Admitted`),
+**and independently re-verified by the trusted kernel via `coqchk`** (C3): the
+`scripts/check-finalized-floor-ALL.sh` gate runs `coqchk -Q theories FinalizedFloor
+FinalizedFloor.MainTheorem` ⇒ *"Modules were successfully checked"*, closing the
+gap between the elaborator that *built* the `.vo` and the kernel that *checks* it —
+the trust root under every capstone.
 
 | Module | Depends on | Key results |
 |---|---|---|

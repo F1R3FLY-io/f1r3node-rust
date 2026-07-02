@@ -611,6 +611,7 @@ mod fork_choice_b1_repro_tests {
 
     use block_storage::rust::dag::block_metadata_store::BlockMetadataStore;
     use parking_lot::RwLock as PlRwLock;
+    use proptest::prelude::*;
     use prost::bytes::Bytes;
     use rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
     use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
@@ -686,5 +687,125 @@ mod fork_choice_b1_repro_tests {
             matches!(result, Err(KvStoreError::KeyNotFound(_))),
             "missing main-parent metadata must be a typed KeyNotFound, got {result:?}"
         );
+    }
+
+    // G1 (CRITICAL) — slash-replay determinism. `slashed_block_senders` builds the slash
+    // system-deploy's invalid_blocks map from the block's OWN recorded slash targets and
+    // each target's IMMUTABLE sender — NOT the node's `dag.invalid_blocks` view (which
+    // diverges proposer-vs-validator and previously caused a `ConsumeFailed` at replay →
+    // block rejection + finalization stall). This test pins that VIEW-INDEPENDENCE: two
+    // DAGs with identical block metadata but DIFFERENT invalid-block sets produce a
+    // byte-identical map, so the PLAY map (block creation) ≡ the REPLAY map (validation).
+    fn dag_with_invalid(
+        blocks: Vec<BlockMetadata>,
+        invalid: Vec<BlockMetadata>,
+    ) -> KeyValueDagRepresentation {
+        let mut dag = dag_with(blocks);
+        let mut inv = imbl::HashSet::new();
+        for b in invalid {
+            inv.insert(b);
+        }
+        dag.invalid_blocks_set = inv;
+        dag
+    }
+
+    #[test]
+    fn slashed_block_senders_is_view_independent_g1() {
+        let (va, vb, vc) = (h(50), h(51), h(52));
+        let (b1, b2, b3) = (h(1), h(2), h(3));
+        let blocks = vec![
+            md(b1.clone(), vec![], 1, &va),
+            md(b2.clone(), vec![b1.clone()], 2, &vb),
+            md(b3.clone(), vec![b2.clone()], 3, &vc),
+        ];
+        // The block slashes b1 and b3 (its own recorded targets).
+        let slashed = vec![b1.clone(), b3.clone()];
+        // Two nodes with DIVERGENT invalid-block views over identical block metadata
+        // (the proposer sees none invalid; the validator's view flags b2 and b3).
+        let dag_proposer = dag_with_invalid(blocks.clone(), vec![]);
+        let dag_validator = dag_with_invalid(
+            blocks.clone(),
+            vec![
+                md(b2.clone(), vec![b1.clone()], 2, &vb),
+                md(b3.clone(), vec![b2.clone()], 3, &vc),
+            ],
+        );
+
+        let map_play = slashed_block_senders(&dag_proposer, &slashed).expect("play map");
+        let map_replay = slashed_block_senders(&dag_validator, &slashed).expect("replay map");
+
+        // Byte-identical map regardless of the invalid-block view (PLAY ≡ REPLAY) ...
+        assert_eq!(
+            map_play, map_replay,
+            "slash map must be node-view-independent (PLAY ≡ REPLAY)"
+        );
+        // ... and it keys each slashed block to its immutable sender.
+        let mut expected = std::collections::HashMap::new();
+        expected.insert(b1.clone(), va.clone());
+        expected.insert(b3.clone(), vc.clone());
+        assert_eq!(
+            map_play, expected,
+            "slash map must key each slashed block to its sender"
+        );
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(200))]
+        // G1 (∀-views property) — the standalone view-independence "lemma" for
+        // `slashed_block_senders`, mechanized as the modality that can actually catch
+        // the regression (a Rocq abstraction of the function would model it as
+        // content-only BY CONSTRUCTION and could never witness the defect). Over
+        // arbitrary block sets, arbitrary on-chain slash records, and TWO independently
+        // random — hence divergent — `invalid_blocks_set` node views, the map is
+        // (a) identical across the two views (PLAY ≡ REPLAY) and (b) equal to the
+        // content-derived ground truth (each slashed hash ↦ its immutable sender). Were
+        // the function to read `dag.invalid_blocks_set`, (a) would fail on the first
+        // view pair that disagrees on a slashed block.
+        #[test]
+        fn slashed_block_senders_is_view_independent_prop_g1(
+            senders in prop::collection::vec(0u8..5, 1..10),
+            slashed_flags in prop::collection::vec(any::<bool>(), 1..10),
+            view_a in prop::collection::vec(any::<bool>(), 1..10),
+            view_b in prop::collection::vec(any::<bool>(), 1..10),
+        ) {
+            let n = senders.len();
+            // n distinct blocks h(1..=n) in a chain; block i's immutable sender = h(100+vid).
+            let blocks: Vec<BlockMetadata> = (0..n)
+                .map(|i| {
+                    let hash = h((i + 1) as u8);
+                    let parents = if i == 0 { vec![] } else { vec![h(i as u8)] };
+                    let sender = h(100 + senders[i]);
+                    md(hash, parents, (i + 1) as i64, &sender)
+                })
+                .collect();
+            // On-chain slash record = the flagged subset (by index, within range).
+            let slashed: Vec<Bytes> = (0..n)
+                .filter(|&i| *slashed_flags.get(i).unwrap_or(&false))
+                .map(|i| h((i + 1) as u8))
+                .collect();
+            // Two nodes: identical block metadata, INDEPENDENTLY random invalid-block sets.
+            let inv_a: Vec<BlockMetadata> = (0..n)
+                .filter(|&i| *view_a.get(i).unwrap_or(&false))
+                .map(|i| blocks[i].clone())
+                .collect();
+            let inv_b: Vec<BlockMetadata> = (0..n)
+                .filter(|&i| *view_b.get(i).unwrap_or(&false))
+                .map(|i| blocks[i].clone())
+                .collect();
+            let dag_a = dag_with_invalid(blocks.clone(), inv_a);
+            let dag_b = dag_with_invalid(blocks.clone(), inv_b);
+
+            let map_a = slashed_block_senders(&dag_a, &slashed).expect("map a");
+            let map_b = slashed_block_senders(&dag_b, &slashed).expect("map b");
+            prop_assert_eq!(&map_a, &map_b);
+
+            let mut expected = std::collections::HashMap::new();
+            for i in 0..n {
+                if *slashed_flags.get(i).unwrap_or(&false) {
+                    expected.insert(h((i + 1) as u8), h(100 + senders[i]));
+                }
+            }
+            prop_assert_eq!(&map_a, &expected);
+        }
     }
 }

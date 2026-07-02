@@ -52,17 +52,19 @@
    ms=[a;b] makes the fold return b (or a), which is NOT a common ancestor of the
    other. So we prove the STRONGEST provable form under the faithful blockchain
    precondition that there is a SINGLE genesis (`single_root d root`: the only
-   parentless block in the DAG is root) which is a common ancestor of the messages
-   (`common_ancestor d ms root`). These hold for every real F1R3FLY DAG (one
-   genesis, from which every block descends). The `lcua_common` "assume the output
-   is a common ancestor" hypothesis is GONE; it is now DERIVED from the covering
-   invariant. The fold's TERMINATION is also DISCHARGED — NOT disclosed: the fuel
+   parentless block in the DAG is root). These hold for every real F1R3FLY DAG
+   (one genesis, from which every block descends). FOUR premises are DERIVED, not
+   assumed: (1) the `lcua_common` "assume the output is a common ancestor"
+   hypothesis (from the covering invariant); (2) the fold's TERMINATION — the fuel
    `lcua_fuel d = (dag_max_num d + 1)*(length d + 1)` is proved adequate
    (`reduce_converges`) via the lexicographic measure `mu = (max_numof,
-   count_at_max)` scalar-encoded on ℕ, so no `reduce ... = [g]` premise remains.
-   LOWEST-ness (that no lower common ancestor exists) is proved on the faithful
-   main-spine linear model (`spine_linear`), the same "Rust enforces the
-   main-parent spine" bridge.
+   count_at_max)` scalar-encoded on ℕ, so no `reduce ... = [g]` premise remains;
+   (3) `common_ancestor d ms root` (from `single_root` + `wf_dag` + `all_real`,
+   `descends_from_root`); (4) LOWEST-ness maximality (`lcua_many_is_max`, no
+   longer a hypothesis). LOWEST-ness (that no lower common ancestor exists) is
+   proved under `single_parent_spine` (the main-parent TREE the LUCA descends) +
+   `NoDup ms`; the weaker `spine_linear` is provably INSUFFICIENT (straddling old
+   parents make the fold over-descend — see Section 7's RESIDUAL note).
 
    ---------------------------------------------------------------------------
    Spec-to-Code Traceability
@@ -78,6 +80,7 @@
    =========================================================================== *)
 
 From Stdlib Require Import Arith.Arith.
+From Stdlib Require Import Arith.Wf_nat.
 From Stdlib Require Import Lists.List.
 From Stdlib Require Import Lia.
 From Stdlib Require Import Sorting.Permutation.
@@ -708,11 +711,65 @@ Proof.
 Qed.
 
 (* ===========================================================================
+   Section 5b - Every block descends from the unique genesis (C4)
+
+   `common_ancestor d ms root` is no longer a premise: it is DERIVED from
+   `single_root d root` + `wf_dag d` + `all_real d ms`. The key is that in a
+   single-genesis DAG every block descends from `root` (a spine walk that always
+   reaches genesis), proved by well-founded induction on `numof`.
+   =========================================================================== *)
+
+Lemma hd_error_in :
+  forall (A : Type) (l : list A) x, hd_error l = Some x -> In x l.
+Proof.
+  intros A l x H. destruct l as [|y ys]; simpl in H; [discriminate|].
+  inversion H; left; reflexivity.
+Qed.
+
+(* Every real block descends from the unique genesis `root`. Well-founded
+   induction on `numof d b`: a genesis block IS root (single_root), else the
+   strictly-lower main parent descends from root (IH) and one `anc_par` step
+   lifts that to the block. *)
+Lemma descends_from_root :
+  forall d root, wf_dag d -> single_root d root ->
+    forall b bb, lookup d b = Some bb -> anc_of d root b.
+Proof.
+  intros d root Hwf Hsr b.
+  induction b as [b IH] using (well_founded_ind (well_founded_ltof BlockHash (numof d))).
+  intros bb Hb.
+  assert (Hin : In bb d) by (eapply lookup_In; eauto).
+  destruct (Hwf bb Hin) as [Hpar Hmp].
+  destruct (blk_main_parent bb) as [mph|] eqn:Emp.
+  - destruct Hmp as [[p [Hlp Hlt]] Hhd].
+    assert (Hmph_in : In mph (blk_parents bb)) by (apply hd_error_in; exact Hhd).
+    assert (Hlt' : ltof BlockHash (numof d) mph b).
+    { unfold ltof.
+      assert (numof d mph = blk_num p) by (unfold numof; rewrite Hlp; reflexivity).
+      assert (numof d b = blk_num bb) by (unfold numof; rewrite Hb; reflexivity). lia. }
+    pose proof (IH mph Hlt' p Hlp) as Hanc_mph.
+    eapply anc_par; [ exact Hb | exact Hmph_in | exact Hanc_mph ].
+  - assert (Hpar0 : blk_parents bb = []) by (eapply numof0_parentless; eauto).
+    assert (Hbroot : b = root) by (eapply Hsr; eauto).
+    rewrite Hbroot. apply anc_of_refl.
+Qed.
+
+(* Hence genesis is a common ancestor of any real message set. *)
+Lemma common_ancestor_root :
+  forall d root ms, wf_dag d -> single_root d root -> all_real d ms ->
+    common_ancestor d ms root.
+Proof.
+  intros d root ms Hwf Hsr Har m Hm.
+  destruct (Har m Hm) as [bb Hb]. eapply descends_from_root; eauto.
+Qed.
+
+(* ===========================================================================
    Section 6 - LCUA-many IS a common ancestor (from the fold model)
 
-   The `lcua_common` hypothesis is gone: it is now DERIVED. Premises are the
-   faithful single-genesis blockchain facts (see the RESIDUAL note) plus the
-   fold's convergence to a single survivor.
+   Both the `lcua_common` hypothesis AND the `common_ancestor d ms root` premise
+   are gone: the former is DERIVED from the covering invariant, the latter from
+   `single_root` + `wf_dag` + `all_real` (Section 5b). The fold's termination is
+   likewise discharged (Section 4b). Only `single_root` + `all_real` (both
+   necessary; see the RESIDUAL note) remain.
    =========================================================================== *)
 
 Theorem lcua_many_common_ancestor :
@@ -720,10 +777,10 @@ Theorem lcua_many_common_ancestor :
     wf_dag d -> wf_lookup d ->
     single_root d root ->
     all_real d ms ->
-    common_ancestor d ms root ->
     common_ancestor d ms (lcua_many d ms).
 Proof.
-  intros d root ms Hwf Hwl Hsr Har Hca m Hm.
+  intros d root ms Hwf Hwl Hsr Har m Hm.
+  assert (Hca : common_ancestor d ms root) by (eapply common_ancestor_root; eauto).
   assert (Hne : ms <> []) by (intro E; rewrite E in Hm; destruct Hm).
   destruct (reduce_converges d ms Hwf Har Hne) as [g Hg].
   pose proof (reduce_preserves_covers (lcua_fuel d) d root ms ms
@@ -743,13 +800,12 @@ Theorem lca_is_common_ancestor :
     wf_dag d -> wf_lookup d ->
     single_root d root ->
     all_real d (map snd (depth_filter d top lms)) ->
-    common_ancestor d (map snd (depth_filter d top lms)) root ->
     forall lm, In lm (depth_filter d top lms) ->
       anc_of d (lca genesis (lcua_many d (map snd (depth_filter d top lms))) d top lms) (snd lm).
 Proof.
-  intros genesis root d top lms Hwf Hwl Hsr Har Hca lm Hin.
+  intros genesis root d top lms Hwf Hwl Hsr Har lm Hin.
   pose proof (lcua_many_common_ancestor d root (map snd (depth_filter d top lms))
-                Hwf Hwl Hsr Har Hca) as Hca'.
+                Hwf Hwl Hsr Har) as Hca'.
   unfold common_ancestor in Hca'.
   (* the filter is nonempty (lm witnesses it), so lca = lcua_many *)
   unfold lca. destruct (depth_filter d top lms) eqn:E.
@@ -758,42 +814,154 @@ Proof.
 Qed.
 
 (* ===========================================================================
-   Section 7 - LOWEST-ness on the faithful main-spine linear model
+   Section 7 - LOWEST-ness, DERIVED (no maximality premise) — C2
 
-   Fully general lowest-ness is NOT a DAG theorem (incomparable common ancestors
-   are unordered), so we prove it on the linear main-spine model: on a chain the
-   common ancestors are totally ordered by `numof`, `lcua_many` returns the
-   `numof`-greatest (the LUCA contract), hence every common ancestor is below it.
-   `spine_linear` is kept as a NAMED premise (the disclosed "Rust enforces the
-   main-parent spine" bridge); the LUCA maximality is likewise the fold's
-   disclosed contract.
+   `lca_is_lowest` no longer ASSUMES the fold's survivor is the numof-greatest
+   common ancestor: that maximality is DERIVED. The bridge is
+   `single_parent_spine` (each block's `blk_parents` is exactly its main parent
+   — the main-parent TREE the LUCA descends) together with `NoDup ms` (the fold's
+   input is a set, faithful to the Rust `BTreeSet`).
+
+   RESIDUAL / why not `spine_linear`: the earlier `spine_linear [c; lcua_many]`
+   premise is INSUFFICIENT to derive maximality — it is provably too weak. A
+   well-formed single-genesis DAG whose blocks carry a "straddling" old parent
+   (e ⊒ p' ⊒ c ⊒ p'' with p'' BOTH a parent of e and below the common ancestor c)
+   satisfies `spine_linear` yet makes the fold (and the Rust `BTreeSet` fold)
+   OVER-DESCEND past c to p'', so `numof c ≤ numof (survivor)` is FALSE. Hence the
+   old maximality premise was silently false on such DAGs (making `lca_is_lowest`
+   vacuous there). `single_parent_spine` rules straddling out: every block has a
+   single parent, so peeling never drops below a common ancestor
+   (`step_preserves_below_all`), and the survivor is ⊒ every common ancestor.
    =========================================================================== *)
 
-Definition spine_linear (d : DAG) (hs : list BlockHash) : Prop :=
-  forall a b, In a hs -> In b hs -> anc_of d a b \/ anc_of d b a.
+(* Each block's parents are exactly its main parent (a tree), or empty at genesis
+   — the main-parent spine the LUCA descends. *)
+Definition single_parent_spine (d : DAG) : Prop :=
+  forall h bb, lookup d h = Some bb ->
+    match blk_main_parent bb with
+    | None => blk_parents bb = []
+    | Some mp => blk_parents bb = [mp]
+    end.
 
-(* On the main-spine linear model, every common ancestor `c` is below the LCUA.
-   The two disclosed premises are the "Rust enforces the main-parent spine"
-   bridge (`spine_linear`) and the LUCA contract (the fold returns the
-   `numof`-greatest common ancestor); given them, `anc_of_proper_lt` forces any
-   common ancestor to sit at or below `lcua_many d ms`. Stated directly about the
-   fold's output `lcua_many d ms` (task's `anc_of d c (lcua_many d ms)`). *)
-Theorem lca_is_lowest :
-  forall d ms c,
-    wf_dag d -> wf_lookup d ->
-    spine_linear d [c ; lcua_many d ms] ->
-    common_ancestor d ms c ->
-    (forall c', common_ancestor d ms c' -> numof d c' <= numof d (lcua_many d ms)) ->
-    anc_of d c (lcua_many d ms).
+(* `c` sits at or below every worker. *)
+Definition below_all (d : DAG) (c : BlockHash) (work : list BlockHash) : Prop :=
+  forall e, In e work -> anc_of d c e.
+
+(* One-step inversion of ancestry. *)
+Lemma anc_of_inv :
+  forall d c x, anc_of d c x ->
+    c = x \/ (exists b p, lookup d x = Some b /\ In p (blk_parents b) /\ anc_of d c p).
 Proof.
-  intros d ms c Hwf Hwl Hlin Hcac Hmax.
-  destruct (Hlin c (lcua_many d ms)
-              (or_introl eq_refl) (or_intror (or_introl eq_refl))) as [Hcg | Hgc].
-  - exact Hcg.
-  - (* lcua_many is an ancestor of c; but it is numof-maximal, so it equals c *)
-    destruct (anc_of_proper_lt d Hwf (lcua_many d ms) c Hgc) as [Heq | Hlt].
-    + rewrite Heq. apply anc_of_refl.
-    + specialize (Hmax c Hcac). lia.
+  intros d c x H. inversion H; subst.
+  - left; reflexivity.
+  - right. eexists; eexists; split; [eassumption | split; eassumption].
+Qed.
+
+(* Through a single-parent block, a proper ancestor descends via that parent. *)
+Lemma anc_of_step_parent :
+  forall d c e be mp,
+    lookup d e = Some be -> blk_parents be = [mp] -> anc_of d c e ->
+    c = e \/ anc_of d c mp.
+Proof.
+  intros d c e be mp Hbe Hpar Hanc.
+  destruct (anc_of_inv d c e Hanc) as [Heq | [b0 [p [Hl [Hp Ha]]]]].
+  - left; exact Heq.
+  - right. rewrite Hbe in Hl. inversion Hl; subst b0. rewrite Hpar in Hp.
+    destruct Hp as [<-|[]]. exact Ha.
+Qed.
+
+(* `below_all c` is preserved by a step on a single-parent tree: the popped max
+   `e` cannot equal `c` while |work| >= 2 (else all deduped workers would collapse
+   to `c`, a singleton), so `e` is non-genesis with single parent `mp`, and
+   `c <= e` (c <> e) forces `c <= mp`. *)
+Lemma step_preserves_below_all :
+  forall d root c work,
+    wf_dag d -> single_root d root -> single_parent_spine d ->
+    all_real d work -> NoDup work -> 2 <= length work ->
+    below_all d c work -> below_all d c (step d work).
+Proof.
+  intros d root c work Hwf Hsr Hsp Har Hnd Hlen Hba.
+  assert (Hne : work <> []) by (destruct work; simpl in Hlen; [lia|discriminate]).
+  destruct (select_max_some d work Hne) as [e [rest Hsel]].
+  assert (Hperm : Permutation work (e::rest)) by (eapply select_max_perm; eauto).
+  assert (Hine : In e work) by
+    (eapply Permutation_in; [apply Permutation_sym; exact Hperm|left; reflexivity]).
+  assert (Hce : anc_of d c e) by (apply Hba; exact Hine).
+  destruct (Har e Hine) as [be Hbe].
+  assert (Hcne : c <> e).
+  { intro Heqce. subst e.
+    assert (Hall : forall w, In w work -> w = c).
+    { intros w Hw. assert (Hcw : anc_of d c w) by (apply Hba; exact Hw).
+      assert (Hwmax : numof d w <= numof d c) by (eapply select_max_max; eauto).
+      destruct (anc_of_proper_lt d Hwf c w Hcw) as [Heq|Hlt]; [ symmetry; exact Heq | lia ]. }
+    destruct work as [|w1 [|w2 tl]]; simpl in Hlen; try lia.
+    inversion Hnd as [|x xs Hnotin Hnd']; subst. apply Hnotin.
+    assert (w1 = c) by (apply Hall; left; reflexivity).
+    assert (w2 = c) by (apply Hall; right; left; reflexivity). subst. left; reflexivity. }
+  intros w Hw. unfold step in Hw. rewrite Hsel in Hw. rewrite nodup_In in Hw.
+  apply in_app_or in Hw. destruct Hw as [Hwp | Hwr].
+  - unfold parents_of in Hwp. rewrite Hbe in Hwp.
+    pose proof (Hsp e be Hbe) as Hspe.
+    destruct (blk_main_parent be) as [mp|] eqn:Emp.
+    + rewrite Hspe in Hwp. destruct Hwp as [<-|[]].
+      destruct (anc_of_step_parent d c e be mp Hbe Hspe Hce) as [Heq|Hanc];
+        [ contradiction | exact Hanc ].
+    + rewrite Hspe in Hwp. destruct Hwp.
+  - apply Hba. eapply Permutation_in; [apply Permutation_sym; exact Hperm | right; exact Hwr].
+Qed.
+
+Lemma reduce_preserves_below_all :
+  forall fuel d root c work,
+    wf_dag d -> single_root d root -> single_parent_spine d ->
+    all_real d work -> NoDup work -> below_all d c work ->
+    below_all d c (reduce d fuel work).
+Proof.
+  induction fuel as [|f IH]; intros d root c work Hwf Hsr Hsp Har Hnd Hba.
+  - rewrite reduce_0. exact Hba.
+  - destruct work as [|a [|b l]].
+    + intros e He; destruct He.
+    + simpl. exact Hba.
+    + rewrite reduce_unfold_2. eapply IH; eauto.
+      * apply step_preserves_real; assumption.
+      * unfold step; apply NoDup_nodup.
+      * eapply step_preserves_below_all; eauto. simpl; lia.
+Qed.
+
+(* LOWEST-ness: every common ancestor is at or below the LCUA survivor. Derived
+   from the fold via `below_all`; premises are the faithful main-parent-tree
+   bridge `single_parent_spine` + distinct inputs `NoDup ms` (no `spine_linear`,
+   no maximality premise). *)
+Theorem lca_is_lowest :
+  forall d root ms,
+    wf_dag d -> wf_lookup d -> single_root d root -> single_parent_spine d ->
+    all_real d ms -> NoDup ms -> ms <> [] ->
+    forall c, common_ancestor d ms c -> anc_of d c (lcua_many d ms).
+Proof.
+  intros d root ms Hwf Hwl Hsr Hsp Har Hnd Hne c Hca.
+  assert (Hba : below_all d c ms) by (intros m Hm; apply Hca; exact Hm).
+  destruct ms as [|a [|b l]]; [ contradiction | | ].
+  - (* singleton: lcua_many = a *)
+    assert (Hr : reduce d (lcua_fuel d) [a] = [a]) by (destruct (lcua_fuel d); reflexivity).
+    unfold lcua_many. rewrite Hr. simpl. unfold common_ancestor in Hca.
+    apply Hca. left; reflexivity.
+  - destruct (reduce_converges d (a::b::l) Hwf Har ltac:(discriminate)) as [g Hg].
+    assert (Hbg : below_all d c (reduce d (lcua_fuel d) (a::b::l)))
+      by (eapply reduce_preserves_below_all; eauto).
+    rewrite Hg in Hbg.
+    assert (Hlm : lcua_many d (a::b::l) = g) by (unfold lcua_many; rewrite Hg; reflexivity).
+    rewrite Hlm. apply Hbg. left; reflexivity.
+Qed.
+
+(* Maximality DERIVED (was the old `lca_is_lowest` premise): the survivor is the
+   numof-greatest common ancestor. *)
+Theorem lcua_many_is_max :
+  forall d root ms,
+    wf_dag d -> wf_lookup d -> single_root d root -> single_parent_spine d ->
+    all_real d ms -> NoDup ms -> ms <> [] ->
+    forall c', common_ancestor d ms c' -> numof d c' <= numof d (lcua_many d ms).
+Proof.
+  intros d root ms Hwf Hwl Hsr Hsp Har Hnd Hne c' Hca.
+  apply anc_of_num_le; [ exact Hwf | eapply lca_is_lowest; eauto ].
 Qed.
 
 (* A latest message strictly BELOW a block never lies in that block's past, so

@@ -88,6 +88,14 @@ EOF
     else
       fail "headline results NOT all axiom-free ($n_closed/8 Closed):"; echo "$out" | sed 's/^/      /'
     fi
+    # Independent kernel re-check (coqchk) — the TRUSTED kernel re-verifies every
+    # capstone + dependency `.vo`, not just the elaborator's Print Assumptions.
+    if capped coqchk -Q "$ROCQ_DIR/theories" FinalizedFloor FinalizedFloor.MainTheorem \
+         >/tmp/ff_coqchk.log 2>&1 && grep -q "Modules were successfully checked" /tmp/ff_coqchk.log; then
+      pass "coqchk kernel re-check (MainTheorem + all deps)"
+    else
+      fail "coqchk kernel re-check FAILED (see /tmp/ff_coqchk.log)"; tail -10 /tmp/ff_coqchk.log | sed 's/^/      /'
+    fi
   else
     fail "Rocq build failed (see /tmp/ff_rocq_build.log)"; tail -20 /tmp/ff_rocq_build.log | sed 's/^/      /'
   fi
