@@ -40,6 +40,7 @@ From FinalizedFloor Require Import Recovery.
 From FinalizedFloor Require Import Selection.
 From FinalizedFloor Require Import IntegerAdd.
 From FinalizedFloor Require Import FtExact.
+From FinalizedFloor Require Import FtProvenance.
 
 Theorem finalized_floor_merge_correct :
   (* T-TERM: the main-parent spine walk always reaches genesis. *)
@@ -152,19 +153,61 @@ Qed.
 (* A9 exact-integer fault-tolerance DECISION (the f32 -> exact hardening). The exact
    test `2q·den ≥ S(den+num)` the node evaluates over i128 is bit-for-bit the rational
    test `(2q−S)/S ≥ num/den` cleared of its positive denominators, monotone in the
-   clique weight (given den ≥ 0), and overflow-free in i128 for i64-bounded stake. *)
+   clique weight (given den ≥ 0), and overflow-free in i128 for i64-bounded stake.
+   The overflow envelope now covers the FULL validated ppm range num ∈ [-den, den]
+   (G2 widening in FtExact.ft_exact_no_overflow), matching the runtime range-check
+   and the negative-θ sentinels, not merely [0, den]. *)
 Theorem finalized_floor_ftexact_correct :
   (forall q S num den : Z, ft_exact_ge q S num den <-> ft_ratio_ge q S num den)
   /\ (forall q S num den : Z, ft_exact_gt q S num den <-> ft_ratio_gt q S num den)
   /\ (forall q q' S num den : Z,
         0 <= den -> q <= q' -> ft_exact_ge q S num den -> ft_exact_ge q' S num den)
   /\ (forall q S num den : Z,
-        0 <= q <= S -> 0 <= S <= 2^63 -> 0 <= num <= den -> den = 1000000 ->
+        0 <= q <= S -> 0 <= S <= 2^63 -> -den <= num <= den -> den = 1000000 ->
         Z.abs (2*q*den) < 2^127 /\ Z.abs (S*(den+num)) < 2^127).
 Proof.
   exact (conj ft_exact_iff_ratio
           (conj ft_exact_iff_ratio_strict
             (conj ft_exact_mono_q ft_exact_no_overflow))).
+Qed.
+
+Close Scope Z_scope.
+
+(* ===========================================================================
+   G2 capstone — θ_ppm PROVENANCE determinism + the widened i128 overflow envelope.
+
+   Strengthens the A9 (ftexact) capstone at its one un-modelled seam: the SOURCING
+   of the threshold numerator θ_ppm. A9 proves the decision is exact GIVEN θ_ppm;
+   this proves θ_ppm is a pure function of the on-chain value (the unconditional
+   override at engine/initializing.rs:1099), so local config cannot drive a fork,
+   AND that the exact decision is i128-overflow-free across the node's FULL
+   validated ppm range num ∈ [-den, den] (the token_metadata_check.rs:105 range,
+   including the negative-θ sentinels) — not just the narrower [0, den].
+
+   Each conjunct is discharged by `exact` against its FtProvenance lemma, so the
+   capstone adds NO assumptions (verify with `Print Assumptions
+   finalized_floor_ftprovenance_correct`).
+   =========================================================================== *)
+Open Scope Z_scope.
+
+Theorem finalized_floor_ftprovenance_correct :
+  (* G2 / provenance: the θ_ppm a node finalizes with is the on-chain value,
+     independent of local config (the unconditional override), so two nodes on the
+     same genesis agree on θ_ppm regardless of local config — not a fork input. *)
+  (forall local onchain : Z, reconcile local onchain = onchain)
+  /\
+  (* G2 / provenance (agreement form): agreeing on-chain ppm forces agreeing
+     reconciled ppm, for ANY local configs local, local'. *)
+  (forall local local' onchain : Z, reconcile local onchain = reconcile local' onchain)
+  /\
+  (* G2 / widened envelope: the exact decision is i128-overflow-free over the FULL
+     validated ppm range num ∈ [-den, den] (not merely [0, den]). *)
+  (forall q S num den : Z,
+     0 <= q <= S -> 0 <= S <= 2^63 -> -den <= num <= den -> den = 1000000 ->
+     Z.abs (2*q*den) < 2^127 /\ Z.abs (S*(den+num)) < 2^127).
+Proof.
+  exact (conj reconcile_is_onchain
+          (conj reconcile_agrees_on_onchain ppm_range_decision_no_overflow)).
 Qed.
 
 Close Scope Z_scope.

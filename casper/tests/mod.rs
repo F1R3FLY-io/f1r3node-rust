@@ -4,6 +4,7 @@ mod batch1;
 mod batch2;
 mod blocks;
 mod engine;
+mod finalized_floor;
 mod genesis;
 mod helper;
 mod merging;

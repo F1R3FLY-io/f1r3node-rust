@@ -102,14 +102,28 @@ Lemma ft_exact_mono_q :
 Proof. intros q q' S num den Hden Hqq. unfold ft_exact_ge. nia. Qed.
 
 (* i128 envelope: with the ppm denominator (den = 1e6) and an i64-bounded stake
-   (S <= 2^63, q <= S, 0 <= num <= den), BOTH sides of the exact test have
-   absolute value < 2^127, so the i128 evaluation never overflows. *)
+   (S <= 2^63, q <= S), BOTH sides of the exact test have absolute value < 2^127,
+   so the i128 evaluation never overflows.
+
+   NUM RANGE (G2 widening): the runtime's own validated ppm range is the FULL
+   symmetric interval `-den <= num <= den` — the on-chain ppm is range-checked to
+   [-1e6, 1e6] (token_metadata_check.rs:105) and negative-θ sentinels are legal
+   (`ft_decides_exact`, clique_oracle.rs:72-78: e.g. θ = -1 "finalize on any
+   majority clique"). The earlier hypothesis `0 <= num <= den` was strictly
+   narrower than what the code admits, leaving the sentinel band unmodelled.
+   Widening the lower bound to `num >= -den` still keeps `den + num >= 0` (the
+   ONLY place the sign of `num` is used), so the envelope holds essentially
+   unchanged: |S*(den+num)| <= S*2*den < 2^84 << 2^127 for S <= 2^63, den = 1e6. *)
 Lemma ft_exact_no_overflow :
   forall q S num den,
-    0 <= q <= S -> 0 <= S <= 2^63 -> 0 <= num <= den -> den = 1000000 ->
+    0 <= q <= S -> 0 <= S <= 2^63 -> -den <= num <= den -> den = 1000000 ->
     Z.abs (2*q*den) < 2^127 /\ Z.abs (S*(den+num)) < 2^127.
 Proof.
   intros q S num den [Hq0 HqS] [HS0 HS63] [Hn0 Hnd] Hden. subst den.
+  (* The widened lower bound num >= -den = -1000000 gives den + num = 1000000 + num
+     >= 0, so the RHS product of two non-negatives stays non-negative exactly as in
+     the narrower [0, den] case; the upper bound num <= den is unchanged. *)
+  assert (Hpos : 0 <= 1000000 + num) by lia.
   assert (Hnn1 : 0 <= 2*q*1000000) by lia.
   assert (Hnn2 : 0 <= S*(1000000+num)) by nia.
   rewrite (Z.abs_eq _ Hnn1). rewrite (Z.abs_eq _ Hnn2).

@@ -22,6 +22,9 @@
 #      the license itself is valid).
 #   6. Diagrams (fail-soft) — renders the dossier's PlantUML diagram set and asserts
 #      a populated SVG (closing </svg>) with no stderr. SKIPPED if plantuml is absent.
+#   7. Rust  (fail-soft)     — `cargo test -p casper` the finalized-floor proptests
+#      (G2 θ_ppm provenance + f32↔ppm round-trip; P1 committee derivation PLAY≡REPLAY).
+#      SKIPPED if cargo is absent; any proptest failure fails the gate.
 #
 # POLICY: this script is for LOCAL use only. Do NOT wire it (or any Rocq/TLA+/
 # Wolfram step) into .github/workflows/* — an earlier formal-CI workflow was
@@ -55,7 +58,7 @@ capped() {
   fi
 }
 
-echo "== [1/6] Rocq (authoritative) =="
+echo "== [1/7] Rocq (authoritative) =="
 if command -v coqc >/dev/null 2>&1 || [[ -x "$HOME/.opam/default/bin/coqc" ]]; then
   # shellcheck disable=SC1090
   eval "$(opam env 2>/dev/null)" 2>/dev/null || true
@@ -80,6 +83,7 @@ Print Assumptions finalized_floor_selection_correct.
 Print Assumptions finalized_floor_arithmetic_correct.
 Print Assumptions finalized_floor_phase7_correct.
 Print Assumptions finalized_floor_ftexact_correct.
+Print Assumptions finalized_floor_ftprovenance_correct.
 Print Assumptions guard_constant_committee_transparent.
 Print Assumptions upgo_finalized.
 Print Assumptions chain_adj_AdjDC.
@@ -90,10 +94,10 @@ EOF
     out=$(coqc -Q "$ROCQ_DIR/theories" FinalizedFloor "$chk" 2>&1)
     rm -rf "$tmpd"
     n_closed=$(grep -c "Closed under the global context" <<<"$out")
-    if [[ "$n_closed" == "11" ]]; then
-      pass "all 11 headline results axiom-free (5 capstones incl. A9 ftexact + guard⇒AdjDC bridge, upgo_finalized, chain_adj_AdjDC + C1/C5: thetaexact_advance capstone, Finalized_ft_refines_Finalized, snap_extends_snap_advances)"
+    if [[ "$n_closed" == "12" ]]; then
+      pass "all 12 headline results axiom-free (6 capstones incl. A9 ftexact + G2 ftprovenance [θ_ppm on-chain provenance + widened [-den,den] overflow envelope] + guard⇒AdjDC bridge, upgo_finalized, chain_adj_AdjDC + C1/C5: thetaexact_advance capstone, Finalized_ft_refines_Finalized, snap_extends_snap_advances)"
     else
-      fail "headline results NOT all axiom-free ($n_closed/11 Closed):"; echo "$out" | sed 's/^/      /'
+      fail "headline results NOT all axiom-free ($n_closed/12 Closed):"; echo "$out" | sed 's/^/      /'
     fi
     # Independent kernel re-check (coqchk) — the TRUSTED kernel re-verifies every
     # capstone + dependency `.vo`, not just the elaborator's Print Assumptions.
@@ -110,7 +114,7 @@ else
   fail "coqc not found — Rocq is authoritative, cannot skip"
 fi
 
-echo "== [2/6] TLA+ (fail-soft) =="
+echo "== [2/7] TLA+ (fail-soft) =="
 TLC_JAR="${TLC_JAR:-/usr/share/java/tla2tools.jar}"
 if [[ -f "$TLC_JAR" ]] || command -v tlc >/dev/null 2>&1; then
   # shellcheck disable=SC1091
@@ -151,7 +155,7 @@ else
   skip "no TLC jar (\$TLC_JAR) or 'tlc' on PATH"
 fi
 
-echo "== [3/6] Z3 cross-witness (fail-soft) =="
+echo "== [3/7] Z3 cross-witness (fail-soft) =="
 if command -v python3 >/dev/null 2>&1 && python3 -c 'import z3' >/dev/null 2>&1; then
   if python3 "$REPO_ROOT/formal/z3/finalized_floor/ft_algebra_crosswitness.py" >/tmp/ff_z3_ft.log 2>&1; then
     pass "Z3 FT-algebra + L-ANC/L-SNAP monotonicity + merge determinism"
@@ -168,11 +172,16 @@ if command -v python3 >/dev/null 2>&1 && python3 -c 'import z3' >/dev/null 2>&1;
   else
     fail "Z3 ft_exact_no_overflow.py failed (see /tmp/ff_z3_fte.log)"
   fi
+  if python3 "$REPO_ROOT/formal/z3/finalized_floor/ft_ppm_roundtrip.py" >/tmp/ff_z3_rt.log 2>&1; then
+    pass "Z3 G2 ppm provenance + round-trip (to_ppm monotone/range/½ppm round-trip; redisplay fixed-point; exact-decision display-invariance; IEEE FPA corroboration)"
+  else
+    fail "Z3 ft_ppm_roundtrip.py failed (see /tmp/ff_z3_rt.log)"
+  fi
 else
   skip "no python3 z3 module"
 fi
 
-echo "== [4/6] Sage cross-witness (fail-soft) =="
+echo "== [4/7] Sage cross-witness (fail-soft) =="
 if command -v sage >/dev/null 2>&1; then
   if sage "$REPO_ROOT/formal/sage/finalized_floor/ft_algebra.sage" >/tmp/ff_sage.log 2>&1 \
        && grep -q "ALL PASS" /tmp/ff_sage.log; then
@@ -184,7 +193,7 @@ else
   skip "no sage on PATH"
 fi
 
-echo "== [5/6] Wolfram (fail-soft) =="
+echo "== [5/7] Wolfram (fail-soft) =="
 # Prefer wolframscript (WolframID/cloud licensing), then the classic `math`
 # kernel (reads $UserBaseDirectory/Licensing/mathpass), then `wolfram`.
 WL_BIN=""; WL_RUN=()
@@ -212,7 +221,7 @@ else
   skip "no wolframscript/math/wolfram kernel on PATH"
 fi
 
-echo "== [6/6] PlantUML diagrams (fail-soft) =="
+echo "== [6/7] PlantUML diagrams (fail-soft) =="
 # The dossier's diagram set must render cleanly: a populated SVG (closing </svg>),
 # no stderr from plantuml. Mirrors the slashing diagram convention. Doc-only, so
 # fail-soft; SKIPPED if plantuml is absent or no .puml sources exist yet.
@@ -236,6 +245,24 @@ if command -v plantuml >/dev/null 2>&1; then
   fi
 else
   skip "no plantuml on PATH"
+fi
+
+echo "== [7/7] Rust proptests (fail-soft) =="
+# The finalized-floor Phase-4 proptests, wired into the `mod` integration-test binary
+# (casper/tests/finalized_floor/): G2 θ_ppm provenance + f32↔ppm round-trip, and P1
+# committee derivation PLAY≡REPLAY. Compiles the casper test harness (one-time; cached
+# thereafter), then runs only the `finalized_floor::` tests. SKIPPED if cargo is absent;
+# any proptest failure fails the gate.
+if command -v cargo >/dev/null 2>&1; then
+  if cargo test -p casper --test mod -- finalized_floor:: >/tmp/ff_rust_prop.log 2>&1 \
+       && grep -q "test result: ok" /tmp/ff_rust_prop.log; then
+    n_rust=$(grep -oE 'result: ok\. [0-9]+ passed' /tmp/ff_rust_prop.log | grep -oE '[0-9]+' | head -1)
+    pass "Rust finalized-floor proptests (${n_rust:-?} passed: G2 provenance/round-trip + P1 committee PLAY≡REPLAY)"
+  else
+    fail "Rust finalized-floor proptests failed (see /tmp/ff_rust_prop.log)"; tail -20 /tmp/ff_rust_prop.log | sed 's/^/      /'
+  fi
+else
+  skip "no cargo on PATH"
 fi
 
 if [[ "${RUN_SOAK:-0}" == "1" ]]; then
