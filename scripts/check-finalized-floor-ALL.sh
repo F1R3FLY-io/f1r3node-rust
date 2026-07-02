@@ -25,6 +25,11 @@
 #   7. Rust  (fail-soft)     — `cargo test -p casper` the finalized-floor proptests
 #      (G2 θ_ppm provenance + f32↔ppm round-trip; P1 committee derivation PLAY≡REPLAY).
 #      SKIPPED if cargo is absent; any proptest failure fails the gate.
+#   8. Loom  (fail-soft)     — exhaustive thread-interleaving model check that the
+#      floor_index/frontier_index memoization (write-once, node-identical pure
+#      function) can never observe a torn or regressed cached value (T-CACHE, proved
+#      sequentially, now stressed concurrently). SKIPPED if cargo is absent or the
+#      loom test cannot be built in this cfg; a real interleaving violation fails.
 #
 # POLICY: this script is for LOCAL use only. Do NOT wire it (or any Rocq/TLA+/
 # Wolfram step) into .github/workflows/* — an earlier formal-CI workflow was
@@ -58,7 +63,7 @@ capped() {
   fi
 }
 
-echo "== [1/7] Rocq (authoritative) =="
+echo "== [1/8] Rocq (authoritative) =="
 if command -v coqc >/dev/null 2>&1 || [[ -x "$HOME/.opam/default/bin/coqc" ]]; then
   # shellcheck disable=SC1090
   eval "$(opam env 2>/dev/null)" 2>/dev/null || true
@@ -114,7 +119,7 @@ else
   fail "coqc not found — Rocq is authoritative, cannot skip"
 fi
 
-echo "== [2/7] TLA+ (fail-soft) =="
+echo "== [2/8] TLA+ (fail-soft) =="
 TLC_JAR="${TLC_JAR:-/usr/share/java/tla2tools.jar}"
 if [[ -f "$TLC_JAR" ]] || command -v tlc >/dev/null 2>&1; then
   # shellcheck disable=SC1091
@@ -155,7 +160,7 @@ else
   skip "no TLC jar (\$TLC_JAR) or 'tlc' on PATH"
 fi
 
-echo "== [3/7] Z3 cross-witness (fail-soft) =="
+echo "== [3/8] Z3 cross-witness (fail-soft) =="
 if command -v python3 >/dev/null 2>&1 && python3 -c 'import z3' >/dev/null 2>&1; then
   if python3 "$REPO_ROOT/formal/z3/finalized_floor/ft_algebra_crosswitness.py" >/tmp/ff_z3_ft.log 2>&1; then
     pass "Z3 FT-algebra + L-ANC/L-SNAP monotonicity + merge determinism"
@@ -181,7 +186,7 @@ else
   skip "no python3 z3 module"
 fi
 
-echo "== [4/7] Sage cross-witness (fail-soft) =="
+echo "== [4/8] Sage cross-witness (fail-soft) =="
 if command -v sage >/dev/null 2>&1; then
   if sage "$REPO_ROOT/formal/sage/finalized_floor/ft_algebra.sage" >/tmp/ff_sage.log 2>&1 \
        && grep -q "ALL PASS" /tmp/ff_sage.log; then
@@ -193,7 +198,7 @@ else
   skip "no sage on PATH"
 fi
 
-echo "== [5/7] Wolfram (fail-soft) =="
+echo "== [5/8] Wolfram (fail-soft) =="
 # Prefer wolframscript (WolframID/cloud licensing), then the classic `math`
 # kernel (reads $UserBaseDirectory/Licensing/mathpass), then `wolfram`.
 WL_BIN=""; WL_RUN=()
@@ -221,7 +226,7 @@ else
   skip "no wolframscript/math/wolfram kernel on PATH"
 fi
 
-echo "== [6/7] PlantUML diagrams (fail-soft) =="
+echo "== [6/8] PlantUML diagrams (fail-soft) =="
 # The dossier's diagram set must render cleanly: a populated SVG (closing </svg>),
 # no stderr from plantuml. Mirrors the slashing diagram convention. Doc-only, so
 # fail-soft; SKIPPED if plantuml is absent or no .puml sources exist yet.
@@ -247,7 +252,7 @@ else
   skip "no plantuml on PATH"
 fi
 
-echo "== [7/7] Rust proptests (fail-soft) =="
+echo "== [7/8] Rust proptests (fail-soft) =="
 # The finalized-floor Phase-4 proptests, wired into the `mod` integration-test binary
 # (casper/tests/finalized_floor/): G2 θ_ppm provenance + f32↔ppm round-trip, and P1
 # committee derivation PLAY≡REPLAY. Compiles the casper test harness (one-time; cached
@@ -260,6 +265,33 @@ if command -v cargo >/dev/null 2>&1; then
     pass "Rust finalized-floor proptests (${n_rust:-?} passed: G2 provenance/round-trip + P1 committee PLAY≡REPLAY)"
   else
     fail "Rust finalized-floor proptests failed (see /tmp/ff_rust_prop.log)"; tail -20 /tmp/ff_rust_prop.log | sed 's/^/      /'
+  fi
+else
+  skip "no cargo on PATH"
+fi
+
+echo "== [8/8] Loom concurrency (fail-soft) =="
+# Exhaustive thread-interleaving model check (block-storage/tests/
+# loom_frontier_floor_cache.rs) that the finalized-floor floor_index/frontier_index
+# memoization — a write-once, node-identical PURE function whose accessors take
+# `&self` and are deliberately NOT behind a global lock — can never expose a torn
+# or regressed cached value: on EVERY interleaving any observed value is in
+# {absent, canonical}, the final value is canonical, and no read regresses below a
+# prior read. The REAL guarantee is idempotence + LMDB single-key MVCC; loom checks
+# the Rust memory-model shape. Uses loom::sync::* directly, so no --cfg loom flag is
+# needed (matches loom_equivocations_tracker). SKIPPED (fail-soft) if cargo is absent
+# or the loom test cannot be built in this cfg; a genuine interleaving violation FAILS.
+if command -v cargo >/dev/null 2>&1; then
+  if cargo test -p block-storage --test loom_frontier_floor_cache >/tmp/ff_loom.log 2>&1; then
+    if grep -q "test result: ok" /tmp/ff_loom.log; then
+      pass "Loom finalized-floor cache (no torn/regressed value on any interleaving; write-once memo + single-key MVCC)"
+    else
+      skip "Loom finalized-floor cache: test target unavailable in this build cfg (fail-soft; see /tmp/ff_loom.log)"
+    fi
+  elif grep -q "test result: FAILED" /tmp/ff_loom.log; then
+    fail "Loom finalized-floor cache found a torn/regressed interleaving (see /tmp/ff_loom.log)"; tail -20 /tmp/ff_loom.log | sed 's/^/      /'
+  else
+    skip "Loom finalized-floor cache: could not build the loom test in this cfg (fail-soft; see /tmp/ff_loom.log)"
   fi
 else
   skip "no cargo on PATH"

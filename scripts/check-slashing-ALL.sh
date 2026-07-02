@@ -87,8 +87,15 @@ if [[ -f "$TLC_JAR" ]] || command -v tlc >/dev/null 2>&1; then
   # invariants PLUS the Live_DetectionComplete temporal property on a tiny
   # (69-state) space — full detector-invariant coverage without the 2v blow-up;
   # the exhaustive 2v safety run is budgeted separately below.
+  # The eager model (MC_EquivocationDetectorEager) is an equivalence-preserving
+  # rewrite that folds liveness into a SAFETY invariant (Inv_LivenessAsSafety) and
+  # quotients the 2v space by validator SYMMETRY, so it exhausts fast while still
+  # covering the liveness claim — cheap must-pass insurance a temporal automaton
+  # cannot be. cfg substitutes MC_Validators/MC_MaxSeqNum/MC_MaxBlocksPerSeq +
+  # SymmetryV from its MC_ wrapper (EXTENDS EquivocationDetectorEager, TLC).
   declare -A SAFE=(
     [detector_liveness]="MC_EquivocationDetector_liveness.cfg:MC_EquivocationDetector_liveness.tla"
+    [detector_eager]="MC_EquivocationDetectorEager.cfg:MC_EquivocationDetectorEager.tla"
     [tracker]="MC_ConcurrentTracker.cfg:MC_ConcurrentTracker.tla"
     [slashflow]="MC_SlashFlow.cfg:MC_SlashFlow.tla"
   )

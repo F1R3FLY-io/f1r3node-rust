@@ -22,6 +22,10 @@
 #      via the licensed Wolfram MCP evaluator; a `mathpass` password is version-keyed).
 #   6. Diagrams (fail-soft) — renders the dossier's PlantUML diagram set and asserts a
 #      populated SVG (closing </svg>) with no stderr. SKIPPED if plantuml is absent.
+#   7. Rust  (fail-soft) — `cargo test -p casper` the fork-choice verification proptests
+#      (C12: the concrete Estimator::filter_deep_parents conforms to GuardBridge.v's
+#      within_depth/prop_filter — soundness + main-retention + completeness + exact-set).
+#      SKIPPED if cargo is absent; any proptest failure fails the gate.
 #
 # POLICY: this script is for LOCAL use only. Do NOT wire it (or any Rocq/TLA+/Wolfram
 # step) into .github/workflows/* — an earlier formal-CI workflow was deliberately
@@ -56,7 +60,7 @@ capped() {
   fi
 }
 
-echo "== [1/6] Rocq (authoritative) =="
+echo "== [1/7] Rocq (authoritative) =="
 if ! ls "$ROCQ_DIR"/theories/*.v >/dev/null 2>&1; then
   skip "no Rocq theories yet (scaffold phase) — becomes AUTHORITATIVE once modules land"
 elif command -v coqc >/dev/null 2>&1 || [[ -x "$HOME/.opam/default/bin/coqc" ]]; then
@@ -110,7 +114,7 @@ else
   fail "coqc not found — Rocq is authoritative, cannot skip"
 fi
 
-echo "== [2/6] TLA+ (fail-soft) =="
+echo "== [2/7] TLA+ (fail-soft) =="
 TLC_JAR="${TLC_JAR:-/usr/share/java/tla2tools.jar}"
 if ! ls "$TLA_DIR"/*.tla >/dev/null 2>&1; then
   skip "no TLA+ modules yet"
@@ -145,7 +149,7 @@ else
   skip "no TLC jar (\$TLC_JAR) or 'tlc' on PATH"
 fi
 
-echo "== [3/6] Z3 cross-witness (fail-soft) =="
+echo "== [3/7] Z3 cross-witness (fail-soft) =="
 if ! ls "$Z3_DIR"/*.py >/dev/null 2>&1; then
   skip "no Z3 scripts yet"
 elif command -v python3 >/dev/null 2>&1 && python3 -c 'import z3' >/dev/null 2>&1; then
@@ -163,7 +167,7 @@ else
   skip "no python3 z3 module"
 fi
 
-echo "== [4/6] Sage cross-witness (fail-soft) =="
+echo "== [4/7] Sage cross-witness (fail-soft) =="
 if ! ls "$SAGE_DIR"/*.sage >/dev/null 2>&1; then
   skip "no Sage scripts yet"
 elif command -v sage >/dev/null 2>&1; then
@@ -176,7 +180,7 @@ else
   skip "no sage on PATH"
 fi
 
-echo "== [5/6] Wolfram (fail-soft) =="
+echo "== [5/7] Wolfram (fail-soft) =="
 WL_BIN=""; WL_RUN=()
 if command -v wolframscript >/dev/null 2>&1; then WL_BIN=wolframscript; WL_RUN=(wolframscript -file)
 elif command -v math >/dev/null 2>&1;       then WL_BIN=math;          WL_RUN=(math -script)
@@ -196,7 +200,7 @@ else
   fi
 fi
 
-echo "== [6/6] PlantUML diagrams (fail-soft) =="
+echo "== [6/7] PlantUML diagrams (fail-soft) =="
 if command -v plantuml >/dev/null 2>&1; then
   n_puml=$(find "$DIAG_DIR" -name '*.puml' 2>/dev/null | wc -l)
   if [[ "$n_puml" -gt 0 ]]; then
@@ -216,6 +220,27 @@ if command -v plantuml >/dev/null 2>&1; then
   fi
 else
   skip "no plantuml on PATH"
+fi
+
+echo "== [7/7] Rust proptests (fail-soft) =="
+# C12: the fork-choice verification proptests wired into the `mod` integration-test
+# binary (casper/tests/fork_choice/): prop_filter_deep_parents asserts the concrete
+# `Estimator::filter_deep_parents` (estimator.rs:133-182) conforms to GuardBridge.v's
+# within_depth/prop_filter model — every RETAINED secondary parent is within depth
+# (soundness), the main parent is ALWAYS retained first, nothing within depth is dropped
+# (completeness), and the retained set equals {main} ∪ prop_filter(secondaries). Compiles
+# the casper test harness (cached thereafter), then runs only the module's tests. SKIPPED
+# if cargo is absent; any proptest failure fails the gate.
+if command -v cargo >/dev/null 2>&1; then
+  if cargo test -p casper --test mod -- fork_choice::prop_filter_deep_parents >/tmp/fc_rust_prop.log 2>&1 \
+       && grep -q "test result: ok" /tmp/fc_rust_prop.log; then
+    n_rust=$(grep -oE 'result: ok\. [0-9]+ passed' /tmp/fc_rust_prop.log | grep -oE '[0-9]+' | head -1)
+    pass "Rust fork-choice proptests (${n_rust:-?} passed: filter_deep_parents ⊨ within_depth/prop_filter — soundness + main-kept + completeness + exact-set)"
+  else
+    fail "Rust fork-choice proptests failed (see /tmp/fc_rust_prop.log)"; tail -20 /tmp/fc_rust_prop.log | sed 's/^/      /'
+  fi
+else
+  skip "no cargo on PATH"
 fi
 
 if [[ "${RUN_SOAK:-0}" == "1" ]]; then
