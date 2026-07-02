@@ -162,18 +162,28 @@ pub fn weight_from_validator_by_dag(
     block_hash: &BlockHash,
     validator: &Validator,
 ) -> Result<i64, KvStoreError> {
-    // Get block metadata
-    let block_metadata = dag
-        .lookup(block_hash)?
-        .expect("Block metadata should exist");
+    // Get block metadata. B1: on the fork-choice BFS hot path a traversed block or
+    // its main parent may be momentarily absent from the metadata index (a sync /
+    // prune window). Surface a typed KvStoreError::KeyNotFound (as `snapshot.rs`
+    // already does for the sibling case) instead of panicking via `.expect`.
+    let block_metadata = dag.lookup(block_hash)?.ok_or_else(|| {
+        KvStoreError::KeyNotFound(format!(
+            "weight_from_validator_by_dag: block metadata missing from index: {}",
+            PrettyPrinter::build_string_no_limit(block_hash)
+        ))
+    })?;
 
     // Try to get parent's weight for this validator
     match block_metadata.parents.first() {
         Some(parent_hash) => {
             // Look up parent
-            let parent_metadata = dag
-                .lookup(parent_hash)?
-                .expect("Parent metadata should exist");
+            let parent_metadata = dag.lookup(parent_hash)?.ok_or_else(|| {
+                KvStoreError::KeyNotFound(format!(
+                    "weight_from_validator_by_dag: main-parent metadata missing from index \
+                     (sync/prune window): {}",
+                    PrettyPrinter::build_string_no_limit(parent_hash)
+                ))
+            })?;
             // Return validator's weight from parent or 0 if not found
             Ok(parent_metadata
                 .weight_map
@@ -587,13 +597,12 @@ pub fn justification_to_justification_info(justification: &Justification) -> Jus
 // Fork-choice FV — Phase-0 reproduction of B1.
 //
 // `weight_from_validator_by_dag` (above) reads the traversed block's MAIN
-// PARENT weight map, and does so with `.expect("Parent metadata should
-// exist")`. On the fork-choice BFS hot path (`estimator::build_scores_map`)
-// a traversed block whose main parent is momentarily absent from the metadata
-// index — a sync / prune window — makes that `.expect` PANIC instead of
-// surfacing a typed error. This test reproduces the panic; Phase 2 replaces the
-// `.expect` with a typed `KvStoreError` and this test flips to a `Result`
-// assertion. See docs/theory/fork-choice/fork-choice-verification.md (B1).
+// PARENT weight map on the fork-choice BFS hot path (`estimator::build_scores_map`).
+// B1 (FIXED): a traversed block whose main parent is momentarily absent from the
+// metadata index — a sync / prune window — previously panicked via
+// `.expect("Parent metadata should exist")`; it now surfaces a typed
+// `KvStoreError::KeyNotFound`. This test asserts that typed error.
+// See docs/theory/fork-choice/fork-choice-verification.md (B1).
 // ---------------------------------------------------------------------------
 #[cfg(test)]
 mod fork_choice_b1_repro_tests {
@@ -665,14 +674,17 @@ mod fork_choice_b1_repro_tests {
     }
 
     #[test]
-    #[should_panic(expected = "Parent metadata should exist")]
-    fn weight_from_validator_missing_parent_panics_b1() {
+    fn weight_from_validator_missing_parent_is_typed_err() {
         let v = h(9);
         let child = h(1);
         let missing = h(2); // deliberately NOT added to the index (sync/prune window)
         let mut dag = dag_with(vec![md(child.clone(), vec![missing], 1, &v)]);
-        // `child` resolves; its declared main parent is absent, so the
-        // `.expect("Parent metadata should exist")` panics (B1 reproduced).
-        let _ = weight_from_validator_by_dag(&mut dag, &child, &v);
+        // `child` resolves; its declared main parent is absent. After the B1 fix this
+        // surfaces a typed KvStoreError::KeyNotFound instead of panicking.
+        let result = weight_from_validator_by_dag(&mut dag, &child, &v);
+        assert!(
+            matches!(result, Err(KvStoreError::KeyNotFound(_))),
+            "missing main-parent metadata must be a typed KeyNotFound, got {result:?}"
+        );
     }
 }
