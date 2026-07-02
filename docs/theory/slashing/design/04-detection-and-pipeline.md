@@ -145,7 +145,7 @@ The end-to-end flow for an admissible equivocation:
 ## 4.4 The detection algorithm — literate pseudocode
 
 The detector is the `check_equivocations` function in
-`equivocation_detector.rs:24-104`. Here is the algorithm in literate
+`equivocation_detector.rs:78-124`. Here is the algorithm in literate
 style.
 
 We begin by extracting what we need from the input block. The
@@ -240,7 +240,7 @@ The data flow that powers neglect detection:
 
 [![Diagram 08 — Justifications → neglect detection](../diagrams/08-dataflow-justifications-to-neglect.svg)](../diagrams/08-dataflow-justifications-to-neglect.svg)
 
-The validate-time logic at `validate.rs:989-1030`:
+The validate-time logic at `validate.rs:1323-1366`:
 
 ```
 for each justification j ∈ b_B.justifications:

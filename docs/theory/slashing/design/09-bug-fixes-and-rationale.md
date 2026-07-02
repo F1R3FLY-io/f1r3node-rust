@@ -58,15 +58,15 @@ withdrawal arm (line 619). Bug #10's theorem set
 >
 > | Bug | Theorem | Production location                                                  |
 > |-----|---------|----------------------------------------------------------------------|
-> | #1  | T-9.1   | `block_status.rs:191` — `IgnorableEquivocation` in `is_slashable()`  |
-> | #2  | T-9.2   | `engine/multi_parent_casper/mod.rs:1056` — RMW via `access_equivocations_tracker` |
-> | #3  | T-9.3   | `engine/multi_parent_casper/mod.rs:1105` — `status if status.is_slashable()` catch-all |
-> | #4  | T-9.4   | `PoS.rhox:487-509` — `match transferResult` with deterministic failure |
-> | #5  | T-9.5   | `equivocation_detector.rs:184` — `if stake > 0` guard                |
-> | #6  | T-9.6   | `validate.rs:875-898` — self-regression filter dropped               |
+> | #1  | T-9.1   | `block_status.rs:183` — `IgnorableEquivocation` in `is_slashable()`  |
+> | #2  | T-9.2   | `engine/multi_parent_casper/validation_dispatcher.rs:459` — RMW via `access_equivocations_tracker` |
+> | #3  | T-9.3   | `engine/multi_parent_casper/validation_dispatcher.rs:502` — `status if status.is_slashable()` catch-all |
+> | #4  | T-9.4   | `PoS.rhox:449-515` — `match transferResult` with deterministic failure |
+> | #5  | T-9.5   | `equivocation_detector.rs:285` — `if stake > 0` guard                |
+> | #6  | T-9.6   | `validate.rs:1247-1319` — self-regression filter dropped             |
 > | #7  | T-9.7   | `equivocation_detector.rs` — canonical self-chain child above base    |
-> | #8  | T-9.8   | `block_creator.rs:298-306` — proposer-bond early-return              |
-> | #9  | T-9.9   | `validate.rs:1018-1029` — `has_slash_system_deploys` widening        |
+> | #8  | T-9.8   | `block_creator.rs:498-533` — proposer-bond early-return              |
+> | #9  | T-9.9   | `validate.rs:1323-1366` — `has_slash_system_deploys` widening        |
 > | #10 | T-9.10  | `PoS.rhox:615-651` — `payWithdraw` pattern-match + success-gated `computeRemove` |
 > | #11 | T-9.11  | `equivocation_detector.rs` — total deterministic traversal with distinct child hashes |
 >
@@ -85,7 +85,7 @@ vector if not fixed."*
 **Cause.** Pre-fix, `IgnorableEquivocation` is *not* in
 `is_slashable() = ⊤`. Equivocations that arrive *unsolicited* (no
 other block cites them) are silently dropped at
-`engine/multi_parent_casper/mod.rs:1077-1088` with only a `tracing::info!`
+`engine/multi_parent_casper/validation_dispatcher.rs:489` with only a `tracing::info!`
 log. A Byzantine validator can flood the network with such blocks
 without economic cost.
 
@@ -115,7 +115,7 @@ the offender their entire bond.
 
 **Origin.** Rust-introduced regression.
 
-**Cause.** `engine/multi_parent_casper/mod.rs:1046-1075` reads then writes
+**Cause.** `engine/multi_parent_casper/validation_dispatcher.rs:459` reads then writes
 the equivocation tracker without a lock, allowing two threads
 processing `AdmissibleEquivocation` for the same `(validator,
 baseSeqNum)` to both observe `record-absent` and both insert,
@@ -153,7 +153,8 @@ catch-all `case ib: InvalidBlock if InvalidBlock.isSlashable(ib)`
 arm only invokes `handleInvalidBlockEffect` (mark-invalid +
 buffer-remove); no `EquivocationRecord` is created.
 
-**Cause.** `engine/multi_parent_casper/mod.rs:1090-1099` carries
+**Cause.** `engine/multi_parent_casper/mod.rs:1090-1099` (now
+`engine/multi_parent_casper/validation_dispatcher.rs:502`) formerly carried
 *"TODO: Slash block for status except InvalidUnslashableBlock - OLD"*.
 The 15 non-equivocation slashable variants (`JustificationRegression`,
 `InvalidBondsCache`, `NeglectedInvalidBlock`, etc.) only get marked
@@ -219,7 +220,7 @@ replays converge.
 
 **Origin.** Scala-inherited.
 
-**Cause.** `equivocation_detector.rs:217-220` notes
+**Cause.** `equivocation_detector.rs:285-312` notes
 *"This case is not necessary if assert(stake > 0) in the PoS
 contract"*. Until that assertion is enforced, a stake-0 bonded
 validator is silently classified `EquivocationDetected` — no slash,
@@ -261,7 +262,7 @@ block's own sender in `justification_regressions` (line 666 of
 `Validate.scala:649-702`); the fix tightens the predicate on both
 sides identically.
 
-**Cause.** `validate.rs:875-985` (Scala `Validate.scala:649-702`)
+**Cause.** `validate.rs:1247-1319` (Scala `Validate.scala:649-702`)
 ignores regression of the block's own sender and defers to
 `check_equivocations`. But `check_equivocations` only compares the
 creator-justification *hash*, not the *sequence-number ordering*.
@@ -294,7 +295,7 @@ DAG-level: ∀ blocks sender cited b,
 
 **Origin.** Scala-inherited.
 
-**Cause.** `equivocation_detector.rs:400` (Scala
+**Cause.** `equivocation_detector.rs:514` (Scala
 `EquivocationDetector.scala:336`) uses `baseSeqNum + 1` to find a
 validator's child block. This assumes per-sender seq numbers are
 *dense* (never skipped). If a validator skips a sequence number
@@ -343,7 +344,7 @@ the proposer-bonded check — it filters `ilm` by *target* validator
 bond (`bondsMap.getOrElse(validator, 0L) > 0L`, line 134) but
 never checks the proposer itself.
 
-**Pre-fix cause.** `block_creator.rs:287-332` did not verify that the
+**Pre-fix cause.** `block_creator.rs:498-543` did not verify that the
 *proposer itself* is bonded. An unbonded proposer running the
 proposer thread will still build slash deploys; the `slash`
 contract rejects them at `sysAuthTokenOps!("check", ...)`. This is
@@ -381,7 +382,7 @@ rejects.
 **Cause.** Scala `Validate.scala:727-731` rejects a block whenever
 `neglectedInvalidJustification = ⊤`, even if the block itself
 carries a `Slash` system deploy targeting the offender. Rust's
-`validate.rs:1016-1029` adds an extra branch
+`validate.rs:1323-1366` adds an extra branch
 `if neglectedInvalidJustification ∧ ¬ has_slash_system_deploys`
 that *admits* self-correcting blocks. The Scala behavior is a bug;
 the Rust widening is correct.

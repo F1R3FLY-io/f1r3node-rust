@@ -632,7 +632,7 @@ offender's bond is positive,
 
 ### 6.3 Theorem 6.3 (T-Idem, Slash idempotence; alias T-9)
 
-**Statement.** *(`slash_idempotent`, `PoSContract.v:117`.)*
+**Statement.** *(`slash_idempotent`, `PoSContract.v:128`.)*
 
 ```
   let (ps₁, _) := slash(ps, v) in
@@ -1285,7 +1285,7 @@ transitive). Proofs in `Bisimulation.v` §2.
 
 ### 8.3 Theorem 8.2 (T-15b, Composed bisimulation closure)
 
-**Statement.** *(`main_bisimilarity_theorem`, `MainTheorem.v:475`.)*
+**Statement.** *(`main_bisimilarity_theorem`, `MainTheorem.v:507`.)*
 For every component triple `(b₁, b₂, v₁, v₂, sl₁, sl₂, offender)` with
 component-wise R-equivalence as the hypothesis,
 
@@ -1975,7 +1975,7 @@ honest. Worked example: `design/11-worked-examples.md §11.13`.
 
 **Statement.** *(`unauthorized_unknown_execution_noop`,
 `BugFixSlashAuthorization.v:32`; also
-`main_T9_13_unknown_slash_evidence_noop` in `MainTheorem.v:212`.)*
+`main_T9_13_unknown_slash_evidence_noop` in `MainTheorem.v:218`.)*
 ```
   evidence_hash(ev) ∉ local.invalid_blocks
   ⟹  apply_slash_deploy(state, ev) = state .
@@ -2202,7 +2202,7 @@ index*, closing the original Bug #14 liveness gap.
 
 **Statement.** *(`execute_invalid_auth_token_noop`,
 `SlashDeploy.v:142`; also
-`main_TAuth_invalid_token_noop` in `MainTheorem.v:252`.)*
+`main_TAuth_invalid_token_noop` in `MainTheorem.v:284`.)*
 ```
   auth_token(deploy) is invalid
   ⟹  apply_slash_deploy(state, deploy) = state .
@@ -2222,7 +2222,7 @@ on `state` follows. ∎
 
 **Statement.** *(`execute_valid_auth_token_equiv`,
 `SlashDeploy.v:149`; also
-`main_TAuth_valid_token_equiv` in `MainTheorem.v:257`.)*
+`main_TAuth_valid_token_equiv` in `MainTheorem.v:289`.)*
 ```
   auth_token(deploy) is valid
   ⟹  apply_slash_deploy(state, deploy)
@@ -2270,7 +2270,7 @@ construction.
 
 The Rust call site at
 `casper/src/rust/slashing_authorization.rs:183` (invoked from
-`block_creator.rs:309`) is the operational realisation of this fold
+`block_creator.rs:498`) is the operational realisation of this fold
 and is verified to match by the bisimulation result of §8. ∎
 
 Deterministic slash-seed construction is tracked separately:

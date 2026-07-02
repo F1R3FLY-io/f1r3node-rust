@@ -382,7 +382,7 @@ Classifies an arriving block into one of the equivocation statuses:
 `NeglectedEquivocation`.
 
 The decision rules mirror
-`equivocation_detector.rs:24-104`:
+`equivocation_detector.rs:78-124`:
 
 ```
 detect(v, s, b):
@@ -488,7 +488,7 @@ on-the-fly slash-deploy path directly: an unbonded proposer returns
 
 The block-construction module. The relevant method is
 `prepare_slashing_deploys(seqNum) → Seq[SlashDeploy]` at
-`block_creator.rs:287-332`:
+`block_creator.rs:498-543`:
 
 ```
 if bonds_map[proposer] ≤ 0 then return []
@@ -587,7 +587,7 @@ construction. The contract:
 5. Otherwise transfers the bond to the Coop vault.
 6. Updates `state.allBonds`, `state.activeValidators`,
    `state.committedRewards` as a single atomic `stateUpdateCh!`
-   map-construction at `PoS.rhox:477-486` (one map write, not three
+   map-construction at `PoS.rhox:449-510` (one map write, not three
    field writes).
 7. Returns `(true, Nil)` on `returnCh`; transfer failure returns
    `(false, "transfer failed: ...")` deterministically.
@@ -797,11 +797,11 @@ slash(ps, v) =
 **Idempotence is structural, not branch-explicit.** The implementation
 at `PoS.rhox:446-507` does not read `state.allBonds[v]` to short-circuit
 on a second slash. Instead, a second slash on the same offender hits the
-same `invalidBlocks.contains(blockHash)` predicate (`PoS.rhox:461`), and
+same `invalidBlocks.contains(blockHash)` predicate (`PoS.rhox:449`), and
 on the second attempt one of two structural identities applies: either
 (a) the block is no longer in `invalidBlocks` (the invalid-block index
 has been pruned post-slash), and the contract returns
-`(false, "invalid slash evidence")` at `PoS.rhox:497`; or (b) the
+`(false, "invalid slash evidence")` at `PoS.rhox:449`; or (b) the
 `posVault.transfer` of an already-zero `valBond` is a no-op map
 identity, and the subsequent `state.allBonds[v := 0]` overwrite of an
 already-zero entry leaves the state unchanged. The Rocq proof of T-Idem
@@ -857,7 +857,7 @@ token introduced at PoS contract instantiation, the contract rejects the
 deploy at the first guard
 (`PoS.rhox:448`, `sysAuthTokenOps!("check", sysAuthToken,
 *isValidTokenCh)`) with `returnCh!((false, "Invalid system auth
-token"))` at `PoS.rhox:503`. No state mutation occurs and no transfer is
+token"))` at `PoS.rhox:449`. No state mutation occurs and no transfer is
 initiated. Rocq models this boundary with
 `execute_authenticated_slash_deploy`: invalid auth returns `(ps, false)`;
 valid auth is extensionally equal to `execute_slash_deploy`. TLA+ models the
@@ -1424,7 +1424,7 @@ design*; T-9.9 establishes that the widening is sound.
 ### 10.5 Bug #5 — Stake-0 silent classification
 
 - **Origin.** Scala-inherited.
-- **Cause.** `equivocation_detector.rs:217-220` notes
+- **Cause.** `equivocation_detector.rs:285-312` notes
   *"This case is not necessary if assert(stake > 0) in the PoS contract"*.
   Until that assertion is enforced, a stake-0 bonded validator is
   silently classified `EquivocationDetected` — no slash, no neglected
@@ -1468,7 +1468,7 @@ design*; T-9.9 establishes that the widening is sound.
   `Validate.scala:649-702`); the fix tightens the predicate on both
   sides identically.
 - **Worked example.** §11.9.
-- **Cause.** `validate.rs:932-1037` (Scala `Validate.scala:649-702`)
+- **Cause.** `validate.rs:1247-1319` (Scala `Validate.scala:649-702`)
   ignores regression of the block's own sender and defers to
   `check_equivocations`. But `check_equivocations` only compares the
   creator-justification *hash*, not the *sequence-number ordering*. A
@@ -1503,7 +1503,7 @@ design*; T-9.9 establishes that the widening is sound.
   differs only for non-dense sequence chains and same-branch
   canonicalization.
 - **Worked example.** §11.7.
-- **Cause.** `equivocation_detector.rs:400` (Scala
+- **Cause.** `equivocation_detector.rs:514` (Scala
   `EquivocationDetector.scala:336`) uses `baseSeqNum + 1` to find a
   validator's child block. This assumes per-sender seq numbers are
   *dense* (never skipped). If a validator skips a sequence number (a
@@ -1538,7 +1538,7 @@ design*; T-9.9 establishes that the widening is sound.
   the proposer-bonded check — it filters `ilm` by *target* validator
   bond (`bondsMap.getOrElse(validator, 0L) > 0L`, line 134) but never
   checks the proposer itself.
-- **Pre-fix cause.** `block_creator.rs:287-332` did not verify that the
+- **Pre-fix cause.** `block_creator.rs:498-543` did not verify that the
   *proposer itself* is bonded. An unbonded proposer running the
   proposer thread would still build slash deploys; the `slash` contract
   would reject them at `sysAuthTokenOps!("check", ...)`. This was wasted
@@ -1576,7 +1576,7 @@ design*; T-9.9 establishes that the widening is sound.
 - **Cause.** Scala `Validate.scala:727-731` rejects a block whenever
   `neglectedInvalidJustification = true`, even if the block itself
   carries a `Slash` system deploy targeting the offender. Rust's
-  `validate.rs:1016-1029` adds an extra branch
+  `validate.rs:1323-1366` adds an extra branch
   `if neglectedInvalidJustification ∧ ¬has_slash_system_deploys` that
   *admits* self-correcting blocks. This is a deliberate widening; the
   Scala behavior is a bug.
@@ -1865,7 +1865,7 @@ Setup: A's bond is decremented to 0 by some non-slash mechanism (e.g. a
 bond withdrawal). A then equivocates.
 
 Pre-fix: detector reaches the `if stake ≤ 0 then EquivocationDetected`
-branch in `equivocation_detector.rs:217`; A is "detected" but never
+branch in `equivocation_detector.rs:285`; A is "detected" but never
 slashed (zero stake to forfeit) and never recorded. A's equivocation
 is invisible to two-level closure.
 

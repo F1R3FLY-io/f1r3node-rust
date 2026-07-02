@@ -152,7 +152,7 @@ Liveness is strictly better.
 
 **Pre-fix.** Detector reaches the
 `if stake ≤ 0 then EquivocationDetected` branch in
-`equivocation_detector.rs:217`; A is "detected" but never slashed
+`equivocation_detector.rs:285`; A is "detected" but never slashed
 (zero stake to forfeit) and never recorded. A's equivocation is
 invisible to two-level closure.
 

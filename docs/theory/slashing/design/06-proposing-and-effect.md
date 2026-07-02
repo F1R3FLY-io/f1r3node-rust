@@ -145,7 +145,7 @@ The activity flow:
 5. **Identify the offender:**
    - If `blockHash ∈ invalidBlocks`, then `validator ← invalidBlocks[blockHash]`.
    - Else: the contract returns `(false, "invalid slash evidence")`
-     and no state mutation occurs (`PoS.rhox:497`). There is **no**
+     and no state mutation occurs (`PoS.rhox:449`). There is **no**
      fallback to "slash whoever submitted the deploy" — that would
      over-broaden the threat surface (a malicious sender could slash
      an honest deployer by submitting a bogus `blockHash`). The
@@ -160,7 +160,7 @@ The activity flow:
    *transferDoneCh)`.
 9. **Handle transfer result** on `transferDoneCh`:
    - On **success**: atomically construct the new state in one
-     `stateUpdateCh!` write at `PoS.rhox:477-486`:
+     `stateUpdateCh!` write at `PoS.rhox:449-510`:
      ```
      atomic stateUpdate(state', (true, Nil)) where
        state'.allBonds          := state.allBonds[validator := 0]
