@@ -11,6 +11,13 @@ from scratch. It records the feature, the bug's root cause, the fix, the formal
 artifacts (with theorem anchors), the invariant catalog, the additional findings,
 and exactly how to re-run every check.
 
+> **Companion docs.** [`finalized-floor-specification.md`](./finalized-floor-specification.md)
+> is the normative contract (the *what must hold*, RFC-2119);
+> [`finalized-floor-glossary.md`](./finalized-floor-glossary.md) defines every
+> symbol/term used here (before first use) and gives literate-programming pseudocode
+> for the warm up-walk and the launder-free combine. Rendered PlantUML diagrams live
+> in [`diagrams/`](./diagrams/) and are embedded in §8.
+
 ---
 
 ## 1. The feature
@@ -154,7 +161,12 @@ so caching is free; `floor_of_block` persists it, `derive_floor` now returns
 Together: **warm-walk result == cold-walk result** (transparent cache).
 Residual: a bonding event inside the band can break L-ANC's constant-committee
 premise; the warm path detects this (committee comparison) and falls back to the
-cold walk (`floor_incremental_guard_fallback` metric).
+cold walk (`floor_incremental_guard_fallback` metric). This guard is **not merely a
+runtime check** — Rocq `GuardBridge.chain_adj_AdjDC` proves that a *constant*
+committee across the band **derives** `Floor.frontier_cache_transparent`'s `AdjDC`
+premise from L-ANC, so the guard is exactly the condition under which warm == cold
+(the "Rocq assumes what Rust enforces" seam is closed; tested by
+`guard_trip_committee_change_falls_back_to_cold`).
 
 ### 3.2 H1 — deterministic backstop, never a silent lossy substitution
 
@@ -192,7 +204,7 @@ the ratchet collapses and over-cap is safe.
 | **T-TERM** | spine walk terminates | Rocq `Foundation.spine_walk_terminates` |
 | **T-MONO / L-ANC** | ancestor-monotone finalization (no floor regress, S2) | Rocq `CliqueOracle.L_ANC`, `L_ANC_mainparent` |
 | **L-SNAP** | snapshot-monotone finalization | Rocq `CliqueOracle.L_SNAP`, `L_ANC_SNAP` |
-| **T-CACHE** | warm up-walk == cold walk (no fork from cache, S1) | Rocq `Floor.warm_eq_cold`, `frontier_cache_transparent` |
+| **T-CACHE** | warm up-walk == cold walk (no fork from cache, S1) | Rocq `Floor.frontier_cache_transparent` (takes `AdjDC`) **+ `GuardBridge.chain_adj_AdjDC` / `guard_constant_committee_transparent`** — the committee-constancy guard *derives* `AdjDC` from L-ANC, so the seam is bridged, not assumed; Rust test `guard_trip_committee_change_falls_back_to_cold` |
 | **T-DETMERGE / T-CONV** | merge order-independent (no fork, S6) | Rocq `Merge.merge_or_perm`, `merge_max_perm` |
 | **T-K1** | no mergeable write lost (the 400-block loss, S5) | Rocq `Merge.merge_or_no_lost_bit`, `merge_absorbs` |
 | **T-NDA** | recovery not double-applied | Rocq `Recovery.apply_idem`, `no_double_apply` |
@@ -202,14 +214,16 @@ the ratchet collapses and over-cap is safe.
 | **ratchet instability** | buggy advance is structurally unstable | Wolfram `delta_ratchet.wl` |
 | **T-SOUND** | chosen floor is a sound base; `None` ⇒ Err correct (S4) | Rocq `Selection.select_sound`, `select_none_correct` |
 | **T-LIN** | a Case-A base is a common DAG-ancestor (one chain) | Rocq `Selection.case_a_common_ancestor` |
-| **T-FIN** | the chosen floor is finalized | Rocq `Selection.select_finalized` |
-| **T-PS** | safety for ANY parent list (unconstrained oracle) | Rocq `Selection.T_PS`; TLA⁺ `FinalizedFloorScan` (nondeterministic parent set) |
+| **T-FIN** | the chosen floor is finalized | Rocq **`GuardBridge.upgo_finalized`** (the warm up-walk's result is `Finalized` — discharges the premise unconditionally) + `Selection.select_finalized` (a floor drawn from finalized candidates is finalized) |
+| **T-PS** | safety for ANY parent list (unconstrained oracle) | Rocq `Selection.T_PS`; TLA⁺ `FinalizedFloorScan` (nondeterministic parent set); Rust test `derive_floor_incompatible_fork_errors` |
 | **T-COMM** | committee = `bonds_of(floor)`, a pure fn of the floor (S8) | Rocq `Selection.committee_is_floor_bonds` |
+| **Case-B** | Case-A fails but every other candidate is compatible ⇒ the dominating finalized tip is a sound base | Rocq `Selection.case_b_compatible`; Rust test `derive_floor_case_b_selects_dominating_finalized_tip` |
+| **maximality / T-DET** | the chosen floor is the HIGHEST sound candidate, a pure function of (parents, candidates) ⇒ every node picks the same floor | Rocq `Selection.select_highest_sound` |
 | **H3 coverage** | floor-bounded scan drops no parent write ≥ floor | Rocq `Selection.scope_covers_band`; TLA⁺ `FinalizedFloorScan` (`.cfg` PASS, `_bug.cfg` counterexample) |
 | **T-ALG (semilattice)** | BitmaskOr / keep-one fold laws | Rocq `Merge` (`Nat.lor` / `Nat.max`) |
 | **T-ALG (IntegerAdd c/d)** | wrapping-add group + checked-apply reject overflow/`<0` (S7) | Rocq `IntegerAdd.wadd_assoc`, `checked_apply_rejects_overflow`/`_negative` |
-| **IntegerAdd launder** | fail-loudly fix is launder-free + supply-cap bound | Rocq `IntegerAdd.launder_exhibit`/`checked_combine_sound`/`supply_cap_no_launder`; Z3 `integeradd_launder_bitvec.py`; Rust merger tests |
-| **capstone** | all of the above, axiom-free | Rocq `MainTheorem.{finalized_floor_merge_correct, finalized_floor_selection_correct, finalized_floor_arithmetic_correct}` |
+| **IntegerAdd launder** | fail-loudly at BOTH combine **and terminal apply**; the diff (`end−prev`) stays wrapping — it is the group inverse that recovers the true delta; supply-cap bound | Rocq `IntegerAdd.launder_exhibit`/`checked_combine_sound`/`supply_cap_no_launder`; Z3 `integeradd_launder_bitvec.py`; Rust `combine_mergeable_value` (combine, `checked_add`), `calculate_number_channel_merge` (terminal apply, `checked_add`+`≥0`); tests `cal_merged_result_rejects_integer_add_true_launder_wraps_nonnegative`, `merge_integer_add_overflow_is_rejected`, `diff_integer_add_recovers_wrapped_delta` |
+| **capstone** | all of the above, axiom-free | Rocq `MainTheorem.{finalized_floor_merge_correct, finalized_floor_selection_correct, finalized_floor_arithmetic_correct, finalized_floor_phase7_correct}` |
 
 ---
 
@@ -224,12 +238,13 @@ Rocq/Coq 9.1.1, Stdlib-only. Every theorem is checked with `Print Assumptions`
 |---|---|---|
 | `Foundation.v` | — | DAG, block numbers, main-parent spine, `walk_spine`, **T-TERM** |
 | `CliqueOracle.v` | Foundation | DAG ancestry, agreement, quorum `Finalized`, **L-ANC**, **L-SNAP** |
-| `Floor.v` | CliqueOracle | **T-CACHE** (`warm_eq_cold`, `frontier_cache_transparent`) |
+| `Floor.v` | CliqueOracle | **T-CACHE** (`warm_eq_cold`, `frontier_cache_transparent`) — takes `AdjDC` as a hypothesis |
+| `GuardBridge.v` | Foundation, CliqueOracle, Floor | **guard ⇒ AdjDC** (`chain_adj_AdjDC`): under a *constant* committee, finalization along the spine is downward-closed, so the Rust committee-constancy guard *derives* Floor.v's `AdjDC` premise (no longer assumed); `guard_constant_committee_transparent` (warm == cold with AdjDC derived); **T-FIN** (`upgo_finalized`: the warm up-walk's result is `Finalized`) |
 | `Merge.v` | — | semilattice fold: **T-DETMERGE/T-CONV** (`merge_*_perm`), **T-K1** (`merge_or_no_lost_bit`) |
 | `Recovery.v` | — | **T-NDA** (`apply_idem`, `no_double_apply`) |
-| `Selection.v` | Floor, CliqueOracle | the Case-A/B sound-base pick: **T-SOUND**, **T-LIN**, **T-PS**, **T-FIN**, **T-COMM**, **H3** (`select_sound`, `select_none_correct`, `case_a_common_ancestor`, `T_PS`, `select_finalized`, `committee_is_floor_bonds`, `scope_covers_band`) |
+| `Selection.v` | Floor, CliqueOracle | the Case-A/B sound-base pick: **T-SOUND**, **T-LIN**, **T-PS**, **T-FIN**, **T-COMM**, **H3**, **Case-B**, **maximality** (`select_sound`, `select_none_correct`, `case_a_common_ancestor`, `T_PS`, `select_finalized`, `committee_is_floor_bonds`, `scope_covers_band`, `case_b_compatible`, `select_highest_sound`) |
 | `IntegerAdd.v` | — | signed-64 wrapping: **T-ALG(c)** (`wadd_assoc`), **T-ALG(d)** (`checked_apply_rejects_*`), launder `launder_exhibit`/`checked_combine_sound`/`supply_cap_no_launder` |
-| `MainTheorem.v` | all | capstones `finalized_floor_merge_correct`, `finalized_floor_selection_correct`, `finalized_floor_arithmetic_correct` |
+| `MainTheorem.v` | all | capstones `finalized_floor_merge_correct`, `finalized_floor_selection_correct`, `finalized_floor_arithmetic_correct`, `finalized_floor_phase7_correct` |
 
 The finalization model is a faithful monotone abstraction of `ft_witnessed`:
 `Finalized c J b` := *some majority-weight sub-committee all agree on `b`* (a
@@ -326,26 +341,63 @@ decision — no fork.** The genuine residual is *precision*: for stakes `> 2²�
 cross-cutting to the whole clique oracle): decide finalization with exact integer
 arithmetic `2q·den ≥ S·(den+num)` for `θ = num/den`, removing the fuzz entirely.
 
-### IntegerAdd overflow-launder asymmetry — **FIXED** (Phase 6, W2/W3)
+### IntegerAdd overflow-launder — **FIXED at both chokepoints** (Phase 6 W3 combine; Phase 7 W7.1 terminal apply)
 
-`merging_logic.rs` `combine_mergeable_value` folded `IntegerAdd` diffs with
-`wrapping_add` (silent), while `conflict_set_merger.rs:762` applies to the base
-with `checked_add` (rejects on overflow/negative). A branch whose diffs wrapped in
-`combine` could launder an overflow past the `checked_add` guard with a wrong
-value (reachable only above `i64::MAX ≈ 9.2×10¹⁸`, so not for realistic supply).
+The IntegerAdd number-channel pipeline is a **wrapping group** `ℤ/2⁶⁴`, and it has
+exactly TWO points where an overflow must be caught — the *combine* (summing a
+branch's diffs) and the *terminal apply* (writing `base + Σdiffs` to consensus
+state). The per-deploy *diff* is deliberately **not** one of them.
 
-Resolution (user decision: **both** — fix *and* prove bounded):
-- **Fix (fail loudly):** `combine_mergeable_value` now returns `Option<i64>` —
+**The defect.** Two silent-`wrapping_add` sites could commit an overflowed value.
+These must be distinguished from the *rejection decision*: `conflict_set_merger.rs`
+`cal_merged_result` already used `checked_add` + `≥0` to decide *which* branches to
+drop — it is **not** a write. The two writes that still wrapped were
+`rspace++/…/merging_logic.rs` `combine_mergeable_value` (folds a branch's IntegerAdd
+diffs) and `rholang/…/rholang_merging_logic.rs` `calculate_number_channel_merge`
+(the terminal apply that actually PERSISTS the merged value via `dag_merger`). A sum
+that wraps to a **non-negative** value (e.g. `i64::MAX + i64::MAX + 2 ≡ 0 (mod 2⁶⁴)`)
+would sail through the `≥0` gate carrying a wrong value.
+**Reachability (corrected):** the terminal apply is a consensus-state write reached
+whenever `base + Σdiffs` crosses `i64::MAX` — e.g. near-`i64::MAX` genesis vault
+balances — and was a fragile *non-local* invariant (safe only because the combine
+gate happens to keep sums in range), not "unreachable for realistic supply".
+
+**Resolution** (user decision: **both** — fix *and* prove bounded):
+- **Fix — combine (Phase 6 W3):** `combine_mergeable_value` returns `Option<i64>`;
   IntegerAdd uses `checked_add` (`None` on overflow), propagated through
-  `EventLogIndex::combine` (Level A) and `cal_merged_result` (Level B, the
-  confirmed launder) so a wrapping combine **rejects the branch** instead of
-  laundering. BitmaskOr is unchanged. Regression tests at both levels
-  (`combine_rejects_integer_add_overflow`,
-  `cal_merged_result_rejects_integer_add_overflow_launder`).
-- **Formal:** Rocq `IntegerAdd.v` `launder_exhibit` confirms the defect is real,
-  `checked_combine_sound` proves the fix is launder-free, `supply_cap_no_launder`
-  proves the defense-in-depth bound; the Z3 BitVec-64 witness confirms the same
-  against exact machine `i64` (`bvadd = wrapping_add`).
+  `EventLogIndex::combine` (Level A) and `cal_merged_result` (Level B) so a wrapping
+  combine **rejects the branch**. BitmaskOr unchanged.
+- **Fix — terminal apply (Phase 7 W7.1):** `calculate_number_channel_merge` IntegerAdd
+  now uses `checked_add` + a `≥0` guard → `Err(HistoryError::MergeError)` on overflow
+  OR a negative balance, never `wrapping_add`. A defense-in-depth backstop (the
+  combine gate rejects overflow upstream, so this can only reject an already-wrong
+  value: for `base ≥ 0` any positive overflow wraps *negative*, caught by `≥0`). The
+  `Err` propagates through `dag_merger::merge → interpreter_util.rs`, aborting the
+  merge deterministically.
+- **Deliberately NOT changed — the diff `end − prev`:** `calculate_num_channel_diff`
+  stays `wrapping_sub`. It is the exact **group inverse** of the wrapping add that
+  language-level execution (`reduce.rs` `GInt +`, intended 64-bit semantics) used to
+  produce `end`, so it faithfully **recovers the deploy's true intended delta** even
+  when execution overflowed and stored a wrapped `end`. `end − prev` can legitimately
+  exceed `i64` range for such a deploy; a `checked_sub` there would hard-error the
+  LIVE per-block diff path and crash block processing on a deploy that must instead be
+  **gracefully rejected at merge time**. (The casper `…_got_overflow` integration test
+  refuted a checked-diff design; regression `diff_integer_add_recovers_wrapped_delta`
+  locks the invariant in.)
+- **Formal:** Rocq `IntegerAdd.v` — `launder_exhibit` confirms the defect is real,
+  `checked_combine_sound` proves the fix is launder-free (an accepted combine returns
+  the true sum, in range), `supply_cap_no_launder` proves the defense-in-depth bound
+  (while partial sums stay ≤ Cap, wrapping = checked); the Z3 BitVec-64 witness
+  `integeradd_launder_bitvec.py` confirms the same against exact machine `i64`
+  (`bvadd = wrapping_add`). In the model, `checked_apply` corresponds to the terminal
+  apply (Site 1) and `wadd`/`wsum` to the wrapping execution + the diff group.
+
+**Activation.** The reject-vs-wrap change at the combine + terminal apply activates
+*atomically* with the unreleased finalized-floor feature (the
+`dag_merger::merge → conflict_set_merger → calculate_number_channel_merge` chain is
+part of it) — no separate flag, no mixed-version window. The diff
+(`calculate_num_channel_diff`) is on the already-live execution/replay path but is
+left wrapping (above), so its behavior is unchanged and there is nothing to gate.
 
 ### A9 — the `f32` fault-tolerance ratio is deterministic (residual precision only)
 
@@ -366,16 +418,111 @@ TLA⁺/Z3/Sage/Wolfram fail-soft). Current result: **ALL GATES OK**.
 |---|---|
 | Rust build | `cargo check -p casper --all-targets` / `-p rspace_plus_plus` clean |
 | Convergence green-gate | 3/3 pass; 400+-block soak holds all fix invariants (~421 blocks) |
-| Rust unit/regression | merger overflow, Level-A/B launder, backstop predicate, floor warm==cold + cache-transparent, frontier round-trip — all pass |
-| Rocq | full dev builds `-j1`; **3 capstones axiom-free** (merge/selection/arithmetic) |
+| Rust unit/regression | combine + terminal-apply launder (`checked_add`), discriminating true-launder (sum wraps non-negative), wrapping-group diff recovery, guard-trip cold-fallback, Case-B dominating-tip, incompatible-fork `Err`, backstop predicate, floor warm==cold + cache-transparent, frontier round-trip — all pass |
+| Rocq | full dev builds `-j1`; **7 headline results axiom-free** — 4 capstones (merge / selection / arithmetic / phase7) + the 3 GuardBridge lemmas (guard⇒AdjDC `chain_adj_AdjDC`, `guard_constant_committee_transparent`, `upgo_finalized`) |
 | TLA⁺ | `SpecFixed` + `FinalizedFloorScan` pass; both pre-fix cfgs reproduce their counterexample |
 | Z3 | FT-algebra + BitVec-64 IntegerAdd launder (exists on wrap; checked-combine launder-free) |
 | Sage | FT-algebra identity + finalization-margin monotonicity |
 | Wolfram | ratchet instability (buggy unstable / fixed stable) — via the licensed MCP evaluator |
 
-**Coverage matrix (§4) has no ABSENT / assumed / prose-only row** — every catalog
-item maps to a Rocq/TLA⁺/Z3/Sage artifact or a Rust test.
+**Coverage matrix (§4).** After the Phase-7 strengthening every catalog item maps to
+a concrete Rocq/TLA⁺/Z3/Sage artifact or Rust test — including the two seams the
+earlier revision had *asserted* rather than mechanized (an honest correction: that
+"no assumed row" claim was premature). Both are now closed: the frontier-cache guard
+is **bridged in Rocq** (`GuardBridge.chain_adj_AdjDC` derives Floor.v's `AdjDC`
+premise from the committee-constancy predicate the Rust guard enforces), and T-FIN is
+**unconditional** (`GuardBridge.upgo_finalized`), no longer merely `Forall Fin cands →`.
+The one documented **residual** is A9's `f32` finalization *precision* (§6.A9) — not a
+fork (the decision is bit-identical across conforming nodes) but a cross-cutting
+exact-integer hardening tracked for the whole clique oracle, outside this feature.
 
 **Policy:** all of the above run **locally**. Do **not** add any Rocq / TLA⁺ / Z3 /
 Sage / Wolfram step to `.github/workflows/*` (an earlier formal-CI workflow was
 deliberately removed).
+
+---
+
+## 8. Diagrams
+
+Six PlantUML diagrams (sources + rendered SVGs in [`diagrams/`](./diagrams/); render
+with `plantuml -tsvg`, checked by `scripts/check-finalized-floor-ALL.sh` step
+**[6/6]**). Each is fully coloured with an in-diagram legend. Click any figure for the
+full-resolution SVG.
+
+### 8.1 Component correspondence — spec ↔ Rocq ↔ TLA⁺ ↔ Z3/Sage ↔ Rust
+
+[![Diagram 1 — every finalized-floor component (floor derivation, clique oracle, merge write-algebra, merge driver/backstop, recovery, LMDB cache) annotated with its spec concern, Rocq module, TLA⁺ model, Z3/Sage witness, and Rust file, with the axiom-free MainTheorem capstone on top](./diagrams/01-component-correspondence.svg)](./diagrams/01-component-correspondence.svg)
+
+*Provenance: the §4 catalog ↔ §5 artifact map, made visual.*
+
+### 8.2 Warm up-walk vs cold down-walk (T-CACHE)
+
+[![Diagram 2 — sequence: the warm incremental_frontier (read cached pivot → committee-constancy + L-SNAP guards → O(advance) up-walk) versus the cold top-down walk, with the L-ANC note that makes the two results identical](./diagrams/02-seq-warm-vs-cold-walk.svg)](./diagrams/02-seq-warm-vs-cold-walk.svg)
+
+*Provenance: §3.1; Rocq `Floor.frontier_cache_transparent` + `GuardBridge`.*
+
+### 8.3 The Δ-ratchet — buggy runaway vs fixed bounded
+
+[![Diagram 3 — the positive-feedback ratchet: the buggy Θ(Δ²·V) floor walk starves finalization and drives Δ across the 256 cliff into silent write-loss, versus the fixed amortized-O(1) up-walk that keeps Δ bounded with a deterministic over-cap Err](./diagrams/03-delta-ratchet.svg)](./diagrams/03-delta-ratchet.svg)
+
+*Provenance: §2; Wolfram `delta_ratchet.wl` (feedback slope > 1 buggy / 0 fixed).*
+
+### 8.4 IntegerAdd overflow-launder and the fail-loudly fix
+
+[![Diagram 4 — the launder (a combine that wraps to a non-negative value passes the ≥0 apply gate carrying a wrong value) versus the fix (checked_add at both the combine and the terminal apply; the per-deploy diff stays the wrapping group inverse that recovers the true delta)](./diagrams/04-integeradd-launder-and-fix.svg)](./diagrams/04-integeradd-launder-and-fix.svg)
+
+*Provenance: §6; Rocq `IntegerAdd.v`; Z3 `integeradd_launder_bitvec.py`.*
+
+### 8.5 Merge flow — floor derive → floor-bounded scan → Δ-backstop
+
+[![Diagram 5 — activity: compute_parents_post_state derives the floor, computes Δ, and either parks (propose) / rejects (validate) deterministically when over the cap, or runs the H3 floor-bounded scan and the checked merge fold to produce the post-state](./diagrams/05-activity-merge-flow.svg)](./diagrams/05-activity-merge-flow.svg)
+
+*Provenance: §3.2/§3.3; Rocq `Selection.scope_covers_band`; TLA⁺ `FinalizedFloorScan`.*
+
+### 8.6 Finalization downward-closure + the warm-path guards
+
+[![Diagram 6 — state: the warm up-walk advancing over a downward-closed finalized prefix (L-ANC), with the committee-constancy and L-SNAP guard transitions that divert to the cold-walk fallback yielding the identical frontier](./diagrams/06-state-finalization-guards.svg)](./diagrams/06-state-finalization-guards.svg)
+
+*Provenance: §3.1; Rocq `GuardBridge.chain_adj_AdjDC` (guard ⇒ AdjDC).*
+
+---
+
+## 9. References
+
+Foundational literature for the consensus, finality, arithmetic, and
+formal-methods claims in this dossier. DOIs are given where they exist and have
+been verified; whitepapers without a DOI carry a stable identifier.
+
+1. L. Lamport. **The Part-Time Parliament.** *ACM Trans. Comput. Syst.* 16(2),
+   1998. DOI [10.1145/279227.279229](https://doi.org/10.1145/279227.279229).
+   *(Quorum-based agreement — the majority-weight sub-committee underlying the
+   clique oracle's `Finalized`.)*
+2. M. Castro, B. Liskov. **Practical Byzantine Fault Tolerance and Proactive
+   Recovery.** *ACM Trans. Comput. Syst.* 20(4), 2002.
+   DOI [10.1145/571637.571640](https://doi.org/10.1145/571637.571640).
+   *(BFT quorum intersection — why a finalized cut is stable, §1, L-ANC.)*
+3. M. J. Fischer, N. A. Lynch, M. S. Paterson. **Impossibility of Distributed
+   Consensus with One Faulty Process.** *J. ACM* 32(2), 1985.
+   DOI [10.1145/3149.214121](https://doi.org/10.1145/3149.214121).
+   *(Why liveness is guarded, not assumed — §2's ratchet is a liveness failure.)*
+4. C. Dwork, N. Lynch, L. Stockmeyer. **Consensus in the Presence of Partial
+   Synchrony.** *J. ACM* 35(2), 1988.
+   DOI [10.1145/42282.42283](https://doi.org/10.1145/42282.42283).
+   *(Partial-synchrony model behind the propose/finalize progress assumption,
+   TLA⁺ `Liveness_Progress`.)*
+5. L. Lamport. **The Temporal Logic of Actions.** *ACM Trans. Program. Lang.
+   Syst.* 16(3), 1994.
+   DOI [10.1145/177492.177726](https://doi.org/10.1145/177492.177726).
+   *(TLA — the basis of the `FinalizedFloor.tla` / `FinalizedFloorScan.tla` models.)*
+6. Y. Bertot, P. Castéran. **Interactive Theorem Proving and Program Development:
+   Coq'Art.** Springer, 2004.
+   DOI [10.1007/978-3-662-07964-5](https://doi.org/10.1007/978-3-662-07964-5).
+   *(The Coq/Rocq calculus in which the axiom-free capstones are mechanized, §5.1.)*
+7. IEEE. **IEEE Standard for Floating-Point Arithmetic (IEEE 754-2019).** 2019.
+   DOI [10.1109/IEEESTD.2019.8766229](https://doi.org/10.1109/IEEESTD.2019.8766229).
+   *(Exactly-rounded, deterministic `f32` — the A9 determinism argument, §6.A9.)*
+8. V. Zamfir et al. **Introducing the Minimal CBC Casper Family of Consensus
+   Protocols.** CBC Casper whitepaper, 2018. (No DOI; stable source:
+   `https://github.com/cbc-casper/cbc-casper-paper`.)
+   *(Correct-by-construction safety oracle and the linear-finality fringe that
+   `floor(B)` specializes, §1.)*

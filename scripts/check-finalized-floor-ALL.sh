@@ -5,8 +5,10 @@
 # Runs every formal layer for the feature under a bounded memory envelope:
 #
 #   1. Rocq  (AUTHORITATIVE) — builds formal/rocq/finalized_floor and asserts the
-#      three capstones (finalized_floor_merge_correct / _selection_correct /
-#      _arithmetic_correct) are axiom-free. Any failure here fails the gate.
+#      four capstones (finalized_floor_{merge,selection,arithmetic,phase7}_correct)
+#      plus the three GuardBridge lemmas that derive Floor.v's AdjDC premise from the
+#      Rust committee-constancy guard (guard_constant_committee_transparent,
+#      upgo_finalized, chain_adj_AdjDC) are axiom-free. Any failure here fails the gate.
 #   2. TLA+  (fail-soft)     — TLC on the POST-fix MC_FinalizedFloor.cfg + the
 #      H3/T-PS MC_FinalizedFloorScan.cfg (both must pass) and the two PRE-fix cfgs
 #      (both must reproduce their counterexample). SKIPPED if no TLC jar.
@@ -18,6 +20,8 @@
 #      `mathpass` password is version-keyed, so a CLI kernel whose entry was
 #      issued for another major version reports "no valid password" even though
 #      the license itself is valid).
+#   6. Diagrams (fail-soft) — renders the dossier's PlantUML diagram set and asserts
+#      a populated SVG (closing </svg>) with no stderr. SKIPPED if plantuml is absent.
 #
 # POLICY: this script is for LOCAL use only. Do NOT wire it (or any Rocq/TLA+/
 # Wolfram step) into .github/workflows/* — an earlier formal-CI workflow was
@@ -51,30 +55,37 @@ capped() {
   fi
 }
 
-echo "== [1/5] Rocq (authoritative) =="
+echo "== [1/6] Rocq (authoritative) =="
 if command -v coqc >/dev/null 2>&1 || [[ -x "$HOME/.opam/default/bin/coqc" ]]; then
   # shellcheck disable=SC1090
   eval "$(opam env 2>/dev/null)" 2>/dev/null || true
   ( cd "$ROCQ_DIR" && coq_makefile -f _CoqProject -o Makefile ) >/dev/null 2>&1
   if capped make -C "$ROCQ_DIR" -j1 >/tmp/ff_rocq_build.log 2>&1; then
-    pass "Rocq build (Foundation, CliqueOracle, Floor, Merge, Recovery, MainTheorem)"
+    pass "Rocq build (Foundation, CliqueOracle, Floor, GuardBridge, Merge, Recovery, Selection, IntegerAdd, MainTheorem)"
     # Coq derives the module name from the file's basename, so it must be a valid
     # identifier (no dots) — use a fixed name inside a scratch dir.
     tmpd=$(mktemp -d)
     chk="$tmpd/GateCheck.v"
+    # The 4 capstones + the 3 Phase-7 GuardBridge lemmas that close the "Rocq
+    # assumes what Rust enforces" seam (guard⇒AdjDC bridge + frontier-is-finalized).
     cat > "$chk" <<'EOF'
 From FinalizedFloor Require Import MainTheorem.
+From FinalizedFloor Require Import GuardBridge.
 Print Assumptions finalized_floor_merge_correct.
 Print Assumptions finalized_floor_selection_correct.
 Print Assumptions finalized_floor_arithmetic_correct.
+Print Assumptions finalized_floor_phase7_correct.
+Print Assumptions guard_constant_committee_transparent.
+Print Assumptions upgo_finalized.
+Print Assumptions chain_adj_AdjDC.
 EOF
     out=$(coqc -Q "$ROCQ_DIR/theories" FinalizedFloor "$chk" 2>&1)
     rm -rf "$tmpd"
     n_closed=$(grep -c "Closed under the global context" <<<"$out")
-    if [[ "$n_closed" == "3" ]]; then
-      pass "all 3 capstones axiom-free (merge_correct, selection_correct, arithmetic_correct)"
+    if [[ "$n_closed" == "7" ]]; then
+      pass "all 7 headline results axiom-free (4 capstones + guard⇒AdjDC bridge, upgo_finalized, chain_adj_AdjDC)"
     else
-      fail "capstones NOT all axiom-free ($n_closed/3 Closed):"; echo "$out" | sed 's/^/      /'
+      fail "headline results NOT all axiom-free ($n_closed/7 Closed):"; echo "$out" | sed 's/^/      /'
     fi
   else
     fail "Rocq build failed (see /tmp/ff_rocq_build.log)"; tail -20 /tmp/ff_rocq_build.log | sed 's/^/      /'
@@ -83,7 +94,7 @@ else
   fail "coqc not found — Rocq is authoritative, cannot skip"
 fi
 
-echo "== [2/5] TLA+ (fail-soft) =="
+echo "== [2/6] TLA+ (fail-soft) =="
 TLC_JAR="${TLC_JAR:-/usr/share/java/tla2tools.jar}"
 if [[ -f "$TLC_JAR" ]] || command -v tlc >/dev/null 2>&1; then
   # shellcheck disable=SC1091
@@ -124,7 +135,7 @@ else
   skip "no TLC jar (\$TLC_JAR) or 'tlc' on PATH"
 fi
 
-echo "== [3/5] Z3 cross-witness (fail-soft) =="
+echo "== [3/6] Z3 cross-witness (fail-soft) =="
 if command -v python3 >/dev/null 2>&1 && python3 -c 'import z3' >/dev/null 2>&1; then
   if python3 "$REPO_ROOT/formal/z3/finalized_floor/ft_algebra_crosswitness.py" >/tmp/ff_z3_ft.log 2>&1; then
     pass "Z3 FT-algebra + L-ANC/L-SNAP monotonicity + merge determinism"
@@ -140,7 +151,7 @@ else
   skip "no python3 z3 module"
 fi
 
-echo "== [4/5] Sage cross-witness (fail-soft) =="
+echo "== [4/6] Sage cross-witness (fail-soft) =="
 if command -v sage >/dev/null 2>&1; then
   if sage "$REPO_ROOT/formal/sage/finalized_floor/ft_algebra.sage" >/tmp/ff_sage.log 2>&1 \
        && grep -q "ALL PASS" /tmp/ff_sage.log; then
@@ -152,7 +163,7 @@ else
   skip "no sage on PATH"
 fi
 
-echo "== [5/5] Wolfram (fail-soft) =="
+echo "== [5/6] Wolfram (fail-soft) =="
 # Prefer wolframscript (WolframID/cloud licensing), then the classic `math`
 # kernel (reads $UserBaseDirectory/Licensing/mathpass), then `wolfram`.
 WL_BIN=""; WL_RUN=()
@@ -178,6 +189,32 @@ if [[ -n "$WL_BIN" && -f "$WL_DIR/delta_ratchet.wl" ]]; then
   fi
 else
   skip "no wolframscript/math/wolfram kernel on PATH"
+fi
+
+echo "== [6/6] PlantUML diagrams (fail-soft) =="
+# The dossier's diagram set must render cleanly: a populated SVG (closing </svg>),
+# no stderr from plantuml. Mirrors the slashing diagram convention. Doc-only, so
+# fail-soft; SKIPPED if plantuml is absent or no .puml sources exist yet.
+DIAG_DIR="$REPO_ROOT/docs/theory/finalized-floor/diagrams"
+if command -v plantuml >/dev/null 2>&1; then
+  n_puml=$(find "$DIAG_DIR" -name '*.puml' 2>/dev/null | wc -l)
+  if [[ "$n_puml" -gt 0 ]]; then
+    diag_ok=1
+    for puml in "$DIAG_DIR"/*.puml; do
+      svg="${puml%.puml}.svg"
+      derr=$(plantuml -tsvg "$puml" 2>&1)
+      if [[ -n "$derr" ]] || [[ ! -s "$svg" ]] || ! grep -q "</svg>" "$svg" 2>/dev/null; then
+        fail "diagram $(basename "$puml") did not render clean"
+        [[ -n "$derr" ]] && echo "$derr" | sed 's/^/      /'
+        diag_ok=0
+      fi
+    done
+    [[ "$diag_ok" == "1" ]] && pass "all $n_puml PlantUML diagrams render clean (populated SVG, no stderr)"
+  else
+    skip "no .puml sources in docs/theory/finalized-floor/diagrams"
+  fi
+else
+  skip "no plantuml on PATH"
 fi
 
 if [[ "${RUN_SOAK:-0}" == "1" ]]; then
