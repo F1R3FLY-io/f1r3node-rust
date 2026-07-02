@@ -789,3 +789,114 @@ mod tests {
         assert!(result.is_err(), "MergeType mismatch on the same channel must produce Err",);
     }
 }
+
+// === P2: user/system EventLogIndex split hides no conflict =====================
+//
+// Rust modality companion to
+// formal/rocq/merge_algebra/theories/EventLogSplit.v. `DeployChainIndex::new`
+// folds deploys into a user bucket and a system bucket, then
+//     event_log_index = combine(user_event_log_index, system_event_log_index).
+// Because `EventLogIndex::combine` is a field-wise set-union semilattice
+// (commutative, associative, idempotent), combine(fold user, fold system) equals
+// fold(all), so conflict detection on the split-recombined index is IDENTICAL to
+// detection on the monolithic (single-bucket) index. Rocq: combine_split_eq /
+// conflicts_split_complete / event_log_split_sound.
+#[cfg(test)]
+mod merge_algebra_p2_tests {
+    use std::collections::HashSet;
+
+    use proptest::prelude::*;
+    use shared::rust::hashable_set::HashableSet;
+
+    use super::EventLogIndex;
+    use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+    use crate::rspace::merger::merging_logic::{are_conflicting, conflicts};
+    use crate::rspace::trace::event::{Consume, Produce};
+
+    fn mk_hash(byte: u8) -> Blake2b256Hash { Blake2b256Hash::from_bytes(vec![byte; 32]) }
+    fn mk_produce(id: u8) -> Produce { Produce::new(mk_hash(id), mk_hash(id), false) }
+    fn mk_consume(id: u8) -> Consume {
+        Consume { channel_hashes: vec![mk_hash(id)], hash: mk_hash(id), persistent: false }
+    }
+
+    // a deploy's conflict-relevant EventLogIndex fields (no number channels, so
+    // `combine` never errors -- number-channel folding is covered by
+    // ChannelNetting.v / IntegerAdd.v, not this split lemma).
+    fn mk_index(pc: [bool; 4], cp: [bool; 4], touch: bool) -> EventLogIndex {
+        let mut e = EventLogIndex::empty();
+        let mut pcs: HashSet<Produce> = HashSet::new();
+        let mut cps: HashSet<Consume> = HashSet::new();
+        for i in 0..4 {
+            if pc[i] {
+                pcs.insert(mk_produce(i as u8));
+            }
+            if cp[i] {
+                cps.insert(mk_consume(i as u8));
+            }
+        }
+        e.produces_consumed = HashableSet(pcs);
+        e.consumes_produced = HashableSet(cps);
+        if touch {
+            let mut t: HashSet<Produce> = HashSet::new();
+            t.insert(mk_produce(9));
+            e.produces_touching_base_joins = HashableSet(t);
+        }
+        e
+    }
+
+    fn fold_idx(items: &[EventLogIndex]) -> EventLogIndex {
+        items.iter().fold(EventLogIndex::empty(), |acc, e| {
+            EventLogIndex::combine(&acc, e).expect("combine must not error without number channels")
+        })
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(300))]
+
+        #[test]
+        fn split_then_recombine_equals_monolithic_for_conflicts(
+            deploys in prop::collection::vec(
+                (any::<bool>(), any::<[bool; 4]>(), any::<[bool; 4]>(), any::<bool>()),
+                0..7),
+            probe_spec in (any::<[bool; 4]>(), any::<[bool; 4]>(), any::<bool>()),
+        ) {
+            let indices: Vec<(bool, EventLogIndex)> = deploys
+                .into_iter()
+                .map(|(is_system, pc, cp, touch)| (is_system, mk_index(pc, cp, touch)))
+                .collect();
+
+            let user: Vec<EventLogIndex> =
+                indices.iter().filter(|(s, _)| !*s).map(|(_, e)| e.clone()).collect();
+            let system: Vec<EventLogIndex> =
+                indices.iter().filter(|(s, _)| *s).map(|(_, e)| e.clone()).collect();
+            let all: Vec<EventLogIndex> =
+                indices.iter().map(|(_, e)| e.clone()).collect();
+
+            // the code's path: fold each bucket, then combine the two buckets.
+            let combined = EventLogIndex::combine(&fold_idx(&user), &fold_idx(&system))
+                .expect("combine of the two buckets must not error");
+            // the monolithic path: fold ALL deploys into one index.
+            let monolithic = fold_idx(&all);
+
+            // combine(fold user, fold system) == fold all (the split hides nothing).
+            prop_assert_eq!(
+                &combined, &monolithic,
+                "combine(fold user, fold system) must equal fold(all)"
+            );
+
+            // hence conflict detection agrees against any probe index.
+            let (ppc, pcp, ptouch) = probe_spec;
+            let probe = mk_index(ppc, pcp, ptouch);
+            prop_assert_eq!(
+                conflicts(&combined, &probe).0.len(),
+                conflicts(&monolithic, &probe).0.len(),
+                "conflicts(split) must equal conflicts(monolithic)"
+            );
+            prop_assert_eq!(
+                are_conflicting(&combined, &probe),
+                are_conflicting(&monolithic, &probe),
+                "are_conflicting(split) must equal are_conflicting(monolithic)"
+            );
+        }
+    }
+}

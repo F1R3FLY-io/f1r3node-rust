@@ -2161,3 +2161,89 @@ mod tests {
         );
     }
 }
+
+// === GAP-3: soundness of removing the single-value-cell conflict predicate =====
+//
+// Rust modality companion to
+// formal/rocq/merge_algebra/theories/ConflictSoundness.v. The REMOVED predicate
+// flagged a conflict when two branches both consume-then-produce on a shared
+// single-value cell (a write-write). We re-implement it as a test ORACLE and
+// assert it is SUBSUMED by the RETAINED double-consume / same-IO-event race
+// detector (`conflicts` Check #1), except on number/foldable channels (which are
+// intrinsically mergeable): for random branch pairs,
+//     removed_oracle(a, b)  =>  !conflicts(a, b).is_empty() || is_number_channel(a, b).
+//
+// Model: a branch's `produces_consumed` holds the base data destroyed in COMM
+// (the "consume" of a single-value-cell update); `produces_mergeable` marks the
+// number-channel (mergeable) base data. The retained produce-race fires on
+// (produces_consumed ∩) minus (produces_mergeable ∩), non-persistent -- so a
+// shared non-persistent consumed base that is NOT both-mergeable is caught by
+// `conflicts`, and one that IS both-mergeable is a number channel (exempt).
+#[cfg(test)]
+mod merge_algebra_gap3_tests {
+    use std::collections::HashSet;
+
+    use proptest::prelude::*;
+    use shared::rust::hashable_set::HashableSet;
+
+    use super::conflicts;
+    use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+    use crate::rspace::merger::event_log_index::EventLogIndex;
+    use crate::rspace::trace::event::Produce;
+
+    fn mk_hash(byte: u8) -> Blake2b256Hash { Blake2b256Hash::from_bytes(vec![byte; 32]) }
+
+    // base datum `id`: identity is its `hash` (Produce::eq is hash-only), so the
+    // same `id` in two branches is the SAME shared base produce.
+    fn mk_produce(id: u8, persistent: bool) -> Produce {
+        Produce::new(mk_hash(id), mk_hash(id), persistent)
+    }
+
+    // spec[i] = (in_a_pc, in_b_pc, in_a_pm, in_b_pm, persistent) for base datum i.
+    fn build(specs: &[[bool; 5]], pick_pc: usize, pick_pm: usize) -> EventLogIndex {
+        let mut e = EventLogIndex::empty();
+        let mut pc: HashSet<Produce> = HashSet::new();
+        let mut pm: HashSet<Produce> = HashSet::new();
+        for (i, s) in specs.iter().enumerate() {
+            let p = mk_produce(i as u8, s[4]);
+            if s[pick_pc] {
+                pc.insert(p.clone());
+            }
+            if s[pick_pm] {
+                pm.insert(p);
+            }
+        }
+        e.produces_consumed = HashableSet(pc);
+        e.produces_mergeable = HashableSet(pm);
+        e
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(400))]
+
+        #[test]
+        fn removed_predicate_is_subsumed_by_retained_or_number_channel(
+            specs in prop::collection::vec(any::<[bool; 5]>(), 1..7),
+        ) {
+            let a = build(&specs, 0, 2); // in_a_pc = s[0], in_a_pm = s[2]
+            let b = build(&specs, 1, 3); // in_b_pc = s[1], in_b_pm = s[3]
+
+            // the REMOVED oracle: some shared non-persistent base datum was
+            // consumed in BOTH branches (both did the consume-then-produce).
+            let removed_oracle =
+                specs.iter().any(|s| s[0] && s[1] && !s[4]);
+            // number-channel exemption: such a shared datum is both-mergeable.
+            let is_number_channel =
+                specs.iter().any(|s| s[0] && s[1] && !s[4] && s[2] && s[3]);
+
+            let retained_fires = !conflicts(&a, &b).0.is_empty();
+
+            prop_assert!(
+                !removed_oracle || retained_fires || is_number_channel,
+                "removed single-value-cell predicate must be subsumed by the retained \
+                 conflict detector or be a number channel (specs={:?})",
+                specs
+            );
+        }
+    }
+}
