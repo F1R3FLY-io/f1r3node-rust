@@ -8,5 +8,9 @@ theories/Merge.vo theories/Merge.glob theories/Merge.v.beautified theories/Merge
 theories/Merge.vos theories/Merge.vok theories/Merge.required_vos: theories/Merge.v /home/dylon/.opam/default/lib/rocq-runtime/rocqworker
 theories/Recovery.vo theories/Recovery.glob theories/Recovery.v.beautified theories/Recovery.required_vo: theories/Recovery.v /home/dylon/.opam/default/lib/rocq-runtime/rocqworker
 theories/Recovery.vos theories/Recovery.vok theories/Recovery.required_vos: theories/Recovery.v /home/dylon/.opam/default/lib/rocq-runtime/rocqworker
+theories/Selection.vo theories/Selection.glob theories/Selection.v.beautified theories/Selection.required_vo: theories/Selection.v theories/CliqueOracle.vo theories/Foundation.vo /home/dylon/.opam/default/lib/rocq-runtime/rocqworker
+theories/Selection.vos theories/Selection.vok theories/Selection.required_vos: theories/Selection.v theories/CliqueOracle.vos theories/Foundation.vos /home/dylon/.opam/default/lib/rocq-runtime/rocqworker
+theories/IntegerAdd.vo theories/IntegerAdd.glob theories/IntegerAdd.v.beautified theories/IntegerAdd.required_vo: theories/IntegerAdd.v /home/dylon/.opam/default/lib/rocq-runtime/rocqworker
+theories/IntegerAdd.vos theories/IntegerAdd.vok theories/IntegerAdd.required_vos: theories/IntegerAdd.v /home/dylon/.opam/default/lib/rocq-runtime/rocqworker
 theories/MainTheorem.vo theories/MainTheorem.glob theories/MainTheorem.v.beautified theories/MainTheorem.required_vo: theories/MainTheorem.v theories/CliqueOracle.vo theories/Floor.vo theories/Foundation.vo theories/Merge.vo theories/Recovery.vo /home/dylon/.opam/default/lib/rocq-runtime/rocqworker
 theories/MainTheorem.vos theories/MainTheorem.vok theories/MainTheorem.required_vos: theories/MainTheorem.v theories/CliqueOracle.vos theories/Floor.vos theories/Foundation.vos theories/Merge.vos theories/Recovery.vos /home/dylon/.opam/default/lib/rocq-runtime/rocqworker

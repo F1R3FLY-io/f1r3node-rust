@@ -32,4 +32,6 @@ theories/CliqueOracle.v
 theories/Floor.v
 theories/Merge.v
 theories/Recovery.v
+theories/Selection.v
+theories/IntegerAdd.v
 theories/MainTheorem.v
