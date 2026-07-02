@@ -3017,15 +3017,28 @@ checked"*. The gate is **authoritative on Rocq** (it auto-generates a
 `Print Assumptions` for *every* `main_*` capstone in `MainTheorem.v` and asserts
 the count of *"Closed under the global context"* equals the capstone count — 70
 at this writing — so a newly-added theorem that is not axiom-free fails the gate),
-and **fail-soft on TLA⁺**: the fast concurrent-tracker, slash-flow, and 1v
-detector-liveness models (the last exercising all detector safety invariants plus
-`Live_DetectionComplete`) must pass, the pre-fix tracker cfg must reproduce its
-race counterexample, and the heavy exhaustive 2v detector-safety run (§10.5,
-§12.4) is budgeted (`SL_DETECTOR_SAFETY_BUDGET`, default 300 s ⇒ skip-with-note;
-`0` ⇒ run to completion) since Rocq is authoritative for detection soundness
-(T-1/T-6) and that run is defense-in-depth. POLICY: this gate is **local-only** —
-it is never wired into `.github/workflows/*` (an earlier formal-CI workflow was
-deliberately removed).
+and **fail-soft on TLA⁺**: the fast concurrent-tracker, slash-flow, 1v
+detector-liveness (exercising all detector safety invariants plus
+`Live_DetectionComplete`), and — added in the P0–P3 coverage sweep — the **eager
+liveness-as-safety** model (**C8**, `MC_EquivocationDetectorEager.cfg`: folds
+liveness into the `Inv_LivenessAsSafety` invariant and quotients the 2v space by
+validator symmetry, exhausting fast at 52 650 states) must pass, the pre-fix
+tracker cfg must reproduce its race counterexample, and the heavy exhaustive 2v
+detector-safety run (§10.5, §12.4) is budgeted (`SL_DETECTOR_SAFETY_BUDGET`,
+default 300 s ⇒ skip-with-note; `0` ⇒ run to completion) since Rocq is
+authoritative for detection soundness (T-1/T-6) and that run is defense-in-depth.
+A further **fail-soft Apalache tier** (**C9**) proves `IndInv = TypeOK ∧
+Inv_DetectionSound ∧ Inv_TaxonomyCorrect ∧ Inv_NeglectedHasDetectableView ∧
+Inv_RecordHasWitness ∧ Inv_LivenessAsSafety` **INDUCTIVE** (BASE `Init ⊨ IndInv` +
+STEP `Next` preserves `IndInv`) on `EquivocationDetectorEager_apalache.tla` at
+3v/3s/3b — **horizon-free** (all reachable states at any trajectory length),
+strictly beyond the bounded TLC 2v/2s/2b, and certifying a 3-validator bound where
+explicit TLC enumeration blows up; non-vacuous (breaking eager atomicity ⇒ STEP
+counterexample-to-induction). The `Canonical*`/`DetectorTraversal*` invariants are
+excluded from `IndInv` (state-independent pure-math over `RECURSIVE` helpers,
+unsupported by Apalache; TLC continues to validate them). SKIPs fail-soft if no
+`apalache-mc` on PATH. POLICY: this gate is **local-only** — it is never wired into
+`.github/workflows/*` (an earlier formal-CI workflow was deliberately removed).
 
 The complete theorem set (after all eleven audit-gap closures plus the
 sixteen-bug-fix completion in §9.10..§9.16) covers:

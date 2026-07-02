@@ -474,11 +474,14 @@ TLA⁺/Z3/Sage/Wolfram fail-soft). Current result: **ALL GATES OK**.
 | Rust build | `cargo check -p casper --all-targets` / `-p rspace_plus_plus` clean |
 | Convergence green-gate | 3/3 pass; 400+-block soak holds all fix invariants (~421 blocks) |
 | Rust unit/regression | combine + terminal-apply launder (`checked_add`), discriminating true-launder (sum wraps non-negative), wrapping-group diff recovery, guard-trip cold-fallback, Case-B dominating-tip, incompatible-fork `Err`, backstop predicate, floor warm==cold + cache-transparent, frontier round-trip — all pass |
-| Rocq | full dev builds `-j1`; **8 headline results axiom-free** — 5 capstones (merge / selection / arithmetic / phase7 / **A9 ftexact**) + the 3 GuardBridge lemmas (guard⇒AdjDC `chain_adj_AdjDC`, `guard_constant_committee_transparent`, `upgo_finalized`) |
+| Rocq | full dev builds `-j1`; **12 headline results axiom-free** — 6 capstones (merge / selection / arithmetic / phase7 / **A9 ftexact** / **G2 ftprovenance**) + the 3 GuardBridge lemmas (guard⇒AdjDC `chain_adj_AdjDC`, `guard_constant_committee_transparent`, `upgo_finalized`) + the C1/C5 results (`finalized_floor_thetaexact_advance_correct`, `Finalized_ft_refines_Finalized`, `snap_extends_snap_advances`) |
+| Rocq kernel (coqchk) | **independent kernel re-check** of `FinalizedFloor.MainTheorem` + all deps ⇒ "Modules were successfully checked" (C3) |
 | TLA⁺ | `SpecFixed` + `FinalizedFloorScan` pass; both pre-fix cfgs reproduce their counterexample |
-| Z3 | FT-algebra + BitVec-64 IntegerAdd launder (exists on wrap; checked-combine launder-free) |
+| Z3 | FT-algebra + BitVec-64 IntegerAdd launder (exists on wrap; checked-combine launder-free) + **G2 `ft_ppm_roundtrip`** (FPA Float32/64 RNE: `to_ppm` monotone/range, ½ppm round-trip, exact-decision display-invariance) |
 | Sage | FT-algebra identity + finalization-margin monotonicity |
 | Wolfram | ratchet instability (buggy unstable / fixed stable) — via the licensed MCP evaluator |
+| Loom (concurrency) | **C10** `loom_frontier_floor_cache` — the write-once `floor_index`/`frontier_index` memoization observes no torn/regressed value on any interleaving (the concurrent realization of the sequentially-proved T-CACHE; real guarantee = idempotence + LMDB single-key MVCC) |
+| Rust proptest | **G2** `prop_ft_ppm_provenance` (`reconcile==onchain`, real `to_ppm` round-trip/range, genesis embed↔read) + **P1** `prop_bonds_from_floor` (proposer-derive ≡ validator-derive committee PLAY≡REPLAY; accept-rule = set-equality) — 11 pass |
 
 **Coverage matrix (§4).** After the Phase-7 strengthening every catalog item maps to
 a concrete Rocq/TLA⁺/Z3/Sage artifact or Rust test — including the two seams the
@@ -490,6 +493,13 @@ premise from the committee-constancy predicate the Rust guard enforces), and T-F
 The one documented **residual** is A9's `f32` finalization *precision* (§6.A9) — not a
 fork (the decision is bit-identical across conforming nodes) but a cross-cutting
 exact-integer hardening tracked for the whole clique oracle, outside this feature.
+**G2 (θ_ppm provenance)** additionally closed a *latent* overflow-envelope gap: the A9
+`ft_exact_no_overflow` bound assumed `0 ≤ num ≤ den`, but the node's own
+`ft_decides_exact` validates `num ∈ [−den, den]` (documented negative-θ "finalize on
+any majority clique" sentinels); the hypothesis is now widened to `[−den, den]`
+(i128 envelope still holds), and `FtProvenance.reconcile_is_onchain` proves the θ_ppm a
+node finalizes with is always the *on-chain* value (local config unconditionally
+overridden), so it cannot fork the exact decision.
 
 **Policy:** all of the above run **locally**. Do **not** add any Rocq / TLA⁺ / Z3 /
 Sage / Wolfram step to `.github/workflows/*` (an earlier formal-CI workflow was

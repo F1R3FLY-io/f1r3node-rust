@@ -296,6 +296,8 @@ TLA⁺/Z3/Sage/Wolfram fail-soft; PlantUML render check). Target result: **ALL G
 | Rocq | full dev builds `-j1`; **12 headline results axiom-free** — 4 capstones + `validation_implies_wf_dag`, `honest_forkchoice_parents_validate`, `sort_total_order`, `reduce_converges`, `lca_is_lowest`, and the P0–P3 derivations `lcua_many_is_max` (C2), `descends_from_root` + `common_ancestor_root` (C4) |
 | Rocq kernel (coqchk) | **independent kernel re-check** of `ForkChoice.MainTheorem` + all deps ⇒ "Modules were successfully checked" (C3 — the trust root under the `Print Assumptions` claim) |
 | TLA⁺ | `MC_ForkChoice.cfg` + `MC_ForkChoiceScan.cfg` pass; both bug cfgs reproduce their counterexample |
+| Apalache (unbounded) | **`IndInv = TypeOK ∧ Inv_Deterministic ∧ Inv_HeaviestSubtree` proved INDUCTIVE** (BASE `Init ⊨ IndInv` + STEP `Next` preserves `IndInv`) on `ForkChoice_apalache.tla` — over **all of ℤ scores** (native SMT `Int`, strictly beyond TLC's `MaxScore=2`); non-vacuous (`TotalTieBreak=FALSE` ⇒ STEP CTI = the S1 fork). Horizon-free: holds on every reachable state at any trajectory length (C9). Fail-soft. |
+| Rust proptest | **C12** `prop_filter_deep_parents` (4/4): the concrete `Estimator::filter_deep_parents` conforms to `GuardBridge.within_depth`/`prop_filter` — soundness + main-parent-retention + completeness + `retained == {main} ∪ prop_filter(secondaries)` (binds the abstract bridge to the real filter) |
 | Z3 | tie-break total order (5/5) + score supply-cap BitVec (4/4) |
 | Sage | fork-choice algebra ⇒ `ALL PASS` |
 | Wolfram | GHOST heaviest-subtree / termination / LCA-bound — via the licensed MCP evaluator |
