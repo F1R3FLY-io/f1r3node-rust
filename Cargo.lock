@@ -766,6 +766,7 @@ dependencies = [
  "bincode",
  "block-storage",
  "byteorder",
+ "casper",
  "comm",
  "crypto",
  "dashmap",
