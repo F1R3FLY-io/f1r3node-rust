@@ -143,6 +143,12 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
         // Scala equivalent: val casperShardConf = CasperShardConf(...)
         let casper_shard_conf = CasperShardConf {
             fault_tolerance_threshold: conf.fault_tolerance_threshold,
+            // Default the exact ppm from the f32 config; when this node joins an
+            // existing chain, `initializing` overwrites it with the on-chain ppm
+            // (the single exact conversion point).
+            fault_tolerance_threshold_ppm: ProofOfStake::fault_tolerance_threshold_to_ppm(
+                conf.fault_tolerance_threshold,
+            ),
             shard_name: conf.shard_name.clone(),
             parent_shard_id: conf.parent_shard_id.clone(),
             finalization_rate: conf.finalization_rate,

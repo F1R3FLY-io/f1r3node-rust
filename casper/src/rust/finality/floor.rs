@@ -16,7 +16,7 @@ use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::validator::Validator;
 
 use crate::rust::errors::CasperError;
-use crate::rust::safety::clique_oracle::CliqueOracle;
+use crate::rust::safety::clique_oracle::{CliqueOracle, FtThreshold};
 
 /// The finalized cut a block builds on. Under linear finality this is a single
 /// block: the highest witnessed-finalized ancestor across the block's parents.
@@ -60,14 +60,14 @@ pub async fn finalized_floor(
     dag: &KeyValueDagRepresentation,
     parents: &[BlockHash],
     latest_messages: &BTreeMap<Validator, BlockHash>,
-    ft_threshold: f32,
+    ftt: FtThreshold,
 ) -> Result<Floor, CasperError> {
     let mut inherited: Vec<Floor> = Vec::with_capacity(parents.len());
     for parent in parents {
-        inherited.push(floor_of_block(dag, parent, ft_threshold).await?);
+        inherited.push(floor_of_block(dag, parent, ftt).await?);
     }
     let (floor, _main_parent_frontier) =
-        derive_floor(dag, parents, latest_messages, ft_threshold, inherited).await?;
+        derive_floor(dag, parents, latest_messages, ftt, inherited).await?;
     Ok(floor)
 }
 
@@ -85,7 +85,7 @@ async fn derive_floor(
     dag: &KeyValueDagRepresentation,
     parents: &[BlockHash],
     latest_messages: &BTreeMap<Validator, BlockHash>,
-    ft_threshold: f32,
+    ftt: FtThreshold,
     inherited: Vec<Floor>,
 ) -> Result<(Floor, Floor), CasperError> {
     if parents.is_empty() {
@@ -99,7 +99,7 @@ async fn derive_floor(
     let inherited_max = candidates.iter().map(|f| f.block_number).max();
     let mut frontiers: Vec<Floor> = Vec::with_capacity(parents.len());
     for parent in parents {
-        frontiers.push(parent_frontier(dag, parent, latest_messages, ft_threshold).await?);
+        frontiers.push(parent_frontier(dag, parent, latest_messages, ftt).await?);
     }
     // parents[0] is the main parent; its frontier over this snapshot is F(B).
     let main_parent_frontier = frontiers[0].clone();
@@ -229,7 +229,7 @@ async fn derive_floor(
 pub async fn floor_of_block(
     dag: &KeyValueDagRepresentation,
     block_hash: &BlockHash,
-    ft_threshold: f32,
+    ftt: FtThreshold,
 ) -> Result<Floor, CasperError> {
     let mut stack: Vec<BlockHash> = vec![block_hash.clone()];
     while let Some(current) = stack.last().cloned() {
@@ -275,7 +275,7 @@ pub async fn floor_of_block(
             dag,
             &metadata.parents,
             &latest_messages,
-            ft_threshold,
+            ftt,
             inherited,
         )
         .await?;
@@ -331,11 +331,11 @@ async fn parent_frontier(
     dag: &KeyValueDagRepresentation,
     parent: &BlockHash,
     latest_messages: &BTreeMap<Validator, BlockHash>,
-    ft_threshold: f32,
+    ftt: FtThreshold,
 ) -> Result<Floor, CasperError> {
     if let Some(pivot_hash) = dag.get_cached_frontier(parent)? {
         if let Some(frontier) =
-            incremental_frontier(dag, parent, &pivot_hash, latest_messages, ft_threshold).await?
+            incremental_frontier(dag, parent, &pivot_hash, latest_messages, ftt).await?
         {
             metrics::counter!(
                 crate::rust::metrics_constants::FLOOR_FRONTIER_CACHE_HIT_METRIC,
@@ -350,7 +350,7 @@ async fn parent_frontier(
         "source" => crate::rust::metrics_constants::CASPER_METRICS_SOURCE
     )
     .increment(1);
-    cold_parent_frontier(dag, parent, latest_messages, ft_threshold).await
+    cold_parent_frontier(dag, parent, latest_messages, ftt).await
 }
 
 /// Warm frontier: resolve `parent`'s frontier over the (larger) `latest_messages`
@@ -363,7 +363,7 @@ async fn incremental_frontier(
     parent: &BlockHash,
     pivot_hash: &BlockHash,
     latest_messages: &BTreeMap<Validator, BlockHash>,
-    ft_threshold: f32,
+    ftt: FtThreshold,
 ) -> Result<Option<Floor>, CasperError> {
     let pivot_number = dag.block_number_unsafe(pivot_hash)?;
 
@@ -403,8 +403,11 @@ async fn incremental_frontier(
     // only raise the fault tolerance — but a bonding event in the band can break
     // that monotonicity, so we verify rather than assume.
     let mut oracle_calls: u64 = 1;
-    let pivot_ft = CliqueOracle::ft_witnessed(pivot_hash, dag, latest_messages).await?;
-    if pivot_ft < ft_threshold {
+    // A9 exact ≥-semantics (floor path): the pivot must still be witnessed-
+    // finalized over the larger snapshot. `strict=false` ⇒ (2q−S)/S ≥ θ.
+    let pivot_finalized =
+        CliqueOracle::ft_witnessed_exact(pivot_hash, dag, latest_messages, ftt, false).await?;
+    if !pivot_finalized {
         metrics::counter!(
             crate::rust::metrics_constants::FLOOR_INCREMENTAL_GUARD_FALLBACK_METRIC,
             "source" => crate::rust::metrics_constants::CASPER_METRICS_SOURCE
@@ -421,9 +424,12 @@ async fn incremental_frontier(
     let mut best_number = pivot_number;
     let mut advance: u64 = 0;
     for candidate in spine[..spine.len() - 1].iter().rev() {
-        let ft = CliqueOracle::ft_witnessed(candidate, dag, latest_messages).await?;
+        // A9 exact ≥-semantics (floor path): advance while each block stays
+        // witnessed-finalized over the snapshot.
+        let finalized =
+            CliqueOracle::ft_witnessed_exact(candidate, dag, latest_messages, ftt, false).await?;
         oracle_calls += 1;
-        if ft >= ft_threshold {
+        if finalized {
             best_hash = candidate.clone();
             best_number = dag.block_number_unsafe(candidate)?;
             advance += 1;
@@ -457,21 +463,22 @@ async fn cold_parent_frontier(
     dag: &KeyValueDagRepresentation,
     parent: &BlockHash,
     latest_messages: &BTreeMap<Validator, BlockHash>,
-    ft_threshold: f32,
+    ftt: FtThreshold,
 ) -> Result<Floor, CasperError> {
     let mut current = parent.clone();
     let mut walked: usize = 0;
     let mut oracle_calls: u64 = 0;
     loop {
-        let ft = CliqueOracle::ft_witnessed(&current, dag, latest_messages).await?;
+        // A9 exact ≥-semantics (floor path): first witnessed-finalized block down
+        // the main-parent chain is the frontier.
+        let finalized =
+            CliqueOracle::ft_witnessed_exact(&current, dag, latest_messages, ftt, false).await?;
         oracle_calls += 1;
-        let finalized = ft >= ft_threshold;
         tracing::debug!(
             target: "f1r3.trace.floor_walk",
             parent = %PrettyPrinter::build_string_bytes(parent),
             current = %PrettyPrinter::build_string_bytes(&current),
             current_number = dag.block_number_unsafe(&current)?,
-            ft,
             finalized,
             walked,
             "floor walk step"
@@ -640,7 +647,7 @@ mod frontier_determinism_tests {
         let (dag, v, (_g, b1, b2, b3)) = mk_dag();
         let mut j = BTreeMap::new();
         j.insert(v, b2.clone());
-        let thr = 0.1f32;
+        let thr = FtThreshold::from_f32_lossy(0.1);
 
         // Cold: top-down from b3 → first finalized is b2.
         let cold = cold_parent_frontier(&dag, &b3, &j, thr).await.unwrap();
@@ -665,7 +672,7 @@ mod frontier_determinism_tests {
         let (dag, v, (_g, _b1, b2, b3)) = mk_dag();
         let mut j = BTreeMap::new();
         j.insert(v, b2.clone());
-        let thr = 0.1f32;
+        let thr = FtThreshold::from_f32_lossy(0.1);
 
         // First call populates the floor/frontier caches (cold internally);
         // the second reads them (warm). The derived floor must be identical, and
@@ -766,7 +773,7 @@ mod frontier_determinism_tests {
         ]);
         let mut j = BTreeMap::new();
         j.insert(v.clone(), b2.clone());
-        let thr = 0.1f32;
+        let thr = FtThreshold::from_f32_lossy(0.1);
 
         // Warm up-walk from pivot b1 must DECLINE (committee changes at b3 in the band).
         let warm = incremental_frontier(&dag, &b3, &b1, &j, thr).await.unwrap();
@@ -808,7 +815,7 @@ mod frontier_determinism_tests {
         ]);
         let mut j = BTreeMap::new();
         j.insert(v.clone(), c.clone()); // v's frozen latest is c (before it made p1)
-        let thr = 0.1f32;
+        let thr = FtThreshold::from_f32_lossy(0.1);
 
         let inherited = vec![
             Floor { hash: c.clone(), block_number: 2 },
@@ -843,7 +850,7 @@ mod frontier_determinism_tests {
             md_wm(b1.clone(), vec![g_b.clone()], 1, &w, vec![(w.clone(), 1)]),
         ]);
         let j = BTreeMap::new(); // nothing finalizes by quorum; frontiers fall to the roots
-        let thr = 0.1f32;
+        let thr = FtThreshold::from_f32_lossy(0.1);
 
         let inherited = vec![
             Floor { hash: g_a.clone(), block_number: 0 },

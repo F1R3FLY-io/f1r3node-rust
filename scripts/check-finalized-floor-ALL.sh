@@ -61,7 +61,7 @@ if command -v coqc >/dev/null 2>&1 || [[ -x "$HOME/.opam/default/bin/coqc" ]]; t
   eval "$(opam env 2>/dev/null)" 2>/dev/null || true
   ( cd "$ROCQ_DIR" && coq_makefile -f _CoqProject -o Makefile ) >/dev/null 2>&1
   if capped make -C "$ROCQ_DIR" -j1 >/tmp/ff_rocq_build.log 2>&1; then
-    pass "Rocq build (Foundation, CliqueOracle, Floor, GuardBridge, Merge, Recovery, Selection, IntegerAdd, MainTheorem)"
+    pass "Rocq build (Foundation, CliqueOracle, Floor, GuardBridge, Merge, Recovery, Selection, IntegerAdd, FtExact, MainTheorem)"
     # Coq derives the module name from the file's basename, so it must be a valid
     # identifier (no dots) — use a fixed name inside a scratch dir.
     tmpd=$(mktemp -d)
@@ -75,6 +75,7 @@ Print Assumptions finalized_floor_merge_correct.
 Print Assumptions finalized_floor_selection_correct.
 Print Assumptions finalized_floor_arithmetic_correct.
 Print Assumptions finalized_floor_phase7_correct.
+Print Assumptions finalized_floor_ftexact_correct.
 Print Assumptions guard_constant_committee_transparent.
 Print Assumptions upgo_finalized.
 Print Assumptions chain_adj_AdjDC.
@@ -82,10 +83,10 @@ EOF
     out=$(coqc -Q "$ROCQ_DIR/theories" FinalizedFloor "$chk" 2>&1)
     rm -rf "$tmpd"
     n_closed=$(grep -c "Closed under the global context" <<<"$out")
-    if [[ "$n_closed" == "7" ]]; then
-      pass "all 7 headline results axiom-free (4 capstones + guard⇒AdjDC bridge, upgo_finalized, chain_adj_AdjDC)"
+    if [[ "$n_closed" == "8" ]]; then
+      pass "all 8 headline results axiom-free (5 capstones incl. A9 ftexact + guard⇒AdjDC bridge, upgo_finalized, chain_adj_AdjDC)"
     else
-      fail "headline results NOT all axiom-free ($n_closed/7 Closed):"; echo "$out" | sed 's/^/      /'
+      fail "headline results NOT all axiom-free ($n_closed/8 Closed):"; echo "$out" | sed 's/^/      /'
     fi
   else
     fail "Rocq build failed (see /tmp/ff_rocq_build.log)"; tail -20 /tmp/ff_rocq_build.log | sed 's/^/      /'
@@ -146,6 +147,11 @@ if command -v python3 >/dev/null 2>&1 && python3 -c 'import z3' >/dev/null 2>&1;
     pass "Z3 BitVec-64 IntegerAdd launder (exists on wrap; checked_combine launder-free)"
   else
     fail "Z3 integeradd_launder_bitvec.py failed (see /tmp/ff_z3_ia.log)"
+  fi
+  if python3 "$REPO_ROOT/formal/z3/finalized_floor/ft_exact_no_overflow.py" >/tmp/ff_z3_fte.log 2>&1; then
+    pass "Z3 A9 exact-integer FT (i128 no-overflow; exact≡ratio; f32 residual real)"
+  else
+    fail "Z3 ft_exact_no_overflow.py failed (see /tmp/ff_z3_fte.log)"
   fi
 else
   skip "no python3 z3 module"

@@ -1059,10 +1059,12 @@ pub async fn create(
             &casper_snapshot.dag,
             &parent_hashes,
             &latest_messages,
-            casper_snapshot
-                .on_chain_state
-                .shard_conf
-                .fault_tolerance_threshold,
+            crate::rust::safety::clique_oracle::FtThreshold::from_ppm(
+                casper_snapshot
+                    .on_chain_state
+                    .shard_conf
+                    .fault_tolerance_threshold_ppm,
+            ),
         )
         .await?;
         let floor_block = block_store.get(&floor.hash)?.ok_or_else(|| {

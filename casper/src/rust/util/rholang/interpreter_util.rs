@@ -1010,7 +1010,9 @@ pub async fn compute_parents_post_state(
                 &s.dag,
                 &parent_hashes,
                 latest_messages,
-                s.on_chain_state.shard_conf.fault_tolerance_threshold,
+                crate::rust::safety::clique_oracle::FtThreshold::from_ppm(
+                    s.on_chain_state.shard_conf.fault_tolerance_threshold_ppm,
+                ),
             )
             .await?;
             let floor_derive_ms = floor_derive_started.elapsed().as_millis();

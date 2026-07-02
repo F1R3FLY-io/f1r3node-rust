@@ -33,6 +33,7 @@ use super::events::finalised_event;
 use super::types::MultiParentCasperImpl;
 use crate::rust::errors::CasperError;
 use crate::rust::finality::finalizer::Finalizer;
+use crate::rust::safety::clique_oracle::FtThreshold;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 
 // Phase 13 (TC-1): the previous `FINALIZER_BLOCKING_TIMEOUT = 15s`
@@ -70,7 +71,7 @@ pub(crate) struct FinalizationContext {
     pub(crate) event_publisher: F1r3flyEvents,
     pub(crate) finalization_in_progress: Arc<AtomicBool>,
     pub(crate) enable_mergeable_channel_gc: bool,
-    pub(crate) fault_tolerance_threshold: f32,
+    pub(crate) ftt: FtThreshold,
     pub(crate) finalizer_conf: crate::rust::casper_conf::FinalizerConf,
     pub(crate) finalizer_blocking_timeout: std::time::Duration,
 }
@@ -94,7 +95,8 @@ pub(crate) fn build_finalization_context<
         event_publisher: this.event_publisher.clone(),
         finalization_in_progress: this.finalization_in_progress.clone(),
         enable_mergeable_channel_gc: this.casper_shard_conf.enable_mergeable_channel_gc,
-        fault_tolerance_threshold: this.casper_shard_conf.fault_tolerance_threshold,
+        // Exact ppm from the shard conf — the source of truth for the DECISION.
+        ftt: FtThreshold::from_ppm(this.casper_shard_conf.fault_tolerance_threshold_ppm),
         finalizer_conf: this.casper_shard_conf.finalizer_conf.clone(),
         finalizer_blocking_timeout: this.casper_shard_conf.finalizer_blocking_timeout,
     }
@@ -151,7 +153,7 @@ pub(crate) async fn compute_last_finalized_block(
         event_publisher,
         finalization_in_progress,
         enable_mergeable_channel_gc,
-        fault_tolerance_threshold,
+        ftt,
         finalizer_conf,
         finalizer_blocking_timeout: _,
     } = ctx;
@@ -308,7 +310,7 @@ pub(crate) async fn compute_last_finalized_block(
     let finalizer_started = std::time::Instant::now();
     let new_finalized_hash_opt = Finalizer::run(
         &dag,
-        fault_tolerance_threshold,
+        ftt,
         last_finalized_block_height,
         new_lfb_found_effect,
         finalizer_conf,

@@ -1420,7 +1420,9 @@ impl Validate {
             &snapshot.dag,
             &parent_hashes,
             &latest_messages,
-            snapshot.on_chain_state.shard_conf.fault_tolerance_threshold,
+            crate::rust::safety::clique_oracle::FtThreshold::from_ppm(
+                snapshot.on_chain_state.shard_conf.fault_tolerance_threshold_ppm,
+            ),
         )
         .await
         {

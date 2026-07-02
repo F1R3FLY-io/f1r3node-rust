@@ -39,6 +39,7 @@ From FinalizedFloor Require Import Merge.
 From FinalizedFloor Require Import Recovery.
 From FinalizedFloor Require Import Selection.
 From FinalizedFloor Require Import IntegerAdd.
+From FinalizedFloor Require Import FtExact.
 
 Theorem finalized_floor_merge_correct :
   (* T-TERM: the main-parent spine walk always reaches genesis. *)
@@ -146,6 +147,24 @@ Proof.
             (conj checked_apply_rejects_overflow
               (conj checked_apply_rejects_negative
                 (conj checked_combine_sound supply_cap_no_launder))))).
+Qed.
+
+(* A9 exact-integer fault-tolerance DECISION (the f32 -> exact hardening). The exact
+   test `2q·den ≥ S(den+num)` the node evaluates over i128 is bit-for-bit the rational
+   test `(2q−S)/S ≥ num/den` cleared of its positive denominators, monotone in the
+   clique weight (given den ≥ 0), and overflow-free in i128 for i64-bounded stake. *)
+Theorem finalized_floor_ftexact_correct :
+  (forall q S num den : Z, ft_exact_ge q S num den <-> ft_ratio_ge q S num den)
+  /\ (forall q S num den : Z, ft_exact_gt q S num den <-> ft_ratio_gt q S num den)
+  /\ (forall q q' S num den : Z,
+        0 <= den -> q <= q' -> ft_exact_ge q S num den -> ft_exact_ge q' S num den)
+  /\ (forall q S num den : Z,
+        0 <= q <= S -> 0 <= S <= 2^63 -> 0 <= num <= den -> den = 1000000 ->
+        Z.abs (2*q*den) < 2^127 /\ Z.abs (S*(den+num)) < 2^127).
+Proof.
+  exact (conj ft_exact_iff_ratio
+          (conj ft_exact_iff_ratio_strict
+            (conj ft_exact_mono_q ft_exact_no_overflow))).
 Qed.
 
 Close Scope Z_scope.

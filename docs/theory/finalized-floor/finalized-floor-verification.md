@@ -223,7 +223,8 @@ the ratchet collapses and over-cap is safe.
 | **T-ALG (semilattice)** | BitmaskOr / keep-one fold laws | Rocq `Merge` (`Nat.lor` / `Nat.max`) |
 | **T-ALG (IntegerAdd c/d)** | wrapping-add group + checked-apply reject overflow/`<0` (S7) | Rocq `IntegerAdd.wadd_assoc`, `checked_apply_rejects_overflow`/`_negative` |
 | **IntegerAdd launder** | fail-loudly at BOTH combine **and terminal apply**; the diff (`end−prev`) stays wrapping — it is the group inverse that recovers the true delta; supply-cap bound | Rocq `IntegerAdd.launder_exhibit`/`checked_combine_sound`/`supply_cap_no_launder`; Z3 `integeradd_launder_bitvec.py`; Rust `combine_mergeable_value` (combine, `checked_add`), `calculate_number_channel_merge` (terminal apply, `checked_add`+`≥0`); tests `cal_merged_result_rejects_integer_add_true_launder_wraps_nonnegative`, `merge_integer_add_overflow_is_rejected`, `diff_integer_add_recovers_wrapped_delta` |
-| **capstone** | all of the above, axiom-free | Rocq `MainTheorem.{finalized_floor_merge_correct, finalized_floor_selection_correct, finalized_floor_arithmetic_correct, finalized_floor_phase7_correct}` |
+| **A9 exact-integer FT** | finalization decides `2·q·den ⋛ S·(den+num)` in i128 (`≥` floor / `>` LFB), not the fuzzy f32 ratio — precise + node-identical | Rocq `MainTheorem.finalized_floor_ftexact_correct` (`FtExact.v`); Z3 `ft_exact_no_overflow.py`; Sage `ft_algebra.sage`; Rust `clique_oracle.ft_decides_exact`/`ft_witnessed_exact`; test `ft_decides_exact_tests` |
+| **capstone** | all of the above, axiom-free | Rocq `MainTheorem.{finalized_floor_merge_correct, finalized_floor_selection_correct, finalized_floor_arithmetic_correct, finalized_floor_phase7_correct, finalized_floor_ftexact_correct}` |
 
 ---
 
@@ -244,6 +245,7 @@ Rocq/Coq 9.1.1, Stdlib-only. Every theorem is checked with `Print Assumptions`
 | `Recovery.v` | — | **T-NDA** (`apply_idem`, `no_double_apply`) |
 | `Selection.v` | Floor, CliqueOracle | the Case-A/B sound-base pick: **T-SOUND**, **T-LIN**, **T-PS**, **T-FIN**, **T-COMM**, **H3**, **Case-B**, **maximality** (`select_sound`, `select_none_correct`, `case_a_common_ancestor`, `T_PS`, `select_finalized`, `committee_is_floor_bonds`, `scope_covers_band`, `case_b_compatible`, `select_highest_sound`) |
 | `IntegerAdd.v` | — | signed-64 wrapping: **T-ALG(c)** (`wadd_assoc`), **T-ALG(d)** (`checked_apply_rejects_*`), launder `launder_exhibit`/`checked_combine_sound`/`supply_cap_no_launder` |
+| `FtExact.v` | — | **A9 exact-integer FT** (`ft_exact_iff_ratio`/`_strict`, `ft_exact_mono_q`, `ft_exact_no_overflow`): the exact test `2q·den ≥ S(den+num)` IS the f32 ratio test cleared of denominators, monotone in `q`, overflow-free in i128 |
 | `MainTheorem.v` | all | capstones `finalized_floor_merge_correct`, `finalized_floor_selection_correct`, `finalized_floor_arithmetic_correct`, `finalized_floor_phase7_correct` |
 
 The finalization model is a faithful monotone abstraction of `ft_witnessed`:
@@ -329,17 +331,39 @@ every round and gates only the terminal full-convergence behind
 `require_full_convergence` (the graded gates keep it `true`; the soak passes
 `false`). *Not a consensus bug; a hotspot the application must avoid.*
 
-### A9 — the `f32` fault-tolerance ratio is deterministic (not a fork bug)
+### A9 — the fault-tolerance decision is now EXACT-INTEGER — **RESOLVED**
 
-`clique_oracle.rs` computes `ft = (2q − S)/S` in **f32** and `floor.rs` compares
-`ft ≥ θ` (f32). Investigated with Wolfram: `q` (max-clique weight) and `S` (stake)
-are integers computed identically on every node, and IEEE-754 f32 arithmetic is
-exactly-rounded/deterministic ⇒ **every conforming node computes the identical
-decision — no fork.** The genuine residual is *precision*: for stakes `> 2²⁴` the
-`i64→f32` cast drops mantissa bits, making the threshold fuzzy by `O(S/2²⁴)` — but
-*consistently* across nodes (still no fork). **Recommended hardening** (future,
-cross-cutting to the whole clique oracle): decide finalization with exact integer
-arithmetic `2q·den ≥ S·(den+num)` for `θ = num/den`, removing the fuzz entirely.
+`clique_oracle.rs` previously computed `ft = (2q − S)/S` in **f32** and finalized on
+`ft ≥ θ` (f32). That decision was deterministic (IEEE-754 f32 is exactly-rounded, so
+every conforming node computed the identical verdict — no fork) but *imprecise*: for
+stakes `> 2²⁴` the `i64→f32` cast drops mantissa bits, making the threshold fuzzy by
+`O(S/2²⁴)`. The fix replaces the finalization **decision** with an **exact-integer**
+test over `i128`, `θ = num/den = ppm / 1_000_000`:
+
+- **`≥` (floor path):** `2·q·den ≥ S·(den + num)` — `clique_oracle.rs`
+  `ft_decides_exact` / `ft_witnessed_exact`, routed through `floor.rs`'s three decision
+  sites; **`>` (LFB finalizer):** the strict twin via `finalizer.rs`
+  `compute_decision_with_cache(…, strict=true)` — the finalizer's strict-`>` clearance
+  is preserved. The early `agreeing ≤ S/2 ⇒ not finalized` becomes exact `2·agreeing ≤ S`.
+  The `f32` `ft` value is kept only for display/metadata (`fault_tolerance_value`); **no
+  decision is re-derived from it**. θ is threaded as the exact on-chain **ppm** (i64),
+  converted once at `initializing.rs` (never the lossy f32).
+- **i128 rationale:** `2·q·den ≤ ~2⁸⁴` and `S·(den+num) ≤ ~2⁸⁴` for `S ≤ i64::MAX`,
+  `den = 10⁶`, both far below `2¹²⁷` — no overflow.
+- **Formal (axiom-free):** Rocq `FtExact.v` — `ft_exact_iff_ratio` (the exact test IS
+  `(2q−S)/S ≥ num/den` cleared of its positive denominators, *unconditional*),
+  `ft_exact_iff_ratio_strict`, `ft_exact_mono_q` (monotone in `q`, given `den ≥ 0` — the
+  one honest side-condition, faithful since `den = 10⁶`), `ft_exact_no_overflow` (the
+  i128 envelope). Z3 `ft_exact_no_overflow.py` and Sage `ft_algebra.sage` cross-witness
+  the same (i128 no-overflow, exact≡ratio for `≥` and `>`, and that the f32 residual is
+  real — `2²⁴` and `2²⁴+1` collide under `i64→f32`). Tests: `ft_decides_exact_tests`
+  (small-stake agreement with f32, the large-stake boundary tie, `2·agreeing = S`, and
+  no overflow at i64::MAX-scale stake).
+- **Activation:** the exact decision changes which blocks finalize *at the margin* — a
+  consensus-observable change — so it activates **atomically with the unreleased
+  `staging-into-dev-merge` branch** (all validators run the branch binary together; no
+  mixed-version window), the same discipline as the IntegerAdd apply change (below). No
+  on-chain activation parameter is introduced.
 
 ### IntegerAdd overflow-launder — **FIXED at both chokepoints** (Phase 6 W3 combine; Phase 7 W7.1 terminal apply)
 
@@ -399,13 +423,14 @@ part of it) — no separate flag, no mixed-version window. The diff
 (`calculate_num_channel_diff`) is on the already-live execution/replay path but is
 left wrapping (above), so its behavior is unchanged and there is nothing to gate.
 
-### A9 — the `f32` fault-tolerance ratio is deterministic (residual precision only)
+### A9 — exact-integer fault tolerance — **RESOLVED (see the A9 block above)**
 
-Still a documented residual (not a fork bug — see above). The exact-integer
-hardening is cross-cutting to the whole clique oracle (all finalization, not the
-finalized-floor feature); it changes the finalization rule and so warrants its own
-coordinated, independently-verified change. Recorded here with the precise recipe
-(`2q·den ≥ S·(den+num)`); Z3/Sage already cross-witness that equivalence.
+The precision residual is closed: finalization now decides with the exact-integer test
+`2·q·den ≥ S·(den + num)` (i128), across the floor and LFB-finalizer paths, activated
+atomically with the branch. See the resolved **A9** block above for the full change, the
+axiom-free `FtExact.v` + Z3 + Sage witnesses, the tests, and the activation note. The
+change was scoped across the whole clique oracle (all finalization), independently
+verified — the exact discipline the prior revision recommended.
 
 ---
 
@@ -419,7 +444,7 @@ TLA⁺/Z3/Sage/Wolfram fail-soft). Current result: **ALL GATES OK**.
 | Rust build | `cargo check -p casper --all-targets` / `-p rspace_plus_plus` clean |
 | Convergence green-gate | 3/3 pass; 400+-block soak holds all fix invariants (~421 blocks) |
 | Rust unit/regression | combine + terminal-apply launder (`checked_add`), discriminating true-launder (sum wraps non-negative), wrapping-group diff recovery, guard-trip cold-fallback, Case-B dominating-tip, incompatible-fork `Err`, backstop predicate, floor warm==cold + cache-transparent, frontier round-trip — all pass |
-| Rocq | full dev builds `-j1`; **7 headline results axiom-free** — 4 capstones (merge / selection / arithmetic / phase7) + the 3 GuardBridge lemmas (guard⇒AdjDC `chain_adj_AdjDC`, `guard_constant_committee_transparent`, `upgo_finalized`) |
+| Rocq | full dev builds `-j1`; **8 headline results axiom-free** — 5 capstones (merge / selection / arithmetic / phase7 / **A9 ftexact**) + the 3 GuardBridge lemmas (guard⇒AdjDC `chain_adj_AdjDC`, `guard_constant_committee_transparent`, `upgo_finalized`) |
 | TLA⁺ | `SpecFixed` + `FinalizedFloorScan` pass; both pre-fix cfgs reproduce their counterexample |
 | Z3 | FT-algebra + BitVec-64 IntegerAdd launder (exists on wrap; checked-combine launder-free) |
 | Sage | FT-algebra identity + finalization-margin monotonicity |
@@ -484,6 +509,14 @@ full-resolution SVG.
 [![Diagram 6 — state: the warm up-walk advancing over a downward-closed finalized prefix (L-ANC), with the committee-constancy and L-SNAP guard transitions that divert to the cold-walk fallback yielding the identical frontier](./diagrams/06-state-finalization-guards.svg)](./diagrams/06-state-finalization-guards.svg)
 
 *Provenance: §3.1; Rocq `GuardBridge.chain_adj_AdjDC` (guard ⇒ AdjDC).*
+
+---
+
+### 8.7 A9 — exact-integer fault-tolerance decision vs the f32 fuzzy threshold
+
+[![Diagram 7 — the legacy f32 path casts q, S to f32 (lossy above 2²⁴) and compares the fuzzy ratio, versus the exact-integer i128 cut 2·q·den ⋛ S·(den+num) that is bit-identical on every node](./diagrams/07-a9-exact-vs-f32-decision.svg)](./diagrams/07-a9-exact-vs-f32-decision.svg)
+
+*Provenance: §6.A9; Rocq `FtExact.v`; Z3 `ft_exact_no_overflow.py`; Sage `ft_algebra.sage`.*
 
 ---
 

@@ -35,4 +35,5 @@ theories/Merge.v
 theories/Recovery.v
 theories/Selection.v
 theories/IntegerAdd.v
+theories/FtExact.v
 theories/MainTheorem.v

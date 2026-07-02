@@ -1076,21 +1076,27 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             .take()
             .ok_or_else(|| CasperError::RuntimeError("Estimator not available".to_string()))?;
 
-        let on_chain_ftt =
-            crate::rust::util::token_metadata_check::read_on_chain_fault_tolerance_threshold(
+        // Single exact conversion point: read the on-chain ppm (the exact source
+        // of truth for the finalization DECISION) and derive the f32 for display.
+        let on_chain_ppm =
+            crate::rust::util::token_metadata_check::read_on_chain_fault_tolerance_threshold_ppm(
                 &runtime_manager,
                 &genesis_post_state_hash,
             )
             .await?;
+        let on_chain_ftt = (on_chain_ppm as f64 / 1_000_000.0) as f32;
         let mut casper_shard_conf = self.casper_shard_conf.clone();
-        if (on_chain_ftt - casper_shard_conf.fault_tolerance_threshold).abs() > 1e-6 {
+        if casper_shard_conf.fault_tolerance_threshold_ppm != on_chain_ppm {
             tracing::warn!(
                 event = "fault_tolerance_threshold_sourced_from_genesis",
+                local_ppm = casper_shard_conf.fault_tolerance_threshold_ppm,
+                on_chain_ppm = on_chain_ppm,
                 local = casper_shard_conf.fault_tolerance_threshold,
                 on_chain = on_chain_ftt,
                 "using on-chain fault-tolerance-threshold from genesis"
             );
         }
+        casper_shard_conf.fault_tolerance_threshold_ppm = on_chain_ppm;
         casper_shard_conf.fault_tolerance_threshold = on_chain_ftt;
 
         // Pass Arc<RuntimeManager> directly to hash_set_casper
