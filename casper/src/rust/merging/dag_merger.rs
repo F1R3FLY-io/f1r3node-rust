@@ -8,8 +8,12 @@ use models::rust::block_hash::BlockHash;
 use prost::bytes::Bytes;
 use rholang::rust::interpreter::merging::rholang_merging_logic::RholangMergingLogic;
 use rholang::rust::interpreter::rho_runtime::RhoHistoryRepository;
+use models::rhoapi::ListParWithRandom;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+use rspace_plus_plus::rspace::internal::Datum;
+use rspace_plus_plus::rspace::merger::channel_change::ChannelChange;
 use rspace_plus_plus::rspace::merger::merging_logic::{self, NumberChannelsDiff};
+use rspace_plus_plus::rspace::merger::state_change::StateChange;
 use rspace_plus_plus::rspace::merger::state_change_merger;
 use shared::rust::hashable_set::HashableSet;
 
@@ -284,6 +288,117 @@ fn split_unavailable_resolved_branches(
 
     resolved.to_merge = kept_branches;
     Ok(rejected_all)
+}
+
+/// §3c keep-one: among the surviving (`to_merge`) branches, reject the minimal
+/// set of writers that would over-fill a single-value (number) cell, keeping
+/// one. This is the finer counterpart to the apply-time guard in the merge
+/// override: instead of failing the whole merge, drop the losing writers (which
+/// recovery re-proposes) and merge the rest.
+///
+/// Only the SAME channels the apply-time guard covers are considered: a channel
+/// whose base is a single numeric datum AND that this merge does not fold
+/// (absent from any branch's mergeable set). Folded number channels are
+/// reconciled by the number-channel fold and must not be rejected here;
+/// registry / TreeHashMap nodes are non-numeric and exempt. The kept writer is
+/// the lowest-ordered `DeployChainIndex`, so the choice is node-deterministic.
+fn split_overfilled_single_value_cells(
+    resolved: &mut conflict_set_merger::ResolvedConflicts<DeployChainIndex>,
+    depends: &impl Fn(&DeployChainIndex, &DeployChainIndex) -> bool,
+    mergeable_channels: &impl Fn(&DeployChainIndex) -> NumberChannelsDiff,
+    base_datum: &impl Fn(
+        &Blake2b256Hash,
+    )
+        -> Result<Vec<Datum<ListParWithRandom>>, rspace_plus_plus::rspace::errors::HistoryError>,
+    base_binary: &impl Fn(
+        &Blake2b256Hash,
+    ) -> Result<Vec<Vec<u8>>, rspace_plus_plus::rspace::errors::HistoryError>,
+) -> Result<HashableSet<DeployChainIndex>, rspace_plus_plus::rspace::errors::HistoryError> {
+    let mut all_chains: Vec<DeployChainIndex> = resolved
+        .to_merge
+        .iter()
+        .flat_map(|b| b.0.iter().cloned())
+        .collect();
+    all_chains.sort();
+
+    // Channels this merge folds (mergeable in any surviving chain) are handled
+    // by the number-channel fold and are exempt from keep-one.
+    let mut folded: HashSet<Blake2b256Hash> = HashSet::new();
+    for chain in &all_chains {
+        for key in mergeable_channels(chain).keys() {
+            folded.insert(key.clone());
+        }
+    }
+
+    // Combined per-channel change + the ordered producers (chains that add).
+    let mut combined: HashMap<Blake2b256Hash, ChannelChange<Vec<u8>>> = HashMap::new();
+    let mut producers: HashMap<Blake2b256Hash, Vec<DeployChainIndex>> = HashMap::new();
+    for chain in &all_chains {
+        for entry in chain.state_changes.datums_changes.iter() {
+            let ch = entry.key().clone();
+            if folded.contains(&ch) {
+                continue;
+            }
+            let chg = entry.value();
+            let c = combined.entry(ch.clone()).or_insert_with(ChannelChange::empty);
+            c.added.extend(chg.added.clone());
+            c.removed.extend(chg.removed.clone());
+            if !chg.added.is_empty() {
+                producers.entry(ch).or_default().push(chain.clone());
+            }
+        }
+    }
+
+    // Seed rejections: for each over-filled single-value cell, keep the lowest
+    // producer, reject the rest.
+    let mut rejected_seed: HashSet<DeployChainIndex> = HashSet::new();
+    for (ch, chg) in &combined {
+        if chg.added.is_empty() {
+            continue;
+        }
+        let base_d = base_datum(ch)?;
+        let is_single_number = base_d.len() == 1
+            && RholangMergingLogic::try_get_number_with_rnd(&base_d[0].a).is_some();
+        if !is_single_number {
+            continue;
+        }
+        let kept = StateChange::multiset_diff(&base_binary(ch)?, &chg.removed);
+        if kept.len() + chg.added.len() > 1 {
+            if let Some(prod) = producers.get(ch) {
+                for loser in prod.iter().skip(1) {
+                    rejected_seed.insert(loser.clone());
+                }
+            }
+        }
+    }
+
+    // Expand rejections to dependents, then prune the branches.
+    let mut rejected = HashableSet(HashSet::new());
+    if !rejected_seed.is_empty() {
+        for chain in &all_chains {
+            if rejected_seed.contains(chain)
+                || rejected_seed.iter().any(|r| depends(chain, r))
+            {
+                rejected.0.insert(chain.clone());
+            }
+        }
+        let mut new_to_merge = Vec::new();
+        for branch in std::mem::take(&mut resolved.to_merge) {
+            let kept: std::collections::HashSet<DeployChainIndex> = branch
+                .0
+                .into_iter()
+                .filter(|c| !rejected.0.contains(c))
+                .collect();
+            if !kept.is_empty() {
+                new_to_merge.push(HashableSet(kept));
+            }
+        }
+        resolved.to_merge = new_to_merge;
+        for c in &rejected.0 {
+            resolved.rejected.0.insert(c.clone());
+        }
+    }
+    Ok(rejected)
 }
 
 fn resolve_conflicts_with_unavailable_retry(
@@ -1047,7 +1162,7 @@ pub fn merge(
 
     let split_unavailable =
         |resolved: &mut conflict_set_merger::ResolvedConflicts<DeployChainIndex>| {
-            split_unavailable_resolved_branches(
+            let mut rejected = split_unavailable_resolved_branches(
                 resolved,
                 &depends_fn,
                 &state_changes_fn,
@@ -1060,7 +1175,20 @@ pub fn merge(
                         );
                     history_reader.get_continuations_proj_binary(&history_pointer)
                 },
-            )
+            )?;
+            // §3c keep-one: drop losing writers to an over-filled single-value
+            // cell (recovery re-proposes them) instead of failing the merge.
+            let overfilled = split_overfilled_single_value_cells(
+                resolved,
+                &depends_fn,
+                &mergeable_channels_fn,
+                &|channel| history_reader.get_data(channel),
+                &|channel| history_reader.get_data_proj_binary(channel),
+            )?;
+            for chain in overfilled.0 {
+                rejected.0.insert(chain);
+            }
+            Ok(rejected)
         };
 
     let (resolved, unavailable_rejected_count) = resolve_conflicts_with_unavailable_retry(
