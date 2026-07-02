@@ -1,0 +1,28 @@
+# Finalized-Floor Multi-Parent Merge — Formal Verification
+#
+# Mechanizes the node-deterministic finalized floor and the floor-anchored
+# multi-parent merge, and the properties on which their correctness rests:
+# termination, monotonicity, floor-is-finalized, sound merge base, keep-one,
+# no-double-apply, and the ancestor/snapshot-monotone finalization lemmas
+# (L-ANC, L-SNAP) that justify caching the per-block frontier without forking.
+#
+# Source: f1r3node-rust/casper/src/rust/{finality/floor,safety/clique_oracle,
+#         util/rholang/interpreter_util,merging/{dag_merger,conflict_set_merger},
+#         engine/multi_parent_casper/snapshot,validate}.rs
+#         f1r3node-rust/block-storage/src/rust/dag/block_dag_key_value_storage.rs
+# Companion docs:
+#   docs/theory/finalized-floor/finalized-floor-specification.md   (normative spec)
+#   docs/theory/finalized-floor/finalized-floor-verification.md    (math + Rocq pointers)
+#
+# Zero `Admitted`. No custom `Axiom` or `Parameter`.
+#
+# Module dependency graph (-> = "depends on"):
+#
+#   Foundation             (standalone: DAG, block numbers, main-parent spine, ancestry)
+#
+# (further modules — CliqueOracle, Floor, Merge, Recovery, MainTheorem — added
+#  as each is proven, in topological order.)
+
+-Q theories FinalizedFloor
+
+theories/Foundation.v
