@@ -207,9 +207,26 @@ impl Ord for DeployChainIndex {
             return signature_cmp;
         }
 
-        // 4. QUATERNARY: Post-state hash as final fallback
-        //    Ensures total ordering even for identical deploys (should be rare)
-        self.post_state_hash.cmp(&other.post_state_hash)
+        // 4. QUATERNARY: Post-state hash. KEPT (not replaced) so the ordering on
+        //    every input where the pre-existing 4-key comparator is already
+        //    deterministic stays byte-identical — the fix is APPEND-ONLY, hence
+        //    safe against live v0.4.16/master nodes under a rolling upgrade (it
+        //    changes only the resolution of currently-non-deterministic 4-key
+        //    ties, whose order is already node-dependent via the reseeded HashSet).
+        let post_state_cmp = self.post_state_hash.cmp(&other.post_state_hash);
+        if post_state_cmp != std::cmp::Ordering::Equal {
+            return post_state_cmp;
+        }
+
+        // 5. QUINARY (injective, total, no cryptographic assumption): the Eq/Hash
+        //    key itself — the canonical shortlex order of the deploy set via
+        //    `HashableSet<DeployIdWithCost>: Ord` (sorts elements, so it is
+        //    deterministic regardless of HashSet iteration order). Because Eq is
+        //    defined by `deploys_with_cost` equality, `cmp == Equal` now implies
+        //    the two chains are Eq, so no two DISTINCT chains ever tie. That makes
+        //    the `min_by`/`sort` winner NODE-IDENTICAL — the property the validator
+        //    (which recomputes the merge) needs to agree with the proposer.
+        self.deploys_with_cost.cmp(&other.deploys_with_cost)
     }
 }
 
@@ -217,6 +234,7 @@ impl Ord for DeployChainIndex {
 mod tests {
     use std::collections::HashSet;
 
+    use proptest::prelude::*;
     use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 
     use super::*;
@@ -271,5 +289,60 @@ mod tests {
 
         assert_eq!(a.cmp(&b), std::cmp::Ordering::Less);
         assert_eq!(b.cmp(&a), std::cmp::Ordering::Greater);
+    }
+
+    // Determinism regression (Finding B): two DISTINCT chains that tie on ALL FOUR
+    // policy keys — Σcost (10), max single cost (5), min deploy_id ([1]), AND
+    // post_state_hash (7) — but carry different deploy sets. Before the injective
+    // 5th tie-break key, `cmp` returned `Equal` for these DISTINCT chains, so the
+    // `min_by`/`sort` winner was decided by the reseeded `HashSet` iteration order —
+    // a non-deterministic rejected-set that the recomputing validator rejects (fork).
+    // The 5th key (the Eq set-order via `HashableSet<DeployIdWithCost>: Ord`) must
+    // break the tie deterministically. (RED without the append; GREEN with it.)
+    #[test]
+    fn distinct_chains_tying_on_all_four_policy_keys_still_order_deterministically() {
+        let a = mk_index(&[(1, 5), (3, 5)], 7);
+        let b = mk_index(&[(1, 5), (4, 5)], 7);
+        assert_ne!(a, b, "the two chains are genuinely distinct (different deploys)");
+        assert_ne!(
+            a.cmp(&b),
+            std::cmp::Ordering::Equal,
+            "distinct chains must never tie under cmp (else min_by/sort is HashSet-order-dependent => fork)"
+        );
+        assert_eq!(a.cmp(&b), b.cmp(&a).reverse(), "cmp must be antisymmetric on the tie");
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(400))]
+        // `DeployChainIndex::cmp` is a STRICT TOTAL ORDER whose `Equal`-class is
+        // contained in `Eq` (`cmp(a,b) == Equal => a == b`) — the property that makes
+        // the merge's `min_by`/`sort` winner node-identical regardless of `HashSet`
+        // reseeding (the no-fork guarantee; the Rust modality companion to the Rocq
+        // `merge_algebra::KeepOneOrder` proof). Over arbitrary small deploy-chain sets:
+        // irreflexivity, antisymmetry, transitivity, and injectivity of the Equal-class.
+        #[test]
+        fn cmp_is_strict_total_order_injective_on_equal(
+            specs in prop::collection::vec(
+                (prop::collection::vec((0u8..8, 1u64..6), 1..4), 0u8..4),
+                2..6),
+        ) {
+            let chains: Vec<DeployChainIndex> =
+                specs.iter().map(|(d, seed)| mk_index(d, *seed)).collect();
+            use std::cmp::Ordering::{Equal, Greater};
+            for a in &chains {
+                prop_assert!(a.cmp(a) == Equal, "irreflexive: cmp(a,a) must be Equal");
+                for b in &chains {
+                    prop_assert!(a.cmp(b) == b.cmp(a).reverse(), "antisymmetric");
+                    if a.cmp(b) == Equal {
+                        prop_assert!(a == b, "cmp==Equal must imply Eq (no distinct ties => no fork)");
+                    }
+                    for c in &chains {
+                        if a.cmp(b) != Greater && b.cmp(c) != Greater {
+                            prop_assert!(a.cmp(c) != Greater, "transitive: a<=b<=c => a<=c");
+                        }
+                    }
+                }
+            }
+        }
     }
 }
