@@ -11,7 +11,11 @@
 #      pass) and the PRE-fix MC_FinalizedFloor_pre_fix.cfg (must produce the
 #      write-loss counterexample). SKIPPED if no TLC jar is available.
 #   3. Wolfram (fail-soft)   — runs delta_ratchet.wl (ratchet instability).
-#      SKIPPED if no wolfram/math kernel is on PATH.
+#      SKIPPED if no kernel is on PATH, or if the CLI kernel cannot bind the
+#      license in this shell (the model is validated via the licensed Wolfram
+#      MCP evaluator; a `mathpass` password is version-keyed, so a CLI kernel
+#      whose entry was issued for another major version reports "no valid
+#      password" even though the license itself is valid).
 #
 # POLICY: this script is for LOCAL use only. Do NOT wire it (or any Rocq/TLA+/
 # Wolfram step) into .github/workflows/* — an earlier formal-CI workflow was
@@ -100,23 +104,31 @@ else
 fi
 
 echo "== [3/3] Wolfram (fail-soft) =="
-WL_BIN=""
-command -v wolfram >/dev/null 2>&1 && WL_BIN=wolfram
-[[ -z "$WL_BIN" ]] && command -v math >/dev/null 2>&1 && WL_BIN=math
+# Prefer wolframscript (WolframID/cloud licensing), then the classic `math`
+# kernel (reads $UserBaseDirectory/Licensing/mathpass), then `wolfram`.
+WL_BIN=""; WL_RUN=()
+if command -v wolframscript >/dev/null 2>&1; then WL_BIN=wolframscript; WL_RUN=(wolframscript -file)
+elif command -v math >/dev/null 2>&1;       then WL_BIN=math;          WL_RUN=(math -script)
+elif command -v wolfram >/dev/null 2>&1;    then WL_BIN=wolfram;       WL_RUN=(wolfram -script)
+fi
 if [[ -n "$WL_BIN" && -f "$WL_DIR/delta_ratchet.wl" ]]; then
-  wlout=$("$WL_BIN" -script "$WL_DIR/delta_ratchet.wl" 2>&1); wlrc=$?
+  wlout=$("${WL_RUN[@]}" "$WL_DIR/delta_ratchet.wl" 2>&1); wlrc=$?
   echo "$wlout" >/tmp/ff_wolfram.log
-  if grep -qiE 'no valid password|activation key|license' <<<"$wlout"; then
-    # The bare CLI is unlicensed in some environments; delta_ratchet.wl is
-    # validated via the Wolfram MCP evaluator (which carries the license).
-    skip "Wolfram CLI unlicensed (delta_ratchet.wl validated via the MCP evaluator)"
+  if grep -qiE 'no valid password|cannot find a valid password' <<<"$wlout"; then
+    # The LICENSE is valid — delta_ratchet.wl is validated via the licensed
+    # Wolfram MCP evaluator. This CLI kernel simply could not BIND the license
+    # in this shell: a `mathpass` password is version-keyed, so an entry issued
+    # for a different major version does not license the installed kernel. To
+    # enable the CLI, activate this kernel (`math`, then Web Activation with your
+    # activation key) or install `wolframscript` (WolframID/cloud licensing).
+    skip "Wolfram CLI kernel ($WL_BIN) could not bind the license in this shell — model validated via the licensed MCP evaluator (details: /tmp/ff_wolfram.log)"
   elif [[ $wlrc -eq 0 ]]; then
-    pass "Wolfram delta_ratchet.wl (buggy advance unstable, fixed advance stable)"
+    pass "Wolfram delta_ratchet.wl via $WL_BIN (buggy advance unstable, fixed advance stable)"
   else
-    fail "Wolfram delta_ratchet.wl errored (see /tmp/ff_wolfram.log)"
+    fail "Wolfram delta_ratchet.wl errored under $WL_BIN (see /tmp/ff_wolfram.log)"
   fi
 else
-  skip "no wolfram/math kernel on PATH"
+  skip "no wolframscript/math/wolfram kernel on PATH"
 fi
 
 if [[ "${RUN_SOAK:-0}" == "1" ]]; then
