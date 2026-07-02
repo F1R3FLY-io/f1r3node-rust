@@ -679,4 +679,183 @@ mod frontier_determinism_tests {
             "enabling the caches must not change the derived floor (no fork)"
         );
     }
+
+    // ---- Phase-7 W7.2: guard-trip, Case-B soundness, incompatible-fork Err ----
+
+    fn md_wm(
+        hash: Bytes,
+        parents: Vec<Bytes>,
+        num: i64,
+        sender: &Bytes,
+        wm: Vec<(Bytes, i64)>,
+    ) -> BlockMetadata {
+        let mut weight_map = BTreeMap::new();
+        for (validator, weight) in wm {
+            weight_map.insert(validator, weight);
+        }
+        BlockMetadata {
+            block_hash: hash,
+            parents,
+            sender: sender.clone(),
+            justifications: vec![],
+            weight_map,
+            block_number: num,
+            sequence_number: num as i32,
+            invalid: false,
+            directly_finalized: false,
+            finalized: false,
+            fault_tolerance_value: 0.0,
+        }
+    }
+
+    /// Assemble a DAG from an explicit block list, deriving `dag_set`,
+    /// `block_number_map`, and `main_parent_map` (parents[0]) from the metadata.
+    fn build_dag(blocks: Vec<BlockMetadata>) -> KeyValueDagRepresentation {
+        let store = KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new()));
+        let mut bms = BlockMetadataStore::new(store);
+        let mut dag_set = imbl::HashSet::new();
+        let mut bnum = imbl::HashMap::new();
+        let mut mp = imbl::HashMap::new();
+        for b in &blocks {
+            dag_set.insert(b.block_hash.clone());
+            bnum.insert(b.block_hash.clone(), b.block_number);
+            if let Some(main) = b.parents.first() {
+                mp.insert(b.block_hash.clone(), main.clone());
+            }
+        }
+        for b in blocks {
+            bms.add(b).unwrap();
+        }
+        KeyValueDagRepresentation {
+            dag_set,
+            latest_messages_map: imbl::HashMap::new(),
+            child_map: imbl::HashMap::new(),
+            height_map: imbl::OrdMap::new(),
+            block_number_map: bnum,
+            main_parent_map: mp,
+            self_justification_map: imbl::HashMap::new(),
+            invalid_blocks_set: imbl::HashSet::new(),
+            last_finalized_block_hash: Bytes::new(),
+            finalized_blocks_set: imbl::HashSet::new(),
+            block_metadata_index: Arc::new(PlRwLock::new(bms)),
+            deploy_index: Arc::new(PlRwLock::new(KeyValueTypedStoreImpl::new(Arc::new(
+                InMemoryKeyValueStore::new(),
+            )))),
+            floor_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
+            frontier_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
+        }
+    }
+
+    /// Guard-trip: a committee CHANGE inside the band (a bonding / re-stake between
+    /// the pivot and the parent) breaks L-ANC's constant-committee premise. The warm
+    /// up-walk MUST decline (`Ok(None)`) rather than serve a frontier computed under
+    /// an inconsistent committee, and the dispatcher MUST fall back to the cold walk,
+    /// yielding the identical frontier. This is the "tested" leg of the guard whose
+    /// soundness `GuardBridge.chain_adj_AdjDC` derives in Rocq.
+    #[tokio::test]
+    async fn guard_trip_committee_change_falls_back_to_cold() {
+        let v = h(50);
+        let (g, b1, b2, b3) = (h(0), h(1), h(2), h(3));
+        // v's weight changes 1 -> 2 at b2, so committee(b3) = wm(b2) = {v:2} differs
+        // from pivot_committee = committee(b1) = wm(g) = {v:1}.
+        let dag = build_dag(vec![
+            md_wm(g.clone(), vec![], 0, &v, vec![(v.clone(), 1)]),
+            md_wm(b1.clone(), vec![g.clone()], 1, &v, vec![(v.clone(), 1)]),
+            md_wm(b2.clone(), vec![b1.clone()], 2, &v, vec![(v.clone(), 2)]),
+            md_wm(b3.clone(), vec![b2.clone()], 3, &v, vec![(v.clone(), 2)]),
+        ]);
+        let mut j = BTreeMap::new();
+        j.insert(v.clone(), b2.clone());
+        let thr = 0.1f32;
+
+        // Warm up-walk from pivot b1 must DECLINE (committee changes at b3 in the band).
+        let warm = incremental_frontier(&dag, &b3, &b1, &j, thr).await.unwrap();
+        assert!(
+            warm.is_none(),
+            "incremental_frontier must return Ok(None) on a committee change in the band"
+        );
+
+        // Seed the pivot so the dispatcher attempts (and must abandon) the warm path;
+        // it must fall back to the cold walk and return the identical frontier.
+        dag.put_cached_frontier(b3.clone(), b1.clone()).unwrap();
+        let dispatched = parent_frontier(&dag, &b3, &j, thr).await.unwrap();
+        let cold = cold_parent_frontier(&dag, &b3, &j, thr).await.unwrap();
+        assert_eq!(
+            dispatched, cold,
+            "on a guard trip the dispatched frontier must equal the cold walk (transparent)"
+        );
+    }
+
+    /// Case-B (in-place finalization-advance dominates): the highest finalized
+    /// candidate `c` is NOT a general ancestor of every parent (Case-A fails), yet
+    /// every other candidate lies in `c`'s DAG past, so `c` is a sound base and is
+    /// chosen. DAG: g <- t <- c <- p1 (validator v) plus t <- p2 (validator w, not in
+    /// the committee). Over j={v:c}, c and t finalize but p1, p2 do not, so
+    /// frontier(p1)=c and frontier(p2)=t. `c` is not an ancestor of p2, but t (p2's
+    /// frontier) is in c's past ⇒ Case-B selects c. Mirrors Selection.case_b_compatible.
+    #[tokio::test]
+    async fn derive_floor_case_b_selects_dominating_finalized_tip() {
+        let v = h(50);
+        let w = h(51);
+        let (g, t, c, p1, p2) = (h(0), h(1), h(2), h(3), h(4));
+        let wm = || vec![(v.clone(), 1)]; // committee is always {v:1}; w never votes
+        let dag = build_dag(vec![
+            md_wm(g.clone(), vec![], 0, &v, wm()),
+            md_wm(t.clone(), vec![g.clone()], 1, &v, wm()),
+            md_wm(c.clone(), vec![t.clone()], 2, &v, wm()),
+            md_wm(p1.clone(), vec![c.clone()], 3, &v, wm()),
+            md_wm(p2.clone(), vec![t.clone()], 2, &w, wm()),
+        ]);
+        let mut j = BTreeMap::new();
+        j.insert(v.clone(), c.clone()); // v's frozen latest is c (before it made p1)
+        let thr = 0.1f32;
+
+        let inherited = vec![
+            Floor { hash: c.clone(), block_number: 2 },
+            Floor { hash: t.clone(), block_number: 1 },
+        ];
+        let (floor, _f) = derive_floor(&dag, &[p1.clone(), p2.clone()], &j, thr, inherited)
+            .await
+            .unwrap();
+        assert_eq!(
+            floor.hash, c,
+            "Case-B must select the dominating finalized tip c (Case-A fails: c is not an \
+             ancestor of p2; but t — the only other candidate — is in c's past)"
+        );
+    }
+
+    /// Incompatible-fork Err: two parents with NO common finalized candidate must be
+    /// surfaced as an error, never papered over with an unsound base. Modeled with a
+    /// deliberately DISCONNECTED DAG (independent roots g_a, g_b) — the only shape in
+    /// which two honest cuts are truly incompatible, since a `{1,1}` quorum can never
+    /// finalize competing forks (both validators would have to agree). Each parent's
+    /// frontier is its own root, so no candidate is a common ancestor and neither
+    /// Case-A nor Case-B holds ⇒ the safety error fires (Selection.select_none_correct).
+    #[tokio::test]
+    async fn derive_floor_incompatible_fork_errors() {
+        let v = h(50);
+        let w = h(51);
+        let (g_a, a1, g_b, b1) = (h(0), h(1), h(5), h(6));
+        let dag = build_dag(vec![
+            md_wm(g_a.clone(), vec![], 0, &v, vec![(v.clone(), 1)]),
+            md_wm(a1.clone(), vec![g_a.clone()], 1, &v, vec![(v.clone(), 1)]),
+            md_wm(g_b.clone(), vec![], 0, &w, vec![(w.clone(), 1)]),
+            md_wm(b1.clone(), vec![g_b.clone()], 1, &w, vec![(w.clone(), 1)]),
+        ]);
+        let j = BTreeMap::new(); // nothing finalizes by quorum; frontiers fall to the roots
+        let thr = 0.1f32;
+
+        let inherited = vec![
+            Floor { hash: g_a.clone(), block_number: 0 },
+            Floor { hash: g_b.clone(), block_number: 0 },
+        ];
+        let result = derive_floor(&dag, &[a1.clone(), b1.clone()], &j, thr, inherited).await;
+        match result {
+            Err(CasperError::Other(msg)) => assert!(
+                msg.contains("incompatible finalized fork"),
+                "expected the incompatible-fork safety error, got: {msg}"
+            ),
+            other => panic!("expected Err(incompatible fork), got {other:?}"),
+        }
+    }
 }

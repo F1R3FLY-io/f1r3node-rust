@@ -1083,6 +1083,34 @@ mod tests {
     }
 
     #[test]
+    fn cal_merged_result_rejects_integer_add_true_launder_wraps_nonnegative() {
+        // A DISCRIMINATING launder witness: three IntegerAdd diffs whose sum is 2^64,
+        // which wraps to 0 — a NON-NEGATIVE value that would sail through the apply-time
+        // `checked_add >= 0` gate if the combine used wrapping. Only the checked_add in
+        // the combine fold (which overflows on MAX + MAX) rejects it. Contrast the
+        // [MAX, 1] case above, whose wrap to i64::MIN is caught by the `>= 0` gate anyway
+        // and so does NOT isolate the overflow check.
+        let ch = Blake2b256Hash::from_bytes(vec![7u8; 32]);
+        let br = branch(&[1, 2, 3]); // three chains in ONE branch
+        let mergeable = |r: &i32| {
+            let mut d = NumberChannelsDiff::new();
+            let v = match *r {
+                1 => i64::MAX,
+                2 => i64::MAX,
+                _ => 2, // MAX + MAX + 2 == 2^64 ≡ 0 (mod 2^64): wraps NON-NEGATIVE
+            };
+            d.insert(ch.clone(), (v, MergeType::IntegerAdd));
+            d
+        };
+        assert_eq!(
+            cal_merged_result(&br, HashMap::new(), mergeable),
+            None,
+            "a sum that wraps to a NON-NEGATIVE value must still be rejected by checked_add \
+             in the combine (the >= 0 gate alone would not catch it)"
+        );
+    }
+
+    #[test]
     fn cal_merged_result_accepts_non_overflowing_integer_add() {
         let ch = Blake2b256Hash::from_bytes(vec![7u8; 32]);
         let br = branch(&[1, 2]);
