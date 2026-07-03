@@ -4,11 +4,11 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
+use models::rhoapi::ListParWithRandom;
 use models::rust::block_hash::BlockHash;
 use prost::bytes::Bytes;
 use rholang::rust::interpreter::merging::rholang_merging_logic::RholangMergingLogic;
 use rholang::rust::interpreter::rho_runtime::RhoHistoryRepository;
-use models::rhoapi::ListParWithRandom;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::internal::Datum;
 use rspace_plus_plus::rspace::merger::channel_change::ChannelChange;
@@ -308,8 +308,10 @@ fn split_overfilled_single_value_cells(
     mergeable_channels: &impl Fn(&DeployChainIndex) -> NumberChannelsDiff,
     base_datum: &impl Fn(
         &Blake2b256Hash,
-    )
-        -> Result<Vec<Datum<ListParWithRandom>>, rspace_plus_plus::rspace::errors::HistoryError>,
+    ) -> Result<
+        Vec<Datum<ListParWithRandom>>,
+        rspace_plus_plus::rspace::errors::HistoryError,
+    >,
     base_binary: &impl Fn(
         &Blake2b256Hash,
     ) -> Result<Vec<Vec<u8>>, rspace_plus_plus::rspace::errors::HistoryError>,
@@ -340,7 +342,9 @@ fn split_overfilled_single_value_cells(
                 continue;
             }
             let chg = entry.value();
-            let c = combined.entry(ch.clone()).or_insert_with(ChannelChange::empty);
+            let c = combined
+                .entry(ch.clone())
+                .or_insert_with(ChannelChange::empty);
             c.added.extend(chg.added.clone());
             c.removed.extend(chg.removed.clone());
             if !chg.added.is_empty() {
@@ -376,9 +380,7 @@ fn split_overfilled_single_value_cells(
     let mut rejected = HashableSet(HashSet::new());
     if !rejected_seed.is_empty() {
         for chain in &all_chains {
-            if rejected_seed.contains(chain)
-                || rejected_seed.iter().any(|r| depends(chain, r))
-            {
+            if rejected_seed.contains(chain) || rejected_seed.iter().any(|r| depends(chain, r)) {
                 rejected.0.insert(chain.clone());
             }
         }

@@ -176,8 +176,8 @@ impl RholangMergingLogic {
         if changes.added.is_empty() {
             return Ok(());
         }
-        let base_is_single_number = base_data.len() == 1
-            && Self::try_get_number_with_rnd(&base_data[0].a).is_some();
+        let base_is_single_number =
+            base_data.len() == 1 && Self::try_get_number_with_rnd(&base_data[0].a).is_some();
         if !base_is_single_number {
             return Ok(());
         }
@@ -338,7 +338,10 @@ mod tests {
             &base_bin,
             &change(vec![vec![0x5eu8]], vec![]),
         );
-        assert!(res.is_err(), "produce-only onto single-value number cell must be rejected");
+        assert!(
+            res.is_err(),
+            "produce-only onto single-value number cell must be rejected"
+        );
     }
 
     // A proper read-modify-write consumes the base and produces one replacement
@@ -370,7 +373,10 @@ mod tests {
             &base_bin,
             &change(vec![vec![0xaau8]], vec![]),
         );
-        assert!(res.is_ok(), "registry/non-numeric channel must merge, not conflict");
+        assert!(
+            res.is_ok(),
+            "registry/non-numeric channel must merge, not conflict"
+        );
     }
 
     #[test]
