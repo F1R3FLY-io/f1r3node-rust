@@ -222,6 +222,7 @@ impl GenesisBuilder {
                 epoch_length: 1000,
                 quarantine_length: 50000,
                 number_of_active_validators: 100,
+                fault_tolerance_threshold_ppm: 0,
                 validators: bonds
                     .into_iter()
                     .map(|(pk, stake)| Validator {

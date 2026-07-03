@@ -424,6 +424,7 @@ impl TestFixture {
             genesis_params.proof_of_stake.epoch_length,
             genesis_params.proof_of_stake.quarantine_length,
             genesis_params.proof_of_stake.number_of_active_validators,
+            genesis_params.proof_of_stake.fault_tolerance_threshold_ppm,
             required_sigs,
             genesis_params
                 .proof_of_stake

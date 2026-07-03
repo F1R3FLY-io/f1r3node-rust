@@ -750,14 +750,42 @@ impl BlockDagKeyValueStorage {
                 .map(|justification| &justification.validator)
                 .collect();
 
+            let newly_bonded_unseen: Vec<Validator> = newly_bonded_set
+                .difference(&justification_validators)
+                .filter_map(|validator| {
+                    match self
+                        .latest_messages_index
+                        .contains_key(ValidatorSerde((*validator).clone()))
+                    {
+                        Ok(false) => Some((*validator).clone()),
+                        _ => None,
+                    }
+                })
+                .collect();
+
             let mut result = HashMap::new();
-            for validator in newly_bonded_set.difference(&justification_validators) {
-                // This filter is required to enable adding blocks backward from higher height to lower
-                if let Ok(false) = self
-                    .latest_messages_index
-                    .contains_key(ValidatorSerde((*validator).clone()))
-                {
-                    result.insert((*validator).clone(), block_hash.clone());
+            if !newly_bonded_unseen.is_empty() {
+                let placeholder = {
+                    let guard = self.block_metadata_index.read().unwrap();
+                    let dag_state = guard.dag_state().read().unwrap();
+                    dag_state
+                        .height_map
+                        .get(&0)
+                        .and_then(|blocks| blocks.iter().min().cloned())
+                        .unwrap_or_else(|| block_hash.clone())
+                };
+
+                for validator in newly_bonded_unseen {
+                    tracing::debug!(
+                        target: "f1r3.trace.lm_register",
+                        via = "newly_bonded",
+                        validator = %PrettyPrinter::build_string_bytes(&validator),
+                        registered_block = %PrettyPrinter::build_string_bytes(&placeholder),
+                        inserting_sender = %PrettyPrinter::build_string_bytes(&block.sender),
+                        inserting_seq = block.seq_num,
+                        "newly bonded validator latest-message slot registered"
+                    );
+                    result.insert(validator, placeholder.clone());
                 }
             }
 

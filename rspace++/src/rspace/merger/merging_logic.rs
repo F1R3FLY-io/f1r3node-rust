@@ -947,7 +947,7 @@ where
             conflict_pairs = ?pairs,
             global_branches = ?global_branches,
             potential_comm_channels = ?comm_channels,
-            "conflicting (lo,hi) index pairs from checks #1/#2/#3"
+            "conflicting (lo,hi) index pairs from event-indexed checks"
         );
     }
 
@@ -1939,6 +1939,94 @@ mod tests {
 
         // Not affected since it's consumed but also created in the same log
         assert!(produces_affected(&e).0.is_empty());
+    }
+
+    fn roundtrip_index(
+        channel: Blake2b256Hash,
+        consumed_seed: u8,
+        emitted_seed: u8,
+    ) -> EventLogIndex {
+        let mut e = EventLogIndex::empty();
+        e.produces_consumed.0.insert(Produce {
+            channel_hash: channel.clone(),
+            persistent: false,
+            hash: Blake2b256Hash::from_bytes(vec![consumed_seed]),
+            is_deterministic: true,
+            output_value: vec![],
+            failed: false,
+        });
+        e.produces_linear.0.insert(Produce {
+            channel_hash: channel,
+            persistent: false,
+            hash: Blake2b256Hash::from_bytes(vec![emitted_seed]),
+            is_deterministic: true,
+            output_value: vec![],
+            failed: false,
+        });
+        e
+    }
+
+    #[test]
+    fn event_indexed_conflict_map_detects_roundtrip_channel_writers() {
+        // Genuine single-value-cell race: a cell holds ONE datum, so both
+        // concurrent writers consume that SAME base datum (seed 1) and emit
+        // different replacements. Only the same-consumed case is a real
+        // keep-one conflict.
+        let channel = Blake2b256Hash::from_bytes(vec![42]);
+        let a = roundtrip_index(channel.clone(), 1, 10);
+        let b = roundtrip_index(channel, 1, 11);
+        let branches = vec![0, 1];
+        let map = compute_conflict_map_event_indexed(&branches, &[&a, &b]);
+
+        assert!(map.get(&0).unwrap().0.contains(&1));
+        assert!(map.get(&1).unwrap().0.contains(&0));
+    }
+
+    #[test]
+    fn event_indexed_conflict_map_allows_disjoint_consumed_writers() {
+        // Two writers consuming DIFFERENT data (seeds 1 and 2) on a shared
+        // channel are not racing on one cell — this is the registry /
+        // TreeHashMap shape (distinct keys/sub-nodes), which must merge even
+        // though the emitted produces differ.
+        let channel = Blake2b256Hash::from_bytes(vec![45]);
+        let a = roundtrip_index(channel.clone(), 1, 10);
+        let b = roundtrip_index(channel, 2, 11);
+        let branches = vec![0, 1];
+        let map = compute_conflict_map_event_indexed(&branches, &[&a, &b]);
+
+        assert!(map.get(&0).unwrap().0.is_empty());
+        assert!(map.get(&1).unwrap().0.is_empty());
+    }
+
+    #[test]
+    fn event_indexed_conflict_map_allows_identical_roundtrip_emits() {
+        // Disjoint consumed data (seeds 1 and 2) with identical emit (seed 10):
+        // not a single-cell race, so no conflict. (Sharing the consumed datum
+        // would instead be a double-consume conflict, independent of the emit.)
+        let channel = Blake2b256Hash::from_bytes(vec![43]);
+        let a = roundtrip_index(channel.clone(), 1, 10);
+        let b = roundtrip_index(channel, 2, 10);
+        let branches = vec![0, 1];
+        let map = compute_conflict_map_event_indexed(&branches, &[&a, &b]);
+
+        assert!(map.get(&0).unwrap().0.is_empty());
+        assert!(map.get(&1).unwrap().0.is_empty());
+    }
+
+    #[test]
+    fn event_indexed_conflict_map_allows_mergeable_roundtrip_channel_writers() {
+        let channel = Blake2b256Hash::from_bytes(vec![44]);
+        let mut a = roundtrip_index(channel.clone(), 1, 10);
+        let mut b = roundtrip_index(channel.clone(), 2, 11);
+        a.number_channels_data
+            .insert(channel.clone(), (0, MergeType::IntegerAdd));
+        b.number_channels_data
+            .insert(channel, (0, MergeType::IntegerAdd));
+        let branches = vec![0, 1];
+        let map = compute_conflict_map_event_indexed(&branches, &[&a, &b]);
+
+        assert!(map.get(&0).unwrap().0.is_empty());
+        assert!(map.get(&1).unwrap().0.is_empty());
     }
 
     #[test]

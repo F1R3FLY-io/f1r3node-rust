@@ -120,7 +120,7 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
             );
         }
 
-        let dag = self.block_dag_storage.get_representation();
+        let mut dag = self.block_dag_storage.get_representation();
 
         // Parent selection: Use latest block from EACH bonded validator.
         // Every block should have one parent per validator to ensure all deploy effects
@@ -146,68 +146,27 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
             .filter_map(|hash| self.block_store.get(hash).ok().flatten())
             .collect();
 
-        // Sort parents deterministically with a near-tip tolerance:
-        // - if both parents are near the maximum parent height, order by hash only to keep
-        //   main-parent choice stable across validators even under slight view skew;
-        // - otherwise prefer higher block number, then hash.
-        //
-        // Without this, validators tend to pick their own freshest block as main parent,
-        // which can keep latest messages on disjoint main-parent chains and starve finalization.
+        let ghost_main_parent = self
+            .estimator
+            .tips_with_latest_messages(&mut dag, &self.approved_block, valid_latest_msgs.clone())
+            .await?
+            .tips
+            .into_iter()
+            .next();
         let mut sorted_parents_list = parent_blocks_list;
-        let max_parent_block_number = sorted_parents_list
-            .iter()
-            .map(|b| b.body.state.block_number)
-            .max()
-            .unwrap_or(0);
-        let near_tip_tolerance_blocks: i64 = 0;
         sorted_parents_list.sort_by(|a, b| {
-            let a_num = a.body.state.block_number;
-            let b_num = b.body.state.block_number;
-            let a_is_near_tip =
-                max_parent_block_number.saturating_sub(a_num) <= near_tip_tolerance_blocks;
-            let b_is_near_tip =
-                max_parent_block_number.saturating_sub(b_num) <= near_tip_tolerance_blocks;
-
-            if a_is_near_tip && b_is_near_tip {
-                a.block_hash.cmp(&b.block_hash)
-            } else {
-                let block_num_cmp = b_num.cmp(&a_num);
-                if block_num_cmp != std::cmp::Ordering::Equal {
-                    block_num_cmp
-                } else {
-                    a.block_hash.cmp(&b.block_hash)
-                }
-            }
+            let a_main = ghost_main_parent.as_ref() == Some(&a.block_hash);
+            let b_main = ghost_main_parent.as_ref() == Some(&b.block_hash);
+            b_main
+                .cmp(&a_main)
+                .then_with(|| a.block_hash.cmp(&b.block_hash))
         });
 
-        // Filter to blocks with matching bond maps (required for merge compatibility)
         // If no parent blocks exist (genesis case), use approved block as the parent
         let unfiltered_parents = if sorted_parents_list.is_empty() {
             vec![self.approved_block.clone()]
         } else {
-            // Use the newest block as the bond-reference baseline.
-            // Relying on the first (hash-sorted near-tip) block can select an older
-            // parent and regress snapshot max_block_num when a joiner/fresh bond-map
-            // divergence is present.
-            let reference_bonds = sorted_parents_list
-                .iter()
-                .max_by(|a, b| {
-                    a.body
-                        .state
-                        .block_number
-                        .cmp(&b.body.state.block_number)
-                        .then_with(|| a.block_hash.cmp(&b.block_hash))
-                })
-                .expect("sorted_parents_list is non-empty after is_empty() check")
-                .body
-                .state
-                .bonds
-                .clone();
-
             sorted_parents_list
-                .into_iter()
-                .filter(|block| block.body.state.bonds == reference_bonds)
-                .collect()
         };
 
         let unfiltered_parents_count = unfiltered_parents.len();
@@ -613,7 +572,15 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
             let (bonds_cache_result, t3) = timed_step(
                 "bonds-cache",
                 BLOCK_VALIDATION_STEP_BONDS_CACHE_TIME_METRIC,
-                async { Ok(Validate::bonds_cache(block, &self.runtime_manager).await) },
+                async {
+                    Ok(Validate::bonds_cache_from_floor(
+                        block,
+                        &self.block_store,
+                        snapshot,
+                        &self.runtime_manager,
+                    )
+                    .await)
+                },
             )
             .await?;
             tracing::debug!(target: "f1r3fly.casper", "bonds-cache-validated");
@@ -992,34 +959,6 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
         // Insert block as valid into DAG storage
         let updated_dag = self.block_dag_storage.insert(block, false, false)?;
         self.record_dag_cardinality_metrics(&updated_dag);
-
-        // Remove user deploys from pending deploy storage as soon as the block is
-        // accepted into the DAG. This keeps pending deploy pool bounded and avoids
-        // repeating selection scans on already-finalized deploys.
-        let deploys: Vec<_> = block
-            .body
-            .deploys
-            .iter()
-            .map(|pd| pd.deploy.clone())
-            .collect();
-        if !deploys.is_empty() {
-            let deploys_count = deploys.len();
-            let block_hash = PrettyPrinter::build_string_bytes(&block.block_hash);
-            let block_number = block.body.state.block_number;
-            self.deploy_storage
-                .lock()
-                .map_err(|_| {
-                    CasperError::RuntimeError("Failed to acquire deploy_storage lock".to_string())
-                })?
-                .remove(deploys)?;
-
-            tracing::debug!(
-                "Removed {} deploys from pending pool for accepted block {} at {}.",
-                deploys_count,
-                block_hash,
-                block_number
-            );
-        }
 
         // Remove block from casper buffer
         let block_hash_serde = BlockHashSerde(block.block_hash.clone());

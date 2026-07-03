@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
 use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
+use block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use crypto::rust::private_key::PrivateKey;
 use crypto::rust::signatures::signed::Signed;
@@ -534,16 +535,25 @@ fn extract_deploy_sig_from_refund_failure(msg: &str) -> Option<Vec<u8>> {
 
 fn quarantine_refund_failure_deploy(
     deploy_storage: Arc<Mutex<KeyValueDeployStorage>>,
+    rejected_deploy_buffer: Arc<Mutex<KeyValueRejectedDeployBuffer>>,
     failure_msg: &str,
-) -> Result<bool, CasperError> {
+) -> Result<(bool, bool), CasperError> {
     let Some(sig) = extract_deploy_sig_from_refund_failure(failure_msg) else {
-        return Ok(false);
+        return Ok((false, false));
     };
 
-    let mut guard = deploy_storage
+    let removed_from_deploy_storage = deploy_storage
         .lock()
-        .map_err(|e| CasperError::LockError(e.to_string()))?;
-    guard.remove_by_sig(&sig).map_err(CasperError::KvStoreError)
+        .map_err(|e| CasperError::LockError(e.to_string()))?
+        .remove_by_sig(&sig)
+        .map_err(CasperError::KvStoreError)?;
+    let removed_from_rejected_buffer = rejected_deploy_buffer
+        .lock()
+        .map_err(|e| CasperError::LockError(e.to_string()))?
+        .remove_by_sig(&sig)
+        .map_err(CasperError::KvStoreError)?;
+
+    Ok((removed_from_deploy_storage, removed_from_rejected_buffer))
 }
 
 pub async fn create(
@@ -825,10 +835,16 @@ pub async fn create(
         Err(CasperError::SystemRuntimeError(SystemDeployPlatformFailure::GasRefundFailure(
             msg,
         ))) => {
-            let removed = quarantine_refund_failure_deploy(deploy_storage.clone(), &msg)?;
+            let (removed_from_deploy_storage, removed_from_rejected_buffer) =
+                quarantine_refund_failure_deploy(
+                    deploy_storage.clone(),
+                    rejected_deploy_buffer.clone(),
+                    &msg,
+                )?;
             tracing::warn!(
-                "Gas refund failure during checkpoint; quarantined_toxic_deploy={} error={}",
-                removed,
+                "Gas refund failure during checkpoint; quarantined_toxic_deploy_storage={} quarantined_toxic_rejected_buffer={} error={}",
+                removed_from_deploy_storage,
+                removed_from_rejected_buffer,
                 msg
             );
             return Ok(BlockCreatorResult::NoNewDeploys);
@@ -855,6 +871,50 @@ pub async fn create(
         new_bonds,
     ) = checkpoint_data;
 
+    let block_bonds = {
+        let parent_hashes: Vec<BlockHash> = parents.iter().map(|p| p.block_hash.clone()).collect();
+        let latest_messages: BTreeMap<Validator, BlockHash> = casper_snapshot
+            .justifications
+            .iter()
+            .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
+            .collect();
+        let floor = crate::rust::finality::floor::finalized_floor(
+            &casper_snapshot.dag,
+            &parent_hashes,
+            &latest_messages,
+            casper_snapshot
+                .on_chain_state
+                .shard_conf
+                .fault_tolerance_threshold,
+        )
+        .await?;
+        let floor_block = block_store.get(&floor.hash)?.ok_or_else(|| {
+            CasperError::RuntimeError(format!(
+                "finalized-floor block {} not in block store for block bonds",
+                pretty_printer::PrettyPrinter::build_string_bytes(&floor.hash)
+            ))
+        })?;
+        let floor_state_hash = &floor_block.body.state.post_state_hash;
+        let floor_bonds = runtime_manager.compute_bonds(floor_state_hash).await?;
+        let active = runtime_manager
+            .get_active_validators(floor_state_hash)
+            .await?;
+        let committee: Vec<Bond> = floor_bonds
+            .into_iter()
+            .filter(|bond| active.contains(&bond.validator))
+            .collect();
+        if committee.len() != new_bonds.len() {
+            tracing::info!(
+                target: "f1r3fly.casper.bonds_validation",
+                floor_number = floor.block_number,
+                committee = committee.len(),
+                post_state_bonds = new_bonds.len(),
+                "block bonds field differs from post-state bonds"
+            );
+        }
+        committee
+    };
+
     let casper_version = casper_snapshot.on_chain_state.shard_conf.casper_version;
 
     // Span[F].trace(ProcessDeploysAndCreateBlockMetricsSource) from Scala
@@ -876,7 +936,7 @@ pub async fn create(
         processed_deploys,
         rejected_deploys,
         processed_system_deploys,
-        new_bonds,
+        block_bonds,
         shard_id,
         casper_version,
     );
@@ -981,6 +1041,8 @@ fn not_future_deploy(current_block_number: i64, deploy_data: &DeployData) -> boo
 
 #[cfg(test)]
 mod tests {
+    use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+
     use super::*;
 
     fn validator(byte: u8) -> Validator { Bytes::from(vec![byte; 32]) }
@@ -1070,5 +1132,57 @@ mod tests {
              fires, prepare_slashing_deploys will emit redundant SlashDeploys every \
              block until the invalid latest message ages out of the DAG view."
         );
+    }
+
+    #[tokio::test]
+    async fn refund_failure_quarantine_removes_recovered_deploy_from_both_stores() {
+        let mut kvm = InMemoryStoreManager::new();
+        let deploy_storage = Arc::new(Mutex::new(
+            KeyValueDeployStorage::new(&mut kvm)
+                .await
+                .expect("deploy storage"),
+        ));
+        let rejected_deploy_buffer = Arc::new(Mutex::new(
+            KeyValueRejectedDeployBuffer::new(&mut kvm)
+                .await
+                .expect("rejected deploy buffer"),
+        ));
+        let deploy = construct_deploy::basic_deploy_data(42, None, Some("test".to_string()))
+            .expect("deploy");
+
+        deploy_storage
+            .lock()
+            .expect("deploy storage lock")
+            .add(vec![deploy.clone()])
+            .expect("add deploy");
+        rejected_deploy_buffer
+            .lock()
+            .expect("rejected buffer lock")
+            .add(vec![deploy.clone()])
+            .expect("add recovered deploy");
+
+        let msg = format!(
+            "(Bug found) Deploy refund failed: Insufficient funds, deploy_sig={}, deployer_pk=04ffc016, refund_amount=4999911287",
+            hex::encode(&deploy.sig)
+        );
+        let removed = quarantine_refund_failure_deploy(
+            deploy_storage.clone(),
+            rejected_deploy_buffer.clone(),
+            &msg,
+        )
+        .expect("quarantine");
+
+        assert_eq!(removed, (true, true));
+        assert!(!deploy_storage
+            .lock()
+            .expect("deploy storage lock")
+            .read_all()
+            .expect("read deploy storage")
+            .contains(&deploy));
+        assert!(!rejected_deploy_buffer
+            .lock()
+            .expect("rejected buffer lock")
+            .contains_sig(&deploy.sig)
+            .expect("contains sig"));
     }
 }

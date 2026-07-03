@@ -430,6 +430,32 @@ pub mod test_helpers {
 
             CasperSnapshot::new(dag)
         }
+
+        pub fn bond_validator_in_snapshot(
+            snapshot: &mut CasperSnapshot,
+            validator: models::rust::validator::Validator,
+        ) {
+            use models::rust::casper::protocol::casper_message::Bond;
+
+            if snapshot.parents.is_empty() {
+                snapshot
+                    .parents
+                    .push(models::rust::block_implicits::get_random_block_default());
+            }
+            let parent = &mut snapshot.parents[0];
+            if !parent
+                .body
+                .state
+                .bonds
+                .iter()
+                .any(|bond| bond.validator == validator)
+            {
+                parent.body.state.bonds.push(Bond {
+                    validator,
+                    stake: 100,
+                });
+            }
+        }
     }
 
     #[async_trait]

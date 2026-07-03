@@ -2124,6 +2124,99 @@ async fn bonds_cache_validation_should_succeed_on_a_valid_block_and_fail_on_modi
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn bonds_cache_from_floor_uses_floor_state_for_child_block_bonds() {
+    with_storage(|mut block_store, mut block_dag_storage| async move {
+        let context = GenesisBuilder::new()
+            .build_genesis_with_parameters(None)
+            .await
+            .unwrap();
+        let genesis = context.genesis_block.clone();
+
+        block_store
+            .put(genesis.block_hash.clone(), &genesis)
+            .unwrap();
+        block_dag_storage.insert(&genesis, false, true).unwrap();
+
+        let mut kvm = mk_test_rnode_store_manager_from_genesis(&context);
+        let m_store = crate::util::rholang::resources::mergeable_store_from_dyn(&mut *kvm)
+            .await
+            .unwrap();
+        let mut runtime_manager = RuntimeManager::create_with_store(
+            (&mut *kvm).r_space_stores().await.unwrap(),
+            m_store,
+            std::sync::Arc::new(Genesis::default_mergeable_tags()),
+            rholang::rust::interpreter::external_services::ExternalServices::noop(),
+        );
+
+        let mut casper_snapshot = mk_casper_snapshot(block_dag_storage.get_representation());
+        interpreter_util::validate_block_checkpoint(
+            &genesis,
+            &mut block_store,
+            &mut casper_snapshot,
+            &mut runtime_manager,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let floor_state = proto_util::post_state_hash(&genesis);
+        let active = runtime_manager
+            .get_active_validators(&floor_state)
+            .await
+            .unwrap();
+        let floor_bonds: Vec<Bond> = runtime_manager
+            .compute_bonds(&floor_state)
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|bond| active.contains(&bond.validator))
+            .collect();
+        let justifications: HashMap<_, _> = floor_bonds
+            .iter()
+            .map(|bond| (bond.validator.clone(), genesis.block_hash.clone()))
+            .collect();
+
+        let child = create_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            vec![genesis.block_hash.clone()],
+            &genesis,
+            None,
+            Some(floor_bonds),
+            Some(justifications),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        let snapshot = mk_casper_snapshot(block_dag_storage.get_representation());
+
+        let result_valid =
+            Validate::bonds_cache_from_floor(&child, &block_store, &snapshot, &runtime_manager)
+                .await;
+        assert_eq!(result_valid, Either::Right(ValidBlock::Valid));
+
+        let mut modified_child = child.clone();
+        modified_child.body.state.bonds = Vec::new();
+
+        let result_invalid = Validate::bonds_cache_from_floor(
+            &modified_child,
+            &block_store,
+            &snapshot,
+            &runtime_manager,
+        )
+        .await;
+        assert_eq!(
+            result_invalid,
+            Either::Left(BlockError::Invalid(InvalidBlock::InvalidBondsCache))
+        );
+    })
+    .await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn field_format_validation_should_succeed_on_a_valid_block_and_fail_on_empty_fields() {
     with_storage(|_block_store, mut block_dag_storage| async move {
         let context = GenesisBuilder::new()

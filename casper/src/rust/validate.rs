@@ -1,6 +1,6 @@
 // See casper/src/main/scala/coop/rchain/casper/Validate.scala
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
@@ -1183,6 +1183,94 @@ impl Validate {
             }
             Err(ex) => {
                 tracing::warn!("Failed to compute bonds from tuplespace hash: {}", ex);
+                Either::Left(BlockError::BlockException(ex))
+            }
+        }
+    }
+
+    pub async fn bonds_cache_from_floor(
+        b: &BlockMessage,
+        block_store: &KeyValueBlockStore,
+        snapshot: &CasperSnapshot,
+        runtime_manager: &RuntimeManager,
+    ) -> ValidBlockProcessing {
+        let parent_hashes = b.header.parents_hash_list.clone();
+        if parent_hashes.is_empty() {
+            return Self::bonds_cache(b, runtime_manager).await;
+        }
+
+        let latest_messages: BTreeMap<Validator, BlockHash> = b
+            .justifications
+            .iter()
+            .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
+            .collect();
+        let floor = match crate::rust::finality::floor::finalized_floor(
+            &snapshot.dag,
+            &parent_hashes,
+            &latest_messages,
+            snapshot.on_chain_state.shard_conf.fault_tolerance_threshold,
+        )
+        .await
+        {
+            Ok(floor) => floor,
+            Err(ex) => {
+                tracing::warn!("Failed to derive finalized floor for bonds cache: {}", ex);
+                return Either::Left(BlockError::BlockException(ex));
+            }
+        };
+        let floor_block = match block_store.get(&floor.hash) {
+            Ok(Some(block)) => block,
+            Ok(None) => {
+                let err = CasperError::RuntimeError(format!(
+                    "finalized-floor block {} not in block store for bonds cache",
+                    PrettyPrinter::build_string_bytes(&floor.hash)
+                ));
+                tracing::warn!("{}", err);
+                return Either::Left(BlockError::BlockException(err));
+            }
+            Err(ex) => {
+                tracing::warn!(
+                    "Failed to read finalized-floor block for bonds cache: {}",
+                    ex
+                );
+                return Either::Left(BlockError::BlockException(ex.into()));
+            }
+        };
+        let floor_state = proto_util::post_state_hash(&floor_block);
+
+        match runtime_manager.compute_bonds(&floor_state).await {
+            Ok(computed_bonds) => {
+                let active = match runtime_manager.get_active_validators(&floor_state).await {
+                    Ok(active) => active,
+                    Err(ex) => {
+                        tracing::warn!(
+                            "Failed to compute active validators for bonds cache: {}",
+                            ex
+                        );
+                        return Either::Left(BlockError::BlockException(ex));
+                    }
+                };
+                let bonds_set: HashSet<_> = proto_util::bonds(b)
+                    .iter()
+                    .map(|bond| (bond.validator.clone(), bond.stake))
+                    .collect();
+                let computed_bonds_set: HashSet<_> = computed_bonds
+                    .iter()
+                    .filter(|bond| active.contains(&bond.validator))
+                    .map(|bond| (bond.validator.clone(), bond.stake))
+                    .collect();
+
+                if bonds_set == computed_bonds_set {
+                    Either::Right(ValidBlock::Valid)
+                } else {
+                    tracing::warn!(
+                        "Bonds in finalized-floor proof of stake contract do not match block's bond cache."
+                    );
+                    Either::Left(BlockError::Invalid(InvalidBlock::InvalidBondsCache))
+                }
+            }
+            Err(ex) => {
+                tracing::warn!("Failed to compute bonds from finalized-floor state: {}", ex);
                 Either::Left(BlockError::BlockException(ex))
             }
         }

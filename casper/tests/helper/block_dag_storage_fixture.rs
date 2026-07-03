@@ -43,7 +43,9 @@ where
     // Acquire global lock for shared LMDB to ensure test isolation.
     // This prevents concurrent tests from interfering with each other when using shared LMDB.
     // The lock is held for the entire test duration to guarantee consistency.
-    let _lock_guard = resources::SHARED_LMDB_LOCK.lock().unwrap();
+    let _lock_guard = resources::SHARED_LMDB_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
 
     async fn create(
         genesis_context: &GenesisContext,
@@ -86,7 +88,9 @@ where
 {
     // Acquire global lock for shared LMDB to ensure test isolation.
     // Same reason as with_genesis - prevents race conditions with shared LMDB.
-    let _lock_guard = resources::SHARED_LMDB_LOCK.lock().unwrap();
+    let _lock_guard = resources::SHARED_LMDB_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
 
     async fn create() -> (KeyValueBlockStore, IndexedBlockDagStorage) {
         let scope_id = resources::generate_scope_id();

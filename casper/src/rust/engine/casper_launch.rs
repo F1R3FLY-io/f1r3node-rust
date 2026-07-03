@@ -35,6 +35,7 @@ use crate::rust::engine::genesis_ceremony_master::GenesisCeremonyMaster;
 use crate::rust::engine::genesis_validator::GenesisValidator;
 use crate::rust::errors::CasperError;
 use crate::rust::estimator::Estimator;
+use crate::rust::genesis::contracts::proof_of_stake::ProofOfStake;
 use crate::rust::multi_parent_casper_impl::MultiParentCasperImpl;
 use crate::rust::util::bonds_parser::BondsParser;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
@@ -487,6 +488,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             self.conf.genesis_block_data.epoch_length,
             self.conf.genesis_block_data.quarantine_length,
             self.conf.genesis_block_data.number_of_active_validators,
+            ProofOfStake::fault_tolerance_threshold_to_ppm(self.conf.fault_tolerance_threshold),
             self.conf.genesis_ceremony.required_signatures,
             self.conf
                 .genesis_block_data
@@ -579,6 +581,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             self.conf.genesis_block_data.epoch_length,
             self.conf.genesis_block_data.quarantine_length,
             self.conf.genesis_block_data.number_of_active_validators,
+            ProofOfStake::fault_tolerance_threshold_to_ppm(self.conf.fault_tolerance_threshold),
             self.casper_shard_conf.shard_name.clone(),
             self.conf.genesis_block_data.deploy_timestamp,
             self.conf.genesis_ceremony.required_signatures,
