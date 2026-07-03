@@ -213,10 +213,37 @@ tlc_run "$(tlc_metadir fc_nt)"   "$FC/MC_ForkChoice_nontotal.cfg" "$FC/ForkChoic
 
 ### 5.4 Rust tests
 
-`shared` `list_ops.rs` (`tie_break_is_total_shuffle_invariant_on_distinct`), `casper`
-`proto_util.rs` (`weight_from_validator_missing_parent_is_typed_err`), and the existing
-fork-choice suite (`casper/tests/slashing/{prop_t_13c_forkchoice_bisim, uc_16, uc_17}`)
-plus `three_writers_converge_under_load` exercise the estimator end-to-end.
+The property-based fork-choice suite lives in `casper/tests/fork_choice/`, wired into the
+gate's `[8/8]` Rust tier (each test carries its Rocq citation in a doc-comment):
+
+- **`prop_filter_deep_parents`** — the concrete `Estimator::filter_deep_parents` conforms to
+  `GuardBridge.within_depth` / `prop_filter`: every retained secondary parent is within depth
+  (soundness), the main parent is retained first, nothing within depth is dropped
+  (completeness), and the retained set equals `{main} ∪ prop_filter(secondaries)`.
+- **`prop_estimator_determinism`** — `Estimator::tips_with_latest_messages` is invariant under
+  permuted latest-message input / `HashMap` seeds (`MainTheorem.fork_choice_determinism`); the
+  `build_scores_map` score monoid is permutation-invariant (`Score.score_perm_invariant`); and
+  the T-10 invalid-latest-message `retain` excludes invalid tips (`Filter`).
+- **`prop_lca`** — `lowest_universal_common_ancestor_many` over random DAGs: the fold converges
+  (`Lca.reduce_converges`), the result is a common ancestor of every input
+  (`Lca.lca_is_common_ancestor`), and no common ancestor is higher (`Lca.lcua_many_is_max`, over
+  single-parent trees per the `Lca.v` §7 `single_parent_spine` residual).
+- **`prop_bound`** — the B2/B3/B4 seams on `tips_with_latest_messages`: `usize`-cast sentinels +
+  positive caps (B2), typed `Err` on score overflow (B3) and empty ranked tips (B4), and `take`
+  never drops the head.
+- **Tie-break** — `shared` `list_ops::sort_by_with_decreasing_order` proptest
+  (`TieBreak.sort_total_order`): permutation-invariant, output is a permutation of the input, and
+  the argmax is unique — the S1 linchpin the estimator's ranking depends on.
+- **`Validate::parents` depth horizon** — `casper/tests/batch2/validate_test.rs::
+  parent_validation_enforces_max_parent_depth_horizon` is the **receive-side** realization of
+  the C12 bridge (§6): with a finite `max_parent_depth`, an honest within-horizon parent
+  accepts, a too-deep parent is `InvalidParents`, and `depth_buffer` extends the horizon —
+  extending the abstract `honest_forkchoice_parents_validate` past `prop_filter` to the real
+  validator predicate.
+
+Plus `casper` `proto_util.rs` (`weight_from_validator_missing_parent_is_typed_err`), the
+existing bisimulation suite (`casper/tests/slashing/{prop_t_13c_forkchoice_bisim, uc_16,
+uc_17}`), and `three_writers_converge_under_load` exercise the estimator end-to-end.
 
 ---
 
@@ -297,7 +324,7 @@ TLA⁺/Z3/Sage/Wolfram fail-soft; PlantUML render check). Target result: **ALL G
 | Rocq kernel (coqchk) | **independent kernel re-check** of `ForkChoice.MainTheorem` + all deps ⇒ "Modules were successfully checked" (C3 — the trust root under the `Print Assumptions` claim) |
 | TLA⁺ | `MC_ForkChoice.cfg` + `MC_ForkChoiceScan.cfg` pass; both bug cfgs reproduce their counterexample |
 | Apalache (unbounded) | **`IndInv = TypeOK ∧ Inv_Deterministic ∧ Inv_HeaviestSubtree` proved INDUCTIVE** (BASE `Init ⊨ IndInv` + STEP `Next` preserves `IndInv`) on `ForkChoice_apalache.tla` — over **all of ℤ scores** (native SMT `Int`, strictly beyond TLC's `MaxScore=2`); non-vacuous (`TotalTieBreak=FALSE` ⇒ STEP CTI = the S1 fork). Horizon-free: holds on every reachable state at any trajectory length (C9). Fail-soft. |
-| Rust proptest | **C12** `prop_filter_deep_parents` (4/4): the concrete `Estimator::filter_deep_parents` conforms to `GuardBridge.within_depth`/`prop_filter` — soundness + main-parent-retention + completeness + `retained == {main} ∪ prop_filter(secondaries)` (binds the abstract bridge to the real filter) |
+| Rust proptest | **C12** proposer-side `prop_filter_deep_parents` (4/4: `Estimator::filter_deep_parents` ⊨ `GuardBridge.within_depth`/`prop_filter` — soundness + main-parent-retention + completeness + `retained == {main} ∪ prop_filter(secondaries)`) **+ receive-side** `Validate::parents` depth-horizon (accept within / reject beyond / buffer extends); `prop_estimator_determinism` (permutation-invariant tips + score-monoid + T-10 filter); `prop_lca` (LUCA converges / common-ancestor / maximal); `prop_bound` (B2/B3/B4 sentinel/overflow/empty seams); tie-break `sort_by_with_decreasing_order` (perm-invariant + permutation + argmax-unique) — all pass |
 | Z3 | tie-break total order (5/5) + score supply-cap BitVec (4/4) |
 | Sage | fork-choice algebra ⇒ `ALL PASS` |
 | Wolfram | GHOST heaviest-subtree / termination / LCA-bound — via the licensed MCP evaluator |

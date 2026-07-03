@@ -125,6 +125,20 @@ The `1` is the system-deploy marker for slashes (`SystemDeployUtil.scala:55`);
 there is no named `SLASH_MARKER` constant in Scala — just the
 literal byte `1` in the `splitByte` call.
 
+> **Verified (T-Slash seed-wiring).** That the seed derives from the
+> offender's `invalidBlockHash` — not some other hash — is
+> `main_TSlash_deploy_seed_uses_invalid_block_hash` (`MainTheorem.v:302`):
+> every deploy `prepare_slashing_deploys` emits satisfies
+> `sd_seed = seed_fn(proposer, seqNum, sd_target_hash)`. In Rust both
+> proposer slash paths (the freshly-detected pass and the merge-rejected
+> recovery) build the deploy through the single
+> `block_creator::build_slash_deploy` helper, and the unit test
+> `build_slash_deploy_wires_seed_from_invalid_block_hash` (slashing gate
+> `[4/5]`) asserts the emitted `initial_rand` recomputes from the deploy's
+> own `invalid_block_hash`, with a negative control that a different hash
+> changes the seed — catching a wrong-hash regression that the
+> candidate-filtering tests would pass.
+
 ## 6.4 The `slash` Rholang contract — activity flow
 
 [![Diagram 07 — PoS.slash() Rholang activity flow](../diagrams/07-activity-pos-slash-contract.svg)](../diagrams/07-activity-pos-slash-contract.svg)

@@ -2028,6 +2028,20 @@ parent pre-state. ∎
 `Inv_ParentZeroRejectsEvenAmbientPositive` in
 `MC_AuthorizedSlashFlow.cfg`.
 
+**Rust realization (why no `ambient ≠ parent` fixture is needed).** The Rocq
+`authorized_slash_candidate_with_ambient` takes both `ambient_bonds` and `parent_bonds`
+precisely so it can *prove* the ambient argument is unused. The Rust receive gate
+`validate_received_slash_deploys` (`slashing_authorization.rs`) is handed a **single**
+snapshot whose `bonds_map` **is** the block's parent pre-state — the ambient view is never
+a parameter — so ambient-independence is enforced *structurally by the function signature*,
+a strictly stronger guarantee than any runtime fixture could give. The two directions of the
+theorem are already covered by `current_epoch_received_slash_deploy_is_accepted`
+(parent-positive ⟹ authorize) and `received_slash_deploy_rejects_unbonded_target`
+(parent-zero ⟹ reject) in `casper/tests/slashing/slash_authorization_regressions.rs`
+(gate `[4/5]`). A discriminating `ambient ≠ parent` fixture therefore has no Rust seam to
+exercise — class **(F)** (a model-level distinction that the realization makes structurally
+impossible to violate).
+
 #### 9.13.3 Theorem 9.13″ (Merge-rejected slash recovery dedup)
 
 **Statement.** *(`recoverable_rejected_slash_hashes_nodup`,
