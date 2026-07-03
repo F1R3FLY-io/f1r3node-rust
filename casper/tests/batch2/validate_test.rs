@@ -1709,6 +1709,121 @@ async fn parent_validation_should_enforce_max_number_of_parents_constraint() {
     .await
 }
 
+/// C12 (GuardBridge `honest_forkchoice_parents_validate` / `capped_parents_validate`):
+/// `Validate::parents` is the receive-side mirror of the proposer's `filter_deep_parents`.
+/// A parent WITHIN the depth horizon (`highest_tip − parent_number ≤ max_parent_depth +
+/// depth_buffer`) is ACCEPTED; one BEYOND it is `InvalidParents`; and `depth_buffer`
+/// extends the horizon. Both existing `Validate::parents` tests pass `i32::MAX` (depth
+/// check OFF), so the finite-horizon accept / reject / buffer paths were entirely untested —
+/// this closes the receive-side half of the C12 abstract bridge. The test block is sent by a
+/// FRESH validator (no prior message), so it is `Valid` as soon as the depth check passes
+/// (validate.rs:1020), isolating the depth filter from the validator-progress check.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn parent_validation_enforces_max_parent_depth_horizon() {
+    with_storage(|mut block_store, mut block_dag_storage| async move {
+        let v0 = generate_validator(Some("Validator0"));
+        let v_fresh = generate_validator(Some("FreshValidator"));
+        let bonds = vec![
+            Bond { validator: v0.clone(), stake: 10 },
+            Bond { validator: v_fresh.clone(), stake: 10 },
+        ];
+
+        let genesis = create_genesis_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            None,
+            Some(bonds.clone()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        // Linear chain genesis <- b1 <- b2 <- b3, all by v0 (consecutive block numbers),
+        // so b3 is the highest tip. Depth is relative: b2 is at depth 1 from b3, b1 at depth 2.
+        let b1 = create_block(
+            &mut block_store, &mut block_dag_storage, vec![genesis.block_hash.clone()],
+            &genesis, Some(v0.clone()), Some(bonds.clone()),
+            None, None, None, None, None, Some(1), None,
+        );
+        let b2 = create_block(
+            &mut block_store, &mut block_dag_storage, vec![b1.block_hash.clone()],
+            &genesis, Some(v0.clone()), Some(bonds.clone()),
+            None, None, None, None, None, Some(2), None,
+        );
+        let b3 = create_block(
+            &mut block_store, &mut block_dag_storage, vec![b2.block_hash.clone()],
+            &genesis, Some(v0.clone()), Some(bonds.clone()),
+            None, None, None, None, None, Some(3), None,
+        );
+        let _ = &b3;
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+
+        // b_ok: parent b2 (depth 1). b_deep: parent b1 (depth 2). Both from the fresh validator.
+        let b_ok = build_block(
+            vec![b2.block_hash.clone()], Some(v_fresh.clone()), now, Some(bonds.clone()),
+            None, None, None, None, None, Some(1),
+        );
+        let b_deep = build_block(
+            vec![b1.block_hash.clone()], Some(v_fresh.clone()), now, Some(bonds.clone()),
+            None, None, None, None, None, Some(1),
+        );
+
+        let dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
+        let mut snap = mk_casper_snapshot(dag);
+
+        // Read the ACTUAL heights the storage assigned rather than assume the numbering
+        // scheme; b1 is structurally deeper than b2, so their depths from the tip strictly
+        // order regardless of the absolute numbers.
+        let tip = snap.dag.latest_block_number();
+        let b1_num = snap.dag.lookup_unsafe(&b1.block_hash).expect("b1 metadata").block_number;
+        let b2_num = snap.dag.lookup_unsafe(&b2.block_hash).expect("b2 metadata").block_number;
+        let depth_b1 = tip - b1_num;
+        let depth_b2 = tip - b2_num;
+        assert!(
+            depth_b1 > depth_b2 && depth_b2 >= 1,
+            "b1 must be strictly deeper than b2 and b2 not the tip (depths b1={depth_b1}, b2={depth_b2})"
+        );
+        // Horizon = depth_b2: b2 sits exactly at the horizon (accept), b1 is beyond it (reject).
+        let horizon = depth_b2 as i32;
+
+        // Accept: honest parent b2 within the horizon (depth_b2 ≤ horizon + buffer 0).
+        let ok = Validate::parents(&b_ok, &genesis, &mut snap, -1, horizon, 0, false);
+        assert_eq!(
+            ok,
+            Either::Right(ValidBlock::Valid),
+            "an honest parent within the depth horizon must validate"
+        );
+
+        // Reject: parent b1 beyond the horizon (depth_b1 > horizon + buffer 0).
+        let deep = Validate::parents(&b_deep, &genesis, &mut snap, -1, horizon, 0, false);
+        assert_eq!(
+            deep,
+            Either::Left(BlockError::Invalid(InvalidBlock::InvalidParents)),
+            "a parent beyond max_parent_depth must be InvalidParents"
+        );
+
+        // depth_buffer extends the horizon: the SAME too-deep parent b1 now validates when
+        // depth_buffer lifts max_allowed_depth to cover depth_b1 exactly.
+        let buffer_needed = (depth_b1 - depth_b2) as i32;
+        let buffered = Validate::parents(&b_deep, &genesis, &mut snap, -1, horizon, buffer_needed, false);
+        assert_eq!(
+            buffered,
+            Either::Right(ValidBlock::Valid),
+            "depth_buffer must extend the accepted parent horizon"
+        );
+    })
+    .await
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn block_summary_validation_should_short_circuit_after_first_invalidity() {
     with_storage(|mut block_store, mut block_dag_storage| async move {

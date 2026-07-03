@@ -300,6 +300,17 @@ if command -v cargo >/dev/null 2>&1; then
   else
     fail "Rust tie-break (shared list_ops) proptests failed (see /tmp/fc_rust_listops.log)"; tail -20 /tmp/fc_rust_listops.log | sed 's/^/      /'
   fi
+  # C12 receive-side mirror: Validate::parents enforces the SAME depth horizon on the
+  # receiving side that filter_deep_parents applies proposer-side — an honest within-horizon
+  # parent accepts, a too-deep parent is InvalidParents, and depth_buffer extends the
+  # horizon. Extends the abstract GuardBridge bridge to the real validator predicate.
+  # Integration test in the `mod` binary (casper/tests/batch2/validate_test.rs).
+  if cargo test -p casper --test mod -- parent_validation_enforces_max_parent_depth_horizon >/tmp/fc_rust_parents.log 2>&1 \
+       && grep -q "test result: ok" /tmp/fc_rust_parents.log; then
+    pass "Rust Validate::parents depth-horizon (C12 receive-side: accept within / reject beyond / buffer extends)"
+  else
+    fail "Rust Validate::parents depth-horizon test failed (see /tmp/fc_rust_parents.log)"; tail -20 /tmp/fc_rust_parents.log | sed 's/^/      /'
+  fi
 else
   skip "no cargo on PATH"
 fi

@@ -52,7 +52,7 @@ capped() {
   fi
 }
 
-echo "== [1/4] Rocq (authoritative) =="
+echo "== [1/5] Rocq (authoritative) =="
 if command -v coqc >/dev/null 2>&1 || [[ -x "$HOME/.opam/default/bin/coqc" ]]; then
   # shellcheck disable=SC1090
   eval "$(opam env 2>/dev/null)" 2>/dev/null || true
@@ -87,7 +87,7 @@ else
   fail "coqc not found — Rocq is authoritative, cannot skip"
 fi
 
-echo "== [2/4] TLA+ TLC bounded (fail-soft) =="
+echo "== [2/5] TLA+ TLC bounded (fail-soft) =="
 TLC_JAR="${TLC_JAR:-/usr/share/java/tla2tools.jar}"
 if [[ -f "$TLC_JAR" ]] || command -v tlc >/dev/null 2>&1; then
   # shellcheck disable=SC1091
@@ -169,7 +169,7 @@ else
   skip "no TLC jar (\$TLC_JAR) or 'tlc' on PATH"
 fi
 
-echo "== [3/4] Apalache unbounded symbolic (fail-soft) =="
+echo "== [3/5] Apalache unbounded symbolic (fail-soft) =="
 # UNBOUNDED (horizon-free) inductive-invariant check on the EAGER equivocation detector,
 # COMPLEMENTING the bounded TLC run above. On the type-annotated wrapper
 # EquivocationDetectorEager_apalache.tla (the TLC base module + MC_*.cfg are left intact),
@@ -209,7 +209,36 @@ else
   fi
 fi
 
-echo "== [4/4] Deep tiers (fail-soft, run separately) =="
+echo "== [4/5] Rust slashing lib + authorization tests (fail-soft) =="
+# The slashing seams realized in casper/src that the Rocq theorems pin:
+#   - T-Slash seed-wiring (MainTheorem.v:302): build_slash_deploy derives the SlashDeploy's
+#     initial_rand from the OFFENDER's invalid_block_hash, so replay recomputes it — plus the
+#     T-9.8 candidate filtering (bonded + active + not-already-slashed). Lib unit tests in
+#     blocks::proposer::block_creator.
+#   - Received-slash authorization (BugFixSlashAuthorization.v): the §9.8 receive rules incl.
+#     the parent-pre-state bond (T-9.13 parent-zero rejects / parent-positive authorizes; the
+#     ambient view never enters — it is not a parameter). Integration tests in
+#     casper/tests/slashing/slash_authorization_regressions.rs.
+if command -v cargo >/dev/null 2>&1; then
+  if cargo test -p casper --lib blocks::proposer::block_creator >/tmp/sl_rust_bc.log 2>&1 \
+       && grep -q "test result: ok" /tmp/sl_rust_bc.log; then
+    n_bc=$(grep -oE 'result: ok\. [0-9]+ passed' /tmp/sl_rust_bc.log | grep -oE '[0-9]+' | head -1)
+    pass "Rust slashing lib tests (${n_bc:-?} passed: T-Slash seed-wiring + T-9.8 candidate filtering)"
+  else
+    fail "Rust slashing lib tests failed (see /tmp/sl_rust_bc.log)"; tail -20 /tmp/sl_rust_bc.log | sed 's/^/      /'
+  fi
+  if cargo test -p casper --test mod -- slashing::slash_authorization_regressions >/tmp/sl_rust_auth.log 2>&1 \
+       && grep -q "test result: ok" /tmp/sl_rust_auth.log; then
+    n_auth=$(grep -oE 'result: ok\. [0-9]+ passed' /tmp/sl_rust_auth.log | grep -oE '[0-9]+' | head -1)
+    pass "Rust slash-authorization regressions (${n_auth:-?} passed: §9.8 seven-rule receive gate incl. T-9.13 parent-bond)"
+  else
+    fail "Rust slash-authorization regressions failed (see /tmp/sl_rust_auth.log)"; tail -20 /tmp/sl_rust_auth.log | sed 's/^/      /'
+  fi
+else
+  skip "no cargo on PATH"
+fi
+
+echo "== [5/5] Deep tiers (fail-soft, run separately) =="
 if [[ -x "$REPO_ROOT/scripts/ci/slashing-search-horizon.sh" ]]; then
   skip "Kani / Miri / fuzz / Sage economic-safety tiers: run scripts/ci/slashing-search-horizon.sh (heavier; not part of this fast gate)"
 else

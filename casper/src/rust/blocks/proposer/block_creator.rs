@@ -21,6 +21,7 @@ use models::rust::casper::protocol::casper_message::{
     BlockMessage, Body, Bond, DeployData, F1r3flyState, Header, Justification, ProcessedDeploy,
     ProcessedSystemDeploy, RejectedDeploy,
 };
+use crypto::rust::public_key::PublicKey;
 use models::rust::validator::Validator;
 use prost::bytes::Bytes;
 use rholang::rust::interpreter::system_processes::BlockData;
@@ -495,6 +496,36 @@ fn filter_slashable_invalid_messages(
         .collect()
 }
 
+/// Build one `SlashDeploy` from its offender evidence. BOTH proposer-side slash
+/// paths — the freshly-detected `prepare_slashing_deploys` and the merge-rejected
+/// `recovered_rejected_slashes` recovery in `create_block` — previously constructed the
+/// deploy with two byte-identical inline copies. This single seam is where the deploy's
+/// `initial_rand` seed is wired, and by MainTheorem T-Slash
+/// (`main_TSlash_deploy_seed_uses_invalid_block_hash`,
+/// formal/rocq/slashing/theories/MainTheorem.v:302) that seed MUST be a pure function of
+/// `(proposer pubkey, seq_num, invalid_block_hash)` — deriving it from the offender's OWN
+/// `invalid_block_hash` is what lets every node and the replay path recompute the identical
+/// randomness. Extracting the copies removes the standing risk that a future edit to one
+/// silently diverges the seed-wiring (mirrors `finality::floor::floor_committee`).
+fn build_slash_deploy(
+    invalid_block_hash: &BlockHash,
+    proposer_public_key: &PublicKey,
+    target_activation_epoch: i64,
+    seq_num: i32,
+) -> SlashDeploy {
+    let self_id = Bytes::copy_from_slice(&proposer_public_key.bytes);
+    SlashDeploy {
+        invalid_block_hash: invalid_block_hash.clone(),
+        pk: proposer_public_key.clone(),
+        target_activation_epoch,
+        initial_rand: system_deploy_util::generate_slash_deploy_random_seed(
+            self_id,
+            seq_num,
+            invalid_block_hash,
+        ),
+    }
+}
+
 async fn prepare_slashing_deploys(
     casper_snapshot: &CasperSnapshot,
     validator_identity: &ValidatorIdentity,
@@ -589,18 +620,13 @@ async fn prepare_slashing_deploys(
     // Create SlashDeploy objects
     let mut slashing_deploys = Vec::new();
     for slash_candidate in slash_candidates {
-        let slash_deploy = SlashDeploy {
-            invalid_block_hash: slash_candidate.invalid_block_hash.clone(),
-            pk: validator_identity.public_key.clone(),
-            // Phase 10 (C-5): convert typed Epoch back to the protobuf
-            // i64 at the wire boundary.
-            target_activation_epoch: slash_candidate.target_activation_epoch.get(),
-            initial_rand: system_deploy_util::generate_slash_deploy_random_seed(
-                self_id.clone(),
-                seq_num,
-                &slash_candidate.invalid_block_hash,
-            ),
-        };
+        // Phase 10 (C-5): `.get()` converts the typed Epoch back to the protobuf i64.
+        let slash_deploy = build_slash_deploy(
+            &slash_candidate.invalid_block_hash,
+            &validator_identity.public_key,
+            slash_candidate.target_activation_epoch.get(),
+            seq_num,
+        );
 
         tracing::info!(
             "Issuing slashing deploy justified by block {}",
@@ -946,19 +972,14 @@ pub async fn create(
     // of the block carrying the slash — for recovered slashes the current
     // epoch is the one that will be assigned to the block we are creating,
     // i.e. `epoch_for_block_number(next_block_num, epoch_length)`.
-    let self_id = Bytes::copy_from_slice(&validator_identity.public_key.bytes);
     if let Some(recovered_target_activation_epoch) = recovered_target_activation_epoch {
         for rs in &recovered_rejected_slashes {
-            let slash_deploy = SlashDeploy {
-                invalid_block_hash: rs.invalid_block_hash.clone(),
-                pk: validator_identity.public_key.clone(),
-                target_activation_epoch: recovered_target_activation_epoch,
-                initial_rand: system_deploy_util::generate_slash_deploy_random_seed(
-                    self_id.clone(),
-                    next_seq_num,
-                    &rs.invalid_block_hash,
-                ),
-            };
+            let slash_deploy = build_slash_deploy(
+                &rs.invalid_block_hash,
+                &validator_identity.public_key,
+                recovered_target_activation_epoch,
+                next_seq_num,
+            );
             tracing::info!(
                 "Recovering merge-rejected slash: invalid_block={}, original_issuer={}, target_activation_epoch={}",
                 pretty_printer::PrettyPrinter::build_string_bytes(&rs.invalid_block_hash),
@@ -1303,6 +1324,51 @@ mod tests {
              re-slashed even when bond floor > 0 keeps their stake nonzero. If this \
              fires, prepare_slashing_deploys will emit redundant SlashDeploys every \
              block until the invalid latest message ages out of the DAG view."
+        );
+    }
+
+    /// T-Slash seed-wiring (MainTheorem.v:302, `main_TSlash_deploy_seed_uses_invalid_block_hash`).
+    ///
+    /// The emitted `SlashDeploy`'s `initial_rand` MUST derive from the offender's OWN
+    /// `invalid_block_hash` (plus the proposer pubkey and seq), so every node — and the
+    /// replay path — recomputes the identical randomness. A regression wiring the seed from a
+    /// DIFFERENT input (the offender pubkey, a constant, the proposer's own block hash) would
+    /// still pass every candidate-FILTERING test above yet silently fork replay.
+    /// `build_slash_deploy` is the single construction seam both proposer slash paths use.
+    #[test]
+    fn build_slash_deploy_wires_seed_from_invalid_block_hash() {
+        let invalid_block = invalid_block_hash(0xD5);
+        let proposer_pk = PublicKey::from_bytes(&[0x07u8; 32]);
+        let seq_num = 42;
+        let target_epoch = 7i64;
+
+        let deploy = build_slash_deploy(&invalid_block, &proposer_pk, target_epoch, seq_num);
+
+        // Straight-through fields.
+        assert_eq!(deploy.invalid_block_hash, invalid_block, "invalid_block_hash passes through");
+        assert_eq!(deploy.pk, proposer_pk, "proposer pubkey passes through");
+        assert_eq!(deploy.target_activation_epoch, target_epoch, "target epoch passes through");
+
+        // The load-bearing wiring: the seed recomputes from THIS deploy's own invalid_block_hash.
+        let self_id = Bytes::copy_from_slice(&proposer_pk.bytes);
+        let expected = system_deploy_util::generate_slash_deploy_random_seed(
+            self_id.clone(),
+            seq_num,
+            &deploy.invalid_block_hash,
+        );
+        assert_eq!(
+            deploy.initial_rand, expected,
+            "initial_rand must be generate_slash_deploy_random_seed(proposer, seq, invalid_block_hash)"
+        );
+
+        // Negative control — a DIFFERENT invalid_block_hash yields a DIFFERENT seed, so the
+        // assertion above is discriminating (not vacuously true for any hash).
+        let other_block = invalid_block_hash(0xE6);
+        let seed_other =
+            system_deploy_util::generate_slash_deploy_random_seed(self_id, seq_num, &other_block);
+        assert_ne!(
+            deploy.initial_rand, seed_other,
+            "a different invalid_block_hash must change the seed (wrong-hash regression must be caught)"
         );
     }
 }
