@@ -21,7 +21,7 @@ use crypto::rust::signatures::signed::Signed;
 use models::rust::block_implicits::get_random_block;
 use models::rust::casper::protocol::casper_message;
 use models::rust::casper::protocol::casper_message::{
-    BlockMessage, Bond, DeployData, ProcessedDeploy,
+    BlockMessage, Bond, DeployData, ProcessedDeploy, RejectedDeploy,
 };
 use prost::bytes::Bytes;
 use rspace_plus_plus::rspace::history::Either;
@@ -2413,6 +2413,126 @@ async fn bonds_cache_from_floor_uses_floor_state_for_child_block_bonds() {
         assert_eq!(
             result_invalid,
             Either::Left(BlockError::Invalid(InvalidBlock::InvalidBondsCache))
+        );
+    })
+    .await
+}
+
+/// T-RECOMPUTE (`interpreter_util::validate_block_checkpoint` :259/:269 → `block_status.rs:153`).
+///
+/// This is the enforcement seam that makes ALL merge-determinism consequential: the
+/// validator RECOMPUTES the parents' post-state (`compute_parents_post_state`) and, before
+/// trusting the block, checks the recomputed pre-state and rejected-deploy set against what
+/// the block RECORDED. A block that lies about either is rejected. Without this gate a
+/// dishonest proposer could record any post-state and the merge proofs would be inert.
+///
+/// Three phases against ONE genesis+runtime (the recompute is deterministic and the two
+/// reject paths return before any replay, so no state carries across phases):
+///   • baseline  — untampered genesis recomputes a MATCHING pre-state and replays ⇒ `Right(Some)`.
+///   • pre-state — flip one byte of the recorded `pre_state_hash`; the recompute disagrees ⇒
+///                 `Right(None)` (reject, NO replay — the :259 gate).
+///   • rejected  — append a bogus `rejected_deploys` sig the recompute never produces; pre-state
+///                 still matches so control reaches the :269 gate ⇒ `Left(InvalidRejectedDeploy)`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn validate_block_checkpoint_recompute_rejects_pre_state_and_rejected_deploy_tampering() {
+    with_storage(|block_store, mut block_dag_storage| async move {
+        let context = GenesisBuilder::new()
+            .build_genesis_with_parameters(None)
+            .await
+            .unwrap();
+        let genesis = context.genesis_block.clone();
+
+        block_store
+            .put(genesis.block_hash.clone(), &genesis)
+            .unwrap();
+        block_dag_storage
+            .insert(
+                &genesis,
+                block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved,
+            )
+            .unwrap();
+
+        let mut kvm = mk_test_rnode_store_manager_from_genesis(&context);
+        let m_store = crate::util::rholang::resources::mergeable_store_from_dyn(&mut *kvm)
+            .await
+            .unwrap();
+        let runtime_manager = RuntimeManager::create_with_store(
+            (&mut *kvm).r_space_stores().await.unwrap(),
+            m_store,
+            std::sync::Arc::new(Genesis::default_mergeable_tags()),
+            rholang::rust::interpreter::external_services::ExternalServices::noop(),
+        );
+
+        // ── Phase 1 (baseline / GREEN): honest genesis recomputes + replays ──────────────
+        let mut snap_ok = mk_casper_snapshot(
+            block_dag_storage
+                .get_representation()
+                .expect("dag representation"),
+        );
+        let valid = interpreter_util::validate_block_checkpoint(
+            &genesis,
+            &block_store,
+            &mut snap_ok,
+            &runtime_manager,
+            None,
+        )
+        .await
+        .expect("checkpoint (baseline)");
+        assert!(
+            matches!(valid, Either::Right(Some(_))),
+            "untampered genesis must recompute a matching pre-state and replay to Some(state), got {valid:?}"
+        );
+
+        // ── Phase 2 (pre-state tamper / RED): recorded pre-state ≠ recompute ⇒ reject, NO replay ──
+        let mut bad_pre = proto_util::pre_state_hash(&genesis).to_vec();
+        bad_pre[0] ^= 0xFF;
+        let mut tampered_pre = genesis.clone();
+        tampered_pre.body.state.pre_state_hash = Bytes::from(bad_pre);
+
+        let mut snap_pre = mk_casper_snapshot(
+            block_dag_storage
+                .get_representation()
+                .expect("dag representation"),
+        );
+        let rejected_pre = interpreter_util::validate_block_checkpoint(
+            &tampered_pre,
+            &block_store,
+            &mut snap_pre,
+            &runtime_manager,
+            None,
+        )
+        .await
+        .expect("checkpoint (pre-state tamper)");
+        assert_eq!(
+            rejected_pre,
+            Either::Right(None),
+            "a tampered pre-state hash must be rejected WITHOUT replay (the recompute-vs-recorded gate, :259)"
+        );
+
+        // ── Phase 3 (rejected-deploy tamper / RED): recorded rejected set ≠ recompute ⇒ InvalidRejectedDeploy ──
+        let mut tampered_rej = genesis.clone();
+        tampered_rej.body.rejected_deploys.push(RejectedDeploy {
+            sig: Bytes::from(vec![0xABu8; 64]),
+        });
+
+        let mut snap_rej = mk_casper_snapshot(
+            block_dag_storage
+                .get_representation()
+                .expect("dag representation"),
+        );
+        let rejected_rej = interpreter_util::validate_block_checkpoint(
+            &tampered_rej,
+            &block_store,
+            &mut snap_rej,
+            &runtime_manager,
+            None,
+        )
+        .await
+        .expect("checkpoint (rejected-deploy tamper)");
+        assert_eq!(
+            rejected_rej,
+            Either::Left(BlockError::Invalid(InvalidBlock::InvalidRejectedDeploy)),
+            "a block claiming a rejected-deploy the validator's recompute does not produce must be InvalidRejectedDeploy (:269)"
         );
     })
     .await

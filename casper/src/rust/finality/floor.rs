@@ -892,4 +892,126 @@ mod frontier_determinism_tests {
             other => panic!("expected Err(incompatible fork), got {other:?}"),
         }
     }
+
+    /// A shared Case-A DAG: `g <- t <- c`, with BOTH parents `p1` (v) and `p2` (w)
+    /// children of `c`, so `c` is a common ancestor of `{p1,p2}`. The committee is
+    /// `{v:1}` (w never votes) and `j={v:c}`, so the whole chain `g,t,c` finalizes and
+    /// `c` is the highest finalized common ancestor. Returns `(dag, j, thr, [p1,p2],
+    /// inherited, g,t,c,p1,p2)`.
+    #[allow(clippy::type_complexity)]
+    fn case_a_fixture() -> (
+        KeyValueDagRepresentation,
+        BTreeMap<Bytes, Bytes>,
+        FtThreshold,
+        Vec<Bytes>,
+        Vec<Floor>,
+        (Bytes, Bytes, Bytes, Bytes, Bytes),
+    ) {
+        let v = h(50);
+        let w = h(51);
+        let (g, t, c, p1, p2) = (h(0), h(1), h(2), h(3), h(4));
+        let wm = || vec![(v.clone(), 1)];
+        let dag = build_dag(vec![
+            md_wm(g.clone(), vec![], 0, &v, wm()),
+            md_wm(t.clone(), vec![g.clone()], 1, &v, wm()),
+            md_wm(c.clone(), vec![t.clone()], 2, &v, wm()),
+            md_wm(p1.clone(), vec![c.clone()], 3, &v, wm()),
+            md_wm(p2.clone(), vec![c.clone()], 3, &w, wm()),
+        ]);
+        let mut j = BTreeMap::new();
+        j.insert(v.clone(), c.clone());
+        let thr = FtThreshold::from_f32_lossy(0.1);
+        let inherited = vec![
+            Floor { hash: c.clone(), block_number: 2 },
+            Floor { hash: c.clone(), block_number: 2 },
+        ];
+        (dag, j, thr, vec![p1.clone(), p2.clone()], inherited, (g, t, c, p1, p2))
+    }
+
+    /// T-LIN (`Selection.case_a_common_ancestor`): when the highest finalized candidate
+    /// is a DAG-ancestor of EVERY parent (Case-A), `derive_floor` selects it AND the
+    /// result is a genuine common ancestor of all parents — asserted via the sibling
+    /// `is_dag_ancestor` primitive. (Previously only the Case-B pick and the
+    /// incompatible-fork `Err` were tested; the Case-A common-ancestor property was not.)
+    #[tokio::test]
+    async fn derive_floor_case_a_floor_is_common_ancestor_of_all_parents() {
+        let (dag, j, thr, parents, inherited, (_g, _t, c, p1, p2)) = case_a_fixture();
+        let (floor, _f) = derive_floor(&dag, &parents, &j, thr, inherited)
+            .await
+            .expect("derive_floor");
+        assert_eq!(floor.hash, c, "Case-A selects the common-ancestor finalized candidate c");
+        assert!(
+            dag.is_dag_ancestor(&floor.hash, &p1).expect("is_dag_ancestor"),
+            "the Case-A floor must be a DAG-ancestor of parent p1"
+        );
+        assert!(
+            dag.is_dag_ancestor(&floor.hash, &p2).expect("is_dag_ancestor"),
+            "the Case-A floor must be a DAG-ancestor of parent p2"
+        );
+    }
+
+    /// Maximality / T-DET (`Selection.select_highest_sound`): the inheritance+advancement
+    /// case. The two parents carry LAGGING inherited floors (`t@1`, `g@0` — older cuts),
+    /// but the justification snapshot `j={v:c}` has since finalized `c`, so advancement
+    /// surfaces `c@2` as a frontier candidate. The candidate multiset is therefore
+    /// genuinely `{g@0, t@1, c@2}` — three sound bases of distinct height — and
+    /// `derive_floor` must pick the strict MAXIMUM (`c@2`), never a lagging inherited cut.
+    /// This is exactly the "a child never carries a lower cut than any parent, and
+    /// advances to the highest newly-finalized candidate" contract (docstring on
+    /// `finalized_floor`). `g` and `t` are shown to be sound competitors (common
+    /// ancestors of both parents) and strictly lower, so the choice is a real maximum.
+    #[tokio::test]
+    async fn derive_floor_selects_highest_sound_finalized_candidate() {
+        let (dag, j, thr, parents, _inherited, (g, t, _c, p1, p2)) = case_a_fixture();
+        // Override the inherited floors with the LAGGING cuts the parents carried before
+        // c finalized, forcing g@0 and t@1 into the candidate sort alongside advancement's c@2.
+        let lagging = vec![
+            Floor { hash: t.clone(), block_number: 1 },
+            Floor { hash: g.clone(), block_number: 0 },
+        ];
+        let (floor, _f) = derive_floor(&dag, &parents, &j, thr, lagging)
+            .await
+            .expect("derive_floor");
+        assert_eq!(
+            floor.block_number, 2,
+            "advancement selects the highest sound candidate c (num 2), not the lagging inherited t=1 or g=0"
+        );
+        for (lower, lower_num) in [(&t, 1i64), (&g, 0)] {
+            assert!(
+                dag.is_dag_ancestor(lower, &p1).expect("anc")
+                    && dag.is_dag_ancestor(lower, &p2).expect("anc"),
+                "the lagging candidate (num {lower_num}) is ALSO a common ancestor of both parents (a competing sound base)"
+            );
+            assert!(
+                lower_num < floor.block_number,
+                "and is strictly lower-numbered than the chosen floor (maximality)"
+            );
+        }
+    }
+
+    /// T-FIN (`Selection.select_finalized` / `GuardBridge.upgo_finalized`): the floor
+    /// `derive_floor` returns is itself `Finalized` over the justification snapshot — it
+    /// clears the exact FT threshold (floor path, `≥`) per the same clique oracle the
+    /// node runs (`CliqueOracle::ft_witnessed_exact`). Confirms the result is a genuinely
+    /// finalized cut, not merely a well-formed ancestor.
+    #[tokio::test]
+    async fn derive_floor_result_is_finalized_over_justifications() {
+        let (dag, j, thr, parents, inherited, _hashes) = case_a_fixture();
+        let (floor, _f) = derive_floor(&dag, &parents, &j, thr, inherited)
+            .await
+            .expect("derive_floor");
+        let finalized = crate::rust::safety::clique_oracle::CliqueOracle::ft_witnessed_exact(
+            &floor.hash,
+            &dag,
+            &j,
+            thr,
+            false,
+        )
+        .await
+        .expect("ft_witnessed_exact");
+        assert!(
+            finalized,
+            "the derive_floor result must be Finalized over the justification snapshot (T-FIN)"
+        );
+    }
 }

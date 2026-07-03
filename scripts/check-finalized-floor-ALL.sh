@@ -252,7 +252,7 @@ else
   skip "no plantuml on PATH"
 fi
 
-echo "== [7/8] Rust proptests (fail-soft) =="
+echo "== [7/8] Rust proptests + floor-selection lib tests (fail-soft) =="
 # The finalized-floor Phase-4 proptests, wired into the `mod` integration-test binary
 # (casper/tests/finalized_floor/): G2 θ_ppm provenance + f32↔ppm round-trip, and P1
 # committee derivation PLAY≡REPLAY. Compiles the casper test harness (one-time; cached
@@ -265,6 +265,18 @@ if command -v cargo >/dev/null 2>&1; then
     pass "Rust finalized-floor proptests (${n_rust:-?} passed: G2 provenance/round-trip + P1 committee PLAY≡REPLAY)"
   else
     fail "Rust finalized-floor proptests failed (see /tmp/ff_rust_prop.log)"; tail -20 /tmp/ff_rust_prop.log | sed 's/^/      /'
+  fi
+  # Floor Selection lib tests (finality::floor #[cfg(test)]) — the derive_floor case
+  # analysis that Selection.v proves: Case-A common-ancestor (T-LIN), highest-sound
+  # maximality (T-DET), general-finalized result (T-FIN), plus the Case-B dominating-tip
+  # pick and the incompatible-fork safety error. These are LIB unit tests (not the `mod`
+  # integration binary), so they need their own invocation.
+  if cargo test -p casper --lib finality::floor:: >/tmp/ff_rust_lib.log 2>&1 \
+       && grep -q "test result: ok" /tmp/ff_rust_lib.log; then
+    n_lib=$(grep -oE 'result: ok\. [0-9]+ passed' /tmp/ff_rust_lib.log | grep -oE '[0-9]+' | head -1)
+    pass "Rust floor-selection lib tests (${n_lib:-?} passed: T-LIN Case-A + T-DET maximality + T-FIN + Case-B + incompatible-fork)"
+  else
+    fail "Rust floor-selection lib tests failed (see /tmp/ff_rust_lib.log)"; tail -20 /tmp/ff_rust_lib.log | sed 's/^/      /'
   fi
 else
   skip "no cargo on PATH"
