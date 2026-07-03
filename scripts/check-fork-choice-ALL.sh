@@ -280,12 +280,25 @@ echo "== [8/8] Rust proptests (fail-soft) =="
 # the casper test harness (cached thereafter), then runs only the module's tests. SKIPPED
 # if cargo is absent; any proptest failure fails the gate.
 if command -v cargo >/dev/null 2>&1; then
-  if cargo test -p casper --test mod -- fork_choice::prop_filter_deep_parents >/tmp/fc_rust_prop.log 2>&1 \
+  # The `fork_choice::` filter picks up EVERY module in casper/tests/fork_choice/:
+  #   prop_filter_deep_parents (C12), prop_estimator_determinism (determinism +
+  #   score-monoid + T-10 filter), prop_lca (LUCA converges/common-ancestor/lowest),
+  #   prop_bound (B2/B3/B4 sentinel/overflow/empty seams).
+  if cargo test -p casper --test mod -- fork_choice:: >/tmp/fc_rust_prop.log 2>&1 \
        && grep -q "test result: ok" /tmp/fc_rust_prop.log; then
     n_rust=$(grep -oE 'result: ok\. [0-9]+ passed' /tmp/fc_rust_prop.log | grep -oE '[0-9]+' | head -1)
-    pass "Rust fork-choice proptests (${n_rust:-?} passed: filter_deep_parents ⊨ within_depth/prop_filter — soundness + main-kept + completeness + exact-set)"
+    pass "Rust fork-choice proptests (${n_rust:-?} passed: filter_deep_parents ⊨ within_depth/prop_filter; estimator determinism + score-monoid + T-10 filter; LUCA converges/common-ancestor/lowest; B2/B3/B4 bound seams)"
   else
     fail "Rust fork-choice proptests failed (see /tmp/fc_rust_prop.log)"; tail -20 /tmp/fc_rust_prop.log | sed 's/^/      /'
+  fi
+  # The tie-break total-order proptests live in the `shared` crate (list_ops), the
+  # realization of TieBreak.v `sort_total_order` the estimator's ranking depends on.
+  if cargo test -p shared list_ops >/tmp/fc_rust_listops.log 2>&1 \
+       && grep -q "test result: ok" /tmp/fc_rust_listops.log; then
+    n_lo=$(grep -oE 'result: ok\. [0-9]+ passed' /tmp/fc_rust_listops.log | grep -oE '[0-9]+' | head -1)
+    pass "Rust tie-break proptests (${n_lo:-?} passed: sort_by_with_decreasing_order — perm-invariant + is-permutation + argmax-unique)"
+  else
+    fail "Rust tie-break (shared list_ops) proptests failed (see /tmp/fc_rust_listops.log)"; tail -20 /tmp/fc_rust_listops.log | sed 's/^/      /'
   fi
 else
   skip "no cargo on PATH"
