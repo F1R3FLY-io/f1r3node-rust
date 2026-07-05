@@ -275,6 +275,12 @@ impl FixedChannels {
     /// future cleanup may hide it behind the byte_name once eval_new
     /// stops needing to resolve URNs through `urn_map` itself.
     pub fn registry_lookup() -> Par { byte_name(37) }
+
+    // File I/O native primitives (FIP 2026-02-06 File-I/O). These are
+    // internal URNs (`rho:io:fs:native:1.0.0/*`); user-facing Rholang
+    // code goes through the `Fs` agent under `rho:io:fs:1.*`.
+    pub fn native_open() -> Par { byte_name(38) }
+    pub fn native_close() -> Par { byte_name(39) }
 }
 
 pub struct BodyRefs;
@@ -312,6 +318,10 @@ impl BodyRefs {
     pub const CHROMA_QUERY: i64 = 35;
     pub const CHROMA_DELETE_DOCUMENTS: i64 = 36;
     pub const REGISTRY_LOOKUP: i64 = 30;
+
+    // File I/O native primitives (FIP 2026-02-06 File-I/O).
+    pub const NATIVE_OPEN: i64 = 37;
+    pub const NATIVE_CLOSE: i64 = 38;
 }
 
 pub fn non_deterministic_ops() -> HashSet<i64> {
@@ -528,6 +538,12 @@ pub struct SystemProcesses {
     /// upcoming `registry_lookup` handler consults this when serving
     /// legacy URNs.
     pub urn_map: Arc<HashMap<String, Par>>,
+    /// Open-file table for the File-I/O native primitives. Shared
+    /// across all clones of this `SystemProcesses` so `nativeOpen`
+    /// on one dispatch worker and `nativeClose` on another see the
+    /// same fd space. Empty at boot; populated by successful
+    /// `nativeOpen` calls.
+    pub file_handles: crate::rust::interpreter::io::handle_table::FileHandleTable,
     openai_service: SharedOpenAIService,
     ollama_service: SharedOllamaService,
     grpc_client_service: GrpcClientService,
@@ -554,6 +570,7 @@ impl SystemProcesses {
             block_data,
             deploy_data,
             urn_map,
+            file_handles: crate::rust::interpreter::io::handle_table::FileHandleTable::new(),
             openai_service,
             ollama_service,
             grpc_client_service,
@@ -2008,6 +2025,103 @@ impl SystemProcesses {
     }
 
     // ChromaDB section end
+
+    // ----- File I/O native primitives (FIP 2026-02-06) -------------------
+
+    /// `nativeOpen(path: String, mode: String) -> [true, fd] | [false, code, msg]`.
+    ///
+    /// Opens a regular file with fopen-style semantics per
+    /// `crate::rust::interpreter::io::mode::open_options_for`. On
+    /// success, stashes the `tokio::fs::File` in the runtime's
+    /// `FileHandleTable` under a freshly-issued `i64` fd and returns
+    /// `[true, fd]`. On failure, returns `[false, FSERR_*, msg]`.
+    ///
+    /// This is an *internal* URN (`rho:io:fs:native:1.0.0/open`).
+    /// User-facing code goes through the `Fs` agent, which pre-
+    /// canonicalizes the path, translates the symbolic mode string
+    /// per `chmod` conventions, and wraps the tuple result in the
+    /// agent's try/catch shape.
+    pub async fn native_open(
+        &self,
+        contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
+    ) -> Result<Vec<Par>, InterpreterError> {
+        use crate::rust::interpreter::io::{mode, response};
+
+        let Some((produce, _, _, args)) = self.is_contract_call().unapply(contract_args) else {
+            return Err(illegal_argument_error("native_open"));
+        };
+        let [path_par, mode_par, ack] = args.as_slice() else {
+            return Err(illegal_argument_error("native_open"));
+        };
+        let (Some(path_str), Some(mode_str)) =
+            (RhoString::unapply(path_par), RhoString::unapply(mode_par))
+        else {
+            return Err(illegal_argument_error("native_open"));
+        };
+
+        let response_par = match mode::open_options_for(&mode_str) {
+            None => response::err(
+                response::FSERR_BAD_ARG,
+                format!("unknown mode {mode_str:?}"),
+            ),
+            Some(opts) => match opts.open(&path_str).await {
+                Err(e) => response::from_io_error(e),
+                Ok(file) => {
+                    // If canonicalization fails (e.g. mode "wx" created
+                    // a file whose parent isn't canonicalizable for some
+                    // exotic reason), fall back to the caller's path
+                    // string. The powerbox already pre-canonicalizes
+                    // paths on the way in, so this is a defense-in-depth
+                    // path for direct callers.
+                    let canonical = tokio::fs::canonicalize(&path_str)
+                        .await
+                        .unwrap_or_else(|_| std::path::PathBuf::from(&path_str));
+                    let fd = self.file_handles.insert(file, canonical, mode_str).await;
+                    response::ok(vec![
+                        crate::rust::interpreter::rho_type::RhoNumber::create_par(fd),
+                    ])
+                }
+            },
+        };
+
+        let output = vec![response_par];
+        produce(&output, ack).await?;
+        Ok(output)
+    }
+
+    /// `nativeClose(fd: Int) -> [true] | [false, code, msg]`.
+    ///
+    /// Removes the fd from the `FileHandleTable`. Any outstanding
+    /// `Arc<FileHandle>` clones held by concurrent handlers keep the
+    /// underlying `tokio::fs::File` alive until they drop.
+    /// Idempotent from the caller's perspective: a second close on
+    /// the same fd returns `[false, FSERR_CLOSED, ...]` rather than
+    /// erroring the deploy.
+    pub async fn native_close(
+        &self,
+        contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
+    ) -> Result<Vec<Par>, InterpreterError> {
+        use crate::rust::interpreter::io::response;
+
+        let Some((produce, _, _, args)) = self.is_contract_call().unapply(contract_args) else {
+            return Err(illegal_argument_error("native_close"));
+        };
+        let [fd_par, ack] = args.as_slice() else {
+            return Err(illegal_argument_error("native_close"));
+        };
+        let Some(fd) = RhoNumber::unapply(fd_par) else {
+            return Err(illegal_argument_error("native_close"));
+        };
+
+        let response_par = match self.file_handles.remove(fd).await {
+            Some(_) => response::ok(vec![]),
+            None => response::err(response::FSERR_CLOSED, format!("fd {fd} is not open")),
+        };
+
+        let output = vec![response_par];
+        produce(&output, ack).await?;
+        Ok(output)
+    }
 }
 
 // See casper/src/test/scala/coop/rchain/casper/helper/RhoSpec.scala

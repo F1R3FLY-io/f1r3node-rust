@@ -15,6 +15,7 @@ pub mod errors;
 pub mod external_services;
 pub mod grpc_client_service;
 pub mod interpreter;
+pub mod io;
 pub mod matcher;
 pub mod merging;
 pub mod metrics_constants;

@@ -691,6 +691,37 @@ fn std_system_processes() -> Vec<Definition> {
             }),
             remainder: None,
         },
+        // File I/O native primitives (FIP 2026-02-06 File-I/O). These
+        // URNs are internal to the interpreter -- user Rholang goes
+        // through the `Fs` agent under `rho:io:fs:1.*`, which wraps
+        // path canonicalization, mode-string translation, and error
+        // shaping around these thin syscall handlers.
+        Definition {
+            urn: "rho:io:fs:native:1.0.0/open".to_string(),
+            fixed_channel: FixedChannels::native_open(),
+            arity: 3,
+            body_ref: BodyRefs::NATIVE_OPEN,
+            handler: Box::new(|ctx| {
+                Box::new(move |args| {
+                    let ctx = ctx.clone();
+                    Box::pin(async move { ctx.system_processes.clone().native_open(args).await })
+                })
+            }),
+            remainder: None,
+        },
+        Definition {
+            urn: "rho:io:fs:native:1.0.0/close".to_string(),
+            fixed_channel: FixedChannels::native_close(),
+            arity: 2,
+            body_ref: BodyRefs::NATIVE_CLOSE,
+            handler: Box::new(|ctx| {
+                Box::new(move |args| {
+                    let ctx = ctx.clone();
+                    Box::pin(async move { ctx.system_processes.clone().native_close(args).await })
+                })
+            }),
+            remainder: None,
+        },
         Definition {
             urn: "rho:io:grpcTell".to_string(),
             fixed_channel: FixedChannels::grpc_tell(),
