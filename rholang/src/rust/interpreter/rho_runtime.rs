@@ -855,6 +855,77 @@ fn std_system_processes() -> Vec<Definition> {
             remainder: None,
         },
         Definition {
+            urn: "rho:io:fs:native:1.0.0/rename".to_string(),
+            fixed_channel: FixedChannels::native_rename(),
+            arity: 3,
+            body_ref: BodyRefs::NATIVE_RENAME,
+            handler: Box::new(|ctx| {
+                Box::new(move |args| {
+                    let ctx = ctx.clone();
+                    Box::pin(async move { ctx.system_processes.clone().native_rename(args).await })
+                })
+            }),
+            remainder: None,
+        },
+        Definition {
+            urn: "rho:io:fs:native:1.0.0/copyFile".to_string(),
+            fixed_channel: FixedChannels::native_copy_file(),
+            arity: 3,
+            body_ref: BodyRefs::NATIVE_COPY_FILE,
+            handler: Box::new(|ctx| {
+                Box::new(move |args| {
+                    let ctx = ctx.clone();
+                    Box::pin(
+                        async move { ctx.system_processes.clone().native_copy_file(args).await },
+                    )
+                })
+            }),
+            remainder: None,
+        },
+        Definition {
+            urn: "rho:io:fs:native:1.0.0/removeFile".to_string(),
+            fixed_channel: FixedChannels::native_remove_file(),
+            arity: 2,
+            body_ref: BodyRefs::NATIVE_REMOVE_FILE,
+            handler: Box::new(|ctx| {
+                Box::new(move |args| {
+                    let ctx = ctx.clone();
+                    Box::pin(
+                        async move { ctx.system_processes.clone().native_remove_file(args).await },
+                    )
+                })
+            }),
+            remainder: None,
+        },
+        Definition {
+            urn: "rho:io:fs:native:1.0.0/removeDir".to_string(),
+            fixed_channel: FixedChannels::native_remove_dir(),
+            arity: 3,
+            body_ref: BodyRefs::NATIVE_REMOVE_DIR,
+            handler: Box::new(|ctx| {
+                Box::new(move |args| {
+                    let ctx = ctx.clone();
+                    Box::pin(
+                        async move { ctx.system_processes.clone().native_remove_dir(args).await },
+                    )
+                })
+            }),
+            remainder: None,
+        },
+        Definition {
+            urn: "rho:io:fs:native:1.0.0/chmod".to_string(),
+            fixed_channel: FixedChannels::native_chmod(),
+            arity: 3,
+            body_ref: BodyRefs::NATIVE_CHMOD,
+            handler: Box::new(|ctx| {
+                Box::new(move |args| {
+                    let ctx = ctx.clone();
+                    Box::pin(async move { ctx.system_processes.clone().native_chmod(args).await })
+                })
+            }),
+            remainder: None,
+        },
+        Definition {
             urn: "rho:io:grpcTell".to_string(),
             fixed_channel: FixedChannels::grpc_tell(),
             arity: 3,

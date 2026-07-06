@@ -291,6 +291,11 @@ impl FixedChannels {
     pub fn native_stat() -> Par { byte_name(47) }
     pub fn native_entries() -> Par { byte_name(48) }
     pub fn native_exists() -> Par { byte_name(49) }
+    pub fn native_rename() -> Par { byte_name(50) }
+    pub fn native_copy_file() -> Par { byte_name(51) }
+    pub fn native_remove_file() -> Par { byte_name(52) }
+    pub fn native_remove_dir() -> Par { byte_name(53) }
+    pub fn native_chmod() -> Par { byte_name(54) }
 }
 
 pub struct BodyRefs;
@@ -342,6 +347,11 @@ impl BodyRefs {
     pub const NATIVE_STAT: i64 = 46;
     pub const NATIVE_ENTRIES: i64 = 47;
     pub const NATIVE_EXISTS: i64 = 48;
+    pub const NATIVE_RENAME: i64 = 49;
+    pub const NATIVE_COPY_FILE: i64 = 50;
+    pub const NATIVE_REMOVE_FILE: i64 = 51;
+    pub const NATIVE_REMOVE_DIR: i64 = 52;
+    pub const NATIVE_CHMOD: i64 = 53;
 }
 
 pub fn non_deterministic_ops() -> HashSet<i64> {
@@ -2624,6 +2634,225 @@ impl SystemProcesses {
         let response_par = match tokio::fs::try_exists(&path_str).await {
             Ok(present) => response::ok(vec![RhoBoolean::create_par(present)]),
             Err(e) => response::from_io_error(e),
+        };
+
+        let output = vec![response_par];
+        produce(&output, ack).await?;
+        Ok(output)
+    }
+
+    /// `nativeRename(from: String, to: String) -> [true] | [false, code, msg]`.
+    ///
+    /// Atomic rename per POSIX `rename(2)`. A cross-filesystem rename
+    /// returns `FSERR_CROSS_DEVICE` per the FIP §"rename" note so
+    /// callers who want copy semantics do it explicitly with
+    /// `nativeCopyFile` + `nativeRemoveFile`.
+    ///
+    /// EXDEV is 18 on both Linux and macOS (and the BSDs, and all
+    /// other POSIX-y hosts the FIP targets); we check `raw_os_error`
+    /// against that number directly rather than pulling in `libc`
+    /// for a single constant. `io::ErrorKind::CrossesDevices` would
+    /// let us drop this, but it's nightly-only.
+    pub async fn native_rename(
+        &self,
+        contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
+    ) -> Result<Vec<Par>, InterpreterError> {
+        use crate::rust::interpreter::io::response;
+
+        let Some((produce, _, _, args)) = self.is_contract_call().unapply(contract_args) else {
+            return Err(illegal_argument_error("native_rename"));
+        };
+        let [from_par, to_par, ack] = args.as_slice() else {
+            return Err(illegal_argument_error("native_rename"));
+        };
+        let (Some(from_str), Some(to_str)) =
+            (RhoString::unapply(from_par), RhoString::unapply(to_par))
+        else {
+            return Err(illegal_argument_error("native_rename"));
+        };
+
+        let response_par = match tokio::fs::rename(&from_str, &to_str).await {
+            Ok(()) => response::ok(vec![]),
+            Err(e) => {
+                if e.raw_os_error() == Some(18) {
+                    response::err(
+                        response::FSERR_CROSS_DEVICE,
+                        format!("rename {from_str:?} -> {to_str:?}: {e}"),
+                    )
+                } else {
+                    response::from_io_error(e)
+                }
+            }
+        };
+
+        let output = vec![response_par];
+        produce(&output, ack).await?;
+        Ok(output)
+    }
+
+    /// `nativeCopyFile(from: String, to: String) -> [true, nBytes] | [false, code, msg]`.
+    ///
+    /// Copies file contents from `from` to `to`, replacing `to` if
+    /// it already exists. Returns the number of bytes copied.
+    /// Distinct from `nativeRename`: `copyFile` produces an
+    /// independent inode and is fine across filesystems.
+    pub async fn native_copy_file(
+        &self,
+        contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
+    ) -> Result<Vec<Par>, InterpreterError> {
+        use crate::rust::interpreter::io::response;
+
+        let Some((produce, _, _, args)) = self.is_contract_call().unapply(contract_args) else {
+            return Err(illegal_argument_error("native_copy_file"));
+        };
+        let [from_par, to_par, ack] = args.as_slice() else {
+            return Err(illegal_argument_error("native_copy_file"));
+        };
+        let (Some(from_str), Some(to_str)) =
+            (RhoString::unapply(from_par), RhoString::unapply(to_par))
+        else {
+            return Err(illegal_argument_error("native_copy_file"));
+        };
+
+        let response_par = match tokio::fs::copy(&from_str, &to_str).await {
+            Ok(n) => response::ok(vec![RhoNumber::create_par(n as i64)]),
+            Err(e) => response::from_io_error(e),
+        };
+
+        let output = vec![response_par];
+        produce(&output, ack).await?;
+        Ok(output)
+    }
+
+    /// `nativeRemoveFile(path: String) -> [true] | [false, code, msg]`.
+    ///
+    /// Unlinks a regular file. Fails with `FSERR_PERM` (via the
+    /// host's `PermissionDenied`) when called on a directory --
+    /// callers use `nativeRemoveDir` for those.
+    pub async fn native_remove_file(
+        &self,
+        contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
+    ) -> Result<Vec<Par>, InterpreterError> {
+        use crate::rust::interpreter::io::response;
+
+        let Some((produce, _, _, args)) = self.is_contract_call().unapply(contract_args) else {
+            return Err(illegal_argument_error("native_remove_file"));
+        };
+        let [path_par, ack] = args.as_slice() else {
+            return Err(illegal_argument_error("native_remove_file"));
+        };
+        let Some(path_str) = RhoString::unapply(path_par) else {
+            return Err(illegal_argument_error("native_remove_file"));
+        };
+
+        let response_par = match tokio::fs::remove_file(&path_str).await {
+            Ok(()) => response::ok(vec![]),
+            Err(e) => response::from_io_error(e),
+        };
+
+        let output = vec![response_par];
+        produce(&output, ack).await?;
+        Ok(output)
+    }
+
+    /// `nativeRemoveDir(path: String, recursive: Bool) -> [true] | [false, code, msg]`.
+    ///
+    /// Removes a directory. When `recursive` is true, uses
+    /// `remove_dir_all` (best-effort atomic per tokio's docs) so
+    /// non-empty trees can be dropped in one call. When false,
+    /// uses `remove_dir`, which requires the directory to be empty
+    /// and returns `FSERR_IO` otherwise.
+    pub async fn native_remove_dir(
+        &self,
+        contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
+    ) -> Result<Vec<Par>, InterpreterError> {
+        use crate::rust::interpreter::io::response;
+
+        let Some((produce, _, _, args)) = self.is_contract_call().unapply(contract_args) else {
+            return Err(illegal_argument_error("native_remove_dir"));
+        };
+        let [path_par, recursive_par, ack] = args.as_slice() else {
+            return Err(illegal_argument_error("native_remove_dir"));
+        };
+        let (Some(path_str), Some(recursive)) = (
+            RhoString::unapply(path_par),
+            RhoBoolean::unapply(recursive_par),
+        ) else {
+            return Err(illegal_argument_error("native_remove_dir"));
+        };
+
+        let result = if recursive {
+            tokio::fs::remove_dir_all(&path_str).await
+        } else {
+            tokio::fs::remove_dir(&path_str).await
+        };
+        let response_par = match result {
+            Ok(()) => response::ok(vec![]),
+            Err(e) => response::from_io_error(e),
+        };
+
+        let output = vec![response_par];
+        produce(&output, ack).await?;
+        Ok(output)
+    }
+
+    /// `nativeChmod(path: String, modeBits: Int) -> [true] | [false, code, msg]`.
+    ///
+    /// Sets the file's permission bits. `modeBits` is the low 9 bits
+    /// (0..=0o777); the higher setuid/setgid/sticky bits are not
+    /// exposed per FIP TODO 5. Any value outside that range returns
+    /// `FSERR_BAD_ARG`.
+    ///
+    /// The Rholang agent layer parses the symbolic `"rwxr-xr-x"`
+    /// string (FIP TODO 8) and passes the resulting integer down;
+    /// keeping string parsing in Rholang lets the native handler
+    /// stay a thin syscall bridge.
+    pub async fn native_chmod(
+        &self,
+        contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
+    ) -> Result<Vec<Par>, InterpreterError> {
+        use crate::rust::interpreter::io::response;
+
+        let Some((produce, _, _, args)) = self.is_contract_call().unapply(contract_args) else {
+            return Err(illegal_argument_error("native_chmod"));
+        };
+        let [path_par, mode_bits_par, ack] = args.as_slice() else {
+            return Err(illegal_argument_error("native_chmod"));
+        };
+        let (Some(path_str), Some(mode_bits)) = (
+            RhoString::unapply(path_par),
+            RhoNumber::unapply(mode_bits_par),
+        ) else {
+            return Err(illegal_argument_error("native_chmod"));
+        };
+
+        let response_par = if !(0..=0o777).contains(&mode_bits) {
+            response::err(
+                response::FSERR_BAD_ARG,
+                format!("chmod bits must be in 0..=0o777, got {mode_bits:o}"),
+            )
+        } else {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let perms = std::fs::Permissions::from_mode(mode_bits as u32);
+                match tokio::fs::set_permissions(&path_str, perms).await {
+                    Ok(()) => response::ok(vec![]),
+                    Err(e) => response::from_io_error(e),
+                }
+            }
+            #[cfg(not(unix))]
+            {
+                // FIP targets macOS + Linux. On non-Unix hosts the
+                // most we can do is toggle the readonly bit, which
+                // is a poor approximation and would surprise users;
+                // refuse instead.
+                let _ = &path_str;
+                response::err(
+                    response::FSERR_UNSUPPORTED,
+                    "chmod is not supported on this platform".to_string(),
+                )
+            }
         };
 
         let output = vec![response_par];
