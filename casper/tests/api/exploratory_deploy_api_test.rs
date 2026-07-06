@@ -258,7 +258,7 @@ async fn exploratory_deploy_should_return_error_on_bonded_validator() {
             let error_message = format!("{:?}", e);
             assert!(
                 error_message
-                    .contains("Exploratory deploy can only be executed on read-only RNode"),
+                    .contains("Exploratory deploy requires a read-only node"),
                 "Expected read-only error message, got: {}",
                 error_message
             );
