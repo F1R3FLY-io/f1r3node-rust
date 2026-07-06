@@ -281,6 +281,13 @@ impl FixedChannels {
     // code goes through the `Fs` agent under `rho:io:fs:1.*`.
     pub fn native_open() -> Par { byte_name(38) }
     pub fn native_close() -> Par { byte_name(39) }
+    pub fn native_read() -> Par { byte_name(40) }
+    pub fn native_write() -> Par { byte_name(41) }
+    pub fn native_seek() -> Par { byte_name(42) }
+    pub fn native_tell() -> Par { byte_name(43) }
+    pub fn native_size() -> Par { byte_name(44) }
+    pub fn native_truncate() -> Par { byte_name(45) }
+    pub fn native_flush() -> Par { byte_name(46) }
 }
 
 pub struct BodyRefs;
@@ -322,6 +329,13 @@ impl BodyRefs {
     // File I/O native primitives (FIP 2026-02-06 File-I/O).
     pub const NATIVE_OPEN: i64 = 37;
     pub const NATIVE_CLOSE: i64 = 38;
+    pub const NATIVE_READ: i64 = 39;
+    pub const NATIVE_WRITE: i64 = 40;
+    pub const NATIVE_SEEK: i64 = 41;
+    pub const NATIVE_TELL: i64 = 42;
+    pub const NATIVE_SIZE: i64 = 43;
+    pub const NATIVE_TRUNCATE: i64 = 44;
+    pub const NATIVE_FLUSH: i64 = 45;
 }
 
 pub fn non_deterministic_ops() -> HashSet<i64> {
@@ -2116,6 +2130,344 @@ impl SystemProcesses {
         let response_par = match self.file_handles.remove(fd).await {
             Some(_) => response::ok(vec![]),
             None => response::err(response::FSERR_CLOSED, format!("fd {fd} is not open")),
+        };
+
+        let output = vec![response_par];
+        produce(&output, ack).await?;
+        Ok(output)
+    }
+
+    /// `nativeRead(fd: Int, n: Int) -> [true, bytes] | [false, code, msg]`.
+    ///
+    /// Reads up to `n` bytes from the file's current position and
+    /// advances the position by the number of bytes actually read.
+    /// EOF at the current position returns `[true, ""]` (empty
+    /// ByteArray); a short read followed by EOF returns whatever was
+    /// read.
+    ///
+    /// The read loops on the underlying `tokio::fs::File` until the
+    /// buffer is full or an EOF is observed. This gives users the
+    /// "read n bytes" semantics they generally expect, rather than
+    /// the POSIX "one syscall may return fewer bytes" surface.
+    pub async fn native_read(
+        &self,
+        contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
+    ) -> Result<Vec<Par>, InterpreterError> {
+        use tokio::io::AsyncReadExt;
+
+        use crate::rust::interpreter::io::response;
+
+        let Some((produce, _, _, args)) = self.is_contract_call().unapply(contract_args) else {
+            return Err(illegal_argument_error("native_read"));
+        };
+        let [fd_par, n_par, ack] = args.as_slice() else {
+            return Err(illegal_argument_error("native_read"));
+        };
+        let (Some(fd), Some(n)) = (RhoNumber::unapply(fd_par), RhoNumber::unapply(n_par)) else {
+            return Err(illegal_argument_error("native_read"));
+        };
+
+        let response_par = if n < 0 {
+            response::err(response::FSERR_BAD_ARG, format!("negative read length {n}"))
+        } else {
+            match self.file_handles.get(fd).await {
+                None => response::err(response::FSERR_CLOSED, format!("fd {fd} is not open")),
+                Some(handle) => {
+                    let mut buf = vec![0u8; n as usize];
+                    let mut file = handle.file.lock().await;
+                    let mut total = 0usize;
+                    let mut io_err: Option<std::io::Error> = None;
+                    while total < buf.len() {
+                        match file.read(&mut buf[total..]).await {
+                            Ok(0) => break,
+                            Ok(k) => total += k,
+                            Err(e) => {
+                                io_err = Some(e);
+                                break;
+                            }
+                        }
+                    }
+                    drop(file);
+                    match io_err {
+                        Some(e) => response::from_io_error(e),
+                        None => {
+                            buf.truncate(total);
+                            response::ok(vec![RhoByteArray::create_par(buf)])
+                        }
+                    }
+                }
+            }
+        };
+
+        let output = vec![response_par];
+        produce(&output, ack).await?;
+        Ok(output)
+    }
+
+    /// `nativeWrite(fd: Int, bytes: ByteArray) -> [true, nWritten] | [false, code, msg]`.
+    ///
+    /// Writes all of `bytes` at the file's current position and
+    /// advances the position by the number of bytes written. Loops
+    /// through short writes so the returned `nWritten` is the full
+    /// buffer length on success. Errors surface via `FSERR_*`.
+    pub async fn native_write(
+        &self,
+        contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
+    ) -> Result<Vec<Par>, InterpreterError> {
+        use tokio::io::AsyncWriteExt;
+
+        use crate::rust::interpreter::io::response;
+
+        let Some((produce, _, _, args)) = self.is_contract_call().unapply(contract_args) else {
+            return Err(illegal_argument_error("native_write"));
+        };
+        let [fd_par, bytes_par, ack] = args.as_slice() else {
+            return Err(illegal_argument_error("native_write"));
+        };
+        let (Some(fd), Some(bytes)) =
+            (RhoNumber::unapply(fd_par), RhoByteArray::unapply(bytes_par))
+        else {
+            return Err(illegal_argument_error("native_write"));
+        };
+
+        let response_par = match self.file_handles.get(fd).await {
+            None => response::err(response::FSERR_CLOSED, format!("fd {fd} is not open")),
+            Some(handle) => {
+                let mut file = handle.file.lock().await;
+                match file.write_all(&bytes).await {
+                    Ok(()) => response::ok(vec![RhoNumber::create_par(bytes.len() as i64)]),
+                    Err(e) => response::from_io_error(e),
+                }
+            }
+        };
+
+        let output = vec![response_par];
+        produce(&output, ack).await?;
+        Ok(output)
+    }
+
+    /// `nativeSeek(fd: Int, offset: Int, whence: String) -> [true, newPos] | [false, code, msg]`.
+    ///
+    /// `whence` is `"set"`, `"cur"`, or `"end"` (FIP §"Positional").
+    /// `"set"` requires a non-negative offset; `"cur"` and `"end"`
+    /// accept any signed offset. Returns the new absolute position.
+    pub async fn native_seek(
+        &self,
+        contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
+    ) -> Result<Vec<Par>, InterpreterError> {
+        use std::io::SeekFrom;
+
+        use tokio::io::AsyncSeekExt;
+
+        use crate::rust::interpreter::io::response;
+
+        let Some((produce, _, _, args)) = self.is_contract_call().unapply(contract_args) else {
+            return Err(illegal_argument_error("native_seek"));
+        };
+        let [fd_par, offset_par, whence_par, ack] = args.as_slice() else {
+            return Err(illegal_argument_error("native_seek"));
+        };
+        let (Some(fd), Some(offset), Some(whence)) = (
+            RhoNumber::unapply(fd_par),
+            RhoNumber::unapply(offset_par),
+            RhoString::unapply(whence_par),
+        ) else {
+            return Err(illegal_argument_error("native_seek"));
+        };
+
+        let seek_from = match whence.as_str() {
+            "set" => {
+                if offset < 0 {
+                    Err(response::err(
+                        response::FSERR_BAD_ARG,
+                        format!("seek 'set' requires non-negative offset, got {offset}"),
+                    ))
+                } else {
+                    Ok(SeekFrom::Start(offset as u64))
+                }
+            }
+            "cur" => Ok(SeekFrom::Current(offset)),
+            "end" => Ok(SeekFrom::End(offset)),
+            other => Err(response::err(
+                response::FSERR_BAD_ARG,
+                format!("unknown seek whence {other:?}"),
+            )),
+        };
+
+        let response_par = match seek_from {
+            Err(err_par) => err_par,
+            Ok(sf) => match self.file_handles.get(fd).await {
+                None => response::err(response::FSERR_CLOSED, format!("fd {fd} is not open")),
+                Some(handle) => {
+                    let mut file = handle.file.lock().await;
+                    match file.seek(sf).await {
+                        Ok(pos) => response::ok(vec![RhoNumber::create_par(pos as i64)]),
+                        Err(e) => response::from_io_error(e),
+                    }
+                }
+            },
+        };
+
+        let output = vec![response_par];
+        produce(&output, ack).await?;
+        Ok(output)
+    }
+
+    /// `nativeTell(fd: Int) -> [true, pos] | [false, code, msg]`.
+    ///
+    /// Reports the current position without moving it, implemented
+    /// as a seek of `Current(0)` since `tokio::fs::File` does not
+    /// expose a dedicated `stream_position` on stable.
+    pub async fn native_tell(
+        &self,
+        contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
+    ) -> Result<Vec<Par>, InterpreterError> {
+        use std::io::SeekFrom;
+
+        use tokio::io::AsyncSeekExt;
+
+        use crate::rust::interpreter::io::response;
+
+        let Some((produce, _, _, args)) = self.is_contract_call().unapply(contract_args) else {
+            return Err(illegal_argument_error("native_tell"));
+        };
+        let [fd_par, ack] = args.as_slice() else {
+            return Err(illegal_argument_error("native_tell"));
+        };
+        let Some(fd) = RhoNumber::unapply(fd_par) else {
+            return Err(illegal_argument_error("native_tell"));
+        };
+
+        let response_par = match self.file_handles.get(fd).await {
+            None => response::err(response::FSERR_CLOSED, format!("fd {fd} is not open")),
+            Some(handle) => {
+                let mut file = handle.file.lock().await;
+                match file.seek(SeekFrom::Current(0)).await {
+                    Ok(pos) => response::ok(vec![RhoNumber::create_par(pos as i64)]),
+                    Err(e) => response::from_io_error(e),
+                }
+            }
+        };
+
+        let output = vec![response_par];
+        produce(&output, ack).await?;
+        Ok(output)
+    }
+
+    /// `nativeSize(fd: Int) -> [true, nBytes] | [false, code, msg]`.
+    ///
+    /// Returns the file's current size via `metadata()`. Independent
+    /// of the file position, so a caller can query size without
+    /// disturbing an in-progress positional read/write.
+    pub async fn native_size(
+        &self,
+        contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
+    ) -> Result<Vec<Par>, InterpreterError> {
+        use crate::rust::interpreter::io::response;
+
+        let Some((produce, _, _, args)) = self.is_contract_call().unapply(contract_args) else {
+            return Err(illegal_argument_error("native_size"));
+        };
+        let [fd_par, ack] = args.as_slice() else {
+            return Err(illegal_argument_error("native_size"));
+        };
+        let Some(fd) = RhoNumber::unapply(fd_par) else {
+            return Err(illegal_argument_error("native_size"));
+        };
+
+        let response_par = match self.file_handles.get(fd).await {
+            None => response::err(response::FSERR_CLOSED, format!("fd {fd} is not open")),
+            Some(handle) => {
+                let file = handle.file.lock().await;
+                match file.metadata().await {
+                    Ok(meta) => response::ok(vec![RhoNumber::create_par(meta.len() as i64)]),
+                    Err(e) => response::from_io_error(e),
+                }
+            }
+        };
+
+        let output = vec![response_par];
+        produce(&output, ack).await?;
+        Ok(output)
+    }
+
+    /// `nativeTruncate(fd: Int, n: Int) -> [true] | [false, code, msg]`.
+    ///
+    /// Sets the file size to `n` bytes. Growing zero-pads per POSIX
+    /// `ftruncate`. Requires the fd to have been opened in a
+    /// writeable mode; otherwise the host returns
+    /// `PermissionDenied`, which the response layer maps to
+    /// `FSERR_PERM`.
+    pub async fn native_truncate(
+        &self,
+        contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
+    ) -> Result<Vec<Par>, InterpreterError> {
+        use crate::rust::interpreter::io::response;
+
+        let Some((produce, _, _, args)) = self.is_contract_call().unapply(contract_args) else {
+            return Err(illegal_argument_error("native_truncate"));
+        };
+        let [fd_par, n_par, ack] = args.as_slice() else {
+            return Err(illegal_argument_error("native_truncate"));
+        };
+        let (Some(fd), Some(n)) = (RhoNumber::unapply(fd_par), RhoNumber::unapply(n_par)) else {
+            return Err(illegal_argument_error("native_truncate"));
+        };
+
+        let response_par = if n < 0 {
+            response::err(
+                response::FSERR_BAD_ARG,
+                format!("negative truncate length {n}"),
+            )
+        } else {
+            match self.file_handles.get(fd).await {
+                None => response::err(response::FSERR_CLOSED, format!("fd {fd} is not open")),
+                Some(handle) => {
+                    let file = handle.file.lock().await;
+                    match file.set_len(n as u64).await {
+                        Ok(()) => response::ok(vec![]),
+                        Err(e) => response::from_io_error(e),
+                    }
+                }
+            }
+        };
+
+        let output = vec![response_par];
+        produce(&output, ack).await?;
+        Ok(output)
+    }
+
+    /// `nativeFlush(fd: Int) -> [true] | [false, code, msg]`.
+    ///
+    /// Forces a durable write via `sync_all`, which fsyncs both data
+    /// and metadata. The FIP promises "durable write" not "flushed to
+    /// kernel", so `sync_all` is the right primitive rather than
+    /// `AsyncWriteExt::flush`.
+    pub async fn native_flush(
+        &self,
+        contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
+    ) -> Result<Vec<Par>, InterpreterError> {
+        use crate::rust::interpreter::io::response;
+
+        let Some((produce, _, _, args)) = self.is_contract_call().unapply(contract_args) else {
+            return Err(illegal_argument_error("native_flush"));
+        };
+        let [fd_par, ack] = args.as_slice() else {
+            return Err(illegal_argument_error("native_flush"));
+        };
+        let Some(fd) = RhoNumber::unapply(fd_par) else {
+            return Err(illegal_argument_error("native_flush"));
+        };
+
+        let response_par = match self.file_handles.get(fd).await {
+            None => response::err(response::FSERR_CLOSED, format!("fd {fd} is not open")),
+            Some(handle) => {
+                let file = handle.file.lock().await;
+                match file.sync_all().await {
+                    Ok(()) => response::ok(vec![]),
+                    Err(e) => response::from_io_error(e),
+                }
+            }
         };
 
         let output = vec![response_par];

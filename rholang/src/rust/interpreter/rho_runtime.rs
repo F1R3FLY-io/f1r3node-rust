@@ -723,6 +723,99 @@ fn std_system_processes() -> Vec<Definition> {
             remainder: None,
         },
         Definition {
+            urn: "rho:io:fs:native:1.0.0/read".to_string(),
+            fixed_channel: FixedChannels::native_read(),
+            arity: 3,
+            body_ref: BodyRefs::NATIVE_READ,
+            handler: Box::new(|ctx| {
+                Box::new(move |args| {
+                    let ctx = ctx.clone();
+                    Box::pin(async move { ctx.system_processes.clone().native_read(args).await })
+                })
+            }),
+            remainder: None,
+        },
+        Definition {
+            urn: "rho:io:fs:native:1.0.0/write".to_string(),
+            fixed_channel: FixedChannels::native_write(),
+            arity: 3,
+            body_ref: BodyRefs::NATIVE_WRITE,
+            handler: Box::new(|ctx| {
+                Box::new(move |args| {
+                    let ctx = ctx.clone();
+                    Box::pin(async move { ctx.system_processes.clone().native_write(args).await })
+                })
+            }),
+            remainder: None,
+        },
+        Definition {
+            urn: "rho:io:fs:native:1.0.0/seek".to_string(),
+            fixed_channel: FixedChannels::native_seek(),
+            arity: 4,
+            body_ref: BodyRefs::NATIVE_SEEK,
+            handler: Box::new(|ctx| {
+                Box::new(move |args| {
+                    let ctx = ctx.clone();
+                    Box::pin(async move { ctx.system_processes.clone().native_seek(args).await })
+                })
+            }),
+            remainder: None,
+        },
+        Definition {
+            urn: "rho:io:fs:native:1.0.0/tell".to_string(),
+            fixed_channel: FixedChannels::native_tell(),
+            arity: 2,
+            body_ref: BodyRefs::NATIVE_TELL,
+            handler: Box::new(|ctx| {
+                Box::new(move |args| {
+                    let ctx = ctx.clone();
+                    Box::pin(async move { ctx.system_processes.clone().native_tell(args).await })
+                })
+            }),
+            remainder: None,
+        },
+        Definition {
+            urn: "rho:io:fs:native:1.0.0/size".to_string(),
+            fixed_channel: FixedChannels::native_size(),
+            arity: 2,
+            body_ref: BodyRefs::NATIVE_SIZE,
+            handler: Box::new(|ctx| {
+                Box::new(move |args| {
+                    let ctx = ctx.clone();
+                    Box::pin(async move { ctx.system_processes.clone().native_size(args).await })
+                })
+            }),
+            remainder: None,
+        },
+        Definition {
+            urn: "rho:io:fs:native:1.0.0/truncate".to_string(),
+            fixed_channel: FixedChannels::native_truncate(),
+            arity: 3,
+            body_ref: BodyRefs::NATIVE_TRUNCATE,
+            handler: Box::new(|ctx| {
+                Box::new(move |args| {
+                    let ctx = ctx.clone();
+                    Box::pin(
+                        async move { ctx.system_processes.clone().native_truncate(args).await },
+                    )
+                })
+            }),
+            remainder: None,
+        },
+        Definition {
+            urn: "rho:io:fs:native:1.0.0/flush".to_string(),
+            fixed_channel: FixedChannels::native_flush(),
+            arity: 2,
+            body_ref: BodyRefs::NATIVE_FLUSH,
+            handler: Box::new(|ctx| {
+                Box::new(move |args| {
+                    let ctx = ctx.clone();
+                    Box::pin(async move { ctx.system_processes.clone().native_flush(args).await })
+                })
+            }),
+            remainder: None,
+        },
+        Definition {
             urn: "rho:io:grpcTell".to_string(),
             fixed_channel: FixedChannels::grpc_tell(),
             arity: 3,
