@@ -926,6 +926,21 @@ fn std_system_processes() -> Vec<Definition> {
             remainder: None,
         },
         Definition {
+            urn: "rho:io:fs:native:1.0.0/quarantine".to_string(),
+            fixed_channel: FixedChannels::native_quarantine(),
+            arity: 3,
+            body_ref: BodyRefs::NATIVE_QUARANTINE,
+            handler: Box::new(|ctx| {
+                Box::new(move |args| {
+                    let ctx = ctx.clone();
+                    Box::pin(
+                        async move { ctx.system_processes.clone().native_quarantine(args).await },
+                    )
+                })
+            }),
+            remainder: None,
+        },
+        Definition {
             urn: "rho:io:grpcTell".to_string(),
             fixed_channel: FixedChannels::grpc_tell(),
             arity: 3,

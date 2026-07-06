@@ -296,6 +296,7 @@ impl FixedChannels {
     pub fn native_remove_file() -> Par { byte_name(52) }
     pub fn native_remove_dir() -> Par { byte_name(53) }
     pub fn native_chmod() -> Par { byte_name(54) }
+    pub fn native_quarantine() -> Par { byte_name(55) }
 }
 
 pub struct BodyRefs;
@@ -352,6 +353,7 @@ impl BodyRefs {
     pub const NATIVE_REMOVE_FILE: i64 = 51;
     pub const NATIVE_REMOVE_DIR: i64 = 52;
     pub const NATIVE_CHMOD: i64 = 53;
+    pub const NATIVE_QUARANTINE: i64 = 54;
 }
 
 pub fn non_deterministic_ops() -> HashSet<i64> {
@@ -2853,6 +2855,50 @@ impl SystemProcesses {
                     "chmod is not supported on this platform".to_string(),
                 )
             }
+        };
+
+        let output = vec![response_par];
+        produce(&output, ack).await?;
+        Ok(output)
+    }
+
+    /// `nativeQuarantine(rootPath: String, relPath: String) -> [true, canonPath] | [false, code, msg]`.
+    ///
+    /// Resolves `relPath` against `rootPath` and confirms the
+    /// canonical result is underneath `rootPath`. Used by the
+    /// Rholang `Dir` agent before dispatching a path-taking native
+    /// so the quarantine enforcement lives on the Rust side where
+    /// the syscalls are.
+    ///
+    /// `rootPath` must already be a canonical absolute path (the
+    /// powerbox canonicalizes it at boot). See
+    /// `io::path::canonicalize_and_quarantine` for the escape /
+    /// symlink / missing-tail semantics.
+    pub async fn native_quarantine(
+        &self,
+        contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
+    ) -> Result<Vec<Par>, InterpreterError> {
+        use crate::rust::interpreter::io::{path as pathq, response};
+
+        let Some((produce, _, _, args)) = self.is_contract_call().unapply(contract_args) else {
+            return Err(illegal_argument_error("native_quarantine"));
+        };
+        let [root_par, rel_par, ack] = args.as_slice() else {
+            return Err(illegal_argument_error("native_quarantine"));
+        };
+        let (Some(root_str), Some(rel_str)) =
+            (RhoString::unapply(root_par), RhoString::unapply(rel_par))
+        else {
+            return Err(illegal_argument_error("native_quarantine"));
+        };
+
+        let root_path = std::path::Path::new(&root_str);
+        let response_par = match pathq::canonicalize_and_quarantine(root_path, &rel_str) {
+            Ok(canonical) => {
+                let s = canonical.to_string_lossy().into_owned();
+                response::ok(vec![RhoString::create_par(s)])
+            }
+            Err(e) => response::err(e.code(), e.message()),
         };
 
         let output = vec![response_par];
