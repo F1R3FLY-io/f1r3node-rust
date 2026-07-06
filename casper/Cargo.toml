@@ -47,6 +47,7 @@ parking_lot = "0.12"
 tempfile = { workspace = true, optional = true }
 
 [dev-dependencies]
+casper = { path = ".", features = ["test-utils"] }
 # P2-16: enable block-storage's test-only RMW bypass helpers for
 # detector-totality / record-lifecycle integration tests. Production
 # builds of casper do NOT enable this feature.
