@@ -54,7 +54,6 @@ impl ValidatorIdentity {
     }
 
     pub fn from_private_key_with_logging(priv_key: Option<&str>) -> Option<Self> {
-        println!("priv_key = {:?}", priv_key);
         match priv_key {
             Some(priv_key) => Self::from_hex(priv_key),
             None => {
