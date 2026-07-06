@@ -790,7 +790,7 @@ pub async fn create(
 
     // Span[F].trace(ProcessDeploysAndCreateBlockMetricsSource) from Scala
     let _span =
-        tracing::info_span!(target: "f1r3fly.create-block", "process-deploys-and-create-block")
+        tracing::info_span!(target: "f1r3fly.casper.create_block", "process-deploys-and-create-block")
             .entered();
 
     tracing::event!(tracing::Level::DEBUG, mark = "before-packing-block");

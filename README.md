@@ -27,7 +27,6 @@ F1R3node Rust provides:
 | `block-storage` | Block, deploy, DAG, and finality persistence |
 | `shared` | Common storage traits, event helpers, metrics utilities |
 | `graphz` | Graph and DOT generation helpers |
-| `rspace_plus_plus_rhotypes` | RSpace/Rholang type bridge helper crate |
 
 ## Quick Start
 
