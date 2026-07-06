@@ -816,6 +816,45 @@ fn std_system_processes() -> Vec<Definition> {
             remainder: None,
         },
         Definition {
+            urn: "rho:io:fs:native:1.0.0/stat".to_string(),
+            fixed_channel: FixedChannels::native_stat(),
+            arity: 2,
+            body_ref: BodyRefs::NATIVE_STAT,
+            handler: Box::new(|ctx| {
+                Box::new(move |args| {
+                    let ctx = ctx.clone();
+                    Box::pin(async move { ctx.system_processes.clone().native_stat(args).await })
+                })
+            }),
+            remainder: None,
+        },
+        Definition {
+            urn: "rho:io:fs:native:1.0.0/entries".to_string(),
+            fixed_channel: FixedChannels::native_entries(),
+            arity: 2,
+            body_ref: BodyRefs::NATIVE_ENTRIES,
+            handler: Box::new(|ctx| {
+                Box::new(move |args| {
+                    let ctx = ctx.clone();
+                    Box::pin(async move { ctx.system_processes.clone().native_entries(args).await })
+                })
+            }),
+            remainder: None,
+        },
+        Definition {
+            urn: "rho:io:fs:native:1.0.0/exists".to_string(),
+            fixed_channel: FixedChannels::native_exists(),
+            arity: 2,
+            body_ref: BodyRefs::NATIVE_EXISTS,
+            handler: Box::new(|ctx| {
+                Box::new(move |args| {
+                    let ctx = ctx.clone();
+                    Box::pin(async move { ctx.system_processes.clone().native_exists(args).await })
+                })
+            }),
+            remainder: None,
+        },
+        Definition {
             urn: "rho:io:grpcTell".to_string(),
             fixed_channel: FixedChannels::grpc_tell(),
             arity: 3,

@@ -288,6 +288,9 @@ impl FixedChannels {
     pub fn native_size() -> Par { byte_name(44) }
     pub fn native_truncate() -> Par { byte_name(45) }
     pub fn native_flush() -> Par { byte_name(46) }
+    pub fn native_stat() -> Par { byte_name(47) }
+    pub fn native_entries() -> Par { byte_name(48) }
+    pub fn native_exists() -> Par { byte_name(49) }
 }
 
 pub struct BodyRefs;
@@ -336,6 +339,9 @@ impl BodyRefs {
     pub const NATIVE_SIZE: i64 = 43;
     pub const NATIVE_TRUNCATE: i64 = 44;
     pub const NATIVE_FLUSH: i64 = 45;
+    pub const NATIVE_STAT: i64 = 46;
+    pub const NATIVE_ENTRIES: i64 = 47;
+    pub const NATIVE_EXISTS: i64 = 48;
 }
 
 pub fn non_deterministic_ops() -> HashSet<i64> {
@@ -2468,6 +2474,156 @@ impl SystemProcesses {
                     Err(e) => response::from_io_error(e),
                 }
             }
+        };
+
+        let output = vec![response_par];
+        produce(&output, ack).await?;
+        Ok(output)
+    }
+
+    /// `nativeStat(path: String) -> [true, statRecord] | [false, code, msg]`.
+    ///
+    /// Reports metadata for the given path per the FIP TODO 5 record
+    /// shape. The record includes `name`, `kind`, `size` (files only),
+    /// `mode`, and `mtime`/`ctime`/`atime`. `owner`/`group` land in
+    /// the `nativeChown` slice where NSS lookup is introduced.
+    ///
+    /// Uses `symlink_metadata` (i.e. does not follow symlinks) so a
+    /// dangling symlink surfaces as `kind: "symlink"` rather than
+    /// `FSERR_NOT_FOUND`. Callers who want follow-symlink semantics
+    /// call `openFile` and then observe via the fd.
+    pub async fn native_stat(
+        &self,
+        contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
+    ) -> Result<Vec<Par>, InterpreterError> {
+        use crate::rust::interpreter::io::{response, stat};
+        use crate::rust::interpreter::rho_type::RhoMap;
+
+        let Some((produce, _, _, args)) = self.is_contract_call().unapply(contract_args) else {
+            return Err(illegal_argument_error("native_stat"));
+        };
+        let [path_par, ack] = args.as_slice() else {
+            return Err(illegal_argument_error("native_stat"));
+        };
+        let Some(path_str) = RhoString::unapply(path_par) else {
+            return Err(illegal_argument_error("native_stat"));
+        };
+
+        let path = std::path::Path::new(&path_str);
+        let response_par = match tokio::fs::symlink_metadata(path).await {
+            Err(e) => response::from_io_error(e),
+            Ok(meta) => {
+                let basename = stat::basename_of(path);
+                let record = stat::stat_record(&basename, &meta);
+                response::ok(vec![RhoMap::create_par(record)])
+            }
+        };
+
+        let output = vec![response_par];
+        produce(&output, ack).await?;
+        Ok(output)
+    }
+
+    /// `nativeEntries(dirPath: String) -> [true, [entry, ...]] | [false, code, msg]`.
+    ///
+    /// Reads the given directory and returns one record per entry,
+    /// sorted lexicographically by `name` (UTF-8 byte order) so the
+    /// result is deterministic across nodes per the FIP TODO 5
+    /// promise. Each record has the same shape as `nativeStat`; the
+    /// `name` field is the basename only, never containing `/`.
+    pub async fn native_entries(
+        &self,
+        contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
+    ) -> Result<Vec<Par>, InterpreterError> {
+        use crate::rust::interpreter::io::{response, stat};
+        use crate::rust::interpreter::rho_type::{RhoList, RhoMap};
+
+        let Some((produce, _, _, args)) = self.is_contract_call().unapply(contract_args) else {
+            return Err(illegal_argument_error("native_entries"));
+        };
+        let [path_par, ack] = args.as_slice() else {
+            return Err(illegal_argument_error("native_entries"));
+        };
+        let Some(path_str) = RhoString::unapply(path_par) else {
+            return Err(illegal_argument_error("native_entries"));
+        };
+
+        let response_par = match tokio::fs::read_dir(&path_str).await {
+            Err(e) => response::from_io_error(e),
+            Ok(mut rd) => {
+                let mut collected: Vec<(String, std::fs::Metadata)> = Vec::new();
+                let mut err: Option<std::io::Error> = None;
+                loop {
+                    match rd.next_entry().await {
+                        Err(e) => {
+                            err = Some(e);
+                            break;
+                        }
+                        Ok(None) => break,
+                        Ok(Some(entry)) => {
+                            let name = match entry.file_name().into_string() {
+                                Ok(s) => s,
+                                // Non-UTF-8 filename: skip. The FIP
+                                // treats paths as `String`, so we
+                                // have no way to represent it and
+                                // dropping is preferable to erroring
+                                // the whole listing.
+                                Err(_) => continue,
+                            };
+                            match entry.metadata().await {
+                                Err(e) => {
+                                    err = Some(e);
+                                    break;
+                                }
+                                Ok(meta) => collected.push((name, meta)),
+                            }
+                        }
+                    }
+                }
+                match err {
+                    Some(e) => response::from_io_error(e),
+                    None => {
+                        collected.sort_by(|a, b| a.0.cmp(&b.0));
+                        let entries: Vec<Par> = collected
+                            .into_iter()
+                            .map(|(name, meta)| RhoMap::create_par(stat::stat_record(&name, &meta)))
+                            .collect();
+                        response::ok(vec![RhoList::create_par(entries)])
+                    }
+                }
+            }
+        };
+
+        let output = vec![response_par];
+        produce(&output, ack).await?;
+        Ok(output)
+    }
+
+    /// `nativeExists(path: String) -> [true, bool] | [false, code, msg]`.
+    ///
+    /// Reports whether the path exists. A dangling symlink counts as
+    /// non-existent (matches `tokio::fs::try_exists`, which follows
+    /// symlinks). Callers who need the "path exists as symlink"
+    /// distinction use `nativeStat`, which uses `symlink_metadata`.
+    pub async fn native_exists(
+        &self,
+        contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
+    ) -> Result<Vec<Par>, InterpreterError> {
+        use crate::rust::interpreter::io::response;
+
+        let Some((produce, _, _, args)) = self.is_contract_call().unapply(contract_args) else {
+            return Err(illegal_argument_error("native_exists"));
+        };
+        let [path_par, ack] = args.as_slice() else {
+            return Err(illegal_argument_error("native_exists"));
+        };
+        let Some(path_str) = RhoString::unapply(path_par) else {
+            return Err(illegal_argument_error("native_exists"));
+        };
+
+        let response_par = match tokio::fs::try_exists(&path_str).await {
+            Ok(present) => response::ok(vec![RhoBoolean::create_par(present)]),
+            Err(e) => response::from_io_error(e),
         };
 
         let output = vec![response_par];
