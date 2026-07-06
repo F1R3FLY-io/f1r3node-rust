@@ -46,6 +46,7 @@ metrics = { workspace = true }
 tempfile = { workspace = true, optional = true }
 
 [dev-dependencies]
+casper = { path = ".", features = ["test-utils"] }
 metrics-util = { workspace = true }
 proptest = { workspace = true }
 k256 = { workspace = true }
