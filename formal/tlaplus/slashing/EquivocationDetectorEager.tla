@@ -207,11 +207,45 @@ Inv_DetectionSound ==
         (detectedStatus[<<v, s, b>>] \in {"admissible", "ignorable"})
             => IsRealEquivocation(v, s)
 
-\* T-3 (taxonomy): the status set is closed.
+\* T-3 (taxonomy): ranges over the real 27-variant InvalidBlock enum and pins
+\* the 19-element is_slashable set (casper/src/rust/block_status.rs); every
+\* non-valid detector status maps to a slashable variant.
+InvalidBlockVariants ==
+    { "AdmissibleEquivocation", "IgnorableEquivocation", "NeglectedEquivocation",
+      "NeglectedInvalidBlock", "JustificationRegression", "InvalidParents",
+      "InvalidFollows", "InvalidBlockNumber", "InvalidSequenceNumber",
+      "InvalidShardId", "InvalidRepeatDeploy", "DeployNotSigned",
+      "InvalidTransaction", "InvalidBondsCache", "InvalidBlockHash",
+      "UnauthorizedSlashDeploy", "ContainsExpiredDeploy",
+      "ContainsTimeExpiredDeploy", "ContainsFutureDeploy",
+      "InvalidFormat", "InvalidSignature", "InvalidSender", "InvalidVersion",
+      "InvalidTimestamp", "InvalidRejectedDeploy", "NotOfInterest",
+      "LowDeployCost" }
+
+SlashableVariants ==
+    { "AdmissibleEquivocation", "IgnorableEquivocation", "NeglectedEquivocation",
+      "NeglectedInvalidBlock", "JustificationRegression", "InvalidParents",
+      "InvalidFollows", "InvalidBlockNumber", "InvalidSequenceNumber",
+      "InvalidShardId", "InvalidRepeatDeploy", "DeployNotSigned",
+      "InvalidTransaction", "InvalidBondsCache", "InvalidBlockHash",
+      "UnauthorizedSlashDeploy", "ContainsExpiredDeploy",
+      "ContainsTimeExpiredDeploy", "ContainsFutureDeploy" }
+
+StatusInvalidBlock(st) ==
+    CASE st = "admissible" -> "AdmissibleEquivocation"
+      [] st = "ignorable"  -> "IgnorableEquivocation"
+      [] st = "neglected"  -> "NeglectedEquivocation"
+      [] OTHER             -> "AdmissibleEquivocation"
+
 Inv_TaxonomyCorrect ==
-    \A v \in Validators, s \in 1..MaxSeqNum, b \in 1..MaxBlocksPerSeq :
-        detectedStatus[<<v, s, b>>] \in
-            {"none", "valid", "admissible", "ignorable", "neglected"}
+    /\ Cardinality(InvalidBlockVariants) = 27
+    /\ Cardinality(SlashableVariants) = 19
+    /\ SlashableVariants \subseteq InvalidBlockVariants
+    /\ \A v \in Validators, s \in 1..MaxSeqNum, b \in 1..MaxBlocksPerSeq :
+         /\ detectedStatus[<<v, s, b>>] \in
+              {"none", "valid", "admissible", "ignorable", "neglected"}
+         /\ ( detectedStatus[<<v, s, b>>] \in {"admissible", "ignorable", "neglected"}
+              => StatusInvalidBlock(detectedStatus[<<v, s, b>>]) \in SlashableVariants )
 
 Inv_NeglectedHasDetectableView ==
     \A v \in Validators, s \in 1..MaxSeqNum, b \in 1..MaxBlocksPerSeq :

@@ -290,9 +290,12 @@ form `weak_barbed_equiv` as it appears in the Rocq mechanization.
 
 ### 2.4 InvalidBlock taxonomy
 
-The `InvalidBlock` enum has **26 variants**. **17 are slashable
-pre-fix; 18 are slashable post-fix** (Bug #1 promotes
-`IgnorableEquivocation` from non-slashable to slashable). The 17
+The `InvalidBlock` enum has **27 variants**. **17 are slashable
+pre-fix; 19 are slashable post-fix** (Bug #1 promotes
+`IgnorableEquivocation` from non-slashable to slashable, and the 27th
+variant `UnauthorizedSlashDeploy` — raised when a block carries a Slash
+system deploy that fails the §9.14 receive-gate authorization — is also
+slashable, `block_status.rs:206`). The 17
 pre-fix slashable variants in the current Rust source are:
 
 ```
@@ -726,20 +729,22 @@ non-`Valid` status, so the disjunction holds. TLC verifies the temporal
 property `Live_DetectionComplete` under fairness.
 
 **Theorem 4.3 (T-3, Slashable taxonomy correctness).**
-*(`slashable_post_fix_extends_pre_fix`, `InvalidBlock.v:151`.)* The post-fix
-slashable set strictly extends the pre-fix slashable set by exactly the
-`IgnorableEquivocation` variant; on all other variants the two predicates
-agree. Proven by exhaustive case analysis on the 26-element enum.
+*(`slashable_post_fix_extends_pre_fix`, `InvalidBlock.v`.)* The post-fix
+slashable set extends the pre-fix slashable set by exactly two variants —
+`IgnorableEquivocation` (Bug #1) and the 27th variant
+`UnauthorizedSlashDeploy`; on all other variants the two predicates agree
+(`slashable_diff_only_ignorable_or_unauth`). Proven by exhaustive case
+analysis on the 27-element enum.
 
-The 18-element post-fix slashable set is
+The 19-element post-fix slashable set is
 
 ```
 { AdmissibleEquivocation, IgnorableEquivocation, NeglectedEquivocation,
   NeglectedInvalidBlock, JustificationRegression, InvalidParents,
   InvalidFollows, InvalidBlockNumber, InvalidSequenceNumber,
   InvalidShardId, InvalidRepeatDeploy, DeployNotSigned, InvalidTransaction,
-  InvalidBondsCache, InvalidBlockHash, ContainsExpiredDeploy,
-  ContainsTimeExpiredDeploy, ContainsFutureDeploy }
+  InvalidBondsCache, InvalidBlockHash, UnauthorizedSlashDeploy,
+  ContainsExpiredDeploy, ContainsTimeExpiredDeploy, ContainsFutureDeploy }
 ```
 
 ---

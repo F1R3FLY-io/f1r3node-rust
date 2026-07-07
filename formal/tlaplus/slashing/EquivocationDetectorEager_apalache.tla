@@ -170,10 +170,49 @@ Inv_DetectionSound ==
         (detectedStatus[<<v, s, b>>] \in {"admissible", "ignorable"})
             => IsRealEquivocation(v, s)
 
-\* T-3 (taxonomy): the status set is closed.
+\* T-3 (taxonomy): ranges over the real 27-variant InvalidBlock enum and pins
+\* the 19-element is_slashable set (casper/src/rust/block_status.rs). The enum /
+\* slashable facts are state-independent constants (trivially inductive); the
+\* status→slashable mapping is a tautology over the closed status set, so IndInv
+\* stays inductive under STEP.
+\* @type: Set(Str);
+InvalidBlockVariants ==
+    { "AdmissibleEquivocation", "IgnorableEquivocation", "NeglectedEquivocation",
+      "NeglectedInvalidBlock", "JustificationRegression", "InvalidParents",
+      "InvalidFollows", "InvalidBlockNumber", "InvalidSequenceNumber",
+      "InvalidShardId", "InvalidRepeatDeploy", "DeployNotSigned",
+      "InvalidTransaction", "InvalidBondsCache", "InvalidBlockHash",
+      "UnauthorizedSlashDeploy", "ContainsExpiredDeploy",
+      "ContainsTimeExpiredDeploy", "ContainsFutureDeploy",
+      "InvalidFormat", "InvalidSignature", "InvalidSender", "InvalidVersion",
+      "InvalidTimestamp", "InvalidRejectedDeploy", "NotOfInterest",
+      "LowDeployCost" }
+
+\* @type: Set(Str);
+SlashableVariants ==
+    { "AdmissibleEquivocation", "IgnorableEquivocation", "NeglectedEquivocation",
+      "NeglectedInvalidBlock", "JustificationRegression", "InvalidParents",
+      "InvalidFollows", "InvalidBlockNumber", "InvalidSequenceNumber",
+      "InvalidShardId", "InvalidRepeatDeploy", "DeployNotSigned",
+      "InvalidTransaction", "InvalidBondsCache", "InvalidBlockHash",
+      "UnauthorizedSlashDeploy", "ContainsExpiredDeploy",
+      "ContainsTimeExpiredDeploy", "ContainsFutureDeploy" }
+
+\* @type: (Str) => Str;
+StatusInvalidBlock(st) ==
+    CASE st = "admissible" -> "AdmissibleEquivocation"
+      [] st = "ignorable"  -> "IgnorableEquivocation"
+      [] st = "neglected"  -> "NeglectedEquivocation"
+      [] OTHER             -> "AdmissibleEquivocation"
+
 Inv_TaxonomyCorrect ==
-    \A v \in Validators, s \in 1..MaxSeqNum, b \in 1..MaxBlocksPerSeq :
-        detectedStatus[<<v, s, b>>] \in Statuses
+    /\ Cardinality(InvalidBlockVariants) = 27
+    /\ Cardinality(SlashableVariants) = 19
+    /\ SlashableVariants \subseteq InvalidBlockVariants
+    /\ \A v \in Validators, s \in 1..MaxSeqNum, b \in 1..MaxBlocksPerSeq :
+         /\ detectedStatus[<<v, s, b>>] \in Statuses
+         /\ ( detectedStatus[<<v, s, b>>] \in {"admissible", "ignorable", "neglected"}
+              => StatusInvalidBlock(detectedStatus[<<v, s, b>>]) \in SlashableVariants )
 
 Inv_NeglectedHasDetectableView ==
     \A v \in Validators, s \in 1..MaxSeqNum, b \in 1..MaxBlocksPerSeq :

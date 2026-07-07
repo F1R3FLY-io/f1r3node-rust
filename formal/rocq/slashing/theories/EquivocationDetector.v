@@ -55,20 +55,73 @@ Definition status_to_invalid (st : DetectorStatus) : option InvalidBlock :=
   end.
 
 (* ═══════════════════════════════════════════════════════════════════════════
-   §2 — Detection function
+   §2 — Detection function (POINTER detector, faithful to the Rust)
    ═══════════════════════════════════════════════════════════════════════════
 
-   The detector takes a DAG state, the arriving block's sender and seqNum,
-   and a flag indicating whether the block has been requested as a
-   dependency by some other block in the DAG. It returns one of the four
-   detector statuses. *)
+   f1r3node's `check_equivocations` (equivocation_detector.rs:86-89) does NOT
+   count same-seq/distinct-hash blocks. It compares two `Option<BlockHash>`
+   pointers:
+
+       let maybe_latest_message_of_creator_hash = dag.latest_message_hash(&block.sender);
+       let maybe_creator_justification         = Self::creator_justification_hash(block);
+       let is_not_equivocation =
+             maybe_creator_justification == maybe_latest_message_of_creator_hash;
+
+   i.e. an arriving block equivocates iff its creator-justification (self-parent)
+   pointer disagrees with the sender's current latest-message pointer in the
+   DAG. We model that pointer comparison directly. This is a DIFFERENT fact
+   from DAGState's same-seq/distinct-hash count `equivocates_b`; the two are
+   provably distinct (see `equivocates_ptr_diverges_from_seq_count` below), so
+   the detector is modelled over the pointer notion the code actually computes,
+   not the seq-count notion (which remains available in DAGState §3 as a
+   separate mathematical characterization of an on-DAG fork). *)
+
+(* Optional block-hash pointer equality (mirrors `Option<BlockHash>` `==`). *)
+Definition ptr_eqb (p q : option BlockHash) : bool :=
+  match p, q with
+  | None, None => true
+  | Some a, Some b => Nat.eqb a b
+  | _, _ => false
+  end.
+
+Lemma ptr_eqb_refl : forall p, ptr_eqb p p = true.
+Proof. destruct p; simpl; [apply Nat.eqb_refl | reflexivity]. Qed.
+
+Lemma ptr_eqb_true_iff : forall p q, ptr_eqb p q = true <-> p = q.
+Proof.
+  intros p q. destruct p as [a|]; destruct q as [b|]; simpl; split; intro H;
+    try discriminate; try reflexivity.
+  - apply Nat.eqb_eq in H. subst. reflexivity.
+  - inversion H. subst. apply Nat.eqb_refl.
+Qed.
+
+(* Pointer-based equivocation (equivocation_detector.rs:88-89): the arriving
+   block's creator-justification pointer disagrees with the sender's current
+   latest-message pointer. *)
+Definition equivocates_ptr
+  (creator_justification latest_message : option BlockHash) : bool :=
+  negb (ptr_eqb creator_justification latest_message).
 
 Definition detect
-  (st : DAGState) (v : Validator) (n : nat) (requestedAsDep : bool)
+  (creator_justification latest_message : option BlockHash) (requestedAsDep : bool)
   : DetectorStatus :=
-  if equivocates_b st v n
+  if equivocates_ptr creator_justification latest_message
   then if requestedAsDep then DSAdmissible else DSIgnorable
   else DSValid.
+
+(* Constructive divergence exhibit: the pointer detector fires on a
+   self-justification-regression pointer mismatch (creator justification 7 ≠
+   latest message 9) for which there need be NO second block at any single seq
+   number — the case DAGState's seq-count `equivocates_b` structurally cannot
+   represent. Conversely, matching pointers are classified non-equivocating.
+   This is why the detector is modelled over `equivocates_ptr`, not bridged to
+   the seq-count notion. *)
+Example equivocates_ptr_diverges_from_seq_count :
+  equivocates_ptr (Some 7) (Some 9) = true /\
+  equivocates_ptr (Some 9) (Some 9) = false /\
+  equivocates_ptr None (Some 9) = true /\
+  equivocates_ptr None None = false.
+Proof. repeat split; reflexivity. Qed.
 
 (* The Neglected case is detected separately by checkNeglectedEquivocations
    (mirroring f1r3node's check_neglected_equivocations_with_update). It
@@ -85,48 +138,48 @@ Definition detect_neglected
    §3 — T-1: Detection soundness
    ═══════════════════════════════════════════════════════════════════════════
 
-   If detect emits Admissible or Ignorable, the DAG witnesses a real
-   equivocation at (v, n). *)
+   If detect emits Admissible or Ignorable, the arriving block's creator
+   justification really disagrees with the sender's latest message — a genuine
+   pointer equivocation. *)
 
 Theorem detection_sound :
-  forall st v n d s,
-    detect st v n d = s ->
+  forall cj lm d s,
+    detect cj lm d = s ->
     s = DSAdmissible \/ s = DSIgnorable ->
-    equivocates st v n.
+    equivocates_ptr cj lm = true.
 Proof.
-  intros st v n d s Hd Hs.
+  intros cj lm d s Hd Hs.
   unfold detect in Hd.
-  destruct (equivocates_b st v n) eqn:E.
-  - unfold equivocates. exact E.
-  - destruct d; subst s; destruct Hs as [Hs | Hs]; discriminate.
+  destruct (equivocates_ptr cj lm) eqn:E.
+  - reflexivity.
+  - subst s. destruct Hs as [Hs | Hs]; discriminate.
 Qed.
 
 (* ═══════════════════════════════════════════════════════════════════════════
    §4 — T-2: Detection completeness
    ═══════════════════════════════════════════════════════════════════════════
 
-   If equivocates(st, v, n), then detect emits Admissible or Ignorable
-   (depending on the requestedAsDep flag). *)
+   If the creator-justification pointer disagrees with the latest-message
+   pointer, then detect emits Admissible or Ignorable (per the requestedAsDep
+   flag). *)
 
 Theorem detection_complete :
-  forall st v n d,
-    equivocates st v n ->
-    detect st v n d = DSAdmissible \/ detect st v n d = DSIgnorable.
+  forall cj lm d,
+    equivocates_ptr cj lm = true ->
+    detect cj lm d = DSAdmissible \/ detect cj lm d = DSIgnorable.
 Proof.
-  intros st v n d He.
-  unfold detect, equivocates in *.
-  rewrite He.
+  intros cj lm d He.
+  unfold detect. rewrite He.
   destruct d; [left; reflexivity | right; reflexivity].
 Qed.
 
 (* Stronger version: the detected status matches the dependency flag. *)
 Theorem detection_complete_strong :
-  forall st v n d,
-    equivocates st v n ->
-    detect st v n d = (if d then DSAdmissible else DSIgnorable).
+  forall cj lm d,
+    equivocates_ptr cj lm = true ->
+    detect cj lm d = (if d then DSAdmissible else DSIgnorable).
 Proof.
-  intros st v n d He. unfold detect. unfold equivocates in He.
-  rewrite He. reflexivity.
+  intros cj lm d He. unfold detect. rewrite He. reflexivity.
 Qed.
 
 (* ═══════════════════════════════════════════════════════════════════════════
@@ -134,14 +187,14 @@ Qed.
    ═══════════════════════════════════════════════════════════════════════════ *)
 
 Theorem detect_status_to_invalid_slashable :
-  forall st v n d s ib,
-    detect st v n d = s ->
+  forall cj lm d s ib,
+    detect cj lm d = s ->
     status_to_invalid s = Some ib ->
     is_slashable ib = true.
 Proof.
-  intros st v n d s ib Hd Hs.
+  intros cj lm d s ib Hd Hs.
   unfold detect in Hd. unfold status_to_invalid in Hs.
-  destruct (equivocates_b st v n).
+  destruct (equivocates_ptr cj lm).
   - destruct d; subst s; inversion Hs; subst; reflexivity.
   - subst s. discriminate.
 Qed.
@@ -279,6 +332,61 @@ Proof.
   - destruct (Nat.eq_dec h2 h1) as [Heq | _].
     + symmetry in Heq. contradiction.
     + reflexivity.
+Qed.
+
+(* ═══════════════════════════════════════════════════════════════════════════
+   §6b — Neglected-equivocation discovery status (Bug fix #1 no-corruption)
+   ═══════════════════════════════════════════════════════════════════════════
+
+   Models `EquivocationDiscoveryStatus` and
+   `get_equivocation_discovery_status_for_bonded_validator`
+   (equivocation_detector.rs:285-313): a bonded (stake > 0) validator's record
+   resolves to Neglected iff its equivocation is detectable in the observing
+   block's latest-message view, else Oblivious; an unbonded (stake 0) validator
+   resolves to Detected.
+
+   Fix #1 mints, for an UnauthorizedSlashDeploy, the empty-witness record
+   `EquivocationRecord::new(sender, seq-1, {})` (BugFixDispatcher.dispatch_post_fix
+   uses `mkEqRec offender baseSeq nil`). The lemma below shows the empty record
+   does NOT corrupt neglected-equivocation detection: for an honest sender —
+   whose view carries no detected-hash marker (the witness set is empty, so the
+   `equivocation_detected_block_hashes.contains(..)` early return never fires)
+   and at most one distinct canonical child (a single self-chain) — the fixed
+   detectable view is FALSE, hence the discovery status is Oblivious, never a
+   spurious NeglectedEquivocation against the honest validator. *)
+
+Inductive EquivDiscoveryStatus : Type :=
+  | EDNeglected : EquivDiscoveryStatus
+  | EDDetected  : EquivDiscoveryStatus
+  | EDOblivious : EquivDiscoveryStatus.
+
+Definition discovery_status_bonded (stake : nat) (detectable : bool) : EquivDiscoveryStatus :=
+  if Nat.ltb 0 stake
+  then if detectable then EDNeglected else EDOblivious
+  else EDDetected.
+
+Lemma honest_empty_record_view_not_detectable :
+  forall xs,
+    detected_hash_seen xs = false ->
+    Nat.leb 2 (length (nodup Nat.eq_dec (child_hashes xs))) = false ->
+    fixed_detectable_view xs = false.
+Proof.
+  intros xs H1 H2. unfold fixed_detectable_view. rewrite H1, H2. reflexivity.
+Qed.
+
+Theorem honest_empty_record_oblivious :
+  forall stake xs,
+    stake > 0 ->
+    detected_hash_seen xs = false ->
+    Nat.leb 2 (length (nodup Nat.eq_dec (child_hashes xs))) = false ->
+    discovery_status_bonded stake (fixed_detectable_view xs) = EDOblivious.
+Proof.
+  intros stake xs Hstake H1 H2.
+  rewrite (honest_empty_record_view_not_detectable xs H1 H2).
+  unfold discovery_status_bonded.
+  destruct (Nat.ltb 0 stake) eqn:E.
+  - reflexivity.
+  - apply Nat.ltb_ge in E. lia.
 Qed.
 
 Fixpoint detector_traversal_fuel

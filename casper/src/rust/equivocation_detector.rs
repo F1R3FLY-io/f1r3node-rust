@@ -869,4 +869,170 @@ mod tests {
             Some(Some(children[0].block_hash.clone()))
         );
     }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // Tier-0 dynamic verification (slashing FV audit finding #6):
+    //   unbonded → pollute → re-bond → false NeglectedEquivocation.
+    //
+    // Hypothesis: while an equivocator V is stake-0/unbonded, its
+    // EquivocationRecord (minted with an EMPTY witness set — e.g. the
+    // UnauthorizedSlashDeploy record `EquivocationRecord::new(V, seq-1, {})`)
+    // resolves to `EquivocationDetected` in `get_equivocation_discovery_status`
+    // (:280 unbonded / :311 stake-0), and the caller
+    // `check_neglected_equivocation` (:214-216) then STAMPS the currently-
+    // validated block's hash into that record. Every block validated during the
+    // unbonded window therefore pollutes V's record. Once V re-bonds (stake > 0),
+    // `is_equivocation_detectable` runs and its first check (:351-356) returns
+    // TRUE for ANY later block whose justifications cite a stamped hash — even a
+    // perfectly honest block — classifying it `EquivocationNeglected`.
+    //
+    // Verdict: LIVE. The three tests below exhibit (1) the pollution source,
+    // (2) the false-positive rejection of an honest block, and (3) cross-node
+    // divergence when two nodes stamp different hashes (observation-order
+    // dependent) — a consensus fork.
+    // ══════════════════════════════════════════════════════════════════════
+
+    // (1) SOURCE: an unbonded validator's record resolves to
+    // `EquivocationDetected`, which is exactly the branch whose caller stamps the
+    // observer block's hash into the record (equivocation_detector.rs:214-216).
+    #[test]
+    fn tier0_unbonded_validator_discovery_is_detected_triggering_stamp() {
+        let v = validator(1);
+        let observer_block_hash = hash(77);
+        let record = EquivocationRecord::new(v.clone(), 0, BTreeSet::new());
+        let genesis = block(&v, 0, hash(10), None);
+        let dag = dag_with(&[genesis.clone()]);
+        let block_store = block_store_with(&[genesis.clone()]);
+        let latest_messages = BTreeMap::from([(v.clone(), observer_block_hash)]);
+        let mut cache = CanonicalChildCache::new();
+        let bonds: Vec<Bond> = Vec::new(); // V is UNBONDED (absent from the bond map)
+
+        let status = EquivocationDetector::get_equivocation_discovery_status(
+            &dag,
+            &block_store,
+            &record,
+            &genesis,
+            &mut cache,
+            &latest_messages,
+            &bonds,
+        )
+        .unwrap();
+
+        assert_eq!(
+            status,
+            EquivocationDiscoveryStatus::EquivocationDetected,
+            "unbonded validator ⇒ Detected ⇒ caller stamps observer hashes into the (empty) record"
+        );
+    }
+
+    // (2) FALSE POSITIVE: a record polluted with V's own honest chain tip (b1),
+    // stamped during the unbonded window, causes a later HONEST block that cites
+    // b1 to be flagged detectable — i.e. rejected NeglectedEquivocation — even
+    // though V never equivocated. The clean (as-minted) record does not.
+    #[test]
+    fn tier0_polluted_record_falsely_neglects_honest_block() {
+        let v = validator(1);
+        // Honest single chain: b0 (seq 0) → b1 (seq 1). No equivocation.
+        let b0 = block(&v, 0, hash(10), None);
+        let b1 = block(&v, 1, hash(11), Some(b0.block_hash.clone()));
+        let dag = dag_with(&[b0.clone(), b1.clone()]);
+        let block_store = block_store_with(&[b0.clone(), b1.clone()]);
+        // A later honest observer cites V's real latest message (b1).
+        let latest_messages = BTreeMap::from([(v.clone(), b1.block_hash.clone())]);
+
+        // Baseline: clean (empty) record — as minted — does NOT flag the honest
+        // block (single honest chain, one canonical child ⇒ Oblivious).
+        let clean_record = EquivocationRecord::new(v.clone(), 0, BTreeSet::new());
+        let mut cache = CanonicalChildCache::new();
+        let baseline = EquivocationDetector::is_equivocation_detectable(
+            &dag,
+            &block_store,
+            &latest_messages,
+            &clean_record,
+            &[],
+            &b0,
+            &mut cache,
+        )
+        .unwrap();
+        assert!(
+            !baseline,
+            "clean as-minted record must NOT flag the honest block"
+        );
+
+        // Polluted: b1's hash was stamped into the record while V was unbonded.
+        let mut polluted_record = EquivocationRecord::new(v.clone(), 0, BTreeSet::new());
+        polluted_record
+            .equivocation_detected_block_hashes
+            .insert(b1.block_hash.clone());
+        let mut cache2 = CanonicalChildCache::new();
+        let polluted = EquivocationDetector::is_equivocation_detectable(
+            &dag,
+            &block_store,
+            &latest_messages,
+            &polluted_record,
+            &[],
+            &b0,
+            &mut cache2,
+        )
+        .unwrap();
+        assert!(
+            polluted,
+            "LIVE: polluted record falsely flags the honest block as NeglectedEquivocation"
+        );
+    }
+
+    // (3) CROSS-NODE DIVERGENCE: two nodes stamped different observer hashes
+    // (observation-order dependent). For the SAME honest block, node A (which
+    // stamped the cited hash) rejects it while node B (which stamped a different
+    // hash) accepts it — a consensus fork.
+    #[test]
+    fn tier0_cross_node_observation_order_divergence() {
+        let v = validator(1);
+        let b0 = block(&v, 0, hash(10), None);
+        let b1 = block(&v, 1, hash(11), Some(b0.block_hash.clone()));
+        let dag = dag_with(&[b0.clone(), b1.clone()]);
+        let block_store = block_store_with(&[b0.clone(), b1.clone()]);
+        let latest_messages = BTreeMap::from([(v.clone(), b1.block_hash.clone())]);
+
+        // Node A stamped b1 (the hash the honest block cites).
+        let mut record_a = EquivocationRecord::new(v.clone(), 0, BTreeSet::new());
+        record_a
+            .equivocation_detected_block_hashes
+            .insert(b1.block_hash.clone());
+        let mut cache_a = CanonicalChildCache::new();
+        let verdict_a = EquivocationDetector::is_equivocation_detectable(
+            &dag,
+            &block_store,
+            &latest_messages,
+            &record_a,
+            &[],
+            &b0,
+            &mut cache_a,
+        )
+        .unwrap();
+
+        // Node B stamped a DIFFERENT hash the honest block never cites.
+        let mut record_b = EquivocationRecord::new(v.clone(), 0, BTreeSet::new());
+        record_b
+            .equivocation_detected_block_hashes
+            .insert(hash(88));
+        let mut cache_b = CanonicalChildCache::new();
+        let verdict_b = EquivocationDetector::is_equivocation_detectable(
+            &dag,
+            &block_store,
+            &latest_messages,
+            &record_b,
+            &[],
+            &b0,
+            &mut cache_b,
+        )
+        .unwrap();
+
+        assert!(verdict_a, "node A (stamped the cited hash) rejects the honest block");
+        assert!(!verdict_b, "node B (stamped a different hash) accepts the honest block");
+        assert_ne!(
+            verdict_a, verdict_b,
+            "LIVE: observation-order-dependent pollution makes two honest nodes DISAGREE (consensus fork)"
+        );
+    }
 }

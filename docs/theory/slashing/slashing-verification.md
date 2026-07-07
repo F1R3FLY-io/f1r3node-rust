@@ -74,7 +74,7 @@ The contribution split:
 
 | Class                                     | Theorems                                                                                                                                                                                                                                                |
 |-------------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| **(a)** Direct mechanizations             | `bm_slash`, `bm_lookup`, `equivocates_b`, `is_slashable`, `detect`, `slash`, `prepare_slashing_deploys`, `filter_slashed`, `slash_step`, `atomic_record_or_update`, `validate_received_slash_deploys`, `checked_pred`, `checked_succ_bounded`           |
+| **(a)** Direct mechanizations             | `bm_slash`, `bm_lookup`, `equivocates_ptr` (detector notion) / `equivocates_b` (auxiliary), `is_slashable`, `detect`, `slash`, `prepare_slashing_deploys`, `filter_slashed`, `slash_step`, `atomic_record_or_update`, `received_slash_deploy_authorized` / `validate_block_slash_deploys`, `checked_pred`, `checked_succ_bounded`           |
 | **(b)** Verifications of paper algorithms | T-1, T-2, T-3, T-4, T-5, T-6, T-7, T-8, T-Idem (slash idempotence; alias T-9), T-10                                                                                                                                                                     |
 | **(c)** Proof-original extensions         | T-11, T-12 (with letter-suffix family T-12-{W, F, C, I, G, A, V, RPT, EID, HYP, AMP, PF, R, D, RET}), T-13a/b/c, T-14, T-15a/b, T-9.1–T-9.15 (including T-9.10', T-9.10″), T-Auth (auth-token guard, §9.16), T-LivenessGap (authorized-index proposer derivation, §9.16) |
 | **(d)** Citable-axiom-gated               | None — all theorems are closed under the global context                                                                                                                                                                                                 |
@@ -336,7 +336,7 @@ The Rocq formalization realizes each rule as a function (e.g. `slash : PoSState 
 
 ### 4.1 Definitions
 
-**Definition 4.1** *(Equivocation in the DAG).*
+**Definition 4.1** *(Same-seq equivocation in the DAG — auxiliary).*
 For a DAG state `S = (D, …)`, validator `v`, and sequence number `n`,
 
 ```
@@ -349,57 +349,82 @@ equivocates(S, v, n) ⇔
 
 Rocq: `equivocates : DAGState → Validator → nat → Prop`
 in `theories/DAGState.v:106`. The boolean version `equivocates_b` is
-proven equivalent (`equivocates_dec` at line 109). Witness extraction
-`equivocates_witnesses` (line 177) is used by all completeness proofs.
+proven decidable (`equivocates_dec` at line 109) and its witness
+extraction `equivocates_witnesses` (line 177) is retained as a
+mathematical characterization of an on-DAG fork.
+
+> **Faithfulness note (FV audit #2).** The Rust detector
+> `check_equivocations` (`equivocation_detector.rs:86-89`) does **not**
+> compute the same-seq/distinct-hash count above. It compares two
+> `Option<BlockHash>` **pointers** — the arriving block's
+> creator-justification (self-parent) against the sender's current
+> latest-message in the DAG:
+> `is_not_equivocation = (creator_justification == latest_message)`.
+> The Rocq detector is therefore modelled over the **pointer** notion the
+> code actually computes (`equivocates_ptr`, Definition 4.1′), not the
+> seq-count notion (which the two provably diverge from — see
+> `equivocates_ptr_diverges_from_seq_count`). `equivocates` / `equivocates_b`
+> remain in `DAGState.v` as an auxiliary, no longer the detector's notion.
+
+**Definition 4.1′** *(Pointer equivocation — the detector's notion).*
+For an arriving block's creator-justification pointer `cj` and the
+sender's latest-message pointer `lm` (both `Option<BlockHash>`),
+
+```
+equivocates_ptr(cj, lm) ⇔ cj ≠ lm
+```
+
+Rocq: `equivocates_ptr : option BlockHash → option BlockHash → bool`
+in `theories/EquivocationDetector.v`.
 
 **Definition 4.2** *(Detector).*
 The detector classifies an arrival as one of four statuses:
 
 ```
-detect(S, v, n, d) =
-  ⎧ DSValid       if ¬equivocates(S, v, n)
-  ⎨ DSAdmissible  if  equivocates(S, v, n) ∧ d = ⊤
-  ⎩ DSIgnorable   if  equivocates(S, v, n) ∧ d = ⊥
+detect(cj, lm, d) =
+  ⎧ DSValid       if ¬equivocates_ptr(cj, lm)
+  ⎨ DSAdmissible  if  equivocates_ptr(cj, lm) ∧ d = ⊤
+  ⎩ DSIgnorable   if  equivocates_ptr(cj, lm) ∧ d = ⊥
 ```
 
-where `d` indicates whether the arriving block was requested as a
+where `cj`/`lm` are the creator-justification and latest-message pointers
+and `d` indicates whether the arriving block was requested as a
 dependency. Rocq:
-`detect : DAGState → Validator → nat → bool → DetectorStatus`
+`detect : option BlockHash → option BlockHash → bool → DetectorStatus`
 in `theories/EquivocationDetector.v:66`.
 
 ### 4.2 Theorem 4.1 (T-1, Detection soundness)
 
 **Statement.** *(`detection_sound`, `EquivocationDetector.v:91`.)*
-For every state `S`, validator `v`, sequence `n`, dependency flag `d`,
-and status `s` returned by the detector,
+For every creator-justification pointer `cj`, latest-message pointer `lm`,
+dependency flag `d`, and status `s` returned by the detector,
 
 ```
-  detect(S, v, n, d) = s ∧ s ∈ {DSAdmissible, DSIgnorable}
-    ⟹ equivocates(S, v, n)
+  detect(cj, lm, d) = s ∧ s ∈ {DSAdmissible, DSIgnorable}
+    ⟹ equivocates_ptr(cj, lm)
 ```
 
-**Proof.** By case analysis on the case of `equivocates_b S v n`:
+**Proof.** By case analysis on `equivocates_ptr(cj, lm)`:
 
-- If `equivocates_b S v n = true`: then `equivocates(S, v, n)` holds
-  by reflection.
-- If `equivocates_b S v n = false`: then `detect` returns `DSValid`
+- If `equivocates_ptr(cj, lm) = true`: the conclusion holds directly.
+- If `equivocates_ptr(cj, lm) = false`: then `detect` returns `DSValid`
   regardless of `d`, contradicting `s ∈ {DSAdmissible, DSIgnorable}`.
 
-The Rocq script destructs on `equivocates_b` and uses `discriminate` to
+The Rocq script destructs on `equivocates_ptr` and uses `discriminate` to
 close the contradictory branch. ∎
 
 ### 4.3 Theorem 4.2 (T-2, Detection completeness)
 
 **Statement.** *(`detection_complete`, `EquivocationDetector.v:111`.)*
-For every state `S`, validator `v`, sequence `n`, and flag `d`,
+For every creator-justification pointer `cj`, latest-message pointer `lm`,
+and flag `d`,
 
 ```
-  equivocates(S, v, n) ⟹
-    detect(S, v, n, d) = DSAdmissible ∨ detect(S, v, n, d) = DSIgnorable
+  equivocates_ptr(cj, lm) ⟹
+    detect(cj, lm, d) = DSAdmissible ∨ detect(cj, lm, d) = DSIgnorable
 ```
 
-**Proof.** From `equivocates(S, v, n)` we have
-`equivocates_b S v n = true` by reflection. Thus `detect` enters its
+**Proof.** From `equivocates_ptr(cj, lm) = true`, `detect` enters its
 true-branch. Case analysis on `d`: returns `DSAdmissible` if `d = ⊤`,
 `DSIgnorable` otherwise. ∎
 
@@ -420,7 +445,7 @@ For every `ib : InvalidBlock`,
   is_slashable_pre_fix(ib) = ⊤ ⟹ is_slashable(ib) = ⊤
 ```
 
-**Proof.** Exhaustive case analysis on the 26-element `InvalidBlock`
+**Proof.** Exhaustive case analysis on the 27-element `InvalidBlock`
 inductive: each variant where `is_slashable_pre_fix` returns `true` also
 has `is_slashable` returning `true`. ∎
 
@@ -1578,15 +1603,39 @@ provides a mathematical statement of the proof. All are mechanized in
 ### 9.1 T-9.1 — IgnorableEquivocation safety
 
 **Statement.** *(`post_fix_ignorable_implies_equivocation`,
-`BugFixIgnorable.v:57`.)* If the detector emits `DSIgnorable`, then
-`IBIgnorableEquivocation` is in the post-fix slashable set AND the DAG
-witnesses a real equivocation. Hence no honest validator is wrongly
-slashed.
+`BugFixIgnorable.v`.)* If the detector emits `DSIgnorable`, then
+`IBIgnorableEquivocation` is in the post-fix slashable set AND the
+arriving block's creator justification really disagreed with the sender's
+latest message (`equivocates_ptr(cj, lm) = true` — a genuine pointer
+equivocation). Hence no honest validator is wrongly slashed.
 
 **Proof.** Combining `ignorable_post_fix_slashable`
-(`InvalidBlock.v:173`, T-3 specialization) with
-`ignorable_only_on_real_equivocation` (`BugFixIgnorable.v:45`, T-1
-specialization). ∎
+(T-3 specialization) with `ignorable_only_on_real_equivocation`
+(T-1 specialization, over the pointer notion). ∎
+
+**Honest restatement (FV audit #1).** Adding the 27th slashable variant
+`UnauthorizedSlashDeploy` makes the naïve "every slashable variant is
+pre-fix-slashable ∨ IgnorableEquivocation" statement **false**. The
+corrected capstone `bug_fix_ignorable_safety` (re-exported as
+`main_T9_1_slashable_attributable`) is:
+
+```
+  is_slashable(ib) = true ⟹
+      is_slashable_pre_fix(ib) = true
+    ∨ ib = IBIgnorableEquivocation
+    ∨ ib = IBUnauthorizedSlashDeploy
+```
+
+Every disjunct is an *attributable* offense, so the honest-validator
+safety conclusion still holds. The empty record minted for the
+`UnauthorizedSlashDeploy` branch (`EquivocationRecord::new(V, seq-1, {})`)
+is shown to resolve to `EquivocationOblivious` for an honest bonded
+sender by `unauth_record_honest_oblivious`
+(`BugFixDispatcher.v`, re-exported `main_T9_1_unauth_record_oblivious`) —
+so minting it does not, on its own, corrupt neglected-equivocation
+detection. (See however the LIVE Tier-0 pollution finding in
+`design/12-failure-modes.md §12.2.1a`, which concerns observer-hash
+stamping while the offender is *unbonded*, a distinct mechanism.)
 
 ### 9.2 T-9.2 — Atomic tracker correctness
 
@@ -2890,7 +2939,7 @@ formal/rocq/slashing/theories/                 (26 Rocq modules; cf. §1.3)
 ├── Validator.v                       (foundations: BondMap algebra)
 ├── ValidatorLifetime.v               (Bug #13: epoch-scoped lifetime identity)
 ├── Block.v                           (Block, Justification, equivocation predicate)
-├── InvalidBlock.v                    (26-variant taxonomy + is_slashable, T-3)
+├── InvalidBlock.v                    (27-variant taxonomy + is_slashable, 19 slashable, T-3)
 ├── EquivocationRecord.v              (EqStore, T-4, T-5)
 ├── DAGState.v                        (DAG snapshot + equivocates predicate)
 ├── EquivocationDetector.v            (detect, T-1, T-2, T-6, T-9.11)

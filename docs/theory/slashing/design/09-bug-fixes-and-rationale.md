@@ -596,9 +596,17 @@ and current epoch, the target must have positive bond in the block's actual
 parent pre-state, and a block may target each `(validator, epoch)` at most
 once.
 
-**Proofs and tests.** Rocq: `execute_unknown_evidence_noop`,
-`main_T9_13_unknown_slash_evidence_noop`,
-`parent_pre_state_authorizes_when_ambient_zero`, and
+**Proofs and tests.** Rocq: the core per-deploy predicate
+`authorized_slash_candidate` (evidence/target epoch = current ∧ positive
+parent bond) via `execute_unknown_evidence_noop`,
+`main_T9_13_unknown_slash_evidence_noop`, and
+`parent_pre_state_authorizes_when_ambient_zero`; the **full seven-rule
+receive gate** (FV audit #3) adds Rule 1 issuer==sender
+(`main_T9_13_issuer_mismatch_rejected`) and Rule 7 block-level
+`(offender, epoch)` NoDup (`main_T9_13_duplicate_target_rejected`,
+`main_T9_13_authorized_block_validates`) over
+`received_slash_deploy_authorized` / `validate_block_slash_deploys` (the
+`SlashDeploy` record now carries the checked `sd_issuer` field); plus
 `recoverable_rejected_slash_requires_current_evidence`. TLA+:
 `Inv_RejectedSlashWithoutEvidenceNoPending`,
 `Inv_AuthorizationUsesParentPreState`, and

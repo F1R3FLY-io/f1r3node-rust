@@ -216,14 +216,53 @@ Live_DetectionComplete ==
 (****************************************************************************)
 (* Invariant: taxonomy correctness (T-3).                                   *)
 (*                                                                          *)
-(* The set of statuses the detector emits is exactly                        *)
-(*   {valid, admissible, ignorable, neglected} ∪ {none}                     *)
-(* No other variant can leak in.                                            *)
+(* Ranges over the REAL 27-variant InvalidBlock enum                        *)
+(*   (casper/src/rust/block_status.rs) and PINS the 19-element is_slashable  *)
+(* set (block_status.rs:191-236), then asserts:                             *)
+(*   (a) the enum has 27 variants and the slashable set has 19, contained    *)
+(*       in the enum;                                                        *)
+(*   (b) the detector's status set is closed AND every non-valid status the  *)
+(*       detector emits (admissible/ignorable/neglected) maps to a slashable  *)
+(*       InvalidBlock variant.                                              *)
+(* This replaces the prior 5-element status-range-only check (which the      *)
+(* README overclaimed as covering the 17 slashable variants).               *)
 (****************************************************************************)
+InvalidBlockVariants ==
+    { "AdmissibleEquivocation", "IgnorableEquivocation", "NeglectedEquivocation",
+      "NeglectedInvalidBlock", "JustificationRegression", "InvalidParents",
+      "InvalidFollows", "InvalidBlockNumber", "InvalidSequenceNumber",
+      "InvalidShardId", "InvalidRepeatDeploy", "DeployNotSigned",
+      "InvalidTransaction", "InvalidBondsCache", "InvalidBlockHash",
+      "UnauthorizedSlashDeploy", "ContainsExpiredDeploy",
+      "ContainsTimeExpiredDeploy", "ContainsFutureDeploy",
+      "InvalidFormat", "InvalidSignature", "InvalidSender", "InvalidVersion",
+      "InvalidTimestamp", "InvalidRejectedDeploy", "NotOfInterest",
+      "LowDeployCost" }
+
+SlashableVariants ==
+    { "AdmissibleEquivocation", "IgnorableEquivocation", "NeglectedEquivocation",
+      "NeglectedInvalidBlock", "JustificationRegression", "InvalidParents",
+      "InvalidFollows", "InvalidBlockNumber", "InvalidSequenceNumber",
+      "InvalidShardId", "InvalidRepeatDeploy", "DeployNotSigned",
+      "InvalidTransaction", "InvalidBondsCache", "InvalidBlockHash",
+      "UnauthorizedSlashDeploy", "ContainsExpiredDeploy",
+      "ContainsTimeExpiredDeploy", "ContainsFutureDeploy" }
+
+StatusInvalidBlock(st) ==
+    CASE st = "admissible" -> "AdmissibleEquivocation"
+      [] st = "ignorable"  -> "IgnorableEquivocation"
+      [] st = "neglected"  -> "NeglectedEquivocation"
+      [] OTHER             -> "AdmissibleEquivocation"
+
 Inv_TaxonomyCorrect ==
-    \A v \in Validators, s \in 1..MaxSeqNum, b \in 1..MaxBlocksPerSeq :
-        detectedStatus[<<v, s, b>>] \in
-            {"none", "valid", "admissible", "ignorable", "neglected"}
+    /\ Cardinality(InvalidBlockVariants) = 27
+    /\ Cardinality(SlashableVariants) = 19
+    /\ SlashableVariants \subseteq InvalidBlockVariants
+    /\ \A v \in Validators, s \in 1..MaxSeqNum, b \in 1..MaxBlocksPerSeq :
+         /\ detectedStatus[<<v, s, b>>] \in
+              {"none", "valid", "admissible", "ignorable", "neglected"}
+         /\ ( detectedStatus[<<v, s, b>>] \in {"admissible", "ignorable", "neglected"}
+              => StatusInvalidBlock(detectedStatus[<<v, s, b>>]) \in SlashableVariants )
 
 Inv_NeglectedHasDetectableView ==
     \A v \in Validators, s \in 1..MaxSeqNum, b \in 1..MaxBlocksPerSeq :

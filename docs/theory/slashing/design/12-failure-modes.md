@@ -35,6 +35,60 @@ The system is designed so that:
 | **Self-regression with no equivocation**                          | Pre-fix: passes `justification_regressions`. **Bug #6.** | Post-fix #6: drop `filterNot(_._1 == sender)`.             |
 | **Skipped sequence number under partition recovery**              | Pre-fix: exact `baseSeqNum + 1` lookup misses the equivocation. **Bug #7.** | Post-fix #7: canonical visible self-chain child above `baseSeq`, with same-branch collapse. |
 
+### 12.2.1a Unbonded-window record pollution (LIVE — FV audit #6, Tier-0)
+
+**Status: LIVE (open).** Confirmed by DAG-level dynamic tests
+`tier0_unbonded_validator_discovery_is_detected_triggering_stamp`,
+`tier0_polluted_record_falsely_neglects_honest_block`, and
+`tier0_cross_node_observation_order_divergence`
+(`equivocation_detector.rs` test module).
+
+**Mechanism.** While an equivocator `V` is stake-0/unbonded, its
+`EquivocationRecord` (minted with an empty witness set — e.g. the
+`UnauthorizedSlashDeploy` record `EquivocationRecord::new(V, seq-1, {})`)
+resolves to `EquivocationDetected` in `get_equivocation_discovery_status`
+(`equivocation_detector.rs:280` unbonded / `:311` stake-0). Its caller
+`check_neglected_equivocation` (`:214-216`) then **stamps the currently-
+validated block's hash** into that record. Every block validated during
+the unbonded window therefore pollutes `V`'s
+`equivocation_detected_block_hashes`. Once `V` re-bonds (`stake > 0`),
+`is_equivocation_detectable` runs and its first check (`:351-356`) returns
+`true` for **any** later block whose justifications cite a stamped hash —
+including a perfectly honest block — classifying it
+`NeglectedEquivocation` (false rejection). Because different nodes stamp
+different hashes depending on observation order, two honest nodes can
+**disagree** on the same block → consensus divergence.
+
+**Recommended remediation (consensus-critical; design separately).** Do
+**not** stamp observer hashes into the record while the offender is
+unbonded (suppress the stamp in the `EquivocationDetected`/stake-0 branch),
+or clear `equivocation_detected_block_hashes` on re-bond, so only genuine
+detectable-equivocation witnesses accumulate. Any fix must carry matching
+full-stack FV updates (Rocq `detect_neglected*`, TLA+ `DetectNeglected`)
+and multi-node integration coverage; it is **not** bundled with the FV
+faithfulness fixes #1–#5 above.
+
+### 12.2.1b BlockException → InvalidTransaction coercion (attribution caveat — FV audit #4)
+
+**Status: reachable; soundness depends on determinism.** `block_processor.rs`
+(`:357-376`) coerces a receiver-local `BlockException` (a runtime error raised
+while the *receiver* validates a block) into the slashable variant
+`InvalidTransaction`, dispatched against the *sender* via the same
+record-creation path as a genuine invalid block. The coercion is now modelled in
+Rocq (`BugFixDispatcher.v §4`: `coerce_block_outcome`,
+`block_exception_coerces_to_slashable`, re-exported
+`main_T9_3_block_exception_coerces_to_slashable`), so the taxonomy FV explicitly
+covers this control-flow edge and confirms the coerced variant is slashable
+(hence T-9.3 dispatch completeness fires a record).
+
+**Caveat (not proven).** Attributing a *receiver-local* exception to the
+*sender* is sound only if `BlockException` is **deterministic** across nodes. A
+transient/local exception (storage error, non-deterministic replay) on one node
+but not another would let the nodes disagree on the sender's slashability — the
+same divergence family as §12.2.1a. The dispatch-completeness theorem does not
+establish determinism; if a non-deterministic `BlockException` path is
+reachable, the coercion needs a determinism guard (design separately).
+
 ### 12.2.2 Storage layer
 
 | Failure mode                                 | Effect                                           | Resolution                                                    |

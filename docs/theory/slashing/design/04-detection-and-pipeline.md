@@ -35,10 +35,17 @@ Validator `v` *equivocates* at sequence number `s` in DAG state
 `D` iff there exist two distinct blocks `b₁, b₂ ∈ D` with
 `sender(bᵢ) = v`, `seq(bᵢ) = s`, and `hash(b₁) ≠ hash(b₂)`.
 
-We write `equivocates(D, v, s) : Prop` for the predicate. Rocq:
+We write `equivocates(D, v, s) : Prop` for this same-seq predicate. Rocq:
 `DAGState.v:106` (`equivocates`); the boolean counterpart
-`equivocates_b` (`DAGState.v:99`) is proven equivalent at
-`equivocates_dec` (line 109).
+`equivocates_b` (`DAGState.v:99`) is proven decidable at
+`equivocates_dec` (line 109). **Note (FV audit #2):** this same-seq notion
+is *auxiliary* — the Rust detector `check_equivocations`
+(`equivocation_detector.rs:86-89`) instead compares the arriving block's
+creator-justification pointer against the sender's latest-message pointer
+(`creator_justification == latest_message`). The mechanized detector is
+modelled over that **pointer** notion, `equivocates_ptr`
+(`EquivocationDetector.v`); the two provably diverge
+(`equivocates_ptr_diverges_from_seq_count`).
 
 ### Definition 4.2 (Requested as dependency)
 
