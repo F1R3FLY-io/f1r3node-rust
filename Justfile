@@ -15,7 +15,7 @@ standalone_genesis := local_dir / "genesis/standalone"
 standalone_data := local_dir / "data/standalone"
 
 # Validator credentials (bootstrap wallet)
-standalone_private_key := "5f668a7ee96d944a4494cc947e4005e172d7ab3461ee5538f1f2a45a835e9657"
+standalone_private_key := env_var('STANDALONE_PRIVATE_KEY')
 
 # Default recipe - show available commands
 default:

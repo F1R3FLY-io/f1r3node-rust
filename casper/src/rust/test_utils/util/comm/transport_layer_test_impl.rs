@@ -218,7 +218,7 @@ impl TransportLayerServer for TransportLayerServerTestImpl {
 
             // Process all messages in the queue for this peer
             if let Err(e) = test_network.handle_queue(dispatch_fn, &identity).await {
-                tracing::error!("Error handling queue for peer {}: {}", identity, e);
+                tracing::error!(peer = %identity, error = %e, "test transport queue processing failed");
             }
         });
 

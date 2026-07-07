@@ -15,7 +15,6 @@ use std::time::Instant;
 use async_trait::async_trait;
 use dashmap::DashMap;
 use serde::Serialize;
-use tracing::{Level, event};
 
 use super::checkpoint::SoftCheckpoint;
 use super::errors::RSpaceError;
@@ -608,7 +607,7 @@ where
     ) -> Result<MaybeConsumeResult<C, P, A, K>, RSpaceError> {
         // Span[F].traceI("locked-consume") from Scala - works because this is NOT async
         let _span = tracing::info_span!(target: "f1r3fly.rspace", "locked-consume").entered();
-        event!(Level::DEBUG, mark = "started-locked-consume", "locked_consume");
+        tracing::trace!(target: "f1r3fly.rspace.ops", mark = "started-locked-consume", "locked_consume");
 
         self.log_consume(consume_ref.clone(), &channels, &patterns, &continuation, persist, &peeks);
 
@@ -751,7 +750,7 @@ where
     ) -> Result<MaybeProduceResult<C, P, A, K>, RSpaceError> {
         // Span[F].traceI("locked-produce") from Scala - works because this is NOT async
         let _span = tracing::info_span!(target: "f1r3fly.rspace", "locked-produce").entered();
-        event!(Level::DEBUG, mark = "started-locked-produce", "locked_produce");
+        tracing::trace!(target: "f1r3fly.rspace.ops", mark = "started-locked-produce", "locked_produce");
 
         let grouped_channels = self.get_store().get_joins(&channel);
 
@@ -1048,7 +1047,7 @@ where
     pub fn spawn(&self) -> Result<Self, RSpaceError> {
         // Span[F].withMarks("spawn") from Scala - works because this is NOT async
         let _span = tracing::info_span!(target: "f1r3fly.rspace", "spawn").entered();
-        event!(Level::DEBUG, mark = "started-spawn", "spawn");
+        tracing::trace!(target: "f1r3fly.rspace.ops", mark = "started-spawn", "spawn");
 
         let history_repo = self.get_history_repository();
         let next_history = history_repo.reset(&history_repo.root())?;
@@ -1058,7 +1057,7 @@ where
         rspace.restore_installs();
 
         // Mark the completion of spawn operation
-        event!(Level::DEBUG, mark = "finished-spawn", "spawn");
+        tracing::trace!(target: "f1r3fly.rspace.ops", mark = "finished-spawn", "spawn");
         Ok(rspace)
     }
 

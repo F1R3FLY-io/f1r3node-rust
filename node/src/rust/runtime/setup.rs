@@ -973,7 +973,7 @@ async fn handle_block_finalized(
         }
         Err(e) => {
             tracing::debug!(
-                target: "f1r3fly.transaction",
+                target: "f1r3fly.node.transaction",
                 %block_hash,
                 error = %e,
                 "Block report pre-cache skipped (expected on validators)"
