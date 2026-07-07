@@ -1633,9 +1633,93 @@ is shown to resolve to `EquivocationOblivious` for an honest bonded
 sender by `unauth_record_honest_oblivious`
 (`BugFixDispatcher.v`, re-exported `main_T9_1_unauth_record_oblivious`) —
 so minting it does not, on its own, corrupt neglected-equivocation
-detection. (See however the LIVE Tier-0 pollution finding in
-`design/12-failure-modes.md §12.2.1a`, which concerns observer-hash
-stamping while the offender is *unbonded*, a distinct mechanism.)
+detection. (The related *observer-hash stamping while the offender is
+unbonded* mechanism — a distinct fork, FV audit #6 — is now RESOLVED; see
+§9.1a below and `design/12-failure-modes.md §12.2.1a`.)
+
+### 9.1a T-9.1a — Unbonded-window record pollution fork (FV audit #6)
+
+**Status.** RESOLVED (remediation shipped). This closes the pre-fix
+observation-order-dependent `NeglectedEquivocation` divergence documented in
+`design/12-failure-modes.md §12.2.1a`.
+
+**Fix.** `get_equivocation_discovery_status` returns `EquivocationOblivious`
+(was `EquivocationDetected`) for an unbonded / stake-0 offender
+(`equivocation_detector.rs:280,311`), matching
+`slashing-specification.md §11.6`. Since the caller
+`check_neglected_equivocation` stamps a witness hash into
+`equivocation_detected_block_hashes` *only* on the `EquivocationDetected`
+arm, that arm becomes unreachable and is hardened to a no-op; the witness
+set of an unbonded offender therefore stays empty, and detectability reduces
+to the deterministic `updated_equivocation_children.len() > 1` mechanism.
+
+**Statements (axiom-free Rocq, `EquivocationDetector.v`, re-exported in
+`MainTheorem.v`).** Let `stamp_on_status(r, st, h)` model the caller
+(only `EDDetected` appends `h` to `r`'s witness list; every other status is
+a no-op), and `discovery_status_bonded(stake, detectable)` the post-fix
+discovery function.
+
+| Theorem (`main_*`) | Statement |
+|--------------------|-----------|
+| `main_T9_1a_unbonded_oblivious` | `∀ d, discovery_status_bonded(0, d) = EDOblivious` — an unbonded offender is always Oblivious, regardless of the observing view's detectability `d`. |
+| `main_T9_1a_unbonded_no_stamp` | `∀ r d h, stamp_on_status(r, discovery_status_bonded(0, d), h) = r` — stamping an unbonded offender's record is a no-op (the witness set is never mutated). |
+| `main_T9_1a_unbonded_order_independent` | `∀ r d h₁ h₂,` with `st = discovery_status_bonded(0, d)`, `stamp_on_status(stamp_on_status(r, st, h₁), st, h₂) = stamp_on_status(stamp_on_status(r, st, h₂), st, h₁) ∧ = r` — two nodes stamping candidate hashes in **either** order reach the **same** record, and that record is exactly the original `r`. |
+
+**Determinism (why the fork is refuted).** By `main_T9_1a_unbonded_no_stamp`
+the unbonded offender's witness set is invariant under any stamping attempt,
+and by `main_T9_1a_unbonded_order_independent` the two-stamp result is
+independent of the `h₁ ↔ h₂` observation order. Since all honest nodes then
+hold the identical (empty) witness set, `is_equivocation_detectable`
+evaluates identically across nodes — the observation-order-dependent
+`NeglectedEquivocation` divergence cannot arise. `Print Assumptions` reports
+all three capstones "Closed under the global context" (no axioms/admits).
+
+**Proof.** Each reduces by computation: `Nat.ltb 0 0 = false` forces the
+Oblivious branch, and `stamp_on_status(r, EDOblivious, h)` reduces to `r` by
+the `match`. ∎
+
+**Model checking (TLA+).** `EquivocationDetector.tla` is enriched with a
+`bonded` map and a `recordWitness` set (the image of
+`equivocation_detected_block_hashes`), plus `Unbond`/`Rebond` and a
+`StampWitness` action (the pre-fix Detected-arm stamp) gated by
+`EnableStampWitness`. Two invariants pin the fix:
+
+- `Inv_NoStampAgainstUnbonded` — no witness is recorded against an unbonded
+  offender (`∀ vk ∈ DOMAIN recordWitness : ¬bonded[vk[1]] ⇒ recordWitness[vk] = {}`).
+- `Inv_NeglectNotFromUnbondedPollution` — a `neglected` verdict is backed by
+  a bonded offender and a genuine detectable-in-view equivocation, never by
+  witness pollution.
+
+The POST-FIX config `MC_EquivocationDetector_unbonded_pollution.cfg`
+(`EnableStampWitness = FALSE`) exhausts its bond-toggling state space and
+PASSES both invariants; the PRE-FIX twin `..._pre_fix.cfg`
+(`EnableStampWitness = TRUE`) reproduces a counterexample to
+`Inv_NoStampAgainstUnbonded` (an equivocation record is created, the
+offender unbonds, and `StampWitness` lands a hash while `¬bonded`). The
+eager model (`EquivocationDetectorEager.tla`) carries the same invariants as
+a static-bonding post-fix witness, and Apalache proves `IndInv` (including
+`Inv_WitnessEmpty`, `Inv_NoStampAgainstUnbonded`,
+`Inv_NeglectNotFromUnbondedPollution`) **inductive** at 3v/3s/3b via
+BASE + STEP.
+
+**Dynamic verification (Rust).** Post-fix characterization tests
+`tier0_unbonded_validator_discovery_is_oblivious_no_stamp`,
+`tier0_polluted_record_falsely_neglects_honest_block`,
+`tier0_cross_node_observation_order_converges` (in the
+`equivocation_detector.rs` test module) plus the randomized-interleaving
+proptest `unbonded_window_never_pollutes_or_falsely_neglects`
+(`casper/tests/slashing/unbonded_window_pollution_determinism.rs`) assert,
+for any schedule of record creation, bond toggles, and block validations,
+that every unbonded-offender witness set stays empty and no honest block is
+rejected `NeglectedEquivocation`.
+
+**Deployment migration (ops step, not consensus logic).** On a network that
+ran the pre-fix code, perform a one-time **deterministic clear** of
+`equivocation_detected_block_hashes` for unbonded offenders' records at a
+coordinated upgrade boundary (equivalently, clear all witness sets and let
+genuine witnesses re-accumulate from the bonded path). Applied identically
+on every node at the same height, this is a state migration, not consensus
+logic, and is unnecessary on a fresh genesis.
 
 ### 9.2 T-9.2 — Atomic tracker correctness
 

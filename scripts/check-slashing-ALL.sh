@@ -105,11 +105,17 @@ if [[ -f "$TLC_JAR" ]] || command -v tlc >/dev/null 2>&1; then
   # covering the liveness claim — cheap must-pass insurance a temporal automaton
   # cannot be. cfg substitutes MC_Validators/MC_MaxSeqNum/MC_MaxBlocksPerSeq +
   # SymmetryV from its MC_ wrapper (EXTENDS EquivocationDetectorEager, TLC).
+  # FV audit #6 (unbonded-window record pollution fork): the POST-FIX pollution
+  # model (EnableStampWitness=FALSE) must PASS Inv_NoStampAgainstUnbonded AND
+  # Inv_NeglectNotFromUnbondedPollution over its bond-toggling state space
+  # (exhaustive at 2v/1s/2b). Its PRE-FIX twin is checked in the VIOLATE block
+  # below. Both share MC_EquivocationDetector_unbonded_pollution.tla.
   declare -A SAFE=(
     [detector_liveness]="MC_EquivocationDetector_liveness.cfg:MC_EquivocationDetector_liveness.tla"
     [detector_eager]="MC_EquivocationDetectorEager.cfg:MC_EquivocationDetectorEager.tla"
     [tracker]="MC_ConcurrentTracker.cfg:MC_ConcurrentTracker.tla"
     [slashflow]="MC_SlashFlow.cfg:MC_SlashFlow.tla"
+    [unbonded_pollution]="MC_EquivocationDetector_unbonded_pollution.cfg:MC_EquivocationDetector_unbonded_pollution.tla"
   )
   for k in "${!SAFE[@]}"; do
     cfg="${SAFE[$k]%%:*}"; mod="${SAFE[$k]##*:}"
@@ -131,6 +137,19 @@ if [[ -f "$TLC_JAR" ]] || command -v tlc >/dev/null 2>&1; then
       pass "TLA+ concurrent-tracker pre-fix reproduces the race counterexample"
     else
       fail "TLA+ concurrent-tracker pre-fix failed for the wrong reason (see /tmp/sl_tlc_tracker_pre.log)"
+    fi
+  fi
+  # FV audit #6 pre-fix counterexample — the PRE-FIX pollution model
+  # (EnableStampWitness=TRUE) must REPRODUCE a violation of
+  # Inv_NoStampAgainstUnbonded (StampWitness stamping an unbonded offender's
+  # record — the fork's root cause). Same wrapper as the post-fix SAFE run above.
+  if [[ -f "$TLA_DIR/MC_EquivocationDetector_unbonded_pollution_pre_fix.cfg" ]]; then
+    if tlc_run "$(tlc_metadir sl_unbonded_pre)" "$TLA_DIR/MC_EquivocationDetector_unbonded_pollution_pre_fix.cfg" "$TLA_DIR/MC_EquivocationDetector_unbonded_pollution.tla" >/tmp/sl_tlc_unbonded_pre.log 2>&1; then
+      fail "TLA+ unbonded-pollution pre-fix should VIOLATE Inv_NoStampAgainstUnbonded but passed"
+    elif grep -qi "is violated" /tmp/sl_tlc_unbonded_pre.log; then
+      pass "TLA+ unbonded-pollution pre-fix reproduces the record-pollution counterexample (Inv_NoStampAgainstUnbonded)"
+    else
+      fail "TLA+ unbonded-pollution pre-fix failed for the wrong reason (see /tmp/sl_tlc_unbonded_pre.log)"
     fi
   fi
   # Heavy exhaustive detector SAFETY (2v × 2s × 2b, no symmetry) — the full safety

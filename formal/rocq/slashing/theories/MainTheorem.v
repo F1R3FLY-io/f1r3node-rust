@@ -135,6 +135,33 @@ Theorem main_T9_1_unauth_record_oblivious :
     discovery_status_bonded stake (fixed_detectable_view xs) = EDOblivious.
 Proof. exact unauth_record_honest_oblivious. Qed.
 
+(* FV audit #6 remediation — unbonded-window record pollution fork.
+   The stake-0 / unbonded offender now resolves to EquivocationOblivious
+   (equivocation_detector.rs:280,311), which makes the caller's stamping arm
+   unreachable, so an unbonded offender's witness set can never be polluted and
+   the fork cannot arise. These three capstones pin the fix:
+
+   (1a-i)   the unbonded discovery status is always Oblivious;
+   (1a-ii)  stamping an unbonded offender's record is a no-op (empty witness);
+   (1a-iii) two nodes stamping candidate hashes in EITHER order reach the SAME
+            record (= the original r), so the observation-order-dependent
+            NeglectedEquivocation divergence is impossible. *)
+Theorem main_T9_1a_unbonded_oblivious :
+  forall d, discovery_status_bonded 0 d = EDOblivious.
+Proof. exact unbonded_offender_oblivious. Qed.
+
+Theorem main_T9_1a_unbonded_no_stamp :
+  forall r d h, stamp_on_status r (discovery_status_bonded 0 d) h = r.
+Proof. exact unbonded_stamp_noop. Qed.
+
+Theorem main_T9_1a_unbonded_order_independent :
+  forall r d h1 h2,
+    let st := discovery_status_bonded 0 d in
+    stamp_on_status (stamp_on_status r st h1) st h2
+    = stamp_on_status (stamp_on_status r st h2) st h1
+    /\ stamp_on_status (stamp_on_status r st h1) st h2 = r.
+Proof. exact unbonded_witness_order_independent. Qed.
+
 Theorem main_T9_2_atomic :
   forall s k h,
     incl (hashes_at_key s k) (hashes_at_key (atomic_record_or_update s k h) k).

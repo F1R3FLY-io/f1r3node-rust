@@ -360,10 +360,26 @@ Inductive EquivDiscoveryStatus : Type :=
   | EDDetected  : EquivDiscoveryStatus
   | EDOblivious : EquivDiscoveryStatus.
 
+(* FV audit #6 remediation (unbonded-window record pollution fork). The
+   stake-0 / unbonded branch now returns EDOblivious rather than EDDetected.
+
+   Rationale (equivocation_detector.rs:280,311). Pre-fix, an unbonded/stake-0
+   offender resolved to EDDetected, and the caller's Detected arm STAMPED the
+   currently-validated block's hash into the (empty) EquivocationRecord. That
+   write is observation-order-dependent, so after the offender re-bonds the
+   witness set drives per-node-divergent NeglectedEquivocation verdicts — a
+   consensus fork. Returning EDOblivious makes the stamping arm unreachable, so
+   the witness set stays empty and detectability reduces to the deterministic
+   `updated_equivocation_children.len() > 1` mechanism, on which all nodes agree.
+   Matches slashing-specification.md §11.6 ("stake-0 offender: detected but never
+   slashed AND never recorded"). The EDDetected constructor is KEPT (it mirrors
+   the still-present Rust EquivocationDiscoveryStatus::EquivocationDetected
+   variant and is exercised by `stamp_on_status` below), it is simply no longer
+   produced here. *)
 Definition discovery_status_bonded (stake : nat) (detectable : bool) : EquivDiscoveryStatus :=
   if Nat.ltb 0 stake
   then if detectable then EDNeglected else EDOblivious
-  else EDDetected.
+  else EDOblivious.
 
 Lemma honest_empty_record_view_not_detectable :
   forall xs,
@@ -387,6 +403,59 @@ Proof.
   destruct (Nat.ltb 0 stake) eqn:E.
   - reflexivity.
   - apply Nat.ltb_ge in E. lia.
+Qed.
+
+(* ═══════════════════════════════════════════════════════════════════════════
+   §6c — FV audit #6: unbonded-window record pollution is neutralized
+   ═══════════════════════════════════════════════════════════════════════════
+
+   Mirrors the caller `check_neglected_equivocation`
+   (equivocation_detector.rs:207-229): ONLY the EquivocationDetected arm mutates
+   the record (it inserts the observer block's hash into
+   `equivocation_detected_block_hashes`); the Neglected and Oblivious arms leave
+   the record untouched. `stamp_on_status` is that caller, distilled to its
+   record effect. *)
+
+Definition stamp_on_status
+  (r : EqRec) (st : EquivDiscoveryStatus) (h : BlockHash) : EqRec :=
+  match st with
+  | EDDetected => mkEqRec (er_validator r) (er_baseSeq r) (h :: er_hashes r)
+  | _ => r
+  end.
+
+(* The post-fix discovery status for an unbonded (stake-0) offender is always
+   EquivocationOblivious, independent of the observing view's detectability. *)
+Theorem unbonded_offender_oblivious :
+  forall d, discovery_status_bonded 0 d = EDOblivious.
+Proof. intro d. unfold discovery_status_bonded. reflexivity. Qed.
+
+(* Because the unbonded status is Oblivious (never Detected), the caller's
+   stamping arm is unreachable: stamping an unbonded offender's record is a
+   no-op, so the witness set can never be polluted while the offender is
+   unbonded. This is the root-cause fix for the fork. *)
+Theorem unbonded_stamp_noop :
+  forall r d h, stamp_on_status r (discovery_status_bonded 0 d) h = r.
+Proof.
+  intros r d h. rewrite unbonded_offender_oblivious. reflexivity.
+Qed.
+
+(* Determinism capstone (refutes the fork). Two nodes that observe an unbonded
+   offender's record in different orders — stamping candidate hashes h1 then h2,
+   or h2 then h1 — reach the SAME record, and that record is exactly the
+   original r (no hash was recorded). Since the result is independent of the
+   observation order, no two honest nodes can derive divergent witness sets, so
+   the observation-order-dependent NeglectedEquivocation divergence cannot
+   arise. *)
+Theorem unbonded_witness_order_independent :
+  forall r d h1 h2,
+    let st := discovery_status_bonded 0 d in
+    stamp_on_status (stamp_on_status r st h1) st h2
+    = stamp_on_status (stamp_on_status r st h2) st h1
+    /\ stamp_on_status (stamp_on_status r st h1) st h2 = r.
+Proof.
+  intros r d h1 h2. cbv zeta.
+  rewrite !(unbonded_offender_oblivious d).
+  split; reflexivity.
 Qed.
 
 Fixpoint detector_traversal_fuel

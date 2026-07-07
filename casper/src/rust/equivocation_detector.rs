@@ -193,7 +193,11 @@ impl EquivocationDetector {
         block_dag_storage.access_equivocations_tracker(|tracker| {
             let equivocations = tracker.data()?;
             let mut canonical_child_cache = CanonicalChildCache::new();
-            let mut recorded: Vec<EquivocationRecord> = Vec::new();
+            // FV audit #6: post-fix the EquivocationDetected arm is unreachable and
+            // never pushes, so `recorded` is always empty and the pass returns
+            // Oblivious. The Vec + DetectedAndRecorded return path is retained (the
+            // enum variant and its caller arm stay live) but is now dead at runtime.
+            let recorded: Vec<EquivocationRecord> = Vec::new();
             for equivocation_record in equivocations {
                 let status = Self::get_equivocation_discovery_status(
                     dag,
@@ -208,22 +212,29 @@ impl EquivocationDetector {
                     EquivocationDiscoveryStatus::EquivocationNeglected => {
                         return Ok(NeglectedEquivocationOutcome::Neglected);
                     }
+                    // FV audit #6 remediation (unbonded-window record pollution
+                    // fork). Post-fix, `get_equivocation_discovery_status` NEVER
+                    // returns `EquivocationDetected`: the unbonded/stake-0 branches
+                    // (:280 / :311) now return `EquivocationOblivious`, and the
+                    // bonded stake>0 branch returns only Neglected/Oblivious. This
+                    // arm is therefore UNREACHABLE. We keep it — the enum variant
+                    // still exists (models::…::EquivocationDiscoveryStatus) — but it
+                    // must NOT mutate the record: stamping observer block hashes into
+                    // an unbonded offender's witness set was the root cause of the
+                    // observation-order-dependent NeglectedEquivocation consensus
+                    // fork (docs/theory/slashing/design/12-failure-modes.md
+                    // §12.2.1a). The body is a strict no-op over `tracker` and
+                    // `recorded`, so `recorded` stays empty ⇒ the pass resolves to
+                    // Oblivious. Reaching it at all is a regression; alert loudly.
                     EquivocationDiscoveryStatus::EquivocationDetected => {
-                        let mut updated = equivocation_record.clone();
-                        updated
-                            .equivocation_detected_block_hashes
-                            .insert(block.block_hash.clone());
-                        tracker.add(updated.clone())?;
-                        // P4-5: detection is a (rare) consensus event; keep info!
-                        // here so operators see the per-block record but use the
-                        // structured `target: "f1r3fly.slashing"` namespace so
-                        // ops can filter without grepping for the message text.
-                        tracing::info!(
+                        tracing::warn!(
                             target: "f1r3fly.slashing",
                             block = %PrettyPrinter::build_string_no_limit(&block.block_hash),
-                            "Equivocation detected and tracker updated"
+                            validator = %hex::encode(&equivocation_record.equivocator),
+                            base_seq = equivocation_record.equivocation_base_block_seq_num,
+                            "unexpected EquivocationDetected post-fix (regression): witness \
+                             stamping suppressed, record left untouched (FV audit #6)"
                         );
-                        recorded.push(updated);
                     }
                     EquivocationDiscoveryStatus::EquivocationOblivious => {}
                 }
@@ -266,22 +277,45 @@ impl EquivocationDetector {
             ),
             None => {
                 // P5 (slashing audit): a validator absent from the bond map
-                // who appears as an equivocator is a degenerate case — the
-                // detector still classifies as EquivocationDetected, but
-                // operators should be alerted because this can indicate a
-                // bond-map / equivocation-tracker desync (rare; Bug #5 was
-                // the original site of this branch).
+                // who appears as an equivocator is a degenerate case. Operators
+                // should still be alerted because this can indicate a bond-map /
+                // equivocation-tracker desync (rare; Bug #5 was the original site
+                // of this branch), so the warn! below is KEPT.
+                //
+                // FV audit #6 remediation: the return is now
+                // EquivocationOblivious (was EquivocationDetected). An unbonded
+                // offender has no stake to slash and, per
+                // slashing-specification.md §11.6, must never be recorded. Since
+                // the caller only stamps the record on EquivocationDetected,
+                // returning Oblivious leaves the (empty) witness set untouched —
+                // no witness is recorded — which closes the observation-order-
+                // dependent NeglectedEquivocation fork (§12.2.1a). Detectability
+                // then rests solely on the deterministic
+                // `updated_equivocation_children.len() > 1` mechanism.
                 tracing::warn!(
                     target: "f1r3fly.slashing",
                     validator = %hex::encode(&equivocation_record.equivocator),
                     base_seq = equivocation_record.equivocation_base_block_seq_num,
-                    "unbonded equivocation detected (validator absent from bond map)"
+                    "unbonded equivocation observed (validator absent from bond map); \
+                     classified Oblivious, no witness recorded (FV audit #6)"
                 );
-                Ok(EquivocationDiscoveryStatus::EquivocationDetected)
+                Ok(EquivocationDiscoveryStatus::EquivocationOblivious)
             }
         }
     }
 
+    /// Resolve the discovery status for an offender that IS present in the
+    /// block's bond map.
+    ///
+    /// * `stake > 0` (bonded): `EquivocationNeglected` iff the equivocation is
+    ///   detectable in the observing block's latest-message view, else
+    ///   `EquivocationOblivious`.
+    /// * `stake == 0` (unbonded/unbonding): `EquivocationOblivious` — **no
+    ///   witness recorded** (FV audit #6; `slashing-specification.md §11.6`).
+    ///   Returning Oblivious (rather than the pre-fix `EquivocationDetected`)
+    ///   makes the caller's stamping arm unreachable, so the witness set stays
+    ///   empty and the observation-order-dependent NeglectedEquivocation fork
+    ///   (`§12.2.1a`) cannot arise.
     fn get_equivocation_discovery_status_for_bonded_validator(
         dag: &KeyValueDagRepresentation,
         block_store: &KeyValueBlockStore,
@@ -308,7 +342,13 @@ impl EquivocationDetector {
                 Ok(EquivocationDiscoveryStatus::EquivocationOblivious)
             }
         } else {
-            Ok(EquivocationDiscoveryStatus::EquivocationDetected)
+            // FV audit #6 remediation: a stake-0 (bonded-but-unbonding) offender
+            // ⇒ EquivocationOblivious (was EquivocationDetected). No stake to
+            // slash and, per slashing-specification.md §11.6, nothing to record;
+            // the caller stamps only on EquivocationDetected, so returning
+            // Oblivious keeps the witness set empty and prevents the
+            // observation-order-dependent NeglectedEquivocation fork (§12.2.1a).
+            Ok(EquivocationDiscoveryStatus::EquivocationOblivious)
         }
     }
 
@@ -872,31 +912,37 @@ mod tests {
 
     // ══════════════════════════════════════════════════════════════════════
     // Tier-0 dynamic verification (slashing FV audit finding #6):
-    //   unbonded → pollute → re-bond → false NeglectedEquivocation.
+    //   unbonded-window record pollution fork — REMEDIATION SHIPPED.
     //
-    // Hypothesis: while an equivocator V is stake-0/unbonded, its
-    // EquivocationRecord (minted with an EMPTY witness set — e.g. the
-    // UnauthorizedSlashDeploy record `EquivocationRecord::new(V, seq-1, {})`)
-    // resolves to `EquivocationDetected` in `get_equivocation_discovery_status`
+    // Historical mechanism (pre-fix): while an equivocator V was stake-0/
+    // unbonded, its EquivocationRecord (minted with an EMPTY witness set — e.g.
+    // the UnauthorizedSlashDeploy record `EquivocationRecord::new(V, seq-1, {})`)
+    // resolved to `EquivocationDetected` in `get_equivocation_discovery_status`
     // (:280 unbonded / :311 stake-0), and the caller
-    // `check_neglected_equivocation` (:214-216) then STAMPS the currently-
-    // validated block's hash into that record. Every block validated during the
-    // unbonded window therefore pollutes V's record. Once V re-bonds (stake > 0),
-    // `is_equivocation_detectable` runs and its first check (:351-356) returns
-    // TRUE for ANY later block whose justifications cite a stamped hash — even a
-    // perfectly honest block — classifying it `EquivocationNeglected`.
+    // `check_neglected_equivocation` then STAMPED the currently-validated
+    // block's hash into that record. Every block validated during the unbonded
+    // window polluted V's record; once V re-bonded, `is_equivocation_detectable`
+    // returned TRUE for ANY later block whose justifications cited a stamped hash
+    // — even a perfectly honest block — classifying it `EquivocationNeglected`.
+    // Because different nodes stamped different hashes (observation-order
+    // dependent), two honest nodes could DISAGREE — a consensus fork.
     //
-    // Verdict: LIVE. The three tests below exhibit (1) the pollution source,
-    // (2) the false-positive rejection of an honest block, and (3) cross-node
-    // divergence when two nodes stamp different hashes (observation-order
-    // dependent) — a consensus fork.
+    // Fix (candidate a): the unbonded/stake-0 branches now return
+    // `EquivocationOblivious`, so the caller's stamping arm is UNREACHABLE, the
+    // witness set stays empty, and detectability reduces to the deterministic
+    // `updated_equivocation_children.len() > 1` mechanism ⇒ all nodes agree.
+    //
+    // The three tests below now pin the FIX: (1) an unbonded validator resolves
+    // to Oblivious (no stamp), (2) an honest block over the (never-polluted)
+    // record resolves Oblivious, and (3) two nodes observing in different orders
+    // CONVERGE to the same empty record and the same verdict.
     // ══════════════════════════════════════════════════════════════════════
 
-    // (1) SOURCE: an unbonded validator's record resolves to
-    // `EquivocationDetected`, which is exactly the branch whose caller stamps the
-    // observer block's hash into the record (equivocation_detector.rs:214-216).
+    // (1) SOURCE (now neutralized): an unbonded validator's record resolves to
+    // `EquivocationOblivious`, so the caller's stamping arm (which only fires on
+    // `EquivocationDetected`) is unreachable — nothing is stamped.
     #[test]
-    fn tier0_unbonded_validator_discovery_is_detected_triggering_stamp() {
+    fn tier0_unbonded_validator_discovery_is_oblivious_no_stamp() {
         let v = validator(1);
         let observer_block_hash = hash(77);
         let record = EquivocationRecord::new(v.clone(), 0, BTreeSet::new());
@@ -920,15 +966,23 @@ mod tests {
 
         assert_eq!(
             status,
-            EquivocationDiscoveryStatus::EquivocationDetected,
-            "unbonded validator ⇒ Detected ⇒ caller stamps observer hashes into the (empty) record"
+            EquivocationDiscoveryStatus::EquivocationOblivious,
+            "FV audit #6 fix: unbonded validator ⇒ Oblivious ⇒ the caller's stamping arm is unreachable (no witness recorded)"
+        );
+        // A discovery-status query never mutates the record (only the now-
+        // unreachable Detected caller-arm stamps): the witness set stays empty.
+        assert!(
+            record.equivocation_detected_block_hashes.is_empty(),
+            "unbonded discovery must leave the witness set empty"
         );
     }
 
-    // (2) FALSE POSITIVE: a record polluted with V's own honest chain tip (b1),
-    // stamped during the unbonded window, causes a later HONEST block that cites
-    // b1 to be flagged detectable — i.e. rejected NeglectedEquivocation — even
-    // though V never equivocated. The clean (as-minted) record does not.
+    // (2) NO FALSE POSITIVE (post-fix): drive the ACTUAL detector over an
+    // unbonded offender V and an observer that cites V's honest chain tip. The
+    // discovery status is Oblivious, so the record's witness set stays EMPTY,
+    // and the honest block therefore resolves Oblivious — never a spurious
+    // NeglectedEquivocation. (Pre-fix, the unbonded observation stamped the
+    // record and a later citing block was falsely flagged.)
     #[test]
     fn tier0_polluted_record_falsely_neglects_honest_block() {
         let v = validator(1);
@@ -937,69 +991,83 @@ mod tests {
         let b1 = block(&v, 1, hash(11), Some(b0.block_hash.clone()));
         let dag = dag_with(&[b0.clone(), b1.clone()]);
         let block_store = block_store_with(&[b0.clone(), b1.clone()]);
-        // A later honest observer cites V's real latest message (b1).
+        // A later observer cites V's real latest message (b1) while V is UNBONDED.
         let latest_messages = BTreeMap::from([(v.clone(), b1.block_hash.clone())]);
-
-        // Baseline: clean (empty) record — as minted — does NOT flag the honest
-        // block (single honest chain, one canonical child ⇒ Oblivious).
-        let clean_record = EquivocationRecord::new(v.clone(), 0, BTreeSet::new());
+        let record = EquivocationRecord::new(v.clone(), 0, BTreeSet::new());
         let mut cache = CanonicalChildCache::new();
-        let baseline = EquivocationDetector::is_equivocation_detectable(
+        let bonds: Vec<Bond> = Vec::new(); // V UNBONDED (absent from the bond map)
+
+        // Post-fix: the unbonded offender resolves to Oblivious, so the caller
+        // never stamps — the witness set stays EMPTY.
+        let status = EquivocationDetector::get_equivocation_discovery_status(
             &dag,
             &block_store,
-            &latest_messages,
-            &clean_record,
-            &[],
+            &record,
             &b0,
             &mut cache,
+            &latest_messages,
+            &bonds,
         )
         .unwrap();
+        assert_eq!(
+            status,
+            EquivocationDiscoveryStatus::EquivocationOblivious,
+            "unbonded offender ⇒ Oblivious"
+        );
         assert!(
-            !baseline,
-            "clean as-minted record must NOT flag the honest block"
+            record.equivocation_detected_block_hashes.is_empty(),
+            "FV audit #6 fix: an unbonded observation records NO witness"
         );
 
-        // Polluted: b1's hash was stamped into the record while V was unbonded.
-        let mut polluted_record = EquivocationRecord::new(v.clone(), 0, BTreeSet::new());
-        polluted_record
-            .equivocation_detected_block_hashes
-            .insert(b1.block_hash.clone());
+        // With the witness set empty (as it now always is for an unbonded
+        // offender), the honest block is NOT detectable — it resolves Oblivious,
+        // never a spurious NeglectedEquivocation.
         let mut cache2 = CanonicalChildCache::new();
-        let polluted = EquivocationDetector::is_equivocation_detectable(
+        let detectable = EquivocationDetector::is_equivocation_detectable(
             &dag,
             &block_store,
             &latest_messages,
-            &polluted_record,
+            &record,
             &[],
             &b0,
             &mut cache2,
         )
         .unwrap();
         assert!(
-            polluted,
-            "LIVE: polluted record falsely flags the honest block as NeglectedEquivocation"
+            !detectable,
+            "empty (unpolluted) record must NOT flag the honest block"
         );
     }
 
-    // (3) CROSS-NODE DIVERGENCE: two nodes stamped different observer hashes
-    // (observation-order dependent). For the SAME honest block, node A (which
-    // stamped the cited hash) rejects it while node B (which stamped a different
-    // hash) accepts it — a consensus fork.
+    // (3) CROSS-NODE CONVERGENCE (post-fix): two nodes observe the unbonded
+    // offender's record and the honest block in OPPOSITE orders (node A: record-
+    // then-block; node B: block-then-record). Post-fix neither node stamps
+    // (unbonded ⇒ Oblivious), so both records stay empty and both reach the SAME
+    // verdict on the honest block — the observation-order-dependent fork is gone.
     #[test]
-    fn tier0_cross_node_observation_order_divergence() {
+    fn tier0_cross_node_observation_order_converges() {
         let v = validator(1);
         let b0 = block(&v, 0, hash(10), None);
         let b1 = block(&v, 1, hash(11), Some(b0.block_hash.clone()));
         let dag = dag_with(&[b0.clone(), b1.clone()]);
         let block_store = block_store_with(&[b0.clone(), b1.clone()]);
         let latest_messages = BTreeMap::from([(v.clone(), b1.block_hash.clone())]);
+        let bonds: Vec<Bond> = Vec::new(); // V UNBONDED on both nodes
 
-        // Node A stamped b1 (the hash the honest block cites).
-        let mut record_a = EquivocationRecord::new(v.clone(), 0, BTreeSet::new());
-        record_a
-            .equivocation_detected_block_hashes
-            .insert(b1.block_hash.clone());
+        // Node A: observe the record (V unbonded) BEFORE evaluating the block.
+        let record_a = EquivocationRecord::new(v.clone(), 0, BTreeSet::new());
         let mut cache_a = CanonicalChildCache::new();
+        let status_a = EquivocationDetector::get_equivocation_discovery_status(
+            &dag,
+            &block_store,
+            &record_a,
+            &b0,
+            &mut cache_a,
+            &latest_messages,
+            &bonds,
+        )
+        .unwrap();
+        let mut cache_a2 = CanonicalChildCache::new();
         let verdict_a = EquivocationDetector::is_equivocation_detectable(
             &dag,
             &block_store,
@@ -1007,16 +1075,13 @@ mod tests {
             &record_a,
             &[],
             &b0,
-            &mut cache_a,
+            &mut cache_a2,
         )
         .unwrap();
 
-        // Node B stamped a DIFFERENT hash the honest block never cites.
-        let mut record_b = EquivocationRecord::new(v.clone(), 0, BTreeSet::new());
-        record_b
-            .equivocation_detected_block_hashes
-            .insert(hash(88));
-        let mut cache_b = CanonicalChildCache::new();
+        // Node B: evaluate the block BEFORE observing the record — opposite order.
+        let record_b = EquivocationRecord::new(v.clone(), 0, BTreeSet::new());
+        let mut cache_b2 = CanonicalChildCache::new();
         let verdict_b = EquivocationDetector::is_equivocation_detectable(
             &dag,
             &block_store,
@@ -1024,15 +1089,35 @@ mod tests {
             &record_b,
             &[],
             &b0,
+            &mut cache_b2,
+        )
+        .unwrap();
+        let mut cache_b = CanonicalChildCache::new();
+        let status_b = EquivocationDetector::get_equivocation_discovery_status(
+            &dag,
+            &block_store,
+            &record_b,
+            &b0,
             &mut cache_b,
+            &latest_messages,
+            &bonds,
         )
         .unwrap();
 
-        assert!(verdict_a, "node A (stamped the cited hash) rejects the honest block");
-        assert!(!verdict_b, "node B (stamped a different hash) accepts the honest block");
-        assert_ne!(
-            verdict_a, verdict_b,
-            "LIVE: observation-order-dependent pollution makes two honest nodes DISAGREE (consensus fork)"
+        // FV audit #6 fix: neither node stamps (unbonded ⇒ Oblivious), so both
+        // records stay empty and the honest-block verdicts AGREE — no fork.
+        assert_eq!(status_a, EquivocationDiscoveryStatus::EquivocationOblivious);
+        assert_eq!(status_b, EquivocationDiscoveryStatus::EquivocationOblivious);
+        assert_eq!(
+            record_a.equivocation_detected_block_hashes,
+            record_b.equivocation_detected_block_hashes,
+            "both nodes reach the SAME (empty) witness set"
         );
+        assert!(record_a.equivocation_detected_block_hashes.is_empty());
+        assert_eq!(
+            verdict_a, verdict_b,
+            "FV audit #6 fix: observation order no longer changes the verdict — the nodes CONVERGE (no consensus fork)"
+        );
+        assert!(!verdict_a, "honest block resolves Oblivious on both nodes");
     }
 }
