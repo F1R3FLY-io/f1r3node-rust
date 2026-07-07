@@ -3,7 +3,7 @@
 // Unit tests for BlockCreator.
 // Tests the deploy preparation and cleanup logic.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -16,7 +16,7 @@ use casper::rust::validator_identity::ValidatorIdentity;
 use crypto::rust::private_key::PrivateKey;
 use crypto::rust::signatures::secp256k1::Secp256k1;
 use crypto::rust::signatures::signed::Signed;
-use dashmap::{DashMap, DashSet};
+use dashmap::DashSet;
 use models::rust::casper::protocol::casper_message::DeployData;
 use models::ByteString;
 use prost::bytes::Bytes;
@@ -82,7 +82,7 @@ fn create_snapshot(max_block_num: i64, validator_id: Bytes) -> CasperSnapshot {
     bonds_map.insert(validator_id.clone(), 100);
 
     // Set maxSeqNums like Scala does: Map(validatorId -> 0)
-    let max_seq_nums: DashMap<ByteString, u64> = DashMap::new();
+    let mut max_seq_nums: HashMap<ByteString, u64> = HashMap::new();
     max_seq_nums.insert(validator_id.clone(), 0);
 
     let on_chain_state = OnChainCasperState {
@@ -100,7 +100,7 @@ fn create_snapshot(max_block_num: i64, validator_id: Bytes) -> CasperSnapshot {
         lca: Bytes::new(),
         tips: vec![],
         parents: vec![],
-        justifications: DashSet::new(),
+        justifications: HashSet::new(),
         invalid_blocks: HashMap::new(),
         deploys_in_scope: Arc::new(DashSet::new()),
         rejected_in_scope: Arc::new(DashSet::new()),
@@ -128,7 +128,7 @@ async fn should_remove_block_expired_deploys_while_keeping_valid_ones() {
     // Create all stores from a single InMemoryStoreManager (like Scala's kvm pattern)
     let mut kvm = InMemoryStoreManager::new();
 
-    let deploy_storage = Arc::new(Mutex::new(
+    let deploy_storage = Arc::new(parking_lot::Mutex::new(
         KeyValueDeployStorage::new(&mut kvm)
             .await
             .expect("Failed to create deploy storage"),
@@ -166,7 +166,7 @@ async fn should_remove_block_expired_deploys_while_keeping_valid_ones() {
 
     // Add both deploys to storage
     {
-        let mut ds = deploy_storage.lock().unwrap();
+        let mut ds = deploy_storage.lock();
         ds.add(vec![expired_deploy.clone(), valid_deploy.clone()])
             .expect("Failed to add deploys");
 
@@ -195,7 +195,7 @@ async fn should_remove_block_expired_deploys_while_keeping_valid_ones() {
 
     // Verify: expired deploy removed, valid deploy kept
     {
-        let ds = deploy_storage.lock().unwrap();
+        let ds = deploy_storage.lock();
         let deploys_after = ds.read_all().expect("Failed to read deploys");
         assert_eq!(
             deploys_after.len(),
@@ -227,7 +227,7 @@ async fn should_remove_both_block_expired_and_time_expired_deploys() {
     // Create all stores from a single InMemoryStoreManager (like Scala's kvm pattern)
     let mut kvm = InMemoryStoreManager::new();
 
-    let deploy_storage = Arc::new(Mutex::new(
+    let deploy_storage = Arc::new(parking_lot::Mutex::new(
         KeyValueDeployStorage::new(&mut kvm)
             .await
             .expect("Failed to create deploy storage"),
@@ -274,7 +274,7 @@ async fn should_remove_both_block_expired_and_time_expired_deploys() {
 
     // Add all deploys to storage
     {
-        let mut ds = deploy_storage.lock().unwrap();
+        let mut ds = deploy_storage.lock();
         ds.add(vec![
             block_expired_deploy.clone(),
             time_expired_deploy.clone(),
@@ -305,7 +305,7 @@ async fn should_remove_both_block_expired_and_time_expired_deploys() {
 
     // Verify: both expired deploys removed, valid deploy kept
     {
-        let ds = deploy_storage.lock().unwrap();
+        let ds = deploy_storage.lock();
         let deploys_after = ds.read_all().expect("Failed to read deploys");
         assert_eq!(
             deploys_after.len(),
@@ -345,7 +345,7 @@ async fn should_remove_expired_deploys_from_rejected_deploy_buffer() {
 
     let mut kvm = InMemoryStoreManager::new();
 
-    let deploy_storage = Arc::new(Mutex::new(
+    let deploy_storage = Arc::new(parking_lot::Mutex::new(
         KeyValueDeployStorage::new(&mut kvm)
             .await
             .expect("Failed to create deploy storage"),
@@ -368,7 +368,7 @@ async fn should_remove_expired_deploys_from_rejected_deploy_buffer() {
         .await
         .expect("Failed to create mergeable store");
 
-    let (mut runtime_manager, _) = RuntimeManager::create_with_history(
+    let (runtime_manager, _) = RuntimeManager::create_with_history(
         rspace_store,
         mergeable_store,
         std::sync::Arc::new(casper::rust::genesis::genesis::Genesis::default_mergeable_tags()),
@@ -402,7 +402,7 @@ async fn should_remove_expired_deploys_from_rejected_deploy_buffer() {
         None,
         deploy_storage.clone(),
         rejected_deploy_buffer.clone(),
-        &mut runtime_manager,
+        &runtime_manager,
         &mut block_store.clone(),
         false,
     )

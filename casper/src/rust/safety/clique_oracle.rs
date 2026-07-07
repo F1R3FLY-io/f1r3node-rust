@@ -21,6 +21,73 @@ const COOPERATIVE_YIELD_TIMESLICE_MS: u64 = 1;
 const MAX_SELF_JUSTIFICATION_CACHE_ENTRIES: usize = 10_000;
 const MAX_ANCESTOR_CACHE_ENTRIES: usize = 10_000;
 
+/// Denominator of the on-chain fault-tolerance threshold, in parts-per-million
+/// (ppm). The threshold θ is stored on-chain as an `i64` ppm numerator with this
+/// fixed denominator, so θ = num / 1_000_000.
+pub const FT_PPM_DEN: i64 = 1_000_000;
+
+/// Fault-tolerance threshold θ = `num`/`den`, kept as an exact rational.
+///
+/// Sourced from the on-chain PoS ppm value (`den` = [`FT_PPM_DEN`], `num` = ppm).
+/// Held exact — never collapsed to `f32` — so the finalization DECISION is
+/// integer-exact; the `f32` form survives only for display.
+#[derive(Debug, Clone, Copy)]
+pub struct FtThreshold {
+    pub num: i64,
+    pub den: i64,
+}
+
+impl FtThreshold {
+    /// Exact threshold from an on-chain ppm numerator (θ = ppm / 1_000_000).
+    pub fn from_ppm(ppm: i64) -> Self {
+        Self {
+            num: ppm,
+            den: FT_PPM_DEN,
+        }
+    }
+
+    /// LOSSY threshold from an `f32` (num = round(t · 1e6), den = 1e6). For tests
+    /// and back-compat call sites only; the exact path is [`FtThreshold::from_ppm`].
+    /// Mirrors `ProofOfStake::fault_tolerance_threshold_to_ppm`.
+    pub fn from_f32_lossy(t: f32) -> Self {
+        Self {
+            num: ((t as f64) * FT_PPM_DEN as f64).round() as i64,
+            den: FT_PPM_DEN,
+        }
+    }
+}
+
+/// Exact rational finalization test: θ = num/den.
+///
+/// `strict=false` ⇒ (2q−S)/S ≥ θ (floor path); `strict=true` ⇒ > θ (LFB
+/// finalizer). Cleared of denominators (S, den > 0), the test is
+/// `2·q·den ⋛ S·(den+num)`. `i128` so `2·q·den` and `S·(den+num)` (≤ ~2^84 for
+/// S ≤ i64::MAX, den = 10^6) never overflow, and `2·agreeing` near i64::MAX
+/// stays exact.
+///
+/// A9 atomic activation: this exact DECISION replaces the imprecise `f32`
+/// comparison and activates ATOMICALLY with the unreleased branch — every
+/// validator runs the branch binary together, so there is no mixed-version
+/// window and no on-chain activation parameter is required.
+pub fn ft_decides_exact(agreeing: i64, q: i64, s: i64, num: i64, den: i64, strict: bool) -> bool {
+    // Domain: the doc-contract is 0 ≤ num ≤ den (θ ∈ [0,1]), but the on-chain ppm
+    // is range-checked to [-den, den] (token_metadata_check.rs) and some callers
+    // pass a negative sentinel θ (e.g. -1.0 "finalize on any majority clique"), so
+    // the lower bound is -den here. The comparison math below is unchanged and is
+    // exact across the full [-den, den] range.
+    debug_assert!(den > 0 && s > 0 && (0..=s).contains(&q) && (-den..=den).contains(&num));
+    if (agreeing as i128) * 2 <= s as i128 {
+        return false; // agreeing ≤ S/2 ⇒ MIN ⇒ not finalized
+    }
+    let lhs = 2i128 * q as i128 * den as i128;
+    let rhs = s as i128 * (den as i128 + num as i128);
+    if strict {
+        lhs > rhs
+    } else {
+        lhs >= rhs
+    }
+}
+
 pub struct CliqueOracleRunCache {
     latest_justifications_cache: BTreeMap<V, BTreeMap<V, M>>,
     self_justification_cache: BTreeMap<M, Option<M>>,
@@ -427,6 +494,143 @@ impl CliqueOracle {
         .await
     }
 
+    /// Weight map restricted to validators that AGREE on `target_msg` over the
+    /// frozen `latest_messages` snapshot. Shared by [`CliqueOracle::ft_witnessed`]
+    /// (f32 display) and [`CliqueOracle::ft_witnessed_exact`] (integer DECISION)
+    /// so both read agreement identically.
+    async fn agreeing_weight_map(
+        weight_map: &WeightMap,
+        target_msg: &M,
+        dag: &KeyValueDagRepresentation,
+        latest_messages: &BTreeMap<V, M>,
+    ) -> Result<WeightMap, KvStoreError> {
+        async fn agree(
+            validator: &V,
+            message: &M,
+            dag: &KeyValueDagRepresentation,
+            latest_messages: &BTreeMap<V, M>,
+        ) -> Result<bool, KvStoreError> {
+            // Multi-parent agreement: a validator agrees with `message` iff
+            // `message` is a DAG-ancestor of its latest message — i.e. the
+            // validator has MERGED `message` into its state via any parent
+            // path. The prior `is_in_main_chain` check counted only the
+            // single main-parent chain, which under-counts merges: an
+            // equal-weight concurrent fork that every validator has merged
+            // would still show <=1/2 agreeing weight and never finalize
+            // (the liveness wedge). For single-parent histories the two
+            // predicates coincide, so single-chain finality is unchanged.
+            latest_messages
+                .get(validator)
+                .map_or(Ok(false), |hash| dag.is_dag_ancestor(message, hash))
+        }
+
+        let mut agreeing_map = HashMap::new();
+        for (validator, weight) in weight_map.iter() {
+            if agree(validator, target_msg, dag, latest_messages).await? {
+                agreeing_map.insert(validator.clone(), *weight);
+            }
+        }
+
+        Ok(agreeing_map)
+    }
+
+    /// EXACT deterministic finalization DECISION over a FROZEN snapshot — the
+    /// integer-exact analog of [`CliqueOracle::ft_witnessed`]. Returns `true` iff
+    /// the clique oracle certifies `target_msg` finalized at threshold `ftt` under
+    /// the exact rule `2·q·den ⋛ S·(den+num)` (see [`ft_decides_exact`]); `strict`
+    /// selects ≥ (floor path) vs > (LFB finalizer). Mirrors `ft_witnessed`'s
+    /// contains / zero-stake / `agreeing ≤ S/2` short-circuits so the two agree
+    /// everywhere except at the `f32` rounding boundary this replaces.
+    pub async fn ft_witnessed_exact(
+        target_msg: &M,
+        dag: &KeyValueDagRepresentation,
+        latest_messages: &BTreeMap<V, M>,
+        ftt: FtThreshold,
+        strict: bool,
+    ) -> Result<bool, KvStoreError> {
+        // Non-existing message: MIN ⇒ not finalized (mirrors ft_witnessed).
+        if !dag.contains(target_msg) {
+            tracing::warn!(
+                ?target_msg,
+                "Exact fault tolerance for non existing message requested."
+            );
+            return Ok(false);
+        }
+        let full_weight_map = CliqueOracle::get_corresponding_weight_map(target_msg, dag).await?;
+        let total_stake = full_weight_map.values().sum::<i64>();
+        // Zero (or negative) total stake cannot witness anything — mirrors the
+        // ft_witnessed guard that returns MIN instead of asserting a positive total.
+        if total_stake <= 0 {
+            return Ok(false);
+        }
+        let agreeing_weight_map =
+            CliqueOracle::agreeing_weight_map(&full_weight_map, target_msg, dag, latest_messages)
+                .await?;
+        let agreeing = agreeing_weight_map.values().sum::<i64>();
+        // agreeing ≤ S/2 ⇒ MIN ⇒ not finalized. Short-circuit BEFORE the expensive
+        // clique search, exactly as compute_output_with_cache does.
+        if (agreeing as i128) * 2 <= total_stake as i128 {
+            return Ok(false);
+        }
+        let mut run_cache = Self::new_run_cache();
+        let max_clique_weight = CliqueOracle::compute_max_clique_weight(
+            target_msg,
+            &agreeing_weight_map,
+            dag,
+            &mut run_cache,
+            latest_messages,
+        )
+        .await?;
+        Ok(ft_decides_exact(
+            agreeing,
+            max_clique_weight,
+            total_stake,
+            ftt.num,
+            ftt.den,
+            strict,
+        ))
+    }
+
+    /// Finalizer decision + display value in one clique pass. Computes the max
+    /// clique weight `q` and total stake `S` once and returns `(decision,
+    /// ft_value)` where `decision` is the EXACT verdict
+    /// [`ft_decides_exact`]`(agreeing, q, S, num, den, strict)` and `ft_value` =
+    /// (2q−S)/S as `f32` for display/telemetry only. The `agreeing ≤ S/2`
+    /// short-circuit returns `(false, MIN_FAULT_TOLERANCE)`, matching
+    /// [`CliqueOracle::compute_output_with_cache`].
+    pub async fn compute_decision_with_cache(
+        target_msg: &M,
+        message_weight_map: &WeightMap,
+        agreeing_weight_map: &WeightMap,
+        dag: &KeyValueDagRepresentation,
+        run_cache: &mut CliqueOracleRunCache,
+        latest_messages: &BTreeMap<V, M>,
+        num: i64,
+        den: i64,
+        strict: bool,
+    ) -> Result<(bool, f32), KvStoreError> {
+        let total_stake = message_weight_map.values().sum::<i64>();
+        assert!(total_stake > 0, "Long overflow when computing total stake");
+        let agreeing = agreeing_weight_map.values().sum::<i64>();
+        if (agreeing as i128) * 2 <= total_stake as i128 {
+            return Ok((false, MIN_FAULT_TOLERANCE));
+        }
+        let max_clique_weight = CliqueOracle::compute_max_clique_weight(
+            target_msg,
+            agreeing_weight_map,
+            dag,
+            run_cache,
+            latest_messages,
+        )
+        .await?;
+        // Display value only: identical formula to compute_output_with_cache.
+        let ft_value = (max_clique_weight as f32 * 2.0 - total_stake as f32) / total_stake as f32;
+        Ok((
+            ft_decides_exact(agreeing, max_clique_weight, total_stake, num, den, strict),
+            ft_value,
+        ))
+    }
+
     /// Deterministic fault tolerance over a FROZEN latest-message snapshot.
     ///
     /// Every "validator V's latest message" read is resolved from `latest_messages`
@@ -441,42 +645,6 @@ impl CliqueOracle {
     ) -> Result<f32, KvStoreError> {
         // Using tracing events for async - Span[F].traceI("normalized-fault-tolerance") from Scala
         tracing::debug!(target: "f1r3fly.casper.safety.clique_oracle", "normalized-fault-tolerance-started");
-        /// weight map containing only validators that agree on the message
-        async fn agreeing_weight_map_f(
-            weight_map: &WeightMap,
-            target_msg: &M,
-            dag: &KeyValueDagRepresentation,
-            latest_messages: &BTreeMap<V, M>,
-        ) -> Result<WeightMap, KvStoreError> {
-            async fn agree(
-                validator: &V,
-                message: &M,
-                dag: &KeyValueDagRepresentation,
-                latest_messages: &BTreeMap<V, M>,
-            ) -> Result<bool, KvStoreError> {
-                // Multi-parent agreement: a validator agrees with `message` iff
-                // `message` is a DAG-ancestor of its latest message — i.e. the
-                // validator has MERGED `message` into its state via any parent
-                // path. The prior `is_in_main_chain` check counted only the
-                // single main-parent chain, which under-counts merges: an
-                // equal-weight concurrent fork that every validator has merged
-                // would still show <=1/2 agreeing weight and never finalize
-                // (the liveness wedge). For single-parent histories the two
-                // predicates coincide, so single-chain finality is unchanged.
-                latest_messages
-                    .get(validator)
-                    .map_or(Ok(false), |hash| dag.is_dag_ancestor(message, hash))
-            }
-
-            let mut agreeing_map = HashMap::new();
-            for (validator, weight) in weight_map.iter() {
-                if agree(validator, target_msg, dag, latest_messages).await? {
-                    agreeing_map.insert(validator.clone(), *weight);
-                }
-            }
-
-            Ok(agreeing_map)
-        }
 
         if dag.contains(target_msg) {
             tracing::debug!("Calculating fault tolerance for {:?}.", target_msg);
@@ -490,7 +658,8 @@ impl CliqueOracle {
                 return Ok(MIN_FAULT_TOLERANCE);
             }
             let agreeing_weight_map =
-                agreeing_weight_map_f(&full_weight_map, target_msg, dag, latest_messages).await?;
+                Self::agreeing_weight_map(&full_weight_map, target_msg, dag, latest_messages)
+                    .await?;
             let result = CliqueOracle::compute_output(
                 target_msg,
                 &full_weight_map,
@@ -533,5 +702,125 @@ impl CliqueOracle {
         tracing::debug!(target: "f1r3fly.casper.safety.clique_oracle", "normalized-fault-tolerance-started");
         let latest_messages: BTreeMap<V, M> = dag.latest_message_hashes().into_iter().collect();
         CliqueOracle::ft_witnessed(target_msg, dag, &latest_messages).await
+    }
+}
+
+#[cfg(test)]
+mod ft_decides_exact_tests {
+    //! Unit tests for the exact-integer finalization DECISION (`ft_decides_exact`)
+    //! and the `FtThreshold` newtype. The exact test replaces the imprecise `f32`
+    //! comparison `(2q−S)/S ⋛ θ`; these confirm it matches `f32` where `f32` is
+    //! exact, pins the ≥-vs-> semantics at an exact tie, and never overflows.
+    use super::{ft_decides_exact, FtThreshold, FT_PPM_DEN};
+
+    /// On small stakes the exact rule matches the naive `f32` comparison
+    /// `(2q−S)/S ⋛ θ` at every grid point where `f32` is exact (dyadic S and θ),
+    /// confirming the DECISION is unchanged on the common case. Exact ties are
+    /// excluded here and pinned down by `boundary_tie_ge_finalizes_gt_does_not`.
+    #[test]
+    fn small_stake_matches_f32_rule_on_dyadic_grid() {
+        let den = FT_PPM_DEN;
+        // θ ∈ {0, ¼, ½, ¾, 1}, all exactly representable in f32.
+        for &num in &[0i64, 250_000, 500_000, 750_000, 1_000_000] {
+            let theta = num as f32 / den as f32;
+            // Powers of two ⇒ (2q−S)/S is dyadic ⇒ exact in f32.
+            for &s in &[1i64, 2, 4, 8, 16] {
+                for q in 0..=s {
+                    let lhs = 2i128 * q as i128 * den as i128;
+                    let rhs = s as i128 * (den as i128 + num as i128);
+                    if lhs == rhs {
+                        continue; // exact tie: covered by the boundary test
+                    }
+                    let ratio = (2.0 * q as f32 - s as f32) / s as f32;
+                    // Full agreement (agreeing = S) so the >S/2 gate always passes,
+                    // isolating the θ comparison.
+                    assert_eq!(
+                        ft_decides_exact(s, q, s, num, den, false),
+                        ratio >= theta,
+                        ">= mismatch q={q} s={s} num={num}"
+                    );
+                    assert_eq!(
+                        ft_decides_exact(s, q, s, num, den, true),
+                        ratio > theta,
+                        "> mismatch q={q} s={s} num={num}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// A large-stake exact tie `2q·den == S·(den+num)` finalizes under ≥ (floor)
+    /// but NOT under > (LFB finalizer) — the precise boundary the `f32` path could
+    /// not resolve. Built so the tie is exact: S = 2·den, q = den+num ⇒
+    /// 2q·den = 2(den+num)·den = S·(den+num).
+    #[test]
+    fn boundary_tie_ge_finalizes_gt_does_not() {
+        let den = FT_PPM_DEN;
+        let num = 333_333;
+        let s = 2 * den; // 2_000_000
+        let q = den + num; // 1_333_333
+        assert_eq!(
+            2i128 * q as i128 * den as i128,
+            s as i128 * (den as i128 + num as i128),
+            "test setup must produce an exact tie"
+        );
+        // agreeing = S so the >S/2 gate passes; the tie is decided purely by strict.
+        assert!(
+            ft_decides_exact(s, q, s, num, den, false),
+            "exact tie must finalize under >= (floor)"
+        );
+        assert!(
+            !ft_decides_exact(s, q, s, num, den, true),
+            "exact tie must NOT finalize under > (LFB finalizer)"
+        );
+    }
+
+    /// The `2·agreeing == S` knife-edge (exactly half agree) is NOT finalized: the
+    /// oracle requires strictly more than half agreeing stake, so even a full
+    /// clique q = S and the most permissive θ = 0 return false.
+    #[test]
+    fn exactly_half_agreeing_is_not_finalized() {
+        let den = FT_PPM_DEN;
+        let s = 10i64;
+        let agreeing = 5i64; // 2·5 == 10 == S
+        assert!(!ft_decides_exact(agreeing, s, s, 0, den, false));
+        assert!(!ft_decides_exact(agreeing, s, s, 0, den, true));
+    }
+
+    /// i64::MAX-scale q and S must not overflow: `2·q·den ≈ 2^84` exceeds i64 but
+    /// is exact in i128, and `2·agreeing` near i64::MAX also needs i128.
+    #[test]
+    fn no_overflow_at_i64_max_scale() {
+        let den = FT_PPM_DEN;
+        let num = 500_000;
+        let s = i64::MAX;
+        let q = i64::MAX; // q ≤ S; full clique ⇒ (2S−S)/S = 1 ≥ θ and > θ (θ < 1)
+        assert!(ft_decides_exact(s, q, s, num, den, false));
+        assert!(ft_decides_exact(s, q, s, num, den, true));
+        // 2·agreeing near i64::MAX in the early-return path: 2·(MAX/2) < MAX ⇒ false.
+        let half = i64::MAX / 2;
+        assert!(!ft_decides_exact(half, q, s, num, den, true));
+    }
+
+    /// Negative-θ sentinel (θ = -1.0 "finalize on any majority clique"): with the
+    /// >S/2 gate satisfied, any q > 0 finalizes, and q == 0 does not.
+    #[test]
+    fn negative_sentinel_threshold_finalizes_any_positive_clique() {
+        let den = FT_PPM_DEN;
+        let num = -1_000_000; // θ = -1.0
+        let s = 10i64;
+        let agreeing = 10i64; // 2·10 > 10 ⇒ gate passes
+        assert!(ft_decides_exact(agreeing, 1, s, num, den, true), "q=1>0 finalizes");
+        assert!(!ft_decides_exact(agreeing, 0, s, num, den, true), "q=0 does not");
+    }
+
+    #[test]
+    fn ft_threshold_constructors() {
+        assert_eq!(FtThreshold::from_ppm(330_000).num, 330_000);
+        assert_eq!(FtThreshold::from_ppm(330_000).den, FT_PPM_DEN);
+        // from_f32_lossy mirrors ProofOfStake::fault_tolerance_threshold_to_ppm.
+        assert_eq!(FtThreshold::from_f32_lossy(0.5).num, 500_000);
+        assert_eq!(FtThreshold::from_f32_lossy(-1.0).num, -1_000_000);
+        assert_eq!(FtThreshold::from_f32_lossy(-1.0).den, FT_PPM_DEN);
     }
 }

@@ -250,6 +250,7 @@ pub fn normalize_p_let<'ast>(
                     }]),
                     span: pattern_span, // Use synthetic pattern span
                 },
+                guard: None,
                 proc: if bindings.len() > 1 {
                     // More bindings - create nested let
                     let remaining_bindings: smallvec::SmallVec<[LetBinding<'ast>; 1]> =
@@ -326,6 +327,7 @@ pub fn normalize_p_let<'ast>(
                     proc: parser.ast_builder().alloc_list(&pattern_elements),
                     span: pattern_list_span,
                 },
+                guard: None,
                 proc: if bindings.len() > 1 {
                     // More bindings - create nested let
                     let remaining_bindings: smallvec::SmallVec<[LetBinding<'ast>; 1]> =

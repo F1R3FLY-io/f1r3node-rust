@@ -138,6 +138,11 @@ where F: Fn() -> bool {
     f() // Final check
 }
 
+async fn abort_protocol(handle: tokio::task::JoinHandle<()>) {
+    handle.abort();
+    let _ = handle.await;
+}
+
 static METRICS_SNAPSHOTTER: OnceLock<metrics_util::debugging::Snapshotter> = OnceLock::new();
 static METRICS_INIT_LOCK: Mutex<()> = Mutex::new(());
 
@@ -255,7 +260,7 @@ async fn should_add_valid_signatures_to_state() {
     assert_eq!(fixture.signature_count(), 1);
     assert!(fixture.events_contain("BlockApprovalReceived", 1));
 
-    protocol_handle.abort();
+    abort_protocol(protocol_handle).await;
 }
 
 #[tokio::test]
@@ -309,7 +314,7 @@ async fn should_not_change_signatures_on_duplicate_approval() {
         "Duplicate approval should not generate a new event"
     );
 
-    protocol_handle.abort();
+    abort_protocol(protocol_handle).await;
 }
 
 #[tokio::test]
@@ -347,7 +352,7 @@ async fn should_not_add_invalid_signatures() {
     );
     assert!(fixture.events_contain("BlockApprovalReceived", 0));
 
-    protocol_handle.abort();
+    abort_protocol(protocol_handle).await;
 }
 
 #[tokio::test]
@@ -392,7 +397,7 @@ async fn should_create_approved_block_when_enough_signatures_collected() {
     assert!(fixture.events_contain("BlockApprovalReceived", n));
     assert!(fixture.events_contain("SentApprovedBlock", 1));
 
-    protocol_handle.abort();
+    abort_protocol(protocol_handle).await;
 }
 
 #[tokio::test]
@@ -449,7 +454,7 @@ async fn should_continue_collecting_if_not_enough_signatures() {
     assert_eq!(fixture.signature_count(), n);
     assert!(fixture.has_approved_block());
 
-    protocol_handle.abort();
+    abort_protocol(protocol_handle).await;
 }
 
 #[tokio::test]
@@ -463,19 +468,27 @@ async fn should_skip_duration_when_required_signatures_is_zero() {
 
     let fixture = TestFixture::new(
         0,
-        Duration::from_millis(30),
+        // Large approval duration (>> the 100ms timeout below). With
+        // required_sigs == 0 the protocol self-approves immediately and never
+        // consults this value; if that skip ever regressed to honoring the wait,
+        // run() would block for the full duration and exceed the timeout,
+        // surfacing deterministically as `result == Err`. This replaces a flaky
+        // `elapsed < 10ms` wall-clock bound that broke under RUST_LOG=debug +
+        // full-workspace parallelism, where the genesis-ceremony completion
+        // (block create + send + tracing) legitimately takes >10ms.
+        Duration::from_secs(30),
         Duration::from_millis(1),
         key_pairs,
     )
     .await;
 
     let baseline = get_baseline_genesis_counter(&snapshotter);
-    let start = std::time::Instant::now();
     let result = timeout(Duration::from_millis(100), fixture.protocol.run()).await;
 
-    let elapsed = start.elapsed();
-    assert!(elapsed < Duration::from_millis(10));
-    assert!(result.is_ok());
+    assert!(
+        result.is_ok(),
+        "required_sigs == 0 must self-approve immediately, not wait the approval duration"
+    );
     assert_eq!(
         get_genesis_counter(&snapshotter) - baseline,
         0,
@@ -525,7 +538,7 @@ async fn should_not_accept_approval_from_untrusted_validator() {
     );
     assert!(fixture.events_contain("BlockApprovalReceived", 0));
 
-    protocol_handle.abort();
+    abort_protocol(protocol_handle).await;
 }
 
 #[tokio::test]
@@ -594,7 +607,7 @@ async fn should_send_unapproved_block_message_to_peers_at_every_interval() {
     );
     assert_eq!(fixture.signature_count(), 1);
 
-    protocol_handle.abort();
+    abort_protocol(protocol_handle).await;
 }
 
 #[tokio::test]
@@ -644,5 +657,5 @@ async fn should_send_approved_block_message_to_peers_once_approved_block_is_crea
     assert!(fixture.transport.request_count() >= 1);
     assert!(fixture.events_contain("SentApprovedBlock", 1));
 
-    protocol_handle.abort();
+    abort_protocol(protocol_handle).await;
 }

@@ -90,7 +90,10 @@ impl ReportingCasper for RhoReporterCasper {
         .await
         .map_err(|e| format!("Failed to create reporting runtime: {}", e))?;
 
-        let dag = self.block_dag_storage.get_representation();
+        let dag = self
+            .block_dag_storage
+            .get_representation()
+            .map_err(|e| format!("Failed to get DAG representation: {}", e))?;
 
         let genesis = self
             .block_store
@@ -353,7 +356,7 @@ impl ReportingRuntime {
         use rholang::rust::interpreter::matcher::r#match::Matcher;
         use rspace_plus_plus::rspace::r#match::Match;
 
-        let matcher: Arc<Box<dyn Match<BindPattern, ListParWithRandom>>> =
+        let matcher: Arc<Box<dyn Match<BindPattern, ListParWithRandom, TaggedContinuation>>> =
             Arc::new(Box::new(Matcher));
 
         RhoReportingRspace::create(store, matcher)

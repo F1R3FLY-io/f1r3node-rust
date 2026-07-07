@@ -96,11 +96,21 @@ fn branch_mergeable_channels(
                             ),
                         ));
                     }
-                    existing.0 = merging_logic::combine_mergeable_value(
+                    existing.0 = match merging_logic::combine_mergeable_value(
                         existing.0,
                         incoming_diff,
                         incoming_mt,
-                    );
+                    ) {
+                        Some(v) => v,
+                        None => {
+                            return Err(
+                                rspace_plus_plus::rspace::errors::HistoryError::MergeError(format!(
+                                    "IntegerAdd overflow combining mergeable channel {:?}",
+                                    key,
+                                )),
+                            )
+                        }
+                    };
                 }
                 None => {
                     branch_mergeable.insert(key.clone(), (incoming_diff, incoming_mt));

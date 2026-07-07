@@ -718,6 +718,31 @@ pub(crate) async fn ensure_scope_mergeable_present(
     Ok(())
 }
 
+/// Cap on the finalized-floor distance Δ = num(maxParent) − num(floor) that a
+/// single multi-parent merge may span. The DETERMINISTIC backstop: Δ is a pure
+/// function of the block's frozen justifications, so every honest node computes
+/// the same Δ. Beyond the cap, `compute_parents_post_state` returns `Err` (the
+/// proposer parks; a validator deterministically rejects) instead of silently
+/// substituting one parent's post-state and dropping the others' writes.
+pub(crate) const MAX_FLOOR_DISTANCE_BLOCKS: i64 = 256;
+
+/// Advisory cap on the merge scope `|visible_blocks|`. This is NOT node-
+/// deterministic (branch width differs across each node's view), so it MUST NOT
+/// gate admission — a divergent reject would fork. Recorded as a metric/warning
+/// only; the deterministic Δ backstop above is what bounds the merge.
+pub(crate) const MAX_PARENT_MERGE_SCOPE_BLOCKS: usize = 512;
+
+/// Node cap on the lossless covering-parent fast-path ancestor scan.
+pub(crate) const MAX_FULL_ANCESTOR_SCAN_NODES: usize = 8_192;
+
+/// The deterministic merge-scope backstop decision: refuse (`Err`) iff the floor
+/// distance exceeds the cap. A pure function of Δ ONLY — the scope size never
+/// gates (see `MAX_PARENT_MERGE_SCOPE_BLOCKS`). Extracted for direct unit testing
+/// of the "reject on Δ only, never on scope" property.
+pub(crate) fn merge_scope_backstop_exceeded(floor_distance: i64) -> bool {
+    floor_distance > MAX_FLOOR_DISTANCE_BLOCKS
+}
+
 /// Compute the merged post-state from multiple parent blocks.
 ///
 /// For exploratory deploy, pass `disable_late_block_filtering_override = Some(true)` to
@@ -743,9 +768,6 @@ pub async fn compute_parents_post_state(
     CasperError,
 > {
     let total_started = std::time::Instant::now();
-    const MAX_PARENT_MERGE_SCOPE_BLOCKS: usize = 512;
-    const MAX_FLOOR_DISTANCE_BLOCKS: i64 = 256;
-    const MAX_FULL_ANCESTOR_SCAN_NODES: usize = 8_192;
 
     // No entered span guard here: the function is async (it awaits floor
     // derivation), and an `.entered()` guard is not `Send` across an await.
@@ -960,9 +982,16 @@ pub async fn compute_parents_post_state(
                 Ok(block_index)
             };
 
-            // Compute scope: all ancestors of parents (blocks visible from these parents)
-            // bounded by max-parent-depth configured for the shard to avoid
-            // expensive ancestry walks through finalized history.
+            // Compute scope: the unfinalized band above the finalized floor.
+            //
+            // H3: derive the floor BEFORE collecting the merge scope so the
+            // ancestor walk can be bounded at the floor's height. Blocks at or
+            // below the floor are already sealed into the floor's post-state, so
+            // scanning them is redundant; bounding here makes the walk O(Δ) (the
+            // unfinalized band) rather than O(chain length) — the prior
+            // `max_parent_depth` bound degenerated to an unbounded scan whenever
+            // the shard left it at its default (≤0 or i32::MAX), which was one
+            // of the O(Δ²) ratchet drivers.
             let parent_hashes: Vec<BlockHash> =
                 parents.iter().map(|p| p.block_hash.clone()).collect();
             let max_parent_block_number = parents
@@ -970,25 +999,51 @@ pub async fn compute_parents_post_state(
                 .map(|p| p.body.state.block_number)
                 .max()
                 .unwrap_or(0);
-            let max_parent_depth = s.on_chain_state.shard_conf.max_parent_depth;
-            let ancestor_min_block_number = if max_parent_depth <= 0 || max_parent_depth == i32::MAX
-            {
-                i64::MIN
-            } else {
-                max_parent_block_number.saturating_sub(max_parent_depth as i64)
-            };
+
+            // Node-deterministic finalized floor, derived from the block's frozen
+            // justification snapshot — the cut the merge builds on. Replaces the
+            // LCA base: the floor is finalization-aware and advance-only, so the
+            // merged state is MONOTONE, where the LCA base let it churn
+            // (path-dependent FS).
+            let floor_derive_started = std::time::Instant::now();
+            let floor = crate::rust::finality::floor::finalized_floor(
+                &s.dag,
+                &parent_hashes,
+                latest_messages,
+                crate::rust::safety::clique_oracle::FtThreshold::from_ppm(
+                    s.on_chain_state.shard_conf.fault_tolerance_threshold_ppm,
+                ),
+            )
+            .await?;
+            let floor_derive_ms = floor_derive_started.elapsed().as_millis();
+            let floor_hash = floor.hash.clone();
+
+            // The floor block's committed post-state is FS(floor) — the merge base.
+            // The floor is an ancestor of the parents (which are stored), so this is
+            // present in normal operation; surface a clear error instead of panicking
+            // if the block store and DAG ever desynchronize.
+            let floor_block = block_store.get(&floor_hash)?.ok_or_else(|| {
+                CasperError::RuntimeError(format!(
+                    "finalized-floor block {} not in block store (DAG/store desync)",
+                    hex::encode(&floor_hash[..8.min(floor_hash.len())])
+                ))
+            })?;
+            let floor_state =
+                Blake2b256Hash::from_bytes_prost(&floor_block.body.state.post_state_hash);
+            let floor_block_number = floor_block.body.state.block_number;
+
             let include_visible_ancestor =
                 |hash: &BlockHash, dag: &KeyValueDagRepresentation| -> bool {
                     // IMPORTANT: do not use local finalized status as a merge-scope filter.
                     // Different validators can have temporarily different finalized views, and
                     // filtering by `is_finalized` causes non-deterministic parent post-state
-                    // computation for the same parent set.
-                    if ancestor_min_block_number == i64::MIN {
-                        return true;
-                    }
-
+                    // computation for the same parent set. The floor, by contrast, is a pure
+                    // function of the block's frozen justifications — node-identical — so
+                    // bounding the scan at the floor height stays deterministic AND never
+                    // silently drops a parent write above the floor (the config-depth bound
+                    // could cut above the floor and lose the band in between).
                     match dag.lookup(hash) {
-                        Ok(Some(meta)) => meta.block_number >= ancestor_min_block_number,
+                        Ok(Some(meta)) => meta.block_number >= floor_block_number,
                         Ok(None) => false,
                         Err(_) => false,
                     }
@@ -1015,43 +1070,13 @@ pub async fn compute_parents_post_state(
                 .collect();
             let flatten_visible_ms = flatten_visible_started.elapsed().as_millis();
 
-            // Node-deterministic finalized floor, derived from the block's frozen
-            // justification snapshot — the cut the merge builds on. Replaces the
-            // LCA base: the floor is finalization-aware and advance-only, so the
-            // merged state is MONOTONE, where the LCA base let it churn
-            // (path-dependent FS). The `lfb_*` names are kept so the downstream
-            // scope filter, fallback, and merge call are unchanged (now
-            // floor-anchored rather than LCA-anchored).
-            let floor_derive_started = std::time::Instant::now();
-            let floor = crate::rust::finality::floor::finalized_floor(
-                &s.dag,
-                &parent_hashes,
-                latest_messages,
-                s.on_chain_state.shard_conf.fault_tolerance_threshold,
-            )
-            .await?;
-            let floor_derive_ms = floor_derive_started.elapsed().as_millis();
-            let floor_hash = floor.hash.clone();
-
-            // The floor block's committed post-state is FS(floor) — the merge base.
-            // The floor is an ancestor of the parents (which are stored), so this is
-            // present in normal operation; surface a clear error instead of panicking
-            // if the block store and DAG ever desynchronize.
-            let floor_block = block_store.get(&floor_hash)?.ok_or_else(|| {
-                CasperError::RuntimeError(format!(
-                    "finalized-floor block {} not in block store (DAG/store desync)",
-                    hex::encode(&floor_hash[..8.min(floor_hash.len())])
-                ))
-            })?;
-            let floor_state =
-                Blake2b256Hash::from_bytes_prost(&floor_block.body.state.post_state_hash);
-
             // Scope visible_blocks to blocks at or above the floor: the
             // unfinalized band the merge resolves. Blocks at or below the floor
             // are already sealed into the floor's post-state, so merging them is
-            // redundant. Deterministic — the floor and block numbers are pure
-            // DAG/justification facts.
-            let floor_block_number = floor_block.body.state.block_number;
+            // redundant. The ancestor scan above is already floor-bounded, so
+            // this retain is a defensive no-op (kept for clarity and to drive the
+            // scope tracing). Deterministic — the floor and block numbers are
+            // pure DAG/justification facts.
             let pre_filter_count = visible_blocks.len();
             let pre_filter_blocks: Option<Vec<BlockHash>> = if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG)
             {
@@ -1111,71 +1136,68 @@ pub async fn compute_parents_post_state(
                 );
             }
 
-            let max_parent_block_number = parents
-                .iter()
-                .map(|p| p.body.state.block_number)
-                .max()
-                .unwrap_or(floor_block.body.state.block_number);
-            let floor_distance = max_parent_block_number - floor_block.body.state.block_number;
+            let floor_distance = max_parent_block_number - floor_block_number;
             let visible_blocks_len = visible_blocks.len();
-            if visible_blocks.len() > MAX_PARENT_MERGE_SCOPE_BLOCKS
-                || floor_distance > MAX_FLOOR_DISTANCE_BLOCKS
-            {
-                let fallback_parent = parents
-                    .iter()
-                    .max_by(|a, b| {
-                        a.body
-                            .state
-                            .block_number
-                            .cmp(&b.body.state.block_number)
-                            .then_with(|| a.block_hash.cmp(&b.block_hash))
-                    })
-                    .expect("parents is non-empty in multi-parent branch");
+            // Observability: the (node-deterministic) floor distance Δ and the
+            // (NOT node-deterministic) scope size. Only Δ gates admission.
+            metrics::histogram!(
+                crate::rust::metrics_constants::FLOOR_DISTANCE_METRIC,
+                "source" => crate::rust::metrics_constants::CASPER_METRICS_SOURCE
+            )
+            .record(floor_distance as f64);
+            metrics::histogram!(
+                crate::rust::metrics_constants::MERGE_SCOPE_SIZE_METRIC,
+                "source" => crate::rust::metrics_constants::CASPER_METRICS_SOURCE
+            )
+            .record(visible_blocks_len as f64);
+            if visible_blocks_len > MAX_PARENT_MERGE_SCOPE_BLOCKS {
+                // The scope size is NOT node-deterministic (branch width differs
+                // across each node's view), so it must NEVER gate admission — a
+                // reject that differs across nodes would fork. Log as an anomaly
+                // only; the deterministic floor-distance backstop below is what
+                // actually bounds the merge.
                 tracing::warn!(
-                    target: "f1r3fly.casper.compute_parents_post_state.fallback",
-                    "compute_parents_post_state fallback: visibleBlocks={}, floor_distance={}, chosen_parent={} (block {}), reason=merge_scope_too_large",
-                    visible_blocks.len(),
+                    target: "f1r3fly.casper.compute_parents_post_state",
+                    visible_blocks = visible_blocks_len,
                     floor_distance,
-                    PrettyPrinter::build_string_bytes(&fallback_parent.block_hash),
-                    fallback_parent.body.state.block_number
+                    max_scope = MAX_PARENT_MERGE_SCOPE_BLOCKS,
+                    "merge scope unusually large; NOT rejecting (scope size is not node-deterministic) — watch floor distance"
                 );
+            }
+            // Deterministic backstop: the floor distance Δ is a pure function of
+            // the block's frozen justifications, so every honest node computes the
+            // same Δ. When Δ exceeds the cap we REFUSE to build a merge rather than
+            // silently substituting the single highest parent's post-state — the
+            // former behaviour dropped every other parent's committed writes and
+            // could strand a dropped co-parent's deploys as non-re-proposable
+            // (the ~400-block "fails under load" bug: S5/¬T-K1/¬T-NDA). On propose
+            // this `Err` parks the round (retried once finality advances and Δ
+            // shrinks); on validate an over-Δ block is deterministically invalid —
+            // both sides compute the same Δ, so there is no fork.
+            if merge_scope_backstop_exceeded(floor_distance) {
                 metrics::counter!(
-                    crate::rust::metrics_constants::MERGE_SCOPE_TOO_LARGE_FALLBACK_FIRED_METRIC,
+                    crate::rust::metrics_constants::MERGE_SCOPE_BACKSTOP_ERROR_METRIC,
                     "source" => crate::rust::metrics_constants::CASPER_METRICS_SOURCE
                 )
                 .increment(1);
-                let fallback_state = proto_util::post_state_hash(fallback_parent);
-                tracing::debug!(
-                    target: "f1r3fly.merge.step",
-                    step = "compute_parents_post_state.CACHE_PUT",
-                    path = "fallback_latest_parent",
-                    post_state = %hex::encode(&fallback_state[..8.min(fallback_state.len())]),
-                    "merge.step: cache put fallback parents-post-state"
-                );
-                runtime_manager.put_cached_parents_post_state(
-                    cache_key,
-                    (fallback_state.clone(), Vec::new(), Vec::new()),
-                );
-                tracing::debug!(
-                    target: "f1r3fly.casper.compute_parents_post_state.timing",
-                    "compute_parents_post_state timing: path=fallback_latest_parent, parents={}, cache_lookup_ms={}, collect_ancestors_ms={}, flatten_visible_ms={}, floor_derive_ms={}, visible_blocks={}, floor_distance={}, total_ms={}",
-                    parents.len(),
-                    cache_lookup_ms,
-                    collect_ancestors_ms,
-                    flatten_visible_ms,
-                    floor_derive_ms,
-                    visible_blocks_len,
+                tracing::warn!(
+                    target: "f1r3fly.casper.compute_parents_post_state.backstop",
                     floor_distance,
-                    total_started.elapsed().as_millis()
+                    max_floor_distance = MAX_FLOOR_DISTANCE_BLOCKS,
+                    visible_blocks = visible_blocks_len,
+                    floor = %hex::encode(&floor_hash[..8.min(floor_hash.len())]),
+                    floor_block = floor_block_number,
+                    n_parents = parents.len(),
+                    "compute_parents_post_state backstop: floor distance exceeds cap; refusing lossy merge"
                 );
-                tracing::debug!(
-                    target: "f1r3fly.merge.step",
-                    step = "compute_parents_post_state.EXIT",
-                    path = "fallback_latest_parent",
-                    post_state = %hex::encode(&fallback_state[..8.min(fallback_state.len())]),
-                    "merge.step: exit compute_parents_post_state"
-                );
-                return Ok((fallback_state, Vec::new(), Vec::new()));
+                return Err(CasperError::RuntimeError(format!(
+                    "finalized-floor merge backstop: floor distance {} exceeds cap {} (parents={}, floor block #{}); \
+                     refusing to build a lossy single-parent merge — finality must advance first",
+                    floor_distance,
+                    MAX_FLOOR_DISTANCE_BLOCKS,
+                    parents.len(),
+                    floor_block_number,
+                )));
             }
 
             // Every scope block's mergeable entry must be loadable before the
@@ -1345,6 +1367,7 @@ pub async fn compute_parents_post_state(
                                         models::rust::casper::protocol::casper_message::SystemDeployData::Slash {
                                             invalid_block_hash,
                                             issuer_public_key,
+                                            target_activation_epoch: _,
                                         },
                                     ..
                                 } = psd
@@ -1428,5 +1451,34 @@ pub async fn compute_parents_post_state(
             );
             Ok((computed_state, rejected, rejected_slashes))
         }
+    }
+}
+
+#[cfg(test)]
+mod backstop_tests {
+    use super::{merge_scope_backstop_exceeded, MAX_FLOOR_DISTANCE_BLOCKS};
+
+    #[test]
+    fn backstop_rejects_only_on_floor_distance_over_cap() {
+        // At or below the cap: proceed (no backstop, build the merge).
+        assert!(!merge_scope_backstop_exceeded(0));
+        assert!(!merge_scope_backstop_exceeded(MAX_FLOOR_DISTANCE_BLOCKS));
+        // Strictly above the cap: refuse — deterministic Err (propose parks;
+        // validate rejects), never a silent lossy single-parent substitution.
+        assert!(merge_scope_backstop_exceeded(MAX_FLOOR_DISTANCE_BLOCKS + 1));
+        assert!(merge_scope_backstop_exceeded(i64::MAX));
+    }
+
+    #[test]
+    fn backstop_decision_depends_on_floor_distance_only() {
+        // The backstop is a pure function of the (node-deterministic) floor
+        // distance Δ. The scope size |visible_blocks| is NOT a parameter — it
+        // cannot influence the decision by construction, which is exactly the
+        // anti-fork property (scope size is not node-deterministic, so gating on
+        // it could reject differently across nodes and fork). This test pins that
+        // the signature carries Δ only.
+        let below = merge_scope_backstop_exceeded(MAX_FLOOR_DISTANCE_BLOCKS);
+        let above = merge_scope_backstop_exceeded(MAX_FLOOR_DISTANCE_BLOCKS + 1);
+        assert!(!below && above);
     }
 }

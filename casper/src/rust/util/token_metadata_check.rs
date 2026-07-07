@@ -84,10 +84,14 @@ const FAULT_TOLERANCE_THRESHOLD_QUERY: &str = r#"
     }
 "#;
 
-pub async fn read_on_chain_fault_tolerance_threshold(
+/// Queries the on-chain PoS `getFaultToleranceThreshold` and returns the exact,
+/// range-checked ppm numerator (θ = ppm / 1_000_000). This is the EXACT source
+/// of truth for the finalization DECISION; the `f32` sibling below is
+/// display-only.
+pub async fn read_on_chain_fault_tolerance_threshold_ppm(
     runtime_manager: &RuntimeManager,
     post_state_hash: &StateHash,
-) -> Result<f32, CasperError> {
+) -> Result<i64, CasperError> {
     let (result, _cost) = runtime_manager
         .play_exploratory_deploy(FAULT_TOLERANCE_THRESHOLD_QUERY.to_string(), post_state_hash)
         .await?;
@@ -105,6 +109,18 @@ pub async fn read_on_chain_fault_tolerance_threshold(
         )));
     }
 
+    Ok(ppm)
+}
+
+/// LOSSY `f32` view of the on-chain ppm threshold. Retained for display /
+/// back-compat; the exact DECISION path uses
+/// [`read_on_chain_fault_tolerance_threshold_ppm`].
+pub async fn read_on_chain_fault_tolerance_threshold(
+    runtime_manager: &RuntimeManager,
+    post_state_hash: &StateHash,
+) -> Result<f32, CasperError> {
+    let ppm =
+        read_on_chain_fault_tolerance_threshold_ppm(runtime_manager, post_state_hash).await?;
     Ok((ppm as f64 / 1_000_000.0) as f32)
 }
 

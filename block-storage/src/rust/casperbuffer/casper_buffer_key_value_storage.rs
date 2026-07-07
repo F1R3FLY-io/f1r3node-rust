@@ -64,7 +64,10 @@ impl CasperBufferKeyValueStorage {
         self.state_lock.read().unwrap_or_else(|e| e.into_inner())
     }
 
-    fn write_guard(&self) -> RwLockWriteGuard<'_, ()> {
+    /// Acquire the buffer's exclusive state lock. Visible at `pub(crate)`
+    /// so the atomic buffer-DAG transition helper (`dag::buffer_dag_transition`)
+    /// can take both locks in a documented order across stores.
+    pub(crate) fn write_guard(&self) -> RwLockWriteGuard<'_, ()> {
         self.state_lock.write().unwrap_or_else(|e| e.into_inner())
     }
 
@@ -86,7 +89,12 @@ impl CasperBufferKeyValueStorage {
         Ok(())
     }
 
-    fn remove_unlocked(&self, hash: BlockHashSerde) -> Result<(), KvStoreError> {
+    /// Remove a block hash from the casper buffer assuming the caller
+    /// already holds `state_lock.write()`. Visible at `pub(crate)` so
+    /// the atomic buffer-DAG transition helper can perform the buffer
+    /// half of the (dag.insert, buffer.remove) pair under a shared
+    /// critical section.
+    pub(crate) fn remove_unlocked(&self, hash: BlockHashSerde) -> Result<(), KvStoreError> {
         let (_hashes_affected, hashes_removed, orphaned_hashes, affected_parent_maps) = {
             let mut dag = self
                 .block_dependency_dag

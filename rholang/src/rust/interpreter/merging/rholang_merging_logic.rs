@@ -67,6 +67,17 @@ impl RholangMergingLogic {
                 for (ch, (end_val, merge_type)) in end_val_map {
                     if let Some(prev_val) = state.get(&ch) {
                         let diff = match merge_type {
+                            // wrapping_sub is DELIBERATE: it is the exact group inverse of
+                            // the wrapping add that language-level execution (reduce.rs
+                            // GInt `+`, intended 64-bit semantics) used to produce `end_val`.
+                            // So the diff recovers the deploy's TRUE intended delta even when
+                            // execution overflowed and stored a wrapped `end_val`. An
+                            // over-large delta is rejected DOWNSTREAM — at combine
+                            // (checked_add, rspace++ combine_mergeable_value) and at the
+                            // terminal apply (calculate_number_channel_merge, checked_add +
+                            // `>= 0`) — never here; erroring here would crash block
+                            // processing on a deploy that must instead be gracefully
+                            // rejected at merge time.
                             MergeType::IntegerAdd => end_val.wrapping_sub(*prev_val),
                             MergeType::BitmaskOr => ((end_val as u64) & !(*prev_val as u64)) as i64,
                         };
@@ -102,8 +113,22 @@ impl RholangMergingLogic {
         // violation (non-numeric or multi-value pre-state) — propagate so the
         // merge is rejected rather than silently substituting 0.
         let init_num = Self::convert_to_read_number(get_base_data)(channel_hash)?.unwrap_or(0);
+        // Terminal apply that WRITES the merged number-channel value. Mirror the
+        // vault rule in conflict_set_merger::cal_merged_result (checked_add + `>= 0`):
+        // a wrapping_add here could silently commit an overflowed/negative balance
+        // to consensus state. Reject loudly instead (defense-in-depth backstop —
+        // the accepted branch set already passed the same gate at the combine step).
         let new_val = match merge_type {
-            MergeType::IntegerAdd => init_num.wrapping_add(diff),
+            MergeType::IntegerAdd => match init_num.checked_add(diff) {
+                Some(v) if v >= 0 => v,
+                _ => {
+                    return Err(HistoryError::MergeError(format!(
+                        "Number channel {:?} merge rejected: base {} + diff {} \
+                         overflows i64 or yields a negative balance",
+                        channel_hash, init_num, diff,
+                    )));
+                }
+            },
             MergeType::BitmaskOr => ((init_num as u64) | (diff as u64)) as i64,
         };
 
@@ -393,6 +418,62 @@ mod tests {
         assert!(res.is_ok());
     }
 
+    // Property companion to the §3c unit tests above and to ConflictSoundness.v
+    // Section Overfill: `check_single_value_cell_not_overfilled` rejects a merge
+    // IFF the post-merge single-value cell would hold > 1 value. The guard's
+    // `result_len = multiset_diff(base_binary, removed).len() + added.len()` is
+    // the Rocq model's `cell_after = kept + added`, and the rejection predicate
+    // `result_len > 1` is exactly `svc_guard_active`'s `1 <? cell_after`.
+    mod svc_guard_property {
+        use proptest::prelude::*;
+        use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+        use rspace_plus_plus::rspace::merger::state_change::StateChange;
+
+        use super::{change, num_datum, RholangMergingLogic};
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(400))]
+
+            #[test]
+            fn svc_guard_rejects_iff_result_len_gt_one(
+                base_num in any::<i64>(),
+                base_byte in any::<u8>(),
+                removes_base in any::<bool>(),
+                added_len in 0usize..4,
+            ) {
+                // A single-value NUMBER cell: exactly one numeric base datum with a
+                // 1-element binary projection. `removes_base` selects a proper
+                // read-modify-write (consumes the base) vs a produce-only write
+                // (leaves it); `added_len` produces 0..3 new data.
+                let ch = Blake2b256Hash::from_bytes(vec![0x0d; 32]);
+                let base = vec![num_datum(base_num)];
+                let base_bin = vec![vec![base_byte]];
+                let removed: Vec<Vec<u8>> =
+                    if removes_base { vec![vec![base_byte]] } else { vec![] };
+                let added: Vec<Vec<u8>> =
+                    (0..added_len).map(|i| vec![0xA0u8.wrapping_add(i as u8)]).collect();
+                let changes = change(added.clone(), removed.clone());
+
+                // cell_after computed EXACTLY as the guard does (same multiset_diff).
+                let kept = StateChange::multiset_diff(&base_bin, &removed);
+                let cell_after = kept.len() + added.len();
+
+                let res = RholangMergingLogic::check_single_value_cell_not_overfilled(
+                    &ch, &base, &base_bin, &changes,
+                );
+                // Reject IFF the merged cell would hold more than one value.
+                // (added-empty short-circuits to Ok, and with a 1-element base_bin
+                // that means cell_after <= 1, so the iff still holds there too.)
+                prop_assert_eq!(
+                    res.is_err(), cell_after > 1,
+                    "guard must reject IFF the single-value cell would hold >1 value \
+                     (cell_after={}, added={:?}, removed={:?})",
+                    cell_after, added, removed
+                );
+            }
+        }
+    }
+
     #[test]
     fn test_calculate_num_channel_diff() {
         /*
@@ -485,5 +566,125 @@ mod tests {
         let mut expected_map0 = BTreeMap::new();
         expected_map0.insert(ch.clone(), (0b0100i64, mt));
         assert_eq!(result, vec![expected_map0]);
+    }
+
+    // ---- Phase-7 W7.1/W7.2: checked apply + checked diff (fail loudly, never
+    // launder an overflowed/negative number-channel value into consensus state) ----
+
+    fn test_hash() -> Blake2b256Hash {
+        Blake2b256Hash::new(&[0u8; 4])
+    }
+
+    fn test_rnd() -> Blake2b512Random {
+        Blake2b512Random::create_from_bytes(&[0u8; 32])
+    }
+
+    // A single-Par integer base datum holding `n`, produced through the exact
+    // production encode path (create_datum_encoded) then decoded back, so the base
+    // reader sees precisely what a real pre-state would.
+    fn num_base_data(n: i64) -> Vec<Datum<ListParWithRandom>> {
+        let encoded = RholangMergingLogic::create_datum_encoded(&test_hash(), n, test_rnd());
+        vec![serializers::decode_datum(&encoded)]
+    }
+
+    // One valid added-change entry so the RNG merge on an ACCEPTED path has input.
+    fn one_change() -> ChannelChange<Vec<u8>> {
+        let encoded = RholangMergingLogic::create_datum_encoded(&test_hash(), 0, test_rnd());
+        ChannelChange {
+            added: vec![encoded],
+            removed: vec![],
+        }
+    }
+
+    #[test]
+    fn merge_integer_add_overflow_is_rejected() {
+        // base = i64::MAX, diff = +1 -> checked_add overflows -> loud Err.
+        // (The old wrapping_add silently committed i64::MIN to consensus state.)
+        let res = RholangMergingLogic::calculate_number_channel_merge(
+            &test_hash(),
+            1,
+            MergeType::IntegerAdd,
+            &ChannelChange::empty(),
+            |_h| -> Result<Vec<Datum<ListParWithRandom>>, HistoryError> {
+                Ok(num_base_data(i64::MAX))
+            },
+        );
+        assert!(matches!(res, Err(HistoryError::MergeError(_))));
+    }
+
+    #[test]
+    fn merge_integer_add_negative_result_is_rejected() {
+        // base = 0, diff = -1 -> checked_add = Some(-1) but < 0 -> Err. This is exactly
+        // the negative vault balance the old code would have committed; at this site a
+        // non-negative launder is structurally impossible for base >= 0, so the `>= 0`
+        // rejection is the "never return a wrong Ok" guard.
+        let res = RholangMergingLogic::calculate_number_channel_merge(
+            &test_hash(),
+            -1,
+            MergeType::IntegerAdd,
+            &ChannelChange::empty(),
+            |_h| -> Result<Vec<Datum<ListParWithRandom>>, HistoryError> { Ok(vec![]) },
+        );
+        assert!(matches!(res, Err(HistoryError::MergeError(_))));
+    }
+
+    #[test]
+    fn merge_integer_add_happy_path_writes_action() {
+        // base = 10, diff = +5 -> 15, non-negative & in range -> Ok(write action).
+        let res = RholangMergingLogic::calculate_number_channel_merge(
+            &test_hash(),
+            5,
+            MergeType::IntegerAdd,
+            &one_change(),
+            |_h| -> Result<Vec<Datum<ListParWithRandom>>, HistoryError> { Ok(num_base_data(10)) },
+        );
+        assert!(matches!(
+            res,
+            Ok(HotStoreTrieAction::TrieInsertAction(
+                TrieInsertAction::TrieInsertBinaryProduce(_)
+            ))
+        ));
+    }
+
+    #[test]
+    fn merge_bitmask_or_unaffected_by_overflow_check() {
+        // BitmaskOr never overflows; base = i64::MAX, diff = 1 -> Ok (no rejection).
+        let res = RholangMergingLogic::calculate_number_channel_merge(
+            &test_hash(),
+            1,
+            MergeType::BitmaskOr,
+            &one_change(),
+            |_h| -> Result<Vec<Datum<ListParWithRandom>>, HistoryError> {
+                Ok(num_base_data(i64::MAX))
+            },
+        );
+        assert!(res.is_ok());
+    }
+
+    #[test]
+    fn diff_integer_add_recovers_wrapped_delta() {
+        // A deploy whose EXECUTION overflowed at the language level (reduce.rs GInt `+`
+        // wraps by design) stores a wrapped `end` value. wrapping_sub is the exact group
+        // inverse of that wrapping add, so the diff recovers the deploy's TRUE intended
+        // delta (here i64::MAX) even though `end` came back negative. The over-large delta
+        // is then rejected DOWNSTREAM at combine (checked_add) / apply (Site 1) — NOT at
+        // this diff step, which must succeed so the deploy can be gracefully merge-rejected.
+        // This is why calculate_num_channel_diff must stay wrapping (see the Site 2 body).
+        let ch = "X".to_string();
+        let mt = MergeType::IntegerAdd;
+        let prev = 10i64;
+        let intended = i64::MAX;
+        let wrapped_end = prev.wrapping_add(intended); // overflowed end, as execution stored it
+        let mut init = HashMap::new();
+        init.insert(ch.clone(), prev);
+        let get_initial = |k: &String| -> Option<i64> { init.get(k).copied() };
+
+        let mut map0 = BTreeMap::new();
+        map0.insert(ch.clone(), (wrapped_end, mt));
+        let result = RholangMergingLogic::calculate_num_channel_diff(vec![map0], get_initial);
+
+        let mut expected = BTreeMap::new();
+        expected.insert(ch.clone(), (intended, mt)); // delta recovered exactly
+        assert_eq!(result, vec![expected]);
     }
 }

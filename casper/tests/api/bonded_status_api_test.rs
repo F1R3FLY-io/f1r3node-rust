@@ -6,7 +6,7 @@ use std::sync::Arc;
 use casper::rust::api::block_api::BlockAPI;
 use casper::rust::engine::engine_cell::EngineCell;
 use casper::rust::engine::engine_with_casper::EngineWithCasper;
-use casper::rust::multi_parent_casper_impl::MultiParentCasperImpl;
+use casper::rust::engine::multi_parent_casper::MultiParentCasperImpl;
 use casper::rust::util::construct_deploy;
 use casper::rust::util::construct_deploy::{DEFAULT_PUB, DEFAULT_SEC};
 use crypto::rust::public_key::PublicKey;
@@ -86,7 +86,7 @@ async fn bonded_status(public_key: &PublicKey, node: &TestNode) -> bool {
         finalizer_task_in_progress: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         finalizer_task_queued: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         heartbeat_signal_ref: casper::rust::heartbeat_signal::new_heartbeat_signal_ref(),
-        deploys_in_scope_cache: std::sync::Arc::new(std::sync::Mutex::new(None)),
+        deploys_in_scope_cache: std::sync::Arc::new(parking_lot::Mutex::new(None)),
         active_validators_cache: std::sync::Arc::new(tokio::sync::Mutex::new(
             std::collections::HashMap::new(),
         )),
