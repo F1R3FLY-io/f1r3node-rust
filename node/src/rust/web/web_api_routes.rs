@@ -8,7 +8,7 @@ use crate::rust::api::serde_types::block_info::BlockInfoSerde;
 use crate::rust::api::web_api::{
     DataAtNameByBlockHashRequest, DeployResponse, PrepareRequest, PrepareResponse, RhoDataResponse,
 };
-use crate::rust::web::shared_handlers::{self, AppError, AppState};
+use crate::rust::web::shared_handlers::{self, offload, AppError, AppState};
 
 #[derive(Debug, Deserialize)]
 pub struct ViewQuery {
@@ -73,7 +73,8 @@ impl WebApiRoutes {
     tag = "WebAPI"
 )]
 pub async fn prepare_deploy_get_handler(State(app_state): State<AppState>) -> Response {
-    match app_state.web_api.prepare_deploy(None).await {
+    let web_api = app_state.web_api.clone();
+    match offload(move || async move { web_api.prepare_deploy(None).await }).await {
         Ok(response) => Json(response).into_response(),
         Err(e) => AppError(e).into_response(),
     }
@@ -93,7 +94,8 @@ pub async fn prepare_deploy_post_handler(
     State(app_state): State<AppState>,
     Json(request): Json<PrepareRequest>,
 ) -> Response {
-    match app_state.web_api.prepare_deploy(Some(request)).await {
+    let web_api = app_state.web_api.clone();
+    match offload(move || async move { web_api.prepare_deploy(Some(request)).await }).await {
         Ok(response) => Json(response).into_response(),
         Err(e) => AppError(e).into_response(),
     }
@@ -114,7 +116,8 @@ pub async fn data_at_name_by_block_hash_handler(
     State(app_state): State<AppState>,
     Json(request): Json<DataAtNameByBlockHashRequest>,
 ) -> Response {
-    match app_state.web_api.get_data_at_par(request).await {
+    let web_api = app_state.web_api.clone();
+    match offload(move || async move { web_api.get_data_at_par(request).await }).await {
         Ok(response) => Json(response).into_response(),
         Err(e) => AppError(e).into_response(),
     }
@@ -142,7 +145,8 @@ pub async fn last_finalized_block_handler(
         Some("summary") => ViewMode::Summary,
         _ => ViewMode::Full,
     };
-    match app_state.web_api.last_finalized_block(view).await {
+    let web_api = app_state.web_api.clone();
+    match offload(move || async move { web_api.last_finalized_block(view).await }).await {
         Ok(response) => Json(response).into_response(),
         Err(e) => AppError(e).into_response(),
     }
@@ -173,10 +177,8 @@ pub async fn get_blocks_by_heights_handler(
         Some("full") => ViewMode::Full,
         _ => ViewMode::Summary,
     };
-    match app_state
-        .web_api
-        .get_blocks_by_heights(start, end, view)
-        .await
+    let web_api = app_state.web_api.clone();
+    match offload(move || async move { web_api.get_blocks_by_heights(start, end, view).await }).await
     {
         Ok(response) => Json(response).into_response(),
         Err(e) => AppError(e).into_response(),
@@ -207,7 +209,8 @@ pub async fn get_blocks_by_depth_handler(
         Some("full") => ViewMode::Full,
         _ => ViewMode::Summary,
     };
-    match app_state.web_api.get_blocks(depth, view).await {
+    let web_api = app_state.web_api.clone();
+    match offload(move || async move { web_api.get_blocks(depth, view).await }).await {
         Ok(response) => Json(response).into_response(),
         Err(e) => AppError(e).into_response(),
     }
@@ -239,7 +242,8 @@ pub async fn find_deploy_handler(
         _ => ViewMode::Full,
     };
 
-    match app_state.web_api.find_deploy(deploy_id, view).await {
+    let web_api = app_state.web_api.clone();
+    match offload(move || async move { web_api.find_deploy(deploy_id, view).await }).await {
         Ok(response) => Json(response).into_response(),
         Err(e) => {
             if e.downcast_ref::<casper::rust::api::block_api::DeployNotFoundError>()
@@ -269,7 +273,8 @@ pub async fn is_finalized_handler(
     State(app_state): State<AppState>,
     Path(hash): Path<String>,
 ) -> Response {
-    match app_state.web_api.is_finalized(hash).await {
+    let web_api = app_state.web_api.clone();
+    match offload(move || async move { web_api.is_finalized(hash).await }).await {
         Ok(response) => Json(response).into_response(),
         Err(e) => AppError(e).into_response(),
     }
@@ -299,9 +304,8 @@ pub async fn deploy_finalization_status_handler(
     State(app_state): State<AppState>,
     Path(deploy_sig_hex): Path<String>,
 ) -> Response {
-    match app_state
-        .web_api
-        .deploy_finalization_status(deploy_sig_hex)
+    let web_api = app_state.web_api.clone();
+    match offload(move || async move { web_api.deploy_finalization_status(deploy_sig_hex).await })
         .await
     {
         Ok(response) => Json(response).into_response(),
@@ -327,10 +331,8 @@ pub async fn balance_handler(
     Path(address): Path<String>,
     Query(query): Query<BlockHashQuery>,
 ) -> Response {
-    match app_state
-        .web_api
-        .get_balance(address, query.block_hash)
-        .await
+    let web_api = app_state.web_api.clone();
+    match offload(move || async move { web_api.get_balance(address, query.block_hash).await }).await
     {
         Ok(response) => Json(response).into_response(),
         Err(e) => AppError(e).into_response(),
@@ -355,7 +357,8 @@ pub async fn registry_handler(
     Path(uri): Path<String>,
     Query(query): Query<BlockHashQuery>,
 ) -> Response {
-    match app_state.web_api.get_registry(uri, query.block_hash).await {
+    let web_api = app_state.web_api.clone();
+    match offload(move || async move { web_api.get_registry(uri, query.block_hash).await }).await {
         Ok(response) => Json(response).into_response(),
         Err(e) => AppError(e).into_response(),
     }
@@ -377,7 +380,8 @@ pub async fn validators_handler(
     State(app_state): State<AppState>,
     Query(query): Query<BlockHashQuery>,
 ) -> Response {
-    match app_state.web_api.get_validators(query.block_hash).await {
+    let web_api = app_state.web_api.clone();
+    match offload(move || async move { web_api.get_validators(query.block_hash).await }).await {
         Ok(response) => Json(response).into_response(),
         Err(e) => AppError(e).into_response(),
     }
@@ -399,7 +403,8 @@ pub async fn epoch_handler(
     State(app_state): State<AppState>,
     Query(query): Query<BlockHashQuery>,
 ) -> Response {
-    match app_state.web_api.get_epoch(query.block_hash).await {
+    let web_api = app_state.web_api.clone();
+    match offload(move || async move { web_api.get_epoch(query.block_hash).await }).await {
         Ok(response) => Json(response).into_response(),
         Err(e) => AppError(e).into_response(),
     }
@@ -428,9 +433,8 @@ pub async fn estimate_cost_handler(
     Query(query): Query<BlockHashQuery>,
     Json(request): Json<SimpleExploreDeployRequest>,
 ) -> Response {
-    match app_state
-        .web_api
-        .estimate_cost(request.term, query.block_hash)
+    let web_api = app_state.web_api.clone();
+    match offload(move || async move { web_api.estimate_cost(request.term, query.block_hash).await })
         .await
     {
         Ok(response) => Json(response).into_response(),
@@ -454,7 +458,8 @@ pub async fn epoch_rewards_handler(
     State(app_state): State<AppState>,
     Query(query): Query<BlockHashQuery>,
 ) -> Response {
-    match app_state.web_api.get_epoch_rewards(query.block_hash).await {
+    let web_api = app_state.web_api.clone();
+    match offload(move || async move { web_api.get_epoch_rewards(query.block_hash).await }).await {
         Ok(response) => Json(response).into_response(),
         Err(e) => AppError(e).into_response(),
     }
@@ -478,10 +483,8 @@ pub async fn validator_handler(
     Path(pubkey): Path<String>,
     Query(query): Query<BlockHashQuery>,
 ) -> Response {
-    match app_state
-        .web_api
-        .get_validator(pubkey, query.block_hash)
-        .await
+    let web_api = app_state.web_api.clone();
+    match offload(move || async move { web_api.get_validator(pubkey, query.block_hash).await }).await
     {
         Ok(response) => Json(response).into_response(),
         Err(e) => AppError(e).into_response(),
@@ -504,7 +507,8 @@ pub async fn bond_status_handler(
     State(app_state): State<AppState>,
     Path(pubkey): Path<String>,
 ) -> Response {
-    match app_state.web_api.get_bond_status(pubkey).await {
+    let web_api = app_state.web_api.clone();
+    match offload(move || async move { web_api.get_bond_status(pubkey).await }).await {
         Ok(response) => Json(response).into_response(),
         Err(e) => AppError(e).into_response(),
     }

@@ -84,7 +84,8 @@ where E: Into<eyre::Error>
 pub async fn status_handler(State(app_state): State<AppState>) -> Response {
     const STATUS_HANDLER_SLOW_THRESHOLD: Duration = Duration::from_millis(500);
     let started = Instant::now();
-    match app_state.web_api.status().await {
+    let web_api = app_state.web_api.clone();
+    match offload(move || async move { web_api.status().await }).await {
         Ok(response) => {
             let elapsed = started.elapsed();
             if elapsed >= STATUS_HANDLER_SLOW_THRESHOLD {
@@ -114,7 +115,8 @@ pub async fn deploy_handler(
     State(app_state): State<AppState>,
     Json(request): Json<DeployRequest>,
 ) -> Response {
-    match app_state.web_api.deploy(request).await {
+    let web_api = app_state.web_api.clone();
+    match offload(move || async move { web_api.deploy(request).await }).await {
         Ok(response) => Json(response).into_response(),
         Err(e) => AppError(e).into_response(),
     }
@@ -134,9 +136,8 @@ pub async fn explore_deploy_handler(
     State(app_state): State<AppState>,
     Json(request): Json<SimpleExploreDeployRequest>,
 ) -> Response {
-    match app_state
-        .web_api
-        .exploratory_deploy(request.term, None, false)
+    let web_api = app_state.web_api.clone();
+    match offload(move || async move { web_api.exploratory_deploy(request.term, None, false).await })
         .await
     {
         Ok(response) => Json(response).into_response(),
@@ -164,10 +165,13 @@ pub async fn explore_deploy_by_block_hash_handler(
         Some(request.block_hash)
     };
 
-    match app_state
-        .web_api
-        .exploratory_deploy(request.term, request_block_hash, false)
-        .await
+    let web_api = app_state.web_api.clone();
+    match offload(move || async move {
+        web_api
+            .exploratory_deploy(request.term, request_block_hash, false)
+            .await
+    })
+    .await
     {
         Ok(response) => Json(response).into_response(),
         Err(e) => AppError(e).into_response(),
@@ -194,9 +198,22 @@ pub async fn get_blocks_handler(
         Some("full") => ViewMode::Full,
         _ => ViewMode::Summary,
     };
-    match app_state.web_api.get_blocks(1, view).await {
+    let web_api = app_state.web_api.clone();
+    match offload(move || async move { web_api.get_blocks(1, view).await }).await {
         Ok(response) => Json(response).into_response(),
         Err(e) => AppError(e).into_response(),
+    }
+}
+
+pub async fn offload <F, Fut, T>(make_fut: F) -> Result<T, eyre::Error>
+where
+    F: FnOnce() -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = eyre::Result<T>>,
+    T: Send + 'static,
+{
+    match  tokio::task::spawn_blocking(move||{tokio::runtime::Handle::current().block_on(make_fut())}).await {
+        Ok(inner) => inner,
+        Err(join_err) => Err(eyre::eyre!("handler task panicked: {}", join_err)),
     }
 }
 
@@ -222,7 +239,8 @@ pub async fn get_block_handler(
         Some("summary") => ViewMode::Summary,
         _ => ViewMode::Full,
     };
-    match app_state.web_api.get_block(hash, view).await {
+    let web_api = app_state.web_api.clone();
+    match offload(move || async move { web_api.get_block(hash, view).await }).await {
         Ok(response) => Json(response).into_response(),
         Err(e) => AppError(e).into_response(),
     }

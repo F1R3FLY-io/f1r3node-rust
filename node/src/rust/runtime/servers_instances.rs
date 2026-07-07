@@ -271,7 +271,8 @@ impl ServersInstances {
         let http_addr = SocketAddr::from((ip_http_addr, node_conf.api_server.port_http));
 
         let http_server_handle = tokio::task::spawn_blocking(move || {
-            let rt = tokio::runtime::Builder::new_current_thread()
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(4)
                 .enable_all()
                 .build()
                 .map_err(|e| eyre::eyre!("Failed to build dedicated HTTP runtime: {}", e))?;
