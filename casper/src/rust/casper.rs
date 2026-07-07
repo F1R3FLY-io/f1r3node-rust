@@ -327,7 +327,15 @@ impl OnChainCasperState {
 
 #[derive(Debug, Clone)]
 pub struct CasperShardConf {
+    /// Display/back-compat `f32` view of the fault-tolerance threshold θ. The
+    /// finalization DECISION is derived from the exact
+    /// [`fault_tolerance_threshold_ppm`](Self::fault_tolerance_threshold_ppm),
+    /// never from this lossy value.
     pub fault_tolerance_threshold: f32,
+    /// Exact fault-tolerance threshold θ as an on-chain ppm numerator
+    /// (θ = ppm / 1_000_000). Source of truth for the integer-exact finalization
+    /// DECISION (`CliqueOracle::ft_decides_exact`).
+    pub fault_tolerance_threshold_ppm: i64,
     pub shard_name: String,
     pub parent_shard_id: String,
     pub finalization_rate: i32,
@@ -425,6 +433,7 @@ impl CasperShardConf {
     pub fn new() -> Self {
         Self {
             fault_tolerance_threshold: 0.0,
+            fault_tolerance_threshold_ppm: 0,
             shard_name: "".to_string(),
             parent_shard_id: "".to_string(),
             finalization_rate: 0,
@@ -548,9 +557,37 @@ pub mod test_helpers {
                 deploy_index: Arc::new(RwLock::new(KeyValueTypedStoreImpl::new(Arc::new(
                     InMemoryKeyValueStore::new(),
                 )))),
+                floor_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
+                frontier_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
             };
 
             CasperSnapshot::new(dag)
+        }
+
+        pub fn bond_validator_in_snapshot(
+            snapshot: &mut CasperSnapshot,
+            validator: models::rust::validator::Validator,
+        ) {
+            use models::rust::casper::protocol::casper_message::Bond;
+
+            if snapshot.parents.is_empty() {
+                snapshot
+                    .parents
+                    .push(models::rust::block_implicits::get_random_block_default());
+            }
+            let parent = &mut snapshot.parents[0];
+            if !parent
+                .body
+                .state
+                .bonds
+                .iter()
+                .any(|bond| bond.validator == validator)
+            {
+                parent.body.state.bonds.push(Bond {
+                    validator,
+                    stake: 100,
+                });
+            }
         }
     }
 

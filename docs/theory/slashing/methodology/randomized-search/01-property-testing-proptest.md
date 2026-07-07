@@ -145,7 +145,7 @@ the table below is a representative subset to illustrate the
 |-------------------------------------------|-----------|--------------------------------------------------------------------------|
 | `prop_t_1_detection_sound.rs`             | T-1       | Honest validators never recorded                                         |
 | `prop_t_2_detection_complete.rs`          | T-2       | Every real equivocator is eventually recorded                            |
-| `prop_t_3_slashable_taxonomy.rs`          | T-3       | `is_slashable(s)` ⇔ `s ∈ {17 slashable variants}`                        |
+| `prop_t_3_slashable_taxonomy.rs`          | T-3       | `is_slashable(s)` ⇔ `s ∈ {19 slashable variants}` (17 pre-fix + `IgnorableEquivocation` + `UnauthorizedSlashDeploy`) |
 | `prop_t_4_record_uniqueness.rs`           | T-4       | At most one record per `(v, base_seq)`                                   |
 | `prop_t_5_record_monotonicity.rs`         | T-5       | Record set is non-decreasing in any trace                                |
 | `prop_t_6_neglect_detection.rs`           | T-6       | Neglected equivocations detected at all valid views                      |

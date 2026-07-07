@@ -1963,9 +1963,9 @@ async fn cost_should_be_repeatable_when_generated() {
     let mut skipped = 0u32;
     let mut mismatches: Vec<(String, i64, i64)> = Vec::new();
 
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
     for _ in 0..10000 {
-        let long = ((rng.gen::<i64>() % 0x144000000) + 0x144000000) % 0x144000000;
+        let long = ((rng.random::<i64>() % 0x144000000) + 0x144000000) % 0x144000000;
         let contract = from_long(long);
         if contract.is_empty() {
             continue;
@@ -2061,7 +2061,7 @@ async fn should_stop_the_evaluation_of_all_execution_branches_when_one_of_them_r
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn should_stop_the_evaluation_of_all_execution_branches_when_one_of_them_runs_out_of_phlo_with_a_more_sophisticated_contract(
 ) {
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
     for contract in contracts() {
         let (full_result, _) = evaluate_with_cost_log(i32::MAX as i64, contract.clone()).await;
         assert!(
@@ -2072,7 +2072,7 @@ async fn should_stop_the_evaluation_of_all_execution_branches_when_one_of_them_r
         if full_result.cost.value <= 1 {
             continue;
         }
-        let initial_phlo = rng.gen_range(1..full_result.cost.value);
+        let initial_phlo = rng.random_range(1..full_result.cost.value);
 
         // D3 (DR-9, OD-3): `initial_phlo` is drawn from `[1, full_comm_count)`,
         // i.e. STRICTLY below the contract's per-COMM cost, so it must OOP and

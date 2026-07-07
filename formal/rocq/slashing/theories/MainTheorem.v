@@ -38,16 +38,16 @@ Set Implicit Arguments.
    ═══════════════════════════════════════════════════════════════════════════ *)
 
 Theorem main_T1_detection_sound :
-  forall st v n d s,
-    detect st v n d = s ->
+  forall cj lm d s,
+    detect cj lm d = s ->
     s = DSAdmissible \/ s = DSIgnorable ->
-    equivocates st v n.
+    equivocates_ptr cj lm = true.
 Proof. exact detection_sound. Qed.
 
 Theorem main_T2_detection_complete :
-  forall st v n d,
-    equivocates st v n ->
-    detect st v n d = DSAdmissible \/ detect st v n d = DSIgnorable.
+  forall cj lm d,
+    equivocates_ptr cj lm = true ->
+    detect cj lm d = DSAdmissible \/ detect cj lm d = DSIgnorable.
 Proof. exact detection_complete. Qed.
 
 Theorem main_T3_slashable_taxonomy :
@@ -106,10 +106,61 @@ Proof. exact fork_choice_exclusion. Qed.
    ═══════════════════════════════════════════════════════════════════════════ *)
 
 Theorem main_T9_1_ignorable :
-  forall st v n d,
-    detect st v n d = DSIgnorable ->
-    is_slashable IBIgnorableEquivocation = true /\ equivocates st v n.
+  forall cj lm d,
+    detect cj lm d = DSIgnorable ->
+    is_slashable IBIgnorableEquivocation = true /\ equivocates_ptr cj lm = true.
 Proof. exact post_fix_ignorable_implies_equivocation. Qed.
+
+(* Bug fix #1 — honest restatement of T-9.1: every variant that is slashable
+   under the real current predicate is attributable, i.e. it was slashable in
+   the historical pre-fix taxonomy, or is IgnorableEquivocation (fix #1), or is
+   UnauthorizedSlashDeploy (the 27th Rust variant). Adding the 27th slashable
+   variant is precisely what forces the third disjunct. *)
+Theorem main_T9_1_slashable_attributable :
+  forall ib,
+    is_slashable ib = true ->
+    is_slashable_pre_fix ib = true
+    \/ ib = IBIgnorableEquivocation
+    \/ ib = IBUnauthorizedSlashDeploy.
+Proof. exact bug_fix_ignorable_safety. Qed.
+
+(* Bug fix #1 no-corruption: the empty-witness record minted for an
+   UnauthorizedSlashDeploy resolves to EquivocationOblivious for an honest
+   bonded sender — it never spuriously drives NeglectedEquivocation. *)
+Theorem main_T9_1_unauth_record_oblivious :
+  forall stake xs,
+    stake > 0 ->
+    detected_hash_seen xs = false ->
+    Nat.leb 2 (length (nodup Nat.eq_dec (child_hashes xs))) = false ->
+    discovery_status_bonded stake (fixed_detectable_view xs) = EDOblivious.
+Proof. exact unauth_record_honest_oblivious. Qed.
+
+(* FV audit #6 remediation — unbonded-window record pollution fork.
+   The stake-0 / unbonded offender now resolves to EquivocationOblivious
+   (equivocation_detector.rs:280,311), which makes the caller's stamping arm
+   unreachable, so an unbonded offender's witness set can never be polluted and
+   the fork cannot arise. These three capstones pin the fix:
+
+   (1a-i)   the unbonded discovery status is always Oblivious;
+   (1a-ii)  stamping an unbonded offender's record is a no-op (empty witness);
+   (1a-iii) two nodes stamping candidate hashes in EITHER order reach the SAME
+            record (= the original r), so the observation-order-dependent
+            NeglectedEquivocation divergence is impossible. *)
+Theorem main_T9_1a_unbonded_oblivious :
+  forall d, discovery_status_bonded 0 d = EDOblivious.
+Proof. exact unbonded_offender_oblivious. Qed.
+
+Theorem main_T9_1a_unbonded_no_stamp :
+  forall r d h, stamp_on_status r (discovery_status_bonded 0 d) h = r.
+Proof. exact unbonded_stamp_noop. Qed.
+
+Theorem main_T9_1a_unbonded_order_independent :
+  forall r d h1 h2,
+    let st := discovery_status_bonded 0 d in
+    stamp_on_status (stamp_on_status r st h1) st h2
+    = stamp_on_status (stamp_on_status r st h2) st h1
+    /\ stamp_on_status (stamp_on_status r st h1) st h2 = r.
+Proof. exact unbonded_witness_order_independent. Qed.
 
 Theorem main_T9_2_atomic :
   forall s k h,
@@ -121,6 +172,17 @@ Theorem main_T9_3_dispatch :
     is_slashable ib = true ->
     has_key (dispatch_post_fix ib offender baseSeq s) (offender, baseSeq) = true.
 Proof. exact t_9_3_dispatch_complete. Qed.
+
+(* FV audit #4 (coercion sub-item): a receiver-local BlockException is coerced
+   to the slashable IBInvalidTransaction (block_processor.rs:357-376), which the
+   dispatcher then records against the sender. The soundness of that attribution
+   depends on BlockException determinism — a premise this theorem does NOT
+   establish (see BugFixDispatcher.v §4 and failure-modes §12.2.1a). *)
+Theorem main_T9_3_block_exception_coerces_to_slashable :
+  forall ib,
+    coerce_block_outcome BOException = Some ib ->
+    is_slashable ib = true.
+Proof. exact block_exception_coerces_to_slashable. Qed.
 
 Theorem main_T9_4_transfer :
   forall ps v transfer_ok,
@@ -280,6 +342,35 @@ Theorem main_T9_13_recoverable_rejected_slash_requires_current_evidence :
             rejected own_invalid_hashes current_evidence_hashes) ->
     In h current_evidence_hashes.
 Proof. exact recoverable_rejected_slash_requires_current_evidence. Qed.
+
+(* Bug fix #3 — the FULL §9.8 seven-rule receive gate. The core three-conjunct
+   `authorized_slash_candidate` above (evidence/target epoch = current, positive
+   bond; unknown/valid evidence folded into evidence_lookup) is completed by the
+   issuer==sender rule (1) and the block-level (offender,epoch) NoDup rule (7),
+   faithfully mirroring validate_received_slash_deploys (slashing_authorization.rs
+   :342-508). *)
+Theorem main_T9_13_issuer_mismatch_rejected :
+  forall block_sender current_epoch parent_bonds sd evidence,
+    sd_issuer sd <> block_sender ->
+    received_slash_deploy_authorized block_sender current_epoch parent_bonds sd evidence = false.
+Proof. exact issuer_mismatch_not_authorized. Qed.
+
+Theorem main_T9_13_duplicate_target_rejected :
+  forall block_sender current_epoch parent_bonds evidence sd1 sd2 rest k,
+    received_slash_deploy_authorized block_sender current_epoch parent_bonds sd1 evidence = true ->
+    received_slash_deploy_authorized block_sender current_epoch parent_bonds sd2 evidence = true ->
+    slash_target_key evidence sd1 = Some k ->
+    slash_target_key evidence sd2 = Some k ->
+    validate_block_slash_deploys block_sender current_epoch parent_bonds evidence
+      (sd1 :: sd2 :: rest) = false.
+Proof. exact duplicate_target_rejected. Qed.
+
+Theorem main_T9_13_authorized_block_validates :
+  forall block_sender current_epoch parent_bonds evidence sd k,
+    received_slash_deploy_authorized block_sender current_epoch parent_bonds sd evidence = true ->
+    slash_target_key evidence sd = Some k ->
+    validate_block_slash_deploys block_sender current_epoch parent_bonds evidence [sd] = true.
+Proof. exact single_authorized_deploy_validates. Qed.
 
 Theorem main_TAuth_invalid_token_noop :
   forall ps sd lookup current_epoch,
@@ -476,21 +567,21 @@ Proof. exact detect_neglected_complete. Qed.
    in §4) hold of the components composed here. *)
 
 Theorem main_slashing_algorithm_correct :
-  forall st v n d status ps lm records witness,
-    detect st v n d = status ->
+  forall cj lmh d status v n ps lm records witness,
+    detect cj lmh d = status ->
     status = DSAdmissible \/ status = DSIgnorable ->
     let result := slash ps v in
     let ps' := fst result in
     let records' := atomic_record_or_update records (v, pred n) witness in
-    equivocates st v n
+    equivocates_ptr cj lmh = true
     /\ In witness (hashes_at_key records' (v, pred n))
     /\ bm_lookup (ps_allBonds ps') v = 0
     /\ fc_lookup (filter_slashed lm (ps_allBonds ps')) v = None
     /\ (bm_lookup (ps_allBonds ps) v > 0 ->
         ps_coopVault ps' = ps_coopVault ps + bm_lookup (ps_allBonds ps) v).
 Proof.
-  intros st v n d status ps lm records witness Hd Hstatus.
-  pose proof (@detection_sound st v n d status Hd Hstatus) as Heq.
+  intros cj lmh d status v n ps lm records witness Hd Hstatus.
+  pose proof (@detection_sound cj lmh d status Hd Hstatus) as Heq.
   pose proof (slash_zeros_bond ps v) as Hzero.
   pose proof (slash_transfers_stake ps v) as Htransfer.
   destruct (slash ps v) as [ps' ok] eqn:Hslash.

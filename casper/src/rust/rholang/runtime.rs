@@ -7,6 +7,8 @@ use std::time::Instant;
 
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use crypto::rust::public_key::PublicKey;
+use crypto::rust::signatures::secp256k1::Secp256k1;
+use crypto::rust::signatures::signatures_alg::SignaturesAlg;
 use crypto::rust::signatures::signed::Signed;
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::g_unforgeable::UnfInstance;
@@ -67,6 +69,8 @@ use crate::rust::util::rholang::system_deploy_user_error::{
 use crate::rust::util::rholang::tools::Tools;
 use crate::rust::util::{construct_deploy, event_converter};
 
+static EXPLORATORY_DEPLOY_KEY: OnceLock<crypto::rust::private_key::PrivateKey> = OnceLock::new();
+
 pub struct RuntimeOps {
     pub runtime: RhoRuntimeImpl,
 }
@@ -84,6 +88,20 @@ fn system_deploy_consume_all_pattern() -> BindPattern {
         patterns: vec![new_freevar_par(0, Vec::new())],
         remainder: None,
         free_count: 1,
+    }
+}
+
+/// Diagnostic label for a system deploy (closeBlock / slash / precharge /
+/// refund). Called lazily inside tracing field evaluation, so it costs nothing
+/// unless the event is enabled.
+fn system_deploy_kind<S: SystemDeployTrait>(sd: &S) -> &'static str {
+    let any = sd.as_any();
+    if any.downcast_ref::<CloseBlockDeploy>().is_some() {
+        "closeBlock"
+    } else if any.downcast_ref::<SlashDeploy>().is_some() {
+        "slash"
+    } else {
+        "other"
     }
 }
 
@@ -206,57 +224,44 @@ impl RuntimeOps {
         ),
         CasperError,
     > {
-        let mem_profile_enabled = crate::rust::util::rholang::mem_profiler::mem_profile_enabled();
-        let read_vm_rss_kb =
-            || -> Option<usize> { crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() };
-        let mut rss_baseline = if mem_profile_enabled {
-            read_vm_rss_kb()
-        } else {
-            None
-        };
-        let mut rss_prev = rss_baseline;
-        let mut log_mem_step = |step: &str| {
-            if !mem_profile_enabled {
-                return;
-            }
-            if let Some(curr) = read_vm_rss_kb() {
-                let prev = rss_prev.unwrap_or(curr);
-                let baseline = rss_baseline.unwrap_or(curr);
-                eprintln!(
-                    "compute_state.mem step={} rss_kb={} delta_prev_kb={} delta_total_kb={}",
-                    step,
-                    curr,
-                    curr as i64 - prev as i64,
-                    curr as i64 - baseline as i64
-                );
-                rss_prev = Some(curr);
-                if rss_baseline.is_none() {
-                    rss_baseline = Some(curr);
-                }
-            }
-        };
-
         // Using tracing events instead of spans for async context
         // Span[F].traceI("compute-state") equivalent from Scala
         tracing::info!(target: "f1r3fly.casper.runtime", "compute-state-started");
-        log_mem_step("start");
+        if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
+            tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "start", rss_kb);
+        }
+        if tracing::enabled!(target: "f1r3fly.casper.invalid_blocks", tracing::Level::DEBUG) {
+            let entries: Vec<String> = invalid_blocks
+                .iter()
+                .map(|(bh, v)| {
+                    format!(
+                        "{}=>{}",
+                        hex::encode(&bh[..8.min(bh.len())]),
+                        hex::encode(&v[..8.min(v.len())])
+                    )
+                })
+                .collect();
+            tracing::debug!(target: "f1r3fly.casper.invalid_blocks", n = invalid_blocks.len(), seq = block_data.seq_num, "PLAY compute_state invalid_blocks: [{}]", entries.join(", "));
+        }
         self.runtime.set_block_data(block_data).await;
-        log_mem_step("after_set_block_data");
+        if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
+            tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_set_block_data", rss_kb);
+        }
         self.runtime.set_invalid_blocks(invalid_blocks).await;
-        log_mem_step("after_set_invalid_blocks");
+        if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
+            tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_set_invalid_blocks", rss_kb);
+        }
 
         let (start_hash, processed_deploys) =
             self.play_deploys_for_state(start_hash, terms).await?;
-        log_mem_step("after_play_deploys_for_state");
+        if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
+            tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_play_deploys_for_state", rss_kb);
+        }
 
         let mut current_hash = start_hash;
         let mut processed_system_deploys = Vec::with_capacity(system_deploys.len());
 
-        for (idx, system_deploy_enum) in system_deploys.into_iter().enumerate() {
-            if mem_profile_enabled {
-                let before_step = format!("before_system_deploy_{}", idx + 1);
-                log_mem_step(&before_step);
-            }
+        for system_deploy_enum in system_deploys {
             // Match on the enum and call appropriate generic method
             let result = match system_deploy_enum {
                 crate::rust::util::rholang::system_deploy_enum::SystemDeployEnum::Slash(
@@ -278,10 +283,6 @@ impl RuntimeOps {
                         .await?
                 }
             };
-            if mem_profile_enabled {
-                let after_step = format!("after_system_deploy_{}", idx + 1);
-                log_mem_step(&after_step);
-            }
 
             match result {
                 SystemDeployResult::PlaySucceeded {
@@ -313,7 +314,9 @@ impl RuntimeOps {
         }
 
         let post_state_hash = current_hash;
-        log_mem_step("finish");
+        if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
+            tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "finish", rss_kb);
+        }
 
         tracing::info!(target: "f1r3fly.casper.runtime", "compute-state-finished");
         Ok((post_state_hash, processed_deploys, processed_system_deploys))
@@ -435,65 +438,43 @@ impl RuntimeOps {
         start_hash: &StateHash,
         terms: Vec<Signed<DeployData>>,
     ) -> Result<(StateHash, Vec<(ProcessedDeploy, NumberChannelsEndVal)>), CasperError> {
-        let mem_profile_enabled = crate::rust::util::rholang::mem_profiler::mem_profile_enabled();
-        let read_vm_rss_kb =
-            || -> Option<usize> { crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() };
-        let mut rss_baseline = if mem_profile_enabled {
-            read_vm_rss_kb()
-        } else {
-            None
-        };
-        let mut rss_prev = rss_baseline;
-        let mut log_mem_step = |step: &str| {
-            if !mem_profile_enabled {
-                return;
-            }
-            if let Some(curr) = read_vm_rss_kb() {
-                let prev = rss_prev.unwrap_or(curr);
-                let baseline = rss_baseline.unwrap_or(curr);
-                eprintln!(
-                    "play_deploys_for_state.mem step={} rss_kb={} delta_prev_kb={} delta_total_kb={}",
-                    step,
-                    curr,
-                    curr as i64 - prev as i64,
-                    curr as i64 - baseline as i64
-                );
-                rss_prev = Some(curr);
-                if rss_baseline.is_none() {
-                    rss_baseline = Some(curr);
-                }
-            }
-        };
-
         // Using tracing events for async - Span[F].withMarks("play-deploys") from Scala
-        tracing::info!(target: "f1r3fly.casper.play-deploys", "play-deploys-started");
-        log_mem_step("start");
+        tracing::info!(target: "f1r3fly.casper.play_deploys", "play-deploys-started");
+        if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
+            tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "start", rss_kb);
+        }
         self.runtime
             .reset(&Blake2b256Hash::from_bytes_prost(start_hash))
             .await?;
-        log_mem_step("after_reset");
-
-        let mut res = Vec::with_capacity(terms.len());
-        for (idx, deploy) in terms.into_iter().enumerate() {
-            if mem_profile_enabled {
-                let before = format!("before_deploy_{}", idx + 1);
-                log_mem_step(&before);
-            }
-            res.push(self.play_deploy_with_cost_accounting(deploy).await?);
-            if mem_profile_enabled {
-                let after = format!("after_deploy_{}", idx + 1);
-                log_mem_step(&after);
-            }
+        if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
+            tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_reset", rss_kb);
         }
 
-        log_mem_step("before_final_checkpoint");
-        log_mem_step("before_final_checkpoint_create_checkpoint");
+        let mut res = Vec::with_capacity(terms.len());
+        for deploy in terms {
+            res.push(self.play_deploy_with_cost_accounting(deploy).await?);
+        }
+
+        if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
+            tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "before_final_checkpoint", rss_kb);
+        }
+        if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
+            tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "before_final_checkpoint_create_checkpoint", rss_kb);
+        }
         let final_checkpoint = self.runtime.create_checkpoint().await;
-        log_mem_step("after_final_checkpoint_create_checkpoint");
-        log_mem_step("before_final_checkpoint_root_to_bytes");
+        if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
+            tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_final_checkpoint_create_checkpoint", rss_kb);
+        }
+        if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
+            tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "before_final_checkpoint_root_to_bytes", rss_kb);
+        }
         let final_root = final_checkpoint.root.to_bytes_prost();
-        log_mem_step("after_final_checkpoint_root_to_bytes");
-        log_mem_step("after_final_checkpoint");
+        if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
+            tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_final_checkpoint_root_to_bytes", rss_kb);
+        }
+        if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
+            tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_final_checkpoint", rss_kb);
+        }
         Ok((final_root, res))
     }
 
@@ -506,7 +487,7 @@ impl RuntimeOps {
         terms: Vec<Signed<DeployData>>,
     ) -> Result<(StateHash, Vec<(ProcessedDeploy, NumberChannelsEndVal)>), CasperError> {
         // Using tracing events for async - Span[F].withMarks("play-deploys") from Scala
-        tracing::info!(target: "f1r3fly.casper.play-deploys-genesis", "play-deploys-genesis-started");
+        tracing::info!(target: "f1r3fly.casper.play_deploys_genesis", "play-deploys-genesis-started");
         self.runtime
             .reset(&Blake2b256Hash::from_bytes_prost(start_hash))
             .await?;
@@ -714,22 +695,15 @@ impl RuntimeOps {
         Ok(result)
     }
 
-    /// Deterministic multi-value fold for a mergeable channel that holds more
-    /// than one numeric Datum at observation time. Dispatches by `MergeType`:
-    /// `IntegerAdd` picks the max (conservative for vault balances);
-    /// `BitmaskOr` OR-folds all bitmaps (no set bit is lost). Returns `None`
-    /// for an empty input.
-    pub fn fold_multi_value(values: &[i64], merge_type: MergeType) -> Option<i64> {
+    pub fn fold_bitmask_or(values: &[i64]) -> Option<i64> {
         if values.is_empty() {
             return None;
         }
-        let folded = match merge_type {
-            MergeType::IntegerAdd => *values.iter().max().unwrap(),
-            MergeType::BitmaskOr => values
+        Some(
+            values
                 .iter()
                 .fold(0i64, |acc, v| ((acc as u64) | (*v as u64)) as i64),
-        };
-        Some(folded)
+        )
     }
 
     pub async fn get_number_channel(
@@ -744,9 +718,6 @@ impl RuntimeOps {
         } else {
             let ch_hash = stable_hash_provider::hash(channel);
             if ch_values.len() != 1 {
-                // Liveness-first fallback: ambiguous mergeable channel values should not wedge
-                // proposing. Non-numeric values are skipped — they aren't candidates for the
-                // numeric merge path and fall through to existing conflict handling.
                 let nums: Vec<i64> = ch_values
                     .iter()
                     .filter_map(|datum| {
@@ -754,26 +725,23 @@ impl RuntimeOps {
                     })
                     .collect();
 
-                let num = match Self::fold_multi_value(&nums, merge_type) {
-                    Some(n) => n,
-                    None => return Ok(None),
-                };
-
-                tracing::warn!(
-                    target: "f1r3fly.mergeable_channel.sanitize",
-                    "NumberChannel has {} values; merge_type={:?} dispatched value={} for channel {}",
-                    ch_values.len(),
-                    merge_type,
-                    num,
-                    hex::encode(ch_hash.clone().bytes()),
-                );
-                metrics::counter!(
-                    "mergeable_channel_number_sanitized_total",
-                    "source" => "casper_runtime"
-                )
-                .increment(1);
-
-                return Ok(Some((ch_hash, num)));
+                match merge_type {
+                    MergeType::IntegerAdd => {
+                        return Err(CasperError::RuntimeError(format!(
+                            "number channel {} holds {} values {:?}; IntegerAdd single-value invariant violated",
+                            hex::encode(ch_hash.bytes()),
+                            ch_values.len(),
+                            nums,
+                        )));
+                    }
+                    MergeType::BitmaskOr => {
+                        let num = match Self::fold_bitmask_or(&nums) {
+                            Some(n) => n,
+                            None => return Ok(None),
+                        };
+                        return Ok(Some((ch_hash, num)));
+                    }
+                }
             }
 
             // Single value: opportunistic numeric read. Non-numeric values
@@ -919,51 +887,28 @@ impl RuntimeOps {
         ),
         CasperError,
     > {
-        let mem_profile_enabled = crate::rust::util::rholang::mem_profiler::mem_profile_enabled();
-        let read_vm_rss_kb =
-            || -> Option<usize> { crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() };
-        let deploy_type = std::any::type_name::<S>();
-        let mut rss_baseline = if mem_profile_enabled {
-            read_vm_rss_kb()
-        } else {
-            None
-        };
-        let mut rss_prev = rss_baseline;
-        let mut log_mem_step = |step: &str| {
-            if !mem_profile_enabled {
-                return;
-            }
-            if let Some(curr) = read_vm_rss_kb() {
-                let prev = rss_prev.unwrap_or(curr);
-                let baseline = rss_baseline.unwrap_or(curr);
-                eprintln!(
-                    "play_system_deploy_internal.mem deploy_type={} step={} rss_kb={} delta_prev_kb={} delta_total_kb={}",
-                    deploy_type,
-                    step,
-                    curr,
-                    curr as i64 - prev as i64,
-                    curr as i64 - baseline as i64
-                );
-                rss_prev = Some(curr);
-                if rss_baseline.is_none() {
-                    rss_baseline = Some(curr);
-                }
-            }
-        };
-        log_mem_step("start");
+        if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
+            tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "start", rss_kb);
+        }
 
         // Get System deploy result / throw fatal errors for unexpected results
         let (result_or_system_deploy_error, eval_result) =
             self.eval_system_deploy(system_deploy).await?;
-        log_mem_step("after_eval_system_deploy");
+        if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
+            tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_eval_system_deploy", rss_kb);
+        }
 
         let log = self.runtime.take_event_log().await;
-        log_mem_step("after_take_event_log");
+        if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
+            tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_take_event_log", rss_kb);
+        }
         let log = log
             .into_iter()
             .map(event_converter::to_casper_event)
             .collect();
-        log_mem_step("after_convert_event_log");
+        if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
+            tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_convert_event_log", rss_kb);
+        }
 
         Ok((log, result_or_system_deploy_error, eval_result.mergeable))
     }
@@ -975,65 +920,47 @@ impl RuntimeOps {
         &mut self,
         system_deploy: &mut S,
     ) -> Result<SysEvalResult<S>, CasperError> {
-        let mem_profile_enabled = crate::rust::util::rholang::mem_profiler::mem_profile_enabled();
-        let read_vm_rss_kb =
-            || -> Option<usize> { crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() };
-        let deploy_type = std::any::type_name::<S>();
-        let mut rss_baseline = if mem_profile_enabled {
-            read_vm_rss_kb()
-        } else {
-            None
-        };
-        let mut rss_prev = rss_baseline;
-        let mut log_mem_step = |step: &str| {
-            if !mem_profile_enabled {
-                return;
-            }
-            if let Some(curr) = read_vm_rss_kb() {
-                let prev = rss_prev.unwrap_or(curr);
-                let baseline = rss_baseline.unwrap_or(curr);
-                eprintln!(
-                    "eval_system_deploy.mem deploy_type={} step={} rss_kb={} delta_prev_kb={} delta_total_kb={}",
-                    deploy_type,
-                    step,
-                    curr,
-                    curr as i64 - prev as i64,
-                    curr as i64 - baseline as i64
-                );
-                rss_prev = Some(curr);
-                if rss_baseline.is_none() {
-                    rss_baseline = Some(curr);
-                }
-            }
-        };
+        tracing::debug!(target: "f1r3fly.casper.replay_rho_runtime", kind = system_deploy_kind(system_deploy), "eval_system_deploy ENTER (eval system source, then consume its result)");
         let wrapper_pre_start = Instant::now();
-        log_mem_step("start");
+        if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
+            tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "start", rss_kb);
+        }
 
-        // println!("\nEvaluating system deploy, {:?}", S::source());
         let wrapper_pre = wrapper_pre_start.elapsed();
         let eval_result = self.evaluate_system_source(system_deploy).await?;
-        log_mem_step("after_evaluate_system_source");
-
-        // println!("\nEval result: {:?}", eval_result);
+        if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
+            tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_evaluate_system_source", rss_kb);
+        }
 
         let wrapper_mid_start = Instant::now();
+        tracing::debug!(target: "f1r3fly.casper.replay_rho_runtime", n_eval_errors = eval_result.errors.len(), "eval_system_deploy: system source evaluated");
         if !eval_result.errors.is_empty() {
+            tracing::debug!(target: "f1r3fly.casper.replay_rho_runtime", "eval_system_deploy: UnexpectedSystemErrors (system deploy eval ERRORED)");
             return Err(CasperError::SystemRuntimeError(
                 SystemDeployPlatformFailure::UnexpectedSystemErrors(eval_result.errors),
             ));
         }
-        log_mem_step("after_error_check");
+        if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
+            tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_error_check", rss_kb);
+        }
 
-        log_mem_step("before_consume_system_result");
+        if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
+            tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "before_consume_system_result", rss_kb);
+        }
         let wrapper_mid = wrapper_mid_start.elapsed();
         let consumed = self.consume_system_result(system_deploy).await?;
         let wrapper_post_start = Instant::now();
-        log_mem_step("after_consume_system_result");
+        if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
+            tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_consume_system_result", rss_kb);
+        }
         let r = match consumed {
             Some((_, vec_list)) => match vec_list.as_slice() {
                 [ListParWithRandom { pars, .. }] if pars.len() == 1 => {
                     let extracted = system_deploy.extract_result(&pars[0]);
-                    log_mem_step("after_extract_result");
+                    if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb()
+                    {
+                        tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_extract_result", rss_kb);
+                    }
                     Ok(extracted)
                 }
                 _ => Err(CasperError::SystemRuntimeError(
@@ -1042,11 +969,20 @@ impl RuntimeOps {
                     ),
                 )),
             },
-            None => Err(CasperError::SystemRuntimeError(
-                SystemDeployPlatformFailure::ConsumeFailed,
-            )),
+            None => {
+                // INSTRUMENT (temporary): dump the leftover replay COMMs — names
+                // the consume the closeBlock stalled on at replay.
+                if let Err(e) = self.runtime.check_replay_data().await {
+                    tracing::error!(target: "f1r3fly.casper.replay_block", kind = system_deploy_kind(system_deploy), "system-deploy ConsumeFailed replay stall (THIS is the deploy that returned None): {}", e);
+                }
+                Err(CasperError::SystemRuntimeError(
+                    SystemDeployPlatformFailure::ConsumeFailed,
+                ))
+            }
         }?;
-        log_mem_step("after_match_result");
+        if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
+            tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_match_result", rss_kb);
+        }
         metrics::counter!(EVAL_SYSTEM_DEPLOY_WRAPPER_CALLS_METRIC, "source" => CASPER_METRICS_SOURCE)
             .increment(1);
         metrics::counter!(EVAL_SYSTEM_DEPLOY_WRAPPER_TIME_NS_METRIC, "source" => CASPER_METRICS_SOURCE)
@@ -1072,7 +1008,11 @@ impl RuntimeOps {
                 // Hardcoded phlogiston limit / 1 REV if phloPrice=1
                 Some(100 * 1000 * 1000),
                 None,
-                Some(construct_deploy::DEFAULT_SEC.clone()),
+                Some(
+                    EXPLORATORY_DEPLOY_KEY
+                        .get_or_init(|| Secp256k1.new_key_pair().0)
+                        .clone(),
+                ),
                 None,
                 None,
             )?;
@@ -1103,43 +1043,20 @@ impl RuntimeOps {
             BONDS_CACHE_RESET_TIME_METRIC, CASPER_METRICS_SOURCE,
         };
         let __reset_start = std::time::Instant::now();
-        let mem_profile_enabled = crate::rust::util::rholang::mem_profiler::mem_profile_enabled();
-        let read_vm_rss_kb =
-            || -> Option<usize> { crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() };
-        let mut rss_baseline = if mem_profile_enabled {
-            read_vm_rss_kb()
-        } else {
-            None
-        };
-        let mut rss_prev = rss_baseline;
-        let mut log_mem_step = |step: &str| {
-            if !mem_profile_enabled {
-                return;
-            }
-            if let Some(curr) = read_vm_rss_kb() {
-                let prev = rss_prev.unwrap_or(curr);
-                let baseline = rss_baseline.unwrap_or(curr);
-                eprintln!(
-                    "play_exploratory_par.mem step={} rss_kb={} delta_prev_kb={} delta_total_kb={}",
-                    step,
-                    curr,
-                    curr as i64 - prev as i64,
-                    curr as i64 - baseline as i64
-                );
-                rss_prev = Some(curr);
-                if rss_baseline.is_none() {
-                    rss_baseline = Some(curr);
-                }
-            }
-        };
-        log_mem_step("start");
+        if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
+            tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "start", rss_kb);
+        }
 
         self.runtime
             .reset(&Blake2b256Hash::from_bytes_prost(hash))
             .await?;
-        log_mem_step("after_reset");
+        if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
+            tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_reset", rss_kb);
+        }
         self.runtime.cost().set(Cost::unsafe_max());
-        log_mem_step("after_set_cost");
+        if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
+            tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_set_cost", rss_kb);
+        }
         metrics::histogram!(BONDS_CACHE_RESET_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
             .record(__reset_start.elapsed().as_secs_f64());
 
@@ -1150,36 +1067,48 @@ impl RuntimeOps {
                 id: return_rand.next().into_iter().map(|b| b as u8).collect(),
             })),
         }]);
-        log_mem_step("after_build_return_name");
+        if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
+            tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_build_return_name", rss_kb);
+        }
 
         let __inj_start = std::time::Instant::now();
         let result = match self.runtime.inj(par, Env::new(), rand).await {
             Ok(()) => {
-                log_mem_step("after_inj_ok");
+                if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
+                    tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_inj_ok", rss_kb);
+                }
                 metrics::histogram!(BONDS_CACHE_INJ_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
                     .record(__inj_start.elapsed().as_secs_f64());
                 let __get_data_start = std::time::Instant::now();
                 let data = self.get_data_par(&return_name).await;
                 metrics::histogram!(BONDS_CACHE_GET_DATA_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
                     .record(__get_data_start.elapsed().as_secs_f64());
-                log_mem_step("after_get_data_par");
+                if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
+                    tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_get_data_par", rss_kb);
+                }
                 Ok(data)
             }
             Err(err) => {
                 metrics::histogram!(BONDS_CACHE_INJ_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
                     .record(__inj_start.elapsed().as_secs_f64());
-                log_mem_step("after_inj_err");
-                tracing::error!("Error in play_exploratory_par: {:?}", err);
+                if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
+                    tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_inj_err", rss_kb);
+                }
+                tracing::error!(error = ?err, "play_exploratory_par failed");
                 Ok(Vec::new())
             }
         };
 
         let _ = self.runtime.take_event_log().await;
-        log_mem_step("after_take_event_log");
+        if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
+            tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_take_event_log", rss_kb);
+        }
         self.runtime
             .reset(&Blake2b256Hash::from_bytes_prost(hash))
             .await?;
-        log_mem_step("after_post_query_reset");
+        if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
+            tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_post_query_reset", rss_kb);
+        }
 
         result
     }
@@ -1363,49 +1292,28 @@ impl RuntimeOps {
         &mut self,
         system_deploy: &mut S,
     ) -> Result<EvaluateResult, CasperError> {
-        let mem_profile_enabled = crate::rust::util::rholang::mem_profiler::mem_profile_enabled();
-        let read_vm_rss_kb =
-            || -> Option<usize> { crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() };
-        let deploy_type = std::any::type_name::<S>();
-        let mut rss_baseline = if mem_profile_enabled {
-            read_vm_rss_kb()
-        } else {
-            None
-        };
-        let mut rss_prev = rss_baseline;
-        let mut log_mem_step = |step: &str| {
-            if !mem_profile_enabled {
-                return;
-            }
-            if let Some(curr) = read_vm_rss_kb() {
-                let prev = rss_prev.unwrap_or(curr);
-                let baseline = rss_baseline.unwrap_or(curr);
-                eprintln!(
-                    "evaluate_system_source.mem deploy_type={} step={} rss_kb={} delta_prev_kb={} delta_total_kb={}",
-                    deploy_type,
-                    step,
-                    curr,
-                    curr as i64 - prev as i64,
-                    curr as i64 - baseline as i64
-                );
-                rss_prev = Some(curr);
-                if rss_baseline.is_none() {
-                    rss_baseline = Some(curr);
-                }
-            }
-        };
-        log_mem_step("start");
+        if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
+            tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "start", rss_kb);
+        }
 
         // Using tracing events for async - Span[F].traceI("evaluate-system-source") from Scala
-        tracing::debug!(target: "f1r3fly.casper.evaluate-system-source", "evaluate-system-source-started");
+        tracing::debug!(target: "f1r3fly.casper.evaluate_system_source", "evaluate-system-source-started");
         let eval_start = Instant::now();
         let wrapper_pre_start = eval_start;
-        log_mem_step("before_build_env");
+        if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
+            tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "before_build_env", rss_kb);
+        }
         let env = system_deploy.env();
-        log_mem_step("after_build_env");
+        if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
+            tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_build_env", rss_kb);
+        }
         let rand = system_deploy.rand().clone();
-        log_mem_step("after_clone_rand");
-        log_mem_step("before_runtime_evaluate");
+        if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
+            tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_clone_rand", rss_kb);
+        }
+        if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
+            tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "before_runtime_evaluate", rss_kb);
+        }
         let wrapper_pre = wrapper_pre_start.elapsed();
         let result = {
             // System deploys perform protocol maintenance and settlement work
@@ -1427,7 +1335,9 @@ impl RuntimeOps {
         };
         let result = result?;
         let wrapper_post_start = Instant::now();
-        log_mem_step("after_runtime_evaluate");
+        if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
+            tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_runtime_evaluate", rss_kb);
+        }
         metrics::histogram!(BLOCK_REPLAY_SYSDEPLOY_EVAL_EVALUATE_SOURCE_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
             .record(eval_start.elapsed().as_secs_f64());
         metrics::counter!(EVALUATE_SOURCE_WRAPPER_CALLS_METRIC, "source" => CASPER_METRICS_SOURCE)
@@ -1663,77 +1573,40 @@ mod tests {
     use super::*;
 
     #[test]
-    fn fold_multi_value_empty_returns_none() {
-        assert_eq!(
-            RuntimeOps::fold_multi_value(&[], MergeType::IntegerAdd),
-            None
-        );
-        assert_eq!(
-            RuntimeOps::fold_multi_value(&[], MergeType::BitmaskOr),
-            None
-        );
+    fn fold_bitmask_or_empty_returns_none() {
+        assert_eq!(RuntimeOps::fold_bitmask_or(&[]), None);
     }
 
     #[test]
-    fn fold_multi_value_single_returns_value() {
-        assert_eq!(
-            RuntimeOps::fold_multi_value(&[42], MergeType::IntegerAdd),
-            Some(42)
-        );
-        assert_eq!(
-            RuntimeOps::fold_multi_value(&[42], MergeType::BitmaskOr),
-            Some(42)
-        );
+    fn fold_bitmask_or_single_returns_value() {
+        assert_eq!(RuntimeOps::fold_bitmask_or(&[42]), Some(42));
     }
 
     #[test]
-    fn fold_multi_value_integer_add_returns_max() {
-        // Vault-balance semantics: pick the largest observed value.
-        assert_eq!(
-            RuntimeOps::fold_multi_value(&[10, 5, 20, 15], MergeType::IntegerAdd),
-            Some(20)
-        );
-    }
-
-    #[test]
-    fn fold_multi_value_bitmask_or_returns_or_fold_not_max() {
-        // BitmaskOr must OR-fold all bitmaps; using max() would silently lose
-        // bits set only in non-max values.
-        let a = 0b00010001i64; // bits {0, 4}
-        let b = 0b00100010i64; // bits {1, 5}
-                               // max(a, b) = b = 0b00100010 — would lose bits {0, 4}.
-                               // OR fold = 0b00110011 — bits {0, 1, 4, 5}. Correct.
-        assert_eq!(
-            RuntimeOps::fold_multi_value(&[a, b], MergeType::BitmaskOr),
-            Some(0b00110011),
-        );
-        // Three-way fold sanity.
+    fn fold_bitmask_or_returns_or_fold_not_max() {
+        let a = 0b00010001i64;
+        let b = 0b00100010i64;
+        assert_eq!(RuntimeOps::fold_bitmask_or(&[a, b]), Some(0b00110011));
         let c = 0b01000000i64;
-        assert_eq!(
-            RuntimeOps::fold_multi_value(&[a, b, c], MergeType::BitmaskOr),
-            Some(0b01110011),
-        );
+        assert_eq!(RuntimeOps::fold_bitmask_or(&[a, b, c]), Some(0b01110011));
     }
 
     #[test]
-    fn fold_multi_value_bitmask_or_commutes() {
-        // Result must not depend on observation order.
+    fn fold_bitmask_or_commutes() {
         let xs = [0b0001_0001i64, 0b0010_0010, 0b0100_0100, 0b1000_1000];
         let mut ys = xs;
         ys.reverse();
         assert_eq!(
-            RuntimeOps::fold_multi_value(&xs, MergeType::BitmaskOr),
-            RuntimeOps::fold_multi_value(&ys, MergeType::BitmaskOr),
+            RuntimeOps::fold_bitmask_or(&xs),
+            RuntimeOps::fold_bitmask_or(&ys),
         );
     }
 
     #[test]
-    fn fold_multi_value_bitmask_or_negative_high_bits_preserved() {
-        // i64::MIN sets only the sign bit (bit 63). OR with a positive bitmap
-        // must keep bit 63 set — no narrowing or sign-extension surprise.
+    fn fold_bitmask_or_negative_high_bits_preserved() {
         let neg = i64::MIN;
         let pos = 0b1010i64;
-        let folded = RuntimeOps::fold_multi_value(&[neg, pos], MergeType::BitmaskOr).unwrap();
+        let folded = RuntimeOps::fold_bitmask_or(&[neg, pos]).unwrap();
         assert_eq!(folded as u64, (neg as u64) | (pos as u64));
         assert_ne!(folded & i64::MIN, 0, "sign bit must remain set");
     }

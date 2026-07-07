@@ -152,7 +152,7 @@ Liveness is strictly better.
 
 **Pre-fix.** Detector reaches the
 `if stake ≤ 0 then EquivocationDetected` branch in
-`equivocation_detector.rs:217`; A is "detected" but never slashed
+`equivocation_detector.rs:285`; A is "detected" but never slashed
 (zero stake to forfeit) and never recorded. A's equivocation is
 invisible to two-level closure.
 
@@ -195,7 +195,7 @@ bug #6).
 2. validate(bX) = JustificationRegression
 3. is_slashable(JustificationRegression) = TRUE
 
-   Pre-fix dispatcher (engine/multi_parent_casper/mod.rs:1090-1099):
+   Pre-fix dispatcher (engine/multi_parent_casper/validation_dispatcher.rs:502):
 4. handle_invalid_block_effect(bX, invalid = true)
    ⟶ DAG marks bX invalid; NO EquivocationRecord;
       A continues with bond intact unless a future proposer

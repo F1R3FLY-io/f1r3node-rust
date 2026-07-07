@@ -10,7 +10,7 @@ proposer had earlier produced an equivocation, even if the block
 acknowledged the equivocation via `has_slash_system_deploys`. This
 incorrectly punished *self-correcting* proposers — validators who
 slashed their own past equivocations to remain in good standing.
-The Rust port at `validate.rs:1018-1029` widens the check to accept
+The Rust port at `validate.rs:1323-1366` widens the check to accept
 self-correcting blocks.
 
 ## 2 · Discovery technique

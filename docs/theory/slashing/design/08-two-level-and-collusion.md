@@ -32,7 +32,7 @@ also follows detected hashes and nested latest-message pointers in
 
 [![Diagram 08 — Justifications → neglect detection data flow](../diagrams/08-dataflow-justifications-to-neglect.svg)](../diagrams/08-dataflow-justifications-to-neglect.svg)
 
-Formally (`validate.rs:989-1030`):
+Formally (`validate.rs:1323-1366`):
 
 ```
 neglected_invalid_justification(b, snapshot) ≜

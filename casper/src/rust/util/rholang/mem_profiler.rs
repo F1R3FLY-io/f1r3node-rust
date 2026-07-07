@@ -1,4 +1,8 @@
-pub fn mem_profile_enabled() -> bool { false }
+/// Whether RSS mem-profiling is enabled for cost-accounting deploy execution.
+/// Compiled off by default so the profiling probes cost nothing when disabled.
+pub fn mem_profile_enabled() -> bool {
+    false
+}
 
 #[cfg(target_os = "linux")]
 pub fn read_vm_rss_kb() -> Option<usize> {

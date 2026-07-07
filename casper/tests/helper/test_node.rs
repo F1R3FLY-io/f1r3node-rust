@@ -79,6 +79,12 @@ pub struct TestNode {
     pub engine_cell: EngineCell,
     // Packet handler for receiving messages (matches Scala line 178)
     pub packet_handler: CasperPacketHandler,
+    /// Heartbeat / liveness mode. When true, `create_block` emits an empty
+    /// (CloseBlock-only) block instead of returning `NoNewDeploys` when the
+    /// proposer has no user deploys — matching a production heartbeat-enabled
+    /// shard, where a validator always proposes to keep the chain advancing.
+    /// Defaults to false (the historic manual-propose test behavior).
+    pub allow_empty_blocks: bool,
 }
 
 impl TestNode {
@@ -118,7 +124,7 @@ impl TestNode {
             std::sync::Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new())),
             &mut self.runtime_manager.clone(),
             &mut self.block_store.clone(),
-            false,
+            self.allow_empty_blocks,
         )
         .await
     }
@@ -1109,6 +1115,7 @@ impl TestNode {
             casper,
             engine_cell,
             packet_handler,
+            allow_empty_blocks: false,
         }
     }
 

@@ -6,7 +6,6 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use metrics_util::debugging::{DebuggingRecorder, Snapshotter};
 use rand::prelude::SliceRandom;
-use rand::thread_rng;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::history::history_repository::HistoryRepositoryInstances;
 use rspace_plus_plus::rspace::hot_store::{HotStoreInstances, HotStoreState};
@@ -698,7 +697,7 @@ async fn picking_n_datums_from_m_waiting_datums_should_replay_correctly() {
         F: Fn(i32) -> Vec<String>,
         G: Fn(i32) -> String,
     {
-        let mut rng = thread_rng();
+        let mut rng = rand::rng();
         let mut shuffled_range = range.clone();
         shuffled_range.shuffle(&mut rng);
 
@@ -731,7 +730,7 @@ async fn picking_n_datums_from_m_waiting_datums_should_replay_correctly() {
         F: Fn(i32) -> String,
         A: Fn(i32) -> String,
     {
-        let mut rng = thread_rng();
+        let mut rng = rand::rng();
         let mut shuffled_range = range.clone();
         shuffled_range.shuffle(&mut rng);
 
@@ -758,7 +757,7 @@ async fn picking_n_datums_from_m_waiting_datums_should_replay_correctly() {
         F: Fn(i32) -> Vec<String>,
         G: Fn(i32) -> String,
     {
-        let mut rng = thread_rng();
+        let mut rng = rand::rng();
         let mut shuffled_range = range.clone();
         shuffled_range.shuffle(&mut rng);
 
@@ -791,7 +790,7 @@ async fn picking_n_datums_from_m_waiting_datums_should_replay_correctly() {
         F: Fn(i32) -> String,
         A: Fn(i32) -> String,
     {
-        let mut rng = thread_rng();
+        let mut rng = rand::rng();
         let mut shuffled_range = range.clone();
         shuffled_range.shuffle(&mut rng);
 
@@ -867,7 +866,7 @@ async fn picking_n_datums_from_m_waiting_datums_should_replay_correctly() {
 async fn a_matched_continuation_defined_for_multiple_channels_some_peeked_should_replay_correctly()
 {
     let (space, replay_space) = fixture().await;
-    let mut rng = thread_rng();
+    let mut rng = rand::rng();
 
     let amount_of_channels = 10;
     let amount_of_peeked_channels = 5;

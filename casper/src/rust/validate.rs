@@ -35,7 +35,7 @@
 //! `engine::multi_parent_casper::validation_dispatcher::dispatch_handle_invalid_block`
 //! path.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
@@ -501,91 +501,47 @@ impl Validate {
         Either::Right(ValidBlock::Valid)
     }
 
-    /// Validate no deploy with the same sig has been produced in the chain
+    /// Validate no deploy with the same sig has been produced in the chain.
     /// Agnostic of non-parent justifications.
     ///
-    /// Recovery exemption: sigs present in `s.rejected_in_scope` (rejected
-    /// by a descendant merge within deploy_lifespan) may be legitimate
-    /// recovery candidates — the rejected-deploy buffer pipeline re-includes
-    /// them so their effects can land in canonical state. Without this
-    /// exemption, every recovery-path block would fail `InvalidRepeatDeploy`.
+    /// A block deploy is an invalid repeat iff its LATEST canonical disposition
+    /// is a WIN: a clean canonical inclusion (in `body.deploys` of a
+    /// main-parent-chain ancestor) not superseded by a later canonical
+    /// rejection. Its effects are already in canonical state, so re-including it
+    /// would be double-execution.
     ///
-    /// The exemption is gated on the sig's current finalization status. A
-    /// sig in `rejected_in_scope` falls into one of two cases:
-    ///
-    ///   - `Pending` / `Expired` / `Failed`: the deploy's effects are NOT
-    ///     in canonical state (no clean canonical inclusion that survived
-    ///     descendant rejection). Re-inclusion is the only way to land
-    ///     them. Exempt from the repeat check.
-    ///
-    ///   - `Finalized`: the deploy has a clean canonical inclusion that
-    ///     was NOT invalidated by a canonical-descendant rejection. Its
-    ///     effects ARE already in canonical state. Re-inclusion would be
-    ///     double-execution, not recovery. Do NOT exempt — let the
-    ///     ancestor scan find the canonical inclusion and flag the
-    ///     repeat. The catchup gate (`should_admit_to_rejected_buffer`)
-    ///     is the primary defense against this; the validator-side
-    ///     check is the second line of defense.
+    /// A keep-one loser (latest canonical disposition = rejection) or a
+    /// never-seen deploy is exempt — a legitimate (re-)inclusion whose effects
+    /// are not yet in canonical state. This is the SAME canonical-won record the
+    /// proposer's `block_creator` gates on, via `canonical_won_sigs`, so
+    /// proposer and validator never disagree (no recovery block is flagged
+    /// `InvalidRepeatDeploy`).
     pub fn repeat_deploy(
         block: &BlockMessage,
         s: &mut CasperSnapshot,
         block_store: &KeyValueBlockStore,
         expiration_threshold: i32,
     ) -> ValidBlockProcessing {
-        use crate::rust::api::deploy_finalization_status::{
-            resolve as resolve_finalization_status, DeployFinalizationState,
+        // A block deploy is an invalid repeat iff its LATEST canonical
+        // disposition is a WIN — its effect is already in the canonical lineage,
+        // so re-including it double-executes. A keep-one loser (latest
+        // disposition = rejection) or a never-seen deploy is a legitimate
+        // (re-)inclusion. This is the SAME canonical-won record the proposer's
+        // `block_creator` gates on, so proposer and validator never disagree.
+        let earliest_block_number = block.body.state.block_number - expiration_threshold as i64;
+        let canonical_won = match crate::rust::util::rholang::interpreter_util::canonical_won_sigs(
+            block_store,
+            &block.header.parents_hash_list,
+            earliest_block_number,
+        ) {
+            Ok(set) => set,
+            Err(e) => return Either::Left(BlockError::BlockException(e)),
         };
-
         let deploy_key_set: HashSet<Vec<u8>> = block
             .body
             .deploys
             .iter()
-            .filter(|pd| {
-                if !s.rejected_in_scope.contains(&pd.deploy.sig) {
-                    return true; // not rejected — must check
-                }
-                // Sig is in rejected_in_scope. Apply the exemption only if
-                // the sig is NOT Finalized — otherwise re-inclusion is
-                // double-execution and the repeat check must catch it.
-                match resolve_finalization_status(
-                    &s.dag,
-                    block_store,
-                    expiration_threshold as i64,
-                    &pd.deploy.sig,
-                ) {
-                    Ok(status) if status.state == DeployFinalizationState::Finalized => {
-                        let canonical_block_str = status
-                            .latest_block_hash
-                            .as_ref()
-                            .map(|h| PrettyPrinter::build_string_bytes(h))
-                            .unwrap_or_else(|| "<none>".to_string());
-                        tracing::warn!(
-                            "repeat_deploy: sig {} is in rejected_in_scope but \
-                             resolves to Finalized (clean canonical inclusion at \
-                             {}); declining the recovery exemption to prevent \
-                             double-execution",
-                            hex::encode(&pd.deploy.sig),
-                            canonical_block_str,
-                        );
-                        true // keep in check set so the ancestor scan finds the repeat
-                    }
-                    Ok(_) => false, // status != Finalized → exempt (recovery)
-                    Err(err) => {
-                        // Resolver failures are conservative-fail: keep the sig
-                        // in the check set so an inconsistency surfaces as
-                        // InvalidRepeatDeploy rather than being silently
-                        // exempted as a recovery candidate.
-                        tracing::warn!(
-                            "repeat_deploy: deploy_finalization_status::resolve \
-                             failed for sig {}: {} — keeping sig in check set \
-                             rather than granting recovery exemption",
-                            hex::encode(&pd.deploy.sig),
-                            err,
-                        );
-                        true
-                    }
-                }
-            })
+            .filter(|pd| canonical_won.contains(&pd.deploy.sig))
             .map(|pd| pd.deploy.sig.to_vec())
             .collect();
         if deploy_key_set.is_empty() {
@@ -599,10 +555,6 @@ impl Validate {
             Ok(parents) => parents,
             Err(e) => return Either::Left(BlockError::BlockException(CasperError::from(e))),
         };
-
-        // Calculate max block number and earliest acceptable block number
-        let max_block_number = proto_util::max_block_number_metadata(&init_parents);
-        let earliest_block_number = max_block_number + 1 - expiration_threshold as i64;
 
         tracing::debug!(target: "f1r3fly.casper", "before-repeat-deploy-duplicate-block");
         let maybe_duplicated_block_metadata = dag_ops::bf_traverse_find(
@@ -1456,4 +1408,86 @@ impl Validate {
     // carry no phlo price/limit. Funding is enforced at block assembly by the
     // per-signature acceptance gate (`util/rholang/acceptance.rs`) against
     // Σ⟦s⟧, with `min_phlo_price` repurposed as that gate's safety margin.
+
+    pub async fn bonds_cache_from_floor(
+        b: &BlockMessage,
+        block_store: &KeyValueBlockStore,
+        snapshot: &CasperSnapshot,
+        runtime_manager: &RuntimeManager,
+    ) -> ValidBlockProcessing {
+        let parent_hashes = b.header.parents_hash_list.clone();
+        if parent_hashes.is_empty() {
+            return Self::bonds_cache(b, runtime_manager).await;
+        }
+
+        let latest_messages: BTreeMap<Validator, BlockHash> = b
+            .justifications
+            .iter()
+            .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
+            .collect();
+        let floor = match crate::rust::finality::floor::finalized_floor(
+            &snapshot.dag,
+            &parent_hashes,
+            &latest_messages,
+            crate::rust::safety::clique_oracle::FtThreshold::from_ppm(
+                snapshot.on_chain_state.shard_conf.fault_tolerance_threshold_ppm,
+            ),
+        )
+        .await
+        {
+            Ok(floor) => floor,
+            Err(ex) => {
+                tracing::warn!("Failed to derive finalized floor for bonds cache: {}", ex);
+                return Either::Left(BlockError::BlockException(ex));
+            }
+        };
+        let floor_block = match block_store.get(&floor.hash) {
+            Ok(Some(block)) => block,
+            Ok(None) => {
+                let err = CasperError::RuntimeError(format!(
+                    "finalized-floor block {} not in block store for bonds cache",
+                    PrettyPrinter::build_string_bytes(&floor.hash)
+                ));
+                tracing::warn!("{}", err);
+                return Either::Left(BlockError::BlockException(err));
+            }
+            Err(ex) => {
+                tracing::warn!(
+                    "Failed to read finalized-floor block for bonds cache: {}",
+                    ex
+                );
+                return Either::Left(BlockError::BlockException(ex.into()));
+            }
+        };
+        let floor_state = proto_util::post_state_hash(&floor_block);
+
+        // Same shared helper the proposer uses to package `block.bonds`, called on
+        // the same floor state ⇒ the recomputed committee is identical by
+        // construction (PLAY≡REPLAY); a mismatching block-bonds set is rejected.
+        match crate::rust::finality::floor::floor_committee(runtime_manager, &floor_state).await {
+            Ok(committee) => {
+                let bonds_set: HashSet<_> = proto_util::bonds(b)
+                    .iter()
+                    .map(|bond| (bond.validator.clone(), bond.stake))
+                    .collect();
+                let committee_set: HashSet<_> = committee
+                    .iter()
+                    .map(|bond| (bond.validator.clone(), bond.stake))
+                    .collect();
+
+                if bonds_set == committee_set {
+                    Either::Right(ValidBlock::Valid)
+                } else {
+                    tracing::warn!(
+                        "Bonds in finalized-floor proof of stake contract do not match block's bond cache."
+                    );
+                    Either::Left(BlockError::Invalid(InvalidBlock::InvalidBondsCache))
+                }
+            }
+            Err(ex) => {
+                tracing::warn!("Failed to compute bonds from finalized-floor state: {}", ex);
+                Either::Left(BlockError::BlockException(ex))
+            }
+        }
+    }
 }

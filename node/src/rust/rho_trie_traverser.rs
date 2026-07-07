@@ -27,14 +27,14 @@ pub type ReadParams = (Vec<Vec<i32>>, i32, Par, Vec<ParMap>);
 /// ```
 /// use node::rust::rho_trie_traverser::RhoTrieTraverser;
 ///
-/// // Create a Par from a string and hash it
+/// // Create a Par from a string and hash it (Keccak256, wrapped as a GByteArray Par)
 /// let key = RhoTrieTraverser::keccak_key("example");
 ///
 /// // Walk the first 4 bytes of the Par's byte array, splitting each
 /// // into a (low, high) nybble pair — 8 nybbles total for the
 /// // 4-byte traversal depth.
 /// let nybbles = RhoTrieTraverser::byte_array_to_nybble_list(&key, 0, 4, vec![]);
-/// assert_eq!(nybbles.len(), 8);
+/// assert_eq!(nybbles.len(), 8); // 4 bytes → 2 nybbles each
 /// ```
 pub struct RhoTrieTraverser;
 

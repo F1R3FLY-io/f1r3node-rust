@@ -363,10 +363,7 @@ impl BlockAPI {
                                     tokio::time::sleep(retry_delay).await;
                                     continue;
                                 }
-                                tracing::error!(
-                                    "Failed to trigger propose from deploy path: {}",
-                                    err
-                                );
+                                tracing::error!(error = %err, "deploy-triggered propose failed");
                             }
                         }
                         break;
@@ -643,6 +640,7 @@ impl BlockAPI {
         }
     }
 
+    #[tracing::instrument(level = "info", skip(engine_cell, trigger_propose_f))]
     pub async fn create_block(
         engine_cell: &EngineCell,
         trigger_propose_f: &Arc<ProposeFunction>,
@@ -1674,6 +1672,14 @@ impl BlockAPI {
         engine_cell: &EngineCell,
         sig: &[u8],
     ) -> ApiErr<crate::rust::api::deploy_finalization_status::DeployFinalizationStatus> {
+        Self::deploy_finalization_status_with_known_block(engine_cell, sig, None).await
+    }
+
+    pub async fn deploy_finalization_status_with_known_block(
+        engine_cell: &EngineCell,
+        sig: &[u8],
+        known_block_hash: Option<&BlockHash>,
+    ) -> ApiErr<crate::rust::api::deploy_finalization_status::DeployFinalizationStatus> {
         let error_message =
             "Could not compute deploy finalization status, casper instance was not available yet.";
         let eng = engine_cell.get().await;
@@ -1683,11 +1689,12 @@ impl BlockAPI {
         };
 
         let dag = casper.block_dag().await?;
-        match crate::rust::api::deploy_finalization_status::resolve(
+        match crate::rust::api::deploy_finalization_status::resolve_with_known_block(
             &dag,
             casper.block_store(),
             casper.casper_shard_conf().deploy_lifespan,
             sig,
+            known_block_hash,
         ) {
             Ok(status) => Ok(status),
             Err(err) => {
@@ -1775,15 +1782,22 @@ impl BlockAPI {
                             "exploratoryDeploy: Computing merged state from {} parents",
                             parents.len()
                         );
+                        let latest_messages: std::collections::BTreeMap<_, _> = snapshot
+                            .justifications
+                            .iter()
+                            .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
+                            .collect();
                         let (merged_state_hash, _rejected, _rejected_slashes) =
                             crate::rust::util::rholang::interpreter_util::compute_parents_post_state(
                                 casper.block_store(),
                                 parents.clone(),
                                 &snapshot,
                                 &runtime_manager,
+                                &latest_messages,
                                 Some(true), // disable_late_block_filtering = true for exploratory deploy
                                 None,       // exploratory deploy: no buffer populate needed
-                            )?;
+                            )
+                            .await?;
                         merged_state_hash
                     };
 

@@ -839,7 +839,7 @@ impl DebruijnInterpreter {
         if let Some(head_par) = head {
             match result {
                 Some(mt) => tracing::trace!(
-                    target: "f1r3fly.merge.tag_check",
+                    target: "f1r3fly.merge.tag_check.validation",
                     "mergeable channel detected: merge_type={:?}",
                     mt,
                 ),
@@ -857,7 +857,7 @@ impl DebruijnInterpreter {
                         })
                         .collect();
                     tracing::trace!(
-                        target: "f1r3fly.merge.tag_check",
+                        target: "f1r3fly.merge.tag_check.validation",
                         "tuple channel with non-tag head: head_hex={}, registered_tag_hexes={:?}",
                         head_hex,
                         tag_hexes,
@@ -1378,7 +1378,7 @@ impl DebruijnInterpreter {
                                 let hex: String =
                                     bytes.iter().map(|b| format!("{:02x}", b)).collect();
                                 tracing::info!(
-                                    target: "f1r3fly.merge.tag_check",
+                                    target: "f1r3fly.merge.tag_check.validation",
                                     "URI lookup at deploy: rho:system:bitmaskMergeableTag -> Par hex={}",
                                     hex,
                                 );

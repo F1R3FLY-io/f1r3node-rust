@@ -131,7 +131,6 @@ fn bench_cosigned_threshold_64_choose_32(c: &mut Criterion) {
             let cosigned = Cosigned::from_signed_data_threshold(
                 black_box(data.clone()),
                 black_box(all_signers.clone()),
-                black_box(32 * 1024),
                 black_box(32),
             )
             .expect("threshold envelope construction");

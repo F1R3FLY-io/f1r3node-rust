@@ -20,7 +20,11 @@
 // multi-parent-merge follow-on, not part of the D3 cost-model removal.)
 
 use casper::rust::util::construct_deploy;
+use models::rust::casper::protocol::casper_message::BlockMessage;
 use prost::bytes::Bytes;
+use rholang::rust::interpreter::merging::rholang_merging_logic::RholangMergingLogic;
+use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+use rspace_plus_plus::rspace::merger::merging_logic::MergeType;
 use serial_test::serial;
 
 use crate::helper::test_node::TestNode;
@@ -68,6 +72,63 @@ const CONFLICT_RHO: &str = r#"
 /// settles without `OutOfPhlogistons`.
 const PHLO_LIMIT: i64 = 80;
 const PHLO_PRICE: i64 = 100_000;
+
+fn assert_touched_integer_add_channels_single_valued(
+    node: &TestNode,
+    state_hash: &Bytes,
+    blocks: &[BlockMessage],
+) {
+    let mut channels = std::collections::BTreeMap::new();
+    for block in blocks {
+        let diffs = node
+            .runtime_manager
+            .load_mergeable_channels(
+                &block.body.state.post_state_hash,
+                block.sender.clone(),
+                block.seq_num,
+            )
+            .expect("load mergeable channels");
+        for diff in diffs {
+            for (hash, (_, merge_type)) in diff {
+                if merge_type == MergeType::IntegerAdd {
+                    channels.insert(hash, merge_type);
+                }
+            }
+        }
+    }
+
+    let root = Blake2b256Hash::from_bytes_prost(state_hash);
+    let reader = node
+        .runtime_manager
+        .get_history_repo()
+        .get_history_reader(&root)
+        .expect("history reader");
+
+    for (hash, _) in channels {
+        let data = reader.get_data(&hash).expect("get mergeable channel data");
+        let values: Vec<i64> = data
+            .iter()
+            .filter_map(|datum| {
+                RholangMergingLogic::try_get_number_with_rnd(&datum.a).map(|(n, _)| n)
+            })
+            .collect();
+        assert!(
+            data.len() <= 1,
+            "number channel {} holds {} values {:?}; IntegerAdd single-value invariant violated",
+            hex::encode(hash.bytes()),
+            data.len(),
+            values
+        );
+        if data.len() == 1 {
+            assert_eq!(
+                values.len(),
+                1,
+                "number channel {} is not numeric at merged state",
+                hex::encode(hash.bytes())
+            );
+        }
+    }
+}
 
 /// Recovery cycle end-to-end.
 ///
@@ -292,5 +353,154 @@ async fn d3_same_key_benign_deploys_merge_without_precharge_conflict() {
              canonical view (it was admitted, not merge-rejected)",
             hex::encode(sig)
         );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[serial]
+async fn three_validator_same_payer_merge_keeps_purses_single_valued_and_live() {
+    let ctx = TestContext::new().await;
+    let shard_id = ctx.genesis.genesis_block.shard_id.clone();
+
+    let mut nodes = TestNode::create_network(ctx.genesis.clone(), 3, None, None, None, None)
+        .await
+        .expect("create_network(3)");
+    for node in nodes.iter_mut() {
+        node.allow_empty_blocks = true;
+    }
+
+    let mut deploys = Vec::new();
+    for _ in 0..3 {
+        tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
+        deploys.push(
+            construct_deploy::source_deploy_now_full(
+                CONFLICT_RHO.to_string(),
+                Some(PHLO_LIMIT),
+                Some(PHLO_PRICE),
+                Some(construct_deploy::DEFAULT_SEC.clone()),
+                None,
+                Some(shard_id.clone()),
+            )
+            .expect("build conflicting deploy"),
+        );
+    }
+
+    let block_0 = nodes[0]
+        .add_block_from_deploys(&[deploys[0].clone()])
+        .await
+        .expect("validator 0 proposes sibling");
+    let block_1 = nodes[1]
+        .add_block_from_deploys(&[deploys[1].clone()])
+        .await
+        .expect("validator 1 proposes sibling");
+    let block_2 = nodes[2]
+        .add_block_from_deploys(&[deploys[2].clone()])
+        .await
+        .expect("validator 2 proposes sibling");
+    let sibling_blocks = vec![block_0, block_1, block_2];
+
+    for (source, block) in sibling_blocks.iter().enumerate() {
+        for target in 0..3 {
+            if source != target {
+                nodes[target]
+                    .process_block(block.clone())
+                    .await
+                    .expect("process sibling");
+            }
+        }
+    }
+
+    for node in &nodes {
+        for block in &sibling_blocks {
+            assert!(node.contains(&block.block_hash));
+        }
+    }
+
+    let marker = construct_deploy::basic_deploy_data(
+        10_000,
+        Some(construct_deploy::DEFAULT_SEC2.clone()),
+        Some(shard_id.clone()),
+    )
+    .expect("build merge marker");
+    let merge_block = nodes[0]
+        .add_block_from_deploys(&[marker])
+        .await
+        .expect("validator 0 proposes merge");
+
+    for block in &sibling_blocks {
+        assert!(
+            merge_block
+                .header
+                .parents_hash_list
+                .iter()
+                .any(|parent| *parent == block.block_hash),
+            "merge block must include sibling {}",
+            hex::encode(&block.block_hash)
+        );
+    }
+
+    let rejected_sigs: Vec<Bytes> = merge_block
+        .body
+        .rejected_deploys
+        .iter()
+        .map(|rd| rd.sig.clone())
+        .collect();
+    let conflicting_rejections = deploys
+        .iter()
+        .filter(|deploy| rejected_sigs.iter().any(|sig| *sig == deploy.sig))
+        .count();
+    assert_eq!(
+        conflicting_rejections,
+        2,
+        "three same-payer siblings must leave exactly one deploy solvent; rejected={:?}",
+        rejected_sigs.iter().map(hex::encode).collect::<Vec<_>>()
+    );
+
+    let mut observed_blocks = sibling_blocks.clone();
+    observed_blocks.push(merge_block.clone());
+    assert_touched_integer_add_channels_single_valued(
+        &nodes[0],
+        &merge_block.body.state.post_state_hash,
+        &observed_blocks,
+    );
+
+    for target in 1..3 {
+        nodes[target]
+            .process_block(merge_block.clone())
+            .await
+            .expect("process merge block");
+        assert_touched_integer_add_channels_single_valued(
+            &nodes[target],
+            &merge_block.body.state.post_state_hash,
+            &observed_blocks,
+        );
+    }
+
+    for proposer in 0..3 {
+        tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
+        let traffic = construct_deploy::basic_deploy_data(
+            20_000 + proposer as i32,
+            Some(construct_deploy::DEFAULT_SEC2.clone()),
+            Some(shard_id.clone()),
+        )
+        .expect("build traffic deploy");
+        let block = nodes[proposer]
+            .add_block_from_deploys(&[traffic])
+            .await
+            .expect("post-merge validator traffic must propose");
+        observed_blocks.push(block.clone());
+        assert_touched_integer_add_channels_single_valued(
+            &nodes[proposer],
+            &block.body.state.post_state_hash,
+            &observed_blocks,
+        );
+        for target in 0..3 {
+            if target != proposer {
+                nodes[target]
+                    .process_block(block.clone())
+                    .await
+                    .expect("process post-merge traffic");
+            }
+        }
     }
 }

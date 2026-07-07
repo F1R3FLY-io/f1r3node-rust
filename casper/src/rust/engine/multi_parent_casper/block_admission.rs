@@ -149,10 +149,14 @@ pub(crate) async fn admit_handle_valid_block<T: TransportLayer + Send + Sync>(
     block: &BlockMessage,
 ) -> Result<KeyValueDagRepresentation, CasperError> {
     // Bug #17 / T-9.20: atomic (DAG insert, casper-buffer remove) pair
-    // via the helper. The deploy-storage purge below runs OUTSIDE the
-    // (DAG, buffer) critical section because deploy storage lives in a
-    // third LMDB env with its own atomicity story. See
+    // via the helper. See
     // docs/theory/slashing/design/09-bug-fixes-and-rationale.md §9.20.
+    //
+    // Sealed-floor (record-driven recovery): user deploys are intentionally
+    // NOT purged from pending storage on mere DAG acceptance. They are
+    // retained through accept and removed only once finalized (see
+    // finalization_runner), so an accepted-but-orphaned deploy can be
+    // re-proposed via the canonical-won record before it is lost.
     let block_hash_serde = BlockHashSerde(block.block_hash.clone());
     let updated_dag = block_storage::rust::dag::buffer_dag_transition::atomic_insert_then_buffer(
         &this.block_dag_storage,
@@ -164,40 +168,6 @@ pub(crate) async fn admit_handle_valid_block<T: TransportLayer + Send + Sync>(
         ),
     )?;
     record_dag_cardinality_metrics(&updated_dag);
-
-    // Remove user deploys from pending deploy storage as soon as the block is
-    // accepted into the DAG.
-    let deploys: Vec<_> = block
-        .body
-        .deploys
-        .iter()
-        .map(|pd| pd.deploy.clone())
-        .collect();
-    if !deploys.is_empty() {
-        let deploys_count = deploys.len();
-        let block_hash = PrettyPrinter::build_string_bytes(&block.block_hash);
-        let block_number = block.body.state.block_number;
-        // Drain the cosigner-metadata sidecar in lockstep with the legacy
-        // deploy_storage. Both keyed by primary signature; identical key set
-        // by construction (sidecar is only populated by `add_deploy_cosigned`,
-        // which always also writes to `deploy_storage`).
-        {
-            let mut sidecar = this.pending_cosigner_metadata.lock();
-            for deploy in &deploys {
-                sidecar.remove(&deploy.sig);
-            }
-        }
-        // Phase 9 (A-3): `deploy_storage` is `parking_lot::Mutex` — no
-        // poison propagation, so `.lock()` returns the guard directly.
-        this.deploy_storage.lock().remove(deploys)?;
-
-        tracing::debug!(
-            "Removed {} deploys from pending pool for accepted block {} at {}.",
-            deploys_count,
-            block_hash,
-            block_number
-        );
-    }
 
     // Publish BlockAdded event
     this.event_publisher

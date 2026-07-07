@@ -1012,7 +1012,7 @@ impl SystemProcesses {
         let response = match ollama_service.chat(Some(&model), messages).await {
             Ok(response) => response,
             Err(e) => {
-                tracing::error!("Ollama chat error: {:?}", e);
+                tracing::error!(error = ?e, "Ollama chat request failed");
                 return Err(InterpreterError::NonDeterministicProcessFailure {
                     cause: Box::new(e),
                     output_not_produced: vec![],
@@ -1068,7 +1068,7 @@ impl SystemProcesses {
         let response = match ollama_service.generate(Some(&model), &prompt).await {
             Ok(response) => response,
             Err(e) => {
-                tracing::error!("Ollama generate error: {:?}", e);
+                tracing::error!(error = ?e, "Ollama generate request failed");
                 return Err(InterpreterError::NonDeterministicProcessFailure {
                     cause: Box::new(e),
                     output_not_produced: vec![],
@@ -1112,7 +1112,7 @@ impl SystemProcesses {
         let models = match ollama_service.list_models().await {
             Ok(models) => models,
             Err(e) => {
-                tracing::error!("Ollama models error: {:?}", e);
+                tracing::error!(error = ?e, "Ollama models list request failed");
                 return Err(InterpreterError::NonDeterministicProcessFailure {
                     cause: Box::new(e),
                     output_not_produced: vec![],
@@ -1254,7 +1254,7 @@ impl SystemProcesses {
         // Log the abort reason for debugging
         if let Some(arg) = args.first() {
             let str = self.pretty_printer.build_string_from_message(arg);
-            eprintln!("Execution aborted with arguments: {}", str);
+            tracing::error!(abort_args = %str, "Rholang contract execution aborted");
         }
 
         Err(InterpreterError::UserAbortError)
@@ -1271,7 +1271,6 @@ impl SystemProcesses {
         &self,
         message: (Vec<ListParWithRandom>, bool, Vec<Par>),
     ) -> Result<Vec<Par>, InterpreterError> {
-        // println!("\nhit handle_message");
         let mut printer = PrettyPrinter::new();
 
         fn clue_msg(clue: String, attempt: i64) -> String {
@@ -1377,23 +1376,23 @@ impl SystemProcesses {
 
                         match log_level.as_str() {
                             "trace" => {
-                                println!("trace: {}", msg);
+                                tracing::trace!("{}", msg);
                                 Ok(vec![])
                             }
                             "debug" => {
-                                println!("debug: {}", msg);
+                                tracing::debug!("{}", msg);
                                 Ok(vec![])
                             }
                             "info" => {
-                                println!("info: {}", msg);
+                                tracing::info!("{}", msg);
                                 Ok(vec![])
                             }
                             "warn" => {
-                                println!("warn: {}", msg);
+                                tracing::warn!("{}", msg);
                                 Ok(vec![])
                             }
                             "error" => {
-                                println!("error: {}", msg);
+                                tracing::error!("{}", msg);
                                 Ok(vec![])
                             }
                             _ => Err(illegal_argument_error("std_log")),

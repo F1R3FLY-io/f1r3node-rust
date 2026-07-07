@@ -36,6 +36,7 @@ pub struct BlockApproverProtocol<T: TransportLayer + Send + Sync + 'static> {
     pub epoch_length: i32,
     pub quarantine_length: i32,
     pub number_of_active_validators: u32,
+    pub fault_tolerance_threshold_ppm: i64,
     pub required_sigs: i32,
     pub pos_multi_sig_public_keys: Vec<String>,
     pub pos_multi_sig_quorum: u32,
@@ -63,6 +64,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
         epoch_length: i32,
         quarantine_length: i32,
         number_of_active_validators: u32,
+        fault_tolerance_threshold_ppm: i64,
         required_sigs: i32,
         pos_multi_sig_public_keys: Vec<String>,
         pos_multi_sig_quorum: u32,
@@ -103,6 +105,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
             epoch_length,
             quarantine_length,
             number_of_active_validators,
+            fault_tolerance_threshold_ppm,
             required_sigs,
             pos_multi_sig_public_keys,
             pos_multi_sig_quorum,
@@ -160,6 +163,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
         epoch_length: i32,
         quarantine_length: i32,
         number_of_active_validators: u32,
+        fault_tolerance_threshold_ppm: i64,
         shard_id: &str,
         pos_multi_sig_public_keys: &[String],
         pos_multi_sig_quorum: u32,
@@ -211,6 +215,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
             epoch_length,
             quarantine_length,
             number_of_active_validators,
+            fault_tolerance_threshold_ppm,
             pos_multi_sig_public_keys: pos_multi_sig_public_keys.to_vec(),
             pos_multi_sig_quorum,
             max_cosigners_per_deploy,
@@ -218,15 +223,15 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
             epoch_phlogiston,
         };
 
-        tracing::warn!("GENESIS DEBUG ---");
-        //        tracing::warn!("deploy_timestamp: {}", deploy_timestamp);
-        tracing::warn!("shard_id: {}", shard_id);
-        tracing::warn!("pos.minimum_bond: {}", pos_params.minimum_bond);
-        tracing::warn!("pos.maximum_bond: {}", pos_params.maximum_bond);
-        tracing::warn!("pos.epoch_length: {}", pos_params.epoch_length);
-        tracing::warn!("pos.quarantine_length: {}", pos_params.quarantine_length);
-        tracing::warn!("vaults: {:?}", vaults);
-        tracing::warn!("--------------------");
+        tracing::info!(
+            shard_id = %shard_id,
+            pos_minimum_bond = pos_params.minimum_bond,
+            pos_maximum_bond = pos_params.maximum_bond,
+            pos_epoch_length = pos_params.epoch_length,
+            pos_quarantine_length = pos_params.quarantine_length,
+            vault_count = vaults.len(),
+            "genesis parameters resolved",
+        );
 
         // Expected blessed contracts
         let genesis_blessed_contracts =
@@ -336,6 +341,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
             self.epoch_length,
             self.quarantine_length,
             self.number_of_active_validators,
+            self.fault_tolerance_threshold_ppm,
             shard_id,
             &self.pos_multi_sig_public_keys,
             self.pos_multi_sig_quorum,

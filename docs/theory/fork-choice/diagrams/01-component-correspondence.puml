@@ -1,0 +1,111 @@
+' Component Diagram 01 — Fork-choice: spec <-> Rocq <-> TLA+ <-> Z3/Sage <-> Rust.
+'
+' Each box is a fork-choice ("ghosting") component, annotated with:
+'   - the spec concern it addresses,
+'   - the Rocq module(s) + key lemmas that mechanize it,
+'   - the TLA+ module(s) that model-check it,
+'   - the Z3 / Sage / Wolfram witness (where one exists),
+'   - the Rust file that implements it.
+'
+' Unlike the finalized-floor dossier (which fixed real bugs), fork-choice is
+' LARGELY CORRECT: the tie-break is a TOTAL order (no fork), weights are exact
+' i64 (no f32 rounding), and there are only three low-severity robustness fixes
+' (B1/B2/B3) plus the empty-tips guard (B4). Validators do NOT recompute
+' fork-choice — validate.rs only bound-checks the proposer's declared parents.
+'
+' Source of truth for the traceability table in
+' docs/theory/fork-choice/fork-choice-verification.md (section 4).
+'
+' Render:
+'   plantuml -tsvg docs/theory/fork-choice/diagrams/01-component-correspondence.puml
+
+@startuml 01-component-correspondence
+!theme plain
+
+skinparam componentStyle rectangle
+skinparam component {
+  BackgroundColor #FFFFFF
+  BorderColor     #333333
+}
+skinparam package {
+  BackgroundColor<<TieBreak>> #FFF7E0
+  BackgroundColor<<Scoring>>  #EEFAF1
+  BackgroundColor<<Filter>>   #F3E5F5
+  BackgroundColor<<Lca>>      #E3F2FD
+  BackgroundColor<<Rank>>     #FFF3E0
+  BackgroundColor<<Bound>>    #EFEBE9
+  BackgroundColor<<Bridge>>   #FCE4EC
+  BackgroundColor<<Theorem>>  #E8F5E9
+  BorderColor #444444
+}
+skinparam defaultFontName "monospace"
+skinparam defaultFontSize 10
+
+title Fork-choice: spec ─ Rocq ─ TLA⁺ ─ Z3/Sage ─ Rust correspondence
+
+' Layer color legend (fill per concept):
+'   ranking / tie-break (S1 core) = gold        (#FFE082)
+'   scoring                       = mint green   (#C8E6C9)
+'   slashing filter (T-10 reuse)  = lavender     (#D1C4E9)
+'   LCA + depth filter            = sky blue     (#BBDEFB)
+'   ranking fixpoint / heaviest   = orange       (#FFE0B2)
+'   bounds / truncation           = tan/storage  (#D7CCC8)
+'   main-parent + validate bridge = pink         (#F8BBD0)
+'   capstone theorem              = strong green (#A5D6A7)
+'
+' Edge color legend:
+'   blue   (#1565C0) = feeds / read query (pipeline data flow)
+'   orange (#E65100) = produces / selects final ForkChoice
+'   gray   (#546E7A) = delegates / uses (tie-break sort)
+'   (hidden edges anchor the capstone on top)
+
+package "Capstone" <<Theorem>> {
+  component "Capstone theorems ── axiom-free\n──────────────────────────────────────\nRocq  MainTheorem.v\n  ▶ fork_choice_determinism_correct\n  ▶ fork_choice_ghost_correct\n  ▶ fork_choice_bound_correct\n  ▶ fork_choice_bridge_correct\nPrint Assumptions ⟹ Closed under the\n  global context (no Axiom / Admitted)" as CAP #A5D6A7
+}
+
+package "Slashing-filter layer (T-10 reuse)" <<Filter>> {
+  component "Invalid-message filter  slashed ⟹ 0 weight\n──────────────────────────────────────\nspec  drop invalid latest messages so\n      slashed validators add no weight\nRocq  Filter.v (invalid_excluded,\n        cites slashing/ForkChoice.v)\nRust  estimator.rs\n        (invalid_latest_messages retain)" as FIL #D1C4E9
+}
+
+package "LCA + depth-filter layer" <<Lca>> {
+  component "LCA over surviving tips + depth cap\n──────────────────────────────────────\nspec  scope band from lowest common\n      ancestor; drop tips deeper than\n      top − LATEST_MESSAGE_MAX_DEPTH (1000)\nRocq  Lca.v (lca_is_common_ancestor,\n        lca_depth_filter_deterministic)\nTLA⁺  ForkChoiceScan.tla (Inv_LcaDeterministic)\nWolfram ghost_heaviest_subtree.wl\n        (LCA-drag boundedness)\nRust  estimator.rs (calculate_lca)\n      dag_operations.rs\n        (lowest_universal_common_ancestor_many)" as LCA #BBDEFB
+}
+
+package "Scoring layer" <<Scoring>> {
+  component "Cumulative validator-weight score\n──────────────────────────────────────\nspec  Σ bonded weight over each tip's\n      supporting chain down to the LCA\nRocq  Score.v (score_perm_invariant,\n        score_eq_support_sum,\n        weight_is_pure)\nZ3    score_supply_cap_bitvec.py\nRust  estimator.rs (build_scores_map)\n      proto_util.rs\n        (weight_from_validator_by_dag ── B1)" as SCO #C8E6C9
+}
+
+package "Ranking fixpoint / heaviest-subtree" <<Rank>> {
+  component "GHOST heaviest-subtree descent\n──────────────────────────────────────\nspec  replace each block with its scored\n      children; recurse until still_same\nRocq  Rank.v (rank_terminates,\n        rank_selects_heaviest)\nWolfram ghost_heaviest_subtree.wl\nRust  estimator.rs (rank_forkchoices)" as RNK #FFE0B2
+}
+
+package "Ranking / tie-break  (S1 core)" <<TieBreak>> {
+  component "TOTAL tie-break  score DESC, hash ASC\n──────────────────────────────────────\nspec  the unique argmax ⟹ NO FORK\nRocq  TieBreak.v (sort_total_order,\n        output_indep_of_input_perm)\nTLA⁺  ForkChoice.tla (Inv_Deterministic)\nZ3    tiebreak_total_order.py\nSage  forkchoice_algebra.sage\nRust  list_ops.rs\n        (sort_by_with_decreasing_order)\n      estimator.rs (rank_forkchoices)" as TIE #FFE082
+}
+
+package "Bounds / truncation layer" <<Bound>> {
+  component "Depth + parent-count truncation\n──────────────────────────────────────\nspec  keep the main tip; drop deep or\n      surplus parents (cast-safe cap)\nRocq  Bound.v (head_preserved,\n        take_never_drops_head,\n        empty_tips_typed_err)\nRust  estimator.rs\n        (filter_deep_parents, take ── B2/B4)" as BND #D7CCC8
+}
+
+package "Main-parent + validation bridge" <<Bridge>> {
+  component "Main-parent select + validate bound\n──────────────────────────────────────\nspec  proposer picks ghost main parent;\n      validators only BOUND-CHECK it\nRocq  GuardBridge.v\n        (validation_implies_wf_dag,\n         main_parent_first_deterministic,\n         honest_forkchoice_parents_validate)\nRust  snapshot.rs (ghost_main_parent,\n        proposer-side)\n      validate.rs (parents ──\n        bound-check only, NOT a recompute)" as BRG #F8BBD0
+}
+
+' === Explicit (visible) pipeline edges (Estimator::tips order) ===
+FIL -[#1565C0]-> LCA : surviving\nlatest messages
+LCA -[#1565C0]-> SCO : LCA + scored band
+SCO -[#1565C0]-> RNK : scores map
+RNK -[#546E7A]-> TIE : sort children\n(score desc, hash asc)
+RNK -[#1565C0]-> BND : ranked tips
+BND -[#E65100]-> BRG : capped tips ⟹\nForkChoice { tips, lca }
+
+' === Hidden edges: anchor the capstone on top, connected to all ===
+CAP -[hidden]-> FIL
+CAP -[hidden]-> LCA
+CAP -[hidden]-> SCO
+CAP -[hidden]-> RNK
+CAP -[hidden]-> TIE
+CAP -[hidden]-> BND
+CAP -[hidden]-> BRG
+
+@enduml

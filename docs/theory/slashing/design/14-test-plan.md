@@ -956,8 +956,9 @@ The test suite is considered **exhaustive** when:
    T-10 (`fork_choice_exclusion`) is exercised by example test UC-01
    rather than a dedicated property test.
 3. **InvalidBlock variant coverage:** All 17 pre-fix slashable +
-   1 post-fix slashable = 18 slashable variants are exercised
-   (Tier B + Core + Tier A tests).
+   2 post-fix slashable (`IgnorableEquivocation`,
+   `UnauthorizedSlashDeploy`) = 19 slashable variants (of 27 total) are
+   exercised (Tier B + Core + Tier A tests).
 4. **TLA+ invariant coverage:** All cited invariants have a
    passing model-check run.
 5. **Pre-fix counter-example coverage:** Every documented bug

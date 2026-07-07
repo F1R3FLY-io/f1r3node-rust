@@ -35,10 +35,17 @@ Validator `v` *equivocates* at sequence number `s` in DAG state
 `D` iff there exist two distinct blocks `b₁, b₂ ∈ D` with
 `sender(bᵢ) = v`, `seq(bᵢ) = s`, and `hash(b₁) ≠ hash(b₂)`.
 
-We write `equivocates(D, v, s) : Prop` for the predicate. Rocq:
+We write `equivocates(D, v, s) : Prop` for this same-seq predicate. Rocq:
 `DAGState.v:106` (`equivocates`); the boolean counterpart
-`equivocates_b` (`DAGState.v:99`) is proven equivalent at
-`equivocates_dec` (line 109).
+`equivocates_b` (`DAGState.v:99`) is proven decidable at
+`equivocates_dec` (line 109). **Note (FV audit #2):** this same-seq notion
+is *auxiliary* — the Rust detector `check_equivocations`
+(`equivocation_detector.rs:86-89`) instead compares the arriving block's
+creator-justification pointer against the sender's latest-message pointer
+(`creator_justification == latest_message`). The mechanized detector is
+modelled over that **pointer** notion, `equivocates_ptr`
+(`EquivocationDetector.v`); the two provably diverge
+(`equivocates_ptr_diverges_from_seq_count`).
 
 ### Definition 4.2 (Requested as dependency)
 
@@ -145,7 +152,7 @@ The end-to-end flow for an admissible equivocation:
 ## 4.4 The detection algorithm — literate pseudocode
 
 The detector is the `check_equivocations` function in
-`equivocation_detector.rs:24-104`. Here is the algorithm in literate
+`equivocation_detector.rs:78-124`. Here is the algorithm in literate
 style.
 
 We begin by extracting what we need from the input block. The
@@ -197,7 +204,7 @@ are recorded identically.
 ## 4.5 The dispatcher — what happens after `detect`
 
 The `MultiParentCasperImpl.handle_invalid_block` dispatcher (Rust:
-`engine/multi_parent_casper/mod.rs:1018-1112`) receives the verdict and
+`engine/multi_parent_casper/validation_dispatcher.rs:403`) receives the verdict and
 decides what to do. The relevant branches:
 
 ```
@@ -240,7 +247,7 @@ The data flow that powers neglect detection:
 
 [![Diagram 08 — Justifications → neglect detection](../diagrams/08-dataflow-justifications-to-neglect.svg)](../diagrams/08-dataflow-justifications-to-neglect.svg)
 
-The validate-time logic at `validate.rs:989-1030`:
+The validate-time logic at `validate.rs:1323-1366`:
 
 ```
 for each justification j ∈ b_B.justifications:

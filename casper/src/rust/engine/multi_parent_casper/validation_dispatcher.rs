@@ -131,7 +131,15 @@ async fn run_validation_steps<T: TransportLayer + Send + Sync>(
         let (bonds_cache_result, t3) = timed_step(
             "bonds-cache",
             BLOCK_VALIDATION_STEP_BONDS_CACHE_TIME_METRIC,
-            async { Ok(Validate::bonds_cache(block, &this.runtime_manager).await) },
+            async {
+                Ok(Validate::bonds_cache_from_floor(
+                    block,
+                    &this.block_store,
+                    snapshot,
+                    &this.runtime_manager,
+                )
+                .await)
+            },
         )
         .await?;
         tracing::debug!(target: "f1r3fly.casper", "bonds-cache-validated");
@@ -316,7 +324,12 @@ pub(crate) async fn dispatch_validate_self_created<T: TransportLayer + Send + Sy
             PrettyPrinter::build_string_no_limit(&block.body.state.pre_state_hash),
             PrettyPrinter::build_string_bytes(&block.block_hash),
         );
-        tracing::error!("{}", msg);
+        tracing::error!(
+            block_hash = %PrettyPrinter::build_string_bytes(&block.block_hash),
+            expected = %PrettyPrinter::build_string_no_limit(&pre_state_hash),
+            actual = %PrettyPrinter::build_string_no_limit(&block.body.state.pre_state_hash),
+            "self-created block pre_state_hash mismatch"
+        );
         return Ok(Either::Left(BlockError::BlockException(
             CasperError::RuntimeError(msg),
         )));
@@ -328,7 +341,12 @@ pub(crate) async fn dispatch_validate_self_created<T: TransportLayer + Send + Sy
             PrettyPrinter::build_string_no_limit(&block.body.state.post_state_hash),
             PrettyPrinter::build_string_bytes(&block.block_hash),
         );
-        tracing::error!("{}", msg);
+        tracing::error!(
+            block_hash = %PrettyPrinter::build_string_bytes(&block.block_hash),
+            expected = %PrettyPrinter::build_string_no_limit(&post_state_hash),
+            actual = %PrettyPrinter::build_string_no_limit(&block.body.state.post_state_hash),
+            "self-created block post_state_hash mismatch"
+        );
         return Ok(Either::Left(BlockError::BlockException(
             CasperError::RuntimeError(msg),
         )));

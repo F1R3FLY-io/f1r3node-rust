@@ -75,6 +75,55 @@ fn parse_all_tuple(par: &Par) -> Option<(String, String, u32)> {
     Some((name, symbol, decimals as u32))
 }
 
+const FAULT_TOLERANCE_THRESHOLD_QUERY: &str = r#"
+    new ret, rl(`rho:registry:lookup`), posCh in {
+      rl!(`rho:system:pos`, *posCh) |
+      for (@(_, PoS) <- posCh) {
+        @PoS!("getFaultToleranceThreshold", *ret)
+      }
+    }
+"#;
+
+/// Queries the on-chain PoS `getFaultToleranceThreshold` and returns the exact,
+/// range-checked ppm numerator (θ = ppm / 1_000_000). This is the EXACT source
+/// of truth for the finalization DECISION; the `f32` sibling below is
+/// display-only.
+pub async fn read_on_chain_fault_tolerance_threshold_ppm(
+    runtime_manager: &RuntimeManager,
+    post_state_hash: &StateHash,
+) -> Result<i64, CasperError> {
+    let (result, _cost) = runtime_manager
+        .play_exploratory_deploy(FAULT_TOLERANCE_THRESHOLD_QUERY.to_string(), post_state_hash)
+        .await?;
+
+    let ppm = result.first().and_then(RhoNumber::unapply).ok_or_else(|| {
+        CasperError::RuntimeError(
+            "PoS getFaultToleranceThreshold returned no value or a non-integer".to_string(),
+        )
+    })?;
+
+    if !(-1_000_000..=1_000_000).contains(&ppm) {
+        return Err(CasperError::RuntimeError(format!(
+            "on-chain fault-tolerance-threshold ppm out of range [-1000000, 1000000]: {}",
+            ppm
+        )));
+    }
+
+    Ok(ppm)
+}
+
+/// LOSSY `f32` view of the on-chain ppm threshold. Retained for display /
+/// back-compat; the exact DECISION path uses
+/// [`read_on_chain_fault_tolerance_threshold_ppm`].
+pub async fn read_on_chain_fault_tolerance_threshold(
+    runtime_manager: &RuntimeManager,
+    post_state_hash: &StateHash,
+) -> Result<f32, CasperError> {
+    let ppm =
+        read_on_chain_fault_tolerance_threshold_ppm(runtime_manager, post_state_hash).await?;
+    Ok((ppm as f64 / 1_000_000.0) as f32)
+}
+
 /// Compares the on-chain token metadata against the node's local config.
 /// Returns `Err` with a descriptive message if any field disagrees.
 ///

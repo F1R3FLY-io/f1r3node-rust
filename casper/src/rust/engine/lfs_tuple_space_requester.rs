@@ -174,6 +174,13 @@ impl<Key: Hash + Eq + Clone> ST<Key> {
     ///
     /// **Scala equivalent**: `def isFinished: Boolean`
     pub fn is_finished(&self) -> bool { !self.d.values().any(|status| *status != ReqStatus::Done) }
+
+    pub fn done_count(&self) -> usize {
+        self.d
+            .values()
+            .filter(|status| **status == ReqStatus::Done)
+            .count()
+    }
 }
 
 /// Stream processor for tuple space requester operations
@@ -399,8 +406,15 @@ impl<T: TupleSpaceRequesterOps> TupleSpaceStreamProcessor<T> {
                 })
                 .collect();
 
-            // Execute all requests in parallel, short-circuit on first error
-            futures::future::try_join_all(request_futures).await?;
+            let results = futures::future::join_all(request_futures).await;
+            let failed = results.iter().filter(|result| result.is_err()).count();
+            if failed > 0 {
+                tracing::warn!(
+                    "LFS tuple-space: {}/{} chunk send(s) failed; paths remain pending for resend",
+                    failed,
+                    results.len()
+                );
+            }
 
             tracing::debug!("Completed broadcasting state chunk requests");
         }
@@ -525,7 +539,14 @@ pub async fn stream<T: TupleSpaceRequesterOps>(
     request_timeout: Duration,
     request_ops: T,
     state_importer: Arc<dyn RSpaceImporter>,
-) -> Result<impl Stream<Item = ST<StatePartPath>>, CasperError> {
+    overall_deadline: Duration,
+) -> Result<
+    (
+        impl Stream<Item = ST<StatePartPath>>,
+        Arc<Mutex<Option<CasperError>>>,
+    ),
+    CasperError,
+> {
     use crate::rust::util::proto_util;
 
     // 1. Extract state hash (Scala: Blake2b256Hash.fromByteString(ProtoUtil.postStateHash(approvedBlock.candidate.block)))
@@ -558,6 +579,8 @@ pub async fn stream<T: TupleSpaceRequesterOps>(
 
     // Default max timeout is 128 seconds
     let max_request_timeout = Duration::from_secs(128);
+    let last_error: Arc<Mutex<Option<CasperError>>> = Arc::new(Mutex::new(None));
+    let last_error_for_stream = last_error.clone();
 
     // 7. Create and return the main stream (Scala: createStream equivalent)
     let stream = async_stream::stream! {
@@ -566,6 +589,8 @@ pub async fn stream<T: TupleSpaceRequesterOps>(
         // resets to request_timeout when a response is received.
         let mut current_timeout = request_timeout;
         let mut idle_timeout = Box::pin(tokio::time::sleep(current_timeout));
+        let mut last_progress = std::time::Instant::now();
+        let mut last_done: usize = 0;
 
         // Main stream processing loop (Scala: requestStream.evalMap(_ => st.get).onIdle(...).terminateAfter(...) concurrently responseStream)
         loop {
@@ -593,10 +618,8 @@ pub async fn stream<T: TupleSpaceRequesterOps>(
                             tracing::debug!("Store items message processed successfully");
                         }
                         Err(e) => {
-                            tracing::error!("Failed to process store items message: {:?}", e);
-                            // On validation or processing error, terminate the stream
-                            // Scala equivalent: Stream fails with validation error and terminates
-                            tracing::error!("Stream terminating due to store items processing error");
+                            tracing::error!(error = ?e, "store items message processing failed; terminating stream");
+                            *last_error_for_stream.lock().expect("last_error lock") = Some(e);
                             break;
                         }
                     }
@@ -606,11 +629,17 @@ pub async fn stream<T: TupleSpaceRequesterOps>(
                         match st.lock() {
                             Ok(state) => state.clone(),
                             Err(e) => {
-                                tracing::error!("Failed to acquire state lock for response processing: {:?}", e);
+                                tracing::error!(error = ?e, "state lock acquisition failed during response processing");
                                 continue;
                             }
                         }
                     };
+
+                    let done = current_state.done_count();
+                    if done > last_done {
+                        last_done = done;
+                        last_progress = std::time::Instant::now();
+                    }
 
                     // Check termination condition
                     let is_finished = current_state.is_finished();
@@ -636,7 +665,7 @@ pub async fn stream<T: TupleSpaceRequesterOps>(
                             tracing::debug!("Request processing completed (resend: {})", resend_flag);
                         }
                         Err(e) => {
-                            tracing::error!("Failed to process request: {:?}", e);
+                            tracing::error!(error = ?e, "tuple space request processing failed");
                             // Continue processing other arms instead of breaking
                             continue;
                         }
@@ -647,7 +676,7 @@ pub async fn stream<T: TupleSpaceRequesterOps>(
                         match st.lock() {
                             Ok(state) => state.clone(),
                             Err(e) => {
-                                tracing::error!("Failed to acquire state lock: {:?}", e);
+                                tracing::error!(error = ?e, "state lock acquisition failed during request processing");
                                 continue;
                             }
                         }
@@ -670,10 +699,26 @@ pub async fn stream<T: TupleSpaceRequesterOps>(
 
                 // Timeout handling with exponential backoff (Scala: .onIdleWithBackoff)
                 _ = &mut idle_timeout => {
+                    let stalled_for = last_progress.elapsed();
+                    if stalled_for >= overall_deadline {
+                        tracing::error!(
+                            "LFS tuple-space: no progress for {:?} (deadline {:?}); giving up",
+                            stalled_for,
+                            overall_deadline
+                        );
+                        *last_error_for_stream.lock().expect("last_error lock") =
+                            Some(CasperError::RuntimeError(format!(
+                                "LFS tuple-space: peer made no progress within {:?}",
+                                overall_deadline
+                            )));
+                        break;
+                    }
                     let next_timeout = current_timeout.saturating_mul(2).min(max_request_timeout);
                     tracing::warn!(
-                        "No tuple space state responses for {:?}. Resending requests. (backoff: {:?} -> {:?})",
+                        "No tuple space state responses for {:?} (stalled {:?} of {:?}). Resending requests. (backoff: {:?} -> {:?})",
                         current_timeout,
+                        stalled_for,
+                        overall_deadline,
                         current_timeout,
                         next_timeout
                     );
@@ -687,7 +732,7 @@ pub async fn stream<T: TupleSpaceRequesterOps>(
                             idle_timeout = Box::pin(tokio::time::sleep(current_timeout));
                         }
                         Err(e) => {
-                            tracing::error!("Failed to enqueue resend request - channel error or full: {:?}", e);
+                            tracing::error!(error = ?e, "resend request enqueue failed: channel error or full");
                             tracing::warn!("Request queue channel appears closed or full, checking if stream should terminate");
 
                             // Check if we should terminate gracefully
@@ -695,7 +740,7 @@ pub async fn stream<T: TupleSpaceRequesterOps>(
                                 match st.lock() {
                                     Ok(state) => state.is_finished(),
                                     Err(_) => {
-                                        tracing::error!("Cannot acquire state lock to check termination condition");
+                                        tracing::error!("state lock acquisition failed while checking stream termination");
                                         true // Assume termination if we can't check state
                                     }
                                 }
@@ -734,7 +779,7 @@ pub async fn stream<T: TupleSpaceRequesterOps>(
                     Some(state.clone())
                 }
                 Err(e) => {
-                    tracing::error!("Failed to acquire final state lock: {:?}", e);
+                    tracing::error!(error = ?e, "final state lock acquisition failed");
                     None
                 }
             }
@@ -748,5 +793,5 @@ pub async fn stream<T: TupleSpaceRequesterOps>(
         tracing::info!("LFS Tuple Space Requester stream processing completed");
     };
 
-    Ok(stream)
+    Ok((stream, last_error))
 }

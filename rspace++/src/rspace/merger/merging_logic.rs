@@ -35,13 +35,32 @@ pub type NumberChannelsDiff = BTreeMap<Blake2b256Hash, (i64, MergeType)>;
 
 /// Combine two values according to the strategy. Used by
 /// `EventLogIndex::combine` to aggregate diffs within a chain and by the merge
-/// engine to combine across chains. For `IntegerAdd` semantics, this performs
-/// wrapping addition; for `BitmaskOr` it performs a bitwise OR through `u64`.
-pub fn combine_mergeable_value(a: i64, b: i64, merge_type: MergeType) -> i64 {
-    match merge_type {
-        MergeType::IntegerAdd => a.wrapping_add(b),
-        MergeType::BitmaskOr => ((a as u64) | (b as u64)) as i64,
-    }
+/// engine to combine across chains.
+///
+/// `IntegerAdd` is OVERFLOW-CHECKED: it returns `None` when the addition would
+/// wrap `i64`, so the caller REJECTS the branch ("fails loudly") instead of
+/// laundering a silently-wrapped value past the apply-time `checked_add >= 0`
+/// gate in `conflict_set_merger::cal_merged_result`. (A wrapped combine could
+/// otherwise produce an in-range/non-negative value that the apply gate accepts
+/// with a wrong result — see IntegerAdd.v `launder_exhibit` / the Z3 BitVec-64
+/// cross-witness.) `BitmaskOr` is a bitwise OR through `u64` and never overflows,
+/// so it always returns `Some`.
+pub fn combine_mergeable_value(a: i64, b: i64, merge_type: MergeType) -> Option<i64> {
+    let result = match merge_type {
+        MergeType::IntegerAdd => a.checked_add(b),
+        MergeType::BitmaskOr => Some(((a as u64) | (b as u64)) as i64),
+    };
+    tracing::debug!(
+        target: "f1r3fly.merge.step",
+        step = "combine_mergeable_value.FOLD",
+        a,
+        b,
+        merge_type = ?merge_type,
+        result = ?result,
+        overflow = result.is_none(),
+        "fold two mergeable number-channel values"
+    );
+    result
 }
 
 /// If target depends on source.
@@ -82,12 +101,54 @@ pub fn depends(target: &EventLogIndex, source: &EventLogIndex) -> bool {
             .collect(),
     );
 
-    !produces_depends.0.is_empty() || !consumes_depends.0.is_empty()
+    let result = !produces_depends.0.is_empty() || !consumes_depends.0.is_empty();
+
+    if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
+        let produce_dep_channels: Vec<String> = produces_depends
+            .0
+            .iter()
+            .map(|p| hex::encode(p.channel_hash.clone().bytes()))
+            .collect();
+        let consume_dep_channels: Vec<String> = consumes_depends
+            .0
+            .iter()
+            .flat_map(|c| {
+                c.channel_hashes
+                    .iter()
+                    .map(|h| hex::encode(h.clone().bytes()))
+            })
+            .collect();
+        tracing::debug!(
+            target: "f1r3fly.merge.step",
+            step = "depends.EXIT",
+            produces_source = produces_source.0.len(),
+            produces_target = produces_target.0.len(),
+            consumes_source = consumes_source.0.len(),
+            consumes_target = consumes_target.0.len(),
+            produce_depends = produces_depends.0.len(),
+            consume_depends = consumes_depends.0.len(),
+            produce_dep_channels = ?produce_dep_channels,
+            consume_dep_channels = ?consume_dep_channels,
+            result,
+            "target depends on source iff a shared produce or consume links them"
+        );
+    }
+
+    result
 }
 
 /// If two event logs are conflicting.
 pub fn are_conflicting(a: &EventLogIndex, b: &EventLogIndex) -> bool {
-    !conflicts(a, b).0.is_empty()
+    let conflicting_channels = conflicts(a, b);
+    let result = !conflicting_channels.0.is_empty();
+    tracing::debug!(
+        target: "f1r3fly.merge.step",
+        step = "are_conflicting.EXIT",
+        conflict_channels = conflicting_channels.0.len(),
+        result,
+        "two indices conflict iff conflicts() is non-empty"
+    );
+    result
 }
 
 /// Debug version that returns the reason for conflict.
@@ -199,6 +260,22 @@ pub fn conflict_reason(a: &EventLogIndex, b: &EventLogIndex) -> Option<String> {
 
 /// Channels conflicting between a pair of event logs.
 pub fn conflicts(a: &EventLogIndex, b: &EventLogIndex) -> HashableSet<Blake2b256Hash> {
+    tracing::debug!(
+        target: "f1r3fly.merge.step",
+        step = "conflicts.ENTER",
+        a_produces_consumed = a.produces_consumed.0.len(),
+        a_consumes_produced = a.consumes_produced.0.len(),
+        a_produces_mergeable = a.produces_mergeable.0.len(),
+        a_consumes_mergeable = a.consumes_mergeable.0.len(),
+        a_produces_touching_base_joins = a.produces_touching_base_joins.0.len(),
+        b_produces_consumed = b.produces_consumed.0.len(),
+        b_consumes_produced = b.consumes_produced.0.len(),
+        b_produces_mergeable = b.produces_mergeable.0.len(),
+        b_consumes_mergeable = b.consumes_mergeable.0.len(),
+        b_produces_touching_base_joins = b.produces_touching_base_joins.0.len(),
+        "conflict check between two branch event-log indices"
+    );
+
     // Check #1
     // If the same produce or consume is destroyed in COMM in both branches, this
     // might be a race. All events created in event logs are unique, this match
@@ -253,12 +330,57 @@ pub fn conflicts(a: &EventLogIndex, b: &EventLogIndex) -> HashableSet<Blake2b256
             .cloned()
             .collect();
 
+        if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
+            let consume_race_channels: Vec<String> = consume_races
+                .iter()
+                .flat_map(|c| {
+                    c.channel_hashes
+                        .iter()
+                        .map(|h| hex::encode(h.clone().bytes()))
+                })
+                .collect();
+            let produce_race_channels: Vec<String> = produce_races
+                .iter()
+                .map(|p| hex::encode(p.channel_hash.clone().bytes()))
+                .collect();
+            tracing::debug!(
+                target: "f1r3fly.merge.step",
+                step = "conflicts.RACE_IO",
+                // consumes_produced ∩
+                shared_consumes = shared_consumes.0.len(),
+                // consumes_mergeable ∩
+                mergeable_consumes = mergeable_consumes.0.len(),
+                // produces_consumed ∩
+                shared_produces = shared_produces.0.len(),
+                // produces_mergeable ∩
+                mergeable_produces = mergeable_produces.0.len(),
+                consume_races = consume_races.len(),
+                produce_races = produce_races.len(),
+                consume_race_channels = ?consume_race_channels,
+                produce_race_channels = ?produce_race_channels,
+                "check #1: same non-persistent IO event destroyed in both branches (minus both-mergeable)"
+            );
+        }
+
         let mut result = HashSet::new();
         for consume in consume_races {
             result.extend(consume.channel_hashes.iter().cloned());
         }
         for produce in produce_races {
             result.insert(produce.channel_hash.clone());
+        }
+        if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
+            let channels: Vec<String> = result
+                .iter()
+                .map(|h| hex::encode(h.clone().bytes()))
+                .collect();
+            tracing::debug!(
+                target: "f1r3fly.merge.step",
+                step = "conflicts.RACE_IO.RESULT",
+                conflict_channels = result.len(),
+                channels = ?channels,
+                "check #1 conflicting channels"
+            );
         }
         result
     };
@@ -290,6 +412,19 @@ pub fn conflicts(a: &EventLogIndex, b: &EventLogIndex) -> HashableSet<Blake2b256
 
         let mut result = check(a, b);
         result.extend(check(b, a));
+        if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
+            let channels: Vec<String> = result
+                .iter()
+                .map(|h| hex::encode(h.clone().bytes()))
+                .collect();
+            tracing::debug!(
+                target: "f1r3fly.merge.step",
+                step = "conflicts.POTENTIAL_COMMS",
+                conflict_channels = result.len(),
+                channels = ?channels,
+                "check #2: surviving produce channel matches a surviving consume channel across branches"
+            );
+        }
         result
     };
 
@@ -306,6 +441,19 @@ pub fn conflicts(a: &EventLogIndex, b: &EventLogIndex) -> HashableSet<Blake2b256
         {
             result.insert(produce.channel_hash.clone());
         }
+        if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
+            let channels: Vec<String> = result
+                .iter()
+                .map(|h| hex::encode(h.clone().bytes()))
+                .collect();
+            tracing::debug!(
+                target: "f1r3fly.merge.step",
+                step = "conflicts.PRODUCE_TOUCH_BASE_JOIN",
+                conflict_channels = result.len(),
+                channels = ?channels,
+                "check #3: produces touching a base join force a conflict"
+            );
+        }
         result
     };
 
@@ -314,6 +462,19 @@ pub fn conflicts(a: &EventLogIndex, b: &EventLogIndex) -> HashableSet<Blake2b256
     all_conflicts.extend(races_for_same_io_event);
     all_conflicts.extend(potential_comms);
     all_conflicts.extend(produce_touch_base_join);
+    if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
+        let channels: Vec<String> = all_conflicts
+            .iter()
+            .map(|h| hex::encode(h.clone().bytes()))
+            .collect();
+        tracing::debug!(
+            target: "f1r3fly.merge.step",
+            step = "conflicts.EXIT",
+            conflict_channels = all_conflicts.len(),
+            channels = ?channels,
+            "final union of all conflicting channels (decides keep-one)"
+        );
+    }
     HashableSet(all_conflicts)
 }
 
@@ -329,18 +490,35 @@ pub fn produces_created(e: &EventLogIndex) -> HashableSet<Produce> {
     for produce in &e.produces_copied_by_peek.0 {
         result.remove(produce);
     }
+    tracing::debug!(
+        target: "f1r3fly.merge.step",
+        step = "produces_created.EXIT",
+        produces_linear = e.produces_linear.0.len(),
+        produces_persistent = e.produces_persistent.0.len(),
+        produces_copied_by_peek = e.produces_copied_by_peek.0.len(),
+        created = result.len(),
+        "produces created inside the event log (linear ∪ persistent − copied-by-peek)"
+    );
     HashableSet(result)
 }
 
 /// Consume created inside event log.
 pub fn consumes_created(e: &EventLogIndex) -> HashableSet<Consume> {
-    HashableSet(
-        e.consumes_linear_and_peeks
-            .0
-            .union(&e.consumes_persistent.0)
-            .cloned()
-            .collect(),
-    )
+    let result: HashSet<Consume> = e
+        .consumes_linear_and_peeks
+        .0
+        .union(&e.consumes_persistent.0)
+        .cloned()
+        .collect();
+    tracing::debug!(
+        target: "f1r3fly.merge.step",
+        step = "consumes_created.EXIT",
+        consumes_linear_and_peeks = e.consumes_linear_and_peeks.0.len(),
+        consumes_persistent = e.consumes_persistent.0.len(),
+        created = result.len(),
+        "consumes created inside the event log (linear-and-peeks ∪ persistent)"
+    );
+    HashableSet(result)
 }
 
 /// Produces that are created inside event log and not destroyed via COMM inside
@@ -357,12 +535,21 @@ pub fn produces_created_and_not_destroyed(e: &EventLogIndex) -> HashableSet<Prod
         .cloned()
         .collect();
 
-    HashableSet(
-        combined
-            .difference(&e.produces_copied_by_peek.0)
-            .cloned()
-            .collect(),
-    )
+    let result: HashSet<Produce> = combined
+        .difference(&e.produces_copied_by_peek.0)
+        .cloned()
+        .collect();
+    tracing::debug!(
+        target: "f1r3fly.merge.step",
+        step = "produces_created_and_not_destroyed.EXIT",
+        produces_linear = e.produces_linear.0.len(),
+        produces_consumed = e.produces_consumed.0.len(),
+        produces_persistent = e.produces_persistent.0.len(),
+        produces_copied_by_peek = e.produces_copied_by_peek.0.len(),
+        survived = result.len(),
+        "produces created and not internally destroyed via COMM"
+    );
+    HashableSet(result)
 }
 
 /// Consumes that are created inside event log and not destroyed via COMM inside
@@ -375,12 +562,20 @@ pub fn consumes_created_and_not_destroyed(e: &EventLogIndex) -> HashableSet<Cons
         .cloned()
         .collect();
 
-    HashableSet(
-        linear_not_produced
-            .union(&e.consumes_persistent.0)
-            .cloned()
-            .collect(),
-    )
+    let result: HashSet<Consume> = linear_not_produced
+        .union(&e.consumes_persistent.0)
+        .cloned()
+        .collect();
+    tracing::debug!(
+        target: "f1r3fly.merge.step",
+        step = "consumes_created_and_not_destroyed.EXIT",
+        consumes_linear_and_peeks = e.consumes_linear_and_peeks.0.len(),
+        consumes_produced = e.consumes_produced.0.len(),
+        consumes_persistent = e.consumes_persistent.0.len(),
+        survived = result.len(),
+        "consumes created and not internally destroyed via COMM"
+    );
+    HashableSet(result)
 }
 
 /// Produces that are affected by event log - locally created + external
@@ -396,13 +591,20 @@ pub fn produces_affected(e: &EventLogIndex) -> HashableSet<Produce> {
             .collect(),
     );
 
-    HashableSet(
-        produces_created_and_not_destroyed(e)
-            .0
-            .union(&external_produces_destroyed.0)
-            .cloned()
-            .collect(),
-    )
+    let result: HashSet<Produce> = produces_created_and_not_destroyed(e)
+        .0
+        .union(&external_produces_destroyed.0)
+        .cloned()
+        .collect();
+    tracing::debug!(
+        target: "f1r3fly.merge.step",
+        step = "produces_affected.EXIT",
+        created = created.0.len(),
+        external_destroyed = external_produces_destroyed.0.len(),
+        affected = result.len(),
+        "produces affected = created-and-not-destroyed ∪ external non-persistent destroyed"
+    );
+    HashableSet(result)
 }
 
 /// Consumes that are affected by event log - locally created + external
@@ -418,13 +620,20 @@ pub fn consumes_affected(e: &EventLogIndex) -> HashableSet<Consume> {
             .collect(),
     );
 
-    HashableSet(
-        consumes_created_and_not_destroyed(e)
-            .0
-            .union(&external_consumes_destroyed.0)
-            .cloned()
-            .collect(),
-    )
+    let result: HashSet<Consume> = consumes_created_and_not_destroyed(e)
+        .0
+        .union(&external_consumes_destroyed.0)
+        .cloned()
+        .collect();
+    tracing::debug!(
+        target: "f1r3fly.merge.step",
+        step = "consumes_affected.EXIT",
+        created = created.0.len(),
+        external_destroyed = external_consumes_destroyed.0.len(),
+        affected = result.len(),
+        "consumes affected = created-and-not-destroyed ∪ external non-persistent destroyed"
+    );
+    HashableSet(result)
 }
 
 /// If produce is copied by peek in one index and originated in another - it is
@@ -449,13 +658,27 @@ pub fn combine_produces_copied_by_peek(
             .collect(),
     );
 
-    HashableSet(
-        combined_copied_by_peek
-            .0
-            .difference(&combined_created.0)
-            .cloned()
-            .collect(),
-    )
+    let result: HashSet<Produce> = combined_copied_by_peek
+        .0
+        .difference(&combined_created.0)
+        .cloned()
+        .collect();
+    if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
+        let channels: Vec<String> = result
+            .iter()
+            .map(|p| hex::encode(p.channel_hash.clone().bytes()))
+            .collect();
+        tracing::debug!(
+            target: "f1r3fly.merge.step",
+            step = "combine_produces_copied_by_peek.EXIT",
+            combined_copied_by_peek = combined_copied_by_peek.0.len(),
+            combined_created = combined_created.0.len(),
+            result = result.len(),
+            channels = ?channels,
+            "produces copied-by-peek in aggregate but not created in either index"
+        );
+    }
+    HashableSet(result)
 }
 
 /// Arrange list[v] into map v -> Vec[v] for items that match predicate.
@@ -472,6 +695,7 @@ pub fn compute_relation_map<A: Eq + std::hash::Hash + Clone + PartialOrd>(
         .map(|item| (item.clone(), HashableSet(HashSet::new())))
         .collect();
 
+    let mut related_pairs = 0usize;
     for item1 in items.0.iter() {
         for item2 in items.0.iter() {
             // Skip self-comparisons and duplicated comparisons
@@ -480,6 +704,7 @@ pub fn compute_relation_map<A: Eq + std::hash::Hash + Clone + PartialOrd>(
             }
 
             if relation(item1, item2) || relation(item2, item1) {
+                related_pairs += 1;
                 if let Some(set1) = init.get_mut(item1) {
                     set1.0.insert(item2.clone());
                 }
@@ -490,6 +715,13 @@ pub fn compute_relation_map<A: Eq + std::hash::Hash + Clone + PartialOrd>(
         }
     }
 
+    tracing::debug!(
+        target: "f1r3fly.merge.step",
+        step = "compute_relation_map.EXIT",
+        items = items.0.len(),
+        related_pairs,
+        "non-directional relation map over items"
+    );
     init
 }
 
@@ -531,6 +763,13 @@ where
         "branches and event_logs must be parallel arrays of the same length"
     );
     let n = branches.len();
+
+    tracing::debug!(
+        target: "f1r3fly.merge.step",
+        step = "compute_conflict_map_event_indexed.ENTER",
+        branches = n,
+        "event-indexed conflict map over branch event logs"
+    );
 
     // Initialize result with every branch as a key holding an empty conflict
     // set — preserves the invariant set by `compute_relation_map`.
@@ -705,6 +944,22 @@ where
         }
     }
 
+    if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
+        let comm_channels: Vec<String> = unconsumed_produces_by_channel
+            .keys()
+            .filter(|ch| unconsumed_consumes_by_channel.contains_key(*ch))
+            .map(|ch| hex::encode((**ch).clone().bytes()))
+            .collect();
+        tracing::debug!(
+            target: "f1r3fly.merge.step",
+            step = "compute_conflict_map_event_indexed.PAIRS",
+            conflict_pairs = ?pairs,
+            global_branches = ?global_branches,
+            potential_comm_channels = ?comm_channels,
+            "conflicting (lo,hi) index pairs from event-indexed checks"
+        );
+    }
+
     // Populate result map. HashSet inserts dedupe so duplicate pairs are
     // safe; we don't need to sort or dedupe `pairs` first.
     for (a, b) in pairs {
@@ -718,6 +973,13 @@ where
         }
     }
 
+    tracing::debug!(
+        target: "f1r3fly.merge.step",
+        step = "compute_conflict_map_event_indexed.EXIT",
+        branches = n,
+        conflicting_keys = result.values().filter(|s| !s.0.is_empty()).count(),
+        "branches with at least one conflict"
+    );
     result
 }
 
@@ -746,6 +1008,13 @@ where
         "branches and event_logs must be parallel arrays of the same length"
     );
     let n = branches.len();
+
+    tracing::debug!(
+        target: "f1r3fly.merge.step",
+        step = "compute_depends_map_event_indexed.ENTER",
+        branches = n,
+        "event-indexed dependency map over branch event logs"
+    );
 
     let mut result: HashMap<R, HashableSet<R>> = branches
         .iter()
@@ -843,6 +1112,15 @@ where
         }
     }
 
+    if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
+        tracing::debug!(
+            target: "f1r3fly.merge.step",
+            step = "compute_depends_map_event_indexed.PAIRS",
+            depends_pairs = ?pairs,
+            "dependency (lo,hi) index pairs linked by a shared produce/consume"
+        );
+    }
+
     for (a, b) in pairs {
         let item_a = branches[a].clone();
         let item_b = branches[b].clone();
@@ -854,6 +1132,13 @@ where
         }
     }
 
+    tracing::debug!(
+        target: "f1r3fly.merge.step",
+        step = "compute_depends_map_event_indexed.EXIT",
+        branches = n,
+        dependent_keys = result.values().filter(|s| !s.0.is_empty()).count(),
+        "branches with at least one dependency"
+    );
     result
 }
 
@@ -921,6 +1206,18 @@ pub fn gather_related_sets<A: Eq + std::hash::Hash + Clone>(
         result.insert(HashableSet(component));
     }
 
+    if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
+        let group_sizes: Vec<usize> = result.iter().map(|g| g.0.len()).collect();
+        tracing::debug!(
+            target: "f1r3fly.merge.step",
+            step = "gather_related_sets.EXIT",
+            nodes = relation_map.len(),
+            groups = result.len(),
+            group_sizes = ?group_sizes,
+            "items clustered into related branch groups (connected components)"
+        );
+    }
+
     HashableSet(result)
 }
 
@@ -937,6 +1234,14 @@ pub fn compute_related_sets<A: Eq + std::hash::Hash + Clone + PartialOrd>(
 pub fn compute_rejection_options<A: Eq + std::hash::Hash + Clone>(
     conflict_map: &HashMap<A, HashableSet<A>>,
 ) -> HashableSet<HashableSet<A>> {
+    tracing::debug!(
+        target: "f1r3fly.merge.step",
+        step = "compute_rejection_options.ENTER",
+        keys = conflict_map.len(),
+        conflicting_keys = conflict_map.values().filter(|s| !s.0.is_empty()).count(),
+        "enumerate minimal rejection sets that resolve all conflicts"
+    );
+
     // Set of rejection paths with corresponding remaining conflicts map
     #[derive(Clone)]
     struct RejectionOption<A: Eq + std::hash::Hash + Clone> {
@@ -1049,6 +1354,17 @@ pub fn compute_rejection_options<A: Eq + std::hash::Hash + Clone>(
         }
 
         current = next;
+    }
+
+    if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
+        let option_sizes: Vec<usize> = result.iter().map(|o| o.0.len()).collect();
+        tracing::debug!(
+            target: "f1r3fly.merge.step",
+            step = "compute_rejection_options.EXIT",
+            options = result.len(),
+            option_sizes = ?option_sizes,
+            "rejection options computed (each is a set of branches to drop)"
+        );
     }
 
     HashableSet(result)
@@ -1634,6 +1950,94 @@ mod tests {
         assert!(produces_affected(&e).0.is_empty());
     }
 
+    fn roundtrip_index(
+        channel: Blake2b256Hash,
+        consumed_seed: u8,
+        emitted_seed: u8,
+    ) -> EventLogIndex {
+        let mut e = EventLogIndex::empty();
+        e.produces_consumed.0.insert(Produce {
+            channel_hash: channel.clone(),
+            persistent: false,
+            hash: Blake2b256Hash::from_bytes(vec![consumed_seed]),
+            is_deterministic: true,
+            output_value: vec![],
+            failed: false,
+        });
+        e.produces_linear.0.insert(Produce {
+            channel_hash: channel,
+            persistent: false,
+            hash: Blake2b256Hash::from_bytes(vec![emitted_seed]),
+            is_deterministic: true,
+            output_value: vec![],
+            failed: false,
+        });
+        e
+    }
+
+    #[test]
+    fn event_indexed_conflict_map_detects_roundtrip_channel_writers() {
+        // Genuine single-value-cell race: a cell holds ONE datum, so both
+        // concurrent writers consume that SAME base datum (seed 1) and emit
+        // different replacements. Only the same-consumed case is a real
+        // keep-one conflict.
+        let channel = Blake2b256Hash::from_bytes(vec![42]);
+        let a = roundtrip_index(channel.clone(), 1, 10);
+        let b = roundtrip_index(channel, 1, 11);
+        let branches = vec![0, 1];
+        let map = compute_conflict_map_event_indexed(&branches, &[&a, &b]);
+
+        assert!(map.get(&0).unwrap().0.contains(&1));
+        assert!(map.get(&1).unwrap().0.contains(&0));
+    }
+
+    #[test]
+    fn event_indexed_conflict_map_allows_disjoint_consumed_writers() {
+        // Two writers consuming DIFFERENT data (seeds 1 and 2) on a shared
+        // channel are not racing on one cell — this is the registry /
+        // TreeHashMap shape (distinct keys/sub-nodes), which must merge even
+        // though the emitted produces differ.
+        let channel = Blake2b256Hash::from_bytes(vec![45]);
+        let a = roundtrip_index(channel.clone(), 1, 10);
+        let b = roundtrip_index(channel, 2, 11);
+        let branches = vec![0, 1];
+        let map = compute_conflict_map_event_indexed(&branches, &[&a, &b]);
+
+        assert!(map.get(&0).unwrap().0.is_empty());
+        assert!(map.get(&1).unwrap().0.is_empty());
+    }
+
+    #[test]
+    fn event_indexed_conflict_map_allows_identical_roundtrip_emits() {
+        // Disjoint consumed data (seeds 1 and 2) with identical emit (seed 10):
+        // not a single-cell race, so no conflict. (Sharing the consumed datum
+        // would instead be a double-consume conflict, independent of the emit.)
+        let channel = Blake2b256Hash::from_bytes(vec![43]);
+        let a = roundtrip_index(channel.clone(), 1, 10);
+        let b = roundtrip_index(channel, 2, 10);
+        let branches = vec![0, 1];
+        let map = compute_conflict_map_event_indexed(&branches, &[&a, &b]);
+
+        assert!(map.get(&0).unwrap().0.is_empty());
+        assert!(map.get(&1).unwrap().0.is_empty());
+    }
+
+    #[test]
+    fn event_indexed_conflict_map_allows_mergeable_roundtrip_channel_writers() {
+        let channel = Blake2b256Hash::from_bytes(vec![44]);
+        let mut a = roundtrip_index(channel.clone(), 1, 10);
+        let mut b = roundtrip_index(channel.clone(), 2, 11);
+        a.number_channels_data
+            .insert(channel.clone(), (0, MergeType::IntegerAdd));
+        b.number_channels_data
+            .insert(channel, (0, MergeType::IntegerAdd));
+        let branches = vec![0, 1];
+        let map = compute_conflict_map_event_indexed(&branches, &[&a, &b]);
+
+        assert!(map.get(&0).unwrap().0.is_empty());
+        assert!(map.get(&1).unwrap().0.is_empty());
+    }
+
     #[test]
     fn compute_rejection_options_deterministic_regardless_of_iteration() {
         // Create a conflict map where multiple rejection options have equal cost
@@ -1681,9 +2085,10 @@ mod tests {
 
         #[test]
         fn bitmask_or_is_associative(a: i64, b: i64, c: i64) {
-            let ab = combine_mergeable_value(a, b, MergeType::BitmaskOr);
+            // BitmaskOr never overflows, so it is always Some — unwrap the fold.
+            let ab = combine_mergeable_value(a, b, MergeType::BitmaskOr).unwrap();
             let ab_c = combine_mergeable_value(ab, c, MergeType::BitmaskOr);
-            let bc = combine_mergeable_value(b, c, MergeType::BitmaskOr);
+            let bc = combine_mergeable_value(b, c, MergeType::BitmaskOr).unwrap();
             let a_bc = combine_mergeable_value(a, bc, MergeType::BitmaskOr);
             proptest::prop_assert_eq!(ab_c, a_bc);
         }
@@ -1692,14 +2097,14 @@ mod tests {
         fn bitmask_or_is_idempotent(a: i64) {
             proptest::prop_assert_eq!(
                 combine_mergeable_value(a, a, MergeType::BitmaskOr),
-                a,
+                Some(a),
             );
         }
 
         #[test]
         fn bitmask_or_dominates_each_input(a: i64, b: i64) {
             // a | b must have every bit that's set in a OR in b.
-            let combined = combine_mergeable_value(a, b, MergeType::BitmaskOr) as u64;
+            let combined = combine_mergeable_value(a, b, MergeType::BitmaskOr).unwrap() as u64;
             proptest::prop_assert_eq!(combined & (a as u64), a as u64);
             proptest::prop_assert_eq!(combined & (b as u64), b as u64);
         }
@@ -1714,11 +2119,168 @@ mod tests {
 
         #[test]
         fn integer_add_is_associative(a: i64, b: i64, c: i64) {
-            let ab = combine_mergeable_value(a, b, MergeType::IntegerAdd);
-            let ab_c = combine_mergeable_value(ab, c, MergeType::IntegerAdd);
-            let bc = combine_mergeable_value(b, c, MergeType::IntegerAdd);
-            let a_bc = combine_mergeable_value(a, bc, MergeType::IntegerAdd);
-            proptest::prop_assert_eq!(ab_c, a_bc);
+            // Overflow-checked add is associative only where both groupings
+            // succeed (one grouping can overflow while the other does not, e.g.
+            // a=MAX, b=1, c=-1); compare only when both are Some.
+            let l = combine_mergeable_value(a, b, MergeType::IntegerAdd)
+                .and_then(|ab| combine_mergeable_value(ab, c, MergeType::IntegerAdd));
+            let r = combine_mergeable_value(b, c, MergeType::IntegerAdd)
+                .and_then(|bc| combine_mergeable_value(a, bc, MergeType::IntegerAdd));
+            if let (Some(x), Some(y)) = (l, r) {
+                proptest::prop_assert_eq!(x, y);
+            }
+        }
+
+        #[test]
+        fn integer_add_overflow_returns_none(a: i64, b: i64) {
+            // Matches i64::checked_add exactly: None iff the true sum is out of range.
+            proptest::prop_assert_eq!(
+                combine_mergeable_value(a, b, MergeType::IntegerAdd),
+                a.checked_add(b),
+            );
+        }
+    }
+
+    // Direct unit witnesses for the fail-loudly overflow behavior (the fix for
+    // the IntegerAdd overflow-launder).
+    #[test]
+    fn integer_add_rejects_overflow_and_underflow() {
+        assert_eq!(
+            combine_mergeable_value(i64::MAX, 1, MergeType::IntegerAdd),
+            None,
+            "IntegerAdd must reject (None) on positive overflow, not wrap"
+        );
+        assert_eq!(
+            combine_mergeable_value(i64::MIN, -1, MergeType::IntegerAdd),
+            None,
+            "IntegerAdd must reject (None) on negative overflow, not wrap"
+        );
+        assert!(
+            combine_mergeable_value(i64::MAX, 1, MergeType::BitmaskOr).is_some(),
+            "BitmaskOr never overflows"
+        );
+    }
+}
+
+// === GAP-3: soundness of removing the single-value-cell conflict predicate =====
+//
+// Rust modality companion to
+// formal/rocq/merge_algebra/theories/ConflictSoundness.v. The REMOVED predicate
+// flagged a conflict when two branches both consume-then-produce on a shared
+// single-value cell (a write-write). We re-implement it as a test ORACLE and
+// assert it is SUBSUMED by the RETAINED double-consume / same-IO-event race
+// detector (`conflicts` Check #1), except on number/foldable channels (which are
+// intrinsically mergeable): for random branch pairs,
+//     removed_oracle(a, b)  =>  !conflicts(a, b).is_empty() || is_number_channel(a, b).
+//
+// Model: a branch's `produces_consumed` holds the base data destroyed in COMM
+// (the "consume" of a single-value-cell update); `produces_mergeable` marks the
+// number-channel (mergeable) base data. The retained produce-race fires on
+// (produces_consumed ∩) minus (produces_mergeable ∩), non-persistent -- so a
+// shared non-persistent consumed base that is NOT both-mergeable is caught by
+// `conflicts`, and one that IS both-mergeable is a number channel (exempt).
+#[cfg(test)]
+mod merge_algebra_gap3_tests {
+    use std::collections::HashSet;
+
+    use proptest::prelude::*;
+    use shared::rust::hashable_set::HashableSet;
+
+    use super::conflicts;
+    use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+    use crate::rspace::merger::event_log_index::EventLogIndex;
+    use crate::rspace::trace::event::Produce;
+
+    fn mk_hash(byte: u8) -> Blake2b256Hash { Blake2b256Hash::from_bytes(vec![byte; 32]) }
+
+    // base datum `id`: identity is its `hash` (Produce::eq is hash-only), so the
+    // same `id` in two branches is the SAME shared base produce.
+    fn mk_produce(id: u8, persistent: bool) -> Produce {
+        Produce::new(mk_hash(id), mk_hash(id), persistent)
+    }
+
+    // spec[i] = (in_a_pc, in_b_pc, in_a_pm, in_b_pm, persistent) for base datum i.
+    fn build(specs: &[[bool; 5]], pick_pc: usize, pick_pm: usize) -> EventLogIndex {
+        let mut e = EventLogIndex::empty();
+        let mut pc: HashSet<Produce> = HashSet::new();
+        let mut pm: HashSet<Produce> = HashSet::new();
+        for (i, s) in specs.iter().enumerate() {
+            let p = mk_produce(i as u8, s[4]);
+            if s[pick_pc] {
+                pc.insert(p.clone());
+            }
+            if s[pick_pm] {
+                pm.insert(p);
+            }
+        }
+        e.produces_consumed = HashableSet(pc);
+        e.produces_mergeable = HashableSet(pm);
+        e
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(400))]
+
+        #[test]
+        fn removed_predicate_is_subsumed_by_retained_or_number_channel(
+            specs in prop::collection::vec(any::<[bool; 5]>(), 1..7),
+        ) {
+            let a = build(&specs, 0, 2); // in_a_pc = s[0], in_a_pm = s[2]
+            let b = build(&specs, 1, 3); // in_b_pc = s[1], in_b_pm = s[3]
+
+            // the REMOVED oracle: some shared non-persistent base datum was
+            // consumed in BOTH branches (both did the consume-then-produce).
+            let removed_oracle =
+                specs.iter().any(|s| s[0] && s[1] && !s[4]);
+            // number-channel exemption: such a shared datum is both-mergeable.
+            let is_number_channel =
+                specs.iter().any(|s| s[0] && s[1] && !s[4] && s[2] && s[3]);
+
+            let retained_fires = !conflicts(&a, &b).0.is_empty();
+
+            prop_assert!(
+                !removed_oracle || retained_fires || is_number_channel,
+                "removed single-value-cell predicate must be subsumed by the retained \
+                 conflict detector or be a number channel (specs={:?})",
+                specs
+            );
+        }
+
+        // §3c PRODUCE-ONLY BLIND SPOT (RCA-asi-devnet-finality-halt). A produce
+        // that does NOT consume the base (a produce-only write) never lands in
+        // produces_consumed, so the retained double-consume race detector cannot
+        // see it: with no consumes and no base-join touches, `conflicts` is EMPTY
+        // even though BOTH branches produce onto the SAME single-value cell (an
+        // over-fill). This is the gap the Rocq `overfill_not_retained` /
+        // `svc_guard_not_subsumed_exhibit` (ConflictSoundness.v Section Overfill)
+        // capture and the §3c `check_single_value_cell_not_overfilled` guard
+        // closes on the non-mergeable path (dag_merger.rs:965). It proves §3c is a
+        // SEPARATE, non-subsumed detector -- the retained detector alone is blind.
+        #[test]
+        fn produce_only_overfill_escapes_retained_detector(
+            ids in prop::collection::vec(any::<u8>(), 1..6),
+        ) {
+            // Both branches PRODUCE the shared base datum(s) but neither CONSUMES
+            // any: produce-only writes populate produces_linear only, leaving
+            // produces_consumed / consumes_* / produces_touching_base_joins empty.
+            let produced: HashSet<Produce> =
+                ids.iter().map(|id| mk_produce(*id, false)).collect();
+            let mut a = EventLogIndex::empty();
+            let mut b = EventLogIndex::empty();
+            a.produces_linear = HashableSet(produced.clone());
+            b.produces_linear = HashableSet(produced);
+
+            // The retained detector finds NO conflict -- the produce-only
+            // over-fill is invisible to it (Check #1 needs a shared CONSUMED base;
+            // Check #2 needs a consume; Check #3 needs a base-join touch -- all
+            // empty here). Hence the §3c guard is required and non-redundant.
+            prop_assert!(
+                conflicts(&a, &b).0.is_empty(),
+                "produce-only writes must ESCAPE the retained detector (that is why \
+                 the §3c single-value-cell guard is a separate, non-subsumed \
+                 mechanism); ids={:?}",
+                ids
+            );
         }
     }
 }
