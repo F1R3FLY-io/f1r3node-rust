@@ -308,7 +308,7 @@ impl TransportLayerService {
                     let handler = tell_handler.clone();
                     tokio::spawn(async move {
                         if let Err(e) = handler(send_msg).await {
-                            tracing::error!("Error processing Send message: {}", e);
+                            tracing::error!(error = %e, "Send message handler failed");
                         }
                     })
                 })
@@ -324,7 +324,7 @@ impl TransportLayerService {
                     let handler = blob_handler.clone();
                     tokio::spawn(async move {
                         if let Err(e) = handler(stream_msg).await {
-                            tracing::error!("Error processing StreamMessage: {}", e);
+                            tracing::error!(error = %e, "StreamMessage handler failed");
                         }
                     })
                 })
@@ -510,7 +510,7 @@ impl TransportLayer for TransportLayerService {
         let chunk_stream = stream.map(|result| match result {
             Ok(chunk) => chunk,
             Err(status) => {
-                tracing::error!("gRPC stream error: {}", status);
+                tracing::error!(error = %status, "gRPC incoming stream chunk error");
                 Chunk { content: None }
             }
         });
@@ -522,7 +522,7 @@ impl TransportLayer for TransportLayerService {
 
         let response = match stream_result {
             Err(StreamError::Unexpected { ref error }) => {
-                tracing::error!("Stream error: {}", error);
+                tracing::error!(error = %error, "blob stream processing failed");
                 self.create_internal_server_error_response(error.clone())
             }
             Err(ref error) => {
@@ -560,7 +560,7 @@ impl TransportLayer for TransportLayerService {
                         }
                     }
                     Err(e) => {
-                        tracing::error!("Failed to get blob buffer: {}", e);
+                        tracing::error!(error = %e, "blob buffer retrieval failed");
                         self.create_internal_server_error_response(format!("Buffer error: {}", e))
                     }
                 }
@@ -682,7 +682,7 @@ impl GrpcTransportReceiver {
                 .await;
 
             if let Err(e) = server_result {
-                tracing::error!("F1r3fly gRPC server error: {}", e);
+                tracing::error!(error = %e, "F1r3fly gRPC server failed");
             }
 
             Ok::<(), CommError>(())
@@ -691,7 +691,7 @@ impl GrpcTransportReceiver {
         // Handle the Result from the spawn task
         Ok(tokio::spawn(async move {
             if let Err(e) = server_task.await {
-                tracing::error!("F1r3fly server task join error: {}", e);
+                tracing::error!(error = %e, "F1r3fly gRPC server task panicked");
             }
         }))
     }
