@@ -258,13 +258,22 @@ Qed.
          preservation-only L-SNAP: `snap_extends ⇒ snap_advances`, so the original
          L-SNAP is the reflexive-descendant corollary.
 
+     C1' The num>0 refinement is VACUOUS at the DEFAULT θ = 0 and the negative-θ
+         sentinels. The node's REAL decision additionally applies a θ-INDEPENDENT
+         hard majority gate (clique_oracle.rs:79-81, `2·agreeing > S`), modelled as
+         `Finalized_ft_hg`; the gate alone yields strict-majority `Finalized` for
+         ALL num (`Finalized_ft_hg_refines_Finalized`), so θ ≤ 0 is covered too.
+         (Cache transparency at θ ≤ 0 is independently secured by
+         GuardBridge.BridgeFt over `Finalized_ft` directly, via `L_ANC_ft`.)
+
    Each conjunct is discharged by `exact` against its CliqueOracle lemma, so this
    capstone introduces NO new assumptions (verify with `Print Assumptions
    finalized_floor_thetaexact_advance_correct`). The pre-existing five capstones
    are unchanged; this only ADDS coverage of the real node test and the faithful
-   advancement model. The refinement side-condition `0 < cweight c` (positive
+   advancement model. The num>0 refinement side-condition `0 < cweight c` (positive
    committee stake) is faithful and necessary — see the NOTE in CliqueOracle.v
-   Section 7 (a zero-stake committee finalizes nothing).
+   Section 7 (a zero-stake committee finalizes nothing); the C1' hard-gate
+   refinement carries NO such side-condition (it holds for all num, all committees).
    =========================================================================== *)
 Theorem finalized_floor_thetaexact_advance_correct :
   (* C1 / L-ANC: θ-exact finalization is downward-closed along ancestry. *)
@@ -275,10 +284,11 @@ Theorem finalized_floor_thetaexact_advance_correct :
   (forall d c J J' b num den,
      snap_extends J' J -> Finalized_ft d c J b num den -> Finalized_ft d c J' b num den)
   /\
-  (* C1 / refinement: the θ-test (θ = num/den, num,den > 0, positive committee
-     stake) implies the strict-majority proxy — so T-CACHE's no-fork guarantee
-     rests on the REAL node test, and every θ-finalized block enjoys L-ANC,
-     L-SNAP and every downstream capstone. *)
+  (* C1 / refinement (θ > 0 ONLY): the θ-test (θ = num/den, num,den > 0, positive
+     committee stake) implies the strict-majority proxy. θ CAVEAT: this conjunct is
+     VACUOUS at the DEFAULT θ = 0 (num = 0 ⇒ the exact test is only the NON-strict
+     2q ≥ S) and at the negative-θ sentinels (num < 0); the C1' conjunct below is
+     what covers θ ≤ 0. *)
   (forall d c J b num den,
      (0 < num)%Z -> (0 < den)%Z -> 0 < cweight c ->
      Finalized_ft d c J b num den -> Finalized d c J b)
@@ -290,10 +300,21 @@ Theorem finalized_floor_thetaexact_advance_correct :
   /\
   (* C5 / generalization: preservation ⇒ advancement, so the existing L-SNAP is
      the reflexive-descendant corollary of L_SNAP_advance. *)
-  (forall d J' J, snap_extends J' J -> snap_advances d J' J).
+  (forall d J' J, snap_extends J' J -> snap_advances d J' J)
+  /\
+  (* C1' / θ ≤ 0 COVERAGE: the node's REAL decision is the θ-test AND the
+     θ-INDEPENDENT hard majority gate (clique_oracle.rs:79-81, `2·agreeing > S`).
+     The hard gate ALONE yields the strict-majority `Finalized` for ALL num —
+     including the default θ = 0 and the negative-θ sentinels — so θ-finalization
+     refines `Finalized` WITHOUT the `0 < num` restriction the conjunct above
+     carries. (Independently, T-CACHE holds directly over `Finalized_ft` for all
+     num via GuardBridge.BridgeFt.guard_constant_committee_transparent_ft.) *)
+  (forall d c J b num den,
+     Finalized_ft_hg d c J b num den -> Finalized d c J b).
 Proof.
   exact (conj L_ANC_ft
           (conj L_SNAP_ft
             (conj Finalized_ft_refines_Finalized
-              (conj L_SNAP_advance snap_extends_snap_advances)))).
+              (conj L_SNAP_advance
+                (conj snap_extends_snap_advances Finalized_ft_hg_refines_Finalized))))).
 Qed.

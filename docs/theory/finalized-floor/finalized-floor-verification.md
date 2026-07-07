@@ -204,7 +204,8 @@ the ratchet collapses and over-cap is safe.
 | **T-TERM** | spine walk terminates | Rocq `Foundation.spine_walk_terminates` |
 | **T-MONO / L-ANC** | ancestor-monotone finalization (no floor regress, S2) | Rocq `CliqueOracle.L_ANC`, `L_ANC_mainparent` |
 | **L-SNAP** | snapshot-monotone finalization | Rocq `CliqueOracle.L_SNAP`, `L_ANC_SNAP` |
-| **C1 — θ-exact refinement** | the node's REAL θ-decision (`ft_exact_ge`, not the strict-majority θ=0 proxy) is ancestor- and snapshot-monotone, and every θ-finalized block (θ ∈ (0,1), positive stake) is strict-majority `Finalized` — so T-CACHE's no-fork rests on the test the node runs | Rocq `CliqueOracle.L_ANC_ft`, `L_SNAP_ft`, `L_ANC_SNAP_ft`, **`Finalized_ft_refines_Finalized`** (side-conditions `0<num`, `0<cweight c` disclosed + necessary), `is_quorum_ft_mono_weight`/`Finalized_ft_enlarge` (via `FtExact.ft_exact_mono_q`); capstone conjuncts of `finalized_floor_thetaexact_advance_correct` |
+| **C1 — θ-exact refinement** | the node's REAL θ-decision (`ft_exact_ge`, not the strict-majority θ=0 proxy) is ancestor- and snapshot-monotone, and every θ-finalized block (θ ∈ (0,1), positive stake) is strict-majority `Finalized` — so T-CACHE's no-fork rests on the test the node runs | Rocq `CliqueOracle.L_ANC_ft`, `L_SNAP_ft`, `L_ANC_SNAP_ft`, **`Finalized_ft_refines_Finalized`** (side-conditions `0<num`, `0<cweight c` disclosed + necessary — VACUOUS at θ≤0, see C1′), `is_quorum_ft_mono_weight`/`Finalized_ft_enlarge` (via `FtExact.ft_exact_mono_q`); capstone conjuncts of `finalized_floor_thetaexact_advance_correct` |
+| **C1′ — θ≤0 coverage (hard gate)** | the num>0 refinement is VACUOUS at the DEFAULT θ=0 and the negative-θ sentinels; the node's REAL decision ALSO applies a θ-INDEPENDENT hard majority gate (`2·agreeing > S`, clique_oracle.rs:79-81), which ALONE yields strict-majority `Finalized` for **ALL** num, and T-CACHE holds directly over `Finalized_ft` for all num via `L_ANC_ft` — so θ≤0 is covered both ways | Rocq `CliqueOracle.hard_gate`, `hard_gate_iff_Finalized`, `Finalized_ft_hg`, **`Finalized_ft_hg_refines_Finalized`** (ALL num — no `0<num`, no positive-stake side-condition), `L_ANC_ft_hg`/`L_SNAP_ft_hg`; **`GuardBridge.BridgeFt.guard_constant_committee_transparent_ft`** + `upgo_finalized_ft` (θ-exact cache transparency, all num); Z3 `ft_exact_no_overflow.py` (the θ≤0 GAP `sat` + hard-gate closure `unsat`); capstone conjunct C1′ of `finalized_floor_thetaexact_advance_correct` |
 | **C5 — snapshot advancement** | growth modeled as latest-message ADVANCEMENT (each binding → a DAG-descendant), not just preservation; L-SNAP holds for it, and preservation ⇒ advancement so the old L-SNAP is subsumed | Rocq `CliqueOracle.snap_advances`, `agrees_snap_advance_mono`, **`L_SNAP_advance`**, `L_ANC_SNAP_advance`, `L_SNAP_advance_ft`, `snap_extends_snap_advances`, `L_SNAP_of_extends` (original L-SNAP re-derived) |
 | **T-CACHE** | warm up-walk == cold walk (no fork from cache, S1) | Rocq `Floor.frontier_cache_transparent` (takes `AdjDC`) **+ `GuardBridge.chain_adj_AdjDC` / `guard_constant_committee_transparent`** — the committee-constancy guard *derives* `AdjDC` from L-ANC, so the seam is bridged, not assumed; Rust test `guard_trip_committee_change_falls_back_to_cold` |
 | **T-DETMERGE / T-CONV** | merge order-independent (no fork, S6) | Rocq `Merge.merge_or_perm`, `merge_max_perm` |
@@ -246,15 +247,15 @@ the trust root under every capstone.
 | Module | Depends on | Key results |
 |---|---|---|
 | `Foundation.v` | — | DAG, block numbers, main-parent spine, `walk_spine`, **T-TERM** |
-| `CliqueOracle.v` | Foundation, FtExact | DAG ancestry, agreement, quorum `Finalized`, **L-ANC**, **L-SNAP**; **C1 θ-exact bridge** — `Finalized_ft` via `FtExact.ft_exact_ge` (the REAL node θ-decision), `L_ANC_ft`/`L_SNAP_ft` (quorum-opaque re-proofs), `Finalized_ft_refines_Finalized` (θ-finalized ⇒ strict-majority `Finalized`, so T-CACHE's no-fork rests on the node test not a proxy); **C5 advancement** — `snap_advances`, `L_SNAP_advance`, `snap_extends_snap_advances` (preservation ⇒ advancement; original L-SNAP is the corollary) |
+| `CliqueOracle.v` | Foundation, FtExact | DAG ancestry, agreement, quorum `Finalized` (quorums carry **`NoDup (map fst Q)`** — distinct validators, matching the code's `WeightMap = HashMap<V,i64>` keys), **L-ANC**, **L-SNAP**; **C1 θ-exact bridge** — `Finalized_ft` via `FtExact.ft_exact_ge` (the REAL node θ-decision), `L_ANC_ft`/`L_SNAP_ft` (quorum-opaque re-proofs), `Finalized_ft_refines_Finalized` (θ-finalized ⇒ strict-majority `Finalized` for θ>0); **C1′ §9 θ≤0 hard gate** — `hard_gate`/`hard_gate_iff_Finalized`, `Finalized_ft_hg`, **`Finalized_ft_hg_refines_Finalized`** (the θ-independent `2·agreeing>S` gate ⇒ strict-majority `Finalized` for ALL num, closing the θ≤0 seam), `L_ANC_ft_hg`/`L_SNAP_ft_hg`; **C5 advancement** — `snap_advances`, `L_SNAP_advance`, `snap_extends_snap_advances` (preservation ⇒ advancement; original L-SNAP is the corollary) |
 | `Floor.v` | CliqueOracle | **T-CACHE** (`warm_eq_cold`, `frontier_cache_transparent`) — takes `AdjDC` as a hypothesis |
-| `GuardBridge.v` | Foundation, CliqueOracle, Floor | **guard ⇒ AdjDC** (`chain_adj_AdjDC`): under a *constant* committee, finalization along the spine is downward-closed, so the Rust committee-constancy guard *derives* Floor.v's `AdjDC` premise (no longer assumed); `guard_constant_committee_transparent` (warm == cold with AdjDC derived); **T-FIN** (`upgo_finalized`: the warm up-walk's result is `Finalized`) |
+| `GuardBridge.v` | Foundation, CliqueOracle, Floor | **guard ⇒ AdjDC** (`chain_adj_AdjDC`): under a *constant* committee, finalization along the spine is downward-closed, so the Rust committee-constancy guard *derives* Floor.v's `AdjDC` premise (no longer assumed); `guard_constant_committee_transparent` (warm == cold with AdjDC derived); **T-FIN** (`upgo_finalized`: the warm up-walk's result is `Finalized`). **Section `BridgeFt` (C1′ θ≤0)** — the SAME construction over the θ-exact `Finalized_ft` via `L_ANC_ft`: `chain_adj_AdjDC_ft`, **`guard_constant_committee_transparent_ft`** (T-CACHE for ALL num, no `0<num` bridge), `upgo_finalized_ft` |
 | `Merge.v` | — | semilattice fold: **T-DETMERGE/T-CONV** (`merge_*_perm`), **T-K1** (`merge_or_no_lost_bit`) |
 | `Recovery.v` | — | **T-NDA** (`apply_idem`, `no_double_apply`) |
 | `Selection.v` | Floor, CliqueOracle | the Case-A/B sound-base pick: **T-SOUND**, **T-LIN**, **T-PS**, **T-FIN**, **T-COMM**, **H3**, **Case-B**, **maximality** (`select_sound`, `select_none_correct`, `case_a_common_ancestor`, `T_PS`, `select_finalized`, `committee_is_floor_bonds`, `scope_covers_band`, `case_b_compatible`, `select_highest_sound`) |
 | `IntegerAdd.v` | — | signed-64 wrapping: **T-ALG(c)** (`wadd_assoc`), **T-ALG(d)** (`checked_apply_rejects_*`), launder `launder_exhibit`/`checked_combine_sound`/`supply_cap_no_launder` |
 | `FtExact.v` | — | **A9 exact-integer FT** (`ft_exact_iff_ratio`/`_strict`, `ft_exact_mono_q`, `ft_exact_no_overflow`): the exact test `2q·den ≥ S(den+num)` IS the f32 ratio test cleared of denominators, monotone in `q`, overflow-free in i128 |
-| `MainTheorem.v` | all | capstones `finalized_floor_merge_correct`, `finalized_floor_selection_correct`, `finalized_floor_arithmetic_correct`, `finalized_floor_phase7_correct`, `finalized_floor_ftexact_correct`, and **`finalized_floor_thetaexact_advance_correct`** (C1/C5 bundle: `L_ANC_ft` ∧ `L_SNAP_ft` ∧ `Finalized_ft_refines_Finalized` ∧ `L_SNAP_advance` ∧ `snap_extends_snap_advances`) |
+| `MainTheorem.v` | all | capstones `finalized_floor_merge_correct`, `finalized_floor_selection_correct`, `finalized_floor_arithmetic_correct`, `finalized_floor_phase7_correct`, `finalized_floor_ftexact_correct`, and **`finalized_floor_thetaexact_advance_correct`** (C1/C5/C1′ bundle: `L_ANC_ft` ∧ `L_SNAP_ft` ∧ `Finalized_ft_refines_Finalized` [θ>0] ∧ `L_SNAP_advance` ∧ `snap_extends_snap_advances` ∧ `Finalized_ft_hg_refines_Finalized` [θ≤0 hard gate]) |
 
 The finalization model is a faithful monotone abstraction of `ft_witnessed`:
 `Finalized c J b` := *some majority-weight sub-committee all agree on `b`* (a
@@ -277,7 +278,28 @@ condition** (faithful, necessary; documented in `CliqueOracle.v` §7): the stric
 bridge needs `0 < num` (θ>0 is *strictly* above majority) and `0 < cweight c`
 (positive committee stake) — a zero-stake committee's empty quorum vacuously
 "finalizes" everything under the exact test yet fails strict majority, so the
-side-condition is the minimal faithful fix, not a weakening. **C5 — snapshot
+side-condition is the minimal faithful fix, not a weakening.
+
+**C1′ — θ≤0 is covered by the θ-INDEPENDENT hard gate.** The `0<num` side-condition
+means `Finalized_ft_refines_Finalized` is **vacuous at the DEFAULT θ=0** (and the
+negative-θ sentinels), so the strict-majority proxy would appear unsupported there.
+But the node does **not** finalize on the θ-test alone: `ft_decides_exact`
+(clique_oracle.rs:79-81) first applies a θ-independent **hard majority gate**
+`if 2·agreeing ≤ S return false`, where `agreeing` is the TOTAL agreeing weight and
+the θ-tested clique weight `q = max_clique_weight` is a sub-part (`q ≤ agreeing`;
+the call sites pass them separately). `CliqueOracle.v` §9 models this as `hard_gate`
+(a strict-majority *agreeing* set, provably `Finalized` — `hard_gate_iff_Finalized`)
+and the node's real decision as `Finalized_ft_hg := Finalized_ft ∧ hard_gate`; the
+capstone-checked **`Finalized_ft_hg_refines_Finalized`** shows the hard gate ALONE
+yields strict-majority `Finalized` for **ALL num** — no `0<num`, no positive-stake
+side-condition — so θ≤0 inherits every downstream result. Independently, T-CACHE
+holds directly over `Finalized_ft` for all num via `GuardBridge.BridgeFt`
+(`guard_constant_committee_transparent_ft`, built on `L_ANC_ft` which needs no sign
+of `num`), so **cache transparency was never gated on `0<num`** either. The Z3
+`ft_exact_no_overflow.py` exhibits the seam and its closure: the θ-test alone at
+θ≤0 can finalize with `2q ≤ S` (a `sat` GAP), while the real decision (θ-test ∧
+`2·agreeing>S`) always carries a strict-majority agreeing set (`unsat` refutation of
+any counterexample over the full `−den ≤ num ≤ den` range). **C5 — snapshot
 growth is modeled as latest-message ADVANCEMENT** (`snap_advances`: each binding
 moves forward to a DAG-descendant), strictly more faithful than the preservation-
 only `snap_extends`; `L_SNAP_advance` re-proves L-SNAP for it (via
@@ -474,7 +496,7 @@ TLA⁺/Z3/Sage/Wolfram fail-soft). Current result: **ALL GATES OK**.
 | Rust build | `cargo check -p casper --all-targets` / `-p rspace_plus_plus` clean |
 | Convergence green-gate | 3/3 pass; 400+-block soak holds all fix invariants (~421 blocks) |
 | Rust unit/regression | combine + terminal-apply launder (`checked_add`), discriminating true-launder (sum wraps non-negative), wrapping-group diff recovery, guard-trip cold-fallback, Case-B dominating-tip, incompatible-fork `Err`, backstop predicate, floor warm==cold + cache-transparent, frontier round-trip — all pass |
-| Rocq | full dev builds `-j1`; **12 headline results axiom-free** — 6 capstones (merge / selection / arithmetic / phase7 / **A9 ftexact** / **G2 ftprovenance**) + the 3 GuardBridge lemmas (guard⇒AdjDC `chain_adj_AdjDC`, `guard_constant_committee_transparent`, `upgo_finalized`) + the C1/C5 results (`finalized_floor_thetaexact_advance_correct`, `Finalized_ft_refines_Finalized`, `snap_extends_snap_advances`) |
+| Rocq | full dev builds `-j1`; **14 headline results axiom-free** — 6 capstones (merge / selection / arithmetic / phase7 / **A9 ftexact** / **G2 ftprovenance**) + the 3 GuardBridge lemmas (guard⇒AdjDC `chain_adj_AdjDC`, `guard_constant_committee_transparent`, `upgo_finalized`) + the C1/C5 results (`finalized_floor_thetaexact_advance_correct`, `Finalized_ft_refines_Finalized`, `snap_extends_snap_advances`) + the **C1′ θ≤0 hard-gate** results (`Finalized_ft_hg_refines_Finalized`, `guard_constant_committee_transparent_ft`) |
 | Rocq kernel (coqchk) | **independent kernel re-check** of `FinalizedFloor.MainTheorem` + all deps ⇒ "Modules were successfully checked" (C3) |
 | TLA⁺ | `SpecFixed` + `FinalizedFloorScan` pass; both pre-fix cfgs reproduce their counterexample |
 | Z3 | FT-algebra + BitVec-64 IntegerAdd launder (exists on wrap; checked-combine launder-free) + **G2 `ft_ppm_roundtrip`** (FPA Float32/64 RNE: `to_ppm` monotone/range, ½ppm round-trip, exact-decision display-invariance) |
@@ -504,6 +526,44 @@ overridden), so it cannot fork the exact decision.
 **Policy:** all of the above run **locally**. Do **not** add any Rocq / TLA⁺ / Z3 /
 Sage / Wolfram step to `.github/workflows/*` (an earlier formal-CI workflow was
 deliberately removed).
+
+### 7.1 Scope disclosure — what the capstones prove (and what they do NOT)
+
+The finalized-floor capstones prove **DETERMINISM** of floor derivation and the
+floor-anchored merge: that every honest node derives the **same** finalized floor,
+the frontier **cache** is transparent (warm up-walk == cold down-walk), the
+multi-parent **merge** is order-independent, and no mergeable **write** is lost.
+Concretely they establish floor/cache determinism (`frontier_cache_transparent`,
+`guard_constant_committee_transparent`(`_ft`)), monotone finalization (L-ANC /
+L-SNAP, and their θ-exact and advancement variants), sound selection
+(`select_sound`, `select_highest_sound`), and the arithmetic hardening (A9/G2).
+
+They do **NOT** prove **CBC finalization safety** — the *quorum-intersection /
+agreement* property that two conflicting blocks can never both finalize. **No such
+theorem exists in this development**, and the disclosure is deliberate rather than
+implied by the "no-fork" labels:
+
+- `Finalized` here is a **faithful monotone abstraction** of the clique oracle (a
+  majority-weight agreeing sub-committee), used to carry L-ANC/L-SNAP through the
+  cache proof. It is **not** a proof that the finalization rule is *safe* — the
+  monotonicity lemmas are quorum-**opaque** (they reuse the same witnessing set),
+  which is exactly why they never need, and never establish, quorum intersection.
+- The `2·cweight Q > cweight c` majority bound and the θ-exact test bound the weight
+  of a *single* quorum; safety would need that **two** majority quorums must
+  **share** an honest validator. That combinatorial lemma is **out of scope** here.
+- **Groundwork laid (Tier-2):** the quorum abstractions now carry
+  `NoDup (map fst Q)` (distinct validators, matching the code's
+  `WeightMap = HashMap<V,i64>` keys). Distinct-validator quorums are precisely the
+  hypothesis a future quorum-intersection lemma
+  (`2·|Q₁| > S ∧ 2·|Q₂| > S ⇒ Q₁ ∩ Q₂ ≠ ∅`) would build on; it would additionally
+  require committee well-formedness (`NoDup (map fst c)`) and a disjoint-weight
+  bound, and is tracked as a separate effort, not asserted here.
+
+Merge/floor determinism is a **necessary** condition for safety (a non-deterministic
+floor or merge would fork outright) but not a **sufficient** one; CBC agreement lives
+in the finalization rule and is stated here as an explicit **non-goal**. The same
+disclosure applies to the merge-algebra dossier (`merge-algebra-verification.md`
+§7.1), whose capstones likewise prove determinism, not quorum intersection.
 
 ---
 

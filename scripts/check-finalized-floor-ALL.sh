@@ -78,7 +78,11 @@ if command -v coqc >/dev/null 2>&1 || [[ -x "$HOME/.opam/default/bin/coqc" ]]; t
     # "Rocq assumes what Rust enforces" seam (guard⇒AdjDC bridge + frontier-is-
     # finalized) + the C1/C5 sweep: the 6th capstone (θ-exact + advancement) and
     # its two load-bearing standalone lemmas (the θ→majority refinement bridge and
-    # preservation⇒advancement generalization).
+    # preservation⇒advancement generalization) + the C1' θ≤0 hard-gate closure:
+    # Finalized_ft_hg_refines_Finalized (the θ-independent 2·agreeing>S gate yields
+    # strict-majority Finalized for ALL num, incl the default θ=0) and BridgeFt's
+    # guard_constant_committee_transparent_ft (T-CACHE directly over Finalized_ft
+    # via L_ANC_ft, so cache transparency covers θ≤0 without the num>0 bridge).
     cat > "$chk" <<'EOF'
 From FinalizedFloor Require Import MainTheorem.
 From FinalizedFloor Require Import GuardBridge.
@@ -95,14 +99,16 @@ Print Assumptions chain_adj_AdjDC.
 Print Assumptions finalized_floor_thetaexact_advance_correct.
 Print Assumptions Finalized_ft_refines_Finalized.
 Print Assumptions snap_extends_snap_advances.
+Print Assumptions Finalized_ft_hg_refines_Finalized.
+Print Assumptions guard_constant_committee_transparent_ft.
 EOF
     out=$(coqc -Q "$ROCQ_DIR/theories" FinalizedFloor "$chk" 2>&1)
     rm -rf "$tmpd"
     n_closed=$(grep -c "Closed under the global context" <<<"$out")
-    if [[ "$n_closed" == "12" ]]; then
-      pass "all 12 headline results axiom-free (6 capstones incl. A9 ftexact + G2 ftprovenance [θ_ppm on-chain provenance + widened [-den,den] overflow envelope] + guard⇒AdjDC bridge, upgo_finalized, chain_adj_AdjDC + C1/C5: thetaexact_advance capstone, Finalized_ft_refines_Finalized, snap_extends_snap_advances)"
+    if [[ "$n_closed" == "14" ]]; then
+      pass "all 14 headline results axiom-free (6 capstones incl. A9 ftexact + G2 ftprovenance [θ_ppm on-chain provenance + widened [-den,den] overflow envelope] + guard⇒AdjDC bridge, upgo_finalized, chain_adj_AdjDC + C1/C5: thetaexact_advance capstone, Finalized_ft_refines_Finalized, snap_extends_snap_advances + C1' θ≤0 hard-gate: Finalized_ft_hg_refines_Finalized + BridgeFt θ-exact cache transparency guard_constant_committee_transparent_ft)"
     else
-      fail "headline results NOT all axiom-free ($n_closed/12 Closed):"; echo "$out" | sed 's/^/      /'
+      fail "headline results NOT all axiom-free ($n_closed/14 Closed):"; echo "$out" | sed 's/^/      /'
     fi
     # Independent kernel re-check (coqchk) — the TRUSTED kernel re-verifies every
     # capstone + dependency `.vo`, not just the elaborator's Print Assumptions.

@@ -28,6 +28,7 @@
    =========================================================================== *)
 
 From Stdlib Require Import Lists.List.
+From Stdlib Require Import ZArith.
 Import ListNotations.
 
 From FinalizedFloor Require Import Foundation.
@@ -110,3 +111,77 @@ Section Bridge.
     intros l pivot Hpiv. apply finb_spec. apply upgo_flag_true. exact Hpiv.
   Qed.
 End Bridge.
+
+(* ===========================================================================
+   BridgeFt - T-CACHE DIRECTLY over the θ-exact `Finalized_ft`, for ALL num
+   (including the DEFAULT θ = 0 and the negative-θ sentinels, i.e. θ ≤ 0).
+
+   Section `Bridge` routes cache transparency through the strict-majority
+   `Finalized`; for the θ-exact test that would depend on
+   `Finalized_ft_refines_Finalized`, whose `0 < num` side-condition is VACUOUS at
+   θ ≤ 0. But the frontier cache needs ONLY that finalization is downward-closed
+   along the spine (`AdjDC`), and `CliqueOracle.L_ANC_ft` delivers that for
+   `Finalized_ft` at ANY num. So we re-instantiate the SAME Floor.v machinery with
+   a decision `finb_ft` reflecting `Finalized_ft` and obtain T-CACHE for all θ —
+   with NO num>0 restriction and WITHOUT the strict-majority bridge. This is the
+   θ ≤ 0 coverage of the cache: the default θ = 0 and the negative-θ sentinels are
+   transparently cached exactly as θ > 0. (`chain_adj` depends only on the DAG, so
+   the `chain_adj d` from Section Bridge is reused verbatim.)
+   =========================================================================== *)
+Section BridgeFt.
+  Variable d : DAG.
+  Variable c : Committee.
+  Variable J : Snapshot.
+  Variables num den : Z.
+  Variable finb_ft : BlockHash -> bool.   (* the θ-exact decision (ft_witnessed) *)
+  Hypothesis finb_ft_spec :
+    forall b, finb_ft b = true <-> Finalized_ft d c J b num den.
+
+  Definition flagged_ft (l : list BlockHash) : list Entry :=
+    map (fun b => (b, finb_ft b)) l.
+
+  (* Constant committee (single `c`) + L-ANC for the θ-EXACT test ⇒ the flags are
+     downward-closed (AdjDC), at ANY num — including θ ≤ 0. *)
+  Lemma chain_adj_AdjDC_ft : forall l, chain_adj d l -> AdjDC (flagged_ft l).
+  Proof.
+    induction l as [| lo tl IH]; intros Hchain.
+    - apply adc_nil.
+    - destruct tl as [| up rest].
+      + apply adc_one.
+      + simpl in Hchain. destruct Hchain as [Hanc Hrest].
+        simpl. apply adc_cons.
+        * intro Hup. apply finb_ft_spec. apply finb_ft_spec in Hup.
+          exact (L_ANC_ft d c J up lo num den Hanc Hup).
+        * exact (IH Hrest).
+  Qed.
+
+  (* T-CACHE over the θ-exact test, for ALL num: the warm up-walk from a θ-finalized
+     pivot equals the cold walk — no num>0, no strict-majority bridge. *)
+  Theorem guard_constant_committee_transparent_ft :
+    forall band pivot,
+      chain_adj d band ->
+      lastTrue ((pivot, true) :: flagged_ft band) = Some (upgo pivot (flagged_ft band)).
+  Proof.
+    intros band pivot Hchain.
+    apply frontier_cache_transparent.
+    apply chain_adj_AdjDC_ft. exact Hchain.
+  Qed.
+
+  Lemma upgo_flag_true_ft :
+    forall l pivot, finb_ft pivot = true -> finb_ft (upgo pivot (flagged_ft l)) = true.
+  Proof.
+    induction l as [| h rest IH]; intros pivot Hpiv.
+    - simpl. exact Hpiv.
+    - simpl. destruct (finb_ft h) eqn:Efh.
+      + apply IH. exact Efh.
+      + exact Hpiv.
+  Qed.
+
+  (* The frontier is θ-FINALIZED (T-FIN over the exact test), for ALL num. *)
+  Theorem upgo_finalized_ft :
+    forall l pivot, finb_ft pivot = true ->
+      Finalized_ft d c J (upgo pivot (flagged_ft l)) num den.
+  Proof.
+    intros l pivot Hpiv. apply finb_ft_spec. apply upgo_flag_true_ft. exact Hpiv.
+  Qed.
+End BridgeFt.

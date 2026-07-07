@@ -189,9 +189,19 @@ Fixpoint cweight (c : Committee) : nat :=
 
 (* Q is a majority-weight sub-committee of c. `incl` keeps the proof of L-ANC/
    L-SNAP weight-free: we reuse the SAME Q, so its inclusion and weight are
-   unchanged and never need re-derivation. *)
+   unchanged and never need re-derivation.
+
+   NoDup (Tier-2 faithfulness): `NoDup (map fst Q)` states the quorum's VALIDATORS
+   are pairwise distinct — matching the code, where the agreeing/clique set is a
+   `WeightMap = HashMap<V, i64>` (clique_oracle.rs) whose KEYS are distinct
+   validators by construction (a HashMap cannot hold two entries for one key). It
+   is a faithful structural fact of the code's quorum representation, not a
+   weakening: it is carried opaquely through L-ANC/L-SNAP (same Q) and is exactly
+   the distinctness a quorum-INTERSECTION argument would need (see the SCOPE
+   DISCLOSURE in the verification dossier — no such intersection theorem is claimed
+   here; the capstones prove DETERMINISM, not CBC finalization safety). *)
 Definition is_quorum (c Q : Committee) : Prop :=
-  incl Q c /\ 2 * cweight Q > cweight c.
+  incl Q c /\ NoDup (map fst Q) /\ 2 * cweight Q > cweight c.
 
 (* Finalization: some majority-weight sub-committee all agree on `b`. Faithful
    monotone abstraction of `ft_witnessed(b,J) >= t` (a clique is such a Q). *)
@@ -294,7 +304,8 @@ Qed.
    test at threshold num/den. `Z.of_nat` injects the (nat) weights into Z, where
    FtExact states the test. The `incl Q c` half is IDENTICAL to `is_quorum`. *)
 Definition is_quorum_ft (c Q : Committee) (num den : Z) : Prop :=
-  incl Q c /\ ft_exact_ge (Z.of_nat (cweight Q)) (Z.of_nat (cweight c)) num den.
+  incl Q c /\ NoDup (map fst Q) /\
+  ft_exact_ge (Z.of_nat (cweight Q)) (Z.of_nat (cweight c)) num den.
 
 (* θ-exact finalization: some θ-exact quorum all agree on `b`. This is the test
    the NODE runs; `Finalized` (Section 4) is its strict-majority (θ = 0⁺) proxy. *)
@@ -397,9 +408,9 @@ Theorem Finalized_ft_refines_Finalized :
 Proof.
   intros d c J b num den Hnum Hden Hc Hfin.
   destruct Hfin as [Q [Hq Hag]].
-  unfold is_quorum_ft in Hq. destruct Hq as [Hincl Hft].
+  unfold is_quorum_ft in Hq. destruct Hq as [Hincl [Hnodup Hft]].
   exists Q. split; [| exact Hag].
-  unfold is_quorum. split; [exact Hincl |].
+  unfold is_quorum. split; [exact Hincl | split; [exact Hnodup |]].
   assert (HS : (0 < Z.of_nat (cweight c))%Z) by lia.
   pose proof (ft_exact_ge_strict_majority _ _ _ _ Hnum Hden HS Hft) as Hstrict.
   lia.
@@ -416,12 +427,13 @@ Lemma is_quorum_ft_mono_weight :
   forall c Q Q' num den,
     (0 <= den)%Z ->
     incl Q' c ->
+    NoDup (map fst Q') ->
     cweight Q <= cweight Q' ->
     is_quorum_ft c Q num den ->
     is_quorum_ft c Q' num den.
 Proof.
-  intros c Q Q' num den Hden Hincl' Hle [Hincl Hft].
-  split; [exact Hincl' |].
+  intros c Q Q' num den Hden Hincl' Hnodup' Hle [Hincl [Hnodup Hft]].
+  split; [exact Hincl' | split; [exact Hnodup' |]].
   eapply ft_exact_mono_q with (q := Z.of_nat (cweight Q));
     [exact Hden | lia | exact Hft].
 Qed.
@@ -433,15 +445,16 @@ Lemma Finalized_ft_enlarge :
   forall d c J b num den Q Q',
     (0 <= den)%Z ->
     incl Q' c ->
+    NoDup (map fst Q') ->
     cweight Q <= cweight Q' ->
     is_quorum_ft c Q num den ->
     (forall v w, In (v, w) Q' -> agrees d J v b) ->
     Finalized_ft d c J b num den.
 Proof.
-  intros d c J b num den Q Q' Hden Hincl' Hle Hq Hag'.
+  intros d c J b num den Q Q' Hden Hincl' Hnodup' Hle Hq Hag'.
   exists Q'. split; [| exact Hag'].
   eapply is_quorum_ft_mono_weight with (Q := Q);
-    [exact Hden | exact Hincl' | exact Hle | exact Hq].
+    [exact Hden | exact Hincl' | exact Hnodup' | exact Hle | exact Hq].
 Qed.
 
 (* ===========================================================================
@@ -550,4 +563,100 @@ Proof.
   intros d c J J' b b' num den Hadv Hanc Hfin.
   eapply L_SNAP_advance_ft; [exact Hadv |].
   eapply L_ANC_ft; [exact Hanc | exact Hfin].
+Qed.
+
+(* ===========================================================================
+   Section 9 - C1' : the θ-INDEPENDENT hard majority gate — θ ≤ 0 coverage.
+
+   `Finalized_ft_refines_Finalized` (Section 7) needs `0 < num` (θ > 0). At the
+   DEFAULT θ = 0 (num = 0) the θ-exact test degrades to the NON-strict `2q ≥ S`,
+   and for the negative-θ sentinels (num < 0; `ft_decides_exact`, clique_oracle.rs
+   :72-78, e.g. θ = -1 "finalize on any majority clique") it is weaker still — so
+   the θ-test ALONE does NOT imply the strict-majority `Finalized` at θ ≤ 0, and
+   that refinement is VACUOUS there.
+
+   But the node does NOT finalize on the θ-test alone. `ft_decides_exact`
+   (clique_oracle.rs:79-81) first applies a θ-INDEPENDENT HARD GATE
+
+       if (agreeing as i128) * 2 <= s then return false      (agreeing ≤ S/2 ⇒ MIN)
+
+   where `agreeing` = the TOTAL weight of validators agreeing on the target (the
+   `agreeing_weight_map`, :578) and the θ-tested clique weight `q = max_clique_weight`
+   is a SUB-part of it (`q ≤ agreeing`; the call sites pass them SEPARATELY,
+   `ft_decides_exact(agreeing, max_clique_weight, …)` at :584/:629). So the real
+   decision is `Finalized_ft ∧ (2·agreeing > S)`, and the hard gate — a strict
+   majority of the AGREEING set — is EXACTLY the strict-majority `Finalized`
+   (Section 4), for ALL num.
+
+   We model the gate faithfully as `hard_gate` (an agreeing majority sub-committee),
+   prove it equivalent to `Finalized`, and derive the θ ≤ 0 bridge
+   `Finalized_ft_hg_refines_Finalized` for ALL num — no `0 < num`, no positive-stake
+   side-condition. (Independently, T-CACHE holds DIRECTLY over `Finalized_ft` for all
+   num via `L_ANC_ft`/`L_SNAP_ft` — see GuardBridge.BridgeFt — so cache transparency
+   never needed the num>0 bridge; this section additionally recovers the strict-
+   majority proxy at θ ≤ 0.)
+
+   Rocq                              | Rust (safety/clique_oracle.rs)
+   ----------------------------------+--------------------------------------------
+   hard_gate (2·agreeing > S)        | ft_decides_exact :79-81 (agreeing*2 ≤ s ⇒ false)
+   Finalized_ft_hg                   | ft_decides_exact = θ-test ∧ hard gate
+   Finalized_ft_hg_refines_Finalized | θ-finalized ⇒ strict-majority (ALL num, θ ≤ 0)
+   =========================================================================== *)
+
+(* The θ-INDEPENDENT hard majority gate: a sub-committee A of the AGREEING
+   validators carries strict-majority weight (`2·cweight A > cweight c`, i.e.
+   `2·agreeing > S`) and every member agrees on `b`. Its shape is identical to a
+   strict-majority quorum, so it is provably `Finalized`. *)
+Definition hard_gate (d : DAG) (c : Committee) (J : Snapshot) (b : BlockHash) : Prop :=
+  exists A, incl A c /\ NoDup (map fst A) /\ 2 * cweight A > cweight c
+         /\ (forall v w, In (v, w) A -> agrees d J v b).
+
+Lemma hard_gate_iff_Finalized :
+  forall d c J b, hard_gate d c J b <-> Finalized d c J b.
+Proof.
+  intros d c J b. unfold hard_gate, Finalized, is_quorum. split.
+  - intros [A [Hincl [Hnodup [Hmaj Hag]]]].
+    exists A. split; [split; [exact Hincl | split; [exact Hnodup | exact Hmaj]] | exact Hag].
+  - intros [Q [[Hincl [Hnodup Hmaj]] Hag]].
+    exists Q. split; [exact Hincl | split; [exact Hnodup | split; [exact Hmaj | exact Hag]]].
+Qed.
+
+(* The node's REAL finalization decision: the θ-exact clique test AND the
+   θ-independent hard majority gate (clique_oracle.rs:79-81). *)
+Definition Finalized_ft_hg (d : DAG) (c : Committee) (J : Snapshot) (b : BlockHash)
+                           (num den : Z) : Prop :=
+  Finalized_ft d c J b num den /\ hard_gate d c J b.
+
+(* THE θ ≤ 0 BRIDGE. The hard gate ALONE supplies strict-majority `Finalized`, for
+   ALL num (num = 0 = default θ, and num < 0 sentinels) — NO `0 < num`, NO positive-
+   stake side-condition. This closes the θ ≤ 0 seam `Finalized_ft_refines_Finalized`
+   left open, so every hard-gated θ-finalized block inherits L-ANC, L-SNAP, T-CACHE
+   and every downstream capstone regardless of θ. *)
+Theorem Finalized_ft_hg_refines_Finalized :
+  forall d c J b num den, Finalized_ft_hg d c J b num den -> Finalized d c J b.
+Proof.
+  intros d c J b num den [_ Hhg]. apply hard_gate_iff_Finalized. exact Hhg.
+Qed.
+
+(* The hard-gated decision is ancestor-monotone (L-ANC) for ALL num: both conjuncts
+   are (Finalized_ft via L_ANC_ft; hard_gate = Finalized via L_ANC). *)
+Theorem L_ANC_ft_hg :
+  forall d c J b b' num den,
+    anc_of d b' b -> Finalized_ft_hg d c J b num den -> Finalized_ft_hg d c J b' num den.
+Proof.
+  intros d c J b b' num den Hanc [Hft Hhg]. split.
+  - exact (L_ANC_ft d c J b b' num den Hanc Hft).
+  - apply hard_gate_iff_Finalized. apply hard_gate_iff_Finalized in Hhg.
+    exact (L_ANC d c J b b' Hanc Hhg).
+Qed.
+
+(* The hard-gated decision is snapshot-monotone (L-SNAP) for ALL num. *)
+Theorem L_SNAP_ft_hg :
+  forall d c J J' b num den,
+    snap_extends J' J -> Finalized_ft_hg d c J b num den -> Finalized_ft_hg d c J' b num den.
+Proof.
+  intros d c J J' b num den Hext [Hft Hhg]. split.
+  - exact (L_SNAP_ft d c J J' b num den Hext Hft).
+  - apply hard_gate_iff_Finalized. apply hard_gate_iff_Finalized in Hhg.
+    exact (L_SNAP d c J J' b Hext Hhg).
 Qed.
