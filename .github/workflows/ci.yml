@@ -91,9 +91,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          xargs -r -a .github/apt-dependencies.txt sudo apt-get install -y
+        run: bash .github/scripts/install-system-dependencies.sh
 
       - name: Check formatting
         run: cargo fmt --all -- --check
@@ -172,9 +170,7 @@ jobs:
           shared-key: test-${{ matrix.crate }}
 
       - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          xargs -r -a .github/apt-dependencies.txt sudo apt-get install -y
+        run: bash .github/scripts/install-system-dependencies.sh
 
       - name: Run tests
         env:
