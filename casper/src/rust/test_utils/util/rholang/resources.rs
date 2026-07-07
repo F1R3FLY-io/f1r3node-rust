@@ -60,6 +60,7 @@ lazy_static! {
     };
 }
 
+#[allow(clippy::await_holding_lock)]
 pub async fn genesis_context() -> Result<GenesisContext, CasperError> {
     let genesis_arc = CACHED_GENESIS
         .get_or_init(|| Arc::new(Mutex::new(None)))
@@ -542,8 +543,8 @@ pub fn create_persisted_temp_dir(prefix: &str) -> PathBuf {
         .expect("Failed to create temp dir");
 
     // Convert to PathBuf which will persist even after TempDir is dropped
-    let path = temp_dir.keep();
-    path
+
+    temp_dir.keep()
 }
 
 /// Copy a template storage directory to a new temporary directory that is persisted

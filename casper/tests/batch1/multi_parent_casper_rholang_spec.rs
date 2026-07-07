@@ -26,7 +26,7 @@ async fn multi_parent_casper_should_create_blocks_based_on_deploys() {
     )
     .unwrap();
     let block = standalone_node
-        .create_block_unsafe(&[deploy.clone()])
+        .create_block_unsafe(std::slice::from_ref(&deploy))
         .await
         .unwrap();
     let deploys: Vec<_> = block.body.deploys.iter().map(|pd| &pd.deploy).collect();
@@ -95,7 +95,7 @@ new out, rl(`rho:registry:lookup`), helloCh in {{
     .unwrap();
 
     let block0 = standalone_node
-        .add_block_from_deploys(&[register_deploy.clone()])
+        .add_block_from_deploys(std::slice::from_ref(&register_deploy))
         .await
         .unwrap();
 
@@ -117,7 +117,7 @@ new out, rl(`rho:registry:lookup`), helloCh in {{
     .unwrap();
 
     let block1 = standalone_node
-        .add_block_from_deploys(&[call_deploy.clone()])
+        .add_block_from_deploys(std::slice::from_ref(&call_deploy))
         .await
         .unwrap();
 

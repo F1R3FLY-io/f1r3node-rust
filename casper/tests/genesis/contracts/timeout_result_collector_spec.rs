@@ -36,8 +36,8 @@ async fn test_finished_should_be_false_if_execution_hasnt_finished_within_timeou
     .await
     .expect("Failed to get results");
 
-    assert_eq!(
-        result.has_finished, false,
+    assert!(
+        !result.has_finished,
         "testFinished should be false if execution hasn't finished within timeout"
     );
 }

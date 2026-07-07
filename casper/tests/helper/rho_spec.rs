@@ -317,8 +317,11 @@ pub async fn get_results(
     // is created automatically (see rspace++/libs/rspace_rhotypes/src/lib.rs).
     // In pure Rust code (without JNA), we must create the Matcher explicitly here,
     // as RSpace::create(stores, matcher) requires it as a parameter.
-    let matcher = Arc::new(Box::new(Matcher::default())
-        as Box<dyn Match<BindPattern, ListParWithRandom, TaggedContinuation>>);
+    let matcher =
+        Arc::new(Box::new(Matcher)
+            as Box<
+                dyn Match<BindPattern, ListParWithRandom, TaggedContinuation>,
+            >);
 
     let mut additional_system_processes = test_framework_contracts(test_result_collector.clone());
 

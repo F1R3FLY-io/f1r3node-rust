@@ -54,6 +54,7 @@ fn create_test_external_services_grpc(grpc_mock: GrpcClientMockConfig) -> Extern
 }
 
 /// Evaluate a term (play only), returning the result
+#[allow(clippy::type_complexity)]
 async fn evaluate_with_mock_service(
     term: &str,
     external_services: ExternalServices,
@@ -89,6 +90,7 @@ async fn evaluate_with_mock_service(
 ///   3. Rig: reset replay runtime to root, load event log
 ///   4. Replay: evaluate same term on replay runtime
 ///   5. Verify: check_replay_data ensures all events were consumed
+#[allow(clippy::type_complexity)]
 async fn evaluate_and_replay(
     term: &str,
     initial_phlo: Cost,

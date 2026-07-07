@@ -21,8 +21,8 @@ mod tests {
 
     #[derive(Debug, Clone, PartialEq)]
     struct TestReason;
-    impl Into<AdmitHashReason> for TestReason {
-        fn into(self) -> AdmitHashReason { AdmitHashReason::HasBlockMessageReceived }
+    impl From<TestReason> for AdmitHashReason {
+        fn from(_val: TestReason) -> Self { AdmitHashReason::HasBlockMessageReceived }
     }
 
     struct TestFixture {
