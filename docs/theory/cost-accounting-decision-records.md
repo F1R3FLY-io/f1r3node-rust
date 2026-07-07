@@ -1223,3 +1223,69 @@ cross-group admission sweep, 0 sound + 0 necessity violations.
 soundness is load-bearing because there is no runtime backstop within a block; the precharge IS the gate),
 DR-11 (block-assembly gate), TM-CA-153 / TM-CA-164 (the over-admission lineage this completes), TM-CA-165 /
 TM-CA-166. Commits `eec6e323` (R2), `8575e7c0` (cross-group gate), `4d848faf` (formal verification).
+
+## DR-29 — Overflow → deterministic rejection; the i64-bounded ledger (over/underflow modeled); diagnostic-refinement scoping
+
+**Context.** A formal-verification faithfulness sweep of the supply ledger found three gaps between the Rust
+runtime and the Rocq model:
+
+1. **Overflow halt (item 2494 / TM-CA-167).** `close_block_deploy::dual_write_supply` credits supply pools with
+   `old.checked_add(amount).expect(..)` at five sites (the `Σ⟦v⟧` epoch mint, the fee-carve running total, the
+   `F_v` collection credit, the fee→`Σ⟦v⟧` convert, the genesis client `Σ⟦c⟧` seed). Near `i64::MAX` the `expect`
+   PANICS — non-deterministic across nodes (a validating node crashes on the block instead of rejecting it),
+   halting the network. The UNDERFLOW side is already deterministic (`recompute_and_verify_admission` raises
+   `ReplayAdmissionMismatch`); the overflow side was asymmetric.
+2. **`nat`-vacuous conservation (item 2505).** `MintingInjection.v` and the settlement conservation theorems
+   model balances as `nat`. `nat` is unbounded, so overflow is UNREPRESENTABLE and the over/underflow branches the
+   `checked_*` code actually guards are domain-excluded — the conservation guarantees say nothing about the
+   adversarial arithmetic boundary.
+3. **Over-broad replay-auth naming (item 2509 / TM-CA-151).** `RuntimeBudgetRefinement.v`'s
+   `RbCostAccountedReplay` mode is digest-INCLUSIVE, broader than deployed consensus (TM-CA-151 dropped the
+   per-op digest from consensus; it is diagnostic/telemetry only). The name implied a consensus obligation.
+
+**Decision.**
+
+- **(item 2494) Symmetric deterministic rejection, not a business cap.** Every credit site routes through a
+  `checked_supply_credit` helper that returns the deterministic `ReplayFailure::ReplaySupplyOverflow` (mapped to
+  an INVALID block in `interpreter_util`) instead of panicking. The overflow is a pure function of the block +
+  pre-state, so play and replay reject the same block identically. There is deliberately **no** economic
+  `SUPPLY_MAX` constant — the `i64` bound IS the cap (a technical machine bound, not a business parameter; a
+  `SUPPLY_MAX` was rejected per *prefer-technical-over-business*). The invariant: *Σ operations use checked
+  arithmetic that deterministically errors on overflow (never wraps, never panics).*
+- **(item 2505) A bounded-`ℤ` ledger that MODELS both branches (`BoundedLedger.v`).** The pool quantity is
+  re-modeled in `ℤ` bounded to the `i64` non-negative range, with `checked_add_i64` / `checked_sub_nonneg` that
+  return `Some` (conservation) OR `None` (deterministic rejection). The credit dichotomy
+  (`checked_add_i64_conserved_or_rejected`, the fold `supply_credit_conserved_or_rejected`), the non-wrap
+  guarantee (`checked_add_i64_never_wraps`), and the debit dichotomy
+  (`checked_sub_nonneg_conserved_or_rejected`) make the adversarial branches PROVEN, not excluded. Crucially the
+  existing `nat` laws are NOT weakened: `checked_add_i64_matches_nat` proves the `nat` model is exactly the
+  in-range restriction of the bounded model, so the bounded layer strictly ADDS the overflow branch. *(Re-typing
+  the existing `nat` theorems in place was REJECTED — it would churn the whole conservation corpus and the
+  headline-assumptions gate; a companion module that carries the guard premise the code enforces, and bridges to
+  the `nat` happy path, keeps every existing Qed-closed theorem intact.)*
+- **(item 2509) Diagnostic-refinement scoping.** `RbCostAccountedReplay → RbDiagnosticRefinement` (obligations
+  `rb_diagnostic_refinement_requires_commitment` / `rb_diagnostic_refinement_rejects_absent_commitment`), with a
+  disclaimer ported from `replay_auth_model.sage`. `rb_full_replay_payload_equiv` is SPLIT into a consensus-core
+  equivalence (`rb_full_replay_payload_consensus_equiv` — RSpace events + `consumed_units` + status) vs a
+  diagnostic-only digest equivalence (`rb_full_replay_payload_diagnostic_equiv`), proven equal to their
+  conjunction (`rb_full_replay_payload_equiv_split`); `rb_full_replay_payload_consensus_coarser_than_full`
+  witnesses the digest is diagnostic, not consensus. Theorem CONTENT is preserved; only scope naming is clarified.
+
+**Verification.** Rust: `close_block_deploy::tests::supply_credit_overflow_is_deterministic_error_not_panic` (+
+in-range/exact-sum and max+max variants) — a mint/convert at `i64::MAX` yields the deterministic error, not a
+panic; `casper` compiles with the new `ReplayFailure::ReplaySupplyOverflow` variant and its `interpreter_util`
+invalid-block arm. Rocq (axiom-free, `CA_ENFORCE_PROOFS=1` gate PASS — every headline `Closed under the global
+context`): `BoundedLedger.v` (`checked_add_i64_conserved_or_rejected`, `checked_add_i64_never_wraps`,
+`checked_add_i64_none_iff_overflow`, `checked_sub_nonneg_conserved_or_rejected`, `checked_add_i64_matches_nat`,
+`supply_credit_conserved_or_rejected`, `bounded_settlement_conserved_or_rejected`,
+`bounded_fee_convert_conserved_or_rejected`); the renamed/split RBR theorems
+(`rb_diagnostic_refinement_requires_commitment`, `rb_diagnostic_refinement_rejects_absent_commitment`,
+`rb_full_replay_payload_equiv_split`, `rb_full_replay_payload_equiv_implies_consensus`,
+`rb_full_replay_payload_consensus_coarser_than_full`). `MintingInjection.v` and `MintingHalt.v` (the halted ⇒
+mint-is-identity mandate) and `Exchange.v` (1:1 conserving, requires-both-inputs) are unchanged and stay
+Qed-closed.
+
+**Cross-refs.** TM-CA-167 (the overflow-halt vector), TM-CA-151 (the digest-diagnostic scoping this names),
+TM-CA-153 (the underflow admission gate this makes symmetric), DR-13 (Σ⟦s⟧ is reducer-unwritable), DR-28 (the
+settlement conservation this bounds). Verification-doc §4.4.1. The one-system-token model (canonical
+*phlogiston*) is untouched.

@@ -601,6 +601,28 @@ fn handle_errors(
                 Ok(Either::Right(None))
             }
 
+            ReplayFailure::ReplaySupplyOverflow {
+                channel,
+                old_balance,
+                addend,
+            } => {
+                // Item 2494: a phlogiston supply CREDIT overflowed i64::MAX. This is
+                // a DETERMINISTIC block rejection (every node computes the same sum),
+                // symmetric with the underflow ReplayAdmissionMismatch; the block is
+                // INVALID (no state hash), never a panic.
+                println!(
+                    "Found phlogiston supply overflow on {}: balance {} + {} exceeds i64::MAX",
+                    channel, old_balance, addend
+                );
+                tracing::warn!(
+                    "Found phlogiston supply overflow on {}: balance {} + {} exceeds i64::MAX",
+                    channel,
+                    old_balance,
+                    addend
+                );
+                Ok(Either::Right(None))
+            }
+
             ReplayFailure::ReplayAdmissionMismatch {
                 expected_admitted,
                 replay_admitted,

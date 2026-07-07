@@ -924,6 +924,52 @@ the implementation contract is
 [`cost-accounting-impl/wd-d2-acceptance-gate.md`](cost-accounting-impl/wd-d2-acceptance-gate.md)
 and [`cost-accounting-impl/d2-9-funding-flow.md`](cost-accounting-impl/d2-9-funding-flow.md).
 
+#### 4.4.1 Bounded-`i64` supply arithmetic — conserved or deterministically rejected
+
+The runtime holds each pool balance `Σ⟦s⟧` as a signed 64-bit integer in
+`[0, i64::MAX]` and mutates it with **checked** arithmetic. The **underflow** side of
+settlement is guarded at the gate boundary: `recompute_and_verify_admission`
+re-derives `Σ ≥ Δ` on replay and raises the deterministic `ReplayAdmissionMismatch`,
+so a settlement `checked_sub` never underflows on a valid block. The **credit** side is
+symmetric: every supply credit in `close_block_deploy::dual_write_supply` (the `Σ⟦v⟧`
+epoch mint, the fee-carve running total, the `F_v` collection credit, the
+fee→`Σ⟦v⟧` convert, and the genesis client `Σ⟦c⟧` seed) routes through the
+`checked_supply_credit` helper, which returns the deterministic
+`ReplayFailure::ReplaySupplyOverflow` rejection when `old + amount` would exceed
+`i64::MAX`, rather than `expect`-panicking. The `i64` bound **is** the supply cap —
+there is deliberately no economic `SUPPLY_MAX` constant (a technical machine bound,
+not a business parameter) — and the invariant is: *Σ operations use checked
+arithmetic that deterministically errors on overflow (never wraps, never panics).* A
+panic would be non-deterministic across nodes (a network halt near `i64::MAX`); a
+returned error is a pure function of the block plus its pre-state, so every node — the
+proposer (play) and every validator (replay) — rejects the same block identically.
+
+`BoundedLedger.v` re-models the ledger quantity in `ℤ` bounded to the `i64`
+non-negative range, so **both** branches the runtime guards are representable and
+proven, where the `nat` conservation of §4.3 and `MintingInjection` domain-*excludes*
+them (`nat` cannot overflow):
+
+- `checked_add_i64_conserved_or_rejected` and the fold headline
+  `supply_credit_conserved_or_rejected` — a credit (and a fold of credits, the exact
+  shape of the mint/convert/collect loop) **either** conserves the pool sum exactly
+  (`checked_add_i64_never_wraps`: the result is `old + amount`, never a modular wrap)
+  **or** is deterministically rejected on overflow.
+- `checked_sub_nonneg_conserved_or_rejected` and
+  `bounded_settlement_conserved_or_rejected` — a debit **either** conserves
+  (`post + Δ = pre`, non-negative) **or** is rejected, *discharging* the `Δ ≤ pre`
+  premise that the `nat` `settlement_conserves` merely assumes.
+- `checked_add_i64_matches_nat` — the `nat` model is **exactly** the in-range
+  restriction of the bounded model, so no existing conservation guarantee is
+  weakened; the bounded layer strictly *adds* the adversarial branch.
+- `bounded_fee_convert_conserved_or_rejected` — the fee→`Σ⟦v⟧` convert
+  (MintingInjection `fb_convert`) preserves the `F_v + Σ⟦v⟧` holding on the in-range
+  branch and is rejected on overflow.
+
+The Rust guard is exercised by
+`close_block_deploy::tests::supply_credit_overflow_is_deterministic_error_not_panic`
+(a mint/convert at `i64::MAX` yields the deterministic error, not a panic). These are
+recorded in [DR-29](cost-accounting-decision-records.md).
+
 ---
 
 ## 5. The Compositional Translation

@@ -1244,12 +1244,12 @@ Theorem uc_ca_049_legacy_replay_quarantines_absent_cost_trace :
     rb_replay_mode_accepts_cost_trace RbLegacyReplay trace count false) /\
   (forall trace count present,
     rb_replay_mode_accepts_cost_trace
-      RbCostAccountedReplay trace count present ->
+      RbDiagnosticRefinement trace count present ->
     rb_cost_trace_commitment_valid trace count present).
 Proof.
   split.
   - exact rb_legacy_replay_accepts_absent_commitment.
-  - exact rb_cost_accounted_replay_requires_commitment.
+  - exact rb_diagnostic_refinement_requires_commitment.
 Qed.
 
 (* UC-CA-050: every successful billable reservation enters the authenticated
@@ -1326,9 +1326,9 @@ Qed.
 Theorem uc_ca_054_activation_replay_rejects_absent_commitment :
   forall trace count,
     ~ rb_replay_mode_accepts_cost_trace
-        RbCostAccountedReplay trace count false.
+        RbDiagnosticRefinement trace count false.
 Proof.
-  exact rb_cost_accounted_replay_rejects_absent_commitment.
+  exact rb_diagnostic_refinement_rejects_absent_commitment.
 Qed.
 
 (* UC-CA-055: user-deploy authority cannot perform fee settlement or mutate

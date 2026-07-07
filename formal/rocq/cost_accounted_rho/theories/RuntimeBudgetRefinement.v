@@ -328,8 +328,25 @@ Definition rb_cost_trace_commitment_valid
   rb_cost_trace_commitment_present present /\
   rb_cost_trace_event_count_matches trace count.
 
+(* ── Replay modes (TM-CA-151 diagnostic-refinement scoping) ───────────────────
+   [rb_replay_mode] distinguishes the DIGEST-INCLUSIVE replay-authentication
+   refinement from legacy replay. Per TM-CA-151
+   (docs/theory/cost-accounting-threat-model.md) the per-operation cost-trace
+   commitment — the digest, [rb_cost_trace_commitment_valid] — is DIAGNOSTIC /
+   TELEMETRY ONLY. It was REMOVED from production consensus: the replay comparison
+   and the signed block-hash preimage authenticate RSpace events + supply balances
+   + consumed_units (the non-digest fields), NOT the digest.
+
+   [RbDiagnosticRefinement] (formerly [RbCostAccountedReplay]) is therefore the
+   name of the strictly-FINER diagnostic refinement that ALSO requires the
+   cost-trace commitment to be valid. Its obligations
+   ([rb_diagnostic_refinement_requires_commitment],
+   [rb_diagnostic_refinement_rejects_absent_commitment]) are Rocq statements ABOUT
+   that refinement level — NOT claims that the per-operation digest is a production
+   consensus requirement. [RbLegacyReplay] imposes no cost-trace obligation.
+   (Disclaimer ported from formal/sage/cost_accounting/replay_auth_model.sage.) *)
 Inductive rb_replay_mode : Type :=
-  | RbCostAccountedReplay
+  | RbDiagnosticRefinement
   | RbLegacyReplay.
 
 Definition rb_replay_mode_accepts_cost_trace
@@ -339,7 +356,7 @@ Definition rb_replay_mode_accepts_cost_trace
   (present : bool)
   : Prop :=
   match mode with
-  | RbCostAccountedReplay =>
+  | RbDiagnosticRefinement =>
       rb_cost_trace_commitment_valid trace count present
   | RbLegacyReplay => True
   end.
@@ -758,6 +775,126 @@ Definition rb_full_replay_payload_equiv
   rb_full_system_slash_fields a = rb_full_system_slash_fields b /\
   rb_full_system_logs a = rb_full_system_logs b /\
   rb_full_genesis a = rb_full_genesis b.
+
+(* ── Item 2509: consensus-core vs diagnostic-only split of the full replay-payload
+   equivalence ─────────────────────────────────────────────────────────────────
+   [rb_full_replay_payload_equiv] (above) authenticates EVERY field. Per TM-CA-151
+   the three cost-trace fields (traces / presence flags / event counts) are the
+   DIAGNOSTIC digest — telemetry, NOT the production consensus surface. We SPLIT
+   the equivalence into two independent halves:
+
+     • [rb_full_replay_payload_consensus_equiv]: the DEPLOYED-CONSENSUS surface —
+       RSpace events (user + system logs), consumed_units (user costs), the user
+       signatures, the pass/fail + error status, the system kinds / error messages
+       / slash fields, and the genesis flag. This is what production replay
+       compares (and the signed block-hash preimage covers).
+     • [rb_full_replay_payload_diagnostic_equiv]: the digest-ONLY fields (cost
+       traces, their presence flags, their event counts).
+
+   [rb_full_replay_payload_equiv_split] proves the ORIGINAL equivalence is EXACTLY
+   the conjunction of the two — so every existing field-sensitivity theorem keeps
+   its full content, while the split makes explicit that the digest half is
+   diagnostic, not consensus. [rb_full_replay_payload_consensus_coarser_than_full]
+   witnesses the scope operationally: two payloads agreeing on the ENTIRE consensus
+   surface are consensus-equivalent EVEN WHEN their digests differ (hence NOT
+   full-equivalent) — the residual is exactly the diagnostic digest. *)
+Definition rb_full_replay_payload_consensus_equiv
+  (a b : rb_full_replay_payload)
+  : Prop :=
+  rb_full_user_signatures a = rb_full_user_signatures b /\
+  rb_full_user_costs a = rb_full_user_costs b /\
+  rb_full_user_failed a = rb_full_user_failed b /\
+  rb_full_user_errors a = rb_full_user_errors b /\
+  rb_full_user_logs a = rb_full_user_logs b /\
+  rb_full_system_kinds a = rb_full_system_kinds b /\
+  rb_full_system_error_messages a = rb_full_system_error_messages b /\
+  rb_full_system_slash_fields a = rb_full_system_slash_fields b /\
+  rb_full_system_logs a = rb_full_system_logs b /\
+  rb_full_genesis a = rb_full_genesis b.
+
+Definition rb_full_replay_payload_diagnostic_equiv
+  (a b : rb_full_replay_payload)
+  : Prop :=
+  rb_full_user_cost_traces a = rb_full_user_cost_traces b /\
+  rb_full_user_cost_trace_present a =
+    rb_full_user_cost_trace_present b /\
+  rb_full_user_cost_trace_event_counts a =
+    rb_full_user_cost_trace_event_counts b.
+
+Theorem rb_full_replay_payload_equiv_split :
+  forall a b,
+    rb_full_replay_payload_equiv a b <->
+    (rb_full_replay_payload_consensus_equiv a b /\
+     rb_full_replay_payload_diagnostic_equiv a b).
+Proof.
+  intros a b.
+  unfold rb_full_replay_payload_equiv,
+    rb_full_replay_payload_consensus_equiv,
+    rb_full_replay_payload_diagnostic_equiv.
+  tauto.
+Qed.
+
+(* Full equivalence is strictly finer than the consensus surface. *)
+Theorem rb_full_replay_payload_equiv_implies_consensus :
+  forall a b,
+    rb_full_replay_payload_equiv a b ->
+    rb_full_replay_payload_consensus_equiv a b.
+Proof.
+  intros a b Hequiv.
+  apply rb_full_replay_payload_equiv_split in Hequiv. tauto.
+Qed.
+
+(* Two witnesses that agree on EVERY consensus field but differ ONLY in the
+   diagnostic digest (cost traces): consensus-equal, yet not full-equal. *)
+Definition rb_full_payload_consensus_witness : rb_full_replay_payload :=
+  {| rb_full_user_signatures := [];
+     rb_full_user_costs := [];
+     rb_full_user_cost_traces := [];
+     rb_full_user_cost_trace_present := [];
+     rb_full_user_cost_trace_event_counts := [];
+     rb_full_user_failed := [];
+     rb_full_user_errors := [];
+     rb_full_user_logs := [];
+     rb_full_system_kinds := [];
+     rb_full_system_error_messages := [];
+     rb_full_system_slash_fields := [];
+     rb_full_system_logs := [];
+     rb_full_genesis := false |}.
+
+Definition rb_full_payload_consensus_witness_alt_digest : rb_full_replay_payload :=
+  {| rb_full_user_signatures := [];
+     rb_full_user_costs := [];
+     (* the ONLY difference from the witness above — a non-empty diagnostic digest *)
+     rb_full_user_cost_traces := [ @nil rb_trace_entry ];
+     rb_full_user_cost_trace_present := [];
+     rb_full_user_cost_trace_event_counts := [];
+     rb_full_user_failed := [];
+     rb_full_user_errors := [];
+     rb_full_user_logs := [];
+     rb_full_system_kinds := [];
+     rb_full_system_error_messages := [];
+     rb_full_system_slash_fields := [];
+     rb_full_system_logs := [];
+     rb_full_genesis := false |}.
+
+Theorem rb_full_replay_payload_consensus_coarser_than_full :
+  rb_full_replay_payload_consensus_equiv
+    rb_full_payload_consensus_witness
+    rb_full_payload_consensus_witness_alt_digest
+  /\ ~ rb_full_replay_payload_equiv
+        rb_full_payload_consensus_witness
+        rb_full_payload_consensus_witness_alt_digest.
+Proof.
+  split.
+  - unfold rb_full_replay_payload_consensus_equiv,
+      rb_full_payload_consensus_witness,
+      rb_full_payload_consensus_witness_alt_digest; cbn.
+    repeat split; reflexivity.
+  - unfold rb_full_replay_payload_equiv,
+      rb_full_payload_consensus_witness,
+      rb_full_payload_consensus_witness_alt_digest; cbn.
+    intros [_ [_ [Htr _]]]. discriminate Htr.
+Qed.
 
 Record rb_block_auth_payload := {
   rb_block_sender : nat;
@@ -1194,10 +1331,13 @@ Proof.
   simpl. split; reflexivity.
 Qed.
 
-Theorem rb_cost_accounted_replay_requires_commitment :
+(* TM-CA-151: a DIAGNOSTIC-REFINEMENT obligation (the digest is NOT production
+   consensus — see the [rb_replay_mode] banner). Under the finer diagnostic
+   refinement, accepting a cost trace reduces to the explicit commitment validity. *)
+Theorem rb_diagnostic_refinement_requires_commitment :
   forall trace count present,
     rb_replay_mode_accepts_cost_trace
-      RbCostAccountedReplay trace count present ->
+      RbDiagnosticRefinement trace count present ->
     rb_cost_trace_commitment_valid trace count present.
 Proof.
   intros trace count present Haccept.
@@ -2048,10 +2188,13 @@ Proof.
   discriminate Heq.
 Qed.
 
-Theorem rb_cost_accounted_replay_rejects_absent_commitment :
+(* TM-CA-151: a DIAGNOSTIC-REFINEMENT obligation (the digest is NOT production
+   consensus — see the [rb_replay_mode] banner). The finer diagnostic refinement
+   cannot accept an absent commitment even when the trace count is zero. *)
+Theorem rb_diagnostic_refinement_rejects_absent_commitment :
   forall trace count,
     ~ rb_replay_mode_accepts_cost_trace
-        RbCostAccountedReplay trace count false.
+        RbDiagnosticRefinement trace count false.
 Proof.
   intros trace count Haccept.
   unfold rb_replay_mode_accepts_cost_trace,

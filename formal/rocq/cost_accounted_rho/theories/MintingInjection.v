@@ -51,6 +51,20 @@
 
    Dependencies: Rocq 9.1.x stdlib, RhoSyntax, CostAccountedSyntax,
                  CostAccountedReduction, TokenConservation (this project)
+
+   ─────────────────────────────────────────────────────────────────────────
+   Item 2505 (bounded-ledger re-modeling). The supply / fee balances below
+   ([pb_balance], [credit], [epoch_mint], [fb_client]/[fb_fees]/[fb_supply],
+   [fb_collect], [fb_convert]) are modeled in [nat]: their conservation laws
+   ([fee_convert_conserves_holding], [fee_collect_conserves_holding], the epoch-mint
+   idempotency, ...) hold on the HAPPY PATH but domain-EXCLUDE the over/underflow
+   the Rust runtime guards ([nat] cannot overflow). The i64-bounded [Z] re-modeling
+   — where the CREDIT [checked_add_i64] / DEBIT [checked_sub_nonneg] each return
+   [Some] (conservation) OR [None] (a DETERMINISTIC block rejection, item 2494) —
+   lives in the companion module BoundedLedger.v, which also proves the nat model
+   here is EXACTLY the in-range restriction of the bounded model
+   ([checked_add_i64_matches_nat]). So the [nat] laws below are NOT weakened; the
+   bounded layer strictly ADDS the adversarial-branch modeling.
    ═══════════════════════════════════════════════════════════════════════════ *)
 
 From Stdlib Require Import Lia.

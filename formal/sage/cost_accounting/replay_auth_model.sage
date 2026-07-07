@@ -90,7 +90,7 @@ def records():
             "A post-activation payload with no cost-trace digest remains replay-invalid at the digest-inclusive diagnostic-refinement level even when the event count is zero (TM-CA-151: this is NOT a production consensus rejection; production replay does not reject on digest presence).",
             canonical_scenario("missing_digest", replay_fields=missing, projection={"activation": "cost_accounted"}, expected_classification="confirmed_safe"),
             {"payload": missing, "replay_valid": False},
-            ["Rocq: rb_cost_accounted_replay_rejects_absent_commitment (diagnostic-refinement)", "Rust: consensus commitment test removed with TM-CA-151"],
+            ["Rocq: rb_diagnostic_refinement_rejects_absent_commitment (diagnostic-refinement)", "Rust: consensus commitment test removed with TM-CA-151"],
         ),
     ]
 

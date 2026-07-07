@@ -259,6 +259,16 @@ theories/MintingHalt.v
 # theorems are Closed under the global context.
 theories/Exchange.v
 
+# Level 4a9: the i64-bounded ledger (item 2505 re-modeling + item 2494 FV mirror).
+# Depends on TokenConservation + MintingInjection. Re-models the phlogiston pool
+# balance in Z bounded to the i64 non-negative range so the over/underflow branches
+# the checked_add/checked_sub runtime code guards are REPRESENTABLE and PROVEN
+# (conserved OR deterministically rejected), rather than domain-excluded by nat.
+# The nat conservation is recovered as the in-range restriction (checked_add_i64_
+# matches_nat), so no existing guarantee is weakened. Concrete; Closed under the
+# global context.
+theories/BoundedLedger.v
+
 # GSLT/OSLF capstone — discharges spec §6.1 (the calculus is a well-formed
 # GSLT: Types / Equations / Rewrites) and §7.7 (the OSLF-generated linear
 # resource logic: the funding judgment Σ_s ≥ Δ_s is decidable, the gate is a

@@ -194,6 +194,14 @@ impl CloseBlockDeploy {
     /// underflow is a HARD error (`expect`) — the gate guarantees `ΣΔ_s ≤ Σ_s`, so
     /// underflow here is a gate-invariant violation, never reachable in a valid
     /// block.
+    ///
+    /// Item 2494 (overflow symmetry): the CREDIT side is symmetric. Every supply
+    /// `checked_add` (mint, fee-carve total, `F_v` collection, fee→`Σ⟦v⟧` convert,
+    /// genesis client seed) routes through [`checked_supply_credit`], which returns
+    /// the DETERMINISTIC [`ReplayFailure::ReplaySupplyOverflow`] rejection on an
+    /// `i64::MAX` overflow instead of `expect`-panicking. The overflow is a pure
+    /// function of the block + pre-state, so every node rejects the same block
+    /// identically (a panic would be non-deterministic across nodes ⇒ network halt).
     async fn dual_write_supply(
         &self,
         runtime_ops: &mut RuntimeOps,
@@ -227,9 +235,9 @@ impl CloseBlockDeploy {
         for (index, (pk, amount)) in mints.iter().enumerate() {
             let chan = supply_channel(&Sig::Ground(pk.clone()));
             let old_n = supply::read_balance(runtime_ops, &chan).await;
-            let new_n = old_n
-                .checked_add(*amount)
-                .expect("phlogiston supply overflow");
+            // Item 2494: overflow near i64::MAX is a DETERMINISTIC block rejection
+            // (symmetric with the underflow gate), never an `expect` panic.
+            let new_n = checked_supply_credit(old_n, *amount, format!("mint:{}", hex::encode(pk)))?;
             let random_state = supply::mint_random_state(&close_rand, index as i64);
             supply::produce_balance(runtime_ops, &chan, new_n, random_state).await?;
 
@@ -339,9 +347,11 @@ impl CloseBlockDeploy {
                 };
                 let carve_rand = supply::fee_carve_random_state(&close_rand, index as i64);
                 supply::produce_balance(runtime_ops, &debit.channel, new_c, carve_rand).await?;
-                carved_total = carved_total
-                    .checked_add(debit.amount)
-                    .expect("fee carve total overflow");
+                carved_total = checked_supply_credit(
+                    carved_total,
+                    debit.amount,
+                    format!("feeCarveTotal:{}", hex::encode(sig_key)),
+                )?;
 
                 if is_replay {
                     let readback = supply::read_balance(runtime_ops, &debit.channel).await;
@@ -363,9 +373,11 @@ impl CloseBlockDeploy {
             if carved_total > 0 {
                 let chan = supply::fee_collection_channel(&carve.recipient_pk);
                 let old_n = supply::read_balance(runtime_ops, &chan).await;
-                let new_n = old_n
-                    .checked_add(carved_total)
-                    .expect("fee supply overflow on FeeExtract collection credit");
+                let new_n = checked_supply_credit(
+                    old_n,
+                    carved_total,
+                    format!("feeCollect:{}", hex::encode(&carve.recipient_pk)),
+                )?;
                 let random_state = supply::fee_collect_random_state(&close_rand);
                 supply::produce_balance(runtime_ops, &chan, new_n, random_state).await?;
 
@@ -425,9 +437,7 @@ impl CloseBlockDeploy {
             // Credit Σ⟦v⟧ += f (the conserving 1:1 convert).
             let supply_chan = supply_channel(&Sig::Ground(pk.clone()));
             let old_v = supply::read_balance(runtime_ops, &supply_chan).await;
-            let new_v = old_v
-                .checked_add(f)
-                .expect("phlogiston supply overflow on fee-convert credit");
+            let new_v = checked_supply_credit(old_v, f, format!("feeConvert:{}", hex::encode(pk)))?;
             let credit_rand = supply::fee_convert_random_state(&close_rand, (index as i64) * 2);
             supply::produce_balance(runtime_ops, &supply_chan, new_v, credit_rand).await?;
 
@@ -507,15 +517,17 @@ impl CloseBlockDeploy {
                     // so skip it and leave the channel untouched, matching the
                     // debit loop's zero-skip and `produce_balance`'s single-datum
                     // discipline). A negative amount is a genesis-config error;
-                    // `checked_add` below would not catch it, but the genesis
-                    // surface validates non-negativity before it reaches here.
+                    // `checked_supply_credit` below would not catch it, but the
+                    // genesis surface validates non-negativity before it reaches here.
                     continue;
                 }
                 let chan = supply_channel(&Sig::Ground(client_pk.clone()));
                 let old_n = supply::read_balance(runtime_ops, &chan).await;
-                let new_n = old_n
-                    .checked_add(*amount)
-                    .expect("phlogiston supply overflow on #13b client funding-slot seed");
+                let new_n = checked_supply_credit(
+                    old_n,
+                    *amount,
+                    format!("clientAlloc:{}", hex::encode(client_pk)),
+                )?;
                 let random_state = supply::client_alloc_random_state(&close_rand, index as i64);
                 supply::produce_balance(runtime_ops, &chan, new_n, random_state).await?;
 
@@ -539,6 +551,38 @@ impl CloseBlockDeploy {
 
         Ok(())
     }
+}
+
+/// Cost-Accounted Rho item 2494 — the OVERFLOW-side deterministic guard on every
+/// phlogiston supply CREDIT in [`CloseBlockDeploy::dual_write_supply`] (the `Σ⟦v⟧`
+/// mint, the fee-carve running total, the `F_v` collection credit, the fee→`Σ⟦v⟧`
+/// convert, and the genesis client `Σ⟦c⟧` funding-slot seed).
+///
+/// Symmetric with the UNDERFLOW side (the acceptance gate's
+/// `recompute_and_verify_admission` / the settlement `checked_sub`): the `i64`
+/// bound IS the supply cap (there is deliberately NO economic `SUPPLY_MAX`
+/// parameter — that would be a business constant), and the invariant is "Σ
+/// operations use checked arithmetic that deterministically ERRORS on overflow
+/// (never wraps, never panics)". A `checked_add` that would wrap therefore returns
+/// the deterministic [`ReplayFailure::ReplaySupplyOverflow`] rejection rather than
+/// `expect`-panicking: the overflow is a pure function of the block + pre-state, so
+/// every node (play and replay) rejects the same block the same way, whereas a
+/// panic is non-deterministic across nodes and would halt the network near
+/// `i64::MAX`. Formal mirror: `MintingInjection`/`BoundedLedger`
+/// `supply_credit_conserved_or_rejected` ("the ledger sum is conserved OR the block
+/// is deterministically rejected on overflow").
+fn checked_supply_credit(
+    old_balance: i64,
+    addend: i64,
+    channel_desc: String,
+) -> Result<i64, CasperError> {
+    old_balance.checked_add(addend).ok_or_else(|| {
+        CasperError::ReplayFailure(ReplayFailure::replay_supply_overflow(
+            channel_desc,
+            old_balance,
+            addend,
+        ))
+    })
 }
 
 /// Decode the Rholang-published mint list `List[(GByteArray pk, GInt amount)]`
@@ -676,5 +720,59 @@ impl CloseBlockDeploy {
     ) -> Result<(), CasperError> {
         self.dual_write_supply(runtime_ops, block_data, pre_state_hash, debits, true)
             .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Item 2494: a mint / convert / collect credit at the `i64::MAX` ceiling must
+    /// yield the DETERMINISTIC [`ReplayFailure::ReplaySupplyOverflow`] rejection —
+    /// NOT a panic (a panic is non-deterministic across nodes ⇒ network halt).
+    #[test]
+    fn supply_credit_overflow_is_deterministic_error_not_panic() {
+        let res = checked_supply_credit(i64::MAX, 1, "mint:deadbeef".to_string());
+        match res {
+            Err(CasperError::ReplayFailure(ReplayFailure::ReplaySupplyOverflow {
+                channel,
+                old_balance,
+                addend,
+            })) => {
+                assert_eq!(channel, "mint:deadbeef");
+                assert_eq!(old_balance, i64::MAX);
+                assert_eq!(addend, 1);
+            }
+            other => panic!("expected ReplaySupplyOverflow deterministic error, got {:?}", other),
+        }
+    }
+
+    /// The fee-carve running total (Σ of per-client fees) overflowing `i64::MAX`
+    /// is likewise a deterministic rejection, not a panic.
+    #[test]
+    fn supply_credit_max_plus_max_overflow_is_rejected() {
+        assert!(matches!(
+            checked_supply_credit(i64::MAX, i64::MAX, "feeCarveTotal:cafe".to_string()),
+            Err(CasperError::ReplayFailure(
+                ReplayFailure::ReplaySupplyOverflow { .. }
+            ))
+        ));
+    }
+
+    /// An in-range credit conserves EXACTLY (checked arithmetic never wraps, never
+    /// truncates): `old + addend` is returned verbatim below the ceiling.
+    #[test]
+    fn supply_credit_in_range_returns_exact_sum() {
+        assert_eq!(
+            checked_supply_credit(100, 23, "mint:x".to_string())
+                .expect("in-range credit must succeed"),
+            123
+        );
+        // Exactly hitting the ceiling is still in range (no off-by-one rejection).
+        assert_eq!(
+            checked_supply_credit(i64::MAX - 1, 1, "mint:ceil".to_string())
+                .expect("credit to exactly i64::MAX must succeed"),
+            i64::MAX
+        );
     }
 }
