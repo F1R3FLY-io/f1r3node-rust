@@ -65,7 +65,6 @@ impl Blake2b512Random {
             result.digest.update(&init_i8, base);
         }
 
-        // println!("\nresult.digest: {:?}", result.digest);
         let partial_base = if range.is_empty() {
             offset
         } else {
@@ -78,7 +77,6 @@ impl Blake2b512Random {
             let remainder_length = (offset + length) - partial_base;
             padded[..remainder_length]
                 .copy_from_slice(&init_i8[partial_base..(partial_base + remainder_length)]);
-            // println!("\npadded: {:?}", padded);
             result.digest.update(&padded, 0);
         }
 
@@ -88,7 +86,7 @@ impl Blake2b512Random {
 
     pub fn create_from_length(length: i32) -> Blake2b512Random {
         let mut bytes = vec![0u8; length as usize];
-        rand::thread_rng().fill(&mut bytes[..]);
+        rand::rng().fill(&mut bytes[..]);
         Self::create(&bytes, 0, length as usize)
     }
 
@@ -104,7 +102,6 @@ impl Blake2b512Random {
         let mut split = self.copy();
         let packed: [u8; 2] = index.to_le_bytes();
         let packed_signed: [i8; 2] = [packed[0] as i8, packed[1] as i8];
-        // println!("\npacked: {:?}", packed_signed);
         split.add_byte(packed_signed[0]);
         split.add_byte(packed_signed[1]);
         split
@@ -112,7 +109,6 @@ impl Blake2b512Random {
 
     fn add_byte(&mut self, index: i8) {
         if self.path_position == 112 {
-            // println!("\npath_position is 112");
             self.digest.update(&self.last_block, 0);
             self.last_block.fill(0);
             self.path_position = 0;
@@ -136,7 +132,6 @@ impl Blake2b512Random {
             clone_block,
         );
         result.path_position = self.path_position;
-        // println!("\nresult in copy");
         // result.debug_str();
         result
     }
@@ -172,11 +167,9 @@ impl Blake2b512Random {
         if self.position == 0 {
             self.hash();
             self.position = 32;
-            // println!("\nhash_array 0-32: {:?}", self.hash_array);
             self.hash_array[0..32].to_vec()
         } else {
             self.position = 0;
-            // println!("\nhash_array 32-64: {:?}", self.hash_array);
             self.hash_array[32..64].to_vec()
         }
     }
@@ -240,7 +233,6 @@ impl Blake2b512Random {
         self.digest.debug_str();
         println!("last_block: {:?}", self.last_block);
         println!("path_position: {:?}", self.path_position);
-        // println!("count_view: {:?}", self.count_view);
         println!("position: {}", self.position);
         println!("rot_position: {}", rot_position);
         println!(
@@ -423,8 +415,6 @@ mod tests {
 
         let res1 = split.next();
         let res2 = split.next();
-        // println!("\nres1: {:?}", res1);
-        // println!("\nres2: {:?}", res2);
 
         assert_eq!(res1, [
             116, 92, -32, -11, -102, -89, -21, -83, -61, 28, 9, 113, 38, -84, -123, -121, 12, 51,
@@ -448,8 +438,6 @@ mod tests {
 
         let res1 = single_merge_random.next();
         let res2 = single_merge_random.next();
-        // println!("\nres1: {:?}", res1);
-        // println!("\nres2: {:?}", res2);
 
         assert_eq!(res1, [
             -50, 25, 15, 66, -125, -44, -79, 22, 83, -53, 120, -18, -113, -68, 104, -91, -72, -53,
@@ -465,7 +453,6 @@ mod tests {
     fn blake2b512_random_should_correctly_implement_wraparound() {
         let mut rand = Blake2b512Random::create_from_bytes(&[]);
         let res1 = rand.next();
-        // println!("\nres1: {:?}", res1);
         // rand.debug_str();
         assert_eq!(res1, [
             82, -120, 78, -100, -6, -9, 56, 112, -99, 39, 30, -100, 2, 104, -16, 89, 100, 57, 86,
@@ -473,7 +460,6 @@ mod tests {
         ]);
 
         let res2 = rand.next();
-        // println!("\nres2: {:?}", res2);
         // rand.debug_str();
         assert_eq!(res2, [
             -49, -94, -21, -71, 17, -123, -23, 118, 74, 90, -17, 108, 127, 90, 103, 86, -49, -32,
@@ -481,14 +467,12 @@ mod tests {
         ]);
 
         let res3 = rand.next();
-        // println!("\nres3: {:?}", res3);
         assert_eq!(res3, [
             -92, 36, -34, 33, 10, 100, -106, 105, -1, -111, -105, 111, -35, -127, -27, 89, -77,
             -75, -64, -38, 118, -116, -68, -68, 48, -46, 94, -24, 110, 62, 7, -77
         ]);
 
         let res4 = rand.next();
-        // println!("\nres4: {:?}", res4);
         assert_eq!(res4, [
             12, 5, -2, -6, 45, 30, -53, -102, -12, 120, -73, 79, 94, -103, 112, 60, 66, -64, 124,
             -75, 89, -90, -96, -114, 24, -2, 77, -7, -120, -24, -108, 96

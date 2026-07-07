@@ -2,7 +2,7 @@
 
 ## Workspace Overview
 
-The Cargo workspace contains 11 crates:
+The Cargo workspace contains 10 crates:
 
 | Crate | Role | Docs |
 |-------|------|------|

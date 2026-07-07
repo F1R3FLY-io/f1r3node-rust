@@ -94,13 +94,29 @@ Key settings in `default.conf` (see [Consensus Configuration Guide](https://gith
 - `enable-mergeable-channel-gc = true`
 - `heartbeat.enabled = true` (overridden via `--heartbeat-disabled` for bootstrap/observer)
 
+The node also has a `logging { }` section in `defaults.conf` for controlling log format and output:
+
+```hocon
+logging {
+  filter = "info"       # overridden by RUST_LOG env var
+  format = "json"       # "json" or "pretty"
+  sink   = "stdout"     # "stdout", "file", or "both"
+  file {
+    rotation  = "daily" # "never", "hourly", "daily"
+    retention = 14      # rotated files to keep; 0 = unlimited
+  }
+}
+```
+
+When `sink` includes `"file"`, logs are written to `<data-dir>/logs/node.log` — in Docker that is `/var/lib/rnode/logs/node.log` inside the container.
+
 ## Environment Variables
 
-The Rust node reads a small set of environment variables. All other configuration is in HOCON config files (see [Configuration](#configuration) above). Env vars are used only for secrets and logging.
+The Rust node reads a small set of environment variables. All other configuration is in HOCON config files (see [Configuration](#configuration) above). Env vars are used only for secrets and logging overrides.
 
 | Variable | Description |
 |---|---|
-| `RUST_LOG` | Log level filtering (e.g. `info`, `debug`) |
+| `RUST_LOG` | Overrides `logging.filter` from config (e.g. `info`, `info,f1r3fly.casper=debug`) |
 | `OPENAI_ENABLED` | Enable OpenAI AI services (`true`/`false`) |
 | `OPENAI_API_KEY` | OpenAI API key (required when `OPENAI_ENABLED=true`) |
 | `OLLAMA_ENABLED` | Enable local Ollama AI services (`true`/`false`) |

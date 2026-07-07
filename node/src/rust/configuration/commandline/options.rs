@@ -61,6 +61,21 @@ pub struct Options {
     #[arg(long = "profile")]
     pub profile: Option<String>,
 
+    /// Override `logging.filter` from config. Examples: "info",
+    /// "info,f1r3fly.casper=debug". `RUST_LOG`, if set, still wins.
+    #[arg(long = "log-level")]
+    pub log_level: Option<String>,
+
+    /// Override `logging.format` from config. "json" (default) or "pretty"
+    /// for human-readable terminal output.
+    #[arg(long = "log-format", value_name = "FORMAT")]
+    pub log_format: Option<String>,
+
+    /// Override `logging.sink` from config. "stdout" (default), "file"
+    /// (writes to <data-dir>/logs/node.log), or "both".
+    #[arg(long = "log-sink", value_name = "SINK")]
+    pub log_sink: Option<String>,
+
     #[command(subcommand)]
     pub subcommand: Option<OptionsSubCommand>,
 }
@@ -227,10 +242,6 @@ pub struct RunOptions {
     /// Path to X.509 certificate for TLS
     #[arg(long = "tls-certificate-path")]
     pub tls_certificate_path: Option<PathBuf>,
-
-    /// Use a non blocking secure random instance
-    #[arg(long = "tls-secure-random-non-blocking", action = ArgAction::SetTrue)]
-    pub tls_secure_random_non_blocking: bool,
 
     /// Address to bind API servers
     #[arg(long = "api-host")]
