@@ -19,7 +19,9 @@
        (a) rank_selects_heaviest     - each descent step picks the argmax child;
        (b) score_perm_invariant      - the score is order-independent (no fork);
        (c) score_eq_support_sum      - score = cumulative supporter weight;
-       (d) lca_is_common_ancestor    - the descent starts at a common ancestor.
+       (d) lca_is_common_ancestor_validated - the descent starts at a common
+                                        ancestor, with `single_root` DERIVED from
+                                        block validation (no longer assumed).
 
      fork_choice_bound_correct        (parent-count/-depth truncation - B2/P2-8)
        (a) head_preserved            - a cap keeps the ghost main parent (head);
@@ -100,25 +102,30 @@ Theorem fork_choice_ghost_correct :
          (map (fun e => weight d b (fst e))
               (filter (fun e => anc_ofb d fuel b (snd e)) lms)))
   /\
-  (* (d) the LCA is a common ancestor of every filtered latest message. THREE
-     premises have been discharged into the fold model: the old `lcua_common`
+  (* (d) the LCA is a common ancestor of every filtered latest message. FOUR
+     premises have been discharged into the model: the old `lcua_common`
      "assume the output is a common ancestor" hypothesis (now DERIVED via the
      covering invariant), the fold's TERMINATION (Lca.reduce_converges, a
-     lexicographic (max_numof, count_at_max) measure), and `common_ancestor …
-     root` itself (now DERIVED from single_root + wf_dag + all_real via
-     Lca.descends_from_root). Only `single_root` + `all_real` remain — both
-     NECESSARY (a 2-genesis DAG makes even the Rust fold return a
-     non-common-ancestor; see Lca.v's RESIDUAL note). *)
-  (forall genesis root d top lms,
+     lexicographic (max_numof, count_at_max) measure), `common_ancestor … root`
+     itself (DERIVED from single_root + wf_dag + all_real via
+     Lca.descends_from_root), and now `single_root` ITSELF — no longer an
+     assumed premise but DERIVED from block validation via
+     GuardBridge.validation_implies_single_root (the approved-genesis pin
+     modeling validate.rs::justification_follows, which rejects every other
+     parentless block as InvalidParents). The clause therefore takes the
+     Rust-enforced validation predicate `(forall b, In b d -> validated_block
+     genesis_hash d b)` instead of a bare `single_root`; only `all_real`
+     remains as a DAG-shape premise. *)
+  (forall genesis genesis_hash d top lms,
      wf_dag d -> wf_lookup d ->
-     single_root d root ->
+     (forall b, In b d -> validated_block genesis_hash d b) ->
      all_real d (map snd (depth_filter d top lms)) ->
      forall lm, In lm (depth_filter d top lms) ->
        anc_of d (lca genesis (lcua_many d (map snd (depth_filter d top lms))) d top lms) (snd lm)).
 Proof.
   exact (conj rank_selects_heaviest
           (conj score_perm_invariant
-            (conj score_eq_support_sum lca_is_common_ancestor))).
+            (conj score_eq_support_sum lca_is_common_ancestor_validated))).
 Qed.
 
 (* ===========================================================================
@@ -152,8 +159,11 @@ Qed.
    =========================================================================== *)
 
 Theorem fork_choice_bridge_correct :
-  (* (a) validation ENFORCES the well-formed DAG *)
-  (forall d, (forall b, In b d -> validated_block d b) -> wf_dag d)
+  (* (a) validation ENFORCES the well-formed DAG (the genesis-pinned
+     `validated_block` is stronger than needed for wf_dag; the pin is consumed
+     separately by validation_implies_single_root, threaded into the ghost
+     capstone clause (d)). *)
+  (forall genesis_hash d, (forall b, In b d -> validated_block genesis_hash d b) -> wf_dag d)
   /\
   (* (b) honest depth-filtered parents pass the validator's buffered check *)
   (forall maxn mpd buf nums,

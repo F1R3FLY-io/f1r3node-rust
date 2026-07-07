@@ -7,7 +7,9 @@
 #
 #   1. Rocq  (AUTHORITATIVE once theories exist) — builds formal/rocq/fork_choice and
 #      asserts the four capstones (fork_choice_{determinism,ghost,bound,bridge}_correct)
-#      plus the three seam lemmas the Rust ENFORCES (validation_implies_wf_dag,
+#      plus the seam lemmas the Rust ENFORCES (validation_implies_wf_dag,
+#      validation_implies_single_root [the approved-genesis pin that makes single_root
+#      DERIVED from validate.rs::justification_follows, not assumed],
 #      honest_forkchoice_parents_validate, sort_total_order) are axiom-free. Any failure
 #      here fails the gate. SKIPPED only while no theories/*.v exist yet (scaffold phase).
 #   2. TLA+  (fail-soft) — TLC (BOUNDED, explicit-state) on MC_ForkChoice.cfg +
@@ -80,8 +82,11 @@ elif command -v coqc >/dev/null 2>&1 || [[ -x "$HOME/.opam/default/bin/coqc" ]];
     pass "Rocq build (Foundation, Score, Filter, TieBreak, Lca, Rank, Bound, GuardBridge, MainTheorem)"
     tmpd=$(mktemp -d)
     chk="$tmpd/GateCheck.v"
-    # The 4 capstones + the 3 seam lemmas the Rust ENFORCES (bridge, not assume) +
+    # The 4 capstones + the 4 seam lemmas the Rust ENFORCES (bridge, not assume) +
     # lca_is_lowest + the C2/C4 derived LCA results (maximality + descends-from-root).
+    # validation_implies_single_root is the approved-genesis-pin bridge that makes
+    # single_root DERIVED (from validate.rs::justification_follows) rather than an
+    # assumed premise of the ghost capstone.
     cat > "$chk" <<'EOF'
 From ForkChoice Require Import MainTheorem.
 From ForkChoice Require Import GuardBridge.
@@ -92,6 +97,7 @@ Print Assumptions fork_choice_ghost_correct.
 Print Assumptions fork_choice_bound_correct.
 Print Assumptions fork_choice_bridge_correct.
 Print Assumptions validation_implies_wf_dag.
+Print Assumptions validation_implies_single_root.
 Print Assumptions honest_forkchoice_parents_validate.
 Print Assumptions sort_total_order.
 Print Assumptions reduce_converges.
@@ -103,10 +109,10 @@ EOF
     out=$(coqc -Q "$ROCQ_DIR/theories" ForkChoice "$chk" 2>&1)
     rm -rf "$tmpd"
     n_closed=$(grep -c "Closed under the global context" <<<"$out")
-    if [[ "$n_closed" == "12" ]]; then
-      pass "all 12 headline results axiom-free (4 capstones + validation⇒wf_dag, honest-parents-validate, sort_total_order, reduce_converges, lca_is_lowest, lcua_many_is_max [C2], descends_from_root+common_ancestor_root [C4])"
+    if [[ "$n_closed" == "13" ]]; then
+      pass "all 13 headline results axiom-free (4 capstones + validation⇒wf_dag, validation⇒single_root [approved-genesis pin], honest-parents-validate, sort_total_order, reduce_converges, lca_is_lowest, lcua_many_is_max [C2], descends_from_root+common_ancestor_root [C4])"
     else
-      fail "headline results NOT all axiom-free ($n_closed/12 Closed):"; echo "$out" | sed 's/^/      /'
+      fail "headline results NOT all axiom-free ($n_closed/13 Closed):"; echo "$out" | sed 's/^/      /'
     fi
     # Independent kernel re-check (coqchk) — the TRUSTED kernel re-verifies every
     # capstone + dependency `.vo`, not just the elaborator's Print Assumptions.

@@ -5,15 +5,34 @@
    Variable/Hypothesis reflecting a Rust-checked invariant; on Section close it
    becomes a PREMISE of the closed term, never an axiom.
 
-   Four seams:
+   Five seams:
 
-   (1) validation_implies_wf_dag  - `validate.rs::block_number` (:703) enforces
-       `num child = 1 + max(parent numbers)` along every edge, and looks up every
-       parent (:684). From that validation predicate we DERIVE Foundation.wf_dag
-       (parents present & strictly older; main parent = head). [NOTE: we model
-       the FAITHFUL `1 + max parent num` (validate.rs:698-703), which is stronger
-       than the task's shorthand `1 + main-parent num` and is exactly what makes
-       EVERY parent - not just the main one - strictly older, so wf_dag follows.]
+   (1) validation_implies_wf_dag  - `validate.rs::block_number` (:698-703)
+       enforces `num child = 1 + max(parent numbers)` along every edge, and looks
+       up every parent (:684). From that validation predicate we DERIVE
+       Foundation.wf_dag (parents present & strictly older; main parent = head).
+       [NOTE: we model the FAITHFUL `1 + max parent num` (validate.rs:698-703),
+       which is stronger than the task's shorthand `1 + main-parent num` and is
+       exactly what makes EVERY parent - not just the main one - strictly older,
+       so wf_dag follows.]
+
+   (5) validation_implies_single_root - the approved-genesis pin. `single_root`
+       (Lca.v: the ONLY parentless block in the DAG is the genesis) was formerly
+       an ASSUMED premise of the Lca common-ancestor results and the
+       `fork_choice_ghost_correct` capstone. It is now DERIVED from validation:
+       we STRENGTHEN `validated_block`'s parentless (main-parent = None) branch to
+       additionally require `blk_hash b = genesis_hash`, faithfully modeling the
+       guard that ACTUALLY exists - `validate.rs::justification_follows`
+       (:1135-1139), which runs BEFORE `Validate.parents` and rejects EVERY
+       empty-parents block as `InvalidParents`. The unique genesis is admitted
+       out-of-band via the signature-authenticated approved-block path
+       (`initializing.rs:832-840`, bypassing the validation pipeline), so the
+       ONLY parentless block that ever enters a validated DAG is the approved
+       genesis. `genesis_hash` is a Section Variable (a PARAMETER of the closed
+       terms), never an axiom. [NOTE: `block_number` (:698-721) only forces
+       num==0 for empty parents; it does NOT pin the genesis hash - see the
+       docs' recommended Rust hardening. The FV models the rejection that DOES
+       exist (`justification_follows`), which is what makes single_root hold.]
 
    (2) weight_block_structural   - `weight_from_validator_by_dag` reads only the
        RESOLVED main-parent weight map, so weight is pure: this IS
@@ -34,7 +53,9 @@
    ---------------------------------------------------------------------------
    Rocq                             | Rust
    ---------------------------------+------------------------------------------
-   validated_block / ...wf_dag      | validate.rs:681-703 block_number
+   validated_block / ...wf_dag      | validate.rs:681-723 block_number
+   validation_implies_single_root   | validate.rs:1135-1139 justification_follows
+                                    |   (+ initializing.rs:832-840 approved genesis)
    weight_block_structural          | proto_util.rs:160 (pure fn of main parent)
    main_parent_first_deterministic  | snapshot.rs:136-142 sort_by (is_main,hash)
    honest_forkchoice_parents_validate| snapshot.rs:124-126 (no recompute)
@@ -53,6 +74,7 @@ From ForkChoice Require Import TieBreak.
 From ForkChoice Require Import Filter.
 From ForkChoice Require Import Rank.
 From ForkChoice Require Import Bound.
+From ForkChoice Require Import Lca.
 
 (* ===========================================================================
    Seam (1) - validation ENFORCES the well-formed DAG
@@ -81,21 +103,39 @@ Proof.
   - injection H as ->. left; reflexivity.
 Qed.
 
-(* The validation predicate mirroring validate.rs::block_number. *)
-Definition validated_block (d : DAG) (b : Block) : Prop :=
-  (forall ph, In ph (blk_parents b) -> exists p, lookup d ph = Some p)
-  /\ match blk_main_parent b with
-     | None    => blk_parents b = [] /\ blk_num b = 0
-     | Some mph => hd_error (blk_parents b) = Some mph
-                   /\ blk_num b = S (maxpn d (blk_parents b))
-     end.
+(* The validation predicate mirroring validate.rs. `genesis_hash` is a Section
+   Variable = a PARAMETER of the discharged terms (never an axiom). A block with
+   NO main parent (None) is doubly constrained by the running node:
+     * validate.rs::block_number (:698-703) forces `num = 1 + max parent num`, so
+       an empty-parent block has number 0; AND
+     * validate.rs::justification_follows (:1135-1139) - which runs BEFORE
+       Validate.parents - rejects EVERY empty-parents block as InvalidParents.
+   The ONLY parentless block that ever enters a validated DAG is therefore the
+   approved genesis, admitted out-of-band via the signature-authenticated
+   approved-block path (initializing.rs:832-840, bypassing the pipeline). We
+   model that pin faithfully: a validated parentless block's hash IS the genesis
+   hash. This is what makes single_root DERIVABLE (below) rather than assumed. *)
+Section ValidatedBlock.
+  Variable genesis_hash : BlockHash.
+
+  Definition validated_block (d : DAG) (b : Block) : Prop :=
+    (forall ph, In ph (blk_parents b) -> exists p, lookup d ph = Some p)
+    /\ match blk_main_parent b with
+       | None    => blk_parents b = [] /\ blk_num b = 0 /\ blk_hash b = genesis_hash
+       | Some mph => hd_error (blk_parents b) = Some mph
+                     /\ blk_num b = S (maxpn d (blk_parents b))
+       end.
+End ValidatedBlock.
 
 Section Bridge.
+  Variable genesis_hash : BlockHash.
   Variable d : DAG.
-  Hypothesis all_validated : forall b, In b d -> validated_block d b.
+  Hypothesis all_validated : forall b, In b d -> validated_block genesis_hash d b.
 
   (* DERIVED: every validated DAG is well-formed (parents present & strictly
-     older; main parent = head). No axiom - `all_validated` is a premise. *)
+     older; main parent = head). No axiom - `all_validated` is a premise. The
+     genesis-pin conjunct on the None branch is UNUSED here (wf_dag needs only
+     `blk_num b = 0`); it is what `validation_implies_single_root` consumes. *)
   Theorem validation_implies_wf_dag : wf_dag d.
   Proof.
     intros b Hb. destruct (all_validated b Hb) as [Hpres Hmain].
@@ -115,9 +155,55 @@ Section Bridge.
         assert (Hnp : numof d mph = blk_num p) by (unfold numof; rewrite Hlp; reflexivity).
         assert (Hbound : numof d mph <= maxpn d (blk_parents b)) by (apply in_le_fold_max; exact Hmphin).
         lia.
-      + destruct Hmain as [_ Hnum]. exact Hnum.
+      + destruct Hmain as [_ [Hnum _]]. exact Hnum.
+  Qed.
+
+  (* DERIVED: the approved-genesis pin makes the validated DAG single-rooted.
+     A parentless block b has main_parent = None (a Some main parent would
+     require `hd_error (blk_parents b) = Some mph`, impossible for []), so the
+     strengthened None branch gives `blk_hash b = genesis_hash`; with
+     lookup_hash (blk_hash b = h), h = genesis_hash. Faithfully models
+     validate.rs::justification_follows (:1135-1139) rejecting every OTHER
+     parentless block as InvalidParents. No axiom - `all_validated` is a premise
+     and `genesis_hash` a Section parameter. This is the seam threaded into the
+     Lca common-ancestor results / the ghost capstone in place of an assumed
+     `single_root`. *)
+  Theorem validation_implies_single_root : single_root d genesis_hash.
+  Proof.
+    unfold single_root. intros h b Hlk Hpar.
+    assert (Hin : In b d) by (eapply lookup_In; eauto).
+    destruct (all_validated b Hin) as [_ Hmain].
+    destruct (blk_main_parent b) as [mph |] eqn:Emp.
+    - (* Some mph: hd_error (blk_parents b) = Some mph contradicts parents = [] *)
+      destruct Hmain as [Hhd _]. rewrite Hpar in Hhd. simpl in Hhd. discriminate.
+    - (* None: the genesis pin gives blk_hash b = genesis_hash = h *)
+      destruct Hmain as [_ [_ Hgen]]. apply lookup_hash in Hlk. rewrite <- Hlk. exact Hgen.
   Qed.
 End Bridge.
+
+(* ===========================================================================
+   Capstone-facing form: the LCA common-ancestor property with `single_root`
+   DERIVED from block validation (via validation_implies_single_root) rather
+   than ASSUMED. This is what MainTheorem.fork_choice_ghost_correct clause (d)
+   is discharged by, so the capstone no longer takes `single_root` as a bare
+   hypothesis. `root := genesis_hash` is instantiated from the pin.
+   =========================================================================== *)
+Theorem lca_is_common_ancestor_validated :
+  forall genesis genesis_hash d top lms,
+    wf_dag d -> wf_lookup d ->
+    (forall b, In b d -> validated_block genesis_hash d b) ->
+    all_real d (map snd (depth_filter d top lms)) ->
+    forall lm, In lm (depth_filter d top lms) ->
+      anc_of d (lca genesis (lcua_many d (map snd (depth_filter d top lms))) d top lms) (snd lm).
+Proof.
+  intros genesis genesis_hash d top lms Hwf Hwl Hval Har lm Hin.
+  eapply lca_is_common_ancestor with (root := genesis_hash).
+  - exact Hwf.
+  - exact Hwl.
+  - exact (validation_implies_single_root genesis_hash d Hval).
+  - exact Har.
+  - exact Hin.
+Qed.
 
 (* ===========================================================================
    Seam (2) - weight is a pure function of the resolved main-parent bonds

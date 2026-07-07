@@ -141,7 +141,8 @@ Every catalog item maps to a concrete artifact — no "assumed"/"prose-only" row
 | **B3** | score overflow ⟹ typed error, not wrap (S5) | Rust (`checked_add`); Z3 `score_supply_cap_bitvec.py` |
 | **T-MP** | main-parent selection deterministic + consistent | Rocq `GuardBridge.main_parent_first_deterministic` |
 | **T-VALID (reframed)** | honest proposer's parents pass `Validate::parents` (not a recompute) | Rocq `GuardBridge.honest_forkchoice_parents_validate`; `derive` in `validate.rs:922` |
-| **T-WF (bridge)** | block validation ⟹ acyclic, height-monotone DAG (the premise the proofs assume) | Rocq `GuardBridge.validation_implies_wf_dag` |
+| **T-WF (bridge)** | block validation ⟹ acyclic, height-monotone DAG (the premise the proofs derive) | Rocq `GuardBridge.validation_implies_wf_dag` |
+| **T-ROOT (bridge)** | block validation ⟹ single-rooted DAG (exactly one parentless block = the approved genesis); `single_root` DERIVED, not assumed | Rocq `GuardBridge.validation_implies_single_root` (models `validate.rs::justification_follows` :1135-1139 rejecting every other parentless block as `InvalidParents`; genesis admitted via the signed approved-block path `initializing.rs:832-840`) |
 | **capstone** | all of the above, axiom-free | Rocq `MainTheorem.fork_choice_{determinism,ghost,bound,bridge}_correct` |
 
 ---
@@ -164,7 +165,7 @@ each round (no effect-application/idempotence concern).
 | `Lca.v` | Foundation | `lcua_many` fold + `reduce_converges` (lex-measure termination); `lca_is_common_ancestor` (from the fold, no circular premise), `lca_is_lowest`, `lca_depth_filter_deterministic`, `lca_empty_is_genesis` |
 | `Rank.v` | Foundation, Score, TieBreak | `rank_terminates`, `rank_selects_heaviest`, `still_same_fixpoint` |
 | `Bound.v` | Foundation, Rank | `head_preserved`, `take_never_drops_head`, `cast_usize_safe`, `empty_tips_typed_err` |
-| `GuardBridge.v` | Foundation, Rank, Bound, Filter | the Rust-enforced seams: `validation_implies_wf_dag`, `weight_block_structural`, `main_parent_first_deterministic`, `honest_forkchoice_parents_validate` |
+| `GuardBridge.v` | Foundation, Rank, Bound, Filter, Lca | the Rust-enforced seams: `validation_implies_wf_dag`, `validation_implies_single_root` (approved-genesis pin ⟹ `single_root`, DERIVED), `weight_block_structural`, `main_parent_first_deterministic`, `honest_forkchoice_parents_validate`; and `lca_is_common_ancestor_validated` (the capstone-facing LCA property with `single_root` DERIVED) |
 | `MainTheorem.v` | all | capstones `fork_choice_{determinism,ghost,bound,bridge}_correct` |
 
 Build (memory-capped, 32 GB envelope):
@@ -301,13 +302,39 @@ in the P0–P3 FV sweep:
   multi-parent straddle each break lowest-ness). Non-vacuity is witnessed by an axiom-free
   `Example` on a concrete tree.
 
-Two FAITHFUL bridge premises remain (Rocq assumes exactly what the DAG / Rust guarantees,
-as premises, never axioms — every result `Print Assumptions` Closed): `single_root` (one
-genesis, enforced by `validate.rs::block_number`) and `all_real` (the tips resolve to real
-blocks). These are **necessary, not deferrals**: a DAG with two distinct parentless blocks
-makes fully-unconditional common-ancestor *false* — the Rust `BTreeSet` fold exhibits the
-same. No lemma is `Admitted` or axiomatized; the one added hypothesis (`wf_dag` on
-`reduce_converges`) is mathematically required.
+- **`single_root` is now derived, not assumed (T-ROOT).** It was formerly a bare premise of
+  the `Lca` common-ancestor results *and* the `fork_choice_ghost_correct` capstone. It is now
+  **DERIVED from block validation** by `GuardBridge.validation_implies_single_root`. The
+  strengthened `validated_block` requires a parentless (main-parent = `None`) block's hash to
+  equal the genesis hash — faithfully modeling `validate.rs::justification_follows`
+  (:1135-1139), which runs *before* `Validate.parents` and rejects **every** empty-parents
+  block as `InvalidParents`; the unique genesis is admitted out-of-band via the
+  signature-authenticated approved-block path (`initializing.rs:832-840`, bypassing the
+  pipeline). `MainTheorem.fork_choice_ghost_correct` clause (d) therefore takes the
+  Rust-enforced validation predicate `(∀ b ∈ d, validated_block genesis_hash d b)` and
+  discharges `single_root` internally via `lca_is_common_ancestor_validated`. `genesis_hash`
+  is a Section `Variable` (a **parameter** of the closed term), never an axiom.
+
+One FAITHFUL DAG-shape premise remains on the ghost capstone: `all_real` (the tips resolve
+to real blocks). It is **necessary, not a deferral**: a DAG with two distinct parentless
+blocks makes fully-unconditional common-ancestor *false* — the Rust `BTreeSet` fold exhibits
+the same — and `single_root` (now derived) rules exactly that out. The internal `Lca` lemmas
+(`lca_is_common_ancestor`, `lca_is_lowest`, `lcua_many_is_max`, `descends_from_root`,
+`common_ancestor_root`) still *state* `single_root` as a premise, but it is now
+**dischargeable** from validation via the bridge (and is so discharged at the capstone). No
+lemma is `Admitted` or axiomatized; the one added hypothesis (`wf_dag` on `reduce_converges`)
+is mathematically required. Rocq assumes exactly what the DAG / Rust guarantees, as premises,
+never axioms — every headline result is `Print Assumptions` Closed.
+
+> **Recommended Rust hardening (FV finding).** `validate.rs::block_number` (:698-721) only
+> forces `num == 0` for a parentless block; it does **not** assert that block's hash equals
+> the approved-genesis hash. The single-root guarantee currently rests on
+> `justification_follows` (:1135-1139) rejecting every *other* parentless block *before*
+> `Validate.parents`, plus genesis entering via the signed approved-block path
+> (`initializing.rs:832-840`). An explicit approved-genesis-hash assertion for parentless
+> blocks in `block_number` would make the pin local and defense-in-depth; the FV models the
+> `justification_follows` rejection that already exists, so the proof is faithful to shipped
+> behavior.
 
 ---
 
@@ -320,7 +347,7 @@ TLA⁺/Z3/Sage/Wolfram fail-soft; PlantUML render check). Target result: **ALL G
 |---|---|
 | Rust build | `cargo check -p casper --all-targets` clean |
 | Rust unit/regression | tie-break totality, B1 typed-error, fork-choice bisim (5), uc_16, convergence — all pass |
-| Rocq | full dev builds `-j1`; **12 headline results axiom-free** — 4 capstones + `validation_implies_wf_dag`, `honest_forkchoice_parents_validate`, `sort_total_order`, `reduce_converges`, `lca_is_lowest`, and the P0–P3 derivations `lcua_many_is_max` (C2), `descends_from_root` + `common_ancestor_root` (C4) |
+| Rocq | full dev builds `-j1`; **13 headline results axiom-free** — 4 capstones + `validation_implies_wf_dag`, `validation_implies_single_root` (approved-genesis pin ⟹ `single_root`, T-ROOT), `honest_forkchoice_parents_validate`, `sort_total_order`, `reduce_converges`, `lca_is_lowest`, and the P0–P3 derivations `lcua_many_is_max` (C2), `descends_from_root` + `common_ancestor_root` (C4) |
 | Rocq kernel (coqchk) | **independent kernel re-check** of `ForkChoice.MainTheorem` + all deps ⇒ "Modules were successfully checked" (C3 — the trust root under the `Print Assumptions` claim) |
 | TLA⁺ | `MC_ForkChoice.cfg` + `MC_ForkChoiceScan.cfg` pass; both bug cfgs reproduce their counterexample |
 | Apalache (unbounded) | **`IndInv = TypeOK ∧ Inv_Deterministic ∧ Inv_HeaviestSubtree` proved INDUCTIVE** (BASE `Init ⊨ IndInv` + STEP `Next` preserves `IndInv`) on `ForkChoice_apalache.tla` — over **all of ℤ scores** (native SMT `Int`, strictly beyond TLC's `MaxScore=2`); non-vacuous (`TotalTieBreak=FALSE` ⇒ STEP CTI = the S1 fork). Horizon-free: holds on every reachable state at any trajectory length (C9). Fail-soft. |
@@ -335,13 +362,17 @@ artifact or a Rust test — no "prose-only" row. The DAG well-formedness the pro
 *derived* from block validation (`GuardBridge.validation_implies_wf_dag`), the LCA
 common-ancestor property is *modeled from the fold* with its termination *proved*
 (`reduce_converges`), the genesis-common-ancestor fact is *derived* (`common_ancestor_root`,
-C4) rather than assumed, and the LCA's maximality is *derived* (`lcua_many_is_max`, C2)
-rather than taken as a premise (§6.1). The remaining `single_root` / `all_real` premises
-(and `single_parent_spine` + `NoDup ms` on the lowest-ness results — the faithful, sufficient
-replacement for the provably-insufficient `spine_linear`) are counterexample-necessary
-DAG-shape bridges — Rocq assumes exactly what the DAG guarantees, as premises, never axioms
-(every headline result is `Print Assumptions` Closed, and the whole library is re-checked by
-`coqchk`) — the finalized-floor GuardBridge discipline.
+C4) rather than assumed, the LCA's maximality is *derived* (`lcua_many_is_max`, C2)
+rather than taken as a premise (§6.1), and **`single_root` is now *derived* from block
+validation** (`GuardBridge.validation_implies_single_root`, T-ROOT) rather than assumed —
+the ghost capstone takes the Rust-enforced `validated_block` predicate and discharges
+single-rootedness internally (modeling `validate.rs::justification_follows`). The one
+remaining `all_real` premise (and `single_parent_spine` + `NoDup ms` on the lowest-ness
+results — the faithful, sufficient replacement for the provably-insufficient `spine_linear`)
+are counterexample-necessary DAG-shape bridges — Rocq assumes exactly what the DAG
+guarantees, as premises, never axioms (every headline result is `Print Assumptions` Closed,
+and the whole library is re-checked by `coqchk`) — the finalized-floor GuardBridge
+discipline.
 
 **Policy:** all of the above run **locally**. Do **not** add any Rocq / TLA⁺ / Z3 / Sage
 / Wolfram step to `.github/workflows/*` (an earlier formal-CI workflow was deliberately
