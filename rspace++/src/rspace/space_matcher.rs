@@ -30,13 +30,9 @@ where
     ) -> Option<MatchingDataCandidate<C, A>> {
         for (idx, (datum, data_index)) in data.iter().enumerate() {
             metrics::counter!("rspace.matcher.get_calls", "source" => "rspace").increment(1);
-            let t_clone = std::time::Instant::now();
-            let pattern_cloned = pattern.clone();
-            let data_cloned = datum.a.clone();
-            metrics::counter!("rspace.matcher.clone_ns", "source" => "rspace")
-                .increment(t_clone.elapsed().as_nanos() as u64);
+            // Probe by reference — no whole-pattern/whole-datum clone per attempt.
             let t_match = std::time::Instant::now();
-            let match_result = matcher.get(pattern_cloned, data_cloned);
+            let match_result = matcher.get(pattern, &datum.a);
             metrics::counter!("rspace.matcher.fold_match_ns", "source" => "rspace")
                 .increment(t_match.elapsed().as_nanos() as u64);
 
@@ -128,7 +124,7 @@ where
         &self,
         matcher: &Box<dyn Match<P, A>>,
         channels: Vec<C>,
-        match_candidates: Vec<(WaitingContinuation<P, K>, i32)>,
+        match_candidates: Vec<(std::sync::Arc<WaitingContinuation<P, K>>, i32)>,
         mut channel_to_index_data: HashMap<C, Vec<(Datum<A>, i32)>>,
     ) -> Option<ProduceCandidate<C, P, A, K>> {
         metrics::counter!(RSPACE_MATCHER_EXTRACT_FIRST_MATCH_CALLS_METRIC, "source" => RSPACE_METRICS_SOURCE)
@@ -158,7 +154,9 @@ where
                     .increment(1);
                 return Some(ProduceCandidate {
                     channels,
-                    continuation: cont.clone(),
+                    // Deref-clone the inner continuation only on a successful
+                    // match — failed probes never deep-clone.
+                    continuation: (**cont).clone(),
                     continuation_index: *index,
                     data_candidates: data_candidates.into_iter().flatten().collect(),
                 });
