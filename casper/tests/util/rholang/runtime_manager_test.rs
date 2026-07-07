@@ -295,12 +295,12 @@ async fn pre_charge_deploy_should_reduce_user_account_balance_by_correct_amount(
                 &mut PreChargeDeploy {
                     charge_amount: 9000000,
                     pk: user_pk.clone(),
-                    rand: Blake2b512Random::create_from_bytes(&vec![0]),
+                    rand: Blake2b512Random::create_from_bytes(&[0]),
                 },
                 &mut PreChargeDeploy {
                     charge_amount: 9000000,
                     pk: user_pk.clone(),
-                    rand: Blake2b512Random::create_from_bytes(&vec![0]),
+                    rand: Blake2b512Random::create_from_bytes(&[0]),
                 },
                 |_| true,
             )
@@ -313,11 +313,11 @@ async fn pre_charge_deploy_should_reduce_user_account_balance_by_correct_amount(
                 &state_hash_0,
                 &mut CheckBalance {
                     pk: user_pk.clone(),
-                    rand: Blake2b512Random::create_from_bytes(&vec![1]),
+                    rand: Blake2b512Random::create_from_bytes(&[1]),
                 },
                 &mut CheckBalance {
                     pk: user_pk.clone(),
-                    rand: Blake2b512Random::create_from_bytes(&vec![1]),
+                    rand: Blake2b512Random::create_from_bytes(&[1]),
                 },
                 |result| *result == 0,
             )
@@ -330,11 +330,11 @@ async fn pre_charge_deploy_should_reduce_user_account_balance_by_correct_amount(
                 &state_hash_1,
                 &mut RefundDeploy {
                     refund_amount: 9000000,
-                    rand: Blake2b512Random::create_from_bytes(&vec![2]),
+                    rand: Blake2b512Random::create_from_bytes(&[2]),
                 },
                 &mut RefundDeploy {
                     refund_amount: 9000000,
-                    rand: Blake2b512Random::create_from_bytes(&vec![2]),
+                    rand: Blake2b512Random::create_from_bytes(&[2]),
                 },
                 |_| true,
             )
@@ -347,11 +347,11 @@ async fn pre_charge_deploy_should_reduce_user_account_balance_by_correct_amount(
                 &state_hash_2,
                 &mut CheckBalance {
                     pk: user_pk.clone(),
-                    rand: Blake2b512Random::create_from_bytes(&vec![3]),
+                    rand: Blake2b512Random::create_from_bytes(&[3]),
                 },
                 &mut CheckBalance {
                     pk: user_pk,
-                    rand: Blake2b512Random::create_from_bytes(&vec![3]),
+                    rand: Blake2b512Random::create_from_bytes(&[3]),
                 },
                 |result| *result == 9000000,
             )
@@ -372,10 +372,10 @@ async fn close_block_should_make_epoch_change_and_reward_validator() {
                 &genesis_context,
                 &genesis_block.body.state.post_state_hash,
                 &mut CloseBlockDeploy {
-                    initial_rand: Blake2b512Random::create_from_bytes(&vec![0]),
+                    initial_rand: Blake2b512Random::create_from_bytes(&[0]),
                 },
                 &mut CloseBlockDeploy {
-                    initial_rand: Blake2b512Random::create_from_bytes(&vec![0]),
+                    initial_rand: Blake2b512Random::create_from_bytes(&[0]),
                 },
                 |_| true,
             )
@@ -396,10 +396,10 @@ async fn close_block_replay_should_fail_with_different_random_seed() {
                 &genesis_context,
                 &genesis_block.body.state.post_state_hash,
                 &mut CloseBlockDeploy {
-                    initial_rand: Blake2b512Random::create_from_bytes(&vec![0]),
+                    initial_rand: Blake2b512Random::create_from_bytes(&[0]),
                 },
                 &mut CloseBlockDeploy {
-                    initial_rand: Blake2b512Random::create_from_bytes(&vec![1]),
+                    initial_rand: Blake2b512Random::create_from_bytes(&[1]),
                 },
                 |_| true,
             )
@@ -423,11 +423,11 @@ async fn balance_deploy_should_compute_rev_balances() {
                 &genesis_block.body.state.post_state_hash,
                 &mut CheckBalance {
                     pk: user_pk.clone(),
-                    rand: Blake2b512Random::create_from_bytes(&vec![]),
+                    rand: Blake2b512Random::create_from_bytes(&[]),
                 },
                 &mut CheckBalance {
                     pk: user_pk.clone(),
-                    rand: Blake2b512Random::create_from_bytes(&vec![]),
+                    rand: Blake2b512Random::create_from_bytes(&[]),
                 },
                 |result| *result == 9000000,
             )
@@ -463,7 +463,7 @@ async fn compute_state_should_capture_rholang_errors() {
             )
             .await;
 
-            assert!(result.1.is_failed == true);
+            assert!(result.1.is_failed);
         },
     )
     .await
@@ -665,7 +665,7 @@ async fn compute_state_should_capture_rholang_parsing_errors_and_charge_for_pars
             )
             .await;
 
-            assert!(result.1.is_failed == true);
+            assert!(result.1.is_failed);
             assert!(result.1.cost.cost == costs::parsing_cost(bad_rholang).value as u64);
         },
     )
@@ -1090,14 +1090,14 @@ async fn compute_state_should_charge_deploys_separately() {
                 .find(|d| d.deploy == first_deploy[0].deploy)
                 .cloned()
                 .expect("Expected at least one matching deploy");
-            assert_eq!(first_deploy_cost, deploy_cost(&vec![matched_first]));
+            assert_eq!(first_deploy_cost, deploy_cost(&[matched_first]));
 
             let matched_second = compound_deploy
                 .iter()
                 .find(|d| d.deploy == second_deploy[0].deploy)
                 .cloned()
                 .expect("Expected at least one matching deploy");
-            assert_eq!(second_deploy_cost, deploy_cost(&vec![matched_second]));
+            assert_eq!(second_deploy_cost, deploy_cost(&[matched_second]));
 
             assert_eq!(first_deploy_cost + second_deploy_cost, compound_deploy_cost);
         },
@@ -1365,10 +1365,7 @@ async fn joins_should_be_replayed_correctly() {
                 .await
                 .unwrap();
 
-            assert_eq!(
-                hex::encode(state_hash.to_vec()),
-                hex::encode(replay_state_hash.to_vec())
-            );
+            assert_eq!(hex::encode(&state_hash), hex::encode(&replay_state_hash));
         },
     )
     .await
@@ -1803,7 +1800,7 @@ async fn bridge_query_survives_multi_parent_merge() {
     let genesis_hash = genesis_block.block_hash.clone();
     let genesis_state = proto_util::post_state_hash(&genesis_block);
     let genesis_bonds = genesis_block.body.state.bonds.clone();
-    let validator: prost::bytes::Bytes = genesis_context.validator_pks()[0].bytes.clone().into();
+    let validator: prost::bytes::Bytes = genesis_context.validator_pks()[0].bytes.clone();
     let shard_name = genesis_block.shard_id.clone();
 
     // Create all stores from the same KVM (shared genesis scope)
@@ -2154,7 +2151,7 @@ async fn concurrent_registry_inserts_should_not_conflict() {
     let genesis_hash = genesis_block.block_hash.clone();
     let genesis_state = proto_util::post_state_hash(&genesis_block);
     let genesis_bonds = genesis_block.body.state.bonds.clone();
-    let validator: prost::bytes::Bytes = genesis_context.validator_pks()[0].bytes.clone().into();
+    let validator: prost::bytes::Bytes = genesis_context.validator_pks()[0].bytes.clone();
     let shard_name = genesis_block.shard_id.clone();
 
     let mut kvm = mk_test_rnode_store_manager_from_genesis(&genesis_context);
@@ -2534,8 +2531,8 @@ async fn concurrent_registry_inserts_should_not_conflict() {
         // Identify which deploy was rejected
         let a_sig = hex::encode(&pd_a[0].deploy.sig[..8]);
         let b_sig = hex::encode(&pd_b[0].deploy.sig[..8]);
-        let a_rejected = rejected_sigs.iter().any(|s| *s == a_sig);
-        let b_rejected = rejected_sigs.iter().any(|s| *s == b_sig);
+        let a_rejected = rejected_sigs.contains(&a_sig);
+        let b_rejected = rejected_sigs.contains(&b_sig);
         tracing::warn!(
             "  Contract A ({}): {}",
             a_sig,
@@ -2676,7 +2673,7 @@ in {
                 eval_result.errors
             );
             let checkpoint = runtime_ops.runtime.create_checkpoint().await;
-            let post_state: StateHash = checkpoint.root.to_bytes_prost().into();
+            let post_state: StateHash = checkpoint.root.to_bytes_prost();
             tracing::info!(
                 "Contract at {}, post_state={}",
                 uri,
@@ -2892,7 +2889,7 @@ async fn stale_diff_application_corrupts_merged_state() {
     let genesis_hash = genesis_block.block_hash.clone();
     let genesis_state = proto_util::post_state_hash(&genesis_block);
     let genesis_bonds = genesis_block.body.state.bonds.clone();
-    let validator: prost::bytes::Bytes = genesis_context.validator_pks()[0].bytes.clone().into();
+    let validator: prost::bytes::Bytes = genesis_context.validator_pks()[0].bytes.clone();
     let shard_name = genesis_block.shard_id.clone();
 
     let mut kvm = mk_test_rnode_store_manager_from_genesis(&genesis_context);

@@ -22,7 +22,7 @@ async fn uc_112_detector_update_retains_existing_detected_hashes() {
         fixture.validators.clone(),
     );
     fixture.add_block(&old_detector);
-    fixture.add_record(0, 0, &[old_detector.block_hash.clone()]);
+    fixture.add_record(0, 0, std::slice::from_ref(&old_detector.block_hash));
 
     let current = block(
         20,

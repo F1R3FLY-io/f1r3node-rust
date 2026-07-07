@@ -40,7 +40,7 @@ async fn hash_set_casper_should_handle_multi_parent_blocks_correctly() {
     let deploy_data2 =
         construct_deploy::basic_deploy_data(2, None, Some(shard_id.clone())).unwrap();
 
-    let deploys = vec![deploy_data0, deploy_data1, deploy_data2];
+    let deploys = [deploy_data0, deploy_data1, deploy_data2];
 
     let block0 = nodes[0]
         .add_block_from_deploys(&[deploys[0].clone()])
@@ -307,7 +307,7 @@ async fn hash_set_casper_should_not_merge_blocks_that_touch_the_same_channel_inv
 
     let deploy2 = construct_deploy::basic_deploy_data(2, None, Some(shard_id.clone())).unwrap();
 
-    let deploys = vec![deploy0, deploy1, deploy2];
+    let deploys = [deploy0, deploy1, deploy2];
 
     let _block0 = nodes[0]
         .add_block_from_deploys(&[deploys[0].clone()])

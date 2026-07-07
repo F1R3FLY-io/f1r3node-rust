@@ -218,10 +218,27 @@ jobs:
           # registers itself via cloud-init). 10 amd64 + 10 arm64 feeds the
           # 20-job dual-provider matrix (docker × {amd64,arm64} × 5 slots +
           # subprocess × {amd64,arm64} × 5 slots).
-          for _ in $(seq 1 10); do ./launch-runner.sh amd64 & done
-          for _ in $(seq 1 10); do ./launch-runner.sh arm64 & done
-          wait
+          pids=()
+          for _ in $(seq 1 10); do ./launch-runner.sh amd64 & pids+=($!); done
+          for _ in $(seq 1 10); do ./launch-runner.sh arm64 & pids+=($!); done
+          failed=0
+          for pid in "${pids[@]}"; do
+            if ! wait "$pid"; then
+              failed=1
+            fi
+          done
+          if [ "$failed" -ne 0 ]; then
+            echo "At least one OCI runner launch failed."
+            exit 1
+          fi
           echo "All 20 ephemeral runner VMs submitted."
+
+      - name: Remove OCI credentials
+        if: always()
+        shell: bash -e {0}
+        run: |
+          shred -fu ~/.oci/oci_api_key.pem 2>/dev/null || true
+          rm -rf ~/.oci
 
   # Integration tests run on ephemeral OCI runners — one fresh VM per matrix
   # job, self-terminating after the job completes. The matrix runs the same

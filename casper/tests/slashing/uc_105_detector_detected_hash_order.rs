@@ -34,7 +34,7 @@ async fn uc_105_detected_hash_evidence_is_order_independent() {
     );
     fixture.add_block(&missing_pointer);
     fixture.add_block(&detector);
-    fixture.add_record(0, 0, &[detector.block_hash.clone()]);
+    fixture.add_record(0, 0, std::slice::from_ref(&detector.block_hash));
 
     let current = block(
         20,

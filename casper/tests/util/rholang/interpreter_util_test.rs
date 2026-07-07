@@ -166,6 +166,7 @@ impl TestContext {
         Ok(costs)
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn compute_deploys_checkpoint(
         &self,
         block_store: &mut KeyValueBlockStore,
@@ -474,7 +475,7 @@ async fn compute_block_checkpoint_should_merge_histories_in_case_of_multiple_par
                 &b3,
                 &block_store,
                 &mut casper_snapshot,
-                &mut runtime_manager,
+                &runtime_manager,
                 None,
             )
             .await
@@ -637,7 +638,7 @@ async fn compute_block_checkpoint_should_merge_histories_in_case_of_multiple_par
                 &b5,
                 &block_store,
                 &mut casper_snapshot,
-                &mut runtime_manager,
+                &runtime_manager,
                 None,
             )
             .await
@@ -847,8 +848,7 @@ async fn validate_block_checkpoint_should_not_return_a_checkpoint_for_an_invalid
         let invalid_hash = StateHash::default();
 
         // Scala: mkRuntimeManager[Task]("interpreter-util-test").use { runtimeManager =>
-        let mut runtime_manager =
-            resources::mk_runtime_manager("interpreter-util-test-", None).await;
+        let runtime_manager = resources::mk_runtime_manager("interpreter-util-test-", None).await;
 
         let block = block_generator::create_genesis_block(
             &mut block_store,
@@ -872,7 +872,7 @@ async fn validate_block_checkpoint_should_not_return_a_checkpoint_for_an_invalid
             &block,
             &block_store,
             &mut casper_snapshot,
-            &mut runtime_manager,
+            &runtime_manager,
             None,
         )
         .await
@@ -897,7 +897,7 @@ async fn validate_block_checkpoint_should_return_a_checkpoint_with_the_right_has
 
     with_genesis(
         ctx.genesis_context.clone(),
-        |mut block_store, mut block_dag_storage, mut runtime_manager| async move {
+        |mut block_store, mut block_dag_storage, runtime_manager| async move {
             let deploys = TestContext::create_deploys_now(
                 vec![
                     "@1!(1)",
@@ -937,7 +937,7 @@ async fn validate_block_checkpoint_should_return_a_checkpoint_with_the_right_has
                 deploys,
                 Vec::<SystemDeployEnum>::new(),
                 &casper_snapshot,
-                &mut runtime_manager,
+                &runtime_manager,
                 block_data,
                 HashMap::new(),
                 None,
@@ -973,7 +973,7 @@ async fn validate_block_checkpoint_should_return_a_checkpoint_with_the_right_has
                 &block,
                 &block_store,
                 &mut casper_snapshot,
-                &mut runtime_manager,
+                &runtime_manager,
                 None,
             )
             .await
@@ -999,7 +999,7 @@ async fn validate_block_checkpoint_should_pass_linked_list_test() {
 
     with_genesis(
         ctx.genesis_context.clone(),
-        |mut block_store, mut block_dag_storage, mut runtime_manager| async move {
+        |mut block_store, mut block_dag_storage, runtime_manager| async move {
             let deploys = TestContext::create_deploys_now(
                 vec![
                     r#"
@@ -1054,7 +1054,7 @@ contract @"recursionTest"(@list) = {
                 deploys,
                 Vec::<SystemDeployEnum>::new(),
                 &casper_snapshot,
-                &mut runtime_manager,
+                &runtime_manager,
                 block_data,
                 HashMap::new(),
                 None,
@@ -1090,7 +1090,7 @@ contract @"recursionTest"(@list) = {
                 &block,
                 &block_store,
                 &mut casper_snapshot,
-                &mut runtime_manager,
+                &runtime_manager,
                 None,
             )
             .await
@@ -1116,7 +1116,7 @@ async fn validate_block_checkpoint_should_pass_persistent_produce_test_with_caus
 
     with_genesis(
         ctx.genesis_context.clone(),
-        |mut block_store, mut block_dag_storage, mut runtime_manager| async move {
+        |mut block_store, mut block_dag_storage, runtime_manager| async move {
             let deploys = TestContext::create_deploys_now(
                 vec![
                     r#"new x, y, delay in {
@@ -1175,7 +1175,7 @@ async fn validate_block_checkpoint_should_pass_persistent_produce_test_with_caus
                 deploys,
                 Vec::<SystemDeployEnum>::new(),
                 &casper_snapshot,
-                &mut runtime_manager,
+                &runtime_manager,
                 block_data,
                 HashMap::new(),
                 None,
@@ -1211,7 +1211,7 @@ async fn validate_block_checkpoint_should_pass_persistent_produce_test_with_caus
                 &block,
                 &block_store,
                 &mut casper_snapshot,
-                &mut runtime_manager,
+                &runtime_manager,
                 None,
             )
             .await
@@ -1237,7 +1237,7 @@ async fn validate_block_checkpoint_should_pass_tests_involving_primitives() {
 
     with_genesis(
         ctx.genesis_context.clone(),
-        |mut block_store, mut block_dag_storage, mut runtime_manager| async move {
+        |mut block_store, mut block_dag_storage, runtime_manager| async move {
             let deploys = TestContext::create_deploys_now(
                 vec![
                     r#"
@@ -1292,7 +1292,7 @@ new loop, primeCheck, stdoutAck(`rho:io:stdoutAck`) in {
                 deploys,
                 Vec::<SystemDeployEnum>::new(),
                 &casper_snapshot,
-                &mut runtime_manager,
+                &runtime_manager,
                 block_data,
                 HashMap::new(),
                 None,
@@ -1328,7 +1328,7 @@ new loop, primeCheck, stdoutAck(`rho:io:stdoutAck`) in {
                 &block,
                 &block_store,
                 &mut casper_snapshot,
-                &mut runtime_manager,
+                &runtime_manager,
                 None,
             )
             .await
@@ -1354,7 +1354,7 @@ async fn validate_block_checkpoint_should_pass_tests_involving_races() {
 
     with_genesis(
         ctx.genesis_context.clone(),
-        |mut block_store, mut block_dag_storage, mut runtime_manager| async move {
+        |mut block_store, mut block_dag_storage, runtime_manager| async move {
             for i in 0..=10 {
                 let deploys = TestContext::create_deploys_now(
                     vec![
@@ -1392,7 +1392,7 @@ async fn validate_block_checkpoint_should_pass_tests_involving_races() {
                     time_stamp: now,
                     block_number: (i + 1) as i64,
                     sender: ctx.genesis_context.validator_pks()[0].clone(),
-                    seq_num: (i + 1) as i32,
+                    seq_num: (i + 1),
                 };
 
                 let deploys_checkpoint = interpreter_util::compute_deploys_checkpoint(
@@ -1401,7 +1401,7 @@ async fn validate_block_checkpoint_should_pass_tests_involving_races() {
                     deploys,
                     Vec::<SystemDeployEnum>::new(),
                     &casper_snapshot,
-                    &mut runtime_manager,
+                    &runtime_manager,
                     block_data,
                     HashMap::new(),
                     None,
@@ -1425,7 +1425,7 @@ async fn validate_block_checkpoint_should_pass_tests_involving_races() {
                     Some(computed_ts_hash.clone()),
                     None,
                     Some(pre_state_hash),
-                    Some((i + 1) as i32),
+                    Some(i + 1),
                     None,
                 );
 
@@ -1438,7 +1438,7 @@ async fn validate_block_checkpoint_should_pass_tests_involving_races() {
                     &block,
                     &block_store,
                     &mut casper_snapshot,
-                    &mut runtime_manager,
+                    &runtime_manager,
                     None,
                 )
                 .await
@@ -1469,7 +1469,7 @@ async fn validate_block_checkpoint_should_return_none_for_logs_containing_extra_
 
     with_genesis(
         ctx.genesis_context.clone(),
-        |mut block_store, mut block_dag_storage, mut runtime_manager| async move {
+        |mut block_store, mut block_dag_storage, runtime_manager| async move {
             let sources: Vec<String> = (0..1)
                 .map(|i| format!("for(_ <- @{}){{{ } Nil }} | @{}!({})", i, "", i, i))
                 .collect();
@@ -1501,7 +1501,7 @@ async fn validate_block_checkpoint_should_return_none_for_logs_containing_extra_
                 deploys,
                 Vec::<SystemDeployEnum>::new(),
                 &casper_snapshot,
-                &mut runtime_manager,
+                &runtime_manager,
                 block_data,
                 HashMap::new(),
                 None,
@@ -1553,7 +1553,7 @@ async fn validate_block_checkpoint_should_return_none_for_logs_containing_extra_
                 &block,
                 &block_store,
                 &mut casper_snapshot,
-                &mut runtime_manager,
+                &runtime_manager,
                 None,
             )
             .await
@@ -1583,7 +1583,7 @@ async fn validate_block_checkpoint_should_pass_map_update_test() {
 
     with_genesis(
         ctx.genesis_context.clone(),
-        |mut block_store, mut block_dag_storage, mut runtime_manager| async move {
+        |mut block_store, mut block_dag_storage, runtime_manager| async move {
             let genesis = ctx.genesis_context.genesis_block.clone();
 
             for i in 0..=10 {
@@ -1623,7 +1623,7 @@ async fn validate_block_checkpoint_should_pass_map_update_test() {
                     time_stamp: now,
                     block_number: (i + 1) as i64,
                     sender: ctx.genesis_context.validator_pks()[0].clone(),
-                    seq_num: (i + 1) as i32,
+                    seq_num: (i + 1),
                 };
 
                 let deploys_checkpoint = interpreter_util::compute_deploys_checkpoint(
@@ -1632,7 +1632,7 @@ async fn validate_block_checkpoint_should_pass_map_update_test() {
                     deploys,
                     Vec::<SystemDeployEnum>::new(),
                     &casper_snapshot,
-                    &mut runtime_manager,
+                    &runtime_manager,
                     block_data,
                     HashMap::new(),
                     None,
@@ -1656,7 +1656,7 @@ async fn validate_block_checkpoint_should_pass_map_update_test() {
                     Some(computed_ts_hash.clone()),
                     None,
                     Some(pre_state_hash),
-                    Some((i + 1) as i32),
+                    Some(i + 1),
                     None,
                 );
 
@@ -1669,7 +1669,7 @@ async fn validate_block_checkpoint_should_pass_map_update_test() {
                     &block,
                     &block_store,
                     &mut casper_snapshot,
-                    &mut runtime_manager,
+                    &runtime_manager,
                     None,
                 )
                 .await

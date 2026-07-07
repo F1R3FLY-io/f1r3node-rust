@@ -178,7 +178,7 @@ fn compute_parents_post_state_should_not_depend_on_local_finalized_set() {
 async fn run_compute_parents_post_state_finalized_skew_regression() {
     let secp = Secp256k1;
     let (_validator_sk, validator_pk) = secp.new_key_pair();
-    let validator: Bytes = validator_pk.bytes.clone().into();
+    let validator: Bytes = validator_pk.bytes.clone();
     let shard_name = "test-shard".to_string();
 
     let mut kvm = InMemoryStoreManager::new();
@@ -232,7 +232,7 @@ async fn run_compute_parents_post_state_finalized_skew_regression() {
         native_token_decimals: 8,
     };
 
-    let genesis_block = Genesis::create_genesis_block(&mut runtime_manager, &genesis)
+    let genesis_block = Genesis::create_genesis_block(&runtime_manager, &genesis)
         .await
         .expect("Failed to create genesis block");
     block_store
@@ -395,7 +395,7 @@ fn compute_parents_post_state_should_fail_when_required_mergeable_is_missing() {
 async fn run_compute_parents_post_state_missing_mergeable_regression() {
     let secp = Secp256k1;
     let (_validator_sk, validator_pk) = secp.new_key_pair();
-    let validator: Bytes = validator_pk.bytes.clone().into();
+    let validator: Bytes = validator_pk.bytes.clone();
     let shard_name = "test-shard".to_string();
 
     let mut kvm = InMemoryStoreManager::new();
@@ -449,7 +449,7 @@ async fn run_compute_parents_post_state_missing_mergeable_regression() {
         native_token_decimals: 8,
     };
 
-    let genesis_block = Genesis::create_genesis_block(&mut runtime_manager, &genesis)
+    let genesis_block = Genesis::create_genesis_block(&runtime_manager, &genesis)
         .await
         .expect("Failed to create genesis block");
     block_store
@@ -605,9 +605,9 @@ async fn run_visible_blocks_scope_test() {
     let (_v1_sk, v1_pk) = secp.new_key_pair();
     let (_v2_sk, v2_pk) = secp.new_key_pair();
     let (_v3_sk, v3_pk) = secp.new_key_pair();
-    let v1: Bytes = v1_pk.bytes.clone().into();
-    let v2: Bytes = v2_pk.bytes.clone().into();
-    let v3: Bytes = v3_pk.bytes.clone().into();
+    let v1: Bytes = v1_pk.bytes.clone();
+    let v2: Bytes = v2_pk.bytes.clone();
+    let v3: Bytes = v3_pk.bytes.clone();
 
     let mut kvm = InMemoryStoreManager::new();
     let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
@@ -624,7 +624,7 @@ async fn run_visible_blocks_scope_test() {
     let mergeable_store = RuntimeManager::mergeable_store(&mut kvm)
         .await
         .expect("Failed to create mergeable store");
-    let (mut runtime_manager, _) = RuntimeManager::create_with_history(
+    let (runtime_manager, _) = RuntimeManager::create_with_history(
         rspace_store,
         mergeable_store,
         std::sync::Arc::new(Genesis::default_mergeable_tags()),
@@ -661,7 +661,7 @@ async fn run_visible_blocks_scope_test() {
         native_token_decimals: 8,
     };
 
-    let genesis_block = Genesis::create_genesis_block(&mut runtime_manager, &genesis)
+    let genesis_block = Genesis::create_genesis_block(&runtime_manager, &genesis)
         .await
         .expect("Failed to create genesis block");
     block_store

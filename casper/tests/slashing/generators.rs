@@ -43,7 +43,7 @@ pub fn gen_bonds_map(
             validators
                 .iter()
                 .cloned()
-                .zip(stakes.into_iter())
+                .zip(stakes)
                 .collect::<HashMap<_, _>>()
         })
     })
@@ -153,7 +153,7 @@ mod generators_smoke {
             let mut runner = proptest::test_runner::TestRunner::default();
             let bonds = strategy.new_tree(&mut runner).unwrap().current();
             prop_assert_eq!(bonds.len(), n);
-            for (_, &b) in &bonds {
+            for &b in bonds.values() {
                 prop_assert!(b >= 1 && b <= stake);
             }
         }

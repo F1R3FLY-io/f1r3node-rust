@@ -33,6 +33,9 @@ env:
   RUSTFLAGS: "-C target-feature=+aes,+sse2"
   DOCKER_IMAGE_NAME: "f1r3flyindustries/f1r3fly-rust"
 
+permissions:
+  contents: read
+
 jobs:
   # Resolve version + branch env vars once for downstream jobs.
   # Skip release-bump commits on branch pushes — the tag push handles publish.
@@ -46,6 +49,7 @@ jobs:
     outputs:
       VERSION: ${{ steps.env.outputs.VERSION }}
       BRANCH: ${{ steps.env.outputs.BRANCH }}
+      SYSTEM_INTEGRATION_REF: ${{ steps.env.outputs.SYSTEM_INTEGRATION_REF }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -70,6 +74,13 @@ jobs:
             BRANCH="${GITHUB_REF#refs/heads/}"
           fi
           echo "BRANCH=$BRANCH" >> "$GITHUB_OUTPUT"
+
+          source .github/oci-validation.env
+          if [[ ! "$SYSTEM_INTEGRATION_REF" =~ ^[0-9a-f]{40}$ && ! "$SYSTEM_INTEGRATION_REF" =~ ^refs/tags/[A-Za-z0-9._/-]+$ ]]; then
+            echo "SYSTEM_INTEGRATION_REF must be a 40-character commit SHA or refs/tags/<tag>."
+            exit 1
+          fi
+          echo "SYSTEM_INTEGRATION_REF=$SYSTEM_INTEGRATION_REF" >> "$GITHUB_OUTPUT"
 
           echo "Version: $VERSION | Branch: $BRANCH"
 
@@ -102,7 +113,7 @@ jobs:
       - name: Run clippy
         env:
           RUSTFLAGS: "-C target-feature=+aes,+sse2 -D warnings"
-        run: cargo clippy --workspace
+        run: cargo clippy --workspace --all-targets
 
   deny:
     name: cargo-deny
