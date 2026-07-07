@@ -9,6 +9,7 @@ use std::time::Duration;
 use casper::rust::casper_conf::{de_duration, CasperConf};
 use clap::Subcommand;
 use serde::{Deserialize, Serialize};
+use shared::rust::tracing_init::LoggingConfig;
 
 use crate::rust::configuration::commandline::options::{
     BondStatusOptions, ContAtNameOptions, DataAtNameOptions, DeployOptions, EvalOptions,
@@ -36,6 +37,9 @@ pub struct NodeConf {
     pub tls: TlsConf,
     pub casper: CasperConf,
     pub metrics: Metrics,
+
+    #[serde(default)]
+    pub logging: LoggingConfig,
 
     #[serde(rename = "dev-mode")]
     pub dev_mode: bool,
@@ -179,8 +183,6 @@ pub struct TlsConf {
     pub certificate_path: PathBuf,
     #[serde(rename = "key-path")]
     pub key_path: PathBuf,
-    #[serde(rename = "secure-random-non-blocking")]
-    pub secure_random_non_blocking: bool,
     #[serde(rename = "custom-certificate-location")]
     pub custom_certificate_location: bool,
     #[serde(rename = "custom-key-location")]
@@ -192,7 +194,6 @@ impl From<TlsConf> for comm::rust::transport::tls_conf::TlsConf {
         comm::rust::transport::tls_conf::TlsConf {
             certificate_path: conf.certificate_path,
             key_path: conf.key_path,
-            secure_random_non_blocking: conf.secure_random_non_blocking,
             custom_certificate_location: conf.custom_certificate_location,
             custom_key_location: conf.custom_key_location,
         }
