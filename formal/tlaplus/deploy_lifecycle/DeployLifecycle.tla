@@ -38,11 +38,11 @@
 (* The `QuarantineBothStores` constant gates the PROPOSER-SIDE quarantine of  *)
 (* a refund-failing re-proposed deploy (a "toxic" deploy):                    *)
 (*   QuarantineBothStores = TRUE  -> the FIX: quarantine purges the toxic     *)
-(*     deploy from BOTH pending AND rejectedBuf and records it in `toxic`,    *)
-(*     with the Submit / RecoverFromRecord guards keeping it barred           *)
-(*     (Inv_NoToxicReproposable holds).                                       *)
+(*     deploy from BOTH pending AND rejectedBuf; RecoverFromRecord cannot      *)
+(*     re-derive it (no loser record), so it stays out of rejectedBuf         *)
+(*     (Inv_NoToxicReproposable holds -- the RECOVERY path is clean).          *)
 (*   QuarantineBothStores = FALSE -> the PRE-FIX: only pending is cleared, so  *)
-(*     the toxic deploy LINGERS in rejectedBuf and stays re-proposable        *)
+(*     the toxic deploy LINGERS in rejectedBuf and recovery re-proposes it     *)
 (*     (Inv_NoToxicReproposable is violated).                                 *)
 (*                                                                         *)
 (* Deploys are abstracted by their signatures {1..MaxDeploys}. A "block" is  *)
@@ -71,9 +71,14 @@ VARIABLES
     finalized,        \* signatures of deploys that landed in a finalized block
     rejectedInBlock,  \* body.rejected_deploys carried by accepted blocks
     blocksUsed,       \* auxiliary: number of blocks formed so far (<= MaxBlocks)
-    toxic             \* quarantined refund-failing deploys (the poison set): once
-                      \* toxic, a deploy is barred from every proposable store
-                      \* (pending / rejectedBuf) AND from re-submission
+    toxic             \* observation set: deploys quarantined after a refund
+                      \* failure. A refund-failed deploy produces NO block
+                      \* (NoNewDeploys, block_creator.rs), hence NO loser record,
+                      \* so recovery cannot re-derive it (RecoverFromRecord skips
+                      \* toxic). The fix additionally removes it from rejectedBuf.
+                      \* A client MAY re-submit the same sig (a fresh lifecycle);
+                      \* the code does NOT permanently bar re-submission, so the
+                      \* guarantee is scoped to the RECOVERY path (rejectedBuf).
 
 vars == <<pending, rejectedBuf, accepted, finalized, rejectedInBlock, blocksUsed, toxic>>
 
@@ -95,7 +100,10 @@ Submit ==
     \E d \in Deploys :
         /\ d \notin pending
         /\ d \notin finalized
-        /\ d \notin toxic
+        \* NB: a quarantined (toxic) deploy MAY be re-submitted -- the code does
+        \* not permanently bar it (quarantine only removes it from the stores).
+        \* A re-submitted toxic deploy is a fresh pending entry; if it refund-fails
+        \* again it is re-quarantined. This is faithful: no `d \notin toxic` guard.
         /\ pending' = pending \union {d}
         /\ UNCHANGED <<rejectedBuf, accepted, finalized, rejectedInBlock, blocksUsed, toxic>>
 
@@ -151,7 +159,8 @@ Finalize ==
 \* records it in `toxic` (the poison set); the Submit / RecoverFromRecord guards
 \* keep it permanently barred.
 \*   QuarantineBothStores = TRUE  -> the FIX: purge BOTH stores; the toxic deploy
-\*     is never in pending or rejectedBuf again (Inv_NoToxicReproposable holds).
+\*     is never in rejectedBuf again, so recovery cannot re-propose it
+\*     (Inv_NoToxicReproposable holds -- scoped to the recovery path).
 \*   QuarantineBothStores = FALSE -> the PRE-FIX: only pending is cleared, so the
 \*     toxic deploy LINGERS in rejectedBuf and stays re-proposable
 \*     (Inv_NoToxicReproposable is violated).
@@ -205,6 +214,12 @@ Inv_NoLossBeforeFinal ==
 \* Submit / RecoverFromRecord `d \notin toxic` guards). On the pre-fix
 \* (QuarantineBothStores = FALSE) TLC discovers a toxic deploy lingering in
 \* rejectedBuf via the recovery + partial-quarantine path.
+\* The proposer-side quarantine guarantee, scoped to the RECOVERY path (the actual
+\* RCA): a refund-failing deploy, once quarantined, is not in rejectedBuf, so
+\* record-driven recovery cannot re-propose it and re-fail (livelock). The pre-fix
+\* (QuarantineBothStores=FALSE) leaves it in rejectedBuf -> violated. `pending` is
+\* NOT asserted: the code permits a client to re-submit the same sig (a fresh
+\* lifecycle), so barring it in `pending` would over-claim the fix.
 Inv_NoToxicReproposable ==
-    \A d \in toxic : d \notin rejectedBuf /\ d \notin pending
+    \A d \in toxic : d \notin rejectedBuf
 ==============================================================================
