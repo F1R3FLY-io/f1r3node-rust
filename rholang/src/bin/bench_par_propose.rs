@@ -21,6 +21,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
+use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use models::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
 use rholang::rust::interpreter::accounting::costs::Cost;
 use rholang::rust::interpreter::external_services::ExternalServices;
@@ -30,8 +31,6 @@ use rspace_plus_plus::rspace::rspace::RSpace;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 use rspace_plus_plus::rspace::shared::lmdb_dir_store_manager::GB;
 use rspace_plus_plus::rspace::shared::rspace_store_manager::mk_rspace_store_manager;
-
-use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 
 // Same ParTerm/BusyTerm body the testbed uses.
 fn par_contract(forks: usize, iters: usize) -> String {
@@ -102,15 +101,26 @@ async fn run_once(forks: usize, iters: usize, lmdb_dir: std::path::PathBuf) -> (
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() {
-    let forks: usize = std::env::args().nth(1).and_then(|s| s.parse().ok()).unwrap_or(32);
-    let iters: usize = std::env::args().nth(2).and_then(|s| s.parse().ok()).unwrap_or(5000);
+    let forks: usize = std::env::args()
+        .nth(1)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(32);
+    let iters: usize = std::env::args()
+        .nth(2)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(5000);
 
-    println!("bench_par_propose: forks={forks}  iters={iters}  (LMDB-backed, evaluate + checkpoint)");
+    println!(
+        "bench_par_propose: forks={forks}  iters={iters}  (LMDB-backed, evaluate + checkpoint)"
+    );
 
     let base = std::env::temp_dir().join(format!("bench_par_propose_{}", std::process::id()));
 
     let (e1, c1) = run_once(1, iters, base.join("f1")).await;
-    println!("forks=1   evaluate={e1} ms   checkpoint={c1} ms   total={} ms", e1 + c1);
+    println!(
+        "forks=1   evaluate={e1} ms   checkpoint={c1} ms   total={} ms",
+        e1 + c1
+    );
 
     let (e32, c32) = run_once(forks, iters, base.join("f32")).await;
     let total32 = e32 + c32;

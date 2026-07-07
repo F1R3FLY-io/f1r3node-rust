@@ -15,10 +15,8 @@ pub static LOCK_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 use async_trait::async_trait;
 use rand::seq::SliceRandom;
-use rand::thread_rng;
 use serde::{Deserialize, Serialize};
 use shared::rust::store::key_value_store::KeyValueStore;
-use tracing::{Level, event};
 
 use super::checkpoint::SoftCheckpoint;
 use super::errors::{HistoryRepositoryError, RSpaceError};
@@ -92,9 +90,7 @@ where
     ) -> ChannelLockGuard {
         // Map channel hashes to stripe indices, sort to prevent deadlocks,
         // dedup so two channels in the same stripe are only locked once.
-        let mut indices: Vec<usize> = keys.iter()
-            .map(|k| (*k as usize) % stripes.len())
-            .collect();
+        let mut indices: Vec<usize> = keys.iter().map(|k| (*k as usize) % stripes.len()).collect();
         indices.sort();
         indices.dedup();
 
@@ -130,7 +126,11 @@ where
     }
 
     fn new_striped_locks() -> Arc<Vec<Arc<tokio::sync::Mutex<()>>>> {
-        Arc::new((0..256).map(|_| Arc::new(tokio::sync::Mutex::new(()))).collect())
+        Arc::new(
+            (0..256)
+                .map(|_| Arc::new(tokio::sync::Mutex::new(())))
+                .collect(),
+        )
     }
 
     pub fn get_history_repository(
@@ -172,7 +172,7 @@ where
         // Span[F].withMarks("create-checkpoint") from Scala - works because this is NOT
         // async
         let _span = tracing::info_span!(target: "f1r3fly.rspace", "create-checkpoint").entered();
-        event!(Level::DEBUG, mark = "started-create-checkpoint", "create_checkpoint");
+        tracing::trace!(target: "f1r3fly.rspace.ops", mark = "started-create-checkpoint", "create_checkpoint");
 
         // Get changes with span
         let changes = {
@@ -200,7 +200,7 @@ where
         self.restore_installs();
 
         // Mark the completion of create-checkpoint
-        event!(Level::DEBUG, mark = "finished-create-checkpoint", "create_checkpoint");
+        tracing::trace!(target: "f1r3fly.rspace.ops", mark = "finished-create-checkpoint", "create_checkpoint");
 
         Ok(Checkpoint {
             root: self.get_history_repository().root(),
@@ -309,7 +309,7 @@ where
                 channels.iter().map(|ch| Self::channel_hash(ch)).collect();
             let _lock_guard = self.consume_lock(&channel_hashes).await;
             let seq = LOCK_SEQUENCE.fetch_add(1, AtomicOrdering::SeqCst);
-            tracing::trace!(target: "rspace.lock_order", seq = seq, op = "consume", hashes = ?channel_hashes, "lock acquired");
+            tracing::trace!(target: "f1r3fly.rspace.lock_order", seq = seq, op = "consume", hashes = ?channel_hashes, "lock acquired");
             metrics::counter!("rspace.consume.lock_acquire_ns", "source" => RSPACE_METRICS_SOURCE)
                 .increment(lock_start.elapsed().as_nanos() as u64);
 
@@ -342,7 +342,7 @@ where
         let lock_start = Instant::now();
         let _lock_guard = self.produce_lock(&channel).await;
         let seq = LOCK_SEQUENCE.fetch_add(1, AtomicOrdering::SeqCst);
-        tracing::trace!(target: "rspace.lock_order", seq = seq, op = "produce", hash = Self::channel_hash(&channel), "lock acquired");
+        tracing::trace!(target: "f1r3fly.rspace.lock_order", seq = seq, op = "produce", hash = Self::channel_hash(&channel), "lock acquired");
         metrics::counter!("rspace.produce.lock_acquire_ns", "source" => RSPACE_METRICS_SOURCE)
             .increment(lock_start.elapsed().as_nanos() as u64);
 
@@ -599,7 +599,7 @@ where
     ) -> Result<MaybeConsumeResult<C, P, A, K>, RSpaceError> {
         // Span[F].traceI("locked-consume") from Scala
         let _span = tracing::info_span!(target: "f1r3fly.rspace", LOCKED_CONSUME_SPAN).entered();
-        event!(Level::DEBUG, mark = "started-locked-consume", "locked_consume");
+        tracing::trace!(target: "f1r3fly.rspace.ops", mark = "started-locked-consume", "locked_consume");
 
         let t0 = Instant::now();
         self.log_consume(consume_ref, channels, patterns, continuation, persist, peeks);
@@ -652,7 +652,7 @@ where
                 self.store_persistent_data(&data_candidates, peeks);
                 metrics::counter!("rspace.consume.process_match_ns", "source" => RSPACE_METRICS_SOURCE)
                     .increment(t3.elapsed().as_nanos() as u64);
-                event!(Level::DEBUG, mark = "finished-locked-consume", "locked_consume");
+                tracing::trace!(target: "f1r3fly.rspace.ops", mark = "finished-locked-consume", "locked_consume");
                 Ok(self.wrap_result(channels, &wk, consume_ref, &data_candidates))
             }
             None => {
@@ -660,7 +660,7 @@ where
                 self.store_waiting_continuation(channels.to_vec(), wk);
                 metrics::counter!("rspace.consume.store_continuation_ns", "source" => RSPACE_METRICS_SOURCE)
                     .increment(t3.elapsed().as_nanos() as u64);
-                event!(Level::DEBUG, mark = "finished-locked-consume", "locked_consume");
+                tracing::trace!(target: "f1r3fly.rspace.ops", mark = "finished-locked-consume", "locked_consume");
                 Ok(None)
             }
         }
@@ -694,7 +694,7 @@ where
     ) -> Result<MaybeProduceResult<C, P, A, K>, RSpaceError> {
         // Span[F].traceI("locked-produce") from Scala
         let _span = tracing::info_span!(target: "f1r3fly.rspace", LOCKED_PRODUCE_SPAN).entered();
-        event!(Level::DEBUG, mark = "started-locked-produce", "locked_produce");
+        tracing::trace!(target: "f1r3fly.rspace.ops", mark = "started-locked-produce", "locked_produce");
 
         let t0 = Instant::now();
         let grouped_channels = self.get_store().get_joins(&channel);
@@ -723,7 +723,7 @@ where
                         }));
                 metrics::counter!("rspace.produce.process_match_ns", "source" => RSPACE_METRICS_SOURCE)
                     .increment(t2.elapsed().as_nanos() as u64);
-                event!(Level::DEBUG, mark = "finished-locked-produce", "locked_produce");
+                tracing::trace!(target: "f1r3fly.rspace.ops", mark = "finished-locked-produce", "locked_produce");
                 result
             }
             None => {
@@ -731,7 +731,7 @@ where
                 let result = Ok(self.store_data(channel, data, persist, produce_ref.clone()));
                 metrics::counter!("rspace.produce.store_data_ns", "source" => RSPACE_METRICS_SOURCE)
                     .increment(t2.elapsed().as_nanos() as u64);
-                event!(Level::DEBUG, mark = "finished-locked-produce", "locked_produce");
+                tracing::trace!(target: "f1r3fly.rspace.ops", mark = "finished-locked-produce", "locked_produce");
                 result
             }
         }
@@ -883,7 +883,7 @@ where
     pub fn spawn(&self) -> Result<Self, RSpaceError> {
         // Span[F].withMarks("spawn") from Scala - works because this is NOT async
         let _span = tracing::info_span!(target: "f1r3fly.rspace", "spawn").entered();
-        event!(Level::DEBUG, mark = "started-spawn", "spawn");
+        tracing::trace!(target: "f1r3fly.rspace.ops", mark = "started-spawn", "spawn");
 
         let history_repo = self.get_history_repository();
         let next_history = history_repo.reset(&history_repo.root())?;
@@ -893,7 +893,7 @@ where
         rspace.restore_installs();
 
         // Mark the completion of spawn operation
-        event!(Level::DEBUG, mark = "finished-spawn", "spawn");
+        tracing::trace!(target: "f1r3fly.rspace.ops", mark = "finished-spawn", "spawn");
         Ok(rspace)
     }
 
@@ -1111,7 +1111,10 @@ where
     fn run_matcher_for_channels(
         &self,
         grouped_channels: Vec<Vec<C>>,
-        fetch_matching_continuations: impl Fn(Vec<C>) -> Vec<(std::sync::Arc<WaitingContinuation<P, K>>, i32)>,
+        fetch_matching_continuations: impl Fn(
+            Vec<C>,
+        )
+            -> Vec<(std::sync::Arc<WaitingContinuation<P, K>>, i32)>,
         fetch_matching_data: impl Fn(C) -> (C, Vec<(Datum<A>, i32)>),
     ) -> MaybeProduceCandidate<C, P, A, K> {
         let mut remaining = grouped_channels;
@@ -1157,7 +1160,7 @@ where
     }
 
     fn shuffle_with_index<D>(&self, t: Vec<D>) -> Vec<(D, i32)> {
-        let mut rng = thread_rng();
+        let mut rng = rand::rng();
         let mut indexed_vec = t
             .into_iter()
             .enumerate()
@@ -1284,11 +1287,15 @@ mod tests {
 
         let total = total_probes.load(Ordering::Relaxed);
         let contended = contended_probes.load(Ordering::Relaxed);
-        let rate = if total > 0 { contended as f64 / total as f64 } else { 0.0 };
+        let rate = if total > 0 {
+            contended as f64 / total as f64
+        } else {
+            0.0
+        };
 
         eprintln!(
-            "event_log_contention: probes={total}  contended={contended}  \
-             rate={:.1}%  (threshold <{:.0}%)",
+            "event_log_contention: probes={total}  contended={contended}  rate={:.1}%  (threshold \
+             <{:.0}%)",
             rate * 100.0,
             MAX_CONTENTION_RATE * 100.0,
         );
@@ -1297,9 +1304,9 @@ mod tests {
             rate < MAX_CONTENTION_RATE,
             "event_log mutex contention too high: {:.1}% of probes found the mutex held \
              (threshold {:.0}%). Root cause: all {} concurrent tasks share one \
-             std::sync::Mutex<event_log> — every produce() call acquires it, \
-             blocking other worker threads. Fix: per-task event logs merged at \
-             checkpoint, or a lock-free append structure.",
+             std::sync::Mutex<event_log> — every produce() call acquires it, blocking other \
+             worker threads. Fix: per-task event logs merged at checkpoint, or a lock-free append \
+             structure.",
             rate * 100.0,
             MAX_CONTENTION_RATE * 100.0,
             TASKS,
@@ -1363,12 +1370,15 @@ mod tests {
 
         let total = total_probes.load(Ordering::Relaxed);
         let contended = contended_probes.load(Ordering::Relaxed);
-        let rate = if total > 0 { contended as f64 / total as f64 } else { 0.0 };
+        let rate = if total > 0 {
+            contended as f64 / total as f64
+        } else {
+            0.0
+        };
 
         eprintln!(
             "par_branch_contention: branches={PAR_BRANCHES}  ops_per_branch={OPS_PER_BRANCH}  \
-             total_ops={}  probes={total}  contended={contended}  \
-             rate={:.1}%  (threshold <{:.0}%)",
+             total_ops={}  probes={total}  contended={contended}  rate={:.1}%  (threshold <{:.0}%)",
             PAR_BRANCHES * OPS_PER_BRANCH,
             rate * 100.0,
             MAX_CONTENTION_RATE * 100.0,
@@ -1376,11 +1386,11 @@ mod tests {
 
         assert!(
             rate < MAX_CONTENTION_RATE,
-            "event_log mutex contention too high at {PAR_BRANCHES} par-branches: {:.1}% of \
-             probes found the mutex held (threshold {:.0}%). Root cause: all {PAR_BRANCHES} \
-             par-branch tasks share one std::sync::Mutex<event_log> and each produce() calls \
-             Vec::insert(0,..) — O(n) shift where n grows to {} entries. Fix: per-branch \
-             event logs merged at create_checkpoint, or replace insert(0,..) with push().",
+            "event_log mutex contention too high at {PAR_BRANCHES} par-branches: {:.1}% of probes \
+             found the mutex held (threshold {:.0}%). Root cause: all {PAR_BRANCHES} par-branch \
+             tasks share one std::sync::Mutex<event_log> and each produce() calls \
+             Vec::insert(0,..) — O(n) shift where n grows to {} entries. Fix: per-branch event \
+             logs merged at create_checkpoint, or replace insert(0,..) with push().",
             rate * 100.0,
             MAX_CONTENTION_RATE * 100.0,
             PAR_BRANCHES * OPS_PER_BRANCH,

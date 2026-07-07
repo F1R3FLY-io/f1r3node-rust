@@ -6,11 +6,10 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use dashmap::DashMap;
-
 #[cfg(test)]
 use proptest::prelude::*;
 #[cfg(test)]
-use rand::{Rng, thread_rng};
+use rand::Rng;
 use tracing::warn;
 
 use super::errors::RSpaceError;
@@ -110,13 +109,13 @@ where
 {
     fn random_vec<T>(size: usize) -> Vec<T>
     where T: Default + Clone {
-        let mut rng = thread_rng();
+        let mut rng = rand::rng();
         (0..size)
             .map(|_| T::default())
             .collect::<Vec<T>>()
             .iter()
             .cloned()
-            .take(rng.gen_range(0..size + 1))
+            .take(rng.random_range(0..size + 1))
             .collect()
     }
 
@@ -191,11 +190,31 @@ where
     fn snapshot(&self) -> HotStoreState<C, P, A, K> {
         let _guard = self.checkpoint_lock.lock().expect("checkpoint lock");
         HotStoreState {
-            continuations: self.continuations.iter().map(|e| (e.key().clone(), e.value().iter().map(|a| (**a).clone()).collect())).collect(),
-            installed_continuations: self.installed_continuations.iter().map(|e| (e.key().clone(), e.value().clone())).collect(),
-            data: self.data.iter().map(|e| (e.key().clone(), e.value().clone())).collect(),
-            joins: self.joins.iter().map(|e| (e.key().clone(), e.value().clone())).collect(),
-            installed_joins: self.installed_joins.iter().map(|e| (e.key().clone(), e.value().clone())).collect(),
+            continuations: self
+                .continuations
+                .iter()
+                .map(|e| (e.key().clone(), e.value().iter().map(|a| (**a).clone()).collect()))
+                .collect(),
+            installed_continuations: self
+                .installed_continuations
+                .iter()
+                .map(|e| (e.key().clone(), e.value().clone()))
+                .collect(),
+            data: self
+                .data
+                .iter()
+                .map(|e| (e.key().clone(), e.value().clone()))
+                .collect(),
+            joins: self
+                .joins
+                .iter()
+                .map(|e| (e.key().clone(), e.value().clone()))
+                .collect(),
+            installed_joins: self
+                .installed_joins
+                .iter()
+                .map(|e| (e.key().clone(), e.value().clone()))
+                .collect(),
         }
     }
 
@@ -237,7 +256,8 @@ where
                     .into_iter()
                     .map(Arc::new)
                     .collect();
-                self.continuations.insert(channels.to_vec(), from_history.clone());
+                self.continuations
+                    .insert(channels.to_vec(), from_history.clone());
                 let mut result = Vec::with_capacity(from_history.len() + 1);
                 result.push(inst);
                 result.extend(from_history);
@@ -251,7 +271,8 @@ where
                     .into_iter()
                     .map(Arc::new)
                     .collect();
-                self.continuations.insert(channels.to_vec(), from_history.clone());
+                self.continuations
+                    .insert(channels.to_vec(), from_history.clone());
                 from_history
             }
         }
@@ -274,7 +295,10 @@ where
                 metrics::counter!(HOT_STORE_PUT_CONT_EXISTING_COUNT_METRIC, "source" => RSPACE_METRICS_SOURCE)
                     .increment(existing_count);
                 let __cmp_start = std::time::Instant::now();
-                let dup = occupied.get().iter().any(|e| Self::continuation_identity(e.as_ref()) == wc_identity);
+                let dup = occupied
+                    .get()
+                    .iter()
+                    .any(|e| Self::continuation_identity(e.as_ref()) == wc_identity);
                 metrics::counter!(HOT_STORE_PUT_CONT_IDENTITY_COMPARE_NS_METRIC, "source" => RSPACE_METRICS_SOURCE)
                     .increment(__cmp_start.elapsed().as_nanos() as u64);
                 if !dup {
@@ -297,7 +321,9 @@ where
                 metrics::counter!(HOT_STORE_PUT_CONT_EXISTING_COUNT_METRIC, "source" => RSPACE_METRICS_SOURCE)
                     .increment(existing_count);
                 let __cmp_start = std::time::Instant::now();
-                let dup = new_continuations.iter().any(|e| Self::continuation_identity(e.as_ref()) == wc_identity);
+                let dup = new_continuations
+                    .iter()
+                    .any(|e| Self::continuation_identity(e.as_ref()) == wc_identity);
                 metrics::counter!(HOT_STORE_PUT_CONT_IDENTITY_COMPARE_NS_METRIC, "source" => RSPACE_METRICS_SOURCE)
                     .increment(__cmp_start.elapsed().as_nanos() as u64);
                 if !dup {
@@ -554,10 +580,16 @@ where
             .map(|entry| {
                 let k = entry.key().clone();
                 if entry.value().is_empty() {
-                    HotStoreAction::Delete(DeleteAction::DeleteContinuations(DeleteContinuations { channels: k }))
+                    HotStoreAction::Delete(DeleteAction::DeleteContinuations(DeleteContinuations {
+                        channels: k,
+                    }))
                 } else {
-                    let v: Vec<WaitingContinuation<P, K>> = entry.value().iter().map(|a| (**a).clone()).collect();
-                    HotStoreAction::Insert(InsertAction::InsertContinuations(InsertContinuations { channels: k, continuations: v }))
+                    let v: Vec<WaitingContinuation<P, K>> =
+                        entry.value().iter().map(|a| (**a).clone()).collect();
+                    HotStoreAction::Insert(InsertAction::InsertContinuations(InsertContinuations {
+                        channels: k,
+                        continuations: v,
+                    }))
                 }
             })
             .collect();
@@ -570,7 +602,10 @@ where
                 if v.is_empty() {
                     HotStoreAction::Delete(DeleteAction::DeleteData(DeleteData { channel: k }))
                 } else {
-                    HotStoreAction::Insert(InsertAction::InsertData(InsertData { channel: k, data: v }))
+                    HotStoreAction::Insert(InsertAction::InsertData(InsertData {
+                        channel: k,
+                        data: v,
+                    }))
                 }
             })
             .collect();
@@ -583,7 +618,10 @@ where
                 if v.is_empty() {
                     HotStoreAction::Delete(DeleteAction::DeleteJoins(DeleteJoins { channel: k }))
                 } else {
-                    HotStoreAction::Insert(InsertAction::InsertJoins(InsertJoins { channel: k, joins: v }))
+                    HotStoreAction::Insert(InsertAction::InsertJoins(InsertJoins {
+                        channel: k,
+                        joins: v,
+                    }))
                 }
             })
             .collect();
@@ -606,7 +644,7 @@ where
         for entry in self.installed_continuations.iter() {
             all_continuations
                 .entry(entry.key().clone())
-                .or_insert_with(Vec::new)
+                .or_default()
                 .push(entry.value().clone());
         }
 
@@ -626,21 +664,37 @@ where
     fn print(&self) {
         println!("\nHot Store");
         println!("Continuations:");
-        for e in self.continuations.iter() { println!("Key: {:?}, Value: {:?}", e.key(), e.value()); }
+        for e in self.continuations.iter() {
+            println!("Key: {:?}, Value: {:?}", e.key(), e.value());
+        }
         println!("\nInstalled Continuations:");
-        for e in self.installed_continuations.iter() { println!("Key: {:?}, Value: {:?}", e.key(), e.value()); }
+        for e in self.installed_continuations.iter() {
+            println!("Key: {:?}, Value: {:?}", e.key(), e.value());
+        }
         println!("\nData:");
-        for e in self.data.iter() { println!("Key: {:?}, Value: {:?}", e.key(), e.value()); }
+        for e in self.data.iter() {
+            println!("Key: {:?}, Value: {:?}", e.key(), e.value());
+        }
         println!("\nJoins:");
-        for e in self.joins.iter() { println!("Key: {:?}, Value: {:?}", e.key(), e.value()); }
+        for e in self.joins.iter() {
+            println!("Key: {:?}, Value: {:?}", e.key(), e.value());
+        }
         println!("\nInstalled Joins:");
-        for e in self.installed_joins.iter() { println!("Key: {:?}, Value: {:?}", e.key(), e.value()); }
+        for e in self.installed_joins.iter() {
+            println!("Key: {:?}, Value: {:?}", e.key(), e.value());
+        }
         println!("\nHistory Cache Continuations:");
-        for e in self.history_cache_continuations.iter() { println!("Key: {:?}, Value: {:?}", e.key(), e.value()); }
+        for e in self.history_cache_continuations.iter() {
+            println!("Key: {:?}, Value: {:?}", e.key(), e.value());
+        }
         println!("\nHistory Cache Data:");
-        for e in self.history_cache_datums.iter() { println!("Key: {:?}, Value: {:?}", e.key(), e.value()); }
+        for e in self.history_cache_datums.iter() {
+            println!("Key: {:?}, Value: {:?}", e.key(), e.value());
+        }
         println!("\nHistory Cache Joins:");
-        for e in self.history_cache_joins.iter() { println!("Key: {:?}, Value: {:?}", e.key(), e.value()); }
+        for e in self.history_cache_joins.iter() {
+            println!("Key: {:?}, Value: {:?}", e.key(), e.value());
+        }
     }
 
     fn clear(&self) {
@@ -674,7 +728,10 @@ where
     }
 
     fn is_empty(&self) -> bool {
-        !self.changes().iter().any(|a| matches!(a, HotStoreAction::Insert(_)))
+        !self
+            .changes()
+            .iter()
+            .any(|a| matches!(a, HotStoreAction::Insert(_)))
     }
 
     fn set_state(&self, new_state: HotStoreState<C, P, A, K>) {
@@ -684,13 +741,22 @@ where
         self.installed_continuations.clear();
         self.joins.clear();
         self.installed_joins.clear();
-        for (k, v) in new_state.data { self.data.insert(k, v); }
-        for (k, v) in new_state.continuations {
-            self.continuations.insert(k, v.into_iter().map(Arc::new).collect());
+        for (k, v) in new_state.data {
+            self.data.insert(k, v);
         }
-        for (k, v) in new_state.installed_continuations { self.installed_continuations.insert(k, v); }
-        for (k, v) in new_state.joins { self.joins.insert(k, v); }
-        for (k, v) in new_state.installed_joins { self.installed_joins.insert(k, v); }
+        for (k, v) in new_state.continuations {
+            self.continuations
+                .insert(k, v.into_iter().map(Arc::new).collect());
+        }
+        for (k, v) in new_state.installed_continuations {
+            self.installed_continuations.insert(k, v);
+        }
+        for (k, v) in new_state.joins {
+            self.joins.insert(k, v);
+        }
+        for (k, v) in new_state.installed_joins {
+            self.installed_joins.insert(k, v);
+        }
     }
 }
 
@@ -747,22 +813,32 @@ where
         let data_items: usize = store.data.iter().map(|e| e.value().len()).sum();
         let joins_items: usize = store.joins.iter().map(|e| e.value().len()).sum();
         let installed_cont_items = store.installed_continuations.len();
-        let installed_joins_items: usize = store.installed_joins.iter().map(|e| e.value().len()).sum();
-        metrics::gauge!(HOT_STORE_STATE_CONT_SIZE_METRIC, "source" => RSPACE_METRICS_SOURCE).set(store.continuations.len() as f64);
-        metrics::gauge!(HOT_STORE_STATE_DATA_SIZE_METRIC, "source" => RSPACE_METRICS_SOURCE).set(store.data.len() as f64);
-        metrics::gauge!(HOT_STORE_STATE_JOINS_SIZE_METRIC, "source" => RSPACE_METRICS_SOURCE).set(store.joins.len() as f64);
+        let installed_joins_items: usize =
+            store.installed_joins.iter().map(|e| e.value().len()).sum();
+        metrics::gauge!(HOT_STORE_STATE_CONT_SIZE_METRIC, "source" => RSPACE_METRICS_SOURCE)
+            .set(store.continuations.len() as f64);
+        metrics::gauge!(HOT_STORE_STATE_DATA_SIZE_METRIC, "source" => RSPACE_METRICS_SOURCE)
+            .set(store.data.len() as f64);
+        metrics::gauge!(HOT_STORE_STATE_JOINS_SIZE_METRIC, "source" => RSPACE_METRICS_SOURCE)
+            .set(store.joins.len() as f64);
         metrics::gauge!(HOT_STORE_STATE_INSTALLED_CONT_SIZE_METRIC, "source" => RSPACE_METRICS_SOURCE).set(store.installed_continuations.len() as f64);
         metrics::gauge!(HOT_STORE_STATE_INSTALLED_JOINS_SIZE_METRIC, "source" => RSPACE_METRICS_SOURCE).set(store.installed_joins.len() as f64);
-        metrics::gauge!(HOT_STORE_STATE_CONT_ITEMS_METRIC, "source" => RSPACE_METRICS_SOURCE).set(cont_items as f64);
-        metrics::gauge!(HOT_STORE_STATE_DATA_ITEMS_METRIC, "source" => RSPACE_METRICS_SOURCE).set(data_items as f64);
-        metrics::gauge!(HOT_STORE_STATE_JOINS_ITEMS_METRIC, "source" => RSPACE_METRICS_SOURCE).set(joins_items as f64);
+        metrics::gauge!(HOT_STORE_STATE_CONT_ITEMS_METRIC, "source" => RSPACE_METRICS_SOURCE)
+            .set(cont_items as f64);
+        metrics::gauge!(HOT_STORE_STATE_DATA_ITEMS_METRIC, "source" => RSPACE_METRICS_SOURCE)
+            .set(data_items as f64);
+        metrics::gauge!(HOT_STORE_STATE_JOINS_ITEMS_METRIC, "source" => RSPACE_METRICS_SOURCE)
+            .set(joins_items as f64);
         metrics::gauge!(HOT_STORE_STATE_INSTALLED_CONT_ITEMS_METRIC, "source" => RSPACE_METRICS_SOURCE).set(installed_cont_items as f64);
         metrics::gauge!(HOT_STORE_STATE_INSTALLED_JOINS_ITEMS_METRIC, "source" => RSPACE_METRICS_SOURCE).set(installed_joins_items as f64);
     }
 
     fn update_history_cache_metrics(store: &InMemHotStore<C, P, A, K>) {
         static LAST_EMIT_AT_MS: AtomicU64 = AtomicU64::new(0);
-        if !Self::should_emit_metrics(&LAST_EMIT_AT_MS, Self::history_cache_metrics_update_interval_ms()) {
+        if !Self::should_emit_metrics(
+            &LAST_EMIT_AT_MS,
+            Self::history_cache_metrics_update_interval_ms(),
+        ) {
             return;
         }
         let cont_items = store.history_cache_cont_items.load(Ordering::Relaxed);
@@ -778,22 +854,25 @@ where
 
     fn enforce_history_cache_bounds(&self) {
         // O(1): read atomic counters instead of iterating DashMaps.
-        if self.history_cache_continuations.len() >= MAX_HISTORY_STORE_CACHE_ENTRIES
-            || self.history_cache_cont_items.load(Ordering::Relaxed) >= MAX_HISTORY_STORE_CACHE_CONT_ITEMS
+        if self.history_cache_continuations.len() >= MAX_HISTORY_STORE_CACHE_ENTRIES ||
+            self.history_cache_cont_items.load(Ordering::Relaxed) >=
+                MAX_HISTORY_STORE_CACHE_CONT_ITEMS
         {
             metrics::counter!(HOT_STORE_HISTORY_CACHE_BULK_CLEAR_CONT_METRIC, "source" => RSPACE_METRICS_SOURCE).increment(1);
             self.history_cache_continuations.clear();
             self.history_cache_cont_items.store(0, Ordering::Relaxed);
         }
-        if self.history_cache_datums.len() >= MAX_HISTORY_STORE_CACHE_ENTRIES
-            || self.history_cache_data_items.load(Ordering::Relaxed) >= MAX_HISTORY_STORE_CACHE_DATA_ITEMS
+        if self.history_cache_datums.len() >= MAX_HISTORY_STORE_CACHE_ENTRIES ||
+            self.history_cache_data_items.load(Ordering::Relaxed) >=
+                MAX_HISTORY_STORE_CACHE_DATA_ITEMS
         {
             metrics::counter!(HOT_STORE_HISTORY_CACHE_BULK_CLEAR_DATUMS_METRIC, "source" => RSPACE_METRICS_SOURCE).increment(1);
             self.history_cache_datums.clear();
             self.history_cache_data_items.store(0, Ordering::Relaxed);
         }
-        if self.history_cache_joins.len() >= MAX_HISTORY_STORE_CACHE_ENTRIES
-            || self.history_cache_joins_items.load(Ordering::Relaxed) >= MAX_HISTORY_STORE_CACHE_JOIN_ITEMS
+        if self.history_cache_joins.len() >= MAX_HISTORY_STORE_CACHE_ENTRIES ||
+            self.history_cache_joins_items.load(Ordering::Relaxed) >=
+                MAX_HISTORY_STORE_CACHE_JOIN_ITEMS
         {
             metrics::counter!(HOT_STORE_HISTORY_CACHE_BULK_CLEAR_JOINS_METRIC, "source" => RSPACE_METRICS_SOURCE).increment(1);
             self.history_cache_joins.clear();
@@ -808,7 +887,8 @@ where
             dashmap::Entry::Occupied(o) => o.get().clone(),
             dashmap::Entry::Vacant(v) => {
                 let ks = self.history_reader_base.get_continuations(&channels_vec);
-                self.history_cache_cont_items.fetch_add(ks.len(), Ordering::Relaxed);
+                self.history_cache_cont_items
+                    .fetch_add(ks.len(), Ordering::Relaxed);
                 v.insert(ks.clone());
                 ks
             }
@@ -823,7 +903,8 @@ where
             dashmap::Entry::Occupied(o) => o.get().clone(),
             dashmap::Entry::Vacant(v) => {
                 let datums = self.history_reader_base.get_data(channel);
-                self.history_cache_data_items.fetch_add(datums.len(), Ordering::Relaxed);
+                self.history_cache_data_items
+                    .fetch_add(datums.len(), Ordering::Relaxed);
                 v.insert(datums.clone());
                 datums
             }
@@ -838,7 +919,8 @@ where
             dashmap::Entry::Occupied(o) => o.get().clone(),
             dashmap::Entry::Vacant(v) => {
                 let joins = self.history_reader_base.get_joins(channel);
-                self.history_cache_joins_items.fetch_add(joins.len(), Ordering::Relaxed);
+                self.history_cache_joins_items
+                    .fetch_add(joins.len(), Ordering::Relaxed);
                 v.insert(joins.clone());
                 joins
             }
@@ -876,13 +958,23 @@ impl HotStoreInstances {
             checkpoint_lock: std::sync::Mutex::new(()),
             history_reader_base: history_reader,
         };
-        for (k, v) in cache.data { store.data.insert(k, v); }
-        for (k, v) in cache.continuations {
-            store.continuations.insert(k, v.into_iter().map(Arc::new).collect());
+        for (k, v) in cache.data {
+            store.data.insert(k, v);
         }
-        for (k, v) in cache.installed_continuations { store.installed_continuations.insert(k, v); }
-        for (k, v) in cache.joins { store.joins.insert(k, v); }
-        for (k, v) in cache.installed_joins { store.installed_joins.insert(k, v); }
+        for (k, v) in cache.continuations {
+            store
+                .continuations
+                .insert(k, v.into_iter().map(Arc::new).collect());
+        }
+        for (k, v) in cache.installed_continuations {
+            store.installed_continuations.insert(k, v);
+        }
+        for (k, v) in cache.joins {
+            store.joins.insert(k, v);
+        }
+        for (k, v) in cache.installed_joins {
+            store.installed_joins.insert(k, v);
+        }
         Box::new(store)
     }
 

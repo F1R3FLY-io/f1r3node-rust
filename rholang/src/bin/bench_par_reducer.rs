@@ -18,6 +18,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
+use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use models::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
 use rholang::rust::interpreter::accounting::costs::Cost;
 use rholang::rust::interpreter::external_services::ExternalServices;
@@ -26,8 +27,6 @@ use rholang::rust::interpreter::rho_runtime::{create_rho_runtime, RhoRuntime};
 use rspace_plus_plus::rspace::rspace::RSpace;
 use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
-
-use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 
 // Generates the ParTerm contract: N par-composed busy branches, each running
 // `iters` rounds of a recursive countdown, fork-joined by an N-receive `for`.
@@ -94,8 +93,14 @@ async fn run_once(forks: usize, iters: usize) -> u128 {
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() {
-    let forks: usize = std::env::args().nth(1).and_then(|s| s.parse().ok()).unwrap_or(32);
-    let iters: usize = std::env::args().nth(2).and_then(|s| s.parse().ok()).unwrap_or(5000);
+    let forks: usize = std::env::args()
+        .nth(1)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(32);
+    let iters: usize = std::env::args()
+        .nth(2)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(5000);
 
     println!("bench_par_reducer: forks={forks}  iters={iters}");
 

@@ -10,8 +10,8 @@
 //
 // Run with off-CPU profiling on Linux:
 //   cargo build --release --bin bench_par_branches
-//   /usr/share/bcc/tools/offcputime -p $(./target/release/bench_par_branches &; echo $!) 10 \
-//     | flamegraph.pl > offcpu.svg
+//   /usr/share/bcc/tools/offcputime -p $(./target/release/bench_par_branches &;
+// echo $!) 10 \     | flamegraph.pl > offcpu.svg
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -54,14 +54,20 @@ async fn main() {
         .and_then(|s| s.parse().ok())
         .unwrap_or(500);
 
-    println!("bench_par_branches: branches={branches}  ops_per_branch={ops_per_branch}  total_ops={}", branches * ops_per_branch);
+    println!(
+        "bench_par_branches: branches={branches}  ops_per_branch={ops_per_branch}  total_ops={}",
+        branches * ops_per_branch
+    );
 
     // Baseline: sequential, one branch at a time
     let seq_space = make_rspace().await;
     let t_seq = Instant::now();
     for b in 0..branches {
         for i in 0..ops_per_branch {
-            seq_space.produce(format!("seq_{}_{}", b, i), "datum".to_string(), false).await.unwrap();
+            seq_space
+                .produce(format!("seq_{}_{}", b, i), "datum".to_string(), false)
+                .await
+                .unwrap();
         }
     }
     let seq_ms = t_seq.elapsed().as_millis();
@@ -74,12 +80,16 @@ async fn main() {
             let s = par_space.clone();
             tokio::spawn(async move {
                 for i in 0..ops_per_branch {
-                    s.produce(format!("par_{}_{}", b, i), "datum".to_string(), false).await.unwrap();
+                    s.produce(format!("par_{}_{}", b, i), "datum".to_string(), false)
+                        .await
+                        .unwrap();
                 }
             })
         })
         .collect();
-    for h in handles { h.await.unwrap(); }
+    for h in handles {
+        h.await.unwrap();
+    }
     let par_ms = t_par.elapsed().as_millis();
 
     let speedup = seq_ms as f64 / par_ms as f64;

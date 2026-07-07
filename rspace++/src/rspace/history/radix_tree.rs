@@ -1450,7 +1450,6 @@ impl RadixTreeImpl {
                 + Send
                 + Sync,
         > = Box::new(|action: HistoryAction, item: Item, item_idx: i32| {
-            // println!("\nhit process_one_action");
             let new_item = match action {
                 HistoryAction::Insert(InsertAction { key, hash }) => {
                     let (_, key_tail) = key.split_first().unwrap();
@@ -1510,27 +1509,14 @@ impl RadixTreeImpl {
                 + Send
                 + Sync,
         > = Box::new(|actions: Vec<HistoryAction>, item_idx: i32| {
-            // println!("\nactions in process_non_empty_actions: {:?}", actions);
-            // println!("item_idx in process_non_empty_actions: {:?}", item_idx);
-            // println!("\ncurr_node: {:?}", curr_node);
-
             let created_node =
                 self.construct_node_from_item(curr_node.get(item_idx as usize).unwrap())?;
-
-            // println!("\ncreated_node in process_non_empty_actions: {:?}", created_node);
 
             let new_actions = trim_keys(actions);
             let new_node_opt = self.make_actions(created_node.as_ref(), new_actions)?;
 
-            // println!(
-            //     "\nnew_node_opt in process_non_empty_actions: {:?}",
-            //     new_node_opt.clone().unwrap().len()
-            // );
-
             let new_item = new_node_opt
                 .map(|new_node| self.save_node_and_create_item(new_node, Vec::new(), true));
-
-            // println!("\nnew_item: {:?}", new_item);
 
             Ok((item_idx, new_item))
         });
@@ -1561,7 +1547,6 @@ impl RadixTreeImpl {
                 .map(|grouped_action| match grouped_action {
                     (group_idx, actions_in_group) => {
                         let item_idx = byte_to_int(*group_idx);
-                        // println!("item_idx: {:?}", item_idx);
                         let item = curr_node[item_idx].clone();
                         if actions_in_group.len() == 1 {
                             process_one_action(
@@ -1604,9 +1589,6 @@ impl RadixTreeImpl {
         // Group the actions by the first byte of the prefix.
         let grouped_actions = grouping(actions)?;
 
-        // println!("\ngrouped_actions: {:?}", grouped_actions);
-        // println!("\ncurr_node: {:?}", curr_node);
-
         // Process actions within each group.
         // TODO: Update to handle parallel execution. See Scala side
         let new_group_items_results = process_grouped_actions(grouped_actions, curr_node);
@@ -1616,8 +1598,6 @@ impl RadixTreeImpl {
             let value = result?;
             new_group_items.push(value);
         }
-
-        // println!("\nnew_group_items: {:?}", new_group_items);
 
         // Update all changed items in current node.
         let mut new_cur_node = curr_node.clone();

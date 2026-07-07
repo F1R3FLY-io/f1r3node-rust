@@ -47,19 +47,22 @@ async fn timed_produces(space: &TestSpace, ops: usize) -> std::time::Duration {
 }
 
 // Verifies that N concurrent par-branches on separate private channels achieve
-// close to linear throughput scaling. Each branch produces on its own channel so
-// per-channel phase locks never contend. The only shared resource is the HotStore.
+// close to linear throughput scaling. Each branch produces on its own channel
+// so per-channel phase locks never contend. The only shared resource is the
+// HotStore.
 //
 // With a global std::sync::RwLock on HotStore all branches serialise on write()
-// regardless of channel — N tasks each doing OPS produces takes N*OPS / solo_rate
-// wall-clock. With DashMap per-key sharding each branch proceeds independently:
-// total wall-clock stays close to OPS / solo_rate (the fastest branch wins).
+// regardless of channel — N tasks each doing OPS produces takes N*OPS /
+// solo_rate wall-clock. With DashMap per-key sharding each branch proceeds
+// independently: total wall-clock stays close to OPS / solo_rate (the fastest
+// branch wins).
 //
-// Threshold: N=4 branches must finish in less than 1.5x the time of 1 branch doing
-// the same number of ops. A global RwLock gives ~1.0x (full serialisation);
-// DashMap gives 2.5-3.5x when isolated. 1.5x is a stable lower bound that holds
-// even under concurrent test suite load.
-// Run explicitly with: cargo test -p rspace_plus_plus hot_store_concurrent -- --ignored --nocapture
+// Threshold: N=4 branches must finish in less than 1.5x the time of 1 branch
+// doing the same number of ops. A global RwLock gives ~1.0x (full
+// serialisation); DashMap gives 2.5-3.5x when isolated. 1.5x is a stable lower
+// bound that holds even under concurrent test suite load.
+// Run explicitly with: cargo test -p rspace_plus_plus hot_store_concurrent --
+// --ignored --nocapture
 #[ignore = "timing-sensitive: run in isolation, not as part of the full suite"]
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn hot_store_concurrent_branches_scale_linearly() {
@@ -70,7 +73,10 @@ async fn hot_store_concurrent_branches_scale_linearly() {
     let solo_space = make_rspace().await;
     let t_solo = Instant::now();
     for i in 0..OPS_PER_BRANCH {
-        solo_space.produce(format!("solo_{}", i), "datum".to_string(), false).await.unwrap();
+        solo_space
+            .produce(format!("solo_{}", i), "datum".to_string(), false)
+            .await
+            .unwrap();
     }
     let solo_ms = t_solo.elapsed().as_secs_f64() * 1000.0;
 
@@ -90,24 +96,27 @@ async fn hot_store_concurrent_branches_scale_linearly() {
             })
         })
         .collect();
-    for h in handles { h.await.unwrap(); }
+    for h in handles {
+        h.await.unwrap();
+    }
     let concurrent_ms = t_concurrent.elapsed().as_secs_f64() * 1000.0;
 
-    // speedup = how many times faster concurrent is relative to doing BRANCHES*OPS solo
+    // speedup = how many times faster concurrent is relative to doing BRANCHES*OPS
+    // solo
     let expected_solo_equivalent_ms = solo_ms * BRANCHES as f64;
     let speedup = expected_solo_equivalent_ms / concurrent_ms;
 
     eprintln!(
-        "hot_store_parallelism: solo={solo_ms:.1}ms  concurrent({BRANCHES} branches)={concurrent_ms:.1}ms  \
-         equiv_solo={expected_solo_equivalent_ms:.1}ms  speedup={speedup:.2}x  (want >2.0x)"
+        "hot_store_parallelism: solo={solo_ms:.1}ms  concurrent({BRANCHES} \
+         branches)={concurrent_ms:.1}ms  equiv_solo={expected_solo_equivalent_ms:.1}ms  \
+         speedup={speedup:.2}x  (want >2.0x)"
     );
 
     assert!(
         speedup > 1.5,
-        "HotStore concurrent branches achieved only {speedup:.2}x speedup over solo \
-         (expected >1.5x). Root cause: global write lock on HotStore serialises all \
-         branches even on separate channels. Fix: replace RwLock<HotStoreState> with \
-         DashMap per collection.",
+        "HotStore concurrent branches achieved only {speedup:.2}x speedup over solo (expected \
+         >1.5x). Root cause: global write lock on HotStore serialises all branches even on \
+         separate channels. Fix: replace RwLock<HotStoreState> with DashMap per collection.",
     );
 }
 
