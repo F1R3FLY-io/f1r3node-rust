@@ -256,19 +256,22 @@ impl TestFixture {
         >::new(equivocation_tracker_store);
         let equivocation_tracker = EquivocationTrackerStore::new(equivocation_tracker_typed_store);
 
-        let block_dag_storage_unwrapped = BlockDagKeyValueStorage {
-            global_lock: Arc::new(Mutex::new(())),
-            latest_messages_index: latest_messages_typed_store,
-            block_metadata_index: Arc::new(std::sync::RwLock::new(block_metadata_store)),
-            deploy_index: Arc::new(std::sync::RwLock::new(deploy_index_typed_store)),
-            invalid_blocks_index: invalid_blocks_typed_store,
-            equivocation_tracker_index: equivocation_tracker,
-            dag_generation: Arc::new(AtomicU64::new(0)),
-        };
+        let block_dag_storage_unwrapped = BlockDagKeyValueStorage::from_parts(
+            Arc::new(parking_lot::RwLock::new(())),
+            latest_messages_typed_store,
+            Arc::new(parking_lot::RwLock::new(block_metadata_store)),
+            Arc::new(parking_lot::RwLock::new(deploy_index_typed_store)),
+            invalid_blocks_typed_store,
+            equivocation_tracker,
+            Arc::new(AtomicU64::new(0)),
+        );
 
         // Insert genesis block into DAG storage (approved = true, invalid = false)
         block_dag_storage_unwrapped
-            .insert(&genesis, false, true)
+            .insert(
+                &genesis,
+                block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved,
+            )
             .expect("Failed to insert genesis into BlockDagStorage");
 
         // OLD CODE (kept for reference, replaced with BlockDagKeyValueStorage):
@@ -313,7 +316,9 @@ impl TestFixture {
         // NoOpsCasperEffect will use the same kvm_blockstorage for its internal block store
         // This ensures consistency with the external block_store
         // NOTE: NoOpsCasperEffect requires KeyValueDagRepresentation, so we get it from BlockDagKeyValueStorage
-        let block_dag_representation = block_dag_storage_unwrapped.get_representation();
+        let block_dag_representation = block_dag_storage_unwrapped
+            .get_representation()
+            .expect("dag representation");
 
         // Wrap RuntimeManager in Arc<Mutex<>> for shared mutable access
         let runtime_manager_shared = Arc::new(runtime_manager);

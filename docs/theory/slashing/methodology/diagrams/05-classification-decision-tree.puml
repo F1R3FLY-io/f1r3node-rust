@@ -1,0 +1,109 @@
+' Methodology Diagram 05 — Classification decision tree (activity).
+'
+' Walks a witness w through the 8-status / 6-class classification
+' taxonomy of the slashing methodology. Every outcome leaf is
+' colour-coded by semantic role:
+'   light green  (#E8F5E9) — already fixed; record only
+'   sat. green   (#C8E6C9) — bug fixed in the same PR
+'   yellow       (#FFF9C4) — action pending (tracking issue opened)
+'   amber        (#FFECB3) — projection-risk guard in place
+'   light blue   (#E3F2FD) — bisimilar; not reproduced in Rust
+'   light purple (#F3E5F5) — theorem-precondition counterexample
+'   red          (#FFCDD2) — HALT — escalation required
+'
+' Decision diamonds use the methodology-suite convention from
+' docs/theory/slashing/methodology/02-glossary-and-notation.md §7:
+'   background #FFF7EE, border #E65100.
+'
+' Render:
+'   plantuml -tsvg docs/theory/slashing/methodology/diagrams/05-classification-decision-tree.puml
+
+@startuml 05-classification-decision-tree
+!theme plain
+
+skinparam ActivityBackgroundColor        #FFFFFF
+skinparam ActivityBorderColor            #333333
+skinparam ActivityDiamondBackgroundColor #FFF7EE
+skinparam ActivityDiamondBorderColor     #E65100
+skinparam ActivityDiamondFontColor       #1A1A1A
+skinparam ActivityFontColor              #1A1A1A
+skinparam ActivityStartColor             #2E7D32
+skinparam ActivityEndColor               #C62828
+skinparam NoteBackgroundColor            #FFE0B2
+skinparam NoteBorderColor                #E65100
+skinparam ArrowColor                     #333333
+skinparam ArrowFontColor                 #1565C0
+skinparam ArrowFontSize                  10
+skinparam defaultFontName                "sans-serif"
+skinparam defaultFontSize                11
+
+title Classification decision tree — witness w → (status, class)
+
+legend right
+  | Colour | Outcome semantic |
+  |<#E8F5E9>| Already fixed; record only |
+  |<#C8E6C9>| Bug fixed in the same PR |
+  |<#FFF9C4>| Action pending (tracking issue) |
+  |<#FFECB3>| Projection-risk guard in place |
+  |<#E3F2FD>| Bisimilar; not reproduced in Rust |
+  |<#F3E5F5>| Theorem-precondition counterexample |
+  |<#FFCDD2>| HALT — escalation required |
+endlegend
+
+start
+
+:Witness w arrives
+from a search tool;
+note right
+  Sources include:
+  Sage, Hypothesis, proptest,
+  libFuzzer, Kani, Loom, TLC.
+end note
+
+if (Q1: Does w reproduce on production?) then (YES)
+  if (Q2a: Is w already in the bug-fix manifest?) then (YES)
+    :status = confirmed_fixed_bug
+class  = permitted_bug_fix; <<#E8F5E9>>
+    stop
+  else (NO)
+    if (Q3a: Is the bug fixed in the same PR?) then (YES)
+      :status = confirmed_current_bug
++ fix in same PR
+class  = projection_risk
+or unexpected (reclassify); <<#C8E6C9>>
+      stop
+    else (NO)
+      :status = confirmed_current_bug
++ tracking issue opened
+class  = projection_risk
+or unexpected (reclassify); <<#FFF9C4>>
+      stop
+    endif
+  endif
+else (NO)
+  if (Q2b: Does w describe a behaviour the Rust path explicitly rejects?) then (YES)
+    :class  = bisimilar
+status = not_reproduced_in_rust; <<#E3F2FD>>
+    stop
+  else (NO)
+    if (Q3b: Is the witness at a theorem precondition boundary?) then (YES)
+      :status = assumption_counterexample
+class  = assumption_counterexample; <<#F3E5F5>>
+      stop
+    else (NO)
+      if (Q4: Is w a model-only projection of a Rust path?) then (YES)
+        :status = projection_risk_guarded
+class  = projection_risk; <<#FFECB3>>
+        stop
+      else (NO)
+        :HALT — escalate audit
+class = unexpected
+must be reclassified
+before commit; <<#FFCDD2>>
+        end
+      endif
+    endif
+  endif
+endif
+
+@enduml

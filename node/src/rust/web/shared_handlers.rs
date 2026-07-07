@@ -285,6 +285,8 @@ fn classify_casper_error(err: &CasperError) -> (StatusCode, &'static str, String
 
         CommError(_) => (S::BAD_GATEWAY, "comm_error", err.to_string()),
 
+        SlashAuth(_) => (S::FORBIDDEN, "slash_auth_error", err.to_string()),
+
         SigningError(_) => internal("signing_error"),
         KvStoreError(_) => internal("kv_store_error"),
         HistoryError(_) => internal("history_error"),
@@ -338,7 +340,8 @@ fn classify_interpreter_error(ie: &InterpreterError) -> (StatusCode, &'static st
         | OperatorNotDefined { .. }
         | OperatorExpectedError { .. }
         | SubstituteError(_)
-        | SortMatchError(_) => (
+        | SortMatchError(_)
+        | IfConditionTypeError { .. } => (
             S::UNPROCESSABLE_ENTITY,
             "rholang_execution_error",
             ie.to_string(),

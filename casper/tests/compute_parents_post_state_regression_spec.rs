@@ -18,7 +18,7 @@ use casper::rust::util::rholang::runtime_manager::RuntimeManager;
 use casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum;
 use crypto::rust::signatures::secp256k1::Secp256k1;
 use crypto::rust::signatures::signatures_alg::SignaturesAlg;
-use dashmap::{DashMap, DashSet};
+use dashmap::DashSet;
 use models::rust::block::state_hash::StateHash;
 use models::rust::block_hash::BlockHash;
 use models::rust::block_implicits;
@@ -46,7 +46,7 @@ fn mk_snapshot(
     let mut snapshot = CasperSnapshot::new(dag);
     snapshot.last_finalized_block = last_finalized_block;
 
-    let max_seq_nums: DashMap<Validator, u64> = DashMap::new();
+    let mut max_seq_nums: HashMap<Validator, u64> = HashMap::new();
     max_seq_nums.insert(validator.clone(), 0);
     snapshot.max_seq_nums = max_seq_nums;
 
@@ -104,7 +104,9 @@ async fn step_block(
     last_finalized_block: BlockHash,
 ) -> Result<BlockMessage, CasperError> {
     let snapshot = mk_snapshot(
-        dag_storage.get_representation(),
+        dag_storage
+            .get_representation()
+            .expect("dag representation"),
         validator,
         shard_name,
         last_finalized_block,
@@ -140,7 +142,10 @@ async fn step_block(
         .put_block_message(&updated)
         .map_err(|e| CasperError::RuntimeError(e.to_string()))?;
     dag_storage
-        .insert(&updated, false, false)
+        .insert(
+            &updated,
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal,
+        )
         .map_err(|e| CasperError::RuntimeError(e.to_string()))?;
 
     Ok(updated)
@@ -234,7 +239,10 @@ async fn run_compute_parents_post_state_finalized_skew_regression() {
         .put_block_message(&genesis_block)
         .expect("Failed to store genesis block");
     dag_storage
-        .insert(&genesis_block, false, true)
+        .insert(
+            &genesis_block,
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved,
+        )
         .expect("Failed to insert genesis in DAG");
 
     let b1_raw = build_empty_block(
@@ -303,7 +311,9 @@ async fn run_compute_parents_post_state_finalized_skew_regression() {
     let parents = vec![b2.clone(), b3.clone()];
 
     let mut snapshot_without_skew = mk_snapshot(
-        dag_storage.get_representation(),
+        dag_storage
+            .get_representation()
+            .expect("dag representation"),
         validator.clone(),
         shard_name.clone(),
         genesis_block.block_hash.clone(),
@@ -325,7 +335,9 @@ async fn run_compute_parents_post_state_finalized_skew_regression() {
     runtime_manager.block_index_cache.clear();
 
     let mut snapshot_with_skew = mk_snapshot(
-        dag_storage.get_representation(),
+        dag_storage
+            .get_representation()
+            .expect("dag representation"),
         validator,
         shard_name,
         genesis_block.block_hash.clone(),
@@ -444,7 +456,10 @@ async fn run_compute_parents_post_state_missing_mergeable_regression() {
         .put_block_message(&genesis_block)
         .expect("Failed to store genesis block");
     dag_storage
-        .insert(&genesis_block, false, true)
+        .insert(
+            &genesis_block,
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved,
+        )
         .expect("Failed to insert genesis in DAG");
 
     let b1_raw = build_empty_block(
@@ -523,7 +538,9 @@ async fn run_compute_parents_post_state_missing_mergeable_regression() {
     );
 
     let mut snapshot = mk_snapshot(
-        dag_storage.get_representation(),
+        dag_storage
+            .get_representation()
+            .expect("dag representation"),
         validator,
         shard_name,
         genesis_block.block_hash.clone(),
@@ -651,7 +668,10 @@ async fn run_visible_blocks_scope_test() {
         .put_block_message(&genesis_block)
         .expect("Failed to store genesis");
     dag_storage
-        .insert(&genesis_block, false, true)
+        .insert(
+            &genesis_block,
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved,
+        )
         .expect("Failed to insert genesis");
 
     let genesis_hash = genesis_block.block_hash.clone();
@@ -705,7 +725,10 @@ async fn run_visible_blocks_scope_test() {
                 .put_block_message(&block)
                 .expect("Failed to store block");
             dag_storage
-                .insert(&block, false, false)
+                .insert(
+                    &block,
+                    block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal,
+                )
                 .expect("Failed to insert block");
 
             latest.insert(creator, block.block_hash.clone());
@@ -715,7 +738,9 @@ async fn run_visible_blocks_scope_test() {
                 let parents = proto_util::get_parents(&block_store, &block);
 
                 // Replicate visible_blocks + LCA-scoped filter from compute_parents_post_state
-                let dag_repr = dag_storage.get_representation();
+                let dag_repr = dag_storage
+                    .get_representation()
+                    .expect("dag representation");
                 let max_parent_depth: i64 = i32::MAX as i64;
                 let max_parent_block_number = parents
                     .iter()

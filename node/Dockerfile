@@ -58,6 +58,7 @@ COPY block-storage/ ./block-storage/
 COPY rspace++/ ./rspace++/
 COPY casper/ ./casper/
 COPY comm/ ./comm/
+COPY rho-pure-eval/ ./rho-pure-eval/
 COPY rholang/ ./rholang/
 COPY node/ ./node/
 

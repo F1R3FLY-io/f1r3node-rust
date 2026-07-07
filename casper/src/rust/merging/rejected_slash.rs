@@ -71,6 +71,24 @@ where
         .collect()
 }
 
+pub fn filter_recoverable_with_evidence<I, F, E>(
+    rejected: Vec<RejectedSlash>,
+    own_invalid_block_hashes: I,
+    mut evidence_is_current: F,
+) -> Result<Vec<RejectedSlash>, E>
+where
+    I: IntoIterator<Item = BlockHash>,
+    F: FnMut(&BlockHash) -> Result<bool, E>,
+{
+    let mut out = Vec::new();
+    for rs in filter_recoverable(rejected, own_invalid_block_hashes) {
+        if evidence_is_current(&rs.invalid_block_hash)? {
+            out.push(rs);
+        }
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use prost::bytes::Bytes;
@@ -178,5 +196,25 @@ mod tests {
     fn empty_inputs_produce_empty_output() {
         let out = filter_recoverable(Vec::<RejectedSlash>::new(), Vec::<BlockHash>::new());
         assert!(out.is_empty());
+    }
+
+    #[test]
+    fn non_current_rejected_slash_is_not_recovered() {
+        let rejected = vec![mk_slash(1, 2), mk_slash(2, 3)];
+        let out = filter_recoverable_with_evidence(rejected, Vec::<BlockHash>::new(), |h| {
+            Ok::<bool, ()>(h.as_ref()[0] == 1)
+        })
+        .expect("evidence filter should not fail");
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].invalid_block_hash, Bytes::from(vec![1u8; 32]));
+    }
+
+    #[test]
+    fn rejected_slash_evidence_filter_errors_propagate() {
+        let rejected = vec![mk_slash(1, 2)];
+        let out = filter_recoverable_with_evidence(rejected, Vec::<BlockHash>::new(), |_h| {
+            Err::<bool, &str>("lookup failed")
+        });
+        assert_eq!(out, Err("lookup failed"));
     }
 }

@@ -389,14 +389,19 @@ async fn genesis_from_input_files_should_create_a_valid_genesis_block() {
                 .expect("Genesis creation should succeed");
 
                 block_dag_storage
-                    .insert(&genesis, false, true)
+                    .insert(
+                        &genesis,
+                        block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved,
+                    )
                     .expect("Failed to insert genesis into DAG");
 
                 block_store
                     .put(genesis.block_hash.clone(), &genesis)
                     .expect("Failed to put genesis into block store");
 
-                let dag = block_dag_storage.get_representation();
+                let dag = block_dag_storage
+                    .get_representation()
+                    .expect("dag representation");
 
                 let maybe_post_genesis_state_hash = interpreter_util::validate_block_checkpoint(
                     &genesis,

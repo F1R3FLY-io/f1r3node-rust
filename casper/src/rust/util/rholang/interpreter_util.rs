@@ -1144,6 +1144,7 @@ pub fn compute_parents_post_state(
                                         models::rust::casper::protocol::casper_message::SystemDeployData::Slash {
                                             invalid_block_hash,
                                             issuer_public_key,
+                                            target_activation_epoch: _,
                                         },
                                     ..
                                 } = psd
