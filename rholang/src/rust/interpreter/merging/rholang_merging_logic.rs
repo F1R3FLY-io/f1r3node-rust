@@ -418,6 +418,62 @@ mod tests {
         assert!(res.is_ok());
     }
 
+    // Property companion to the §3c unit tests above and to ConflictSoundness.v
+    // Section Overfill: `check_single_value_cell_not_overfilled` rejects a merge
+    // IFF the post-merge single-value cell would hold > 1 value. The guard's
+    // `result_len = multiset_diff(base_binary, removed).len() + added.len()` is
+    // the Rocq model's `cell_after = kept + added`, and the rejection predicate
+    // `result_len > 1` is exactly `svc_guard_active`'s `1 <? cell_after`.
+    mod svc_guard_property {
+        use proptest::prelude::*;
+        use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+        use rspace_plus_plus::rspace::merger::state_change::StateChange;
+
+        use super::{change, num_datum, RholangMergingLogic};
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(400))]
+
+            #[test]
+            fn svc_guard_rejects_iff_result_len_gt_one(
+                base_num in any::<i64>(),
+                base_byte in any::<u8>(),
+                removes_base in any::<bool>(),
+                added_len in 0usize..4,
+            ) {
+                // A single-value NUMBER cell: exactly one numeric base datum with a
+                // 1-element binary projection. `removes_base` selects a proper
+                // read-modify-write (consumes the base) vs a produce-only write
+                // (leaves it); `added_len` produces 0..3 new data.
+                let ch = Blake2b256Hash::from_bytes(vec![0x0d; 32]);
+                let base = vec![num_datum(base_num)];
+                let base_bin = vec![vec![base_byte]];
+                let removed: Vec<Vec<u8>> =
+                    if removes_base { vec![vec![base_byte]] } else { vec![] };
+                let added: Vec<Vec<u8>> =
+                    (0..added_len).map(|i| vec![0xA0u8.wrapping_add(i as u8)]).collect();
+                let changes = change(added.clone(), removed.clone());
+
+                // cell_after computed EXACTLY as the guard does (same multiset_diff).
+                let kept = StateChange::multiset_diff(&base_bin, &removed);
+                let cell_after = kept.len() + added.len();
+
+                let res = RholangMergingLogic::check_single_value_cell_not_overfilled(
+                    &ch, &base, &base_bin, &changes,
+                );
+                // Reject IFF the merged cell would hold more than one value.
+                // (added-empty short-circuits to Ok, and with a 1-element base_bin
+                // that means cell_after <= 1, so the iff still holds there too.)
+                prop_assert_eq!(
+                    res.is_err(), cell_after > 1,
+                    "guard must reject IFF the single-value cell would hold >1 value \
+                     (cell_after={}, added={:?}, removed={:?})",
+                    cell_after, added, removed
+                );
+            }
+        }
+    }
+
     #[test]
     fn test_calculate_num_channel_diff() {
         /*

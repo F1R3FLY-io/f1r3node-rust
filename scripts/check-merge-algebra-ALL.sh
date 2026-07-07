@@ -16,9 +16,12 @@
 #      Finding A; the sum-union FIX is associative). SKIPPED if no python3 z3.
 #   3. Rust  (fail-soft) — the modality companions: rspace_plus_plus merger tests
 #      (GAP-1 combine commutativity + the Finding-A non-associativity pin +
-#      the sum-union order-independence; GAP-3 removed-predicate subsumption;
-#      P2 split-hides-no-conflict) and the casper merging P3 proptest
-#      (cmp is a strict total order whose Equal-class is the injective key).
+#      the sum-union order-independence; GAP-3 removed-predicate subsumption +
+#      the §3c produce-only over-fill ESCAPE of the retained detector;
+#      P2 split-hides-no-conflict), the casper merging P3 proptest
+#      (cmp is a strict total order whose Equal-class is the injective key), and
+#      the rholang merging::rholang_merging_logic §3c guard tests
+#      (produce-only over-fill rejected IFF the cell would hold > 1 value).
 #      SKIPPED if cargo is absent.
 #   4. Diagrams (fail-soft) — renders the dossier's PlantUML set and asserts a
 #      populated SVG (closing </svg>) with no stderr. SKIPPED if plantuml is
@@ -117,7 +120,7 @@ fi
 echo "== [3/4] Rust modality companions (fail-soft) =="
 if command -v cargo >/dev/null 2>&1; then
   if cargo test -p rspace_plus_plus --lib merger:: >/tmp/ma_rust_rspace.log 2>&1; then
-    pass "Rust rspace_plus_plus merger:: (GAP-1 combine, Finding-A pin ignored, GAP-3, P2)"
+    pass "Rust rspace_plus_plus merger:: (GAP-1 combine, Finding-A pin ignored, GAP-3 subsumption + §3c produce-only escape, P2)"
   else
     fail "Rust rspace_plus_plus merger:: tests failed (see /tmp/ma_rust_rspace.log)"; tail -20 /tmp/ma_rust_rspace.log | sed 's/^/      /'
   fi
@@ -125,6 +128,16 @@ if command -v cargo >/dev/null 2>&1; then
     pass "Rust casper merging:: (P3 cmp strict-total-order, Equal-class = injective key)"
   else
     fail "Rust casper merging:: tests failed (see /tmp/ma_rust_casper.log)"; tail -20 /tmp/ma_rust_casper.log | sed 's/^/      /'
+  fi
+  # §3c single-value-cell guard (RCA-asi-devnet-finality-halt): the Rocq
+  # ConflictSoundness.v Section Overfill companion —
+  # check_single_value_cell_not_overfilled rejects a merge IFF the post-merge
+  # single-value NUMBER cell would hold > 1 value (produce-only over-fill), plus
+  # Kevin's §3c unit witnesses (produce-only reject / RMW allow / registry exempt).
+  if cargo test -p rholang --lib merging::rholang_merging_logic >/tmp/ma_rust_rholang.log 2>&1; then
+    pass "Rust rholang merging::rholang_merging_logic (§3c guard: produce-only over-fill rejected IFF result_len>1)"
+  else
+    fail "Rust rholang merging::rholang_merging_logic tests failed (see /tmp/ma_rust_rholang.log)"; tail -20 /tmp/ma_rust_rholang.log | sed 's/^/      /'
   fi
   # T-RECOMPUTE — the enforcement seam that makes merge-determinism consequential:
   # validate_block_checkpoint recomputes the parents' post-state and REJECTS a block

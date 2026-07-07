@@ -594,4 +594,16 @@ Section KeepOne.
           -- exfalso; apply Hwe; exact H.
   Qed.
 
+  (* The REJECTED-LOSERS list (everything the greedy keep-one does NOT keep --
+     the tail after the unique winner is removed) is likewise a pure function of
+     the input SET: permuted merge inputs drop the identical winner and leave the
+     byte-identical remainder. This is the rejected-deploy-set half of P3/R-KEEP1
+     (the winner half is sort_argmax_unique): a direct corollary of
+     output_indep_of_input_perm via `tl`. *)
+  Corollary keep_one_reject_losers_deterministic :
+    forall l l', Permutation l l' -> tl (sort l) = tl (sort l').
+  Proof.
+    intros l l' H. rewrite (output_indep_of_input_perm l l' H). reflexivity.
+  Qed.
+
 End KeepOne.

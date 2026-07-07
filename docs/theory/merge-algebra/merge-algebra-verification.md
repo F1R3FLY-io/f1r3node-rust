@@ -9,7 +9,10 @@
 > **Finding A**, the non-associative per-channel `combine` — is **disclosed and rendered
 > benign** by the Finding-B fix (a canonical fold order), **not** silently changed (that
 > would alter merge *semantics*). Two dropped/split checks are **confirmed sound** (**GAP-3**,
-> **P2**). Verification is **local-only** — no Rocq/Z3 step is wired into CI.
+> **P2**), and a produce-only single-value-cell **over-fill** (**§3c**, the finality-halt RCA
+> a produce that does *not* consume the base leaves a NUMBER cell holding two values) is
+> **guarded and proven** — `ConflictSoundness.v` **Section Overfill**, safety **S7**.
+> Verification is **local-only** — no Rocq/Z3 step is wired into CI.
 
 This document is written so the design and its verification can be reconstructed from
 scratch. It records the feature, the bug-hunt outcome, the fix, the formal artifacts (with
@@ -116,6 +119,21 @@ prime suspect (**Finding B**) is a **real, live fork hazard** and is **fixed**.
   the retained double-consume / same-IO-event race detector (`conflicts` Check #1), **except**
   number/foldable channels, which are intrinsically mergeable and correctly left unflagged by
   both. Nothing is lost.
+- **§3c — the produce-only single-value-cell over-fill (RCA-asi-devnet-finality-halt):
+  CONFIRMED, GUARDED.** GAP-3's soundness argument models a cell update as
+  `svc_update = consumes ∧ produces` — an update that *always* consumes the base. But a
+  **produce-only write** (a produce that does **not** consume the base) also lands in the
+  cell: producing `5e9` onto a single NUMBER cell `[0]` **without** consuming the base leaves
+  it holding `[0, 5e9]`, tripping the RhoVM IntegerAdd single-value invariant at read →
+  **finalization halt**. Because `svc_update` needs `consumes = true`, GAP-3's model is
+  **vacuous** for it and the retained double-consume detector is **blind** (`produces_consumed`
+  is never populated by a produce-only write). The fix,
+  `check_single_value_cell_not_overfilled` (`rholang_merging_logic.rs:194`), runs on the
+  **non-mergeable** else-path (`dag_merger.rs:965`) and rejects any merge whose post-state
+  single-value NUMBER cell would hold `result_len = |multiset_diff(base, removed)| + |added|
+  > 1`; non-numeric registry / `TreeHashMap` bases are exempt. Proven end-to-end in
+  `ConflictSoundness.v` **Section Overfill** (and shown NOT redundant with the retained
+  detector by `svc_guard_not_subsumed_exhibit`) — safety **S7**.
 - **P2 — the user/system event-log split hides no conflict: CONFIRMED.** `DeployChainIndex::new`
   folds deploys into a user and a system `EventLogIndex` and `combine`s them (`:70-88`).
   `EventLogIndex::combine` (`:343`) is a field-wise **set-union monoid** (commutative,
@@ -128,6 +146,7 @@ prime suspect (**Finding B**) is a **real, live fork hazard** and is **fixed**.
 | **B** | **High** (live fork) | `deploy_chain_index.rs` 4-key `cmp` + `Eq` on `deploys_with_cost` only | `cmp` could return `Equal` for two **distinct** chains ⟹ reseeded-`HashSet` `min_by`/`sort` winner ⟹ node-dependent rejected set ⟹ **fork**. |
 | **A** | Disclosed | `channel_change.rs:17,25` max-union `combine` | `combine` is commutative but **non-associative**; the fold order matters. Benign **only** under the Finding-B fix; a semantics-changing fix is disclosed, not made. |
 | **GAP-3** | Sound | `merging_logic.rs:262` retained detector; commit `f3360e84` | The removed single-value-cell check is fully subsumed by the retained double-consume detector ∪ the number-channel exemption. |
+| **§3c** | **High** (finality halt) | `rholang_merging_logic.rs:194`; `dag_merger.rs:965` | A **produce-only** write over-fills a single-value NUMBER cell (`[0]`→`[0,5e9]`) → IntegerAdd invariant trips at read → **finalization halt**. The retained detector is blind (no consume); the §3c guard closes it (S7). |
 | **P2** | Sound | `event_log_index.rs:343` `combine` (set union) | The user/system split recombines to the monolithic index; it hides no conflict. |
 
 ---
@@ -160,6 +179,16 @@ prime suspect (**Finding B**) is a **real, live fork hazard** and is **fixed**.
   `channel_change.rs:136`) so it documents the hazard without a semantics change (§6).
 - **GAP-3 — the check stays removed (commit `f3360e84`), its soundness proved.** The removal
   is discharged by `ConflictSoundness.conflict_removal_sound`.
+- **§3c — the produce-only over-fill guard (the finality-halt fix).**
+  `check_single_value_cell_not_overfilled` rejects a non-mergeable single-value NUMBER cell
+  merge whose `result_len = |multiset_diff(base, removed)| + |added| > 1`. Discharged by
+  `ConflictSoundness.svc_guard_catches_overfill` (the guard fires on **every** over-fill),
+  `overfill_not_retained` (it is **not** redundant with the retained detector — a
+  produce-only write consumes no base), and `svc_invariant_iff_both_detectors` (the two
+  detectors together are **exactly** complete), plus the constant witness
+  `svc_guard_not_subsumed_exhibit`. Rust proptests: `svc_guard_rejects_iff_result_len_gt_one`
+  (rholang) and `produce_only_overfill_escapes_retained_detector` (rspace++). The
+  `merge_algebra_conflict_correct` capstone now carries both GAP-3 (Part A) and §3c (Part B).
 - **P2 — the split stays, its soundness proved** by `EventLogSplit.event_log_split_sound`.
 
 Verified: `scripts/check-merge-algebra-ALL.sh` ⟹ **ALL GATES OK** — Rocq build + 4 axiom-free
@@ -180,6 +209,8 @@ Every catalog item maps to a concrete artifact — no "assumed"/"prose-only" row
 | **T-FOLD** | merged-state fold order-independent under the canonical (total-order) sort (S3) | Rocq `KeepOneOrder.output_indep_of_input_perm` + `ChannelNetting.combine_not_assoc_exhibit` (why the sort is required); Rust `fixed_net_is_order_independent` |
 | **T-NET** | `combine` commutative but non-associative (Finding A); sum-union fix is a commutative monoid with a permutation-invariant fold | Rocq `ChannelNetting.combine_max_comm`, `combine_not_assoc_exhibit`, `channel_netting_fixed_deterministic`, `netting_fold_perm`; Z3 `channel_netting_monoid.py`; Rust `combine_is_commutative_as_multiset`, `finding_a_max_union_combine_is_non_associative` (`#[ignore]` pin) |
 | **T-CONFLICT** | removed single-value-cell check ⊆ retained double-consume detector ∪ number-channel exemption (S4) | Rocq `ConflictSoundness.removed_subset_retained`, `conflict_removal_sound`; Rust `removed_predicate_is_subsumed_by_retained_or_number_channel` |
+| **T-SVC** | the §3c guard rejects a single-value NUMBER cell merge **iff** it would over-fill it (`result_len > 1`); non-number bases exempt (S7) | Rocq `ConflictSoundness.svc_guard_catches_overfill`, `svc_invariant_iff_both_detectors` (Section Overfill); Rust `svc_guard_rejects_iff_result_len_gt_one` (rholang) |
+| **T-OVERFILL** | a **produce-only** over-fill escapes the retained detector (consumes no base) ⟹ §3c is a separate, non-subsumed detector; the two together are exactly complete (S7) | Rocq `ConflictSoundness.overfill_not_retained`, `svc_guard_not_subsumed_exhibit`; Rust `produce_only_overfill_escapes_retained_detector` (rspace++) |
 | **T-SPLIT** | `combine(fold user, fold system) = fold all` ⟹ the split hides no conflict (S5) | Rocq `EventLogSplit.combine_split_eq`, `conflicts_split_complete`, `event_log_split_sound`; Rust `split_then_recombine_equals_monolithic_for_conflicts` |
 | **T-RECOMPUTE** | validation recomputes the merge and rejects on any `(pre-state \| rejected-set)` mismatch | Rust `interpreter_util.rs:228` (recompute), `:259` (pre-state mismatch ⟹ reject/no-replay), `:269` (rejected-set mismatch ⟹ `invalid_rejected_deploy` `:302`); Rust test `validate_block_checkpoint_recompute_rejects_pre_state_and_rejected_deploy_tampering` (honest baseline ⟹ `Right(Some)`; pre-state byte-flip ⟹ `Right(None)` no-replay; bogus `rejected_deploys` sig ⟹ `InvalidRejectedDeploy`) |
 | **T-APPEND** | the fix is append-only over `v0.4.16` ⟹ rolling-upgrade-safe (S6) | `deploy_chain_index.rs:210-228` (the KEPT key-4 comment); `git show origin/master` (4-key `cmp` terminating at `post_state_hash`); commit `c0b7609e` |
@@ -199,7 +230,7 @@ library is re-checked by the trusted kernel (`coqchk`).
 |---|---|---|
 | `KeepOneOrder.v` | Stdlib | the `lexcomp` combinator + its linear-comparator algebra (`Antisym_lex`, `LtTrans_lex`, `EqCongR_lex`), the `dcmp`/`acmp` leaves, the 5-key tower `cmp`; **`keep_one_equal_impl_eq`** (`cmp a b = Eq → a = b`, **unconditional**), **`keep_one_total_order`**, `sort_total_order`, `sort_is_permutation`, `sort_sorted`, `sorted_perm_eq`, **`output_indep_of_input_perm`**, **`sort_argmax_unique`** |
 | `ChannelNetting.v` | Stdlib | **`combine_max_comm`**, **`combine_not_assoc_exhibit`** (Finding A, exhibited); the sum-union fix `combine_sum_{comm,assoc,id_l}`, **`netting_fold_perm`**, `net_combine_sum`, `net_cancel`, **`channel_netting_fixed_deterministic`** |
-| `ConflictSoundness.v` | Stdlib | **`removed_subset_retained`** (`removed_fires ⟹ retained_conflict ∨ is_number_channel`, no hidden hypothesis — the consume conjunct is definitional via `andb_prop`; `is_number_ch` an abstract parameter), **`conflict_removal_sound`** |
+| `ConflictSoundness.v` | Stdlib | **Section Conflict:** **`removed_subset_retained`** (`removed_fires ⟹ retained_conflict ∨ is_number_channel`, no hidden hypothesis — the consume conjunct is definitional via `andb_prop`; `is_number_ch` an abstract parameter), **`conflict_removal_sound`**. **Section Overfill (§3c):** **`svc_guard_catches_overfill`** (produce-only over-fill ⟹ guard fires), **`overfill_not_retained`** (the over-fill escapes the retained detector — non-subsumption, via an explicit consume→removed bridge), **`svc_invariant_iff_both_detectors`** (retained ∪ §3c is exactly complete), and the `vm_compute` constant witness **`svc_guard_not_subsumed_exhibit`** |
 | `EventLogSplit.v` | Stdlib | `combine_{comm,assoc,idem,id_l}` (join-semilattice), `foldi_app`, `foldi_perm`, `partition_perm`, **`combine_split_eq`**, **`conflicts_split_complete`**, **`event_log_split_sound`** |
 | `MainTheorem.v` | all four | capstones **`merge_algebra_{keeporder,netting,conflict,split}_correct`** |
 
@@ -256,8 +287,16 @@ Modality companions run by the gate (`scripts/check-merge-algebra-ALL.sh` steps 
   (the sum-union net is fold-order-independent), and
   `finding_a_max_union_combine_is_non_associative` (an `#[ignore]`d pin of Finding A, run
   explicitly with `cargo test -- --ignored`); `merging_logic.rs`:
-  `removed_predicate_is_subsumed_by_retained_or_number_channel` (GAP-3);
+  `removed_predicate_is_subsumed_by_retained_or_number_channel` (GAP-3) and
+  `produce_only_overfill_escapes_retained_detector` (§3c / T-OVERFILL — a produce-only write
+  yields an empty `conflicts` set, so the retained detector is blind to it);
   `event_log_index.rs`: `split_then_recombine_equals_monolithic_for_conflicts` (P2).
+- **`rholang merging::rholang_merging_logic`** — the §3c guard
+  (`check_single_value_cell_not_overfilled`): the proptest
+  `svc_guard_rejects_iff_result_len_gt_one` (T-SVC — the guard errors **iff**
+  `result_len > 1`) plus Kevin's unit witnesses `single_value_cell_produce_only_is_rejected`,
+  `single_value_cell_read_modify_write_is_allowed`, `non_numeric_base_registry_merges_freely`,
+  `no_produce_is_allowed`. Wired into the gate at step [3/4].
 
 ---
 
@@ -320,7 +359,7 @@ Z3 + Rust fail-soft; PlantUML render check). Target result: **ALL GATES OK**.
 | Rocq | full dev builds `-j1`; **4 capstones axiom-free** (`merge_algebra_{keeporder,netting,conflict,split}_correct` ⟹ "Closed under the global context") |
 | Rocq kernel (`coqchk`) | **independent kernel re-check** of `MergeAlgebra.MainTheorem` + all deps ⟹ "Modules were successfully checked" |
 | Z3 | `keep_one_total_order.py` (5 `unsat` + the key-5 `sat` probe) + `channel_netting_monoid.py` (max-union non-assoc / sum-union assoc) ⟹ `ALL PASS` |
-| Rust | `casper merging::` (P3 strict-total-order, `Equal`-class = injective key) + `rspace_plus_plus merger::` (GAP-1 commutativity, Finding-A pin `#[ignore]`, GAP-3, P2) — all pass |
+| Rust | `casper merging::` (P3 strict-total-order, `Equal`-class = injective key) + `rspace_plus_plus merger::` (GAP-1 commutativity, Finding-A pin `#[ignore]`, GAP-3 + §3c produce-only escape, P2) + `rholang merging::rholang_merging_logic` (§3c guard: over-fill rejected iff `result_len > 1`) — all pass |
 | Diagrams | 6 PlantUML diagrams render clean (populated SVG, no stderr) |
 
 **Coverage matrix (§4).** Every catalog item maps to a concrete Rocq/Z3 artifact or a Rust

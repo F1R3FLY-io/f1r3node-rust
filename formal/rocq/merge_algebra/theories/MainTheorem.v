@@ -22,10 +22,18 @@
        (c) channel_netting_fixed_...  - the sum-union FIX is a commutative monoid
                                         whose fold is permutation-invariant.
 
-     merge_algebra_conflict_correct   (GAP-3 - sound conflict-detector removal)
-       the removed single-value-cell predicate is SUBSUMED by the retained
-       double-consume race detector, except on intrinsically-mergeable number
-       channels (conflict_removal_sound).
+     merge_algebra_conflict_correct   (GAP-3 - sound conflict-detector removal +
+                                       §3c produce-only over-fill guard)
+       PART A: the removed single-value-cell predicate is SUBSUMED by the retained
+         double-consume race detector, except on intrinsically-mergeable number
+         channels (conflict_removal_sound).
+       PART B: the §3c guard closes the produce-only gap Part A's model cannot see
+         (a produce that does NOT consume the base over-fills a single-value NUMBER
+         cell): svc_guard_catches_overfill (the guard fires on every over-fill),
+         overfill_not_retained (it is NOT redundant with the retained detector),
+         and svc_invariant_iff_both_detectors (the two detectors together are
+         exactly complete). Extends this capstone into a CONJUNCTION; still ONE
+         Theorem (the gate requires exactly 4 axiom-free capstones).
 
      merge_algebra_split_correct      (P2 - the user/system split hides no conflict)
        combine(fold user, fold system) = fold all, so conflict detection on the
@@ -103,16 +111,45 @@ Qed.
    =========================================================================== *)
 
 Theorem merge_algebra_conflict_correct :
-  forall is_number_ch,
+  (* PART A - the REMOVED consume-then-produce predicate is subsumed by the
+     retained double-consume race detector (Section Conflict / GAP-3). *)
+  (forall is_number_ch,
     (* the removed single-value-cell predicate is subsumed by the retained
        double-consume race, except on number channels (intrinsically mergeable) *)
     (forall a b, removed_fires a b ->
        retained_conflict is_number_ch a b \/ is_number_channel is_number_ch a b)
     /\
     (* with the number-channel exemption the code applies, it is FULLY subsumed *)
-    (forall a b, removed_fires_exempt is_number_ch a b -> retained_conflict is_number_ch a b).
+    (forall a b, removed_fires_exempt is_number_ch a b -> retained_conflict is_number_ch a b))
+  /\
+  (* PART B - the §3c produce-only over-fill guard (Section Overfill). A produce
+     that does NOT consume the base over-fills a single-value NUMBER cell -- a case
+     Part A's `svc_update = consumes && produces` model is VACUOUS for. For ANY
+     number-classifier / numeric-base / cardinality parameters: (1) the guard fires
+     on every over-fill, (2) the over-fill is NOT caught by the retained detector
+     (given the explicit consume->removed bridge), so the guard is a genuinely
+     separate detector, and (3) the two detectors together are EXACTLY complete. *)
+  (forall is_number_ch numeric_base base_card added removed,
+    (forall ch,
+       svc_overfill is_number_ch numeric_base base_card added removed ch = true ->
+       svc_guard_active is_number_ch numeric_base base_card added removed ch = true)
+    /\
+    (forall a b ch,
+       (consumes a ch = true -> consumed_by_merge removed ch = true) ->
+       svc_overfill is_number_ch numeric_base base_card added removed ch = true ->
+       retained_ch is_number_ch a b ch = false)
+    /\
+    (forall a b ch,
+       svc_broken is_number_ch numeric_base base_card added removed a b ch <->
+       svc_flagged is_number_ch numeric_base base_card added removed a b ch = true)).
 Proof.
-  exact conflict_removal_sound.
+  split.
+  - exact conflict_removal_sound.
+  - intros is_number_ch numeric_base base_card added removed.
+    split; [ | split ].
+    + exact (svc_guard_catches_overfill is_number_ch numeric_base base_card added removed).
+    + exact (overfill_not_retained is_number_ch numeric_base base_card added removed).
+    + exact (svc_invariant_iff_both_detectors is_number_ch numeric_base base_card added removed).
 Qed.
 
 (* ===========================================================================

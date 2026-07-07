@@ -64,6 +64,17 @@ Given a base state and a set of deploy chains to merge:
   caught by the retained double-consume / same-IO-event race detector (`conflicts`,
   Check #1) **or** be an intrinsically-mergeable number/foldable channel. No real conflict
   may be silently dropped.
+- **R-SVC.** A merge that would leave a **single-value NUMBER cell** holding more than one
+  datum **MUST** be rejected. On the **non-mergeable** path (a channel not folded as a
+  number channel this merge), if the base is a single numeric datum and the post-merge
+  cardinality `result_len = |multiset_diff(base, removed)| + |added|` exceeds 1, the merge
+  **MUST** fail (`check_single_value_cell_not_overfilled`, `rholang_merging_logic.rs:194`,
+  wired at `dag_merger.rs:965`). This covers the **produce-only write** — a produce that
+  does **not** consume the base — that R-CONFLICT's consume-then-produce model
+  (`svc_update = consumes ∧ produces`) is **vacuous** for and cannot see. Non-numeric bases
+  (registry / `TreeHashMap` leaves) are **exempt** (they merge freely). Rationale: a RhoVM
+  read of an over-filled single-value cell trips the IntegerAdd single-value invariant and
+  **halts finalization** (safety **S7**).
 - **R-SPLIT.** `combine(fold user, fold system)` **MUST** equal `fold(all deploys)` on the
   conflict-relevant produce/consume fields, so conflict detection on the split index equals
   detection on the monolithic index. The user/system partition **MUST NOT** hide a
@@ -131,6 +142,7 @@ Given a base state and a set of deploy chains to merge:
 | **S4** | The removed single-value-cell check silently dropped a real, non-number conflict (violates R-CONFLICT) — **GAP-3**. |
 | **S5** | The user/system event-log split hides a cross-partition conflict (violates R-SPLIT) — **P2**. |
 | **S6** | A comparator hardening breaks agreement with a live `v0.4.16` node on an input the old order already resolved deterministically (violates R-APPEND). |
+| **S7** | A merge persists a **single-value NUMBER cell** holding > 1 datum (a produce-only over-fill), so a later RhoVM read trips the IntegerAdd single-value invariant and **halts finalization** (violates R-SVC) — **§3c**, RCA-asi-devnet-finality-halt. |
 
 ## 8. Conformance
 

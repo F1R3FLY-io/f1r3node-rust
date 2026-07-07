@@ -6,10 +6,14 @@
 # under the bounded memory envelope of scripts/lib/tlc-run.sh:
 #
 #   1. TLA+  (fail-soft) — TLC on the POST-fix MC_DeployLifecycle.cfg (must PASS
-#      with no violation, exhausting the bounded state space) and the PRE-fix
-#      MC_DeployLifecycle_pre_fix.cfg (must REPRODUCE its counterexample to
-#      Inv_NoFinalizedReproposable). SKIPPED if there is no TLC jar ($TLC_JAR)
-#      and no `tlc` on PATH.
+#      with no violation, exhausting the bounded state space) and TWO PRE-fix
+#      regression cfgs, each of which must REPRODUCE its counterexample:
+#        * MC_DeployLifecycle_pre_fix.cfg (PurgeRejectedBuf=FALSE) ->
+#          Inv_NoFinalizedReproposable (the dropped finalization buffer purge);
+#        * MC_DeployLifecycle_quarantine_pre_fix.cfg (QuarantineBothStores=FALSE)
+#          -> Inv_NoToxicReproposable (the §3c proposer-side quarantine that
+#          leaves a refund-failing re-proposed deploy lingering re-proposable).
+#      SKIPPED if there is no TLC jar ($TLC_JAR) and no `tlc` on PATH.
 #
 # What it guards: casper/src/rust/engine/multi_parent_casper/finalization_runner.rs
 # (:234-241) documents a regression — the casper_engine split once DROPPED the
@@ -42,11 +46,11 @@ if [[ -f "$TLC_JAR" ]] || command -v tlc >/dev/null 2>&1; then
   source "$REPO_ROOT/scripts/lib/tlc-run.sh"
   # POST-fix: must pass (no violation, bounded space exhausted).
   if tlc_run "$(tlc_metadir dl_post_gate)" "$TLA_DIR/MC_DeployLifecycle.cfg" "$TLA_DIR/DeployLifecycle.tla" >/tmp/dl_tlc_post.log 2>&1; then
-    pass "TLA+ post-fix Spec, PurgeRejectedBuf=TRUE (TypeOK, Inv_NoFinalizedReproposable, Inv_NoLossBeforeFinal)"
+    pass "TLA+ post-fix Spec, PurgeRejectedBuf=TRUE + QuarantineBothStores=TRUE (TypeOK, Inv_NoFinalizedReproposable, Inv_NoLossBeforeFinal, Inv_NoToxicReproposable)"
   else
     fail "TLA+ post-fix MC_DeployLifecycle.cfg did NOT pass (see /tmp/dl_tlc_post.log)"
   fi
-  # PRE-fix: must FAIL (counterexample). Inverted sense.
+  # PRE-fix (finalization): must FAIL (counterexample). Inverted sense.
   if tlc_run "$(tlc_metadir dl_pre_gate)" "$TLA_DIR/MC_DeployLifecycle_pre_fix.cfg" "$TLA_DIR/DeployLifecycle.tla" >/tmp/dl_tlc_pre.log 2>&1; then
     fail "TLA+ pre-fix should VIOLATE Inv_NoFinalizedReproposable but passed (the regression demo is broken)"
   else
@@ -54,6 +58,18 @@ if [[ -f "$TLC_JAR" ]] || command -v tlc >/dev/null 2>&1; then
       pass "TLA+ pre-fix reproduces the finalized-deploy re-proposal counterexample"
     else
       fail "TLA+ pre-fix failed for the wrong reason (see /tmp/dl_tlc_pre.log)"
+    fi
+  fi
+  # PRE-fix (quarantine): must FAIL (Inv_NoToxicReproposable counterexample). The
+  # §3c proposer-side quarantine with QuarantineBothStores=FALSE leaves a toxic
+  # refund-failing deploy lingering re-proposable in rejectedBuf.
+  if tlc_run "$(tlc_metadir dl_quar_pre_gate)" "$TLA_DIR/MC_DeployLifecycle_quarantine_pre_fix.cfg" "$TLA_DIR/DeployLifecycle.tla" >/tmp/dl_tlc_quar.log 2>&1; then
+    fail "TLA+ quarantine pre-fix should VIOLATE Inv_NoToxicReproposable but passed (the regression demo is broken)"
+  else
+    if grep -q "Inv_NoToxicReproposable is violated" /tmp/dl_tlc_quar.log; then
+      pass "TLA+ quarantine pre-fix reproduces the toxic re-proposal counterexample"
+    else
+      fail "TLA+ quarantine pre-fix failed for the wrong reason (see /tmp/dl_tlc_quar.log)"
     fi
   fi
 else
