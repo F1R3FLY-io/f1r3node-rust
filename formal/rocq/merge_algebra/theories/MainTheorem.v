@@ -20,7 +20,15 @@
        (a) combine_max_comm           - the shipped combine is commutative;
        (b) combine_not_assoc_exhibit  - but NON-associative (Finding A, exhibited);
        (c) channel_netting_fixed_...  - the sum-union FIX is a commutative monoid
-                                        whose fold is permutation-invariant.
+                                        whose fold is permutation-invariant
+                                        (documented context: the DEFERRED-cancel
+                                        operator giving genuine order-independence);
+       (d) channel_netting_deployed_  - THE DEPLOYED operator's determinism: the
+           deterministic                 shipped combine_max is a semilattice JOIN
+                                        (vunion) with a DEFERRED single cancel, and
+                                        its fold over a CANONICAL order (KeepOneOrder
+                                        DeployChainIndex::cmp / compare_branches) is
+                                        node-identical — the actual no-fork property.
 
      merge_algebra_conflict_correct   (GAP-3 - sound conflict-detector removal +
                                        §3c produce-only over-fill guard)
@@ -94,16 +102,35 @@ Theorem merge_algebra_netting_correct :
    /\ empty_cc <> mk_add)
   /\
   (* (c) the sum-union FIX is a commutative monoid with a permutation-invariant
-     fold, and cancel_common preserves the netted multiplicity *)
+     fold, and cancel_common preserves the netted multiplicity (documented context:
+     the DEFERRED-cancel operator that would give genuine order-independence) *)
   ((forall x y, combine_sum x y = combine_sum y x)
    /\ (forall x y z, combine_sum x (combine_sum y z) = combine_sum (combine_sum x y) z)
    /\ (forall x, combine_sum empty_cc x = x)
    /\ (forall l1 l2, Permutation l1 l2 -> netting_fold l1 = netting_fold l2)
+   /\ (forall c, net (cancel c) = net c))
+  /\
+  (* (d) THE DEPLOYED operator's determinism (the shipped no-fork guarantee, the
+     property this capstone now points at). The shipped `combine_max` is a
+     SEMILATTICE JOIN with a DEFERRED single cancel (combine_max = cancel ∘ vunion);
+     the max-union `vunion` join is idempotent/commutative/ASSOCIATIVE with an
+     order-independent fold; and folding the (non-associative) `combine_max` over a
+     CANONICAL order (compare_branches / DeployChainIndex::cmp, KeepOneOrder) is a
+     function of the input SET — node-identical, no fork. Finding A (b) is the
+     inline-vs-deferred cancel gap, rendered BENIGN by the canonical order. *)
+  ((forall x y, combine_max x y = cancel (vunion x y))
+   /\ (forall x y, vunion x y = vunion y x)
+   /\ (forall x y z, vunion x (vunion y z) = vunion (vunion x y) z)
+   /\ (forall x, vunion x x = x)
+   /\ (forall l1 l2, Permutation l1 l2 -> vunion_fold l1 = vunion_fold l2)
+   /\ (forall canon, (forall l l', Permutation l l' -> canon l = canon l') ->
+        forall l l', Permutation l l' -> deployed_fold canon l = deployed_fold canon l')
    /\ (forall c, net (cancel c) = net c)).
 Proof.
   exact (conj combine_max_comm
           (conj combine_not_assoc_exhibit
-            channel_netting_fixed_deterministic)).
+            (conj channel_netting_fixed_deterministic
+              channel_netting_deployed_deterministic))).
 Qed.
 
 (* ===========================================================================

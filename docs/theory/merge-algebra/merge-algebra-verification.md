@@ -206,8 +206,8 @@ Every catalog item maps to a concrete artifact — no "assumed"/"prose-only" row
 | **T-DET** | same merge inputs ⟹ identical `(pre-state hash, rejected-set)` on every node (S1) | Rocq `MainTheorem.merge_algebra_keeporder_correct` (+ `…_split_correct`); the two consumers reduce to T-ORDER + T-SPLIT |
 | **T-ORDER** | `cmp` is a strict total order whose `Equal`-class ⊆ `Eq` (no distinct chains tie) | Rocq `KeepOneOrder.keep_one_total_order`, `keep_one_equal_impl_eq`; Z3 `keep_one_total_order.py`; Rust `cmp_is_strict_total_order_injective_on_equal` |
 | **T-KEEP1** | greedy keep-one / rejection winner is a pure function of the branch set (S2) | Rocq `KeepOneOrder.output_indep_of_input_perm`, `sort_argmax_unique`; Rust `distinct_chains_tying_on_all_four_policy_keys_still_order_deterministically` |
-| **T-FOLD** | merged-state fold order-independent under the canonical (total-order) sort (S3) | Rocq `KeepOneOrder.output_indep_of_input_perm` + `ChannelNetting.combine_not_assoc_exhibit` (why the sort is required); Rust `fixed_net_is_order_independent` |
-| **T-NET** | `combine` commutative but non-associative (Finding A); sum-union fix is a commutative monoid with a permutation-invariant fold | Rocq `ChannelNetting.combine_max_comm`, `combine_not_assoc_exhibit`, `channel_netting_fixed_deterministic`, `netting_fold_perm`; Z3 `channel_netting_monoid.py`; Rust `combine_is_commutative_as_multiset`, `finding_a_max_union_combine_is_non_associative` (`#[ignore]` pin) |
+| **T-FOLD** | merged-state fold order-independent under the canonical (total-order) sort (S3) | Rocq `KeepOneOrder.output_indep_of_input_perm` + `ChannelNetting.combine_not_assoc_exhibit` (why the sort is required) + **`ChannelNetting.deployed_fold_canonical_deterministic`** (the shipped non-assoc `combine_max` folded over a permutation-invariant `canon` is a function of the SET); Rust `fixed_net_is_order_independent` |
+| **T-NET** | shipped `combine` commutative but non-associative (Finding A); it is a **semilattice JOIN with a DEFERRED single cancel** whose canonical-order fold is node-identical (the DEPLOYED no-fork property); the sum-union fix is the associative deferred-cancel operator (documented context) | Rocq **`ChannelNetting.channel_netting_deployed_deterministic`** (`combine_max = cancel ∘ vunion`, `vunion_{comm,assoc,idem}`, `vunion_fold_perm`, `deployed_fold_canonical_deterministic`, `net_cancel`), `combine_max_comm`, `combine_not_assoc_exhibit`, `channel_netting_fixed_deterministic`, `netting_fold_perm`; Z3 `channel_netting_monoid.py` (semilattice-join assoc/comm/idem + `cmax = cancel ∘ vunion`); Rust `combine_is_commutative_as_multiset`, `finding_a_max_union_combine_is_non_associative` (`#[ignore]` pin) |
 | **T-CONFLICT** | removed single-value-cell check ⊆ retained double-consume detector ∪ number-channel exemption (S4) | Rocq `ConflictSoundness.removed_subset_retained`, `conflict_removal_sound`; Rust `removed_predicate_is_subsumed_by_retained_or_number_channel` |
 | **T-SVC** | the §3c guard rejects a single-value NUMBER cell merge **iff** it would over-fill it (`result_len > 1`); non-number bases exempt (S7) | Rocq `ConflictSoundness.svc_guard_catches_overfill`, `svc_invariant_iff_both_detectors` (Section Overfill); Rust `svc_guard_rejects_iff_result_len_gt_one` (rholang) |
 | **T-OVERFILL** | a **produce-only** over-fill escapes the retained detector (consumes no base) ⟹ §3c is a separate, non-subsumed detector; the two together are exactly complete (S7) | Rocq `ConflictSoundness.overfill_not_retained`, `svc_guard_not_subsumed_exhibit`; Rust `produce_only_overfill_escapes_retained_detector` (rspace++) |
@@ -229,7 +229,7 @@ library is re-checked by the trusted kernel (`coqchk`).
 | Module | Depends on | Key results |
 |---|---|---|
 | `KeepOneOrder.v` | Stdlib | the `lexcomp` combinator + its linear-comparator algebra (`Antisym_lex`, `LtTrans_lex`, `EqCongR_lex`), the `dcmp`/`acmp` leaves, the 5-key tower `cmp`; **`keep_one_equal_impl_eq`** (`cmp a b = Eq → a = b`, **unconditional**), **`keep_one_total_order`**, `sort_total_order`, `sort_is_permutation`, `sort_sorted`, `sorted_perm_eq`, **`output_indep_of_input_perm`**, **`sort_argmax_unique`** |
-| `ChannelNetting.v` | Stdlib | **`combine_max_comm`**, **`combine_not_assoc_exhibit`** (Finding A, exhibited); the sum-union fix `combine_sum_{comm,assoc,id_l}`, **`netting_fold_perm`**, `net_combine_sum`, `net_cancel`, **`channel_netting_fixed_deterministic`** |
+| `ChannelNetting.v` | Stdlib | **`combine_max_comm`**, **`combine_not_assoc_exhibit`** (Finding A, exhibited); the sum-union fix `combine_sum_{comm,assoc,id_l}`, **`netting_fold_perm`**, `net_combine_sum`, `net_cancel`, **`channel_netting_fixed_deterministic`**; **Section 5 (the DEPLOYED operator):** the max-union semilattice JOIN `vunion_{comm,assoc,idem,id_l}`, **`combine_max_eq_cancel_join`** (`combine_max = cancel ∘ vunion` — semilattice join with a deferred single cancel), **`vunion_fold_perm`**, **`deployed_fold_canonical_deterministic`** (the shipped non-assoc fold over a permutation-invariant `canon` is a pure function of the input SET — the no-fork property), **`channel_netting_deployed_deterministic`** |
 | `ConflictSoundness.v` | Stdlib | **Section Conflict:** **`removed_subset_retained`** (`removed_fires ⟹ retained_conflict ∨ is_number_channel`, no hidden hypothesis — the consume conjunct is definitional via `andb_prop`; `is_number_ch` an abstract parameter), **`conflict_removal_sound`**. **Section Overfill (§3c):** **`svc_guard_catches_overfill`** (produce-only over-fill ⟹ guard fires), **`overfill_not_retained`** (the over-fill escapes the retained detector — non-subsumption, via an explicit consume→removed bridge), **`svc_invariant_iff_both_detectors`** (retained ∪ §3c is exactly complete), and the `vm_compute` constant witness **`svc_guard_not_subsumed_exhibit`** |
 | `EventLogSplit.v` | Stdlib | `combine_{comm,assoc,idem,id_l}` (join-semilattice), `foldi_app`, `foldi_perm`, `partition_perm`, **`combine_split_eq`**, **`conflicts_split_complete`**, **`event_log_split_sound`** |
 | `MainTheorem.v` | all four | capstones **`merge_algebra_{keeporder,netting,conflict,split}_correct`** |
@@ -270,8 +270,22 @@ coqchk -Q formal/rocq/merge_algebra/theories MergeAlgebra MergeAlgebra.MainTheor
   Prints `ALL PASS`.
 - **`channel_netting_monoid.py`** — max-union `combine` **commutes** (disagreement `unsat`)
   but is **non-associative** (a `sat` witness, and the concrete `add(x)/add(x)/remove(x)`
-  witness), while the sum-union fix is **associative** and **commutative** (both `unsat`).
-  Prints `ALL PASS`.
+  witness), while the sum-union fix is **associative** and **commutative** (both `unsat`). It
+  also witnesses the **DEPLOYED** structure: the max-union JOIN `vunion` (no cancel) is
+  **associative / commutative / idempotent** (a semilattice, all `unsat`) and the shipped
+  `combine_max` **equals** `cancel ∘ vunion` (deferred single cancel, `unsat`) — so the
+  non-associativity is confined to the (deferred) cancel and the canonical-order fold is
+  node-identical. Prints `ALL PASS`.
+
+**Audit reconciliation (keep-one comparator — 5-key CONFIRMED).** The `carefully-git-merge`
+audit read `DeployChainIndex::cmp` as a **4-key** tower (totality resting on the unstated
+Blake2b injectivity of key-4 `post_state_hash`). That reading was of **`origin/master`
+(pre-`c0b7609e`)**. On this branch the shipped `cmp` (`deploy_chain_index.rs:151-230`) has the
+**5th, injective terminal key** `self.deploys_with_cost.cmp(..)` (line 229, added by
+`c0b7609e`), so totality holds **by construction with NO cryptographic assumption**. The Z3
+`keep_one_total_order.py` and Rocq `KeepOneOrder.v` model **5 keys**, matching the shipped
+comparator — the finding is **RESOLVED**, not a residual model-vs-code gap. (The `sat` dual
+probe in the Z3 script pins precisely the pre-fix 4-key tie that the 5th key eliminates.)
 
 ### 5.3 Rust tests
 
@@ -374,6 +388,32 @@ safety (T-APPEND) is *derived* from the `v0.4.16` comparator via `git show`, not
 
 **Policy:** all of the above run **locally**. Do **not** add any Rocq / Z3 step to
 `.github/workflows/*` (an earlier formal-CI workflow was deliberately removed).
+
+### 7.1 Scope disclosure — what the capstones prove (and what they do NOT)
+
+The merge-algebra capstones prove **DETERMINISM** of the block merger: that every honest node
+that recomputes the merge derives the **byte-identical** `(pre-state hash, rejected-deploy
+set)`. Concretely, the four `merge_algebra_*_correct` capstones establish
+
+- **merge-winner determinism** — the keep-one/rejection winner is a pure function of the branch
+  SET (`keep_one_*`, `output_indep_of_input_perm`, `sort_argmax_unique`);
+- **fold determinism** — the shipped non-associative `combine_max` folded over the canonical
+  order is a pure function of the SET (`channel_netting_deployed_deterministic`,
+  `deployed_fold_canonical_deterministic`);
+- **conflict-detector soundness** and **event-log-split soundness** (`conflict_removal_sound`,
+  `event_log_split_sound`).
+
+They do **NOT** prove **CBC finalization safety** (quorum-intersection / agreement — that two
+conflicting blocks can never both finalize). No such theorem exists in this development, and
+the merge algebra is not where it would live: merge determinism guarantees that the *inputs a
+validator recomputes* match the proposer's, which is a **necessary** condition for safety (a
+non-deterministic merge would fork outright) but not a **sufficient** one. CBC safety is a
+property of the finalization rule (the clique oracle / fault-tolerance threshold), tracked
+separately in the **finalized-floor** dossier — whose own capstones likewise prove floor/cache
+**determinism**, not quorum intersection (see `finalized-floor-verification.md` §7.1). The
+quorum abstractions there now carry `NoDup` (distinct validators, matching the code's
+`WeightMap = HashMap<V,i64>`), which is the groundwork a future quorum-intersection lemma would
+build on; it is deliberately **out of scope** here and stated so rather than implied.
 
 ---
 

@@ -76,6 +76,37 @@ expect("sum-union FIX associativity holds", s, "unsat")
 s = Solver(); s.add(xdom + ydom); s.add(neq(csum(x, y), csum(y, x)))
 expect("sum-union FIX commutativity holds", s, "unsat")
 
+# === THE DEPLOYED operator: a SEMILATTICE JOIN with a DEFERRED single cancel =====
+# The shipped combine_max is NOT the sum-union fix — the node runs `cmax`. Its
+# determinism (no-fork) is NOT from associativity (cmax is non-associative, above)
+# but from folding in a CANONICAL order (conflict_set_merger.rs:385,391,426 sort
+# branches/items by compare_branches / DeployChainIndex::cmp before folding). The
+# STRUCTURE that makes a canonical-order fold suffice: cmax = cancel ∘ vunion, where
+# the MAX-union `vunion` (no cancel) is an idempotent, commutative, ASSOCIATIVE
+# semilattice JOIN — order-free — and the single `cancel` is deferred. Confirms Rocq
+# ChannelNetting `vunion_{comm,assoc,idem}`, `combine_max_eq_cancel_join`.
+
+def vunion(x, y):  # semilattice join: per-side max, NO cancel (channel_change.rs:25)
+    return (zmax(x[0], y[0]), zmax(x[1], y[1]))
+
+# ASSOCIATIVITY of the max-union JOIN holds (unlike cmax): refute a disagreement.
+s = Solver(); s.add(adom + bdom + cdom)
+s.add(neq(vunion(vunion(a, b), c), vunion(a, vunion(b, c))))
+expect("max-union JOIN (no cancel) associativity holds (semilattice)", s, "unsat")
+
+# COMMUTATIVITY of the max-union JOIN holds.
+s = Solver(); s.add(xdom + ydom); s.add(neq(vunion(x, y), vunion(y, x)))
+expect("max-union JOIN commutativity holds", s, "unsat")
+
+# IDEMPOTENCE of the max-union JOIN holds (vunion(x,x) == x).
+s = Solver(); s.add(xdom); s.add(neq(vunion(x, x), x))
+expect("max-union JOIN idempotent (vunion(x,x) = x)", s, "unsat")
+
+# DECOMPOSITION: the shipped combine_max IS `cancel ∘ vunion` (deferred single
+# cancel over the semilattice join): refute any disagreement.
+s = Solver(); s.add(xdom + ydom); s.add(neq(cmax(x, y), cancel(vunion(x, y))))
+expect("combine_max == cancel ∘ vunion (semilattice join, deferred single cancel)", s, "unsat")
+
 print("== Z3 channel-netting monoid cross-witness: ALL PASS =="
       if ok else "== FAILURES ==")
 import sys

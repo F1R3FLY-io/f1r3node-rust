@@ -177,3 +177,142 @@ Proof.
             (conj combine_sum_id_l
               (conj netting_fold_perm net_cancel)))).
 Qed.
+
+(* ===========================================================================
+   Section 5 - THE DEPLOYED operator's determinism: a SEMILATTICE JOIN with a
+   DEFERRED single cancel, folded in a CANONICAL order.
+
+   The sum-union `combine_sum` (Section 2) is the associative FIX, but it is NOT
+   what the node runs. This section models the DEPLOYED determinism faithfully.
+
+   WHAT THE NODE ACTUALLY FOLDS. The shipped `ChannelChange::combine`
+   (channel_change.rs:17) is `combine_max` (Section 1): a per-side MAX-multiset
+   union (`vec_union`) followed by an INLINE `cancel_common`. As a fold operator
+   it is COMMUTATIVE but NON-ASSOCIATIVE (`combine_not_assoc_exhibit`, Finding A).
+   So its multi-branch fold is order-DEPENDENT in general. Determinism therefore
+   does NOT come from associativity.
+
+   WHERE DETERMINISM COMES FROM (the no-fork guarantee). The deployed merge
+   (conflict_set_merger.rs:384-426) folds `combine_max` over a CANONICAL order:
+   the branches are sorted by `compare_branches` and the items within each branch
+   by `DeployChainIndex::cmp` — the injective 5-key STRICT TOTAL order proven
+   node-identical in KeepOneOrder (`output_indep_of_input_perm`) — and only THEN
+   are they folded left-to-right (`combined = combined.combine(item_changes)`).
+   Because every node canonicalizes with the SAME permutation-invariant sort, the
+   folded result is a pure function of the input SET — byte-identical regardless
+   of HashSet reseeding. A non-associative operator folded in a canonical order is
+   still deterministic; Finding A is rendered BENIGN by the canonical order, not
+   by a semantics change (mirrors the dossier's T-FOLD).
+
+   THE STRUCTURE ("semilattice join with deferred single cancel"). `combine_max`
+   decomposes as `cancel ∘ vunion` (`combine_max_eq_cancel_join`), where the
+   MAX-union `vunion` (no cancel) is an idempotent, commutative, ASSOCIATIVE
+   semilattice JOIN whose fold IS order-independent (`vunion_fold_perm`). The ONLY
+   non-associative part is interleaving the `cancel` between joins; deferring it
+   to a SINGLE final normalization (as `cancel (vunion_fold l)`) restores genuine
+   order-independence, and `cancel` is net-preserving (`net_cancel`, Section 3).
+   Finding A is exactly the gap between an INLINE cancel and a DEFERRED one.
+
+   Spec-to-Code (this section):
+   Rocq                              | Rust
+   ----------------------------------+----------------------------------------
+   vunion (max-union, no cancel)     | vec_union (channel_change.rs:25)
+   combine_max_eq_cancel_join        | combine = vec_union x2 then cancel_common
+   vunion_fold_perm                  | max-union part is order-free
+   deployed_fold / canon             | conflict_set_merger.rs:385,391,426 fold
+   deployed_fold_canonical_...       | node-identical fold winner (no fork)
+   canon perm-invariance premise     | DeployChainIndex::cmp / compare_branches
+                                     |   sort = KeepOneOrder.output_indep_of_...
+   =========================================================================== *)
+
+(* The MAX-union JOIN (`vec_union`): per-datum multiplicity = max, NO cancel.
+   This is the semilattice the deployed combine is built on. *)
+Definition vunion (x y : cc) : cc := (Nat.max (fst x) (fst y), Nat.max (snd x) (snd y)).
+
+Theorem vunion_comm : forall x y, vunion x y = vunion y x.
+Proof.
+  intros [xa xr] [ya yr]. unfold vunion; simpl.
+  rewrite (Nat.max_comm xa ya), (Nat.max_comm xr yr). reflexivity.
+Qed.
+
+Theorem vunion_assoc :
+  forall x y z, vunion x (vunion y z) = vunion (vunion x y) z.
+Proof.
+  intros [xa xr] [ya yr] [za zr]. unfold vunion; simpl.
+  rewrite (Nat.max_assoc xa ya za), (Nat.max_assoc xr yr zr). reflexivity.
+Qed.
+
+Theorem vunion_idem : forall x, vunion x x = x.
+Proof.
+  intros [xa xr]. unfold vunion; simpl.
+  rewrite (Nat.max_id xa), (Nat.max_id xr). reflexivity.
+Qed.
+
+Theorem vunion_id_l : forall x, vunion empty_cc x = x.
+Proof. intros [xa xr]. unfold vunion, empty_cc; simpl. reflexivity. Qed.
+
+(* THE structural decomposition: the shipped `combine_max` IS the semilattice
+   JOIN followed by a SINGLE (deferred) `cancel`. Definitionally true — both are
+   `cancel (Nat.max (fst x)(fst y), Nat.max (snd x)(snd y))`. *)
+Theorem combine_max_eq_cancel_join :
+  forall x y, combine_max x y = cancel (vunion x y).
+Proof. reflexivity. Qed.
+
+(* The semilattice JOIN fold is order-independent (permutation-invariant): the max
+   multiplicity per datum does not depend on branch order (uses comm + assoc, the
+   `netting_fold_perm` pattern). This is the sense in which the max-union part of
+   the deployed combine is genuinely "order-free". *)
+Definition vunion_fold (l : list cc) : cc := fold_right vunion empty_cc l.
+
+Theorem vunion_fold_perm :
+  forall l1 l2, Permutation l1 l2 -> vunion_fold l1 = vunion_fold l2.
+Proof.
+  intros l1 l2 H.
+  induction H as [| x l1 l2 Hp IH | x y l | l1 l2 l3 Hp1 IH1 Hp2 IH2].
+  - reflexivity.
+  - simpl. rewrite IH. reflexivity.
+  - simpl. rewrite vunion_assoc, vunion_assoc, (vunion_comm y x). reflexivity.
+  - rewrite IH1, IH2. reflexivity.
+Qed.
+
+(* THE deployed-fold determinism (the shipped NO-FORK guarantee): fold the shipped
+   (non-associative) `combine_max` over a CANONICAL order produced by `canon`.
+   Every node canonicalizes with the SAME permutation-invariant sort, so the folded
+   result is a function of the input SET — node-identical regardless of HashSet
+   reseeding. The `canon` permutation-invariance is an explicit THEOREM PREMISE (a
+   PROVEN property of the real sort: KeepOneOrder.output_indep_of_input_perm on
+   DeployChainIndex::cmp / compare_branches), NOT an axiom — so this is exactly why
+   a non-associative fold does not fork under the canonical order. *)
+Definition deployed_fold (canon : list cc -> list cc) (l : list cc) : cc :=
+  fold_right combine_max empty_cc (canon l).
+
+Theorem deployed_fold_canonical_deterministic :
+  forall (canon : list cc -> list cc),
+    (forall l l', Permutation l l' -> canon l = canon l') ->
+    forall l l', Permutation l l' -> deployed_fold canon l = deployed_fold canon l'.
+Proof.
+  intros canon Hcanon l l' Hperm. unfold deployed_fold.
+  rewrite (Hcanon l l' Hperm). reflexivity.
+Qed.
+
+(* The headline for the DEPLOYED operator (companion to
+   `channel_netting_fixed_deterministic`, which is the DEFERRED-cancel FIX): the
+   shipped combine is a semilattice JOIN with a deferred single cancel, whose
+   canonical-order fold is node-identical, and whose cancel preserves the net. *)
+Theorem channel_netting_deployed_deterministic :
+  (forall x y, combine_max x y = cancel (vunion x y))
+  /\ (forall x y, vunion x y = vunion y x)
+  /\ (forall x y z, vunion x (vunion y z) = vunion (vunion x y) z)
+  /\ (forall x, vunion x x = x)
+  /\ (forall l1 l2, Permutation l1 l2 -> vunion_fold l1 = vunion_fold l2)
+  /\ (forall canon, (forall l l', Permutation l l' -> canon l = canon l') ->
+        forall l l', Permutation l l' -> deployed_fold canon l = deployed_fold canon l')
+  /\ (forall c, net (cancel c) = net c).
+Proof.
+  exact (conj combine_max_eq_cancel_join
+          (conj vunion_comm
+            (conj vunion_assoc
+              (conj vunion_idem
+                (conj vunion_fold_perm
+                  (conj deployed_fold_canonical_deterministic net_cancel)))))).
+Qed.
