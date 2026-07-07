@@ -14,9 +14,6 @@ standalone_conf := local_dir / "conf/standalone.conf"
 standalone_genesis := local_dir / "genesis/standalone"
 standalone_data := local_dir / "data/standalone"
 
-# Validator credentials (bootstrap wallet)
-standalone_private_key := env_var('STANDALONE_PRIVATE_KEY')
-
 # Default recipe - show available commands
 default:
     @just --list
@@ -46,7 +43,7 @@ setup-standalone:
     @echo "Done. Data directory: {{standalone_data}}"
 
 # Run standalone node locally
-run-standalone: build setup-standalone
+run-standalone standalone_private_key=env_var('STANDALONE_PRIVATE_KEY'): build setup-standalone
     @echo "Starting standalone Rust node..."
     @echo "  Config: {{standalone_conf}}"
     @echo "  Data:   {{standalone_data}}"
@@ -58,7 +55,7 @@ run-standalone: build setup-standalone
         --no-upnp
 
 # Run standalone node in debug mode (for development)
-run-standalone-debug: build-debug setup-standalone
+run-standalone-debug standalone_private_key=env_var('STANDALONE_PRIVATE_KEY'): build-debug setup-standalone
     ./target/debug/node run -s \
         --config-file={{standalone_conf}} \
         --validator-private-key={{standalone_private_key}} \

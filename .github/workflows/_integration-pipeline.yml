@@ -178,7 +178,7 @@ jobs:
           oci --version
 
       - name: Configure OCI auth from secrets
-        shell: bash -e {0}   # no -x: never trace the multi-line private key
+        shell: bash -e {0} # no -x: never trace the multi-line private key
         env:
           OCI_TENANCY_OCID: ${{ secrets.OCI_TENANCY_OCID }}
           OCI_USER_OCID: ${{ secrets.OCI_USER_OCID }}
@@ -240,29 +240,269 @@ jobs:
       matrix:
         include:
           # ── amd64 × docker × 5 ───────────────────────────────────────────────
-          - { arch: amd64, provider: docker,     slot: 1, runner: [self-hosted, linux, x64,   f1r3fly-rust-ci-ephemeral, oracle-cloud] }
-          - { arch: amd64, provider: docker,     slot: 2, runner: [self-hosted, linux, x64,   f1r3fly-rust-ci-ephemeral, oracle-cloud] }
-          - { arch: amd64, provider: docker,     slot: 3, runner: [self-hosted, linux, x64,   f1r3fly-rust-ci-ephemeral, oracle-cloud] }
-          - { arch: amd64, provider: docker,     slot: 4, runner: [self-hosted, linux, x64,   f1r3fly-rust-ci-ephemeral, oracle-cloud] }
-          - { arch: amd64, provider: docker,     slot: 5, runner: [self-hosted, linux, x64,   f1r3fly-rust-ci-ephemeral, oracle-cloud] }
+          - {
+              arch: amd64,
+              provider: docker,
+              slot: 1,
+              runner:
+                [
+                  self-hosted,
+                  linux,
+                  x64,
+                  f1r3fly-rust-ci-ephemeral,
+                  oracle-cloud,
+                ],
+            }
+          - {
+              arch: amd64,
+              provider: docker,
+              slot: 2,
+              runner:
+                [
+                  self-hosted,
+                  linux,
+                  x64,
+                  f1r3fly-rust-ci-ephemeral,
+                  oracle-cloud,
+                ],
+            }
+          - {
+              arch: amd64,
+              provider: docker,
+              slot: 3,
+              runner:
+                [
+                  self-hosted,
+                  linux,
+                  x64,
+                  f1r3fly-rust-ci-ephemeral,
+                  oracle-cloud,
+                ],
+            }
+          - {
+              arch: amd64,
+              provider: docker,
+              slot: 4,
+              runner:
+                [
+                  self-hosted,
+                  linux,
+                  x64,
+                  f1r3fly-rust-ci-ephemeral,
+                  oracle-cloud,
+                ],
+            }
+          - {
+              arch: amd64,
+              provider: docker,
+              slot: 5,
+              runner:
+                [
+                  self-hosted,
+                  linux,
+                  x64,
+                  f1r3fly-rust-ci-ephemeral,
+                  oracle-cloud,
+                ],
+            }
           # ── amd64 × subprocess × 5 ───────────────────────────────────────────
-          - { arch: amd64, provider: subprocess, slot: 1, runner: [self-hosted, linux, x64,   f1r3fly-rust-ci-ephemeral, oracle-cloud] }
-          - { arch: amd64, provider: subprocess, slot: 2, runner: [self-hosted, linux, x64,   f1r3fly-rust-ci-ephemeral, oracle-cloud] }
-          - { arch: amd64, provider: subprocess, slot: 3, runner: [self-hosted, linux, x64,   f1r3fly-rust-ci-ephemeral, oracle-cloud] }
-          - { arch: amd64, provider: subprocess, slot: 4, runner: [self-hosted, linux, x64,   f1r3fly-rust-ci-ephemeral, oracle-cloud] }
-          - { arch: amd64, provider: subprocess, slot: 5, runner: [self-hosted, linux, x64,   f1r3fly-rust-ci-ephemeral, oracle-cloud] }
+          - {
+              arch: amd64,
+              provider: subprocess,
+              slot: 1,
+              runner:
+                [
+                  self-hosted,
+                  linux,
+                  x64,
+                  f1r3fly-rust-ci-ephemeral,
+                  oracle-cloud,
+                ],
+            }
+          - {
+              arch: amd64,
+              provider: subprocess,
+              slot: 2,
+              runner:
+                [
+                  self-hosted,
+                  linux,
+                  x64,
+                  f1r3fly-rust-ci-ephemeral,
+                  oracle-cloud,
+                ],
+            }
+          - {
+              arch: amd64,
+              provider: subprocess,
+              slot: 3,
+              runner:
+                [
+                  self-hosted,
+                  linux,
+                  x64,
+                  f1r3fly-rust-ci-ephemeral,
+                  oracle-cloud,
+                ],
+            }
+          - {
+              arch: amd64,
+              provider: subprocess,
+              slot: 4,
+              runner:
+                [
+                  self-hosted,
+                  linux,
+                  x64,
+                  f1r3fly-rust-ci-ephemeral,
+                  oracle-cloud,
+                ],
+            }
+          - {
+              arch: amd64,
+              provider: subprocess,
+              slot: 5,
+              runner:
+                [
+                  self-hosted,
+                  linux,
+                  x64,
+                  f1r3fly-rust-ci-ephemeral,
+                  oracle-cloud,
+                ],
+            }
           # ── arm64 × docker × 5 ───────────────────────────────────────────────
-          - { arch: arm64, provider: docker,     slot: 1, runner: [self-hosted, linux, arm64, f1r3fly-rust-ci-ephemeral, oracle-cloud] }
-          - { arch: arm64, provider: docker,     slot: 2, runner: [self-hosted, linux, arm64, f1r3fly-rust-ci-ephemeral, oracle-cloud] }
-          - { arch: arm64, provider: docker,     slot: 3, runner: [self-hosted, linux, arm64, f1r3fly-rust-ci-ephemeral, oracle-cloud] }
-          - { arch: arm64, provider: docker,     slot: 4, runner: [self-hosted, linux, arm64, f1r3fly-rust-ci-ephemeral, oracle-cloud] }
-          - { arch: arm64, provider: docker,     slot: 5, runner: [self-hosted, linux, arm64, f1r3fly-rust-ci-ephemeral, oracle-cloud] }
+          - {
+              arch: arm64,
+              provider: docker,
+              slot: 1,
+              runner:
+                [
+                  self-hosted,
+                  linux,
+                  arm64,
+                  f1r3fly-rust-ci-ephemeral,
+                  oracle-cloud,
+                ],
+            }
+          - {
+              arch: arm64,
+              provider: docker,
+              slot: 2,
+              runner:
+                [
+                  self-hosted,
+                  linux,
+                  arm64,
+                  f1r3fly-rust-ci-ephemeral,
+                  oracle-cloud,
+                ],
+            }
+          - {
+              arch: arm64,
+              provider: docker,
+              slot: 3,
+              runner:
+                [
+                  self-hosted,
+                  linux,
+                  arm64,
+                  f1r3fly-rust-ci-ephemeral,
+                  oracle-cloud,
+                ],
+            }
+          - {
+              arch: arm64,
+              provider: docker,
+              slot: 4,
+              runner:
+                [
+                  self-hosted,
+                  linux,
+                  arm64,
+                  f1r3fly-rust-ci-ephemeral,
+                  oracle-cloud,
+                ],
+            }
+          - {
+              arch: arm64,
+              provider: docker,
+              slot: 5,
+              runner:
+                [
+                  self-hosted,
+                  linux,
+                  arm64,
+                  f1r3fly-rust-ci-ephemeral,
+                  oracle-cloud,
+                ],
+            }
           # ── arm64 × subprocess × 5 ───────────────────────────────────────────
-          - { arch: arm64, provider: subprocess, slot: 1, runner: [self-hosted, linux, arm64, f1r3fly-rust-ci-ephemeral, oracle-cloud] }
-          - { arch: arm64, provider: subprocess, slot: 2, runner: [self-hosted, linux, arm64, f1r3fly-rust-ci-ephemeral, oracle-cloud] }
-          - { arch: arm64, provider: subprocess, slot: 3, runner: [self-hosted, linux, arm64, f1r3fly-rust-ci-ephemeral, oracle-cloud] }
-          - { arch: arm64, provider: subprocess, slot: 4, runner: [self-hosted, linux, arm64, f1r3fly-rust-ci-ephemeral, oracle-cloud] }
-          - { arch: arm64, provider: subprocess, slot: 5, runner: [self-hosted, linux, arm64, f1r3fly-rust-ci-ephemeral, oracle-cloud] }
+          - {
+              arch: arm64,
+              provider: subprocess,
+              slot: 1,
+              runner:
+                [
+                  self-hosted,
+                  linux,
+                  arm64,
+                  f1r3fly-rust-ci-ephemeral,
+                  oracle-cloud,
+                ],
+            }
+          - {
+              arch: arm64,
+              provider: subprocess,
+              slot: 2,
+              runner:
+                [
+                  self-hosted,
+                  linux,
+                  arm64,
+                  f1r3fly-rust-ci-ephemeral,
+                  oracle-cloud,
+                ],
+            }
+          - {
+              arch: arm64,
+              provider: subprocess,
+              slot: 3,
+              runner:
+                [
+                  self-hosted,
+                  linux,
+                  arm64,
+                  f1r3fly-rust-ci-ephemeral,
+                  oracle-cloud,
+                ],
+            }
+          - {
+              arch: arm64,
+              provider: subprocess,
+              slot: 4,
+              runner:
+                [
+                  self-hosted,
+                  linux,
+                  arm64,
+                  f1r3fly-rust-ci-ephemeral,
+                  oracle-cloud,
+                ],
+            }
+          - {
+              arch: arm64,
+              provider: subprocess,
+              slot: 5,
+              runner:
+                [
+                  self-hosted,
+                  linux,
+                  arm64,
+                  f1r3fly-rust-ci-ephemeral,
+                  oracle-cloud,
+                ],
+            }
     steps:
       - name: Clone Repository
         uses: actions/checkout@v4
@@ -342,7 +582,7 @@ jobs:
             --deselect integration-tests/test/tests/custom/test_active_validator_cap.py \
             --provider=${{ matrix.provider }} \
             -v --tb=short --instafail --maxfail=10 \
-            -n auto --dist=loadgroup --timeout=1200 $SCALE_FLAG
+            -n 16 --dist=loadgroup --timeout=1200 $SCALE_FLAG
 
       - name: Upload Integration Test Logs
         if: always()
