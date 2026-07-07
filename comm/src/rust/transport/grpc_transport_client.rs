@@ -1,7 +1,6 @@
 // See comm/src/main/scala/coop/rchain/comm/transport/GrpcTransportClient.scala
 
 use std::collections::HashMap;
-use std::error::Error as StdError;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -168,12 +167,7 @@ impl GrpcTransportClient {
         );
 
         let endpoint = Channel::from_shared(endpoint_uri.clone()).map_err(|e| {
-            tracing::error!(
-                "Failed to create gRPC endpoint: {} {} {}",
-                e,
-                endpoint_uri,
-                peer.endpoint.host
-            );
+            tracing::error!(uri = %endpoint_uri, host = %peer.endpoint.host, error = %e, "gRPC endpoint creation failed");
             CommError::InternalCommunicationError(format!("Invalid endpoint URI: {}", e))
         })?;
 
@@ -183,14 +177,7 @@ impl GrpcTransportClient {
             .connect_with_connector(f1r3fly_connector)
             .await
             .map_err(|e| {
-                tracing::error!(
-                    "Failed to connect with F1r3flyConnector to {}: {}",
-                    endpoint_uri,
-                    e
-                );
-                if let Some(source) = e.source() {
-                    tracing::error!("Error source: {}", source);
-                }
+                tracing::error!(uri = %endpoint_uri, error = %e, "F1r3flyConnector gRPC channel connect failed");
                 CommError::InternalCommunicationError(format!(
                     "Failed to establish gRPC connection: {}",
                     e
@@ -401,11 +388,7 @@ impl GrpcTransportClient {
         match timed_operation.await {
             Ok(Ok(success)) => Ok(success),
             Ok(Err(comm_error)) => {
-                tracing::error!(
-                    "Request failed for peer {}: {}",
-                    peer.to_address(),
-                    comm_error
-                );
+                tracing::error!(peer = %peer.to_address(), error = %comm_error, "gRPC request failed");
                 Err(comm_error)
             }
             Err(_timeout_error) => {
@@ -414,7 +397,7 @@ impl GrpcTransportClient {
                     peer.to_address(),
                     timeout.as_millis()
                 ));
-                tracing::error!("Request timeout: {}", timeout_error);
+                tracing::warn!("Request timeout: {}", timeout_error);
                 Err(timeout_error)
             }
         }
@@ -490,12 +473,7 @@ impl GrpcTransportClient {
                 Ok(())
             }
             Err(error) => {
-                tracing::error!(
-                    "Error while streaming packet {} to {}: {}",
-                    key,
-                    peer.to_address(),
-                    error
-                );
+                tracing::error!(key = %key, peer = %peer.to_address(), error = %error, "packet streaming failed");
                 Ok(())
             }
         }

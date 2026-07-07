@@ -48,7 +48,7 @@ where F: Fn(&PeerNode, &Packet) -> Option<Result<(), CommError>> + Send + Sync
             Some(result) => result,
             None => {
                 let error_msg = format!("Unable to handle packet {:?}", packet);
-                tracing::error!("{}", error_msg);
+                tracing::error!(packet_type = %packet.type_id, "no handler matched incoming packet");
                 Err(unknown_protocol(error_msg))
             }
         }

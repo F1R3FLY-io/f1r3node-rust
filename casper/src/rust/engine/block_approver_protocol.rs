@@ -203,15 +203,15 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
             pos_multi_sig_quorum,
         };
 
-        tracing::warn!("GENESIS DEBUG ---");
-        //        tracing::warn!("deploy_timestamp: {}", deploy_timestamp);
-        tracing::warn!("shard_id: {}", shard_id);
-        tracing::warn!("pos.minimum_bond: {}", pos_params.minimum_bond);
-        tracing::warn!("pos.maximum_bond: {}", pos_params.maximum_bond);
-        tracing::warn!("pos.epoch_length: {}", pos_params.epoch_length);
-        tracing::warn!("pos.quarantine_length: {}", pos_params.quarantine_length);
-        tracing::warn!("vaults: {:?}", vaults);
-        tracing::warn!("--------------------");
+        tracing::info!(
+            shard_id = %shard_id,
+            pos_minimum_bond = pos_params.minimum_bond,
+            pos_maximum_bond = pos_params.maximum_bond,
+            pos_epoch_length = pos_params.epoch_length,
+            pos_quarantine_length = pos_params.quarantine_length,
+            vault_count = vaults.len(),
+            "genesis parameters resolved",
+        );
 
         // Expected blessed contracts
         let genesis_blessed_contracts =
