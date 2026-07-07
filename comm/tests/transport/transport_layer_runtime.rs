@@ -53,7 +53,7 @@ impl TransportLayerTestRuntime {
     pub async fn create_environment(&self, port: u16) -> Result<TlsEnvironment, CommError> {
         let host = "127.0.0.1".to_string();
 
-        let (secret_key, public_key) = CertificateHelper::generate_key_pair(true);
+        let (secret_key, public_key) = CertificateHelper::generate_key_pair();
 
         let cert_der = CertificateHelper::generate_certificate(&secret_key, &public_key)
             .map_err(|e| CommError::ConfigError(format!("Certificate generation failed: {}", e)))?;

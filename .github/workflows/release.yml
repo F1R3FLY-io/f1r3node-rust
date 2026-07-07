@@ -67,7 +67,7 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y $(cat .github/apt-dependencies.txt)
+          xargs -r -a .github/apt-dependencies.txt sudo apt-get install -y
 
       - name: Install git-cliff
         uses: orhun/git-cliff-action@v4
@@ -80,9 +80,11 @@ jobs:
         run: |
           source scripts/version.sh
           bump_version patch
-          echo "NEXT_VERSION=$NEXT_VERSION" >> "$GITHUB_OUTPUT"
-          echo "TAG_NAME=$TAG_NAME" >> "$GITHUB_OUTPUT"
-          echo "BRANCH=master" >> "$GITHUB_OUTPUT"
+          {
+            echo "NEXT_VERSION=$NEXT_VERSION"
+            echo "TAG_NAME=$TAG_NAME"
+            echo "BRANCH=master"
+          } >> "$GITHUB_OUTPUT"
           echo "Next version: $NEXT_VERSION (tag: $TAG_NAME)"
 
       - name: Update node/Cargo.toml version
@@ -109,9 +111,14 @@ jobs:
           git add node/Cargo.toml node/Dockerfile Cargo.lock CHANGELOG.md
           git commit -m "chore(release): ${{ steps.version.outputs.TAG_NAME }}"
 
-      - name: Push commit (GITHUB_TOKEN — no workflow triggers)
+      - name: Push commit (RELEASE_PAT — required to push to protected master)
         run: |
-          git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
+          # master's rulesets require a pull request for everyone except admins,
+          # so GITHUB_TOKEN (github-actions[bot], not a bypass actor) cannot push
+          # here. RELEASE_PAT is an org-admin token and bypasses both rulesets.
+          # The chore(release) commit message trips ci.yml's build_base skip-guard,
+          # so this push does not kick off a redundant pipeline.
+          git remote set-url origin https://x-access-token:${{ secrets.RELEASE_PAT }}@github.com/${{ github.repository }}.git
           git push origin ${{ steps.version.outputs.BRANCH }}
 
       - name: Create tag via API (PAT — triggers downstream CI)

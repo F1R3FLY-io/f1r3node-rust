@@ -144,9 +144,9 @@ dependencies = [
 
 [[package]]
 name = "anyhow"
-version = "1.0.102"
+version = "1.0.103"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
+checksum = "2a4385e2e34eb35d6b3efe798b9eb88096925d87726c0798709bf56d9ed84af3"
 
 [[package]]
 name = "approx"
@@ -1065,7 +1065,6 @@ dependencies = [
  "models",
  "p256",
  "paste",
- "proptest",
  "prost 0.14.3",
  "rand 0.9.4",
  "regex",
@@ -1253,9 +1252,9 @@ dependencies = [
 
 [[package]]
 name = "crossbeam-epoch"
-version = "0.9.18"
+version = "0.9.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5b82ac4a3c2ca9c3460964f020e1402edd5753411d7737aa39c3714ad1b5420e"
+checksum = "2d6914041f254d6e9176c01941b21115dcfb7089e55135a35411081bd106ef3f"
 dependencies = [
  "crossbeam-utils",
 ]
@@ -1304,7 +1303,7 @@ dependencies = [
  "pkcs8",
  "proptest",
  "prost 0.14.3",
- "rand 0.8.6",
+ "rand 0.9.4",
  "rand_core 0.6.4",
  "rcgen",
  "serde",
@@ -3491,7 +3490,7 @@ dependencies = [
 
 [[package]]
 name = "node"
-version = "0.4.15"
+version = "0.4.16"
 dependencies = [
  "async-trait",
  "axum 0.8.9",
@@ -5015,7 +5014,6 @@ dependencies = [
  "anyhow",
  "async-trait",
  "bincode",
- "cc",
  "chroma",
  "clap",
  "console",
@@ -5036,10 +5034,10 @@ dependencies = [
  "openai-api-rs",
  "pretty_assertions",
  "prost 0.14.3",
- "rand 0.8.6",
+ "rand 0.9.4",
  "rayon",
  "regex",
- "reqwest 0.11.27",
+ "reqwest 0.12.28",
  "rho-pure-eval",
  "rholang-parser",
  "rspace_plus_plus",
@@ -5065,7 +5063,7 @@ dependencies = [
 [[package]]
 name = "rholang-parser"
 version = "0.1.0"
-source = "git+https://github.com/F1R3FLY-io/rholang-rs?rev=c163755#c1637550a844253f8fe781fc07e57fe5e5aabe7c"
+source = "git+https://github.com/F1R3FLY-io/rholang-rs?rev=527af8a#527af8afb37f6cad470516fe316076f120b9c353"
 dependencies = [
  "bitvec",
  "nonempty-collections",
@@ -5080,7 +5078,7 @@ dependencies = [
 [[package]]
 name = "rholang-tree-sitter"
 version = "0.1.2"
-source = "git+https://github.com/F1R3FLY-io/rholang-rs?rev=c163755#c1637550a844253f8fe781fc07e57fe5e5aabe7c"
+source = "git+https://github.com/F1R3FLY-io/rholang-rs?rev=527af8a#527af8afb37f6cad470516fe316076f120b9c353"
 dependencies = [
  "cc",
  "tree-sitter-language",
@@ -5089,7 +5087,7 @@ dependencies = [
 [[package]]
 name = "rholang-tree-sitter-proc-macro"
 version = "0.1.2"
-source = "git+https://github.com/F1R3FLY-io/rholang-rs?rev=c163755#c1637550a844253f8fe781fc07e57fe5e5aabe7c"
+source = "git+https://github.com/F1R3FLY-io/rholang-rs?rev=527af8a#527af8afb37f6cad470516fe316076f120b9c353"
 dependencies = [
  "anyhow",
  "quote",
@@ -5188,7 +5186,7 @@ dependencies = [
  "proptest",
  "proptest-derive",
  "prost 0.14.3",
- "rand 0.8.6",
+ "rand 0.9.4",
  "rayon",
  "rholang-parser",
  "rstest",
@@ -5202,24 +5200,6 @@ dependencies = [
  "tracing-subscriber",
  "uuid",
  "validated",
-]
-
-[[package]]
-name = "rspace_plus_plus_rhotypes"
-version = "0.1.0"
-dependencies = [
- "bincode",
- "chrono",
- "dashmap",
- "models",
- "prost 0.14.3",
- "rand 0.9.4",
- "rholang",
- "rspace_plus_plus",
- "serde",
- "serde_json",
- "shared",
- "tokio",
 ]
 
 [[package]]
@@ -5847,6 +5827,7 @@ dependencies = [
  "axum 0.8.9",
  "bincode",
  "bytes",
+ "eyre",
  "futures",
  "heed",
  "hex",
@@ -5855,18 +5836,21 @@ dependencies = [
  "indexmap 2.14.0",
  "lz4_flex",
  "metrics 0.23.1",
- "proptest",
  "prost 0.14.3",
  "rand 0.9.4",
  "serde",
  "serde_bytes",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "tokio-stream",
  "tonic 0.14.6",
  "tower 0.5.3",
  "tracing",
+ "tracing-appender",
+ "tracing-log 0.2.0",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -6030,6 +6014,12 @@ name = "subtle"
 version = "2.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
+
+[[package]]
+name = "symlink"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a7973cce6668464ea31f176d85b13c7ab3bba2cb3b77a2ed26abd7801688010a"
 
 [[package]]
 name = "syn"
@@ -6714,6 +6704,19 @@ dependencies = [
  "pin-project-lite",
  "tracing-attributes",
  "tracing-core",
+]
+
+[[package]]
+name = "tracing-appender"
+version = "0.2.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "050686193eb999b4bb3bc2acfa891a13da00f79734704c4b8b4ef1a10b368a3c"
+dependencies = [
+ "crossbeam-channel",
+ "symlink",
+ "thiserror 2.0.18",
+ "time",
+ "tracing-subscriber",
 ]
 
 [[package]]

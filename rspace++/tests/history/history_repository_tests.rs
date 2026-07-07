@@ -109,7 +109,7 @@ async fn history_repository_should_process_insert_and_delete_of_thirty_mixed_ele
     let conts: (Vec<_>, Vec<_>) = (0..=10).map(insert_continuation).unzip();
 
     let mut elems: Vec<_> = [&data.0[..], &joins.0[..], &conts.0[..]].concat();
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
     elems.shuffle(&mut rng);
 
     let data_delete: Vec<_> = data

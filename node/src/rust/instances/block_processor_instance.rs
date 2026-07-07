@@ -68,9 +68,10 @@ fn maybe_trim_allocator_after_block() {
     if interval == 0 {
         return;
     }
+
     let count = PROCESSED_BLOCKS.fetch_add(1, Ordering::Relaxed) + 1;
     if count.is_multiple_of(interval) {
-        // Best-effort return of free heap pages to OS to limit RSS ratcheting.
+        #[cfg(target_os = "linux")]
         unsafe {
             let _ = malloc_trim(0);
         }
@@ -218,10 +219,9 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorInstance<T> {
                             tracing::info!("Block {} processing finished.", block_str);
                             match result_tx.send(res).await {
                                 Ok(_) => {}
-                                Err(err) => tracing::error!(
-                                    "Failed to send block processing result: {}",
-                                    err
-                                ),
+                                Err(err) => {
+                                    tracing::error!(error = %err, "block processing result send failed")
+                                }
                             }
                         }
                         Err(e) => match &e {
@@ -232,7 +232,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorInstance<T> {
                                 );
                             }
                             _ => {
-                                tracing::error!("Error processing block {}: {}", block_str, e);
+                                tracing::error!(block = %block_str, error = %e, "block processing failed");
                             }
                         },
                     }
@@ -339,10 +339,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorInstance<T> {
                                         match trigger_propose(casper_arc, true).await {
                                             Ok(_) => {}
                                             Err(err) => {
-                                                tracing::error!(
-                                                    "Failed to trigger propose: {}",
-                                                    err
-                                                )
+                                                tracing::error!(error = %err, "propose trigger after block processing failed")
                                             }
                                         }
                                     } else {
@@ -355,13 +352,8 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorInstance<T> {
                             }
                         }
                         Err(err) => {
-                            tracing::error!(
-                                "Failed to get dependency-free blocks from buffer: {}. Skipping \
-                                 trigger propose.",
-                                err
-                            );
-                            // Don't call trigger_propose if
-                            // get_dependency_free_from_buffer failed
+                            tracing::error!(error = %err, "dependency-free block buffer retrieval failed; skipping propose trigger");
+                            // Don't call trigger_propose if get_dependency_free_from_buffer failed
                         }
                     }
 

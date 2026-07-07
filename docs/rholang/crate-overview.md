@@ -269,12 +269,6 @@ as the async ISpace provides its own interior mutability and per-channel locking
 
 Aliases are resolved at the registry and normalizer level. Usage is logged at debug level (`f1r3fly.legacy-uri`).
 
-## FFI (lib.rs)
-
-C interface for Scala JNA interop:
-- `create_rho_runtime()`, `evaluate()`, `inj()`, `create_soft_checkpoint()`, `revert_to_soft_checkpoint()`
-- Memory management: `rholang_get_allocated_bytes()`, `rholang_deallocate_memory()`
-
 ## Tests
 
 Test suites in `tests/`: `interpreter_spec.rs`, `reduce_spec.rs`, `substitute_test.rs`, `crypto_channels_spec.rs`, `abort_spec.rs`, `deploy_data_spec.rs`, `demo_verification.rs`, `getsubtrie_spec.rs`, `setsubtrie_spec.rs`, `replay_memory_profile_spec.rs`, `ollama_integration_test.rs`, `openai_service_spec.rs`, `zipper_*_spec.rs` (3 files), `accounting/cost_accounting_spec.rs`, `accounting/non_deterministic_processes_spec.rs`, `matcher/match_test.rs`.

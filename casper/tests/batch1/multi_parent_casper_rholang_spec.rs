@@ -8,12 +8,6 @@ use crypto::rust::signatures::signatures_alg::SignaturesAlg;
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::GenesisBuilder;
 
-// Scala comments:
-// Uncomment this to use the debugger on M2
-// May need to modify if architecture required is different or if path is different. See ./scripts/build_rust_libraries.sh
-// System.setProperty("jna.library.path", "../rspace++/target/x86_64-apple-darwin/debug/")
-
-// Scala comments:
 //put a new casper instance at the start of each
 //test since we cannot reset it
 #[tokio::test]
