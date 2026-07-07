@@ -50,26 +50,25 @@ impl TestContext {
 /// `receive_eval` + a COMM + substitutions land the deploy at 49 phlo
 /// in the merged tree). The deploy must settle successfully —
 /// `block_index` discards failed-deploy diffs upstream of the merge
-/// engine, so an `OutOfPhlogistons` exit would erase the vault drain
-/// that drives the rejection.
+/// engine, so an `OutOfPhlogistons` exit would erase the settlement
+/// diffs these merge tests exercise. This is a BENIGN contract: it
+/// transfers no REV, so under D3 it drives no merge-time vault rejection.
 const CONFLICT_RHO: &str = r#"
 @0!(0) | for (_ <- @0) { 0 }
 "#;
 
-/// Phlogiston pricing per deploy. The actual REV drain on the source
-/// vault is `cost * phlo_price` (precharge is `phlo_limit * phlo_price`,
-/// refunded down to `cost * phlo_price`).
+/// Phlogiston pricing per deploy. RETAINED only as (ignored) parameters for
+/// `source_deploy_now_full`'s signature stability — under D3 (DR-9) a deploy
+/// carries no phlo price/limit and there is NO precharge, so these values do
+/// NOT drive a REV vault drain. `DeployData` has no phlo fields, and the
+/// per-signature settlement demand is a static O(AST) analysis against Σ⟦s⟧ at
+/// the acceptance gate, independent of `phlo_price`.
 ///
-/// `phlo_limit = 80` keeps the per-branch precharge at
-/// `80 * 100_000 = 8_000_000` REV — under the 9_000_000 REV vault cap
-/// (the default `DEFAULT_PUB` balance from `genesis_builder`'s
-/// `predefined_vault`). `phlo_price = 100_000` amplifies the body's
-/// settled cost (49 phlo) into `49 * 100_000 = 4_900_000` REV of vault
-/// drain per branch. Two such deploys against the same source vault
-/// sum to `9_800_000` REV, exceeding the `9_000_000` balance and
-/// triggering the merge-engine's negative-balance rejection. The body
-/// stays comfortably under `phlo_limit` (49 < 80) so the deploy
-/// settles without `OutOfPhlogistons`.
+/// (Pre-D3 these drove a `cost * phlo_price` precharge — `phlo_price = 100_000`
+/// amplifying the 49-phlo body into `4_900_000` REV of vault drain per branch,
+/// so two deploys' `9_800_000` REV exceeded the `9_000_000` vault and triggered
+/// the merge-engine's negative-balance rejection. That precharge model is
+/// removed; the merge tests below assert the D3 outcome instead.)
 const PHLO_LIMIT: i64 = 80;
 const PHLO_PRICE: i64 = 100_000;
 
@@ -356,6 +355,21 @@ async fn d3_same_key_benign_deploys_merge_without_precharge_conflict() {
     }
 }
 
+/// D3 (DR-9): three sibling blocks, one same-payer deploy each. Under the
+/// cost-accounted model precharge is removed, so a same-payer set does NOT
+/// over-spend a shared REV vault at merge (the precharge-era premise of this
+/// test — hence 0, not 2, user rejections). Funding settles per-signature at
+/// the acceptance gate: each sibling's lone deploy is individually fundable
+/// against the full genesis Σ⟦signer⟧, so none is gate-rejected, and the
+/// inherited deploys are merged (not re-gated). The merge still keeps the
+/// touched purse single-valued and stays LIVE by dropping the redundant SYSTEM
+/// `CloseBlockDeploy` settlement branches (system chains — never mapped into
+/// user `rejected_deploys`). This mirrors the rejection count of
+/// `d3_same_key_benign_deploys_merge_without_precharge_conflict` while adding
+/// 3-validator post-merge liveness coverage. A genuine value-draining
+/// cross-sibling settlement conflict (an `IntegerAdd` / Σ⟦s⟧-draining transfer)
+/// is the separate D3 follow-on noted at the top of this file, which this
+/// benign contract deliberately cannot exercise.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[serial]
 async fn three_validator_same_payer_merge_keeps_purses_single_valued_and_live() {
@@ -451,8 +465,14 @@ async fn three_validator_same_payer_merge_keeps_purses_single_valued_and_live() 
         .count();
     assert_eq!(
         conflicting_rejections,
-        2,
-        "three same-payer siblings must leave exactly one deploy solvent; rejected={:?}",
+        0,
+        "D3 (DR-9): precharge is removed, so same-payer siblings do NOT over-spend a \
+         shared vault at merge (that was the precharge-era model). Funding settles \
+         per-signature at the acceptance gate — each sibling's lone deploy is \
+         individually fundable against the full genesis Σ⟦signer⟧, so none is \
+         gate-rejected, and the inherited deploys are merged, not re-gated. The merge \
+         keeps the purse single-valued by dropping redundant SYSTEM (CloseBlockDeploy) \
+         settlement branches, which are never user rejections; rejected={:?}",
         rejected_sigs.iter().map(hex::encode).collect::<Vec<_>>()
     );
 
