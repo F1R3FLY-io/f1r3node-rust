@@ -253,7 +253,11 @@ async fn eval_expr_should_return_error_for_multiplication_overflow() {
     assert!(result.is_err());
     assert_eq!(
         result.unwrap_err(),
-        InterpreterError::ReduceError("Arithmetic overflow in multiplication".to_string())
+        InterpreterError::ReduceError(format!(
+            "Arithmetic overflow in multiplication: {} * {}",
+            i64::MAX,
+            2
+        ))
     );
 }
 
