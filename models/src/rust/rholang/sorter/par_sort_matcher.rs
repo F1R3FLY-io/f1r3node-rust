@@ -3,10 +3,11 @@
 use super::score_tree::ScoredTerm;
 use super::send_sort_matcher::SendSortMatcher;
 use super::sortable::Sortable;
-use crate::rhoapi::{Bundle, Connective, Expr, GUnforgeable, Match, New, Par, Receive, Send};
+use crate::rhoapi::{Bundle, Connective, Expr, GUnforgeable, If, Match, New, Par, Receive, Send};
 use crate::rust::rholang::sorter::bundle_sort_matcher::BundleSortMatcher;
 use crate::rust::rholang::sorter::connective_sort_matcher::ConnectiveSortMatcher;
 use crate::rust::rholang::sorter::expr_sort_matcher::ExprSortMatcher;
+use crate::rust::rholang::sorter::if_sort_matcher::IfSortMatcher;
 use crate::rust::rholang::sorter::match_sort_matcher::MatchSortMatcher;
 use crate::rust::rholang::sorter::new_sort_matcher::NewSortMatcher;
 use crate::rust::rholang::sorter::receive_sort_matcher::ReceiveSortMatcher;
@@ -105,6 +106,17 @@ impl Sortable<Par> for ParSortMatcher {
             _unforgeables
         };
 
+        let conditionals: Vec<ScoredTerm<If>> = {
+            let mut _conditionals: Vec<ScoredTerm<If>> = par
+                .conditionals
+                .iter()
+                .map(IfSortMatcher::sort_match)
+                .collect();
+
+            ScoredTerm::sort_vec(&mut _conditionals);
+            _conditionals
+        };
+
         let (send_terms, send_scores) = split_scored_terms(sends);
         let (receive_terms, receive_scores) = split_scored_terms(receives);
         let (news_terms, news_scores) = split_scored_terms(news);
@@ -113,6 +125,7 @@ impl Sortable<Par> for ParSortMatcher {
         let (bundle_terms, bundle_scores) = split_scored_terms(bundles);
         let (connective_terms, connective_scores) = split_scored_terms(connectives);
         let (unforgeable_terms, unforgeable_scores) = split_scored_terms(unforgeables);
+        let (conditional_terms, conditional_scores) = split_scored_terms(conditionals);
 
         let sorted_par = Par {
             sends: send_terms,
@@ -123,6 +136,7 @@ impl Sortable<Par> for ParSortMatcher {
             unforgeables: unforgeable_terms,
             bundles: bundle_terms,
             connectives: connective_terms,
+            conditionals: conditional_terms,
             locally_free: par.locally_free.clone(),
             connective_used: par.connective_used,
         };
@@ -136,13 +150,13 @@ impl Sortable<Par> for ParSortMatcher {
                 .chain(
                     receive_scores
                         .into_iter()
-                        .map(|s| s)
-                        .chain(expr_scores.into_iter().map(|s| s))
-                        .chain(news_scores.into_iter().map(|s| s))
-                        .chain(match_scores.into_iter().map(|s| s))
-                        .chain(bundle_scores.into_iter().map(|s| s))
-                        .chain(connective_scores.into_iter().map(|s| s))
-                        .chain(unforgeable_scores.into_iter().map(|s| s))
+                        .chain(expr_scores)
+                        .chain(news_scores)
+                        .chain(match_scores)
+                        .chain(bundle_scores)
+                        .chain(connective_scores)
+                        .chain(unforgeable_scores)
+                        .chain(conditional_scores)
                         .chain(vec![Tree::<ScoreAtom>::create_leaf_from_i64(
                             connective_used_score,
                         )]),

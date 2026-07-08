@@ -1,0 +1,19 @@
+{
+  "spec": "MC_ConcurrentTracker",
+  "validators": 3,
+  "stake_per_validator": 100,
+  "schedule": [
+    { "action": "SignHonest",     "args": { "v": "v0", "s": 1 } },
+    { "action": "SignHonest",     "args": { "v": "v1", "s": 1 } },
+    { "action": "RecordEvidence", "args": { "v": "v0", "s": 0, "witness": 100 } },
+    { "action": "RecordEvidence", "args": { "v": "v0", "s": 0, "witness": 200 } }
+  ],
+  "expected_final": {
+    "slashed": [],
+    "active": ["v0", "v1", "v2"],
+    "coop_vault": 0,
+    "records": [
+      { "validator": "v0", "base_seq": 0 }
+    ]
+  }
+}

@@ -33,10 +33,10 @@ pub enum InvalidBlock {
     // AdmissibleEquivocation are blocks that would create an equivocation but are
     // pulled in through a justification of another block
     AdmissibleEquivocation,
-    // TODO: Make IgnorableEquivocation slashable again and remember to add an entry to the equivocation record.
-    // For now we won't eagerly slash equivocations that we can just ignore,
-    // as we aren't forced to add it to our view as a dependency.
-    // TODO: The above will become a DOS vector if we don't fix.
+    // IgnorableEquivocation: an equivocating block we observe via someone
+    // else's justification but did not pull in as a dependency. Slashable —
+    // the dispatcher mints an EquivocationRecord so the proposer can issue a
+    // SlashDeploy. See docs/theory/slashing/design/09-bug-fixes-and-rationale.md §9.1.
     IgnorableEquivocation,
 
     InvalidFormat,
@@ -58,6 +58,13 @@ pub enum InvalidBlock {
     InvalidTransaction,
     InvalidBondsCache,
     InvalidBlockHash,
+    // UnauthorizedSlashDeploy: a block carries a `Slash` system deploy that
+    // fails the authorization predicate (wrong epoch, missing/non-invalid
+    // evidence, unbonded offender, duplicate target, or issuer ≠ sender).
+    // Raised by `Validate::slash_deploy_authorization`; the rules are in
+    // `slashing_authorization.rs::validate_received_slash_deploys` and
+    // proven sufficient by Theorem T-9.8.
+    UnauthorizedSlashDeploy,
     InvalidRejectedDeploy,
     ContainsExpiredDeploy,
     ContainsTimeExpiredDeploy,
@@ -139,6 +146,10 @@ impl BlockStatus {
         BlockError::Invalid(InvalidBlock::InvalidBlockHash)
     }
 
+    pub fn unauthorized_slash_deploy() -> BlockError {
+        BlockError::Invalid(InvalidBlock::UnauthorizedSlashDeploy)
+    }
+
     pub fn invalid_rejected_deploy() -> BlockError {
         BlockError::Invalid(InvalidBlock::InvalidRejectedDeploy)
     }
@@ -170,6 +181,13 @@ impl BlockStatus {
 
 impl InvalidBlock {
     pub fn is_slashable(&self) -> bool {
+        // Exhaustive match (no catch-all). Adding a new `InvalidBlock`
+        // variant without updating this function would silently default
+        // to non-slashable under a `_ => false` wildcard; the explicit
+        // enumeration forces a compiler error and a deliberate decision
+        // about whether the new variant is slashable. This is the
+        // future-correctness footgun protection T-9.3 depends on at the
+        // dispatcher catch-all.
         match self {
             InvalidBlock::AdmissibleEquivocation
             | InvalidBlock::DeployNotSigned
@@ -185,10 +203,37 @@ impl InvalidBlock {
             | InvalidBlock::InvalidTransaction
             | InvalidBlock::InvalidBondsCache
             | InvalidBlock::InvalidBlockHash
+            | InvalidBlock::UnauthorizedSlashDeploy
             | InvalidBlock::ContainsExpiredDeploy
             | InvalidBlock::ContainsTimeExpiredDeploy
-            | InvalidBlock::ContainsFutureDeploy => true,
-            _ => false,
+            | InvalidBlock::ContainsFutureDeploy
+            // IgnorableEquivocation is now slashable per Bug #1 (§9.1). On
+            // dev this variant was a known DOS-vector TODO — equivocations
+            // observed via someone else's justification produced no on-chain
+            // evidence. The dispatcher (`engine::multi_parent_casper::handle_*`)
+            // now mints an EquivocationRecord whenever this branch fires.
+            | InvalidBlock::IgnorableEquivocation => true,
+
+            // Non-slashable variants — listed explicitly so the compiler
+            // catches new additions to the enum. Each represents a failure
+            // attributable to the block's wire format or local node state,
+            // NOT to Byzantine behavior the network can attribute and slash:
+            //   • InvalidFormat/Signature/Sender/Version/Timestamp: malformed
+            //     wire data; the sender is not identifiable (Signature) or
+            //     the sender's identity can't be verified (Sender).
+            //   • InvalidRejectedDeploy: rejected-deploy tracking; not a
+            //     consensus offense.
+            //   • NotOfInterest: local node filtering decision.
+            //   • LowDeployCost: per-deploy cost threshold; rejected at
+            //     admission, not on-chain accountable.
+            InvalidBlock::InvalidFormat
+            | InvalidBlock::InvalidSignature
+            | InvalidBlock::InvalidSender
+            | InvalidBlock::InvalidVersion
+            | InvalidBlock::InvalidTimestamp
+            | InvalidBlock::InvalidRejectedDeploy
+            | InvalidBlock::NotOfInterest
+            | InvalidBlock::LowDeployCost => false,
         }
     }
 }

@@ -1,0 +1,39 @@
+# Scheduled supply-chain audit.
+#
+# The main CI `deny` job only runs on push / pull_request, so a newly-published
+# RustSec advisory against an existing dependency goes unnoticed during quiet
+# periods. This weekly cron closes that gap by running cargo-deny against the
+# long-lived branches even when no one has pushed.
+#
+# NOTE: GitHub only fires `schedule` events from the workflow file on the
+# repository's default branch (master). This file must be present on master for
+# the cron to run; the matrix then checks each branch independently.
+name: Scheduled cargo-deny
+
+on:
+  schedule:
+    - cron: '0 6 * * 1' # Mondays 06:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deny:
+    name: cargo-deny (${{ matrix.branch }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        branch: [dev, master]
+    steps:
+      - name: Checkout ${{ matrix.branch }}
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.branch }}
+
+      - name: cargo-deny check
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories bans licenses sources
