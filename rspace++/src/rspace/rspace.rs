@@ -58,7 +58,7 @@ pub struct RSpace<C, P, A, K> {
     installs: Arc<std::sync::Mutex<HashMap<Vec<C>, Install<P, K>>>>,
     event_log: Arc<std::sync::Mutex<Log>>,
     produce_counter: Arc<std::sync::Mutex<BTreeMap<Produce, i32>>>,
-    matcher: Arc<Box<dyn Match<P, A>>>,
+    matcher: Arc<Box<dyn Match<P, A, K>>>,
     // Fixed-size striped locks replace the growing DashMap<u64, Mutex>.
     // 256 pre-allocated mutexes, channel hash % 256 → stripe index.
     // No DashMap entry() → no parking_lot shard contention per produce/consume.
@@ -450,7 +450,7 @@ where
     pub fn apply(
         history_repository: Arc<Box<dyn HistoryRepository<C, P, A, K> + Send + Sync + 'static>>,
         store: Box<dyn HotStore<C, P, A, K>>,
-        matcher: Arc<Box<dyn Match<P, A>>>,
+        matcher: Arc<Box<dyn Match<P, A, K>>>,
     ) -> RSpace<C, P, A, K>
     where
         C: Clone + Debug + Ord + Hash,
@@ -472,7 +472,7 @@ where
 
     pub fn create(
         store: RSpaceStore,
-        matcher: Arc<Box<dyn Match<P, A>>>,
+        matcher: Arc<Box<dyn Match<P, A, K>>>,
     ) -> Result<RSpace<C, P, A, K>, HistoryRepositoryError>
     where
         C: Clone
@@ -497,7 +497,7 @@ where
 
     pub fn create_with_replay(
         store: RSpaceStore,
-        matcher: Arc<Box<dyn Match<P, A>>>,
+        matcher: Arc<Box<dyn Match<P, A, K>>>,
     ) -> Result<(RSpace<C, P, A, K>, ReplayRSpace<C, P, A, K>), HistoryRepositoryError>
     where
         C: Clone
@@ -632,8 +632,20 @@ where
             source: consume_ref.clone(),
         };
 
-        match options {
+        let commit_ok = match &options {
+            // Cross-channel commit hook: a `where` guard on the consume
+            // can veto even after every spatial bind matched. On false
+            // we install the wk and leave the data alone, just as if
+            // the spatial match itself had failed (plan §7.12).
             Some(data_candidates) => {
+                let matched: Vec<A> = data_candidates.iter().map(|c| c.datum.a.clone()).collect();
+                self.matcher.check_commit(continuation, &matched)
+            }
+            None => false,
+        };
+
+        match options {
+            Some(data_candidates) if commit_ok => {
                 let t3 = Instant::now();
                 let produce_counters_closure =
                     |produces: &[Produce]| self.produce_counters(produces);
@@ -655,7 +667,7 @@ where
                 tracing::trace!(target: "f1r3fly.rspace.ops", mark = "finished-locked-consume", "locked_consume");
                 Ok(self.wrap_result(channels, &wk, consume_ref, &data_candidates))
             }
-            None => {
+            _ => {
                 let t3 = Instant::now();
                 self.store_waiting_continuation(channels.to_vec(), wk);
                 metrics::counter!("rspace.consume.store_continuation_ns", "source" => RSPACE_METRICS_SOURCE)
@@ -1193,7 +1205,7 @@ mod tests {
 
     struct AlwaysMatch;
 
-    impl Match<Wildcard, String> for AlwaysMatch {
+    impl Match<Wildcard, String, Cont> for AlwaysMatch {
         fn get(&self, _: &Wildcard, a: &String) -> Option<String> { Some(a.clone()) }
     }
 

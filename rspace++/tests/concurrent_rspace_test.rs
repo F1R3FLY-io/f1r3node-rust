@@ -23,7 +23,7 @@ struct StringCont;
 
 struct AlwaysMatch;
 
-impl Match<WildcardPattern, String> for AlwaysMatch {
+impl Match<WildcardPattern, String, StringCont> for AlwaysMatch {
     fn get(&self, _p: &WildcardPattern, a: &String) -> Option<String> { Some(a.clone()) }
 }
 

@@ -13,7 +13,7 @@ use casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum;
 use casper::rust::util::{construct_deploy, proto_util, rspace_util};
 use crypto::rust::private_key::PrivateKey;
 use crypto::rust::signatures::signed::Signed;
-use dashmap::{DashMap, DashSet};
+use dashmap::DashSet;
 use models::rhoapi::PCost;
 use models::rust::block::state_hash::StateHash;
 use models::rust::block_hash::BlockHash;
@@ -121,12 +121,12 @@ impl TestContext {
             lca: BlockHash::default(),
             tips: Vec::new(),
             parents: Vec::new(),
-            justifications: DashSet::new(),
+            justifications: HashSet::new(),
             invalid_blocks: HashMap::new(),
             deploys_in_scope: Arc::new(DashSet::new()),
             rejected_in_scope: Arc::new(DashSet::new()),
             max_block_num: 0,
-            max_seq_nums: DashMap::new(),
+            max_seq_nums: HashMap::new(),
             on_chain_state: OnChainCasperState {
                 shard_conf: CasperShardConf::new(),
                 bonds_map: HashMap::new(),
@@ -166,6 +166,7 @@ impl TestContext {
         Ok(costs)
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn compute_deploys_checkpoint(
         &self,
         block_store: &mut KeyValueBlockStore,
@@ -465,14 +466,16 @@ async fn compute_block_checkpoint_should_merge_histories_in_case_of_multiple_par
             .await
             .expect("Failed to step b2");
 
-            let dag = block_dag_storage.get_representation();
+            let dag = block_dag_storage
+                .get_representation()
+                .expect("dag representation");
             let mut casper_snapshot = TestContext::mk_casper_snapshot(dag);
 
             let post_state = interpreter_util::validate_block_checkpoint(
                 &b3,
                 &block_store,
                 &mut casper_snapshot,
-                &mut runtime_manager,
+                &runtime_manager,
                 None,
             )
             .await
@@ -626,14 +629,16 @@ async fn compute_block_checkpoint_should_merge_histories_in_case_of_multiple_par
             .await
             .expect("Failed to step b4");
 
-            let dag = block_dag_storage.get_representation();
+            let dag = block_dag_storage
+                .get_representation()
+                .expect("dag representation");
             let mut casper_snapshot = TestContext::mk_casper_snapshot(dag);
 
             let post_state = interpreter_util::validate_block_checkpoint(
                 &b5,
                 &block_store,
                 &mut casper_snapshot,
-                &mut runtime_manager,
+                &runtime_manager,
                 None,
             )
             .await
@@ -690,7 +695,10 @@ async fn compute_deploys_checkpoint_should_aggregate_cost_of_deploying_rholang_p
         .await
         .expect("Failed to create standalone node");
 
-    let dag = node.block_dag_storage.get_representation();
+    let dag = node
+        .block_dag_storage
+        .get_representation()
+        .expect("dag representation");
 
     let cost1 = ctx
         .compute_deploy_costs(
@@ -771,7 +779,10 @@ async fn compute_deploys_checkpoint_should_return_cost_of_deploying_even_if_one_
         .await
         .expect("Failed to create standalone node");
 
-    let dag = node.block_dag_storage.get_representation();
+    let dag = node
+        .block_dag_storage
+        .get_representation()
+        .expect("dag representation");
 
     let cost1 = ctx
         .compute_deploy_costs(
@@ -837,8 +848,7 @@ async fn validate_block_checkpoint_should_not_return_a_checkpoint_for_an_invalid
         let invalid_hash = StateHash::default();
 
         // Scala: mkRuntimeManager[Task]("interpreter-util-test").use { runtimeManager =>
-        let mut runtime_manager =
-            resources::mk_runtime_manager("interpreter-util-test-", None).await;
+        let runtime_manager = resources::mk_runtime_manager("interpreter-util-test-", None).await;
 
         let block = block_generator::create_genesis_block(
             &mut block_store,
@@ -853,14 +863,16 @@ async fn validate_block_checkpoint_should_not_return_a_checkpoint_for_an_invalid
             None,
         );
 
-        let dag = block_dag_storage.get_representation();
+        let dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
         let mut casper_snapshot = TestContext::mk_casper_snapshot(dag);
 
         let validate_result = interpreter_util::validate_block_checkpoint(
             &block,
             &block_store,
             &mut casper_snapshot,
-            &mut runtime_manager,
+            &runtime_manager,
             None,
         )
         .await
@@ -885,7 +897,7 @@ async fn validate_block_checkpoint_should_return_a_checkpoint_with_the_right_has
 
     with_genesis(
         ctx.genesis_context.clone(),
-        |mut block_store, mut block_dag_storage, mut runtime_manager| async move {
+        |mut block_store, mut block_dag_storage, runtime_manager| async move {
             let deploys = TestContext::create_deploys_now(
                 vec![
                     "@1!(1)",
@@ -900,7 +912,9 @@ async fn validate_block_checkpoint_should_return_a_checkpoint_with_the_right_has
                 None,
             );
 
-            let dag1 = block_dag_storage.get_representation();
+            let dag1 = block_dag_storage
+                .get_representation()
+                .expect("dag representation");
             let casper_snapshot = TestContext::mk_casper_snapshot(dag1);
 
             let genesis = ctx.genesis_context.genesis_block.clone();
@@ -923,7 +937,7 @@ async fn validate_block_checkpoint_should_return_a_checkpoint_with_the_right_has
                 deploys,
                 Vec::<SystemDeployEnum>::new(),
                 &casper_snapshot,
-                &mut runtime_manager,
+                &runtime_manager,
                 block_data,
                 HashMap::new(),
                 None,
@@ -950,14 +964,16 @@ async fn validate_block_checkpoint_should_return_a_checkpoint_with_the_right_has
                 None,
             );
 
-            let dag2 = block_dag_storage.get_representation();
+            let dag2 = block_dag_storage
+                .get_representation()
+                .expect("dag representation");
             let mut casper_snapshot = TestContext::mk_casper_snapshot(dag2);
 
             let validate_result = interpreter_util::validate_block_checkpoint(
                 &block,
                 &block_store,
                 &mut casper_snapshot,
-                &mut runtime_manager,
+                &runtime_manager,
                 None,
             )
             .await
@@ -983,7 +999,7 @@ async fn validate_block_checkpoint_should_pass_linked_list_test() {
 
     with_genesis(
         ctx.genesis_context.clone(),
-        |mut block_store, mut block_dag_storage, mut runtime_manager| async move {
+        |mut block_store, mut block_dag_storage, runtime_manager| async move {
             let deploys = TestContext::create_deploys_now(
                 vec![
                     r#"
@@ -1013,7 +1029,9 @@ contract @"recursionTest"(@list) = {
                 None,
             );
 
-            let dag1 = block_dag_storage.get_representation();
+            let dag1 = block_dag_storage
+                .get_representation()
+                .expect("dag representation");
             let casper_snapshot = TestContext::mk_casper_snapshot(dag1);
 
             let genesis = ctx.genesis_context.genesis_block.clone();
@@ -1036,7 +1054,7 @@ contract @"recursionTest"(@list) = {
                 deploys,
                 Vec::<SystemDeployEnum>::new(),
                 &casper_snapshot,
-                &mut runtime_manager,
+                &runtime_manager,
                 block_data,
                 HashMap::new(),
                 None,
@@ -1063,14 +1081,16 @@ contract @"recursionTest"(@list) = {
                 None,
             );
 
-            let dag2 = block_dag_storage.get_representation();
+            let dag2 = block_dag_storage
+                .get_representation()
+                .expect("dag representation");
             let mut casper_snapshot = TestContext::mk_casper_snapshot(dag2);
 
             let validate_result = interpreter_util::validate_block_checkpoint(
                 &block,
                 &block_store,
                 &mut casper_snapshot,
-                &mut runtime_manager,
+                &runtime_manager,
                 None,
             )
             .await
@@ -1096,7 +1116,7 @@ async fn validate_block_checkpoint_should_pass_persistent_produce_test_with_caus
 
     with_genesis(
         ctx.genesis_context.clone(),
-        |mut block_store, mut block_dag_storage, mut runtime_manager| async move {
+        |mut block_store, mut block_dag_storage, runtime_manager| async move {
             let deploys = TestContext::create_deploys_now(
                 vec![
                     r#"new x, y, delay in {
@@ -1130,7 +1150,9 @@ async fn validate_block_checkpoint_should_pass_persistent_produce_test_with_caus
                 None, // uses default key
             );
 
-            let dag1 = block_dag_storage.get_representation();
+            let dag1 = block_dag_storage
+                .get_representation()
+                .expect("dag representation");
             let casper_snapshot = TestContext::mk_casper_snapshot(dag1);
 
             let genesis = ctx.genesis_context.genesis_block.clone();
@@ -1153,7 +1175,7 @@ async fn validate_block_checkpoint_should_pass_persistent_produce_test_with_caus
                 deploys,
                 Vec::<SystemDeployEnum>::new(),
                 &casper_snapshot,
-                &mut runtime_manager,
+                &runtime_manager,
                 block_data,
                 HashMap::new(),
                 None,
@@ -1180,14 +1202,16 @@ async fn validate_block_checkpoint_should_pass_persistent_produce_test_with_caus
                 None,
             );
 
-            let dag2 = block_dag_storage.get_representation();
+            let dag2 = block_dag_storage
+                .get_representation()
+                .expect("dag representation");
             let mut casper_snapshot = TestContext::mk_casper_snapshot(dag2);
 
             let validate_result = interpreter_util::validate_block_checkpoint(
                 &block,
                 &block_store,
                 &mut casper_snapshot,
-                &mut runtime_manager,
+                &runtime_manager,
                 None,
             )
             .await
@@ -1213,7 +1237,7 @@ async fn validate_block_checkpoint_should_pass_tests_involving_primitives() {
 
     with_genesis(
         ctx.genesis_context.clone(),
-        |mut block_store, mut block_dag_storage, mut runtime_manager| async move {
+        |mut block_store, mut block_dag_storage, runtime_manager| async move {
             let deploys = TestContext::create_deploys_now(
                 vec![
                     r#"
@@ -1243,7 +1267,9 @@ new loop, primeCheck, stdoutAck(`rho:io:stdoutAck`) in {
                 None,
             );
 
-            let dag1 = block_dag_storage.get_representation();
+            let dag1 = block_dag_storage
+                .get_representation()
+                .expect("dag representation");
             let casper_snapshot = TestContext::mk_casper_snapshot(dag1);
 
             let genesis = ctx.genesis_context.genesis_block.clone();
@@ -1266,7 +1292,7 @@ new loop, primeCheck, stdoutAck(`rho:io:stdoutAck`) in {
                 deploys,
                 Vec::<SystemDeployEnum>::new(),
                 &casper_snapshot,
-                &mut runtime_manager,
+                &runtime_manager,
                 block_data,
                 HashMap::new(),
                 None,
@@ -1293,14 +1319,16 @@ new loop, primeCheck, stdoutAck(`rho:io:stdoutAck`) in {
                 None,
             );
 
-            let dag2 = block_dag_storage.get_representation();
+            let dag2 = block_dag_storage
+                .get_representation()
+                .expect("dag representation");
             let mut casper_snapshot = TestContext::mk_casper_snapshot(dag2);
 
             let validate_result = interpreter_util::validate_block_checkpoint(
                 &block,
                 &block_store,
                 &mut casper_snapshot,
-                &mut runtime_manager,
+                &runtime_manager,
                 None,
             )
             .await
@@ -1326,7 +1354,7 @@ async fn validate_block_checkpoint_should_pass_tests_involving_races() {
 
     with_genesis(
         ctx.genesis_context.clone(),
-        |mut block_store, mut block_dag_storage, mut runtime_manager| async move {
+        |mut block_store, mut block_dag_storage, runtime_manager| async move {
             for i in 0..=10 {
                 let deploys = TestContext::create_deploys_now(
                     vec![
@@ -1348,7 +1376,9 @@ async fn validate_block_checkpoint_should_pass_tests_involving_races() {
                     None,
                 );
 
-                let dag1 = block_dag_storage.get_representation();
+                let dag1 = block_dag_storage
+                    .get_representation()
+                    .expect("dag representation");
                 let casper_snapshot = TestContext::mk_casper_snapshot(dag1);
 
                 let genesis = ctx.genesis_context.genesis_block.clone();
@@ -1362,7 +1392,7 @@ async fn validate_block_checkpoint_should_pass_tests_involving_races() {
                     time_stamp: now,
                     block_number: (i + 1) as i64,
                     sender: ctx.genesis_context.validator_pks()[0].clone(),
-                    seq_num: (i + 1) as i32,
+                    seq_num: (i + 1),
                 };
 
                 let deploys_checkpoint = interpreter_util::compute_deploys_checkpoint(
@@ -1371,7 +1401,7 @@ async fn validate_block_checkpoint_should_pass_tests_involving_races() {
                     deploys,
                     Vec::<SystemDeployEnum>::new(),
                     &casper_snapshot,
-                    &mut runtime_manager,
+                    &runtime_manager,
                     block_data,
                     HashMap::new(),
                     None,
@@ -1395,18 +1425,20 @@ async fn validate_block_checkpoint_should_pass_tests_involving_races() {
                     Some(computed_ts_hash.clone()),
                     None,
                     Some(pre_state_hash),
-                    Some((i + 1) as i32),
+                    Some(i + 1),
                     None,
                 );
 
-                let dag2 = block_dag_storage.get_representation();
+                let dag2 = block_dag_storage
+                    .get_representation()
+                    .expect("dag representation");
                 let mut casper_snapshot = TestContext::mk_casper_snapshot(dag2);
 
                 let validate_result = interpreter_util::validate_block_checkpoint(
                     &block,
                     &block_store,
                     &mut casper_snapshot,
-                    &mut runtime_manager,
+                    &runtime_manager,
                     None,
                 )
                 .await
@@ -1437,14 +1469,16 @@ async fn validate_block_checkpoint_should_return_none_for_logs_containing_extra_
 
     with_genesis(
         ctx.genesis_context.clone(),
-        |mut block_store, mut block_dag_storage, mut runtime_manager| async move {
+        |mut block_store, mut block_dag_storage, runtime_manager| async move {
             let sources: Vec<String> = (0..1)
                 .map(|i| format!("for(_ <- @{}){{{ } Nil }} | @{}!({})", i, "", i, i))
                 .collect();
             let deploys =
                 TestContext::create_deploys_now(sources.iter().map(|s| s.as_str()).collect(), None);
 
-            let dag1 = block_dag_storage.get_representation();
+            let dag1 = block_dag_storage
+                .get_representation()
+                .expect("dag representation");
             let casper_snapshot = TestContext::mk_casper_snapshot(dag1);
 
             let genesis = ctx.genesis_context.genesis_block.clone();
@@ -1467,7 +1501,7 @@ async fn validate_block_checkpoint_should_return_none_for_logs_containing_extra_
                 deploys,
                 Vec::<SystemDeployEnum>::new(),
                 &casper_snapshot,
-                &mut runtime_manager,
+                &runtime_manager,
                 block_data,
                 HashMap::new(),
                 None,
@@ -1510,14 +1544,16 @@ async fn validate_block_checkpoint_should_return_none_for_logs_containing_extra_
                 None,
             );
 
-            let dag2 = block_dag_storage.get_representation();
+            let dag2 = block_dag_storage
+                .get_representation()
+                .expect("dag representation");
             let mut casper_snapshot = TestContext::mk_casper_snapshot(dag2);
 
             let validate_result = interpreter_util::validate_block_checkpoint(
                 &block,
                 &block_store,
                 &mut casper_snapshot,
-                &mut runtime_manager,
+                &runtime_manager,
                 None,
             )
             .await
@@ -1547,7 +1583,7 @@ async fn validate_block_checkpoint_should_pass_map_update_test() {
 
     with_genesis(
         ctx.genesis_context.clone(),
-        |mut block_store, mut block_dag_storage, mut runtime_manager| async move {
+        |mut block_store, mut block_dag_storage, runtime_manager| async move {
             let genesis = ctx.genesis_context.genesis_block.clone();
 
             for i in 0..=10 {
@@ -1573,7 +1609,9 @@ async fn validate_block_checkpoint_should_pass_map_update_test() {
                     None,
                 );
 
-                let dag1 = block_dag_storage.get_representation();
+                let dag1 = block_dag_storage
+                    .get_representation()
+                    .expect("dag representation");
                 let casper_snapshot = TestContext::mk_casper_snapshot(dag1);
 
                 let now = std::time::SystemTime::now()
@@ -1585,7 +1623,7 @@ async fn validate_block_checkpoint_should_pass_map_update_test() {
                     time_stamp: now,
                     block_number: (i + 1) as i64,
                     sender: ctx.genesis_context.validator_pks()[0].clone(),
-                    seq_num: (i + 1) as i32,
+                    seq_num: (i + 1),
                 };
 
                 let deploys_checkpoint = interpreter_util::compute_deploys_checkpoint(
@@ -1594,7 +1632,7 @@ async fn validate_block_checkpoint_should_pass_map_update_test() {
                     deploys,
                     Vec::<SystemDeployEnum>::new(),
                     &casper_snapshot,
-                    &mut runtime_manager,
+                    &runtime_manager,
                     block_data,
                     HashMap::new(),
                     None,
@@ -1618,18 +1656,20 @@ async fn validate_block_checkpoint_should_pass_map_update_test() {
                     Some(computed_ts_hash.clone()),
                     None,
                     Some(pre_state_hash),
-                    Some((i + 1) as i32),
+                    Some(i + 1),
                     None,
                 );
 
-                let dag2 = block_dag_storage.get_representation();
+                let dag2 = block_dag_storage
+                    .get_representation()
+                    .expect("dag representation");
                 let mut casper_snapshot = TestContext::mk_casper_snapshot(dag2);
 
                 let validate_result = interpreter_util::validate_block_checkpoint(
                     &block,
                     &block_store,
                     &mut casper_snapshot,
-                    &mut runtime_manager,
+                    &runtime_manager,
                     None,
                 )
                 .await

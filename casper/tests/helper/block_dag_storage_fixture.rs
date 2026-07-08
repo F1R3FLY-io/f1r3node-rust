@@ -35,6 +35,7 @@ use crate::init_logger;
 use crate::util::genesis_builder::GenesisContext;
 use crate::util::rholang::resources;
 
+#[allow(clippy::await_holding_lock)]
 pub async fn with_genesis<F, Fut, R>(context: GenesisContext, f: F) -> R
 where
     F: FnOnce(KeyValueBlockStore, IndexedBlockDagStorage, RuntimeManager) -> Fut,
@@ -62,6 +63,12 @@ where
         let dag = resources::block_dag_storage_from_dyn(&mut *kvm)
             .await
             .unwrap();
+        dag.insert(
+            &genesis_context.genesis_block,
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved,
+        )
+        .expect("Failed to insert genesis block into DAG");
+
         let indexed_dag = IndexedBlockDagStorage::new(dag);
 
         let (runtime, _history_repo) =
@@ -74,6 +81,7 @@ where
     f(blocks, indexed_dag, runtime).await
 }
 
+#[allow(clippy::await_holding_lock)]
 pub async fn with_storage<F, Fut, R>(f: F) -> R
 where
     F: FnOnce(KeyValueBlockStore, IndexedBlockDagStorage) -> Fut,

@@ -31,7 +31,7 @@ struct Cont;
 
 struct AlwaysMatch;
 
-impl Match<Wildcard, String> for AlwaysMatch {
+impl Match<Wildcard, String, Cont> for AlwaysMatch {
     fn get(&self, _: &Wildcard, a: &String) -> Option<String> { Some(a.clone()) }
 }
 

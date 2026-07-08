@@ -74,7 +74,7 @@ if [[ "$SKIP_CLIPPY" == "1" ]]; then
     echo -e "  ${CYAN}[clippy]${NC} ${YELLOW}SKIP${NC} (SKIP_CLIPPY=1)"
 else
     clippy_out=$(mktemp)
-    if cargo clippy --workspace -- -D warnings > "$clippy_out" 2>&1; then
+    if cargo clippy --workspace --all-targets -- -D warnings > "$clippy_out" 2>&1; then
         echo -e "  ${CYAN}[clippy]${NC} ${GREEN}PASS${NC}"
     else
         echo -e "  ${CYAN}[clippy]${NC} ${RED}FAIL${NC}"
