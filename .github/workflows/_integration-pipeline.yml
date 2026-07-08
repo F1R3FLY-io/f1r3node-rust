@@ -200,7 +200,7 @@ jobs:
           chmod 600 ~/.oci/config
           oci iam region list >/dev/null && echo "OCI auth OK"
 
-      - name: Launch 10 amd64 + 10 arm64 ephemeral runners
+      - name: Launch 2 amd64 + 2 arm64 ephemeral runners
         shell: bash -ex {0}
         env:
           # The default GITHUB_TOKEN can't mint runner registration tokens even
@@ -215,12 +215,14 @@ jobs:
           cd system-integration/ci/oci-runners
           # Launch in parallel; each script exits as soon as the OCI launch
           # API call returns (the VM continues booting in the background and
-          # registers itself via cloud-init). 10 amd64 + 10 arm64 feeds the
-          # 20-job dual-provider matrix (docker × {amd64,arm64} × 5 slots +
-          # subprocess × {amd64,arm64} × 5 slots).
+          # registers itself via cloud-init). 2 amd64 + 2 arm64 feeds the
+          # 4-job dual-provider matrix ({docker,subprocess} × {amd64,arm64}).
+          # Kept to one VM per matrix job: OCI daily instance-creation quota
+          # is shared tenancy-wide, and the previous 20-VM layout (5 identical
+          # slots per arch×provider) exhausted it under normal PR traffic.
           pids=()
-          for _ in $(seq 1 10); do ./launch-runner.sh amd64 & pids+=($!); done
-          for _ in $(seq 1 10); do ./launch-runner.sh arm64 & pids+=($!); done
+          for _ in $(seq 1 2); do ./launch-runner.sh amd64 & pids+=($!); done
+          for _ in $(seq 1 2); do ./launch-runner.sh arm64 & pids+=($!); done
           failed=0
           for pid in "${pids[@]}"; do
             if ! wait "$pid"; then
@@ -231,7 +233,7 @@ jobs:
             echo "At least one OCI runner launch failed."
             exit 1
           fi
-          echo "All 20 ephemeral runner VMs submitted."
+          echo "All 4 ephemeral runner VMs submitted."
 
       - name: Remove OCI credentials
         if: always()
@@ -243,10 +245,14 @@ jobs:
   # Integration tests run on ephemeral OCI runners — one fresh VM per matrix
   # job, self-terminating after the job completes. The matrix runs the same
   # test suite against TWO node-spawn backends (docker provider, subprocess
-  # provider) on each arch — 20 jobs total. Each arch's 10 jobs share its 10
-  # ephemeral runners (provider is a pytest flag, not a runner concern).
+  # provider) on each arch — 4 jobs total, one ephemeral runner each
+  # (provider is a pytest flag, not a runner concern). The former layout ran
+  # 5 identical slots per arch×provider (20 VMs) — pure repetition carried
+  # over from legacy rust/staging, dropped to conserve OCI daily quota.
+  # Job names must keep the "arch-provider" form: the per-arch aggregators
+  # in ci.yml / ci-fork-pr.yml match on contains("Integration Tests (amd64-").
   integration_tests:
-    name: Integration Tests (${{ matrix.arch }}-${{ matrix.provider }}-${{ matrix.slot }})
+    name: Integration Tests (${{ matrix.arch }}-${{ matrix.provider }})
     needs: [build_docker_image, launch_ephemeral_runners]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
@@ -256,77 +262,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # ── amd64 × docker × 5 ───────────────────────────────────────────────
           - {
               arch: amd64,
               provider: docker,
-              slot: 1,
-              runner:
-                [
-                  self-hosted,
-                  linux,
-                  x64,
-                  f1r3fly-rust-ci-ephemeral,
-                  oracle-cloud,
-                ],
-            }
-          - {
-              arch: amd64,
-              provider: docker,
-              slot: 2,
-              runner:
-                [
-                  self-hosted,
-                  linux,
-                  x64,
-                  f1r3fly-rust-ci-ephemeral,
-                  oracle-cloud,
-                ],
-            }
-          - {
-              arch: amd64,
-              provider: docker,
-              slot: 3,
-              runner:
-                [
-                  self-hosted,
-                  linux,
-                  x64,
-                  f1r3fly-rust-ci-ephemeral,
-                  oracle-cloud,
-                ],
-            }
-          - {
-              arch: amd64,
-              provider: docker,
-              slot: 4,
-              runner:
-                [
-                  self-hosted,
-                  linux,
-                  x64,
-                  f1r3fly-rust-ci-ephemeral,
-                  oracle-cloud,
-                ],
-            }
-          - {
-              arch: amd64,
-              provider: docker,
-              slot: 5,
-              runner:
-                [
-                  self-hosted,
-                  linux,
-                  x64,
-                  f1r3fly-rust-ci-ephemeral,
-                  oracle-cloud,
-                ],
-            }
-          # ── amd64 × subprocess × 5 ───────────────────────────────────────────
-          - {
-              arch: amd64,
-              provider: subprocess,
-              slot: 1,
               runner:
                 [
                   self-hosted,
@@ -339,7 +277,6 @@ jobs:
           - {
               arch: amd64,
               provider: subprocess,
-              slot: 2,
               runner:
                 [
                   self-hosted,
@@ -350,115 +287,8 @@ jobs:
                 ],
             }
           - {
-              arch: amd64,
-              provider: subprocess,
-              slot: 3,
-              runner:
-                [
-                  self-hosted,
-                  linux,
-                  x64,
-                  f1r3fly-rust-ci-ephemeral,
-                  oracle-cloud,
-                ],
-            }
-          - {
-              arch: amd64,
-              provider: subprocess,
-              slot: 4,
-              runner:
-                [
-                  self-hosted,
-                  linux,
-                  x64,
-                  f1r3fly-rust-ci-ephemeral,
-                  oracle-cloud,
-                ],
-            }
-          - {
-              arch: amd64,
-              provider: subprocess,
-              slot: 5,
-              runner:
-                [
-                  self-hosted,
-                  linux,
-                  x64,
-                  f1r3fly-rust-ci-ephemeral,
-                  oracle-cloud,
-                ],
-            }
-          # ── arm64 × docker × 5 ───────────────────────────────────────────────
-          - {
               arch: arm64,
               provider: docker,
-              slot: 1,
-              runner:
-                [
-                  self-hosted,
-                  linux,
-                  arm64,
-                  f1r3fly-rust-ci-ephemeral,
-                  oracle-cloud,
-                ],
-            }
-          - {
-              arch: arm64,
-              provider: docker,
-              slot: 2,
-              runner:
-                [
-                  self-hosted,
-                  linux,
-                  arm64,
-                  f1r3fly-rust-ci-ephemeral,
-                  oracle-cloud,
-                ],
-            }
-          - {
-              arch: arm64,
-              provider: docker,
-              slot: 3,
-              runner:
-                [
-                  self-hosted,
-                  linux,
-                  arm64,
-                  f1r3fly-rust-ci-ephemeral,
-                  oracle-cloud,
-                ],
-            }
-          - {
-              arch: arm64,
-              provider: docker,
-              slot: 4,
-              runner:
-                [
-                  self-hosted,
-                  linux,
-                  arm64,
-                  f1r3fly-rust-ci-ephemeral,
-                  oracle-cloud,
-                ],
-            }
-          - {
-              arch: arm64,
-              provider: docker,
-              slot: 5,
-              runner:
-                [
-                  self-hosted,
-                  linux,
-                  arm64,
-                  f1r3fly-rust-ci-ephemeral,
-                  oracle-cloud,
-                ],
-            }
-          # ── arm64 × subprocess × 5 ───────────────────────────────────────────
-          - {
-              arch: arm64,
-              provider: subprocess,
-              slot: 1,
               runner:
                 [
                   self-hosted,
@@ -471,46 +301,6 @@ jobs:
           - {
               arch: arm64,
               provider: subprocess,
-              slot: 2,
-              runner:
-                [
-                  self-hosted,
-                  linux,
-                  arm64,
-                  f1r3fly-rust-ci-ephemeral,
-                  oracle-cloud,
-                ],
-            }
-          - {
-              arch: arm64,
-              provider: subprocess,
-              slot: 3,
-              runner:
-                [
-                  self-hosted,
-                  linux,
-                  arm64,
-                  f1r3fly-rust-ci-ephemeral,
-                  oracle-cloud,
-                ],
-            }
-          - {
-              arch: arm64,
-              provider: subprocess,
-              slot: 4,
-              runner:
-                [
-                  self-hosted,
-                  linux,
-                  arm64,
-                  f1r3fly-rust-ci-ephemeral,
-                  oracle-cloud,
-                ],
-            }
-          - {
-              arch: arm64,
-              provider: subprocess,
-              slot: 5,
               runner:
                 [
                   self-hosted,
@@ -605,7 +395,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: integration-logs-${{ matrix.arch }}-${{ matrix.provider }}-slot${{ matrix.slot }}-run${{ github.run_id }}-attempt${{ github.run_attempt }}
+          name: integration-logs-${{ matrix.arch }}-${{ matrix.provider }}-run${{ github.run_id }}-attempt${{ github.run_attempt }}
           path: system-integration/integration-tests/
           retention-days: 7
 

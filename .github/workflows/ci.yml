@@ -20,7 +20,7 @@ on:
 
 # Concurrency: PRs run in parallel (one group per ref) for fast feedback; pushes
 # (dev/master/staging/trying/tags) share a single group so merge and release runs
-# serialize rather than piling up independent 20-VM OCI matrices. Nothing is
+# serialize rather than piling up independent 4-VM OCI matrices. Nothing is
 # cancelled mid-flight — a re-push queues behind its own in-flight run, so release
 # jobs and long integration runs always reach completion.
 concurrency:
@@ -229,7 +229,7 @@ jobs:
 
   # Per-arch aggregators. The branch ruleset requires status checks named
   # exactly `Integration Tests (amd64)` / `(arm64)`. These collapse the reusable
-  # pipeline's 10 per-arch matrix slots into one ruleset gate per arch. They use
+  # pipeline's per-arch matrix jobs into one ruleset gate per arch. They use
   # `contains(...)` (not `startswith`) because reusable-workflow job names are
   # prefixed with the caller job id ("Heavy Pipeline / Integration Tests (...)").
   # Internal-only: fork PRs get this check from ci-fork-pr.yml instead, so this
