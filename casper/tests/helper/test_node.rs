@@ -1058,6 +1058,7 @@ impl TestNode {
             quarantine_length: 20000,
             min_phlo_price: 1,
             disable_late_block_filtering: true, // Disabled to prevent deploy loss
+            deploy_heartbeat_wake_enabled: false, // Disabled to prevent deploy loss
             disable_validator_progress_check: false,
             enable_mergeable_channel_gc: false, // Keep mergeable data unless GC is explicitly enabled
             mergeable_channels_gc_depth_buffer: 10,
