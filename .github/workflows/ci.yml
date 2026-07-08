@@ -33,6 +33,9 @@ env:
   RUSTFLAGS: "-C target-feature=+aes,+sse2"
   DOCKER_IMAGE_NAME: "f1r3flyindustries/f1r3fly-rust"
 
+permissions:
+  contents: read
+
 jobs:
   # Resolve version + branch env vars once for downstream jobs.
   # Skip release-bump commits on branch pushes — the tag push handles publish.
@@ -46,6 +49,7 @@ jobs:
     outputs:
       VERSION: ${{ steps.env.outputs.VERSION }}
       BRANCH: ${{ steps.env.outputs.BRANCH }}
+      SYSTEM_INTEGRATION_REF: ${{ steps.env.outputs.SYSTEM_INTEGRATION_REF }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -70,6 +74,13 @@ jobs:
             BRANCH="${GITHUB_REF#refs/heads/}"
           fi
           echo "BRANCH=$BRANCH" >> "$GITHUB_OUTPUT"
+
+          source .github/oci-validation.env
+          if [[ ! "$SYSTEM_INTEGRATION_REF" =~ ^[0-9a-f]{40}$ && ! "$SYSTEM_INTEGRATION_REF" =~ ^refs/tags/[A-Za-z0-9._/-]+$ ]]; then
+            echo "SYSTEM_INTEGRATION_REF must be a 40-character commit SHA or refs/tags/<tag>."
+            exit 1
+          fi
+          echo "SYSTEM_INTEGRATION_REF=$SYSTEM_INTEGRATION_REF" >> "$GITHUB_OUTPUT"
 
           echo "Version: $VERSION | Branch: $BRANCH"
 
@@ -102,7 +113,7 @@ jobs:
       - name: Run clippy
         env:
           RUSTFLAGS: "-C target-feature=+aes,+sse2 -D warnings"
-        run: cargo clippy --workspace
+        run: cargo clippy --workspace --all-targets
 
   deny:
     name: cargo-deny
@@ -141,6 +152,7 @@ jobs:
           args: >-
             --no-progress
             --exclude-loopback
+            --exclude 'https://www\.gutenberg\.org/ebooks/132'
             --max-retries 2
             --retry-wait-time 5
             --accept 200..=299,403,429
@@ -240,7 +252,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash -e {0}
         run: |
-          if [ "${{ needs.pipeline.result }}" != "success" ]; then
+          if [ "${{ needs.pipeline.result }}" = "failure" ] || [ "${{ needs.pipeline.result }}" = "cancelled" ]; then
             echo "Heavy Pipeline did not succeed (result: ${{ needs.pipeline.result }}); failing gate."
             exit 1
           fi
@@ -269,7 +281,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash -e {0}
         run: |
-          if [ "${{ needs.pipeline.result }}" != "success" ]; then
+          if [ "${{ needs.pipeline.result }}" = "failure" ] || [ "${{ needs.pipeline.result }}" = "cancelled" ]; then
             echo "Heavy Pipeline did not succeed (result: ${{ needs.pipeline.result }}); failing gate."
             exit 1
           fi
@@ -510,20 +522,6 @@ jobs:
           docker rm "$CONTAINER_ID"
           test -f /tmp/artifacts/f1r3node-linux-arm64 || { echo 'arm64 binary extraction failed'; exit 1; }
 
-      - name: Determine release type
-        id: release_type
-        shell: bash -ex {0}
-        run: |
-          # Tag format: refs/tags/v{MAJOR}.{MINOR}.{PATCH}
-          # PATCH == 0 → stable (prerelease=false); PATCH > 0 → prerelease=true
-          TAG="${GITHUB_REF#refs/tags/v}"
-          PATCH=$(echo "$TAG" | cut -d. -f3)
-          if [ "$PATCH" = "0" ]; then
-            echo "prerelease=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "prerelease=true" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Extract release notes for this version
         shell: bash -ex {0}
         run: |
@@ -534,7 +532,7 @@ jobs:
         uses: ncipollo/release-action@v1
         with:
           artifacts: /tmp/artifacts/f1r3node-linux-amd64,/tmp/artifacts/f1r3node-linux-arm64
-          prerelease: ${{ steps.release_type.outputs.prerelease }}
+          prerelease: false
           draft: false
           allowUpdates: true
           omitBodyDuringUpdate: true

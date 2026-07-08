@@ -52,7 +52,7 @@ pub async fn production_snapshot_at(
         .iter()
         .map(|b| (b.validator.clone(), b.stake))
         .collect();
-    let active_table: Vec<Bytes> = active_set.iter().map(|v| v.clone()).collect();
+    let active_table: Vec<Bytes> = active_set.to_vec();
 
     // Coop-vault formula per design §14.6 stake-conservation
     // invariant: genesis_total_stake = sum(current_bonds) + coop_vault
@@ -154,7 +154,7 @@ pub async fn equivocate_block(
 
     // Build the same parent set b1 used.
     let parents = snapshot.parents.clone();
-    let justifications: Vec<_> = snapshot.justifications.iter().map(|j| j.clone()).collect();
+    let justifications: Vec<_> = snapshot.justifications.iter().cloned().collect();
 
     // Build BlockData from b1's header (matching the timestamp in
     // particular — `rho:block:data` reads it during replay; an
@@ -472,7 +472,7 @@ pub async fn propose_with_block_mutation(
     let shard_id = snapshot.on_chain_state.shard_conf.shard_name.clone();
 
     let parents = snapshot.parents.clone();
-    let justifications: Vec<_> = snapshot.justifications.iter().map(|j| j.clone()).collect();
+    let justifications: Vec<_> = snapshot.justifications.iter().cloned().collect();
 
     let parent_max_ts = parents
         .iter()
@@ -612,7 +612,7 @@ pub async fn propose_neglecting_block(
     // receiver's check_neglected_equivocations_with_update
     // recognises that this block "saw" the equivocation).
     let parents = snapshot.parents.clone();
-    let justifications: Vec<_> = snapshot.justifications.iter().map(|j| j.clone()).collect();
+    let justifications: Vec<_> = snapshot.justifications.iter().cloned().collect();
 
     // Honest block timestamp: pick "now" matching production
     // semantics. Use the max parent timestamp + 1 so we satisfy

@@ -154,11 +154,11 @@ async fn recovery_cycle_rejected_deploy_is_buffered_and_re_proposed() {
     // proposes block_b. Neither has seen the other's block yet, so each
     // executes its deploy against the genesis post-state independently.
     let block_a = nodes[0]
-        .add_block_from_deploys(&[deploy_a.clone()])
+        .add_block_from_deploys(std::slice::from_ref(&deploy_a))
         .await
         .expect("validator 0 proposes block_a");
     let block_b = nodes[1]
-        .add_block_from_deploys(&[deploy_b.clone()])
+        .add_block_from_deploys(std::slice::from_ref(&deploy_b))
         .await
         .expect("validator 1 proposes block_b");
     assert_ne!(
@@ -197,7 +197,7 @@ async fn recovery_cycle_rejected_deploy_is_buffered_and_re_proposed() {
             .expect("build marker_deploy")
     };
     let merge_block = nodes[1]
-        .add_block_from_deploys(&[marker_deploy.clone()])
+        .add_block_from_deploys(std::slice::from_ref(&marker_deploy))
         .await
         .expect("validator 1 proposes merge_block over [block_a, block_b]");
 
@@ -213,16 +213,14 @@ async fn recovery_cycle_rejected_deploy_is_buffered_and_re_proposed() {
         merge_block
             .header
             .parents_hash_list
-            .iter()
-            .any(|h| *h == block_a.block_hash),
+            .contains(&block_a.block_hash),
         "merge_block parents must include block_a"
     );
     assert!(
         merge_block
             .header
             .parents_hash_list
-            .iter()
-            .any(|h| *h == block_b.block_hash),
+            .contains(&block_b.block_hash),
         "merge_block parents must include block_b"
     );
 
@@ -301,7 +299,7 @@ async fn recovery_cycle_rejected_deploy_is_buffered_and_re_proposed() {
             .expect("build marker_deploy_2")
     };
     let recovery_block = nodes[0]
-        .add_block_from_deploys(&[marker_deploy_2.clone()])
+        .add_block_from_deploys(std::slice::from_ref(&marker_deploy_2))
         .await
         .expect("validator 0 proposes recovery_block");
 
