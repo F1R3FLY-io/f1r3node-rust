@@ -799,6 +799,7 @@ impl TestNode {
     }
 
     /// Creates a network of TestNodes
+    #[allow(clippy::too_many_arguments)]
     async fn network(
         sks: Vec<PrivateKey>,
         genesis_context: GenesisContext,
