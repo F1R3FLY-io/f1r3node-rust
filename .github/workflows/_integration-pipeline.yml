@@ -429,6 +429,14 @@ jobs:
           zcat /tmp/rust-node-docker.tar.gz | docker image load
           docker tag ${{ env.DOCKER_IMAGE_NAME }}:amd64 ${{ env.DOCKER_IMAGE_NAME }}
 
+      - name: Reserve node host ports
+        shell: bash -ex {0}
+        # 40400-40455 sit inside the kernel ephemeral range (32768-60999); a
+        # transient outbound connection can grab one as its source port and
+        # fail the bind with "address already in use". Reserving them excludes
+        # them from ephemeral allocation.
+        run: sudo sysctl -w net.ipv4.ip_local_reserved_ports=40400-40455
+
       - name: Start standalone node
         shell: bash -ex {0}
         run: docker compose -f docker/standalone.yml up -d
@@ -514,6 +522,12 @@ jobs:
         run: |
           zcat /tmp/rust-node-docker.tar.gz | docker image load
           docker tag ${{ env.DOCKER_IMAGE_NAME }}:amd64 ${{ env.DOCKER_IMAGE_NAME }}
+
+      - name: Reserve node host ports
+        shell: bash -ex {0}
+        # Same ephemeral-port hazard as the standalone smoke; observed as
+        # rnode.validator2 failing to bind 0.0.0.0:40420 (run 28917696069).
+        run: sudo sysctl -w net.ipv4.ip_local_reserved_ports=40400-40455
 
       - name: Start shard
         shell: bash -ex {0}
@@ -609,6 +623,12 @@ jobs:
       - name: Setup standalone data
         shell: bash -ex {0}
         run: just setup-standalone
+
+      - name: Reserve node host ports
+        shell: bash -ex {0}
+        # Same ephemeral-port hazard as the docker smokes: the node binary
+        # binds 40400-40405 directly on the host.
+        run: sudo sysctl -w net.ipv4.ip_local_reserved_ports=40400-40455
 
       - name: Start standalone node
         shell: bash -ex {0}
