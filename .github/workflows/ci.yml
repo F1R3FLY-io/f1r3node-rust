@@ -150,6 +150,7 @@ jobs:
           args: >-
             --no-progress
             --exclude-loopback
+            --exclude 'https://www\.gutenberg\.org/ebooks/132'
             --max-retries 2
             --retry-wait-time 5
             --accept 200..=299,403,429
