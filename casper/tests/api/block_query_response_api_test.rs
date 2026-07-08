@@ -374,10 +374,7 @@ async fn get_block_should_return_error_when_no_block_exists() {
     );
 
     let error_msg = block_query_response.unwrap_err().to_string();
-    let expected_msg = format!(
-        "Error: Failure to find block with hash: {}",
-        BAD_TEST_HASH_QUERY
-    );
+    let expected_msg = format!("Block not found: {}", BAD_TEST_HASH_QUERY);
     assert_eq!(error_msg, expected_msg, "Error message mismatch");
 }
 
@@ -407,10 +404,7 @@ async fn get_block_should_return_error_when_hash_is_invalid_hex_string() {
     );
 
     let error_msg = block_query_response.unwrap_err().to_string();
-    let expected_msg = format!(
-        "Input hash value is not valid hex string: {}",
-        INVALID_HEX_QUERY
-    );
+    let expected_msg = format!("'{}' is not valid block hash", INVALID_HEX_QUERY);
     assert_eq!(error_msg, expected_msg, "Error message mismatch");
 }
 
@@ -441,7 +435,7 @@ async fn get_block_should_return_error_when_hash_is_too_short() {
 
     let error_msg = block_query_response.unwrap_err().to_string();
     let expected_msg = format!(
-        "Input hash value must be at least 6 characters: {}",
+        "'{}' is not a valid block hash (minimum 6 hex characters)",
         TOO_SHORT_QUERY
     );
     assert_eq!(error_msg, expected_msg, "Error message mismatch");

@@ -8,6 +8,8 @@ use std::time::Instant;
 
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use crypto::rust::public_key::PublicKey;
+use crypto::rust::signatures::secp256k1::Secp256k1;
+use crypto::rust::signatures::signatures_alg::SignaturesAlg;
 use crypto::rust::signatures::signed::Signed;
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::g_unforgeable::UnfInstance;
@@ -32,7 +34,6 @@ use rholang::rust::interpreter::accounting::costs::Cost;
 use rholang::rust::interpreter::accounting::has_cost::HasCost;
 use rholang::rust::interpreter::compiler::compiler::Compiler;
 use rholang::rust::interpreter::env::Env;
-use rholang::rust::interpreter::errors::InterpreterError;
 use rholang::rust::interpreter::interpreter::EvaluateResult;
 use rholang::rust::interpreter::merging::rholang_merging_logic::RholangMergingLogic;
 use rholang::rust::interpreter::rho_runtime::{bootstrap_registry, RhoRuntime, RhoRuntimeImpl};
@@ -65,6 +66,8 @@ use crate::rust::util::rholang::system_deploy_user_error::{
 use crate::rust::util::rholang::tools::Tools;
 use crate::rust::util::rholang::{interpreter_util, system_deploy_util};
 use crate::rust::util::{construct_deploy, event_converter};
+
+static EXPLORATORY_DEPLOY_KEY: OnceLock<crypto::rust::private_key::PrivateKey> = OnceLock::new();
 
 pub struct RuntimeOps {
     pub runtime: RhoRuntimeImpl,
@@ -799,7 +802,11 @@ impl RuntimeOps {
                 // Hardcoded phlogiston limit / 1 REV if phloPrice=1
                 Some(100 * 1000 * 1000),
                 None,
-                Some(construct_deploy::DEFAULT_SEC.clone()),
+                Some(
+                    EXPLORATORY_DEPLOY_KEY
+                        .get_or_init(|| Secp256k1.new_key_pair().0)
+                        .clone(),
+                ),
                 None,
                 None,
             )?;
@@ -952,15 +959,7 @@ impl RuntimeOps {
         deploy: &Signed<DeployData>,
         name: &Par,
     ) -> Result<(Vec<Par>, u64), CasperError> {
-        match self.capture_results_with_errors(start, deploy, name).await {
-            Ok(result) => Ok(result),
-            Err(err) => Err(CasperError::InterpreterError(
-                InterpreterError::BugFoundError(format!(
-                    "Unexpected error while capturing results from Rholang: {}",
-                    err
-                )),
-            )),
-        }
+        self.capture_results_with_errors(start, deploy, name).await
     }
 
     pub async fn capture_results_with_errors(
