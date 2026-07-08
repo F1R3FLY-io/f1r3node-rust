@@ -146,14 +146,17 @@ jobs:
           # unauthenticated/bot requests. A 403 response from these
           # endpoints still proves the URL is well-formed and the
           # resource exists; a real broken link would 404. The 429
-          # allowance for rate-limited fetches is unchanged.
+          # allowance for rate-limited fetches is unchanged. 503 is
+          # accepted because it is transient by definition (seen from
+          # rust-fuzz.github.io during a GitHub Pages blip); a genuinely
+          # dead link returns 404/410, not 503.
           args: >-
             --no-progress
             --exclude-loopback
             --exclude 'https://www\.gutenberg\.org/ebooks/132'
             --max-retries 2
             --retry-wait-time 5
-            --accept 200..=299,403,429
+            --accept 200..=299,403,429,503
             './**/*.md'
           fail: true
 
