@@ -50,7 +50,7 @@ env:
   # supply-chain guarantee for the secret-bearing launch job: immutable, so a
   # repo takeover cannot move it. Bump ONLY via a reviewed PR after diffing
   # the old..new range in system-integration; never replace with a tag/branch.
-  SYSTEM_INTEGRATION_REF: 82b6bf5bc69de0bac1d6bd37cc25a53a92ceb022
+  SYSTEM_INTEGRATION_REF: 06f2020cc6c14c035c5bb08bffebc0ecad0294d9
   # Pinned OCI CLI installer (release tag + sha256). The checksum fails closed
   # if the tag is ever moved. Bump both together when upgrading.
   OCI_CLI_INSTALLER_URL: "https://raw.githubusercontent.com/oracle/oci-cli/v3.89.1/scripts/install/install.sh"
