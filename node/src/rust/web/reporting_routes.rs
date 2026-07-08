@@ -6,6 +6,7 @@ use axum::Router;
 use casper::rust::api::block_report_api::BlockReportError;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use utoipa::ToSchema;
 
 use crate::rust::api::serde_types::block_event_info::BlockEventInfoSerde;
@@ -17,7 +18,10 @@ pub struct ReportingRoutes;
 #[serde(tag = "type")]
 pub enum ReportResponse {
     #[serde(rename = "block-traces-report")]
-    BlockTracesReport { report: BlockEventInfoSerde },
+    BlockTracesReport {
+        #[schema(value_type = Object)]
+        report: Value,
+    },
     #[serde(rename = "block-report-error")]
     BlockReportError { error_message: String },
 }

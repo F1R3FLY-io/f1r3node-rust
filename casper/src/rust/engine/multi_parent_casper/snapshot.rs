@@ -1,0 +1,550 @@
+//! Snapshot construction — `compute_snapshot`, `get_on_chain_state`,
+//! `record_dag_cardinality_metrics`, `estimator`.
+//!
+//! Phase 3 Step 3 — extracted from `engine::multi_parent_casper`. Each
+//! function takes the casper instance as a `&MultiParentCasperImpl<T>`
+//! reference (rather than `&self`) so the implementation can live in this
+//! module while the trait method is a one-line delegate in `traits.rs`.
+
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
+
+use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
+use comm::rust::transport::transport_layer::TransportLayer;
+use models::rust::block_hash::BlockHash;
+use models::rust::casper::pretty_printer::PrettyPrinter;
+use models::rust::casper::protocol::casper_message::{BlockMessage, Justification};
+use models::rust::validator::Validator;
+use prost::bytes::Bytes;
+use shared::rust::dag::dag_ops;
+
+use super::types::MultiParentCasperImpl;
+use crate::rust::casper::{CasperSnapshot, OnChainCasperState};
+use crate::rust::errors::CasperError;
+use crate::rust::metrics_constants::{
+    ACTIVE_VALIDATORS_CACHE_SIZE_METRIC, CASPER_METRICS_SOURCE, DAG_BLOCKS_SIZE_METRIC,
+    DAG_CHILDREN_INDEX_SIZE_METRIC, DAG_FINALIZED_BLOCKS_SIZE_METRIC, DAG_HEIGHTS_SIZE_METRIC,
+    DEPLOYS_IN_SCOPE_SIG_BYTES_ESTIMATE_METRIC, DEPLOYS_IN_SCOPE_SIZE_METRIC,
+};
+use crate::rust::util::proto_util;
+
+/// C15 / Smell-1: byte-size estimate for a secp256k1 compact-encoded
+/// deploy signature. ~64 bytes signature + 1 byte prefix. Used to
+/// drive the `DEPLOYS_IN_SCOPE_SIG_BYTES_ESTIMATE_METRIC` gauge — the
+/// gauge is operator-facing memory-pressure telemetry, NOT a
+/// consensus-critical value, so a rounded estimate (rather than a
+/// per-deploy actual-byte sum) is intentional.
+const DEPLOY_SIG_BYTES_ESTIMATE: f64 = 65.0;
+
+pub(crate) fn record_dag_cardinality_metrics(dag: &KeyValueDagRepresentation) {
+    metrics::gauge!(DAG_BLOCKS_SIZE_METRIC, "source" => CASPER_METRICS_SOURCE)
+        .set(dag.dag_set.len() as f64);
+    metrics::gauge!(DAG_CHILDREN_INDEX_SIZE_METRIC, "source" => CASPER_METRICS_SOURCE)
+        .set(dag.child_map.len() as f64);
+    metrics::gauge!(DAG_HEIGHTS_SIZE_METRIC, "source" => CASPER_METRICS_SOURCE)
+        .set(dag.height_map.len() as f64);
+    metrics::gauge!(DAG_FINALIZED_BLOCKS_SIZE_METRIC, "source" => CASPER_METRICS_SOURCE)
+        .set(dag.finalized_blocks_set.len() as f64);
+}
+
+pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
+    this: &MultiParentCasperImpl<T>,
+) -> Result<CasperSnapshot, CasperError> {
+    if this
+        .finalization_in_progress
+        .load(std::sync::atomic::Ordering::SeqCst)
+    {
+        tracing::debug!(
+            "Finalization in progress while creating snapshot; using best-effort snapshot"
+        );
+    }
+
+    let dag = this.block_dag_storage.get_representation()?;
+
+    // Parent selection: Use latest block from EACH bonded validator.
+    // Phase 12 (PERF-5): `latest_message_hashes()` returns an owned
+    // `imbl::HashMap` already (refcount-bump clone). Use `into_iter` to
+    // collect by ownership rather than re-cloning every key/value.
+    let latest_msgs_hashes: HashMap<Validator, BlockHash> =
+        dag.latest_message_hashes().into_iter().collect();
+    let validator_capacity = latest_msgs_hashes.len();
+    let invalid_latest_msgs = dag.invalid_latest_messages_from_hashes(&latest_msgs_hashes)?;
+    // Phase 12 (PERF-7): each subsequent collection is bounded by the
+    // current validator-set cardinality. Preallocating avoids
+    // power-of-two HashMap/HashSet/Vec growth and the rehashes that come
+    // with it on every snapshot.
+    let mut valid_latest_msgs: HashMap<Validator, BlockHash> =
+        HashMap::with_capacity(validator_capacity);
+    for (validator, hash) in latest_msgs_hashes.iter() {
+        if invalid_latest_msgs.contains_key(validator) {
+            continue;
+        }
+        valid_latest_msgs.insert(validator.clone(), hash.clone());
+    }
+    // Storage errors during snapshot construction must propagate: a
+    // silent empty `valid_latest_metas` would feed wrong fork-choice on
+    // the consensus hot path. Bug #17 / T-9.20 hardened this contract
+    // for crash-window drift; same discipline applies to general
+    // storage I/O.
+    let mut valid_latest_metas: HashMap<Validator, models::rust::block_metadata::BlockMetadata> =
+        HashMap::with_capacity(valid_latest_msgs.len());
+    for (validator, hash) in valid_latest_msgs.iter() {
+        let meta = dag.lookup_unsafe(hash)?;
+        valid_latest_metas.insert(validator.clone(), meta);
+    }
+    let mut unique_parent_hashes: HashSet<BlockHash> =
+        HashSet::with_capacity(valid_latest_msgs.len());
+    for hash in valid_latest_msgs.values() {
+        unique_parent_hashes.insert(hash.clone());
+    }
+    let mut parent_blocks_list: Vec<BlockMessage> = Vec::with_capacity(unique_parent_hashes.len());
+    for hash in unique_parent_hashes.iter() {
+        // Missing parent block here is a real consensus invariant
+        // violation (validator pointed at by latest_messages_map but
+        // not in block_store) — surface as KvStoreError::KeyNotFound
+        // rather than silently dropping the parent.
+        let block = this.block_store.get(hash)?.ok_or_else(|| {
+            shared::rust::store::key_value_store::KvStoreError::KeyNotFound(format!(
+                "parent block referenced by latest_messages missing from block_store: {}",
+                hex::encode(hash)
+            ))
+        })?;
+        parent_blocks_list.push(block);
+    }
+
+    let mut sorted_parents_list = parent_blocks_list;
+    let max_parent_block_number = sorted_parents_list
+        .iter()
+        .map(|b| b.body.state.block_number)
+        .max()
+        .unwrap_or(0);
+    let near_tip_tolerance_blocks: i64 = 0;
+    sorted_parents_list.sort_by(|a, b| {
+        let a_num = a.body.state.block_number;
+        let b_num = b.body.state.block_number;
+        let a_is_near_tip =
+            max_parent_block_number.saturating_sub(a_num) <= near_tip_tolerance_blocks;
+        let b_is_near_tip =
+            max_parent_block_number.saturating_sub(b_num) <= near_tip_tolerance_blocks;
+
+        if a_is_near_tip && b_is_near_tip {
+            a.block_hash.cmp(&b.block_hash)
+        } else {
+            let block_num_cmp = b_num.cmp(&a_num);
+            if block_num_cmp != std::cmp::Ordering::Equal {
+                block_num_cmp
+            } else {
+                a.block_hash.cmp(&b.block_hash)
+            }
+        }
+    });
+
+    let unfiltered_parents = if sorted_parents_list.is_empty() {
+        vec![this.approved_block.clone()]
+    } else {
+        // Filter parents to the most-slashed (smallest) consistent
+        // validator-set view.
+        //
+        // The original incarnation of this filter compared the full
+        // `Vec<Bond>` (including exact stake amounts) of every parent
+        // against the max-height parent's bonds. That had two bugs:
+        //
+        //   1. It conflated stake-amount drift with bond-set drift.
+        //      Each block's `CloseBlockDeploy` pays PoS rewards to its
+        //      creator, so sibling blocks from different creators never
+        //      have identical stake *amounts* even when the bonded set
+        //      is the same. The hazard the filter is meant to guard
+        //      against is a parent with a *stale view of who is
+        //      bonded* (e.g. a genesis slot sneaking in beside h=N
+        //      blocks where a slash has already zeroed an equivocator),
+        //      not stake-amount divergence.
+        //
+        //   2. Picking the max-height parent as the reference is unsafe
+        //      when siblings include both pre-slash and post-slash
+        //      blocks at the same height. The equivocator's own valid
+        //      block (e.g. `signed_block` in
+        //      `casper/tests/batch2/slash_recovery_spec.rs`) has the
+        //      pre-slash validator set as a *superset* of the
+        //      slashing-sibling's set; max-height tiebreaks via hash
+        //      can make the pre-slash block the reference and then
+        //      drop the post-slash siblings. The pre-slash block is
+        //      the stale one — we should drop *it*, not the
+        //      slashing-aware blocks.
+        //
+        // Fix: compute the intersection of all parents' bonded-validator
+        // sets. The intersection is the "most-slashed" view — any
+        // validator missing from one parent's set is taken to be
+        // slashed-out, regardless of which sibling chose to apply the
+        // slash. Then keep only parents whose bonded set equals this
+        // intersection, i.e. parents that have actually applied every
+        // slash visible to the consensus snapshot. Pre-slash siblings
+        // with extra validators are dropped as stale.
+        let validator_set_of = |block: &BlockMessage| -> std::collections::BTreeSet<
+            models::rust::validator::Validator,
+        > {
+            block
+                .body
+                .state
+                .bonds
+                .iter()
+                .filter(|b| b.stake > 0)
+                .map(|b| b.validator.clone())
+                .collect()
+        };
+
+        let parent_validator_sets: Vec<
+            std::collections::BTreeSet<models::rust::validator::Validator>,
+        > = sorted_parents_list.iter().map(validator_set_of).collect();
+
+        let intersection: std::collections::BTreeSet<models::rust::validator::Validator> =
+            parent_validator_sets
+                .iter()
+                .skip(1)
+                .fold(parent_validator_sets[0].clone(), |acc, set| {
+                    acc.intersection(set).cloned().collect()
+                });
+
+        sorted_parents_list
+            .into_iter()
+            .zip(parent_validator_sets.into_iter())
+            .filter_map(|(block, set)| {
+                if set == intersection {
+                    Some(block)
+                } else {
+                    None
+                }
+            })
+            .collect()
+    };
+
+    let unfiltered_parents_count = unfiltered_parents.len();
+
+    // C15 / Smell-3: shared wire-convention constant — see
+    // `crate::rust::casper::UNLIMITED_PARENTS`.
+    let mut parents_after_count_limit = unfiltered_parents;
+    if this.casper_shard_conf.max_number_of_parents != crate::rust::casper::UNLIMITED_PARENTS {
+        parents_after_count_limit.truncate(this.casper_shard_conf.max_number_of_parents as usize);
+    }
+
+    let parents = if this.casper_shard_conf.max_parent_depth != i32::MAX
+        && parents_after_count_limit.len() > 1
+    {
+        // C13 / Perf-2: collapse the build-then-max-then-filter triple
+        // pass into a single forward iteration that maintains
+        // `max_block_num` incrementally, followed by an in-place
+        // `retain` on the vector. Eliminates one intermediate Vec
+        // allocation per snapshot and a redundant `.iter()` walk for
+        // the max computation.
+        let mut parents_with_meta: Vec<(
+            BlockMessage,
+            models::rust::block_metadata::BlockMetadata,
+        )> = Vec::with_capacity(parents_after_count_limit.len());
+        let mut max_block_num: i64 = 0;
+        for b in parents_after_count_limit {
+            let meta = dag.lookup_unsafe(&b.block_hash)?;
+            if meta.block_number > max_block_num {
+                max_block_num = meta.block_number;
+            }
+            parents_with_meta.push((b, meta));
+        }
+
+        let depth = this.casper_shard_conf.max_parent_depth as i64;
+        parents_with_meta.retain(|(_, meta)| max_block_num - meta.block_number <= depth);
+        parents_with_meta.into_iter().map(|(b, _)| b).collect()
+    } else {
+        parents_after_count_limit
+    };
+
+    // C13 / Perf-3: hoist the parent-metadata lookup. Previously this
+    // function performed two passes of `dag.lookup_unsafe` over the
+    // same `parents` set — one to build `parent_metas_for_lca` and
+    // another (via `lookups_unsafe`) to build `parent_metas`. The
+    // batched `lookups_unsafe` is cheaper per parent, so use it once
+    // up-front and borrow into the LCA call.
+    let parent_hashes: Vec<BlockHash> = parents.iter().map(|b| b.block_hash.clone()).collect();
+    let parent_metas = dag.lookups_unsafe(parent_hashes)?;
+
+    let lca = if parent_metas.is_empty() {
+        this.approved_block.block_hash.clone()
+    } else {
+        crate::rust::util::dag_operations::DagOperations::lowest_universal_common_ancestor_many(
+            &parent_metas,
+            &dag,
+        )
+        .await?
+        .block_hash
+    };
+
+    let tips: Vec<BlockHash> = parents.iter().map(|b| b.block_hash.clone()).collect();
+
+    tracing::debug!(
+        "Parent selection: {} validators, {} invalid, {} valid, {} after bond filter, {} parents",
+        latest_msgs_hashes.len(),
+        invalid_latest_msgs.len(),
+        valid_latest_msgs.len(),
+        unfiltered_parents_count,
+        parents.len()
+    );
+
+    let on_chain_state = get_on_chain_state(
+        this,
+        parents
+            .first()
+            .expect("parents should never be empty after approved block"),
+    )
+    .await?;
+
+    let justifications = {
+        let bonded_validators = &on_chain_state.bonds_map;
+
+        // Include justifications for ALL bonded validators based on their
+        // *unfiltered* latest_messages, valid OR invalid. The proposer must
+        // satisfy `justification_follows` (T-9.7), which requires every
+        // bonded validator to appear in the block's justifications.
+        // Filtering to only `valid_latest_metas` here would drop the
+        // equivocator's slot from the snapshot, so the proposer's resulting
+        // block would lack the equivocator's justification and be flagged
+        // `InvalidFollows` downstream — even though parent-selection /
+        // fork-choice correctly use `valid_latest_metas` only.
+        //
+        // This pairs with the LMM-for-invalid-blocks invariant documented
+        // at `block-storage/src/rust/dag/block_dag_key_value_storage.rs`'s
+        // `new_latest_messages` closure: invalid blocks advance LMM
+        // precisely so the equivocator's slot is reachable here, and
+        // `justification_follows` (validator-side) plus
+        // `check_neglected_equivocations_with_update` (T-9.7 detection)
+        // can both work.
+        latest_msgs_hashes
+            .iter()
+            .filter(|(validator, _)| bonded_validators.contains_key(*validator))
+            .map(|(validator, hash)| Justification {
+                validator: validator.clone(),
+                latest_block_hash: hash.clone(),
+            })
+            .collect::<HashSet<_>>()
+    };
+
+    // C13 / Perf-3: `parent_metas` is reused from the hoisted lookup
+    // above — no second pass of `dag.lookups_unsafe`.
+    let max_block_num = proto_util::max_block_number_metadata(&parent_metas);
+
+    let max_seq_nums = valid_latest_metas
+        .iter()
+        .map(
+            |(validator, block_metadata): (
+                &Validator,
+                &models::rust::block_metadata::BlockMetadata,
+            )| (validator.clone(), block_metadata.sequence_number as u64),
+        )
+        .collect::<HashMap<_, _>>();
+
+    let (deploys_in_scope, rejected_in_scope) = {
+        let current_dag_generation = this.block_dag_storage.current_generation();
+        let snapshot_lfb_hash = dag.last_finalized_block();
+
+        let cached: Option<(Arc<dashmap::DashSet<Bytes>>, Arc<dashmap::DashSet<Bytes>>)> = {
+            // C16: `deploys_in_scope_cache` is a `parking_lot::Mutex` —
+            // no poison propagation, `.lock()` returns the guard
+            // directly. The prior `std::sync::Mutex` migration's
+            // poison-handling branch has been removed.
+            //
+            // Merge of dev: cache tuple now carries both the deploys-in-scope
+            // and the rejected-in-scope companion set so both can be served
+            // out of one cache hit.
+            let cache_guard = this.deploys_in_scope_cache.lock();
+            cache_guard
+                .as_ref()
+                .and_then(|(gen, cached_lfb, deploys_set, rejected_set)| {
+                    if *gen == current_dag_generation && *cached_lfb == snapshot_lfb_hash {
+                        Some((deploys_set.clone(), rejected_set.clone()))
+                    } else {
+                        None
+                    }
+                })
+        };
+
+        if let Some(pair) = cached {
+            pair
+        } else {
+            // P2-9: checked arithmetic — alignment with T-9.14.
+            let current_block_number = max_block_num.checked_add(1).ok_or_else(|| {
+                CasperError::RuntimeError(format!(
+                    "max_block_num overflow: {} + 1 wraps i64",
+                    max_block_num
+                ))
+            })?;
+            let earliest_block_number =
+                current_block_number - on_chain_state.shard_conf.deploy_lifespan;
+
+            // Propagate storage errors out of the BFS neighbor
+            // expansion. Silent `.unwrap_or_default()` here is a
+            // correctness bug: a transient storage failure on a
+            // single parent would shrink `deploys_in_scope`, which
+            // could then admit a duplicate-signature deploy past
+            // `InvalidRepeatDeploy` detection.
+            let neighbor_fn = |block_metadata: &models::rust::block_metadata::BlockMetadata| -> Result<
+                Vec<models::rust::block_metadata::BlockMetadata>,
+                shared::rust::store::key_value_store::KvStoreError,
+            > {
+                proto_util::get_parent_metadatas_above_block_number(
+                    block_metadata,
+                    earliest_block_number,
+                    &dag,
+                )
+            };
+
+            let traversal_result = dag_ops::try_bf_traverse(parent_metas, neighbor_fn)?;
+
+            let all_deploys = Arc::new(dashmap::DashSet::new());
+            let all_rejected = Arc::new(dashmap::DashSet::new());
+            for block_metadata in traversal_result {
+                let block_deploy_sigs = this
+                    .block_store
+                    .deploy_sigs(&block_metadata.block_hash)?
+                    .ok_or_else(|| {
+                    CasperError::RuntimeError(format!(
+                        "Missing block {} during deploys_in_scope traversal",
+                        PrettyPrinter::build_string_bytes(&block_metadata.block_hash)
+                    ))
+                })?;
+                for deploy_sig in block_deploy_sigs {
+                    all_deploys.insert(deploy_sig.into());
+                }
+                // Merge of dev: a deploy that was executed in this block
+                // and rejected by a descendant merge contributes to the
+                // rejected_in_scope set. The block creator and validator
+                // intersect this with deploys_in_scope to decide
+                // re-inclusion eligibility for merge-rejected deploys.
+                if let Some(rejected_sigs) = this
+                    .block_store
+                    .rejected_deploy_sigs(&block_metadata.block_hash)?
+                {
+                    for sig in rejected_sigs {
+                        all_rejected.insert(sig.into());
+                    }
+                }
+            }
+
+            // C16: parking_lot::Mutex — no poison propagation.
+            let mut cache_guard = this.deploys_in_scope_cache.lock();
+            *cache_guard = Some((
+                current_dag_generation,
+                snapshot_lfb_hash,
+                all_deploys.clone(),
+                all_rejected.clone(),
+            ));
+            (all_deploys, all_rejected)
+        }
+    };
+    let deploys_in_scope_len = deploys_in_scope.len();
+    let deploys_in_scope_sig_bytes_estimate =
+        (deploys_in_scope_len as f64) * DEPLOY_SIG_BYTES_ESTIMATE;
+    metrics::gauge!(DEPLOYS_IN_SCOPE_SIZE_METRIC, "source" => CASPER_METRICS_SOURCE)
+        .set(deploys_in_scope_len as f64);
+    metrics::gauge!(
+        DEPLOYS_IN_SCOPE_SIG_BYTES_ESTIMATE_METRIC,
+        "source" => CASPER_METRICS_SOURCE
+    )
+    .set(deploys_in_scope_sig_bytes_estimate);
+
+    let invalid_blocks = dag.invalid_blocks_map()?;
+    let last_finalized_block = dag.last_finalized_block();
+    record_dag_cardinality_metrics(&dag);
+
+    Ok(CasperSnapshot {
+        dag,
+        last_finalized_block,
+        lca,
+        tips,
+        parents,
+        justifications,
+        invalid_blocks,
+        deploys_in_scope,
+        rejected_in_scope,
+        max_block_num,
+        max_seq_nums,
+        on_chain_state,
+    })
+}
+
+pub(crate) async fn estimator<T: TransportLayer + Send + Sync>(
+    this: &MultiParentCasperImpl<T>,
+    dag: &mut KeyValueDagRepresentation,
+) -> Result<Vec<BlockHash>, CasperError> {
+    // Phase 12 (PERF-5): use `into_iter` to consume the already-owned
+    // `imbl::HashMap` rather than re-cloning every pair.
+    let latest_message_hashes: HashMap<Validator, BlockHash> =
+        dag.latest_message_hashes().into_iter().collect();
+    let invalid_latest_messages =
+        dag.invalid_latest_messages_from_hashes(&latest_message_hashes)?;
+
+    let valid_latest: HashMap<Validator, BlockHash> = latest_message_hashes
+        .iter()
+        .filter(|(validator, _)| !invalid_latest_messages.contains_key(*validator))
+        .map(|(validator, hash): (&Validator, &BlockHash)| (validator.clone(), hash.clone()))
+        .collect();
+
+    if valid_latest.is_empty() {
+        Ok(vec![this.approved_block.block_hash.clone()])
+    } else {
+        let unique_hashes: HashSet<BlockHash> = valid_latest.values().cloned().collect();
+        Ok(unique_hashes.into_iter().collect())
+    }
+}
+
+pub(crate) async fn get_on_chain_state<T: TransportLayer + Send + Sync>(
+    this: &MultiParentCasperImpl<T>,
+    block: &BlockMessage,
+) -> Result<OnChainCasperState, CasperError> {
+    let cache_key = block.body.state.post_state_hash.to_vec();
+    let (cached_hit, cache_len) = {
+        let cache = this.active_validators_cache.lock().await;
+        (cache.get(&cache_key).cloned(), cache.len())
+    };
+    if let Some(cached) = cached_hit {
+        metrics::gauge!(ACTIVE_VALIDATORS_CACHE_SIZE_METRIC, "source" => CASPER_METRICS_SOURCE)
+            .set(cache_len as f64);
+        let bm = &block.body.state.bonds;
+        return Ok(OnChainCasperState {
+            shard_conf: this.casper_shard_conf.clone(),
+            bonds_map: bm
+                .iter()
+                .map(|v| (v.validator.clone(), v.stake))
+                .collect::<HashMap<_, _>>(),
+            active_validators: cached,
+        });
+    }
+
+    let fetched = this
+        .runtime_manager
+        .get_active_validators(&block.body.state.post_state_hash)
+        .await?;
+
+    let av = {
+        let mut cache = this.active_validators_cache.lock().await;
+        if cache.len() >= this.casper_shard_conf.active_validators_cache_max_entries {
+            if let Some(first_key) = cache.keys().next().cloned() {
+                cache.remove(&first_key);
+            }
+        }
+        let entry = cache
+            .entry(cache_key)
+            .or_insert_with(|| fetched.clone())
+            .clone();
+        let cache_len = cache.len();
+        metrics::gauge!(ACTIVE_VALIDATORS_CACHE_SIZE_METRIC, "source" => CASPER_METRICS_SOURCE)
+            .set(cache_len as f64);
+        entry
+    };
+
+    let bm = &block.body.state.bonds;
+
+    Ok(OnChainCasperState {
+        shard_conf: this.casper_shard_conf.clone(),
+        bonds_map: bm
+            .iter()
+            .map(|v| (v.validator.clone(), v.stake))
+            .collect::<HashMap<_, _>>(),
+        active_validators: av,
+    })
+}

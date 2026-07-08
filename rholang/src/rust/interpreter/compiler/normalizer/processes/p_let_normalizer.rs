@@ -250,6 +250,7 @@ pub fn normalize_p_let<'ast>(
                     }]),
                     span: pattern_span, // Use synthetic pattern span
                 },
+                guard: None,
                 proc: if bindings.len() > 1 {
                     // More bindings - create nested let
                     let remaining_bindings: smallvec::SmallVec<[LetBinding<'ast>; 1]> =
@@ -326,6 +327,7 @@ pub fn normalize_p_let<'ast>(
                     proc: parser.ast_builder().alloc_list(&pattern_elements),
                     span: pattern_list_span,
                 },
+                guard: None,
                 proc: if bindings.len() > 1 {
                     // More bindings - create nested let
                     let remaining_bindings: smallvec::SmallVec<[LetBinding<'ast>; 1]> =
@@ -413,7 +415,7 @@ mod tests {
 
         // Should transform into a match process
         let normalized = result.unwrap();
-        assert!(normalized.par.matches.len() > 0);
+        assert!(!normalized.par.matches.is_empty());
     }
 
     #[test]
@@ -458,7 +460,7 @@ mod tests {
 
         // Should transform into a new process with sends and receives
         let normalized = result.unwrap();
-        assert!(normalized.par.news.len() > 0); // Should have new declarations
+        assert!(!normalized.par.news.is_empty()); // Should have new declarations
     }
 
     #[test]
@@ -513,7 +515,7 @@ mod tests {
 
         // Should transform into a match process with list pattern
         let normalized = result.unwrap();
-        assert!(normalized.par.matches.len() > 0);
+        assert!(!normalized.par.matches.is_empty());
     }
 
     #[test]
@@ -552,7 +554,7 @@ mod tests {
 
         // Should just normalize the body directly
         let normalized = result.unwrap();
-        assert!(normalized.par.sends.len() > 0);
+        assert!(!normalized.par.sends.is_empty());
     }
 
     #[test]
@@ -618,6 +620,6 @@ mod tests {
 
         // Should transform into nested match processes
         let normalized = result.unwrap();
-        assert!(normalized.par.matches.len() > 0);
+        assert!(!normalized.par.matches.is_empty());
     }
 }

@@ -5,6 +5,7 @@ use rholang::rust::interpreter::errors::InterpreterError;
 use rspace_plus_plus::rspace::errors::HistoryError;
 use shared::rust::store::key_value_store::KvStoreError;
 
+use super::slashing_authorization::SlashAuthError;
 use super::util::rholang::replay_failure::ReplayFailure;
 use super::util::rholang::system_deploy_user_error::SystemDeployPlatformFailure;
 
@@ -20,6 +21,11 @@ pub enum CasperError {
     HistoryError(HistoryError),
     StreamError(String),
     LockError(String),
+    /// Phase 9 (R-2): typed `Slash`-deploy authorization failure. Carries
+    /// the [`SlashAuthError`] variant so callers in
+    /// `engine::multi_parent_casper::validation_dispatcher` can `match` on the structured
+    /// reason instead of grepping a stringified error.
+    SlashAuth(SlashAuthError),
     Other(String),
 }
 
@@ -36,9 +42,14 @@ impl fmt::Display for CasperError {
             CasperError::HistoryError(error) => write!(f, "History error: {}", error),
             CasperError::StreamError(error) => write!(f, "Stream error: {}", error),
             CasperError::LockError(error) => write!(f, "Lock error: {}", error),
+            CasperError::SlashAuth(error) => write!(f, "Slash authorization error: {}", error),
             CasperError::Other(error) => write!(f, "Other error: {}", error),
         }
     }
+}
+
+impl From<SlashAuthError> for CasperError {
+    fn from(error: SlashAuthError) -> Self { CasperError::SlashAuth(error) }
 }
 
 impl From<InterpreterError> for CasperError {
@@ -55,4 +66,26 @@ impl From<ReplayFailure> for CasperError {
 
 impl From<CommError> for CasperError {
     fn from(error: CommError) -> Self { CasperError::CommError(error) }
+}
+
+/// Conversion from un-typed `String` errors. Used by `?` propagation
+/// from APIs that return `Result<_, String>` (e.g.
+/// `EventPublisher::publish`). The string is wrapped in
+/// `CasperError::RuntimeError` — semantically the same as the explicit
+/// `.map_err(|e| CasperError::RuntimeError(e.to_string()))?` pattern it
+/// replaces, but without the per-site boilerplate.
+impl From<String> for CasperError {
+    fn from(error: String) -> Self { CasperError::RuntimeError(error) }
+}
+
+/// Conversion from `std::time::SystemTimeError`. Wraps the underlying
+/// error message into `CasperError::RuntimeError`. Used by `?`
+/// propagation in `construct_deploy::source_deploy_now` and
+/// `source_deploy_now_full` — both compute deploy timestamps via
+/// `SystemTime::now().duration_since(UNIX_EPOCH)?` which can fail on a
+/// pre-epoch system clock.
+impl From<std::time::SystemTimeError> for CasperError {
+    fn from(error: std::time::SystemTimeError) -> Self {
+        CasperError::RuntimeError(format!("System time error: {}", error))
+    }
 }

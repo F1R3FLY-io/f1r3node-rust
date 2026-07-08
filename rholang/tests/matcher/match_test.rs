@@ -38,10 +38,9 @@ fn assert_spatial_match(
     let spatial_match_result = spatial_matcher.spatial_match(target, pattern);
     let result = spatial_matcher.free_map;
 
-    if spatial_match_result.is_some() && expected_captures.is_some() {
-        assert_eq!(result, expected_captures.unwrap());
-    } else {
-        assert_eq!(None, expected_captures);
+    match (spatial_match_result.is_some(), expected_captures) {
+        (true, Some(expected)) => assert_eq!(result, expected),
+        (_, expected) => assert_eq!(None, expected),
     }
 
     Ok(())
@@ -977,11 +976,13 @@ fn matching_between_matches_should_require_equality_of_cases_but_match_targets_a
                     false,
                 )),
                 free_count: 0,
+                guard: None,
             },
             MatchCase {
                 pattern: Some(new_wildcard_par(Vec::new(), true)),
                 source: Some(vector_par(Vec::new(), false)),
                 free_count: 0,
+                guard: None,
             },
         ],
         Vec::new(),
@@ -1007,11 +1008,13 @@ fn matching_between_matches_should_require_equality_of_cases_but_match_targets_a
                 )),
                 source: Some(new_wildcard_par(Vec::new(), true)),
                 free_count: 0,
+                guard: None,
             },
             MatchCase {
                 pattern: Some(new_wildcard_par(Vec::new(), true)),
                 source: Some(new_freevar_par(1, Vec::new())),
                 free_count: 0,
+                guard: None,
             },
         ],
         Vec::new(),
