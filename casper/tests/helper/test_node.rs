@@ -1124,7 +1124,7 @@ impl TestNode {
                 last_approved_block: last_approved_block.clone(),
                 block_store: block_store.clone(),
                 block_dag_storage: block_dag_storage.clone(),
-                deploy_storage: deploy_storage.lock().unwrap().clone(),
+                deploy_storage: deploy_storage.lock().clone(),
                 rejected_deploy_buffer: rejected_deploy_buffer.clone(),
                 casper_buffer_storage: casper_buffer_storage.clone(),
                 rspace_state_manager: rspace_state_manager.clone(),
