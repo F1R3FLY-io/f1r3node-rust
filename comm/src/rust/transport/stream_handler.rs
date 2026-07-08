@@ -493,6 +493,14 @@ impl StreamHandler {
     }
 }
 
+/// Result of processing a single chunk
+enum ChunkProcessResult {
+    /// Continue processing with the updated state
+    Continue(Streamed),
+    /// Stop processing due to an error
+    Error(StreamError),
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -536,12 +544,4 @@ mod tests {
             "cache entry should be removed on restore failure"
         );
     }
-}
-
-/// Result of processing a single chunk
-enum ChunkProcessResult {
-    /// Continue processing with the updated state
-    Continue(Streamed),
-    /// Stop processing due to an error
-    Error(StreamError),
 }

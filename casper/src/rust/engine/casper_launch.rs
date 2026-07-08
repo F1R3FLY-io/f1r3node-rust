@@ -33,10 +33,10 @@ use crate::rust::engine::engine::{
 use crate::rust::engine::engine_cell::EngineCell;
 use crate::rust::engine::genesis_ceremony_master::GenesisCeremonyMaster;
 use crate::rust::engine::genesis_validator::GenesisValidator;
+use crate::rust::engine::multi_parent_casper::MultiParentCasperImpl;
 use crate::rust::engine::running::RunningRecoveryContext;
 use crate::rust::errors::CasperError;
 use crate::rust::estimator::Estimator;
-use crate::rust::multi_parent_casper_impl::MultiParentCasperImpl;
 use crate::rust::util::bonds_parser::BondsParser;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 use crate::rust::util::vault_parser::VaultParser;
@@ -80,7 +80,9 @@ pub struct CasperLaunchImpl<T: TransportLayer + Send + Sync + Clone + 'static> {
 
 const MAX_BLOCKS_IN_PROCESSING: usize = 2_048;
 
-fn max_blocks_in_processing() -> usize { MAX_BLOCKS_IN_PROCESSING }
+fn max_blocks_in_processing() -> usize {
+    MAX_BLOCKS_IN_PROCESSING
+}
 
 impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
     /// Helper method to create MultiParentCasper instance

@@ -107,13 +107,17 @@ pub fn noop() -> impl Engine {
 
     #[async_trait]
     impl Engine for NoopEngine {
-        async fn init(&self) -> Result<(), CasperError> { Ok(()) }
+        async fn init(&self) -> Result<(), CasperError> {
+            Ok(())
+        }
 
         async fn handle(&self, _peer: PeerNode, _msg: CasperMessage) -> Result<(), CasperError> {
             Ok(())
         }
 
-        fn with_casper(&self) -> Option<Arc<dyn MultiParentCasper + Send + Sync>> { None }
+        fn with_casper(&self) -> Option<Arc<dyn MultiParentCasper + Send + Sync>> {
+            None
+        }
     }
 
     NoopEngine
@@ -167,7 +171,10 @@ pub fn insert_into_block_and_dag_store(
     approved_block: ApprovedBlock,
 ) -> Result<(), CasperError> {
     block_store.put(genesis.block_hash.clone(), genesis)?;
-    block_dag_storage.insert(genesis, false, true)?;
+    block_dag_storage.insert(
+        genesis,
+        block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved,
+    )?;
     block_store.put_approved_block(&approved_block)?;
     Ok(())
 }

@@ -101,6 +101,7 @@ pub fn normalize_p_contr<'ast>(
             .par
             .connective_used(name_match_result.par.clone())
             || body_result.par.connective_used(body_result.par.clone()),
+        condition: None,
     };
     //TODO: I should create new Expr for prepend_expr and provide it instead of receive.clone().into
     let updated_par = input.clone().par.prepend_receive(receive);
@@ -141,13 +142,11 @@ mod tests {
         */
 
         let (mut inputs, env) = proc_visit_inputs_and_env();
-        inputs.bound_map_chain =
-            inputs
-                .bound_map_chain
-                .put_pos(("add".to_string(), VarSort::NameSort, SourcePos {
-                    line: 0,
-                    col: 0,
-                }));
+        inputs.bound_map_chain = inputs.bound_map_chain.put_pos((
+            "add".to_string(),
+            VarSort::NameSort,
+            SourcePos { line: 0, col: 0 },
+        ));
 
         let parser = rholang_parser::RholangParser::new();
 
@@ -181,33 +180,34 @@ mod tests {
                     new_freevar_par(1, Vec::new()),
                     new_freevar_par(2, Vec::new()),
                 ],
-                source: Some(new_boundvar_par(0, create_bit_vector(&vec![0]), false)),
+                source: Some(new_boundvar_par(0, create_bit_vector(&[0]), false)),
                 remainder: None,
                 free_count: 3,
             }],
             body: Some(new_send_par(
-                new_boundvar_par(2, create_bit_vector(&vec![2]), false),
+                new_boundvar_par(2, create_bit_vector(&[2]), false),
                 vec![{
                     let mut par = Par::default().with_exprs(vec![Expr {
                         expr_instance: Some(ExprInstance::EPlusBody(EPlus {
-                            p1: Some(new_boundvar_par(1, create_bit_vector(&vec![1]), false)),
-                            p2: Some(new_boundvar_par(0, create_bit_vector(&vec![0]), false)),
+                            p1: Some(new_boundvar_par(1, create_bit_vector(&[1]), false)),
+                            p2: Some(new_boundvar_par(0, create_bit_vector(&[0]), false)),
                         })),
                     }]);
-                    par.locally_free = create_bit_vector(&vec![0, 1]);
+                    par.locally_free = create_bit_vector(&[0, 1]);
                     par
                 }],
                 false,
-                create_bit_vector(&vec![0, 1, 2]),
+                create_bit_vector(&[0, 1, 2]),
                 false,
-                create_bit_vector(&vec![0, 1, 2]),
+                create_bit_vector(&[0, 1, 2]),
                 false,
             )),
             persistent: true,
             peek: false,
             bind_count: 3,
-            locally_free: create_bit_vector(&vec![0]),
+            locally_free: create_bit_vector(&[0]),
             connective_used: false,
+            condition: None,
         });
 
         assert_eq!(result.clone().unwrap().par, expected_result);
@@ -231,13 +231,11 @@ mod tests {
         */
 
         let (mut inputs, env) = proc_visit_inputs_and_env();
-        inputs.bound_map_chain =
-            inputs
-                .bound_map_chain
-                .put_pos(("ret5".to_string(), VarSort::NameSort, SourcePos {
-                    line: 0,
-                    col: 0,
-                }));
+        inputs.bound_map_chain = inputs.bound_map_chain.put_pos((
+            "ret5".to_string(),
+            VarSort::NameSort,
+            SourcePos { line: 0, col: 0 },
+        ));
 
         let parser = rholang_parser::RholangParser::new();
 
@@ -270,24 +268,25 @@ mod tests {
                     new_freevar_par(0, Vec::new()),
                     new_gint_par(5, Vec::new(), false),
                 ],
-                source: Some(new_boundvar_par(0, create_bit_vector(&vec![0]), false)),
+                source: Some(new_boundvar_par(0, create_bit_vector(&[0]), false)),
                 remainder: None,
                 free_count: 1,
             }],
             body: Some(new_send_par(
-                new_boundvar_par(0, create_bit_vector(&vec![0]), false),
+                new_boundvar_par(0, create_bit_vector(&[0]), false),
                 vec![new_gint_par(5, Vec::new(), false)],
                 false,
-                create_bit_vector(&vec![0]),
+                create_bit_vector(&[0]),
                 false,
-                create_bit_vector(&vec![0]),
+                create_bit_vector(&[0]),
                 false,
             )),
             persistent: true,
             peek: false,
             bind_count: 1,
-            locally_free: create_bit_vector(&vec![0]),
+            locally_free: create_bit_vector(&[0]),
             connective_used: false,
+            condition: None,
         });
 
         assert_eq!(result.clone().unwrap().par, expected_result);

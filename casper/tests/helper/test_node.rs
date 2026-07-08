@@ -14,11 +14,11 @@ use casper::rust::blocks::proposer::proposer::new_proposer;
 use casper::rust::casper::{Casper, CasperShardConf, MultiParentCasper};
 use casper::rust::engine::block_retriever::{BlockRetriever, RequestState, RequestedBlocks};
 use casper::rust::engine::engine_cell::EngineCell;
+use casper::rust::engine::multi_parent_casper::MultiParentCasperImpl;
 use casper::rust::engine::running::{Running, RunningRecoveryContext};
 use casper::rust::errors::CasperError;
 use casper::rust::estimator::Estimator;
 use casper::rust::genesis::genesis::Genesis;
-use casper::rust::multi_parent_casper_impl::MultiParentCasperImpl;
 use casper::rust::safety_oracle::CliqueOracleImpl;
 use casper::rust::util::comm::casper_packet_handler::CasperPacketHandler;
 use casper::rust::util::rholang::runtime_manager::RuntimeManager;
@@ -65,7 +65,7 @@ pub struct TestNode {
     pub block_processor: BlockProcessor<TransportLayerTestImpl>,
     pub block_store: KeyValueBlockStore,
     pub block_dag_storage: BlockDagKeyValueStorage,
-    pub deploy_storage: Arc<Mutex<KeyValueDeployStorage>>,
+    pub deploy_storage: Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
     pub rejected_deploy_buffer: Arc<
         Mutex<block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer>,
     >,
@@ -116,7 +116,7 @@ impl TestNode {
             None, // dummy_deploy_opt
             self.deploy_storage.clone(),
             self.rejected_deploy_buffer.clone(),
-            &mut self.runtime_manager.clone(),
+            &self.runtime_manager.clone(),
             &mut self.block_store.clone(),
             false,
         )
@@ -595,7 +595,9 @@ impl TestNode {
     }
 
     /// Checks if this node contains a block (equivalent to Scala contains, line 346).
-    pub fn contains(&self, block_hash: &BlockHash) -> bool { self.casper.contains(block_hash) }
+    pub fn contains(&self, block_hash: &BlockHash) -> bool {
+        self.casper.contains(block_hash)
+    }
 
     /// Checks if this node knows about a block (in storage or requested) (equivalent to Scala knowsAbout, line 347-348).
     pub fn knows_about(&self, block_hash: &BlockHash) -> bool {
@@ -614,7 +616,9 @@ impl TestNode {
     /// Shuts off this node by clearing its transport layer queue (equivalent to Scala shutoff, line 350).
     ///
     /// This is useful for simulating network partitions or node failures in tests.
-    pub fn shutoff(&self) -> Result<(), CommError> { self.tle.test_network().clear(&self.local) }
+    pub fn shutoff(&self) -> Result<(), CommError> {
+        self.tle.test_network().clear(&self.local)
+    }
 
     pub async fn handle_receive(&self) -> Result<(), CasperError> {
         let tle = self.tle.clone();
@@ -722,7 +726,7 @@ impl TestNode {
             > { Box::pin(async move { Ok(()) }) },
         );
 
-        let _ = self.tls.handle_receive(dispatch, handle_streamed).await?;
+        drop(self.tls.handle_receive(dispatch, handle_streamed).await?);
 
         Ok(())
     }
@@ -876,6 +880,7 @@ impl TestNode {
         Ok(nodes)
     }
 
+    #[allow(clippy::too_many_arguments, clippy::type_complexity)]
     async fn create_node(
         name: String,
         current_peer_node: PeerNode,
@@ -923,9 +928,12 @@ impl TestNode {
 
         // Initialize DAG storage with genesis block metadata
         block_dag_storage
-            .insert(&genesis, false, true)
+            .insert(
+                &genesis,
+                block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved,
+            )
             .expect("Failed to insert genesis into DAG storage in TestNode");
-        let deploy_storage = Arc::new(Mutex::new(
+        let deploy_storage = Arc::new(parking_lot::Mutex::new(
             resources::key_value_deploy_storage_from_dyn(&mut *kvm)
                 .await
                 .unwrap(),
@@ -941,7 +949,7 @@ impl TestNode {
             .await
             .unwrap();
 
-        let rspace_store = (&mut *kvm).r_space_stores().await.unwrap();
+        let rspace_store = (*kvm).r_space_stores().await.unwrap();
         let mergeable_store = resources::mergeable_store_from_dyn(&mut *kvm)
             .await
             .unwrap();
@@ -984,8 +992,8 @@ impl TestNode {
             Some(ValidatorIdentity::new(&sk))
         };
 
-        let _proposer_opt = match validator_id_opt {
-            Some(ref vi) => Some(new_proposer(
+        let _proposer_opt = validator_id_opt.as_ref().map(|vi| {
+            new_proposer(
                 vi.clone(),
                 None,
                 runtime_manager.clone(),
@@ -998,9 +1006,8 @@ impl TestNode {
                 rp_conf.clone(),
                 event_publisher.clone(),
                 false, // allow_empty_blocks - disabled for tests
-            )),
-            None => None,
-        };
+            )
+        });
 
         let bp_dependencies = BlockProcessorDependencies::new(
             block_store.clone(),
@@ -1086,7 +1093,7 @@ impl TestNode {
             )),
             finalizer_task_queued: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             heartbeat_signal_ref: casper::rust::heartbeat_signal::new_heartbeat_signal_ref(),
-            deploys_in_scope_cache: std::sync::Arc::new(std::sync::Mutex::new(None)),
+            deploys_in_scope_cache: std::sync::Arc::new(parking_lot::Mutex::new(None)),
             active_validators_cache: std::sync::Arc::new(tokio::sync::Mutex::new(
                 std::collections::HashMap::new(),
             )),
@@ -1174,7 +1181,9 @@ impl TestNode {
     }
 
     /// Creates an endpoint with the given port for both TCP and UDP
-    fn endpoint(port: u32) -> Endpoint { Endpoint::new("host".to_string(), port, port) }
+    fn endpoint(port: u32) -> Endpoint {
+        Endpoint::new("host".to_string(), port, port)
+    }
 
     /// Propagates messages across all nodes until all queues are empty (equivalent to Scala propagate, line 640-649).
     ///

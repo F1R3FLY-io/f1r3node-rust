@@ -128,9 +128,12 @@ async fn lowest_common_universal_ancestor_should_be_computed_properly() {
         //          |
         //         genesis
 
-        let b1 = create_block_with_meta(&mut block_store, &mut block_dag_storage, &genesis, &[
-            genesis.block_hash.clone(),
-        ]);
+        let b1 = create_block_with_meta(
+            &mut block_store,
+            &mut block_dag_storage,
+            &genesis,
+            std::slice::from_ref(&genesis.block_hash),
+        );
 
         let b2 = create_block_with_meta_and_seq(
             &mut block_store,
@@ -179,7 +182,9 @@ async fn lowest_common_universal_ancestor_should_be_computed_properly() {
             block_metadata_to_block_hash(&b8),
         ]);
 
-        let dag = block_dag_storage.get_representation();
+        let dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
 
         let result = DagOperations::lowest_universal_common_ancestor(&b1, &b5, &dag)
             .await
@@ -414,7 +419,9 @@ async fn uncommon_ancestors_should_be_computed_properly() {
             None,
         );
 
-        let dag = block_dag_storage.get_representation();
+        let dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
 
         let b1_meta = to_metadata(&b1);
         let b2_meta = to_metadata(&b2);
@@ -466,7 +473,7 @@ async fn uncommon_ancestors_should_be_computed_properly() {
 
         assert_eq!(result, expected);
 
-        let result = DagOperations::uncommon_ancestors(&[b1_meta.clone()], &dag)
+        let result = DagOperations::uncommon_ancestors(std::slice::from_ref(&b1_meta), &dag)
             .await
             .unwrap();
 

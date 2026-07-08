@@ -254,6 +254,7 @@ impl Score {
     pub const BUNDLE_READ: i32 = 306;
     pub const BUNDLE_WRITE: i32 = 307;
     pub const BUNDLE_READ_WRITE: i32 = 308;
+    pub const IF: i32 = 309;
 
     pub const CONNECTIVE_NOT: i32 = 400;
     pub const CONNECTIVE_AND: i32 = 401;

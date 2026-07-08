@@ -31,30 +31,30 @@ fn create_pars() -> Vec<Par> {
     let par_methods = Par::default().with_exprs(vec![
         new_emethod_expr(
             "nth".to_string(),
-            new_boundvar_par(2, create_bit_vector(&vec![2]), false),
+            new_boundvar_par(2, create_bit_vector(&[2]), false),
             vec![new_gint_par(1, Vec::new(), false)],
-            create_bit_vector(&vec![2]),
+            create_bit_vector(&[2]),
         ),
         new_emethod_expr(
             "nth".to_string(),
-            new_boundvar_par(2, create_bit_vector(&vec![2]), false),
+            new_boundvar_par(2, create_bit_vector(&[2]), false),
             vec![new_gint_par(1, Vec::new(), false)],
-            create_bit_vector(&vec![2]),
+            create_bit_vector(&[2]),
         ),
         new_emethod_expr(
             "nth".to_string(),
-            new_boundvar_par(2, create_bit_vector(&vec![2]), false),
+            new_boundvar_par(2, create_bit_vector(&[2]), false),
             vec![
                 new_gint_par(2, Vec::new(), false),
                 new_gint_par(3, Vec::new(), false),
             ],
-            create_bit_vector(&vec![2]),
+            create_bit_vector(&[2]),
         ),
         new_emethod_expr(
             "nth".to_string(),
-            new_boundvar_par(2, create_bit_vector(&vec![2]), false),
+            new_boundvar_par(2, create_bit_vector(&[2]), false),
             vec![new_gint_par(2, Vec::new(), false)],
-            create_bit_vector(&vec![2]),
+            create_bit_vector(&[2]),
         ),
     ]);
 
@@ -120,15 +120,15 @@ fn sorted_par_hash_set_should_deduplicate_its_elements_where_last_seen_element_w
         new_gbool_par(false, Vec::new(), false),
         Par::default().with_exprs(vec![new_emethod_expr(
             "nth".to_string(),
-            new_boundvar_par(2, create_bit_vector(&vec![2]), false),
+            new_boundvar_par(2, create_bit_vector(&[2]), false),
             vec![new_gint_par(1, Vec::new(), false)],
-            create_bit_vector(&vec![2]),
+            create_bit_vector(&[2]),
         )]),
         Par::default().with_exprs(vec![new_emethod_expr(
             "nth".to_string(),
-            new_boundvar_par(2, create_bit_vector(&vec![2]), false),
+            new_boundvar_par(2, create_bit_vector(&[2]), false),
             vec![new_gint_par(1, Vec::new(), false)],
-            create_bit_vector(&vec![2]),
+            create_bit_vector(&[2]),
         )]),
     ];
 
@@ -191,10 +191,7 @@ fn sorted_par_hash_set_should_sort_all_input() {
         check_sorted_input(
             |input: HashSet<Par>| set.clone().union(input),
             pars.iter().cloned().collect(),
-            pars.iter()
-                .cloned()
-                .map(|par| SortedParHashSet::sort(&par))
-                .collect(),
+            pars.iter().map(SortedParHashSet::sort).collect(),
         );
     }
 }
@@ -221,8 +218,7 @@ fn check_sorted(iterable: &[Par]) {
         iterable,
         &iterable
             .iter()
-            .cloned()
-            .map(|par| ParSortMatcher::sort_match(&par).term)
+            .map(|par| ParSortMatcher::sort_match(par).term)
             .collect::<Vec<_>>()[..],
         "Iterable is not sorted correctly"
     );

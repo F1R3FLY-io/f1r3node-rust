@@ -50,7 +50,7 @@ pub struct ReplayRSpace<C, P, A, K> {
     installs: Arc<Mutex<HashMap<Vec<C>, Install<P, K>>>>,
     event_log: Arc<Mutex<Log>>,
     produce_counter: Arc<Mutex<BTreeMap<Produce, i32>>>,
-    matcher: Arc<Box<dyn Match<P, A>>>,
+    matcher: Arc<Box<dyn Match<P, A, K>>>,
     pub replay_data: Arc<Mutex<MultisetMultiMap<IOEvent, COMM>>>,
     logger: Arc<Mutex<Box<dyn RSpaceLogger<C, P, A, K>>>>,
     replay_waiting_continuations_estimate: Arc<AtomicI64>,
@@ -446,7 +446,7 @@ where
     pub fn apply(
         history_repository: Arc<Box<dyn HistoryRepository<C, P, A, K> + Send + Sync + 'static>>,
         store: Arc<Box<dyn HotStore<C, P, A, K>>>,
-        matcher: Arc<Box<dyn Match<P, A>>>,
+        matcher: Arc<Box<dyn Match<P, A, K>>>,
     ) -> ReplayRSpace<C, P, A, K>
     where
         C: Clone + Debug + Ord + Hash,
@@ -472,7 +472,7 @@ where
     pub fn apply_with_logger(
         history_repository: Arc<Box<dyn HistoryRepository<C, P, A, K> + Send + Sync + 'static>>,
         store: Arc<Box<dyn HotStore<C, P, A, K>>>,
-        matcher: Arc<Box<dyn Match<P, A>>>,
+        matcher: Arc<Box<dyn Match<P, A, K>>>,
         logger: Box<dyn RSpaceLogger<C, P, A, K>>,
     ) -> ReplayRSpace<C, P, A, K>
     where
@@ -832,7 +832,7 @@ where
         self.run_matcher_for_channels(
             grouped_channels,
             |channels| {
-                let continuations = self.get_store().get_continuations(&channels);
+                let continuations = self.get_store().get_continuations_arc(&channels);
                 continuations
                     .into_iter()
                     .enumerate()
@@ -1282,7 +1282,10 @@ where
     fn run_matcher_for_channels(
         &self,
         grouped_channels: Vec<Vec<C>>,
-        fetch_matching_continuations: impl Fn(Vec<C>) -> Vec<(WaitingContinuation<P, K>, i32)>,
+        fetch_matching_continuations: impl Fn(
+            Vec<C>,
+        )
+            -> Vec<(std::sync::Arc<WaitingContinuation<P, K>>, i32)>,
         fetch_matching_data: impl Fn(C) -> (C, Vec<(Datum<A>, i32)>),
     ) -> MaybeProduceCandidate<C, P, A, K> {
         let mut remaining = grouped_channels;

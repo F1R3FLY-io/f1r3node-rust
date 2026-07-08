@@ -8,6 +8,40 @@ use rholang::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
 use rholang::rust::interpreter::rho_type::{RhoList, RhoMap, RhoNil, RhoNumber, RhoString};
 use rholang::rust::interpreter::test_utils::resources::with_runtime;
 
+/// These tests exercise `rho:chroma:*` system processes end-to-end, which
+/// requires a live ChromaDB server. Probe the configured host with a fast
+/// heartbeat HTTP call; if it's not reachable, treat the test as a no-op
+/// success so unattended local / CI runs without ChromaDB do not fail.
+///
+/// Honors the `CHROMA_HOST` env var the way the production
+/// `ChromaHttpClient::from_env()` does (defaulting to `http://localhost:8000`).
+/// Returns `true` when ChromaDB responds to `/api/v2/heartbeat` within
+/// 500ms, otherwise `false`.
+async fn chromadb_available() -> bool {
+    let base = std::env::var("CHROMA_HOST").unwrap_or_else(|_| "http://localhost:8000".to_string());
+    let url = format!("{}/api/v2/heartbeat", base.trim_end_matches('/'));
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_millis(500))
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+    matches!(client.get(&url).send().await, Ok(resp) if resp.status().is_success())
+}
+
+macro_rules! skip_if_no_chromadb {
+    () => {
+        if !chromadb_available().await {
+            eprintln!(
+                "Skipping ChromaDB integration test: no server at {} (set CHROMA_HOST or start chromadb to enable).",
+                std::env::var("CHROMA_HOST").unwrap_or_else(|_| "http://localhost:8000".to_string())
+            );
+            return;
+        }
+    };
+}
+
 async fn success(runtime: &mut RhoRuntimeImpl, term: &str) -> Result<(), InterpreterError> {
     execute(runtime, term).await.map(|res| {
         assert!(
@@ -27,6 +61,7 @@ async fn execute(
 
 #[tokio::test]
 async fn collection_should_yield_correct_meta_after_creation() {
+    skip_if_no_chromadb!();
     let meta_contract = r#"
             new createCollection(`rho:chroma:collection:new`),
                 getCollectionMeta(`rho:chroma:collection:meta`),
@@ -61,6 +96,7 @@ async fn collection_should_yield_correct_meta_after_creation() {
 
 #[tokio::test]
 async fn collection_should_yield_correct_meta_after_creation_empty() {
+    skip_if_no_chromadb!();
     let meta_contract = r#"
             new createCollection(`rho:chroma:collection:new`),
                 getCollectionMeta(`rho:chroma:collection:meta`),
@@ -80,6 +116,7 @@ async fn collection_should_yield_correct_meta_after_creation_empty() {
 
 #[tokio::test]
 async fn entry_should_be_queried() {
+    skip_if_no_chromadb!();
     let meta_contract = r#"
         new createCollection(`rho:chroma:collection:new`),
             upsertEntries(`rho:chroma:collection:entries:new`),

@@ -160,7 +160,7 @@ async fn interpreter_should_yield_correct_results_for_prime_check_contract() {
             })
             .unwrap_or_default();
 
-        let expected: Vec<Par> = vec!["Nil", "Nil", "Pr", "Pr", "Pr", "Co", "Co"]
+        let expected: Vec<Par> = ["Nil", "Nil", "Pr", "Pr", "Pr", "Co", "Co"]
             .iter()
             .flat_map(|s| rho_string(s))
             .collect();

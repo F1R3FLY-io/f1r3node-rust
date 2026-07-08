@@ -489,7 +489,7 @@ See [F1R3FLY-io/f1r3node issues](https://github.com/F1R3FLY-io/f1r3node/issues) 
 | File | Role |
 |------|------|
 | `casper/src/rust/casper.rs` | `Casper` and `MultiParentCasper` trait definitions |
-| `casper/src/rust/multi_parent_casper_impl.rs` | Main implementation: snapshot, propose, validate, finalize |
+| `casper/src/rust/engine/multi_parent_casper/mod.rs` | Main implementation: snapshot, propose, validate, finalize |
 | `casper/src/rust/casper_conf.rs` | `CasperConf`, `HeartbeatConf` configuration structs |
 
 ### Engine

@@ -80,14 +80,14 @@ const HISTORY_HASH_1_STR: &str = "1a";
 /// Scala equivalent: val historyHash2 = createHash("2a")
 const HISTORY_HASH_2_STR: &str = "2a";
 
-/// Chunk 3
+// Chunk 3
 
 /// Invalid test data
 /// Scala equivalent: val invalidHistory = Seq((createHash("666aaaaa"), ByteString.EMPTY))
 const INVALID_HASH_STR: &str = "666aaaaa";
 
-/// Individual test data constants - matching Scala version structure
-/// Scala equivalent: Multiple val declarations for historyPath1, history1, data1, etc.
+// Individual test data constants - matching Scala version structure
+// Scala equivalent: Multiple val declarations for historyPath1, history1, data1, etc.
 
 /// Get approved block state (start of the state)
 /// Scala equivalent: val historyHash1 = createHash("1a")
@@ -517,8 +517,8 @@ where
     test_result
 }
 
-/// Test runner utilities
-/// Scala equivalent: def createBootstrapTest(runProcessingStream: Boolean, requestTimeout: FiniteDuration = 10.days)(test: Mock[Task] => Task[Unit]): Unit
+// Test runner utilities
+// Scala equivalent: def createBootstrapTest(runProcessingStream: Boolean, requestTimeout: FiniteDuration = 10.days)(test: Mock[Task] => Task[Unit]): Unit
 
 /// Creates a bootstrap test with configurable stream processing
 /// Scala equivalent: def createBootstrapTest(runProcessingStream: Boolean, requestTimeout: FiniteDuration = 10.days)
@@ -648,9 +648,7 @@ pub async fn assert_no_requests(mock: &mut MockImpl, timeout_ms: u64) -> Result<
         Ok(Some(unexpected_req)) => {
             panic!("Unexpected request received: {:?}", unexpected_req);
         }
-        Ok(None) => {
-            return Err(TestError::ChannelClosed);
-        }
+        Ok(None) => Err(TestError::ChannelClosed),
         Err(_) => {
             // Timeout is expected - no requests should be sent
             Ok(())
@@ -673,9 +671,7 @@ pub async fn assert_no_saved_history(
         Ok(Some(unexpected_save)) => {
             panic!("Unexpected history save received: {:?}", unexpected_save);
         }
-        Ok(None) => {
-            return Err(TestError::ChannelClosed);
-        }
+        Ok(None) => Err(TestError::ChannelClosed),
         Err(_) => {
             // Timeout is expected - no saves should happen
             Ok(())
@@ -695,9 +691,7 @@ pub async fn assert_no_saved_data(mock: &mut MockImpl, timeout_ms: u64) -> Resul
         Ok(Some(unexpected_save)) => {
             panic!("Unexpected data save received: {:?}", unexpected_save);
         }
-        Ok(None) => {
-            return Err(TestError::ChannelClosed);
-        }
+        Ok(None) => Err(TestError::ChannelClosed),
         Err(_) => {
             // Timeout is expected - no saves should happen
             Ok(())

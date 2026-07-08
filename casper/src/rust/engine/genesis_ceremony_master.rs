@@ -195,7 +195,8 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> GenesisCeremonyMaster<T>
         ab: BlockMessage,
         block_retriever: &BlockRetriever<T>,
         heartbeat_signal_ref: &crate::rust::heartbeat_signal::HeartbeatSignalRef,
-    ) -> Result<crate::rust::multi_parent_casper_impl::MultiParentCasperImpl<T>, CasperError> {
+    ) -> Result<crate::rust::engine::multi_parent_casper::MultiParentCasperImpl<T>, CasperError>
+    {
         let runtime_manager_for_casper = runtime_manager.clone();
 
         hash_set_casper(
@@ -218,7 +219,9 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> GenesisCeremonyMaster<T>
 
 #[async_trait]
 impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for GenesisCeremonyMaster<T> {
-    async fn init(&self) -> Result<(), CasperError> { self.approve_protocol.run().await }
+    async fn init(&self) -> Result<(), CasperError> {
+        self.approve_protocol.run().await
+    }
 
     async fn handle(&self, peer: PeerNode, msg: CasperMessage) -> Result<(), CasperError> {
         match msg {
@@ -242,6 +245,8 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for GenesisCeremo
         }
     }
 
-    fn with_casper(&self) -> Option<Arc<dyn MultiParentCasper + Send + Sync>> { None }
+    fn with_casper(&self) -> Option<Arc<dyn MultiParentCasper + Send + Sync>> {
+        None
+    }
 }
 use dashmap::DashSet;
