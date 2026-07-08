@@ -82,10 +82,13 @@ pub async fn trace_handler(
         .block_report(block_hash.to_bytes_prost(), force_replay)
         .await
     {
-        Ok(block_event_info) => Json(ReportResponse::BlockTracesReport {
-            report: block_event_info.into(),
-        })
-        .into_response(),
+        Ok(block_event_info) => {
+            let serde_data = BlockEventInfoSerde::from(block_event_info);
+            Json(ReportResponse::BlockTracesReport {
+                report: serde_json::to_value(&serde_data).unwrap_or(Value::Null),
+            })
+            .into_response()
+        }
         Err(e) => {
             let status = match &e {
                 BlockReportError::BlockNotFound(_) => StatusCode::NOT_FOUND,

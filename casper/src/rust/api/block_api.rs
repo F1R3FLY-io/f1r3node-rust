@@ -164,7 +164,7 @@ pub struct BlockNotFoundError {
 
 impl std::fmt::Display for BlockNotFoundError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Error: Failure to find block with hash: {}", self.hash)
+        write!(f, "Block not found: {}", self.hash)
     }
 }
 
@@ -1286,7 +1286,7 @@ impl BlockAPI {
         async fn casper_response(casper: &dyn MultiParentCasper, hash: &str) -> ApiErr<BlockInfo> {
             if hash.len() < 6 {
                 return Err(eyre::Report::new(InvalidHashError(format!(
-                    "Input hash value must be at least 6 characters: {}",
+                    "'{}' is not a valid block hash (minimum 6 hex characters)",
                     hash
                 ))));
             }
@@ -1295,7 +1295,7 @@ impl BlockAPI {
 
             let hash_byte_string = hex::decode(&padded_hash).map_err(|_| {
                 eyre::Report::new(InvalidHashError(format!(
-                    "Input hash value is not valid hex string: {}",
+                    "'{}' is not valid block hash",
                     hash
                 )))
             })?;
