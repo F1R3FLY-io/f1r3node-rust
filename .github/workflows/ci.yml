@@ -8,7 +8,8 @@ on:
       - master
       - staging
       - trying
-    tags: "**"
+    tags:
+      - "**"
   pull_request:
     branches:
       - dev
@@ -32,6 +33,9 @@ env:
   RUSTFLAGS: "-C target-feature=+aes,+sse2"
   DOCKER_IMAGE_NAME: "f1r3flyindustries/f1r3fly-rust"
 
+permissions:
+  contents: read
+
 jobs:
   # Resolve version + branch env vars once for downstream jobs.
   # Skip release-bump commits on branch pushes — the tag push handles publish.
@@ -45,6 +49,7 @@ jobs:
     outputs:
       VERSION: ${{ steps.env.outputs.VERSION }}
       BRANCH: ${{ steps.env.outputs.BRANCH }}
+      SYSTEM_INTEGRATION_REF: ${{ steps.env.outputs.SYSTEM_INTEGRATION_REF }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -69,6 +74,13 @@ jobs:
             BRANCH="${GITHUB_REF#refs/heads/}"
           fi
           echo "BRANCH=$BRANCH" >> "$GITHUB_OUTPUT"
+
+          source .github/oci-validation.env
+          if [[ ! "$SYSTEM_INTEGRATION_REF" =~ ^[0-9a-f]{40}$ && ! "$SYSTEM_INTEGRATION_REF" =~ ^refs/tags/[A-Za-z0-9._/-]+$ ]]; then
+            echo "SYSTEM_INTEGRATION_REF must be a 40-character commit SHA or refs/tags/<tag>."
+            exit 1
+          fi
+          echo "SYSTEM_INTEGRATION_REF=$SYSTEM_INTEGRATION_REF" >> "$GITHUB_OUTPUT"
 
           echo "Version: $VERSION | Branch: $BRANCH"
 
@@ -99,7 +111,7 @@ jobs:
       - name: Run clippy
         env:
           RUSTFLAGS: "-C target-feature=+aes,+sse2 -D warnings"
-        run: cargo clippy --workspace
+        run: cargo clippy --workspace --all-targets
 
   deny:
     name: cargo-deny
@@ -127,12 +139,20 @@ jobs:
       - name: Link Checker
         uses: lycheeverse/lychee-action@v2
         with:
+          # 403 is accepted alongside 200..=299 and 429 because many
+          # citations in `docs/theory/slashing/methodology/references.md`
+          # are DOIs that redirect to publisher portals (ACM DL, Oxford
+          # Academic, IEEE Xplore, IACR ePrint, Medium) which 403 on
+          # unauthenticated/bot requests. A 403 response from these
+          # endpoints still proves the URL is well-formed and the
+          # resource exists; a real broken link would 404. The 429
+          # allowance for rate-limited fetches is unchanged.
           args: >-
             --no-progress
             --exclude-loopback
             --max-retries 2
             --retry-wait-time 5
-            --accept 200..=299,429
+            --accept 200..=299,403,429
             './**/*.md'
           fail: true
 

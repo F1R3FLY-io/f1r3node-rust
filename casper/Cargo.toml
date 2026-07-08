@@ -43,15 +43,29 @@ humantime = { workspace = true }
 tonic = { workspace = true }
 eyre = { workspace = true }
 metrics = { workspace = true }
+proptest = { workspace = true }
+parking_lot = "0.12"
 tempfile = { workspace = true, optional = true }
 
 [dev-dependencies]
 casper = { path = ".", features = ["test-utils"] }
+# P2-16: enable block-storage's test-only RMW bypass helpers for
+# detector-totality / record-lifecycle integration tests. Production
+# builds of casper do NOT enable this feature.
+block-storage = { path = "../block-storage", features = ["test-internals"] }
 metrics-util = { workspace = true }
-proptest = { workspace = true }
 k256 = { workspace = true }
 serial_test = { workspace = true }
+env_logger = "0.11.8"
 tempfile = { workspace = true }
+# Exhaustive thread-interleaving model checker for the slashing
+# atomic-RMW property (T-9.2). See
+# docs/theory/slashing/design/14-test-plan.md §14.5.
+loom = "=0.7.2"
+# JSON parsing for the TLA+ trace-replay harness. See
+# casper/tests/slashing/tla_trace_replay.rs (Item 4 / Track 7).
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
 
 
 
@@ -59,10 +73,19 @@ tempfile = { workspace = true }
 default = []
 # Exposes test utilities (TestNode, mocks, genesis helpers) to other workspace members.
 # Guarded with #[cfg(feature = "test-utils")] so it is never compiled in production.
-test-utils = ["tempfile"]
+#
+# Phase 11 (visibility hardening): the casper `test_utils` module constructs
+# `BlockDagKeyValueStorage` directly from in-memory stores and grabs raw write
+# guards on the metadata / deploy indices. Those entry points now live behind
+# block-storage's `test-internals` feature, so enabling casper's `test-utils`
+# transitively enables it. Production builds keep both features off.
+test-utils = ["tempfile", "block-storage/test-internals"]
 schnorr_secp256k1_experimental = [
     "crypto/schnorr_secp256k1_experimental",
     "models/schnorr_secp256k1_experimental",
 ]
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }
 
 [build-dependencies]

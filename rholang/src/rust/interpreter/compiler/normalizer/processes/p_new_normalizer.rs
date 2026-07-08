@@ -183,24 +183,24 @@ mod tests {
             p: Some(
                 Par::default()
                     .prepend_send(new_send(
-                        new_boundvar_par(2, create_bit_vector(&vec![2]), false),
+                        new_boundvar_par(2, create_bit_vector(&[2]), false),
                         vec![new_gint_par(7, Vec::new(), false)],
                         false,
-                        create_bit_vector(&vec![2]),
+                        create_bit_vector(&[2]),
                         false,
                     ))
                     .prepend_send(new_send(
-                        new_boundvar_par(1, create_bit_vector(&vec![1]), false),
+                        new_boundvar_par(1, create_bit_vector(&[1]), false),
                         vec![new_gint_par(8, Vec::new(), false)],
                         false,
-                        create_bit_vector(&vec![1]),
+                        create_bit_vector(&[1]),
                         false,
                     ))
                     .prepend_send(new_send(
-                        new_boundvar_par(0, create_bit_vector(&vec![0]), false),
+                        new_boundvar_par(0, create_bit_vector(&[0]), false),
                         vec![new_gint_par(9, Vec::new(), false)],
                         false,
-                        create_bit_vector(&vec![0]),
+                        create_bit_vector(&[0]),
                         false,
                     )),
             ),
@@ -323,38 +323,38 @@ mod tests {
             p: Some(
                 Par::default()
                     .prepend_send(new_send(
-                        new_boundvar_par(4, create_bit_vector(&vec![4]), false),
+                        new_boundvar_par(4, create_bit_vector(&[4]), false),
                         vec![new_gint_par(7, Vec::new(), false)],
                         false,
-                        create_bit_vector(&vec![4]),
+                        create_bit_vector(&[4]),
                         false,
                     ))
                     .prepend_send(new_send(
-                        new_boundvar_par(3, create_bit_vector(&vec![3]), false),
+                        new_boundvar_par(3, create_bit_vector(&[3]), false),
                         vec![new_gint_par(8, Vec::new(), false)],
                         false,
-                        create_bit_vector(&vec![3]),
+                        create_bit_vector(&[3]),
                         false,
                     ))
                     .prepend_send(new_send(
-                        new_boundvar_par(1, create_bit_vector(&vec![1]), false),
+                        new_boundvar_par(1, create_bit_vector(&[1]), false),
                         vec![new_gint_par(9, Vec::new(), false)],
                         false,
-                        create_bit_vector(&vec![1]),
+                        create_bit_vector(&[1]),
                         false,
                     ))
                     .prepend_send(new_send(
-                        new_boundvar_par(0, create_bit_vector(&vec![0]), false),
+                        new_boundvar_par(0, create_bit_vector(&[0]), false),
                         vec![new_gint_par(10, Vec::new(), false)],
                         false,
-                        create_bit_vector(&vec![0]),
+                        create_bit_vector(&[0]),
                         false,
                     ))
                     .prepend_send(new_send(
-                        new_boundvar_par(2, create_bit_vector(&vec![2]), false),
+                        new_boundvar_par(2, create_bit_vector(&[2]), false),
                         vec![new_gint_par(11, Vec::new(), false)],
                         false,
-                        create_bit_vector(&vec![2]),
+                        create_bit_vector(&[2]),
                         false,
                     )),
             ),
@@ -374,16 +374,16 @@ mod tests {
                 .map(|x| x.locally_free)
                 .collect::<Vec<Vec<u8>>>(),
             vec![
-                create_bit_vector(&vec![2]),
-                create_bit_vector(&vec![0]),
-                create_bit_vector(&vec![1]),
-                create_bit_vector(&vec![3]),
-                create_bit_vector(&vec![4])
+                create_bit_vector(&[2]),
+                create_bit_vector(&[0]),
+                create_bit_vector(&[1]),
+                create_bit_vector(&[3]),
+                create_bit_vector(&[4])
             ]
         );
         assert_eq!(
             result.unwrap().par.news[0].p.clone().unwrap().locally_free,
-            create_bit_vector(&vec![0, 1, 2, 3, 4])
+            create_bit_vector(&[0, 1, 2, 3, 4])
         );
     }
 }

@@ -38,7 +38,7 @@ fn test_create_empty_pathmap() {
 #[test]
 fn test_create_pathmap_single_element() {
     let par = make_list_par(vec!["books", "fiction", "gatsby"]);
-    let result = create_pathmap_from_elements(&[par.clone()], None);
+    let result = create_pathmap_from_elements(std::slice::from_ref(&par), None);
     assert!(!result.map.is_empty());
 }
 
@@ -423,7 +423,7 @@ fn test_write_zipper_set_val() {
 
     // Create a simple path and set a value
     let par = make_string_par("value");
-    map.insert(b"test_path".to_vec(), par.clone());
+    map.insert(b"test_path", par.clone());
 
     assert_eq!(map.val_count(), 1);
 }
@@ -507,7 +507,7 @@ fn perform_drophead(elements: Vec<Par>, n: usize) -> Vec<Par> {
                     ps: remaining,
                     locally_free: list.locally_free.clone(),
                     connective_used: list.connective_used,
-                    remainder: list.remainder.clone(),
+                    remainder: list.remainder,
                 };
                 let new_par = Par {
                     exprs: vec![Expr {
@@ -671,7 +671,7 @@ fn test_drophead_mixed_survivability() {
 
     // Verify correct elements were dropped
     assert!(
-        list1.len() >= 1 && list2.len() >= 1,
+        !list1.is_empty() && !list2.is_empty(),
         "Surviving paths should have elements"
     );
 }

@@ -1,0 +1,12 @@
+[package]
+name = "rho-pure-eval"
+version = "0.1.0"
+publish = false  # internal workspace crate; not published to crates.io
+edition = "2021"
+
+[dependencies]
+models = { path = "../models" }
+shared = { path = "../shared" }
+num-bigint = { workspace = true }
+num-rational = { workspace = true }
+num-traits = { workspace = true }

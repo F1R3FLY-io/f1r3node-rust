@@ -7,7 +7,7 @@ use casper::rust::api::block_api::BlockAPI;
 use casper::rust::casper::MultiParentCasper;
 use casper::rust::engine::engine_cell::EngineCell;
 use casper::rust::engine::engine_with_casper::EngineWithCasper;
-use casper::rust::multi_parent_casper_impl::MultiParentCasperImpl;
+use casper::rust::engine::multi_parent_casper::MultiParentCasperImpl;
 use casper::rust::util::{construct_deploy, proto_util};
 use crypto::rust::public_key::PublicKey;
 use models::rust::casper::protocol::casper_message::BlockMessage;
@@ -65,7 +65,7 @@ async fn create_engine_cell(node: &TestNode) -> EngineCell {
         finalizer_task_in_progress: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         finalizer_task_queued: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         heartbeat_signal_ref: casper::rust::heartbeat_signal::new_heartbeat_signal_ref(),
-        deploys_in_scope_cache: std::sync::Arc::new(std::sync::Mutex::new(None)),
+        deploys_in_scope_cache: std::sync::Arc::new(parking_lot::Mutex::new(None)),
         active_validators_cache: std::sync::Arc::new(tokio::sync::Mutex::new(
             std::collections::HashMap::new(),
         )),
@@ -168,21 +168,18 @@ async fn is_finalized_should_return_true_for_ancestors_of_last_finalized_block()
 
     let engine_cell = create_engine_cell(&nodes[0]).await;
 
-    assert_eq!(
+    assert!(
         is_finalized(&b5, &engine_cell).await,
-        true,
         "b5 should be finalized"
     );
 
-    assert_eq!(
+    assert!(
         is_finalized(&b4, &engine_cell).await,
-        true,
         "b4 (parent of b5) should be finalized"
     );
 
-    assert_eq!(
+    assert!(
         is_finalized(&b2, &engine_cell).await,
-        true,
         "b2 (secondary parent of b5) should be finalized"
     );
 }
@@ -268,21 +265,18 @@ async fn should_return_false_for_children_uncles_and_cousins_of_last_finalized_b
 
     let engine_cell = create_engine_cell(&nodes[0]).await;
 
-    assert_eq!(
-        is_finalized(&b4, &engine_cell).await,
-        false,
+    assert!(
+        !is_finalized(&b4, &engine_cell).await,
         "b4 (child of b3) should not be finalized"
     );
 
-    assert_eq!(
-        is_finalized(&b6, &engine_cell).await,
-        false,
+    assert!(
+        !is_finalized(&b6, &engine_cell).await,
         "b6 (uncle of b3) should not be finalized"
     );
 
-    assert_eq!(
-        is_finalized(&b7, &engine_cell).await,
-        false,
+    assert!(
+        !is_finalized(&b7, &engine_cell).await,
         "b7 (cousin of b3) should not be finalized"
     );
 }

@@ -293,6 +293,7 @@ fn classify_casper_error(err: &CasperError) -> (StatusCode, &'static str, String
         ReplayFailure(_) => internal("replay_failure"),
         StreamError(_) => internal("stream_error"),
         LockError(_) => internal("lock_error"),
+        SlashAuth(_) => internal("slash_authorization_error"),
         Other(_) => internal("other_error"),
     }
 }
@@ -333,6 +334,7 @@ fn classify_interpreter_error(ie: &InterpreterError) -> (StatusCode, &'static st
         UserAbortError => (S::UNPROCESSABLE_ENTITY, "user_abort", ie.to_string()),
 
         ReduceError(_)
+        | IfConditionTypeError { .. }
         | MethodNotDefined { .. }
         | MethodArgumentNumberMismatch { .. }
         | OperatorNotDefined { .. }

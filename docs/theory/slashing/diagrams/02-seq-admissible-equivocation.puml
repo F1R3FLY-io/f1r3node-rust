@@ -1,0 +1,176 @@
+' Sequence Diagram 02 — Admissible equivocation slash flow.
+'
+' End-to-end: Validator A signs two distinct blocks at the same seq number,
+' both pulled in as dependencies of a third block. The detector emits
+' AdmissibleEquivocation; an EquivocationRecord is created; the next
+' proposer P attaches a SlashDeploy; the PoS Rholang contract zeros A's
+' bond and transfers the forfeited stake to the Coop vault; fork choice
+' filters A's latest message out.
+'
+' Source of truth for Figure 4.1 in docs/theory/slashing/slashing-specification.md.
+'
+' Color palette (consistent across all sequence diagrams 02, 03, 04, 05, 09):
+'   #C62828 red     — adversarial action; buggy/regression write
+'   #E65100 orange  — non-trivial detection verdict; slash state mutation
+'   #2E7D32 green   — successful honest write; "Valid" verdict
+'   #1565C0 blue    — read query (lookup, snapshot)
+'   #6A1B9A purple  — Rholang / system-deploy invocation
+'   #00838F teal    — inter-validator block gossip
+'   #546E7A gray    — internal computation (no side effect)
+'
+' Render:
+'   plantuml -tsvg docs/theory/slashing/diagrams/02-seq-admissible-equivocation.puml
+
+@startuml 02-seq-admissible-equivocation
+!theme plain
+
+title Admissible equivocation slash flow
+
+skinparam sequence {
+  ArrowColor              #444444
+  LifeLineBorderColor     #666666
+  ParticipantBorderColor  #333333
+  NoteBorderColor         #666666
+  NoteBackgroundColor     #FFF8E1
+  GroupBorderColor        #333333
+  GroupHeaderFontColor    #222222
+  DividerBackgroundColor  #ECEFF1
+}
+skinparam defaultFontName "sans-serif"
+skinparam defaultFontSize 11
+
+autonumber
+
+actor       "Equivocator A"      as A   #F8C3B8
+actor       "Honest Proposer P"  as P   #C8E6C9
+participant "Validate"           as V   #FFECB3
+participant "EquivocationDetector" as D #FFECB3
+participant "MultiParentCasperImpl" as C #FFECB3
+participant "BlockDagStorage"    as DS  #C8E6C9
+participant "EquivocationTrackerStore" as T #C8E6C9
+participant "CasperSnapshot\n(in-memory snapshot of\nDAG + on-chain state\npre-loaded by block_processor)" as CS #C8E6C9
+participant "BlockCreator"       as BC  #B2DFDB
+participant "SlashDeploy\n(system_deploys[0])" as SD #B2DFDB
+participant "PoS Rholang"        as PoS #D1C4E9
+database    "Bond map\n(on-chain state)" as B   #D1C4E9
+database    "Coop vault\n(Rholang contract)" as CV  #BBDEFB
+participant "ForkChoice"         as FC  #BBDEFB
+
+note over A, FC #ECEFF1
+  **Preconditions**
+  • Validator A is bonded with stake s > 0 in [Bond map].
+  • A's previous block is at sequence number seqN − 1 (creator-justification).
+  • Both b1 and b1' will be signed at seqN, where seqN ≥ 1.
+  • The "base sequence number" used as the EquivocationRecord key is **seqN − 1**.
+  • Every block goes through Validate → EquivocationDetector → MultiParentCasperImpl
+    on receipt; the diagram shows D explicitly when its verdict is non-trivial.
+
+  **Color legend**
+  red = adversarial / regression  ·  orange = detection verdict / slash effect
+  green = honest write / Valid    ·  blue = read query
+  purple = Rholang invocation     ·  teal = block gossip   ·  gray = internal
+end note
+
+== Phase 1 — First block: A signs honestly ==
+A -[#C62828]> V ++ : signed block b1 @ seqN
+V -[#1565C0]> D ++ : check_equivocations(b1,\n  requested_as_dependency = ⊥, snapshot)
+D -[#546E7A]> D   : extract creator_justification\nfrom b1 (proto_util)
+D -[#1565C0]> DS  : latest_message_hash(b1.sender)
+note right of D
+  Only one signed block by A at seqN
+  exists so far → creator_justification
+  matches latest_message → no equivocation.
+end note
+D -[#2E7D32]-> V -- : ValidBlock
+V -[#2E7D32]> C ++ : ValidBlock
+C -[#2E7D32]> DS  : insert(b1, invalid = false)
+deactivate V
+deactivate C
+
+== Phase 2 — Second block by A at the SAME seq number ==
+A -[#C62828]> V ++ : signed block b1' @ seqN  (b1' ≠ b1)
+note over V
+  requested_as_dependency = ⊤ is computed
+  upstream by the block-processor (not by D);
+  it is passed in as a parameter.
+end note
+V -[#1565C0]> D ++ : check_equivocations(b1',\n  requested_as_dependency = ⊤, snapshot)
+D -[#546E7A]> D   : extract creator_justification\nfrom b1' (proto_util)
+D -[#1565C0]> DS  : latest_message_hash(b1'.sender)\n→ hash(b1) (already in DAG)
+D -[#546E7A]> D   : creator_justification(b1') ≠ b1.hash\n→ equivocation detected
+D -[#E65100]-> V -- : InvalidBlock::AdmissibleEquivocation
+V -[#E65100]> C ++ : InvalidBlock::AdmissibleEquivocation
+deactivate V
+note right of C
+  AdmissibleEquivocation = the offender
+  is **needed** (b1' is in some block's
+  justifications). Compare with
+  Diagram 03 (Ignorable = unsolicited).
+end note
+
+== Phase 3 — Record creation and DAG marking ==
+C -[#1565C0]> T   : equivocation_records()
+T -[#1565C0]-> C  : current set (empty for (A, seqN−1))
+note over C, T #FFCDD2
+  ⚠ Pre-fix Rust regression: this RMW is lock-free.
+  Two threads can both observe "absent" and both
+  insert. Bug fix #2 (T-9.2) re-locks via
+  access_equivocations_tracker. See Diagram 09.
+end note
+C -[#E65100]> T   : insert_equivocation_record(A, seqN − 1, ∅)
+C -[#E65100]> DS  : insert(b1', invalid = true)
+deactivate C
+
+== Phase 4 — Honest proposer P begins next block ==
+P -[#00838F]> BC ++ : propose new block at seqM\n(seqM > seqN, P scheduled by\nleader-election or proposer thread)
+note over BC
+  prepare_slashing_deploys reads from a
+  CasperSnapshot pre-loaded by the
+  block-processor — NOT live DS calls.
+end note
+BC -[#1565C0]> CS  : casper_snapshot.dag.invalid_blocks()
+CS -[#1565C0]-> BC : { (A, b1', epoch e) }
+BC -[#1565C0]> CS  : casper_snapshot.on_chain_state.bonds_map
+CS -[#1565C0]-> BC : bonds_map
+BC -[#546E7A]> BC  : filter current epoch and\nbonds_map[offender] > 0\n→ keep A
+note right of BC
+  prepare_slashing_deploys
+  (block_creator.rs:287-332).
+  Skipped here if proposer
+  itself is unbonded (fix #8).
+end note
+BC -[#6A1B9A]> SD  : new SlashDeploy(b1', P.pubkey,\n  generateSlashDeployRandomSeed(P, seqM))\n(struct lives in bP.body.system_deploys)
+BC -[#546E7A]> BC  : assemble candidate block bP\nincluding SlashDeploy as a system deploy
+
+== Phase 5 — Local evaluation: SlashDeploy fires in PoS ==
+note over BC, FC #ECEFF1
+  Block deploys are evaluated locally during proposal
+  to compute the post-state. Other validators replay
+  the same evaluation when they receive the gossiped block.
+end note
+SD -[#6A1B9A]> PoS ++ : @PoS!("slash", deployerId,\n            blockHash = b1'.hash,\n            sysAuthToken, returnCh)\n(parameter names match PoS.rhox:435)
+PoS -[#546E7A]> PoS  : sysAuthTokenOps.check(sysAuthToken)\n→ TRUE (system deploy)
+PoS -[#1565C0]> PoS  : invalidBlocks.get(b1'.hash) → A
+PoS -[#1565C0]> B    : valBond ← state.allBonds[A]
+B   -[#1565C0]-> PoS : valBond
+PoS -[#6A1B9A]> CV   : @posVault!("transfer",\n  coopMultiVaultAddr, valBond,\n  posAuthKey, transferDoneCh)
+CV  -[#2E7D32]-> PoS : transferDone (success)
+PoS -[#E65100]> B    : atomic stateUpdateCh!{\n  allBonds := allBonds[A := 0],\n  activeValidators := \\ {A},\n  committedRewards := \\ {A}\n} ; (true, Nil)\n(single map-construction step,\n PoS.rhox:473-482)
+PoS -[#2E7D32]-> SD -- : (true, Nil) on returnCh\nvia runMVar
+deactivate BC
+
+== Phase 6 — Block bP gossiped; fork choice updates ==
+BC -[#00838F]> P    : finalized block bP (post-state hash)\nincluding the executed SlashDeploy.\nP gossips bP to the network; other\nvalidators replay the deploys to verify\nthe post-state.
+note right of FC
+  ForkChoice does not receive a push.
+  On every fork-choice computation it
+  reads on-chain bonds_map and **filters**
+  validators with bond = 0 from latest-
+  message consideration.
+end note
+FC -[#1565C0]> B    : on_chain_state.bonds_map
+B  -[#1565C0]-> FC  : bonds_map (with allBonds[A] = 0)
+FC -[#E65100]> FC   : filter A's latest_message\nfrom GHOST estimator
+deactivate P
+
+@enduml
