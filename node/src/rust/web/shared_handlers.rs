@@ -335,13 +335,13 @@ fn classify_interpreter_error(ie: &InterpreterError) -> (StatusCode, &'static st
         UserAbortError => (S::UNPROCESSABLE_ENTITY, "user_abort", ie.to_string()),
 
         ReduceError(_)
+        | IfConditionTypeError { .. }
         | MethodNotDefined { .. }
         | MethodArgumentNumberMismatch { .. }
         | OperatorNotDefined { .. }
         | OperatorExpectedError { .. }
         | SubstituteError(_)
-        | SortMatchError(_)
-        | IfConditionTypeError { .. } => (
+        | SortMatchError(_) => (
             S::UNPROCESSABLE_ENTITY,
             "rholang_execution_error",
             ie.to_string(),
