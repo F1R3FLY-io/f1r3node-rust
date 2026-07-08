@@ -285,6 +285,8 @@ fn classify_casper_error(err: &CasperError) -> (StatusCode, &'static str, String
 
         CommError(_) => (S::BAD_GATEWAY, "comm_error", err.to_string()),
 
+        SlashAuth(_) => (S::FORBIDDEN, "slash_auth_error", err.to_string()),
+
         SigningError(_) => internal("signing_error"),
         KvStoreError(_) => internal("kv_store_error"),
         HistoryError(_) => internal("history_error"),
@@ -293,7 +295,6 @@ fn classify_casper_error(err: &CasperError) -> (StatusCode, &'static str, String
         ReplayFailure(_) => internal("replay_failure"),
         StreamError(_) => internal("stream_error"),
         LockError(_) => internal("lock_error"),
-        SlashAuth(_) => internal("slash_authorization_error"),
         Other(_) => internal("other_error"),
     }
 }
