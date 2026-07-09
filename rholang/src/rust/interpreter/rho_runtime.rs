@@ -494,6 +494,7 @@ where
 
         let continuation = TaggedContinuation {
             tagged_cont: Some(TaggedCont::ScalaBodyRef(body_ref)),
+            guard: None,
         };
 
         for space in &mut spaces {
@@ -966,7 +967,7 @@ fn std_rho_chroma_processes() -> Vec<Definition> {
 #[cfg(not(feature = "chromadb"))]
 fn std_rho_chroma_processes() -> Vec<Definition> { vec![] }
 
-fn _std_swipl_processes() -> Vec<Definition> {
+fn std_swipl_processes() -> Vec<Definition> {
     vec![Definition {
         urn: "rho:petta:execute".to_string(),
         fixed_channel: FixedChannels::swipl_execute_petta(),
@@ -1005,6 +1006,7 @@ fn dispatch_table_creator(
     all_processes.extend(std_rho_crypto_processes());
     all_processes.extend(std_rho_ai_processes());
     all_processes.extend(std_rho_chroma_processes());
+    all_processes.extend(std_swipl_processes());
 
     all_processes.append(extra_system_processes);
 
@@ -1133,6 +1135,7 @@ fn setup_maps_and_refs(
     // When OpenAI is disabled, the NoOp service handles calls gracefully.
     let rho_ai_binding = std_rho_ai_processes();
     let rho_chroma_binding = std_rho_chroma_processes();
+    let rho_swipl_binding = std_swipl_processes();
 
     let combined_processes = system_binding
         .iter()
@@ -1140,6 +1143,7 @@ fn setup_maps_and_refs(
         .chain(rho_ai_binding.iter())
         .chain(extra_system_processes.iter())
         .chain(rho_chroma_binding.iter())
+        .chain(rho_swipl_binding.iter())
         .collect::<Vec<&Definition>>();
 
     let mut urn_map: HashMap<_, _> = basic_processes();
@@ -1444,7 +1448,7 @@ pub async fn create_runtime_from_kv_store(
     mergeable_tags: Arc<HashMap<Par, MergeType>>,
     init_registry: bool,
     additional_system_processes: &mut Vec<Definition>,
-    matcher: Arc<Box<dyn Match<BindPattern, ListParWithRandom>>>,
+    matcher: Arc<Box<dyn Match<BindPattern, ListParWithRandom, TaggedContinuation>>>,
     external_services: ExternalServices,
 ) -> RhoRuntimeImpl {
     let space: RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation> =

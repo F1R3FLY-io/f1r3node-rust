@@ -227,6 +227,13 @@ impl InterpreterImpl {
                 mergeable: HashMap::new(),
             }),
 
+            // Non-bool `if` condition - report actual consumed cost
+            InterpreterError::IfConditionTypeError { actual_type: _ } => Ok(EvaluateResult {
+                cost: initial_cost.clone() - self.c.get(),
+                errors: vec![error],
+                mergeable: HashMap::new(),
+            }),
+
             // InterpreterError(s) - multiple errors are result of parallel execution
             InterpreterError::AggregateError { interpreter_errors } => Ok(EvaluateResult {
                 cost: initial_cost,

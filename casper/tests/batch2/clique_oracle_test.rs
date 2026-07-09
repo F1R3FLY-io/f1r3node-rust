@@ -149,7 +149,9 @@ async fn finalized_block_ft_should_not_change_with_dag_state() {
         );
 
         // Compute FT via oracle before finalization
-        let dag_phase1 = block_dag_storage.get_representation();
+        let dag_phase1 = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
         let safety_oracle = CliqueOracleImpl;
         let ft_phase1 = safety_oracle
             .normalized_fault_tolerance(&dag_phase1, &b1.block_hash)
@@ -168,7 +170,9 @@ async fn finalized_block_ft_should_not_change_with_dag_state() {
             .unwrap();
 
         // Verify FT is cached in metadata
-        let dag_after_finalize = block_dag_storage.get_representation();
+        let dag_after_finalize = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
         let meta_after_finalize = dag_after_finalize.lookup(&b1.block_hash).unwrap().unwrap();
         assert!(
             meta_after_finalize.finalized,
@@ -195,7 +199,9 @@ async fn finalized_block_ft_should_not_change_with_dag_state() {
         );
 
         // Verify the oracle now returns a different (lower) FT for b1
-        let dag_phase2 = block_dag_storage.get_representation();
+        let dag_phase2 = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
         let ft_oracle_phase2 = safety_oracle
             .normalized_fault_tolerance(&dag_phase2, &b1.block_hash)
             .await
@@ -319,7 +325,9 @@ async fn clique_oracle_should_detect_finality_as_appropriate() {
             &HashMap::from([(&v1, &b7), (&v2, &b4)]),
         );
 
-        let dag = block_dag_storage.get_representation();
+        let dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
         let safety_oracle = CliqueOracleImpl;
 
         let genesis_fault_tolerance = safety_oracle
@@ -439,7 +447,9 @@ async fn clique_oracle_should_detect_possible_disagreements_appropriately() {
             &HashMap::from([(&v1, &b6), (&v2, &b5), (&v3, &b4)]),
         );
 
-        let dag = block_dag_storage.get_representation();
+        let dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
         let safety_oracle = CliqueOracleImpl;
 
         let genesis_fault_tolerance = safety_oracle
@@ -587,7 +597,9 @@ async fn clique_oracle_should_identify_no_majority_fork_safe_after_union() {
         gj_r.insert(&v4, &r3);
         let r4 = creator3(&mut block_store, &mut block_dag_storage, &r3, &gj_r);
 
-        let dag = block_dag_storage.get_representation();
+        let dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
         let safety_oracle = CliqueOracleImpl;
 
         let l0_fault_tolerance = safety_oracle
@@ -643,7 +655,9 @@ async fn clique_oracle_should_identify_no_majority_fork_safe_after_union() {
         aj.insert(&v3, &j31);
         let _j41 = creator4(&mut block_store, &mut block_dag_storage, &j31, &aj);
 
-        let dag2 = block_dag_storage.get_representation();
+        let dag2 = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
 
         let fault_tolerance = safety_oracle
             .normalized_fault_tolerance(&dag2, &l0.block_hash)
@@ -658,11 +672,9 @@ async fn clique_oracle_should_identify_no_majority_fork_safe_after_union() {
 #[ignore = "diagnostic: run manually for fast clique-oracle growth feedback"]
 async fn clique_oracle_growth_feedback_loop_stale_justification_chain() {
     with_storage(|mut block_store, mut block_dag_storage| async move {
-        let validators = vec![
-            generate_validator(Some("Growth Validator One")),
+        let validators = [generate_validator(Some("Growth Validator One")),
             generate_validator(Some("Growth Validator Two")),
-            generate_validator(Some("Growth Validator Three")),
-        ];
+            generate_validator(Some("Growth Validator Three"))];
         let bonds: Vec<Bond> = validators
             .iter()
             .map(|validator| Bond {
@@ -689,7 +701,7 @@ async fn clique_oracle_growth_feedback_loop_stale_justification_chain() {
         let creator3 = create_block(&bonds, &genesis, &validators[2]);
 
         let checkpoints = [24usize, 48usize, 96usize];
-        let mut latest_by_validator = vec![genesis.clone(), genesis.clone(), genesis.clone()];
+        let mut latest_by_validator = [genesis.clone(), genesis.clone(), genesis.clone()];
         let mut timing_samples: Vec<(usize, u128, f32)> = Vec::with_capacity(checkpoints.len());
 
         for height in 1..=checkpoints[checkpoints.len() - 1] {
@@ -730,7 +742,7 @@ async fn clique_oracle_growth_feedback_loop_stale_justification_chain() {
             latest_by_validator[creator_index] = next_block;
 
             if checkpoints.contains(&height) {
-                let dag = block_dag_storage.get_representation();
+                let dag = block_dag_storage.get_representation().expect("dag representation");
                 let target_hash = genesis.block_hash.clone();
                 let started = Instant::now();
                 let message_weight_map = CliqueOracle::get_corresponding_weight_map(&target_hash, &dag)
@@ -838,7 +850,9 @@ async fn orphaned_finalized_block_should_still_get_ft_updated() {
             .await
             .unwrap();
 
-        let dag_after_first = block_dag_storage.get_representation();
+        let dag_after_first = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
         let meta_v1 = dag_after_first.lookup(&b1_v1.block_hash).unwrap().unwrap();
         assert!(
             (meta_v1.fault_tolerance_value - 0.33).abs() < 0.01,
@@ -863,7 +877,9 @@ async fn orphaned_finalized_block_should_still_get_ft_updated() {
             .unwrap();
 
         // Check: did b1_v1 get updated?
-        let dag_after_second = block_dag_storage.get_representation();
+        let dag_after_second = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
         let meta_v1_after = dag_after_second.lookup(&b1_v1.block_hash).unwrap().unwrap();
 
         eprintln!(

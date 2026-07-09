@@ -91,7 +91,7 @@ async fn multi_parent_casper_should_be_able_to_create_a_chain_of_blocks_from_dif
     .unwrap();
 
     let signed_block2 = node
-        .add_block_from_deploys(&[deploy2.clone()])
+        .add_block_from_deploys(std::slice::from_ref(&deploy2))
         .await
         .unwrap();
 
@@ -258,7 +258,10 @@ async fn multi_parent_casper_should_reject_blocks_not_from_bonded_validators() {
         .await
         .unwrap();
 
-    let dag = node.block_dag_storage.get_representation();
+    let dag = node
+        .block_dag_storage
+        .get_representation()
+        .expect("dag representation");
 
     let secp256k1 = Secp256k1;
     let (sk, pk) = secp256k1.new_key_pair();
@@ -1073,7 +1076,10 @@ async fn build_block_with_invalid_justification(
         extra_bytes: Bytes::new(),
     };
 
-    let dag = nodes[1].block_dag_storage.get_representation();
+    let dag = nodes[1]
+        .block_dag_storage
+        .get_representation()
+        .expect("dag representation");
 
     let sender = block_that_points_to_invalid_block.sender.clone();
 

@@ -1,0 +1,64 @@
+// References below to `formal/{rocq,tlaplus,sage}/slashing/`,
+// `FINDINGS.md`, `slashing-search-horizon.{md,sh}`, `slashing-traceability.md`,
+// `docs/theory/slashing/methodology/`, and `.mutants.toml` point at
+// audit-corpus artifacts preserved on the `analysis/slashing` branch.
+//
+// Property-based test for T-9.6 (self-regression caught post-fix #6).
+//
+// Theorem: T-9.6 (`t_9_6_self_regression_detected`,
+// formal/rocq/slashing/theories/BugFixSelfRegression.v).
+// Reference: docs/theory/slashing/design/09-bug-fixes-and-rationale.md §9.7.
+//
+// Property: for every block whose creator-justification cites a
+// previous block by the same sender at a *higher* sequence number,
+// `dispatch` classifies the block as `JustificationRegression` and
+// the post-fix #3 catch-all mints an EquivocationRecord.
+
+use proptest::prelude::*;
+
+use super::harness::SlashingTestHarness;
+use super::types::{base_seq_from_seq, BlockMeta, Status};
+
+proptest! {
+    #![proptest_config(ProptestConfig {
+        cases: 256,
+        .. ProptestConfig::default()
+    })]
+
+    #[test]
+    fn t_9_6_self_regression_always_detected(
+        early_seq in 0u64..10,
+        gap in 1u64..20,
+    ) {
+        let later_seq = early_seq + gap;
+        let mut harness = SlashingTestHarness::new(2, 100);
+
+        // v0 publishes at later_seq first.
+        let later = harness.sign_block("v0", later_seq);
+
+        // v0 publishes a regressing block at early_seq citing the
+        // later block as its creator-justification.
+        let regressing = later.wrapping_add(100_000);
+        harness.dag.blocks.insert(
+            regressing,
+            BlockMeta {
+                hash: regressing,
+                sender: "v0".into(),
+                seq: early_seq,
+                justifications: vec![("v0".into(), later)],
+                slash_targets: vec![],
+            },
+        );
+
+        let s = harness.dispatch(regressing);
+        prop_assert_eq!(s, Status::JustificationRegression,
+            "post-fix #6: any self-regressing block (early_seq={} citing later_seq={}) is detected",
+            early_seq, later_seq);
+        match base_seq_from_seq(early_seq) {
+            Some(base) => prop_assert!(harness.has_record("v0", base),
+                "post-fix #3: dispatcher mints record for positive-seq JustificationRegression"),
+            None => prop_assert!(harness.dag.invalid.contains(&regressing),
+                "seq=0 regression is invalid evidence but has no predecessor record key"),
+        }
+    }
+}

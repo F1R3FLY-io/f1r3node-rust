@@ -51,7 +51,7 @@ in {
     .unwrap();
 
     let signed_block = node
-        .add_block_from_deploys(&[deploy.clone()])
+        .add_block_from_deploys(std::slice::from_ref(&deploy))
         .await
         .unwrap();
 

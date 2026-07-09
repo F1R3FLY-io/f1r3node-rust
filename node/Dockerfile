@@ -58,6 +58,7 @@ COPY block-storage/ ./block-storage/
 COPY rspace++/ ./rspace++/
 COPY casper/ ./casper/
 COPY comm/ ./comm/
+COPY rho-pure-eval/ ./rho-pure-eval/
 COPY rholang/ ./rholang/
 COPY node/ ./node/
 
@@ -177,7 +178,7 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
 # drifting from node/Cargo.toml.
 ARG VERSION=unknown
 LABEL maintainer="F1r3fly.io LCA https://f1r3fly.io/"
-LABEL version="${VERSION}"
+LABEL version="0.4.16"
 
 # Set PETTA_PATH environment variable for MeTTa contract execution
 ENV PETTA_PATH=/opt/docker/PeTTa

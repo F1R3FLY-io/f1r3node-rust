@@ -1,3 +1,7 @@
+// 3.14 etc. in this file are arbitrary sample doubles for arithmetic
+// tests, not approximations of pi.
+#![allow(clippy::approx_constant)]
+
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::{
     BindPattern, EDiv, EEq, EGt, EGte, ELt, ELte, EMinus, EMod, EMult, ENeg, ENeq, EPlus, Expr,

@@ -313,11 +313,11 @@ mod tests {
             inputs.par.clone(),
             new_elist_expr(
                 vec![
-                    new_boundvar_par(1, create_bit_vector(&vec![1]), false),
-                    new_boundvar_par(0, create_bit_vector(&vec![0]), false),
+                    new_boundvar_par(1, create_bit_vector(&[1]), false),
+                    new_boundvar_par(0, create_bit_vector(&[0]), false),
                     new_gint_par(7, Vec::new(), false),
                 ],
-                create_bit_vector(&vec![0, 1]),
+                create_bit_vector(&[0, 1]),
                 false,
                 None,
             ),
@@ -360,7 +360,7 @@ mod tests {
           )
         }
     "#;
-        assert_equal_normalized(&rho1, &rho2);
+        assert_equal_normalized(rho1, rho2);
     }
 
     #[test]
@@ -451,13 +451,13 @@ mod tests {
             new_eset_expr(
                 vec![
                     new_eplus_par(
-                        new_boundvar_par(1, create_bit_vector(&vec![1]), false),
+                        new_boundvar_par(1, create_bit_vector(&[1]), false),
                         new_freevar_par(1, Vec::new()),
                     ),
                     new_gint_par(7, Vec::new(), false),
                     prepend_expr(new_gint_par(8, Vec::new(), false), new_freevar_expr(2), 0),
                 ],
-                create_bit_vector(&vec![1]),
+                create_bit_vector(&[1]),
                 true,
                 Some(new_freevar_var(0)),
             ),
@@ -511,11 +511,11 @@ mod tests {
                         value: Some(new_gstring_par("Seven".parse().unwrap(), Vec::new(), false)),
                     },
                     KeyValuePair {
-                        key: Some(new_boundvar_par(1, create_bit_vector(&vec![1]), false)),
+                        key: Some(new_boundvar_par(1, create_bit_vector(&[1]), false)),
                         value: Some(new_freevar_par(1, Vec::new())),
                     },
                 ],
-                create_bit_vector(&vec![1]),
+                create_bit_vector(&[1]),
                 true,
                 Some(new_freevar_var(0)),
             ),

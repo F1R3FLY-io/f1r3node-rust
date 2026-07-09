@@ -1,4 +1,5 @@
 // See casper/src/test/scala/coop/rchain/casper/helper/BlockGenerator.scala
+#![allow(clippy::too_many_arguments)]
 
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -30,7 +31,9 @@ pub async fn step(
     runtime_manager: &mut RuntimeManager,
     block: &BlockMessage,
 ) -> Result<(), CasperError> {
-    let dag = block_dag_storage.get_representation();
+    let dag = block_dag_storage
+        .get_representation()
+        .expect("dag representation");
     let (post_b1_state_hash, post_b1_processed_deploys) = compute_block_checkpoint(
         block_store,
         block,
@@ -87,7 +90,10 @@ fn inject_post_state_hash(
     updated_block.body.state.post_state_hash = post_state_hash;
     updated_block.body.deploys = processed_deploys;
     block_store.put(block.block_hash.clone(), &updated_block)?;
-    block_dag_storage.insert(&updated_block, false, false)?;
+    block_dag_storage.insert(
+        &updated_block,
+        block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal,
+    )?;
     Ok(())
 }
 
