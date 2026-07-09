@@ -27,7 +27,7 @@ x-rnode-env: &rnode-env
 
 services:
   validator1:
-    image: ${F1R3FLY_IMAGE:-sjc.ocir.io/axd0qezqa9z3/f1r3fly-rust:latest}
+    image: ${F1R3FLY_IMAGE:-us-sanjose-1.ocir.io/axd0qezqa9z3/f1r3fly-rust:latest}
     user: root
     restart: always
     container_name: rnode.validator1
@@ -57,7 +57,7 @@ services:
       - ./certs/validator1/node.key.pem:/var/lib/rnode/node.key.pem:ro
 
   validator2:
-    image: ${F1R3FLY_IMAGE:-sjc.ocir.io/axd0qezqa9z3/f1r3fly-rust:latest}
+    image: ${F1R3FLY_IMAGE:-us-sanjose-1.ocir.io/axd0qezqa9z3/f1r3fly-rust:latest}
     user: root
     restart: always
     container_name: rnode.validator2
@@ -87,7 +87,7 @@ services:
       - ./certs/validator2/node.key.pem:/var/lib/rnode/node.key.pem:ro
 
   readonly:
-    image: ${F1R3FLY_IMAGE:-sjc.ocir.io/axd0qezqa9z3/f1r3fly-rust:latest}
+    image: ${F1R3FLY_IMAGE:-us-sanjose-1.ocir.io/axd0qezqa9z3/f1r3fly-rust:latest}
     user: root
     restart: always
     container_name: rnode.readonly
