@@ -50,11 +50,16 @@ env:
   # supply-chain guarantee for the secret-bearing launch job: immutable, so a
   # repo takeover cannot move it. Bump ONLY via a reviewed PR after diffing
   # the old..new range in system-integration; never replace with a tag/branch.
+  # MUST be kept identical to .github/oci-validation.env (the Full OCI
+  # Validation workflow sources that file) — bump both in the same commit.
   SYSTEM_INTEGRATION_REF: 06f2020cc6c14c035c5bb08bffebc0ecad0294d9
-  # Pinned OCI CLI installer (release tag + sha256). The checksum fails closed
-  # if the tag is ever moved. Bump both together when upgrading.
+  # Pinned OCI CLI installer (release tag + sha256) and CLI version. The
+  # checksum fails closed if the tag is ever moved; OCI_CLI_VERSION pins what
+  # the installer pulls from PyPI (without it the installer floats to latest).
+  # Keep identical to oci-validation.yml; bump all three together.
   OCI_CLI_INSTALLER_URL: "https://raw.githubusercontent.com/oracle/oci-cli/v3.89.1/scripts/install/install.sh"
   OCI_CLI_INSTALLER_SHA256: "079dcc9a3e2a61ec692400e30169c9996b2998ac8c4e205198ed5863283fcb76"
+  OCI_CLI_VERSION: "3.89.1"
 
 jobs:
   # Build Docker image natively on each arch using Oracle Cloud self-hosted runners.
@@ -176,7 +181,8 @@ jobs:
           curl -fsSL --retry 5 --retry-delay 10 "$OCI_CLI_INSTALLER_URL" -o /tmp/oci-install.sh
           echo "$OCI_CLI_INSTALLER_SHA256  /tmp/oci-install.sh" | sha256sum -c -
           bash /tmp/oci-install.sh \
-            --accept-all-defaults --install-dir /opt/oci-cli --exec-dir /usr/local/bin
+            --accept-all-defaults --install-dir /opt/oci-cli --exec-dir /usr/local/bin \
+            --oci-cli-version "$OCI_CLI_VERSION"
           oci --version
 
       - name: Configure OCI auth from secrets
