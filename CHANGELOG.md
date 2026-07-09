@@ -4,6 +4,13 @@ All notable changes to the Rust implementation of F1r3node will be documented in
 This changelog is automatically generated from conventional commits.
 
 
+## [0.4.17] - 2026-07-09
+
+### CI
+
+- add scheduled reaper for leaked ephemeral OCI runners
+
+
 ## [0.4.16] - 2026-06-25
 
 ### Bug Fixes
