@@ -82,8 +82,20 @@ in {
       }
     } |
 
+    // Namespace policy: `serve` accepts registration; `lib` does not.
+    //
+    // The FIP promises importers of a `lib` process that it "is only
+    // permitted to create temporary names" (FIP §lib, line 25) --
+    // meaning it may not leave persistent artifacts in the tuplespace.
+    // Enforcing that requires either static AST scanning of the
+    // submitted `code` for persistent sends / receives / contracts,
+    // or a runtime name-lifetime mechanism (reified rspaces) that
+    // f1r3node-rust does not yet have. Until at least the static
+    // scan lands, we reject `lib` registrations entirely rather
+    // than accept them with an unenforceable safety guarantee that
+    // would mislead importers.
     contract v1Api(@"insertVersion", @ns, @deployerId, @projectId, @version, @code, ret) = {
-      if (ns == "lib" or ns == "serve") {
+      if (ns == "serve") {
         for (@store <- _versionedRegistryStore) {
           match store.get(ns).getOrElse((deployerId, projectId), {}).get(version) {
             Nil => {
@@ -102,12 +114,16 @@ in {
           }
         }
       } else {
+        // ns == "lib" (rejected pending enforcement), or unknown.
         ret!(false)
       }
     } |
 
     contract v1Api(@"deprecateVersion", @ns, @deployerId, @projectId, @version, ret) = {
-      if (ns == "lib" or ns == "serve") {
+      // Only `serve` is registrable (see insertVersion above), so
+      // only `serve` can be deprecated. `lib` and unknown namespaces
+      // never populate the store; reject symmetrically.
+      if (ns == "serve") {
         for (@store <- _versionedRegistryStore) {
           match store.get(ns).getOrElse((deployerId, projectId), {}).get(version) {
             Nil => {
@@ -142,7 +158,9 @@ in {
     } |
 
     contract v1Api(@"approveVersion", @ns, @deployerId, @projectId, @version, ret) = {
-      if (ns == "lib" or ns == "serve") {
+      // Only `serve` is registrable (see insertVersion above); reject
+      // `lib` and unknown namespaces symmetrically.
+      if (ns == "serve") {
         for (@store <- _versionedRegistryStore) {
           match store.get(ns).getOrElse((deployerId, projectId), {}).get(version) {
             Nil => {

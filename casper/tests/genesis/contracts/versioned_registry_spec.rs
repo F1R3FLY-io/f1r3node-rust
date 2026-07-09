@@ -22,7 +22,7 @@ use crate::util::genesis_builder::GenesisBuilder;
 /// register. If any is missing from `result.assertions` the test fails
 /// loudly rather than passing vacuously.
 const EXPECTED_TEST_NAMES: &[&str] = &[
-    "insertVersion_lib_happy_path",
+    "insertVersion_lib_rejected",
     "insertVersion_serve_happy_path",
     "insertVersion_duplicate_rejected",
     "insertVersion_bad_namespace_rejected",
