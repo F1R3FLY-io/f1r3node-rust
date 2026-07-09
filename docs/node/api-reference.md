@@ -422,8 +422,8 @@ Execute against a specific block's post-state.
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `term` | string | yes | Rholang source code |
-| `blockHash` | string | yes | Block hash to execute against |
-| `usePreStateHash` | bool | no | Use pre-state instead of post-state (default: false). **Note:** currently ignored by the server; always uses post-state |
+| `blockHash` | string | yes | Block hash to execute against (must not be empty) |
+| `usePreStateHash` | bool | no | Use pre-state instead of post-state (default: false) |
 
 ```bash
 curl -X POST http://localhost:40453/api/explore-deploy-by-block-hash \

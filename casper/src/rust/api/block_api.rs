@@ -184,7 +184,10 @@ pub struct ExploratoryDeployReadOnlyError;
 
 impl std::fmt::Display for ExploratoryDeployReadOnlyError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Exploratory deploy requires a read-only node")
+        write!(
+            f,
+            "Exploratory deploy can only be executed on read-only node"
+        )
     }
 }
 
@@ -1692,7 +1695,7 @@ impl BlockAPI {
                     let padded_hash = pad_hex_string(hash_str);
                     let hash_byte_string = hex::decode(&padded_hash).map_err(|_| {
                         eyre::Report::new(InvalidHashError(format!(
-                            "'{}' is not valid block hash",
+                            "Input hash value is not valid hex string: {}",
                             hash_str
                         )))
                     })?;
