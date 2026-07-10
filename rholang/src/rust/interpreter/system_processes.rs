@@ -1797,17 +1797,27 @@ impl SystemProcesses {
             return Err(illegal_argument_error("swipl_execute_petta"));
         };
 
-        // Common piece of code.
         if is_replay {
             produce(&previous_output, ack).await?;
             return Ok(previous_output);
         }
 
-        // Perform the execution and wrap in vector
-        let output = petta_execute(&metta_code).await?;
-        let output = vec![output];
+        let output = match petta_execute(&metta_code).await {
+            Ok(par) => vec![par],
+            Err(e) => {
+                return Err(InterpreterError::NonDeterministicProcessFailure {
+                    cause: Box::new(e),
+                    output_not_produced: vec![],
+                });
+            }
+        };
 
-        produce(&output, ack).await?;
+        if let Err(e) = produce(&output, ack).await {
+            return Err(InterpreterError::ProduceFailureWithOutput {
+                cause: Box::new(e),
+                output_not_produced: output.iter().map(|p| p.encode_to_vec()).collect(),
+            });
+        }
         Ok(output)
     }
 }
