@@ -86,8 +86,11 @@ pub async fn petta_execute(metta_code: &str) -> Result<Par, InterpreterError> {
     let mut metta_file = NamedTempFile::new()
         .map_err(|_| InterpreterError::SwiplError("Can't open temp file".into()))?;
     metta_file
-        .write(metta_code.as_bytes())
+        .write_all(metta_code.as_bytes())
         .map_err(|_| InterpreterError::SwiplError("Can't write MeTTa code to temp file".into()))?;
+    metta_file
+        .flush()
+        .map_err(|_| InterpreterError::SwiplError("Can't flush MeTTa temp file".into()))?;
 
     let metta_file_path = metta_file
         .path()
