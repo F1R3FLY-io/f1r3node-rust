@@ -1768,18 +1768,57 @@ impl SystemProcesses {
     /// Sends a single `Par` on the acknowledgment channel containing the execution result.
     /// The structure matches PeTTa's JSON output converted to Rholang types.
     ///
+    /// # Non-Deterministic Operation Flow
+    ///
+    /// This operation is registered as non-deterministic (see [`non_deterministic_ops`]) and
+    /// follows the standard non-det pattern for replay safety:
+    ///
+    /// **Play Mode (`is_replay = false`):**
+    /// 1. Execute `petta_execute()` to invoke SWI-Prolog with MeTTa code
+    /// 2. On success: produce output to ack channel, return `Ok(output)`, output is logged
+    /// 3. On PeTTa failure: return `NonDeterministicProcessFailure` (no produce, no output logged)
+    /// 4. On produce failure: return `ProduceFailureWithOutput` (output captured but not stored)
+    ///
+    /// **Replay Mode (`is_replay = true`):**
+    /// 1. Retrieve cached output from event log (via `previous_output`)
+    /// 2. Produce cached output to ack channel
+    /// 3. Return `Ok(previous_output)` without invoking `petta_execute()`
+    /// 4. This path is taken for both successful and failed executions
+    ///
+    /// # Error Handling and Replay Safety
+    ///
+    /// **Execution Errors (during play):**
+    /// - Wrapped in `NonDeterministicProcessFailure` to signal the dispatcher
+    /// - The dispatcher marks the produce event as failed (see `DispatchType::FailedNonDeterministicCall`)
+    /// - Failed event is recorded in the event log for replay
+    /// - No output is produced (ack channel remains empty, contract may deadlock or timeout)
+    ///
+    /// **During Replay:**
+    /// - Failed executions are replayed from the event log without re-invoking `petta_execute()`
+    /// - The same error is reproduced using cached failure information
+    /// - Ensures all validators agree on failures, preventing consensus divergence
+    ///
     /// # Error Conditions
     ///
     /// Returns `InterpreterError` for:
     /// - **Illegal argument error**: Wrong number of arguments or incorrect types
-    /// - **PeTTa not found**: `$PETTA_PATH` points to invalid location
-    /// - **Timeout**: Execution exceeds 10 seconds
-    /// - **MeTTa syntax error**: Invalid MeTTa code
-    /// - **JSON parse error**: PeTTa output is not valid JSON
-    /// - **Number overflow**: JSON number doesn't fit in i64
+    /// - **NonDeterministicProcessFailure**: PeTTa execution failed (timeout, syntax error, etc.)
+    ///   - Cause: `SwiplError` with details (PeTTa not found, timeout, parse error, etc.)
+    ///   - `output_not_produced`: Empty (no output was generated)
+    /// - **ProduceFailureWithOutput**: PeTTa succeeded but produce failed
+    ///   - Cause: RSpace produce error
+    ///   - `output_not_produced`: The PeTTa result that couldn't be stored
     ///
-    /// Errors are propagated to the Rholang contract and captured in the evaluation result's
+    /// All errors are propagated to the Rholang contract and captured in the evaluation result's
     /// error list.
+    ///
+    /// # See Also
+    ///
+    /// - [`petta_execute`] - Low-level PeTTa execution (in `swi_prolog_service`)
+    /// - [`non_deterministic_ops`] - Registry of non-deterministic body refs
+    /// - [`InterpreterError::NonDeterministicProcessFailure`] - Error type for failed non-det ops
+    /// - [`DispatchType::FailedNonDeterministicCall`] - Dispatcher handling for failed ops
+    /// - Tests: `swipl_petta_replay_spec.rs::test_petta_replay_error_consistency`
     pub async fn swipl_execute_petta(
         &self,
         contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
