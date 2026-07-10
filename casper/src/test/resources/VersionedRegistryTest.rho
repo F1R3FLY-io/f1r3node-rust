@@ -1,0 +1,388 @@
+// Step 3-5 probe for VersionedRegistry.rho.
+//
+// Bypasses RhoSpec (see regver-known-issues.md item #2 — RhoSpec is
+// silently passing across the whole suite). Instead, this probe calls
+// `rho:test:assertAck` directly. Every assertion is recorded into the
+// TestResultCollector; the Rust spec asserts on both presence (no
+// vacuous passes) and success of every recorded assertion.
+
+new
+  v1Api(`rho:registry:v1:internal`),
+  legacyOps(`rho:registry:ops`),
+  opsV1(`rho:registry:ops:1.0.0`),
+  assert(`rho:test:assertAck`),
+
+  // sequencing channels for each test
+  ins1, ack1,
+  ins2, ack2,
+  ins3a, ins3b, ack3,
+  ins4, ack4,
+  ins5a, dep5, ack5,
+  dep6, ack6,
+  ins7a, dep7, app7, ack7,
+
+  // Step 4 channels
+  legacyUri, v1Uri, ack8,
+  parseLib, ack9,
+  parseReg, ack10,
+  parseBad, ack11,
+
+  // Step 5 channels — resolver test cases
+  lk12a, lk12b, ack12,
+  lk13a, lk13b, lk13c, lk13d, ack13,
+  lk14a, lk14b, lk14c, lk14d, ack14,
+  lk15a, lk15b, lk15c, ack15,
+  lk16a, lk16b, lk16c, ack16,
+  lk17a, lk17b, lk17c, lk17d, ack17,
+  lk18, ack18,
+  lk19, ack19,
+
+  // Step 6 channels — public rho:registry:1.0.0 import
+  getReg(`rho:registry:1.0.0`), notify20, reg20Ch, ins20, ack20,
+  getReg21(`rho:registry:1.0.0`), notify21, reg21Ch, ins21, lk21, ack21,
+
+  // Step 7 channels — deprecation notify wiring
+  ins22, lk22, notify22, dep22, ack22,
+  ins23, lk23a, lk23b, lk23c, n23a, n23b, n23c, dep23, ack23,
+  ins24, lk24, dep24, app24, redep24, n24, ack24,
+
+  // Step 5b/C precursor: registry_lookup unified dispatcher
+  registryLookup(`rho:internal:registry_lookup`),
+  rl25, ack25,
+  ins26, rl26, ack26,
+  ins27, rl27, dispatch27, ack27
+in {
+  // 1. insertVersion under lib happy path returns true
+  v1Api!("insertVersion", "lib", "deployerA".toByteArray(), "projA", "1.0.0", "codeA", *ins1) |
+  for (@r1 <- ins1) {
+    assert!("insertVersion_lib_happy_path", 1, (true, "==", r1),
+            "First insertVersion under lib should return true", *ack1)
+  } |
+
+  // 2. insertVersion under serve happy path returns true
+  v1Api!("insertVersion", "serve", "deployerB".toByteArray(), "projB", "1.0.0", "codeB", *ins2) |
+  for (@r2 <- ins2) {
+    assert!("insertVersion_serve_happy_path", 1, (true, "==", r2),
+            "First insertVersion under serve should return true", *ack2)
+  } |
+
+  // 3. Duplicate (ns, deployer, proj, ver) returns false on the second insert
+  v1Api!("insertVersion", "lib", "deployerDup".toByteArray(), "projDup", "1.0.0", "first", *ins3a) |
+  for (@_ <- ins3a) {
+    v1Api!("insertVersion", "lib", "deployerDup".toByteArray(), "projDup", "1.0.0", "second", *ins3b) |
+    for (@r3 <- ins3b) {
+      assert!("insertVersion_duplicate_rejected", 1, (false, "==", r3),
+              "Duplicate insertVersion should return false", *ack3)
+    }
+  } |
+
+  // 4. Non-lib/serve namespace returns false
+  v1Api!("insertVersion", "other", "deployerC".toByteArray(), "projC", "1.0.0", "code", *ins4) |
+  for (@r4 <- ins4) {
+    assert!("insertVersion_bad_namespace_rejected", 1, (false, "==", r4),
+            "Non-lib/serve namespace should return false", *ack4)
+  } |
+
+  // 5. deprecateVersion of a known entry returns true
+  v1Api!("insertVersion", "lib", "deployerDep".toByteArray(), "projDep", "1.0.0", "code", *ins5a) |
+  for (@_ <- ins5a) {
+    v1Api!("deprecateVersion", "lib", "deployerDep".toByteArray(), "projDep", "1.0.0", *dep5) |
+    for (@r5 <- dep5) {
+      assert!("deprecateVersion_sets_flag", 1, (true, "==", r5),
+              "deprecateVersion of a known entry should return true", *ack5)
+    }
+  } |
+
+  // 6. deprecateVersion of an unknown entry returns false
+  v1Api!("deprecateVersion", "lib", "ghostDeployer".toByteArray(), "ghostProj", "1.0.0", *dep6) |
+  for (@r6 <- dep6) {
+    assert!("deprecateVersion_unknown_rejected", 1, (false, "==", r6),
+            "deprecateVersion of an unknown entry should return false", *ack6)
+  } |
+
+  // 7. approveVersion of a deprecated entry returns true
+  v1Api!("insertVersion", "lib", "deployerApr".toByteArray(), "projApr", "1.0.0", "code", *ins7a) |
+  for (@_ <- ins7a) {
+    v1Api!("deprecateVersion", "lib", "deployerApr".toByteArray(), "projApr", "1.0.0", *dep7) |
+    for (@_ <- dep7) {
+      v1Api!("approveVersion", "lib", "deployerApr".toByteArray(), "projApr", "1.0.0", *app7) |
+      for (@r7 <- app7) {
+        assert!("approveVersion_clears_flag", 1, (true, "==", r7),
+                "approveVersion after deprecate should return true", *ack7)
+      }
+    }
+  } |
+
+  // 8. opsV1 buildUri produces the same URI as legacy ops on the same input
+  legacyOps!("buildUri", "probe-bytes".toByteArray(), *legacyUri) |
+  opsV1!("buildUri", "probe-bytes".toByteArray(), *v1Uri) |
+  for (@uLegacy <- legacyUri & @uV1 <- v1Uri) {
+    assert!("opsV1_buildUri_matches_legacy", 1, (uLegacy, "==", uV1),
+            "rho:registry:ops:1.0.0 buildUri must match legacy rho:registry:ops", *ack8)
+  } |
+
+  // 9. opsV1 parseVersionedUri on a well-formed lib URN returns the tuple
+  opsV1!("parseVersionedUri", "rho:lib:1.0.0:abc123:myproj:2.6.3", *parseLib) |
+  for (@parsed <- parseLib) {
+    assert!("opsV1_parseVersionedUri_lib", 1,
+            (("lib", "1.0.0", "abc123", "myproj", "2.6.3"), "==", parsed),
+            "Parsed lib URN should be the expected 5-tuple", *ack9)
+  } |
+
+  // 10. opsV1 parseVersionedUri on a registry URN returns the short shape
+  opsV1!("parseVersionedUri", "rho:registry:1.0.0", *parseReg) |
+  for (@parsed <- parseReg) {
+    assert!("opsV1_parseVersionedUri_registry", 1,
+            (("registry", "1.0.0", Nil, Nil, Nil), "==", parsed),
+            "Parsed registry URN should be (\"registry\", \"1.0.0\", Nil, Nil, Nil)", *ack10)
+  } |
+
+  // 11. opsV1 parseVersionedUri on malformed input returns Nil
+  opsV1!("parseVersionedUri", "not-a-versioned-urn", *parseBad) |
+  for (@parsed <- parseBad) {
+    assert!("opsV1_parseVersionedUri_malformed", 1, (Nil, "==", parsed),
+            "Malformed URN should parse to Nil", *ack11)
+  } |
+
+  // ─── Step 5: lookupVersion resolver tests ────────────────────────────
+  //
+  // Step 5 tests use plain-string deployer IDs (not .toByteArray()) so
+  // the URN-parsed pk field matches the stored map key directly. The
+  // store layout from Step 5+ is (pk, projectId) -> Map[version -> entry].
+
+  // 12. exact-version lookup returns the inserted code
+  v1Api!("insertVersion", "lib", "alice", "p12", "1.0.0", "code12", *lk12a) |
+  for (@_ <- lk12a) {
+    v1Api!("lookupVersion", "rho:lib:1.0.0:alice:p12:1.0.0", Nil, *lk12b) |
+    for (@code <- lk12b) {
+      assert!("resolve_exact_version", 1, ("code12", "==", code),
+              "Exact version lookup should return the stored code", *ack12)
+    }
+  } |
+
+  // 13. patch wildcard returns the highest matching patch
+  v1Api!("insertVersion", "lib", "alice", "p13", "1.0.0", "patch0", *lk13a) |
+  for (@_ <- lk13a) {
+    v1Api!("insertVersion", "lib", "alice", "p13", "1.0.1", "patch1", *lk13b) |
+    for (@_ <- lk13b) {
+      v1Api!("insertVersion", "lib", "alice", "p13", "1.0.2", "patch2", *lk13c) |
+      for (@_ <- lk13c) {
+        v1Api!("lookupVersion", "rho:lib:1.*:alice:p13:1.0.*", Nil, *lk13d) |
+        for (@code <- lk13d) {
+          assert!("resolve_patch_wildcard", 1, ("patch2", "==", code),
+                  "1.0.* should resolve to highest patch (1.0.2)", *ack13)
+        }
+      }
+    }
+  } |
+
+  // 14. minor wildcard picks the highest minor.patch under a major
+  v1Api!("insertVersion", "lib", "alice", "p14", "1.0.5", "minor10x", *lk14a) |
+  for (@_ <- lk14a) {
+    v1Api!("insertVersion", "lib", "alice", "p14", "1.2.3", "minor12x", *lk14b) |
+    for (@_ <- lk14b) {
+      v1Api!("insertVersion", "lib", "alice", "p14", "1.1.9", "minor11x", *lk14c) |
+      for (@_ <- lk14c) {
+        v1Api!("lookupVersion", "rho:lib:1.*:alice:p14:1.*", Nil, *lk14d) |
+        for (@code <- lk14d) {
+          assert!("resolve_minor_wildcard", 1, ("minor12x", "==", code),
+                  "1.* should resolve to the highest minor.patch (1.2.3)", *ack14)
+        }
+      }
+    }
+  } |
+
+  // 15. major wildcard picks the highest version across majors
+  v1Api!("insertVersion", "lib", "alice", "p15", "1.5.0", "major1", *lk15a) |
+  for (@_ <- lk15a) {
+    v1Api!("insertVersion", "lib", "alice", "p15", "2.0.0", "major2", *lk15b) |
+    for (@_ <- lk15b) {
+      v1Api!("lookupVersion", "rho:lib:1.*:alice:p15:*", Nil, *lk15c) |
+      for (@code <- lk15c) {
+        assert!("resolve_major_wildcard", 1, ("major2", "==", code),
+                "* should resolve to the highest version (2.0.0)", *ack15)
+      }
+    }
+  } |
+
+  // 16. prereleases are skipped by wildcards (per FIP)
+  v1Api!("insertVersion", "lib", "alice", "p16", "1.0.0", "stable", *lk16a) |
+  for (@_ <- lk16a) {
+    v1Api!("insertVersion", "lib", "alice", "p16", "1.1.0-alpha", "prerelease", *lk16b) |
+    for (@_ <- lk16b) {
+      v1Api!("lookupVersion", "rho:lib:1.*:alice:p16:1.*", Nil, *lk16c) |
+      for (@code <- lk16c) {
+        assert!("resolve_prerelease_skipped", 1, ("stable", "==", code),
+                "1.* should resolve to 1.0.0 stable, skipping 1.1.0-alpha", *ack16)
+      }
+    }
+  } |
+
+  // 17. deprecated versions are skipped; lookup falls back to the next
+  v1Api!("insertVersion", "lib", "alice", "p17", "1.0.0", "old", *lk17a) |
+  for (@_ <- lk17a) {
+    v1Api!("insertVersion", "lib", "alice", "p17", "1.0.1", "newer", *lk17b) |
+    for (@_ <- lk17b) {
+      v1Api!("deprecateVersion", "lib", "alice", "p17", "1.0.1", *lk17c) |
+      for (@_ <- lk17c) {
+        v1Api!("lookupVersion", "rho:lib:1.*:alice:p17:1.0.*", Nil, *lk17d) |
+        for (@code <- lk17d) {
+          assert!("resolve_deprecated_skipped", 1, ("old", "==", code),
+                  "Deprecating 1.0.1 should make 1.0.* fall back to 1.0.0", *ack17)
+        }
+      }
+    }
+  } |
+
+  // 18. no matching (pk, project) returns Nil
+  v1Api!("lookupVersion", "rho:lib:1.0.0:nobody:nothing:1.0.0", Nil, *lk18) |
+  for (@code <- lk18) {
+    assert!("resolve_miss_returns_nil", 1, (Nil, "==", code),
+            "Lookup of an unknown (pk, project) should return Nil", *ack18)
+  } |
+
+  // 19. malformed URN returns Nil
+  v1Api!("lookupVersion", "not-a-versioned-urn", Nil, *lk19) |
+  for (@code <- lk19) {
+    assert!("resolve_malformed_returns_nil", 1, (Nil, "==", code),
+            "Malformed URN should return Nil", *ack19)
+  } |
+
+  // ─── Step 6: public rho:registry:1.0.0 entry point ───────────────────
+  //
+  // The FIP-canonical import shape is
+  //   for (reg <- getReg!?(*notify)) { reg!(...) ... }
+  // After Step 6 this works against the public URN.
+
+  // 20. getReg!?(*notify) returns a usable v1 API bundle.
+  //     We exercise the bundle by calling insertVersion and asserting
+  //     the call lands and returns `true`.
+  getReg!(*reg20Ch, *notify20) |
+  for (@reg <- reg20Ch) {
+    @reg!("insertVersion", "lib", "alice", "p20", "1.0.0", "code20", *ins20) |
+    for (@r <- ins20) {
+      assert!("public_v1_returns_v1Api_bundle", 1, (true, "==", r),
+              "Calling insertVersion via the public rho:registry:1.0.0 bundle should return true", *ack20)
+    }
+  } |
+
+  // 21. The public URN composes with lookupVersion end-to-end:
+  //     insert via the public bundle, then look up via the same bundle.
+  getReg21!(*reg21Ch, *notify21) |
+  for (@reg <- reg21Ch) {
+    @reg!("insertVersion", "lib", "alice", "p21", "1.0.0", "publicCode", *ins21) |
+    for (@_ <- ins21) {
+      @reg!("lookupVersion", "rho:lib:1.0.0:alice:p21:1.0.0", Nil, *lk21) |
+      for (@code <- lk21) {
+        assert!("public_v1_insert_then_lookup", 1, ("publicCode", "==", code),
+                "insertVersion then lookupVersion through the public URN should round-trip", *ack21)
+      }
+    }
+  } |
+
+  // ─── Step 7: deprecation notify wiring ───────────────────────────────
+  //
+  // lookupVersion records the caller's notify channel on the resolved
+  // entry; deprecateVersion fires
+  //   ("deprecated", deployerId, projectId, version)
+  // on each recorded channel. Channels are per-resolution, so each
+  // lookupVersion call adds an independent listener.
+
+  // 22. Single notify channel: lookup with notify, deprecate, observe.
+  v1Api!("insertVersion", "lib", "alice", "p22", "1.0.0", "code22", *ins22) |
+  for (@_ <- ins22) {
+    v1Api!("lookupVersion", "rho:lib:1.0.0:alice:p22:1.0.0", *notify22, *lk22) |
+    for (@_ <- lk22) {
+      v1Api!("deprecateVersion", "lib", "alice", "p22", "1.0.0", *dep22) |
+      for (@_ <- dep22 & @msg <- notify22) {
+        assert!("notify_fires_to_one_listener", 1,
+                (("deprecated", "alice", "p22", "1.0.0"), "==", msg),
+                "Deprecation should fire a single recorded notify", *ack22)
+      }
+    }
+  } |
+
+  // 23. Multiple notify channels from independent lookups all fire.
+  v1Api!("insertVersion", "lib", "alice", "p23", "1.0.0", "code23", *ins23) |
+  for (@_ <- ins23) {
+    v1Api!("lookupVersion", "rho:lib:1.0.0:alice:p23:1.0.0", *n23a, *lk23a) |
+    v1Api!("lookupVersion", "rho:lib:1.0.0:alice:p23:1.0.0", *n23b, *lk23b) |
+    v1Api!("lookupVersion", "rho:lib:1.0.0:alice:p23:1.0.0", *n23c, *lk23c) |
+    for (@_ <- lk23a & @_ <- lk23b & @_ <- lk23c) {
+      v1Api!("deprecateVersion", "lib", "alice", "p23", "1.0.0", *dep23) |
+      for (@_ <- dep23 & @ma <- n23a & @mb <- n23b & @mc <- n23c) {
+        assert!("notify_fires_to_many_listeners", 1,
+                ((ma, mb, mc), "==",
+                 (("deprecated", "alice", "p23", "1.0.0"),
+                  ("deprecated", "alice", "p23", "1.0.0"),
+                  ("deprecated", "alice", "p23", "1.0.0"))),
+                "All three recorded notifies should fire on a single deprecate", *ack23)
+      }
+    }
+  } |
+
+  // 24. approve then deprecate re-fires the warning.
+  v1Api!("insertVersion", "lib", "alice", "p24", "1.0.0", "code24", *ins24) |
+  for (@_ <- ins24) {
+    v1Api!("lookupVersion", "rho:lib:1.0.0:alice:p24:1.0.0", *n24, *lk24) |
+    for (@_ <- lk24) {
+      v1Api!("deprecateVersion", "lib", "alice", "p24", "1.0.0", *dep24) |
+      for (@_ <- dep24 & @firstFire <- n24) {
+        v1Api!("approveVersion", "lib", "alice", "p24", "1.0.0", *app24) |
+        for (@_ <- app24) {
+          v1Api!("deprecateVersion", "lib", "alice", "p24", "1.0.0", *redep24) |
+          for (@_ <- redep24 & @secondFire <- n24) {
+            assert!("approve_then_deprecate_refires", 1,
+                    ((firstFire, secondFire), "==",
+                     (("deprecated", "alice", "p24", "1.0.0"),
+                      ("deprecated", "alice", "p24", "1.0.0"))),
+                    "Both deprecations should fire the notify", *ack24)
+          }
+        }
+      }
+    }
+  } |
+
+  // ─── Step 5b/C precursor: registry_lookup unified dispatcher ─────────
+  //
+  // The new rho:internal:registry_lookup URN dispatches both legacy
+  // and versioned URNs. eval_new will later be rewritten to call it
+  // for every `new x(URN)` binding; for now we exercise it directly.
+
+  // 25. Legacy URN: registry_lookup returns the stored Par from urn_map.
+  //     The stored value for rho:registry:lookup is the same write-only
+  //     bundle that `new x(URN)` already binds — we compare to that.
+  registryLookup!(`rho:registry:lookup`, *rl25) |
+  for (@stored <- rl25) {
+    new control(`rho:registry:lookup`) in {
+      assert!("registry_lookup_legacy_urn_matches_urn_map", 1,
+              (stored, "==", *control),
+              "registry_lookup on a legacy URN should return the same Par new-with-URN binds", *ack25)
+    }
+  } |
+
+  // 26. Versioned URN: registry_lookup delegates to v1Api's lookupVersion
+  //     and the resolved code comes back on our ret channel.
+  v1Api!("insertVersion", "lib", "alice", "p26", "1.0.0", "code26", *ins26) |
+  for (@_ <- ins26) {
+    registryLookup!(`rho:lib:1.0.0:alice:p26:1.0.0`, *rl26) |
+    for (@code <- rl26) {
+      assert!("registry_lookup_versioned_urn_delegates_to_v1Api", 1,
+              ("code26", "==", code),
+              "registry_lookup on a versioned URN should produce the resolved code", *ack26)
+    }
+  } |
+
+  // 27. registry_lookup composes with `for(@x <- registry_lookup!?(URN))`
+  //     — the desugaring eval_new will use. Verifies the for-bound x
+  //     is the resolved value directly.
+  v1Api!("insertVersion", "lib", "alice", "p27", "1.0.0", "code27", *ins27) |
+  for (@_ <- ins27) {
+    registryLookup!(`rho:lib:1.0.0:alice:p27:1.0.0`, *rl27) |
+    for (@boundProcess <- rl27) {
+      assert!("registry_lookup_forms_eval_new_desugaring", 1,
+              ("code27", "==", boundProcess),
+              "for(@x <- registry_lookup!?(URN)) binds x to the resolved code", *ack27)
+    }
+  }
+}
