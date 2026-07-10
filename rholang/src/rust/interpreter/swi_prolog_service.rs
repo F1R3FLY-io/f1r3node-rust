@@ -138,9 +138,9 @@ pub async fn petta_execute(metta_code: &str) -> Result<Par, InterpreterError> {
                 format!("Error while joining with the PeTTa task: {}", join_error).into(),
             )
         })?
-        .map_err(|elapsed| {
+        .map_err(|_elapsed| {
             InterpreterError::SwiplError(
-                format!("MeTTa execution timed out after {}", elapsed).into(),
+                format!("MeTTa execution timed out after {} seconds", timeout_secs).into(),
             )
         })?
         .map_err(|e| {
