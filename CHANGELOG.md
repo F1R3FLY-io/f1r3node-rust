@@ -4,6 +4,13 @@ All notable changes to the Rust implementation of F1r3node will be documented in
 This changelog is automatically generated from conventional commits.
 
 
+## [0.4.18] - 2026-07-10
+
+### CI
+
+- pass aggregator gates on skipped pipeline, harden OCI auth step
+
+
 ## [0.4.17] - 2026-07-09
 
 ### CI
