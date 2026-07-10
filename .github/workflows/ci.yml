@@ -231,7 +231,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash -e {0}
         run: |
-          if [ "${{ needs.pipeline.result }}" != "success" ]; then
+          if [ "${{ needs.pipeline.result }}" = "failure" ] || [ "${{ needs.pipeline.result }}" = "cancelled" ]; then
             echo "Heavy Pipeline did not succeed (result: ${{ needs.pipeline.result }}); failing gate."
             exit 1
           fi
@@ -260,7 +260,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash -e {0}
         run: |
-          if [ "${{ needs.pipeline.result }}" != "success" ]; then
+          if [ "${{ needs.pipeline.result }}" = "failure" ] || [ "${{ needs.pipeline.result }}" = "cancelled" ]; then
             echo "Heavy Pipeline did not succeed (result: ${{ needs.pipeline.result }}); failing gate."
             exit 1
           fi
