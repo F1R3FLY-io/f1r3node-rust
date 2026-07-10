@@ -99,6 +99,12 @@ pub async fn petta_execute(metta_code: &str) -> Result<Par, InterpreterError> {
             "Can't convert metta_file path to string".into(),
         ))?;
 
+    if metta_file_path.contains('\'') {
+        return Err(InterpreterError::SwiplError(
+            "Temp file path contains unsafe character (single quote)".into(),
+        ));
+    }
+
     // Get the path to PeTTa
     let metta_module_path: PathBuf = {
         let petta_path = PathBuf::from(env::var("PETTA_PATH").unwrap_or("./PeTTa".into()));
