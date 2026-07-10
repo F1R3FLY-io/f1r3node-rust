@@ -1,4 +1,5 @@
 use prost::Message;
+use rholang::rust::interpreter::rho_type::{RhoList, RhoMap, RhoNumber, RhoString};
 use rholang::rust::interpreter::swi_prolog_service::petta_execute;
 use rholang::rust::interpreter::test_utils::utils::should_skip_petta_test;
 
@@ -26,7 +27,23 @@ async fn test_petta_execute_simple_swap() {
     );
     let par = result.unwrap();
 
-    // Verify we got a valid Par structure back
+    let expected_map = RhoMap::create_par(
+        vec![(
+            RhoString::create_par("results".into()),
+            RhoList::create_par(vec![RhoList::create_par(vec![
+                RhoString::create_par("Pair".into()),
+                RhoNumber::create_par(3),
+                RhoNumber::create_par(1),
+            ])]),
+        )]
+        .into_iter()
+        .collect(),
+    );
+
+    assert_eq!(
+        par, expected_map,
+        "Result should be {{\"results\": [\"(Pair 3 1)\"]}}"
+    );
     assert!(
         !par.encode_to_vec().is_empty(),
         "Par structure should not be empty"
@@ -53,7 +70,19 @@ async fn test_petta_execute_fibonacci() {
     );
     let par = result.unwrap();
 
-    // Verify we got a valid Par structure back (result should be 55)
+    let expected_map = RhoMap::create_par(
+        vec![(
+            RhoString::create_par("results".into()),
+            RhoList::create_par(vec![RhoNumber::create_par(55)]),
+        )]
+        .into_iter()
+        .collect(),
+    );
+
+    assert_eq!(
+        par, expected_map,
+        "fib(10) should return {{\"results\": [55]}}"
+    );
     assert!(
         !par.encode_to_vec().is_empty(),
         "Par structure should not be empty"
@@ -75,6 +104,20 @@ async fn test_petta_execute_simple_arithmetic() {
         result.err()
     );
     let par = result.unwrap();
+
+    let expected_map = RhoMap::create_par(
+        vec![(
+            RhoString::create_par("results".into()),
+            RhoList::create_par(vec![RhoNumber::create_par(3)]),
+        )]
+        .into_iter()
+        .collect(),
+    );
+
+    assert_eq!(
+        par, expected_map,
+        "1 + 2 should return {{\"results\": [3]}}"
+    );
     assert!(
         !par.encode_to_vec().is_empty(),
         "Par structure should not be empty"
@@ -87,20 +130,14 @@ async fn test_petta_execute_invalid_syntax() {
         return;
     }
 
-    // This should fail due to invalid MeTTa syntax
     let metta_code = "(= incomplete";
     let result = petta_execute(metta_code).await;
 
-    // We expect this to either error or return an error result
-    // The exact behavior depends on PeTTa's error handling
-    if result.is_err() {
-        println!("Got expected error: {:?}", result.err());
-    } else {
-        println!(
-            "PeTTa handled invalid syntax without error: {:?}",
-            result.ok()
-        );
-    }
+    assert!(
+        result.is_err(),
+        "Invalid MeTTa syntax should fail: got {:?}",
+        result.ok()
+    );
 }
 
 #[tokio::test]
