@@ -175,15 +175,16 @@ pub async fn petta_execute(metta_code: &str) -> Result<Par, InterpreterError> {
 /// |-----------|--------------|-------|
 /// | `null` | `RhoNil` | Represents absence of value |
 /// | `boolean` | `RhoBoolean` | Direct mapping |
-/// | `number` | `RhoNumber` | **Must fit in i64**, otherwise returns error |
+/// | `number` | `RhoNumber` | **Must be integer in i64 range**, floats rejected |
 /// | `string` | `RhoString` | Direct mapping, supports Unicode |
 /// | `array` | `RhoList` | Elements recursively converted |
 /// | `object` | `RhoMap` | Keys stringified, values recursively converted |
 ///
 /// # Important Constraints
 ///
-/// - **Numbers must fit in i64**: JSON numbers that exceed `i64::MIN` to `i64::MAX` will cause
-///   an error. Floating-point numbers are truncated to integers.
+/// - **Only integers are supported**: JSON numbers must be integers in the range `i64::MIN` to
+///   `i64::MAX`. Floating-point numbers and integers outside this range are explicitly rejected
+///   with descriptive errors to prevent silent truncation and maintain consensus safety.
 /// - **Object keys become strings**: All JSON object keys are converted to `RhoString` in the
 ///   resulting `RhoMap`.
 /// - **Recursive conversion**: Nested structures (arrays in arrays, objects in objects, etc.)
@@ -224,9 +225,32 @@ fn value_to_par(v: Value) -> Result<Par, InterpreterError> {
         Value::Null => Ok(RhoNil::create_par()),
         Value::Bool(b) => Ok(RhoBoolean::create_par(b)),
         Value::Number(n) => {
-            let n64 = n.as_i64().ok_or(InterpreterError::SwiplError(
-                "Could not parse number as i64".into(),
-            ))?;
+            if !n.is_i64() {
+                if n.is_f64() {
+                    return Err(InterpreterError::SwiplError(
+                        format!(
+                            "Floating-point numbers are not supported. Got: {}. \
+                             Only integers in the range {} to {} are allowed.",
+                            n,
+                            i64::MIN,
+                            i64::MAX
+                        )
+                        .into(),
+                    ));
+                } else {
+                    return Err(InterpreterError::SwiplError(
+                        format!(
+                            "Number exceeds i64 range. Got: {}. \
+                             Only integers in the range {} to {} are allowed.",
+                            n,
+                            i64::MIN,
+                            i64::MAX
+                        )
+                        .into(),
+                    ));
+                }
+            }
+            let n64 = n.as_i64().unwrap();
             Ok(RhoNumber::create_par(n64))
         }
         Value::String(s) => Ok(RhoString::create_par(s)),
@@ -436,6 +460,42 @@ mod tests {
     fn test_value_to_par_unicode_string() {
         let result = value_to_par(json!("Hello, 世界! 🌍")).unwrap();
         assert_eq!(result, RhoString::create_par("Hello, 世界! 🌍".into()));
+    }
+
+    #[test]
+    fn test_value_to_par_float_rejected() {
+        let result = value_to_par(json!(3.14));
+        assert!(result.is_err(), "Floating-point numbers should be rejected");
+        let err = result.unwrap_err();
+        let err_msg = format!("{:?}", err);
+        assert!(
+            err_msg.contains("Floating-point") && err_msg.contains("not supported"),
+            "Error should mention floating-point not supported, got: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn test_value_to_par_large_uint_rejected() {
+        let large_uint = u64::MAX;
+        let result = value_to_par(json!(large_uint));
+        assert!(
+            result.is_err(),
+            "Numbers exceeding i64::MAX should be rejected"
+        );
+        let err = result.unwrap_err();
+        let err_msg = format!("{:?}", err);
+        assert!(
+            err_msg.contains("exceeds i64 range") || err_msg.contains("not supported"),
+            "Error should mention range exceeded, got: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn test_value_to_par_min_i64() {
+        let result = value_to_par(json!(i64::MIN)).unwrap();
+        assert_eq!(result, RhoNumber::create_par(i64::MIN));
     }
 
     /// Test that petta_execute times out after 10 seconds for long-running computations.
