@@ -129,6 +129,7 @@ mod tests {
                 grpc_max_recv_message_size: 16 * 1024 * 1024,
                 port_http: 40403,
                 port_admin_http: 40405,
+                http_max_body_bytes: 16 * 1024 * 1024,
                 max_blocks_limit: 100,
                 enable_reporting: true,
                 keep_alive_time: Duration::from_secs(60),

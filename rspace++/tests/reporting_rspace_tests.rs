@@ -21,7 +21,7 @@ enum Pattern {
 struct StringMatch;
 
 impl Match<Pattern, String, String> for StringMatch {
-    fn get(&self, _p: Pattern, a: String) -> Option<String> { Some(a) }
+    fn get(&self, _p: &Pattern, a: &String) -> Option<String> { Some(a.clone()) }
 }
 
 #[allow(clippy::type_complexity)]

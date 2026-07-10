@@ -335,13 +335,13 @@ fn classify_interpreter_error(ie: &InterpreterError) -> (StatusCode, &'static st
         UserAbortError => (S::UNPROCESSABLE_ENTITY, "user_abort", ie.to_string()),
 
         ReduceError(_)
+        | IfConditionTypeError { .. }
         | MethodNotDefined { .. }
         | MethodArgumentNumberMismatch { .. }
         | OperatorNotDefined { .. }
         | OperatorExpectedError { .. }
         | SubstituteError(_)
-        | SortMatchError(_)
-        | IfConditionTypeError { .. } => (
+        | SortMatchError(_) => (
             S::UNPROCESSABLE_ENTITY,
             "rholang_execution_error",
             ie.to_string(),
@@ -478,15 +478,17 @@ pub async fn explore_deploy_by_block_hash_handler(
     State(app_state): State<AppState>,
     AppJson(request): AppJson<ExploreDeployRequest>,
 ) -> Response {
-    let request_block_hash = if request.block_hash.is_empty() {
-        None
-    } else {
-        Some(request.block_hash)
-    };
+    let block_hash = request.block_hash.trim().to_string();
+    if block_hash.is_empty() {
+        return AppError(eyre::Report::new(InvalidHashError(
+            "blockHash is required".to_string(),
+        )))
+        .into_response();
+    }
 
     match app_state
         .web_api
-        .exploratory_deploy(request.term, request_block_hash, false)
+        .exploratory_deploy(request.term, Some(block_hash), request.use_pre_state_hash)
         .await
     {
         Ok(response) => Json(response).into_response(),
