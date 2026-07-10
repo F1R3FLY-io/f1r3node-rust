@@ -130,6 +130,42 @@ which swipl
 tail -f ~/.rnode/rnode.log
 ```
 
+## Error Handling and Replay Behavior
+
+### Non-Deterministic Operation
+
+`rho:petta:execute` is a **non-deterministic operation**. This means:
+
+1. **During play execution:** PeTTa is invoked and the result (or error) is cached
+2. **During replay:** The cached result is used without re-invoking PeTTa
+3. **Consensus safety:** All validators must agree on both successes and failures
+
+### Error Recording
+
+When PeTTa execution fails (timeout, syntax error, etc.):
+- The error is wrapped in `NonDeterministicProcessFailure`
+- The failure is recorded in the event log
+- No output is produced to the acknowledgment channel
+- During replay, the same error is reproduced from the event log
+
+This ensures that:
+- Validators reach consensus on failures as well as successes
+- Failed operations don't cause replay divergence
+- Contract behavior is deterministic across all validators
+
+### Failure Modes
+
+| Error Type | Description | Replay Behavior |
+|------------|-------------|-----------------|
+| Timeout | Execution exceeds 10 seconds | Cached failure replayed |
+| Syntax Error | Invalid MeTTa code | Cached failure replayed |
+| PeTTa Not Found | Missing SWI-Prolog or PeTTa | Cached failure replayed |
+| Number Overflow | Result number exceeds i64 | Cached failure replayed |
+| Floating Point | Non-integer JSON number | Cached failure replayed |
+
+All failures prevent output from being sent on the acknowledgment channel,
+which may cause the calling contract to deadlock or timeout.
+
 ## Security Notes
 
 ⚠️ **Important Security Considerations: this feature is EXPERIMENTAL.**
