@@ -8,12 +8,6 @@ use crypto::rust::signatures::signatures_alg::SignaturesAlg;
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::GenesisBuilder;
 
-// Scala comments:
-// Uncomment this to use the debugger on M2
-// May need to modify if architecture required is different or if path is different. See ./scripts/build_rust_libraries.sh
-// System.setProperty("jna.library.path", "../rspace++/target/x86_64-apple-darwin/debug/")
-
-// Scala comments:
 //put a new casper instance at the start of each
 //test since we cannot reset it
 #[tokio::test]
@@ -32,7 +26,7 @@ async fn multi_parent_casper_should_create_blocks_based_on_deploys() {
     )
     .unwrap();
     let block = standalone_node
-        .create_block_unsafe(&[deploy.clone()])
+        .create_block_unsafe(std::slice::from_ref(&deploy))
         .await
         .unwrap();
     let deploys: Vec<_> = block.body.deploys.iter().map(|pd| &pd.deploy).collect();
@@ -101,7 +95,7 @@ new out, rl(`rho:registry:lookup`), helloCh in {{
     .unwrap();
 
     let block0 = standalone_node
-        .add_block_from_deploys(&[register_deploy.clone()])
+        .add_block_from_deploys(std::slice::from_ref(&register_deploy))
         .await
         .unwrap();
 
@@ -123,7 +117,7 @@ new out, rl(`rho:registry:lookup`), helloCh in {{
     .unwrap();
 
     let block1 = standalone_node
-        .add_block_from_deploys(&[call_deploy.clone()])
+        .add_block_from_deploys(std::slice::from_ref(&call_deploy))
         .await
         .unwrap();
 

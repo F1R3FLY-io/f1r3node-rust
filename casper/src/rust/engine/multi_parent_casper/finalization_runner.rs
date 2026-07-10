@@ -92,6 +92,7 @@ pub(crate) fn build_finalization_context<
     }
 }
 
+#[tracing::instrument(level = "info", skip_all)]
 pub(crate) async fn run_queued_finalizer(
     ctx: FinalizationContext,
     finalizer_task_in_progress: Arc<AtomicBool>,
@@ -240,7 +241,7 @@ pub(crate) async fn compute_last_finalized_block(
                         // Guard will reset finalization_in_progress flag on drop
                         tracing::debug!("Finalization completed");
                         tracing::debug!(
-                            target: "f1r3fly.finalizer.effect.timing",
+                            target: "f1r3fly.casper.finalizer.effect.timing",
                             "Finalization effect timing: finalized_blocks={}, process_finalized_ms={}",
                             finalized_set.len(),
                             process_finalized_started.elapsed().as_millis()
@@ -251,7 +252,7 @@ pub(crate) async fn compute_last_finalized_block(
                 })
                 .await?;
             tracing::debug!(
-                target: "f1r3fly.finalizer.effect.timing",
+                target: "f1r3fly.casper.finalizer.effect.timing",
                 "record_directly_finalized_total_ms={}",
                 effect_started.elapsed().as_millis()
             );
@@ -288,7 +289,7 @@ pub(crate) async fn compute_last_finalized_block(
         ))
     })?;
     tracing::debug!(
-        target: "f1r3fly.last_finalized_block.timing",
+        target: "f1r3fly.casper.lfb.timing",
         "last_finalized_block timing: finalizer_ms={}, read_block_ms={}, total_ms={}, new_lfb_found={}",
         finalizer_ms,
         read_started.elapsed().as_millis(),

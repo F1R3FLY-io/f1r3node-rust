@@ -155,10 +155,6 @@ impl ConfigMapper<Options> for NodeConf {
             Self::try_override_value(&mut self.storage.data_dir, run.data_dir);
 
             // TLS fields
-            Self::try_override_bool(
-                &mut self.tls.secure_random_non_blocking,
-                run.tls_secure_random_non_blocking,
-            );
             Self::try_override_value(&mut self.tls.key_path, run.tls_key_path);
             Self::try_override_value(&mut self.tls.certificate_path, run.tls_certificate_path);
 
@@ -440,7 +436,6 @@ mod tests {
         "--disable-state-exporter",
         "--tls-certificate-path=/var/lib/rnode/node.certificate.pem",
         "--tls-key-path=/var/lib/rnode/node.key.pem",
-        "--tls-secure-random-non-blocking",
         "--api-host=localhost",
         "--api-port-grpc-external=11111",
         "--api-port-grpc-internal=11111",
@@ -579,6 +574,9 @@ mod tests {
             grpc_port: Some(40401),
             grpc_max_recv_message_size: 16777216,
             profile: Some("docker".to_string()),
+            log_level: None,
+            log_format: None,
+            log_sink: None,
             subcommand: Some(OptionsSubCommand::Run(RunOptions {
                 config_file: None,
                 thread_pool_size: None,
@@ -608,7 +606,6 @@ mod tests {
                 protocol_max_message_consumers: Some(111111),
                 tls_key_path: Some(PathBuf::from("/var/lib/rnode/node.key.pem")),
                 tls_certificate_path: Some(PathBuf::from("/var/lib/rnode/node.certificate.pem")),
-                tls_secure_random_non_blocking: true,
                 api_host: Some("localhost".to_string()),
                 api_port_grpc_external: Some(11111),
                 api_port_grpc_internal: Some(11111),
@@ -725,6 +722,7 @@ mod tests {
                 grpc_max_recv_message_size: 16777216,
                 port_http: 40403,
                 port_admin_http: 40405,
+                http_max_body_bytes: 16777216,
                 max_blocks_limit: 100,
                 enable_reporting: false,
                 keep_alive_time: Duration::from_secs(2),
@@ -740,7 +738,6 @@ mod tests {
             tls: crate::rust::configuration::model::TlsConf {
                 certificate_path: PathBuf::from("/var/lib/rnode/node.certificate.pem"),
                 key_path: PathBuf::from("/var/lib/rnode/node.key.pem"),
-                secure_random_non_blocking: false,
                 custom_certificate_location: false,
                 custom_key_location: false,
             },
@@ -819,6 +816,7 @@ mod tests {
                 tick_interval: std::time::Duration::from_secs(10),
                 influxdb_endpoint: crate::rust::configuration::model::InfluxDbEndpoint::default(),
             },
+            logging: Default::default(),
             dev_mode: false,
             dev: crate::rust::configuration::model::DevConf {
                 deployer_private_key: None,
@@ -830,9 +828,9 @@ mod tests {
         default_config.override_config_values(options);
 
         // Verify that CLI options have overridden the default values
-        assert_eq!(default_config.standalone, true);
-        assert_eq!(default_config.autopropose, false);
-        assert_eq!(default_config.dev_mode, true);
+        assert!(default_config.standalone);
+        assert!(!default_config.autopropose);
+        assert!(default_config.dev_mode);
 
         // Protocol server fields
         assert_eq!(
@@ -843,10 +841,10 @@ mod tests {
             default_config.protocol_server.host,
             Some("localhost".to_string())
         );
-        assert_eq!(default_config.protocol_server.allow_private_addresses, true);
-        assert_eq!(default_config.protocol_server.use_random_ports, true);
-        assert_eq!(default_config.protocol_server.dynamic_ip, true);
-        assert_eq!(default_config.protocol_server.no_upnp, true);
+        assert!(default_config.protocol_server.allow_private_addresses);
+        assert!(default_config.protocol_server.use_random_ports);
+        assert!(default_config.protocol_server.dynamic_ip);
+        assert!(default_config.protocol_server.no_upnp);
         assert_eq!(default_config.protocol_server.port, 11111);
         assert_eq!(
             default_config.protocol_server.grpc_max_recv_message_size,
@@ -859,10 +857,10 @@ mod tests {
             111111
         );
         assert_eq!(default_config.protocol_server.max_message_consumers, 111111);
-        assert_eq!(default_config.protocol_server.disable_state_exporter, true);
+        assert!(default_config.protocol_server.disable_state_exporter);
 
         // Protocol client fields
-        assert_eq!(default_config.protocol_client.disable_lfs, true);
+        assert!(default_config.protocol_client.disable_lfs);
         assert_eq!(default_config.protocol_client.bootstrap, "rnode://de6eed5d00cf080fc587eeb412cb31a75fd10358@52.119.8.109?protocol=40400&discovery=40404".to_string());
         assert_eq!(
             default_config.protocol_client.network_timeout,
@@ -895,7 +893,7 @@ mod tests {
         );
 
         // API server fields
-        assert_eq!(default_config.api_server.enable_reporting, true);
+        assert!(default_config.api_server.enable_reporting);
         assert_eq!(default_config.api_server.port_grpc_external, 11111);
         assert_eq!(default_config.api_server.port_grpc_internal, 11111);
         assert_eq!(default_config.api_server.port_http, 11111);
@@ -935,7 +933,6 @@ mod tests {
         );
 
         // TLS fields
-        assert_eq!(default_config.tls.secure_random_non_blocking, true);
         assert_eq!(
             default_config.tls.key_path,
             PathBuf::from("/var/lib/rnode/node.key.pem")
@@ -946,11 +943,11 @@ mod tests {
         );
 
         // Metrics fields
-        assert_eq!(default_config.metrics.prometheus, true);
-        assert_eq!(default_config.metrics.influxdb, true);
-        assert_eq!(default_config.metrics.influxdb_udp, true);
-        assert_eq!(default_config.metrics.zipkin, true);
-        assert_eq!(default_config.metrics.sigar, true);
+        assert!(default_config.metrics.prometheus);
+        assert!(default_config.metrics.influxdb);
+        assert!(default_config.metrics.influxdb_udp);
+        assert!(default_config.metrics.zipkin);
+        assert!(default_config.metrics.sigar);
 
         // Dev fields
         assert_eq!(
@@ -1141,12 +1138,11 @@ mod tests {
             default_config.casper.genesis_ceremony.autogen_shard_size,
             111111
         );
-        assert_eq!(
+        assert!(
             default_config
                 .casper
                 .genesis_ceremony
-                .genesis_validator_mode,
-            true
+                .genesis_validator_mode
         );
     }
 }

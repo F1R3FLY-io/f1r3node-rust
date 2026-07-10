@@ -508,10 +508,7 @@ pub async fn stream<T: HorizonRequesterOps>(
 
                 Some(message) = store_items_message_receiver.recv() => {
                     if let Err(e) = processor.process_store_items_message(message).await {
-                        tracing::error!(
-                            "LFS forward-horizon: stream terminating due to processing error: {:?}",
-                            e
-                        );
+                        tracing::error!(error = ?e, "LFS forward-horizon store items processing failed; terminating stream");
                         *last_error_for_stream.lock().expect("last_error lock") = Some(e);
                         break;
                     }
@@ -539,10 +536,7 @@ pub async fn stream<T: HorizonRequesterOps>(
 
                 Some(resend_flag) = request_rx.recv() => {
                     if let Err(e) = processor.request_next(resend_flag).await {
-                        tracing::error!(
-                            "LFS forward-horizon: stream terminating due to request error: {:?}",
-                            e
-                        );
+                        tracing::error!(error = ?e, "LFS forward-horizon request processing failed; terminating stream");
                         *last_error_for_stream.lock().expect("last_error lock") = Some(e);
                         break;
                     }
@@ -733,9 +727,9 @@ mod tests {
     struct NoopImporter;
 
     impl TrieImporter for NoopImporter {
-        fn set_history_items(&self, _data: Vec<(Blake2b256Hash, Vec<u8>)>) -> () {}
-        fn set_data_items(&self, _data: Vec<(Blake2b256Hash, Vec<u8>)>) -> () {}
-        fn set_root(&self, _key: &Blake2b256Hash) -> () {}
+        fn set_history_items(&self, _data: Vec<(Blake2b256Hash, Vec<u8>)>) {}
+        fn set_data_items(&self, _data: Vec<(Blake2b256Hash, Vec<u8>)>) {}
+        fn set_root(&self, _key: &Blake2b256Hash) {}
     }
 
     impl RSpaceImporter for NoopImporter {
@@ -762,9 +756,9 @@ mod tests {
     }
 
     impl TrieImporter for RecordingImporter {
-        fn set_history_items(&self, _data: Vec<(Blake2b256Hash, Vec<u8>)>) -> () {}
-        fn set_data_items(&self, _data: Vec<(Blake2b256Hash, Vec<u8>)>) -> () {}
-        fn set_root(&self, key: &Blake2b256Hash) -> () {
+        fn set_history_items(&self, _data: Vec<(Blake2b256Hash, Vec<u8>)>) {}
+        fn set_data_items(&self, _data: Vec<(Blake2b256Hash, Vec<u8>)>) {}
+        fn set_root(&self, key: &Blake2b256Hash) {
             self.recorded.lock().unwrap().insert(key.clone());
         }
     }

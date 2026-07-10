@@ -11,6 +11,58 @@
 
 ---
 
+## Error Responses
+
+All HTTP endpoints return errors as structured JSON. Every non-2xx response body conforms to this schema:
+
+```json
+{
+  "error": "block_not_found",
+  "message": "Block not found: 3bfdf56f"
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `error` | Machine-readable error kind. Stable across node versions — safe to switch on in client code. |
+| `message` | Human-readable description. May change between releases. |
+
+### Status codes
+
+| Code | Meaning | Common `error` values |
+|------|---------|----------------------|
+| `400` | Client sent invalid input | `invalid_request_body`, `invalid_path_parameter`, `invalid_query_parameter`, `invalid_hash`, `illegal_argument`, `rholang_bad_term`, `readonly_node_required`, `validator_node_required`|
+| `404` | Requested resource not found | `block_not_found`, `deploy_not_found`, `endpoint_not_found` |
+| `405` | HTTP method not allowed for this path | `method_not_allowed` |
+| `422` | Input is valid but execution failed | `rholang_execution_error`, `out_of_phlogistons`, `user_abort`, `aggregate_error` |
+| `409` | Expected state conflict (empty mempool) | `no_new_deploys` |
+| `500` | Node-side failure | `interpreter_internal_error`, `runtime_error`, `replay_failure`, `signing_error`, `kv_store_error`, `history_error`, `system_runtime_error`, `stream_error`, `lock_error`, `other_error`, `unknown_error` |
+| `502` | Upstream or peer communication failure | `comm_error`, `external_service_error` |
+
+### Read-only-only endpoints on validators
+
+The following endpoints run exploratory deploys internally and are only available on read-only nodes. On validator nodes they return `400 readonly_node_required`:
+
+- `POST /api/explore-deploy`
+- `POST /api/explore-deploy-by-block-hash`
+- `POST /api/estimate-cost`
+- `GET /api/balance/{address}`
+- `GET /api/registry/{uri}`
+- `GET /api/validators`
+- `GET /api/validator/{pubkey}`
+- `GET /api/epoch/rewards`
+
+```json
+HTTP/1.1 400 Bad Request
+Content-Type: application/json
+
+{"error": "readonly_node_required", "message": "Exploratory deploy requires a read-only node"}
+```
+
+Route these requests to a read-only node (typically port 40453). `GET /api/status` exposes `isValidator` and `isReadOnly` so clients can pick a target dynamically.
+
+---
+
 ## HTTP REST API (port 40403)
 
 ### `GET /api/status`
@@ -75,11 +127,11 @@ All block endpoints support `?view=full|summary`. Single-item endpoints default 
 
 #### `GET /api/block/{hash}`
 
-Get a block by hash. Default: full (with deploys).
+Get a block by hash or hex prefix. Default view: full.
 
 | Parameter | Location | Required | Description |
 |-----------|----------|----------|-------------|
-| `hash` | path | yes | Block hash (hex) |
+| `hash` | path | yes | Full 64-char hex block hash, or a hex prefix of at least 6 characters for prefix lookup |
 | `view` | query | no | `full` (default) or `summary` |
 
 ```bash
@@ -89,9 +141,16 @@ curl "http://localhost:40403/api/block/3bfdf56f...?view=summary"
 
 Full response includes `blockInfo` (header with `isFinalized`) + `deploys` array. Summary omits `deploys`.
 
+| Status | Condition |
+|--------|-----------|
+| `200` | Block found |
+| `400` | Hash shorter than 6 chars or contains non-hex characters (`invalid_hash`) |
+| `404` | No block matching the hash or prefix (`block_not_found`) |
+| `500` | Node-side failure |
+
 #### `GET /api/last-finalized-block`
 
-Get the last finalized block. Default: full.
+Get the last finalized block. Default view: full.
 
 | Parameter | Location | Required | Description |
 |-----------|----------|----------|-------------|
@@ -104,11 +163,11 @@ curl "http://localhost:40403/api/last-finalized-block?view=summary"
 
 #### `GET /api/blocks/{depth}`
 
-Get recent blocks by depth. Default: summary.
+Get recent blocks by depth. Default view: summary.
 
 | Parameter | Location | Required | Description |
 |-----------|----------|----------|-------------|
-| `depth` | path | yes | Number of block heights to return |
+| `depth` | path | yes | Number of most-recent blocks to return; clamped to the configured maximum |
 | `view` | query | no | `summary` (default) or `full` |
 
 ```bash
@@ -118,12 +177,12 @@ curl "http://localhost:40403/api/blocks/5?view=full"
 
 #### `GET /api/blocks/{start}/{end}`
 
-Get blocks by height range. Default: summary.
+Get blocks by height range. Default view: summary.
 
 | Parameter | Location | Required | Description |
 |-----------|----------|----------|-------------|
 | `start` | path | yes | Start block height (inclusive) |
-| `end` | path | yes | End block height (inclusive) |
+| `end` | path | yes | End block height (inclusive); clamped to the configured maximum range |
 | `view` | query | no | `summary` (default) or `full` |
 
 ```bash
@@ -132,7 +191,7 @@ curl http://localhost:40403/api/blocks/100/110
 
 #### `GET /api/blocks`
 
-Get the most recent block. Default: summary.
+Get the most recent block. Default view: summary.
 
 | Parameter | Location | Required | Description |
 |-----------|----------|----------|-------------|
@@ -148,7 +207,7 @@ Check if a block is finalized. Returns `true` or `false`.
 
 | Parameter | Location | Required | Description |
 |-----------|----------|----------|-------------|
-| `hash` | path | yes | Block hash (hex) |
+| `hash` | path | yes | Full 64-char hex block hash |
 
 ```bash
 curl http://localhost:40403/api/is-finalized/3bfdf56f...
@@ -194,13 +253,21 @@ curl -X POST http://localhost:40413/api/deploy \
   }'
 ```
 
-#### `GET /api/deploy/{id}`
+| Status | Condition |
+|--------|-----------|
+| `200` | Deploy accepted; body is the deploy ID (hex string) |
+| `400` | Malformed body or invalid field value: read-only node, wrong shard ID, forbidden key, phlo price below minimum, deploy expired (`invalid_request_body`, `illegal_argument`, `rholang_bad_term`) |
+| `422` | Term valid but execution failed (`rholang_execution_error`, `out_of_phlogistons`, `user_abort`) |
+| `500` | Node-side failure (`interpreter_internal_error`, `replay_failure`, `signing_error`) |
+| `502` | Peer communication failure (`comm_error`) |
 
-Get deploy execution details.
+#### `GET /api/deploy/{deploy_id}`
+
+Get deploy execution details by deploy ID.
 
 | Parameter | Location | Required | Description |
 |-----------|----------|----------|-------------|
-| `id` | path | yes | Deploy ID (hex signature) |
+| `deploy_id` | path | yes | Hex-encoded deploy ID (deploy signature) |
 | `view` | query | no | `full` (default) or `summary` |
 
 ```bash
@@ -230,9 +297,48 @@ curl "http://localhost:40403/api/deploy/abc123...?view=summary"
 
 **Summary** returns only: `deployId`, `blockHash`, `blockNumber`, `timestamp`, `cost`, `errored`, `isFinalized`.
 
+| Status | Condition |
+|--------|-----------|
+| `200` | Deploy found |
+| `400` | Deploy ID is not valid hex (`invalid_hash`) |
+| `404` | No deploy with this ID found in any finalized block (`deploy_not_found`) |
+| `500` | Node-side failure |
+
+#### `GET /api/deploy-finalization-status/{deploy_sig_hex}`
+
+Query the canonical-state finalization status of a deploy by its signature.
+
+Prefer this over polling `is-finalized` on the containing block. A block can finalize while some of its deploys' effects are dropped during a merge — polling by block hash would return `true` misleadingly.
+
+| Parameter | Location | Required | Description |
+|-----------|----------|----------|-------------|
+| `deploy_sig_hex` | path | yes | Hex-encoded deploy signature (with or without `0x` prefix) |
+
+```bash
+curl http://localhost:40403/api/deploy-finalization-status/3044...
+```
+
+```json
+{"state": "Finalized", "rejectionCount": 0, "latestBlockHash": "3bfdf56f..."}
+```
+
+Possible `state` values: `Finalized`, `Failed`, `Pending`, `Expired`.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `state` | string | Deploy finalization state |
+| `rejectionCount` | int | Number of times the deploy was rejected during finalization |
+| `latestBlockHash` | string/null | Hex block hash where the deploy was last seen; `null` if never included |
+
+| Status | Condition |
+|--------|-----------|
+| `200` | Status determined |
+| `400` | Signature is not valid hex (`invalid_hash`) |
+| `500` | Node-side failure |
+
 #### `GET /api/prepare-deploy`
 
-Get the next valid `validAfterBlockNumber` for deploy construction.
+Get the next sequence number for the node's validator (or `-1` if not a validator). Use `seqNumber` as `validAfterBlockNumber` in the deploy data — it is the validator's next expected sequence number, not the deployer's.
 
 **Parameters:** None
 
@@ -244,11 +350,44 @@ curl http://localhost:40403/api/prepare-deploy
 {"names": [], "seqNumber": 20}
 ```
 
+#### `POST /api/prepare-deploy`
+
+Same as GET, but additionally pre-generates unforgeable private names for a given deployer and timestamp. Equivalent to gRPC `previewPrivateNames`.
+
+**Request body:**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `deployer` | string | yes | Deployer public key (hex) |
+| `timestamp` | int | yes | Deploy timestamp (ms since epoch) |
+| `nameQty` | int | yes | Number of unforgeable names to generate (max 1024) |
+
+```bash
+curl -X POST http://localhost:40403/api/prepare-deploy \
+  -H 'Content-Type: application/json' \
+  -d '{"deployer": "04abc...", "timestamp": 1700000000000, "nameQty": 2}'
+```
+
+```json
+{
+  "names": ["a1b2c3...", "d4e5f6..."],
+  "seqNumber": 20
+}
+```
+
+The `names` array contains hex-encoded unforgeable names that will be produced by the deployer at the given timestamp. Clients can use these to pre-sign contracts that create private channels before deploying.
+
+| Status | Condition |
+|--------|-----------|
+| `200` | Sequence number and (optionally) names returned |
+| `400` | Malformed body or invalid deployer hex (`invalid_request_body`, `invalid_hash`) |
+| `500` | Node-side failure (`runtime_error`) |
+
 ---
 
 ### Exploratory Deploy
 
-Execute Rholang code in read-only mode. No block is created, no phlo is consumed. **Readonly nodes only.**
+Execute Rholang code in read-only mode. No block is created, no phlogiston is consumed. **Read-only nodes only.**
 
 #### `POST /api/explore-deploy`
 
@@ -266,6 +405,14 @@ curl -X POST http://localhost:40453/api/explore-deploy \
   -d '{"term": "new ret in { ret!(42) }"}'
 ```
 
+| Status | Condition |
+|--------|-----------|
+| `200` | Execution succeeded; returns channel data |
+| `400` | Malformed body, invalid Rholang, or node is not read-only (`invalid_request_body`, `rholang_bad_term`, `readonly_node_required`) |
+| `422` | Term valid but execution failed (`rholang_execution_error`, `out_of_phlogistons`, `user_abort`) |
+| `500` | Node-side failure (`interpreter_internal_error`) |
+| `502` | External service failure (`external_service_error`) |
+
 #### `POST /api/explore-deploy-by-block-hash`
 
 Execute against a specific block's post-state.
@@ -275,7 +422,7 @@ Execute against a specific block's post-state.
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `term` | string | yes | Rholang source code |
-| `blockHash` | string | yes | Block hash to execute against |
+| `blockHash` | string | yes | Block hash to execute against (must not be empty) |
 | `usePreStateHash` | bool | no | Use pre-state instead of post-state (default: false) |
 
 ```bash
@@ -283,6 +430,15 @@ curl -X POST http://localhost:40453/api/explore-deploy-by-block-hash \
   -H 'Content-Type: application/json' \
   -d '{"term": "new ret in { ret!(42) }", "blockHash": "3bfdf56f...", "usePreStateHash": false}'
 ```
+
+| Status | Condition |
+|--------|-----------|
+| `200` | Execution succeeded; returns channel data |
+| `400` | Malformed body, invalid Rholang, invalid block hash, or node is not read-only (`invalid_request_body`, `rholang_bad_term`, `invalid_hash`, `readonly_node_required`) |
+| `404` | Specified block not found (`block_not_found`) |
+| `422` | Term valid but execution failed (`rholang_execution_error`, `out_of_phlogistons`, `user_abort`) |
+| `500` | Node-side failure (`interpreter_internal_error`) |
+| `502` | External service failure (`external_service_error`) |
 
 ---
 
@@ -310,11 +466,50 @@ curl -X POST http://localhost:40453/api/data-at-name-by-block-hash \
   }'
 ```
 
+| Status | Condition |
+|--------|-----------|
+| `200` | Data found |
+| `400` | Malformed body or invalid block hash (`invalid_request_body`, `invalid_hash`) |
+| `404` | Specified block not found (`block_not_found`) |
+| `500` | Node-side failure (`interpreter_internal_error`) |
+
+---
+
+### Reporting
+
+Block execution trace. **Read-only nodes only** (requires block report replay). Available when the node is started with reporting enabled.
+
+#### `GET /reporting/trace`
+
+Full per-deploy execution trace for a block — every produce, consume, and COMM event for every user deploy and system deploy. Use for debugging orphan sends and auditing contract execution.
+
+| Parameter | Location | Required | Description |
+|-----------|----------|----------|-------------|
+| `blockHash` | query | yes | Full 64-char hex block hash |
+| `forceReplay` | query | no | If `true`, discard any cached trace and re-replay the block (default: `false`) |
+
+```bash
+curl "http://localhost:40453/reporting/trace?blockHash=3bfdf56f...&forceReplay=false"
+```
+
+```json
+{
+  "report": { "deploys": [ ... ], "systemDeploys": [ ... ] }
+}
+```
+
+| Status | Condition |
+|--------|-----------|
+| `200` | Trace report returned |
+| `400` | `blockHash` query parameter is missing, empty, or contains non-hex characters; or node is not read-only (`invalid_query_parameter`, `invalid_hash`, `readonly_node_required`) |
+| `404` | Specified block not found (`block_not_found`) |
+| `500` | Node-side failure (`replay_failure`, `kv_store_error`, `lock_error`, `unknown_error`) |
+
 ---
 
 ### High-Level Query Endpoints
 
-Convenience endpoints wrapping exploratory deploy or genesis config. Unless noted, **readonly nodes only**.
+Convenience endpoints wrapping exploratory deploy or genesis config. Unless noted, **read-only nodes only**.
 
 #### `GET /api/balance/{address}`
 
@@ -322,7 +517,7 @@ Vault balance for a wallet address.
 
 | Parameter | Location | Required | Description |
 |-----------|----------|----------|-------------|
-| `address` | path | yes | REV address (Base58, starts with `1111`) — not raw hex public key |
+| `address` | path | yes | REV wallet address (Base58-encoded, starts with `1111`) |
 | `block_hash` | query | no | Block hash to query against (defaults to LFB) |
 
 ```bash
@@ -332,6 +527,14 @@ curl http://localhost:40453/api/balance/11112BpS5mG8...
 ```json
 {"address": "11112BpS5mG8...", "balance": 1000000, "blockNumber": 42, "blockHash": "3bfdf56f..."}
 ```
+
+| Status | Condition |
+|--------|-----------|
+| `200` | Balance returned |
+| `400` | Invalid block hash or node is not read-only (`invalid_hash`, `readonly_node_required`) |
+| `404` | Specified block not found (`block_not_found`) |
+| `422` | Exploratory deploy execution failed (`rholang_execution_error`, `out_of_phlogistons`) |
+| `500` | Node-side failure (`interpreter_internal_error`) |
 
 #### `GET /api/registry/{uri}`
 
@@ -349,6 +552,14 @@ curl http://localhost:40453/api/registry/rho:id:abc...
 ```json
 {"uri": "rho:id:abc...", "data": [<RhoExpr>], "blockNumber": 42, "blockHash": "3bfdf56f..."}
 ```
+
+| Status | Condition |
+|--------|-----------|
+| `200` | Data returned |
+| `400` | Invalid block hash or node is not read-only (`invalid_hash`, `readonly_node_required`) |
+| `404` | Specified block not found (`block_not_found`) |
+| `422` | Exploratory deploy execution failed (`rholang_execution_error`, `out_of_phlogistons`) |
+| `500` | Node-side failure (`interpreter_internal_error`) |
 
 #### `GET /api/validators`
 
@@ -375,13 +586,21 @@ curl http://localhost:40453/api/validators
 }
 ```
 
+| Status | Condition |
+|--------|-----------|
+| `200` | Validator set returned |
+| `400` | Invalid block hash or node is not read-only (`invalid_hash`, `readonly_node_required`) |
+| `404` | Specified block not found (`block_not_found`) |
+| `422` | Exploratory deploy execution failed (`rholang_execution_error`) |
+| `500` | Node-side failure (`interpreter_internal_error`) |
+
 #### `GET /api/validator/{pubkey}`
 
 Status of a specific validator — whether bonded and current stake. Queries the PoS contract (`getBonds`).
 
 | Parameter | Location | Required | Description |
 |-----------|----------|----------|-------------|
-| `pubkey` | path | yes | Validator public key (hex) |
+| `pubkey` | path | yes | Validator secp256k1 public key as a 65-byte uncompressed hex string |
 | `block_hash` | query | no | Block hash to query against (defaults to LFB) |
 
 ```bash
@@ -395,16 +614,24 @@ Bonded validator:
 
 Unknown key:
 ```json
-{"publicKey": "aaaa", "isBonded": false, "stake": null, "blockNumber": 4, "blockHash": "7701282c..."}
+{"publicKey": "04aaaa...", "isBonded": false, "stake": null, "blockNumber": 4, "blockHash": "7701282c..."}
 ```
+
+| Status | Condition |
+|--------|-----------|
+| `200` | Status returned |
+| `400` | Invalid public key or block hash (`illegal_argument`, `invalid_hash`, `readonly_node_required`) |
+| `404` | Specified block not found (`block_not_found`) |
+| `422` | Exploratory deploy execution failed (`rholang_execution_error`) |
+| `500` | Node-side failure (`interpreter_internal_error`) |
 
 #### `GET /api/bond-status/{pubkey}`
 
-Check if a public key is bonded. HTTP equivalent of gRPC `bondStatus`. Uses `BlockAPI::bond_status` directly — **available on all node types** (no exploratory deploy).
+Check if a public key is bonded. Uses `BlockAPI::bond_status` directly — **available on all node types**, no exploratory deploy required.
 
 | Parameter | Location | Required | Description |
 |-----------|----------|----------|-------------|
-| `pubkey` | path | yes | Validator public key (hex) |
+| `pubkey` | path | yes | Validator secp256k1 public key as a 65-byte uncompressed hex string |
 
 ```bash
 curl http://localhost:40403/api/bond-status/04837a4cff...
@@ -413,6 +640,12 @@ curl http://localhost:40403/api/bond-status/04837a4cff...
 ```json
 {"publicKey": "04837a4cff...", "isBonded": true}
 ```
+
+| Status | Condition |
+|--------|-----------|
+| `200` | Status returned |
+| `400` | Invalid public key format (`illegal_argument`) |
+| `500` | Node-side failure (`runtime_error`) |
 
 #### `GET /api/epoch`
 
@@ -437,9 +670,18 @@ curl http://localhost:40403/api/epoch
 }
 ```
 
+| Status | Condition |
+|--------|-----------|
+| `200` | Epoch info returned |
+| `400` | Invalid block hash (`invalid_hash`) |
+| `404` | Specified block not found (`block_not_found`) |
+| `500` | Node-side failure (`runtime_error`) |
+
 #### `GET /api/epoch/rewards`
 
 Current epoch rewards from the PoS contract (`getCurrentEpochRewards`). Returns a map of validator public keys to their accumulated rewards.
+
+If the node is desynced from the network, the Rholang execution may fail with an arithmetic error (e.g. overflow in reward calculation). This returns `422 rholang_execution_error`, not `400`.
 
 | Parameter | Location | Required | Description |
 |-----------|----------|----------|-------------|
@@ -463,6 +705,14 @@ curl http://localhost:40453/api/epoch/rewards
   "blockHash": "2ee3df7f..."
 }
 ```
+
+| Status | Condition |
+|--------|-----------|
+| `200` | Rewards returned |
+| `400` | Invalid block hash or node is not read-only (`invalid_hash`, `readonly_node_required`) |
+| `404` | Specified block not found (`block_not_found`) |
+| `422` | Execution failed, e.g. arithmetic overflow due to node desync (`rholang_execution_error`) |
+| `500` | Node-side failure (`interpreter_internal_error`) |
 
 #### `POST /api/estimate-cost`
 
@@ -488,6 +738,14 @@ curl -X POST http://localhost:40453/api/estimate-cost \
 {"cost": 204, "blockNumber": 3, "blockHash": "2ee3df7f..."}
 ```
 
+| Status | Condition |
+|--------|-----------|
+| `200` | Cost estimated |
+| `400` | Malformed body, invalid Rholang, invalid block hash, or node is not read-only (`invalid_request_body`, `rholang_bad_term`, `invalid_hash`, `readonly_node_required`) |
+| `404` | Specified block not found (`block_not_found`) |
+| `422` | Term valid but execution failed (`rholang_execution_error`, `out_of_phlogistons`) |
+| `500` | Node-side failure (`interpreter_internal_error`) |
+
 ---
 
 ### Admin API (port 40405)
@@ -499,8 +757,15 @@ Propose a new block containing pending deploys. Validator nodes only.
 **Parameters:** None
 
 ```bash
-curl -X POST http://localhost:40415/api/propose
+curl -X POST http://localhost:40405/api/propose
 ```
+
+| Status | Condition |
+|--------|-----------|
+| `200` | Propose result message (success block hash) |
+| `400` | Read-only node (`readonly_node_required`) |
+| `409` | No new deploys to propose (`no_new_deploys`) |
+| `500` | Node-side propose failure (`unknown_error`, `replay_failure`) |
 
 ---
 
@@ -521,7 +786,7 @@ curl -X POST http://localhost:40415/api/propose
 | `getDataAtName` | `DataAtNameByBlockQuery` | `RhoDataResponse` | Query data at a Rholang name in a specific block's post-state. Takes `Par` + block hash + `usePreStateHash` |
 | `listenForContinuationAtName` | `ContinuationAtNameQuery` | `ContinuationAtNameResponse` | Find processes waiting to receive on given channel names. Returns matching patterns and continuation bodies |
 | `exploratoryDeploy` | `ExploratoryDeployQuery` | `ExploratoryDeployResponse` | Execute Rholang read-only. No block created, no phlo consumed. Returns result `Par`s, block context, and cost. Readonly only |
-| `bondStatus` | `BondStatusQuery` | `BondStatusResponse` | Check if a public key is bonded. Takes public key bytes, returns bool. HTTP: `GET /api/bond-status/{pubkey}` |
+| `bondStatus` | `BondStatusQuery` | `BondStatusResponse` | Check if a public key is bonded. Validates that the key is a 65-byte uncompressed secp256k1 point; returns error on invalid input. HTTP: `GET /api/bond-status/{pubkey}` |
 | `previewPrivateNames` | `PrivateNamePreviewQuery` | `PrivateNamePreviewResponse` | Generate unforgeable names from deployer key + timestamp. Allows clients to compute signatures over names before deploying. Max 1024 names |
 | `getEventByHash` | `ReportQuery` | `EventInfoResponse` | Get full block execution trace — every COMM/produce/consume event per deploy and system deploy. Takes block hash + `forceReplay` flag. Used for debugging and auditing |
 | `visualizeDag` | `VisualizeDagQuery` | `stream VisualizeBlocksResponse` | DAG visualization in DOT format. Takes depth + startBlockNumber + showJustificationLines |
@@ -536,46 +801,6 @@ curl -X POST http://localhost:40415/api/propose
 | `proposeResult` | `ProposeResultQuery` | `ProposeResultResponse` | Get latest propose result. Blocks until current proposal completes if one is in progress |
 
 Proto definitions: `models/src/main/protobuf/DeployServiceV1.proto`, `ProposeServiceV1.proto`, `DeployServiceCommon.proto`.
-
----
-
-## Error Responses
-
-All HTTP endpoints return errors with the same shape:
-
-- **Status code:** `400 Bad Request`
-- **Content-Type:** `text/plain; charset=utf-8`
-- **Body:** `Something went wrong: <message>`
-
-The message is not structured JSON. Clients should match on the HTTP status code and parse the message string if they need to distinguish error types.
-
-### Readonly-only endpoints on validators
-
-These endpoints use exploratory deploy internally and are rejected on validator nodes:
-
-- `POST /api/explore-deploy`
-- `POST /api/explore-deploy-by-block-hash`
-- `POST /api/estimate-cost`
-- `GET /api/balance/{address}`
-- `GET /api/registry/{uri}`
-- `GET /api/validators`
-- `GET /api/validator/{pubkey}`
-- `GET /api/epoch/rewards`
-
-When called on a validator they return:
-
-```
-HTTP/1.1 400 Bad Request
-Content-Type: text/plain; charset=utf-8
-
-Something went wrong: Exploratory deploy can only be executed on read-only RNode.
-```
-
-Clients should route these requests to a readonly node (typically port 40453 in standard shard deployments). `GET /api/status` exposes `isValidator` and `isReadOnly` so clients can pick a target dynamically.
-
-### Not-found errors
-
-`GET /api/block/{hash}` returns `404 Not Found` with a plain text body when the hash doesn't exist in the local store. Other block lookups surface missing data as `400 Bad Request` with an explanatory message.
 
 ---
 

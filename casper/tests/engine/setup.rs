@@ -53,6 +53,7 @@ use crate::util::rholang::resources::mk_test_rnode_store_manager_from_genesis;
 use crate::util::test_mocks::MockKeyValueStore;
 
 /// Test fixture struct to hold all test dependencies
+#[allow(clippy::type_complexity)]
 pub struct TestFixture {
     // Scala: implicit val transportLayer = new TransportLayerStub[Task]
     pub transport_layer: Arc<TransportLayerStub>,
@@ -168,7 +169,7 @@ impl TestFixture {
         // Scala's createWithReplay calls Rust RSpace++ code which uses the real Matcher (not DummyMatcher)
         // In Rust, we must use RuntimeManager::create_with_history to match this behavior
         // Use r_space_stores() from the shared LMDB environment instead of directory-based stores
-        let rspace_store = (&mut *space_kv_manager)
+        let rspace_store = (*space_kv_manager)
             .r_space_stores()
             .await
             .expect("Failed to create RSpace store from shared LMDB");
@@ -543,6 +544,7 @@ impl TestFixture {
     }
 
     /// Sync the tracking set with the mpsc channel by draining and re-enqueuing
+    #[allow(clippy::await_holding_lock)]
     async fn sync_block_tracking(&self) {
         let mut rx = self.block_processing_queue_rx.lock().await;
         let mut tracking_set = self.blocks_enqueued_for_processing.lock().unwrap();
@@ -563,27 +565,23 @@ impl TestFixture {
 }
 
 pub fn to_casper_message(p: Protocol) -> CasperMessage {
-    if let Some(packet) = p.message {
-        if let models::routing::protocol::Message::Packet(packet_data) = packet {
-            // This is a simplified stand-in for the full conversion logic,
-            // which would involve looking at the typeId of the packet.
-            // For these tests, we can make assumptions about the message type.
-            if let Ok(bm) = models::casper::BlockMessageProto::decode(packet_data.content.as_ref())
-            {
-                if let Ok(block_message) = BlockMessage::from_proto(bm) {
-                    return CasperMessage::BlockMessage(block_message);
-                }
+    if let Some(models::routing::protocol::Message::Packet(packet_data)) = p.message {
+        // This is a simplified stand-in for the full conversion logic,
+        // which would involve looking at the typeId of the packet.
+        // For these tests, we can make assumptions about the message type.
+        if let Ok(bm) = models::casper::BlockMessageProto::decode(packet_data.content.as_ref()) {
+            if let Ok(block_message) = BlockMessage::from_proto(bm) {
+                return CasperMessage::BlockMessage(block_message);
             }
-            if let Ok(ab) = models::casper::ApprovedBlockProto::decode(packet_data.content.as_ref())
-            {
-                if let Ok(approved_block) = ApprovedBlock::from_proto(ab) {
-                    return CasperMessage::ApprovedBlock(approved_block);
-                }
+        }
+        if let Ok(ab) = models::casper::ApprovedBlockProto::decode(packet_data.content.as_ref()) {
+            if let Ok(approved_block) = ApprovedBlock::from_proto(ab) {
+                return CasperMessage::ApprovedBlock(approved_block);
             }
-            if let Ok(hb) = models::casper::HasBlockProto::decode(packet_data.content.as_ref()) {
-                let has_block = HasBlock::from_proto(hb);
-                return CasperMessage::HasBlock(has_block);
-            }
+        }
+        if let Ok(hb) = models::casper::HasBlockProto::decode(packet_data.content.as_ref()) {
+            let has_block = HasBlock::from_proto(hb);
+            return CasperMessage::HasBlock(has_block);
         }
     }
     panic!("Could not convert protocol to casper message");

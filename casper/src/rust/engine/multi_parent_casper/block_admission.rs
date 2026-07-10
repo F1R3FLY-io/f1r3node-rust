@@ -68,7 +68,7 @@ pub(crate) fn admit_deploy<T: TransportLayer + Send + Sync>(
     match interpreter_util::mk_term(&deploy.data.term, normalizer_env) {
         Err(interpreter_error) => {
             tracing::debug!(
-                target: "f1r3fly.deploy.latency",
+                target: "f1r3fly.casper.deploy.timing",
                 parse_ms = parse_started_at.elapsed().as_millis(),
                 "Deploy parse failed"
             );
@@ -82,7 +82,7 @@ pub(crate) fn admit_deploy<T: TransportLayer + Send + Sync>(
             let add_started_at = std::time::Instant::now();
             let deploy_id = add_deploy(this, deploy)?;
             tracing::debug!(
-                target: "f1r3fly.deploy.latency",
+                target: "f1r3fly.casper.deploy.timing",
                 parse_ms = parse_elapsed_ms,
                 add_deploy_ms = add_started_at.elapsed().as_millis(),
                 "Deploy parse/add completed"

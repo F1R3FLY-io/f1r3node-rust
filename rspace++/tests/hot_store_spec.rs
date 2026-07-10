@@ -7,7 +7,6 @@ use proptest::collection::vec;
 use proptest::prelude::*;
 use proptest_derive::Arbitrary;
 use rand::prelude::SliceRandom;
-use rand::thread_rng;
 use rspace_plus_plus::rspace::history::history_reader::HistoryReaderBase;
 use rspace_plus_plus::rspace::hot_store::{HotStore, HotStoreInstances, HotStoreState};
 use rspace_plus_plus::rspace::hot_store_action::{
@@ -390,7 +389,7 @@ proptest! {
       hot_store.set_state(HotStoreState { continuations: HashMap::new(), installed_continuations: HashMap::new(), data: HashMap::new(), joins: HashMap::from_iter(vec![(channel.clone(), cached_joins.clone())]),
         installed_joins: HashMap::from_iter(vec![(channel.clone(), installed_joins.clone())]) });
 
-      let mut rng = thread_rng();
+      let mut rng = rand::rng();
       let mut shuffled_joins = installed_joins.clone();
       shuffled_joins.shuffle(&mut rng);
       let to_remove = shuffled_joins.first().unwrap().clone();
@@ -417,7 +416,7 @@ proptest! {
       hot_store.set_state(HotStoreState { continuations: HashMap::new(), installed_continuations: HashMap::new(), data: HashMap::new(), joins: HashMap::from_iter(vec![(channel.clone(), cached_joins.clone())]),
         installed_joins: HashMap::new() });
 
-      let mut rng = thread_rng();
+      let mut rng = rand::rng();
       let mut shuffled_joins = cached_joins.clone();
       shuffled_joins.shuffle(&mut rng);
       let to_remove = shuffled_joins.first().unwrap().clone();
@@ -660,7 +659,7 @@ proptest! {
       let (_, hot_store) = fixture();
 
       hot_store.put_join(&channel.clone(), &channels.clone());
-      hot_store.put_join(&channel.clone(), &vec!["other_channel".to_string()]);
+      hot_store.put_join(&channel.clone(), &["other_channel".to_string()]);
       hot_store.remove_join(&channel.clone(), &channels.clone());
       let res = hot_store.get_joins(&channel);
       assert_eq!(res, vec![vec!["other_channel".to_string()]]);
@@ -872,7 +871,7 @@ impl<C: Clone + Eq + Hash + Send, P: Clone + Send, A: Clone + Send, K: Clone + S
             .data
             .get(channel)
             .map(|v| v.to_vec())
-            .unwrap_or_else(|| Vec::new());
+            .unwrap_or_default();
         data
     }
 
@@ -882,7 +881,7 @@ impl<C: Clone + Eq + Hash + Send, P: Clone + Send, A: Clone + Send, K: Clone + S
             .continuations
             .get(channels)
             .map(|v| v.to_vec())
-            .unwrap_or_else(|| Vec::new());
+            .unwrap_or_default();
         continuations
     }
 
@@ -892,7 +891,7 @@ impl<C: Clone + Eq + Hash + Send, P: Clone + Send, A: Clone + Send, K: Clone + S
             .joins
             .get(channel)
             .map(|v| v.to_vec())
-            .unwrap_or_else(|| Vec::new());
+            .unwrap_or_default();
         joins
     }
 
@@ -904,21 +903,17 @@ impl<C: Clone + Eq + Hash + Send, P: Clone + Send, A: Clone + Send, K: Clone + S
 }
 
 impl<C: Eq + Hash, P: Clone, A: Clone, K: Clone> TestHistory<C, P, A, K> {
-    fn put_data(&self, channel: C, data: Vec<Datum<A>>) -> () {
+    fn put_data(&self, channel: C, data: Vec<Datum<A>>) {
         let mut state = self.state.lock().unwrap();
         state.data.insert(channel, data);
     }
 
-    fn put_continuations(
-        &self,
-        channels: Vec<C>,
-        continuations: Vec<WaitingContinuation<P, K>>,
-    ) -> () {
+    fn put_continuations(&self, channels: Vec<C>, continuations: Vec<WaitingContinuation<P, K>>) {
         let mut state = self.state.lock().unwrap();
         state.continuations.insert(channels, continuations);
     }
 
-    fn put_joins(&self, channel: C, joins: Vec<Vec<C>>) -> () {
+    fn put_joins(&self, channel: C, joins: Vec<Vec<C>>) {
         let mut state = self.state.lock().unwrap();
         state.joins.insert(channel, joins);
     }

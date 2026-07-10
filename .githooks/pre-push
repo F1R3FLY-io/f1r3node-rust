@@ -51,12 +51,16 @@ if [ -n "${CI:-}" ] || [ -n "${GITLAB_CI:-}" ] || [ -n "${GITHUB_ACTIONS:-}" ]; 
     exit 0
 fi
 
+# Remote name is the hook's first argument (falls back to origin only if
+# git ever invokes the hook without args).
+remote_name="${1:-origin}"
+zero="0000000000000000000000000000000000000000"
+
 # Check if there are actually new commits to push
 has_new_commits=0
 push_info=""
 while IFS=' ' read -r local_ref local_oid remote_ref remote_oid; do
     push_info+="$local_ref $local_oid $remote_ref $remote_oid"$'\n'
-    zero="0000000000000000000000000000000000000000"
     if [ "$local_oid" != "$remote_oid" ] && [ "$local_oid" != "$zero" ]; then
         has_new_commits=1
     fi
@@ -66,11 +70,27 @@ if [ -z "$push_info" ] || [ "$has_new_commits" -eq 0 ]; then
     exit 0
 fi
 
+# True when every ref being pushed already sits at its local OID on the
+# remote (racing push landed first). Keyed off the stdin refspecs, never
+# HEAD: HEAD may be detached or on a different branch than the refs being
+# pushed, and a ref that is absent on the remote (new branch) must count
+# as needing a push.
+refs_already_on_remote() {
+    local local_ref local_oid remote_ref remote_oid actual_oid
+    while IFS=' ' read -r local_ref local_oid remote_ref remote_oid; do
+        [ -z "$local_ref" ] && continue
+        [ "$local_oid" = "$zero" ] && continue
+        actual_oid=$(git ls-remote "$remote_name" "$remote_ref" 2>/dev/null | awk '{print $1}') || actual_oid=""
+        if [ "$actual_oid" != "$local_oid" ]; then
+            return 1
+        fi
+    done <<< "$push_info"
+    return 0
+}
+
 # Double-check against the actual remote to catch racing pushes
-local_head=$(git rev-parse HEAD)
-remote_head=$(git ls-remote origin "$(git symbolic-ref HEAD)" 2>/dev/null | awk '{print $1}') || remote_head=""
-if [ -n "$remote_head" ] && [ "$local_head" = "$remote_head" ]; then
-    git fetch origin 2>/dev/null || true
+if refs_already_on_remote; then
+    git fetch "$remote_name" 2>/dev/null || true
     echo -e "${CYAN}Already up to date with remote. Nothing to push.${NC}"
     exit 1
 fi
@@ -105,7 +125,7 @@ echo "================================"
     fi
     total=1
     clippy_out="$RESULTS_DIR/clippy.out"
-    if timeout "$TEST_TIMEOUT" cargo clippy --workspace -- -D warnings > "$clippy_out" 2>&1; then
+    if timeout "$TEST_TIMEOUT" cargo clippy --workspace --all-targets -- -D warnings > "$clippy_out" 2>&1; then
         echo -e "  ${CYAN}[clippy]${NC}  ${GREEN}PASS${NC}" >&3
         passed=1
     else
@@ -232,9 +252,8 @@ echo ""
 
 if [[ $FAILED -eq 0 ]]; then
     # Re-check remote after tests for race condition
-    post_remote=$(git ls-remote origin "$(git symbolic-ref HEAD)" 2>/dev/null | awk '{print $1}') || post_remote=""
-    if [ -n "$post_remote" ] && [ "$local_head" = "$post_remote" ]; then
-        git fetch origin 2>/dev/null || true
+    if refs_already_on_remote; then
+        git fetch "$remote_name" 2>/dev/null || true
         echo -e "${GREEN}All checks passed!${NC}"
         echo -e "${CYAN}Remote already up to date (pushed by prior attempt). Nothing to push.${NC}"
         exit 1

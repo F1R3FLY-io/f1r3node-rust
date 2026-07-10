@@ -96,7 +96,7 @@ fn cannot_be_orphaned_should_return_false_on_stake_sum_overflow() {
 #[tokio::test]
 async fn test_not_advance_finalization_if_no_new_lfb_found_advance_otherwise_invoke_all_effects() {
     with_storage(|mut store, mut dag_store| async move {
-        let validators = vec![
+        let validators = [
             generate_validator(Some("Validator 1")),
             generate_validator(Some("Validator 2")),
             generate_validator(Some("Validator 3")),
@@ -276,7 +276,7 @@ async fn test_not_advance_finalization_if_no_new_lfb_found_advance_otherwise_inv
         // check output
         assert_eq!(lfb, None);
         // check if new LFB effect is invoked
-        assert_eq!(*lfb_effect_invoked.borrow(), false);
+        assert!(!(*lfb_effect_invoked.borrow()));
 
         // add more 3 children - finalization should advance
         creator3(
@@ -354,7 +354,7 @@ async fn test_not_advance_finalization_if_no_new_lfb_found_advance_otherwise_inv
 #[ignore = "diagnostic: run manually for fast finalizer growth feedback"]
 async fn finalizer_growth_feedback_loop_stale_justification_chain() {
     with_storage(|mut store, mut dag_store| async move {
-        let validators = vec![
+        let validators = [
             generate_validator(Some("Growth Validator 1")),
             generate_validator(Some("Growth Validator 2")),
             generate_validator(Some("Growth Validator 3")),
@@ -386,7 +386,7 @@ async fn finalizer_growth_feedback_loop_stale_justification_chain() {
 
         let checkpoints = [24usize, 48usize, 96usize];
         let mut timing_samples: Vec<(usize, u128)> = Vec::with_capacity(checkpoints.len());
-        let mut latest_by_validator = vec![genesis.clone(), genesis.clone(), genesis.clone()];
+        let mut latest_by_validator = [genesis.clone(), genesis.clone(), genesis.clone()];
 
         for height in 1..=checkpoints[checkpoints.len() - 1] {
             let creator_index = (height - 1) % validators.len();

@@ -281,6 +281,6 @@ mod tests {
         // Test that we can create chunks (functionality tested in chunker module)
         let chunks = Chunker::chunk_it("test_network", &blob, 4096);
         assert!(!chunks.is_empty());
-        assert!(chunks.len() >= 1); // At least header chunk
+        assert!(!chunks.is_empty()); // At least header chunk
     }
 }

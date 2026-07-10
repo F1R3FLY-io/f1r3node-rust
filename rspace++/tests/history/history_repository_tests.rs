@@ -109,7 +109,7 @@ async fn history_repository_should_process_insert_and_delete_of_thirty_mixed_ele
     let conts: (Vec<_>, Vec<_>) = (0..=10).map(insert_continuation).unzip();
 
     let mut elems: Vec<_> = [&data.0[..], &joins.0[..], &conts.0[..]].concat();
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
     elems.shuffle(&mut rng);
 
     let data_delete: Vec<_> = data
@@ -271,6 +271,7 @@ async fn history_repository_should_process_insert_and_delete_of_thirty_mixed_ele
 }
 
 #[tokio::test]
+#[allow(clippy::assertions_on_constants)]
 async fn history_repository_should_not_allow_switching_to_a_not_existing_root() {
     let repo = create_empty_repository();
 
@@ -330,6 +331,7 @@ fn insert_join(s: i32) -> (HotStoreAction<String, String, String, String>, Inser
     (HotStoreAction::Insert(InsertAction::InsertJoins(insert.clone())), insert)
 }
 
+#[allow(clippy::type_complexity)]
 fn insert_continuation(
     s: i32,
 ) -> (HotStoreAction<String, String, String, String>, InsertContinuations<String, String, String>) {
@@ -483,9 +485,9 @@ impl RSpaceImporter for EmptyImporter {
 }
 
 impl TrieImporter for EmptyImporter {
-    fn set_history_items(&self, _data: Vec<(KeyHash, Value)>) -> () { todo!() }
+    fn set_history_items(&self, _data: Vec<(KeyHash, Value)>) { todo!() }
 
-    fn set_data_items(&self, _data: Vec<(KeyHash, Value)>) -> () { todo!() }
+    fn set_data_items(&self, _data: Vec<(KeyHash, Value)>) { todo!() }
 
-    fn set_root(&self, _key: &KeyHash) -> () { todo!() }
+    fn set_root(&self, _key: &KeyHash) { todo!() }
 }

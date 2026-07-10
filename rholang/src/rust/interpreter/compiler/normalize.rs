@@ -845,15 +845,15 @@ mod tests {
             inputs.par.clone(),
             Expr {
                 expr_instance: Some(ExprInstance::EMinusBody(EMinus {
-                    p1: Some(new_boundvar_par(2, create_bit_vector(&vec![2]), false)),
+                    p1: Some(new_boundvar_par(2, create_bit_vector(&[2]), false)),
                     p2: Some(Par {
                         exprs: vec![Expr {
                             expr_instance: Some(ExprInstance::EMultBody(EMult {
-                                p1: Some(new_boundvar_par(1, create_bit_vector(&vec![1]), false)),
-                                p2: Some(new_boundvar_par(0, create_bit_vector(&vec![0]), false)),
+                                p1: Some(new_boundvar_par(1, create_bit_vector(&[1]), false)),
+                                p2: Some(new_boundvar_par(0, create_bit_vector(&[0]), false)),
                             })),
                         }],
-                        locally_free: create_bit_vector(&vec![0, 1]),
+                        locally_free: create_bit_vector(&[0, 1]),
                         connective_used: false,
                         ..Par::default()
                     }),

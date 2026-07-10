@@ -99,6 +99,7 @@ async fn create_runtimes_with_cost_log(
     (rho_runtime, replay_rho_runtime, history_repository)
 }
 
+#[allow(clippy::type_complexity)]
 async fn evaluate_and_replay(initial_phlo: Cost, term: String) -> (EvaluateResult, EvaluateResult) {
     let mut kvm = InMemoryStoreManager::new();
     let store = kvm.r_space_stores().await.unwrap();
@@ -347,9 +348,9 @@ async fn cost_should_be_repeatable_when_generated() {
     let mut skipped = 0u32;
     let mut mismatches: Vec<(String, i64, i64)> = Vec::new();
 
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
     for _ in 0..10000 {
-        let long = ((rng.gen::<i64>() % 0x144000000) + 0x144000000) % 0x144000000;
+        let long = ((rng.random::<i64>() % 0x144000000) + 0x144000000) % 0x144000000;
         let contract = from_long(long);
         if contract.is_empty() {
             continue;
@@ -453,9 +454,9 @@ async fn should_stop_the_evaluation_of_all_execution_branches_when_one_of_them_r
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn should_stop_the_evaluation_of_all_execution_branches_when_one_of_them_runs_out_of_phlo_with_a_more_sophisticated_contract(
 ) {
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
     for (contract, expected_total_cost) in contracts() {
-        let initial_phlo = rng.gen_range(1..expected_total_cost);
+        let initial_phlo = rng.random_range(1..expected_total_cost);
 
         let (result, _) = evaluate_with_cost_log(initial_phlo, contract.clone()).await;
 

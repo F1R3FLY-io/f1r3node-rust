@@ -5,7 +5,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use casper::rust::api::block_api::{BlockAPI, DeployNotFoundError};
+use casper::rust::api::block_api::{
+    BlockAPI, DeployNotFoundError, InvalidHashError, InvalidPublicKeyError,
+};
 use casper::rust::api::block_report_api::BlockReportAPI;
 use casper::rust::engine::engine_cell::EngineCell;
 use casper::rust::ProposeFunction;
@@ -484,8 +486,12 @@ impl WebApi for WebApiImpl {
     }
 
     async fn find_deploy(&self, deploy_id: String, view: ViewMode) -> Result<DeployResponse> {
-        let deploy_id_bytes =
-            hex::decode(&deploy_id).map_err(|e| eyre!("Invalid deploy ID format: {}", e))?;
+        let deploy_id_bytes = hex::decode(&deploy_id).map_err(|_| {
+            eyre::Report::new(InvalidHashError(format!(
+                "'{}' is not a valid hex deploy ID",
+                deploy_id
+            )))
+        })?;
 
         let retry_interval_ms = find_deploy_retry_interval_ms();
         let max_attempts = find_deploy_max_attempts();
@@ -644,8 +650,12 @@ impl WebApi for WebApiImpl {
         &self,
         deploy_sig_hex: String,
     ) -> Result<DeployFinalizationStatusJson> {
-        let sig = hex::decode(deploy_sig_hex.trim_start_matches("0x"))
-            .map_err(|e| eyre!("invalid hex for deploy_sig: {}", e))?;
+        let sig = hex::decode(deploy_sig_hex.trim_start_matches("0x")).map_err(|_| {
+            eyre::Report::new(InvalidHashError(format!(
+                "'{}' is not a valid hex deploy signature",
+                deploy_sig_hex
+            )))
+        })?;
         let status = BlockAPI::deploy_finalization_status(&self.engine_cell, &sig).await?;
         Ok(DeployFinalizationStatusJson {
             state: deploy_state_json_label(status.state).to_string(),
@@ -887,12 +897,12 @@ impl WebApi for WebApiImpl {
         pubkey: String,
         block_hash: Option<String>,
     ) -> Result<ValidatorStatusResponse> {
+        let _ = validate_and_decode_pubkey(&pubkey)?;
+
         let term = r#"new return, rl(`rho:registry:lookup`), poSCh in {
-  rl!(`rho:system:pos`, *poSCh) |
-  for(@(_, PoS) <- poSCh) {
-    @PoS!("getBonds", *return)
-  }
-}"#
+            rl!(`rho:system:pos`, *poSCh) |
+            for(@(_, PoS) <- poSCh) { @PoS!("getBonds", *return) }
+        }"#
         .to_string();
 
         let (resolved_hash, block_number) = self.resolve_block(block_hash).await?;
@@ -930,10 +940,9 @@ impl WebApi for WebApiImpl {
     }
 
     async fn get_bond_status(&self, pubkey: String) -> Result<BondStatusResponse> {
-        let pubkey_bytes =
-            hex::decode(&pubkey).map_err(|e| eyre!("Invalid public key hex: {}", e))?;
+        let pk_bytes = validate_and_decode_pubkey(&pubkey)?;
 
-        let is_bonded = BlockAPI::bond_status(&self.engine_cell, &pubkey_bytes).await?;
+        let is_bonded = BlockAPI::bond_status(&self.engine_cell, &pk_bytes).await?;
 
         Ok(BondStatusResponse {
             public_key: pubkey,
@@ -1139,7 +1148,7 @@ pub struct ExploreDeployRequest {
     pub term: String,
     #[serde(rename = "blockHash")]
     pub block_hash: String,
-    #[serde(rename = "usePreStateHash")]
+    #[serde(rename = "usePreStateHash", default)]
     pub use_pre_state_hash: bool,
 }
 
@@ -1164,7 +1173,7 @@ pub struct DataAtNameByBlockHashRequest {
     pub name: RhoUnforg,
     #[serde(rename = "blockHash")]
     pub block_hash: String,
-    #[serde(rename = "usePreStateHash")]
+    #[serde(rename = "usePreStateHash", default)]
     pub use_pre_state_hash: bool,
 }
 
@@ -1442,6 +1451,19 @@ impl std::fmt::Display for WebApiError {
 }
 
 impl std::error::Error for WebApiError {}
+
+fn validate_and_decode_pubkey(pubkey_hex: &str) -> Result<Vec<u8>> {
+    let bytes = hex::decode(pubkey_hex).map_err(|e| {
+        eyre::Report::new(InvalidPublicKeyError(format!(
+            "invalid public key hex: {}",
+            e
+        )))
+    })?;
+    PublicKey::validate_secp256k1_bytes(&bytes).map_err(|e| {
+        eyre::Report::new(InvalidPublicKeyError(format!("invalid public key: {}", e)))
+    })?;
+    Ok(bytes)
+}
 
 // Conversion functions
 

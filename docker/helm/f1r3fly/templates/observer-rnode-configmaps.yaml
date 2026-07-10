@@ -188,9 +188,6 @@ data:
       # If file does not exist, new key will be generated.
       key-path = ${storage.data-dir}/node.key.pem
 
-      # Use a non blocking secure random instance to generate TLS key
-      secure-random-non-blocking = false
-
       # TODO possibly remove
       custom-certificate-location = false
       custom-key-location = false

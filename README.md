@@ -27,7 +27,6 @@ F1R3node Rust provides:
 | `block-storage` | Block, deploy, DAG, and finality persistence |
 | `shared` | Common storage traits, event helpers, metrics utilities |
 | `graphz` | Graph and DOT generation helpers |
-| `rspace_plus_plus_rhotypes` | RSpace/Rholang type bridge helper crate |
 
 ## Quick Start
 
@@ -151,6 +150,7 @@ To build a local image:
 | [DEVELOPER.md](DEVELOPER.md) | Native toolchain setup, build, test, and troubleshooting |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Contribution workflow and review expectations |
 | [docs/vps-cloud-testing.md](docs/vps-cloud-testing.md) | Testbed setup guide — local Docker, generic SSH VPSes, or Oracle Cloud |
+| [docs/neutralCloud_benchmark_review.md](docs/neutralCloud_benchmark_review.md) | Provider-neutral cloud benchmark plan — distributed shard, integration tests, latency/throughput |
 | [run-local/README.md](run-local/README.md) | Local standalone node workflow without Docker |
 | [docker/README.md](docker/README.md) | Docker image, standalone, shard, monitoring, smoke tests |
 | [node/README.md](node/README.md) | Node binary crate and CLI entry points |
