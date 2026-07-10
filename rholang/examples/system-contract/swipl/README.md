@@ -15,14 +15,12 @@ pattern matching, and AI-style computations.
 See the prerequisites section in the DEVELOPER.md file located in the project's
 folder.
 
-## MeTTa entry point
+## MeTTa Execution Model
 
-Standard MeTTa programs do not require an entry point. Any definitions and queries
-are added and executed (respectively) in the order of the program.
-
-However, programs provided to the `rho::petta::execute` contract MUST contain
-an entry point called `main`. This entry point MUST be defined as a function
-with a single parameter (which serves no purpose and should be ignored).
+MeTTa programs provided to the `rho:petta:execute` contract are executed as a
+sequence of definitions and queries in the order they appear. There is no
+required entry point - definitions are loaded and queries are evaluated as
+encountered.
 
 ## Examples Overview
 
