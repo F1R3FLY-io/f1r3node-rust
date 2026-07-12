@@ -203,7 +203,11 @@ impl RholangMergingLogic {
         }
         let base_is_single_number =
             base_data.len() == 1 && Self::try_get_number_with_rnd(&base_data[0].a).is_some();
-        if !base_is_single_number {
+        let added_are_numbers = changes
+            .added
+            .iter()
+            .all(|bytes| Self::encoded_datum_is_number(bytes));
+        if !base_is_single_number && !(base_data.is_empty() && added_are_numbers) {
             return Ok(());
         }
         let kept = StateChange::multiset_diff(base_binary, &changes.removed);
@@ -236,6 +240,13 @@ impl RholangMergingLogic {
                 Blake2b512Random::from_bytes(&par_with_rnd.random_state),
             )
         })
+    }
+
+    pub fn encoded_datum_is_number(bytes: &[u8]) -> bool {
+        bincode::deserialize::<Datum<ListParWithRandom>>(bytes)
+            .ok()
+            .and_then(|datum| Self::try_get_number_with_rnd(&datum.a))
+            .is_some()
     }
 
     fn create_datum_encoded(
@@ -383,6 +394,33 @@ mod tests {
             &change(vec![vec![0x5eu8]], vec![vec![0x00u8]]),
         );
         assert!(res.is_ok(), "RMW that consumes the base must be allowed");
+    }
+
+    #[test]
+    fn empty_numeric_cell_multiple_produces_are_rejected() {
+        let ch = Blake2b256Hash::from_bytes(vec![0x0d; 32]);
+        let added_a = serializers::encode_datum(&num_datum(0));
+        let added_b = serializers::encode_datum(&num_datum(0));
+        let res = RholangMergingLogic::check_single_value_cell_not_overfilled(
+            &ch,
+            &[],
+            &[],
+            &change(vec![added_a, added_b], vec![]),
+        );
+        assert!(res.is_err());
+    }
+
+    #[test]
+    fn empty_numeric_cell_single_produce_is_allowed() {
+        let ch = Blake2b256Hash::from_bytes(vec![0x0d; 32]);
+        let added = serializers::encode_datum(&num_datum(0));
+        let res = RholangMergingLogic::check_single_value_cell_not_overfilled(
+            &ch,
+            &[],
+            &[],
+            &change(vec![added], vec![]),
+        );
+        assert!(res.is_ok());
     }
 
     // A non-numeric base (registry / TreeHashMap leaf) is a multi-key structure,
@@ -571,13 +609,9 @@ mod tests {
     // ---- Phase-7 W7.1/W7.2: checked apply + checked diff (fail loudly, never
     // launder an overflowed/negative number-channel value into consensus state) ----
 
-    fn test_hash() -> Blake2b256Hash {
-        Blake2b256Hash::new(&[0u8; 4])
-    }
+    fn test_hash() -> Blake2b256Hash { Blake2b256Hash::new(&[0u8; 4]) }
 
-    fn test_rnd() -> Blake2b512Random {
-        Blake2b512Random::create_from_bytes(&[0u8; 32])
-    }
+    fn test_rnd() -> Blake2b512Random { Blake2b512Random::create_from_bytes(&[0u8; 32]) }
 
     // A single-Par integer base datum holding `n`, produced through the exact
     // production encode path (create_datum_encoded) then decoded back, so the base

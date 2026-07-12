@@ -72,8 +72,8 @@ pub struct DeployFinalizationStatus {
     /// increases with each merge rejection that finalizes. Gives
     /// operators visibility into deploys that are contending.
     pub rejection_count: u32,
-    /// Hash of the highest-block-number canonical block that contains
-    /// the sig in either `body.deploys` or `body.rejected_deploys`.
+    /// Hash of the block that determines the reported state for terminal
+    /// results, or the latest observed block while still pending/expired.
     /// `None` when the sig has not yet been included in any block.
     pub latest_block_hash: Option<BlockHash>,
 }
@@ -97,16 +97,10 @@ struct ResolverState {
     first_seen_block_hash: BlockHash,
     rejection_count: u32,
     /// Highest-block-number `is_failed=true` inclusion + its block hash.
-    /// Tracked symmetrically with `clean_finalized_event` so the
-    /// post-loop step can apply the same canonical-descendant gate to
-    /// both — a failed inclusion in a non-main-chain finalized sibling
-    /// must NOT terminate the state machine when a later canonical
-    /// clean inclusion exists.
+    /// Failed inclusions only terminate when no surviving clean inclusion
+    /// exists and no later rejection keeps the sig recoverable.
     failed_finalized_event: Option<(i64, BlockHash)>,
-    /// Highest-block-number clean inclusion + its block hash. Tracked
-    /// together so the post-loop invalidation step can do a canonical-
-    /// descendant ancestry comparison against `latest_rejected_event`.
-    clean_finalized_event: Option<(i64, BlockHash)>,
+    clean_finalized_events: Vec<(i64, BlockHash, bool)>,
     latest_event: Option<(i64, BlockHash)>,
     latest_rejected_event: Option<(i64, BlockHash)>,
 }
@@ -123,7 +117,7 @@ impl ResolverState {
             first_seen_block_hash,
             rejection_count: 0,
             failed_finalized_event: None,
-            clean_finalized_event: None,
+            clean_finalized_events: Vec::new(),
             latest_event: None,
             latest_rejected_event: None,
         }
@@ -260,7 +254,12 @@ fn bfs_finalized_window(
             PrettyPrinter::build_string_bytes(&lfb_hash),
         )
     })?;
-    let scan_floor = (lfb_height - deploy_lifespan).max(0);
+    let scan_floor = per_sig
+        .values()
+        .map(|state| state.valid_after_block_number.max(0))
+        .min()
+        .map(|oldest| oldest.min((lfb_height - deploy_lifespan).max(0)))
+        .unwrap_or((lfb_height - deploy_lifespan).max(0));
 
     // Active sigs as a HashSet for O(1) membership checks during body scans.
     // Cloning sig bytes once here avoids per-block-per-sig clones.
@@ -322,6 +321,7 @@ fn bfs_finalized_window(
         // once for that sig at this height).
         let mut seen_sigs_here: HashSet<Bytes> = HashSet::new();
 
+        let mut candidate_is_canonical: Option<bool> = None;
         for pd in &candidate_block.body.deploys {
             if active_sigs.contains(&pd.deploy.sig) {
                 seen_sigs_here.insert(pd.deploy.sig.clone());
@@ -337,13 +337,21 @@ fn bfs_finalized_window(
                     {
                         state.failed_finalized_event = Some((height, candidate_hash.clone()));
                     }
-                } else if state
-                    .clean_finalized_event
-                    .as_ref()
-                    .map(|(h, _)| height > *h)
-                    .unwrap_or(true)
-                {
-                    state.clean_finalized_event = Some((height, candidate_hash.clone()));
+                } else {
+                    let is_canonical = match candidate_is_canonical {
+                        Some(v) => v,
+                        None => {
+                            let v = candidate_hash == lfb_hash
+                                || dag.is_in_main_chain(&candidate_hash, &lfb_hash)?;
+                            candidate_is_canonical = Some(v);
+                            v
+                        }
+                    };
+                    state.clean_finalized_events.push((
+                        height,
+                        candidate_hash.clone(),
+                        is_canonical,
+                    ));
                 }
             }
         }
@@ -382,9 +390,35 @@ fn bfs_finalized_window(
     Ok(())
 }
 
-/// Apply the per-sig post-loop rules: canonical-descendant invalidation
-/// of clean inclusions, latest_block_hash fallback to the first-seen
-/// block, expiry rule, and final state determination.
+fn preferred_clean_event(
+    clean_events: &[(i64, BlockHash, bool)],
+    latest_rejection_height: Option<i64>,
+) -> Option<(i64, BlockHash, bool)> {
+    let clean_after_rejection = clean_events.iter().filter(|(height, _, _)| {
+        latest_rejection_height
+            .map(|reject_height| *height > reject_height)
+            .unwrap_or(true)
+    });
+
+    if let Some(clean_canonical) = clean_after_rejection
+        .clone()
+        .filter(|(_, _, is_canonical)| *is_canonical)
+        .cloned()
+        .max_by(|(a_height, _, _), (b_height, _, _)| a_height.cmp(b_height))
+    {
+        return Some(clean_canonical);
+    }
+
+    clean_after_rejection.cloned().max_by(
+        |(a_height, _, a_canonical), (b_height, _, b_canonical)| {
+            a_canonical.cmp(b_canonical).then(a_height.cmp(b_height))
+        },
+    )
+}
+
+/// Apply the per-sig post-loop rules: latest-disposition handling,
+/// latest_block_hash fallback to the first-seen block, expiry rule, and
+/// final state determination.
 ///
 /// Returns `ApiErr` rather than swallowing failures from `is_in_main_chain`.
 /// The resolver's `state` field is consensus-relevant — `repeat_deploy`
@@ -395,100 +429,35 @@ fn finalize_sig_state(
     deploy_lifespan: i64,
     state: ResolverState,
 ) -> ApiErr<DeployFinalizationStatus> {
-    // A rejection invalidates a clean inclusion only when the
-    // rejection block is a CANONICAL-CHAIN DESCENDANT of the clean
-    // block. Two reasons height alone is wrong:
-    //
-    //  1. Multi-parent DAGs: blocks at the same height can be siblings
-    //     on separate chains. A rejection in a sibling at the same or
-    //     higher height does not affect the deploy's effects in a
-    //     canonical block on a different chain.
-    //  2. Recovery cycles via the rejected-deploy buffer produce
-    //     rejection events in non-canonical sibling blocks (validators
-    //     racing to recover the same deploy). Counting these as "after"
-    //     the clean inclusion creates a positive feedback loop where
-    //     the deploy stays Pending while the buffer keeps re-proposing.
-    //
-    // Two conditions must BOTH hold for a rejection to invalidate a
-    // clean inclusion:
-    //
-    //   (a) `is_in_main_chain(clean_block, reject_block)` — clean is
-    //       in reject's main-parent ancestry. Necessary so the
-    //       rejection is "downstream" of the clean inclusion.
-    //   (b) `is_in_main_chain(reject_block, lfb)` — reject is itself
-    //       on LFB's main-parent chain (i.e., canonical). Necessary
-    //       because (a) alone is satisfied even by non-canonical
-    //       sibling blocks: a sibling fork B' that has the canonical
-    //       clean block A as its main parent will pass (a) yet sit
-    //       outside LFB's main chain. Without (b) the resolver
-    //       reports false-Pending for sigs that are genuinely in
-    //       canonical state — exactly the recovery-cycle case the
-    //       comment above warns about.
-    //
-    // Same-block (clean and rejection in the SAME block — e.g., a
-    // recovery proposal whose merge step also dedup-rejected an older
-    // copy in scope) is not a "descendant" and must not invalidate.
-    // Same gate, applied symmetrically to clean and failed inclusions.
-    //
-    // Failed events: drop the event if either (a) the failed block is
-    // not on LFB's main-parent chain (visited via secondary parent in
-    // BFS — finalized but not canonical), or (b) a canonical-descendant
-    // rejection nullifies the failed inclusion the same way it nullifies
-    // a clean one. Without this, a stale `is_failed=true` event in a
-    // non-canonical sibling pins the resolver at `Failed` and preempts
-    // a later canonical clean inclusion — `repeat_deploy` then exempts
-    // the sig as a recovery candidate, allowing double-execution of a
-    // canonically clean deploy.
     let lfb_hash = dag.last_finalized_block();
 
     let canonical_block = |block: &BlockHash| -> ApiErr<bool> {
         Ok(block == &lfb_hash || dag.is_in_main_chain(block, &lfb_hash)?)
     };
 
-    // Resolve clean event with two invalidation rules:
-    //
-    //   (i) Non-canonical clean + canonical reject: the merge that
-    //       integrated the non-canonical chain rejected this deploy, so
-    //       its effects are not in canonical state.
-    //   (ii) Canonical clean + canonical-descendant reject: the existing
-    //        `is_in_main_chain` rule — a rejection downstream of a
-    //        canonical clean inclusion invalidates that inclusion.
-    //
-    // Without (i), a non-canonical clean event survives whenever the
-    // rejection isn't a main-parent ancestor — which is true by
-    // construction of any non-canonical clean — letting the resolver
-    // report `Finalized` for a sig whose effects are not in canonical
-    // state.
-    let mut clean_canonical: Option<(i64, BlockHash)> = state.clean_finalized_event.clone();
-    if let (Some((_, clean_block)), Some((_, reject_block))) =
-        (&state.clean_finalized_event, &state.latest_rejected_event)
-    {
-        let reject_is_canonical = canonical_block(reject_block)?;
-        let clean_is_canonical = canonical_block(clean_block)?;
-        if !clean_is_canonical && reject_is_canonical {
-            clean_canonical = None;
-        } else if reject_is_canonical
-            && clean_block != reject_block
-            && dag.is_in_main_chain(clean_block, reject_block)?
-        {
-            clean_canonical = None;
-        }
-    }
+    let latest_rejection_height = state
+        .latest_rejected_event
+        .as_ref()
+        .map(|(height, _)| *height);
+    let clean_canonical =
+        preferred_clean_event(&state.clean_finalized_events, latest_rejection_height);
 
-    // Resolve failed event with the symmetric gate: it must be on the
-    // main chain, AND not invalidated by a canonical-descendant rejection.
     let mut failed_canonical: Option<(i64, BlockHash)> = None;
     if let Some((failed_height, failed_block)) = &state.failed_finalized_event {
         if canonical_block(failed_block)? {
             let mut keep = true;
-            if let Some((_, reject_block)) = &state.latest_rejected_event {
-                let reject_is_canonical = canonical_block(reject_block)?;
-                let reject_is_canonical_descendant = failed_block != reject_block
-                    && reject_is_canonical
-                    && dag.is_in_main_chain(failed_block, reject_block)?;
-                if reject_is_canonical_descendant {
-                    keep = false;
-                }
+            if clean_canonical
+                .as_ref()
+                .map(|(_, _, clean_is_canonical)| *clean_is_canonical)
+                .unwrap_or(false)
+            {
+                keep = false;
+            }
+            if latest_rejection_height
+                .map(|reject_height| *failed_height <= reject_height)
+                .unwrap_or(false)
+            {
+                keep = false;
             }
             if keep {
                 failed_canonical = Some((*failed_height, failed_block.clone()));
@@ -496,16 +465,13 @@ fn finalize_sig_state(
         }
     }
 
-    // Latest-canonical-wins: if both clean and failed canonical events
-    // survived their gates, the higher-height one represents the most
-    // recent canonical state of the sig.
     let clean_finalized_height: Option<i64> = match (&clean_canonical, &failed_canonical) {
-        (Some((ch, _)), Some((fh, _))) if ch > fh => Some(*ch),
-        (Some((ch, _)), None) => Some(*ch),
+        (Some((ch, _, _)), Some((fh, _))) if ch > fh => Some(*ch),
+        (Some((ch, _, _)), None) => Some(*ch),
         _ => None,
     };
     let failed_finalized: bool = match (&clean_canonical, &failed_canonical) {
-        (Some((ch, _)), Some((fh, _))) => fh > ch,
+        (Some((ch, _, _)), Some((fh, _))) => fh > ch,
         (None, Some(_)) => true,
         _ => false,
     };
@@ -544,7 +510,8 @@ fn finalize_sig_state(
             )
         })?;
     let expired = lfb_height > state.valid_after_block_number + deploy_lifespan
-        && clean_finalized_height.is_none();
+        && clean_finalized_height.is_none()
+        && state.latest_rejected_event.is_none();
 
     let final_state = if failed_finalized {
         DeployFinalizationState::Failed
@@ -558,10 +525,18 @@ fn finalize_sig_state(
 
     let _ = state.sig_bytes; // no longer needed past finalize
 
+    let status_block_hash = match final_state {
+        DeployFinalizationState::Finalized => clean_canonical.map(|(_, h, _)| h),
+        DeployFinalizationState::Failed => failed_canonical.map(|(_, h)| h),
+        DeployFinalizationState::Pending | DeployFinalizationState::Expired => {
+            latest_event.map(|(_, h)| h)
+        }
+    };
+
     Ok(DeployFinalizationStatus {
         state: final_state,
         rejection_count: state.rejection_count,
-        latest_block_hash: latest_event.map(|(_, h)| h),
+        latest_block_hash: status_block_hash,
     })
 }
 
@@ -579,17 +554,17 @@ fn finalize_sig_state(
 /// (unknown sig, first-seen body missing from the store) returns
 /// `pending_unknown` directly.
 ///
-/// The state machine is a canonical-chain scan:
+/// The state machine is a finalized-ancestor scan:
 ///
 /// 1. Look up the sig in the deploy index. Unknown sig → `Pending`.
 /// 2. Fetch the first-seen block to read `valid_after_block_number`.
-/// 3. Walk the finalized chain from LFB backward for `deploy_lifespan`
+/// 3. Walk finalized ancestors from LFB backward for `deploy_lifespan`
 ///    blocks, tallying clean inclusions, failed inclusions, rejections,
 ///    and `latest_block_hash`.
-/// 4. Apply the state rules: failed finalized → `Failed`; clean finalized
-///    without a later canonical-descendant rejection → `Finalized`;
-///    beyond lifespan without a clean inclusion → `Expired`; otherwise
-///    → `Pending`.
+/// 4. Apply the state rules: latest rejection keeps the sig pending
+///    until a later clean inclusion lands; failed finalized → `Failed`;
+///    clean finalized → `Finalized`; beyond lifespan without clean or
+///    rejection → `Expired`; otherwise → `Pending`.
 pub fn resolve(
     dag: &KeyValueDagRepresentation,
     block_store: &KeyValueBlockStore,
@@ -698,6 +673,16 @@ pub fn resolve_batch(
     Ok(results)
 }
 
+pub fn pending_if_buffered(
+    mut status: DeployFinalizationStatus,
+    buffered: bool,
+) -> DeployFinalizationStatus {
+    if buffered && status.state == DeployFinalizationState::Expired {
+        status.state = DeployFinalizationState::Pending;
+    }
+    status
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -729,5 +714,34 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn buffered_expired_status_reports_pending() {
+        let status = DeployFinalizationStatus {
+            state: DeployFinalizationState::Expired,
+            rejection_count: 3,
+            latest_block_hash: Some(BlockHash::from(vec![1])),
+        };
+
+        let normalized = pending_if_buffered(status, true);
+
+        assert_eq!(normalized.state, DeployFinalizationState::Pending);
+        assert_eq!(normalized.rejection_count, 3);
+        assert_eq!(normalized.latest_block_hash, Some(BlockHash::from(vec![1])));
+    }
+
+    #[test]
+    fn unbuffered_expired_status_stays_expired() {
+        let status = DeployFinalizationStatus {
+            state: DeployFinalizationState::Expired,
+            rejection_count: 0,
+            latest_block_hash: None,
+        };
+
+        assert_eq!(
+            pending_if_buffered(status, false).state,
+            DeployFinalizationState::Expired
+        );
     }
 }

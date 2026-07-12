@@ -395,26 +395,29 @@ impl KeyValueDagRepresentation {
         &self,
         latest_message_hashes: &HashMap<Validator, BlockHash>,
     ) -> Result<HashMap<Validator, BlockHash>, KvStoreError> {
-        let invalid_blocks = self.invalid_blocks();
-        let invalid_block_hashes: HashSet<BlockHash> = invalid_blocks
-            .iter()
-            .map(|block| block.block_hash.clone())
-            .collect();
-
-        Ok(latest_message_hashes
-            .iter()
-            .filter(|(_, block_hash)| invalid_block_hashes.contains(*block_hash))
-            .map(|(validator, block_hash)| (validator.clone(), block_hash.clone()))
-            .collect())
+        let mut result = HashMap::new();
+        for (validator, block_hash) in latest_message_hashes {
+            if self
+                .lookup(block_hash)?
+                .map(|metadata| metadata.invalid)
+                .unwrap_or(false)
+            {
+                result.insert(validator.clone(), block_hash.clone());
+            }
+        }
+        Ok(result)
     }
 
     pub fn invalid_blocks_map(&self) -> Result<HashMap<BlockHash, Validator>, KvStoreError> {
         let invalid_blocks = self.invalid_blocks();
-        let invalid_block_hashes: HashMap<BlockHash, Validator> = invalid_blocks
-            .iter()
-            .map(|block| (block.block_hash.clone(), block.sender.clone()))
-            .collect();
-
+        let mut invalid_block_hashes = HashMap::new();
+        for block in invalid_blocks {
+            if let Some(metadata) = self.lookup(&block.block_hash)? {
+                if metadata.invalid {
+                    invalid_block_hashes.insert(metadata.block_hash, metadata.sender);
+                }
+            }
+        }
         Ok(invalid_block_hashes)
     }
 

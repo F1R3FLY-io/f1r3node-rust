@@ -119,8 +119,7 @@ pub async fn read_on_chain_fault_tolerance_threshold(
     runtime_manager: &RuntimeManager,
     post_state_hash: &StateHash,
 ) -> Result<f32, CasperError> {
-    let ppm =
-        read_on_chain_fault_tolerance_threshold_ppm(runtime_manager, post_state_hash).await?;
+    let ppm = read_on_chain_fault_tolerance_threshold_ppm(runtime_manager, post_state_hash).await?;
     Ok((ppm as f64 / 1_000_000.0) as f32)
 }
 

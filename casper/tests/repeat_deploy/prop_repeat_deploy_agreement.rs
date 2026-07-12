@@ -59,8 +59,9 @@
 // LOCAL-ONLY verification (not consensus code). Discoverable under `cargo test -p casper`
 // (wired into the `mod` integration-test binary via casper/tests/mod.rs).
 
-use proptest::prelude::*;
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
+
+use proptest::prelude::*;
 
 /// `u32` stands in for a deploy signature (`Bytes` in the real code); distinct
 /// integers ⇒ distinct sigs.
@@ -132,13 +133,20 @@ fn canonical_won_sigs(store: &HashMap<u32, Block>, parents: &[u32], earliest: i6
 
 /// PROPOSER selection (block_creator.rs:179-182): include only deploys NOT canonically-won.
 fn proposer_selects(pool: &[Sig], canonical_won: &HashSet<Sig>) -> HashSet<Sig> {
-    pool.iter().copied().filter(|s| !canonical_won.contains(s)).collect()
+    pool.iter()
+        .copied()
+        .filter(|s| !canonical_won.contains(s))
+        .collect()
 }
 
 /// VALIDATOR flag set (validate.rs:537-543): the block's deploys that ARE canonically-won
 /// (`deploy_key_set`). An honest block yields ∅ here and is Valid at :544-546.
 fn validator_flags(block_deploys: &[Sig], canonical_won: &HashSet<Sig>) -> HashSet<Sig> {
-    block_deploys.iter().copied().filter(|s| canonical_won.contains(s)).collect()
+    block_deploys
+        .iter()
+        .copied()
+        .filter(|s| canonical_won.contains(s))
+        .collect()
 }
 
 /// INDEPENDENT (non-BFS) ground truth for a linear chain: every block is reachable from
@@ -294,11 +302,26 @@ mod concrete_cases {
     fn latest_rejection_is_reproposable() {
         let a: Sig = 0;
         let (store, _chain) = store_of(vec![
-            Block { number: 1, hash: 1, parents: vec![], wins: vec![a], rejections: vec![] },
-            Block { number: 2, hash: 2, parents: vec![1], wins: vec![], rejections: vec![a] },
+            Block {
+                number: 1,
+                hash: 1,
+                parents: vec![],
+                wins: vec![a],
+                rejections: vec![],
+            },
+            Block {
+                number: 2,
+                hash: 2,
+                parents: vec![1],
+                wins: vec![],
+                rejections: vec![a],
+            },
         ]);
         let canonical_won = canonical_won_sigs(&store, &[2], 0);
-        assert!(!canonical_won.contains(&a), "latest disposition is a rejection ⇒ re-proposable");
+        assert!(
+            !canonical_won.contains(&a),
+            "latest disposition is a rejection ⇒ re-proposable"
+        );
         assert!(proposer_selects(&[a], &canonical_won).contains(&a));
         assert!(validator_flags(&[a], &canonical_won).is_empty());
     }
@@ -309,12 +332,30 @@ mod concrete_cases {
     fn latest_win_is_gated_and_flagged() {
         let a: Sig = 0;
         let (store, _chain) = store_of(vec![
-            Block { number: 1, hash: 1, parents: vec![], wins: vec![], rejections: vec![a] },
-            Block { number: 2, hash: 2, parents: vec![1], wins: vec![a], rejections: vec![] },
+            Block {
+                number: 1,
+                hash: 1,
+                parents: vec![],
+                wins: vec![],
+                rejections: vec![a],
+            },
+            Block {
+                number: 2,
+                hash: 2,
+                parents: vec![1],
+                wins: vec![a],
+                rejections: vec![],
+            },
         ]);
         let canonical_won = canonical_won_sigs(&store, &[2], 0);
-        assert!(canonical_won.contains(&a), "latest disposition is a win ⇒ canonically-won");
-        assert!(!proposer_selects(&[a], &canonical_won).contains(&a), "proposer gates it out");
+        assert!(
+            canonical_won.contains(&a),
+            "latest disposition is a win ⇒ canonically-won"
+        );
+        assert!(
+            !proposer_selects(&[a], &canonical_won).contains(&a),
+            "proposer gates it out"
+        );
         assert_eq!(validator_flags(&[a], &canonical_won), HashSet::from([a]));
     }
 
@@ -324,11 +365,26 @@ mod concrete_cases {
     fn below_window_is_reproposable() {
         let a: Sig = 0;
         let (store, _chain) = store_of(vec![
-            Block { number: 1, hash: 1, parents: vec![], wins: vec![a], rejections: vec![] },
-            Block { number: 2, hash: 2, parents: vec![1], wins: vec![], rejections: vec![] },
+            Block {
+                number: 1,
+                hash: 1,
+                parents: vec![],
+                wins: vec![a],
+                rejections: vec![],
+            },
+            Block {
+                number: 2,
+                hash: 2,
+                parents: vec![1],
+                wins: vec![],
+                rejections: vec![],
+            },
         ]);
         let canonical_won = canonical_won_sigs(&store, &[2], 2); // earliest = 2 excludes height 1
-        assert!(!canonical_won.contains(&a), "won only below earliest ⇒ expired ⇒ re-proposable");
+        assert!(
+            !canonical_won.contains(&a),
+            "won only below earliest ⇒ expired ⇒ re-proposable"
+        );
         assert!(validator_flags(&[a], &canonical_won).is_empty());
     }
 }

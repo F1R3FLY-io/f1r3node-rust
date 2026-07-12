@@ -51,6 +51,28 @@ fn remove_from_available(available: &mut Vec<Vec<u8>>, removed: &[Vec<u8>]) -> b
     true
 }
 
+fn binary_data_is_single_number(data: &[Vec<u8>]) -> bool {
+    if data.len() != 1 {
+        return false;
+    }
+    RholangMergingLogic::encoded_datum_is_number(&data[0])
+}
+
+fn numeric_cell_would_overfill(base: &[Vec<u8>], current: &[Vec<u8>], added: &[Vec<u8>]) -> bool {
+    if added.is_empty() {
+        return false;
+    }
+    if binary_data_is_single_number(base) {
+        return current.len() + added.len() > 1;
+    }
+    base.is_empty()
+        && current.len() + added.len() > 1
+        && current
+            .iter()
+            .chain(added.iter())
+            .all(|bytes| RholangMergingLogic::encoded_datum_is_number(bytes))
+}
+
 fn dependency_ordered_branch_items<'a>(
     branch: &'a HashableSet<DeployChainIndex>,
     depends: &impl Fn(&DeployChainIndex, &DeployChainIndex) -> bool,
@@ -103,12 +125,12 @@ fn branch_mergeable_channels(
                     ) {
                         Some(v) => v,
                         None => {
-                            return Err(
-                                rspace_plus_plus::rspace::errors::HistoryError::MergeError(format!(
+                            return Err(rspace_plus_plus::rspace::errors::HistoryError::MergeError(
+                                format!(
                                     "IntegerAdd overflow combining mergeable channel {:?}",
                                     key,
-                                )),
-                            )
+                                ),
+                            ))
                         }
                     };
                 }
@@ -163,13 +185,22 @@ fn split_unavailable_branch_consumes(
         }
 
         let changes = state_changes(chain)?;
+        let chain_mergeable = mergeable_channels(chain);
         let mut next_data = available_data.clone();
         let mut next_continuations = available_continuations.clone();
         let mut applicable = true;
 
         for entry in changes.datums_changes.iter() {
             let channel = entry.key();
+            if chain_mergeable.contains_key(channel) {
+                continue;
+            }
             if branch_mergeable.contains_key(channel) {
+                applicable = false;
+                break;
+            }
+            let changed = !entry.value().removed.is_empty() || !entry.value().added.is_empty();
+            if !changed {
                 continue;
             }
             let removed = &entry.value().removed;
@@ -211,7 +242,7 @@ fn split_unavailable_branch_consumes(
         if applicable {
             for entry in changes.datums_changes.iter() {
                 let channel = entry.key();
-                if branch_mergeable.contains_key(channel) {
+                if chain_mergeable.contains_key(channel) {
                     continue;
                 }
                 let added = &entry.value().added;
@@ -221,8 +252,17 @@ fn split_unavailable_branch_consumes(
                 if !next_data.contains_key(channel) {
                     next_data.insert(channel.clone(), base_data(channel)?);
                 }
+                let base = base_data(channel)?;
+                let current = next_data.get(channel).unwrap();
+                if numeric_cell_would_overfill(&base, current, added) {
+                    applicable = false;
+                    break;
+                }
                 next_data.get_mut(channel).unwrap().extend(added.clone());
             }
+        }
+
+        if applicable {
             for entry in changes.cont_changes.iter() {
                 let consume_channels = entry.key();
                 let added = &entry.value().added;
@@ -243,7 +283,9 @@ fn split_unavailable_branch_consumes(
             available_data = next_data;
             available_continuations = next_continuations;
             accepted.insert(chain.clone());
-        } else {
+        }
+
+        if !applicable {
             rejected.0.insert(chain.clone());
         }
     }
@@ -333,8 +375,6 @@ fn split_overfilled_single_value_cells(
         .collect();
     all_chains.sort();
 
-    // Channels this merge folds (mergeable in any surviving chain) are handled
-    // by the number-channel fold and are exempt from keep-one.
     let mut folded: HashSet<Blake2b256Hash> = HashSet::new();
     for chain in &all_chains {
         for key in mergeable_channels(chain).keys() {
@@ -345,13 +385,19 @@ fn split_overfilled_single_value_cells(
     // Combined per-channel change + the ordered producers (chains that add).
     let mut combined: HashMap<Blake2b256Hash, ChannelChange<Vec<u8>>> = HashMap::new();
     let mut producers: HashMap<Blake2b256Hash, Vec<DeployChainIndex>> = HashMap::new();
+    let mut rejected_seed: HashSet<DeployChainIndex> = HashSet::new();
     for chain in &all_chains {
+        let chain_mergeable = mergeable_channels(chain);
         for entry in chain.state_changes.datums_changes.iter() {
             let ch = entry.key().clone();
-            if folded.contains(&ch) {
+            let chg = entry.value();
+            if chain_mergeable.contains_key(&ch) {
                 continue;
             }
-            let chg = entry.value();
+            if folded.contains(&ch) && (!chg.added.is_empty() || !chg.removed.is_empty()) {
+                rejected_seed.insert(chain.clone());
+                continue;
+            }
             let c = combined
                 .entry(ch.clone())
                 .or_insert_with(ChannelChange::empty);
@@ -365,7 +411,6 @@ fn split_overfilled_single_value_cells(
 
     // Seed rejections: for each over-filled single-value cell, keep the lowest
     // producer, reject the rest.
-    let mut rejected_seed: HashSet<DeployChainIndex> = HashSet::new();
     for (ch, chg) in &combined {
         if chg.added.is_empty() {
             continue;
@@ -373,10 +418,17 @@ fn split_overfilled_single_value_cells(
         let base_d = base_datum(ch)?;
         let is_single_number = base_d.len() == 1
             && RholangMergingLogic::try_get_number_with_rnd(&base_d[0].a).is_some();
-        if !is_single_number {
+        let base_b = base_binary(ch)?;
+        let kept = StateChange::multiset_diff(&base_b, &chg.removed);
+        let empty_numeric_cell = base_d.is_empty()
+            && kept.is_empty()
+            && chg
+                .added
+                .iter()
+                .all(|bytes| RholangMergingLogic::encoded_datum_is_number(bytes));
+        if !is_single_number && !empty_numeric_cell {
             continue;
         }
-        let kept = StateChange::multiset_diff(&base_binary(ch)?, &chg.removed);
         if kept.len() + chg.added.len() > 1 {
             if let Some(prod) = producers.get(ch) {
                 for loser in prod.iter().skip(1) {
@@ -1405,10 +1457,15 @@ pub fn merge(
 mod tests {
     use std::collections::{BTreeMap, HashSet};
 
+    use crypto::rust::hash::blake2b512_random::Blake2b512Random;
     use dashmap::DashMap;
+    use rholang::rust::interpreter::rho_type::RhoNumber;
+    use rspace_plus_plus::rspace::hashing::stable_hash_provider;
     use rspace_plus_plus::rspace::merger::channel_change::ChannelChange;
     use rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex;
     use rspace_plus_plus::rspace::merger::state_change::StateChange;
+    use rspace_plus_plus::rspace::serializers::serializers;
+    use rspace_plus_plus::rspace::trace::event::Produce;
 
     use super::*;
     use crate::rust::merging::deploy_chain_index::{DeployChainIndex, DeployIdWithCost};
@@ -1433,6 +1490,22 @@ mod tests {
         source_block_number: i64,
         state_changes: StateChange,
     ) -> DeployChainIndex {
+        chain_with_event_log(
+            deploy_id,
+            cost,
+            source_block_number,
+            state_changes,
+            EventLogIndex::empty(),
+        )
+    }
+
+    fn chain_with_event_log(
+        deploy_id: u8,
+        cost: u64,
+        source_block_number: i64,
+        state_changes: StateChange,
+        event_log_index: EventLogIndex,
+    ) -> DeployChainIndex {
         let deploys_with_cost = HashableSet(HashSet::from([DeployIdWithCost {
             deploy_id: Bytes::from(vec![deploy_id]),
             cost,
@@ -1440,11 +1513,54 @@ mod tests {
         DeployChainIndex::from_parts(
             deploys_with_cost,
             Blake2b256Hash::from_bytes(vec![deploy_id; 32]),
-            EventLogIndex::empty(),
+            event_log_index,
             state_changes,
             Bytes::from(vec![deploy_id; 32]),
             source_block_number,
         )
+    }
+
+    fn mergeable_chain(
+        deploy_id: u8,
+        cost: u64,
+        source_block_number: i64,
+        channel: Blake2b256Hash,
+        state_changes: StateChange,
+    ) -> DeployChainIndex {
+        let mut event_log = EventLogIndex::empty();
+        event_log
+            .number_channels_data
+            .insert(channel, (0, merging_logic::MergeType::IntegerAdd));
+        chain_with_event_log(
+            deploy_id,
+            cost,
+            source_block_number,
+            state_changes,
+            event_log,
+        )
+    }
+
+    fn encoded_number(channel_hash: &Blake2b256Hash, num: i64) -> Vec<u8> {
+        let rnd = Blake2b512Random::create_from_bytes(&[num as u8; 32]);
+        let par_with_rnd = ListParWithRandom {
+            pars: vec![RhoNumber::create_par(num)],
+            random_state: rnd.to_bytes(),
+        };
+        let data_hash =
+            stable_hash_provider::hash_produce(channel_hash.bytes(), &par_with_rnd, false);
+        let produce = Produce {
+            channel_hash: channel_hash.clone(),
+            hash: data_hash,
+            persistent: false,
+            is_deterministic: true,
+            output_value: vec![],
+            failed: false,
+        };
+        serializers::encode_datum(&Datum {
+            a: par_with_rnd,
+            persist: false,
+            source: produce,
+        })
     }
 
     fn split_branch(
@@ -1456,14 +1572,26 @@ mod tests {
         Option<HashableSet<DeployChainIndex>>,
         HashableSet<DeployChainIndex>,
     ) {
+        split_branch_with_base(branch, base_channel, vec![base_data_value], depends)
+    }
+
+    fn split_branch_with_base(
+        branch: HashableSet<DeployChainIndex>,
+        base_channel: Blake2b256Hash,
+        base_data_values: Vec<Vec<u8>>,
+        depends: impl Fn(&DeployChainIndex, &DeployChainIndex) -> bool,
+    ) -> (
+        Option<HashableSet<DeployChainIndex>>,
+        HashableSet<DeployChainIndex>,
+    ) {
         split_unavailable_branch_consumes(
             branch,
             &depends,
             &|chain| Ok(chain.state_changes.clone()),
-            &|_| BTreeMap::new(),
+            &|chain| chain.event_log_index.number_channels_data.clone(),
             &|channel| {
                 if channel == &base_channel {
-                    Ok(vec![base_data_value.clone()])
+                    Ok(base_data_values.clone())
                 } else {
                     Ok(Vec::new())
                 }
@@ -1500,6 +1628,212 @@ mod tests {
         assert!(!kept.0.contains(&low_cost));
         assert!(rejected.0.contains(&low_cost));
         assert!(!rejected.0.contains(&high_cost));
+    }
+
+    #[test]
+    fn unavailable_floor_consumes_reject_produce_only_single_value_overfill() {
+        let channel = Blake2b256Hash::from_bytes(vec![0x12; 32]);
+        let base = encoded_number(&channel, 0);
+        let added_a = encoded_number(&channel, 1);
+        let added_b = encoded_number(&channel, 2);
+        let first = chain(
+            1,
+            10,
+            1,
+            datum_change(channel.clone(), Vec::new(), vec![added_a]),
+        );
+        let second = chain(
+            2,
+            1,
+            1,
+            datum_change(channel.clone(), Vec::new(), vec![added_b]),
+        );
+        let branch = HashableSet(HashSet::from([first.clone(), second.clone()]));
+
+        let (kept, rejected) = split_branch(branch, channel, base, |_, _| false);
+
+        assert!(kept.is_none());
+        assert!(rejected.0.contains(&first));
+        assert!(rejected.0.contains(&second));
+    }
+
+    #[test]
+    fn unavailable_floor_consumes_keep_one_empty_numeric_cell_creator() {
+        let channel = Blake2b256Hash::from_bytes(vec![0x14; 32]);
+        let added_a = encoded_number(&channel, 0);
+        let added_b = encoded_number(&channel, 0);
+        let first = chain(
+            1,
+            10,
+            1,
+            datum_change(channel.clone(), Vec::new(), vec![added_a]),
+        );
+        let second = chain(
+            2,
+            1,
+            1,
+            datum_change(channel.clone(), Vec::new(), vec![added_b]),
+        );
+        let branch = HashableSet(HashSet::from([first.clone(), second.clone()]));
+
+        let (kept, rejected) = split_branch_with_base(branch, channel, Vec::new(), |_, _| false);
+
+        let kept = kept.expect("one numeric creator must survive");
+        assert_eq!(kept.0.len(), 1);
+        assert_eq!(rejected.0.len(), 1);
+        assert_ne!(
+            kept.0.iter().next().unwrap().source_block_hash,
+            rejected.0.iter().next().unwrap().source_block_hash
+        );
+    }
+
+    #[test]
+    fn overfilled_splitter_keep_one_empty_numeric_cell_creator() {
+        let channel = Blake2b256Hash::from_bytes(vec![0x15; 32]);
+        let added_a = encoded_number(&channel, 0);
+        let added_b = encoded_number(&channel, 0);
+        let first = chain(
+            1,
+            10,
+            1,
+            datum_change(channel.clone(), Vec::new(), vec![added_a]),
+        );
+        let second = chain(
+            2,
+            1,
+            1,
+            datum_change(channel.clone(), Vec::new(), vec![added_b]),
+        );
+        let mut resolved = conflict_set_merger::ResolvedConflicts {
+            to_merge: vec![
+                HashableSet(HashSet::from([first.clone()])),
+                HashableSet(HashSet::from([second.clone()])),
+            ],
+            rejected: HashableSet(HashSet::new()),
+            late_set_size: 0,
+            actual_set_size: 2,
+            branches_count: 2,
+            rejected_as_dependents_count: 0,
+            optimal_rejection_count: 0,
+            conflict_map_conflicts_count: 0,
+            rejection_options_count: 0,
+            branches_time: std::time::Duration::ZERO,
+            conflicts_map_time: std::time::Duration::ZERO,
+            rejection_options_time: std::time::Duration::ZERO,
+        };
+
+        let rejected = split_overfilled_single_value_cells(
+            &mut resolved,
+            &|_, _| false,
+            &|_| BTreeMap::new(),
+            &|_| Ok(Vec::new()),
+            &|_| Ok(Vec::new()),
+        )
+        .expect("split overfilled cells");
+
+        assert_eq!(rejected.0.len(), 1);
+        assert_eq!(resolved.to_merge.len(), 1);
+        assert_eq!(resolved.to_merge[0].0.len(), 1);
+    }
+
+    #[test]
+    fn unavailable_split_rejects_untagged_touch_to_folded_number_channel() {
+        let channel = Blake2b256Hash::from_bytes(vec![0x16; 32]);
+        let tagged_added = encoded_number(&channel, 0);
+        let untagged_added = encoded_number(&channel, 0);
+        let tagged = mergeable_chain(
+            1,
+            10,
+            1,
+            channel.clone(),
+            datum_change(channel.clone(), Vec::new(), vec![tagged_added]),
+        );
+        let untagged = chain(
+            2,
+            1,
+            1,
+            datum_change(channel.clone(), Vec::new(), vec![untagged_added]),
+        );
+        let branch = HashableSet(HashSet::from([tagged.clone(), untagged.clone()]));
+
+        let (kept, rejected) = split_branch_with_base(branch, channel, Vec::new(), |_, _| false);
+
+        let kept = kept.expect("tagged writer must survive");
+        assert!(kept.0.contains(&tagged));
+        assert!(!kept.0.contains(&untagged));
+        assert!(rejected.0.contains(&untagged));
+        assert!(!rejected.0.contains(&tagged));
+    }
+
+    #[test]
+    fn overfilled_splitter_rejects_untagged_touch_to_folded_number_channel() {
+        let channel = Blake2b256Hash::from_bytes(vec![0x17; 32]);
+        let tagged_added = encoded_number(&channel, 0);
+        let untagged_added = encoded_number(&channel, 0);
+        let tagged = mergeable_chain(
+            1,
+            10,
+            1,
+            channel.clone(),
+            datum_change(channel.clone(), Vec::new(), vec![tagged_added]),
+        );
+        let untagged = chain(
+            2,
+            1,
+            1,
+            datum_change(channel.clone(), Vec::new(), vec![untagged_added]),
+        );
+        let mut resolved = conflict_set_merger::ResolvedConflicts {
+            to_merge: vec![
+                HashableSet(HashSet::from([tagged.clone()])),
+                HashableSet(HashSet::from([untagged.clone()])),
+            ],
+            rejected: HashableSet(HashSet::new()),
+            late_set_size: 0,
+            actual_set_size: 2,
+            branches_count: 2,
+            rejected_as_dependents_count: 0,
+            optimal_rejection_count: 0,
+            conflict_map_conflicts_count: 0,
+            rejection_options_count: 0,
+            branches_time: std::time::Duration::ZERO,
+            conflicts_map_time: std::time::Duration::ZERO,
+            rejection_options_time: std::time::Duration::ZERO,
+        };
+
+        let rejected = split_overfilled_single_value_cells(
+            &mut resolved,
+            &|_, _| false,
+            &|chain| chain.event_log_index.number_channels_data.clone(),
+            &|_| Ok(Vec::new()),
+            &|_| Ok(Vec::new()),
+        )
+        .expect("split mixed folded cells");
+
+        assert!(rejected.0.contains(&untagged));
+        assert!(!rejected.0.contains(&tagged));
+        assert_eq!(resolved.to_merge.len(), 1);
+        assert!(resolved.to_merge[0].0.contains(&tagged));
+    }
+
+    #[test]
+    fn unavailable_floor_consumes_reject_internal_single_value_overfill() {
+        let channel = Blake2b256Hash::from_bytes(vec![0x13; 32]);
+        let base = encoded_number(&channel, 0);
+        let added_a = encoded_number(&channel, 1);
+        let added_b = encoded_number(&channel, 2);
+        let overfilled = chain(
+            1,
+            10,
+            1,
+            datum_change(channel.clone(), vec![base.clone()], vec![added_a, added_b]),
+        );
+        let branch = HashableSet(HashSet::from([overfilled.clone()]));
+
+        let (kept, rejected) = split_branch(branch, channel, base, |_, _| false);
+
+        assert!(kept.is_none());
+        assert!(rejected.0.contains(&overfilled));
     }
 
     #[test]

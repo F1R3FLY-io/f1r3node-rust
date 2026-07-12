@@ -124,17 +124,15 @@ fn assert_touched_integer_add_channels_single_valued(
 ///       merge_block          proposed by validator 1 (NOT validator 0)
 ///            |
 ///     recovery_block         proposed by validator 0; the rejected sig
-///                            must surface in body.deploys
+///                            must stay parked while its source is unresolved
 ///
 /// The flow exercises:
 ///   1. Multi-parent merge in `compute_parents_post_state`, where
-///      `dag_merger::merge` returns the rejected sig and
-///      `compute_rejected_buffer_admits` admits it to the buffer.
+///      `dag_merger::merge` returns the rejected sig and admits it to the buffer.
 ///   2. Buffer population on the recovery proposer via
 ///      `validate_block_checkpoint` when it syncs merge_block.
-///   3. `prepare_user_deploys` pulling from the buffer and the
-///      self-chain dedup filter exempting `rejected_in_scope` sigs so
-///      the recovered deploy actually reaches `body.deploys`.
+///   3. `prepare_user_deploys` refusing to replay the buffered deploy
+///      while the same sig is still visible in unresolved scope.
 ///
 /// Determinism notes:
 ///
@@ -157,7 +155,7 @@ fn assert_touched_integer_add_channels_single_valued(
 ///   merge_block via the self-chain walk.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[serial]
-async fn recovery_cycle_rejected_deploy_is_buffered_and_re_proposed() {
+async fn recovery_cycle_rejected_deploy_retries_while_source_is_visible() {
     let ctx = TestContext::new().await;
     let shard_id = ctx.genesis.genesis_block.shard_id.clone();
 
@@ -166,6 +164,9 @@ async fn recovery_cycle_rejected_deploy_is_buffered_and_re_proposed() {
     let mut nodes = TestNode::create_network(ctx.genesis.clone(), 2, None, None, None, None)
         .await
         .expect("create_network(2)");
+    for node in nodes.iter_mut() {
+        node.allow_empty_blocks = true;
+    }
 
     // Build the two conflicting deploys. Both are signed by the same
     // funded key; different timestamps (enforced by the sleeps) keep
@@ -349,13 +350,16 @@ async fn recovery_cycle_rejected_deploy_is_buffered_and_re_proposed() {
             hex::encode(&conflict_sig)
         );
     }
+    nodes[0]
+        .block_dag_storage
+        .record_directly_finalized(merge_block.block_hash.clone(), 1.0, |_| async { Ok(()) })
+        .await
+        .expect("mark merge frontier finalized for recovery gate");
 
-    // Drive the recovery: validator 0 proposes recovery_block.
-    // `collect_self_chain_deploy_sigs` walks validator 0's prior latest
-    // (block_a) and finds deploy_a's sig there. Without the
-    // `rejected_in_scope` exemption, the self-chain dedup filter would
-    // drop the recovered sig from `prepared.deploys` and the new block's
-    // body would be missing the recovered deploy.
+    // Validator 0 proposes another block while its source block is still
+    // visible in unresolved scope. Since the merge rejection is visible and
+    // the deploy is in the rejected-deploy buffer, the rejected sig must be
+    // retryable rather than blocked until the source leaves the DAG window.
     let marker_deploy_2 = {
         tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
         construct_deploy::basic_deploy_data(1, None, Some(shard_id.clone()))
@@ -374,16 +378,53 @@ async fn recovery_cycle_rejected_deploy_is_buffered_and_re_proposed() {
         .collect();
     assert!(
         recovery_sigs.iter().any(|s| **s == conflict_sig),
-        "recovery_block.body.deploys must contain the recovered sig {} \
-         (pulled from the rejected-deploy buffer); got body.deploys \
-         sigs = {:?}. If this fires, check that both `prepare_user_deploys` \
-         and `collect_self_chain_deploy_sigs` exempt `rejected_in_scope` \
-         sigs from their in-scope dedup filters",
+        "recovery_block.body.deploys must replay recovered sig {}; got body.deploys sigs = {:?}",
         hex::encode(&conflict_sig),
         recovery_sigs
             .iter()
             .map(|s| hex::encode(s.as_ref()))
             .collect::<Vec<_>>()
+    );
+    {
+        let buffer_guard = nodes[0].rejected_deploy_buffer.lock().expect("buffer lock");
+        assert!(
+            !buffer_guard
+                .contains_sig(&conflict_sig)
+                .expect("buffer.contains_sig"),
+            "selected recovered sig must be drained from the rejected-deploy buffer"
+        );
+    }
+
+    let body_deploy_sigs: std::collections::HashSet<Bytes> = recovery_block
+        .body
+        .deploys
+        .iter()
+        .map(|pd| pd.deploy.sig.clone())
+        .collect();
+    let overlapping_rejected_sigs: Vec<Bytes> = recovery_block
+        .body
+        .rejected_deploys
+        .iter()
+        .filter_map(|rd| body_deploy_sigs.contains(&rd.sig).then_some(rd.sig.clone()))
+        .collect();
+    assert!(
+        overlapping_rejected_sigs.is_empty(),
+        "recovery_block must not list accepted deploy signatures as rejected; overlaps={:?}",
+        overlapping_rejected_sigs
+            .iter()
+            .map(hex::encode)
+            .collect::<Vec<_>>()
+    );
+
+    {
+        let (a, b) = nodes.split_at_mut(1);
+        b[0].sync_with_one(&mut a[0])
+            .await
+            .expect("sync recovery_block 0 -> 1");
+    }
+    assert!(
+        nodes[1].contains(&recovery_block.block_hash),
+        "validator 1 must validate the recovery block with filtered rejected_deploys"
     );
 
     // The surviving sig must remain reachable in the canonical view via

@@ -10,8 +10,10 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
+use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use comm::rust::transport::transport_layer::TransportLayer;
 use models::rust::block_hash::BlockHash;
+use models::rust::block_metadata::BlockMetadata;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{BlockMessage, Justification};
 use models::rust::validator::Validator;
@@ -35,6 +37,47 @@ use crate::rust::util::proto_util;
 /// consensus-critical value, so a rounded estimate (rather than a
 /// per-deploy actual-byte sum) is intentional.
 const DEPLOY_SIG_BYTES_ESTIMATE: f64 = 65.0;
+
+fn candidate_scope_has_rejected_deploys(
+    dag: &KeyValueDagRepresentation,
+    block_store: &KeyValueBlockStore,
+    parent_metas: Vec<BlockMetadata>,
+    current_block_number: i64,
+    deploy_lifespan: i64,
+) -> Result<bool, CasperError> {
+    let earliest_block_number = current_block_number - deploy_lifespan;
+    let neighbor_fn = |block_metadata: &BlockMetadata| {
+        proto_util::get_parent_metadatas_above_block_number(
+            block_metadata,
+            earliest_block_number,
+            dag,
+        )
+    };
+    let traversal_result = dag_ops::try_bf_traverse(parent_metas, neighbor_fn)?;
+    for block_metadata in traversal_result {
+        if block_store
+            .rejected_deploy_sigs(&block_metadata.block_hash)?
+            .map(|sigs| !sigs.is_empty())
+            .unwrap_or(false)
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn deploy_scope_cache_key_matches(
+    cached_generation: u64,
+    cached_lfb: &BlockHash,
+    cached_parents: &[BlockHash],
+    current_generation: u64,
+    current_lfb: &BlockHash,
+    current_parents: &[BlockHash],
+) -> bool {
+    cached_generation == current_generation
+        && cached_lfb == current_lfb
+        && cached_parents == current_parents
+}
 
 pub(crate) fn record_dag_cardinality_metrics(dag: &KeyValueDagRepresentation) {
     metrics::gauge!(DAG_BLOCKS_SIZE_METRIC, "source" => CASPER_METRICS_SOURCE)
@@ -141,8 +184,51 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
             .then_with(|| a.block_hash.cmp(&b.block_hash))
     });
 
+    let rejected_deploys_in_candidate_scope = if sorted_parents_list.is_empty() {
+        false
+    } else {
+        let sorted_parent_hashes: Vec<BlockHash> = sorted_parents_list
+            .iter()
+            .map(|block| block.block_hash.clone())
+            .collect();
+        let sorted_parent_metas = dag.lookups_unsafe(sorted_parent_hashes)?;
+        let candidate_block_number = proto_util::max_block_number_metadata(&sorted_parent_metas)
+            .checked_add(1)
+            .ok_or_else(|| {
+                CasperError::RuntimeError(
+                    "candidate max_block_num overflow while checking recovery context".to_string(),
+                )
+            })?;
+        candidate_scope_has_rejected_deploys(
+            &dag,
+            &this.block_store,
+            sorted_parent_metas,
+            candidate_block_number,
+            this.casper_shard_conf.deploy_lifespan,
+        )?
+    };
+
+    let recovery_backlog = {
+        let buffer_guard = this
+            .rejected_deploy_buffer
+            .lock()
+            .map_err(|err| CasperError::LockError(err.to_string()))?;
+        buffer_guard.non_empty().map_err(CasperError::from)?
+    };
+    let recovery_context = recovery_backlog || rejected_deploys_in_candidate_scope;
+
     let unfiltered_parents = if sorted_parents_list.is_empty() {
         vec![this.approved_block.clone()]
+    } else if recovery_context && sorted_parents_list.len() > 1 {
+        tracing::info!(
+            target: "f1r3fly.casper.recovery",
+            "Parent selection narrowed for deploy recovery: original_parents={}, selected_main={}, local_buffer={}, rejected_in_scope={}",
+            sorted_parents_list.len(),
+            PrettyPrinter::build_string_bytes(&sorted_parents_list[0].block_hash),
+            recovery_backlog,
+            rejected_deploys_in_candidate_scope
+        );
+        vec![sorted_parents_list[0].clone()]
     } else {
         sorted_parents_list
     };
@@ -192,7 +278,7 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
     // batched `lookups_unsafe` is cheaper per parent, so use it once
     // up-front and borrow into the LCA call.
     let parent_hashes: Vec<BlockHash> = parents.iter().map(|b| b.block_hash.clone()).collect();
-    let parent_metas = dag.lookups_unsafe(parent_hashes)?;
+    let parent_metas = dag.lookups_unsafe(parent_hashes.clone())?;
 
     let lca = if parent_metas.is_empty() {
         this.approved_block.block_hash.clone()
@@ -282,15 +368,22 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
             // and the rejected-in-scope companion set so both can be served
             // out of one cache hit.
             let cache_guard = this.deploys_in_scope_cache.lock();
-            cache_guard
-                .as_ref()
-                .and_then(|(gen, cached_lfb, deploys_set, rejected_set)| {
-                    if *gen == current_dag_generation && *cached_lfb == snapshot_lfb_hash {
+            cache_guard.as_ref().and_then(
+                |(gen, cached_lfb, cached_parents, deploys_set, rejected_set)| {
+                    if deploy_scope_cache_key_matches(
+                        *gen,
+                        cached_lfb,
+                        cached_parents,
+                        current_dag_generation,
+                        &snapshot_lfb_hash,
+                        &parent_hashes,
+                    ) {
                         Some((deploys_set.clone(), rejected_set.clone()))
                     } else {
                         None
                     }
-                })
+                },
+            )
         };
 
         if let Some(pair) = cached {
@@ -360,6 +453,7 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
             *cache_guard = Some((
                 current_dag_generation,
                 snapshot_lfb_hash,
+                parent_hashes.clone(),
                 all_deploys.clone(),
                 all_rejected.clone(),
             ));
@@ -477,4 +571,120 @@ pub(crate) async fn get_on_chain_state<T: TransportLayer + Send + Sync>(
             .collect::<HashMap<_, _>>(),
         active_validators: av,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use block_storage::rust::dag::block_dag_key_value_storage::{
+        BlockDagKeyValueStorage, InsertMode,
+    };
+    use block_storage::rust::key_value_block_store::KeyValueBlockStore;
+    use models::rust::block_implicits;
+    use models::rust::casper::protocol::casper_message::RejectedDeploy;
+    use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+
+    use super::{candidate_scope_has_rejected_deploys, deploy_scope_cache_key_matches};
+
+    #[test]
+    fn deploy_scope_cache_key_includes_selected_parents() {
+        let lfb = prost::bytes::Bytes::from_static(b"lfb");
+        let parent_a = prost::bytes::Bytes::from_static(b"a");
+        let parent_b = prost::bytes::Bytes::from_static(b"b");
+
+        assert!(deploy_scope_cache_key_matches(
+            7,
+            &lfb,
+            std::slice::from_ref(&parent_a),
+            7,
+            &lfb,
+            std::slice::from_ref(&parent_a)
+        ));
+        assert!(!deploy_scope_cache_key_matches(
+            7,
+            &lfb,
+            std::slice::from_ref(&parent_a),
+            7,
+            &lfb,
+            std::slice::from_ref(&parent_b)
+        ));
+        assert!(!deploy_scope_cache_key_matches(
+            7,
+            &lfb,
+            &[parent_a.clone(), parent_b.clone()],
+            7,
+            &lfb,
+            &[parent_b, parent_a]
+        ));
+    }
+
+    #[tokio::test]
+    async fn candidate_scope_detects_rejected_deploys_without_local_buffer() {
+        let mut kvm = InMemoryStoreManager::new();
+        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
+            .await
+            .expect("block store");
+        let dag_storage = BlockDagKeyValueStorage::new(&mut kvm)
+            .await
+            .expect("dag storage");
+
+        let genesis = block_implicits::get_random_block(
+            Some(0),
+            Some(0),
+            None,
+            None,
+            None,
+            None,
+            Some(0),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            None,
+            Some("test".to_string()),
+            None,
+        );
+        let mut rejected = block_implicits::get_random_block(
+            Some(1),
+            Some(1),
+            None,
+            None,
+            None,
+            None,
+            Some(1),
+            Some(vec![genesis.block_hash.clone()]),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            None,
+            Some("test".to_string()),
+            None,
+        );
+        rejected.body.rejected_deploys = vec![RejectedDeploy {
+            sig: prost::bytes::Bytes::from_static(b"sig"),
+        }];
+
+        block_store
+            .put_block_message(&genesis)
+            .expect("store genesis");
+        block_store
+            .put_block_message(&rejected)
+            .expect("store rejected");
+        dag_storage
+            .insert(&genesis, InsertMode::Approved)
+            .expect("insert genesis");
+        dag_storage
+            .insert(&rejected, InsertMode::Normal)
+            .expect("insert rejected");
+
+        let dag = dag_storage.get_representation().expect("dag");
+        let parent_meta = dag
+            .lookup(&rejected.block_hash)
+            .expect("lookup rejected")
+            .expect("rejected metadata");
+
+        assert!(
+            candidate_scope_has_rejected_deploys(&dag, &block_store, vec![parent_meta], 2, 50)
+                .expect("candidate scope")
+        );
+    }
 }

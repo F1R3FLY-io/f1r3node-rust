@@ -477,22 +477,19 @@ where
                             key, existing.1, incoming_mt,
                         )));
                     }
-                    existing.0 = match combine_mergeable_value(
-                        existing.0,
-                        incoming_diff,
-                        incoming_mt,
-                    ) {
-                        Some(v) => v,
-                        // Survivors already passed the per-branch overflow gate, so
-                        // this should be unreachable; error rather than write a
-                        // wrapped value if it ever is.
-                        None => {
-                            return Err(HistoryError::MergeError(format!(
-                                "IntegerAdd overflow combining mergeable channel {:?}",
-                                key,
-                            )))
-                        }
-                    };
+                    existing.0 =
+                        match combine_mergeable_value(existing.0, incoming_diff, incoming_mt) {
+                            Some(v) => v,
+                            // Survivors already passed the per-branch overflow gate, so
+                            // this should be unreachable; error rather than write a
+                            // wrapped value if it ever is.
+                            None => {
+                                return Err(HistoryError::MergeError(format!(
+                                    "IntegerAdd overflow combining mergeable channel {:?}",
+                                    key,
+                                )))
+                            }
+                        };
                 }
                 None => {
                     all_mergeable_channels.insert(key.clone(), (incoming_diff, incoming_mt));

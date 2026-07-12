@@ -280,7 +280,14 @@ pub fn authorized_slash_candidates(
     // BTreeMap (not HashMap) gives deterministic iteration order across nodes;
     // the resulting Vec is what feeds the block body.
     let mut by_offender: BTreeMap<Validator, AuthorizedSlashCandidate> = BTreeMap::new();
-    for metadata in snapshot.dag.invalid_blocks() {
+    for indexed_metadata in snapshot.dag.invalid_blocks() {
+        let Some(metadata) = snapshot
+            .dag
+            .lookup(&indexed_metadata.block_hash)
+            .map_err(CasperError::KvStoreError)?
+        else {
+            continue;
+        };
         if !metadata.invalid {
             continue;
         }

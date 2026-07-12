@@ -810,8 +810,14 @@ mod ft_decides_exact_tests {
         let num = -1_000_000; // θ = -1.0
         let s = 10i64;
         let agreeing = 10i64; // 2·10 > 10 ⇒ gate passes
-        assert!(ft_decides_exact(agreeing, 1, s, num, den, true), "q=1>0 finalizes");
-        assert!(!ft_decides_exact(agreeing, 0, s, num, den, true), "q=0 does not");
+        assert!(
+            ft_decides_exact(agreeing, 1, s, num, den, true),
+            "q=1>0 finalizes"
+        );
+        assert!(
+            !ft_decides_exact(agreeing, 0, s, num, den, true),
+            "q=0 does not"
+        );
     }
 
     #[test]

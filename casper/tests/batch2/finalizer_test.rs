@@ -352,6 +352,131 @@ async fn test_not_advance_finalization_if_no_new_lfb_found_advance_otherwise_inv
 }
 
 #[tokio::test]
+async fn finalizer_invokes_effect_for_finalized_candidate_ahead_of_lfb() {
+    with_storage(|mut store, mut dag_store| async move {
+        let validators = vec![
+            generate_validator(Some("Finalized Candidate Validator 1")),
+            generate_validator(Some("Finalized Candidate Validator 2")),
+            generate_validator(Some("Finalized Candidate Validator 3")),
+            generate_validator(Some("Finalized Candidate Validator 4")),
+            generate_validator(Some("Finalized Candidate Validator 5")),
+        ];
+        let bonds: Vec<Bond> = validators
+            .iter()
+            .map(|v| Bond {
+                validator: v.clone(),
+                stake: 3,
+            })
+            .collect();
+
+        let genesis = create_genesis_block(
+            &mut store,
+            &mut dag_store,
+            None,
+            Some(bonds.clone()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        let creator1 = create_block_creator(&bonds, &genesis, &validators[0]);
+        let creator2 = create_block_creator(&bonds, &genesis, &validators[1]);
+        let creator3 = create_block_creator(&bonds, &genesis, &validators[2]);
+        let creator4 = create_block_creator(&bonds, &genesis, &validators[3]);
+        let creator5 = create_block_creator(&bonds, &genesis, &validators[4]);
+
+        let genesis_justification = HashMap::from([
+            (&validators[0], &genesis),
+            (&validators[1], &genesis),
+            (&validators[2], &genesis),
+            (&validators[3], &genesis),
+            (&validators[4], &genesis),
+        ]);
+
+        let b1 = creator1(
+            &mut store,
+            &mut dag_store,
+            vec![&genesis],
+            &genesis_justification,
+        );
+
+        let _b2 = creator1(
+            &mut store,
+            &mut dag_store,
+            vec![&b1],
+            &genesis_justification,
+        );
+        let _b3 = creator2(
+            &mut store,
+            &mut dag_store,
+            vec![&b1],
+            &genesis_justification,
+        );
+        let _b4 = creator3(
+            &mut store,
+            &mut dag_store,
+            vec![&b1],
+            &genesis_justification,
+        );
+        let _b5 = creator4(
+            &mut store,
+            &mut dag_store,
+            vec![&b1],
+            &genesis_justification,
+        );
+        let _b6 = creator5(
+            &mut store,
+            &mut dag_store,
+            vec![&b1],
+            &genesis_justification,
+        );
+
+        dag_store
+            .record_directly_finalized(b1.block_hash.clone(), 1.0, |_| async { Ok(()) })
+            .await
+            .unwrap();
+
+        let dag = dag_store.get_representation().expect("dag representation");
+        assert!(dag.is_finalized(&b1.block_hash));
+
+        let effect_invoked = Rc::new(RefCell::new(false));
+        let selected = Rc::new(RefCell::new(BlockHash::default()));
+        let lfb = {
+            let effect_invoked = effect_invoked.clone();
+            let selected = selected.clone();
+            Finalizer::run(
+                &dag,
+                FtThreshold::from_f32_lossy(-1.0),
+                0,
+                move |(m, _ft)| {
+                    let effect_invoked = effect_invoked.clone();
+                    let selected = selected.clone();
+                    async move {
+                        *effect_invoked.borrow_mut() = true;
+                        *selected.borrow_mut() = m;
+                        Ok(())
+                    }
+                },
+                &FinalizerConf::default(),
+            )
+            .await
+            .unwrap()
+        };
+
+        assert_eq!(lfb.as_ref().map(|(h, _)| h), Some(&b1.block_hash));
+        assert_eq!(*selected.borrow(), b1.block_hash);
+        assert!(*effect_invoked.borrow());
+
+        Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
+    })
+    .await
+    .expect("Test should complete successfully");
+}
+
+#[tokio::test]
 #[ignore = "diagnostic: run manually for fast finalizer growth feedback"]
 async fn finalizer_growth_feedback_loop_stale_justification_chain() {
     with_storage(|mut store, mut dag_store| async move {

@@ -174,7 +174,9 @@ impl RhoReporterCasper {
                 "Replaying deploy for report"
             );
 
-            let replay_result = runtime.replay_deploy_e(with_cost_accounting, term).await;
+            let replay_result = runtime
+                .replay_deploy_e(with_cost_accounting, term, block_data)
+                .await;
 
             let events = match replay_result {
                 Ok(_) => runtime.get_report().unwrap_or_default(),
@@ -312,13 +314,14 @@ impl ReportingRuntime {
         &mut self,
         with_cost_accounting: bool,
         processed_deploy: &ProcessedDeploy,
+        block_data: &BlockData,
     ) -> Result<(), crate::rust::errors::CasperError> {
         use crate::rust::rholang::replay_runtime::ReplayRuntimeOps;
 
         let mut replay_ops = ReplayRuntimeOps::new_from_runtime(self.runtime.clone());
 
         replay_ops
-            .replay_deploy_e(with_cost_accounting, processed_deploy)
+            .replay_deploy_e(with_cost_accounting, processed_deploy, block_data)
             .await?;
 
         self.runtime = replay_ops.runtime_ops.runtime;

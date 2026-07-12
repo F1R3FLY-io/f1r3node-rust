@@ -440,7 +440,7 @@ impl Validate {
         tracing::debug!(target: "f1r3fly.casper", "before-transaction-expired-validation");
         match __step!(
             BLOCK_VALIDATION_TRANSACTION_EXPIRATION_TIME_METRIC,
-            Self::transaction_expiration(block, expiration_threshold)
+            Self::transaction_expiration(block, expiration_threshold, block_store)
         ) {
             Either::Left(err) => return Either::Left(err),
             Either::Right(_) => {}
@@ -751,6 +751,7 @@ impl Validate {
     pub fn transaction_expiration(
         b: &BlockMessage,
         expiration_threshold: i32,
+        block_store: &KeyValueBlockStore,
     ) -> ValidBlockProcessing {
         let earliest_acceptable_valid_after_block_number =
             proto_util::block_number(b) - expiration_threshold as i64;
@@ -761,9 +762,35 @@ impl Validate {
             .map(|processed_deploy| &processed_deploy.deploy)
             .collect();
 
-        let maybe_expired_deploy = deploys.iter().find(|&deploy| {
-            deploy.data.valid_after_block_number <= earliest_acceptable_valid_after_block_number
-        });
+        let expired_deploys: Vec<_> = deploys
+            .iter()
+            .filter(|&deploy| {
+                deploy.data.valid_after_block_number <= earliest_acceptable_valid_after_block_number
+            })
+            .collect();
+        if expired_deploys.is_empty() {
+            return Either::Right(ValidBlock::Valid);
+        }
+
+        let scan_floor = expired_deploys
+            .iter()
+            .map(|deploy| deploy.data.valid_after_block_number)
+            .min()
+            .unwrap_or(earliest_acceptable_valid_after_block_number)
+            .max(0);
+        let canonical_rejected =
+            match crate::rust::util::rholang::interpreter_util::canonical_rejected_sigs(
+                block_store,
+                &b.header.parents_hash_list,
+                scan_floor,
+            ) {
+                Ok(sigs) => sigs,
+                Err(err) => return Either::Left(BlockError::BlockException(err)),
+            };
+
+        let maybe_expired_deploy = expired_deploys
+            .into_iter()
+            .find(|deploy| !canonical_rejected.contains(&deploy.sig));
 
         let maybe_error = maybe_expired_deploy.map(|expired_deploy| {
             let message = format!(
@@ -1421,7 +1448,10 @@ impl Validate {
             &parent_hashes,
             &latest_messages,
             crate::rust::safety::clique_oracle::FtThreshold::from_ppm(
-                snapshot.on_chain_state.shard_conf.fault_tolerance_threshold_ppm,
+                snapshot
+                    .on_chain_state
+                    .shard_conf
+                    .fault_tolerance_threshold_ppm,
             ),
         )
         .await

@@ -121,11 +121,8 @@ async fn dedup_orphan_lands_in_rejected_deploy_buffer() {
         let mut shard_conf = CasperShardConf::new();
         shard_conf.shard_name = shard_name.clone();
         shard_conf.max_parent_depth = 0;
-        // A non-trivial deploy lifespan keeps the orphan sig in the
-        // `Pending` state through `compute_rejected_buffer_admits`. The
-        // default of 0 would mark any deploy whose `valid_after_block_number`
-        // is below the tip height as `Expired`, which would prevent buffer
-        // admission and obscure what this test is checking.
+        // A non-trivial deploy lifespan keeps the orphan sig eligible for
+        // recovery instead of immediately expiring it.
         shard_conf.deploy_lifespan = 50;
         let mut bonds_map = HashMap::new();
         bonds_map.insert(validator.clone(), 100);
@@ -367,10 +364,7 @@ for(@_v <- @"dedup-orphan-shared") { Nil }
          be re-proposed unnecessarily"
     );
 
-    // The orphaned sig must be admitted to the buffer. The catchup gate
-    // (`compute_rejected_buffer_admits`) checks finalization status; for
-    // an unfinalized sig in the merge scope, status is `Pending` and the
-    // sig is admitted.
+    // The orphaned sig must be admitted to the buffer from the current merge.
     let orphaned_sig = if v_orphaned { &sig_v } else { &sig_w };
     let buffer_contains = {
         let guard = rejected_deploy_buffer.lock().expect("buffer lock");

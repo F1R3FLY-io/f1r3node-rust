@@ -199,9 +199,6 @@ pub const BLOCK_CREATOR_TOTAL_TIME_METRIC: &str = "block-creator.total.time";
 pub const FINALIZER_RUN_TIME_METRIC: &str = "finalizer.run.time";
 pub const CLIQUE_ORACLE_COMPUTE_TIME_METRIC: &str = "clique-oracle.compute.time";
 
-// `compute_rejected_buffer_admits` (called from `compute_parents_post_state`).
-pub const COMPUTE_REJECTED_BUFFER_ADMITS_TIME_METRIC: &str = "compute-rejected-buffer-admits.time";
-
 // Counter incremented every time `compute_parents_post_state` refuses to build
 // a merge because the finalized-floor distance exceeded the deterministic
 // backstop (`MAX_FLOOR_DISTANCE_BLOCKS`). Unlike the former silent
