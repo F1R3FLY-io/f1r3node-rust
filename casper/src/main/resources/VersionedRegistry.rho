@@ -16,11 +16,21 @@
 //
 //   _versionedRegistryStore  ↦
 //     {
-//       "lib":   Map[(deployerId, projectId) -> Map[version -> entry]],
+//       "lib":   Map[(pkHex, projectId) -> Map[version -> entry]],
 //       "serve": same
 //     }
 //
 // where entry = {"code": _, "deprecated": Bool, "notify": List}.
+//
+// The `pkHex` key is the *authenticated* deployer's public-key bytes
+// hex-encoded. Mutators (insertVersion, deprecateVersion,
+// approveVersion) fetch the deployerId from `rho:deploy:data`, extract
+// pubKeyBytes via `rho:system:deployerId:ops`, and hex-encode -- the
+// caller never gets to name the identity, so nothing an attacker can
+// send on the wire lets them mutate someone else's entries. This is
+// the GAP-2 authentication fix per the PR #95 review (2026-07-07);
+// see also `Registry.rho:571-599` for the analogous authenticated
+// pattern in the legacy `insertSigned`.
 //
 // Step 6 will replace `rho:registry:v1:internal` with the public
 // `rho:registry:1.0.0` entry point and call lookupVersion from the
@@ -33,8 +43,11 @@ new
   bootstrapPublicV1(`rho:registry:1.0.0`),
   publicV1Ch,
   opsV1(`rho:registry:ops:1.0.0`),
+  deployData(`rho:deploy:data`),
+  deployerIdOps(`rho:system:deployerId:ops`),
   collectNonDeprecated,
-  fireNotifications
+  fireNotifications,
+  authenticatedPkHex
 in {
   _versionedRegistryStore!({"lib": {}, "serve": {}}) |
 
@@ -68,6 +81,25 @@ in {
     }
   } |
 
+  // Helper: return the hex-encoded pubKey bytes of the deploy's
+  // authenticated deployerId. Every mutator flows through this so
+  // no caller-supplied identity string is trusted. The deploy's
+  // `rho:deploy:data` unforgeable is the authenticated source; the
+  // pubKeyBytes are extracted via the standard
+  // `rho:system:deployerId:ops` helper (same pattern as legacy
+  // `insertSigned`).
+  contract authenticatedPkHex(ret) = {
+    new dd, pkbCh in {
+      deployData!(*dd) |
+      for (@_ts, @deployerId, @_phlo <- dd) {
+        deployerIdOps!("pubKeyBytes", deployerId, *pkbCh) |
+        for (@pkb <- pkbCh) {
+          ret!(pkb.bytesToHex())
+        }
+      }
+    }
+  } |
+
   for (v1Api <- v1ApiCh) {
 
     // Public entry-point handler for `rho:registry:1.0.0`. The legacy
@@ -94,22 +126,29 @@ in {
     // scan lands, we reject `lib` registrations entirely rather
     // than accept them with an unenforceable safety guarantee that
     // would mislead importers.
-    contract v1Api(@"insertVersion", @ns, @deployerId, @projectId, @version, @code, ret) = {
+    //
+    // Identity: no caller-supplied deployerId. The store key is the
+    // authenticated deployer's pubKey hex; anyone can only insert
+    // under their own identity.
+    contract v1Api(@"insertVersion", @ns, @projectId, @version, @code, ret) = {
       if (ns == "serve") {
-        for (@store <- _versionedRegistryStore) {
-          match store.get(ns).getOrElse((deployerId, projectId), {}).get(version) {
-            Nil => {
-              _versionedRegistryStore!(
-                store.set(ns,
-                  store.get(ns).set((deployerId, projectId),
-                    store.get(ns).getOrElse((deployerId, projectId), {}).set(version,
-                      {"code": code, "deprecated": false, "notify": []})))
-              ) |
-              ret!(true)
-            }
-            _ => {
-              _versionedRegistryStore!(store) |
-              ret!(false)
+        new pkHexCh in {
+          authenticatedPkHex!(*pkHexCh) |
+          for (@pkHex <- pkHexCh; @store <- _versionedRegistryStore) {
+            match store.get(ns).getOrElse((pkHex, projectId), {}).get(version) {
+              Nil => {
+                _versionedRegistryStore!(
+                  store.set(ns,
+                    store.get(ns).set((pkHex, projectId),
+                      store.get(ns).getOrElse((pkHex, projectId), {}).set(version,
+                        {"code": code, "deprecated": false, "notify": []})))
+                ) |
+                ret!(true)
+              }
+              _ => {
+                _versionedRegistryStore!(store) |
+                ret!(false)
+              }
             }
           }
         }
@@ -119,34 +158,41 @@ in {
       }
     } |
 
-    contract v1Api(@"deprecateVersion", @ns, @deployerId, @projectId, @version, ret) = {
+    // Identity: no caller-supplied deployerId. Deprecating an entry
+    // requires the caller be the authenticated owner (its pubKey
+    // hex must be the store key). A different deployer looking up
+    // the same (projectId, version) sees no entry and gets `false`.
+    contract v1Api(@"deprecateVersion", @ns, @projectId, @version, ret) = {
       // Only `serve` is registrable (see insertVersion above), so
       // only `serve` can be deprecated. `lib` and unknown namespaces
       // never populate the store; reject symmetrically.
       if (ns == "serve") {
-        for (@store <- _versionedRegistryStore) {
-          match store.get(ns).getOrElse((deployerId, projectId), {}).get(version) {
-            Nil => {
-              _versionedRegistryStore!(store) |
-              ret!(false)
-            }
-            entry => {
-              _versionedRegistryStore!(
-                store.set(ns,
-                  store.get(ns).set((deployerId, projectId),
-                    store.get(ns).get((deployerId, projectId)).set(version,
-                      entry.set("deprecated", true))))
-              ) |
-              // Fire warnings on every notify channel recorded at
-              // lookup time. The list stays in the entry — repeated
-              // deprecateVersion calls re-fire (idempotent at the
-              // contract level; clients dedupe).
-              new done in {
-                fireNotifications!(entry.get("notify"),
-                                   ("deprecated", deployerId, projectId, version),
-                                   *done) |
-                for (_ <- done) {
-                  ret!(true)
+        new pkHexCh in {
+          authenticatedPkHex!(*pkHexCh) |
+          for (@pkHex <- pkHexCh; @store <- _versionedRegistryStore) {
+            match store.get(ns).getOrElse((pkHex, projectId), {}).get(version) {
+              Nil => {
+                _versionedRegistryStore!(store) |
+                ret!(false)
+              }
+              entry => {
+                _versionedRegistryStore!(
+                  store.set(ns,
+                    store.get(ns).set((pkHex, projectId),
+                      store.get(ns).get((pkHex, projectId)).set(version,
+                        entry.set("deprecated", true))))
+                ) |
+                // Fire warnings on every notify channel recorded at
+                // lookup time. The list stays in the entry — repeated
+                // deprecateVersion calls re-fire (idempotent at the
+                // contract level; clients dedupe).
+                new done in {
+                  fireNotifications!(entry.get("notify"),
+                                     ("deprecated", pkHex, projectId, version),
+                                     *done) |
+                  for (_ <- done) {
+                    ret!(true)
+                  }
                 }
               }
             }
@@ -157,24 +203,28 @@ in {
       }
     } |
 
-    contract v1Api(@"approveVersion", @ns, @deployerId, @projectId, @version, ret) = {
+    // Identity: no caller-supplied deployerId. See deprecateVersion.
+    contract v1Api(@"approveVersion", @ns, @projectId, @version, ret) = {
       // Only `serve` is registrable (see insertVersion above); reject
       // `lib` and unknown namespaces symmetrically.
       if (ns == "serve") {
-        for (@store <- _versionedRegistryStore) {
-          match store.get(ns).getOrElse((deployerId, projectId), {}).get(version) {
-            Nil => {
-              _versionedRegistryStore!(store) |
-              ret!(false)
-            }
-            entry => {
-              _versionedRegistryStore!(
-                store.set(ns,
-                  store.get(ns).set((deployerId, projectId),
-                    store.get(ns).get((deployerId, projectId)).set(version,
-                      entry.set("deprecated", false))))
-              ) |
-              ret!(true)
+        new pkHexCh in {
+          authenticatedPkHex!(*pkHexCh) |
+          for (@pkHex <- pkHexCh; @store <- _versionedRegistryStore) {
+            match store.get(ns).getOrElse((pkHex, projectId), {}).get(version) {
+              Nil => {
+                _versionedRegistryStore!(store) |
+                ret!(false)
+              }
+              entry => {
+                _versionedRegistryStore!(
+                  store.set(ns,
+                    store.get(ns).set((pkHex, projectId),
+                      store.get(ns).get((pkHex, projectId)).set(version,
+                        entry.set("deprecated", false))))
+                ) |
+                ret!(true)
+              }
             }
           }
         }
@@ -190,9 +240,11 @@ in {
     //
     // If `notifyCh` is non-Nil, it is appended to the matched entry's
     // notify list. A subsequent deprecateVersion on the same entry
-    // sends ("deprecated", deployerId, projectId, version) on it. The
-    // list is per-resolution (one entry per lookupVersion call), so
-    // multiple imports of the same version produce independent entries.
+    // sends ("deprecated", pkHex, projectId, version) on it, where
+    // pkHex is the authenticated deployer's pubKey hex (i.e., the
+    // same as the URN's `pk` field). The list is per-resolution
+    // (one entry per lookupVersion call), so multiple imports of
+    // the same version produce independent entries.
     contract v1Api(@"lookupVersion", @urnStr, @notifyCh, ret) = {
       new parsedCh in {
         opsV1!("parseVersionedUri", urnStr, *parsedCh) |
