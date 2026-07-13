@@ -351,6 +351,105 @@ async fn test_not_advance_finalization_if_no_new_lfb_found_advance_otherwise_inv
 }
 
 #[tokio::test]
+async fn finalizer_invokes_effect_for_finalized_candidate_ahead_of_lfb() {
+    with_storage(|mut store, mut dag_store| async move {
+        let validators = [
+            generate_validator(Some("Finalized Candidate Validator 1")),
+            generate_validator(Some("Finalized Candidate Validator 2")),
+            generate_validator(Some("Finalized Candidate Validator 3")),
+            generate_validator(Some("Finalized Candidate Validator 4")),
+            generate_validator(Some("Finalized Candidate Validator 5")),
+        ];
+        let bonds: Vec<Bond> = validators
+            .iter()
+            .map(|validator| Bond {
+                validator: validator.clone(),
+                stake: 3,
+            })
+            .collect();
+        let genesis = create_genesis_block(
+            &mut store,
+            &mut dag_store,
+            None,
+            Some(bonds.clone()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        let creators = [
+            create_block_creator(&bonds, &genesis, &validators[0]),
+            create_block_creator(&bonds, &genesis, &validators[1]),
+            create_block_creator(&bonds, &genesis, &validators[2]),
+            create_block_creator(&bonds, &genesis, &validators[3]),
+            create_block_creator(&bonds, &genesis, &validators[4]),
+        ];
+        let genesis_justifications = HashMap::from([
+            (&validators[0], &genesis),
+            (&validators[1], &genesis),
+            (&validators[2], &genesis),
+            (&validators[3], &genesis),
+            (&validators[4], &genesis),
+        ]);
+        let candidate = creators[0](
+            &mut store,
+            &mut dag_store,
+            vec![&genesis],
+            &genesis_justifications,
+        );
+        for creator in &creators {
+            creator(
+                &mut store,
+                &mut dag_store,
+                vec![&candidate],
+                &genesis_justifications,
+            );
+        }
+        dag_store
+            .record_directly_finalized(candidate.block_hash.clone(), 1.0, |_| async { Ok(()) })
+            .await
+            .expect("record candidate finalized");
+        let dag = dag_store.get_representation().expect("dag representation");
+        let effect_invoked = Rc::new(RefCell::new(false));
+        let selected = Rc::new(RefCell::new(BlockHash::default()));
+        let result = {
+            let effect_invoked = effect_invoked.clone();
+            let selected = selected.clone();
+            Finalizer::run(
+                &dag,
+                -1.0,
+                0,
+                move |(hash, _)| {
+                    let effect_invoked = effect_invoked.clone();
+                    let selected = selected.clone();
+                    async move {
+                        *effect_invoked.borrow_mut() = true;
+                        *selected.borrow_mut() = hash;
+                        Ok(())
+                    }
+                },
+                &FinalizerConf::default(),
+            )
+            .await
+            .expect("finalizer run")
+        };
+
+        assert_eq!(
+            result.as_ref().map(|(hash, _)| hash),
+            Some(&candidate.block_hash)
+        );
+        assert_eq!(*selected.borrow(), candidate.block_hash);
+        assert!(*effect_invoked.borrow());
+
+        Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
+    })
+    .await
+    .expect("validation fixture");
+}
+
+#[tokio::test]
 #[ignore = "diagnostic: run manually for fast finalizer growth feedback"]
 async fn finalizer_growth_feedback_loop_stale_justification_chain() {
     with_storage(|mut store, mut dag_store| async move {

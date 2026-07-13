@@ -1461,3 +1461,162 @@ impl Validate {
         }
     }
 }
+
+#[cfg(test)]
+mod merge_recovery_validation_tests {
+    use std::collections::BTreeMap;
+
+    use crypto::rust::public_key::PublicKey;
+    use models::rust::block_metadata::BlockMetadata;
+    use models::rust::casper::protocol::casper_message::{
+        Body, Bond, F1r3flyState, Header, Justification,
+    };
+
+    use super::*;
+
+    fn validator(byte: u8) -> Validator { Bytes::from(vec![byte; models::rust::validator::LENGTH]) }
+
+    fn hash(byte: u8) -> BlockHash { Bytes::from(vec![byte; 32]) }
+
+    fn add_metadata(
+        snapshot: &mut CasperSnapshot,
+        block_hash: BlockHash,
+        sender: Validator,
+        block_number: i64,
+        invalid: bool,
+    ) {
+        snapshot.dag.dag_set.insert(block_hash.clone());
+        snapshot
+            .dag
+            .block_metadata_index
+            .write()
+            .add(BlockMetadata {
+                block_hash,
+                parents: Vec::new(),
+                sender,
+                justifications: Vec::new(),
+                weight_map: BTreeMap::new(),
+                block_number,
+                sequence_number: block_number as i32,
+                invalid,
+                directly_finalized: false,
+                finalized: false,
+                fault_tolerance_value: 0.0,
+            })
+            .expect("metadata inserted");
+    }
+
+    fn candidate(
+        block_number: i64,
+        sender: Validator,
+        offender: Validator,
+        invalid_hash: BlockHash,
+        system_deploys: Vec<ProcessedSystemDeploy>,
+    ) -> BlockMessage {
+        BlockMessage {
+            block_hash: hash(0xf0),
+            header: Header {
+                parents_hash_list: Vec::new(),
+                timestamp: block_number,
+                version: 1,
+                extra_bytes: Bytes::new(),
+            },
+            body: Body {
+                state: F1r3flyState {
+                    pre_state_hash: Bytes::new(),
+                    post_state_hash: Bytes::new(),
+                    bonds: vec![
+                        Bond {
+                            validator: offender.clone(),
+                            stake: 1000,
+                        },
+                        Bond {
+                            validator: sender.clone(),
+                            stake: 1000,
+                        },
+                    ],
+                    block_number,
+                },
+                deploys: Vec::new(),
+                rejected_deploys: Vec::new(),
+                system_deploys,
+                extra_bytes: Bytes::new(),
+            },
+            justifications: vec![Justification {
+                validator: offender,
+                latest_block_hash: invalid_hash,
+            }],
+            sender,
+            seq_num: block_number as i32,
+            sig: Bytes::new(),
+            sig_algorithm: "test".to_string(),
+            shard_id: "test".to_string(),
+            extra_bytes: Bytes::new(),
+        }
+    }
+
+    fn slash(
+        invalid_hash: BlockHash,
+        issuer: Validator,
+        target_activation_epoch: i64,
+    ) -> ProcessedSystemDeploy {
+        ProcessedSystemDeploy::Succeeded {
+            event_list: Vec::new(),
+            system_deploy: SystemDeployData::Slash {
+                invalid_block_hash: invalid_hash,
+                issuer_public_key: PublicKey::new(issuer),
+                target_activation_epoch,
+            },
+        }
+    }
+
+    #[test]
+    fn stale_invalid_justification_is_not_slash_obligating() {
+        let mut snapshot =
+            crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+        snapshot.on_chain_state.shard_conf.epoch_length = 10;
+        let offender = validator(2);
+        let proposer = validator(3);
+        let invalid = hash(17);
+        add_metadata(&mut snapshot, invalid.clone(), offender.clone(), 391, true);
+        let block = candidate(4334, proposer, offender, invalid, Vec::new());
+
+        assert!(matches!(
+            Validate::neglected_invalid_block(&block, &mut snapshot),
+            Either::Right(ValidBlock::Valid)
+        ));
+    }
+
+    #[test]
+    fn current_invalid_justification_requires_matching_slash() {
+        let mut snapshot =
+            crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+        snapshot.on_chain_state.shard_conf.epoch_length = 10;
+        let offender = validator(4);
+        let proposer = validator(5);
+        let invalid = hash(34);
+        add_metadata(&mut snapshot, invalid.clone(), offender.clone(), 94, true);
+        let unrelated = hash(51);
+        add_metadata(&mut snapshot, unrelated.clone(), validator(6), 94, true);
+        let block = candidate(
+            95,
+            proposer.clone(),
+            offender.clone(),
+            invalid.clone(),
+            vec![slash(unrelated, proposer.clone(), 9)],
+        );
+
+        assert!(matches!(
+            Validate::neglected_invalid_block(&block, &mut snapshot),
+            Either::Left(BlockError::Invalid(InvalidBlock::NeglectedInvalidBlock))
+        ));
+
+        let block = candidate(95, proposer.clone(), offender, invalid.clone(), vec![
+            slash(invalid, proposer, 9),
+        ]);
+        assert!(matches!(
+            Validate::neglected_invalid_block(&block, &mut snapshot),
+            Either::Right(ValidBlock::Valid)
+        ));
+    }
+}

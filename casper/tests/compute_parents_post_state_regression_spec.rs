@@ -369,7 +369,7 @@ async fn run_compute_parents_post_state_finalized_skew_regression() {
 }
 
 #[test]
-fn compute_parents_post_state_should_fail_when_required_mergeable_is_missing() {
+fn compute_parents_post_state_should_reconstruct_required_mergeable_when_missing() {
     let stack_bytes = std::env::var("F1R3_COMPUTE_PARENTS_REGRESSION_STACK_BYTES")
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
@@ -549,7 +549,7 @@ async fn run_compute_parents_post_state_missing_mergeable_regression() {
 
     let result = compute_parents_post_state(
         &block_store,
-        vec![b2, b3],
+        vec![b2.clone(), b3],
         &snapshot,
         &runtime_manager,
         None,
@@ -557,8 +557,16 @@ async fn run_compute_parents_post_state_missing_mergeable_regression() {
     );
 
     assert!(
-        matches!(result, Err(CasperError::KvStoreError(_))),
-        "Expected compute_parents_post_state to fail when a required mergeable entry is missing; got {result:?}"
+        result.is_ok(),
+        "compute_parents_post_state should reconstruct a missing mergeable entry; got {result:?}"
+    );
+    assert!(
+        runtime_manager
+            .get_mergeable_entry_bytes(&b2)
+            .expect("mergeable entry query failed")
+            .1
+            .is_some(),
+        "the missing mergeable entry should be materialized from its source block"
     );
 }
 

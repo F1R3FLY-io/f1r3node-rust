@@ -244,4 +244,14 @@ mod tests {
         assert_eq!(a.cmp(&b), std::cmp::Ordering::Less);
         assert_eq!(b.cmp(&a), std::cmp::Ordering::Greater);
     }
+
+    #[test]
+    fn distinct_chains_tying_on_policy_keys_still_order_deterministically() {
+        let a = mk_index(&[(1, 10), (2, 10)], 0x01);
+        let b = mk_index(&[(1, 10), (3, 10)], 0x01);
+
+        assert_ne!(a, b);
+        assert_ne!(a.cmp(&b), std::cmp::Ordering::Equal);
+        assert_eq!(a.cmp(&b), b.cmp(&a).reverse());
+    }
 }
