@@ -967,18 +967,16 @@ fn std_rho_chroma_processes() -> Vec<Definition> {
 #[cfg(not(feature = "chromadb"))]
 fn std_rho_chroma_processes() -> Vec<Definition> { vec![] }
 
-fn std_swipl_processes() -> Vec<Definition> {
+fn std_petta_processes() -> Vec<Definition> {
     vec![Definition {
         urn: "rho:petta:execute".to_string(),
-        fixed_channel: FixedChannels::swipl_execute_petta(),
+        fixed_channel: FixedChannels::petta_execute(),
         arity: 2,
-        body_ref: BodyRefs::SWIPL_EXECUTE_PETTA,
+        body_ref: BodyRefs::PETTA_EXECUTE,
         handler: Box::new(|ctx| {
             Box::new(move |args| {
                 let ctx = ctx.clone();
-                Box::pin(
-                    async move { ctx.system_processes.clone().swipl_execute_petta(args).await },
-                )
+                Box::pin(async move { ctx.system_processes.clone().petta_execute(args).await })
             })
         }),
         remainder: None,
@@ -1006,7 +1004,7 @@ fn dispatch_table_creator(
     all_processes.extend(std_rho_crypto_processes());
     all_processes.extend(std_rho_ai_processes());
     all_processes.extend(std_rho_chroma_processes());
-    all_processes.extend(std_swipl_processes());
+    all_processes.extend(std_petta_processes());
 
     all_processes.append(extra_system_processes);
 
@@ -1135,7 +1133,7 @@ fn setup_maps_and_refs(
     // When OpenAI is disabled, the NoOp service handles calls gracefully.
     let rho_ai_binding = std_rho_ai_processes();
     let rho_chroma_binding = std_rho_chroma_processes();
-    let rho_swipl_binding = std_swipl_processes();
+    let rho_swipl_binding = std_petta_processes();
 
     let combined_processes = system_binding
         .iter()

@@ -79,7 +79,7 @@ use crate::rust::interpreter::rho_type::{
 ///
 /// # See Also
 ///
-/// - [`system_processes::swipl_execute_petta`] - System process wrapper for Rholang contracts
+/// - [`system_processes::petta_execute`] - System process wrapper for Rholang contracts
 /// - [`value_to_par`] - JSON to Par conversion logic
 pub async fn petta_execute(metta_code: &str) -> Result<Par, InterpreterError> {
     // Write the MeTTa code to a temp file

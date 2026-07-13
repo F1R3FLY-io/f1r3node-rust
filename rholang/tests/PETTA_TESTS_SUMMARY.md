@@ -79,7 +79,7 @@ Same tests as above, but using the Rholang runtime.
 **Coverage:** 5 tests
 
 Critical tests for consensus safety:
-- `test_petta_is_registered_as_non_deterministic` - Verifies `SWIPL_EXECUTE_PETTA` in `non_deterministic_ops()`
+- `test_petta_is_registered_as_non_deterministic` - Verifies `PETTA_EXECUTE` in `non_deterministic_ops()`
 - `test_petta_replay_consistency` - Basic replay with cached output
 - `test_petta_replay_with_multiple_calls` - Multiple PeTTa calls in one contract
 - `test_petta_replay_error_consistency` - Error cases are replayed correctly

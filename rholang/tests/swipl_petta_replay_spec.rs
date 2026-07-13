@@ -16,8 +16,8 @@ fn test_petta_is_registered_as_non_deterministic() {
     let non_det_ops = non_deterministic_ops();
 
     assert!(
-        non_det_ops.contains(&BodyRefs::SWIPL_EXECUTE_PETTA),
-        "SWIPL_EXECUTE_PETTA should be marked as non-deterministic"
+        non_det_ops.contains(&BodyRefs::PETTA_EXECUTE),
+        "PETTA_EXECUTE should be marked as non-deterministic"
     );
 }
 

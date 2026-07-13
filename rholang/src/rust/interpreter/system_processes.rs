@@ -154,7 +154,7 @@ impl FixedChannels {
 
     pub fn chroma_delete_documents() -> Par { byte_name(36) }
 
-    pub fn swipl_execute_petta() -> Par { byte_name(37) }
+    pub fn petta_execute() -> Par { byte_name(37) }
 }
 
 pub struct BodyRefs;
@@ -190,7 +190,7 @@ impl BodyRefs {
     pub const CHROMA_UPSERT_ENTRIES: i64 = 34;
     pub const CHROMA_QUERY: i64 = 35;
     pub const CHROMA_DELETE_DOCUMENTS: i64 = 36;
-    pub const SWIPL_EXECUTE_PETTA: i64 = 37;
+    pub const PETTA_EXECUTE: i64 = 37;
 }
 
 pub fn non_deterministic_ops() -> HashSet<i64> {
@@ -203,7 +203,7 @@ pub fn non_deterministic_ops() -> HashSet<i64> {
         BodyRefs::OLLAMA_MODELS,
         BodyRefs::GRPC_TELL,
         BodyRefs::CHROMA_QUERY,
-        BodyRefs::SWIPL_EXECUTE_PETTA,
+        BodyRefs::PETTA_EXECUTE,
     ])
 }
 
@@ -1838,21 +1838,21 @@ impl SystemProcesses {
     /// - [`DispatchType::FailedNonDeterministicCall`] - Dispatcher handling for failed ops
     /// - `DebruijnInterpreter::continue_produce_process` — short-circuit for failed non-det replays
     /// - Tests: `swipl_petta_replay_spec.rs::test_petta_replay_error_consistency`
-    pub async fn swipl_execute_petta(
+    pub async fn petta_execute(
         &self,
         contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
     ) -> Result<Vec<Par>, InterpreterError> {
         let Some((produce, is_replay, previous_output, args)) =
             self.is_contract_call().unapply(contract_args)
         else {
-            return Err(illegal_argument_error("swipl_execute_petta"));
+            return Err(illegal_argument_error("petta_execute"));
         };
 
         let [metta_code, ack] = args.as_slice() else {
-            return Err(illegal_argument_error("swipl_execute_petta"));
+            return Err(illegal_argument_error("petta_execute"));
         };
         let Some(metta_code) = RhoString::unapply(metta_code) else {
-            return Err(illegal_argument_error("swipl_execute_petta"));
+            return Err(illegal_argument_error("petta_execute"));
         };
 
         if is_replay {
