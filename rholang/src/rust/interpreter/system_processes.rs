@@ -2046,26 +2046,40 @@ impl SystemProcesses {
     /// 1. Execute `petta_execute()` to invoke SWI-Prolog with MeTTa code
     /// 2. On success: produce output to ack channel, return `Ok(output)`, output is logged
     /// 3. On PeTTa failure: return `NonDeterministicProcessFailure` (no produce, no output logged)
+    ///    The reducer marks the produce event `failed=true` in the event log (via `with_error()`).
+    ///    The original cause is NOT stored — only the boolean failed flag is recorded.
     /// 4. On produce failure: return `ProduceFailureWithOutput` (output captured but not stored)
     ///
     /// **Replay Mode (`is_replay = true`):**
-    /// 1. Retrieve cached output from event log (via `previous_output`)
-    /// 2. Produce cached output to ack channel
-    /// 3. Return `Ok(previous_output)` without invoking `petta_execute()`
-    /// 4. This path is taken for both successful and failed executions
+    ///
+    /// **For a successful play:** The event log contains the cached output (is_deterministic=false,
+    /// output_value=previous_output, failed=false). The handler is dispatched with is_replay=true,
+    /// reads previous_output, produces it to ack, and returns Ok(previous_output) without re-invoking
+    /// petta_execute().
+    ///
+    /// **For a failed play:** The event log contains a produce with failed=true and empty output_value.
+    /// The reducer's `continue_produce_process` (`reduce.rs:454-456`) checks `is_replay && trace_failed`
+    /// and short-circuits with `InterpreterError::CanNotReplayFailedNonDeterministicProcess` **before**
+    /// dispatching to this handler. Therefore swipl/PeTTa is NEVER re-invoked for failed executions
+    /// during replay. All replaying validators deterministically produce the same error, preventing
+    /// consensus divergence.
     ///
     /// # Error Handling and Replay Safety
     ///
     /// **Execution Errors (during play):**
     /// - Wrapped in `NonDeterministicProcessFailure` to signal the dispatcher
-    /// - The dispatcher marks the produce event as failed (see `DispatchType::FailedNonDeterministicCall`)
-    /// - Failed event is recorded in the event log for replay
+    /// - The dispatcher wraps it as `DispatchType::FailedNonDeterministicCall`
+    /// - The reducer marks the produce event `failed=true` via `produce_event.with_error()` and
+    ///   persists it to the event log. No output_value or cause is stored.
     /// - No output is produced (ack channel remains empty, contract may deadlock or timeout)
     ///
-    /// **During Replay:**
-    /// - Failed executions are replayed from the event log without re-invoking `petta_execute()`
-    /// - The same error is reproduced using cached failure information
-    /// - Ensures all validators agree on failures, preventing consensus divergence
+    /// **During Replay (for a previously failed produce):**
+    /// - The event log returns a produce event with `failed=true` and `output_value=vec![]`
+    /// - `continue_produce_process` is called with `is_replay=true`, `trace_failed=true`
+    /// - It returns `Err(InterpreterError::CanNotReplayFailedNonDeterministicProcess)` **before**
+    ///   dispatching — this handler is never reached, swipl/PeTTa is never re-invoked
+    /// - `evaluate()` returns `Ok(EvaluateResult { errors: [CanNotReplayFailedNonDeterministicProcess] })`
+    /// - All validators deterministically produce the same error → consensus is preserved
     ///
     /// # Error Conditions
     ///
@@ -2078,6 +2092,9 @@ impl SystemProcesses {
     ///   - Cause: RSpace produce error
     ///   - `output_not_produced`: The PeTTa result that couldn't be stored
     ///
+    /// During replay of a failed execution, the error `CanNotReplayFailedNonDeterministicProcess`
+    /// is surfaced in `EvaluateResult.errors` instead (dispatch and this handler are skipped).
+    ///
     /// All errors are propagated to the Rholang contract and captured in the evaluation result's
     /// error list.
     ///
@@ -2086,7 +2103,9 @@ impl SystemProcesses {
     /// - [`petta_execute`] - Low-level PeTTa execution (in `swi_prolog_service`)
     /// - [`non_deterministic_ops`] - Registry of non-deterministic body refs
     /// - [`InterpreterError::NonDeterministicProcessFailure`] - Error type for failed non-det ops
+    /// - [`InterpreterError::CanNotReplayFailedNonDeterministicProcess`] - Error raised during replay
     /// - [`DispatchType::FailedNonDeterministicCall`] - Dispatcher handling for failed ops
+    /// - `DebruijnInterpreter::continue_produce_process` — short-circuit for failed non-det replays
     /// - Tests: `swipl_petta_replay_spec.rs::test_petta_replay_error_consistency`
     pub async fn swipl_execute_petta(
         &self,
