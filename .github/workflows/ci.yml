@@ -316,6 +316,7 @@ jobs:
         github.ref == 'refs/heads/trying'
       )
     runs-on: ubuntu-latest
+    environment: ephemeral-launch
     steps:
       - name: Checkout (for version)
         uses: actions/checkout@v4
