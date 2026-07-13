@@ -2,12 +2,14 @@ use std::collections::HashMap;
 
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use rholang::rust::interpreter::accounting::costs::Cost;
+use rholang::rust::interpreter::errors::InterpreterError;
 use rholang::rust::interpreter::rho_runtime::RhoRuntime;
 use rholang::rust::interpreter::system_processes::{non_deterministic_ops, BodyRefs};
 use rholang::rust::interpreter::test_utils::resources::create_runtimes;
 use rholang::rust::interpreter::test_utils::utils::should_skip_petta_test;
 use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
+use rspace_plus_plus::rspace::trace::event::{Event, IOEvent};
 
 #[test]
 fn test_petta_is_registered_as_non_deterministic() {
@@ -166,16 +168,22 @@ async fn test_petta_replay_with_multiple_calls() {
 }
 
 /// This test verifies that failed PeTTa executions are properly recorded in the event log
-/// and can be replayed without re-invoking swipl. The test specifically ensures:
+/// and produce a deterministic replay error without re-invoking swipl. The test specifically
+/// ensures:
 ///
 /// 1. Play execution fails with invalid MeTTa syntax
-/// 2. The failure is captured in the event log (NonDeterministicProcessFailure)
-/// 3. Replay runtime can be rigged with the failed execution
-/// 4. Replay reproduces the same error without invoking swipl (using cached failure)
-/// 5. Error consistency: play and replay produce the same error
+/// 2. The failure is recorded in the event log as a `Produce` with `failed == true` and
+///    `output_value` empty (the original cause is NOT stored — only the boolean flag)
+/// 3. Replay runtime can be rigged with the event log containing the failed execution
+/// 4. Replay raises `InterpreterError::CanNotReplayFailedNonDeterministicProcess` (a
+///    deterministic error) — this is raised by `continue_produce_process` BEFORE dispatch,
+///    so the system process handler and swipl/PeTTa are NEVER re-invoked
+/// 5. Replay error does NOT contain `SwiplError` / `"incomplete"` / `NonDeterministicProcessFailure`,
+///    proving swipl was not re-invoked to re-derive those messages
 ///
-/// This is critical for consensus safety - validators must agree on failures as well as
-/// successes, and replay must not diverge by attempting to re-execute failed operations.
+/// This is critical for consensus safety: validators must agree on failures as well as successes.
+/// The CanNotReplay short-circuit ensures all replaying validators produce the same error regardless
+/// of the original non-deterministic failure cause, preventing divergence.
 #[tokio::test]
 async fn test_petta_replay_error_consistency() {
     if should_skip_petta_test() {
@@ -209,20 +217,32 @@ async fn test_petta_replay_error_consistency() {
     );
 
     // Verify the error is a NonDeterministicProcessFailure (correct error type for failed non-det ops)
-    let play_error_msg = format!("{:?}", play_result.errors);
     assert!(
-        play_error_msg.contains("NonDeterministicProcessFailure")
-            || play_error_msg.contains("SwiplError")
-            || play_error_msg.contains("incomplete"),
-        "Error should indicate MeTTa syntax failure, got: {}",
-        play_error_msg
+        play_result
+            .errors
+            .iter()
+            .any(|e| matches!(e, InterpreterError::NonDeterministicProcessFailure { .. })),
+        "Play should contain NonDeterministicProcessFailure, got: {:?}",
+        play_result.errors
     );
 
-    // Step 2: Capture event log - should contain the failed execution
+    // Step 2: Capture event log - should contain a failed produce
     let event_log = runtime.take_event_log().await;
+    let has_failed_produce = event_log.iter().any(|event| match event {
+        Event::Comm(comm) => comm
+            .produces
+            .iter()
+            .any(|p| p.failed && p.output_value.is_empty()),
+        Event::IoEvent(IOEvent::Produce(p)) => p.failed && p.output_value.is_empty(),
+        Event::IoEvent(IOEvent::Consume(_)) => false,
+    });
     assert!(
-        !event_log.is_empty(),
-        "Event log should capture failed execution for replay"
+        has_failed_produce,
+        "Event log should contain a Produce with failed==true and empty output_value. \
+         This means the runtime correctly recorded the failed non-det produce, and during \
+         replay continue_produce_process will short-circuit with \
+         CanNotReplayFailedNonDeterministicProcess. Event log: {:?}",
+        event_log
     );
 
     // Step 3: Rig replay runtime with the event log containing the failure
@@ -231,36 +251,53 @@ async fn test_petta_replay_error_consistency() {
         .await
         .expect("Rig should work with failed non-det operations");
 
-    // Step 4: Execute in replay mode - should reproduce the same error without invoking swipl
+    // Step 4: Execute in replay mode - should short-circuit with CanNotReplayFailedNonDeterministicProcess
     let replay_checkpoint = replay_runtime.create_soft_checkpoint().await;
     let replay_result = replay_runtime
         .evaluate(term, initial_phlo.clone(), HashMap::new(), rand)
         .await
         .expect("Replay evaluation completed (with errors)");
 
-    // Step 5: Verify error consistency between play and replay
+    // Step 5: Verify replay raises CanNotReplayFailedNonDeterministicProcess
+    assert_eq!(
+        replay_result.errors.len(),
+        1,
+        "Replay should produce exactly one error"
+    );
     assert!(
-        !replay_result.errors.is_empty(),
-        "Replay should reproduce the same error"
+        matches!(
+            replay_result.errors[0],
+            InterpreterError::CanNotReplayFailedNonDeterministicProcess
+        ),
+        "Replay should produce CanNotReplayFailedNonDeterministicProcess, got: {:?}",
+        replay_result.errors[0]
     );
 
-    let replay_error_msg = format!("{:?}", replay_result.errors);
+    // Prove swipl was NOT re-invoked during replay: the replay error should NOT contain
+    // SwiplError, "incomplete", or NonDeterministicProcessFailure (which swipl would produce).
+    let replay_has_swipl_output = replay_result.errors.iter().any(|e| match e {
+        InterpreterError::NonDeterministicProcessFailure { cause, .. }
+        | InterpreterError::ProduceFailureWithOutput { cause, .. } => {
+            matches!(cause.as_ref(), InterpreterError::SwiplError(_))
+        }
+        InterpreterError::SwiplError(_) => true,
+        _ => false,
+    });
     assert!(
-        replay_error_msg.contains("NonDeterministicProcessFailure")
-            || replay_error_msg.contains("SwiplError")
-            || replay_error_msg.contains("incomplete"),
-        "Replay error should match play error type, got: {}",
-        replay_error_msg
+        !replay_has_swipl_output,
+        "Replay error should NOT contain SwiplError — swipl was not re-invoked. Got: {:?}",
+        replay_result.errors
     );
 
     println!(
-        "✓ Play execution failed as expected with {} error(s)",
+        "Play execution failed as expected with {} error(s)",
         play_result.errors.len()
     );
-    println!("✓ Event log captured failed execution");
+    println!("✓ Event log contains a Produce with failed==true and empty output_value");
     println!("✓ Replay runtime rigged successfully with failed execution");
     println!(
-        "✓ Replay reproduced the same error ({} error(s)) without re-invoking swipl",
+        "Replay deterministically raised CanNotReplayFailedNonDeterministicProcess ({} errors) \
+         — swipl was NOT re-invoked",
         replay_result.errors.len()
     );
     println!("✓ Failed PeTTa executions are replay-safe");
@@ -328,21 +365,38 @@ async fn test_petta_replay_timeout_error() {
     let replay_result = replay_runtime
         .evaluate(term, initial_phlo.clone(), HashMap::new(), rand)
         .await
-        .expect("Replay evaluation completed (with timeout)");
+        .expect("Replay evaluation completed (with CanNotReplayFailedNonDeterministicProcess)");
 
     assert!(
         !replay_result.errors.is_empty(),
-        "Replay should reproduce timeout error"
+        "Replay should produce a CanNotReplayFailedNonDeterministicProcess error"
     );
 
-    let replay_error_msg = format!("{:?}", replay_result.errors);
+    // Replay must raise CanNotReplayFailedNonDeterministicProcess (short-circuits before dispatch)
     assert!(
-        replay_error_msg.contains("timed out") || replay_error_msg.contains("timeout"),
-        "Replay error should match play timeout, got: {}",
-        replay_error_msg
+        replay_result.errors.iter().any(|e| {
+            matches!(
+                e,
+                InterpreterError::CanNotReplayFailedNonDeterministicProcess
+            )
+        }),
+        "Replay should produce CanNotReplayFailedNonDeterministicProcess, got: {:?}",
+        replay_result.errors
     );
 
-    println!("✓ Timeout error properly recorded and replayed");
+    // Prove swipl was NOT re-invoked during replay: assert no timeout/timed out/SwiplError
+    let replay_has_swipl_output = replay_result.errors.iter().any(|e| {
+        matches!(e, InterpreterError::SwiplError(_))
+            || matches!(e, InterpreterError::NonDeterministicProcessFailure { .. })
+    });
+    assert!(
+        !replay_has_swipl_output,
+        "Replay should NOT contain SwiplError or NonDeterministicProcessFailure \
+         — swipl was not re-invoked. Got: {:?}",
+        replay_result.errors
+    );
+
+    println!("✓ Timeout failure properly recorded; replay deterministically raised CanNotReplayFailedNonDeterministicProcess");
 
     runtime.revert_to_soft_checkpoint(play_checkpoint).await;
     replay_runtime
