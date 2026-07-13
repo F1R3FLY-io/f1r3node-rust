@@ -801,6 +801,58 @@ fn scope_has_unfinalized_user_deploys(
     Ok(false)
 }
 
+fn branch_unfinalized_user_deploy_sender(
+    casper_snapshot: &CasperSnapshot,
+    block_store: &KeyValueBlockStore,
+    root_hash: &BlockHash,
+) -> Result<Option<Validator>, CasperError> {
+    let last_finalized_block_number = block_store
+        .get(&casper_snapshot.last_finalized_block)?
+        .map(|block| block.body.state.block_number);
+    let current_block_number = casper_snapshot
+        .max_block_num
+        .checked_add(1)
+        .ok_or_else(|| {
+            CasperError::RuntimeError(format!(
+                "max_block_num overflow: {} + 1 wraps i64",
+                casper_snapshot.max_block_num
+            ))
+        })?;
+    let earliest_block_number = current_block_number
+        .saturating_sub(casper_snapshot.on_chain_state.shard_conf.deploy_lifespan);
+    let mut stack = vec![root_hash.clone()];
+    let mut seen: HashSet<BlockHash> = HashSet::new();
+
+    while let Some(block_hash) = stack.pop() {
+        if !seen.insert(block_hash.clone())
+            || block_hash == casper_snapshot.last_finalized_block
+            || casper_snapshot.dag.is_finalized(&block_hash)
+        {
+            continue;
+        }
+
+        let Some(block) = block_store.get(&block_hash)? else {
+            continue;
+        };
+
+        if last_finalized_block_number
+            .map(|lfb_number| block.body.state.block_number <= lfb_number)
+            .unwrap_or(false)
+            || block.body.state.block_number <= earliest_block_number
+        {
+            continue;
+        }
+
+        if !block.body.deploys.is_empty() {
+            return Ok(Some(block.sender.clone()));
+        }
+
+        stack.extend(block.header.parents_hash_list.iter().cloned());
+    }
+
+    Ok(None)
+}
+
 fn storage_has_unresolved_in_scope_deploys(
     casper_snapshot: &CasperSnapshot,
     deploy_storage: &Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
@@ -1198,6 +1250,46 @@ fn is_recovered_deploy_leader(
         .unwrap_or(true)
 }
 
+fn deploy_inclusion_leader(
+    casper_snapshot: &CasperSnapshot,
+    block_store: &KeyValueBlockStore,
+) -> Result<Option<Validator>, CasperError> {
+    let validators = current_proposal_validators(casper_snapshot);
+    for parent in &casper_snapshot.parents {
+        if parent.sender.is_empty()
+            || (!validators.is_empty() && !validators.iter().any(|v| v == &parent.sender))
+        {
+            continue;
+        }
+
+        if let Some(sender) =
+            branch_unfinalized_user_deploy_sender(casper_snapshot, block_store, &parent.block_hash)?
+        {
+            if !sender.is_empty()
+                && (validators.is_empty() || validators.iter().any(|v| v == &sender))
+            {
+                return Ok(Some(sender));
+            }
+        }
+    }
+
+    if scope_has_unfinalized_user_deploys(casper_snapshot, block_store)? {
+        return Ok(recovered_deploy_leader(casper_snapshot));
+    }
+
+    Ok(None)
+}
+
+fn is_deploy_inclusion_leader(
+    casper_snapshot: &CasperSnapshot,
+    validator_identity: &ValidatorIdentity,
+    block_store: &KeyValueBlockStore,
+) -> Result<bool, CasperError> {
+    Ok(deploy_inclusion_leader(casper_snapshot, block_store)?
+        .map(|leader| leader == validator_identity.public_key.bytes)
+        .unwrap_or(true))
+}
+
 fn should_skip_empty_recovery_heartbeat(
     suppress_empty_recovery_block_by_non_leader: bool,
     user_work_in_flight: bool,
@@ -1217,8 +1309,11 @@ fn should_skip_empty_recovery_heartbeat(
 fn allow_ordinary_user_deploys(
     rejected_buffer_non_empty: bool,
     allow_recovered_deploys: bool,
+    user_work_in_flight: bool,
+    allow_deploy_inclusion: bool,
 ) -> bool {
-    !rejected_buffer_non_empty || allow_recovered_deploys
+    (!rejected_buffer_non_empty || allow_recovered_deploys)
+        && (!user_work_in_flight || allow_deploy_inclusion)
 }
 
 fn parent_frontier_extends_lfb(
@@ -1364,6 +1459,8 @@ pub async fn create(
         };
         let allow_recovered_deploys =
             is_recovered_deploy_leader(casper_snapshot, validator_identity);
+        let allow_deploy_inclusion =
+            is_deploy_inclusion_leader(casper_snapshot, validator_identity, block_store)?;
         let rejected_buffer_non_empty = {
             let buffer_guard = rejected_deploy_buffer
                 .lock()
@@ -1372,8 +1469,12 @@ pub async fn create(
                 .non_empty()
                 .map_err(CasperError::KvStoreError)?
         };
-        let allow_ordinary_deploys =
-            allow_ordinary_user_deploys(rejected_buffer_non_empty, allow_recovered_deploys);
+        let allow_ordinary_deploys = allow_ordinary_user_deploys(
+            rejected_buffer_non_empty,
+            allow_recovered_deploys,
+            user_work_in_flight,
+            allow_deploy_inclusion,
+        );
         if self_chain_rejected_buffered && !allow_recovered_deploys {
             tracing::debug!(
                 target: "f1r3fly.casper.recovery",
@@ -1381,7 +1482,17 @@ pub async fn create(
                 next_block_num
             );
         }
-        if user_work_in_flight {
+        if user_work_in_flight && !allow_deploy_inclusion {
+            tracing::info!(
+                target: "f1r3fly.casper.recovery",
+                "Ordinary user deploy selection deferred to deploy-inclusion leader for block #{}; proposing finality support only: scope={}, storage_scope={}, self_chain={}",
+                next_block_num,
+                user_deploys_in_scope,
+                storage_deploys_in_scope,
+                self_chain_user_deploys
+            );
+        }
+        if user_work_in_flight && allow_ordinary_deploys {
             tracing::info!(
                 target: "f1r3fly.casper.recovery",
                 "Ordinary user deploy selection remains enabled for block #{} while user deploy work is in flight; per-deploy scope filters will suppress duplicates: scope={}, storage_scope={}, self_chain={}",
@@ -2457,6 +2568,65 @@ mod tests {
         ));
     }
 
+    #[tokio::test]
+    async fn deploy_inclusion_leader_tracks_user_deploy_sender_below_support_block() {
+        let mut kvm = InMemoryStoreManager::new();
+        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
+            .await
+            .expect("block store");
+        let mut snapshot =
+            crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+        snapshot.on_chain_state.active_validators = vec![validator(1), validator(2), validator(3)];
+        snapshot.on_chain_state.shard_conf.deploy_lifespan = 10;
+
+        let lfb_hash = invalid_block_hash(0x71);
+        let user_hash = invalid_block_hash(0x72);
+        let support_hash = invalid_block_hash(0x73);
+        let lfb = test_block(lfb_hash.clone(), validator(1), Vec::new(), 1, Vec::new());
+        let deploy = crate::rust::util::construct_deploy::basic_deploy_data(
+            1,
+            None,
+            Some("test".to_string()),
+        )
+        .expect("deploy");
+        let user = test_block(
+            user_hash.clone(),
+            validator(2),
+            vec![lfb_hash.clone()],
+            2,
+            vec![ProcessedDeploy::empty(deploy)],
+        );
+        let support = test_block(
+            support_hash.clone(),
+            validator(3),
+            vec![user_hash.clone()],
+            3,
+            Vec::new(),
+        );
+
+        block_store.put_block_message(&lfb).expect("put lfb");
+        block_store.put_block_message(&user).expect("put user");
+        block_store
+            .put_block_message(&support)
+            .expect("put support");
+        snapshot.last_finalized_block = lfb_hash;
+        snapshot.max_block_num = 3;
+        snapshot.parents = vec![support];
+
+        assert_eq!(
+            deploy_inclusion_leader(&snapshot, &block_store).expect("leader"),
+            Some(validator(2))
+        );
+        assert!(
+            is_deploy_inclusion_leader(&snapshot, &validator_identity(2), &block_store)
+                .expect("validator 2 leader")
+        );
+        assert!(
+            !is_deploy_inclusion_leader(&snapshot, &validator_identity(3), &block_store)
+                .expect("validator 3 support")
+        );
+    }
+
     #[test]
     fn empty_recovery_heartbeat_skip_requires_no_other_work() {
         assert!(should_skip_empty_recovery_heartbeat(
@@ -2484,9 +2654,18 @@ mod tests {
 
     #[test]
     fn non_leader_recovery_backlog_disables_ordinary_deploy_selection() {
-        assert!(!allow_ordinary_user_deploys(true, false));
-        assert!(allow_ordinary_user_deploys(true, true));
-        assert!(allow_ordinary_user_deploys(false, false));
+        assert!(!allow_ordinary_user_deploys(true, false, false, true));
+        assert!(allow_ordinary_user_deploys(true, true, false, true));
+        assert!(allow_ordinary_user_deploys(false, false, false, false));
+    }
+
+    #[test]
+    fn deploy_inclusion_leadership_gates_ordinary_selection() {
+        assert!(allow_ordinary_user_deploys(false, false, false, false));
+        assert!(allow_ordinary_user_deploys(false, false, true, true));
+        assert!(!allow_ordinary_user_deploys(false, false, true, false));
+        assert!(!allow_ordinary_user_deploys(true, false, true, true));
+        assert!(allow_ordinary_user_deploys(true, true, true, true));
     }
 
     #[tokio::test]
