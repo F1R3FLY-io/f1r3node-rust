@@ -2107,21 +2107,21 @@ impl SystemProcesses {
     /// - [`DispatchType::FailedNonDeterministicCall`] - Dispatcher handling for failed ops
     /// - `DebruijnInterpreter::continue_produce_process` — short-circuit for failed non-det replays
     /// - Tests: `swipl_petta_replay_spec.rs::test_petta_replay_error_consistency`
-    pub async fn swipl_execute_petta(
+    pub async fn petta_execute(
         &self,
         contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
     ) -> Result<Vec<Par>, InterpreterError> {
         let Some((produce, is_replay, previous_output, args)) =
             self.is_contract_call().unapply(contract_args)
         else {
-            return Err(illegal_argument_error("swipl_execute_petta"));
+            return Err(illegal_argument_error("petta_execute"));
         };
 
         let [metta_code, ack] = args.as_slice() else {
-            return Err(illegal_argument_error("swipl_execute_petta"));
+            return Err(illegal_argument_error("petta_execute"));
         };
         let Some(metta_code) = RhoString::unapply(metta_code) else {
-            return Err(illegal_argument_error("swipl_execute_petta"));
+            return Err(illegal_argument_error("petta_execute"));
         };
 
         if is_replay {
