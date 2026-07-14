@@ -137,7 +137,7 @@ Three crates have `build.rs` for protobuf code generation:
   and fully-autonomous (YOLO/worktree) modes; in interactive sessions it is
   overridden by the consent rules above.
 
-**Full Documentation**: [Git Interaction Policy](../../SA/top-level-gitlab-profile/docs/common/git-interaction-policy.md) (workspace checkout) — use the GitLab copy when working single-repo.
+**Full Documentation**: [Git Interaction Policy](https://gitlab.com/smart-assets.io/gitlab-profile/-/blob/master/docs/common/git-interaction-policy.md) (canonical; also available at `../../SA/top-level-gitlab-profile/docs/common/git-interaction-policy.md` in a multi-repo workspace checkout).
 
 ### Commit Messages
 - Use `[agent]` prefix in agentic mode
