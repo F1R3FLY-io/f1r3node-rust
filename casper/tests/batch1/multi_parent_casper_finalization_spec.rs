@@ -127,6 +127,13 @@ async fn multi_parent_casper_should_advance_finalization_monotonically_in_round_
     let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None, None)
         .await
         .unwrap();
+    // Heartbeat mode: under deploy-inclusion leadership only the leader packages
+    // user deploys while unresolved user work is in the frontier; non-leaders
+    // emit empty support blocks instead of erroring NoNewDeploys. The
+    // assertions below concern LFB monotonicity, not deploy inclusion.
+    for node in nodes.iter_mut() {
+        node.allow_empty_blocks = true;
+    }
 
     let shard_id = genesis.genesis_block.shard_id.clone();
 

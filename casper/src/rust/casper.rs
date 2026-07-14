@@ -171,6 +171,10 @@ pub trait MultiParentCasper: Casper + Send + Sync {
     /// finalization status.
     fn casper_shard_conf(&self) -> &CasperShardConf;
 
+    fn rejected_deploy_buffer_contains_sig(&self, _sig: &[u8]) -> Result<bool, CasperError> {
+        Ok(false)
+    }
+
     fn runtime_manager(&self) -> Arc<RuntimeManager>;
 
     fn get_validator(&self) -> Option<ValidatorIdentity>;

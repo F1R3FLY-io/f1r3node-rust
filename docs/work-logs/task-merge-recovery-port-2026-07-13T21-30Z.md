@@ -62,16 +62,63 @@ branch the exact θ ppm is derived locally from the configured f32
 (single conversion point in `casper_launch`), which is consistent across nodes
 with identical configs. Genesis hashes are unchanged.
 
-## Status
+## Phase 3 — engine snapshot builders + suite reconciliation (2026-07-14)
 
-- Workspace compiles clean; the 6 unit validation tests green.
-- Integration run (finalizer, reconstruction, leadership, convergence trio)
-  in flight at time of writing.
+Phase 2 committed as `57838f25`; master merged as `b19e79e0` (fixes the yanked
+`spin` deny failure via lockfile refresh). The pre-push gate then surfaced 95
+casper failures — one primary panic under the shared LMDB fixture lock poisoned
+~80 downstream tests.
+
+Ported in phase 3 (lossless swaps from `f584e9e9` unless noted):
+- `engine/multi_parent_casper/{snapshot,dispatch,types}.rs` — the snapshot
+  builders feeding `deploys_in_scope`/`rejected_in_scope`/parents into the
+  leadership gate (two last touched by "Fix merge recovery finalization for
+  counter deploys")
+- `engine/multi_parent_casper/{block_admission,validation_dispatcher}.rs` —
+  sealed-floor deploy retention (deploys stay pending until FINALIZED, the
+  loser-recovery mechanism) and `bonds_cache_from_floor` validation (fixed the
+  `InvalidBondsCache` slashing failure); dev tracing-target rename reapplied
+- `validate.rs` gains `bonds_cache_from_floor` (surgical);
+  `MultiParentCasper::rejected_deploy_buffer_contains_sig` trait method
+- Test reconciliation: `uc_112` (source = FV-audited no-unbonded-stamp
+  version), `recovery_cycle_spec` + `block_creator_spec` (source's corrected
+  harnesses; dev's block-expiry buffer-purge test superseded — recovered
+  deploys are deliberately exempt from block-expiry, buffer hygiene is
+  canonical-win purge + time expiry), misfire spec (snapshot.parents set —
+  proposers never have empty parents), heartbeat-mode adaptations
+  (`allow_empty_blocks`) in finalization round-robin, exploratory-deploy,
+  merge, limited-parent-depth, single-parent, and bridge specs, and a
+  leader-aware deploy2 packaging loop in the merge spec.
+
+## Final state (full casper release suite)
+
+736 passed / 8 failed / 31 ignored.
+
+Expected-red (all verified to fail IDENTICALLY on the source branch
+`f584e9e9` via worktree runs — they are the UNSOLVED remainder of
+RCA-asi-devnet-finality-halt, which this validation branch tracks):
+- `map_cell_convergence_spec::{two,three}_writers_converge[,_under_load]`
+  (keep-one loser recovery incomplete upstream too)
+- `map_cell_convergence_spec::unresolved_user_frontier_has_one_deploy_inclusion_leader`
+- `recovery_cycle_spec::recovery_cycle_rejected_deploy_retries_while_source_is_visible`
+- `runtime_manager_test::{bridge_query_survives_multi_parent_merge,stale_diff_application_corrupts_merged_state}`
+  (known stale-diff merge defect, red on both branches)
+
+Flaky (passes solo, fails occasionally under parallel load; pre-existing):
+- `approve_block_protocol_test::should_continue_collecting_if_not_enough_signatures`
+
+Notable wins vs the source branch: FS-monotonicity under load fixed, slashing
+bonds-cache green, merge spec multi-parent test green (red on source), misfire
+double-execution guards green (absent on source), clippy clean.
 
 ## Next steps
 
-- Confirm convergence trio green; then full casper suite in release.
-- Commit phase 2; update this log with results.
-- Follow-up candidate: port on-chain θ-ppm provenance chain.
-- Pre-existing `cargo deny` failure (yanked `spin 0.9.8`) blocks pre-commit;
-  committed with SKIP_DENY=1 — needs its own lockfile-bump branch.
+- Commit phase 3 (user-driven /quick-commit).
+- Pushing requires `SKIP_TESTS=1` or crate-scoped `TEST_CRATES` while the
+  expected-red set exists — consistent with the validation plan's
+  intentionally-red CI posture. Alternative: leave casper out of pre-push
+  and let CI document the red matrix.
+- Follow-up candidates: on-chain θ-ppm provenance chain
+  (standard_deploys/initializing/node config); the actual convergence
+  recovery completion (the expected-red set) — new engineering beyond the
+  source branch.
