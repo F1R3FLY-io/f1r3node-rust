@@ -4,6 +4,13 @@ All notable changes to the Rust implementation of F1r3node will be documented in
 This changelog is automatically generated from conventional commits.
 
 
+## [0.4.19] - 2026-07-14
+
+### Documentation
+
+- make AI assistant guidance vendor-neutral, add subagent policy
+
+
 ## [0.4.18] - 2026-07-10
 
 ### CI
