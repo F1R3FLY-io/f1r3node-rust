@@ -59,6 +59,32 @@ pub struct PreparedUserDeploys {
     pub cap_hit: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct DeployAdmissionPolicy {
+    allow_ordinary: bool,
+    ordinary_cap: usize,
+    reserve_tail: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct BranchDeployInfo {
+    sender: Validator,
+    block_number: i64,
+    timestamp: i64,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct DeployInclusionProgress {
+    leader: Option<Validator>,
+    latest_deploy: Option<BranchDeployInfo>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct FreshLocalDeployStats {
+    count: usize,
+    oldest_age_millis: i64,
+}
+
 /// C15 / Smell-2: was previously a zero-arg `fn -> bool` returning a
 /// hard-coded `true`. Promoted to a `const` so its always-on nature
 /// is explicit and the value is folded at compile time. Kept as a
@@ -69,6 +95,10 @@ pub struct PreparedUserDeploys {
 const DEPLOY_SELECTION_RESERVE_TAIL_ENABLED: bool = true;
 const ORDINARY_DEPLOY_PROPOSAL_CAP: usize = 32;
 const RETRY_DEPLOY_REPROPOSAL_CAP: usize = ORDINARY_DEPLOY_PROPOSAL_CAP;
+const NON_LEADER_FALLBACK_ORDINARY_DEPLOY_CAP: usize = 8;
+const DEPLOY_INCLUSION_LEASE_BLOCKS: i64 = 3;
+const DEPLOY_INCLUSION_LEASE_MILLIS: i64 = 30_000;
+const FRESH_DEPLOY_MAX_ADMISSION_DELAY_MILLIS: i64 = 60_000;
 
 /// C15 / Smell-4: extract the deploy-signature pretty-print prefix
 /// used in operator-facing log messages. Previously inlined as
@@ -98,6 +128,43 @@ fn select_recovered_deploys_for_block(
         return HashSet::new();
     }
     ordered.into_iter().take(cap).collect()
+}
+
+fn select_ordinary_deploys_for_block(
+    deploys: &HashSet<Signed<DeployData>>,
+    cap: usize,
+    reserve_tail: bool,
+) -> (HashSet<Signed<DeployData>>, &'static str) {
+    let ordered = ordered_user_deploys(deploys);
+    if ordered.is_empty() || cap == 0 {
+        return (HashSet::new(), "none");
+    }
+    if ordered.len() <= cap {
+        return (ordered.into_iter().collect(), "uncapped");
+    }
+    if reserve_tail && DEPLOY_SELECTION_RESERVE_TAIL_ENABLED && cap > 1 {
+        let oldest_take = cap.saturating_sub(1);
+        let mut picked: HashSet<Signed<DeployData>> =
+            ordered.iter().take(oldest_take).cloned().collect();
+        if let Some(newest) = ordered.iter().last().cloned() {
+            picked.insert(newest);
+        }
+        (picked, "oldest-plus-newest")
+    } else {
+        (ordered.into_iter().take(cap).collect(), "oldest-only")
+    }
+}
+
+fn normal_ordinary_deploy_cap(casper_snapshot: &CasperSnapshot) -> usize {
+    (casper_snapshot
+        .on_chain_state
+        .shard_conf
+        .max_user_deploys_per_block as usize)
+        .min(ORDINARY_DEPLOY_PROPOSAL_CAP)
+}
+
+fn fallback_ordinary_deploy_cap(casper_snapshot: &CasperSnapshot) -> usize {
+    normal_ordinary_deploy_cap(casper_snapshot).min(NON_LEADER_FALLBACK_ORDINARY_DEPLOY_CAP)
 }
 
 fn is_retryable_single_value_batch_error(err: &CasperError) -> bool {
@@ -153,6 +220,38 @@ pub async fn prepare_user_deploys(
     allow_recovered_deploys: bool,
     allow_ordinary_deploys: bool,
 ) -> Result<PreparedUserDeploys, CasperError> {
+    prepare_user_deploys_with_policy(
+        casper_snapshot,
+        block_number,
+        current_time_millis,
+        deploy_storage,
+        rejected_deploy_buffer,
+        block_store,
+        allow_recovered_deploys,
+        DeployAdmissionPolicy {
+            allow_ordinary: allow_ordinary_deploys,
+            ordinary_cap: normal_ordinary_deploy_cap(casper_snapshot),
+            reserve_tail: true,
+        },
+    )
+    .await
+}
+
+async fn prepare_user_deploys_with_policy(
+    casper_snapshot: &CasperSnapshot,
+    block_number: i64,
+    current_time_millis: i64,
+    deploy_storage: Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
+    rejected_deploy_buffer: Arc<
+        Mutex<block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer>,
+    >,
+    block_store: &KeyValueBlockStore,
+    allow_recovered_deploys: bool,
+    admission_policy: DeployAdmissionPolicy,
+) -> Result<PreparedUserDeploys, CasperError> {
+    let max_user_deploys = normal_ordinary_deploy_cap(casper_snapshot);
+    let ordinary_cap = admission_policy.ordinary_cap.min(max_user_deploys);
+    let allow_ordinary_deploys = admission_policy.allow_ordinary && ordinary_cap > 0;
     // Phase 9 (A-3): parking_lot::Mutex — no poison.
     let mut deploy_storage_guard = deploy_storage.lock();
 
@@ -364,7 +463,7 @@ pub async fn prepare_user_deploys(
         .filter(|deploy| canonical_won.contains(&deploy.sig) || blocked_by_scope(deploy))
         .map(|deploy| (*deploy).clone())
         .collect();
-    let mut valid_unique: HashSet<Signed<DeployData>> = valid
+    let valid_unique: HashSet<Signed<DeployData>> = valid
         .into_iter()
         .filter(|deploy| !canonical_won.contains(&deploy.sig) && !blocked_by_scope(deploy))
         .collect();
@@ -388,35 +487,68 @@ pub async fn prepare_user_deploys(
         recovered_sigs.contains(&deploy.sig)
             || casper_snapshot.rejected_in_scope.contains(&deploy.sig)
     };
-    let retry_candidate_count = valid_unique
+    let retry_candidates: HashSet<Signed<DeployData>> = valid_unique
         .iter()
         .filter(|deploy| is_retry_candidate(deploy))
-        .count();
-    if retry_candidate_count > RETRY_DEPLOY_REPROPOSAL_CAP {
-        let ordinary: HashSet<Signed<DeployData>> = valid_unique
-            .iter()
-            .filter(|deploy| !is_retry_candidate(deploy))
-            .cloned()
-            .collect();
-        let retry_candidates: HashSet<Signed<DeployData>> = valid_unique
-            .iter()
-            .filter(|deploy| is_retry_candidate(deploy))
-            .cloned()
-            .collect();
-        let selected_retries = select_recovered_deploys_for_block(
-            &retry_candidates,
-            block_number,
-            RETRY_DEPLOY_REPROPOSAL_CAP,
-        );
+        .cloned()
+        .collect();
+    let ordinary_candidates: HashSet<Signed<DeployData>> = valid_unique
+        .iter()
+        .filter(|deploy| !is_retry_candidate(deploy))
+        .cloned()
+        .collect();
+    let retry_candidate_count = retry_candidates.len();
+    let selected_retries = select_recovered_deploys_for_block(
+        &retry_candidates,
+        block_number,
+        RETRY_DEPLOY_REPROPOSAL_CAP,
+    );
+    let retry_capped = retry_candidate_count > selected_retries.len();
+    if retry_capped {
         let deferred_retries = retry_candidate_count.saturating_sub(selected_retries.len());
-        valid_unique = ordinary.into_iter().chain(selected_retries).collect();
         tracing::info!(
             target: "f1r3fly.casper.recovery",
             "Retry deploy selection capped for block #{}: selected={}, deferred={}, cap={}",
             block_number,
-            RETRY_DEPLOY_REPROPOSAL_CAP,
+            selected_retries.len(),
             deferred_retries,
             RETRY_DEPLOY_REPROPOSAL_CAP
+        );
+    }
+    let (selected_ordinary, ordinary_selection_strategy) = select_ordinary_deploys_for_block(
+        &ordinary_candidates,
+        ordinary_cap,
+        admission_policy.reserve_tail,
+    );
+    let ordinary_capped = ordinary_candidates.len() > selected_ordinary.len();
+    let selected: HashSet<Signed<DeployData>> = selected_retries
+        .into_iter()
+        .chain(selected_ordinary.into_iter())
+        .collect();
+    let deferred = retry_candidate_count.saturating_sub(
+        selected
+            .iter()
+            .filter(|deploy| is_retry_candidate(deploy))
+            .count(),
+    ) + ordinary_candidates.len().saturating_sub(
+        selected
+            .iter()
+            .filter(|deploy| !is_retry_candidate(deploy))
+            .count(),
+    );
+    let cap_hit = retry_capped || ordinary_capped;
+    let selected_ordinary_count = selected
+        .iter()
+        .filter(|deploy| !is_retry_candidate(deploy))
+        .count();
+    if ordinary_capped {
+        tracing::info!(
+            "Ordinary deploy selection capped for block #{}: selected={}, deferred={}, cap={}, strategy={}",
+            block_number,
+            selected_ordinary_count,
+            ordinary_candidates.len().saturating_sub(selected_ordinary_count),
+            ordinary_cap,
+            ordinary_selection_strategy
         );
     }
 
@@ -489,7 +621,7 @@ pub async fn prepare_user_deploys(
             current_time_millis,
             valid_count,
             already_in_scope_count,
-            valid_unique.len()
+            selected.len()
         );
     }
 
@@ -552,85 +684,6 @@ pub async fn prepare_user_deploys(
         buffer_guard.remove(expired_list)?;
     }
 
-    let max_deploys = casper_snapshot
-        .on_chain_state
-        .shard_conf
-        .max_user_deploys_per_block as usize;
-    let max_user_deploys = max_deploys.min(ORDINARY_DEPLOY_PROPOSAL_CAP);
-    if valid_unique.len() <= max_user_deploys {
-        if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
-            let chosen: Vec<String> = valid_unique
-                .iter()
-                .map(|d| hex::encode(&d.sig[..8.min(d.sig.len())]))
-                .collect();
-            tracing::debug!(
-                target: "f1r3fly.merge.step",
-                step = "prepare_user_deploys.CHOSEN",
-                block_number,
-                count = valid_unique.len(),
-                cap_hit = false,
-                chosen = ?chosen,
-                "merge.step: final deploy set chosen for block"
-            );
-        }
-        return Ok(PreparedUserDeploys {
-            deploys: valid_unique,
-            effective_cap: max_user_deploys,
-            cap_hit: false,
-        });
-    }
-
-    // Deterministically order deploys by age so selection remains stable across validators.
-    let mut ordered: Vec<Signed<DeployData>> = valid_unique.into_iter().collect();
-    ordered.sort_by(|a, b| {
-        a.data
-            .valid_after_block_number
-            .cmp(&b.data.valid_after_block_number)
-            .then_with(|| a.data.time_stamp.cmp(&b.data.time_stamp))
-            .then_with(|| {
-                // Stable deterministic tie-breaker for identical timestamps/windows.
-                a.sig.cmp(&b.sig)
-            })
-    });
-
-    // To avoid head-of-line blocking after stress bursts, reserve one slot for
-    // the freshest deploy when capping is active. The remaining slots still drain
-    // oldest deploys first to preserve fairness.
-    let (selected, selection_strategy): (HashSet<Signed<DeployData>>, &'static str) =
-        if DEPLOY_SELECTION_RESERVE_TAIL_ENABLED {
-            if max_user_deploys == 1 {
-                (ordered.iter().take(1).cloned().collect(), "oldest-only")
-            } else {
-                let oldest_take = max_user_deploys.saturating_sub(1);
-                let mut picked: HashSet<Signed<DeployData>> =
-                    ordered.iter().take(oldest_take).cloned().collect();
-                if let Some(newest) = ordered.iter().last().cloned() {
-                    picked.insert(newest);
-                }
-                if max_user_deploys <= ordered.len() {
-                    debug_assert_eq!(picked.len(), max_user_deploys);
-                }
-                (picked, "oldest-plus-newest")
-            }
-        } else {
-            (
-                ordered.iter().take(max_user_deploys).cloned().collect(),
-                "oldest-only",
-            )
-        };
-    let deferred = valid_count
-        .saturating_sub(already_in_scope_count)
-        .saturating_sub(selected.len());
-
-    tracing::info!(
-        "Deploy selection capped for block #{}: selected={}, deferred={}, cap={}, strategy={}",
-        block_number,
-        selected.len(),
-        deferred,
-        max_user_deploys,
-        selection_strategy
-    );
-
     if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
         let chosen: Vec<String> = selected
             .iter()
@@ -641,17 +694,19 @@ pub async fn prepare_user_deploys(
             step = "prepare_user_deploys.CHOSEN",
             block_number,
             count = selected.len(),
-            cap_hit = true,
-            strategy = selection_strategy,
+            cap_hit,
+            ordinary_cap,
+            ordinary_strategy = ordinary_selection_strategy,
+            deferred,
             chosen = ?chosen,
-            "merge.step: final deploy set chosen for block (capped)"
+            "merge.step: final deploy set chosen for block"
         );
     }
 
     Ok(PreparedUserDeploys {
         deploys: selected,
-        effective_cap: max_user_deploys,
-        cap_hit: true,
+        effective_cap: ordinary_cap,
+        cap_hit,
     })
 }
 
@@ -801,11 +856,29 @@ fn scope_has_unfinalized_user_deploys(
     Ok(false)
 }
 
-fn branch_unfinalized_user_deploy_sender(
+fn newer_branch_deploy_info(
+    current: Option<BranchDeployInfo>,
+    candidate: BranchDeployInfo,
+) -> Option<BranchDeployInfo> {
+    match current {
+        Some(existing)
+            if existing.block_number > candidate.block_number
+                || (existing.block_number == candidate.block_number
+                    && (existing.timestamp > candidate.timestamp
+                        || (existing.timestamp == candidate.timestamp
+                            && existing.sender.as_ref() >= candidate.sender.as_ref()))) =>
+        {
+            Some(existing)
+        }
+        _ => Some(candidate),
+    }
+}
+
+fn branch_unfinalized_user_deploy_info(
     casper_snapshot: &CasperSnapshot,
     block_store: &KeyValueBlockStore,
     root_hash: &BlockHash,
-) -> Result<Option<Validator>, CasperError> {
+) -> Result<Option<BranchDeployInfo>, CasperError> {
     let last_finalized_block_number = block_store
         .get(&casper_snapshot.last_finalized_block)?
         .map(|block| block.body.state.block_number);
@@ -822,6 +895,7 @@ fn branch_unfinalized_user_deploy_sender(
         .saturating_sub(casper_snapshot.on_chain_state.shard_conf.deploy_lifespan);
     let mut stack = vec![root_hash.clone()];
     let mut seen: HashSet<BlockHash> = HashSet::new();
+    let mut latest = None;
 
     while let Some(block_hash) = stack.pop() {
         if !seen.insert(block_hash.clone())
@@ -844,13 +918,17 @@ fn branch_unfinalized_user_deploy_sender(
         }
 
         if !block.body.deploys.is_empty() {
-            return Ok(Some(block.sender.clone()));
+            latest = newer_branch_deploy_info(latest, BranchDeployInfo {
+                sender: block.sender.clone(),
+                block_number: block.body.state.block_number,
+                timestamp: block.header.timestamp,
+            });
         }
 
         stack.extend(block.header.parents_hash_list.iter().cloned());
     }
 
-    Ok(None)
+    Ok(latest)
 }
 
 fn storage_has_unresolved_in_scope_deploys(
@@ -1250,11 +1328,12 @@ fn is_recovered_deploy_leader(
         .unwrap_or(true)
 }
 
-fn deploy_inclusion_leader(
+fn deploy_inclusion_progress(
     casper_snapshot: &CasperSnapshot,
     block_store: &KeyValueBlockStore,
-) -> Result<Option<Validator>, CasperError> {
+) -> Result<DeployInclusionProgress, CasperError> {
     let validators = current_proposal_validators(casper_snapshot);
+    let mut latest = None;
     for parent in &casper_snapshot.parents {
         if parent.sender.is_empty()
             || (!validators.is_empty() && !validators.iter().any(|v| v == &parent.sender))
@@ -1262,32 +1341,117 @@ fn deploy_inclusion_leader(
             continue;
         }
 
-        if let Some(sender) =
-            branch_unfinalized_user_deploy_sender(casper_snapshot, block_store, &parent.block_hash)?
+        if let Some(info) =
+            branch_unfinalized_user_deploy_info(casper_snapshot, block_store, &parent.block_hash)?
         {
-            if !sender.is_empty()
-                && (validators.is_empty() || validators.iter().any(|v| v == &sender))
-            {
-                return Ok(Some(sender));
-            }
+            latest = newer_branch_deploy_info(latest, info);
         }
     }
 
-    if scope_has_unfinalized_user_deploys(casper_snapshot, block_store)? {
-        return Ok(recovered_deploy_leader(casper_snapshot));
+    if let Some(info) = latest {
+        let leader = if !info.sender.is_empty()
+            && (validators.is_empty() || validators.iter().any(|v| v == &info.sender))
+        {
+            Some(info.sender.clone())
+        } else {
+            recovered_deploy_leader(casper_snapshot)
+        };
+        return Ok(DeployInclusionProgress {
+            leader,
+            latest_deploy: Some(info),
+        });
     }
 
-    Ok(None)
+    if scope_has_unfinalized_user_deploys(casper_snapshot, block_store)? {
+        return Ok(DeployInclusionProgress {
+            leader: recovered_deploy_leader(casper_snapshot),
+            latest_deploy: None,
+        });
+    }
+
+    Ok(DeployInclusionProgress::default())
 }
 
-fn is_deploy_inclusion_leader(
+fn deploy_inclusion_progress_is_stale(
+    progress: &DeployInclusionProgress,
+    next_block_num: i64,
+    now_millis: i64,
+) -> bool {
+    match &progress.latest_deploy {
+        Some(info) => {
+            next_block_num.saturating_sub(info.block_number) >= DEPLOY_INCLUSION_LEASE_BLOCKS
+                || now_millis.saturating_sub(info.timestamp) >= DEPLOY_INCLUSION_LEASE_MILLIS
+        }
+        None => progress.leader.is_some(),
+    }
+}
+
+fn fresh_local_deploy_stats(
     casper_snapshot: &CasperSnapshot,
-    validator_identity: &ValidatorIdentity,
+    block_number: i64,
+    current_time_millis: i64,
+    deploy_storage: &Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
+    rejected_deploy_buffer: &Arc<Mutex<KeyValueRejectedDeployBuffer>>,
     block_store: &KeyValueBlockStore,
-) -> Result<bool, CasperError> {
-    Ok(deploy_inclusion_leader(casper_snapshot, block_store)?
-        .map(|leader| leader == validator_identity.public_key.bytes)
-        .unwrap_or(true))
+) -> Result<FreshLocalDeployStats, CasperError> {
+    let stored_deploys = deploy_storage.lock().read_all()?;
+    if stored_deploys.is_empty() {
+        return Ok(FreshLocalDeployStats::default());
+    }
+    let buffered_sigs: HashSet<Bytes> = rejected_deploy_buffer
+        .lock()
+        .map_err(|e| CasperError::LockError(e.to_string()))?
+        .read_all()?
+        .into_iter()
+        .map(|deploy| deploy.sig)
+        .collect();
+    let earliest_block_number =
+        block_number - casper_snapshot.on_chain_state.shard_conf.deploy_lifespan;
+    let candidates: HashSet<Signed<DeployData>> = stored_deploys
+        .into_iter()
+        .filter(|deploy| {
+            !buffered_sigs.contains(&deploy.sig)
+                && !casper_snapshot.deploys_in_scope.contains(&deploy.sig)
+                && not_future_deploy(block_number, &deploy.data)
+                && not_expired_deploy(earliest_block_number, &deploy.data)
+                && !deploy.data.is_expired_at(current_time_millis)
+        })
+        .collect();
+    if candidates.is_empty() {
+        return Ok(FreshLocalDeployStats::default());
+    }
+    let parent_hashes: Vec<BlockHash> = casper_snapshot
+        .parents
+        .iter()
+        .map(|p| p.block_hash.clone())
+        .collect();
+    let canonical_scan_floor = candidates
+        .iter()
+        .map(|d| d.data.valid_after_block_number)
+        .min()
+        .map(|h| h.min(earliest_block_number))
+        .unwrap_or(earliest_block_number);
+    let canonical_won =
+        interpreter_util::canonical_won_sigs(block_store, &parent_hashes, canonical_scan_floor)?;
+    let mut count = 0usize;
+    let mut oldest_time = None;
+    for deploy in candidates {
+        if canonical_won.contains(&deploy.sig) {
+            continue;
+        }
+        count += 1;
+        oldest_time = Some(
+            oldest_time
+                .map(|current: i64| current.min(deploy.data.time_stamp))
+                .unwrap_or(deploy.data.time_stamp),
+        );
+    }
+    Ok(FreshLocalDeployStats {
+        count,
+        oldest_age_millis: oldest_time
+            .map(|time_stamp| current_time_millis.saturating_sub(time_stamp))
+            .unwrap_or(0),
+    })
 }
 
 fn should_skip_empty_recovery_heartbeat(
@@ -1306,14 +1470,39 @@ fn should_skip_empty_recovery_heartbeat(
         && !has_recovered_rejected_slashes
 }
 
-fn allow_ordinary_user_deploys(
+fn fresh_admission_fallback_allowed(
+    stale_in_scope_work: bool,
+    deploy_inclusion_progress_stale: bool,
+    fresh_local_stats: FreshLocalDeployStats,
+) -> bool {
+    fresh_local_stats.count > 0
+        && fresh_local_stats.oldest_age_millis >= FRESH_DEPLOY_MAX_ADMISSION_DELAY_MILLIS
+        && (!stale_in_scope_work || deploy_inclusion_progress_stale)
+}
+
+fn ordinary_admission_policy(
+    casper_snapshot: &CasperSnapshot,
     rejected_buffer_non_empty: bool,
     allow_recovered_deploys: bool,
-    user_work_in_flight: bool,
+    stale_in_scope_work: bool,
     allow_deploy_inclusion: bool,
-) -> bool {
-    (!rejected_buffer_non_empty || allow_recovered_deploys)
-        && (!user_work_in_flight || allow_deploy_inclusion)
+    fallback_allowed: bool,
+) -> DeployAdmissionPolicy {
+    let requires_fallback = (rejected_buffer_non_empty && !allow_recovered_deploys)
+        || (stale_in_scope_work && !allow_deploy_inclusion);
+    if requires_fallback {
+        return DeployAdmissionPolicy {
+            allow_ordinary: fallback_allowed,
+            ordinary_cap: fallback_ordinary_deploy_cap(casper_snapshot),
+            reserve_tail: false,
+        };
+    }
+
+    DeployAdmissionPolicy {
+        allow_ordinary: true,
+        ordinary_cap: normal_ordinary_deploy_cap(casper_snapshot),
+        reserve_tail: true,
+    }
 }
 
 fn parent_frontier_extends_lfb(
@@ -1433,8 +1622,9 @@ pub async fn create(
             validator_identity,
             block_store,
         )?;
-        let user_work_in_flight =
+        let stale_in_scope_work =
             user_deploys_in_scope || storage_deploys_in_scope || self_chain_user_deploys;
+        let user_work_in_flight = stale_in_scope_work;
         let finality_work_in_flight = parent_frontier_extends_lfb(casper_snapshot, block_store)?;
         let self_chain_deploy_sigs =
             collect_self_chain_deploy_sigs(casper_snapshot, validator_identity, block_store)?;
@@ -1459,8 +1649,27 @@ pub async fn create(
         };
         let allow_recovered_deploys =
             is_recovered_deploy_leader(casper_snapshot, validator_identity);
-        let allow_deploy_inclusion =
-            is_deploy_inclusion_leader(casper_snapshot, validator_identity, block_store)?;
+        let inclusion_progress = deploy_inclusion_progress(casper_snapshot, block_store)?;
+        let allow_deploy_inclusion = inclusion_progress
+            .leader
+            .as_ref()
+            .map(|leader| leader == &validator_identity.public_key.bytes)
+            .unwrap_or(true);
+        let inclusion_progress_stale =
+            deploy_inclusion_progress_is_stale(&inclusion_progress, next_block_num, now_millis);
+        let fresh_local_stats = fresh_local_deploy_stats(
+            casper_snapshot,
+            next_block_num,
+            now_millis,
+            &deploy_storage,
+            &rejected_deploy_buffer,
+            block_store,
+        )?;
+        let fallback_allowed = fresh_admission_fallback_allowed(
+            stale_in_scope_work,
+            inclusion_progress_stale,
+            fresh_local_stats,
+        );
         let rejected_buffer_non_empty = {
             let buffer_guard = rejected_deploy_buffer
                 .lock()
@@ -1469,11 +1678,13 @@ pub async fn create(
                 .non_empty()
                 .map_err(CasperError::KvStoreError)?
         };
-        let allow_ordinary_deploys = allow_ordinary_user_deploys(
+        let admission_policy = ordinary_admission_policy(
+            casper_snapshot,
             rejected_buffer_non_empty,
             allow_recovered_deploys,
-            user_work_in_flight,
+            stale_in_scope_work,
             allow_deploy_inclusion,
+            fallback_allowed,
         );
         if self_chain_rejected_buffered && !allow_recovered_deploys {
             tracing::debug!(
@@ -1482,7 +1693,7 @@ pub async fn create(
                 next_block_num
             );
         }
-        if user_work_in_flight && !allow_deploy_inclusion {
+        if user_work_in_flight && !allow_deploy_inclusion && !admission_policy.allow_ordinary {
             tracing::info!(
                 target: "f1r3fly.casper.recovery",
                 "Ordinary user deploy selection deferred to deploy-inclusion leader for block #{}; proposing finality support only: scope={}, storage_scope={}, self_chain={}",
@@ -1492,7 +1703,21 @@ pub async fn create(
                 self_chain_user_deploys
             );
         }
-        if user_work_in_flight && allow_ordinary_deploys {
+        if (stale_in_scope_work || rejected_buffer_non_empty)
+            && admission_policy.allow_ordinary
+            && !admission_policy.reserve_tail
+        {
+            tracing::info!(
+                target: "f1r3fly.casper.recovery",
+                "Ordinary user deploy fallback enabled for block #{}: cap={}, fresh_local={}, oldest_fresh_age_ms={}, inclusion_progress_stale={}",
+                next_block_num,
+                admission_policy.ordinary_cap,
+                fresh_local_stats.count,
+                fresh_local_stats.oldest_age_millis,
+                inclusion_progress_stale
+            );
+        }
+        if user_work_in_flight && admission_policy.allow_ordinary && allow_deploy_inclusion {
             tracing::info!(
                 target: "f1r3fly.casper.recovery",
                 "Ordinary user deploy selection remains enabled for block #{} while user deploy work is in flight; per-deploy scope filters will suppress duplicates: scope={}, storage_scope={}, self_chain={}",
@@ -1502,7 +1727,7 @@ pub async fn create(
                 self_chain_user_deploys
             );
         }
-        let prepared = prepare_user_deploys(
+        let prepared = prepare_user_deploys_with_policy(
             casper_snapshot,
             next_block_num,
             now_millis,
@@ -1510,7 +1735,7 @@ pub async fn create(
             rejected_deploy_buffer.clone(),
             block_store,
             allow_recovered_deploys,
-            allow_ordinary_deploys,
+            admission_policy,
         )
         .await?;
         let mut v = prepared.deploys;
@@ -2613,17 +2838,20 @@ mod tests {
         snapshot.max_block_num = 3;
         snapshot.parents = vec![support];
 
+        let progress = deploy_inclusion_progress(&snapshot, &block_store).expect("progress");
+
+        assert_eq!(progress.leader, Some(validator(2)));
         assert_eq!(
-            deploy_inclusion_leader(&snapshot, &block_store).expect("leader"),
-            Some(validator(2))
+            progress.latest_deploy,
+            Some(BranchDeployInfo {
+                sender: validator(2),
+                block_number: 2,
+                timestamp: 2,
+            })
         );
-        assert!(
-            is_deploy_inclusion_leader(&snapshot, &validator_identity(2), &block_store)
-                .expect("validator 2 leader")
-        );
-        assert!(
-            !is_deploy_inclusion_leader(&snapshot, &validator_identity(3), &block_store)
-                .expect("validator 3 support")
+        assert_ne!(
+            progress.leader,
+            Some(validator_identity(3).public_key.bytes)
         );
     }
 
@@ -2654,18 +2882,129 @@ mod tests {
 
     #[test]
     fn non_leader_recovery_backlog_disables_ordinary_deploy_selection() {
-        assert!(!allow_ordinary_user_deploys(true, false, false, true));
-        assert!(allow_ordinary_user_deploys(true, true, false, true));
-        assert!(allow_ordinary_user_deploys(false, false, false, false));
+        let snapshot =
+            crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+        assert!(
+            !ordinary_admission_policy(&snapshot, true, false, false, true, false).allow_ordinary
+        );
+        assert!(
+            ordinary_admission_policy(&snapshot, true, true, false, true, false).allow_ordinary
+        );
+        assert!(
+            ordinary_admission_policy(&snapshot, false, false, false, false, false).allow_ordinary
+        );
     }
 
     #[test]
     fn deploy_inclusion_leadership_gates_ordinary_selection() {
-        assert!(allow_ordinary_user_deploys(false, false, false, false));
-        assert!(allow_ordinary_user_deploys(false, false, true, true));
-        assert!(!allow_ordinary_user_deploys(false, false, true, false));
-        assert!(!allow_ordinary_user_deploys(true, false, true, true));
-        assert!(allow_ordinary_user_deploys(true, true, true, true));
+        let snapshot =
+            crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+        assert!(
+            ordinary_admission_policy(&snapshot, false, false, false, false, false).allow_ordinary
+        );
+        assert!(
+            ordinary_admission_policy(&snapshot, false, false, true, true, false).allow_ordinary
+        );
+        assert!(
+            !ordinary_admission_policy(&snapshot, false, false, true, false, false).allow_ordinary
+        );
+        assert!(
+            !ordinary_admission_policy(&snapshot, true, false, true, true, false).allow_ordinary
+        );
+        assert!(ordinary_admission_policy(&snapshot, true, true, true, true, false).allow_ordinary);
+    }
+
+    #[test]
+    fn bounded_fresh_fallback_uses_small_oldest_first_policy() {
+        let mut snapshot =
+            crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+        snapshot
+            .on_chain_state
+            .shard_conf
+            .max_user_deploys_per_block = 32;
+        let policy = ordinary_admission_policy(&snapshot, false, false, true, false, true);
+
+        assert!(policy.allow_ordinary);
+        assert_eq!(policy.ordinary_cap, NON_LEADER_FALLBACK_ORDINARY_DEPLOY_CAP);
+        assert!(!policy.reserve_tail);
+    }
+
+    #[test]
+    fn fresh_fallback_waits_for_age_and_progress_lease() {
+        let stats = FreshLocalDeployStats {
+            count: 1,
+            oldest_age_millis: FRESH_DEPLOY_MAX_ADMISSION_DELAY_MILLIS,
+        };
+        assert!(!fresh_admission_fallback_allowed(true, false, stats));
+        assert!(fresh_admission_fallback_allowed(true, true, stats));
+        assert!(fresh_admission_fallback_allowed(false, false, stats));
+
+        let young = FreshLocalDeployStats {
+            count: 1,
+            oldest_age_millis: FRESH_DEPLOY_MAX_ADMISSION_DELAY_MILLIS - 1,
+        };
+        assert!(!fresh_admission_fallback_allowed(true, true, young));
+        assert!(!fresh_admission_fallback_allowed(
+            true,
+            true,
+            FreshLocalDeployStats::default()
+        ));
+    }
+
+    #[test]
+    fn newer_branch_deploy_info_breaks_ties_by_sender() {
+        let existing = BranchDeployInfo {
+            sender: validator(1),
+            block_number: 10,
+            timestamp: 1_000,
+        };
+        let candidate = BranchDeployInfo {
+            sender: validator(2),
+            block_number: 10,
+            timestamp: 1_000,
+        };
+
+        assert_eq!(
+            newer_branch_deploy_info(Some(existing), candidate.clone()),
+            Some(candidate)
+        );
+    }
+
+    #[test]
+    fn deploy_inclusion_progress_stale_after_block_or_time_lease() {
+        let progress = DeployInclusionProgress {
+            leader: Some(validator(1)),
+            latest_deploy: Some(BranchDeployInfo {
+                sender: validator(1),
+                block_number: 10,
+                timestamp: 1_000,
+            }),
+        };
+
+        assert!(!deploy_inclusion_progress_is_stale(
+            &progress,
+            12,
+            1_000 + DEPLOY_INCLUSION_LEASE_MILLIS - 1
+        ));
+        assert!(deploy_inclusion_progress_is_stale(&progress, 13, 1_000));
+        assert!(deploy_inclusion_progress_is_stale(
+            &progress,
+            11,
+            1_000 + DEPLOY_INCLUSION_LEASE_MILLIS
+        ));
+        assert!(deploy_inclusion_progress_is_stale(
+            &DeployInclusionProgress {
+                leader: Some(validator(1)),
+                latest_deploy: None,
+            },
+            11,
+            1_000
+        ));
+        assert!(!deploy_inclusion_progress_is_stale(
+            &DeployInclusionProgress::default(),
+            11,
+            1_000
+        ));
     }
 
     #[tokio::test]
@@ -3145,6 +3484,171 @@ mod tests {
             .deploys
             .iter()
             .any(|deploy| deploy.sig == first.sig));
+    }
+
+    #[tokio::test]
+    async fn fallback_ordinary_selection_uses_bounded_oldest_first_cap() {
+        let mut kvm = InMemoryStoreManager::new();
+        let deploy_storage = Arc::new(parking_lot::Mutex::new(
+            KeyValueDeployStorage::new(&mut kvm)
+                .await
+                .expect("deploy storage"),
+        ));
+        let rejected_deploy_buffer = Arc::new(Mutex::new(
+            KeyValueRejectedDeployBuffer::new(&mut kvm)
+                .await
+                .expect("rejected deploy buffer"),
+        ));
+        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
+            .await
+            .expect("block store");
+        let mut snapshot =
+            crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+        snapshot
+            .on_chain_state
+            .shard_conf
+            .max_user_deploys_per_block = 32;
+        snapshot.on_chain_state.shard_conf.deploy_lifespan = 500;
+        let deploys: Vec<_> = (1..=20)
+            .map(|id| {
+                construct_deploy::source_deploy(
+                    format!("@{}!({})", id, id),
+                    1_000 + id as i64,
+                    None,
+                    None,
+                    None,
+                    Some(id as i64),
+                    Some("test".to_string()),
+                )
+                .expect("deploy")
+            })
+            .collect();
+
+        deploy_storage
+            .lock()
+            .add(deploys)
+            .expect("seed deploy storage");
+
+        let prepared = prepare_user_deploys_with_policy(
+            &snapshot,
+            200,
+            10_000,
+            deploy_storage,
+            rejected_deploy_buffer,
+            &block_store,
+            false,
+            DeployAdmissionPolicy {
+                allow_ordinary: true,
+                ordinary_cap: NON_LEADER_FALLBACK_ORDINARY_DEPLOY_CAP,
+                reserve_tail: false,
+            },
+        )
+        .await
+        .expect("prepare deploys");
+
+        let selected_valid_after: HashSet<i64> = prepared
+            .deploys
+            .iter()
+            .map(|deploy| deploy.data.valid_after_block_number)
+            .collect();
+        let expected: HashSet<i64> = (1..=NON_LEADER_FALLBACK_ORDINARY_DEPLOY_CAP as i64).collect();
+        assert_eq!(
+            prepared.deploys.len(),
+            NON_LEADER_FALLBACK_ORDINARY_DEPLOY_CAP
+        );
+        assert_eq!(selected_valid_after, expected);
+        assert_eq!(
+            prepared.effective_cap,
+            NON_LEADER_FALLBACK_ORDINARY_DEPLOY_CAP
+        );
+        assert!(prepared.cap_hit);
+    }
+
+    #[tokio::test]
+    async fn already_in_scope_deploys_do_not_consume_fallback_fresh_cap() {
+        let mut kvm = InMemoryStoreManager::new();
+        let deploy_storage = Arc::new(parking_lot::Mutex::new(
+            KeyValueDeployStorage::new(&mut kvm)
+                .await
+                .expect("deploy storage"),
+        ));
+        let rejected_deploy_buffer = Arc::new(Mutex::new(
+            KeyValueRejectedDeployBuffer::new(&mut kvm)
+                .await
+                .expect("rejected deploy buffer"),
+        ));
+        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
+            .await
+            .expect("block store");
+        let mut snapshot =
+            crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+        snapshot
+            .on_chain_state
+            .shard_conf
+            .max_user_deploys_per_block = 32;
+        snapshot.on_chain_state.shard_conf.deploy_lifespan = 500;
+        let in_scope: Vec<_> = (1..=95)
+            .map(|id| {
+                construct_deploy::source_deploy(
+                    format!("@{}!({})", id, id),
+                    1_000 + id as i64,
+                    None,
+                    None,
+                    None,
+                    Some(id as i64),
+                    Some("test".to_string()),
+                )
+                .expect("deploy")
+            })
+            .collect();
+        let fresh: Vec<_> = (100..=109)
+            .map(|id| {
+                construct_deploy::source_deploy(
+                    format!("@{}!({})", id, id),
+                    1_000 + id as i64,
+                    None,
+                    None,
+                    None,
+                    Some(id as i64),
+                    Some("test".to_string()),
+                )
+                .expect("deploy")
+            })
+            .collect();
+        for deploy in &in_scope {
+            snapshot.deploys_in_scope.insert(deploy.sig.clone());
+        }
+        let fresh_sigs: HashSet<Bytes> = fresh.iter().map(|deploy| deploy.sig.clone()).collect();
+        deploy_storage
+            .lock()
+            .add(in_scope.into_iter().chain(fresh.into_iter()).collect())
+            .expect("seed deploy storage");
+
+        let prepared = prepare_user_deploys_with_policy(
+            &snapshot,
+            300,
+            10_000,
+            deploy_storage,
+            rejected_deploy_buffer,
+            &block_store,
+            false,
+            DeployAdmissionPolicy {
+                allow_ordinary: true,
+                ordinary_cap: NON_LEADER_FALLBACK_ORDINARY_DEPLOY_CAP,
+                reserve_tail: false,
+            },
+        )
+        .await
+        .expect("prepare deploys");
+
+        assert_eq!(
+            prepared.deploys.len(),
+            NON_LEADER_FALLBACK_ORDINARY_DEPLOY_CAP
+        );
+        assert!(prepared
+            .deploys
+            .iter()
+            .all(|deploy| fresh_sigs.contains(&deploy.sig)));
     }
 
     #[tokio::test]
