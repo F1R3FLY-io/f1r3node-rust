@@ -89,6 +89,12 @@ pub struct ParentsPostStateCacheKey {
     pub sorted_parent_hashes: Vec<BlockHash>,
     // Snapshot LFB participates in visible-ancestor filtering, so cache key must include it.
     pub snapshot_lfb_hash: BlockHash,
+    // The finalized-floor merge base is derived from the block's frozen
+    // justification snapshot (finality/floor.rs), so identical parent sets
+    // under different justification maps can merge from different floors.
+    // Sorted (validator, latest_block_hash) pairs keep such contexts from
+    // sharing a cache entry.
+    pub sorted_latest_messages: Vec<(Validator, BlockHash)>,
     pub disable_late_block_filtering: bool,
 }
 

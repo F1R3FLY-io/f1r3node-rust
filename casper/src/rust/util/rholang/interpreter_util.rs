@@ -913,6 +913,11 @@ pub async fn compute_parents_post_state(
             let cache_key = super::runtime_manager::ParentsPostStateCacheKey {
                 sorted_parent_hashes: parent_hashes_for_key,
                 snapshot_lfb_hash: s.last_finalized_block.clone(),
+                // BTreeMap iteration is key-ordered, so this is deterministic.
+                sorted_latest_messages: latest_messages
+                    .iter()
+                    .map(|(v, h)| (v.clone(), h.clone()))
+                    .collect(),
                 disable_late_block_filtering,
             };
             if let Some((cached_state, cached_rejected, cached_slashes)) =
