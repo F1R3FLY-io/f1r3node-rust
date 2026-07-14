@@ -110,11 +110,10 @@ The project expects to evolve toward a contributor trust and reputation process.
 
 ## AI-Assisted Contributions
 
-AI coding assistants (Claude Code, Codex, Gemini, Cursor, Copilot, and others) are welcome.
-Per-tool instructions live in the repo's `CLAUDE.md` / `AGENTS.md` / `GEMINI.md`. When
-committing from an autonomous agentic session, prefix the commit subject with `[agent]`. You
-are responsible for every line you submit — review your assistant's output as you would a
-human colleague's.
+AI-assisted contributions are welcome. Repository-wide guidance lives in `AGENTS.md`.
+When committing from an autonomous agentic session, prefix the commit subject with `[agent]`.
+You are responsible for every line you submit — review generated output as you would a human
+colleague's.
 
 ## Security and Privacy
 
