@@ -200,6 +200,8 @@ pub const BLOCK_CREATOR_DEPLOY_ADMISSION_OLDEST_FRESH_AGE_MS_METRIC: &str =
     "block-creator.deploy-admission.oldest-fresh-age-ms";
 pub const BLOCK_CREATOR_DEPLOY_ADMISSION_IN_SCOPE_LOCAL_METRIC: &str =
     "block-creator.deploy-admission.in-scope-local";
+pub const BLOCK_CREATOR_DEPLOY_ADMISSION_STRANDED_IN_SCOPE_METRIC: &str =
+    "block-creator.deploy-admission.stranded-in-scope";
 pub const BLOCK_CREATOR_DEPLOY_ADMISSION_OLDEST_IN_SCOPE_AGE_MS_METRIC: &str =
     "block-creator.deploy-admission.oldest-in-scope-age-ms";
 pub const BLOCK_CREATOR_DEPLOY_ADMISSION_ALREADY_IN_SCOPE_METRIC: &str =

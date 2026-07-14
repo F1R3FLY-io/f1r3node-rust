@@ -102,6 +102,7 @@ struct FreshLocalDeployStats {
 struct InScopeLocalDeployStats {
     count: usize,
     oldest_age_millis: i64,
+    stranded_count: usize,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -1770,12 +1771,14 @@ fn in_scope_local_deploy_stats(
     let finalized_won =
         finalized_ancestor_deploy_sigs(casper_snapshot, block_store, canonical_scan_floor)?;
     let mut count = 0usize;
+    let mut stranded_count = 0usize;
     let mut oldest_time = None;
     for deploy in candidates {
         if canonical_won.contains(&deploy.sig) || finalized_won.contains(&deploy.sig) {
             continue;
         }
         count += 1;
+        stranded_count += 1;
         oldest_time = Some(
             oldest_time
                 .map(|current: i64| current.min(deploy.data.time_stamp))
@@ -1787,6 +1790,7 @@ fn in_scope_local_deploy_stats(
         oldest_age_millis: oldest_time
             .map(|time_stamp| current_time_millis.saturating_sub(time_stamp))
             .unwrap_or(0),
+        stranded_count,
     })
 }
 
@@ -1875,15 +1879,12 @@ fn adaptive_normal_ordinary_deploy_cap(
 
 fn fresh_admission_fallback(
     casper_snapshot: &CasperSnapshot,
-    stale_in_scope_work: bool,
-    deploy_inclusion_staleness: DeployInclusionStaleness,
+    _stale_in_scope_work: bool,
+    _deploy_inclusion_staleness: DeployInclusionStaleness,
     fresh_local_stats: FreshLocalDeployStats,
     finality_lag_stats: FinalityLagStats,
 ) -> FreshAdmissionFallback {
-    if fresh_local_stats.count == 0
-        || fresh_local_stats.oldest_age_millis < FRESH_DEPLOY_MAX_ADMISSION_DELAY_MILLIS
-        || (stale_in_scope_work && !deploy_inclusion_staleness.stale)
-    {
+    if fresh_local_stats.count == 0 {
         return FreshAdmissionFallback::default();
     }
     let (cap, backpressure) = adaptive_fallback_ordinary_deploy_cap(
@@ -1905,10 +1906,13 @@ fn in_scope_recovery_fallback(
     in_scope_local_stats: InScopeLocalDeployStats,
     finality_lag_stats: FinalityLagStats,
 ) -> FreshAdmissionFallback {
+    let has_stranded_work = in_scope_local_stats.stranded_count > 0;
     if !stale_in_scope_work
         || in_scope_local_stats.count == 0
-        || in_scope_local_stats.oldest_age_millis < FRESH_DEPLOY_MAX_ADMISSION_DELAY_MILLIS
-        || (!deploy_inclusion_staleness.stale
+        || (!has_stranded_work
+            && in_scope_local_stats.oldest_age_millis < FRESH_DEPLOY_MAX_ADMISSION_DELAY_MILLIS)
+        || (!has_stranded_work
+            && !deploy_inclusion_staleness.stale
             && finality_lag_stats.lag < FINALITY_LAG_HARD_BACKPRESSURE_BLOCKS)
     {
         return FreshAdmissionFallback::default();
@@ -2005,7 +2009,8 @@ fn record_deploy_admission_metrics(
         BLOCK_CREATOR_DEPLOY_ADMISSION_SELECTED_IN_SCOPE_RECOVERY_METRIC,
         BLOCK_CREATOR_DEPLOY_ADMISSION_SELECTED_ORDINARY_METRIC,
         BLOCK_CREATOR_DEPLOY_ADMISSION_SELECTED_RETRY_METRIC,
-        BLOCK_CREATOR_DEPLOY_ADMISSION_SIGNATURE_STALE_METRIC, CASPER_METRICS_SOURCE,
+        BLOCK_CREATOR_DEPLOY_ADMISSION_SIGNATURE_STALE_METRIC,
+        BLOCK_CREATOR_DEPLOY_ADMISSION_STRANDED_IN_SCOPE_METRIC, CASPER_METRICS_SOURCE,
     };
     let (progress_new_sigs, progress_recycled_sigs) = inclusion_progress
         .latest_deploy
@@ -2027,6 +2032,11 @@ fn record_deploy_admission_metrics(
         "source" => CASPER_METRICS_SOURCE
     )
     .set(in_scope_local_stats.count as f64);
+    metrics::gauge!(
+        BLOCK_CREATOR_DEPLOY_ADMISSION_STRANDED_IN_SCOPE_METRIC,
+        "source" => CASPER_METRICS_SOURCE
+    )
+    .set(in_scope_local_stats.stranded_count as f64);
     metrics::gauge!(
         BLOCK_CREATOR_DEPLOY_ADMISSION_OLDEST_IN_SCOPE_AGE_MS_METRIC,
         "source" => CASPER_METRICS_SOURCE
@@ -2340,12 +2350,13 @@ pub async fn create(
         {
             tracing::info!(
                 target: "f1r3fly.casper.recovery",
-                "Ordinary user deploy fallback enabled for block #{}: cap={}, fresh_local={}, oldest_fresh_age_ms={}, in_scope_local={}, oldest_in_scope_age_ms={}, inclusion_progress_stale={}, signature_stale={}, lfb_lag={}, backpressure={}",
+                "Ordinary user deploy fallback enabled for block #{}: cap={}, fresh_local={}, oldest_fresh_age_ms={}, in_scope_local={}, stranded_in_scope={}, oldest_in_scope_age_ms={}, inclusion_progress_stale={}, signature_stale={}, lfb_lag={}, backpressure={}",
                 next_block_num,
                 admission_policy.ordinary_cap,
                 fresh_local_stats.count,
                 fresh_local_stats.oldest_age_millis,
                 in_scope_local_stats.count,
+                in_scope_local_stats.stranded_count,
                 in_scope_local_stats.oldest_age_millis,
                 inclusion_staleness.stale,
                 inclusion_staleness.signature_stale,
@@ -2356,10 +2367,11 @@ pub async fn create(
         if admission_policy.allow_in_scope_recovery {
             tracing::info!(
                 target: "f1r3fly.casper.recovery",
-                "In-scope deploy recovery enabled for block #{}: cap={}, in_scope_local={}, oldest_in_scope_age_ms={}, inclusion_progress_stale={}, signature_stale={}, lfb_lag={}, backpressure={}",
+                "In-scope deploy recovery enabled for block #{}: cap={}, in_scope_local={}, stranded_in_scope={}, oldest_in_scope_age_ms={}, inclusion_progress_stale={}, signature_stale={}, lfb_lag={}, backpressure={}",
                 next_block_num,
                 admission_policy.in_scope_recovery_cap,
                 in_scope_local_stats.count,
+                in_scope_local_stats.stranded_count,
                 in_scope_local_stats.oldest_age_millis,
                 inclusion_staleness.stale,
                 inclusion_staleness.signature_stale,
@@ -3791,10 +3803,17 @@ mod tests {
         let old = InScopeLocalDeployStats {
             count: 150,
             oldest_age_millis: FRESH_DEPLOY_MAX_ADMISSION_DELAY_MILLIS,
+            stranded_count: 0,
         };
         let young = InScopeLocalDeployStats {
             count: 150,
             oldest_age_millis: FRESH_DEPLOY_MAX_ADMISSION_DELAY_MILLIS - 1,
+            stranded_count: 0,
+        };
+        let young_stranded = InScopeLocalDeployStats {
+            count: 1,
+            oldest_age_millis: 0,
+            stranded_count: 1,
         };
         let stale = DeployInclusionStaleness {
             stale: true,
@@ -3818,10 +3837,19 @@ mod tests {
         let fallback = in_scope_recovery_fallback(&snapshot, true, stale, old, lag(3, 2));
         assert!(fallback.allowed);
         assert_eq!(fallback.cap, NON_LEADER_FALLBACK_ORDINARY_DEPLOY_CAP);
+        let fallback = in_scope_recovery_fallback(
+            &snapshot,
+            true,
+            DeployInclusionStaleness::default(),
+            young_stranded,
+            lag(3, 2),
+        );
+        assert!(fallback.allowed);
+        assert_eq!(fallback.cap, NON_LEADER_FALLBACK_ORDINARY_DEPLOY_CAP);
     }
 
     #[test]
-    fn fresh_fallback_waits_for_age_and_progress_lease() {
+    fn fresh_fallback_uses_bounded_cap_before_age_or_progress_lease() {
         let snapshot =
             crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
         let stats = FreshLocalDeployStats {
@@ -3843,7 +3871,9 @@ mod tests {
             missing_deploy_metadata: false,
         };
 
-        assert!(!fresh_admission_fallback(&snapshot, true, fresh, stats, lag(3, 1)).allowed);
+        let fallback = fresh_admission_fallback(&snapshot, true, fresh, stats, lag(3, 1));
+        assert!(fallback.allowed);
+        assert_eq!(fallback.cap, NON_LEADER_FALLBACK_ORDINARY_DEPLOY_CAP);
         assert!(fresh_admission_fallback(&snapshot, true, stale, stats, lag(3, 1)).allowed);
         assert!(
             fresh_admission_fallback(
@@ -3860,7 +3890,9 @@ mod tests {
             count: 1,
             oldest_age_millis: FRESH_DEPLOY_MAX_ADMISSION_DELAY_MILLIS - 1,
         };
-        assert!(!fresh_admission_fallback(&snapshot, true, stale, young, lag(3, 1)).allowed);
+        let fallback = fresh_admission_fallback(&snapshot, true, stale, young, lag(3, 1));
+        assert!(fallback.allowed);
+        assert_eq!(fallback.cap, NON_LEADER_FALLBACK_ORDINARY_DEPLOY_CAP);
         assert!(
             !fresh_admission_fallback(
                 &snapshot,
@@ -4984,6 +5016,120 @@ mod tests {
         assert!(prepared.deploys.is_empty());
         assert_eq!(prepared.already_in_scope_count, 1);
         assert_eq!(prepared.selected_in_scope_recovery_count, 0);
+    }
+
+    #[tokio::test]
+    async fn finalized_sibling_stranded_in_scope_deploy_is_selected_for_recovery() {
+        let mut kvm = InMemoryStoreManager::new();
+        let deploy_storage = Arc::new(parking_lot::Mutex::new(
+            KeyValueDeployStorage::new(&mut kvm)
+                .await
+                .expect("deploy storage"),
+        ));
+        let rejected_deploy_buffer = Arc::new(Mutex::new(
+            KeyValueRejectedDeployBuffer::new(&mut kvm)
+                .await
+                .expect("rejected deploy buffer"),
+        ));
+        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
+            .await
+            .expect("block store");
+        let mut snapshot =
+            crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+        snapshot
+            .on_chain_state
+            .shard_conf
+            .max_user_deploys_per_block = 128;
+        snapshot.on_chain_state.shard_conf.deploy_lifespan = 500;
+        let deploy = construct_deploy::source_deploy(
+            "@stranded!(0)".to_string(),
+            1_000,
+            None,
+            None,
+            None,
+            Some(1),
+            Some("test".to_string()),
+        )
+        .expect("deploy");
+        snapshot.deploys_in_scope.insert(deploy.sig.clone());
+        deploy_storage
+            .lock()
+            .add(vec![deploy.clone()])
+            .expect("seed deploy storage");
+        let base_hash = invalid_block_hash(0x96);
+        let finalized_hash = invalid_block_hash(0x97);
+        let losing_hash = invalid_block_hash(0x98);
+        let base = test_block(base_hash.clone(), validator(1), Vec::new(), 250, Vec::new());
+        let finalized = test_block(
+            finalized_hash.clone(),
+            validator(1),
+            vec![base_hash.clone()],
+            300,
+            Vec::new(),
+        );
+        let losing = test_block(
+            losing_hash.clone(),
+            validator(2),
+            vec![base_hash],
+            300,
+            vec![ProcessedDeploy::empty(deploy.clone())],
+        );
+        block_store.put_block_message(&base).expect("put base");
+        block_store
+            .put_block_message(&finalized)
+            .expect("put finalized");
+        block_store.put_block_message(&losing).expect("put losing");
+        snapshot.last_finalized_block = finalized_hash.clone();
+        snapshot.max_block_num = 300;
+        snapshot.parents = vec![finalized];
+
+        let parent_hashes = vec![finalized_hash];
+        let canonical_won =
+            interpreter_util::canonical_won_sigs(&block_store, &parent_hashes, -200)
+                .expect("canonical wins");
+        let finalized_won =
+            finalized_ancestor_deploy_sigs(&snapshot, &block_store, -200).expect("finalized sigs");
+
+        assert!(!canonical_won.contains(&deploy.sig));
+        assert!(!finalized_won.contains(&deploy.sig));
+
+        let stats = in_scope_local_deploy_stats(
+            &snapshot,
+            301,
+            10_000,
+            &deploy_storage,
+            &rejected_deploy_buffer,
+            &block_store,
+        )
+        .expect("in-scope stats");
+        assert_eq!(stats.count, 1);
+        assert_eq!(stats.stranded_count, 1);
+
+        let prepared = prepare_user_deploys_with_policy(
+            &snapshot,
+            301,
+            10_000,
+            deploy_storage,
+            rejected_deploy_buffer,
+            &block_store,
+            false,
+            DeployAdmissionPolicy {
+                allow_ordinary: false,
+                ordinary_cap: 0,
+                allow_in_scope_recovery: true,
+                in_scope_recovery_cap: NON_LEADER_FALLBACK_MIN_ORDINARY_DEPLOY_CAP,
+                reserve_tail: false,
+                fallback: true,
+                backpressure: false,
+            },
+        )
+        .await
+        .expect("prepare deploys");
+
+        assert_eq!(prepared.deploys.len(), 1);
+        assert!(prepared.deploys.iter().any(|d| d.sig == deploy.sig));
+        assert_eq!(prepared.already_in_scope_count, 1);
+        assert_eq!(prepared.selected_in_scope_recovery_count, 1);
     }
 
     #[tokio::test]
