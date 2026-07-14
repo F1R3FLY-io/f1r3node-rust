@@ -227,6 +227,8 @@ async fn proposer_must_skip_recovery_when_deploy_is_canonically_finalized() {
             deploy_storage.clone(),
             rejected_deploy_buffer.clone(),
             &block_store,
+            true,
+            true,
         )
         .await
         .expect("prepare_user_deploys should not error");

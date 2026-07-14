@@ -398,6 +398,8 @@ pub async fn block_dag_storage_from_dyn(
         Arc::new(RwLock::new(block_metadata_store)),
         Arc::new(RwLock::new(deploy_index_db)),
         invalid_blocks_db,
+        KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
+        KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
         equivocation_tracker_store,
         Arc::new(AtomicU64::new(0)),
     ))
@@ -560,6 +562,8 @@ pub fn new_key_value_dag_representation() -> KeyValueDagRepresentation {
         deploy_index: Arc::new(RwLock::new(KeyValueTypedStoreImpl::new(Arc::new(
             InMemoryKeyValueStore::new(),
         )))),
+        floor_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
+        frontier_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
     }
 }
 

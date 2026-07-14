@@ -36,6 +36,7 @@ use crate::rust::engine::genesis_validator::GenesisValidator;
 use crate::rust::engine::multi_parent_casper::MultiParentCasperImpl;
 use crate::rust::errors::CasperError;
 use crate::rust::estimator::Estimator;
+use crate::rust::genesis::contracts::proof_of_stake::ProofOfStake;
 use crate::rust::util::bonds_parser::BondsParser;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 use crate::rust::util::vault_parser::VaultParser;
@@ -142,6 +143,12 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
         // Scala equivalent: val casperShardConf = CasperShardConf(...)
         let casper_shard_conf = CasperShardConf {
             fault_tolerance_threshold: conf.fault_tolerance_threshold,
+            // Locally-derived exact ppm from the configured f32. On a joining/
+            // existing chain, `initializing` overwrites it with the on-chain ppm
+            // (the single exact conversion point).
+            fault_tolerance_threshold_ppm: ProofOfStake::fault_tolerance_threshold_to_ppm(
+                conf.fault_tolerance_threshold,
+            ),
             shard_name: conf.shard_name.clone(),
             parent_shard_id: conf.parent_shard_id.clone(),
             finalization_rate: conf.finalization_rate,

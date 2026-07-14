@@ -809,6 +809,10 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
         let gc_interval = conf.casper.mergeable_channels_gc_interval;
         let gc_casper_shard_conf = CasperShardConf {
             fault_tolerance_threshold: conf.casper.fault_tolerance_threshold,
+            fault_tolerance_threshold_ppm:
+                casper::rust::genesis::contracts::proof_of_stake::ProofOfStake::fault_tolerance_threshold_to_ppm(
+                    conf.casper.fault_tolerance_threshold,
+                ),
             shard_name: conf.casper.shard_name.clone(),
             parent_shard_id: conf.casper.parent_shard_id.clone(),
             finalization_rate: conf.casper.finalization_rate,

@@ -263,6 +263,12 @@ impl TestFixture {
             Arc::new(parking_lot::RwLock::new(block_metadata_store)),
             Arc::new(parking_lot::RwLock::new(deploy_index_typed_store)),
             invalid_blocks_typed_store,
+            KeyValueTypedStoreImpl::new(Arc::new(
+                rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore::new(),
+            )),
+            KeyValueTypedStoreImpl::new(Arc::new(
+                rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore::new(),
+            )),
             equivocation_tracker,
             Arc::new(AtomicU64::new(0)),
         );

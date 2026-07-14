@@ -217,6 +217,7 @@ async fn run_compute_parents_post_state_finalized_skew_regression() {
             epoch_length: 1000,
             quarantine_length: 50000,
             number_of_active_validators: 1,
+            fault_tolerance_threshold_ppm: 0,
             pos_multi_sig_public_keys: vec![
                 "04db91a53a2b72fcdcb201031772da86edad1e4979eb6742928d27731b1771e0bc40c9e9c9fa6554bdec041a87cee423d6f2e09e9dfb408b78e85a4aa611aad20c".to_string(),
                 "042a736b30fffcc7d5a58bb9416f7e46180818c82b15542d0a7819d1a437aa7f4b6940c50db73a67bfc5f5ec5b5fa555d24ef8339b03edaa09c096de4ded6eae14".to_string(),
@@ -320,15 +321,22 @@ async fn run_compute_parents_post_state_finalized_skew_regression() {
     );
     snapshot_without_skew.dag.last_finalized_block_hash = genesis_block.block_hash.clone();
 
+    let latest_messages_without_skew: std::collections::BTreeMap<_, _> = snapshot_without_skew
+        .justifications
+        .iter()
+        .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
+        .collect();
     let (state_without_skew, rejected_without_skew, _rejected_slashes) =
         compute_parents_post_state(
             &block_store,
             parents.clone(),
             &snapshot_without_skew,
             &runtime_manager,
+            &latest_messages_without_skew,
             None,
             None,
         )
+        .await
         .expect("Failed to compute parents post-state without finalized skew");
 
     runtime_manager.parents_post_state_cache.clear();
@@ -348,14 +356,21 @@ async fn run_compute_parents_post_state_finalized_skew_regression() {
         .finalized_blocks_set
         .insert(b1.block_hash.clone());
 
+    let latest_messages_with_skew: std::collections::BTreeMap<_, _> = snapshot_with_skew
+        .justifications
+        .iter()
+        .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
+        .collect();
     let (state_with_skew, rejected_with_skew, _rejected_slashes) = compute_parents_post_state(
         &block_store,
         parents,
         &snapshot_with_skew,
         &runtime_manager,
+        &latest_messages_with_skew,
         None,
         None,
     )
+    .await
     .expect("Failed to compute parents post-state with finalized skew");
 
     assert_eq!(
@@ -434,6 +449,7 @@ async fn run_compute_parents_post_state_missing_mergeable_regression() {
             epoch_length: 1000,
             quarantine_length: 50000,
             number_of_active_validators: 1,
+            fault_tolerance_threshold_ppm: 0,
             pos_multi_sig_public_keys: vec![
                 "04db91a53a2b72fcdcb201031772da86edad1e4979eb6742928d27731b1771e0bc40c9e9c9fa6554bdec041a87cee423d6f2e09e9dfb408b78e85a4aa611aad20c".to_string(),
                 "042a736b30fffcc7d5a58bb9416f7e46180818c82b15542d0a7819d1a437aa7f4b6940c50db73a67bfc5f5ec5b5fa555d24ef8339b03edaa09c096de4ded6eae14".to_string(),
@@ -547,14 +563,21 @@ async fn run_compute_parents_post_state_missing_mergeable_regression() {
     );
     snapshot.dag.last_finalized_block_hash = genesis_block.block_hash;
 
+    let latest_messages: std::collections::BTreeMap<_, _> = snapshot
+        .justifications
+        .iter()
+        .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
+        .collect();
     let result = compute_parents_post_state(
         &block_store,
         vec![b2.clone(), b3],
         &snapshot,
         &runtime_manager,
+        &latest_messages,
         None,
         None,
-    );
+    )
+    .await;
 
     assert!(
         result.is_ok(),
@@ -654,6 +677,7 @@ async fn run_visible_blocks_scope_test() {
             epoch_length: 1000,
             quarantine_length: 50000,
             number_of_active_validators: 3,
+            fault_tolerance_threshold_ppm: 0,
             pos_multi_sig_public_keys: vec![
                 "04db91a53a2b72fcdcb201031772da86edad1e4979eb6742928d27731b1771e0bc40c9e9c9fa6554bdec041a87cee423d6f2e09e9dfb408b78e85a4aa611aad20c".to_string(),
                 "042a736b30fffcc7d5a58bb9416f7e46180818c82b15542d0a7819d1a437aa7f4b6940c50db73a67bfc5f5ec5b5fa555d24ef8339b03edaa09c096de4ded6eae14".to_string(),
