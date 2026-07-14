@@ -180,6 +180,7 @@ impl ApproveBlockProtocolFactory {
                 epoch_length,
                 quarantine_length,
                 number_of_active_validators,
+                fault_tolerance_threshold_ppm: 0,
                 pos_multi_sig_public_keys,
                 pos_multi_sig_quorum,
             },

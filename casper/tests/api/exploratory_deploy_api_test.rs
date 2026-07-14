@@ -53,6 +53,14 @@ async fn exploratory_deploy_should_get_data_from_read_only_node() {
     )
     .await
     .expect("Failed to create network");
+    // Heartbeat mode: under deploy-inclusion leadership only the leader packages
+    // user deploys while unresolved user work is in the frontier; non-leaders
+    // emit empty support blocks instead of erroring NoNewDeploys. The produce
+    // deploys below are finalization fillers — the assertions read only the
+    // @"store" datum (packaged by the leader) and the LFB.
+    for node in nodes.iter_mut() {
+        node.allow_empty_blocks = true;
+    }
 
     let shard_id = genesis.genesis_block.shard_id.clone();
     let stored_data = "data";

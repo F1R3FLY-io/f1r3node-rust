@@ -5103,6 +5103,7 @@ dependencies = [
  "num-traits",
  "openai-api-rs",
  "pretty_assertions",
+ "proptest",
  "prost 0.14.4",
  "rand 0.9.5",
  "rayon",

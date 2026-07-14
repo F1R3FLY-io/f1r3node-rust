@@ -42,7 +42,23 @@ impl TestContext {
         &self,
         max_parent_depth: Option<i32>,
     ) -> Result<Vec<TestNode>, CasperError> {
-        TestNode::create_network(self.genesis.clone(), 2, None, None, max_parent_depth, None).await
+        {
+            let mut nodes = TestNode::create_network(
+                self.genesis.clone(),
+                2,
+                None,
+                None,
+                max_parent_depth,
+                None,
+            )
+            .await?;
+            // Heartbeat mode: non-leader proposers emit empty support blocks
+            // instead of erroring NoNewDeploys under deploy-inclusion leadership.
+            for node in nodes.iter_mut() {
+                node.allow_empty_blocks = true;
+            }
+            Ok(nodes)
+        }
     }
 }
 

@@ -957,6 +957,44 @@ impl RuntimeManager {
         Ok((key_bytes, value_bytes))
     }
 
+    pub fn has_mergeable_entry(
+        &self,
+        block: &models::rust::casper::protocol::casper_message::BlockMessage,
+    ) -> Result<bool, CasperError> {
+        Ok(self.get_mergeable_entry_bytes(block)?.1.is_some())
+    }
+
+    pub async fn ensure_mergeable_entry(
+        &self,
+        block: &models::rust::casper::protocol::casper_message::BlockMessage,
+        invalid_blocks: HashMap<BlockHash, Validator>,
+    ) -> Result<(), CasperError> {
+        if self.has_mergeable_entry(block)? {
+            return Ok(());
+        }
+
+        let block_data = BlockData::from_block(block);
+        self.replay_compute_state(
+            &block.body.state.pre_state_hash,
+            block.body.deploys.clone(),
+            block.body.system_deploys.clone(),
+            &block_data,
+            Some(invalid_blocks),
+            block.header.parents_hash_list.is_empty(),
+        )
+        .await?;
+
+        if self.has_mergeable_entry(block)? {
+            Ok(())
+        } else {
+            Err(CasperError::RuntimeError(format!(
+                "mergeable entry still absent after recompute for block {} (seq={})",
+                hex::encode(&block.block_hash),
+                block.seq_num
+            )))
+        }
+    }
+
     /// Store a mergeable-channels entry received over the wire. Decodes the
     /// transported bytes and writes via the typed store. Empty `value_bytes`
     /// signals "peer had no entry" and is a no-op.

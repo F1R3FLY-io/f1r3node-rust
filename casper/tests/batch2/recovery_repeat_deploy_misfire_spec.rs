@@ -171,7 +171,7 @@ async fn proposer_must_skip_recovery_when_deploy_is_canonically_finalized() {
         let deploy_sig: Bytes = signed_deploy.sig.clone();
 
         // Genesis (LFB) carries D — so D is canonically Finalized.
-        let _genesis = create_genesis_block(
+        let genesis = create_genesis_block(
             &mut block_store,
             &mut block_dag_storage,
             None,
@@ -212,6 +212,10 @@ async fn proposer_must_skip_recovery_when_deploy_is_canonically_finalized() {
             .get_representation()
             .expect("dag representation")
             .last_finalized_block();
+        // A proposer always builds on at least one parent; the canonical-won
+        // record scan walks the main-parent chain from here and must see D's
+        // win in genesis.
+        snapshot.parents = vec![genesis.clone()];
         snapshot.deploys_in_scope.insert(deploy_sig.clone());
         snapshot.rejected_in_scope.insert(deploy_sig.clone());
 
@@ -227,6 +231,8 @@ async fn proposer_must_skip_recovery_when_deploy_is_canonically_finalized() {
             deploy_storage.clone(),
             rejected_deploy_buffer.clone(),
             &block_store,
+            true,
+            true,
         )
         .await
         .expect("prepare_user_deploys should not error");
