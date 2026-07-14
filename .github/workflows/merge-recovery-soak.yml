@@ -26,6 +26,10 @@ permissions:
 env:
   DOCKER_IMAGE_NAME: f1r3flyindustries/f1r3fly-rust
   SYSTEM_INTEGRATION_REF: a50eeb198c6e542504af8db92389de5c02500422
+  # Pinned OCI CLI installer (release tag + sha256). The checksum fails closed
+  # if the tag is ever moved. Bump both together when upgrading.
+  OCI_CLI_INSTALLER_URL: "https://raw.githubusercontent.com/oracle/oci-cli/v3.89.1/scripts/install/install.sh"
+  OCI_CLI_INSTALLER_SHA256: "079dcc9a3e2a61ec692400e30169c9996b2998ac8c4e205198ed5863283fcb76"
 
 jobs:
   schedule_gate:
@@ -91,10 +95,14 @@ jobs:
           path: system-integration
           persist-credentials: false
 
-      - name: Install OCI CLI
+      - name: Install OCI CLI (pinned, checksum-verified)
         shell: bash -e {0}
         run: |
-          bash -c "$(curl -L https://raw.githubusercontent.com/oracle/oci-cli/master/scripts/install/install.sh)" -- \
+          # This runner later holds OCI_* secrets, so the installer must not be
+          # fetched from a movable ref. Fails closed on any checksum mismatch.
+          curl -fsSL "$OCI_CLI_INSTALLER_URL" -o /tmp/oci-install.sh
+          echo "$OCI_CLI_INSTALLER_SHA256  /tmp/oci-install.sh" | sha256sum -c -
+          bash /tmp/oci-install.sh \
             --accept-all-defaults --install-dir /opt/oci-cli --exec-dir /usr/local/bin
           oci --version
 
