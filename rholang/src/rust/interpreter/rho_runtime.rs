@@ -639,6 +639,43 @@ fn std_system_processes() -> Vec<Definition> {
             }),
             remainder: None,
         },
+        // Versioned-registry helper URN; see the `registry_ops_v1`
+        // handler in system_processes.rs. The legacy `rho:registry:ops`
+        // above is intentionally left untouched.
+        Definition {
+            urn: "rho:registry:ops:1.0.0".to_string(),
+            fixed_channel: FixedChannels::reg_ops_v1(),
+            arity: 3,
+            body_ref: BodyRefs::REG_OPS_V1,
+            handler: Box::new(|ctx| {
+                Box::new(move |args| {
+                    let ctx = ctx.clone();
+                    Box::pin(
+                        async move { ctx.system_processes.clone().registry_ops_v1(args).await },
+                    )
+                })
+            }),
+            remainder: None,
+        },
+        // Unified URN-binding dispatcher. Serves both legacy URNs (via
+        // ProcessContext::urn_map) and versioned URNs (by delegating to
+        // the Rholang lookupVersion contract). Will be the single
+        // dispatch point for eval_new once that refactor lands.
+        Definition {
+            urn: "rho:internal:registry_lookup".to_string(),
+            fixed_channel: FixedChannels::registry_lookup(),
+            arity: 2,
+            body_ref: BodyRefs::REGISTRY_LOOKUP,
+            handler: Box::new(|ctx| {
+                Box::new(move |args| {
+                    let ctx = ctx.clone();
+                    Box::pin(
+                        async move { ctx.system_processes.clone().registry_lookup(args).await },
+                    )
+                })
+            }),
+            remainder: None,
+        },
         Definition {
             urn: "sys:authToken:ops".to_string(),
             fixed_channel: FixedChannels::sys_authtoken_ops(),
@@ -972,6 +1009,7 @@ fn dispatch_table_creator(
     dispatcher: RhoDispatch,
     block_data: Arc<tokio::sync::RwLock<BlockData>>,
     invalid_blocks: InvalidBlocks,
+    urn_map: Arc<HashMap<String, Par>>,
     deploy_data: Arc<tokio::sync::RwLock<DeployData>>,
     extra_system_processes: &mut Vec<Definition>,
     openai_service: SharedOpenAIService,
@@ -998,6 +1036,7 @@ fn dispatch_table_creator(
             block_data.clone(),
             invalid_blocks.clone(),
             deploy_data.clone(),
+            urn_map.clone(),
             openai_service.clone(),
             ollama_service.clone(),
             grpc_client_service.clone(),
@@ -1040,6 +1079,31 @@ fn basic_processes() -> HashMap<String, Par> {
         }]),
     );
 
+    // TODO(cleanup): drop this entry once Step 5b lands the eval_new
+    // desugaring for rho:lib:... URNs and the test surface migrates
+    // to the public rho:registry:1.0.0 URN below. Kept for now so the
+    // Step 3-5 tests keep passing while the public URN ships beside it.
+    map.insert(
+        "rho:registry:v1:internal".to_string(),
+        Par::default().with_bundles(vec![Bundle {
+            body: Some(FixedChannels::reg_v1_internal()),
+            write_flag: true,
+            read_flag: false,
+        }]),
+    );
+
+    // Public versioned-registry entry point. Clients use
+    // `new getReg(`rho:registry:1.0.0`), notify in { ... getReg!?(*notify) ... }`
+    // to obtain a `bundle+{v1Api}` carrying the v1 API surface.
+    map.insert(
+        "rho:registry:1.0.0".to_string(),
+        Par::default().with_bundles(vec![Bundle {
+            body: Some(FixedChannels::reg_v1()),
+            write_flag: true,
+            read_flag: false,
+        }]),
+    );
+
     map
 }
 
@@ -1065,11 +1129,18 @@ async fn setup_reducer(
         reducer: reducer_cell.clone(),
     });
 
+    // Wrap urn_map in Arc up front so it can be shared between the
+    // dispatch_table_creator (passes it into ProcessContext / SystemProcesses
+    // for the upcoming registry_lookup handler) and the DebruijnInterpreter
+    // (uses it directly in the eval_new fast path).
+    let urn_map = Arc::new(urn_map);
+
     let replay_dispatch_table = dispatch_table_creator(
         charging_rspace.clone(),
         temp_dispatcher.clone(),
         block_data_ref,
         invalid_blocks,
+        urn_map.clone(),
         deploy_data_ref,
         extra_system_processes,
         openai_service,
@@ -1086,7 +1157,7 @@ async fn setup_reducer(
     let reducer = Arc::new(DebruijnInterpreter {
         space: charging_rspace.clone(),
         dispatcher: dispatcher.clone(),
-        urn_map: Arc::new(urn_map),
+        urn_map,
         merge_chs,
         mergeable_tags,
         cost: cost.clone(),
