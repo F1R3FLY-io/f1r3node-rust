@@ -6,7 +6,7 @@ use crypto::rust::private_key::PrivateKey;
 use crypto::rust::signatures::signed::Signed;
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::Par;
-use models::rust::casper::protocol::casper_message::DeployData;
+use models::rust::casper::protocol::casper_message::{BlockMessage, DeployData};
 use serial_test::serial;
 
 use crate::helper::test_node::TestNode;
@@ -47,6 +47,18 @@ fn map_write(key: &str, value: i64, key_pair: &PrivateKey, shard: &str) -> Signe
         Some(shard.to_string()),
     )
     .expect("map deploy")
+}
+
+async fn create_with_deploy(nodes: &mut [TestNode], deploy: Signed<DeployData>) -> BlockMessage {
+    for node in nodes.iter() {
+        node.casper.deploy(deploy.clone()).expect("queue deploy");
+    }
+    for node in nodes.iter_mut() {
+        if let Ok(block) = node.create_block_unsafe(&[]).await {
+            return block;
+        }
+    }
+    panic!("no validator packaged the deploy")
 }
 
 fn par_to_i64(par: &Par) -> Option<i64> {
@@ -153,11 +165,7 @@ async fn run_convergence(validators: usize, write_rounds: usize, drain_rounds: u
         }
         let marker = construct_deploy::basic_deploy_data(round as i32, None, Some(shard.clone()))
             .expect("merge marker");
-        nodes[0].casper.deploy(marker).expect("queue marker");
-        let merged = nodes[0]
-            .create_block_unsafe(&[])
-            .await
-            .expect("merge block");
+        let merged = create_with_deploy(&mut nodes, marker).await;
         for node in &mut nodes {
             node.process_block(merged.clone()).await.ok();
         }
@@ -174,27 +182,22 @@ async fn run_convergence(validators: usize, write_rounds: usize, drain_rounds: u
         let marker =
             construct_deploy::basic_deploy_data((1000 + round) as i32, None, Some(shard.clone()))
                 .expect("drain marker");
-        nodes[proposer].casper.deploy(marker).expect("queue drain");
-        if let Ok(block) = nodes[proposer].create_block_unsafe(&[]).await {
-            for node in &mut nodes {
-                node.process_block(block.clone()).await.ok();
-            }
-            let (_, current) = finalized_keys(&nodes, &writes).await;
-            assert!(
-                previous_finalized.iter().all(|key| current.contains(key)),
-                "finalized state regressed from {previous_finalized:?} to {current:?}"
-            );
-            previous_finalized = current;
+        let _ = proposer;
+        let block = create_with_deploy(&mut nodes, marker).await;
+        for node in &mut nodes {
+            node.process_block(block.clone()).await.ok();
         }
+        let (_, current) = finalized_keys(&nodes, &writes).await;
+        assert!(
+            previous_finalized.iter().all(|key| current.contains(key)),
+            "finalized state regressed from {previous_finalized:?} to {current:?}"
+        );
+        previous_finalized = current;
     }
 
     let marker =
         construct_deploy::basic_deploy_data(9999, None, Some(shard)).expect("final marker");
-    nodes[0].casper.deploy(marker).expect("queue final");
-    let final_block = nodes[0]
-        .create_block_unsafe(&[])
-        .await
-        .expect("final block");
+    let final_block = create_with_deploy(&mut nodes, marker).await;
     let final_keys =
         present_keys(&nodes[0], &final_block.body.state.post_state_hash, &writes).await;
     let missing: Vec<_> = writes

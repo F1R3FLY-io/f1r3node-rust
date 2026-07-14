@@ -181,9 +181,12 @@ impl Ord for DeployChainIndex {
             return signature_cmp;
         }
 
-        // 4. QUATERNARY: Post-state hash as final fallback
-        //    Ensures total ordering even for identical deploys (should be rare)
-        self.post_state_hash.cmp(&other.post_state_hash)
+        let post_state_cmp = self.post_state_hash.cmp(&other.post_state_hash);
+        if post_state_cmp != std::cmp::Ordering::Equal {
+            return post_state_cmp;
+        }
+
+        self.deploys_with_cost.cmp(&other.deploys_with_cost)
     }
 }
 

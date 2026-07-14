@@ -275,9 +275,9 @@ impl EquivocationDetector {
                     target: "f1r3fly.slashing",
                     validator = %hex::encode(&equivocation_record.equivocator),
                     base_seq = equivocation_record.equivocation_base_block_seq_num,
-                    "unbonded equivocation detected (validator absent from bond map)"
+                    "unbonded equivocation observed (validator absent from bond map)"
                 );
-                Ok(EquivocationDiscoveryStatus::EquivocationDetected)
+                Ok(EquivocationDiscoveryStatus::EquivocationOblivious)
             }
         }
     }
@@ -308,7 +308,7 @@ impl EquivocationDetector {
                 Ok(EquivocationDiscoveryStatus::EquivocationOblivious)
             }
         } else {
-            Ok(EquivocationDiscoveryStatus::EquivocationDetected)
+            Ok(EquivocationDiscoveryStatus::EquivocationOblivious)
         }
     }
 

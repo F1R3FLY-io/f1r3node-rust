@@ -406,10 +406,7 @@ impl Finalizer {
             if fault_tolerance > fault_tolerance_threshold {
                 let lfb_hash = message.block_hash.clone();
                 let ft_value = fault_tolerance as f32;
-                // Only process blocks that aren't already finalized
-                if !dag.is_finalized(&lfb_hash) {
-                    new_lfb_found_effect((lfb_hash.clone(), ft_value)).await?;
-                }
+                new_lfb_found_effect((lfb_hash.clone(), ft_value)).await?;
                 lfb_result = Some((lfb_hash, ft_value));
                 break;
             } else {

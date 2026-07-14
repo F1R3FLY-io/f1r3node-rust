@@ -10,7 +10,7 @@ use models::rust::block::state_hash::StateHash;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{
-    BlockMessage, Bond, DeployData, ProcessedDeploy, ProcessedSystemDeploy,
+    BlockMessage, Bond, DeployData, ProcessedDeploy, ProcessedSystemDeploy, SystemDeployData,
 };
 use models::rust::validator::Validator;
 use prost::bytes::Bytes;
@@ -36,73 +36,41 @@ pub fn mk_term(rho: &str, normalizer_env: HashMap<String, Par>) -> Result<Par, I
     Compiler::source_to_adt_with_normalizer_env(rho, normalizer_env)
 }
 
-/// Pre-compute admit decisions for a batch of rejected-deploy sigs in a
-/// single canonical-chain scan. The returned set contains the sigs that
-/// *should* be admitted to the rejected-deploy buffer — those whose
-/// current finalization state is `Pending`. Sigs whose state is terminal
-/// (`Finalized` / `Failed` / `Expired`) are absent from the returned
-/// set: they have already been resolved in the local canonical view and
-/// must not be re-proposed (re-proposal would either waste a slot or,
-/// in the catchup case, cause re-execution of already-canonical work
-/// against a different pre-state).
-///
-/// Catastrophic resolver failures (LFB lookup, block-store IO during
-/// the prelude) are treated conservatively as "do not admit" for any
-/// sig in the batch — transient failures must not open the
-/// re-execution hazard; sigs will be retried on the next merge
-/// rejection if still live.
-///
-/// This is the batched replacement for the previous per-sig
-/// `should_admit_to_rejected_buffer`. Cost: one BFS over the
-/// `deploy_lifespan` window regardless of sig count, instead of one
-/// BFS per sig. For an N-rejected merge with M-block window, this is
-/// O(M + N) block fetches versus O(N · M).
-fn compute_rejected_buffer_admits(
-    dag: &block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation,
+/// Sigs whose LATEST canonical disposition is a WIN. Walks the main-parent chain
+/// (the canonical lineage) from `main_parent` down through the deploy-lifespan
+/// window, recording each sig's first-seen (= highest-block = latest) disposition:
+/// a sig in a block's `body.deploys` is a WIN, in `body.rejected_deploys` is a
+/// REJECTION. Returns the sigs whose latest disposition is a WIN — those have
+/// their effect in the canonical lineage, so re-proposing them would
+/// double-execute. Walking only the main-parent chain (not the whole cone) keeps
+/// a non-canonical sibling's disposition from stranding the answer.
+pub fn canonical_won_sigs(
     block_store: &KeyValueBlockStore,
-    deploy_lifespan: i64,
-    sigs: &HashSet<Bytes>,
-) -> HashSet<Bytes> {
-    use crate::rust::api::deploy_finalization_status::{resolve_batch, DeployFinalizationState};
-    let __admits_start = std::time::Instant::now();
-    if sigs.is_empty() {
-        metrics::histogram!(
-            crate::rust::metrics_constants::COMPUTE_REJECTED_BUFFER_ADMITS_TIME_METRIC,
-            "source" => crate::rust::metrics_constants::CASPER_METRICS_SOURCE
-        )
-        .record(__admits_start.elapsed().as_secs_f64());
-        return HashSet::new();
-    }
-    let result = match resolve_batch(dag, block_store, deploy_lifespan, sigs) {
-        Ok(statuses) => statuses
-            .into_iter()
-            .filter_map(|(sig, status)| {
-                if status.state == DeployFinalizationState::Pending {
-                    Some(sig)
-                } else {
-                    tracing::debug!(
-                        "RejectedDeployBuffer populate: skipping sig {} (state={:?}) — already resolved in canonical view",
-                        hex::encode(&sig),
-                        status.state
-                    );
-                    None
-                }
-            })
-            .collect(),
-        Err(err) => {
-            tracing::warn!(
-                "RejectedDeployBuffer populate: batched status check failed: {} — admitting nothing for this merge",
-                err
-            );
-            HashSet::new()
+    main_parent: Option<&BlockHash>,
+    earliest_block_number: i64,
+) -> Result<HashSet<Bytes>, CasperError> {
+    let mut won: HashSet<Bytes> = HashSet::new();
+    let mut seen: HashSet<Bytes> = HashSet::new();
+    let mut current: Option<BlockHash> = main_parent.cloned();
+    while let Some(hash) = current {
+        let Some(block) = block_store.get(&hash)? else {
+            break;
+        };
+        if block.body.state.block_number < earliest_block_number {
+            break;
         }
-    };
-    metrics::histogram!(
-        crate::rust::metrics_constants::COMPUTE_REJECTED_BUFFER_ADMITS_TIME_METRIC,
-        "source" => crate::rust::metrics_constants::CASPER_METRICS_SOURCE
-    )
-    .record(__admits_start.elapsed().as_secs_f64());
-    result
+        for pd in &block.body.deploys {
+            let sig: Bytes = pd.deploy.sig.clone();
+            if seen.insert(sig.clone()) {
+                won.insert(sig);
+            }
+        }
+        for rd in &block.body.rejected_deploys {
+            seen.insert(rd.sig.clone());
+        }
+        current = block.header.parents_hash_list.first().cloned();
+    }
+    Ok(won)
 }
 
 fn with_ancestors_capped(
@@ -734,6 +702,51 @@ pub fn compute_parents_post_state(
                 let sender = b.sender.clone();
                 let seq_num = b.seq_num;
 
+                if !runtime_manager.has_mergeable_entry(&b)? {
+                    let slashed_hashes: Vec<BlockHash> = b
+                        .body
+                        .system_deploys
+                        .iter()
+                        .filter_map(|deploy| match deploy {
+                            ProcessedSystemDeploy::Succeeded {
+                                system_deploy:
+                                    SystemDeployData::Slash {
+                                        invalid_block_hash, ..
+                                    },
+                                ..
+                            } => Some(invalid_block_hash.clone()),
+                            _ => None,
+                        })
+                        .collect();
+                    let mut invalid_blocks = HashMap::new();
+                    for hash in slashed_hashes {
+                        if let Some(metadata) = s.dag.lookup(&hash)? {
+                            invalid_blocks.insert(hash, metadata.sender);
+                        }
+                    }
+                    let replay_manager = runtime_manager.clone();
+                    let replay_block = b.clone();
+                    std::thread::Builder::new()
+                        .name("mergeable-entry-recompute".to_string())
+                        .stack_size(64 * 1024 * 1024)
+                        .spawn(move || {
+                            let runtime = tokio::runtime::Builder::new_current_thread()
+                                .enable_all()
+                                .build()
+                                .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
+                            runtime.block_on(
+                                replay_manager
+                                    .ensure_mergeable_entry(&replay_block, invalid_blocks),
+                            )
+                        })
+                        .map_err(|error| CasperError::RuntimeError(error.to_string()))?
+                        .join()
+                        .map_err(|_| {
+                            CasperError::RuntimeError(
+                                "mergeable entry recompute thread panicked".to_string(),
+                            )
+                        })??;
+                }
                 let mergeable_chs =
                     runtime_manager.load_mergeable_channels(post_state, sender, seq_num)?;
 
@@ -903,8 +916,14 @@ pub fn compute_parents_post_state(
             let lca_ms = lca_started.elapsed().as_millis();
             let used_snapshot_lfb_fallback = lca_opt.is_none();
 
-            // Use LCA as the LFB for computing descendants, fall back to snapshot LFB
-            let lfb_for_descendants = lca_opt.unwrap_or_else(|| s.last_finalized_block.clone());
+            let snapshot_lfb_is_common = lca_ancestor_sets_with_parents
+                .iter()
+                .all(|ancestors| ancestors.contains(&s.last_finalized_block));
+            let lfb_for_descendants = if snapshot_lfb_is_common {
+                s.last_finalized_block.clone()
+            } else {
+                lca_opt.unwrap_or_else(|| s.last_finalized_block.clone())
+            };
 
             // Get the LFB block to use its post-state as the merge base
             let lfb_block = block_store.get_unsafe(&lfb_for_descendants);
@@ -1048,25 +1067,6 @@ pub fn compute_parents_post_state(
             // different pre-state.
             if let Some(buffer) = rejected_deploy_buffer {
                 if !rejected_user_pairs.is_empty() {
-                    // Pre-compute admit decisions for all rejected sigs in
-                    // one batched canonical-chain scan, before the
-                    // per-block iteration below. Without batching, the
-                    // catchup hot path was O(rejected_count × DAG_size)
-                    // — a 50-rejected merge with a 200-block deploy-
-                    // lifespan window would do 10 000 block fetches.
-                    // After batching: one BFS regardless of N, then
-                    // dictionary lookups.
-                    let candidate_sigs: HashSet<Bytes> = rejected_user_pairs
-                        .iter()
-                        .map(|(sig, _)| sig.clone())
-                        .collect();
-                    let admit_set: HashSet<Bytes> = compute_rejected_buffer_admits(
-                        &s.dag,
-                        block_store,
-                        s.on_chain_state.shard_conf.deploy_lifespan,
-                        &candidate_sigs,
-                    );
-
                     let mut by_block: HashMap<BlockHash, Vec<Bytes>> = HashMap::new();
                     for (sig, src_block) in &rejected_user_pairs {
                         by_block
@@ -1080,9 +1080,7 @@ pub fn compute_parents_post_state(
                         match block_store.get(&src_block) {
                             Ok(Some(block)) => {
                                 for pd in &block.body.deploys {
-                                    if sig_set.contains(&pd.deploy.sig)
-                                        && admit_set.contains(&pd.deploy.sig)
-                                    {
+                                    if sig_set.contains(&pd.deploy.sig) {
                                         deploys_to_buffer.push(pd.deploy.clone());
                                     }
                                 }
