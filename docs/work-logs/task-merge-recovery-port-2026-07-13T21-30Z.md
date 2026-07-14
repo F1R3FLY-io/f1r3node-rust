@@ -111,6 +111,36 @@ Notable wins vs the source branch: FS-monotonicity under load fixed, slashing
 bonds-cache green, merge spec multi-parent test green (red on source), misfire
 double-execution guards green (absent on source), clippy clean.
 
+## Phase 4 — admission-starvation fixes + LMDB registry (2026-07-14, branch fix/dem-merge-recovery-addl-pre)
+
+PR #118's CI failed beyond the expected-red set: ALL Heavy Pipeline smoke and
+integration jobs. Two root causes, both fixed on `fix/dem-merge-recovery-addl-pre`
+(= dev + merge of the validation branch + these fixes):
+
+1. **Startup crash on every production node**: the floor/frontier DAG indexes
+   were never registered in `rnode_key_value_store_manager.rs`'s LMDB db
+   mapping — `LmdbDirStoreManager` fails closed on undeclared stores
+   (`Key floor-index was not found`), while the in-memory test manager creates
+   stores on demand, so no test ever caught it. Ported the source branch's
+   registry fix (`8c7c8073`).
+2. **Deploy-admission starvation** under the inclusion-leadership gate: ported
+   the source branch's three new commits (`bec6325f` bounded non-leader
+   admission fallback, `c32cfee9` inclusion recovery + canonical support,
+   `c58fcae5` canonical admission starvation) via wholesale swaps of
+   `block_creator.rs`, `snapshot.rs`, `metrics_constants.rs`,
+   `block_creator_spec.rs`, plus `max_user_deploys_per_block` 32→128 at four
+   config sites and upstream's panic→warn downgrade in
+   `block_metadata_store.rs` (non-contiguous height map is diagnostic, not
+   fatal).
+
+Verification: workspace compiles; clippy `--all-targets -D warnings` clean;
+full casper suite **740 passed / 6 failed** — `two_writers_converge` and
+`three_writers_converge` flipped GREEN (red on both branches before);
+remaining expected-red: under-load convergence, leadership spec,
+recovery-cycle retries, stale-diff pair (+ the approve_block flake). Local
+standalone smoke reproducing CI's check: node reaches Running and LFB #10
+within budget (SMOKE PASS) — previously crashed at startup.
+
 ## Next steps
 
 - Commit phase 3 (user-driven /quick-commit).
