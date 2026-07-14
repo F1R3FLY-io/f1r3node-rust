@@ -38,6 +38,152 @@ use crate::rust::util::proto_util;
 /// per-deploy actual-byte sum) is intentional.
 const DEPLOY_SIG_BYTES_ESTIMATE: f64 = 65.0;
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct DeployBranchScore {
+    deploy_sig_count: usize,
+    latest_deploy_block_number: i64,
+    root_block_number: i64,
+}
+
+fn better_deploy_branch_score(
+    candidate: (&DeployBranchScore, &BlockHash),
+    current: (&DeployBranchScore, &BlockHash),
+) -> bool {
+    candidate
+        .0
+        .deploy_sig_count
+        .cmp(&current.0.deploy_sig_count)
+        .then_with(|| {
+            candidate
+                .0
+                .latest_deploy_block_number
+                .cmp(&current.0.latest_deploy_block_number)
+        })
+        .then_with(|| {
+            candidate
+                .0
+                .root_block_number
+                .cmp(&current.0.root_block_number)
+        })
+        .then_with(|| current.1.cmp(candidate.1))
+        .is_gt()
+}
+
+fn branch_unfinalized_user_deploy_score(
+    dag: &KeyValueDagRepresentation,
+    block_store: &KeyValueBlockStore,
+    root_hash: &BlockHash,
+    last_finalized_block: &BlockHash,
+) -> Result<Option<DeployBranchScore>, CasperError> {
+    let last_finalized_number = dag
+        .lookup(last_finalized_block)?
+        .map(|meta| meta.block_number)
+        .unwrap_or(-1);
+    let root_meta = dag.lookup_unsafe(root_hash)?;
+    let mut stack = vec![root_hash.clone()];
+    let mut seen: HashSet<BlockHash> = HashSet::new();
+    let mut deploy_sigs: HashSet<Bytes> = HashSet::new();
+    let mut latest_deploy_block_number: Option<i64> = None;
+
+    while let Some(block_hash) = stack.pop() {
+        if !seen.insert(block_hash.clone())
+            || &block_hash == last_finalized_block
+            || dag.is_finalized(&block_hash)
+        {
+            continue;
+        }
+
+        let block_meta = dag.lookup_unsafe(&block_hash)?;
+        if block_meta.block_number <= last_finalized_number {
+            continue;
+        }
+
+        if let Some(sigs) = block_store.deploy_sigs(&block_hash)? {
+            if !sigs.is_empty() {
+                latest_deploy_block_number = Some(
+                    latest_deploy_block_number
+                        .map(|current| current.max(block_meta.block_number))
+                        .unwrap_or(block_meta.block_number),
+                );
+                for sig in sigs {
+                    deploy_sigs.insert(sig.into());
+                }
+            }
+        }
+
+        stack.extend(block_meta.parents.iter().cloned());
+    }
+
+    Ok(latest_deploy_block_number.map(|latest| DeployBranchScore {
+        deploy_sig_count: deploy_sigs.len(),
+        latest_deploy_block_number: latest,
+        root_block_number: root_meta.block_number,
+    }))
+}
+
+fn prefer_deploy_support_main_parent(
+    dag: &KeyValueDagRepresentation,
+    block_store: &KeyValueBlockStore,
+    parents: Vec<BlockMessage>,
+    last_finalized_block: &BlockHash,
+) -> Result<Vec<BlockMessage>, CasperError> {
+    if parents.len() <= 1 {
+        return Ok(parents);
+    }
+
+    let mut scored: Vec<Option<DeployBranchScore>> = Vec::with_capacity(parents.len());
+    for parent in &parents {
+        scored.push(branch_unfinalized_user_deploy_score(
+            dag,
+            block_store,
+            &parent.block_hash,
+            last_finalized_block,
+        )?);
+    }
+
+    let mut best: Option<(usize, &DeployBranchScore)> = None;
+    for (idx, score) in scored.iter().enumerate() {
+        let Some(score) = score.as_ref() else {
+            continue;
+        };
+        let replace = best
+            .as_ref()
+            .map(|(best_idx, best_score)| {
+                better_deploy_branch_score(
+                    (score, &parents[idx].block_hash),
+                    (best_score, &parents[*best_idx].block_hash),
+                )
+            })
+            .unwrap_or(true);
+        if replace {
+            best = Some((idx, score));
+        }
+    }
+
+    let Some((best_idx, best_score)) = best else {
+        return Ok(parents);
+    };
+    if best_idx == 0 {
+        return Ok(parents);
+    }
+
+    let original_main = parents[0].block_hash.clone();
+    let promoted = parents[best_idx].block_hash.clone();
+    let mut reordered = parents;
+    let promoted_parent = reordered.remove(best_idx);
+    reordered.insert(0, promoted_parent);
+    tracing::info!(
+        target: "f1r3fly.casper.deploy_support",
+        "Parent selection promoted deploy-carrying branch for canonical support: original_main={}, promoted_main={}, deploy_sigs={}, latest_deploy_block={}, promoted_root_block={}",
+        PrettyPrinter::build_string_bytes(&original_main),
+        PrettyPrinter::build_string_bytes(&promoted),
+        best_score.deploy_sig_count,
+        best_score.latest_deploy_block_number,
+        best_score.root_block_number
+    );
+    Ok(reordered)
+}
+
 fn candidate_scope_has_rejected_deploys(
     dag: &KeyValueDagRepresentation,
     block_store: &KeyValueBlockStore,
@@ -183,6 +329,12 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
             .cmp(&a_main)
             .then_with(|| a.block_hash.cmp(&b.block_hash))
     });
+    let sorted_parents_list = prefer_deploy_support_main_parent(
+        &dag,
+        &this.block_store,
+        sorted_parents_list,
+        &dag.last_finalized_block(),
+    )?;
 
     let rejected_deploys_in_candidate_scope = if sorted_parents_list.is_empty() {
         false
@@ -580,10 +732,13 @@ mod tests {
     };
     use block_storage::rust::key_value_block_store::KeyValueBlockStore;
     use models::rust::block_implicits;
-    use models::rust::casper::protocol::casper_message::RejectedDeploy;
+    use models::rust::casper::protocol::casper_message::{ProcessedDeploy, RejectedDeploy};
     use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 
-    use super::{candidate_scope_has_rejected_deploys, deploy_scope_cache_key_matches};
+    use super::{
+        candidate_scope_has_rejected_deploys, deploy_scope_cache_key_matches,
+        prefer_deploy_support_main_parent,
+    };
 
     #[test]
     fn deploy_scope_cache_key_includes_selected_parents() {
@@ -686,5 +841,303 @@ mod tests {
             candidate_scope_has_rejected_deploys(&dag, &block_store, vec![parent_meta], 2, 50)
                 .expect("candidate scope")
         );
+    }
+
+    #[tokio::test]
+    async fn deploy_support_promotes_nonfinal_deploy_branch_over_empty_main_parent() {
+        let mut kvm = InMemoryStoreManager::new();
+        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
+            .await
+            .expect("block store");
+        let dag_storage = BlockDagKeyValueStorage::new(&mut kvm)
+            .await
+            .expect("dag storage");
+        let genesis = block_implicits::get_random_block(
+            Some(0),
+            Some(0),
+            None,
+            None,
+            None,
+            None,
+            Some(0),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            None,
+            Some("test".to_string()),
+            None,
+        );
+        let deploy = crate::rust::util::construct_deploy::basic_deploy_data(
+            0,
+            None,
+            Some("test".to_string()),
+        )
+        .expect("deploy");
+        let deploy_block = block_implicits::get_random_block(
+            Some(1),
+            Some(1),
+            None,
+            None,
+            None,
+            None,
+            Some(1),
+            Some(vec![genesis.block_hash.clone()]),
+            Some(Vec::new()),
+            Some(vec![ProcessedDeploy::empty(deploy)]),
+            Some(Vec::new()),
+            None,
+            Some("test".to_string()),
+            None,
+        );
+        let deploy_support = block_implicits::get_random_block(
+            Some(2),
+            Some(2),
+            None,
+            None,
+            None,
+            None,
+            Some(2),
+            Some(vec![deploy_block.block_hash.clone()]),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            None,
+            Some("test".to_string()),
+            None,
+        );
+        let empty = block_implicits::get_random_block(
+            Some(2),
+            Some(3),
+            None,
+            None,
+            None,
+            None,
+            Some(2),
+            Some(vec![genesis.block_hash.clone()]),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            None,
+            Some("test".to_string()),
+            None,
+        );
+
+        for block in [&genesis, &deploy_block, &deploy_support, &empty] {
+            block_store.put_block_message(block).expect("store block");
+        }
+        dag_storage
+            .insert(&genesis, InsertMode::Approved)
+            .expect("insert genesis");
+        for block in [&deploy_block, &deploy_support, &empty] {
+            dag_storage
+                .insert(block, InsertMode::Normal)
+                .expect("insert block");
+        }
+
+        let dag = dag_storage.get_representation().expect("dag");
+        let reordered = prefer_deploy_support_main_parent(
+            &dag,
+            &block_store,
+            vec![empty.clone(), deploy_support.clone()],
+            &genesis.block_hash,
+        )
+        .expect("prefer deploy support");
+
+        assert_eq!(reordered[0].block_hash, deploy_support.block_hash);
+        assert_eq!(reordered[1].block_hash, empty.block_hash);
+    }
+
+    #[tokio::test]
+    async fn deploy_support_prefers_larger_unfinalized_deploy_branch() {
+        let mut kvm = InMemoryStoreManager::new();
+        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
+            .await
+            .expect("block store");
+        let dag_storage = BlockDagKeyValueStorage::new(&mut kvm)
+            .await
+            .expect("dag storage");
+        let genesis = block_implicits::get_random_block(
+            Some(0),
+            Some(0),
+            None,
+            None,
+            None,
+            None,
+            Some(0),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            None,
+            Some("test".to_string()),
+            None,
+        );
+        let heavy_a = crate::rust::util::construct_deploy::basic_deploy_data(
+            1,
+            None,
+            Some("test".to_string()),
+        )
+        .expect("deploy a");
+        let heavy_b = crate::rust::util::construct_deploy::basic_deploy_data(
+            2,
+            None,
+            Some("test".to_string()),
+        )
+        .expect("deploy b");
+        let light = crate::rust::util::construct_deploy::basic_deploy_data(
+            3,
+            None,
+            Some("test".to_string()),
+        )
+        .expect("deploy c");
+        let heavy_parent = block_implicits::get_random_block(
+            Some(1),
+            Some(1),
+            None,
+            None,
+            None,
+            None,
+            Some(1),
+            Some(vec![genesis.block_hash.clone()]),
+            Some(Vec::new()),
+            Some(vec![
+                ProcessedDeploy::empty(heavy_a),
+                ProcessedDeploy::empty(heavy_b),
+            ]),
+            Some(Vec::new()),
+            None,
+            Some("test".to_string()),
+            None,
+        );
+        let light_parent = block_implicits::get_random_block(
+            Some(3),
+            Some(2),
+            None,
+            None,
+            None,
+            None,
+            Some(3),
+            Some(vec![genesis.block_hash.clone()]),
+            Some(Vec::new()),
+            Some(vec![ProcessedDeploy::empty(light)]),
+            Some(Vec::new()),
+            None,
+            Some("test".to_string()),
+            None,
+        );
+
+        for block in [&genesis, &heavy_parent, &light_parent] {
+            block_store.put_block_message(block).expect("store block");
+        }
+        dag_storage
+            .insert(&genesis, InsertMode::Approved)
+            .expect("insert genesis");
+        for block in [&heavy_parent, &light_parent] {
+            dag_storage
+                .insert(block, InsertMode::Normal)
+                .expect("insert block");
+        }
+
+        let dag = dag_storage.get_representation().expect("dag");
+        let reordered = prefer_deploy_support_main_parent(
+            &dag,
+            &block_store,
+            vec![light_parent.clone(), heavy_parent.clone()],
+            &genesis.block_hash,
+        )
+        .expect("prefer deploy support");
+
+        assert_eq!(reordered[0].block_hash, heavy_parent.block_hash);
+        assert_eq!(reordered[1].block_hash, light_parent.block_hash);
+    }
+
+    #[tokio::test]
+    async fn deploy_support_keeps_existing_deploy_main_parent() {
+        let mut kvm = InMemoryStoreManager::new();
+        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
+            .await
+            .expect("block store");
+        let dag_storage = BlockDagKeyValueStorage::new(&mut kvm)
+            .await
+            .expect("dag storage");
+        let genesis = block_implicits::get_random_block(
+            Some(0),
+            Some(0),
+            None,
+            None,
+            None,
+            None,
+            Some(0),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            None,
+            Some("test".to_string()),
+            None,
+        );
+        let deploy = crate::rust::util::construct_deploy::basic_deploy_data(
+            0,
+            None,
+            Some("test".to_string()),
+        )
+        .expect("deploy");
+        let deploy_parent = block_implicits::get_random_block(
+            Some(1),
+            Some(1),
+            None,
+            None,
+            None,
+            None,
+            Some(1),
+            Some(vec![genesis.block_hash.clone()]),
+            Some(Vec::new()),
+            Some(vec![ProcessedDeploy::empty(deploy)]),
+            Some(Vec::new()),
+            None,
+            Some("test".to_string()),
+            None,
+        );
+        let empty = block_implicits::get_random_block(
+            Some(1),
+            Some(2),
+            None,
+            None,
+            None,
+            None,
+            Some(1),
+            Some(vec![genesis.block_hash.clone()]),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            None,
+            Some("test".to_string()),
+            None,
+        );
+
+        for block in [&genesis, &deploy_parent, &empty] {
+            block_store.put_block_message(block).expect("store block");
+        }
+        dag_storage
+            .insert(&genesis, InsertMode::Approved)
+            .expect("insert genesis");
+        for block in [&deploy_parent, &empty] {
+            dag_storage
+                .insert(block, InsertMode::Normal)
+                .expect("insert block");
+        }
+
+        let dag = dag_storage.get_representation().expect("dag");
+        let reordered = prefer_deploy_support_main_parent(
+            &dag,
+            &block_store,
+            vec![deploy_parent.clone(), empty.clone()],
+            &genesis.block_hash,
+        )
+        .expect("prefer deploy support");
+
+        assert_eq!(reordered[0].block_hash, deploy_parent.block_hash);
+        assert_eq!(reordered[1].block_hash, empty.block_hash);
     }
 }

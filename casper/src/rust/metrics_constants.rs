@@ -194,6 +194,44 @@ pub const BLOCK_CREATOR_COMPUTE_DEPLOYS_CHECKPOINT_TIME_METRIC: &str =
     "block-creator.compute-deploys-checkpoint.time";
 pub const BLOCK_CREATOR_PACKAGE_BLOCK_TIME_METRIC: &str = "block-creator.package-block.time";
 pub const BLOCK_CREATOR_TOTAL_TIME_METRIC: &str = "block-creator.total.time";
+pub const BLOCK_CREATOR_DEPLOY_ADMISSION_FRESH_LOCAL_METRIC: &str =
+    "block-creator.deploy-admission.fresh-local";
+pub const BLOCK_CREATOR_DEPLOY_ADMISSION_OLDEST_FRESH_AGE_MS_METRIC: &str =
+    "block-creator.deploy-admission.oldest-fresh-age-ms";
+pub const BLOCK_CREATOR_DEPLOY_ADMISSION_IN_SCOPE_LOCAL_METRIC: &str =
+    "block-creator.deploy-admission.in-scope-local";
+pub const BLOCK_CREATOR_DEPLOY_ADMISSION_OLDEST_IN_SCOPE_AGE_MS_METRIC: &str =
+    "block-creator.deploy-admission.oldest-in-scope-age-ms";
+pub const BLOCK_CREATOR_DEPLOY_ADMISSION_ALREADY_IN_SCOPE_METRIC: &str =
+    "block-creator.deploy-admission.already-in-scope";
+pub const BLOCK_CREATOR_DEPLOY_ADMISSION_SELECTED_ORDINARY_METRIC: &str =
+    "block-creator.deploy-admission.selected-ordinary";
+pub const BLOCK_CREATOR_DEPLOY_ADMISSION_SELECTED_RETRY_METRIC: &str =
+    "block-creator.deploy-admission.selected-retry";
+pub const BLOCK_CREATOR_DEPLOY_ADMISSION_SELECTED_IN_SCOPE_RECOVERY_METRIC: &str =
+    "block-creator.deploy-admission.selected-in-scope-recovery";
+pub const BLOCK_CREATOR_DEPLOY_ADMISSION_FALLBACK_ENABLED_METRIC: &str =
+    "block-creator.deploy-admission.fallback-enabled";
+pub const BLOCK_CREATOR_DEPLOY_ADMISSION_FALLBACK_CAP_METRIC: &str =
+    "block-creator.deploy-admission.fallback-cap";
+pub const BLOCK_CREATOR_DEPLOY_ADMISSION_BACKPRESSURE_METRIC: &str =
+    "block-creator.deploy-admission.backpressure";
+pub const BLOCK_CREATOR_DEPLOY_ADMISSION_DAG_TIP_METRIC: &str =
+    "block-creator.deploy-admission.dag-tip";
+pub const BLOCK_CREATOR_DEPLOY_ADMISSION_LFB_METRIC: &str =
+    "block-creator.deploy-admission.last-finalized";
+pub const BLOCK_CREATOR_DEPLOY_ADMISSION_LFB_LAG_METRIC: &str =
+    "block-creator.deploy-admission.lfb-lag";
+pub const BLOCK_CREATOR_DEPLOY_ADMISSION_PROGRESS_NEW_SIGS_METRIC: &str =
+    "block-creator.deploy-admission.progress-new-sigs";
+pub const BLOCK_CREATOR_DEPLOY_ADMISSION_PROGRESS_RECYCLED_SIGS_METRIC: &str =
+    "block-creator.deploy-admission.progress-recycled-sigs";
+pub const BLOCK_CREATOR_DEPLOY_ADMISSION_SIGNATURE_STALE_METRIC: &str =
+    "block-creator.deploy-admission.signature-stale";
+pub const BLOCK_CREATOR_DEPLOY_ADMISSION_BLOCK_TIME_STALE_METRIC: &str =
+    "block-creator.deploy-admission.block-time-stale";
+pub const BLOCK_CREATOR_DEPLOY_ADMISSION_MISSING_PROGRESS_METADATA_METRIC: &str =
+    "block-creator.deploy-admission.missing-progress-metadata";
 
 // Finalization pipeline.
 pub const FINALIZER_RUN_TIME_METRIC: &str = "finalizer.run.time";

@@ -57,20 +57,33 @@ pub struct PreparedUserDeploys {
     pub deploys: HashSet<Signed<DeployData>>,
     pub effective_cap: usize,
     pub cap_hit: bool,
+    pub selected_retry_count: usize,
+    pub selected_ordinary_count: usize,
+    pub selected_in_scope_recovery_count: usize,
+    pub selected_in_scope_recovery_sigs: HashSet<Bytes>,
+    pub already_in_scope_count: usize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct DeployAdmissionPolicy {
     allow_ordinary: bool,
     ordinary_cap: usize,
+    allow_in_scope_recovery: bool,
+    in_scope_recovery_cap: usize,
     reserve_tail: bool,
+    fallback: bool,
+    backpressure: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct BranchDeployInfo {
+    block_hash: BlockHash,
     sender: Validator,
     block_number: i64,
     timestamp: i64,
+    deploy_sig_count: usize,
+    new_sig_count: usize,
+    recycled_sig_count: usize,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -85,6 +98,34 @@ struct FreshLocalDeployStats {
     oldest_age_millis: i64,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct InScopeLocalDeployStats {
+    count: usize,
+    oldest_age_millis: i64,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct DeployInclusionStaleness {
+    stale: bool,
+    block_or_time_stale: bool,
+    signature_stale: bool,
+    missing_deploy_metadata: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct FreshAdmissionFallback {
+    allowed: bool,
+    cap: usize,
+    backpressure: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct FinalityLagStats {
+    dag_tip: i64,
+    last_finalized_block: i64,
+    lag: i64,
+}
+
 /// C15 / Smell-2: was previously a zero-arg `fn -> bool` returning a
 /// hard-coded `true`. Promoted to a `const` so its always-on nature
 /// is explicit and the value is folded at compile time. Kept as a
@@ -93,12 +134,19 @@ struct FreshLocalDeployStats {
 /// for per-shard control — when that happens the rename target is
 /// already in place.
 const DEPLOY_SELECTION_RESERVE_TAIL_ENABLED: bool = true;
-const ORDINARY_DEPLOY_PROPOSAL_CAP: usize = 32;
-const RETRY_DEPLOY_REPROPOSAL_CAP: usize = ORDINARY_DEPLOY_PROPOSAL_CAP;
+const ORDINARY_DEPLOY_PROPOSAL_CAP: usize = 128;
+const RETRY_DEPLOY_REPROPOSAL_CAP: usize = 32;
 const NON_LEADER_FALLBACK_ORDINARY_DEPLOY_CAP: usize = 8;
+const NON_LEADER_FALLBACK_MIN_ORDINARY_DEPLOY_CAP: usize = 4;
+const NON_LEADER_FALLBACK_MEDIUM_ORDINARY_DEPLOY_CAP: usize = 16;
+const NON_LEADER_FALLBACK_MAX_ORDINARY_DEPLOY_CAP: usize = 32;
 const DEPLOY_INCLUSION_LEASE_BLOCKS: i64 = 3;
 const DEPLOY_INCLUSION_LEASE_MILLIS: i64 = 30_000;
 const FRESH_DEPLOY_MAX_ADMISSION_DELAY_MILLIS: i64 = 60_000;
+const FRESH_DEPLOY_ESCALATED_ADMISSION_DELAY_MILLIS: i64 = 120_000;
+const FRESH_DEPLOY_MAX_ESCALATED_ADMISSION_DELAY_MILLIS: i64 = 300_000;
+const FINALITY_LAG_SOFT_BACKPRESSURE_BLOCKS: i64 = 4;
+const FINALITY_LAG_HARD_BACKPRESSURE_BLOCKS: i64 = 8;
 
 /// C15 / Smell-4: extract the deploy-signature pretty-print prefix
 /// used in operator-facing log messages. Previously inlined as
@@ -161,10 +209,6 @@ fn normal_ordinary_deploy_cap(casper_snapshot: &CasperSnapshot) -> usize {
         .shard_conf
         .max_user_deploys_per_block as usize)
         .min(ORDINARY_DEPLOY_PROPOSAL_CAP)
-}
-
-fn fallback_ordinary_deploy_cap(casper_snapshot: &CasperSnapshot) -> usize {
-    normal_ordinary_deploy_cap(casper_snapshot).min(NON_LEADER_FALLBACK_ORDINARY_DEPLOY_CAP)
 }
 
 fn is_retryable_single_value_batch_error(err: &CasperError) -> bool {
@@ -231,7 +275,11 @@ pub async fn prepare_user_deploys(
         DeployAdmissionPolicy {
             allow_ordinary: allow_ordinary_deploys,
             ordinary_cap: normal_ordinary_deploy_cap(casper_snapshot),
+            allow_in_scope_recovery: false,
+            in_scope_recovery_cap: 0,
             reserve_tail: true,
+            fallback: false,
+            backpressure: false,
         },
     )
     .await
@@ -251,18 +299,21 @@ async fn prepare_user_deploys_with_policy(
 ) -> Result<PreparedUserDeploys, CasperError> {
     let max_user_deploys = normal_ordinary_deploy_cap(casper_snapshot);
     let ordinary_cap = admission_policy.ordinary_cap.min(max_user_deploys);
+    let in_scope_recovery_cap = admission_policy.in_scope_recovery_cap.min(max_user_deploys);
     let allow_ordinary_deploys = admission_policy.allow_ordinary && ordinary_cap > 0;
-    // Phase 9 (A-3): parking_lot::Mutex — no poison.
+    let allow_in_scope_recovery =
+        admission_policy.allow_in_scope_recovery && in_scope_recovery_cap > 0;
     let mut deploy_storage_guard = deploy_storage.lock();
 
-    let stored_unfinalized: HashSet<Signed<DeployData>> = if allow_ordinary_deploys {
-        deploy_storage_guard.read_all()?
-    } else {
-        HashSet::new()
-    };
+    let stored_unfinalized: HashSet<Signed<DeployData>> =
+        if allow_ordinary_deploys || allow_in_scope_recovery {
+            deploy_storage_guard.read_all()?
+        } else {
+            HashSet::new()
+        };
 
     let buffered_deploys: HashSet<Signed<DeployData>> =
-        if allow_ordinary_deploys || allow_recovered_deploys {
+        if allow_ordinary_deploys || allow_in_scope_recovery || allow_recovered_deploys {
             let buffer_guard = rejected_deploy_buffer
                 .lock()
                 .map_err(|e| CasperError::LockError(e.to_string()))?;
@@ -321,7 +372,7 @@ async fn prepare_user_deploys_with_policy(
     };
     let recovered_sigs: HashSet<Bytes> = recovered.iter().map(|d| d.sig.clone()).collect();
     let recovery_backlog = allow_recovered_deploys && !recovered.is_empty();
-    let ordinary_allowed_now = allow_ordinary_deploys;
+    let storage_scan_allowed_now = allow_ordinary_deploys || allow_in_scope_recovery;
 
     let ordinary_kept_with_recovery = if recovery_backlog && allow_ordinary_deploys {
         stored_unfinalized
@@ -339,7 +390,7 @@ async fn prepare_user_deploys_with_policy(
         );
     }
 
-    let unfinalized: HashSet<Signed<DeployData>> = if ordinary_allowed_now {
+    let unfinalized: HashSet<Signed<DeployData>> = if storage_scan_allowed_now {
         stored_unfinalized
             .into_iter()
             .filter(|deploy| !buffered_sigs.contains(&deploy.sig))
@@ -414,7 +465,6 @@ async fn prepare_user_deploys_with_policy(
         .iter()
         .filter(|d| {
             !recovered_sigs.contains(&d.sig)
-                && !casper_snapshot.deploys_in_scope.contains(&d.sig)
                 && !casper_snapshot.rejected_in_scope.contains(&d.sig)
                 && !not_expired_deploy(earliest_block_number, &d.data)
         })
@@ -468,6 +518,11 @@ async fn prepare_user_deploys_with_policy(
         .filter(|deploy| !canonical_won.contains(&deploy.sig) && !blocked_by_scope(deploy))
         .collect();
 
+    let finalized_won = if allow_in_scope_recovery && !already_in_scope.is_empty() {
+        finalized_ancestor_deploy_sigs(casper_snapshot, block_store, canonical_scan_floor)?
+    } else {
+        HashSet::new()
+    };
     let already_in_scope_count = already_in_scope.len();
     let purged_recovered_already_in_scope = purge_recovered_already_in_scope(
         &mut deploy_storage_guard,
@@ -497,6 +552,20 @@ async fn prepare_user_deploys_with_policy(
         .filter(|deploy| !is_retry_candidate(deploy))
         .cloned()
         .collect();
+    let in_scope_recovery_candidates: HashSet<Signed<DeployData>> = if allow_in_scope_recovery {
+        already_in_scope
+            .iter()
+            .filter(|deploy| {
+                !canonical_won.contains(&deploy.sig)
+                    && !finalized_won.contains(&deploy.sig)
+                    && casper_snapshot.deploys_in_scope.contains(&deploy.sig)
+                    && !casper_snapshot.rejected_in_scope.contains(&deploy.sig)
+            })
+            .cloned()
+            .collect()
+    } else {
+        HashSet::new()
+    };
     let retry_candidate_count = retry_candidates.len();
     let selected_retries = select_recovered_deploys_for_block(
         &retry_candidates,
@@ -521,26 +590,45 @@ async fn prepare_user_deploys_with_policy(
         admission_policy.reserve_tail,
     );
     let ordinary_capped = ordinary_candidates.len() > selected_ordinary.len();
+    let (selected_in_scope_recovery, in_scope_recovery_selection_strategy) =
+        select_ordinary_deploys_for_block(
+            &in_scope_recovery_candidates,
+            in_scope_recovery_cap,
+            false,
+        );
+    let in_scope_recovery_capped =
+        in_scope_recovery_candidates.len() > selected_in_scope_recovery.len();
+    let selected_in_scope_recovery_sigs: HashSet<Bytes> = selected_in_scope_recovery
+        .iter()
+        .map(|deploy| deploy.sig.clone())
+        .collect();
     let selected: HashSet<Signed<DeployData>> = selected_retries
         .into_iter()
         .chain(selected_ordinary.into_iter())
+        .chain(selected_in_scope_recovery.into_iter())
         .collect();
-    let deferred = retry_candidate_count.saturating_sub(
-        selected
-            .iter()
-            .filter(|deploy| is_retry_candidate(deploy))
-            .count(),
-    ) + ordinary_candidates.len().saturating_sub(
-        selected
-            .iter()
-            .filter(|deploy| !is_retry_candidate(deploy))
-            .count(),
-    );
-    let cap_hit = retry_capped || ordinary_capped;
+    let selected_retry_count = selected
+        .iter()
+        .filter(|deploy| is_retry_candidate(deploy))
+        .count();
+    let selected_in_scope_recovery_count = selected
+        .iter()
+        .filter(|deploy| selected_in_scope_recovery_sigs.contains(&deploy.sig))
+        .count();
     let selected_ordinary_count = selected
         .iter()
-        .filter(|deploy| !is_retry_candidate(deploy))
+        .filter(|deploy| {
+            !is_retry_candidate(deploy) && !selected_in_scope_recovery_sigs.contains(&deploy.sig)
+        })
         .count();
+    let deferred = retry_candidate_count.saturating_sub(selected_retry_count)
+        + ordinary_candidates
+            .len()
+            .saturating_sub(selected_ordinary_count)
+        + in_scope_recovery_candidates
+            .len()
+            .saturating_sub(selected_in_scope_recovery_count);
+    let cap_hit = retry_capped || ordinary_capped || in_scope_recovery_capped;
     if ordinary_capped {
         tracing::info!(
             "Ordinary deploy selection capped for block #{}: selected={}, deferred={}, cap={}, strategy={}",
@@ -549,6 +637,17 @@ async fn prepare_user_deploys_with_policy(
             ordinary_candidates.len().saturating_sub(selected_ordinary_count),
             ordinary_cap,
             ordinary_selection_strategy
+        );
+    }
+    if !selected_in_scope_recovery_sigs.is_empty() || in_scope_recovery_capped {
+        tracing::info!(
+            target: "f1r3fly.casper.recovery",
+            "In-scope deploy recovery selection for block #{}: selected={}, deferred={}, cap={}, strategy={}",
+            block_number,
+            selected_in_scope_recovery_count,
+            in_scope_recovery_candidates.len().saturating_sub(selected_in_scope_recovery_count),
+            in_scope_recovery_cap,
+            in_scope_recovery_selection_strategy
         );
     }
 
@@ -583,7 +682,10 @@ async fn prepare_user_deploys_with_policy(
                 "merge.step: deploy filter decision"
             );
         }
-        for d in &already_in_scope {
+        for d in already_in_scope
+            .iter()
+            .filter(|d| !selected_in_scope_recovery_sigs.contains(&d.sig))
+        {
             tracing::debug!(
                 target: "f1r3fly.merge.step",
                 step = "prepare_user_deploys.FILTER",
@@ -650,7 +752,10 @@ async fn prepare_user_deploys_with_policy(
             current_time_millis
         );
     }
-    for d in &already_in_scope {
+    for d in already_in_scope
+        .iter()
+        .filter(|d| !selected_in_scope_recovery_sigs.contains(&d.sig))
+    {
         tracing::warn!(
             "Deploy {}... FILTERED (already in scope): deploy already exists in DAG within lifespan window",
             deploy_sig_prefix(&d.sig)
@@ -696,7 +801,9 @@ async fn prepare_user_deploys_with_policy(
             count = selected.len(),
             cap_hit,
             ordinary_cap,
+            in_scope_recovery_cap,
             ordinary_strategy = ordinary_selection_strategy,
+            in_scope_recovery_strategy = in_scope_recovery_selection_strategy,
             deferred,
             chosen = ?chosen,
             "merge.step: final deploy set chosen for block"
@@ -707,6 +814,11 @@ async fn prepare_user_deploys_with_policy(
         deploys: selected,
         effective_cap: ordinary_cap,
         cap_hit,
+        selected_retry_count,
+        selected_ordinary_count,
+        selected_in_scope_recovery_count,
+        selected_in_scope_recovery_sigs,
+        already_in_scope_count,
     })
 }
 
@@ -874,6 +986,92 @@ fn newer_branch_deploy_info(
     }
 }
 
+fn collect_branch_user_deploy_sigs(
+    casper_snapshot: &CasperSnapshot,
+    block_store: &KeyValueBlockStore,
+    roots: &[BlockHash],
+    earliest_block_number: i64,
+    last_finalized_block_number: Option<i64>,
+    excluded_block_hash: Option<&BlockHash>,
+) -> Result<HashSet<Bytes>, CasperError> {
+    let mut stack: Vec<BlockHash> = roots.to_vec();
+    let mut seen: HashSet<BlockHash> = HashSet::new();
+    let mut sigs = HashSet::new();
+
+    while let Some(block_hash) = stack.pop() {
+        if !seen.insert(block_hash.clone())
+            || block_hash == casper_snapshot.last_finalized_block
+            || casper_snapshot.dag.is_finalized(&block_hash)
+        {
+            continue;
+        }
+
+        let Some(block) = block_store.get(&block_hash)? else {
+            continue;
+        };
+
+        if last_finalized_block_number
+            .map(|lfb_number| block.body.state.block_number <= lfb_number)
+            .unwrap_or(false)
+            || block.body.state.block_number <= earliest_block_number
+        {
+            continue;
+        }
+
+        let excluded = excluded_block_hash
+            .map(|excluded_hash| excluded_hash == &block_hash)
+            .unwrap_or(false);
+        if !excluded {
+            for deploy in &block.body.deploys {
+                sigs.insert(deploy.deploy.sig.clone());
+            }
+        }
+
+        stack.extend(block.header.parents_hash_list.iter().cloned());
+    }
+
+    Ok(sigs)
+}
+
+fn classify_branch_deploy_info(
+    mut info: BranchDeployInfo,
+    casper_snapshot: &CasperSnapshot,
+    block_store: &KeyValueBlockStore,
+    earliest_block_number: i64,
+    last_finalized_block_number: Option<i64>,
+) -> Result<BranchDeployInfo, CasperError> {
+    let Some(block) = block_store.get(&info.block_hash)? else {
+        return Ok(info);
+    };
+    let deploy_sigs: HashSet<Bytes> = block
+        .body
+        .deploys
+        .iter()
+        .map(|deploy| deploy.deploy.sig.clone())
+        .collect();
+    let parent_frontier: Vec<BlockHash> = casper_snapshot
+        .parents
+        .iter()
+        .map(|parent| parent.block_hash.clone())
+        .collect();
+    let visible_sigs = collect_branch_user_deploy_sigs(
+        casper_snapshot,
+        block_store,
+        &parent_frontier,
+        earliest_block_number,
+        last_finalized_block_number,
+        Some(&info.block_hash),
+    )?;
+    let new_sig_count = deploy_sigs
+        .iter()
+        .filter(|sig| !visible_sigs.contains(*sig))
+        .count();
+    info.deploy_sig_count = deploy_sigs.len();
+    info.new_sig_count = new_sig_count;
+    info.recycled_sig_count = deploy_sigs.len().saturating_sub(new_sig_count);
+    Ok(info)
+}
+
 fn branch_unfinalized_user_deploy_info(
     casper_snapshot: &CasperSnapshot,
     block_store: &KeyValueBlockStore,
@@ -919,16 +1117,30 @@ fn branch_unfinalized_user_deploy_info(
 
         if !block.body.deploys.is_empty() {
             latest = newer_branch_deploy_info(latest, BranchDeployInfo {
+                block_hash: block_hash.clone(),
                 sender: block.sender.clone(),
                 block_number: block.body.state.block_number,
                 timestamp: block.header.timestamp,
+                deploy_sig_count: block.body.deploys.len(),
+                new_sig_count: 0,
+                recycled_sig_count: 0,
             });
         }
 
         stack.extend(block.header.parents_hash_list.iter().cloned());
     }
 
-    Ok(latest)
+    latest
+        .map(|info| {
+            classify_branch_deploy_info(
+                info,
+                casper_snapshot,
+                block_store,
+                earliest_block_number,
+                last_finalized_block_number,
+            )
+        })
+        .transpose()
 }
 
 fn storage_has_unresolved_in_scope_deploys(
@@ -1328,6 +1540,37 @@ fn is_recovered_deploy_leader(
         .unwrap_or(true)
 }
 
+fn finalized_ancestor_deploy_sigs(
+    casper_snapshot: &CasperSnapshot,
+    block_store: &KeyValueBlockStore,
+    earliest_block_number: i64,
+) -> Result<HashSet<Bytes>, CasperError> {
+    let mut sigs = HashSet::new();
+    let mut stack = vec![casper_snapshot.last_finalized_block.clone()];
+    let mut seen: HashSet<BlockHash> = HashSet::new();
+
+    while let Some(block_hash) = stack.pop() {
+        if !seen.insert(block_hash.clone()) {
+            continue;
+        }
+
+        let Some(block) = block_store.get(&block_hash)? else {
+            continue;
+        };
+
+        if block.body.state.block_number < earliest_block_number {
+            continue;
+        }
+
+        for deploy in &block.body.deploys {
+            sigs.insert(deploy.deploy.sig.clone());
+        }
+        stack.extend(block.header.parents_hash_list.iter().cloned());
+    }
+
+    Ok(sigs)
+}
+
 fn deploy_inclusion_progress(
     casper_snapshot: &CasperSnapshot,
     block_store: &KeyValueBlockStore,
@@ -1372,17 +1615,39 @@ fn deploy_inclusion_progress(
     Ok(DeployInclusionProgress::default())
 }
 
+#[cfg(test)]
 fn deploy_inclusion_progress_is_stale(
     progress: &DeployInclusionProgress,
     next_block_num: i64,
     now_millis: i64,
 ) -> bool {
+    deploy_inclusion_progress_staleness(progress, next_block_num, now_millis).stale
+}
+
+fn deploy_inclusion_progress_staleness(
+    progress: &DeployInclusionProgress,
+    next_block_num: i64,
+    now_millis: i64,
+) -> DeployInclusionStaleness {
     match &progress.latest_deploy {
         Some(info) => {
-            next_block_num.saturating_sub(info.block_number) >= DEPLOY_INCLUSION_LEASE_BLOCKS
-                || now_millis.saturating_sub(info.timestamp) >= DEPLOY_INCLUSION_LEASE_MILLIS
+            let block_or_time_stale = next_block_num.saturating_sub(info.block_number)
+                >= DEPLOY_INCLUSION_LEASE_BLOCKS
+                || now_millis.saturating_sub(info.timestamp) >= DEPLOY_INCLUSION_LEASE_MILLIS;
+            let signature_stale = info.deploy_sig_count > 0 && info.new_sig_count == 0;
+            DeployInclusionStaleness {
+                stale: block_or_time_stale || signature_stale,
+                block_or_time_stale,
+                signature_stale,
+                missing_deploy_metadata: false,
+            }
         }
-        None => progress.leader.is_some(),
+        None => DeployInclusionStaleness {
+            stale: progress.leader.is_some(),
+            block_or_time_stale: false,
+            signature_stale: false,
+            missing_deploy_metadata: progress.leader.is_some(),
+        },
     }
 }
 
@@ -1454,6 +1719,77 @@ fn fresh_local_deploy_stats(
     })
 }
 
+fn in_scope_local_deploy_stats(
+    casper_snapshot: &CasperSnapshot,
+    block_number: i64,
+    current_time_millis: i64,
+    deploy_storage: &Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
+    rejected_deploy_buffer: &Arc<Mutex<KeyValueRejectedDeployBuffer>>,
+    block_store: &KeyValueBlockStore,
+) -> Result<InScopeLocalDeployStats, CasperError> {
+    let stored_deploys = deploy_storage.lock().read_all()?;
+    if stored_deploys.is_empty() {
+        return Ok(InScopeLocalDeployStats::default());
+    }
+    let buffered_sigs: HashSet<Bytes> = rejected_deploy_buffer
+        .lock()
+        .map_err(|e| CasperError::LockError(e.to_string()))?
+        .read_all()?
+        .into_iter()
+        .map(|deploy| deploy.sig)
+        .collect();
+    let earliest_block_number =
+        block_number - casper_snapshot.on_chain_state.shard_conf.deploy_lifespan;
+    let candidates: HashSet<Signed<DeployData>> = stored_deploys
+        .into_iter()
+        .filter(|deploy| {
+            !buffered_sigs.contains(&deploy.sig)
+                && casper_snapshot.deploys_in_scope.contains(&deploy.sig)
+                && !casper_snapshot.rejected_in_scope.contains(&deploy.sig)
+                && not_future_deploy(block_number, &deploy.data)
+                && not_expired_deploy(earliest_block_number, &deploy.data)
+                && !deploy.data.is_expired_at(current_time_millis)
+        })
+        .collect();
+    if candidates.is_empty() {
+        return Ok(InScopeLocalDeployStats::default());
+    }
+    let canonical_scan_floor = candidates
+        .iter()
+        .map(|d| d.data.valid_after_block_number)
+        .min()
+        .map(|h| h.min(earliest_block_number))
+        .unwrap_or(earliest_block_number);
+    let parent_hashes: Vec<BlockHash> = casper_snapshot
+        .parents
+        .iter()
+        .map(|p| p.block_hash.clone())
+        .collect();
+    let canonical_won =
+        interpreter_util::canonical_won_sigs(block_store, &parent_hashes, canonical_scan_floor)?;
+    let finalized_won =
+        finalized_ancestor_deploy_sigs(casper_snapshot, block_store, canonical_scan_floor)?;
+    let mut count = 0usize;
+    let mut oldest_time = None;
+    for deploy in candidates {
+        if canonical_won.contains(&deploy.sig) || finalized_won.contains(&deploy.sig) {
+            continue;
+        }
+        count += 1;
+        oldest_time = Some(
+            oldest_time
+                .map(|current: i64| current.min(deploy.data.time_stamp))
+                .unwrap_or(deploy.data.time_stamp),
+        );
+    }
+    Ok(InScopeLocalDeployStats {
+        count,
+        oldest_age_millis: oldest_time
+            .map(|time_stamp| current_time_millis.saturating_sub(time_stamp))
+            .unwrap_or(0),
+    })
+}
+
 fn should_skip_empty_recovery_heartbeat(
     suppress_empty_recovery_block_by_non_leader: bool,
     user_work_in_flight: bool,
@@ -1470,14 +1806,126 @@ fn should_skip_empty_recovery_heartbeat(
         && !has_recovered_rejected_slashes
 }
 
-fn fresh_admission_fallback_allowed(
-    stale_in_scope_work: bool,
-    deploy_inclusion_progress_stale: bool,
+fn finality_lag_stats(
+    casper_snapshot: &CasperSnapshot,
+    block_store: &KeyValueBlockStore,
+) -> Result<FinalityLagStats, CasperError> {
+    let last_finalized_block = block_store
+        .get(&casper_snapshot.last_finalized_block)?
+        .map(|block| block.body.state.block_number)
+        .unwrap_or(-1);
+    let dag_tip = casper_snapshot.max_block_num;
+    Ok(FinalityLagStats {
+        dag_tip,
+        last_finalized_block,
+        lag: dag_tip.saturating_sub(last_finalized_block).max(0),
+    })
+}
+
+fn adaptive_fallback_ordinary_deploy_cap(
+    casper_snapshot: &CasperSnapshot,
     fresh_local_stats: FreshLocalDeployStats,
-) -> bool {
-    fresh_local_stats.count > 0
-        && fresh_local_stats.oldest_age_millis >= FRESH_DEPLOY_MAX_ADMISSION_DELAY_MILLIS
-        && (!stale_in_scope_work || deploy_inclusion_progress_stale)
+    finality_lag_stats: FinalityLagStats,
+) -> (usize, bool) {
+    let normal_cap = normal_ordinary_deploy_cap(casper_snapshot);
+    if normal_cap == 0 {
+        return (0, false);
+    }
+    let backpressure = finality_lag_stats.lag >= FINALITY_LAG_SOFT_BACKPRESSURE_BLOCKS;
+    let cap = if finality_lag_stats.lag >= FINALITY_LAG_HARD_BACKPRESSURE_BLOCKS {
+        NON_LEADER_FALLBACK_MIN_ORDINARY_DEPLOY_CAP
+    } else if backpressure {
+        NON_LEADER_FALLBACK_ORDINARY_DEPLOY_CAP
+    } else if fresh_local_stats.oldest_age_millis
+        >= FRESH_DEPLOY_MAX_ESCALATED_ADMISSION_DELAY_MILLIS
+    {
+        NON_LEADER_FALLBACK_MAX_ORDINARY_DEPLOY_CAP
+    } else if fresh_local_stats.oldest_age_millis >= FRESH_DEPLOY_ESCALATED_ADMISSION_DELAY_MILLIS {
+        NON_LEADER_FALLBACK_MEDIUM_ORDINARY_DEPLOY_CAP
+    } else {
+        NON_LEADER_FALLBACK_ORDINARY_DEPLOY_CAP
+    };
+    (normal_cap.min(cap), backpressure)
+}
+
+fn adaptive_normal_ordinary_deploy_cap(
+    casper_snapshot: &CasperSnapshot,
+    stale_in_scope_work: bool,
+    deploy_inclusion_staleness: DeployInclusionStaleness,
+    finality_lag_stats: FinalityLagStats,
+) -> (usize, bool) {
+    let normal_cap = normal_ordinary_deploy_cap(casper_snapshot);
+    if normal_cap == 0 {
+        return (0, false);
+    }
+    let cap = if finality_lag_stats.lag >= FINALITY_LAG_HARD_BACKPRESSURE_BLOCKS
+        || (stale_in_scope_work && deploy_inclusion_staleness.signature_stale)
+    {
+        NON_LEADER_FALLBACK_MIN_ORDINARY_DEPLOY_CAP
+    } else if finality_lag_stats.lag >= FINALITY_LAG_SOFT_BACKPRESSURE_BLOCKS
+        || (stale_in_scope_work && deploy_inclusion_staleness.stale)
+    {
+        NON_LEADER_FALLBACK_ORDINARY_DEPLOY_CAP
+    } else {
+        normal_cap
+    };
+    let effective = normal_cap.min(cap);
+    (effective, effective < normal_cap)
+}
+
+fn fresh_admission_fallback(
+    casper_snapshot: &CasperSnapshot,
+    stale_in_scope_work: bool,
+    deploy_inclusion_staleness: DeployInclusionStaleness,
+    fresh_local_stats: FreshLocalDeployStats,
+    finality_lag_stats: FinalityLagStats,
+) -> FreshAdmissionFallback {
+    if fresh_local_stats.count == 0
+        || fresh_local_stats.oldest_age_millis < FRESH_DEPLOY_MAX_ADMISSION_DELAY_MILLIS
+        || (stale_in_scope_work && !deploy_inclusion_staleness.stale)
+    {
+        return FreshAdmissionFallback::default();
+    }
+    let (cap, backpressure) = adaptive_fallback_ordinary_deploy_cap(
+        casper_snapshot,
+        fresh_local_stats,
+        finality_lag_stats,
+    );
+    FreshAdmissionFallback {
+        allowed: cap > 0,
+        cap,
+        backpressure,
+    }
+}
+
+fn in_scope_recovery_fallback(
+    casper_snapshot: &CasperSnapshot,
+    stale_in_scope_work: bool,
+    deploy_inclusion_staleness: DeployInclusionStaleness,
+    in_scope_local_stats: InScopeLocalDeployStats,
+    finality_lag_stats: FinalityLagStats,
+) -> FreshAdmissionFallback {
+    if !stale_in_scope_work
+        || in_scope_local_stats.count == 0
+        || in_scope_local_stats.oldest_age_millis < FRESH_DEPLOY_MAX_ADMISSION_DELAY_MILLIS
+        || (!deploy_inclusion_staleness.stale
+            && finality_lag_stats.lag < FINALITY_LAG_HARD_BACKPRESSURE_BLOCKS)
+    {
+        return FreshAdmissionFallback::default();
+    }
+    let (cap, backpressure) = adaptive_fallback_ordinary_deploy_cap(
+        casper_snapshot,
+        FreshLocalDeployStats {
+            count: in_scope_local_stats.count,
+            oldest_age_millis: in_scope_local_stats.oldest_age_millis,
+        },
+        finality_lag_stats,
+    );
+    FreshAdmissionFallback {
+        allowed: cap > 0,
+        cap,
+        backpressure,
+    }
 }
 
 fn ordinary_admission_policy(
@@ -1486,23 +1934,185 @@ fn ordinary_admission_policy(
     allow_recovered_deploys: bool,
     stale_in_scope_work: bool,
     allow_deploy_inclusion: bool,
-    fallback_allowed: bool,
+    fallback: FreshAdmissionFallback,
+    in_scope_recovery: FreshAdmissionFallback,
+    deploy_inclusion_staleness: DeployInclusionStaleness,
+    finality_lag_stats: FinalityLagStats,
 ) -> DeployAdmissionPolicy {
+    let (normal_cap, normal_backpressure) = adaptive_normal_ordinary_deploy_cap(
+        casper_snapshot,
+        stale_in_scope_work,
+        deploy_inclusion_staleness,
+        finality_lag_stats,
+    );
     let requires_fallback = (rejected_buffer_non_empty && !allow_recovered_deploys)
         || (stale_in_scope_work && !allow_deploy_inclusion);
     if requires_fallback {
         return DeployAdmissionPolicy {
-            allow_ordinary: fallback_allowed,
-            ordinary_cap: fallback_ordinary_deploy_cap(casper_snapshot),
+            allow_ordinary: fallback.allowed,
+            ordinary_cap: fallback.cap,
+            allow_in_scope_recovery: in_scope_recovery.allowed,
+            in_scope_recovery_cap: in_scope_recovery.cap,
             reserve_tail: false,
+            fallback: fallback.allowed || in_scope_recovery.allowed,
+            backpressure: fallback.backpressure || in_scope_recovery.backpressure,
         };
     }
 
     DeployAdmissionPolicy {
         allow_ordinary: true,
-        ordinary_cap: normal_ordinary_deploy_cap(casper_snapshot),
-        reserve_tail: true,
+        ordinary_cap: normal_cap,
+        allow_in_scope_recovery: in_scope_recovery.allowed,
+        in_scope_recovery_cap: in_scope_recovery.cap,
+        reserve_tail: !normal_backpressure,
+        fallback: in_scope_recovery.allowed,
+        backpressure: normal_backpressure || in_scope_recovery.backpressure,
     }
+}
+
+fn metric_bool(value: bool) -> f64 {
+    if value {
+        1.0
+    } else {
+        0.0
+    }
+}
+
+fn record_deploy_admission_metrics(
+    fresh_local_stats: FreshLocalDeployStats,
+    in_scope_local_stats: InScopeLocalDeployStats,
+    finality_lag_stats: FinalityLagStats,
+    inclusion_progress: &DeployInclusionProgress,
+    inclusion_staleness: DeployInclusionStaleness,
+    admission_policy: DeployAdmissionPolicy,
+    prepared: &PreparedUserDeploys,
+) {
+    use crate::rust::metrics_constants::{
+        BLOCK_CREATOR_DEPLOY_ADMISSION_ALREADY_IN_SCOPE_METRIC,
+        BLOCK_CREATOR_DEPLOY_ADMISSION_BACKPRESSURE_METRIC,
+        BLOCK_CREATOR_DEPLOY_ADMISSION_BLOCK_TIME_STALE_METRIC,
+        BLOCK_CREATOR_DEPLOY_ADMISSION_DAG_TIP_METRIC,
+        BLOCK_CREATOR_DEPLOY_ADMISSION_FALLBACK_CAP_METRIC,
+        BLOCK_CREATOR_DEPLOY_ADMISSION_FALLBACK_ENABLED_METRIC,
+        BLOCK_CREATOR_DEPLOY_ADMISSION_FRESH_LOCAL_METRIC,
+        BLOCK_CREATOR_DEPLOY_ADMISSION_IN_SCOPE_LOCAL_METRIC,
+        BLOCK_CREATOR_DEPLOY_ADMISSION_LFB_LAG_METRIC, BLOCK_CREATOR_DEPLOY_ADMISSION_LFB_METRIC,
+        BLOCK_CREATOR_DEPLOY_ADMISSION_MISSING_PROGRESS_METADATA_METRIC,
+        BLOCK_CREATOR_DEPLOY_ADMISSION_OLDEST_FRESH_AGE_MS_METRIC,
+        BLOCK_CREATOR_DEPLOY_ADMISSION_OLDEST_IN_SCOPE_AGE_MS_METRIC,
+        BLOCK_CREATOR_DEPLOY_ADMISSION_PROGRESS_NEW_SIGS_METRIC,
+        BLOCK_CREATOR_DEPLOY_ADMISSION_PROGRESS_RECYCLED_SIGS_METRIC,
+        BLOCK_CREATOR_DEPLOY_ADMISSION_SELECTED_IN_SCOPE_RECOVERY_METRIC,
+        BLOCK_CREATOR_DEPLOY_ADMISSION_SELECTED_ORDINARY_METRIC,
+        BLOCK_CREATOR_DEPLOY_ADMISSION_SELECTED_RETRY_METRIC,
+        BLOCK_CREATOR_DEPLOY_ADMISSION_SIGNATURE_STALE_METRIC, CASPER_METRICS_SOURCE,
+    };
+    let (progress_new_sigs, progress_recycled_sigs) = inclusion_progress
+        .latest_deploy
+        .as_ref()
+        .map(|info| (info.new_sig_count, info.recycled_sig_count))
+        .unwrap_or((0, 0));
+    metrics::gauge!(
+        BLOCK_CREATOR_DEPLOY_ADMISSION_FRESH_LOCAL_METRIC,
+        "source" => CASPER_METRICS_SOURCE
+    )
+    .set(fresh_local_stats.count as f64);
+    metrics::gauge!(
+        BLOCK_CREATOR_DEPLOY_ADMISSION_OLDEST_FRESH_AGE_MS_METRIC,
+        "source" => CASPER_METRICS_SOURCE
+    )
+    .set(fresh_local_stats.oldest_age_millis as f64);
+    metrics::gauge!(
+        BLOCK_CREATOR_DEPLOY_ADMISSION_IN_SCOPE_LOCAL_METRIC,
+        "source" => CASPER_METRICS_SOURCE
+    )
+    .set(in_scope_local_stats.count as f64);
+    metrics::gauge!(
+        BLOCK_CREATOR_DEPLOY_ADMISSION_OLDEST_IN_SCOPE_AGE_MS_METRIC,
+        "source" => CASPER_METRICS_SOURCE
+    )
+    .set(in_scope_local_stats.oldest_age_millis as f64);
+    metrics::gauge!(
+        BLOCK_CREATOR_DEPLOY_ADMISSION_ALREADY_IN_SCOPE_METRIC,
+        "source" => CASPER_METRICS_SOURCE
+    )
+    .set(prepared.already_in_scope_count as f64);
+    metrics::gauge!(
+        BLOCK_CREATOR_DEPLOY_ADMISSION_SELECTED_ORDINARY_METRIC,
+        "source" => CASPER_METRICS_SOURCE
+    )
+    .set(prepared.selected_ordinary_count as f64);
+    metrics::gauge!(
+        BLOCK_CREATOR_DEPLOY_ADMISSION_SELECTED_RETRY_METRIC,
+        "source" => CASPER_METRICS_SOURCE
+    )
+    .set(prepared.selected_retry_count as f64);
+    metrics::gauge!(
+        BLOCK_CREATOR_DEPLOY_ADMISSION_SELECTED_IN_SCOPE_RECOVERY_METRIC,
+        "source" => CASPER_METRICS_SOURCE
+    )
+    .set(prepared.selected_in_scope_recovery_count as f64);
+    metrics::gauge!(
+        BLOCK_CREATOR_DEPLOY_ADMISSION_FALLBACK_ENABLED_METRIC,
+        "source" => CASPER_METRICS_SOURCE
+    )
+    .set(metric_bool(admission_policy.fallback));
+    metrics::gauge!(
+        BLOCK_CREATOR_DEPLOY_ADMISSION_FALLBACK_CAP_METRIC,
+        "source" => CASPER_METRICS_SOURCE
+    )
+    .set(if admission_policy.fallback {
+        admission_policy
+            .ordinary_cap
+            .max(admission_policy.in_scope_recovery_cap) as f64
+    } else {
+        0.0
+    });
+    metrics::gauge!(
+        BLOCK_CREATOR_DEPLOY_ADMISSION_BACKPRESSURE_METRIC,
+        "source" => CASPER_METRICS_SOURCE
+    )
+    .set(metric_bool(admission_policy.backpressure));
+    metrics::gauge!(
+        BLOCK_CREATOR_DEPLOY_ADMISSION_DAG_TIP_METRIC,
+        "source" => CASPER_METRICS_SOURCE
+    )
+    .set(finality_lag_stats.dag_tip as f64);
+    metrics::gauge!(
+        BLOCK_CREATOR_DEPLOY_ADMISSION_LFB_METRIC,
+        "source" => CASPER_METRICS_SOURCE
+    )
+    .set(finality_lag_stats.last_finalized_block as f64);
+    metrics::gauge!(
+        BLOCK_CREATOR_DEPLOY_ADMISSION_LFB_LAG_METRIC,
+        "source" => CASPER_METRICS_SOURCE
+    )
+    .set(finality_lag_stats.lag as f64);
+    metrics::gauge!(
+        BLOCK_CREATOR_DEPLOY_ADMISSION_PROGRESS_NEW_SIGS_METRIC,
+        "source" => CASPER_METRICS_SOURCE
+    )
+    .set(progress_new_sigs as f64);
+    metrics::gauge!(
+        BLOCK_CREATOR_DEPLOY_ADMISSION_PROGRESS_RECYCLED_SIGS_METRIC,
+        "source" => CASPER_METRICS_SOURCE
+    )
+    .set(progress_recycled_sigs as f64);
+    metrics::gauge!(
+        BLOCK_CREATOR_DEPLOY_ADMISSION_SIGNATURE_STALE_METRIC,
+        "source" => CASPER_METRICS_SOURCE
+    )
+    .set(metric_bool(inclusion_staleness.signature_stale));
+    metrics::gauge!(
+        BLOCK_CREATOR_DEPLOY_ADMISSION_BLOCK_TIME_STALE_METRIC,
+        "source" => CASPER_METRICS_SOURCE
+    )
+    .set(metric_bool(inclusion_staleness.block_or_time_stale));
+    metrics::gauge!(
+        BLOCK_CREATOR_DEPLOY_ADMISSION_MISSING_PROGRESS_METADATA_METRIC,
+        "source" => CASPER_METRICS_SOURCE
+    )
+    .set(metric_bool(inclusion_staleness.missing_deploy_metadata));
 }
 
 fn parent_frontier_extends_lfb(
@@ -1655,8 +2265,9 @@ pub async fn create(
             .as_ref()
             .map(|leader| leader == &validator_identity.public_key.bytes)
             .unwrap_or(true);
-        let inclusion_progress_stale =
-            deploy_inclusion_progress_is_stale(&inclusion_progress, next_block_num, now_millis);
+        let inclusion_staleness =
+            deploy_inclusion_progress_staleness(&inclusion_progress, next_block_num, now_millis);
+        let finality_lag_stats = finality_lag_stats(casper_snapshot, block_store)?;
         let fresh_local_stats = fresh_local_deploy_stats(
             casper_snapshot,
             next_block_num,
@@ -1665,10 +2276,27 @@ pub async fn create(
             &rejected_deploy_buffer,
             block_store,
         )?;
-        let fallback_allowed = fresh_admission_fallback_allowed(
+        let in_scope_local_stats = in_scope_local_deploy_stats(
+            casper_snapshot,
+            next_block_num,
+            now_millis,
+            &deploy_storage,
+            &rejected_deploy_buffer,
+            block_store,
+        )?;
+        let fallback = fresh_admission_fallback(
+            casper_snapshot,
             stale_in_scope_work,
-            inclusion_progress_stale,
+            inclusion_staleness,
             fresh_local_stats,
+            finality_lag_stats,
+        );
+        let in_scope_recovery = in_scope_recovery_fallback(
+            casper_snapshot,
+            stale_in_scope_work,
+            inclusion_staleness,
+            in_scope_local_stats,
+            finality_lag_stats,
         );
         let rejected_buffer_non_empty = {
             let buffer_guard = rejected_deploy_buffer
@@ -1684,7 +2312,10 @@ pub async fn create(
             allow_recovered_deploys,
             stale_in_scope_work,
             allow_deploy_inclusion,
-            fallback_allowed,
+            fallback,
+            in_scope_recovery,
+            inclusion_staleness,
+            finality_lag_stats,
         );
         if self_chain_rejected_buffered && !allow_recovered_deploys {
             tracing::debug!(
@@ -1709,12 +2340,31 @@ pub async fn create(
         {
             tracing::info!(
                 target: "f1r3fly.casper.recovery",
-                "Ordinary user deploy fallback enabled for block #{}: cap={}, fresh_local={}, oldest_fresh_age_ms={}, inclusion_progress_stale={}",
+                "Ordinary user deploy fallback enabled for block #{}: cap={}, fresh_local={}, oldest_fresh_age_ms={}, in_scope_local={}, oldest_in_scope_age_ms={}, inclusion_progress_stale={}, signature_stale={}, lfb_lag={}, backpressure={}",
                 next_block_num,
                 admission_policy.ordinary_cap,
                 fresh_local_stats.count,
                 fresh_local_stats.oldest_age_millis,
-                inclusion_progress_stale
+                in_scope_local_stats.count,
+                in_scope_local_stats.oldest_age_millis,
+                inclusion_staleness.stale,
+                inclusion_staleness.signature_stale,
+                finality_lag_stats.lag,
+                admission_policy.backpressure
+            );
+        }
+        if admission_policy.allow_in_scope_recovery {
+            tracing::info!(
+                target: "f1r3fly.casper.recovery",
+                "In-scope deploy recovery enabled for block #{}: cap={}, in_scope_local={}, oldest_in_scope_age_ms={}, inclusion_progress_stale={}, signature_stale={}, lfb_lag={}, backpressure={}",
+                next_block_num,
+                admission_policy.in_scope_recovery_cap,
+                in_scope_local_stats.count,
+                in_scope_local_stats.oldest_age_millis,
+                inclusion_staleness.stale,
+                inclusion_staleness.signature_stale,
+                finality_lag_stats.lag,
+                admission_policy.backpressure
             );
         }
         if user_work_in_flight && admission_policy.allow_ordinary && allow_deploy_inclusion {
@@ -1738,18 +2388,23 @@ pub async fn create(
             admission_policy,
         )
         .await?;
+        record_deploy_admission_metrics(
+            fresh_local_stats,
+            in_scope_local_stats,
+            finality_lag_stats,
+            &inclusion_progress,
+            inclusion_staleness,
+            admission_policy,
+            &prepared,
+        );
+        let selected_in_scope_recovery_sigs = prepared.selected_in_scope_recovery_sigs.clone();
         let mut v = prepared.deploys;
         if !self_chain_deploy_sigs.is_empty() {
             let before = v.len();
-            // A sig in the proposer's self-chain is normally a duplicate and
-            // must be filtered out. The exception is a sig in
-            // `rejected_in_scope`: the merge engine conflict-rejected it, so
-            // its effects never landed in canonical state and re-proposing
-            // it is correct. Mirror the same exemption that
-            // `prepare_user_deploys` applies upstream.
             v.retain(|deploy| {
                 !self_chain_deploy_sigs.contains(&deploy.sig)
                     || casper_snapshot.rejected_in_scope.contains(&deploy.sig)
+                    || selected_in_scope_recovery_sigs.contains(&deploy.sig)
             });
             let skipped = before.saturating_sub(v.len());
             if skipped > 0 {
@@ -2395,6 +3050,34 @@ mod tests {
         block
     }
 
+    fn fallback(allowed: bool, cap: usize) -> FreshAdmissionFallback {
+        FreshAdmissionFallback {
+            allowed,
+            cap,
+            backpressure: false,
+        }
+    }
+
+    fn lag(dag_tip: i64, last_finalized_block: i64) -> FinalityLagStats {
+        FinalityLagStats {
+            dag_tip,
+            last_finalized_block,
+            lag: dag_tip.saturating_sub(last_finalized_block).max(0),
+        }
+    }
+
+    fn branch_info(byte: u8, sender: Validator, block_number: i64) -> BranchDeployInfo {
+        BranchDeployInfo {
+            block_hash: invalid_block_hash(byte),
+            sender,
+            block_number,
+            timestamp: block_number,
+            deploy_sig_count: 1,
+            new_sig_count: 1,
+            recycled_sig_count: 0,
+        }
+    }
+
     #[tokio::test]
     async fn self_chain_user_deploy_gate_tracks_unfinalized_user_block_behind_empty_latest() {
         let mut kvm = InMemoryStoreManager::new();
@@ -2844,9 +3527,13 @@ mod tests {
         assert_eq!(
             progress.latest_deploy,
             Some(BranchDeployInfo {
+                block_hash: user_hash,
                 sender: validator(2),
                 block_number: 2,
                 timestamp: 2,
+                deploy_sig_count: 1,
+                new_sig_count: 1,
+                recycled_sig_count: 0,
             })
         );
         assert_ne!(
@@ -2885,13 +3572,46 @@ mod tests {
         let snapshot =
             crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
         assert!(
-            !ordinary_admission_policy(&snapshot, true, false, false, true, false).allow_ordinary
+            !ordinary_admission_policy(
+                &snapshot,
+                true,
+                false,
+                false,
+                true,
+                FreshAdmissionFallback::default(),
+                FreshAdmissionFallback::default(),
+                DeployInclusionStaleness::default(),
+                lag(1, 1)
+            )
+            .allow_ordinary
         );
         assert!(
-            ordinary_admission_policy(&snapshot, true, true, false, true, false).allow_ordinary
+            ordinary_admission_policy(
+                &snapshot,
+                true,
+                true,
+                false,
+                true,
+                FreshAdmissionFallback::default(),
+                FreshAdmissionFallback::default(),
+                DeployInclusionStaleness::default(),
+                lag(1, 1)
+            )
+            .allow_ordinary
         );
         assert!(
-            ordinary_admission_policy(&snapshot, false, false, false, false, false).allow_ordinary
+            ordinary_admission_policy(
+                &snapshot,
+                false,
+                false,
+                false,
+                false,
+                FreshAdmissionFallback::default(),
+                FreshAdmissionFallback::default(),
+                DeployInclusionStaleness::default(),
+                lag(1, 1)
+            )
+            .allow_ordinary
         );
     }
 
@@ -2900,18 +3620,75 @@ mod tests {
         let snapshot =
             crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
         assert!(
-            ordinary_admission_policy(&snapshot, false, false, false, false, false).allow_ordinary
+            ordinary_admission_policy(
+                &snapshot,
+                false,
+                false,
+                false,
+                false,
+                FreshAdmissionFallback::default(),
+                FreshAdmissionFallback::default(),
+                DeployInclusionStaleness::default(),
+                lag(1, 1)
+            )
+            .allow_ordinary
         );
         assert!(
-            ordinary_admission_policy(&snapshot, false, false, true, true, false).allow_ordinary
+            ordinary_admission_policy(
+                &snapshot,
+                false,
+                false,
+                true,
+                true,
+                FreshAdmissionFallback::default(),
+                FreshAdmissionFallback::default(),
+                DeployInclusionStaleness::default(),
+                lag(1, 1)
+            )
+            .allow_ordinary
         );
         assert!(
-            !ordinary_admission_policy(&snapshot, false, false, true, false, false).allow_ordinary
+            !ordinary_admission_policy(
+                &snapshot,
+                false,
+                false,
+                true,
+                false,
+                FreshAdmissionFallback::default(),
+                FreshAdmissionFallback::default(),
+                DeployInclusionStaleness::default(),
+                lag(1, 1)
+            )
+            .allow_ordinary
         );
         assert!(
-            !ordinary_admission_policy(&snapshot, true, false, true, true, false).allow_ordinary
+            !ordinary_admission_policy(
+                &snapshot,
+                true,
+                false,
+                true,
+                true,
+                FreshAdmissionFallback::default(),
+                FreshAdmissionFallback::default(),
+                DeployInclusionStaleness::default(),
+                lag(1, 1)
+            )
+            .allow_ordinary
         );
-        assert!(ordinary_admission_policy(&snapshot, true, true, true, true, false).allow_ordinary);
+        assert!(
+            ordinary_admission_policy(
+                &snapshot,
+                true,
+                true,
+                true,
+                true,
+                FreshAdmissionFallback::default(),
+                FreshAdmissionFallback::default(),
+                DeployInclusionStaleness::default(),
+                lag(1, 1)
+            )
+            .allow_ordinary
+        );
     }
 
     #[test]
@@ -2922,47 +3699,248 @@ mod tests {
             .on_chain_state
             .shard_conf
             .max_user_deploys_per_block = 32;
-        let policy = ordinary_admission_policy(&snapshot, false, false, true, false, true);
+        let policy = ordinary_admission_policy(
+            &snapshot,
+            false,
+            false,
+            true,
+            false,
+            fallback(true, NON_LEADER_FALLBACK_ORDINARY_DEPLOY_CAP),
+            FreshAdmissionFallback::default(),
+            DeployInclusionStaleness::default(),
+            lag(1, 1),
+        );
 
         assert!(policy.allow_ordinary);
         assert_eq!(policy.ordinary_cap, NON_LEADER_FALLBACK_ORDINARY_DEPLOY_CAP);
         assert!(!policy.reserve_tail);
+        assert!(policy.fallback);
+    }
+
+    #[test]
+    fn stale_progress_backpressures_normal_leader_cap() {
+        let mut snapshot =
+            crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+        snapshot
+            .on_chain_state
+            .shard_conf
+            .max_user_deploys_per_block = 128;
+        let stale = DeployInclusionStaleness {
+            stale: true,
+            block_or_time_stale: true,
+            signature_stale: false,
+            missing_deploy_metadata: false,
+        };
+        let recycled = DeployInclusionStaleness {
+            signature_stale: true,
+            ..stale
+        };
+
+        let policy = ordinary_admission_policy(
+            &snapshot,
+            false,
+            false,
+            false,
+            true,
+            FreshAdmissionFallback::default(),
+            FreshAdmissionFallback::default(),
+            stale,
+            lag(3, 2),
+        );
+        assert_eq!(policy.ordinary_cap, 128);
+        assert!(policy.reserve_tail);
+        assert!(!policy.backpressure);
+
+        let policy = ordinary_admission_policy(
+            &snapshot,
+            false,
+            false,
+            true,
+            true,
+            FreshAdmissionFallback::default(),
+            FreshAdmissionFallback::default(),
+            stale,
+            lag(3, 2),
+        );
+        assert!(policy.allow_ordinary);
+        assert_eq!(policy.ordinary_cap, NON_LEADER_FALLBACK_ORDINARY_DEPLOY_CAP);
+        assert!(!policy.reserve_tail);
+        assert!(policy.backpressure);
+
+        let policy = ordinary_admission_policy(
+            &snapshot,
+            false,
+            false,
+            true,
+            true,
+            FreshAdmissionFallback::default(),
+            FreshAdmissionFallback::default(),
+            recycled,
+            lag(3, 2),
+        );
+        assert_eq!(
+            policy.ordinary_cap,
+            NON_LEADER_FALLBACK_MIN_ORDINARY_DEPLOY_CAP
+        );
+    }
+
+    #[test]
+    fn in_scope_recovery_fallback_waits_for_age_and_stale_progress() {
+        let snapshot =
+            crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+        let old = InScopeLocalDeployStats {
+            count: 150,
+            oldest_age_millis: FRESH_DEPLOY_MAX_ADMISSION_DELAY_MILLIS,
+        };
+        let young = InScopeLocalDeployStats {
+            count: 150,
+            oldest_age_millis: FRESH_DEPLOY_MAX_ADMISSION_DELAY_MILLIS - 1,
+        };
+        let stale = DeployInclusionStaleness {
+            stale: true,
+            block_or_time_stale: true,
+            signature_stale: false,
+            missing_deploy_metadata: false,
+        };
+
+        assert!(!in_scope_recovery_fallback(&snapshot, false, stale, old, lag(3, 2)).allowed);
+        assert!(
+            !in_scope_recovery_fallback(
+                &snapshot,
+                true,
+                DeployInclusionStaleness::default(),
+                old,
+                lag(3, 2)
+            )
+            .allowed
+        );
+        assert!(!in_scope_recovery_fallback(&snapshot, true, stale, young, lag(3, 2)).allowed);
+        let fallback = in_scope_recovery_fallback(&snapshot, true, stale, old, lag(3, 2));
+        assert!(fallback.allowed);
+        assert_eq!(fallback.cap, NON_LEADER_FALLBACK_ORDINARY_DEPLOY_CAP);
     }
 
     #[test]
     fn fresh_fallback_waits_for_age_and_progress_lease() {
+        let snapshot =
+            crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
         let stats = FreshLocalDeployStats {
             count: 1,
             oldest_age_millis: FRESH_DEPLOY_MAX_ADMISSION_DELAY_MILLIS,
         };
-        assert!(!fresh_admission_fallback_allowed(true, false, stats));
-        assert!(fresh_admission_fallback_allowed(true, true, stats));
-        assert!(fresh_admission_fallback_allowed(false, false, stats));
+        let fresh = deploy_inclusion_progress_staleness(
+            &DeployInclusionProgress {
+                leader: Some(validator(1)),
+                latest_deploy: Some(branch_info(0x81, validator(1), 10)),
+            },
+            11,
+            10,
+        );
+        let stale = DeployInclusionStaleness {
+            stale: true,
+            block_or_time_stale: true,
+            signature_stale: false,
+            missing_deploy_metadata: false,
+        };
+
+        assert!(!fresh_admission_fallback(&snapshot, true, fresh, stats, lag(3, 1)).allowed);
+        assert!(fresh_admission_fallback(&snapshot, true, stale, stats, lag(3, 1)).allowed);
+        assert!(
+            fresh_admission_fallback(
+                &snapshot,
+                false,
+                DeployInclusionStaleness::default(),
+                stats,
+                lag(3, 1)
+            )
+            .allowed
+        );
 
         let young = FreshLocalDeployStats {
             count: 1,
             oldest_age_millis: FRESH_DEPLOY_MAX_ADMISSION_DELAY_MILLIS - 1,
         };
-        assert!(!fresh_admission_fallback_allowed(true, true, young));
-        assert!(!fresh_admission_fallback_allowed(
-            true,
-            true,
-            FreshLocalDeployStats::default()
-        ));
+        assert!(!fresh_admission_fallback(&snapshot, true, stale, young, lag(3, 1)).allowed);
+        assert!(
+            !fresh_admission_fallback(
+                &snapshot,
+                true,
+                stale,
+                FreshLocalDeployStats::default(),
+                lag(3, 1)
+            )
+            .allowed
+        );
+    }
+
+    #[test]
+    fn adaptive_fallback_scales_with_age_and_finality_backpressure() {
+        let mut snapshot =
+            crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+        snapshot
+            .on_chain_state
+            .shard_conf
+            .max_user_deploys_per_block = 128;
+
+        let medium = fresh_admission_fallback(
+            &snapshot,
+            false,
+            DeployInclusionStaleness::default(),
+            FreshLocalDeployStats {
+                count: 10,
+                oldest_age_millis: FRESH_DEPLOY_ESCALATED_ADMISSION_DELAY_MILLIS,
+            },
+            lag(10, 9),
+        );
+        assert_eq!(medium.cap, NON_LEADER_FALLBACK_MEDIUM_ORDINARY_DEPLOY_CAP);
+        assert!(!medium.backpressure);
+
+        let max = fresh_admission_fallback(
+            &snapshot,
+            false,
+            DeployInclusionStaleness::default(),
+            FreshLocalDeployStats {
+                count: 10,
+                oldest_age_millis: FRESH_DEPLOY_MAX_ESCALATED_ADMISSION_DELAY_MILLIS,
+            },
+            lag(10, 9),
+        );
+        assert_eq!(max.cap, NON_LEADER_FALLBACK_MAX_ORDINARY_DEPLOY_CAP);
+        assert!(!max.backpressure);
+
+        let soft = fresh_admission_fallback(
+            &snapshot,
+            false,
+            DeployInclusionStaleness::default(),
+            FreshLocalDeployStats {
+                count: 10,
+                oldest_age_millis: FRESH_DEPLOY_MAX_ESCALATED_ADMISSION_DELAY_MILLIS,
+            },
+            lag(10, 6),
+        );
+        assert_eq!(soft.cap, NON_LEADER_FALLBACK_ORDINARY_DEPLOY_CAP);
+        assert!(soft.backpressure);
+
+        let hard = fresh_admission_fallback(
+            &snapshot,
+            false,
+            DeployInclusionStaleness::default(),
+            FreshLocalDeployStats {
+                count: 10,
+                oldest_age_millis: FRESH_DEPLOY_MAX_ESCALATED_ADMISSION_DELAY_MILLIS,
+            },
+            lag(10, 2),
+        );
+        assert_eq!(hard.cap, NON_LEADER_FALLBACK_MIN_ORDINARY_DEPLOY_CAP);
+        assert!(hard.backpressure);
     }
 
     #[test]
     fn newer_branch_deploy_info_breaks_ties_by_sender() {
-        let existing = BranchDeployInfo {
-            sender: validator(1),
-            block_number: 10,
-            timestamp: 1_000,
-        };
-        let candidate = BranchDeployInfo {
-            sender: validator(2),
-            block_number: 10,
-            timestamp: 1_000,
-        };
+        let mut existing = branch_info(0x82, validator(1), 10);
+        existing.timestamp = 1_000;
+        let mut candidate = branch_info(0x83, validator(2), 10);
+        candidate.timestamp = 1_000;
 
         assert_eq!(
             newer_branch_deploy_info(Some(existing), candidate.clone()),
@@ -2975,9 +3953,8 @@ mod tests {
         let progress = DeployInclusionProgress {
             leader: Some(validator(1)),
             latest_deploy: Some(BranchDeployInfo {
-                sender: validator(1),
-                block_number: 10,
                 timestamp: 1_000,
+                ..branch_info(0x84, validator(1), 10)
             }),
         };
 
@@ -3005,6 +3982,149 @@ mod tests {
             11,
             1_000
         ));
+    }
+
+    #[test]
+    fn deploy_inclusion_progress_is_stale_when_latest_deploy_block_recycles_signatures() {
+        let mut recycled = branch_info(0x85, validator(1), 10);
+        recycled.new_sig_count = 0;
+        recycled.recycled_sig_count = 1;
+        let progress = DeployInclusionProgress {
+            leader: Some(validator(1)),
+            latest_deploy: Some(recycled),
+        };
+
+        let staleness = deploy_inclusion_progress_staleness(&progress, 11, 1_000);
+
+        assert!(staleness.stale);
+        assert!(!staleness.block_or_time_stale);
+        assert!(staleness.signature_stale);
+    }
+
+    #[tokio::test]
+    async fn deploy_inclusion_progress_counts_recycled_deploy_signatures() {
+        let mut kvm = InMemoryStoreManager::new();
+        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
+            .await
+            .expect("block store");
+        let mut snapshot =
+            crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+        snapshot.on_chain_state.active_validators = vec![validator(1), validator(2), validator(3)];
+        snapshot.on_chain_state.shard_conf.deploy_lifespan = 10;
+
+        let lfb_hash = invalid_block_hash(0x86);
+        let first_hash = invalid_block_hash(0x87);
+        let recycled_hash = invalid_block_hash(0x88);
+        let lfb = test_block(lfb_hash.clone(), validator(1), Vec::new(), 1, Vec::new());
+        let deploy = crate::rust::util::construct_deploy::basic_deploy_data(
+            2,
+            None,
+            Some("test".to_string()),
+        )
+        .expect("deploy");
+        let first = test_block(
+            first_hash.clone(),
+            validator(2),
+            vec![lfb_hash.clone()],
+            2,
+            vec![ProcessedDeploy::empty(deploy.clone())],
+        );
+        let recycled = test_block(
+            recycled_hash.clone(),
+            validator(2),
+            vec![first_hash.clone()],
+            3,
+            vec![ProcessedDeploy::empty(deploy)],
+        );
+
+        block_store.put_block_message(&lfb).expect("put lfb");
+        block_store.put_block_message(&first).expect("put first");
+        block_store
+            .put_block_message(&recycled)
+            .expect("put recycled");
+        snapshot.last_finalized_block = lfb_hash;
+        snapshot.max_block_num = 3;
+        snapshot.parents = vec![recycled];
+
+        let progress = deploy_inclusion_progress(&snapshot, &block_store).expect("progress");
+
+        assert_eq!(progress.leader, Some(validator(2)));
+        assert_eq!(
+            progress.latest_deploy,
+            Some(BranchDeployInfo {
+                block_hash: recycled_hash,
+                sender: validator(2),
+                block_number: 3,
+                timestamp: 3,
+                deploy_sig_count: 1,
+                new_sig_count: 0,
+                recycled_sig_count: 1,
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn deploy_inclusion_progress_treats_sibling_branch_signatures_as_in_scope() {
+        let mut kvm = InMemoryStoreManager::new();
+        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
+            .await
+            .expect("block store");
+        let mut snapshot =
+            crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+        snapshot.on_chain_state.active_validators = vec![validator(1), validator(2), validator(3)];
+        snapshot.on_chain_state.shard_conf.deploy_lifespan = 10;
+
+        let lfb_hash = invalid_block_hash(0x89);
+        let sibling_hash = invalid_block_hash(0x8a);
+        let duplicate_hash = invalid_block_hash(0x8b);
+        let lfb = test_block(lfb_hash.clone(), validator(1), Vec::new(), 1, Vec::new());
+        let deploy = crate::rust::util::construct_deploy::basic_deploy_data(
+            3,
+            None,
+            Some("test".to_string()),
+        )
+        .expect("deploy");
+        let sibling = test_block(
+            sibling_hash.clone(),
+            validator(3),
+            vec![lfb_hash.clone()],
+            2,
+            vec![ProcessedDeploy::empty(deploy.clone())],
+        );
+        let duplicate = test_block(
+            duplicate_hash.clone(),
+            validator(2),
+            vec![lfb_hash.clone()],
+            3,
+            vec![ProcessedDeploy::empty(deploy)],
+        );
+
+        block_store.put_block_message(&lfb).expect("put lfb");
+        block_store
+            .put_block_message(&sibling)
+            .expect("put sibling");
+        block_store
+            .put_block_message(&duplicate)
+            .expect("put duplicate");
+        snapshot.last_finalized_block = lfb_hash;
+        snapshot.max_block_num = 3;
+        snapshot.parents = vec![duplicate, sibling];
+
+        let progress = deploy_inclusion_progress(&snapshot, &block_store).expect("progress");
+
+        assert_eq!(progress.leader, Some(validator(2)));
+        assert_eq!(
+            progress.latest_deploy,
+            Some(BranchDeployInfo {
+                block_hash: duplicate_hash,
+                sender: validator(2),
+                block_number: 3,
+                timestamp: 3,
+                deploy_sig_count: 1,
+                new_sig_count: 0,
+                recycled_sig_count: 1,
+            })
+        );
     }
 
     #[tokio::test]
@@ -3540,7 +4660,11 @@ mod tests {
             DeployAdmissionPolicy {
                 allow_ordinary: true,
                 ordinary_cap: NON_LEADER_FALLBACK_ORDINARY_DEPLOY_CAP,
+                allow_in_scope_recovery: false,
+                in_scope_recovery_cap: 0,
                 reserve_tail: false,
+                fallback: true,
+                backpressure: false,
             },
         )
         .await
@@ -3635,7 +4759,11 @@ mod tests {
             DeployAdmissionPolicy {
                 allow_ordinary: true,
                 ordinary_cap: NON_LEADER_FALLBACK_ORDINARY_DEPLOY_CAP,
+                allow_in_scope_recovery: false,
+                in_scope_recovery_cap: 0,
                 reserve_tail: false,
+                fallback: true,
+                backpressure: false,
             },
         )
         .await
@@ -3649,6 +4777,300 @@ mod tests {
             .deploys
             .iter()
             .all(|deploy| fresh_sigs.contains(&deploy.sig)));
+    }
+
+    #[tokio::test]
+    async fn stale_in_scope_recovery_selects_bounded_oldest_first_batch() {
+        let mut kvm = InMemoryStoreManager::new();
+        let deploy_storage = Arc::new(parking_lot::Mutex::new(
+            KeyValueDeployStorage::new(&mut kvm)
+                .await
+                .expect("deploy storage"),
+        ));
+        let rejected_deploy_buffer = Arc::new(Mutex::new(
+            KeyValueRejectedDeployBuffer::new(&mut kvm)
+                .await
+                .expect("rejected deploy buffer"),
+        ));
+        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
+            .await
+            .expect("block store");
+        let mut snapshot =
+            crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+        snapshot
+            .on_chain_state
+            .shard_conf
+            .max_user_deploys_per_block = 128;
+        snapshot.on_chain_state.shard_conf.deploy_lifespan = 500;
+        let deploys: Vec<_> = (1..=20)
+            .map(|id| {
+                construct_deploy::source_deploy(
+                    format!("@{}!({})", id, id),
+                    1_000 + id as i64,
+                    None,
+                    None,
+                    None,
+                    Some(id as i64),
+                    Some("test".to_string()),
+                )
+                .expect("deploy")
+            })
+            .collect();
+        for deploy in &deploys {
+            snapshot.deploys_in_scope.insert(deploy.sig.clone());
+        }
+        let lfb_hash = invalid_block_hash(0x91);
+        let user_hash = invalid_block_hash(0x92);
+        let lfb = test_block(lfb_hash.clone(), validator(1), Vec::new(), 250, Vec::new());
+        let user = test_block(
+            user_hash,
+            validator(2),
+            vec![lfb_hash.clone()],
+            299,
+            deploys
+                .iter()
+                .cloned()
+                .map(ProcessedDeploy::empty)
+                .collect(),
+        );
+        block_store.put_block_message(&lfb).expect("put lfb");
+        block_store.put_block_message(&user).expect("put user");
+        snapshot.last_finalized_block = lfb_hash;
+        snapshot.max_block_num = 299;
+        snapshot.parents = vec![lfb];
+        deploy_storage
+            .lock()
+            .add(deploys)
+            .expect("seed deploy storage");
+
+        let stats = in_scope_local_deploy_stats(
+            &snapshot,
+            300,
+            10_000,
+            &deploy_storage,
+            &rejected_deploy_buffer,
+            &block_store,
+        )
+        .expect("in-scope stats");
+        let finalized =
+            finalized_ancestor_deploy_sigs(&snapshot, &block_store, -200).expect("finalized sigs");
+
+        assert!(finalized.is_empty());
+        assert_eq!(stats.count, 20);
+
+        let prepared = prepare_user_deploys_with_policy(
+            &snapshot,
+            300,
+            10_000,
+            deploy_storage,
+            rejected_deploy_buffer,
+            &block_store,
+            false,
+            DeployAdmissionPolicy {
+                allow_ordinary: false,
+                ordinary_cap: 0,
+                allow_in_scope_recovery: true,
+                in_scope_recovery_cap: NON_LEADER_FALLBACK_MIN_ORDINARY_DEPLOY_CAP,
+                reserve_tail: false,
+                fallback: true,
+                backpressure: true,
+            },
+        )
+        .await
+        .expect("prepare deploys");
+
+        let selected_valid_after: HashSet<i64> = prepared
+            .deploys
+            .iter()
+            .map(|deploy| deploy.data.valid_after_block_number)
+            .collect();
+        let expected: HashSet<i64> =
+            (1..=NON_LEADER_FALLBACK_MIN_ORDINARY_DEPLOY_CAP as i64).collect();
+        assert_eq!(
+            prepared.deploys.len(),
+            NON_LEADER_FALLBACK_MIN_ORDINARY_DEPLOY_CAP
+        );
+        assert_eq!(selected_valid_after, expected);
+        assert_eq!(prepared.already_in_scope_count, 20);
+        assert_eq!(
+            prepared.selected_in_scope_recovery_count,
+            NON_LEADER_FALLBACK_MIN_ORDINARY_DEPLOY_CAP
+        );
+        assert_eq!(prepared.selected_ordinary_count, 0);
+    }
+
+    #[tokio::test]
+    async fn parent_chain_in_scope_deploys_are_not_selected_for_recovery() {
+        let mut kvm = InMemoryStoreManager::new();
+        let deploy_storage = Arc::new(parking_lot::Mutex::new(
+            KeyValueDeployStorage::new(&mut kvm)
+                .await
+                .expect("deploy storage"),
+        ));
+        let rejected_deploy_buffer = Arc::new(Mutex::new(
+            KeyValueRejectedDeployBuffer::new(&mut kvm)
+                .await
+                .expect("rejected deploy buffer"),
+        ));
+        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
+            .await
+            .expect("block store");
+        let mut snapshot =
+            crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+        snapshot
+            .on_chain_state
+            .shard_conf
+            .max_user_deploys_per_block = 128;
+        snapshot.on_chain_state.shard_conf.deploy_lifespan = 500;
+        let deploy = construct_deploy::source_deploy(
+            "@parent_chain!(0)".to_string(),
+            1_000,
+            None,
+            None,
+            None,
+            Some(1),
+            Some("test".to_string()),
+        )
+        .expect("deploy");
+        snapshot.deploys_in_scope.insert(deploy.sig.clone());
+        deploy_storage
+            .lock()
+            .add(vec![deploy.clone()])
+            .expect("seed deploy storage");
+        let lfb_hash = invalid_block_hash(0x94);
+        let user_hash = invalid_block_hash(0x95);
+        let lfb = test_block(lfb_hash.clone(), validator(1), Vec::new(), 250, Vec::new());
+        let user = test_block(user_hash, validator(2), vec![lfb_hash.clone()], 299, vec![
+            ProcessedDeploy::empty(deploy.clone()),
+        ]);
+        block_store.put_block_message(&lfb).expect("put lfb");
+        block_store.put_block_message(&user).expect("put user");
+        snapshot.last_finalized_block = lfb_hash;
+        snapshot.max_block_num = 299;
+        snapshot.parents = vec![user];
+
+        let stats = in_scope_local_deploy_stats(
+            &snapshot,
+            300,
+            10_000,
+            &deploy_storage,
+            &rejected_deploy_buffer,
+            &block_store,
+        )
+        .expect("in-scope stats");
+        assert_eq!(stats.count, 0);
+
+        let prepared = prepare_user_deploys_with_policy(
+            &snapshot,
+            300,
+            10_000,
+            deploy_storage,
+            rejected_deploy_buffer,
+            &block_store,
+            false,
+            DeployAdmissionPolicy {
+                allow_ordinary: false,
+                ordinary_cap: 0,
+                allow_in_scope_recovery: true,
+                in_scope_recovery_cap: NON_LEADER_FALLBACK_MIN_ORDINARY_DEPLOY_CAP,
+                reserve_tail: false,
+                fallback: true,
+                backpressure: true,
+            },
+        )
+        .await
+        .expect("prepare deploys");
+
+        assert!(prepared.deploys.is_empty());
+        assert_eq!(prepared.already_in_scope_count, 1);
+        assert_eq!(prepared.selected_in_scope_recovery_count, 0);
+    }
+
+    #[tokio::test]
+    async fn finalized_in_scope_deploys_are_not_selected_for_recovery() {
+        let mut kvm = InMemoryStoreManager::new();
+        let deploy_storage = Arc::new(parking_lot::Mutex::new(
+            KeyValueDeployStorage::new(&mut kvm)
+                .await
+                .expect("deploy storage"),
+        ));
+        let rejected_deploy_buffer = Arc::new(Mutex::new(
+            KeyValueRejectedDeployBuffer::new(&mut kvm)
+                .await
+                .expect("rejected deploy buffer"),
+        ));
+        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
+            .await
+            .expect("block store");
+        let mut snapshot =
+            crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+        snapshot
+            .on_chain_state
+            .shard_conf
+            .max_user_deploys_per_block = 128;
+        snapshot.on_chain_state.shard_conf.deploy_lifespan = 500;
+        let deploy = construct_deploy::source_deploy(
+            "@finalized!(0)".to_string(),
+            1_000,
+            None,
+            None,
+            None,
+            Some(1),
+            Some("test".to_string()),
+        )
+        .expect("deploy");
+        snapshot.deploys_in_scope.insert(deploy.sig.clone());
+        deploy_storage
+            .lock()
+            .add(vec![deploy.clone()])
+            .expect("seed deploy storage");
+        let lfb_hash = invalid_block_hash(0x93);
+        let lfb = test_block(lfb_hash.clone(), validator(1), Vec::new(), 250, vec![
+            ProcessedDeploy::empty(deploy.clone()),
+        ]);
+        block_store.put_block_message(&lfb).expect("put lfb");
+        snapshot.last_finalized_block = lfb_hash;
+        snapshot.max_block_num = 250;
+
+        let stats = in_scope_local_deploy_stats(
+            &snapshot,
+            300,
+            10_000,
+            &deploy_storage,
+            &rejected_deploy_buffer,
+            &block_store,
+        )
+        .expect("in-scope stats");
+        let finalized =
+            finalized_ancestor_deploy_sigs(&snapshot, &block_store, -200).expect("finalized sigs");
+
+        assert!(finalized.contains(&deploy.sig));
+        assert_eq!(stats.count, 0);
+
+        let prepared = prepare_user_deploys_with_policy(
+            &snapshot,
+            300,
+            10_000,
+            deploy_storage,
+            rejected_deploy_buffer,
+            &block_store,
+            false,
+            DeployAdmissionPolicy {
+                allow_ordinary: false,
+                ordinary_cap: 0,
+                allow_in_scope_recovery: true,
+                in_scope_recovery_cap: NON_LEADER_FALLBACK_MIN_ORDINARY_DEPLOY_CAP,
+                reserve_tail: false,
+                fallback: true,
+                backpressure: true,
+            },
+        )
+        .await
+        .expect("prepare deploys");
+
+        assert!(prepared.deploys.is_empty());
+        assert_eq!(prepared.already_in_scope_count, 1);
+        assert_eq!(prepared.selected_in_scope_recovery_count, 0);
     }
 
     #[tokio::test]

@@ -366,8 +366,13 @@ async fn ordinary_deploy_selection_uses_config_cap() {
     let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
         .await
         .expect("block store");
-    let snapshot = create_snapshot(20, validator_id);
-    let deploys: Vec<Signed<DeployData>> = (1..=40)
+    let mut snapshot = create_snapshot(20, validator_id);
+    snapshot
+        .on_chain_state
+        .shard_conf
+        .max_user_deploys_per_block = 40;
+    snapshot.on_chain_state.shard_conf.deploy_lifespan = 10_000;
+    let deploys: Vec<Signed<DeployData>> = (1..=60)
         .map(|n| create_deploy(n, None, &validator_sk))
         .collect();
     deploy_storage
@@ -377,7 +382,7 @@ async fn ordinary_deploy_selection_uses_config_cap() {
 
     let prepared = block_creator::prepare_user_deploys(
         &snapshot,
-        41,
+        70,
         i64::MAX,
         deploy_storage,
         rejected_deploy_buffer,
@@ -390,7 +395,7 @@ async fn ordinary_deploy_selection_uses_config_cap() {
 
     assert_eq!(
         prepared.deploys.len(),
-        32,
+        40,
         "ordinary deploy proposals must use the configured throughput cap"
     );
     assert!(prepared.cap_hit);
@@ -447,7 +452,7 @@ async fn ordinary_deploy_selection_is_bounded_when_config_is_huge() {
 
     assert_eq!(
         prepared.deploys.len(),
-        32,
+        128,
         "ordinary deploy proposals must remain bounded when config is huge"
     );
     assert!(prepared.cap_hit);
@@ -581,7 +586,7 @@ async fn rejected_in_scope_ordinary_deploy_waits_for_recovery_buffer() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn block_expired_deploy_in_unresolved_scope_stays_in_storage() {
+async fn block_expired_deploy_in_unresolved_scope_is_removed_from_storage() {
     crate::init_logger();
 
     let validator_sk = DEFAULT_VALIDATOR_SKS[0].clone();
@@ -623,7 +628,7 @@ async fn block_expired_deploy_in_unresolved_scope_stays_in_storage() {
     .expect("prepare deploys");
 
     assert!(prepared.deploys.is_empty());
-    assert!(deploy_storage
+    assert!(!deploy_storage
         .lock()
         .read_all()
         .expect("read deploy storage")

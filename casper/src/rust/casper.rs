@@ -406,7 +406,7 @@ impl CasperShardConf {
             synchrony_recovery_max_bypasses: 2,
             synchrony_finalized_baseline_enabled: true,
             synchrony_finalized_baseline_max_distance: 2048,
-            max_user_deploys_per_block: 32,
+            max_user_deploys_per_block: 128,
             native_token_name: "F1R3CAP".to_string(),
             native_token_symbol: "F1R3".to_string(),
             native_token_decimals: 8,
