@@ -1523,7 +1523,7 @@ dependencies = [
  "defmt-parser",
  "proc-macro2",
  "quote",
- "syn 2.0.118",
+ "syn 2.0.119",
 ]
 
 [[package]]
@@ -3009,7 +3009,7 @@ checksum = "d0879bd39df99c4c5e2c6615ccc026391a423dde10532c573e6086eb94a802cc"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.118",
+ "syn 2.0.119",
 ]
 
 [[package]]
@@ -5103,6 +5103,7 @@ dependencies = [
  "num-traits",
  "openai-api-rs",
  "pretty_assertions",
+ "proptest",
  "prost 0.14.4",
  "rand 0.9.5",
  "rayon",

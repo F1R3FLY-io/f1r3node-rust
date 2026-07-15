@@ -171,6 +171,10 @@ pub trait MultiParentCasper: Casper + Send + Sync {
     /// finalization status.
     fn casper_shard_conf(&self) -> &CasperShardConf;
 
+    fn rejected_deploy_buffer_contains_sig(&self, _sig: &[u8]) -> Result<bool, CasperError> {
+        Ok(false)
+    }
+
     fn runtime_manager(&self) -> Arc<RuntimeManager>;
 
     fn get_validator(&self) -> Option<ValidatorIdentity>;
@@ -190,7 +194,7 @@ pub trait MultiParentCasper: Casper + Send + Sync {
     }
 }
 
-pub fn hash_set_casper<T: TransportLayer + Send + Sync>(
+pub async fn hash_set_casper<T: TransportLayer + Send + Sync>(
     block_retriever: BlockRetriever<T>,
     event_publisher: F1r3flyEvents,
     runtime_manager: Arc<RuntimeManager>,
@@ -201,10 +205,41 @@ pub fn hash_set_casper<T: TransportLayer + Send + Sync>(
     rejected_deploy_buffer: Arc<Mutex<KeyValueRejectedDeployBuffer>>,
     casper_buffer_storage: CasperBufferKeyValueStorage,
     validator_id: Option<ValidatorIdentity>,
-    casper_shard_conf: CasperShardConf,
+    mut casper_shard_conf: CasperShardConf,
     approved_block: BlockMessage,
     heartbeat_signal_ref: crate::rust::heartbeat_signal::HeartbeatSignalRef,
 ) -> Result<MultiParentCasperImpl<T>, CasperError> {
+    // The fault-tolerance threshold is a CONSENSUS value: the finalized-floor
+    // oracle runs on it, and the floor decides the multi-parent merge base —
+    // a validated, node-identical quantity. Adopt the protocol ppm baked into
+    // the PoS contract at genesis so every node (validator or observer) runs
+    // the same threshold regardless of local configuration. A chain whose
+    // genesis predates the parameter returns None: keep the locally-derived
+    // ppm and warn — such shards must configure all nodes identically.
+    match runtime_manager
+        .get_fault_tolerance_threshold_ppm(&approved_block.body.state.post_state_hash)
+        .await?
+    {
+        Some(onchain_ppm) => {
+            if onchain_ppm != casper_shard_conf.fault_tolerance_threshold_ppm {
+                tracing::info!(
+                    onchain_ppm,
+                    local_ppm = casper_shard_conf.fault_tolerance_threshold_ppm,
+                    "Adopting on-chain protocol fault-tolerance threshold over local configuration"
+                );
+            }
+            casper_shard_conf.fault_tolerance_threshold_ppm = onchain_ppm;
+        }
+        None => {
+            tracing::warn!(
+                local_ppm = casper_shard_conf.fault_tolerance_threshold_ppm,
+                "Chain state exposes no protocol fault-tolerance threshold; using locally-derived \
+                 ppm — ALL nodes in this shard must configure the same fault-tolerance-threshold \
+                 or their merge floors will diverge"
+            );
+        }
+    }
+
     Ok(MultiParentCasperImpl {
         block_retriever,
         event_publisher,
@@ -300,7 +335,15 @@ impl OnChainCasperState {
 
 #[derive(Debug, Clone)]
 pub struct CasperShardConf {
+    /// Display/back-compat `f32` view of the fault-tolerance threshold θ. The
+    /// finalization DECISION is derived from the exact
+    /// [`fault_tolerance_threshold_ppm`](Self::fault_tolerance_threshold_ppm),
+    /// never from this lossy value.
     pub fault_tolerance_threshold: f32,
+    /// Exact fault-tolerance threshold θ as an on-chain ppm numerator
+    /// (θ = ppm / 1_000_000). Source of truth for the integer-exact finalization
+    /// DECISION (`CliqueOracle::ft_decides_exact`).
+    pub fault_tolerance_threshold_ppm: i64,
     pub shard_name: String,
     pub parent_shard_id: String,
     pub finalization_rate: i32,
@@ -367,6 +410,7 @@ impl CasperShardConf {
     pub fn new() -> Self {
         Self {
             fault_tolerance_threshold: 0.0,
+            fault_tolerance_threshold_ppm: 0,
             shard_name: "".to_string(),
             parent_shard_id: "".to_string(),
             finalization_rate: 0,
@@ -393,7 +437,7 @@ impl CasperShardConf {
             synchrony_recovery_max_bypasses: 2,
             synchrony_finalized_baseline_enabled: true,
             synchrony_finalized_baseline_max_distance: 2048,
-            max_user_deploys_per_block: 32,
+            max_user_deploys_per_block: 128,
             native_token_name: "F1R3CAP".to_string(),
             native_token_symbol: "F1R3".to_string(),
             native_token_decimals: 8,
@@ -479,6 +523,8 @@ pub mod test_helpers {
                 deploy_index: Arc::new(RwLock::new(KeyValueTypedStoreImpl::new(Arc::new(
                     InMemoryKeyValueStore::new(),
                 )))),
+                floor_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
+                frontier_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
             };
 
             CasperSnapshot::new(dag)

@@ -144,7 +144,7 @@ fn default_synchrony_finalized_baseline_enabled() -> bool { true }
 
 fn default_synchrony_finalized_baseline_max_distance() -> u64 { 2048 }
 
-fn default_max_user_deploys_per_block() -> u32 { 32 }
+fn default_max_user_deploys_per_block() -> u32 { 128 }
 
 fn default_disable_late_block_filtering() -> bool { true }
 

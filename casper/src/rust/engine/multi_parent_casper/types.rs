@@ -95,8 +95,8 @@ pub struct MultiParentCasperImpl<T: TransportLayer + Send + Sync> {
     pub finalizer_task_queued: Arc<AtomicBool>,
     /// Shared reference to heartbeat signal for triggering immediate wake on deploy
     pub heartbeat_signal_ref: crate::rust::heartbeat_signal::HeartbeatSignalRef,
-    /// Cache for deploys_in_scope BFS result keyed by DAG generation and snapshot LFB.
-    /// Including LFB in the key avoids stale scope reuse across finalization advances.
+    /// Cache for deploys_in_scope BFS result keyed by DAG generation, snapshot LFB, and selected parents.
+    /// Including LFB and parents in the key avoids stale scope reuse across finalization and parent selection changes.
     /// C16: migrated from `Arc<std::sync::Mutex<...>>` to
     /// `Arc<parking_lot::Mutex<...>>` so all three non-async mutex
     /// types on this struct are uniform (`deploy_storage` already
@@ -105,7 +105,7 @@ pub struct MultiParentCasperImpl<T: TransportLayer + Send + Sync> {
     /// at the call sites in `snapshot.rs`. The lock is held purely
     /// synchronously across read-modify-write of the cache cell.
     ///
-    /// Merge of dev: tuple grew to 4 elements — the trailing
+    /// Merge of dev: tuple carries both scope sets — the trailing
     /// `Arc<DashSet<Bytes>>` is the `rejected_in_scope` companion set
     /// to `deploys_in_scope`, used by `validate.rs::repeat_deploy` and
     /// `block_creator.rs` to distinguish in-scope deploys that were
@@ -116,6 +116,7 @@ pub struct MultiParentCasperImpl<T: TransportLayer + Send + Sync> {
             Option<(
                 u64,
                 BlockHash,
+                Vec<BlockHash>,
                 Arc<dashmap::DashSet<Bytes>>,
                 Arc<dashmap::DashSet<Bytes>>,
             )>,

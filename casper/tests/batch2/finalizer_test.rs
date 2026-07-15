@@ -9,6 +9,7 @@ use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use block_storage::rust::test::indexed_block_dag_storage::IndexedBlockDagStorage;
 use casper::rust::casper_conf::FinalizerConf;
 use casper::rust::finality::finalizer::Finalizer;
+use casper::rust::safety::clique_oracle::FtThreshold;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::{BlockMessage, Bond};
 use models::rust::validator::Validator;
@@ -191,7 +192,7 @@ async fn test_not_advance_finalization_if_no_new_lfb_found_advance_otherwise_inv
             let lfb_store = lfb_store.clone();
             Finalizer::run(
                 &dag,
-                -1.0,
+                FtThreshold::from_f32_lossy(-1.0),
                 0,
                 move |(m, _ft)| {
                     let lfb_store = lfb_store.clone();
@@ -258,7 +259,7 @@ async fn test_not_advance_finalization_if_no_new_lfb_found_advance_otherwise_inv
             let lfb_effect_invoked = lfb_effect_invoked.clone();
             Finalizer::run(
                 &dag,
-                -1.0,
+                FtThreshold::from_f32_lossy(-1.0),
                 finalized_height,
                 move |(_m, _ft)| {
                     let lfb_effect_invoked = lfb_effect_invoked.clone();
@@ -322,7 +323,7 @@ async fn test_not_advance_finalization_if_no_new_lfb_found_advance_otherwise_inv
             let finalised_store = finalised_store.clone();
             Finalizer::run(
                 &dag,
-                -1.0,
+                FtThreshold::from_f32_lossy(-1.0),
                 0,
                 move |(m, _ft)| {
                     let lfb_store = lfb_store.clone();
@@ -348,6 +349,105 @@ async fn test_not_advance_finalization_if_no_new_lfb_found_advance_otherwise_inv
     })
     .await
     .expect("Test should complete successfully");
+}
+
+#[tokio::test]
+async fn finalizer_invokes_effect_for_finalized_candidate_ahead_of_lfb() {
+    with_storage(|mut store, mut dag_store| async move {
+        let validators = [
+            generate_validator(Some("Finalized Candidate Validator 1")),
+            generate_validator(Some("Finalized Candidate Validator 2")),
+            generate_validator(Some("Finalized Candidate Validator 3")),
+            generate_validator(Some("Finalized Candidate Validator 4")),
+            generate_validator(Some("Finalized Candidate Validator 5")),
+        ];
+        let bonds: Vec<Bond> = validators
+            .iter()
+            .map(|validator| Bond {
+                validator: validator.clone(),
+                stake: 3,
+            })
+            .collect();
+        let genesis = create_genesis_block(
+            &mut store,
+            &mut dag_store,
+            None,
+            Some(bonds.clone()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        let creators = [
+            create_block_creator(&bonds, &genesis, &validators[0]),
+            create_block_creator(&bonds, &genesis, &validators[1]),
+            create_block_creator(&bonds, &genesis, &validators[2]),
+            create_block_creator(&bonds, &genesis, &validators[3]),
+            create_block_creator(&bonds, &genesis, &validators[4]),
+        ];
+        let genesis_justifications = HashMap::from([
+            (&validators[0], &genesis),
+            (&validators[1], &genesis),
+            (&validators[2], &genesis),
+            (&validators[3], &genesis),
+            (&validators[4], &genesis),
+        ]);
+        let candidate = creators[0](
+            &mut store,
+            &mut dag_store,
+            vec![&genesis],
+            &genesis_justifications,
+        );
+        for creator in &creators {
+            creator(
+                &mut store,
+                &mut dag_store,
+                vec![&candidate],
+                &genesis_justifications,
+            );
+        }
+        dag_store
+            .record_directly_finalized(candidate.block_hash.clone(), 1.0, |_| async { Ok(()) })
+            .await
+            .expect("record candidate finalized");
+        let dag = dag_store.get_representation().expect("dag representation");
+        let effect_invoked = Rc::new(RefCell::new(false));
+        let selected = Rc::new(RefCell::new(BlockHash::default()));
+        let result = {
+            let effect_invoked = effect_invoked.clone();
+            let selected = selected.clone();
+            Finalizer::run(
+                &dag,
+                FtThreshold::from_f32_lossy(-1.0),
+                0,
+                move |(hash, _)| {
+                    let effect_invoked = effect_invoked.clone();
+                    let selected = selected.clone();
+                    async move {
+                        *effect_invoked.borrow_mut() = true;
+                        *selected.borrow_mut() = hash;
+                        Ok(())
+                    }
+                },
+                &FinalizerConf::default(),
+            )
+            .await
+            .expect("finalizer run")
+        };
+
+        assert_eq!(
+            result.as_ref().map(|(hash, _)| hash),
+            Some(&candidate.block_hash)
+        );
+        assert_eq!(*selected.borrow(), candidate.block_hash);
+        assert!(*effect_invoked.borrow());
+
+        Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
+    })
+    .await
+    .expect("validation fixture");
 }
 
 #[tokio::test]
@@ -415,7 +515,7 @@ async fn finalizer_growth_feedback_loop_stale_justification_chain() {
                 let started = Instant::now();
                 let _ = Finalizer::run(
                     &dag,
-                    -1.0,
+                    FtThreshold::from_f32_lossy(-1.0),
                     0,
                     |(_m, _ft)| async { Ok::<(), KvStoreError>(()) },
                     &FinalizerConf::default(),
