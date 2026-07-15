@@ -167,9 +167,10 @@ jobs:
           eval $(opam env)
           make -C formal/rocq/slashing -j1
       - name: Verify no axioms or admits
+        # Line-anchored so prose in comments (e.g. "per the no-Axiom rule")
+        # cannot trip the guard; only actual vernacular commands match.
         run: |
-          eval $(opam env)
-          ! grep -rn "Axiom\|Admitted\|Parameter\|Conjecture" \
+          ! grep -rnE "^[[:space:]]*(Axioms?|Admitted|Parameters?|Conjectures?|Hypothes[ie]s)\b" \
             formal/rocq/slashing/theories/
 
   search-horizon-smoke:
