@@ -7,8 +7,11 @@
 //! Boundary classes probed (each one is a bug class that has previously
 //! shipped in slashing implementations):
 //!
-//!   1. `checked_base_seq` — i32 subtraction underflow at `seq <= 0`.
-//!      Must saturate to `None` rather than wrapping to i32::MAX.
+//!   1. `checked_base_seq` — exclusive-lower-bound predecessor. `None` for
+//!      ALL `seq <= 0` (not just i32::MIN underflow): sequence 0 has no
+//!      predecessor bound and negatives are invalid wire values. See
+//!      commit db0b979 ("Fix slashing sequence base boundary") and the
+//!      kani_proofs::checked_base_seq_* proofs.
 //!   2. `checked_next_seq` — u64 successor narrowed to i32 wire type.
 //!      Two-step saturation: u64 overflow OR i32 truncation produces `None`.
 //!   3. `epoch_for_block_number` — division by zero or negative epoch
@@ -36,10 +39,12 @@ struct Input {
 }
 
 fuzz_target!(|input: Input| {
-    assert_eq!(
-        checked_base_seq(input.seq_i32),
-        input.seq_i32.checked_sub(1)
-    );
+    let expected_base = if input.seq_i32 <= 0 {
+        None
+    } else {
+        Some(input.seq_i32 - 1)
+    };
+    assert_eq!(checked_base_seq(input.seq_i32), expected_base);
 
     let expected_next = input
         .seq_u64
