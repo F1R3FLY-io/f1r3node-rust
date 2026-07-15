@@ -1,18 +1,27 @@
 // Tests covering the rejected-deploy-buffer recovery exemption:
 //
-//   - Validator side (`Validate::repeat_deploy`) MUST reject a recovery block
-//     whose deploy is canonically Finalized via a different chain (the
-//     rejection in `rejected_in_scope` came from a non-canonical sibling).
-//     Re-executing such a deploy would be double-execution.
+//   - Validator side (`Validate::repeat_deploy`): the exemption is a PURE
+//     FUNCTION OF THE BLOCK — a sig whose latest canonical disposition in
+//     the block's own parent scope is a merge rejection is legal recovery.
+//     An earlier version gated the exemption on the validating node's LOCAL
+//     finalization status, which forked the network when two honest nodes'
+//     finalization progress differed (roaming InvalidRepeatDeploy Heavy
+//     Pipeline failures). Double-execution defense is layered:
+//       * a win never rejected in scope keeps the sig in the check set and
+//         the ancestor scan flags the repeat (deterministic);
+//       * a FABRICATED rejection record (naming a floor-protected deploy an
+//         honest merge could never reject) invalidates the fabricating
+//         block itself via the rejected-list equality check in
+//         `validate_block_checkpoint` (`InvalidRejectedDeploy`), so no
+//         descendant can build on it.
 //
-//   - Proposer side (`prepare_user_deploys`) MUST decline the exemption for
-//     the same shape, otherwise it gossips a recovery block that downstream
-//     validators correctly flag as `InvalidRepeatDeploy` — leading to
+//   - Proposer side (`prepare_user_deploys`) MUST decline the exemption
+//     when the deploy's effects are already canonical, otherwise it gossips
+//     a recovery block that downstream validators flag — leading to
 //     mutual-slashing on FTT=0 shards.
 
 use std::sync::Arc;
 
-use casper::rust::block_status::{BlockError, InvalidBlock};
 use casper::rust::util::construct_deploy;
 use casper::rust::validate::Validate;
 use dashmap::DashSet;
@@ -65,6 +74,20 @@ fn mk_casper_snapshot(
     snapshot
 }
 
+/// The stale-recovery shape: D's only real inclusion is in genesis (the
+/// finalized base), and a child block FABRICATES a rejected_deploys record
+/// for it — no honest merge can reject a chain protected by its floor.
+///
+/// Under the deterministic exemption, `repeat_deploy` judged in isolation
+/// accepts the re-inclusion (the block's parent scope says latest
+/// disposition = rejected: the predicate deliberately trusts the parent's
+/// on-chain record so that every node returns the SAME verdict). The
+/// double-execution defense for this shape sits one layer down, where it is
+/// also node-deterministic: the fabricating block itself fails
+/// `validate_block_checkpoint`'s rejected-list equality
+/// (`InvalidRejectedDeploy` — the validator's recomputed merge produces no
+/// such rejection), so the fabricated record never becomes buildable
+/// history and the recovery block is orphaned with it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn repeat_deploy_correctly_rejects_stale_recovery_when_d_is_finalized() {
     crate::init_logger();
@@ -140,13 +163,18 @@ async fn repeat_deploy_correctly_rejects_stale_recovery_when_d_is_finalized() {
 
         let result = Validate::repeat_deploy(&block_w, &mut snapshot, &block_store, 50);
 
-        assert!(
-            matches!(
-                result,
-                Either::Left(BlockError::Invalid(InvalidBlock::InvalidRepeatDeploy))
-            ),
-            "expected InvalidRepeatDeploy (D is canonically Finalized; rejection in \
-             block_n is non-canonical so the exemption must decline), got {:?}",
+        // Deterministic semantics: repeat_deploy trusts the parent's on-chain
+        // rejection record (same verdict on every node). The fabricated record
+        // itself is what gets rejected — block_n fails the checkpoint
+        // rejected-list equality (InvalidRejectedDeploy) on every validator,
+        // so this Valid verdict can never be reached through buildable history.
+        assert_eq!(
+            result,
+            Either::Right(casper::rust::block_status::ValidBlock::Valid),
+            "repeat_deploy must return the same verdict on every node: the \
+             parent-scope disposition record (rejection in block_n) grants the \
+             exemption; the fabricated record is caught by checkpoint \
+             validation of block_n, not by repeat_deploy; got {:?}",
             result
         );
     })
