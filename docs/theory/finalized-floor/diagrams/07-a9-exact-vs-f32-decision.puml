@@ -1,0 +1,72 @@
+' A9 fault-tolerance decision — the f32 fuzzy threshold vs the exact-integer cut.
+'
+' Left lane (buggy/imprecise): the legacy path casts q, S to f32 (lossy above 2^24)
+' and compares the f32 ratio to theta — the finalization threshold is fuzzy by
+' O(S/2^24). Right lane (fixed): the exact-integer test 2*q*den >= S*(den+num) in
+' i128 with theta = ppm/1_000_000 — bit-identical on every node, no fuzz.
+'
+' Source of truth for the A9 block in finalized-floor-verification.md §6.
+' Confirms Rocq FtExact.v (ft_exact_iff_ratio / ft_exact_no_overflow), Z3
+' ft_exact_no_overflow.py, Sage ft_algebra.sage.
+'
+' Render:
+'   plantuml -tsvg docs/theory/finalized-floor/diagrams/07-a9-exact-vs-f32-decision.puml
+
+@startuml 07-a9-exact-vs-f32-decision
+!theme plain
+
+skinparam componentStyle rectangle
+skinparam defaultFontName "monospace"
+skinparam defaultFontSize 10
+skinparam component {
+  BackgroundColor #FFFFFF
+  BorderColor     #333333
+}
+skinparam package {
+  BackgroundColor<<Buggy>> #FFEBEE
+  BackgroundColor<<Fixed>> #E8F5E9
+  BorderColor #444444
+}
+
+title A9 — fault-tolerance decision: f32 fuzzy threshold (legacy) vs exact-integer cut (fixed)
+
+legend right
+  <b>Legend</b>
+  |= colour |= meaning |
+  | <back:#FFCDD2>  </back> | legacy f32 path (imprecise: fuzz O(S / 2^24)) |
+  | <back:#C8E6C9>  </back> | exact-integer path (bit-identical, no fuzz) |
+  | <back:#FFF9C4>  </back> | shared clique inputs q, S, θ |
+  q = max-clique weight   S = total stake   θ = num/den = ppm / 1_000_000
+endlegend
+
+component "Clique inputs\n────────────\nq  (i64, max-clique weight)\nS  (i64, total stake)\nθ = ppm / 1_000_000" as IN #FFF9C4
+
+package "LEGACY — f32 ratio (imprecise)" <<Buggy>> {
+  component "cast q, S → f32\n(loses mantissa bits for values > 2^24)" as CAST #FFCDD2
+  component "ft = (2q − S)/S  as f32" as FT #FFCDD2
+  component "finalize iff  ft ≥ θ_f32\n────────────\nthreshold FUZZY by O(S / 2^24)\n(deterministic, but imprecise)" as CMP #FFCDD2
+}
+
+package "FIXED — exact integer (i128)" <<Fixed>> {
+  component "no cast — q, S, ppm stay i64" as NOCAST #C8E6C9
+  component "lhs = 2·q·den   (i128)\nrhs = S·(den + num)   (i128)\n(≤ 2^84 ≪ 2^127: no overflow)" as CALC #C8E6C9
+  component "finalize iff  lhs ⋛ rhs\n────────────\n≥  floor path (ft_witnessed_exact)\n>  LFB finalizer (strict clearance)\nbit-identical on every node — EXACT" as EXACT #C8E6C9
+}
+
+component "Rocq FtExact.v (axiom-free)\n────────────\nft_exact_iff_ratio :  2q·den ≥ S(den+num)  ⟺  (2q−S)/S ≥ num/den\nft_exact_mono_q · ft_exact_no_overflow\n+ Z3 ft_exact_no_overflow.py · Sage ft_algebra.sage" as PROOF #E8F5E9
+
+IN -[#C62828]-> CAST
+CAST -[#C62828]-> FT
+FT -[#C62828]-> CMP
+IN -[#2E7D32]-> NOCAST
+NOCAST -[#2E7D32]-> CALC
+CALC -[#2E7D32]-> EXACT
+EXACT -[#1B5E20]-> PROOF : proven ≡ the\nrational test
+
+note bottom of CMP
+  the f32 residual is REAL: 2^24 and 2^24+1
+  round to the SAME f32 (Z3 witness) ⇒ a
+  decision taken in f32 cannot distinguish them
+end note
+
+@enduml
