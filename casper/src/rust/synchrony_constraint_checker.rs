@@ -326,8 +326,11 @@ fn count_recent_proposals(
     validator_weight_map: &HashMap<Validator, i64>,
     since_block_number: i64,
 ) -> Result<HashMap<Validator, u64>, CasperError> {
-    let mut counts: HashMap<Validator, u64> =
-        validator_weight_map.keys().cloned().map(|v| (v, 0u64)).collect();
+    let mut counts: HashMap<Validator, u64> = validator_weight_map
+        .keys()
+        .cloned()
+        .map(|v| (v, 0u64))
+        .collect();
 
     let levels = dag.topo_sort(since_block_number, None)?;
     for level in levels {
