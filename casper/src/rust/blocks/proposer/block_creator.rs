@@ -313,7 +313,7 @@ async fn prepare_user_deploys_with_policy(
             HashSet::new()
         };
 
-    let buffered_deploys: HashSet<Signed<DeployData>> =
+    let mut buffered_deploys: HashSet<Signed<DeployData>> =
         if allow_ordinary_deploys || allow_in_scope_recovery || allow_recovered_deploys {
             let buffer_guard = rejected_deploy_buffer
                 .lock()
@@ -322,7 +322,8 @@ async fn prepare_user_deploys_with_policy(
         } else {
             HashSet::new()
         };
-    let buffered_sigs: HashSet<Bytes> = buffered_deploys.iter().map(|d| d.sig.clone()).collect();
+    let mut buffered_sigs: HashSet<Bytes> =
+        buffered_deploys.iter().map(|d| d.sig.clone()).collect();
 
     let skipped_buffered_ordinary = if allow_ordinary_deploys && !allow_recovered_deploys {
         stored_unfinalized
@@ -353,6 +354,43 @@ async fn prepare_user_deploys_with_policy(
         .min()
         .map(|h| h.min(earliest_block_number))
         .unwrap_or(earliest_block_number);
+
+    // Terminal purge: a rejected-buffer entry is dropped only once its sig is
+    // canonically WON inside the FINALIZED ancestry (latest finalized
+    // disposition is a win). A win that is merely canonical-but-unfinalized
+    // can still be orphaned, so the entry must survive until finality — the
+    // buffer is the only re-proposable copy of merge-rejected work.
+    let finalized_won_buffered: Vec<Signed<DeployData>> = if buffered_deploys.is_empty() {
+        Vec::new()
+    } else {
+        let finalized_won = interpreter_util::canonical_won_sigs(
+            block_store,
+            std::slice::from_ref(&casper_snapshot.last_finalized_block),
+            buffer_scan_floor,
+        )?;
+        buffered_deploys
+            .iter()
+            .filter(|d| finalized_won.contains(&d.sig))
+            .cloned()
+            .collect()
+    };
+    if !finalized_won_buffered.is_empty() {
+        rejected_deploy_buffer
+            .lock()
+            .map_err(|e| CasperError::LockError(e.to_string()))?
+            .remove(finalized_won_buffered.clone())?;
+        tracing::info!(
+            target: "f1r3fly.casper.recovery",
+            "Purged {} rejected-buffer entr(y/ies) with finalized canonical wins before block #{}",
+            finalized_won_buffered.len(),
+            block_number
+        );
+        for deploy in &finalized_won_buffered {
+            buffered_deploys.remove(deploy);
+            buffered_sigs.remove(&deploy.sig);
+        }
+    }
+
     let canonical_won_buffer_sigs = if allow_recovered_deploys && !buffered_deploys.is_empty() {
         interpreter_util::canonical_won_sigs(block_store, &parent_hashes, buffer_scan_floor)?
     } else {
@@ -527,7 +565,6 @@ async fn prepare_user_deploys_with_policy(
     let already_in_scope_count = already_in_scope.len();
     let purged_recovered_already_in_scope = purge_recovered_already_in_scope(
         &mut deploy_storage_guard,
-        &rejected_deploy_buffer,
         &recovered_canonical_wins,
         &recovered_sigs,
     )?;
@@ -1412,11 +1449,19 @@ fn drain_selected_deploys_from_rejected_buffer(
     Ok(removed)
 }
 
-fn drain_selected_recovered_deploys_from_local_buffers(
+/// Packaging a recovered deploy removes its ORDINARY deploy-storage copy
+/// (the buffer is the tracking home for merge-rejected work) but deliberately
+/// leaves the rejected-buffer entry in place. The packaged block is not yet
+/// canonical — if it gets orphaned (e.g. single-parent narrowing during a
+/// recovery context leaves the replay on a side branch) the buffer entry is
+/// the only re-proposable copy. Buffer entries are purged only when their sig
+/// is finalized-won (see the terminal purge in `prepare_user_deploys_with_policy`)
+/// or expired.
+fn drain_selected_recovered_deploys_from_deploy_storage(
     deploy_storage: &Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
     rejected_deploy_buffer: &Arc<Mutex<KeyValueRejectedDeployBuffer>>,
     deploys: &[Signed<DeployData>],
-) -> Result<(usize, usize), CasperError> {
+) -> Result<usize, CasperError> {
     let selected_recovered: Vec<Signed<DeployData>> = {
         let guard = rejected_deploy_buffer
             .lock()
@@ -1433,7 +1478,7 @@ fn drain_selected_recovered_deploys_from_local_buffers(
         out
     };
     if selected_recovered.is_empty() {
-        return Ok((0, 0));
+        return Ok(0);
     }
 
     let mut removed_from_storage = 0usize;
@@ -1449,22 +1494,7 @@ fn drain_selected_recovered_deploys_from_local_buffers(
         }
     }
 
-    let mut removed_from_rejected_buffer = 0usize;
-    {
-        let mut buffer = rejected_deploy_buffer
-            .lock()
-            .map_err(|e| CasperError::LockError(e.to_string()))?;
-        for deploy in &selected_recovered {
-            if buffer
-                .remove_by_sig(&deploy.sig)
-                .map_err(CasperError::KvStoreError)?
-            {
-                removed_from_rejected_buffer += 1;
-            }
-        }
-    }
-
-    Ok((removed_from_storage, removed_from_rejected_buffer))
+    Ok(removed_from_storage)
 }
 
 fn filter_unprocessed_rejected_deploys(
@@ -1477,9 +1507,13 @@ fn filter_unprocessed_rejected_deploys(
         .collect()
 }
 
+/// Removes the ordinary deploy-storage copies of recovered deploys whose sig
+/// already shows a canonical win in the parent scope. The rejected-buffer
+/// entry is NOT touched here: a canonical-but-unfinalized win can still be
+/// orphaned, and the buffer entry must remain re-proposable until the win is
+/// finalized (terminal purge in `prepare_user_deploys_with_policy`).
 fn purge_recovered_already_in_scope(
     deploy_storage: &mut KeyValueDeployStorage,
-    rejected_deploy_buffer: &Arc<Mutex<KeyValueRejectedDeployBuffer>>,
     deploys: &[Signed<DeployData>],
     recovered_sigs: &HashSet<Bytes>,
 ) -> Result<usize, CasperError> {
@@ -1493,11 +1527,6 @@ fn purge_recovered_already_in_scope(
     }
 
     deploy_storage
-        .remove(recovered_done.clone())
-        .map_err(CasperError::KvStoreError)?;
-    rejected_deploy_buffer
-        .lock()
-        .map_err(|e| CasperError::LockError(e.to_string()))?
         .remove(recovered_done.clone())
         .map_err(CasperError::KvStoreError)?;
     Ok(recovered_done.len())
@@ -2267,8 +2296,15 @@ pub async fn create(
             }
             found
         };
+        // Self-chain recovery exemption: a validator may always replay its OWN
+        // merge-rejected work (sigs from its self-chain sitting in the rejected
+        // buffer) without waiting to become the validator-set recovered-deploy
+        // leader. Owner replay is deterministic and duplicate-safe — if another
+        // validator re-proposes the same sig, the merge's keep-one dedup picks
+        // exactly one copy by (block_number, hash).
         let allow_recovered_deploys =
-            is_recovered_deploy_leader(casper_snapshot, validator_identity);
+            is_recovered_deploy_leader(casper_snapshot, validator_identity)
+                || self_chain_rejected_buffered;
         let inclusion_progress = deploy_inclusion_progress(casper_snapshot, block_store)?;
         let allow_deploy_inclusion = inclusion_progress
             .leader
@@ -2882,25 +2918,16 @@ pub async fn create(
         .take(user_deploy_limit)
         .cloned()
         .collect();
-    let (removed_recovered_from_storage, drained_recovered) =
-        drain_selected_recovered_deploys_from_local_buffers(
-            &deploy_storage,
-            &rejected_deploy_buffer,
-            &selected_user_deploys_for_buffer_drain,
-        )?;
+    let removed_recovered_from_storage = drain_selected_recovered_deploys_from_deploy_storage(
+        &deploy_storage,
+        &rejected_deploy_buffer,
+        &selected_user_deploys_for_buffer_drain,
+    )?;
     if removed_recovered_from_storage > 0 {
         tracing::info!(
             target: "f1r3fly.casper.recovery",
-            "Removed {} selected recovered deploy(s) from ordinary deploy storage after packaging block #{}",
+            "Removed {} selected recovered deploy(s) from ordinary deploy storage after packaging block #{}; rejected-buffer entries retained until finalized-won",
             removed_recovered_from_storage,
-            next_block_num
-        );
-    }
-    if drained_recovered > 0 {
-        tracing::info!(
-            target: "f1r3fly.casper.recovery",
-            "Drained {} selected deploy(s) from rejected-deploy buffer after packaging block #{}",
-            drained_recovered,
             next_block_num
         );
     }
@@ -4459,8 +4486,11 @@ mod tests {
             .expect("unrelated contains"));
     }
 
+    // Packaging drains a recovered deploy's ordinary-storage copy only; the
+    // rejected-buffer entry must survive packaging (the block may be
+    // orphaned) and is purged only when its sig is finalized-won or expired.
     #[tokio::test]
-    async fn selected_recovered_deploys_are_drained_from_local_buffers() {
+    async fn selected_recovered_deploys_drain_storage_but_keep_buffer_entry() {
         let mut kvm = InMemoryStoreManager::new();
         let deploy_storage = Arc::new(parking_lot::Mutex::new(
             KeyValueDeployStorage::new(&mut kvm)
@@ -4494,14 +4524,14 @@ mod tests {
             .add(vec![recovered.clone(), unselected_recovered.clone()])
             .expect("seed rejected buffer");
 
-        let removed = drain_selected_recovered_deploys_from_local_buffers(
+        let removed = drain_selected_recovered_deploys_from_deploy_storage(
             &deploy_storage,
             &rejected_deploy_buffer,
             &[recovered.clone(), ordinary.clone()],
         )
         .expect("drain selected recovered deploys");
 
-        assert_eq!(removed, (1, 1));
+        assert_eq!(removed, 1);
         let storage = deploy_storage.lock().read_all().expect("read storage");
         assert!(!storage.iter().any(|deploy| deploy.sig == recovered.sig));
         assert!(storage.iter().any(|deploy| deploy.sig == ordinary.sig));
@@ -4509,7 +4539,7 @@ mod tests {
             .iter()
             .any(|deploy| deploy.sig == unselected_recovered.sig));
         let buffer = rejected_deploy_buffer.lock().expect("rejected buffer lock");
-        assert!(!buffer
+        assert!(buffer
             .contains_sig(&recovered.sig)
             .expect("recovered contains"));
         assert!(buffer
@@ -5501,8 +5531,11 @@ mod tests {
             .any(|deploy| deploy.sig == recovered.sig));
     }
 
+    // A canonical-but-unfinalized win purges only the ordinary-storage copy;
+    // the rejected-buffer entry survives (the winning block could still be
+    // orphaned) until the finalized-won terminal purge removes it.
     #[tokio::test]
-    async fn recovered_canonical_wins_are_purged_from_local_buffers() {
+    async fn recovered_canonical_wins_are_purged_from_storage_only() {
         let mut kvm = InMemoryStoreManager::new();
         let mut deploy_storage = KeyValueDeployStorage::new(&mut kvm)
             .await
@@ -5540,7 +5573,6 @@ mod tests {
                 .collect();
         let removed = purge_recovered_already_in_scope(
             &mut deploy_storage,
-            &rejected_deploy_buffer,
             &[recovered_done.clone(), ordinary_done.clone()],
             &recovered_sigs,
         )
@@ -5559,7 +5591,7 @@ mod tests {
             .any(|deploy| deploy.sig == ordinary_done.sig));
 
         let buffer_guard = rejected_deploy_buffer.lock().expect("rejected buffer lock");
-        assert!(!buffer_guard
+        assert!(buffer_guard
             .contains_sig(&recovered_done.sig)
             .expect("recovered done contains"));
         assert!(buffer_guard
