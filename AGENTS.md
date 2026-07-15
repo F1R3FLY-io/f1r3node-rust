@@ -27,6 +27,19 @@ Three crates have `build.rs` for protobuf code generation:
 - `rust-toolchain.toml` — nightly channel pin
 - `Cross.toml` — cross-compilation for amd64/arm64
 
+## Git Interaction
+
+- Do not run `git add`, `git commit`, or `git push` unless explicitly requested
+- Commit consent is per-commit: never create a commit — including merge
+  commits and plumbing equivalents (`commit-tree`/`update-ref`) — without an
+  unambiguous per-commit request; consent does not carry over from a plan or
+  an earlier commit
+- "Resolve the merge conflicts" authorizes conflict resolution only: resolve,
+  verify the build, report, and stop before the merge commit
+- `git stash pop|drop|clear|branch` are blocked (destructive); other stash
+  writes require user confirmation; `stash list`/`show` are fine
+- See `CLAUDE.md` § "Git Interaction Policy" for the full rules
+
 ## Subagent Usage
 
 - Only use a subagent if the user has explicitly told you to do so

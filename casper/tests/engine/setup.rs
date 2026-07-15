@@ -492,6 +492,7 @@ impl TestFixture {
             transport_layer.clone(),
             rp_conf.clone(),
             block_retriever.clone(),
+            None,
         );
 
         Self {
