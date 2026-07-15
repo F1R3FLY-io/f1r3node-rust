@@ -503,6 +503,46 @@ fn dag_storage_should_be_able_to_restore_invalid_blocks_on_startup() {
 }
 
 #[test]
+fn invalid_helpers_ignore_stale_invalid_set_entries() {
+    let genesis = genesis_block();
+    let dag_storage = RUNTIME.block_on(create_dag_storage(&genesis));
+    let valid_block = get_random_block(
+        Some(1),
+        Some(1),
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some(vec![genesis.block_hash.clone()]),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    );
+    dag_storage
+        .insert(
+            &valid_block,
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal,
+        )
+        .unwrap();
+
+    let mut dag = dag_storage.get_representation().expect("dag");
+    dag.invalid_blocks_set
+        .insert(BlockMetadata::from_block(&valid_block, true, None, None));
+
+    assert!(dag.invalid_blocks_map().expect("invalid map").is_empty());
+
+    let latest = HashMap::from([(valid_block.sender.clone(), valid_block.block_hash.clone())]);
+    assert!(dag
+        .invalid_latest_messages_from_hashes(&latest)
+        .expect("invalid latest")
+        .is_empty());
+}
+
+#[test]
 fn dag_storage_should_advance_latest_message_to_invalid_block_from_same_sender() {
     // Inserting an invalid block with an advancing sequence number updates the
     // sender's latest message. Required for equivocation detection via

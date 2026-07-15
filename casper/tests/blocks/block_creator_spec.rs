@@ -116,7 +116,7 @@ async fn seen_deploys_wait_for_finalized_recovery_buffer() {
 
     let validator_sk = DEFAULT_VALIDATOR_SKS[0].clone();
     let validator_identity = ValidatorIdentity::new(&validator_sk);
-    let validator_id: Bytes = validator_identity.public_key.bytes.clone();
+    let validator_id: Bytes = validator_identity.public_key.bytes.clone().into();
     let mut kvm = InMemoryStoreManager::new();
     let deploy_storage = Arc::new(parking_lot::Mutex::new(
         KeyValueDeployStorage::new(&mut kvm)
@@ -229,7 +229,7 @@ async fn ordinary_deploys_are_ignored_when_user_deploy_leadership_is_disabled() 
 
     let validator_sk = DEFAULT_VALIDATOR_SKS[0].clone();
     let validator_identity = ValidatorIdentity::new(&validator_sk);
-    let validator_id: Bytes = validator_identity.public_key.bytes.clone();
+    let validator_id: Bytes = validator_identity.public_key.bytes.clone().into();
     let mut kvm = InMemoryStoreManager::new();
     let deploy_storage = Arc::new(parking_lot::Mutex::new(
         KeyValueDeployStorage::new(&mut kvm)
@@ -302,7 +302,7 @@ async fn unrelated_ordinary_deploys_remain_selectable_while_scope_has_user_work(
 
     let validator_sk = DEFAULT_VALIDATOR_SKS[0].clone();
     let validator_identity = ValidatorIdentity::new(&validator_sk);
-    let validator_id: Bytes = validator_identity.public_key.bytes.clone();
+    let validator_id: Bytes = validator_identity.public_key.bytes.clone().into();
     let mut kvm = InMemoryStoreManager::new();
     let deploy_storage = Arc::new(parking_lot::Mutex::new(
         KeyValueDeployStorage::new(&mut kvm)
@@ -351,7 +351,7 @@ async fn ordinary_deploy_selection_uses_config_cap() {
 
     let validator_sk = DEFAULT_VALIDATOR_SKS[0].clone();
     let validator_identity = ValidatorIdentity::new(&validator_sk);
-    let validator_id: Bytes = validator_identity.public_key.bytes.clone();
+    let validator_id: Bytes = validator_identity.public_key.bytes.clone().into();
     let mut kvm = InMemoryStoreManager::new();
     let deploy_storage = Arc::new(parking_lot::Mutex::new(
         KeyValueDeployStorage::new(&mut kvm)
@@ -407,7 +407,7 @@ async fn ordinary_deploy_selection_is_bounded_when_config_is_huge() {
 
     let validator_sk = DEFAULT_VALIDATOR_SKS[0].clone();
     let validator_identity = ValidatorIdentity::new(&validator_sk);
-    let validator_id: Bytes = validator_identity.public_key.bytes.clone();
+    let validator_id: Bytes = validator_identity.public_key.bytes.clone().into();
     let mut kvm = InMemoryStoreManager::new();
     let deploy_storage = Arc::new(parking_lot::Mutex::new(
         KeyValueDeployStorage::new(&mut kvm)
@@ -464,7 +464,7 @@ async fn recovered_deploy_selection_uses_normal_retry_window() {
 
     let validator_sk = DEFAULT_VALIDATOR_SKS[0].clone();
     let validator_identity = ValidatorIdentity::new(&validator_sk);
-    let validator_id: Bytes = validator_identity.public_key.bytes.clone();
+    let validator_id: Bytes = validator_identity.public_key.bytes.clone().into();
     let mut kvm = InMemoryStoreManager::new();
     let deploy_storage = Arc::new(parking_lot::Mutex::new(
         KeyValueDeployStorage::new(&mut kvm)
@@ -531,7 +531,7 @@ async fn rejected_in_scope_ordinary_deploy_waits_for_recovery_buffer() {
 
     let validator_sk = DEFAULT_VALIDATOR_SKS[0].clone();
     let validator_identity = ValidatorIdentity::new(&validator_sk);
-    let validator_id: Bytes = validator_identity.public_key.bytes.clone();
+    let validator_id: Bytes = validator_identity.public_key.bytes.clone().into();
     let mut kvm = InMemoryStoreManager::new();
     let deploy_storage = Arc::new(parking_lot::Mutex::new(
         KeyValueDeployStorage::new(&mut kvm)
@@ -591,7 +591,7 @@ async fn block_expired_deploy_in_unresolved_scope_is_removed_from_storage() {
 
     let validator_sk = DEFAULT_VALIDATOR_SKS[0].clone();
     let validator_identity = ValidatorIdentity::new(&validator_sk);
-    let validator_id: Bytes = validator_identity.public_key.bytes.clone();
+    let validator_id: Bytes = validator_identity.public_key.bytes.clone().into();
     let mut kvm = InMemoryStoreManager::new();
     let deploy_storage = Arc::new(parking_lot::Mutex::new(
         KeyValueDeployStorage::new(&mut kvm)
@@ -641,7 +641,7 @@ async fn block_expired_rejected_deploy_retries_after_source_leaves_scope() {
 
     let validator_sk = DEFAULT_VALIDATOR_SKS[0].clone();
     let validator_identity = ValidatorIdentity::new(&validator_sk);
-    let validator_id: Bytes = validator_identity.public_key.bytes.clone();
+    let validator_id: Bytes = validator_identity.public_key.bytes.clone().into();
     let mut kvm = InMemoryStoreManager::new();
     let deploy_storage = Arc::new(parking_lot::Mutex::new(
         KeyValueDeployStorage::new(&mut kvm)
@@ -687,7 +687,7 @@ async fn recovered_deploys_are_ignored_when_recovery_leadership_is_disabled() {
 
     let validator_sk = DEFAULT_VALIDATOR_SKS[0].clone();
     let validator_identity = ValidatorIdentity::new(&validator_sk);
-    let validator_id: Bytes = validator_identity.public_key.bytes.clone();
+    let validator_id: Bytes = validator_identity.public_key.bytes.clone().into();
     let mut kvm = InMemoryStoreManager::new();
     let deploy_storage = Arc::new(parking_lot::Mutex::new(
         KeyValueDeployStorage::new(&mut kvm)
@@ -784,7 +784,7 @@ async fn should_remove_block_expired_deploys_while_keeping_valid_ones() {
 
     let validator_sk = DEFAULT_VALIDATOR_SKS[0].clone();
     let validator_identity = ValidatorIdentity::new(&validator_sk);
-    let validator_id: Bytes = validator_identity.public_key.bytes.clone();
+    let validator_id: Bytes = validator_identity.public_key.bytes.clone().into();
 
     // Create all stores from a single InMemoryStoreManager (like Scala's kvm pattern)
     let mut kvm = InMemoryStoreManager::new();
@@ -812,7 +812,7 @@ async fn should_remove_block_expired_deploys_while_keeping_valid_ones() {
         .await
         .expect("Failed to create mergeable store");
 
-    let (runtime_manager, _) = RuntimeManager::create_with_history(
+    let (mut runtime_manager, _) = RuntimeManager::create_with_history(
         rspace_store,
         mergeable_store,
         std::sync::Arc::new(casper::rust::genesis::genesis::Genesis::default_mergeable_tags()),
@@ -848,7 +848,7 @@ async fn should_remove_block_expired_deploys_while_keeping_valid_ones() {
         None,
         deploy_storage.clone(),
         rejected_deploy_buffer.clone(),
-        &runtime_manager,
+        &mut runtime_manager,
         &mut block_store.clone(),
         false,
     )
@@ -883,7 +883,7 @@ async fn should_remove_both_block_expired_and_time_expired_deploys() {
 
     let validator_sk = DEFAULT_VALIDATOR_SKS[0].clone();
     let validator_identity = ValidatorIdentity::new(&validator_sk);
-    let validator_id: Bytes = validator_identity.public_key.bytes.clone();
+    let validator_id: Bytes = validator_identity.public_key.bytes.clone().into();
 
     // Create all stores from a single InMemoryStoreManager (like Scala's kvm pattern)
     let mut kvm = InMemoryStoreManager::new();
@@ -911,7 +911,7 @@ async fn should_remove_both_block_expired_and_time_expired_deploys() {
         .await
         .expect("Failed to create mergeable store");
 
-    let (runtime_manager, _) = RuntimeManager::create_with_history(
+    let (mut runtime_manager, _) = RuntimeManager::create_with_history(
         rspace_store,
         mergeable_store,
         std::sync::Arc::new(casper::rust::genesis::genesis::Genesis::default_mergeable_tags()),
@@ -958,7 +958,7 @@ async fn should_remove_both_block_expired_and_time_expired_deploys() {
         None,
         deploy_storage.clone(),
         rejected_deploy_buffer.clone(),
-        &runtime_manager,
+        &mut runtime_manager,
         &mut block_store.clone(),
         false,
     )
@@ -988,7 +988,7 @@ async fn should_remove_expired_deploys_from_rejected_deploy_buffer() {
 
     let validator_sk = DEFAULT_VALIDATOR_SKS[0].clone();
     let validator_identity = ValidatorIdentity::new(&validator_sk);
-    let validator_id: Bytes = validator_identity.public_key.bytes.clone();
+    let validator_id: Bytes = validator_identity.public_key.bytes.clone().into();
 
     let mut kvm = InMemoryStoreManager::new();
 

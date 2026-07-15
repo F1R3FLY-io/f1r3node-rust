@@ -1594,7 +1594,12 @@ impl BlockAPI {
             sig,
             known_block_hash,
         ) {
-            Ok(status) => Ok(status),
+            Ok(status) => Ok(
+                crate::rust::api::deploy_finalization_status::pending_if_buffered(
+                    status,
+                    casper.rejected_deploy_buffer_contains_sig(sig)?,
+                ),
+            ),
             Err(err) => {
                 // Convert deploy-index inconsistency to `pending_unknown`
                 // so HTTP/gRPC callers see a tractable response. The

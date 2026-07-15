@@ -132,11 +132,18 @@ mod tests {
     // suite. Run explicitly (`cargo test -- --ignored`) to assert the expected
     // inequality.
     #[test]
-    #[ignore = "Finding A: pins the shipped max-union combine's NON-associativity (disclosed, not a fix)"]
+    #[ignore = "Finding A: pins the shipped max-union combine's NON-associativity (disclosed, not \
+                a fix)"]
     fn finding_a_max_union_combine_is_non_associative() {
         let x: u8 = 0x42;
-        let add_x = || ChannelChange { added: vec![x], removed: vec![] };
-        let rem_x = || ChannelChange { added: vec![], removed: vec![x] };
+        let add_x = || ChannelChange {
+            added: vec![x],
+            removed: vec![],
+        };
+        let rem_x = || ChannelChange {
+            added: vec![],
+            removed: vec![x],
+        };
 
         // (a . b) . c
         let ab = add_x().combine(add_x());

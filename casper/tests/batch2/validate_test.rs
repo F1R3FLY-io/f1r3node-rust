@@ -668,7 +668,7 @@ async fn deploy_expiration_validation_should_work() {
             None,
             None,
         );
-        let status = Validate::transaction_expiration(&block, 10);
+        let status = Validate::transaction_expiration(&block, 10, &block_store);
         assert_eq!(status, Either::Right(ValidBlock::Valid));
     })
     .await
@@ -705,7 +705,168 @@ async fn deploy_expiration_validation_should_not_accept_blocks_with_a_deploy_tha
             None,
         );
 
-        let status = Validate::transaction_expiration(&block_with_expired_deploy, 10);
+        let status = Validate::transaction_expiration(&block_with_expired_deploy, 10, &block_store);
+        assert_eq!(
+            status,
+            Either::Left(BlockError::Invalid(InvalidBlock::ContainsExpiredDeploy))
+        );
+    })
+    .await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn deploy_expiration_validation_accepts_expired_recovery_with_latest_rejection() {
+    with_storage(|mut block_store, mut block_dag_storage| async move {
+        let deploy = construct_deploy::basic_processed_deploy(0, None).unwrap();
+        let expired_processed_deploy = {
+            let mut data = deploy.deploy.data.clone();
+            data.valid_after_block_number = i64::MIN;
+            let signed = create_signed_deploy_with_data(data).expect("sign expired deploy");
+            ProcessedDeploy {
+                deploy: signed,
+                ..deploy
+            }
+        };
+        let sig = expired_processed_deploy.deploy.sig.clone();
+        let genesis = create_genesis_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        let source = create_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            vec![genesis.block_hash.clone()],
+            &genesis,
+            None,
+            None,
+            None,
+            Some(vec![expired_processed_deploy.clone()]),
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        let rejection = create_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            vec![source.block_hash.clone()],
+            &genesis,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        mark_deploy_rejected(&mut block_store, &rejection, sig);
+        let recovery = create_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            vec![rejection.block_hash.clone()],
+            &genesis,
+            None,
+            None,
+            None,
+            Some(vec![expired_processed_deploy]),
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        let status = Validate::transaction_expiration(&recovery, 1, &block_store);
+        assert_eq!(status, Either::Right(ValidBlock::Valid));
+    })
+    .await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn deploy_expiration_validation_rejects_expired_deploy_with_latest_win() {
+    with_storage(|mut block_store, mut block_dag_storage| async move {
+        let deploy = construct_deploy::basic_processed_deploy(0, None).unwrap();
+        let expired_processed_deploy = {
+            let mut data = deploy.deploy.data.clone();
+            data.valid_after_block_number = i64::MIN;
+            let signed = create_signed_deploy_with_data(data).expect("sign expired deploy");
+            ProcessedDeploy {
+                deploy: signed,
+                ..deploy
+            }
+        };
+        let sig = expired_processed_deploy.deploy.sig.clone();
+        let genesis = create_genesis_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        let rejection = create_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            vec![genesis.block_hash.clone()],
+            &genesis,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        mark_deploy_rejected(&mut block_store, &rejection, sig);
+        let source = create_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            vec![rejection.block_hash.clone()],
+            &genesis,
+            None,
+            None,
+            None,
+            Some(vec![expired_processed_deploy.clone()]),
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        let duplicate = create_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            vec![source.block_hash.clone()],
+            &genesis,
+            None,
+            None,
+            None,
+            Some(vec![expired_processed_deploy]),
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        let status = Validate::transaction_expiration(&duplicate, 1, &block_store);
         assert_eq!(
             status,
             Either::Left(BlockError::Invalid(InvalidBlock::ContainsExpiredDeploy))

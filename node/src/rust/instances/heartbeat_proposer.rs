@@ -38,6 +38,8 @@ struct HeartbeatCheckResult {
     refresh_deploy_grace_window: bool,
 }
 
+const DEPLOY_RECOVERY_FRONTIER_CHASE_MAX_LAG: i64 = 2;
+
 impl HeartbeatProposer {
     /// Create a heartbeat proposer stream that periodically checks if a block
     /// needs to be proposed to maintain liveness.
@@ -413,19 +415,11 @@ async fn check_lfb_and_propose(
     let deploy_recovery_max_lag =
         std::cmp::max(pending_deploy_max_lag, advanced_deploy_recovery_max_lag);
 
-    // Under active deploy-finalization recovery, allow a wider bounded chase window so
-    // validators can keep up with fast parent growth without stalling on tight lag caps.
-    // Outside deploy recovery, keep the tighter cap to avoid idle empty-block churn.
-    let deploy_recovery_frontier_chase_cap = if deploy_recovery_hint {
-        std::cmp::max(2, deploy_recovery_max_lag)
-    } else {
-        2
-    };
-    let effective_frontier_chase_cap = if deploy_recovery_hint {
-        std::cmp::max(frontier_chase_max_lag, deploy_recovery_frontier_chase_cap)
-    } else {
-        frontier_chase_max_lag
-    };
+    let effective_frontier_chase_cap = effective_frontier_chase_cap(
+        frontier_chase_max_lag,
+        deploy_recovery_hint,
+        deploy_grace_active,
+    );
     let stale_recovery_interval_elapsed = frontier_age_ms >= stale_recovery_min_interval_ms;
     let stale_recovery_window_open = stale_recovery_interval_elapsed || deploy_recovery_hint;
 
@@ -467,7 +461,7 @@ async fn check_lfb_and_propose(
     // When a peer parent with user deploys is observed, allow one frontier-follow step
     // while ahead (bounded by pending-deploy lag threshold) to unblock synchrony progress.
     let allow_frontier_follow_while_ahead_for_deploy_parent =
-        has_new_parent_with_user_deploys && lfb_lag_blocks <= deploy_recovery_max_lag;
+        has_new_parent_with_user_deploys && lfb_lag_blocks <= effective_frontier_chase_cap;
     let can_chase_frontier_while_ahead = lfb_lag_blocks <= effective_frontier_chase_cap
         && has_new_parents
         && (!self_proposed_too_recently || allow_cooldown_override_for_deploy_recovery);
@@ -479,7 +473,7 @@ async fn check_lfb_and_propose(
             || allow_frontier_follow_while_ahead_for_deploy_parent);
     let stale_lfb_recovery_due = lfb_is_stale
         && stale_recovery_window_open
-        && (!self_recently_proposed || can_chase_frontier_while_ahead || deploy_grace_active);
+        && (!self_recently_proposed || can_chase_frontier_while_ahead);
     let lag_recovery_leader = is_lag_recovery_leader(&snapshot, validator_identity);
     let lag_recovery_threshold = pending_deploy_max_lag;
     let moderate_lag_recovery_threshold = std::cmp::max(1, lag_recovery_threshold / 2);
@@ -505,6 +499,7 @@ async fn check_lfb_and_propose(
         && self_recently_proposed
         && !can_chase_frontier_while_ahead
         && frontier_is_stale
+        && lag_recovery_leader
         && stale_recovery_window_open;
     let should_propose = pending_deploys_due
         || pending_deploy_backstop_due
@@ -836,7 +831,7 @@ fn is_lag_recovery_leader(
     snapshot: &CasperSnapshot,
     validator_identity: &ValidatorIdentity,
 ) -> bool {
-    let mut validators: Vec<Validator> = match snapshot.parents.first() {
+    let validators: Vec<Validator> = match snapshot.parents.first() {
         Some(parent) => parent
             .body
             .state
@@ -850,11 +845,43 @@ fn is_lag_recovery_leader(
         return true;
     }
 
-    validators.sort();
+    select_lag_recovery_leader(validators, |validator| {
+        snapshot
+            .dag
+            .latest_message(validator)
+            .ok()
+            .flatten()
+            .map(|meta| meta.block_number)
+            .unwrap_or(0)
+    })
+    .is_none_or(|leader| leader == validator_identity.public_key.bytes)
+}
 
-    let next_block_number = snapshot.max_block_num.saturating_add(1);
-    let leader_index = (next_block_number as usize) % validators.len();
-    validators[leader_index] == validator_identity.public_key.bytes
+fn effective_frontier_chase_cap(
+    frontier_chase_max_lag: i64,
+    deploy_recovery_hint: bool,
+    deploy_grace_active: bool,
+) -> i64 {
+    if deploy_recovery_hint || deploy_grace_active {
+        std::cmp::min(
+            frontier_chase_max_lag,
+            DEPLOY_RECOVERY_FRONTIER_CHASE_MAX_LAG,
+        )
+    } else {
+        frontier_chase_max_lag
+    }
+}
+
+fn select_lag_recovery_leader(
+    mut validators: Vec<Validator>,
+    latest_height: impl Fn(&Validator) -> i64,
+) -> Option<Validator> {
+    validators.sort_by(|a, b| {
+        latest_height(a)
+            .cmp(&latest_height(b))
+            .then_with(|| a.cmp(b))
+    });
+    validators.into_iter().next()
 }
 
 /// Unit tests for HeartbeatProposer configuration validation.
@@ -992,6 +1019,44 @@ mod tests {
         if let Some(handle) = result {
             handle.abort();
         }
+    }
+
+    #[test]
+    fn lag_recovery_leader_prefers_lowest_latest_height() {
+        let a = prost::bytes::Bytes::from_static(b"a");
+        let b = prost::bytes::Bytes::from_static(b"b");
+        let c = prost::bytes::Bytes::from_static(b"c");
+
+        let leader = select_lag_recovery_leader(vec![b.clone(), c.clone(), a.clone()], |v| {
+            if *v == a {
+                12
+            } else if *v == b {
+                4
+            } else {
+                9
+            }
+        });
+
+        assert_eq!(leader, Some(b));
+    }
+
+    #[test]
+    fn lag_recovery_leader_ties_by_validator_id() {
+        let a = prost::bytes::Bytes::from_static(b"a");
+        let b = prost::bytes::Bytes::from_static(b"b");
+        let c = prost::bytes::Bytes::from_static(b"c");
+
+        let leader = select_lag_recovery_leader(vec![c.clone(), b.clone(), a.clone()], |_| 7);
+
+        assert_eq!(leader, Some(a));
+    }
+
+    #[test]
+    fn deploy_recovery_frontier_chase_cap_is_bounded() {
+        assert_eq!(effective_frontier_chase_cap(20, true, false), 2);
+        assert_eq!(effective_frontier_chase_cap(20, false, true), 2);
+        assert_eq!(effective_frontier_chase_cap(1, true, false), 1);
+        assert_eq!(effective_frontier_chase_cap(20, false, false), 20);
     }
 
     // ==================== Decision Logic Tests (Direct Method Calls) ====================

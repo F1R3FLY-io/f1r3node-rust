@@ -155,7 +155,6 @@ fn assert_touched_integer_add_channels_single_valued(
 ///   merge_block via the self-chain walk.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[serial]
-#[ignore = "expected-red: rejected-deploy replay while source visible incomplete (RCA remainder, issue #71); run with --ignored"]
 async fn recovery_cycle_rejected_deploy_retries_while_source_is_visible() {
     let ctx = TestContext::new().await;
     let shard_id = ctx.genesis.genesis_block.shard_id.clone();
@@ -217,11 +216,11 @@ async fn recovery_cycle_rejected_deploy_retries_while_source_is_visible() {
     // proposes block_b. Neither has seen the other's block yet, so each
     // executes its deploy against the genesis post-state independently.
     let block_a = nodes[0]
-        .add_block_from_deploys(std::slice::from_ref(&deploy_a))
+        .add_block_from_deploys(&[deploy_a.clone()])
         .await
         .expect("validator 0 proposes block_a");
     let block_b = nodes[1]
-        .add_block_from_deploys(std::slice::from_ref(&deploy_b))
+        .add_block_from_deploys(&[deploy_b.clone()])
         .await
         .expect("validator 1 proposes block_b");
     assert_ne!(
@@ -260,7 +259,7 @@ async fn recovery_cycle_rejected_deploy_retries_while_source_is_visible() {
             .expect("build marker_deploy")
     };
     let merge_block = nodes[1]
-        .add_block_from_deploys(std::slice::from_ref(&marker_deploy))
+        .add_block_from_deploys(&[marker_deploy.clone()])
         .await
         .expect("validator 1 proposes merge_block over [block_a, block_b]");
 
@@ -276,14 +275,16 @@ async fn recovery_cycle_rejected_deploy_retries_while_source_is_visible() {
         merge_block
             .header
             .parents_hash_list
-            .contains(&block_a.block_hash),
+            .iter()
+            .any(|h| *h == block_a.block_hash),
         "merge_block parents must include block_a"
     );
     assert!(
         merge_block
             .header
             .parents_hash_list
-            .contains(&block_b.block_hash),
+            .iter()
+            .any(|h| *h == block_b.block_hash),
         "merge_block parents must include block_b"
     );
 
@@ -365,7 +366,7 @@ async fn recovery_cycle_rejected_deploy_retries_while_source_is_visible() {
             .expect("build marker_deploy_2")
     };
     let recovery_block = nodes[0]
-        .add_block_from_deploys(std::slice::from_ref(&marker_deploy_2))
+        .add_block_from_deploys(&[marker_deploy_2.clone()])
         .await
         .expect("validator 0 proposes recovery_block");
 
@@ -487,7 +488,6 @@ async fn three_validator_same_payer_merge_keeps_purses_single_valued_and_live() 
     let sibling_blocks = vec![block_0, block_1, block_2];
 
     for (source, block) in sibling_blocks.iter().enumerate() {
-        #[allow(clippy::needless_range_loop)]
         for target in 0..3 {
             if source != target {
                 nodes[target]
@@ -520,7 +520,8 @@ async fn three_validator_same_payer_merge_keeps_purses_single_valued_and_live() 
             merge_block
                 .header
                 .parents_hash_list
-                .contains(&block.block_hash),
+                .iter()
+                .any(|parent| *parent == block.block_hash),
             "merge block must include sibling {}",
             hex::encode(&block.block_hash)
         );
@@ -534,7 +535,7 @@ async fn three_validator_same_payer_merge_keeps_purses_single_valued_and_live() 
         .collect();
     let conflicting_rejections = deploys
         .iter()
-        .filter(|deploy| rejected_sigs.contains(&deploy.sig))
+        .filter(|deploy| rejected_sigs.iter().any(|sig| *sig == deploy.sig))
         .count();
     assert_eq!(
         conflicting_rejections,
@@ -551,7 +552,6 @@ async fn three_validator_same_payer_merge_keeps_purses_single_valued_and_live() 
         &observed_blocks,
     );
 
-    #[allow(clippy::needless_range_loop)]
     for target in 1..3 {
         nodes[target]
             .process_block(merge_block.clone())
@@ -582,7 +582,6 @@ async fn three_validator_same_payer_merge_keeps_purses_single_valued_and_live() 
             &block.body.state.post_state_hash,
             &observed_blocks,
         );
-        #[allow(clippy::needless_range_loop)]
         for target in 0..3 {
             if target != proposer {
                 nodes[target]

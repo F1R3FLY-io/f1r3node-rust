@@ -9,6 +9,7 @@ use casper::rust::api::block_api::{
     BlockAPI, DeployNotFoundError, InvalidHashError, InvalidPublicKeyError,
 };
 use casper::rust::api::block_report_api::BlockReportAPI;
+use casper::rust::api::deploy_finalization_status::DeployFinalizationState;
 use casper::rust::engine::engine_cell::EngineCell;
 use casper::rust::ProposeFunction;
 use comm::rust::discovery::node_discovery::NodeDiscovery;
@@ -527,25 +528,6 @@ impl WebApi for WebApiImpl {
             .map_err(|e| eyre!("Invalid block hash returned by findDeploy: {}", e))?;
         let light_block = LightBlockInfoSerde::from(light_block);
 
-        // Always fetch full block to get deploy execution details
-        let block_info = self
-            .get_block(light_block.block_hash.clone(), ViewMode::Full)
-            .await?;
-
-        let deploys = block_info
-            .deploys
-            .as_ref()
-            .ok_or_else(|| eyre!("Block {} returned without deploys", light_block.block_hash))?;
-
-        let deploy = deploys.iter().find(|d| d.sig == deploy_id).ok_or_else(|| {
-            eyre!(
-                "Deploy {} found in block {} but not in deploy list",
-                deploy_id,
-                light_block.block_hash
-            )
-        })?;
-
-        let is_full = view == ViewMode::Full;
         let finalization = BlockAPI::deploy_finalization_status_with_known_block(
             &self.engine_cell,
             &deploy_id_bytes,
@@ -553,14 +535,47 @@ impl WebApi for WebApiImpl {
         )
         .await?;
 
+        let details_block_hash = match finalization.state {
+            DeployFinalizationState::Finalized | DeployFinalizationState::Failed => finalization
+                .latest_block_hash
+                .as_ref()
+                .map(hex::encode)
+                .unwrap_or_else(|| light_block.block_hash.clone()),
+            DeployFinalizationState::Pending | DeployFinalizationState::Expired => {
+                light_block.block_hash.clone()
+            }
+        };
+
+        let block_info = if view == ViewMode::Full {
+            self.get_block(details_block_hash.clone(), ViewMode::Full)
+                .await?
+        } else {
+            BlockInfoSerde::from(BlockAPI::get_block(&self.engine_cell, &details_block_hash).await?)
+        };
+
+        let deploys = block_info
+            .deploys
+            .as_ref()
+            .ok_or_else(|| eyre!("Block {} returned without deploys", details_block_hash))?;
+
+        let deploy = deploys.iter().find(|d| d.sig == deploy_id).ok_or_else(|| {
+            eyre!(
+                "Deploy {} found in block {} but not in deploy list",
+                deploy_id,
+                details_block_hash
+            )
+        })?;
+
+        let is_full = view == ViewMode::Full;
+
         Ok(DeployResponse {
             deploy_id,
-            block_hash: light_block.block_hash,
-            block_number: light_block.block_number,
-            timestamp: light_block.timestamp,
+            block_hash: block_info.block_info.block_hash,
+            block_number: block_info.block_info.block_number,
+            timestamp: deploy.timestamp,
             cost: deploy.cost,
             errored: deploy.errored,
-            is_finalized: light_block.is_finalized,
+            is_finalized: finalization.state == DeployFinalizationState::Finalized,
             finalization_state: deploy_state_json_label(finalization.state).to_string(),
             rejection_count: finalization.rejection_count,
             deployer: if is_full {
@@ -1944,7 +1959,7 @@ mod tests {
             timestamp: 1700000000000,
             cost: 500,
             errored: false,
-            is_finalized: true,
+            is_finalized: false,
             finalization_state: "Pending".to_string(),
             rejection_count: 2,
             deployer: None,
@@ -1963,7 +1978,7 @@ mod tests {
         assert_eq!(json["deployId"], "abc123");
         assert_eq!(json["blockHash"], "hash1");
         assert_eq!(json["cost"], 500);
-        assert_eq!(json["isFinalized"], true);
+        assert_eq!(json["isFinalized"], false);
         assert_eq!(json["finalizationState"], "Pending");
         assert_eq!(json["rejectionCount"], 2);
 

@@ -193,6 +193,7 @@ pub const BLOCK_CREATOR_COMPUTE_PARENTS_POST_STATE_TIME_METRIC: &str =
 pub const BLOCK_CREATOR_COMPUTE_DEPLOYS_CHECKPOINT_TIME_METRIC: &str =
     "block-creator.compute-deploys-checkpoint.time";
 pub const BLOCK_CREATOR_PACKAGE_BLOCK_TIME_METRIC: &str = "block-creator.package-block.time";
+pub const BLOCK_CREATOR_PACKED_BLOCK_BYTES_METRIC: &str = "block-creator.packed-block.bytes";
 pub const BLOCK_CREATOR_TOTAL_TIME_METRIC: &str = "block-creator.total.time";
 pub const BLOCK_CREATOR_DEPLOY_ADMISSION_FRESH_LOCAL_METRIC: &str =
     "block-creator.deploy-admission.fresh-local";
@@ -212,6 +213,14 @@ pub const BLOCK_CREATOR_DEPLOY_ADMISSION_SELECTED_RETRY_METRIC: &str =
     "block-creator.deploy-admission.selected-retry";
 pub const BLOCK_CREATOR_DEPLOY_ADMISSION_SELECTED_IN_SCOPE_RECOVERY_METRIC: &str =
     "block-creator.deploy-admission.selected-in-scope-recovery";
+pub const BLOCK_CREATOR_DEPLOY_ADMISSION_SELECTED_USER_BYTES_METRIC: &str =
+    "block-creator.deploy-admission.selected-user-bytes";
+pub const BLOCK_CREATOR_DEPLOY_ADMISSION_DEFERRED_USER_BYTES_METRIC: &str =
+    "block-creator.deploy-admission.deferred-user-bytes";
+pub const BLOCK_CREATOR_DEPLOY_ADMISSION_USER_BYTE_BUDGET_METRIC: &str =
+    "block-creator.deploy-admission.user-byte-budget";
+pub const BLOCK_CREATOR_DEPLOY_ADMISSION_BYTE_CAP_HIT_METRIC: &str =
+    "block-creator.deploy-admission.byte-cap-hit";
 pub const BLOCK_CREATOR_DEPLOY_ADMISSION_FALLBACK_ENABLED_METRIC: &str =
     "block-creator.deploy-admission.fallback-enabled";
 pub const BLOCK_CREATOR_DEPLOY_ADMISSION_FALLBACK_CAP_METRIC: &str =

@@ -106,7 +106,12 @@ async fn build_random_dag(
 
     for i in 1..=n {
         let mut parents: Vec<BlockHash> = (0..i)
-            .filter(|&j| parent_bits.get((i - 1) * MAX_BLOCKS + j).copied().unwrap_or(false))
+            .filter(|&j| {
+                parent_bits
+                    .get((i - 1) * MAX_BLOCKS + j)
+                    .copied()
+                    .unwrap_or(false)
+            })
             .map(|j| hashes[j].clone())
             .collect();
         if parents.is_empty() {
@@ -336,13 +341,20 @@ async fn lca_single_and_genesis_boundary() {
         // parent_bits all-false => each block defaults to genesis as its parent
         // (a two-deep chain rooted at genesis: genesis <- b1 <- ... but with the
         // all-genesis default b1 and b2 both hang off genesis).
-        let (genesis, hashes) =
-            build_random_dag(&mut block_store, &mut block_dag_storage, 2, &[false; PARENT_BITS_LEN]).await;
+        let (genesis, hashes) = build_random_dag(
+            &mut block_store,
+            &mut block_dag_storage,
+            2,
+            &[false; PARENT_BITS_LEN],
+        )
+        .await;
         let dag = block_dag_storage
             .get_representation()
             .expect("dag representation");
 
-        let genesis_meta = dag.lookup_unsafe(&genesis.block_hash).expect("genesis meta");
+        let genesis_meta = dag
+            .lookup_unsafe(&genesis.block_hash)
+            .expect("genesis meta");
         let b1_meta = dag.lookup_unsafe(&hashes[1]).expect("b1 meta");
 
         // single-genesis input => genesis (the len==1 fast path).
@@ -352,11 +364,17 @@ async fn lca_single_and_genesis_boundary() {
         )
         .await
         .expect("single luca");
-        assert_eq!(single, genesis_meta, "single-genesis input must return genesis");
+        assert_eq!(
+            single, genesis_meta,
+            "single-genesis input must return genesis"
+        );
 
         // empty input => typed Err (the documented boundary of the fold).
         let empty = DagOperations::lowest_universal_common_ancestor_many(&[], &dag).await;
-        assert!(empty.is_err(), "empty input must be a typed Err, not a panic");
+        assert!(
+            empty.is_err(),
+            "empty input must be a typed Err, not a panic"
+        );
 
         // reflexive pairwise: lca(b, b) == b.
         let reflexive = DagOperations::lowest_universal_common_ancestor(&b1_meta, &b1_meta, &dag)
@@ -367,7 +385,8 @@ async fn lca_single_and_genesis_boundary() {
         // genesis is a universal ancestor (descends_from_root): ancestor of every node.
         for h in &hashes {
             assert!(
-                dag.is_dag_ancestor(&genesis.block_hash, h).expect("is_dag_ancestor"),
+                dag.is_dag_ancestor(&genesis.block_hash, h)
+                    .expect("is_dag_ancestor"),
                 "genesis must be an ancestor of every node"
             );
         }

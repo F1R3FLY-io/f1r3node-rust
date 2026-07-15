@@ -171,11 +171,7 @@ fn split_unavailable_branch_consumes(
     let branch_mergeable = branch_mergeable_channels(&branch_items, mergeable_channels)?;
     let mut available_data: HashMap<Blake2b256Hash, Vec<Vec<u8>>> = HashMap::new();
     let mut available_continuations: HashMap<Vec<Blake2b256Hash>, Vec<Vec<u8>>> = HashMap::new();
-    // `mutable_key_type` is a false positive: DeployChainIndex's Hash/Eq use
-    // only its immutable identity fields, not the interior-mutable caches.
-    #[allow(clippy::mutable_key_type)]
     let mut accepted = HashSet::new();
-    #[allow(clippy::mutable_key_type)]
     let mut rejected = HashableSet(HashSet::new());
 
     for chain in branch_items {
@@ -389,8 +385,6 @@ fn split_overfilled_single_value_cells(
     // Combined per-channel change + the ordered producers (chains that add).
     let mut combined: HashMap<Blake2b256Hash, ChannelChange<Vec<u8>>> = HashMap::new();
     let mut producers: HashMap<Blake2b256Hash, Vec<DeployChainIndex>> = HashMap::new();
-    // False positive: DeployChainIndex's Hash/Eq use only immutable fields.
-    #[allow(clippy::mutable_key_type)]
     let mut rejected_seed: HashSet<DeployChainIndex> = HashSet::new();
     for chain in &all_chains {
         let chain_mergeable = mergeable_channels(chain);
@@ -454,8 +448,6 @@ fn split_overfilled_single_value_cells(
         }
         let mut new_to_merge = Vec::new();
         for branch in std::mem::take(&mut resolved.to_merge) {
-            // False positive: DeployChainIndex's Hash/Eq use only immutable fields.
-            #[allow(clippy::mutable_key_type)]
             let kept: std::collections::HashSet<DeployChainIndex> = branch
                 .0
                 .into_iter()
@@ -1948,8 +1940,6 @@ mod tests {
             )
         };
         let compute_conflict_map = |branches: &HashableSet<HashableSet<DeployChainIndex>>| {
-            // False positive: DeployChainIndex's Hash/Eq use only immutable fields.
-            #[allow(clippy::mutable_key_type)]
             let mut map: HashMap<
                 HashableSet<DeployChainIndex>,
                 HashableSet<HashableSet<DeployChainIndex>>,
@@ -2043,8 +2033,6 @@ mod tests {
             )
         };
         let compute_conflict_map = |branches: &HashableSet<HashableSet<DeployChainIndex>>| {
-            // False positive: DeployChainIndex's Hash/Eq use only immutable fields.
-            #[allow(clippy::mutable_key_type)]
             let mut map: HashMap<
                 HashableSet<DeployChainIndex>,
                 HashableSet<HashableSet<DeployChainIndex>>,

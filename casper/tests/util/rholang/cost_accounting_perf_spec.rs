@@ -474,14 +474,13 @@ async fn time_replay_per_deploy(
     processed_deploy: &ProcessedDeploy,
 ) -> Result<ReplayPhaseTimings, CasperError> {
     let replay_runtime = runtime_manager.spawn_replay_runtime().await;
-    replay_runtime
-        .set_block_data(BlockData {
-            time_stamp: processed_deploy.deploy.data.time_stamp,
-            block_number: 0,
-            sender: genesis_context.validator_pks()[0].clone(),
-            seq_num: 0,
-        })
-        .await;
+    let block_data = BlockData {
+        time_stamp: processed_deploy.deploy.data.time_stamp,
+        block_number: 0,
+        sender: genesis_context.validator_pks()[0].clone(),
+        seq_num: 0,
+    };
+    replay_runtime.set_block_data(block_data.clone()).await;
 
     let mut replay_ops = ReplayRuntimeOps::new_from_runtime(replay_runtime);
     replay_ops
@@ -490,12 +489,13 @@ async fn time_replay_per_deploy(
         .reset(&Blake2b256Hash::from_bytes_prost(start_state))
         .await?;
 
-    time_replay_one_deploy(&mut replay_ops, processed_deploy).await
+    time_replay_one_deploy(&mut replay_ops, processed_deploy, &block_data).await
 }
 
 async fn time_replay_one_deploy(
     replay_ops: &mut ReplayRuntimeOps,
     processed_deploy: &ProcessedDeploy,
+    block_data: &BlockData,
 ) -> Result<ReplayPhaseTimings, CasperError> {
     let total_start = Instant::now();
 
@@ -511,7 +511,10 @@ async fn time_replay_one_deploy(
     let mut precharge = PreChargeDeploy {
         charge_amount: processed_deploy.deploy.data.total_phlo_charge(),
         pk: processed_deploy.deploy.pk.clone(),
-        rand: system_deploy_util::generate_pre_charge_deploy_random_seed(&processed_deploy.deploy),
+        rand: system_deploy_util::generate_pre_charge_deploy_random_seed_for_block(
+            &processed_deploy.deploy,
+            block_data,
+        ),
     };
     let (_, mut precharge_eval) = replay_ops
         .replay_system_deploy_internal(&mut precharge, &processed_deploy.system_deploy_error)
@@ -533,7 +536,10 @@ async fn time_replay_one_deploy(
     let refund_start = Instant::now();
     let mut refund = RefundDeploy {
         refund_amount: processed_deploy.refund_amount(),
-        rand: system_deploy_util::generate_refund_deploy_random_seed(&processed_deploy.deploy),
+        rand: system_deploy_util::generate_refund_deploy_random_seed_for_block(
+            &processed_deploy.deploy,
+            block_data,
+        ),
     };
     let (_, mut refund_eval) = replay_ops
         .replay_system_deploy_internal(&mut refund, &None)
@@ -811,7 +817,7 @@ async fn measure_block_replay_cost() {
 
                 // One replay runtime per block, mirroring production.
                 let replay_runtime = runtime_manager.spawn_replay_runtime().await;
-                replay_runtime.set_block_data(block_data).await;
+                replay_runtime.set_block_data(block_data.clone()).await;
                 let mut replay_ops = ReplayRuntimeOps::new_from_runtime(replay_runtime);
                 replay_ops
                     .runtime_ops
@@ -822,7 +828,7 @@ async fn measure_block_replay_cost() {
 
                 let mut block_total_ms = 0.0f64;
                 for pd in processed_deploys.iter() {
-                    let phase = time_replay_one_deploy(&mut replay_ops, pd)
+                    let phase = time_replay_one_deploy(&mut replay_ops, pd, &block_data)
                         .await
                         .expect("replay timing failed");
                     block_total_ms += phase.total.as_secs_f64() * 1000.0;

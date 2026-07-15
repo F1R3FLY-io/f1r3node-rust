@@ -23,8 +23,9 @@
 // Discharged math (no new Rocq): Selection.committee_is_floor_bonds +
 // committee_deterministic + Floor.frontier_cache_transparent.
 
-use proptest::prelude::*;
 use std::collections::{BTreeSet, HashSet};
+
+use proptest::prelude::*;
 
 type Validator = Vec<u8>;
 /// Faithful to `models::rust::casper::protocol::casper_message::Bond`

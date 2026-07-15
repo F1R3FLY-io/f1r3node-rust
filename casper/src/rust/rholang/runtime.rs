@@ -162,7 +162,7 @@ impl RuntimeOps {
                 .collect();
             tracing::debug!(target: "f1r3fly.casper.invalid_blocks", n = invalid_blocks.len(), seq = block_data.seq_num, "PLAY compute_state invalid_blocks: [{}]", entries.join(", "));
         }
-        self.runtime.set_block_data(block_data).await;
+        self.runtime.set_block_data(block_data.clone()).await;
         if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
             tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_set_block_data", rss_kb);
         }
@@ -171,8 +171,9 @@ impl RuntimeOps {
             tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_set_invalid_blocks", rss_kb);
         }
 
-        let (start_hash, processed_deploys) =
-            self.play_deploys_for_state(start_hash, terms).await?;
+        let (start_hash, processed_deploys) = self
+            .play_deploys_for_state(start_hash, terms, &block_data)
+            .await?;
         if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
             tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_play_deploys_for_state", rss_kb);
         }
@@ -282,6 +283,7 @@ impl RuntimeOps {
         &mut self,
         start_hash: &StateHash,
         terms: Vec<Signed<DeployData>>,
+        block_data: &BlockData,
     ) -> Result<(StateHash, Vec<(ProcessedDeploy, NumberChannelsEndVal)>), CasperError> {
         // Using tracing events for async - Span[F].withMarks("play-deploys") from Scala
         tracing::info!(target: "f1r3fly.casper.play_deploys", "play-deploys-started");
@@ -297,7 +299,10 @@ impl RuntimeOps {
 
         let mut res = Vec::with_capacity(terms.len());
         for deploy in terms {
-            res.push(self.play_deploy_with_cost_accounting(deploy).await?);
+            res.push(
+                self.play_deploy_with_cost_accounting(deploy, block_data)
+                    .await?,
+            );
         }
 
         if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
@@ -352,6 +357,25 @@ impl RuntimeOps {
     pub async fn play_deploy_with_cost_accounting(
         &mut self,
         deploy: Signed<DeployData>,
+        block_data: &BlockData,
+    ) -> Result<(ProcessedDeploy, NumberChannelsEndVal), CasperError> {
+        let deploy_fallback = self.runtime.create_soft_checkpoint().await;
+        let result = self
+            .play_deploy_with_cost_accounting_inner(deploy, block_data)
+            .await;
+        if result.is_err() {
+            self.runtime
+                .revert_to_soft_checkpoint(deploy_fallback)
+                .await;
+            let _ = self.runtime.take_event_log().await;
+        }
+        result
+    }
+
+    async fn play_deploy_with_cost_accounting_inner(
+        &mut self,
+        deploy: Signed<DeployData>,
+        block_data: &BlockData,
     ) -> Result<(ProcessedDeploy, NumberChannelsEndVal), CasperError> {
         // Using tracing events for async - Span[F].withMarks("play-deploy") from Scala
         tracing::debug!(target: "f1r3fly.casper.play_deploy", "play-deploy-started");
@@ -363,10 +387,14 @@ impl RuntimeOps {
         let deploy_pk = deploy.pk.bytes.clone();
         let deploy_pk_hex = hex::encode(&deploy_pk);
         let deploy_sig_hex = hex::encode(&deploy.sig);
-        let refund_rand = system_deploy_util::generate_refund_deploy_random_seed(&deploy);
-        let pre_charge_rand = system_deploy_util::generate_pre_charge_deploy_random_seed(&deploy);
+        let refund_rand =
+            system_deploy_util::generate_refund_deploy_random_seed_for_block(&deploy, block_data);
+        let pre_charge_rand = system_deploy_util::generate_pre_charge_deploy_random_seed_for_block(
+            &deploy, block_data,
+        );
 
         // Evaluates Pre-charge system deploy
+        let pre_charge_fallback = self.runtime.create_soft_checkpoint().await;
         let pre_charge_result = {
             // Using tracing events for async - Span[F].traceI("precharge") from Scala
             tracing::debug!(target: "f1r3fly.casper.precharge", "precharge-started");
@@ -485,17 +513,34 @@ impl RuntimeOps {
 
             Either::Left(error) => {
                 tracing::error!(error = %error.error_message, "pre-charge evaluation failed");
+                self.runtime
+                    .revert_to_soft_checkpoint(pre_charge_fallback)
+                    .await;
+
+                if error.error_message.contains("BUG FOUND") {
+                    let failure_context = format!(
+                        "{}, deploy_sig={}, deployer_pk={}, charge_amount={}",
+                        error.error_message,
+                        deploy_sig_hex,
+                        deploy_pk_hex.as_str(),
+                        deploy.data.total_phlo_charge()
+                    );
+                    metrics::counter!(
+                        "casper_runtime_payment_failures_total",
+                        "source" => CASPER_METRICS_SOURCE
+                    )
+                    .increment(1);
+                    tracing::warn!("Payment failure '{}'", failure_context);
+                    return Err(CasperError::SystemRuntimeError(
+                        SystemDeployPlatformFailure::GasPaymentFailure(failure_context),
+                    ));
+                }
 
                 // Handle evaluation errors from PreCharge
                 // - assigning 0 cost - replay should reach the same state
                 let mut empty_pd = ProcessedDeploy::empty(deploy);
                 empty_pd.system_deploy_error = Some(error.error_message);
-
-                // Update result with accumulated event logs
-                // Get mergeable channels data
-                let mergeable_channels_data = self
-                    .get_number_channels_data(&eval_collector_state.mergeable_channels)
-                    .await?;
+                empty_pd.is_failed = true;
 
                 let deploy_log = mem::take(&mut eval_collector_state.event_log);
 
@@ -504,7 +549,7 @@ impl RuntimeOps {
                         deploy_log,
                         ..empty_pd
                     },
-                    mergeable_channels_data,
+                    BTreeMap::new(),
                 ))
             }
         }

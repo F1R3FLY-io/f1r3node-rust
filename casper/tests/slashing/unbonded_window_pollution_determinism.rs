@@ -27,10 +27,9 @@
 // observer's block hash into the record, so assertion (1) would fail (the
 // witness would become non-empty), reproducing the pollution source.
 
+use casper::rust::block_status::{BlockError, InvalidBlock, ValidBlock};
 use proptest::prelude::*;
 use rspace_plus_plus::rspace::history::Either;
-
-use casper::rust::block_status::{BlockError, InvalidBlock, ValidBlock};
 
 use super::detector_totality_helpers::{block, justification, DetectorFixture};
 

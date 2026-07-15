@@ -122,9 +122,18 @@ async fn build_flipping_dag(
     let v2 = generate_validator(Some("Validator Two"));
     let v3 = generate_validator(Some("Validator Three"));
     let bonds = vec![
-        Bond { validator: v1.clone(), stake: 25 },
-        Bond { validator: v2.clone(), stake: 20 },
-        Bond { validator: v3.clone(), stake: 15 },
+        Bond {
+            validator: v1.clone(),
+            stake: 25,
+        },
+        Bond {
+            validator: v2.clone(),
+            stake: 20,
+        },
+        Bond {
+            validator: v3.clone(),
+            stake: 15,
+        },
     ];
 
     let genesis = create_genesis_block(
@@ -141,37 +150,72 @@ async fn build_flipping_dag(
     );
 
     let b2 = create_test_block(
-        block_store, block_dag_storage, &[genesis.block_hash.clone()], &genesis, &v2, &bonds,
+        block_store,
+        block_dag_storage,
+        &[genesis.block_hash.clone()],
+        &genesis,
+        &v2,
+        &bonds,
         justifications!(v1 => genesis.block_hash, v2 => genesis.block_hash, v3 => genesis.block_hash),
         None,
     );
     let b3 = create_test_block(
-        block_store, block_dag_storage, &[genesis.block_hash.clone()], &genesis, &v1, &bonds,
+        block_store,
+        block_dag_storage,
+        &[genesis.block_hash.clone()],
+        &genesis,
+        &v1,
+        &bonds,
         justifications!(v1 => genesis.block_hash, v2 => genesis.block_hash, v3 => genesis.block_hash),
         None,
     );
     let b4 = create_test_block(
-        block_store, block_dag_storage, &[b2.block_hash.clone()], &genesis, &v3, &bonds,
+        block_store,
+        block_dag_storage,
+        &[b2.block_hash.clone()],
+        &genesis,
+        &v3,
+        &bonds,
         justifications!(v1 => genesis.block_hash, v2 => b2.block_hash, v3 => b2.block_hash),
         None,
     );
     let b5 = create_test_block(
-        block_store, block_dag_storage, &[b3.block_hash.clone()], &genesis, &v2, &bonds,
+        block_store,
+        block_dag_storage,
+        &[b3.block_hash.clone()],
+        &genesis,
+        &v2,
+        &bonds,
         justifications!(v1 => b3.block_hash, v2 => b2.block_hash, v3 => genesis.block_hash),
         None,
     );
     let b6 = create_test_block(
-        block_store, block_dag_storage, &[b4.block_hash.clone()], &genesis, &v1, &bonds,
+        block_store,
+        block_dag_storage,
+        &[b4.block_hash.clone()],
+        &genesis,
+        &v1,
+        &bonds,
         justifications!(v1 => b3.block_hash, v2 => b2.block_hash, v3 => b4.block_hash),
         None,
     );
     let b7 = create_test_block(
-        block_store, block_dag_storage, &[b5.block_hash.clone()], &genesis, &v3, &bonds,
+        block_store,
+        block_dag_storage,
+        &[b5.block_hash.clone()],
+        &genesis,
+        &v3,
+        &bonds,
         justifications!(v1 => b3.block_hash, v2 => b5.block_hash, v3 => b4.block_hash),
         None,
     );
     let b8 = create_test_block(
-        block_store, block_dag_storage, &[b6.block_hash.clone()], &genesis, &v2, &bonds,
+        block_store,
+        block_dag_storage,
+        &[b6.block_hash.clone()],
+        &genesis,
+        &v2,
+        &bonds,
         justifications!(v1 => b6.block_hash, v2 => b5.block_hash, v3 => b4.block_hash),
         None,
     );
@@ -189,14 +233,9 @@ async fn build_flipping_dag(
 
 /// Every distinct ordering of a 3-element list (the 3! insertion orders of the
 /// latest-message pairs). Used to drive the example determinism test.
-const ORDERS_3: [[usize; 3]; 6] = [
-    [0, 1, 2],
-    [0, 2, 1],
-    [1, 0, 2],
-    [1, 2, 0],
-    [2, 0, 1],
-    [2, 1, 0],
-];
+const ORDERS_3: [[usize; 3]; 6] = [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [
+    2, 1, 0,
+]];
 
 // DETERMINISM (example): the flipping DAG returns the SAME tips for every
 // insertion order of the latest-message map, AND that stable answer is the
@@ -253,8 +292,14 @@ async fn filter_t10_invalid_latest_message_excluded() {
         let v1 = generate_validator(Some("Valid One"));
         let v0 = generate_validator(Some("Slashed Zero"));
         let bonds = vec![
-            Bond { validator: v1.clone(), stake: 5 },
-            Bond { validator: v0.clone(), stake: 7 },
+            Bond {
+                validator: v1.clone(),
+                stake: 5,
+            },
+            Bond {
+                validator: v0.clone(),
+                stake: 7,
+            },
         ];
 
         let genesis = create_genesis_block(
@@ -272,15 +317,23 @@ async fn filter_t10_invalid_latest_message_excluded() {
 
         // v1's valid block on genesis.
         let b_valid = create_test_block(
-            &mut block_store, &mut block_dag_storage, &[genesis.block_hash.clone()], &genesis,
-            &v1, &bonds,
+            &mut block_store,
+            &mut block_dag_storage,
+            &[genesis.block_hash.clone()],
+            &genesis,
+            &v1,
+            &bonds,
             justifications!(v1 => genesis.block_hash, v0 => genesis.block_hash),
             None,
         );
         // v0's INVALID block on genesis (goes into the DAG's invalid-blocks set).
         let b_invalid = create_test_block(
-            &mut block_store, &mut block_dag_storage, &[genesis.block_hash.clone()], &genesis,
-            &v0, &bonds,
+            &mut block_store,
+            &mut block_dag_storage,
+            &[genesis.block_hash.clone()],
+            &genesis,
+            &v0,
+            &bonds,
             justifications!(v1 => genesis.block_hash, v0 => genesis.block_hash),
             Some(true),
         );
@@ -298,8 +351,14 @@ async fn filter_t10_invalid_latest_message_excluded() {
         let flagged = dag
             .invalid_latest_messages_from_hashes(&latest_all)
             .expect("invalid latest messages");
-        assert!(flagged.contains_key(&v0), "v0's invalid latest message must be flagged");
-        assert!(!flagged.contains_key(&v1), "v1's valid latest message must NOT be flagged");
+        assert!(
+            flagged.contains_key(&v0),
+            "v0's invalid latest message must be flagged"
+        );
+        assert!(
+            !flagged.contains_key(&v1),
+            "v1's valid latest message must NOT be flagged"
+        );
 
         let estimator = Estimator::apply(i32::MAX, None);
 

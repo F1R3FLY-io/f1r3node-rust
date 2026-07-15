@@ -158,6 +158,22 @@ async fn stale_invalid_evidence_is_not_an_authorized_slash_candidate() {
 }
 
 #[tokio::test]
+async fn stale_invalid_index_entry_for_valid_block_is_not_a_slash_candidate() {
+    let fixture = DetectorFixture::new().await;
+    let offender = fixture.validators[0].clone();
+    let valid = block(35, offender.clone(), 11, vec![], fixture.validators.clone());
+    put_block(&fixture, &valid, false);
+
+    let mut snapshot = snapshot_from_fixture(&fixture, 11, 10, vec![offender]);
+    snapshot.dag.invalid_blocks_set.insert(
+        models::rust::block_metadata::BlockMetadata::from_block(&valid, true, None, None),
+    );
+    let candidates = authorized_slash_candidates(&snapshot).expect("candidates");
+
+    assert!(candidates.is_empty());
+}
+
+#[tokio::test]
 async fn current_epoch_invalid_evidence_is_authorized_once_per_offender() {
     let fixture = DetectorFixture::new().await;
     let offender = fixture.validators[0].clone();

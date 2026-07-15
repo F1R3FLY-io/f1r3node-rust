@@ -142,7 +142,9 @@ impl ReplayRuntimeOps {
         let user_deploys_start = Instant::now();
         let mut deploy_results = Vec::new();
         for term in terms {
-            let result = self.replay_deploy_e(with_cost_accounting, &term).await?;
+            let result = self
+                .replay_deploy_e(with_cost_accounting, &term, block_data)
+                .await?;
             deploy_results.push(result);
         }
         metrics::histogram!(BLOCK_REPLAY_PHASE_USER_DEPLOYS_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
@@ -184,8 +186,9 @@ impl ReplayRuntimeOps {
         &mut self,
         with_cost_accounting: bool,
         processed_deploy: &ProcessedDeploy,
+        block_data: &BlockData,
     ) -> Option<CasperError> {
-        self.replay_deploy_e(with_cost_accounting, processed_deploy)
+        self.replay_deploy_e(with_cost_accounting, processed_deploy, block_data)
             .await
             .err()
     }
@@ -199,6 +202,7 @@ impl ReplayRuntimeOps {
         &mut self,
         with_cost_accounting: bool,
         processed_deploy: &ProcessedDeploy,
+        block_data: &BlockData,
     ) -> Result<NumberChannelsEndVal, CasperError> {
         let mut mergeable_channels: HashMap<Par, MergeType> = HashMap::new();
 
@@ -215,8 +219,12 @@ impl ReplayRuntimeOps {
             .record(rig_start.elapsed().as_secs_f64());
 
         let eval_successful = if with_cost_accounting {
-            self.process_deploy_with_cost_accounting(processed_deploy, &mut mergeable_channels)
-                .await?
+            self.process_deploy_with_cost_accounting(
+                processed_deploy,
+                &mut mergeable_channels,
+                block_data,
+            )
+            .await?
         } else {
             self.process_deploy_without_cost_accounting(processed_deploy, &mut mergeable_channels)
                 .await?
@@ -247,17 +255,20 @@ impl ReplayRuntimeOps {
         &mut self,
         processed_deploy: &ProcessedDeploy,
         mergeable_channels: &mut HashMap<Par, MergeType>,
+        block_data: &BlockData,
     ) -> Result<bool, CasperError> {
         let mut pre_charge_deploy = PreChargeDeploy {
             charge_amount: processed_deploy.deploy.data.total_phlo_charge(),
             pk: processed_deploy.deploy.pk.clone(),
-            rand: system_deploy_util::generate_pre_charge_deploy_random_seed(
+            rand: system_deploy_util::generate_pre_charge_deploy_random_seed_for_block(
                 &processed_deploy.deploy,
+                block_data,
             ),
         };
 
         tracing::debug!(target: "f1r3fly.casper.replay_rho_runtime", "precharge-started");
         let precharge_start = Instant::now();
+        let precharge_fallback = self.runtime_ops.runtime.create_soft_checkpoint().await;
         let precharge_result = self
             .replay_system_deploy_internal(
                 &mut pre_charge_deploy,
@@ -266,18 +277,27 @@ impl ReplayRuntimeOps {
             .await;
 
         match precharge_result {
-            Ok((_, mut system_eval_result)) => {
+            Ok((result, mut system_eval_result)) => {
                 let discard_start = Instant::now();
                 self.discard_event_log("precharge", false).await;
                 metrics::histogram!(BLOCK_REPLAY_DEPLOY_DISCARD_EVENT_LOG_TIME_METRIC, "source" => CASPER_METRICS_SOURCE, "phase" => "precharge")
                     .record(discard_start.elapsed().as_secs_f64());
-                if system_eval_result.errors.is_empty() {
+                if matches!(result, Either::Left(_)) {
+                    self.runtime_ops
+                        .runtime
+                        .revert_to_soft_checkpoint(precharge_fallback)
+                        .await;
+                } else if system_eval_result.errors.is_empty() {
                     mergeable_channels.extend(system_eval_result.mergeable.drain());
                 }
                 tracing::debug!(target: "f1r3fly.casper.replay_rho_runtime", "precharge-done");
             }
             Err(err) => {
                 self.discard_event_log("precharge", true).await;
+                self.runtime_ops
+                    .runtime
+                    .revert_to_soft_checkpoint(precharge_fallback)
+                    .await;
                 return Err(err);
             }
         };
@@ -298,8 +318,9 @@ impl ReplayRuntimeOps {
             let refund_start = Instant::now();
             let mut refund_deploy = RefundDeploy {
                 refund_amount: processed_deploy.refund_amount(),
-                rand: system_deploy_util::generate_refund_deploy_random_seed(
+                rand: system_deploy_util::generate_refund_deploy_random_seed_for_block(
                     &processed_deploy.deploy,
+                    block_data,
                 ),
             };
 
