@@ -6,6 +6,12 @@ This changelog is automatically generated from conventional commits.
 
 ## [0.4.19] - 2026-07-14
 
+### CI
+
+- pin OCI CLI installer by tag+sha256 in soak workflow
+- add scheduled merge recovery soak on ephemeral OCI runner
+- add scheduled merge recovery soak on ephemeral OCI runner
+
 ### Documentation
 
 - make AI assistant guidance vendor-neutral, add subagent policy
