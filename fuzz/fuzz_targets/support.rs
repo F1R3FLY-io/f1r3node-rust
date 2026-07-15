@@ -193,6 +193,14 @@ fn metadata(evidence: &Evidence) -> BlockMetadata {
 /// production code assumes them consistent and panics or returns
 /// `KeyNotFound` if they aren't. Any future change to those collections
 /// must update this builder in the same atomic step.
+///
+/// Duplicate evidence hashes are skipped (first occurrence wins): a real
+/// DAG has exactly one metadata per block hash, and arbitrary fuzz inputs
+/// that reuse a hash seed would otherwise split the collections — the
+/// first metadata lands in `invalid_blocks_set` while a later one
+/// overwrites `block_metadata_index`, an unreachable state that makes
+/// candidate derivation and validation diverge by construction (found by
+/// the slash_lifecycle_trace fuzzer, crash b60fee62).
 pub fn snapshot(
     evidences: &[Evidence],
     max_block_num: i64,
@@ -200,7 +208,11 @@ pub fn snapshot(
     bonds: Vec<(Validator, i64)>,
 ) -> CasperSnapshot {
     let mut dag = empty_dag();
+    let mut seen_hashes: HashSet<BlockHash> = HashSet::new();
     for evidence in evidences {
+        if !seen_hashes.insert(evidence.hash.clone()) {
+            continue;
+        }
         let metadata = metadata(evidence);
         dag.dag_set.insert(metadata.block_hash.clone());
         dag.block_number_map

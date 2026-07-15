@@ -124,6 +124,17 @@ pub fn mk_test_rnode_store_manager(dir_path: PathBuf) -> impl KeyValueStoreManag
     LmdbDirStoreManager::new(dir_path, db_mappings.into_iter().collect())
 }
 
+/// LMDB named-DB slot budget for the shared, process-cached test
+/// environments. Scoped DB names accumulate monotonically across
+/// store-manager creations (each mints a fresh `{scope}-{db}` name set,
+/// ~10 slots in the worst env per creation, never reclaimed), and the
+/// slashing-tests CI job runs uncapped proptests at PROPTEST_CASES=10000
+/// with a store manager per case: 10k cases x ~2 managers x ~10 slots
+/// = ~200k. Slot bookkeeping is ~100 bytes each (~20 MB per env at this
+/// cap). Durable fix — reusing or evicting scoped DBs per case — is
+/// tracked in the PR #125 findings comment.
+const TEST_LMDB_MAX_DBS: u32 = 200_000;
+
 pub fn mk_test_rnode_store_manager_with_scope(
     dir_path: PathBuf,
     scope_id: Option<String>,
@@ -139,7 +150,7 @@ pub fn mk_test_rnode_store_manager_with_scope(
             } else {
                 conf
             }
-            .with_max_dbs(200_000);
+            .with_max_dbs(TEST_LMDB_MAX_DBS);
 
             // If scope_id is provided, create a scoped database name using name_override
             // This ensures test isolation while keeping the original ID for lookup
@@ -219,7 +230,7 @@ pub fn mk_test_rnode_store_manager_with_dual_scope(
             } else {
                 conf
             }
-            .with_max_dbs(200_000);
+            .with_max_dbs(TEST_LMDB_MAX_DBS);
 
             // Determine which scope to use based on database type
             let scope_to_use = if db.id().starts_with("rspace-") {
