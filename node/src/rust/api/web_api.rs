@@ -1148,7 +1148,7 @@ pub struct ExploreDeployRequest {
     pub term: String,
     #[serde(rename = "blockHash")]
     pub block_hash: String,
-    #[serde(rename = "usePreStateHash")]
+    #[serde(rename = "usePreStateHash", default)]
     pub use_pre_state_hash: bool,
 }
 
@@ -1173,7 +1173,7 @@ pub struct DataAtNameByBlockHashRequest {
     pub name: RhoUnforg,
     #[serde(rename = "blockHash")]
     pub block_hash: String,
-    #[serde(rename = "usePreStateHash")]
+    #[serde(rename = "usePreStateHash", default)]
     pub use_pre_state_hash: bool,
 }
 
