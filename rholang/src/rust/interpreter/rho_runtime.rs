@@ -691,6 +691,255 @@ fn std_system_processes() -> Vec<Definition> {
             }),
             remainder: None,
         },
+        // File I/O native primitives (FIP 2026-02-06 File-I/O). These
+        // URNs are internal to the interpreter -- user Rholang goes
+        // through the `Fs` agent under `rho:io:fs:1.*`, which wraps
+        // path canonicalization, mode-string translation, and error
+        // shaping around these thin syscall handlers.
+        Definition {
+            urn: "rho:io:fs:native:1.0.0/open".to_string(),
+            fixed_channel: FixedChannels::native_open(),
+            arity: 3,
+            body_ref: BodyRefs::NATIVE_OPEN,
+            handler: Box::new(|ctx| {
+                Box::new(move |args| {
+                    let ctx = ctx.clone();
+                    Box::pin(async move { ctx.system_processes.clone().native_open(args).await })
+                })
+            }),
+            remainder: None,
+        },
+        Definition {
+            urn: "rho:io:fs:native:1.0.0/close".to_string(),
+            fixed_channel: FixedChannels::native_close(),
+            arity: 2,
+            body_ref: BodyRefs::NATIVE_CLOSE,
+            handler: Box::new(|ctx| {
+                Box::new(move |args| {
+                    let ctx = ctx.clone();
+                    Box::pin(async move { ctx.system_processes.clone().native_close(args).await })
+                })
+            }),
+            remainder: None,
+        },
+        Definition {
+            urn: "rho:io:fs:native:1.0.0/read".to_string(),
+            fixed_channel: FixedChannels::native_read(),
+            arity: 3,
+            body_ref: BodyRefs::NATIVE_READ,
+            handler: Box::new(|ctx| {
+                Box::new(move |args| {
+                    let ctx = ctx.clone();
+                    Box::pin(async move { ctx.system_processes.clone().native_read(args).await })
+                })
+            }),
+            remainder: None,
+        },
+        Definition {
+            urn: "rho:io:fs:native:1.0.0/write".to_string(),
+            fixed_channel: FixedChannels::native_write(),
+            arity: 3,
+            body_ref: BodyRefs::NATIVE_WRITE,
+            handler: Box::new(|ctx| {
+                Box::new(move |args| {
+                    let ctx = ctx.clone();
+                    Box::pin(async move { ctx.system_processes.clone().native_write(args).await })
+                })
+            }),
+            remainder: None,
+        },
+        Definition {
+            urn: "rho:io:fs:native:1.0.0/seek".to_string(),
+            fixed_channel: FixedChannels::native_seek(),
+            arity: 4,
+            body_ref: BodyRefs::NATIVE_SEEK,
+            handler: Box::new(|ctx| {
+                Box::new(move |args| {
+                    let ctx = ctx.clone();
+                    Box::pin(async move { ctx.system_processes.clone().native_seek(args).await })
+                })
+            }),
+            remainder: None,
+        },
+        Definition {
+            urn: "rho:io:fs:native:1.0.0/tell".to_string(),
+            fixed_channel: FixedChannels::native_tell(),
+            arity: 2,
+            body_ref: BodyRefs::NATIVE_TELL,
+            handler: Box::new(|ctx| {
+                Box::new(move |args| {
+                    let ctx = ctx.clone();
+                    Box::pin(async move { ctx.system_processes.clone().native_tell(args).await })
+                })
+            }),
+            remainder: None,
+        },
+        Definition {
+            urn: "rho:io:fs:native:1.0.0/size".to_string(),
+            fixed_channel: FixedChannels::native_size(),
+            arity: 2,
+            body_ref: BodyRefs::NATIVE_SIZE,
+            handler: Box::new(|ctx| {
+                Box::new(move |args| {
+                    let ctx = ctx.clone();
+                    Box::pin(async move { ctx.system_processes.clone().native_size(args).await })
+                })
+            }),
+            remainder: None,
+        },
+        Definition {
+            urn: "rho:io:fs:native:1.0.0/truncate".to_string(),
+            fixed_channel: FixedChannels::native_truncate(),
+            arity: 3,
+            body_ref: BodyRefs::NATIVE_TRUNCATE,
+            handler: Box::new(|ctx| {
+                Box::new(move |args| {
+                    let ctx = ctx.clone();
+                    Box::pin(
+                        async move { ctx.system_processes.clone().native_truncate(args).await },
+                    )
+                })
+            }),
+            remainder: None,
+        },
+        Definition {
+            urn: "rho:io:fs:native:1.0.0/flush".to_string(),
+            fixed_channel: FixedChannels::native_flush(),
+            arity: 2,
+            body_ref: BodyRefs::NATIVE_FLUSH,
+            handler: Box::new(|ctx| {
+                Box::new(move |args| {
+                    let ctx = ctx.clone();
+                    Box::pin(async move { ctx.system_processes.clone().native_flush(args).await })
+                })
+            }),
+            remainder: None,
+        },
+        Definition {
+            urn: "rho:io:fs:native:1.0.0/stat".to_string(),
+            fixed_channel: FixedChannels::native_stat(),
+            arity: 2,
+            body_ref: BodyRefs::NATIVE_STAT,
+            handler: Box::new(|ctx| {
+                Box::new(move |args| {
+                    let ctx = ctx.clone();
+                    Box::pin(async move { ctx.system_processes.clone().native_stat(args).await })
+                })
+            }),
+            remainder: None,
+        },
+        Definition {
+            urn: "rho:io:fs:native:1.0.0/entries".to_string(),
+            fixed_channel: FixedChannels::native_entries(),
+            arity: 2,
+            body_ref: BodyRefs::NATIVE_ENTRIES,
+            handler: Box::new(|ctx| {
+                Box::new(move |args| {
+                    let ctx = ctx.clone();
+                    Box::pin(async move { ctx.system_processes.clone().native_entries(args).await })
+                })
+            }),
+            remainder: None,
+        },
+        Definition {
+            urn: "rho:io:fs:native:1.0.0/exists".to_string(),
+            fixed_channel: FixedChannels::native_exists(),
+            arity: 2,
+            body_ref: BodyRefs::NATIVE_EXISTS,
+            handler: Box::new(|ctx| {
+                Box::new(move |args| {
+                    let ctx = ctx.clone();
+                    Box::pin(async move { ctx.system_processes.clone().native_exists(args).await })
+                })
+            }),
+            remainder: None,
+        },
+        Definition {
+            urn: "rho:io:fs:native:1.0.0/rename".to_string(),
+            fixed_channel: FixedChannels::native_rename(),
+            arity: 3,
+            body_ref: BodyRefs::NATIVE_RENAME,
+            handler: Box::new(|ctx| {
+                Box::new(move |args| {
+                    let ctx = ctx.clone();
+                    Box::pin(async move { ctx.system_processes.clone().native_rename(args).await })
+                })
+            }),
+            remainder: None,
+        },
+        Definition {
+            urn: "rho:io:fs:native:1.0.0/copyFile".to_string(),
+            fixed_channel: FixedChannels::native_copy_file(),
+            arity: 3,
+            body_ref: BodyRefs::NATIVE_COPY_FILE,
+            handler: Box::new(|ctx| {
+                Box::new(move |args| {
+                    let ctx = ctx.clone();
+                    Box::pin(
+                        async move { ctx.system_processes.clone().native_copy_file(args).await },
+                    )
+                })
+            }),
+            remainder: None,
+        },
+        Definition {
+            urn: "rho:io:fs:native:1.0.0/removeFile".to_string(),
+            fixed_channel: FixedChannels::native_remove_file(),
+            arity: 2,
+            body_ref: BodyRefs::NATIVE_REMOVE_FILE,
+            handler: Box::new(|ctx| {
+                Box::new(move |args| {
+                    let ctx = ctx.clone();
+                    Box::pin(
+                        async move { ctx.system_processes.clone().native_remove_file(args).await },
+                    )
+                })
+            }),
+            remainder: None,
+        },
+        Definition {
+            urn: "rho:io:fs:native:1.0.0/removeDir".to_string(),
+            fixed_channel: FixedChannels::native_remove_dir(),
+            arity: 3,
+            body_ref: BodyRefs::NATIVE_REMOVE_DIR,
+            handler: Box::new(|ctx| {
+                Box::new(move |args| {
+                    let ctx = ctx.clone();
+                    Box::pin(
+                        async move { ctx.system_processes.clone().native_remove_dir(args).await },
+                    )
+                })
+            }),
+            remainder: None,
+        },
+        Definition {
+            urn: "rho:io:fs:native:1.0.0/chmod".to_string(),
+            fixed_channel: FixedChannels::native_chmod(),
+            arity: 3,
+            body_ref: BodyRefs::NATIVE_CHMOD,
+            handler: Box::new(|ctx| {
+                Box::new(move |args| {
+                    let ctx = ctx.clone();
+                    Box::pin(async move { ctx.system_processes.clone().native_chmod(args).await })
+                })
+            }),
+            remainder: None,
+        },
+        Definition {
+            urn: "rho:io:fs:native:1.0.0/quarantine".to_string(),
+            fixed_channel: FixedChannels::native_quarantine(),
+            arity: 3,
+            body_ref: BodyRefs::NATIVE_QUARANTINE,
+            handler: Box::new(|ctx| {
+                Box::new(move |args| {
+                    let ctx = ctx.clone();
+                    Box::pin(
+                        async move { ctx.system_processes.clone().native_quarantine(args).await },
+                    )
+                })
+            }),
+            remainder: None,
+        },
         Definition {
             urn: "rho:io:grpcTell".to_string(),
             fixed_channel: FixedChannels::grpc_tell(),
