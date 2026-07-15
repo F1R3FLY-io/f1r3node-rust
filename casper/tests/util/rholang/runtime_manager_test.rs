@@ -1772,7 +1772,6 @@ in {{
 /// Reproduces: system-integration docs/TODO.md "Contract query deploy returns
 /// empty deployId after finalization (intermittent)"
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "expected-red: known stale-diff merge defect, red on source branch too (issue #71); run with --ignored"]
 async fn bridge_query_survives_multi_parent_merge() {
     use std::collections::HashMap;
 
@@ -2888,7 +2887,6 @@ async fn parallel_replay_determinism() {
 /// The expansion in DagMerger rejects the descendant's chains as well, so the
 /// assertion below — "no ancestor-rejected-but-descendant-surviving" — holds.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "expected-red: known stale-diff merge defect, red on source branch too (issue #71); run with --ignored"]
 async fn stale_diff_application_corrupts_merged_state() {
     use std::collections::HashSet;
 
