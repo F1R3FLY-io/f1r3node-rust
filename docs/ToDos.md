@@ -644,17 +644,17 @@ tasks:
 ---
 epoch_id: EPOCH-010
 title: "Soak Benchmark Metrics & Reporting"
-status: pending
+status: in_progress
 priority: p2
 user_story: US-004
 blocked_by: []
 created_at: 2026-07-15
-claimed_by: null
-claimed_at: null
+claimed_by: claude-session-810424d7
+claimed_at: 2026-07-15T21:35:00Z
 tasks:
   - id: TASK-010-1
     title: "Per-iteration metrics emission in run-merge-recovery-soak.sh"
-    status: pending
+    status: in_progress
     acceptance:
       - "Each iteration writes metrics.json to its ITERATION_DIR: wall-clock duration, pytest pass/fail/error counts (parsed from pytest.log), provider, exit code"
       - "Run-level summary.json aggregates: iterations, failure rate, iterations/hour throughput, per-provider split, target ref/sha, started/finished timestamps"
@@ -662,7 +662,7 @@ tasks:
 
   - id: TASK-010-2
     title: "Node resource + finalization sampling during soak iterations"
-    status: pending
+    status: in_progress
     blocked_by: [TASK-010-1]
     acceptance:
       - "Peak node RSS per iteration captured (docker stats for docker provider; harness resource_monitor output for subprocess provider) into metrics.json"
@@ -671,7 +671,7 @@ tasks:
 
   - id: TASK-010-3
     title: "Week-over-week compare step with release-gate verdict"
-    status: pending
+    status: in_progress
     blocked_by: [TASK-010-1, TASK-010-2]
     acceptance:
       - "Compare job fetches previous week's summary.json (from the Pages data history) and computes deltas for: failure rate, throughput, peak RSS, finalization latency"
@@ -681,7 +681,7 @@ tasks:
 
   - id: TASK-010-4
     title: "GitHub Pages trend dashboard"
-    status: pending
+    status: in_progress
     blocked_by: [TASK-010-1]
     acceptance:
       - "Pages enabled on the repo (source: GitHub Actions); site at f1r3fly-io.github.io/f1r3node-rust"
@@ -690,7 +690,7 @@ tasks:
 
   - id: TASK-010-5
     title: "OCI Notifications (ONS) Monday summary email"
-    status: pending
+    status: in_progress
     blocked_by: [TASK-010-3]
     acceptance:
       - "ONS topic (e.g. soak-benchmark-reports) exists; creation scripted (CLI or Terraform) OR documented as manually provisioned — OPEN QUESTION: who administers the topic (see work log)"

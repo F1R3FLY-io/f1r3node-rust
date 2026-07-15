@@ -33,8 +33,44 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  soak_gate:
+    name: Weekend Soak Verdict Gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    if: >-
+      !startsWith(github.event.head_commit.message, 'chore(release)')
+    steps:
+      - name: Require latest weekend soak verdict to be pass
+        shell: bash -euo pipefail {0}
+        env:
+          OVERRIDE: ${{ contains(github.event.head_commit.message, '[soak-override]') }}
+        run: |
+          # Releases must not promote past a regressing weekend soak
+          # (EPOCH-010 TASK-010-3). Maintainer override: include
+          # [soak-override] in the release commit message.
+          if [ "$OVERRIDE" = "true" ]; then
+            echo "::warning::Soak gate overridden via [soak-override] in commit message"
+            exit 0
+          fi
+          verdict_json="$(curl -fsS --max-time 30 \
+            "https://f1r3fly-io.github.io/f1r3node-rust/data/latest-verdict.json" \
+            2>/dev/null || true)"
+          if [ -z "$verdict_json" ]; then
+            echo "::warning::No published soak verdict yet (dashboard bootstrap); allowing release"
+            exit 0
+          fi
+          verdict="$(printf '%s' "$verdict_json" | jq -r '.verdict // "unknown"')"
+          date="$(printf '%s' "$verdict_json" | jq -r '.run.date // "unknown"')"
+          echo "Latest weekend soak verdict: $verdict ($date)"
+          if [ "$verdict" != "pass" ]; then
+            printf '%s' "$verdict_json" | jq -r '.failures[] | "FAIL: " + .'
+            echo "::error::Latest weekend soak regressed — release blocked. Fix the regression or use [soak-override] in the release commit message."
+            exit 1
+          fi
+
   release:
     name: Bump Version & Tag
+    needs: soak_gate
     runs-on: ubuntu-latest
     timeout-minutes: 10
     if: >-
