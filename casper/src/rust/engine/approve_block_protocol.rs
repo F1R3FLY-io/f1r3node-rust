@@ -124,6 +124,7 @@ impl ApproveBlockProtocolFactory {
         epoch_length: i32,
         quarantine_length: i32,
         number_of_active_validators: u32,
+        fault_tolerance_threshold_ppm: i64,
         shard_id: String,
         deploy_timestamp: Option<i64>,
         required_sigs: i32,
@@ -180,6 +181,10 @@ impl ApproveBlockProtocolFactory {
                 epoch_length,
                 quarantine_length,
                 number_of_active_validators,
+                // Protocol-level finality threshold, baked into the PoS contract at
+                // genesis and read back by every node at startup — the consensus
+                // value the finalized-floor oracle runs on.
+                fault_tolerance_threshold_ppm,
                 pos_multi_sig_public_keys,
                 pos_multi_sig_quorum,
             },

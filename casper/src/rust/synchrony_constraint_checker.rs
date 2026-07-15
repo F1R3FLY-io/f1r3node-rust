@@ -230,49 +230,6 @@ mod tests {
             "finalized fallback must stay tightly bounded and not inherit large height thresholds"
         );
     }
-
-    #[test]
-    fn fair_bypass_candidate_wins_when_it_has_proposed_least() {
-        let validator1 = Validator::from(vec![1u8]);
-        let validator2 = Validator::from(vec![2u8]);
-        let mut counts = HashMap::new();
-        counts.insert(validator1.clone(), 0u64);
-        counts.insert(validator2.clone(), 5u64);
-
-        assert!(
-            super::is_fair_bypass_candidate(&validator1, &counts),
-            "validator with fewest recent proposals should be a fair bypass candidate"
-        );
-        assert!(
-            !super::is_fair_bypass_candidate(&validator2, &counts),
-            "validator that already proposed disproportionately should not win the bypass"
-        );
-    }
-
-    #[test]
-    fn fair_bypass_candidate_allows_ties_at_the_minimum() {
-        let validator1 = Validator::from(vec![1u8]);
-        let validator2 = Validator::from(vec![2u8]);
-        let mut counts = HashMap::new();
-        counts.insert(validator1.clone(), 3u64);
-        counts.insert(validator2.clone(), 3u64);
-
-        assert!(super::is_fair_bypass_candidate(&validator1, &counts));
-        assert!(super::is_fair_bypass_candidate(&validator2, &counts));
-    }
-
-    #[test]
-    fn fair_bypass_candidate_defaults_unknown_validator_to_zero() {
-        let known = Validator::from(vec![1u8]);
-        let unknown = Validator::from(vec![9u8]);
-        let mut counts = HashMap::new();
-        counts.insert(known, 2u64);
-
-        assert!(
-            super::is_fair_bypass_candidate(&unknown, &counts),
-            "a validator absent from the tally (0 recent proposals) should be treated as fully fair"
-        );
-    }
 }
 
 lazy_static! {
@@ -316,45 +273,6 @@ fn can_use_finalized_baseline(
     let allowed_ahead = height_constraint_threshold.max(0).min(max_distance as i64);
     let proposer_ahead_of_finalized = last_proposed_block_number - last_finalized_block_number;
     proposer_ahead_of_finalized <= allowed_ahead
-}
-
-/// Tallies how many blocks each active validator has proposed since `since_block_number`
-/// (typically the last finalized block). Used to keep the synchrony-constraint bypass
-/// from monopolizing on whichever node's local stall timer happens to fire first.
-fn count_recent_proposals(
-    dag: &KeyValueDagRepresentation,
-    validator_weight_map: &HashMap<Validator, i64>,
-    since_block_number: i64,
-) -> Result<HashMap<Validator, u64>, CasperError> {
-    let mut counts: HashMap<Validator, u64> = validator_weight_map
-        .keys()
-        .cloned()
-        .map(|v| (v, 0u64))
-        .collect();
-
-    let levels = dag.topo_sort(since_block_number, None)?;
-    for level in levels {
-        for block_hash in level {
-            let meta = dag.lookup_unsafe(&block_hash)?;
-            if let Some(count) = counts.get_mut(&meta.sender) {
-                *count += 1;
-            }
-        }
-    }
-
-    Ok(counts)
-}
-
-/// A validator is only allowed to use the timer-based bypass if it is not already
-/// over-represented among recent proposers, i.e. its own proposal count is at (or tied
-/// for) the minimum among active validators. This turns the bypass gate into a
-/// deterministic, DAG-derived fairness check that every node computes identically,
-/// instead of a race decided by whichever node's local wall clock or network position
-/// happens to be fastest.
-fn is_fair_bypass_candidate(validator: &Validator, counts: &HashMap<Validator, u64>) -> bool {
-    let own_count = counts.get(validator).copied().unwrap_or(0);
-    let min_count = counts.values().copied().min().unwrap_or(0);
-    own_count <= min_count
 }
 
 fn should_bypass_synchrony_constraint(
@@ -481,7 +399,6 @@ pub async fn check(
                     let last_finalized_block_hash = snapshot.dag.last_finalized_block();
                     let last_finalized_block_meta =
                         snapshot.dag.lookup_unsafe(&last_finalized_block_hash)?;
-                    let last_finalized_block_number = last_finalized_block_meta.block_number;
                     let can_use_finalized = can_use_finalized_baseline(
                         last_proposed_block_meta.block_number,
                         last_finalized_block_meta.block_number,
@@ -532,20 +449,11 @@ pub async fn check(
                         );
                     }
 
-                    let timer_allows_bypass = should_bypass_synchrony_constraint(
+                    let bypass = should_bypass_synchrony_constraint(
                         &validator,
                         last_proposed_block_hash.as_ref(),
                         shard_conf,
                     );
-
-                    let bypass = timer_allows_bypass && {
-                        let proposal_counts = count_recent_proposals(
-                            &snapshot.dag,
-                            &validator_weight_map,
-                            last_finalized_block_number,
-                        )?;
-                        is_fair_bypass_candidate(&validator, &proposal_counts)
-                    };
 
                     if bypass {
                         tracing::warn!(

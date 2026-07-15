@@ -827,10 +827,39 @@ impl RuntimeOps {
         deploy_result.await
     }
 
-    async fn play_exploratory_par(
+    /// Lenient exploratory query: a runtime execution failure degrades to an
+    /// empty result (logged, not propagated). Appropriate for display/API
+    /// reads (bonds, active validators) — NEVER for consensus-level reads,
+    /// where "failed" and "absent" must stay distinguishable
+    /// (see [`Self::play_exploratory_par_strict`]).
+    pub async fn play_exploratory_par(
         &mut self,
         par: Par,
         hash: &StateHash,
+    ) -> Result<Vec<Par>, CasperError> {
+        self.play_exploratory_par_with_mode(par, hash, false).await
+    }
+
+    /// Strict variant: a runtime injection failure PROPAGATES as an error
+    /// instead of degrading to an empty result. Required for consensus-level
+    /// reads (the protocol fault-tolerance threshold) where "query failed"
+    /// must never be conflated with "value genuinely absent" — the lenient
+    /// empty-result degradation would silently route a transient execution
+    /// failure into the local-config fallback and re-open node-local
+    /// divergence.
+    pub async fn play_exploratory_par_strict(
+        &mut self,
+        par: Par,
+        hash: &StateHash,
+    ) -> Result<Vec<Par>, CasperError> {
+        self.play_exploratory_par_with_mode(par, hash, true).await
+    }
+
+    async fn play_exploratory_par_with_mode(
+        &mut self,
+        par: Par,
+        hash: &StateHash,
+        strict: bool,
     ) -> Result<Vec<Par>, CasperError> {
         use crate::rust::metrics_constants::{
             BONDS_CACHE_GET_DATA_TIME_METRIC, BONDS_CACHE_INJ_TIME_METRIC,
@@ -888,8 +917,15 @@ impl RuntimeOps {
                 if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
                     tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_inj_err", rss_kb);
                 }
-                tracing::error!(error = ?err, "play_exploratory_par failed");
-                Ok(Vec::new())
+                tracing::error!(error = ?err, strict, "play_exploratory_par failed");
+                if strict {
+                    Err(CasperError::RuntimeError(format!(
+                        "exploratory query execution failed (strict mode): {:?}",
+                        err
+                    )))
+                } else {
+                    Ok(Vec::new())
+                }
             }
         };
 
@@ -1176,6 +1212,71 @@ impl RuntimeOps {
         }
       "#
         .to_string()
+    }
+
+    /// Reads the protocol fault-tolerance threshold (parts-per-million) from
+    /// the PoS contract at `start_hash`. Returns `None` when the contract does
+    /// not expose the getter (a chain whose genesis predates the parameter) —
+    /// the caller falls back to its local configuration in that case.
+    pub async fn get_fault_tolerance_threshold_ppm(
+        &mut self,
+        start_hash: &StateHash,
+    ) -> Result<Option<i64>, CasperError> {
+        // STRICT query: a runtime execution failure must PROPAGATE (failing
+        // node startup) rather than degrade to an empty result — the lenient
+        // path's `Ok(vec![])`-on-error would be indistinguishable from "the
+        // getter does not exist" and silently route a transient failure into
+        // the local-config fallback, re-opening node-local floor divergence.
+        // `None` is returned only after a SUCCESSFUL query with no result.
+        let ppm_pars = self
+            .play_exploratory_par_strict(Self::fault_tolerance_ppm_query_par().clone(), start_hash)
+            .await?;
+
+        if ppm_pars.is_empty() {
+            tracing::warn!(
+                "No result from getFaultToleranceThresholdPpm query for state {}; \
+                 genesis predates the on-chain protocol FTT — falling back to local config",
+                PrettyPrinter::build_string_bytes(start_hash)
+            );
+            return Ok(None);
+        }
+        if ppm_pars.len() != 1 {
+            return Err(CasperError::RuntimeError(format!(
+                "Incorrect number of results from getFaultToleranceThresholdPpm query in state {}: {}",
+                PrettyPrinter::build_string_bytes(start_hash),
+                ppm_pars.len()
+            )));
+        }
+
+        let par = &ppm_pars[0];
+        match par.exprs.first().and_then(|e| e.expr_instance.as_ref()) {
+            Some(ExprInstance::GInt(ppm)) => Ok(Some(*ppm)),
+            other => Err(CasperError::RuntimeError(format!(
+                "getFaultToleranceThresholdPpm returned a non-integer value in state {}: {:?}",
+                PrettyPrinter::build_string_bytes(start_hash),
+                other
+            ))),
+        }
+    }
+
+    fn fault_tolerance_ppm_query_source() -> String {
+        r#"
+          new return, rl(`rho:registry:lookup`), poSCh in {
+          rl!(`rho:system:pos`, *poSCh) |
+          for(@(_, PoS) <- poSCh) {
+            @PoS!("getFaultToleranceThresholdPpm", *return)
+          }
+        }
+      "#
+        .to_string()
+    }
+
+    fn fault_tolerance_ppm_query_par() -> &'static Par {
+        static QUERY: OnceLock<Par> = OnceLock::new();
+        QUERY.get_or_init(|| {
+            Compiler::source_to_adt(&Self::fault_tolerance_ppm_query_source())
+                .expect("Failed to compile fault tolerance ppm query source")
+        })
     }
 
     fn activate_validator_query_par() -> &'static Par {
