@@ -227,9 +227,24 @@ async fn create_allow_empty(node: &mut TestNode) -> BlockCreatorResult {
     .expect("block creation")
 }
 
+/// Deploy admission under an unresolved user frontier.
+///
+/// Original (pre-starvation-fix) semantics required strict single-leader
+/// packaging of ALL ordinary deploys — which starved fresh deploy admission
+/// on live shards (every non-leader returned NoNewDeploys until the leader's
+/// work finalized). The corrected semantics serialize IN-SCOPE recovery /
+/// re-proposal work through the deterministic inclusion leader (covered by
+/// the `deploy_inclusion_leadership_gates_ordinary_selection` unit test)
+/// while allowing each validator to admit its OWN fresh local deploys under
+/// the bounded `fresh_admission_fallback` cap.
+///
+/// This test pins the refined invariant: fresh admission is disjoint (a
+/// validator packages only the fresh deploys it received; nothing is
+/// double-packaged) and the already-included frontier work is never
+/// re-packaged by either proposer.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[serial]
-async fn unresolved_user_frontier_has_one_deploy_inclusion_leader() {
+async fn unresolved_user_frontier_fresh_admission_is_bounded_and_disjoint() {
     let context = TestContext::new(2).await;
     let shard = context.genesis.genesis_block.shard_id.clone();
     let mut nodes = TestNode::create_network(context.genesis, 2, None, None, None, None)
@@ -237,40 +252,63 @@ async fn unresolved_user_frontier_has_one_deploy_inclusion_leader() {
         .expect("network");
     let first = map_write("leader-a", 1, &signer(0), &shard);
     let second = map_write("leader-b", 2, &signer(1), &shard);
+    let frontier_sigs = [first.sig.clone(), second.sig.clone()];
     let block_a = nodes[0]
-        .add_block_from_deploys(&[first])
+        .add_block_from_deploys(std::slice::from_ref(&first))
         .await
         .expect("first sibling");
     let block_b = nodes[1]
-        .add_block_from_deploys(&[second])
+        .add_block_from_deploys(std::slice::from_ref(&second))
         .await
         .expect("second sibling");
     for node in &mut nodes {
         node.process_block(block_a.clone()).await.ok();
         node.process_block(block_b.clone()).await.ok();
     }
-    nodes[0]
-        .casper
-        .deploy(map_write("fresh-a", 3, &signer(0), &shard))
-        .expect("fresh a");
-    nodes[1]
-        .casper
-        .deploy(map_write("fresh-b", 4, &signer(1), &shard))
-        .expect("fresh b");
+    let fresh_a = map_write("fresh-a", 3, &signer(0), &shard);
+    let fresh_b = map_write("fresh-b", 4, &signer(1), &shard);
+    nodes[0].casper.deploy(fresh_a.clone()).expect("fresh a");
+    nodes[1].casper.deploy(fresh_b.clone()).expect("fresh b");
     let proposal_a = create_allow_empty(&mut nodes[0]).await;
     let proposal_b = create_allow_empty(&mut nodes[1]).await;
-    let packaged = [proposal_a, proposal_b]
-        .iter()
-        .filter(|result| match result {
-            BlockCreatorResult::Created(block, ..) => !block.body.deploys.is_empty(),
-            _ => false,
-        })
-        .count();
 
-    assert_eq!(
-        packaged, 1,
-        "exactly one validator may package user deploys"
+    let packaged_sigs = |result: &BlockCreatorResult| -> Vec<prost::bytes::Bytes> {
+        match result {
+            BlockCreatorResult::Created(block, ..) => block
+                .body
+                .deploys
+                .iter()
+                .map(|pd| pd.deploy.sig.clone())
+                .collect(),
+            _ => Vec::new(),
+        }
+    };
+    let sigs_a = packaged_sigs(&proposal_a);
+    let sigs_b = packaged_sigs(&proposal_b);
+
+    // Disjointness: nothing is packaged by both proposers.
+    for sig in &sigs_a {
+        assert!(
+            !sigs_b.contains(sig),
+            "a deploy was double-packaged by both proposers"
+        );
+    }
+    // Locality: each validator packages at most its own fresh deploy.
+    assert!(
+        sigs_a.iter().all(|sig| sig == &fresh_a.sig),
+        "validator 0 packaged deploys it did not receive: {sigs_a:?}"
     );
+    assert!(
+        sigs_b.iter().all(|sig| sig == &fresh_b.sig),
+        "validator 1 packaged deploys it did not receive: {sigs_b:?}"
+    );
+    // Frontier work already included in blocks A/B is never re-packaged.
+    for sig in frontier_sigs.iter() {
+        assert!(
+            !sigs_a.contains(sig) && !sigs_b.contains(sig),
+            "already-included frontier deploy was re-packaged"
+        );
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

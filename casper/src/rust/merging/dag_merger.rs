@@ -65,7 +65,12 @@ fn numeric_cell_would_overfill(base: &[Vec<u8>], current: &[Vec<u8>], added: &[V
     if binary_data_is_single_number(base) {
         return current.len() + added.len() > 1;
     }
+    // A base-empty channel only reads as a single-value cell when MULTIPLE
+    // writers accumulate into it. A sole chain leaving several numeric datums
+    // on a channel it created is intra-chain state that already executed
+    // sequentially in PLAY — not a produce-only conflict.
     base.is_empty()
+        && !current.is_empty()
         && current.len() + added.len() > 1
         && current
             .iter()
@@ -200,6 +205,11 @@ fn split_unavailable_branch_consumes(
                 continue;
             }
             if branch_mergeable.contains_key(channel) {
+                tracing::debug!(
+                    target: "f1r3.trace.unavail",
+                    channel = ?channel,
+                    "reject: datum channel in branch_mergeable"
+                );
                 applicable = false;
                 break;
             }
@@ -215,6 +225,13 @@ fn split_unavailable_branch_consumes(
                 next_data.insert(channel.clone(), base_data(channel)?);
             }
             if !remove_from_available(next_data.get_mut(channel).unwrap(), removed) {
+                tracing::debug!(
+                    target: "f1r3.trace.unavail",
+                    channel = ?channel,
+                    removed = removed.len(),
+                    available = next_data.get(channel).map(|v| v.len()),
+                    "reject: datum remove not available at base"
+                );
                 applicable = false;
                 break;
             }
@@ -237,6 +254,13 @@ fn split_unavailable_branch_consumes(
                     next_continuations.get_mut(consume_channels).unwrap(),
                     removed,
                 ) {
+                    tracing::debug!(
+                        target: "f1r3.trace.unavail",
+                        consume_channels = ?consume_channels,
+                        removed = removed.len(),
+                        available = next_continuations.get(consume_channels).map(|v| v.len()),
+                        "reject: continuation remove not available at base"
+                    );
                     applicable = false;
                     break;
                 }
@@ -259,6 +283,14 @@ fn split_unavailable_branch_consumes(
                 let base = base_data(channel)?;
                 let current = next_data.get(channel).unwrap();
                 if numeric_cell_would_overfill(&base, current, added) {
+                    tracing::debug!(
+                        target: "f1r3.trace.unavail",
+                        channel = ?channel,
+                        base = base.len(),
+                        current = current.len(),
+                        added = added.len(),
+                        "reject: numeric cell would overfill"
+                    );
                     applicable = false;
                     break;
                 }
@@ -972,7 +1004,7 @@ pub fn merge(
     let mergeable_channels_fn =
         |chain: &DeployChainIndex| chain.event_log_index.number_channels_data.clone();
 
-    let compute_trie_actions_fn = {
+    let mk_compute_trie_actions_fn = |multi_writer_channels: HashSet<Blake2b256Hash>| {
         let reader = Arc::clone(&history_reader);
         move |changes: rspace_plus_plus::rspace::merger::state_change::StateChange,
               mergeable_chs| {
@@ -1019,15 +1051,24 @@ pub fn merge(
                         // Prevents the RhoVM IntegerAdd single-value invariant tripping at
                         // read time (RCA-asi-devnet-finality-halt). `added`-empty changes
                         // skip the base read inside the helper.
+                        //
+                        // Provenance gate for the base-empty arm: a channel absent at
+                        // base whose adds all came from a SINGLE accepted chain is that
+                        // branch's own internal state — it executed sequentially in PLAY
+                        // and validated in REPLAY, so multiple numeric datums prove the
+                        // channel is not a single-value cell. Overfill on a base-empty
+                        // channel is only a cross-writer accumulation phenomenon.
                         if !channel_changes.added.is_empty() {
                             let base = reader.get_data(hash)?;
-                            let base_bin = reader.get_data_proj_binary(hash)?;
-                            RholangMergingLogic::check_single_value_cell_not_overfilled(
-                                hash,
-                                &base,
-                                &base_bin,
-                                channel_changes,
-                            )?;
+                            if !base.is_empty() || multi_writer_channels.contains(hash) {
+                                let base_bin = reader.get_data_proj_binary(hash)?;
+                                RholangMergingLogic::check_single_value_cell_not_overfilled(
+                                    hash,
+                                    &base,
+                                    &base_bin,
+                                    channel_changes,
+                                )?;
+                            }
                         }
                         Ok(None)
                     }
@@ -1263,7 +1304,7 @@ pub fn merge(
             Ok(rejected)
         };
 
-    let (resolved, unavailable_rejected_count) = resolve_conflicts_with_unavailable_retry(
+    let (mut resolved, unavailable_rejected_count) = resolve_conflicts_with_unavailable_retry(
         &actual_seq_all,
         &late_seq_all,
         &resolve_once,
@@ -1278,6 +1319,74 @@ pub fn merge(
             rejected_chains = unavailable_rejected_count,
             remaining_branches = resolved.to_merge.len()
         );
+    }
+
+    // Rejection expansion over block lineage: a surviving chain whose source
+    // block DAG-descends from a rejected chain's source block was computed
+    // against a pre-state that materializes the rejected work. Applying its
+    // pre-computed diffs on a merge base WITHOUT that work is a stale-diff
+    // application — the descendant's effects appear while its ancestor's are
+    // absent, an internally inconsistent post-state. Reject the descendants'
+    // chains as well; recovery re-proposes them against the actual merged
+    // base. Event-log dependency expansion (inside conflict resolution)
+    // cannot catch this: the descendant may touch disjoint channels and still
+    // be state-lineage-dependent. Ancestry is transitive, so one pass covers
+    // deeper descendants.
+    {
+        let rejected_blocks: HashSet<BlockHash> = resolved
+            .rejected
+            .0
+            .iter()
+            .map(|chain| chain.source_block_hash.clone())
+            .collect();
+        if !rejected_blocks.is_empty() {
+            let mut descends_cache: HashMap<BlockHash, bool> = HashMap::new();
+            let mut descends_rejected = |block_hash: &BlockHash| -> Result<bool, CasperError> {
+                if let Some(cached) = descends_cache.get(block_hash) {
+                    return Ok(*cached);
+                }
+                let mut result = false;
+                for rejected_block in &rejected_blocks {
+                    if rejected_block != block_hash
+                        && dag.is_dag_ancestor(rejected_block, block_hash)?
+                    {
+                        result = true;
+                        break;
+                    }
+                }
+                descends_cache.insert(block_hash.clone(), result);
+                Ok(result)
+            };
+            let mut expanded = 0usize;
+            let mut new_to_merge = Vec::new();
+            for branch in std::mem::take(&mut resolved.to_merge) {
+                // False positive: DeployChainIndex's Hash/Eq use only immutable fields.
+                #[allow(clippy::mutable_key_type)]
+                let mut kept: HashSet<DeployChainIndex> = HashSet::new();
+                for chain in branch.0 {
+                    if descends_rejected(&chain.source_block_hash)? {
+                        expanded += 1;
+                        resolved.rejected.0.insert(chain);
+                    } else {
+                        kept.insert(chain);
+                    }
+                }
+                if !kept.is_empty() {
+                    new_to_merge.push(HashableSet(kept));
+                }
+            }
+            resolved.to_merge = new_to_merge;
+            if expanded > 0 {
+                tracing::info!(
+                    target: "f1r3fly.merge.step",
+                    step = "merge.reject_stale_diff_descendants",
+                    expanded_chains = expanded,
+                    rejected_source_blocks = rejected_blocks.len(),
+                    remaining_branches = resolved.to_merge.len(),
+                    "rejection expanded over block lineage to prevent stale-diff application"
+                );
+            }
+        }
     }
 
     if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
@@ -1353,6 +1462,28 @@ pub fn merge(
             log_final("REJECT", c);
         }
     }
+
+    // Channels where MORE THAN ONE accepted chain contributes datum adds:
+    // only these can exhibit cross-writer accumulation, so only these are
+    // subject to the base-empty single-value-cell overfill guard.
+    let multi_writer_channels: HashSet<Blake2b256Hash> = {
+        let mut writer_counts: HashMap<Blake2b256Hash, usize> = HashMap::new();
+        for branch in &resolved.to_merge {
+            for chain in &branch.0 {
+                for entry in chain.state_changes.datums_changes.iter() {
+                    if !entry.value().added.is_empty() {
+                        *writer_counts.entry(entry.key().clone()).or_insert(0) += 1;
+                    }
+                }
+            }
+        }
+        writer_counts
+            .into_iter()
+            .filter(|(_, writers)| *writers > 1)
+            .map(|(channel, _)| channel)
+            .collect()
+    };
+    let compute_trie_actions_fn = mk_compute_trie_actions_fn(multi_writer_channels);
 
     // Combine surviving diffs and apply to the LFB post-state.
     let new_state = conflict_set_merger::compute_merged_state(

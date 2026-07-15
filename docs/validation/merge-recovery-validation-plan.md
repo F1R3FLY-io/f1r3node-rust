@@ -45,7 +45,7 @@ Normal Rust unit and integration jobs execute the validation modules.
 introduced on 2026-07-14 are removed — every validation assertion runs
 unconditionally in per-change CI again. This PR merges only when the
 remaining corrections for `three_writers_converge_under_load`,
-`unresolved_user_frontier_has_one_deploy_inclusion_leader`,
+`unresolved_user_frontier_fresh_admission_is_bounded_and_disjoint (reconciled with the bounded fresh-admission semantics)`,
 `recovery_cycle_rejected_deploy_retries_while_source_is_visible`,
 `bridge_query_survives_multi_parent_merge`, and
 `stale_diff_application_corrupts_merged_state` have landed (issue #71) and
