@@ -114,6 +114,31 @@ Three crates have `build.rs` for protobuf code generation:
 
 ## Git and Version Control
 
+### Git Interaction Policy (agents)
+- Use `/quick-commit` for git add/commit operations
+- Use `/recursive-push` for git push operations
+- Do not run `git add`, `git commit`, or `git push` directly unless explicitly requested
+- **Commit consent is per-commit**: never create a commit — including merge
+  commits and plumbing equivalents (`git commit-tree`, `git update-ref`) —
+  without the user invoking `/quick-commit` or giving an unambiguous
+  per-commit "yes". Consent does not carry over from a plan, an earlier
+  commit, or a previous merge in the same session.
+- **Merge conflicts**: a request to "resolve the merge conflicts" authorizes
+  conflict resolution only — resolve the files, verify the build, report,
+  then STOP before the merge commit. The user running `git merge` in their
+  own terminal is not a request for the agent to act.
+- `git mv` is permitted but requires user confirmation
+- `git stash`:
+  - `git stash list`, `git stash show` are permitted (read-only)
+  - `git stash`, `git stash push|save|apply` require user confirmation
+  - `git stash pop|drop|clear|branch` are blocked (destructive; can silently lose uncommitted work)
+- **Exception:** In agentic mode (`claude-agentic`), all restrictions are lifted
+- The workspace stigmergic guidance to "commit frequently" applies to humans
+  and fully-autonomous (YOLO/worktree) modes; in interactive sessions it is
+  overridden by the consent rules above.
+
+**Full Documentation**: [Git Interaction Policy](https://gitlab.com/smart-assets.io/gitlab-profile/-/blob/master/docs/common/git-interaction-policy.md) (canonical; also available at `../../SA/top-level-gitlab-profile/docs/common/git-interaction-policy.md` in a multi-repo workspace checkout).
+
 ### Commit Messages
 - Use `[agent]` prefix in agentic mode
 - Do NOT include Claude Code attribution footer or emoji

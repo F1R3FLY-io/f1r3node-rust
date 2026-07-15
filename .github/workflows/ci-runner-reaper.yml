@@ -1,0 +1,148 @@
+name: CI Runner Reaper
+
+# Terminates leaked ephemeral CI runner VMs (ci-eph-*) in the OCI ci-runner
+# compartment. An ephemeral runner self-terminates only after completing a
+# job; a runner that registers but never picks up a job idles forever. In
+# June 2026 ~209 such zombies burned ~$1,084/day for 9 days (~$6k excess)
+# before anyone noticed. No pipeline job runs longer than 60 minutes
+# (_integration-pipeline.yml timeout-minutes), so any ci-eph instance older
+# than MAX_AGE_HOURS is a leak, busy or not.
+#
+# NOTE: the schedule trigger only fires from the default branch (master).
+# Until this file reaches master, run it manually via workflow_dispatch.
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: List leaked instances without terminating them
+        type: boolean
+        default: false
+      max_age_hours:
+        description: Terminate ci-eph-* instances older than this many hours
+        default: "2"
+
+concurrency:
+  group: ci-runner-reaper
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  # OCI compartment "ci-runner" — where the ephemeral launcher creates VMs.
+  # Not a secret; pinned here so the reaper can never touch other compartments.
+  CI_RUNNER_COMPARTMENT_OCID: "ocid1.compartment.oc1..aaaaaaaalq6bh2a6dmq4h6i3nrripxlcevv7fa3goaf7wxve52qiuocmehia"
+  # Pinned OCI CLI installer (release tag + sha256) and CLI version. Keep
+  # identical to _integration-pipeline.yml and oci-validation.yml — this job
+  # holds OCI_* secrets. Bump all three together in all three files.
+  OCI_CLI_INSTALLER_URL: "https://raw.githubusercontent.com/oracle/oci-cli/v3.89.1/scripts/install/install.sh"
+  OCI_CLI_INSTALLER_SHA256: "079dcc9a3e2a61ec692400e30169c9996b2998ac8c4e205198ed5863283fcb76"
+  OCI_CLI_VERSION: "3.89.1"
+
+jobs:
+  reap:
+    name: Reap leaked ephemeral runners
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Install OCI CLI (pinned, checksum-verified)
+        shell: bash -ex {0}
+        run: |
+          curl -fsSL --retry 5 --retry-delay 10 "$OCI_CLI_INSTALLER_URL" -o /tmp/oci-install.sh
+          echo "$OCI_CLI_INSTALLER_SHA256  /tmp/oci-install.sh" | sha256sum -c -
+          bash /tmp/oci-install.sh \
+            --accept-all-defaults --install-dir /opt/oci-cli --exec-dir /usr/local/bin \
+            --oci-cli-version "$OCI_CLI_VERSION"
+          oci --version
+
+      - name: Configure OCI auth from secrets
+        shell: bash -e {0} # no -x: never trace the multi-line private key
+        env:
+          OCI_TENANCY_OCID: ${{ secrets.OCI_TENANCY_OCID }}
+          OCI_USER_OCID: ${{ secrets.OCI_USER_OCID }}
+          OCI_REGION: ${{ secrets.OCI_REGION }}
+          OCI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
+          OCI_PRIVATE_KEY: ${{ secrets.OCI_PRIVATE_KEY }}
+          SUPPRESS_LABEL_WARNING: "True"
+        run: |
+          install -d -m 700 ~/.oci
+          printf '%s\n' "$OCI_PRIVATE_KEY" > ~/.oci/key.pem
+          chmod 600 ~/.oci/key.pem
+          cat > ~/.oci/config <<CFG
+          [DEFAULT]
+          user=$OCI_USER_OCID
+          fingerprint=$OCI_FINGERPRINT
+          tenancy=$OCI_TENANCY_OCID
+          region=$OCI_REGION
+          key_file=$HOME/.oci/key.pem
+          CFG
+          chmod 600 ~/.oci/config
+
+      - name: Terminate ci-eph-* instances past max age
+        shell: bash -e {0}
+        env:
+          # `== true` guards against string-typed inputs (e.g. via
+          # github.event.inputs), where the string "false" is truthy.
+          DRY_RUN: ${{ inputs.dry_run == true && '1' || '' }}
+          MAX_AGE_HOURS: ${{ inputs.max_age_hours || '2' }}
+        run: |
+          case "$MAX_AGE_HOURS" in
+            ''|*[!0-9]*) echo "max_age_hours must be a positive integer"; exit 1 ;;
+          esac
+          cutoff=$(date -u -d "-${MAX_AGE_HOURS} hours" +%Y-%m-%dT%H:%M:%S)
+          echo "Reaping ci-eph-* instances created before ${cutoff}Z (max age ${MAX_AGE_HOURS}h)"
+
+          oci compute instance list \
+            --compartment-id "$CI_RUNNER_COMPARTMENT_OCID" --all --output json \
+            | jq -r --arg cutoff "$cutoff" '
+                .data[]
+                | select(."lifecycle-state" == "RUNNING" or ."lifecycle-state" == "STOPPED")
+                | select(."display-name" | startswith("ci-eph-"))
+                | select(."time-created" < $cutoff)
+                | "\(.id) \(."display-name") \(."time-created")"' \
+            > /tmp/zombies.txt
+
+          count=$(wc -l < /tmp/zombies.txt)
+          if [ "$count" -eq 0 ]; then
+            echo "No leaked instances found."
+            exit 0
+          fi
+
+          echo "Found $count leaked instance(s):"
+          awk '{print "  " $2 " (created " $3 ")"}' /tmp/zombies.txt
+
+          if [ -n "$DRY_RUN" ]; then
+            echo "Dry run — nothing terminated."
+            exit 0
+          fi
+
+          failed=0
+          while read -r id name created; do
+            # Defense in depth: never terminate anything not matching the
+            # ephemeral naming scheme, even if the jq filter changes.
+            case "$name" in
+              ci-eph-*) ;;
+              *) echo "SKIP unexpected name: $name"; continue ;;
+            esac
+            if oci compute instance terminate --instance-id "$id" --force >/dev/null; then
+              echo "Terminated $name (created $created)"
+            else
+              echo "FAILED to terminate $name"
+              failed=1
+            fi
+          done < /tmp/zombies.txt
+
+          echo "reaped=$count" >> "$GITHUB_STEP_SUMMARY"
+          exit $failed
+
+      - name: Shred OCI credentials
+        if: always()
+        shell: bash -e {0}
+        run: |
+          if [ -d ~/.oci ]; then
+            find ~/.oci -type f -exec shred -u {} + 2>/dev/null || rm -rf ~/.oci
+            rm -rf ~/.oci
+          fi
