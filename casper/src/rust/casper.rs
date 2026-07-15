@@ -194,7 +194,7 @@ pub trait MultiParentCasper: Casper + Send + Sync {
     }
 }
 
-pub fn hash_set_casper<T: TransportLayer + Send + Sync>(
+pub async fn hash_set_casper<T: TransportLayer + Send + Sync>(
     block_retriever: BlockRetriever<T>,
     event_publisher: F1r3flyEvents,
     runtime_manager: Arc<RuntimeManager>,
@@ -205,10 +205,41 @@ pub fn hash_set_casper<T: TransportLayer + Send + Sync>(
     rejected_deploy_buffer: Arc<Mutex<KeyValueRejectedDeployBuffer>>,
     casper_buffer_storage: CasperBufferKeyValueStorage,
     validator_id: Option<ValidatorIdentity>,
-    casper_shard_conf: CasperShardConf,
+    mut casper_shard_conf: CasperShardConf,
     approved_block: BlockMessage,
     heartbeat_signal_ref: crate::rust::heartbeat_signal::HeartbeatSignalRef,
 ) -> Result<MultiParentCasperImpl<T>, CasperError> {
+    // The fault-tolerance threshold is a CONSENSUS value: the finalized-floor
+    // oracle runs on it, and the floor decides the multi-parent merge base —
+    // a validated, node-identical quantity. Adopt the protocol ppm baked into
+    // the PoS contract at genesis so every node (validator or observer) runs
+    // the same threshold regardless of local configuration. A chain whose
+    // genesis predates the parameter returns None: keep the locally-derived
+    // ppm and warn — such shards must configure all nodes identically.
+    match runtime_manager
+        .get_fault_tolerance_threshold_ppm(&approved_block.body.state.post_state_hash)
+        .await?
+    {
+        Some(onchain_ppm) => {
+            if onchain_ppm != casper_shard_conf.fault_tolerance_threshold_ppm {
+                tracing::info!(
+                    onchain_ppm,
+                    local_ppm = casper_shard_conf.fault_tolerance_threshold_ppm,
+                    "Adopting on-chain protocol fault-tolerance threshold over local configuration"
+                );
+            }
+            casper_shard_conf.fault_tolerance_threshold_ppm = onchain_ppm;
+        }
+        None => {
+            tracing::warn!(
+                local_ppm = casper_shard_conf.fault_tolerance_threshold_ppm,
+                "Chain state exposes no protocol fault-tolerance threshold; using locally-derived \
+                 ppm — ALL nodes in this shard must configure the same fault-tolerance-threshold \
+                 or their merge floors will diverge"
+            );
+        }
+    }
+
     Ok(MultiParentCasperImpl {
         block_retriever,
         event_publisher,

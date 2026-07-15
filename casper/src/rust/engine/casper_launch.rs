@@ -85,7 +85,7 @@ fn max_blocks_in_processing() -> usize { MAX_BLOCKS_IN_PROCESSING }
 impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
     /// Helper method to create MultiParentCasper instance
     /// Scala equivalent: MultiParentCasper.hashSetCasper[F](validatorId, casperShardConf, ab)
-    fn create_casper(
+    async fn create_casper(
         &self,
         validator_id: Option<ValidatorIdentity>,
         ab: BlockMessage,
@@ -107,6 +107,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             ab,
             self.heartbeat_signal_ref.clone(),
         )
+        .await
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -360,7 +361,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
         let ab = approved_block.candidate.block.clone();
         let genesis_post_state_hash = ab.body.state.post_state_hash.clone();
 
-        let casper = self.create_casper(validator_id.clone(), ab)?;
+        let casper = self.create_casper(validator_id.clone(), ab).await?;
         let casper_arc = Arc::new(casper);
 
         // Scala equivalent: init = for { _ <- askPeersForForkChoiceTips; _ <- sendBufferPendantsToCasper(casper); _ <- proposeFOpt.traverse(...) } yield ()
@@ -509,6 +510,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             self.conf.genesis_block_data.epoch_length,
             self.conf.genesis_block_data.quarantine_length,
             self.conf.genesis_block_data.number_of_active_validators,
+            self.casper_shard_conf.fault_tolerance_threshold_ppm,
             self.conf.genesis_ceremony.required_signatures,
             self.conf
                 .genesis_block_data
@@ -601,6 +603,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             self.conf.genesis_block_data.epoch_length,
             self.conf.genesis_block_data.quarantine_length,
             self.conf.genesis_block_data.number_of_active_validators,
+            self.casper_shard_conf.fault_tolerance_threshold_ppm,
             self.casper_shard_conf.shard_name.clone(),
             self.conf.genesis_block_data.deploy_timestamp,
             self.conf.genesis_ceremony.required_signatures,

@@ -1178,6 +1178,65 @@ impl RuntimeOps {
         .to_string()
     }
 
+    /// Reads the protocol fault-tolerance threshold (parts-per-million) from
+    /// the PoS contract at `start_hash`. Returns `None` when the contract does
+    /// not expose the getter (a chain whose genesis predates the parameter) —
+    /// the caller falls back to its local configuration in that case.
+    pub async fn get_fault_tolerance_threshold_ppm(
+        &mut self,
+        start_hash: &StateHash,
+    ) -> Result<Option<i64>, CasperError> {
+        let ppm_pars = self
+            .play_exploratory_par(Self::fault_tolerance_ppm_query_par().clone(), start_hash)
+            .await?;
+
+        if ppm_pars.is_empty() {
+            tracing::warn!(
+                "No result from getFaultToleranceThresholdPpm query for state {}; \
+                 genesis predates the on-chain protocol FTT — falling back to local config",
+                PrettyPrinter::build_string_bytes(start_hash)
+            );
+            return Ok(None);
+        }
+        if ppm_pars.len() != 1 {
+            return Err(CasperError::RuntimeError(format!(
+                "Incorrect number of results from getFaultToleranceThresholdPpm query in state {}: {}",
+                PrettyPrinter::build_string_bytes(start_hash),
+                ppm_pars.len()
+            )));
+        }
+
+        let par = &ppm_pars[0];
+        match par.exprs.first().and_then(|e| e.expr_instance.as_ref()) {
+            Some(ExprInstance::GInt(ppm)) => Ok(Some(*ppm)),
+            other => Err(CasperError::RuntimeError(format!(
+                "getFaultToleranceThresholdPpm returned a non-integer value in state {}: {:?}",
+                PrettyPrinter::build_string_bytes(start_hash),
+                other
+            ))),
+        }
+    }
+
+    fn fault_tolerance_ppm_query_source() -> String {
+        r#"
+          new return, rl(`rho:registry:lookup`), poSCh in {
+          rl!(`rho:system:pos`, *poSCh) |
+          for(@(_, PoS) <- poSCh) {
+            @PoS!("getFaultToleranceThresholdPpm", *return)
+          }
+        }
+      "#
+        .to_string()
+    }
+
+    fn fault_tolerance_ppm_query_par() -> &'static Par {
+        static QUERY: OnceLock<Par> = OnceLock::new();
+        QUERY.get_or_init(|| {
+            Compiler::source_to_adt(&Self::fault_tolerance_ppm_query_source())
+                .expect("Failed to compile fault tolerance ppm query source")
+        })
+    }
+
     fn activate_validator_query_par() -> &'static Par {
         static QUERY: OnceLock<Par> = OnceLock::new();
         QUERY.get_or_init(|| {

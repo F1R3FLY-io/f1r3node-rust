@@ -141,7 +141,8 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> GenesisCeremonyMaster<T>
                     ab,
                     &block_retriever,
                     &heartbeat_signal_ref,
-                )?;
+                )
+                .await?;
 
                 // Scala: Engine.transitionToRunning[F](..., init = ().pure[F], ...)
                 let the_init = Arc::new(|| {
@@ -180,7 +181,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> GenesisCeremonyMaster<T>
     /// Helper function to create MultiParentCasper from storage components
     /// Same logic as CasperLaunchImpl::create_casper but as static function
     #[allow(clippy::too_many_arguments)]
-    fn create_casper_from_storage(
+    async fn create_casper_from_storage(
         event_publisher: &F1r3flyEvents,
         runtime_manager: &Arc<RuntimeManager>,
         estimator: &Estimator,
@@ -213,6 +214,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> GenesisCeremonyMaster<T>
             ab,
             heartbeat_signal_ref.clone(),
         )
+        .await
     }
 }
 
