@@ -3387,3 +3387,53 @@ async fn fault_tolerance_threshold_ppm_round_trips_through_genesis() {
         "every node must read the identical protocol threshold from chain state"
     );
 }
+
+/// Strict exploratory-query regression (PR #122 review r3588246166): the
+/// lenient exploratory path degrades a runtime EXECUTION FAILURE into an
+/// empty result — indistinguishable from "the queried contract method does
+/// not exist". For a consensus parameter (the protocol fault-tolerance
+/// threshold) that conflation silently routes a transient failure into the
+/// local-config fallback and re-opens node-local finalized-floor divergence.
+/// The strict variant used by `get_fault_tolerance_threshold_ppm` must
+/// PROPAGATE the failure instead, so node startup fails loudly rather than
+/// running divergent. This pins the contrast on the same failing term.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn strict_exploratory_query_propagates_execution_failure() {
+    with_runtime_manager(
+        |runtime_manager, _genesis_context, genesis_block| async move {
+            let post_state = genesis_block.body.state.post_state_hash;
+            // Fails at reduce time (division by zero evaluated for the send).
+            let failing_source = r#"new x in { x!(1 / 0) }"#;
+            let failing_par =
+                Compiler::source_to_adt(failing_source).expect("compile failing term");
+
+            let runtime = runtime_manager.spawn_runtime().await;
+            let mut ops = RuntimeOps::new(runtime);
+
+            // Lenient path (display/API callers): degrades to an empty result.
+            let lenient = ops
+                .play_exploratory_par(failing_par.clone(), &post_state)
+                .await;
+            assert!(
+                matches!(&lenient, Ok(pars) if pars.is_empty()),
+                "lenient exploratory path degrades execution failure to an empty \
+             result (the hazard the strict variant exists to avoid); got {:?}",
+                lenient
+            );
+
+            // Strict path (consensus reads): the same failure must propagate.
+            let strict = ops
+                .play_exploratory_par_strict(failing_par, &post_state)
+                .await;
+            assert!(
+                strict.is_err(),
+                "strict exploratory path must propagate an execution failure — \
+             degrading it to an empty result would be indistinguishable from \
+             'getter absent' and re-open node-local divergence; got {:?}",
+                strict
+            );
+        },
+    )
+    .await
+    .expect("with_runtime_manager");
+}

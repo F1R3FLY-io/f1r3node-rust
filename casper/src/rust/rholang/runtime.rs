@@ -827,10 +827,39 @@ impl RuntimeOps {
         deploy_result.await
     }
 
-    async fn play_exploratory_par(
+    /// Lenient exploratory query: a runtime execution failure degrades to an
+    /// empty result (logged, not propagated). Appropriate for display/API
+    /// reads (bonds, active validators) — NEVER for consensus-level reads,
+    /// where "failed" and "absent" must stay distinguishable
+    /// (see [`Self::play_exploratory_par_strict`]).
+    pub async fn play_exploratory_par(
         &mut self,
         par: Par,
         hash: &StateHash,
+    ) -> Result<Vec<Par>, CasperError> {
+        self.play_exploratory_par_with_mode(par, hash, false).await
+    }
+
+    /// Strict variant: a runtime injection failure PROPAGATES as an error
+    /// instead of degrading to an empty result. Required for consensus-level
+    /// reads (the protocol fault-tolerance threshold) where "query failed"
+    /// must never be conflated with "value genuinely absent" — the lenient
+    /// empty-result degradation would silently route a transient execution
+    /// failure into the local-config fallback and re-open node-local
+    /// divergence.
+    pub async fn play_exploratory_par_strict(
+        &mut self,
+        par: Par,
+        hash: &StateHash,
+    ) -> Result<Vec<Par>, CasperError> {
+        self.play_exploratory_par_with_mode(par, hash, true).await
+    }
+
+    async fn play_exploratory_par_with_mode(
+        &mut self,
+        par: Par,
+        hash: &StateHash,
+        strict: bool,
     ) -> Result<Vec<Par>, CasperError> {
         use crate::rust::metrics_constants::{
             BONDS_CACHE_GET_DATA_TIME_METRIC, BONDS_CACHE_INJ_TIME_METRIC,
@@ -888,8 +917,15 @@ impl RuntimeOps {
                 if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
                     tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_inj_err", rss_kb);
                 }
-                tracing::error!(error = ?err, "play_exploratory_par failed");
-                Ok(Vec::new())
+                tracing::error!(error = ?err, strict, "play_exploratory_par failed");
+                if strict {
+                    Err(CasperError::RuntimeError(format!(
+                        "exploratory query execution failed (strict mode): {:?}",
+                        err
+                    )))
+                } else {
+                    Ok(Vec::new())
+                }
             }
         };
 
@@ -1186,8 +1222,14 @@ impl RuntimeOps {
         &mut self,
         start_hash: &StateHash,
     ) -> Result<Option<i64>, CasperError> {
+        // STRICT query: a runtime execution failure must PROPAGATE (failing
+        // node startup) rather than degrade to an empty result — the lenient
+        // path's `Ok(vec![])`-on-error would be indistinguishable from "the
+        // getter does not exist" and silently route a transient failure into
+        // the local-config fallback, re-opening node-local floor divergence.
+        // `None` is returned only after a SUCCESSFUL query with no result.
         let ppm_pars = self
-            .play_exploratory_par(Self::fault_tolerance_ppm_query_par().clone(), start_hash)
+            .play_exploratory_par_strict(Self::fault_tolerance_ppm_query_par().clone(), start_hash)
             .await?;
 
         if ppm_pars.is_empty() {
