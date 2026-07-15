@@ -3324,3 +3324,66 @@ new deployId(`rho:system:deployId`) in {
         !bd_data.is_empty(),
     );
 }
+
+/// Protocol fault-tolerance-threshold round-trip (floor-divergence regression,
+/// 2026-07-15). The FTT is a CONSENSUS value: the finalized-floor oracle runs
+/// on it, and the floor decides the multi-parent merge base — a validated,
+/// node-identical quantity. It must therefore be baked into the PoS contract
+/// at genesis and be readable back from ANY post-state, because
+/// `hash_set_casper` adopts the on-chain ppm over local configuration at node
+/// startup. The regression this pins: a readonly observer running a different
+/// LOCAL fault-tolerance-threshold (0.1 vs the validators' 0.33) certified
+/// blocks finalized that no validator did, derived a different merge floor,
+/// and permanently invalidated the proposers' blocks
+/// (ComputedPreStateMismatch → UnknownRootError cascade in
+/// test_fault_tolerance_asymmetric_bonds / test_validator_failure_recovery).
+/// With the ppm on-chain, two nodes with ANY local configs read the same
+/// protocol value — the floor threshold ceases to be node-local.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn fault_tolerance_threshold_ppm_round_trips_through_genesis() {
+    use crate::util::genesis_builder::GenesisBuilder;
+    use crate::util::rholang::resources::{
+        mk_runtime_manager_with_history_at, mk_test_rnode_store_manager_from_genesis,
+    };
+
+    // The asymmetric-bonds shard's threshold (0.33 → 330_000 ppm): a value the
+    // default test conf (ppm 0) can never produce by accident.
+    let mut parameters = GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(4));
+    parameters.2.proof_of_stake.fault_tolerance_threshold_ppm = 330_000;
+
+    let genesis_context = GenesisBuilder::new()
+        .build_genesis_with_parameters(Some(parameters))
+        .await
+        .expect("genesis with protocol FTT");
+    let post_state = genesis_context
+        .genesis_block
+        .body
+        .state
+        .post_state_hash
+        .clone();
+
+    let mut kvm = mk_test_rnode_store_manager_from_genesis(&genesis_context);
+    let (runtime_manager, _history) = mk_runtime_manager_with_history_at(&mut *kvm).await;
+
+    // Two independent reads model two nodes with DIFFERENT local configs: the
+    // local threshold is not an input to the read, so both adopt 330_000.
+    let first = runtime_manager
+        .get_fault_tolerance_threshold_ppm(&post_state)
+        .await
+        .expect("on-chain FTT query");
+    let second = runtime_manager
+        .get_fault_tolerance_threshold_ppm(&post_state)
+        .await
+        .expect("on-chain FTT query (second node)");
+
+    assert_eq!(
+        first,
+        Some(330_000),
+        "genesis must bake the protocol fault-tolerance threshold into the PoS \
+         contract and expose it via getFaultToleranceThresholdPpm"
+    );
+    assert_eq!(
+        first, second,
+        "every node must read the identical protocol threshold from chain state"
+    );
+}

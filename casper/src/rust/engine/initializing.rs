@@ -1081,7 +1081,8 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             self.casper_shard_conf.clone(),
             ab,
             self.heartbeat_signal_ref.clone(),
-        )?;
+        )
+        .await?;
 
         tracing::info!(
             "create_casper_and_transition_to_running: MultiParentCasper instance created"

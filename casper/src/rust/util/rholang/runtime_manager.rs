@@ -729,6 +729,20 @@ impl RuntimeManager {
         Ok(computed)
     }
 
+    /// On-chain protocol fault-tolerance threshold (ppm) at `start_hash`, or
+    /// `None` when the chain's genesis predates the parameter. Read once at
+    /// casper construction (`hash_set_casper`) — not cached here.
+    pub async fn get_fault_tolerance_threshold_ppm(
+        &self,
+        start_hash: &StateHash,
+    ) -> Result<Option<i64>, CasperError> {
+        let runtime = self.spawn_runtime().await;
+        let mut runtime_ops = RuntimeOps::new(runtime);
+        runtime_ops
+            .get_fault_tolerance_threshold_ppm(start_hash)
+            .await
+    }
+
     pub async fn compute_bonds(&self, hash: &StateHash) -> Result<Vec<Bond>, CasperError> {
         if let Some(cached) = self.bonds_cache.get(hash) {
             Self::touch_cache_key(&self.bonds_cache_order, hash);
