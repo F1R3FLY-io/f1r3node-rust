@@ -12,15 +12,18 @@
 //!   2. `checked_next_seq` — u64 successor narrowed to i32 wire type.
 //!      Two-step saturation: u64 overflow OR i32 truncation produces `None`.
 //!   3. `epoch_for_block_number` — division by zero or negative epoch
-//!      length. Must return `None` instead of panicking on `% 0`.
+//!      length. Must return the typed `DomainError` (never panic on `% 0`),
+//!      with `InvalidEpochLength` taking precedence over
+//!      `NegativeBlockNumber` when both hold.
 //!
 //! The asserts compare against re-derived expressions in the harness so
 //! a regression that introduces wrapping arithmetic surfaces immediately.
 
 #![no_main]
 
+use casper::rust::epoch::Epoch;
 use casper::rust::slashing_authorization::{
-    checked_base_seq, checked_next_seq, epoch_for_block_number,
+    checked_base_seq, checked_next_seq, epoch_for_block_number, DomainError,
 };
 use libfuzzer_sys::fuzz_target;
 
@@ -44,10 +47,14 @@ fuzz_target!(|input: Input| {
         .and_then(|seq| i32::try_from(seq).ok());
     assert_eq!(checked_next_seq(input.seq_u64), expected_next);
 
-    let expected_epoch = if input.block_number < 0 || input.epoch_length <= 0 {
-        None
+    let expected_epoch = if input.epoch_length <= 0 {
+        Err(DomainError::InvalidEpochLength(input.epoch_length))
+    } else if input.block_number < 0 {
+        Err(DomainError::NegativeBlockNumber(input.block_number))
     } else {
-        Some(input.block_number / i64::from(input.epoch_length))
+        Ok(Epoch::new(
+            input.block_number / i64::from(input.epoch_length),
+        ))
     };
     assert_eq!(
         epoch_for_block_number(input.block_number, input.epoch_length),
