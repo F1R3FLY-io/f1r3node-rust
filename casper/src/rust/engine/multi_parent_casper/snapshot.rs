@@ -382,7 +382,74 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
         );
         vec![sorted_parents_list[0].clone()]
     } else {
+        // Filter parents to the most-slashed (smallest) consistent
+        // validator-set view.
+        //
+        // The original incarnation of this filter compared the full
+        // `Vec<Bond>` (including exact stake amounts) of every parent
+        // against the max-height parent's bonds. That had two bugs:
+        //
+        //   1. It conflated stake-amount drift with bond-set drift.
+        //      Each block's `CloseBlockDeploy` pays PoS rewards to its
+        //      creator, so sibling blocks from different creators never
+        //      have identical stake *amounts* even when the bonded set
+        //      is the same. The hazard the filter is meant to guard
+        //      against is a parent with a *stale view of who is
+        //      bonded* (e.g. a genesis slot sneaking in beside h=N
+        //      blocks where a slash has already zeroed an equivocator),
+        //      not stake-amount divergence.
+        //
+        //   2. Picking the max-height parent as the reference is unsafe
+        //      when siblings include both pre-slash and post-slash
+        //      blocks at the same height. The equivocator's own valid
+        //      block (e.g. `signed_block` in
+        //      `casper/tests/batch2/slash_recovery_spec.rs`) has the
+        //      pre-slash validator set as a *superset* of the
+        //      slashing-sibling's set; max-height tiebreaks via hash
+        //      can make the pre-slash block the reference and then
+        //      drop the post-slash siblings. The pre-slash block is
+        //      the stale one — we should drop *it*, not the
+        //      slashing-aware blocks.
+        //
+        // Fix: keep only parents whose bonded-validator set is minimal
+        // under set inclusion — drop any parent whose set is a strict
+        // superset of a sibling's set, since the superset is the stale
+        // pre-slash view (it still counts a validator that a sibling
+        // has already slashed out). Whenever some parent's set equals
+        // the intersection of all sets, this is exactly the previous
+        // "equals the intersection" filter. But when siblings applied
+        // *different* slashes (incomparable sets, e.g. {v1,v2} vs
+        // {v2,v3}), the intersection equals no parent's set and the
+        // equality filter emptied the parent list — panicking at the
+        // `parents.first().expect(...)` below. Minimal-under-inclusion
+        // keeps every such divergent-slash sibling (none is staler
+        // than another; the merge machinery reconciles their bond
+        // views), and a minimal element always exists, so the filter
+        // can never empty a non-empty parent list.
+        let validator_set_of = |block: &BlockMessage| -> std::collections::BTreeSet<
+            models::rust::validator::Validator,
+        > {
+            block
+                .body
+                .state
+                .bonds
+                .iter()
+                .filter(|b| b.stake > 0)
+                .map(|b| b.validator.clone())
+                .collect()
+        };
+
+        let parent_validator_sets: Vec<
+            std::collections::BTreeSet<models::rust::validator::Validator>,
+        > = sorted_parents_list.iter().map(validator_set_of).collect();
+
+        let keep = minimal_bond_view_flags(&parent_validator_sets);
+
         sorted_parents_list
+            .into_iter()
+            .zip(keep)
+            .filter_map(|(block, keep)| if keep { Some(block) } else { None })
+            .collect()
     };
 
     let unfiltered_parents_count = unfiltered_parents.len();
@@ -643,6 +710,20 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
     })
 }
 
+/// Parent bond-view filter: `flags[i]` is true iff `sets[i]` is minimal
+/// under set inclusion, i.e. no other parent's bonded set is a strict
+/// subset of it. Strict supersets are stale pre-slash views and are
+/// dropped. For any non-empty input at least one flag is true (a set of
+/// minimum cardinality cannot strictly contain another set), so the
+/// filter in `compute_snapshot` can never empty a non-empty parent list.
+fn minimal_bond_view_flags(
+    sets: &[std::collections::BTreeSet<models::rust::validator::Validator>],
+) -> Vec<bool> {
+    sets.iter()
+        .map(|s| !sets.iter().any(|o| o != s && o.is_subset(s)))
+        .collect()
+}
+
 pub(crate) async fn estimator<T: TransportLayer + Send + Sync>(
     this: &MultiParentCasperImpl<T>,
     dag: &mut KeyValueDagRepresentation,
@@ -727,17 +808,20 @@ pub(crate) async fn get_on_chain_state<T: TransportLayer + Send + Sync>(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use block_storage::rust::dag::block_dag_key_value_storage::{
         BlockDagKeyValueStorage, InsertMode,
     };
     use block_storage::rust::key_value_block_store::KeyValueBlockStore;
     use models::rust::block_implicits;
     use models::rust::casper::protocol::casper_message::{ProcessedDeploy, RejectedDeploy};
+    use models::rust::validator::Validator;
     use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 
     use super::{
         candidate_scope_has_rejected_deploys, deploy_scope_cache_key_matches,
-        prefer_deploy_support_main_parent,
+        minimal_bond_view_flags, prefer_deploy_support_main_parent,
     };
 
     #[test]
@@ -1139,5 +1223,63 @@ mod tests {
 
         assert_eq!(reordered[0].block_hash, deploy_parent.block_hash);
         assert_eq!(reordered[1].block_hash, empty.block_hash);
+    fn set(ids: &[u8]) -> BTreeSet<Validator> {
+        ids.iter()
+            .map(|id| Validator::copy_from_slice(&[*id]))
+            .collect()
+    }
+
+    #[test]
+    fn identical_bond_sets_keep_all_parents() {
+        let sets = vec![set(&[1, 2, 3]), set(&[1, 2, 3]), set(&[1, 2, 3])];
+        assert_eq!(minimal_bond_view_flags(&sets), vec![true, true, true]);
+    }
+
+    #[test]
+    fn stale_pre_slash_superset_is_dropped() {
+        // Pre-slash sibling still counts validator 3; post-slash siblings
+        // dropped it. The superset view is stale and must be filtered.
+        let sets = vec![set(&[1, 2, 3]), set(&[1, 2]), set(&[1, 2])];
+        assert_eq!(minimal_bond_view_flags(&sets), vec![false, true, true]);
+    }
+
+    #[test]
+    fn subset_chain_keeps_only_most_slashed_view() {
+        let sets = vec![set(&[1, 2, 3, 4]), set(&[1, 2, 3]), set(&[1, 2])];
+        assert_eq!(minimal_bond_view_flags(&sets), vec![false, false, true]);
+    }
+
+    #[test]
+    fn incomparable_divergent_slash_views_all_kept() {
+        // Regression for the empty-parent panic: siblings applied
+        // *different* slashes ({v1,v2} slashed v3, {v2,v3} slashed v1).
+        // The old equals-the-intersection filter matched neither set and
+        // emptied the parent list, panicking at parents.first().expect(...).
+        let sets = vec![set(&[1, 2]), set(&[2, 3])];
+        assert_eq!(minimal_bond_view_flags(&sets), vec![true, true]);
+    }
+
+    #[test]
+    fn mixed_chain_and_incomparable_keeps_all_minimal_views() {
+        // {1} ⊂ {1,2}; {2,3} incomparable to both → keep {1} and {2,3}.
+        let sets = vec![set(&[1]), set(&[1, 2]), set(&[2, 3])];
+        assert_eq!(minimal_bond_view_flags(&sets), vec![true, false, true]);
+    }
+
+    #[test]
+    fn non_empty_input_never_filters_to_empty() {
+        let cases = vec![
+            vec![set(&[1, 2]), set(&[2, 3]), set(&[1, 3])],
+            vec![set(&[]), set(&[1]), set(&[2])],
+            vec![set(&[1, 2, 3])],
+            vec![set(&[1]), set(&[1])],
+        ];
+        for sets in cases {
+            assert!(
+                minimal_bond_view_flags(&sets).iter().any(|&k| k),
+                "filter emptied a non-empty parent list: {:?}",
+                sets
+            );
+        }
     }
 }

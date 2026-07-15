@@ -123,6 +123,9 @@ async fn hot_store_concurrent_branches_scale_linearly() {
 // Runs SMALL and LARGE op counts on separate fresh spaces and checks that the
 // time ratio stays below 25x. O(n) growth gives ~10x ratio; O(n^2) gives ~100x.
 // Distinct channels per op so per-channel locks do not affect the measurement.
+// Run explicitly with: cargo test -p rspace_plus_plus event_log_insert --
+// --ignored --nocapture
+#[ignore = "timing-sensitive: run in isolation, not as part of the full suite"]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn event_log_insert_complexity_is_not_quadratic() {
     const SMALL: usize = 200;

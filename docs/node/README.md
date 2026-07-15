@@ -354,6 +354,14 @@ These values are hardcoded (previously configurable via `F1R3_*` env vars, remov
 
 **`BlockProcessorInstance`** -- Receives blocks, validates, applies to DAG. Semaphore-bounded parallelism. Re-queues on `FinalizationInProgress`.
 
+### Block-processing tuning env vars
+
+| Env var | Default | Purpose |
+|---------|--------:|---------|
+| `F1R3_MAX_BLOCKS_IN_PROCESSING` | `512` | Cap on concurrently in-flight blocks in `BlockProcessorInstance`. **When the cap is hit, incoming blocks are dropped with a warn log** (they are re-fetched via the missing-dependency path later), so undersizing this on a catching-up node slows sync. Was hardcoded 2048 through v0.4.16; lowered to bound peak memory. `0`/invalid falls back to the default. |
+| `F1R3_MALLOC_TRIM_EVERY_BLOCKS` | `0` (disabled) | Linux/glibc only: call `malloc_trim(0)` after every N processed blocks to return freed arena memory to the OS. Was 8 through v0.4.16; now disabled by default because trims stall the processing loop. Long-running validators that need bounded RSS should set a non-zero interval (e.g. `8`). |
+| `F1R3_MISSING_DEPENDENCY_QUARANTINE_MS` | `120000` | How long a block whose dependencies exceeded the retry budget stays quarantined before another fetch round. Was 10s through v0.4.16; raised to 120s to stop request storms against slow peers. Lower it on small local networks where dependencies resolve fast. |
+
 **`ProposerInstance`** -- Dequeues proposal requests. Non-blocking locking (try_lock). 5-minute timeout for stuck proposals. Min-interval between proposals is 250ms (hardcoded).
 
 **`HeartbeatProposer`** -- Periodic proposals for network liveness. All heartbeat settings live in `defaults.conf` under the `casper.heartbeat` section and accept CLI overrides. Stable knobs are at the top level; experimental tuning knobs are nested under `advanced.*` and may change shape in a future release.

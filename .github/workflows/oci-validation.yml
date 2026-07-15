@@ -21,6 +21,17 @@ permissions:
   contents: read
   pull-requests: read
 
+env:
+  # Pinned OCI CLI installer (release tag + sha256) and CLI version. The
+  # checksum fails closed if the tag is ever moved; OCI_CLI_VERSION pins what
+  # the installer pulls from PyPI (without it the installer floats to latest).
+  # Keep identical to _integration-pipeline.yml — this job holds OCI_* secrets
+  # and RELEASE_PAT, so it must not use a weaker install path than the main
+  # pipeline. Bump all three together in both files.
+  OCI_CLI_INSTALLER_URL: "https://raw.githubusercontent.com/oracle/oci-cli/v3.89.1/scripts/install/install.sh"
+  OCI_CLI_INSTALLER_SHA256: "079dcc9a3e2a61ec692400e30169c9996b2998ac8c4e205198ed5863283fcb76"
+  OCI_CLI_VERSION: "3.89.1"
+
 jobs:
   validate_pr:
     name: Validate PR Input
@@ -145,12 +156,19 @@ jobs:
           path: system-integration
           persist-credentials: false
 
-      - name: Install OCI CLI
-        shell: bash -e {0}
+      - name: Install OCI CLI (pinned, checksum-verified)
+        shell: bash -ex {0}
         run: |
-          python3 -m pip install --user --only-binary=:all: 'oci-cli==3.85.0'
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-          "$HOME/.local/bin/oci" --version
+          # This runner holds OCI_* secrets, so the installer must not be
+          # fetched from a movable ref. Fails closed on any checksum mismatch.
+          # Retries cover transient raw.githubusercontent.com 429s, which curl
+          # treats as retryable; the pinned checksum still gates what runs.
+          curl -fsSL --retry 5 --retry-delay 10 "$OCI_CLI_INSTALLER_URL" -o /tmp/oci-install.sh
+          echo "$OCI_CLI_INSTALLER_SHA256  /tmp/oci-install.sh" | sha256sum -c -
+          bash /tmp/oci-install.sh \
+            --accept-all-defaults --install-dir /opt/oci-cli --exec-dir /usr/local/bin \
+            --oci-cli-version "$OCI_CLI_VERSION"
+          oci --version
 
       - name: Configure OCI auth from secrets
         shell: bash -e {0}
