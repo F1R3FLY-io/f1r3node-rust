@@ -3387,6 +3387,7 @@ async fn fault_tolerance_threshold_ppm_round_trips_through_genesis() {
         "every node must read the identical protocol threshold from chain state"
     );
 }
+
 /// Strict exploratory-query regression (PR #122 review r3588246166): the
 /// lenient exploratory path degrades a runtime EXECUTION FAILURE into an
 /// empty result — indistinguishable from "the queried contract method does
