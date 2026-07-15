@@ -2,8 +2,6 @@
 
 AI assistant guidance for F1R3node Rust — Pure Rust Blockchain Node. This file follows the Agentic AI Foundation (Linux Foundation) standard for AI coding assistants.
 
-**Full documentation:** See [CLAUDE.md](CLAUDE.md) for comprehensive project guidelines.
-
 ## Project Context
 - Pure Rust implementation of the F1R3FLY.io blockchain platform
 - Extracted from the `rust/dev` branch of [f1r3fly](https://github.com/F1R3FLY-io/f1r3fly) as a standalone Rust workspace
@@ -29,13 +27,26 @@ Three crates have `build.rs` for protobuf code generation:
 - `rust-toolchain.toml` — nightly channel pin
 - `Cross.toml` — cross-compilation for amd64/arm64
 
+## Git Interaction
+
+- Do not run `git add`, `git commit`, or `git push` unless explicitly requested
+- Commit consent is per-commit: never create a commit — including merge
+  commits and plumbing equivalents (`commit-tree`/`update-ref`) — without an
+  unambiguous per-commit request; consent does not carry over from a plan or
+  an earlier commit
+- "Resolve the merge conflicts" authorizes conflict resolution only: resolve,
+  verify the build, report, and stop before the merge commit
+- `git stash pop|drop|clear|branch` are blocked (destructive); other stash
+  writes require user confirmation; `stash list`/`show` are fine
+- See `CLAUDE.md` § "Git Interaction Policy" for the full rules
+
+## Subagent Usage
+
+- Only use a subagent if the user has explicitly told you to do so
+- Do not delegate work to subagents on your own initiative; perform tasks directly by default
+
 ## Security
 - Never log or expose private keys
 - Validate all user inputs and state transitions
 - TLS 1.3 for P2P communications
 - Capability-based security in Rholang contracts
-
-
----
-
-**Detailed guidelines:** [CLAUDE.md](CLAUDE.md)
