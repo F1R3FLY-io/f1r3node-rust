@@ -1,0 +1,63 @@
+' State Diagram 06 — rank_forkchoices fixpoint (termination).
+'
+' rank_forkchoices(blocks) computes new_blocks by replacing each block with its
+' scored children (distinct, then sorted score-desc / hash-asc). If
+' still_same(blocks, new_blocks) it returns blocks (the fixpoint); otherwise it
+' recurses on new_blocks. Each recursion advances the frontier one level down
+' the DAG, so the Σ block-number measure strictly increases and is bounded by
+' the DAG height ⟹ termination.
+'
+' Rocq Rank.rank_terminates ; the empty-tips case is a typed Err
+' (Bound.empty_tips_typed_err).
+'
+' Render:
+'   plantuml -tsvg docs/theory/fork-choice/diagrams/06-state-rank-fixpoint.puml
+
+@startuml 06-state-rank-fixpoint
+!theme plain
+
+skinparam state {
+  BackgroundColor  #FFFFFF
+  BorderColor      #333333
+  ArrowColor       #444444
+  FontName         "monospace"
+  FontSize         10
+}
+skinparam legendFontName "monospace"
+skinparam legendFontSize 10
+skinparam legendBackgroundColor #FFFFFF
+skinparam legendBorderColor #666666
+skinparam defaultFontName "monospace"
+skinparam defaultFontSize 10
+
+title rank_forkchoices fixpoint (termination)
+
+' State color legend:
+'   blue   (#BBDEFB) = seed frontier {lca}
+'   orange (#FFE0B2) = expand-and-sort frontier (one level)
+'   green  (#A5D6A7) = fixpoint reached (accepting)
+' Edge color legend:
+'   teal  (#00838F) = initial descent
+'   blue  (#1565C0) = progress step (measure strictly increases)
+'   orange(#E65100) = leaf guard (block keeps self)
+'   green (#2E7D32) = fixpoint transition
+
+state "start = {lca}" as Seed #BBDEFB
+state "expand to scored children\n(replace each block; distinct;\nsort score DESC, hash ASC)" as Expand #FFE0B2
+state "fixpoint = current tips\n(still_same = true ⟹\nnew_blocks == blocks)" as Fix #A5D6A7
+
+[*] -[#00838F]-> Seed
+Seed -[#00838F]-> Expand : rank_forkchoices({lca})
+Expand -[#1565C0]-> Expand : still_same = false ⟹\nadvance one level;\nΣ block-number STRICTLY increases
+Expand -[#E65100]-> Expand : no scored children ⟹\nkeep self (leaf reached)
+Expand -[#2E7D32]-> Fix : still_same = true ⟹\nall frontier blocks kept self
+Fix -[#2E7D32]-> [*] : return tips
+
+note bottom of Fix
+  The strictly-increasing block-number measure is bounded by the DAG
+  height ⟹ the recursion terminates (Rocq Rank.rank_terminates).
+  The empty-tips case (genesis-only DAG) is a typed Err downstream in
+  filter_deep_parents, NOT a panic (Bound.empty_tips_typed_err).
+end note
+
+@enduml

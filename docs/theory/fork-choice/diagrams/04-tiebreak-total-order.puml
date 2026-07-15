@@ -1,0 +1,79 @@
+' Component Diagram 04 — Tie-break totality: why fork-choice cannot fork (S1).
+'
+' Two side-by-side lanes contrasting the SHIPPED code against a hypothetical bug:
+'   LEFT  (green) TOTAL order (the code): sort by score DESC then hash ASC on
+'         DISTINCT hashes ⟹ the argmax is UNIQUE ⟹ HashSet/HashMap iteration
+'         order is washed out ⟹ every node picks the same tip.
+'   RIGHT (red)  score-ONLY (hypothetical bug): equal-score tips are
+'         incomparable ⟹ > 1 maximal element ⟹ the choice leaks iteration
+'         order ⟹ FORK (TLA⁺ MC_ForkChoice_nontotal.cfg violates
+'         Inv_Deterministic).
+'
+' Witnesses: Rocq TieBreak.sort_total_order / output_indep_of_input_perm,
+'            Z3 tiebreak_total_order.py, Rust list_ops.rs:55-64.
+'
+' Render:
+'   plantuml -tsvg docs/theory/fork-choice/diagrams/04-tiebreak-total-order.puml
+
+@startuml 04-tiebreak-total-order
+!theme plain
+
+skinparam componentStyle rectangle
+skinparam rectangle {
+  FontName "monospace"
+  FontSize 10
+}
+skinparam package {
+  BackgroundColor<<Good>> #EEFAF1
+  BackgroundColor<<Bad>>  #FDECEA
+  BorderColor #444444
+}
+skinparam legendFontName "monospace"
+skinparam legendFontSize 10
+skinparam legendBackgroundColor #FFFFFF
+skinparam legendBorderColor #666666
+skinparam defaultFontName "monospace"
+skinparam defaultFontSize 10
+
+title Tie-break totality — why fork-choice cannot fork (S1)
+
+' Node color legend:
+'   green (#C8E6C9 / #A5D6A7) = the SHIPPED total order (safe)
+'   red   (#FFCDD2 / #EF9A9A) = the hypothetical score-only bug (forks)
+' Edge color legend:
+'   green (#2E7D32) = safe derivation chain
+'   red   (#C62828) = fork derivation chain
+
+package "TOTAL order — the code (SAFE)" <<Good>> {
+  rectangle "sort by score DESC, then hash ASC\n(on DISTINCT block hashes)\nlist_ops.rs:55-64" as G1 #C8E6C9
+  rectangle "the argmax is UNIQUE\n(no two hashes compare equal)" as G2 #C8E6C9
+  rectangle "HashSet / HashMap iteration order\nis WASHED OUT by the sort" as G3 #C8E6C9
+  rectangle "every honest node picks the\nSAME tip  ⟹  NO FORK ✓" as G4 #A5D6A7
+  G1 -[#2E7D32,bold]-> G2
+  G2 -[#2E7D32,bold]-> G3
+  G3 -[#2E7D32,bold]-> G4
+}
+
+package "score-ONLY — hypothetical bug (FORKS)" <<Bad>> {
+  rectangle "sort by score ONLY\n(equal-score tips are INCOMPARABLE)" as B1 #FFCDD2
+  rectangle "> 1 maximal element\n(the argmax is a SET, not a point)" as B2 #FFCDD2
+  rectangle "the pick LEAKS HashSet / HashMap\niteration order (view-dependent)" as B3 #FFCDD2
+  rectangle "nodes pick DIFFERENT tips  ⟹  FORK ✗\nMC_ForkChoice_nontotal.cfg\nviolates Inv_Deterministic" as B4 #EF9A9A
+  B1 -[#C62828,bold]-> B2
+  B2 -[#C62828,bold]-> B3
+  B3 -[#C62828,bold]-> B4
+}
+
+' keep the two lanes side by side
+G1 -[hidden]-> B1
+G4 -[hidden]-> B4
+
+legend bottom
+  The distinction is TOTALITY of the order. score-desc / hash-asc on distinct
+  hashes is a total order (antisymmetric + total), so argmax is a unique point.
+  Rocq TieBreak.sort_total_order + output_indep_of_input_perm (permuting the
+  input list does not change the output). Z3 tiebreak_total_order.py proves the
+  order total over bit-vectors; the _nontotal TLA⁺ config exhibits the fork.
+endlegend
+
+@enduml

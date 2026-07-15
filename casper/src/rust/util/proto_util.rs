@@ -162,18 +162,28 @@ pub fn weight_from_validator_by_dag(
     block_hash: &BlockHash,
     validator: &Validator,
 ) -> Result<i64, KvStoreError> {
-    // Get block metadata
-    let block_metadata = dag
-        .lookup(block_hash)?
-        .expect("Block metadata should exist");
+    // Get block metadata. B1: on the fork-choice BFS hot path a traversed block or
+    // its main parent may be momentarily absent from the metadata index (a sync /
+    // prune window). Surface a typed KvStoreError::KeyNotFound (as `snapshot.rs`
+    // already does for the sibling case) instead of panicking via `.expect`.
+    let block_metadata = dag.lookup(block_hash)?.ok_or_else(|| {
+        KvStoreError::KeyNotFound(format!(
+            "weight_from_validator_by_dag: block metadata missing from index: {}",
+            PrettyPrinter::build_string_no_limit(block_hash)
+        ))
+    })?;
 
     // Try to get parent's weight for this validator
     match block_metadata.parents.first() {
         Some(parent_hash) => {
             // Look up parent
-            let parent_metadata = dag
-                .lookup(parent_hash)?
-                .expect("Parent metadata should exist");
+            let parent_metadata = dag.lookup(parent_hash)?.ok_or_else(|| {
+                KvStoreError::KeyNotFound(format!(
+                    "weight_from_validator_by_dag: main-parent metadata missing from index \
+                     (sync/prune window): {}",
+                    PrettyPrinter::build_string_no_limit(parent_hash)
+                ))
+            })?;
             // Return validator's weight from parent or 0 if not found
             Ok(parent_metadata
                 .weight_map
@@ -326,7 +336,7 @@ pub fn to_latest_message_hashes(
 
 pub fn to_latest_message(
     justifications: &Vec<Justification>,
-    dag: &mut KeyValueDagRepresentation,
+    dag: &KeyValueDagRepresentation,
 ) -> Result<std::collections::HashMap<Validator, BlockMetadata>, KvStoreError> {
     let mut latest_messages = std::collections::HashMap::new();
     for justification in justifications {
@@ -445,11 +455,12 @@ pub fn dependencies_hashes_of(b: &BlockMessage) -> Vec<BlockHash> {
 
 // Return hashes of all blocks that are yet to be seen by the passed in block
 pub fn unseen_block_hashes(
-    dag: &mut KeyValueDagRepresentation,
-    block: &BlockMessage,
+    dag: &KeyValueDagRepresentation,
+    justifications: &Vec<Justification>,
+    current_block_hash: Option<&BlockHash>,
 ) -> Result<HashSet<BlockHash>, KvStoreError> {
     let dags_latest_messages = dag.latest_messages()?;
-    let blocks_latest_messages = to_latest_message(&block.justifications, dag)?;
+    let blocks_latest_messages = to_latest_message(justifications, dag)?;
 
     // From input block perspective we want to find what latest messages are not seen
     //  that are in the DAG latest messages.
@@ -487,8 +498,10 @@ pub fn unseen_block_hashes(
         all_unseen_blocks.remove(&block_metadata.block_hash);
     }
 
-    // Remove the current block hash
-    all_unseen_blocks.remove(&block.block_hash);
+    // Remove the current block hash (at block creation the block does not exist yet)
+    if let Some(h) = current_block_hash {
+        all_unseen_blocks.remove(h);
+    }
 
     Ok(all_unseen_blocks)
 }
@@ -516,7 +529,7 @@ pub fn slashed_block_senders(
 }
 
 fn get_creator_blocks_between(
-    dag: &mut KeyValueDagRepresentation,
+    dag: &KeyValueDagRepresentation,
     top_block: &BlockMetadata,
     bottom_block: Option<&BlockMetadata>,
 ) -> Result<HashSet<BlockHash>, KvStoreError> {
@@ -545,7 +558,7 @@ fn get_creator_blocks_between(
 }
 
 fn get_creator_justification_unless_goal(
-    dag: &mut KeyValueDagRepresentation,
+    dag: &KeyValueDagRepresentation,
     block: &BlockMetadata,
     goal: &BlockMetadata,
 ) -> Result<Vec<BlockMetadata>, KvStoreError> {
@@ -577,5 +590,222 @@ pub fn justification_to_justification_info(justification: &Justification) -> Jus
     JustificationInfo {
         validator: PrettyPrinter::build_string_no_limit(&justification.validator),
         latest_block_hash: PrettyPrinter::build_string_no_limit(&justification.latest_block_hash),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Fork-choice FV — Phase-0 reproduction of B1.
+//
+// `weight_from_validator_by_dag` (above) reads the traversed block's MAIN
+// PARENT weight map on the fork-choice BFS hot path (`estimator::build_scores_map`).
+// B1 (FIXED): a traversed block whose main parent is momentarily absent from the
+// metadata index — a sync / prune window — previously panicked via
+// `.expect("Parent metadata should exist")`; it now surfaces a typed
+// `KvStoreError::KeyNotFound`. This test asserts that typed error.
+// See docs/theory/fork-choice/fork-choice-verification.md (B1).
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod fork_choice_b1_repro_tests {
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+
+    use block_storage::rust::dag::block_metadata_store::BlockMetadataStore;
+    use parking_lot::RwLock as PlRwLock;
+    use proptest::prelude::*;
+    use prost::bytes::Bytes;
+    use rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
+    use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
+
+    use super::*;
+
+    fn h(n: u8) -> Bytes { Bytes::from(vec![n; 32]) }
+
+    fn md(hash: Bytes, parents: Vec<Bytes>, num: i64, v: &Bytes) -> BlockMetadata {
+        let mut wm = BTreeMap::new();
+        wm.insert(v.clone(), 7i64);
+        BlockMetadata {
+            block_hash: hash,
+            parents,
+            sender: v.clone(),
+            justifications: vec![],
+            weight_map: wm,
+            block_number: num,
+            sequence_number: num as i32,
+            invalid: false,
+            directly_finalized: false,
+            finalized: false,
+            fault_tolerance_value: 0.0,
+        }
+    }
+
+    fn dag_with(blocks: Vec<BlockMetadata>) -> KeyValueDagRepresentation {
+        let store = KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new()));
+        let mut bms = BlockMetadataStore::new(store);
+        let mut dag_set = imbl::HashSet::new();
+        let mut bnum = imbl::HashMap::new();
+        let mut mp = imbl::HashMap::new();
+        for b in &blocks {
+            dag_set.insert(b.block_hash.clone());
+            bnum.insert(b.block_hash.clone(), b.block_number);
+            if let Some(p) = b.parents.first() {
+                mp.insert(b.block_hash.clone(), p.clone());
+            }
+        }
+        for b in blocks {
+            bms.add(b).unwrap();
+        }
+        KeyValueDagRepresentation {
+            dag_set,
+            latest_messages_map: imbl::HashMap::new(),
+            child_map: imbl::HashMap::new(),
+            height_map: imbl::OrdMap::new(),
+            block_number_map: bnum,
+            main_parent_map: mp,
+            self_justification_map: imbl::HashMap::new(),
+            invalid_blocks_set: imbl::HashSet::new(),
+            last_finalized_block_hash: Bytes::new(),
+            finalized_blocks_set: imbl::HashSet::new(),
+            block_metadata_index: Arc::new(PlRwLock::new(bms)),
+            deploy_index: Arc::new(PlRwLock::new(KeyValueTypedStoreImpl::new(Arc::new(
+                InMemoryKeyValueStore::new(),
+            )))),
+            floor_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
+            frontier_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
+        }
+    }
+
+    #[test]
+    fn weight_from_validator_missing_parent_is_typed_err() {
+        let v = h(9);
+        let child = h(1);
+        let missing = h(2); // deliberately NOT added to the index (sync/prune window)
+        let mut dag = dag_with(vec![md(child.clone(), vec![missing], 1, &v)]);
+        // `child` resolves; its declared main parent is absent. After the B1 fix this
+        // surfaces a typed KvStoreError::KeyNotFound instead of panicking.
+        let result = weight_from_validator_by_dag(&mut dag, &child, &v);
+        assert!(
+            matches!(result, Err(KvStoreError::KeyNotFound(_))),
+            "missing main-parent metadata must be a typed KeyNotFound, got {result:?}"
+        );
+    }
+
+    // G1 (CRITICAL) — slash-replay determinism. `slashed_block_senders` builds the slash
+    // system-deploy's invalid_blocks map from the block's OWN recorded slash targets and
+    // each target's IMMUTABLE sender — NOT the node's `dag.invalid_blocks` view (which
+    // diverges proposer-vs-validator and previously caused a `ConsumeFailed` at replay →
+    // block rejection + finalization stall). This test pins that VIEW-INDEPENDENCE: two
+    // DAGs with identical block metadata but DIFFERENT invalid-block sets produce a
+    // byte-identical map, so the PLAY map (block creation) ≡ the REPLAY map (validation).
+    fn dag_with_invalid(
+        blocks: Vec<BlockMetadata>,
+        invalid: Vec<BlockMetadata>,
+    ) -> KeyValueDagRepresentation {
+        let mut dag = dag_with(blocks);
+        let mut inv = imbl::HashSet::new();
+        for b in invalid {
+            inv.insert(b);
+        }
+        dag.invalid_blocks_set = inv;
+        dag
+    }
+
+    #[test]
+    fn slashed_block_senders_is_view_independent_g1() {
+        let (va, vb, vc) = (h(50), h(51), h(52));
+        let (b1, b2, b3) = (h(1), h(2), h(3));
+        let blocks = vec![
+            md(b1.clone(), vec![], 1, &va),
+            md(b2.clone(), vec![b1.clone()], 2, &vb),
+            md(b3.clone(), vec![b2.clone()], 3, &vc),
+        ];
+        // The block slashes b1 and b3 (its own recorded targets).
+        let slashed = vec![b1.clone(), b3.clone()];
+        // Two nodes with DIVERGENT invalid-block views over identical block metadata
+        // (the proposer sees none invalid; the validator's view flags b2 and b3).
+        let dag_proposer = dag_with_invalid(blocks.clone(), vec![]);
+        let dag_validator = dag_with_invalid(
+            blocks.clone(),
+            vec![
+                md(b2.clone(), vec![b1.clone()], 2, &vb),
+                md(b3.clone(), vec![b2.clone()], 3, &vc),
+            ],
+        );
+
+        let map_play = slashed_block_senders(&dag_proposer, &slashed).expect("play map");
+        let map_replay = slashed_block_senders(&dag_validator, &slashed).expect("replay map");
+
+        // Byte-identical map regardless of the invalid-block view (PLAY ≡ REPLAY) ...
+        assert_eq!(
+            map_play, map_replay,
+            "slash map must be node-view-independent (PLAY ≡ REPLAY)"
+        );
+        // ... and it keys each slashed block to its immutable sender.
+        let mut expected = std::collections::HashMap::new();
+        expected.insert(b1.clone(), va.clone());
+        expected.insert(b3.clone(), vc.clone());
+        assert_eq!(
+            map_play, expected,
+            "slash map must key each slashed block to its sender"
+        );
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(200))]
+        // G1 (∀-views property) — the standalone view-independence "lemma" for
+        // `slashed_block_senders`, mechanized as the modality that can actually catch
+        // the regression (a Rocq abstraction of the function would model it as
+        // content-only BY CONSTRUCTION and could never witness the defect). Over
+        // arbitrary block sets, arbitrary on-chain slash records, and TWO independently
+        // random — hence divergent — `invalid_blocks_set` node views, the map is
+        // (a) identical across the two views (PLAY ≡ REPLAY) and (b) equal to the
+        // content-derived ground truth (each slashed hash ↦ its immutable sender). Were
+        // the function to read `dag.invalid_blocks_set`, (a) would fail on the first
+        // view pair that disagrees on a slashed block.
+        #[test]
+        fn slashed_block_senders_is_view_independent_prop_g1(
+            senders in prop::collection::vec(0u8..5, 1..10),
+            slashed_flags in prop::collection::vec(any::<bool>(), 1..10),
+            view_a in prop::collection::vec(any::<bool>(), 1..10),
+            view_b in prop::collection::vec(any::<bool>(), 1..10),
+        ) {
+            let n = senders.len();
+            // n distinct blocks h(1..=n) in a chain; block i's immutable sender = h(100+vid).
+            let blocks: Vec<BlockMetadata> = (0..n)
+                .map(|i| {
+                    let hash = h((i + 1) as u8);
+                    let parents = if i == 0 { vec![] } else { vec![h(i as u8)] };
+                    let sender = h(100 + senders[i]);
+                    md(hash, parents, (i + 1) as i64, &sender)
+                })
+                .collect();
+            // On-chain slash record = the flagged subset (by index, within range).
+            let slashed: Vec<Bytes> = (0..n)
+                .filter(|&i| *slashed_flags.get(i).unwrap_or(&false))
+                .map(|i| h((i + 1) as u8))
+                .collect();
+            // Two nodes: identical block metadata, INDEPENDENTLY random invalid-block sets.
+            let inv_a: Vec<BlockMetadata> = (0..n)
+                .filter(|&i| *view_a.get(i).unwrap_or(&false))
+                .map(|i| blocks[i].clone())
+                .collect();
+            let inv_b: Vec<BlockMetadata> = (0..n)
+                .filter(|&i| *view_b.get(i).unwrap_or(&false))
+                .map(|i| blocks[i].clone())
+                .collect();
+            let dag_a = dag_with_invalid(blocks.clone(), inv_a);
+            let dag_b = dag_with_invalid(blocks.clone(), inv_b);
+
+            let map_a = slashed_block_senders(&dag_a, &slashed).expect("map a");
+            let map_b = slashed_block_senders(&dag_b, &slashed).expect("map b");
+            prop_assert_eq!(&map_a, &map_b);
+
+            let mut expected = std::collections::HashMap::new();
+            for i in 0..n {
+                if *slashed_flags.get(i).unwrap_or(&false) {
+                    expected.insert(h((i + 1) as u8), h(100 + senders[i]));
+                }
+            }
+            prop_assert_eq!(&map_a, &expected);
+        }
     }
 }

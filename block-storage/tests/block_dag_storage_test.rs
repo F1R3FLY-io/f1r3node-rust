@@ -283,6 +283,67 @@ fn dag_storage_should_be_able_to_lookup_a_stored_block() {
     });
 }
 
+// GAP-2 / GAP-4 (FV precondition): `is_dag_ancestor` is the trusted ancestry primitive
+// that the FORMALLY-VERIFIED finalized-floor (`casper/finality/floor.rs`) and the safety
+// clique oracle (`casper/safety/clique_oracle.rs`) both ASSUME — the Rocq
+// (`CliqueOracle.v`/`Selection.v`/`Foundation.v`) models ancestry only ABSTRACTLY as
+// `anc_of`. Its block-number prune (`block_number(current) <= stop_height => stop
+// descending`) is sound only when block numbers are strictly monotone along parent
+// edges (`wf_dag`) — a precondition BLOCK VALIDATION enforces (`block_number = 1 + max
+// parent number`, mirrored by GuardBridge's `validated_block`) and that
+// `block_elements_with_parents_gen` respects. This test discharges the trusted-primitive
+// gap: on random well-formed DAGs, `is_dag_ancestor` (WITH the prune) computes EXACTLY
+// the reflexive-transitive closure over parents — the abstract `anc_of` relation the
+// proofs reason about. (The demoted height-map contiguity `assert!` at
+// `block_metadata_store.rs:388` is a separate, stronger diagnostic — monotonicity, not
+// contiguity, is the property the prune relies on, and it is what this test exercises.)
+#[test]
+fn is_dag_ancestor_matches_reflexive_transitive_closure_over_parents() {
+    let genesis = genesis_block();
+    proptest!(proptest_config(), |(block_elements in block_elements_with_parents_gen(genesis.clone(), 0, 10))| {
+      let dag_storage = RUNTIME.block_on(create_dag_storage(&genesis));
+      for be in &block_elements {
+        dag_storage.insert(be, block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal).expect("insert block element");
+      }
+      let dag = dag_storage.get_representation().expect("dag representation");
+
+      // Ground-truth parent map from the block metadata (genesis has no parents).
+      let mut parents: std::collections::HashMap<prost::bytes::Bytes, Vec<prost::bytes::Bytes>> =
+          std::collections::HashMap::new();
+      parents.insert(genesis.block_hash.clone(), Vec::new());
+      for be in &block_elements {
+        let meta = BlockMetadata::from_block(be, false, None, None);
+        parents.insert(meta.block_hash.clone(), meta.parents.clone());
+      }
+
+      // Reference: reflexive-transitive closure over parents, with NO prune.
+      let reachable = |anc: &prost::bytes::Bytes, desc: &prost::bytes::Bytes| -> bool {
+        if anc == desc { return true; }
+        let mut stack = vec![desc.clone()];
+        let mut seen: std::collections::HashSet<prost::bytes::Bytes> = std::collections::HashSet::new();
+        while let Some(cur) = stack.pop() {
+          if !seen.insert(cur.clone()) { continue; }
+          if &cur == anc { return true; }
+          if let Some(ps) = parents.get(&cur) { for p in ps { stack.push(p.clone()); } }
+        }
+        false
+      };
+
+      let all: Vec<prost::bytes::Bytes> = std::iter::once(genesis.block_hash.clone())
+          .chain(block_elements.iter().map(|b| b.block_hash.clone()))
+          .collect();
+      for a in &all {
+        for b in &all {
+          let got = dag.is_dag_ancestor(a, b).expect("is_dag_ancestor");
+          let want = reachable(a, b);
+          assert_eq!(got, want,
+            "is_dag_ancestor mismatch (prune unsound?): a={:?} b={:?} got={} closure={}",
+            a, b, got, want);
+        }
+      }
+    });
+}
+
 #[test]
 fn dag_storage_should_be_able_to_handle_checking_if_contains_a_block_with_empty_hash() {
     let genesis = genesis_block();
