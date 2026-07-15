@@ -97,10 +97,14 @@ pub(crate) async fn admit_handle_valid_block<T: TransportLayer + Send + Sync>(
     block: &BlockMessage,
 ) -> Result<KeyValueDagRepresentation, CasperError> {
     // Bug #17 / T-9.20: atomic (DAG insert, casper-buffer remove) pair
-    // via the helper. The deploy-storage purge below runs OUTSIDE the
-    // (DAG, buffer) critical section because deploy storage lives in a
-    // third LMDB env with its own atomicity story. See
+    // via the helper. See
     // docs/theory/slashing/design/09-bug-fixes-and-rationale.md §9.20.
+    //
+    // Sealed-floor (record-driven recovery): user deploys are intentionally
+    // NOT purged from pending storage on mere DAG acceptance. They are
+    // retained through accept and removed only once finalized (see
+    // finalization_runner), so an accepted-but-orphaned deploy can be
+    // re-proposed via the canonical-won record before it is lost.
     let block_hash_serde = BlockHashSerde(block.block_hash.clone());
     let updated_dag = block_storage::rust::dag::buffer_dag_transition::atomic_insert_then_buffer(
         &this.block_dag_storage,
@@ -112,30 +116,6 @@ pub(crate) async fn admit_handle_valid_block<T: TransportLayer + Send + Sync>(
         ),
     )?;
     record_dag_cardinality_metrics(&updated_dag);
-
-    // Remove user deploys from pending deploy storage as soon as the block is
-    // accepted into the DAG.
-    let deploys: Vec<_> = block
-        .body
-        .deploys
-        .iter()
-        .map(|pd| pd.deploy.clone())
-        .collect();
-    if !deploys.is_empty() {
-        let deploys_count = deploys.len();
-        let block_hash = PrettyPrinter::build_string_bytes(&block.block_hash);
-        let block_number = block.body.state.block_number;
-        // Phase 9 (A-3): `deploy_storage` is `parking_lot::Mutex` — no
-        // poison propagation, so `.lock()` returns the guard directly.
-        this.deploy_storage.lock().remove(deploys)?;
-
-        tracing::debug!(
-            "Removed {} deploys from pending pool for accepted block {} at {}.",
-            deploys_count,
-            block_hash,
-            block_number
-        );
-    }
 
     // Publish BlockAdded event
     this.event_publisher
@@ -188,6 +168,28 @@ pub(crate) fn add_deploy<T: TransportLayer + Send + Sync>(
     Ok(deploy.sig.to_vec())
 }
 
+fn stored_deploy_is_pending_for_snapshot(
+    snapshot: &CasperSnapshot,
+    latest_block_number: i64,
+    earliest_block_number: i64,
+    current_time_millis: i64,
+    deploy: &Signed<DeployData>,
+) -> bool {
+    let block_expired = deploy.data.valid_after_block_number <= earliest_block_number;
+    let time_expired = deploy.data.is_expired_at(current_time_millis);
+    if block_expired || time_expired {
+        return false;
+    }
+
+    let is_future = super::events::pending_deploy_is_future_for_next_block(
+        latest_block_number,
+        deploy.data.valid_after_block_number,
+    );
+    let already_in_scope = snapshot.deploys_in_scope.contains(&deploy.sig)
+        && !snapshot.rejected_in_scope.contains(&deploy.sig);
+    !is_future && !already_in_scope
+}
+
 /// C15 / Arch-3: extracted from `Casper::has_pending_deploys_in_storage_for_snapshot`
 /// in `dispatch.rs`. The dispatch module is intended to host thin
 /// trait delegates (one-line `super::<module>::<fn>` calls); the
@@ -230,21 +232,53 @@ pub(crate) async fn admit_has_pending_deploys_in_storage_for_snapshot<
 
     storage
         .any(|deploy| {
-            let block_expired = deploy.data.valid_after_block_number <= earliest_block_number;
-            let time_expired = deploy.data.is_expired_at(current_time_millis);
-            if block_expired || time_expired {
-                return Ok(false);
-            }
-
-            // `pending_deploy_is_future_for_next_block` is `pub(super)`
-            // in `events`; the call resolves because `block_admission` is
-            // a sibling sub-module of `events` under `engine::multi_parent_casper`.
-            let is_future = super::events::pending_deploy_is_future_for_next_block(
+            Ok(stored_deploy_is_pending_for_snapshot(
+                snapshot,
                 latest_block_number,
-                deploy.data.valid_after_block_number,
-            );
-            let already_in_scope = snapshot.deploys_in_scope.contains(&deploy.sig);
-            Ok(!is_future && !already_in_scope)
+                earliest_block_number,
+                current_time_millis,
+                deploy,
+            ))
         })
         .map_err(|e| CasperError::RuntimeError(format!("Failed to scan deploy storage: {:?}", e)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::stored_deploy_is_pending_for_snapshot;
+    use crate::rust::casper::test_helpers::TestCasperWithSnapshot;
+    use crate::rust::util::construct_deploy;
+
+    #[test]
+    fn rejected_in_scope_storage_deploy_remains_pending() {
+        let snapshot = TestCasperWithSnapshot::create_empty_snapshot();
+        let deploy = construct_deploy::basic_deploy_data(91, None, Some("test".to_string()))
+            .expect("deploy");
+
+        assert!(stored_deploy_is_pending_for_snapshot(
+            &snapshot,
+            20,
+            -1,
+            deploy.data.time_stamp,
+            &deploy,
+        ));
+
+        snapshot.deploys_in_scope.insert(deploy.sig.clone());
+        assert!(!stored_deploy_is_pending_for_snapshot(
+            &snapshot,
+            20,
+            -1,
+            deploy.data.time_stamp,
+            &deploy,
+        ));
+
+        snapshot.rejected_in_scope.insert(deploy.sig.clone());
+        assert!(stored_deploy_is_pending_for_snapshot(
+            &snapshot,
+            20,
+            -1,
+            deploy.data.time_stamp,
+            &deploy,
+        ));
+    }
 }

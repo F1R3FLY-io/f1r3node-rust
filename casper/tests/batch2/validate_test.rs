@@ -1000,26 +1000,23 @@ async fn repeat_deploy_validation_should_not_accept_blocks_with_a_repeated_deplo
 /// merge and is re-proposed through `RejectedDeployBuffer` to land its
 /// effects in canonical state.
 ///
-/// Setup models a true recovery scenario: the deploy lives ONLY in a
-/// non-canonical / non-finalized ancestor (the `rejected_in_scope` flag
-/// is what marks it as rejected during merge), so
-/// `deploy_finalization_status::resolve` for the sig returns `Pending`
-/// — not `Finalized`. Under this state, the recovery exemption is
-/// legitimate: re-inclusion is the only way to land the deploy's
-/// effects in canonical state.
+/// Setup models a true recovery scenario with the ON-CHAIN disposition
+/// record the deterministic exemption reads: the deploy's only inclusion
+/// (block_x) is followed by a merge block whose `rejected_deploys` names
+/// the sig — the record every real merge writes and every node sees
+/// identically. The exemption is a pure function of the block's parent
+/// scope, never of the validator's live view.
 ///
-/// DAG: genesis (no deploys) → block_x (body.deploys=[deploy], not
-/// finalized) → block_w (body.deploys=[deploy], the re-inclusion).
-/// LFB stays at genesis because only `genesis` is inserted with
-/// `approved=true`. The resolver's BFS from LFB visits only genesis,
-/// never block_x — so the sig has no clean canonical inclusion and the
-/// resolver returns `Pending`.
+/// DAG: genesis (no deploys) → block_x (body.deploys=[deploy]) →
+/// block_m (rejected_deploys=[deploy]) → block_w (body.deploys=[deploy],
+/// the re-inclusion). Latest canonical disposition in block_w's parent
+/// scope is the rejection at block_m, so re-inclusion is legal recovery.
 ///
 /// Companion test:
 /// `repeat_deploy_blocks_double_execution_when_finalized_and_in_rejected_in_scope`
-/// covers the symmetric case where the sig has a clean canonical
-/// inclusion (status `Finalized`) and the recovery exemption must NOT
-/// apply.
+/// covers the symmetric case where the sig's latest disposition in the
+/// parent scope is a WIN (clean inclusion, never rejected) and the
+/// recovery exemption must NOT apply.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn repeat_deploy_validation_allows_recovered_deploy_from_rejected_in_scope() {
     use std::sync::Arc;
@@ -1065,6 +1062,34 @@ async fn repeat_deploy_validation_allows_recovered_deploy_from_rejected_in_scope
             None,
         );
 
+        // block_m is the merge that rejected the deploy: its on-chain
+        // rejected_deploys record is the disposition the deterministic
+        // exemption reads (and the source `rejected_in_scope` is derived
+        // from in the real pipeline).
+        let mut block_m = create_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            vec![block_x.block_hash.clone()],
+            &genesis,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        block_m.body.rejected_deploys = vec![
+            models::rust::casper::protocol::casper_message::RejectedDeploy {
+                sig: deploy_sig.clone(),
+            },
+        ];
+        block_store
+            .put(block_m.block_hash.clone(), &block_m)
+            .unwrap();
+
         // block_w re-includes the deploy. repeat_deploy walks block_w's
         // ancestor chain and finds block_x with deploy in body.deploys —
         // an "ancestor occurrence" that without the exemption would be
@@ -1072,7 +1097,7 @@ async fn repeat_deploy_validation_allows_recovered_deploy_from_rejected_in_scope
         let block_w = create_block(
             &mut block_store,
             &mut block_dag_storage,
-            vec![block_x.block_hash.clone()],
+            vec![block_m.block_hash.clone()],
             &genesis,
             None,
             None,
@@ -1088,9 +1113,9 @@ async fn repeat_deploy_validation_allows_recovered_deploy_from_rejected_in_scope
         let dag = block_dag_storage.get_representation().expect("dag representation");
         let mut snapshot = mk_casper_snapshot(dag);
 
-        // Mark the sig as "rejected in a descendant merge within deploy_lifespan".
-        // This is the signal the block-creator and Phase D recovery pipelines use
-        // to justify re-inclusion; validation must honor it.
+        // The snapshot flag mirrors what the recovery pipeline derives from
+        // the on-chain record above; the validation exemption itself no
+        // longer reads it (node-local), but keep it for realism.
         let rejected: DashSet<Bytes> = DashSet::new();
         rejected.insert(deploy_sig);
         snapshot.rejected_in_scope = Arc::new(rejected);

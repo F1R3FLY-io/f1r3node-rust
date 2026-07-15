@@ -493,6 +493,28 @@ pub fn unseen_block_hashes(
     Ok(all_unseen_blocks)
 }
 
+/// Deterministic invalid-blocks map (block_hash -> sender) for the PoS slash
+/// system deploys in a block: exactly the blocks this block slashes, each keyed
+/// to its immutable sender. Derived from the block's own recorded slash targets
+/// (NOT the node's DAG invalid-set view, which is node-view-dependent and so
+/// differs between the proposer and a validator), so block creation and replay
+/// produce a byte-identical map. That makes the slash deploy's
+/// `rho:casper:invalidBlocks` produce reproduce at replay (no slash
+/// ConsumeFailed). The slash contract only looks up its own target via
+/// `invalidBlocks.getOrElse(blockHash, ..)`, so this is exactly what it needs —
+/// and it makes the slash hit the block's true sender instead of falling back.
+pub fn slashed_block_senders(
+    dag: &KeyValueDagRepresentation,
+    slashed_hashes: &[BlockHash],
+) -> Result<std::collections::HashMap<BlockHash, Validator>, KvStoreError> {
+    let mut map = std::collections::HashMap::with_capacity(slashed_hashes.len());
+    for h in slashed_hashes {
+        let meta = dag.lookup_unsafe(h)?;
+        map.insert(h.clone(), meta.sender.clone());
+    }
+    Ok(map)
+}
+
 fn get_creator_blocks_between(
     dag: &mut KeyValueDagRepresentation,
     top_block: &BlockMetadata,

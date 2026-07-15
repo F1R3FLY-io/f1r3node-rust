@@ -380,9 +380,12 @@ fn bfs_finalized_window(
 /// block, expiry rule, and final state determination.
 ///
 /// Returns `ApiErr` rather than swallowing failures from `is_in_main_chain`.
-/// The resolver's `state` field is consensus-relevant — `repeat_deploy`
-/// validation reads it via the `rejected_in_scope` exemption — so two
-/// validators must not silently disagree on it under transient I/O.
+/// The resolver is an API/observability surface (deploy status reporting and
+/// the catchup buffer-admission gate); consensus validation (`repeat_deploy`)
+/// deliberately does NOT read it — the resolver reflects the node's LOCAL
+/// finalization progress, and gating validation on it forked honest nodes
+/// whose finality lagged by a step. Fail loudly rather than guessing under
+/// transient I/O all the same.
 fn finalize_sig_state(
     dag: &KeyValueDagRepresentation,
     deploy_lifespan: i64,

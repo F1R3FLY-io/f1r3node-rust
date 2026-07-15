@@ -76,6 +76,11 @@ async fn two_concurrent_bridges_should_merge_without_rejection() {
     let mut nodes = TestNode::create_network(ctx.genesis.clone(), 3, None, None, None, None)
         .await
         .unwrap();
+    // Heartbeat mode: non-leader proposers emit empty support blocks instead
+    // of erroring NoNewDeploys under deploy-inclusion leadership.
+    for node in nodes.iter_mut() {
+        node.allow_empty_blocks = true;
+    }
 
     let bridge_rho = read_bridge_rho();
     let shard_id = ctx.genesis.genesis_block.shard_id.clone();
