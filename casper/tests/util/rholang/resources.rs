@@ -139,7 +139,7 @@ pub fn mk_test_rnode_store_manager_with_scope(
             } else {
                 conf
             }
-            .with_max_dbs(10_000);
+            .with_max_dbs(200_000);
 
             // If scope_id is provided, create a scoped database name using name_override
             // This ensures test isolation while keeping the original ID for lookup
@@ -219,7 +219,7 @@ pub fn mk_test_rnode_store_manager_with_dual_scope(
             } else {
                 conf
             }
-            .with_max_dbs(10_000);
+            .with_max_dbs(200_000);
 
             // Determine which scope to use based on database type
             let scope_to_use = if db.id().starts_with("rspace-") {
