@@ -229,7 +229,6 @@ async fn create_allow_empty(node: &mut TestNode) -> BlockCreatorResult {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[serial]
-#[ignore = "expected-red: deterministic single-leader packaging not yet achieved (RCA remainder, issue #71); run with --ignored"]
 async fn unresolved_user_frontier_has_one_deploy_inclusion_leader() {
     let context = TestContext::new(2).await;
     let shard = context.genesis.genesis_block.shard_id.clone();
@@ -284,5 +283,4 @@ async fn three_writers_converge() { run_convergence(3, 1, 21).await; }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[serial]
-#[ignore = "expected-red: keep-one loser recovery under sustained load incomplete (RCA remainder, issue #71); run with --ignored"]
 async fn three_writers_converge_under_load() { run_convergence(3, 3, 21).await; }

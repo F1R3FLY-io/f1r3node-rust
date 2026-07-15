@@ -155,7 +155,6 @@ fn assert_touched_integer_add_channels_single_valued(
 ///   merge_block via the self-chain walk.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[serial]
-#[ignore = "expected-red: rejected-deploy replay while source visible incomplete (RCA remainder, issue #71); run with --ignored"]
 async fn recovery_cycle_rejected_deploy_retries_while_source_is_visible() {
     let ctx = TestContext::new().await;
     let shard_id = ctx.genesis.genesis_block.shard_id.clone();
