@@ -385,13 +385,18 @@ async fn recovery_cycle_rejected_deploy_retries_while_source_is_visible() {
             .map(|s| hex::encode(s.as_ref()))
             .collect::<Vec<_>>()
     );
+    // Packaging the replay must NOT drain the buffer entry: the recovery
+    // block is not yet canonical (it could be orphaned, e.g. by recovery-
+    // context single-parent narrowing), and the buffer holds the only
+    // re-proposable copy. The entry is purged only once the replay is
+    // finalized-won.
     {
         let buffer_guard = nodes[0].rejected_deploy_buffer.lock().expect("buffer lock");
         assert!(
-            !buffer_guard
+            buffer_guard
                 .contains_sig(&conflict_sig)
                 .expect("buffer.contains_sig"),
-            "selected recovered sig must be drained from the rejected-deploy buffer"
+            "recovered sig must remain buffered until its replay is finalized-won"
         );
     }
 
@@ -442,6 +447,40 @@ async fn recovery_cycle_rejected_deploy_retries_while_source_is_visible() {
          the deploy index",
         hex::encode(&surviving_sig)
     );
+
+    // Terminal purge: once the replay block is finalized, the next proposal's
+    // buffer scan sees the sig finalized-won and drops the buffer entry.
+    nodes[0]
+        .block_dag_storage
+        .record_directly_finalized(recovery_block.block_hash.clone(), 1.0, |_| async { Ok(()) })
+        .await
+        .expect("mark recovery_block finalized for terminal purge");
+    let marker_deploy_3 = {
+        tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
+        construct_deploy::basic_deploy_data(2, None, Some(shard_id.clone()))
+            .expect("build marker_deploy_3")
+    };
+    let post_finality_block = nodes[0]
+        .add_block_from_deploys(std::slice::from_ref(&marker_deploy_3))
+        .await
+        .expect("validator 0 proposes post-finality block");
+    assert!(
+        !post_finality_block
+            .body
+            .deploys
+            .iter()
+            .any(|pd| pd.deploy.sig == conflict_sig),
+        "a finalized-won sig must not be replayed again"
+    );
+    {
+        let buffer_guard = nodes[0].rejected_deploy_buffer.lock().expect("buffer lock");
+        assert!(
+            !buffer_guard
+                .contains_sig(&conflict_sig)
+                .expect("buffer.contains_sig"),
+            "finalized-won recovered sig must be purged from the rejected-deploy buffer"
+        );
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

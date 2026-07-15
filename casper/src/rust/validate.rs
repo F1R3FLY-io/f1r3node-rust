@@ -504,47 +504,37 @@ impl Validate {
     /// Validate no deploy with the same sig has been produced in the chain.
     /// Agnostic of non-parent justifications.
     ///
-    /// A block deploy is an invalid repeat iff its LATEST canonical disposition
-    /// is a WIN: a clean canonical inclusion (in `body.deploys` of a
-    /// main-parent-chain ancestor) not superseded by a later canonical
-    /// rejection. Its effects are already in canonical state, so re-including it
-    /// would be double-execution.
+    /// Recovery exemption: a sig whose LATEST canonical disposition within
+    /// the BLOCK'S OWN parent scope is a merge rejection is a legitimate
+    /// recovery re-inclusion — the rejected-deploy buffer pipeline
+    /// re-proposes such deploys so their effects can land in canonical
+    /// state. Without this exemption, every recovery-path block would fail
+    /// `InvalidRepeatDeploy`.
     ///
-    /// A keep-one loser (latest canonical disposition = rejection) or a
-    /// never-seen deploy is exempt — a legitimate (re-)inclusion whose effects
-    /// are not yet in canonical state. This is the SAME canonical-won record the
-    /// proposer's `block_creator` gates on, via `canonical_won_sigs`, so
-    /// proposer and validator never disagree (no recovery block is flagged
-    /// `InvalidRepeatDeploy`).
+    /// The exemption is a PURE FUNCTION OF THE BLOCK (its parents and the
+    /// disposition records in their ancestry), never of the validating
+    /// node's live view. An earlier version gated it on the sig's LOCAL
+    /// finalization status (`deploy_finalization_status::resolve`) and the
+    /// validator's own `rejected_in_scope` snapshot set — both node-local:
+    /// two honest validators whose finalization progress differed by one
+    /// step returned opposite verdicts for the same block, forking the
+    /// network (the roaming `InvalidRepeatDeploy` Heavy Pipeline failures).
+    ///
+    /// The double-execution defense is preserved deterministically: if a
+    /// re-inclusion already WON above the rejection in the block's parent
+    /// scope, the latest disposition is a win — not exempt — and the
+    /// ancestor scan below finds the canonical inclusion and flags the
+    /// repeat. A win that exists only on a fork OUTSIDE the block's parent
+    /// scope must NOT poison this block: judged in its own context the
+    /// re-inclusion is legal recovery, and the eventual merge's keep-one
+    /// dedup reconciles the duplicate.
     pub fn repeat_deploy(
         block: &BlockMessage,
         s: &mut CasperSnapshot,
         block_store: &KeyValueBlockStore,
         expiration_threshold: i32,
     ) -> ValidBlockProcessing {
-        // A block deploy is an invalid repeat iff its LATEST canonical
-        // disposition is a WIN — its effect is already in the canonical lineage,
-        // so re-including it double-executes. A keep-one loser (latest
-        // disposition = rejection) or a never-seen deploy is a legitimate
-        // (re-)inclusion. This is the SAME canonical-won record the proposer's
-        // `block_creator` gates on, so proposer and validator never disagree.
-        let earliest_block_number = block.body.state.block_number - expiration_threshold as i64;
-        let canonical_won = match crate::rust::util::rholang::interpreter_util::canonical_won_sigs(
-            block_store,
-            &block.header.parents_hash_list,
-            earliest_block_number,
-        ) {
-            Ok(set) => set,
-            Err(e) => return Either::Left(BlockError::BlockException(e)),
-        };
-        let deploy_key_set: HashSet<Vec<u8>> = block
-            .body
-            .deploys
-            .iter()
-            .filter(|pd| canonical_won.contains(&pd.deploy.sig))
-            .map(|pd| pd.deploy.sig.to_vec())
-            .collect();
-        if deploy_key_set.is_empty() {
+        if block.body.deploys.is_empty() {
             return Either::Right(ValidBlock::Valid);
         }
 
@@ -555,6 +545,36 @@ impl Validate {
             Ok(parents) => parents,
             Err(e) => return Either::Left(BlockError::BlockException(CasperError::from(e))),
         };
+
+        // Calculate max block number and earliest acceptable block number
+        let max_block_number = proto_util::max_block_number_metadata(&init_parents);
+        let earliest_block_number = max_block_number + 1 - expiration_threshold as i64;
+
+        // Latest canonical dispositions within the block's parent scope,
+        // over the same expiration window the ancestor scan uses. This is
+        // exactly the record the proposer's admission logic consults
+        // (`canonical_won_sigs` from its parents), so proposer and every
+        // validator evaluate the same predicate on the same inputs.
+        let canonical_rejected =
+            match crate::rust::util::rholang::interpreter_util::canonical_rejected_sigs(
+                block_store,
+                &block.header.parents_hash_list,
+                earliest_block_number,
+            ) {
+                Ok(sigs) => sigs,
+                Err(e) => return Either::Left(BlockError::BlockException(e)),
+            };
+
+        let deploy_key_set: HashSet<Vec<u8>> = block
+            .body
+            .deploys
+            .iter()
+            .filter(|pd| !canonical_rejected.contains(&pd.deploy.sig))
+            .map(|pd| pd.deploy.sig.to_vec())
+            .collect();
+        if deploy_key_set.is_empty() {
+            return Either::Right(ValidBlock::Valid);
+        }
 
         tracing::debug!(target: "f1r3fly.casper", "before-repeat-deploy-duplicate-block");
         let maybe_duplicated_block_metadata = dag_ops::bf_traverse_find(
