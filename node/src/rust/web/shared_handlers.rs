@@ -341,7 +341,8 @@ fn classify_interpreter_error(ie: &InterpreterError) -> (StatusCode, &'static st
         | OperatorNotDefined { .. }
         | OperatorExpectedError { .. }
         | SubstituteError(_)
-        | SortMatchError(_) => (
+        | SortMatchError(_)
+        | SwiplError(_) => (
             S::UNPROCESSABLE_ENTITY,
             "rholang_execution_error",
             ie.to_string(),
