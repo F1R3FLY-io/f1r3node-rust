@@ -34,8 +34,10 @@ use crate::rust::engine::engine_cell::EngineCell;
 use crate::rust::engine::genesis_ceremony_master::GenesisCeremonyMaster;
 use crate::rust::engine::genesis_validator::GenesisValidator;
 use crate::rust::engine::multi_parent_casper::MultiParentCasperImpl;
+use crate::rust::engine::running::RunningRecoveryContext;
 use crate::rust::errors::CasperError;
 use crate::rust::estimator::Estimator;
+use crate::rust::genesis::contracts::proof_of_stake::ProofOfStake;
 use crate::rust::util::bonds_parser::BondsParser;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 use crate::rust::util::vault_parser::VaultParser;
@@ -84,7 +86,7 @@ fn max_blocks_in_processing() -> usize { MAX_BLOCKS_IN_PROCESSING }
 impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
     /// Helper method to create MultiParentCasper instance
     /// Scala equivalent: MultiParentCasper.hashSetCasper[F](validatorId, casperShardConf, ab)
-    fn create_casper(
+    async fn create_casper(
         &self,
         validator_id: Option<ValidatorIdentity>,
         ab: BlockMessage,
@@ -106,6 +108,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             ab,
             self.heartbeat_signal_ref.clone(),
         )
+        .await
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -142,6 +145,12 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
         // Scala equivalent: val casperShardConf = CasperShardConf(...)
         let casper_shard_conf = CasperShardConf {
             fault_tolerance_threshold: conf.fault_tolerance_threshold,
+            // Locally-derived exact ppm from the configured f32. On a joining/
+            // existing chain, `initializing` overwrites it with the on-chain ppm
+            // (the single exact conversion point).
+            fault_tolerance_threshold_ppm: ProofOfStake::fault_tolerance_threshold_to_ppm(
+                conf.fault_tolerance_threshold,
+            ),
             shard_name: conf.shard_name.clone(),
             parent_shard_id: conf.parent_shard_id.clone(),
             finalization_rate: conf.finalization_rate,
@@ -353,7 +362,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
         let ab = approved_block.candidate.block.clone();
         let genesis_post_state_hash = ab.body.state.post_state_hash.clone();
 
-        let casper = self.create_casper(validator_id.clone(), ab)?;
+        let casper = self.create_casper(validator_id.clone(), ab).await?;
         let casper_arc = Arc::new(casper);
 
         // Scala equivalent: init = for { _ <- askPeersForForkChoiceTips; _ <- sendBufferPendantsToCasper(casper); _ <- proposeFOpt.traverse(...) } yield ()
@@ -424,6 +433,22 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             self.transport_layer.clone(),
             self.rp_conf_ask.clone(),
             self.block_retriever.clone(),
+            Some(RunningRecoveryContext {
+                connections_cell: self.connections_cell.clone(),
+                last_approved_block: self.last_approved_block.clone(),
+                block_store: self.block_store.clone(),
+                block_dag_storage: self.block_dag_storage.clone(),
+                deploy_storage: self.deploy_storage.clone(),
+                rejected_deploy_buffer: self.rejected_deploy_buffer.clone(),
+                casper_buffer_storage: self.casper_buffer_storage.clone(),
+                rspace_state_manager: self.rspace_state_manager.clone(),
+                event_publisher: self.event_publisher.clone(),
+                engine_cell: self.engine_cell.clone(),
+                runtime_manager: self.runtime_manager.clone(),
+                estimator: self.estimator.clone(),
+                casper_shard_conf: self.casper_shard_conf.clone(),
+                heartbeat_signal_ref: self.heartbeat_signal_ref.clone(),
+            }),
             &self.engine_cell,
             &self.event_publisher,
         )
@@ -502,6 +527,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             self.conf.genesis_block_data.epoch_length,
             self.conf.genesis_block_data.quarantine_length,
             self.conf.genesis_block_data.number_of_active_validators,
+            self.casper_shard_conf.fault_tolerance_threshold_ppm,
             self.conf.genesis_ceremony.required_signatures,
             self.conf
                 .genesis_block_data
@@ -594,6 +620,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             self.conf.genesis_block_data.epoch_length,
             self.conf.genesis_block_data.quarantine_length,
             self.conf.genesis_block_data.number_of_active_validators,
+            self.casper_shard_conf.fault_tolerance_threshold_ppm,
             self.casper_shard_conf.shard_name.clone(),
             self.conf.genesis_block_data.deploy_timestamp,
             self.conf.genesis_ceremony.required_signatures,

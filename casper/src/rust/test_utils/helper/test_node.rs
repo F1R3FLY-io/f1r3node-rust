@@ -1129,6 +1129,7 @@ impl TestNode {
 
         let shard_conf = CasperShardConf {
             fault_tolerance_threshold: 0.0,
+            fault_tolerance_threshold_ppm: 0,
             shard_name: shard_id.clone(),
             parent_shard_id: "".to_string(),
             finalization_rate,
@@ -1174,7 +1175,13 @@ impl TestNode {
             finalizer_task_queued: Arc::new(AtomicBool::new(false)),
             heartbeat_signal_ref: crate::rust::heartbeat_signal::new_heartbeat_signal_ref(),
             deploys_in_scope_cache: Arc::new(parking_lot::Mutex::new(
-                None::<(u64, BlockHash, Arc<DashSet<Bytes>>, Arc<DashSet<Bytes>>)>,
+                None::<(
+                    u64,
+                    BlockHash,
+                    Vec<BlockHash>,
+                    Arc<DashSet<Bytes>>,
+                    Arc<DashSet<Bytes>>,
+                )>,
             )),
             active_validators_cache: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         };

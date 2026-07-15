@@ -89,6 +89,12 @@ pub struct ParentsPostStateCacheKey {
     pub sorted_parent_hashes: Vec<BlockHash>,
     // Snapshot LFB participates in visible-ancestor filtering, so cache key must include it.
     pub snapshot_lfb_hash: BlockHash,
+    // The finalized-floor merge base is derived from the block's frozen
+    // justification snapshot (finality/floor.rs), so identical parent sets
+    // under different justification maps can merge from different floors.
+    // Sorted (validator, latest_block_hash) pairs keep such contexts from
+    // sharing a cache entry.
+    pub sorted_latest_messages: Vec<(Validator, BlockHash)>,
     pub disable_late_block_filtering: bool,
 }
 
@@ -723,6 +729,20 @@ impl RuntimeManager {
         Ok(computed)
     }
 
+    /// On-chain protocol fault-tolerance threshold (ppm) at `start_hash`, or
+    /// `None` when the chain's genesis predates the parameter. Read once at
+    /// casper construction (`hash_set_casper`) — not cached here.
+    pub async fn get_fault_tolerance_threshold_ppm(
+        &self,
+        start_hash: &StateHash,
+    ) -> Result<Option<i64>, CasperError> {
+        let runtime = self.spawn_runtime().await;
+        let mut runtime_ops = RuntimeOps::new(runtime);
+        runtime_ops
+            .get_fault_tolerance_threshold_ppm(start_hash)
+            .await
+    }
+
     pub async fn compute_bonds(&self, hash: &StateHash) -> Result<Vec<Bond>, CasperError> {
         if let Some(cached) = self.bonds_cache.get(hash) {
             Self::touch_cache_key(&self.bonds_cache_order, hash);
@@ -955,6 +975,44 @@ impl RuntimeManager {
                 CasperError::KvStoreError(KvStoreError::SerializationError(e.to_string()))
             })?;
         Ok((key_bytes, value_bytes))
+    }
+
+    pub fn has_mergeable_entry(
+        &self,
+        block: &models::rust::casper::protocol::casper_message::BlockMessage,
+    ) -> Result<bool, CasperError> {
+        Ok(self.get_mergeable_entry_bytes(block)?.1.is_some())
+    }
+
+    pub async fn ensure_mergeable_entry(
+        &self,
+        block: &models::rust::casper::protocol::casper_message::BlockMessage,
+        invalid_blocks: HashMap<BlockHash, Validator>,
+    ) -> Result<(), CasperError> {
+        if self.has_mergeable_entry(block)? {
+            return Ok(());
+        }
+
+        let block_data = BlockData::from_block(block);
+        self.replay_compute_state(
+            &block.body.state.pre_state_hash,
+            block.body.deploys.clone(),
+            block.body.system_deploys.clone(),
+            &block_data,
+            Some(invalid_blocks),
+            block.header.parents_hash_list.is_empty(),
+        )
+        .await?;
+
+        if self.has_mergeable_entry(block)? {
+            Ok(())
+        } else {
+            Err(CasperError::RuntimeError(format!(
+                "mergeable entry still absent after recompute for block {} (seq={})",
+                hex::encode(&block.block_hash),
+                block.seq_num
+            )))
+        }
     }
 
     /// Store a mergeable-channels entry received over the wire. Decodes the

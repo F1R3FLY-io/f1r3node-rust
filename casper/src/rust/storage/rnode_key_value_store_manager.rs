@@ -95,6 +95,17 @@ pub fn rnode_db_mapping(legacy_rspace_paths: Option<bool>) -> Vec<(Db, LmdbEnvCo
             dag_storage_env_config(),
         ),
         (
+            Db::new("floor-index".to_string(), None),
+            dag_storage_env_config(),
+        ),
+        (
+            // Per-block finalized frontier F(X) (the warm up-walk pivot). Must be
+            // registered here so the production LMDB store manager can open it in
+            // BlockDagKeyValueStorage::new (mirrors "floor-index").
+            Db::new("frontier-index".to_string(), None),
+            dag_storage_env_config(),
+        ),
+        (
             Db::new("last-finalized-block".to_string(), None),
             dag_storage_env_config(),
         ),

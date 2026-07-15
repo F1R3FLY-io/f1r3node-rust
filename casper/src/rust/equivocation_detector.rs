@@ -275,9 +275,9 @@ impl EquivocationDetector {
                     target: "f1r3fly.slashing",
                     validator = %hex::encode(&equivocation_record.equivocator),
                     base_seq = equivocation_record.equivocation_base_block_seq_num,
-                    "unbonded equivocation detected (validator absent from bond map)"
+                    "unbonded equivocation observed (validator absent from bond map)"
                 );
-                Ok(EquivocationDiscoveryStatus::EquivocationDetected)
+                Ok(EquivocationDiscoveryStatus::EquivocationOblivious)
             }
         }
     }
@@ -308,7 +308,7 @@ impl EquivocationDetector {
                 Ok(EquivocationDiscoveryStatus::EquivocationOblivious)
             }
         } else {
-            Ok(EquivocationDiscoveryStatus::EquivocationDetected)
+            Ok(EquivocationDiscoveryStatus::EquivocationOblivious)
         }
     }
 
@@ -659,6 +659,8 @@ mod tests {
             finalized_blocks_set: imbl::HashSet::new(),
             block_metadata_index,
             deploy_index,
+            floor_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
+            frontier_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
         };
 
         for (index, block) in blocks.iter().enumerate() {
@@ -866,5 +868,55 @@ mod tests {
             cache.get(&(b11.block_hash, sender, 0)).cloned(),
             Some(Some(children[0].block_hash.clone()))
         );
+    }
+
+    #[test]
+    fn unbonded_equivocation_discovery_is_oblivious() {
+        let sender = validator(1);
+        let genesis = block(&sender, 0, hash(10), None);
+        let dag = dag_with(std::slice::from_ref(&genesis));
+        let block_store = block_store_with(std::slice::from_ref(&genesis));
+        let record = EquivocationRecord::new(sender, 0, BTreeSet::new());
+        let mut cache = CanonicalChildCache::new();
+
+        let status = EquivocationDetector::get_equivocation_discovery_status(
+            &dag,
+            &block_store,
+            &record,
+            &genesis,
+            &mut cache,
+            &BTreeMap::new(),
+            &[],
+        )
+        .expect("discovery status");
+
+        assert_eq!(status, EquivocationDiscoveryStatus::EquivocationOblivious);
+    }
+
+    #[test]
+    fn zero_stake_equivocation_discovery_is_oblivious() {
+        let sender = validator(1);
+        let genesis = block(&sender, 0, hash(10), None);
+        let dag = dag_with(std::slice::from_ref(&genesis));
+        let block_store = block_store_with(std::slice::from_ref(&genesis));
+        let record = EquivocationRecord::new(sender.clone(), 0, BTreeSet::new());
+        let mut cache = CanonicalChildCache::new();
+        let bonds = [Bond {
+            validator: sender,
+            stake: 0,
+        }];
+
+        let status = EquivocationDetector::get_equivocation_discovery_status(
+            &dag,
+            &block_store,
+            &record,
+            &genesis,
+            &mut cache,
+            &BTreeMap::new(),
+            &bonds,
+        )
+        .expect("discovery status");
+
+        assert_eq!(status, EquivocationDiscoveryStatus::EquivocationOblivious);
     }
 }

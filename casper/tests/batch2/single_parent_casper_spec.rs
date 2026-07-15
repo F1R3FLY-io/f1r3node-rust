@@ -31,6 +31,11 @@ async fn single_parent_casper_should_create_blocks_with_a_single_parent() {
     let mut nodes = TestNode::create_network(ctx.genesis.clone(), 2, None, Some(1), None, None)
         .await
         .unwrap();
+    // Heartbeat mode: non-leader proposers emit empty support blocks instead
+    // of erroring NoNewDeploys under deploy-inclusion leadership.
+    for node in nodes.iter_mut() {
+        node.allow_empty_blocks = true;
+    }
 
     // Note: We create deploys one by one with sleep to ensure unique timestamps.
     // In Scala, the Time effect provides unique timestamps automatically,

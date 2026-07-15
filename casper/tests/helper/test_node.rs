@@ -15,7 +15,7 @@ use casper::rust::casper::{Casper, CasperShardConf, MultiParentCasper};
 use casper::rust::engine::block_retriever::{BlockRetriever, RequestState, RequestedBlocks};
 use casper::rust::engine::engine_cell::EngineCell;
 use casper::rust::engine::multi_parent_casper::MultiParentCasperImpl;
-use casper::rust::engine::running::Running;
+use casper::rust::engine::running::{Running, RunningRecoveryContext};
 use casper::rust::errors::CasperError;
 use casper::rust::estimator::Estimator;
 use casper::rust::genesis::genesis::Genesis;
@@ -43,6 +43,7 @@ use models::rust::casper::protocol::casper_message::{
     ApprovedBlock, ApprovedBlockCandidate, BlockMessage, DeployData,
 };
 use rspace_plus_plus::rspace::history::Either;
+use rspace_plus_plus::rspace::state::rspace_state_manager::RSpaceStateManager;
 use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
 use tokio::sync::mpsc;
 
@@ -79,6 +80,12 @@ pub struct TestNode {
     pub engine_cell: EngineCell,
     // Packet handler for receiving messages (matches Scala line 178)
     pub packet_handler: CasperPacketHandler,
+    /// Heartbeat / liveness mode. When true, `create_block` emits an empty
+    /// (CloseBlock-only) block instead of returning `NoNewDeploys` when the
+    /// proposer has no user deploys — matching a production heartbeat-enabled
+    /// shard, where a validator always proposes to keep the chain advancing.
+    /// Defaults to false (the historic manual-propose test behavior).
+    pub allow_empty_blocks: bool,
 }
 
 impl TestNode {
@@ -117,7 +124,7 @@ impl TestNode {
             self.rejected_deploy_buffer.clone(),
             &self.runtime_manager.clone(),
             &mut self.block_store.clone(),
-            false,
+            self.allow_empty_blocks,
         )
         .await
     }
@@ -764,12 +771,41 @@ impl TestNode {
             max_number_of_parents.unwrap_or(Estimator::UNLIMITED_PARENTS),
             max_parent_depth,
             with_read_only_size.unwrap_or(0),
+            None,
+            test_network,
+        )
+        .await
+    }
+
+    pub async fn create_network_with_bootstrap_index(
+        genesis: GenesisContext,
+        network_size: usize,
+        bootstrap_index: usize,
+    ) -> Result<Vec<TestNode>, CasperError> {
+        crate::init_logger();
+
+        let test_network = TestNetwork::empty();
+        let sks_to_use: Vec<PrivateKey> = genesis
+            .validator_sks()
+            .into_iter()
+            .take(network_size)
+            .collect();
+
+        Self::network(
+            sks_to_use,
+            genesis,
+            0.0,
+            Estimator::UNLIMITED_PARENTS,
+            None,
+            0,
+            Some(bootstrap_index),
             test_network,
         )
         .await
     }
 
     /// Creates a network of TestNodes
+    #[allow(clippy::too_many_arguments)]
     async fn network(
         sks: Vec<PrivateKey>,
         genesis_context: GenesisContext,
@@ -777,6 +813,7 @@ impl TestNode {
         max_number_of_parents: i32,
         max_parent_depth: Option<i32>,
         with_read_only_size: usize,
+        bootstrap_index: Option<usize>,
         test_network: TestNetwork,
     ) -> Result<Vec<TestNode>, CasperError> {
         let genesis = genesis_context.genesis_block.clone();
@@ -801,6 +838,7 @@ impl TestNode {
             .iter()
             .map(|name| Self::peer_node(name, 40400))
             .collect();
+        let bootstrap_peer = bootstrap_index.and_then(|index| peers.get(index).cloned());
 
         // Create nodes
         let mut nodes = Vec::new();
@@ -821,6 +859,7 @@ impl TestNode {
                 is_readonly,
                 test_network.clone(),
                 &genesis_context,
+                bootstrap_peer.clone(),
             )
             .await;
             nodes.push(node);
@@ -857,6 +896,7 @@ impl TestNode {
         is_read_only: bool,
         test_network: TestNetwork,
         genesis_context: &GenesisContext,
+        bootstrap_peer: Option<PeerNode>,
     ) -> TestNode {
         let tle = Arc::new(TransportLayerTestImpl::new(test_network.clone()));
         let tls =
@@ -917,17 +957,24 @@ impl TestNode {
             .await
             .unwrap();
         // Use create_with_history to ensure tests can reset to genesis state root hash
-        let (runtime_manager, _rho_history_repository) = RuntimeManager::create_with_history(
+        let (runtime_manager, rho_history_repository) = RuntimeManager::create_with_history(
             rspace_store,
             mergeable_store,
             std::sync::Arc::new(Genesis::default_mergeable_tags()),
             rholang::rust::interpreter::external_services::ExternalServices::noop(),
         );
+        let rspace_state_manager = RSpaceStateManager::new(
+            rho_history_repository.exporter(),
+            rho_history_repository.importer(),
+        );
 
         let connections_cell = ConnectionsCell::new();
         let _clique_oracle = CliqueOracleImpl;
         let estimator = Estimator::apply(max_number_of_parents, max_parent_depth);
-        let rp_conf = create_rp_conf_ask(current_peer_node.clone(), None, None);
+        let mut rp_conf = create_rp_conf_ask(current_peer_node.clone(), None, None);
+        if let Some(bootstrap_peer) = bootstrap_peer {
+            rp_conf.bootstrap = Some(bootstrap_peer);
+        }
         let event_publisher = F1r3flyEvents::new();
         // Scala: implicit val requestedBlocks: RequestedBlocks[F] = Ref.unsafe[F, Map[BlockHash, RequestState]](Map.empty)
         let requested_blocks = Arc::new(Mutex::new(HashMap::<BlockHash, RequestState>::new()));
@@ -999,6 +1046,7 @@ impl TestNode {
             },
             sigs: vec![],
         };
+        let last_approved_block = Arc::new(Mutex::new(Some(_approved_block.clone())));
 
         let shard_conf = CasperShardConf {
             fault_tolerance_threshold: 0.0,
@@ -1019,7 +1067,7 @@ impl TestNode {
             epoch_length: 10000,
             quarantine_length: 20000,
             min_phlo_price: 1,
-            disable_late_block_filtering: true,
+            disable_late_block_filtering: true, // Disabled to prevent deploy loss
             deploy_heartbeat_wake_enabled: false, // Disabled to prevent deploy loss
             disable_validator_progress_check: false,
             enable_mergeable_channel_gc: false, // Keep mergeable data unless GC is explicitly enabled
@@ -1066,6 +1114,8 @@ impl TestNode {
                 + Sync,
         > = Arc::new(|| Box::pin(async { Ok(()) }));
 
+        let engine_cell = EngineCell::init();
+
         let running_engine = Running::new(
             block_processor_queue.0.clone(), // block_processing_queue_tx
             Arc::new(DashSet::new()),        // blocks_in_processing
@@ -1076,10 +1126,23 @@ impl TestNode {
             tle.clone(),                     // transport
             rp_conf.clone(),                 // conf
             block_retriever.clone(),         // block_retriever
+            Some(RunningRecoveryContext {
+                connections_cell: connections_cell.clone(),
+                last_approved_block: last_approved_block.clone(),
+                block_store: block_store.clone(),
+                block_dag_storage: block_dag_storage.clone(),
+                deploy_storage: deploy_storage.lock().clone(),
+                rejected_deploy_buffer: rejected_deploy_buffer.clone(),
+                casper_buffer_storage: casper_buffer_storage.clone(),
+                rspace_state_manager: rspace_state_manager.clone(),
+                event_publisher: event_publisher.clone(),
+                engine_cell: Arc::new(engine_cell.clone()),
+                runtime_manager: Arc::new(runtime_manager.clone()),
+                estimator: estimator.clone(),
+                casper_shard_conf: casper.casper_shard_conf.clone(),
+                heartbeat_signal_ref: casper.heartbeat_signal_ref.clone(),
+            }),
         );
-
-        // Create EngineCell
-        let engine_cell = EngineCell::init();
         engine_cell.set(Arc::new(running_engine)).await;
 
         // Create CasperPacketHandler
@@ -1104,6 +1167,7 @@ impl TestNode {
             casper,
             engine_cell,
             packet_handler,
+            allow_empty_blocks: false,
         }
     }
 
