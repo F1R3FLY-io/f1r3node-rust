@@ -72,7 +72,7 @@ async fn rev_vault_balance(node: &mut TestNode, shard_id: &str, rev_address: &st
     .expect("Failed to build balance-query deploy");
 
     let block = node
-        .add_block_from_deploys(&[deploy.clone()])
+        .add_block_from_deploys(std::slice::from_ref(&deploy))
         .await
         .expect("Failed to add balance-query block");
 
@@ -124,11 +124,7 @@ async fn vault_issuance_test() {
     genesis_params.vaults.extend(issued_vaults.clone());
 
     let genesis_context = GenesisBuilder::new()
-        .build_genesis_with_parameters(Some((
-            validator_key_pairs,
-            genesis_vaults,
-            genesis_params,
-        )))
+        .build_genesis_with_parameters(Some((validator_key_pairs, genesis_vaults, genesis_params)))
         .await
         .expect("Failed to build genesis with issued vaults");
 

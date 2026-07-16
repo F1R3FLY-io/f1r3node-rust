@@ -55,11 +55,9 @@ impl TestContext {
 
     // Scala: val br = BlockRequest.from(convert[PacketTypeTag.BlockRequest.type](toPacket(msg).right.get).get)
     fn to_block_request(protocol: &Protocol) -> BlockRequest {
-        if let Some(message) = &protocol.message {
-            if let Packet(packet_data) = message {
-                if let Ok(br) = BlockRequestProto::decode(packet_data.content.as_ref()) {
-                    return BlockRequest::from_proto(br);
-                }
+        if let Some(Packet(packet_data)) = &protocol.message {
+            if let Ok(br) = BlockRequestProto::decode(packet_data.content.as_ref()) {
+                return BlockRequest::from_proto(br);
             }
         }
         panic!("Could not convert protocol to BlockRequest");

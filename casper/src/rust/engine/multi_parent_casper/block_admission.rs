@@ -68,7 +68,7 @@ pub(crate) fn admit_deploy<T: TransportLayer + Send + Sync>(
     match interpreter_util::mk_term(&deploy.data.term, normalizer_env) {
         Err(interpreter_error) => {
             tracing::debug!(
-                target: "f1r3fly.deploy.latency",
+                target: "f1r3fly.casper.deploy.timing",
                 parse_ms = parse_started_at.elapsed().as_millis(),
                 "Deploy parse failed"
             );
@@ -82,7 +82,7 @@ pub(crate) fn admit_deploy<T: TransportLayer + Send + Sync>(
             let add_started_at = std::time::Instant::now();
             let deploy_id = add_deploy(this, deploy)?;
             tracing::debug!(
-                target: "f1r3fly.deploy.latency",
+                target: "f1r3fly.casper.deploy.timing",
                 parse_ms = parse_elapsed_ms,
                 add_deploy_ms = add_started_at.elapsed().as_millis(),
                 "Deploy parse/add completed"
@@ -168,6 +168,28 @@ pub(crate) fn add_deploy<T: TransportLayer + Send + Sync>(
     Ok(deploy.sig.to_vec())
 }
 
+fn stored_deploy_is_pending_for_snapshot(
+    snapshot: &CasperSnapshot,
+    latest_block_number: i64,
+    earliest_block_number: i64,
+    current_time_millis: i64,
+    deploy: &Signed<DeployData>,
+) -> bool {
+    let block_expired = deploy.data.valid_after_block_number <= earliest_block_number;
+    let time_expired = deploy.data.is_expired_at(current_time_millis);
+    if block_expired || time_expired {
+        return false;
+    }
+
+    let is_future = super::events::pending_deploy_is_future_for_next_block(
+        latest_block_number,
+        deploy.data.valid_after_block_number,
+    );
+    let already_in_scope = snapshot.deploys_in_scope.contains(&deploy.sig)
+        && !snapshot.rejected_in_scope.contains(&deploy.sig);
+    !is_future && !already_in_scope
+}
+
 /// C15 / Arch-3: extracted from `Casper::has_pending_deploys_in_storage_for_snapshot`
 /// in `dispatch.rs`. The dispatch module is intended to host thin
 /// trait delegates (one-line `super::<module>::<fn>` calls); the
@@ -210,21 +232,53 @@ pub(crate) async fn admit_has_pending_deploys_in_storage_for_snapshot<
 
     storage
         .any(|deploy| {
-            let block_expired = deploy.data.valid_after_block_number <= earliest_block_number;
-            let time_expired = deploy.data.is_expired_at(current_time_millis);
-            if block_expired || time_expired {
-                return Ok(false);
-            }
-
-            // `pending_deploy_is_future_for_next_block` is `pub(super)`
-            // in `events`; the call resolves because `block_admission` is
-            // a sibling sub-module of `events` under `engine::multi_parent_casper`.
-            let is_future = super::events::pending_deploy_is_future_for_next_block(
+            Ok(stored_deploy_is_pending_for_snapshot(
+                snapshot,
                 latest_block_number,
-                deploy.data.valid_after_block_number,
-            );
-            let already_in_scope = snapshot.deploys_in_scope.contains(&deploy.sig);
-            Ok(!is_future && !already_in_scope)
+                earliest_block_number,
+                current_time_millis,
+                deploy,
+            ))
         })
         .map_err(|e| CasperError::RuntimeError(format!("Failed to scan deploy storage: {:?}", e)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::stored_deploy_is_pending_for_snapshot;
+    use crate::rust::casper::test_helpers::TestCasperWithSnapshot;
+    use crate::rust::util::construct_deploy;
+
+    #[test]
+    fn rejected_in_scope_storage_deploy_remains_pending() {
+        let snapshot = TestCasperWithSnapshot::create_empty_snapshot();
+        let deploy = construct_deploy::basic_deploy_data(91, None, Some("test".to_string()))
+            .expect("deploy");
+
+        assert!(stored_deploy_is_pending_for_snapshot(
+            &snapshot,
+            20,
+            -1,
+            deploy.data.time_stamp,
+            &deploy,
+        ));
+
+        snapshot.deploys_in_scope.insert(deploy.sig.clone());
+        assert!(!stored_deploy_is_pending_for_snapshot(
+            &snapshot,
+            20,
+            -1,
+            deploy.data.time_stamp,
+            &deploy,
+        ));
+
+        snapshot.rejected_in_scope.insert(deploy.sig.clone());
+        assert!(stored_deploy_is_pending_for_snapshot(
+            &snapshot,
+            20,
+            -1,
+            deploy.data.time_stamp,
+            &deploy,
+        ));
+    }
 }

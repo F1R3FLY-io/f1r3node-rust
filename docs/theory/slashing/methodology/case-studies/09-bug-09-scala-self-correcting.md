@@ -10,8 +10,12 @@ proposer had earlier produced an equivocation, even if the block
 acknowledged the equivocation via `has_slash_system_deploys`. This
 incorrectly punished *self-correcting* proposers — validators who
 slashed their own past equivocations to remain in good standing.
-The Rust port at `validate.rs:1323-1366` widens the check to accept
-self-correcting blocks.
+The Rust port widens the check to accept self-correcting blocks, in
+`neglected_invalid_block` (`validate.rs:1346`). Since the 2026-07-15
+dev merge the exemption is **per-target** rather than block-level: the
+`slash_targets` membership test at `validate.rs:1448-1449` excuses a
+neglected justification only for the offender the block actually
+slashes (see design §9.10).
 
 ## 2 · Discovery technique
 

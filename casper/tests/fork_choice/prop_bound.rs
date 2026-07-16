@@ -70,8 +70,14 @@ async fn build_two_tip_dag(
     let v1 = generate_validator(Some("Bound V1"));
     let v2 = generate_validator(Some("Bound V2"));
     let bonds = vec![
-        Bond { validator: v1.clone(), stake: stake_v1 },
-        Bond { validator: v2.clone(), stake: stake_v2 },
+        Bond {
+            validator: v1.clone(),
+            stake: stake_v1,
+        },
+        Bond {
+            validator: v2.clone(),
+            stake: stake_v2,
+        },
     ];
 
     let genesis = create_genesis_block(
@@ -123,10 +129,7 @@ async fn build_two_tip_dag(
         None,
     );
 
-    let latest = HashMap::from([
-        (v1, b_a.block_hash.clone()),
-        (v2, b_b.block_hash.clone()),
-    ]);
+    let latest = HashMap::from([(v1, b_a.block_hash.clone()), (v2, b_b.block_hash.clone())]);
     (genesis, latest)
 }
 
@@ -156,7 +159,10 @@ async fn b2_sentinel_and_positive_cap_usize_safe() {
             .await
             .expect("neg-1 tips")
             .tips;
-        assert_eq!(neg, full, "max_number_of_parents = -1 must mean unlimited (take all)");
+        assert_eq!(
+            neg, full,
+            "max_number_of_parents = -1 must mean unlimited (take all)"
+        );
 
         // Positive cap of 1 truncates to just the head.
         let cap1 = Estimator::apply(1, None)
@@ -165,7 +171,10 @@ async fn b2_sentinel_and_positive_cap_usize_safe() {
             .expect("cap-1 tips")
             .tips;
         assert_eq!(cap1.len(), 1, "positive cap of 1 must truncate to one tip");
-        assert_eq!(cap1[0], full[0], "the truncated tip must be the head (main parent)");
+        assert_eq!(
+            cap1[0], full[0],
+            "the truncated tip must be the head (main parent)"
+        );
 
         // Positive cap equal to the tip count keeps everything, in order.
         let cap2 = Estimator::apply(2, None)
@@ -200,7 +209,9 @@ async fn b3_score_overflow_is_typed_err() {
                     "expected a score-overflow InvalidArgument, got: {msg}"
                 );
             }
-            Err(other) => panic!("expected InvalidArgument overflow, got a different error: {other}"),
+            Err(other) => {
+                panic!("expected InvalidArgument overflow, got a different error: {other}")
+            }
             Ok(fc) => panic!(
                 "expected a typed overflow Err, but score wrapped and returned {} tips",
                 fc.tips.len()
@@ -272,7 +283,10 @@ fn b4_empty_ranked_tips_is_typed_err() {
     let empty: Vec<BlockHash> = Vec::new();
     match filter_deep_parents_empty_branch(0, &empty) {
         Err(KvStoreError::InvalidArgument(msg)) => {
-            assert!(msg.contains("no tips"), "unexpected empty-branch message: {msg}");
+            assert!(
+                msg.contains("no tips"),
+                "unexpected empty-branch message: {msg}"
+            );
         }
         other => panic!("empty ranked tips must be a typed InvalidArgument Err, got: {other:?}"),
     }

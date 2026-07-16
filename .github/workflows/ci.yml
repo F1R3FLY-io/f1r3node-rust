@@ -8,7 +8,8 @@ on:
       - master
       - staging
       - trying
-    tags: "**"
+    tags:
+      - "**"
   pull_request:
     branches:
       - dev
@@ -19,7 +20,7 @@ on:
 
 # Concurrency: PRs run in parallel (one group per ref) for fast feedback; pushes
 # (dev/master/staging/trying/tags) share a single group so merge and release runs
-# serialize rather than piling up independent 20-VM OCI matrices. Nothing is
+# serialize rather than piling up independent 4-VM OCI matrices. Nothing is
 # cancelled mid-flight — a re-push queues behind its own in-flight run, so release
 # jobs and long integration runs always reach completion.
 concurrency:
@@ -31,6 +32,9 @@ env:
   # AES/SSE2 CPU features for gxhash (required by PathMap crate)
   RUSTFLAGS: "-C target-feature=+aes,+sse2"
   DOCKER_IMAGE_NAME: "f1r3flyindustries/f1r3fly-rust"
+
+permissions:
+  contents: read
 
 jobs:
   # Resolve version + branch env vars once for downstream jobs.
@@ -45,6 +49,7 @@ jobs:
     outputs:
       VERSION: ${{ steps.env.outputs.VERSION }}
       BRANCH: ${{ steps.env.outputs.BRANCH }}
+      SYSTEM_INTEGRATION_REF: ${{ steps.env.outputs.SYSTEM_INTEGRATION_REF }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -70,6 +75,13 @@ jobs:
           fi
           echo "BRANCH=$BRANCH" >> "$GITHUB_OUTPUT"
 
+          source .github/oci-validation.env
+          if [[ ! "$SYSTEM_INTEGRATION_REF" =~ ^[0-9a-f]{40}$ && ! "$SYSTEM_INTEGRATION_REF" =~ ^refs/tags/[A-Za-z0-9._/-]+$ ]]; then
+            echo "SYSTEM_INTEGRATION_REF must be a 40-character commit SHA or refs/tags/<tag>."
+            exit 1
+          fi
+          echo "SYSTEM_INTEGRATION_REF=$SYSTEM_INTEGRATION_REF" >> "$GITHUB_OUTPUT"
+
           echo "Version: $VERSION | Branch: $BRANCH"
 
   lint:
@@ -91,9 +103,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          xargs -r -a .github/apt-dependencies.txt sudo apt-get install -y
+        run: bash .github/scripts/install-system-dependencies.sh
 
       - name: Check formatting
         run: cargo fmt --all -- --check
@@ -101,7 +111,7 @@ jobs:
       - name: Run clippy
         env:
           RUSTFLAGS: "-C target-feature=+aes,+sse2 -D warnings"
-        run: cargo clippy --workspace
+        run: cargo clippy --workspace --all-targets
 
   deny:
     name: cargo-deny
@@ -129,12 +139,24 @@ jobs:
       - name: Link Checker
         uses: lycheeverse/lychee-action@v2
         with:
+          # 403 is accepted alongside 200..=299 and 429 because many
+          # citations in `docs/theory/slashing/methodology/references.md`
+          # are DOIs that redirect to publisher portals (ACM DL, Oxford
+          # Academic, IEEE Xplore, IACR ePrint, Medium) which 403 on
+          # unauthenticated/bot requests. A 403 response from these
+          # endpoints still proves the URL is well-formed and the
+          # resource exists; a real broken link would 404. The 429
+          # allowance for rate-limited fetches is unchanged. 503 is
+          # accepted because it is transient by definition (seen from
+          # rust-fuzz.github.io during a GitHub Pages blip); a genuinely
+          # dead link returns 404/410, not 503.
           args: >-
             --no-progress
             --exclude-loopback
+            --exclude 'https://www\.gutenberg\.org/ebooks/132'
             --max-retries 2
             --retry-wait-time 5
-            --accept 200..=299,429
+            --accept 200..=299,403,429,503
             './**/*.md'
           fail: true
 
@@ -172,9 +194,7 @@ jobs:
           shared-key: test-${{ matrix.crate }}
 
       - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          xargs -r -a .github/apt-dependencies.txt sudo apt-get install -y
+        run: bash .github/scripts/install-system-dependencies.sh
 
       - name: Run tests
         env:
@@ -201,10 +221,22 @@ jobs:
   # receive secrets normally and need no approval gate (gated: false). Fork PRs
   # cannot get secrets on a `pull_request` event, so they skip this job and are
   # served by ci-fork-pr.yml (pull_request_target, maintainer-gated) instead.
+  #
+  # Promotion PRs (head is a push-covered branch: dev/staging/master/trying)
+  # also skip: the push run on the identical commit already runs the identical
+  # pipeline, so the PR-event copy would only double OCI VM creations against
+  # the tenancy's daily limit. Required checks are commit-scoped — the push
+  # run's aggregator results land on the same SHA and gate the PR; the
+  # PR-side aggregators skip alongside (skipped = passing, same semantics the
+  # fork path relies on) and finish long before the push run's real results,
+  # so the real results are the latest and win.
   pipeline:
     name: Heavy Pipeline
     needs: lint
-    if: github.event_name == 'push' || github.event.pull_request.head.repo.fork == false
+    if: >-
+      github.event_name == 'push'
+      || (github.event.pull_request.head.repo.fork == false
+      && !contains(fromJSON('["dev", "staging", "master", "trying"]'), github.event.pull_request.head.ref))
     uses: ./.github/workflows/_integration-pipeline.yml
     with:
       gated: false
@@ -212,15 +244,20 @@ jobs:
 
   # Per-arch aggregators. The branch ruleset requires status checks named
   # exactly `Integration Tests (amd64)` / `(arm64)`. These collapse the reusable
-  # pipeline's 10 per-arch matrix slots into one ruleset gate per arch. They use
+  # pipeline's per-arch matrix jobs into one ruleset gate per arch. They use
   # `contains(...)` (not `startswith`) because reusable-workflow job names are
   # prefixed with the caller job id ("Heavy Pipeline / Integration Tests (...)").
   # Internal-only: fork PRs get this check from ci-fork-pr.yml instead, so this
   # one skips for them (a skipped required check is treated as passing).
+  # Promotion PRs skip too, mirroring the pipeline job's dedupe condition.
   integration_tests_amd64:
     name: Integration Tests (amd64)
     needs: pipeline
-    if: always() && (github.event_name == 'push' || github.event.pull_request.head.repo.fork == false)
+    if: >-
+      always()
+      && (github.event_name == 'push'
+      || (github.event.pull_request.head.repo.fork == false
+      && !contains(fromJSON('["dev", "staging", "master", "trying"]'), github.event.pull_request.head.ref)))
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -249,7 +286,11 @@ jobs:
   integration_tests_arm64:
     name: Integration Tests (arm64)
     needs: pipeline
-    if: always() && (github.event_name == 'push' || github.event.pull_request.head.repo.fork == false)
+    if: >-
+      always()
+      && (github.event_name == 'push'
+      || (github.event.pull_request.head.repo.fork == false
+      && !contains(fromJSON('["dev", "staging", "master", "trying"]'), github.event.pull_request.head.ref)))
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -296,6 +337,7 @@ jobs:
         github.ref == 'refs/heads/trying'
       )
     runs-on: ubuntu-latest
+    environment: ephemeral-launch
     steps:
       - name: Checkout (for version)
         uses: actions/checkout@v4

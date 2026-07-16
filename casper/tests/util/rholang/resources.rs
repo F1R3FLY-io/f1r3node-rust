@@ -84,6 +84,7 @@ lazy_static! {
     pub static ref SHARED_LMDB_LOCK: Mutex<()> = Mutex::new(());
 }
 
+#[allow(clippy::await_holding_lock)]
 pub async fn genesis_context() -> Result<GenesisContext, CasperError> {
     let genesis_arc = CACHED_GENESIS
         .get_or_init(|| Arc::new(Mutex::new(None)))
@@ -207,7 +208,7 @@ pub fn mk_test_rnode_store_manager_with_dual_scope(
     let (shared_path, _temp_dir) = &*SHARED_LMDB_ENV;
     // Dual-scope variant — same shared-env consideration as
     // mk_test_rnode_store_manager_with_scope. Bumped from 100 MB to 1 GB.
-    let limit_size = 1 * GB;
+    let limit_size = GB;
 
     let db_mappings: Vec<(Db, LmdbEnvConfig)> = rnode_db_mapping(None)
         .into_iter()
@@ -397,12 +398,8 @@ pub async fn block_dag_storage_from_dyn(
         Arc::new(RwLock::new(block_metadata_store)),
         Arc::new(RwLock::new(deploy_index_db)),
         invalid_blocks_db,
-        KeyValueTypedStoreImpl::new(Arc::new(
-            rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore::new(),
-        )),
-        KeyValueTypedStoreImpl::new(Arc::new(
-            rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore::new(),
-        )),
+        KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
+        KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
         equivocation_tracker_store,
         Arc::new(AtomicU64::new(0)),
     ))

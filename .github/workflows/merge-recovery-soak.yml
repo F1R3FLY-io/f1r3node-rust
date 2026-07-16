@@ -1,0 +1,233 @@
+name: Merge Recovery Soak
+
+on:
+  schedule:
+    - cron: "0 5 * * *"
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+    inputs:
+      target_ref:
+        description: Branch, tag, or SHA to validate
+        required: true
+        default: dev
+        type: string
+      duration:
+        description: Requested soak duration
+        required: true
+        default: daily-24h
+        type: choice
+        options:
+          - daily-24h
+          - weekend-72h
+
+permissions:
+  contents: read
+
+env:
+  DOCKER_IMAGE_NAME: f1r3flyindustries/f1r3fly-rust
+  SYSTEM_INTEGRATION_REF: a50eeb198c6e542504af8db92389de5c02500422
+  # Pinned OCI CLI installer (release tag + sha256). The checksum fails closed
+  # if the tag is ever moved. Bump both together when upgrading.
+  OCI_CLI_INSTALLER_URL: "https://raw.githubusercontent.com/oracle/oci-cli/v3.89.1/scripts/install/install.sh"
+  OCI_CLI_INSTALLER_SHA256: "079dcc9a3e2a61ec692400e30169c9996b2998ac8c4e205198ed5863283fcb76"
+
+jobs:
+  schedule_gate:
+    name: Resolve Pacific Schedule
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      should_run: ${{ steps.resolve.outputs.should_run }}
+      duration_seconds: ${{ steps.resolve.outputs.duration_seconds }}
+      target_ref: ${{ steps.resolve.outputs.target_ref }}
+    steps:
+      - name: Resolve schedule
+        id: resolve
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_DURATION: ${{ inputs.duration }}
+          INPUT_TARGET_REF: ${{ inputs.target_ref }}
+        shell: bash -euo pipefail {0}
+        run: |
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            if [ "$INPUT_DURATION" = "weekend-72h" ]; then
+              duration_seconds=259200
+            else
+              duration_seconds=86400
+            fi
+            target_ref="$INPUT_TARGET_REF"
+            should_run=true
+          else
+            pacific_hour="$(TZ=America/Los_Angeles date +%H)"
+            pacific_weekday="$(TZ=America/Los_Angeles date +%u)"
+            target_ref=dev
+            should_run=false
+            duration_seconds=86400
+            if [ "$pacific_hour" = "22" ] && [ "$pacific_weekday" -ge 1 ] && [ "$pacific_weekday" -le 4 ]; then
+              should_run=true
+            elif [ "$pacific_hour" = "22" ] && [ "$pacific_weekday" -eq 5 ]; then
+              should_run=true
+              duration_seconds=259200
+            fi
+          fi
+          {
+            echo "should_run=$should_run"
+            echo "duration_seconds=$duration_seconds"
+            echo "target_ref=$target_ref"
+          } >> "$GITHUB_OUTPUT"
+
+  launch_runner:
+    name: Launch Oracle Cloud Soak Runner
+    needs: schedule_gate
+    if: needs.schedule_gate.outputs.should_run == 'true'
+    runs-on: ubuntu-latest
+    environment: ephemeral-launch-internal
+    timeout-minutes: 10
+    concurrency:
+      group: merge-recovery-soak-${{ needs.schedule_gate.outputs.duration_seconds }}
+      cancel-in-progress: true
+    steps:
+      - name: Clone trusted runner launcher
+        uses: actions/checkout@v4
+        with:
+          repository: F1R3FLY-io/system-integration
+          ref: ${{ env.SYSTEM_INTEGRATION_REF }}
+          path: system-integration
+          persist-credentials: false
+
+      - name: Install OCI CLI (pinned, checksum-verified)
+        shell: bash -e {0}
+        run: |
+          # This runner later holds OCI_* secrets, so the installer must not be
+          # fetched from a movable ref. Fails closed on any checksum mismatch.
+          curl -fsSL "$OCI_CLI_INSTALLER_URL" -o /tmp/oci-install.sh
+          echo "$OCI_CLI_INSTALLER_SHA256  /tmp/oci-install.sh" | sha256sum -c -
+          bash /tmp/oci-install.sh \
+            --accept-all-defaults --install-dir /opt/oci-cli --exec-dir /usr/local/bin
+          oci --version
+
+      - name: Configure OCI authentication
+        env:
+          OCI_TENANCY_OCID: ${{ secrets.OCI_TENANCY_OCID }}
+          OCI_USER_OCID: ${{ secrets.OCI_USER_OCID }}
+          OCI_REGION: ${{ secrets.OCI_REGION }}
+          OCI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
+          OCI_PRIVATE_KEY: ${{ secrets.OCI_PRIVATE_KEY }}
+        shell: bash -e {0}
+        run: |
+          install -d -m 700 ~/.oci
+          umask 077
+          printf '%s\n' "$OCI_PRIVATE_KEY" > ~/.oci/oci_api_key.pem
+          cat > ~/.oci/config <<EOF
+          [DEFAULT]
+          user=$OCI_USER_OCID
+          fingerprint=$OCI_FINGERPRINT
+          tenancy=$OCI_TENANCY_OCID
+          region=$OCI_REGION
+          key_file=$HOME/.oci/oci_api_key.pem
+          EOF
+          oci iam region list >/dev/null
+
+      - name: Launch runner
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PAT }}
+          GH_REPO: ${{ github.repository }}
+          SUPPRESS_LABEL_WARNING: "True"
+        shell: bash -e {0}
+        run: system-integration/ci/oci-runners/launch-runner.sh amd64
+
+      - name: Remove OCI credentials
+        if: always()
+        shell: bash -e {0}
+        run: |
+          shred -fu ~/.oci/oci_api_key.pem 2>/dev/null || true
+          rm -rf ~/.oci
+
+  soak:
+    name: Merge Recovery Soak
+    needs: [schedule_gate, launch_runner]
+    if: needs.schedule_gate.outputs.should_run == 'true'
+    runs-on: [self-hosted, linux, x64, f1r3fly-rust-ci-ephemeral, oracle-cloud]
+    timeout-minutes: 4560
+    concurrency:
+      group: merge-recovery-soak-${{ needs.schedule_gate.outputs.duration_seconds }}
+      cancel-in-progress: true
+    steps:
+      - name: Checkout CI control files
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: ci-control
+          persist-credentials: false
+
+      - name: Checkout code under test
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.schedule_gate.outputs.target_ref }}
+          path: node-under-test
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Resolve target revision
+        id: target
+        working-directory: node-under-test
+        shell: bash -euo pipefail {0}
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Clone trusted integration harness
+        uses: actions/checkout@v4
+        with:
+          repository: F1R3FLY-io/system-integration
+          ref: ${{ env.SYSTEM_INTEGRATION_REF }}
+          path: system-integration
+          persist-credentials: false
+
+      - name: Build node image
+        working-directory: node-under-test
+        shell: bash -euo pipefail {0}
+        run: |
+          docker context use default
+          docker buildx build \
+            --platform linux/amd64 \
+            --file node/Dockerfile \
+            --build-arg VERSION="$(git describe --tags --always)" \
+            --tag "$DOCKER_IMAGE_NAME:latest" \
+            --load \
+            .
+
+      - name: Extract subprocess binary
+        shell: bash -euo pipefail {0}
+        run: |
+          container_id="$(docker create "$DOCKER_IMAGE_NAME:latest")"
+          docker cp "$container_id:/opt/docker/bin/node" /tmp/rnode
+          docker rm "$container_id"
+          chmod +x /tmp/rnode
+          ldd /tmp/rnode
+
+      - name: Install integration dependencies
+        working-directory: system-integration
+        shell: bash -euo pipefail {0}
+        run: |
+          poetry lock --no-update
+          poetry install --with integration
+
+      - name: Run soak
+        env:
+          F1R3FLY_NODE_IMAGE: ${{ env.DOCKER_IMAGE_NAME }}:latest
+          F1R3FLY_NODE_BINARY: /tmp/rnode
+          F1R3FLY_NODE_DEFAULTS_CONF: ${{ github.workspace }}/node-under-test/node/src/main/resources/defaults.conf
+          SOAK_DURATION_SECONDS: ${{ needs.schedule_gate.outputs.duration_seconds }}
+          SOAK_OUTPUT_DIR: /tmp/merge-recovery-soak
+          SOAK_TARGET_REF: ${{ needs.schedule_gate.outputs.target_ref }}
+          SOAK_TARGET_SHA: ${{ steps.target.outputs.sha }}
+          SYSTEM_INTEGRATION_DIR: ${{ github.workspace }}/system-integration
+        shell: bash -e {0}
+        run: ci-control/scripts/run-merge-recovery-soak.sh
+
+      - name: Upload soak results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: merge-recovery-soak-${{ needs.schedule_gate.outputs.duration_seconds }}s-${{ github.run_id }}-${{ github.run_attempt }}
+          path: /tmp/merge-recovery-soak
+          retention-days: 14

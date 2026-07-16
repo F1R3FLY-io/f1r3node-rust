@@ -43,7 +43,10 @@ fn active_validators_cap_spec() {
                     // build (GENESIS_CACHE is keyed on the full parameters).
                     let mut genesis_parameters =
                         GenesisBuilder::build_genesis_parameters_with_defaults(None, None);
-                    genesis_parameters.2.proof_of_stake.number_of_active_validators = 2;
+                    genesis_parameters
+                        .2
+                        .proof_of_stake
+                        .number_of_active_validators = 2;
 
                     let spec = RhoSpec::new_with_genesis_parameters(
                         compiled,

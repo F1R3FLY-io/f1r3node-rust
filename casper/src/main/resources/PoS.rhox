@@ -5,6 +5,7 @@
 // epochLength - the length of the validation epoch in blocks
 // quarantineLength - the length of the quarantine time in blocks
 // numberOfActiveValidators - max number of active validator in a shard
+// faultToleranceThresholdPpm - protocol fault-tolerance threshold in parts-per-million
 // posMultiSigPublicKeys - public keys
 // posMultiSigQuorum - how many confirmations are necessary to use multi-sig vault
 /*
@@ -298,8 +299,12 @@ in {
               contract PoS(@"getQuarantineLength", returnCh) = {
                 returnCh!($$quarantineLength$$)
               } |
-              contract PoS(@"getFaultToleranceThreshold", returnCh) = {
-                returnCh!($$faultToleranceThreshold$$)
+              // Exposes the protocol fault-tolerance threshold (parts-per-million).
+              // This is a CONSENSUS-level value: every node reads it back at startup
+              // and uses it for the finalized-floor / finality oracle, so the merge
+              // base is node-identical regardless of local configuration.
+              contract PoS(@"getFaultToleranceThresholdPpm", returnCh) = {
+                returnCh!($$faultToleranceThresholdPpm$$)
               } |
               contract PoS(@"posVaultTransfer", @targetAddress, @amount, @deployerID, @transferRet) = {
                 // human transfer would just use this method

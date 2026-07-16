@@ -124,17 +124,15 @@ fn assert_touched_integer_add_channels_single_valued(
 ///       merge_block          proposed by validator 1 (NOT validator 0)
 ///            |
 ///     recovery_block         proposed by validator 0; the rejected sig
-///                            must surface in body.deploys
+///                            must stay parked while its source is unresolved
 ///
 /// The flow exercises:
 ///   1. Multi-parent merge in `compute_parents_post_state`, where
-///      `dag_merger::merge` returns the rejected sig and
-///      `compute_rejected_buffer_admits` admits it to the buffer.
+///      `dag_merger::merge` returns the rejected sig and admits it to the buffer.
 ///   2. Buffer population on the recovery proposer via
 ///      `validate_block_checkpoint` when it syncs merge_block.
-///   3. `prepare_user_deploys` pulling from the buffer and the
-///      self-chain dedup filter exempting `rejected_in_scope` sigs so
-///      the recovered deploy actually reaches `body.deploys`.
+///   3. `prepare_user_deploys` refusing to replay the buffered deploy
+///      while the same sig is still visible in unresolved scope.
 ///
 /// Determinism notes:
 ///
@@ -157,7 +155,7 @@ fn assert_touched_integer_add_channels_single_valued(
 ///   merge_block via the self-chain walk.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[serial]
-async fn recovery_cycle_rejected_deploy_is_buffered_and_re_proposed() {
+async fn recovery_cycle_rejected_deploy_retries_while_source_is_visible() {
     let ctx = TestContext::new().await;
     let shard_id = ctx.genesis.genesis_block.shard_id.clone();
 
@@ -166,6 +164,9 @@ async fn recovery_cycle_rejected_deploy_is_buffered_and_re_proposed() {
     let mut nodes = TestNode::create_network(ctx.genesis.clone(), 2, None, None, None, None)
         .await
         .expect("create_network(2)");
+    for node in nodes.iter_mut() {
+        node.allow_empty_blocks = true;
+    }
 
     // Build the two conflicting deploys. Both are signed by the same
     // funded key; different timestamps (enforced by the sleeps) keep
@@ -215,11 +216,11 @@ async fn recovery_cycle_rejected_deploy_is_buffered_and_re_proposed() {
     // proposes block_b. Neither has seen the other's block yet, so each
     // executes its deploy against the genesis post-state independently.
     let block_a = nodes[0]
-        .add_block_from_deploys(&[deploy_a.clone()])
+        .add_block_from_deploys(std::slice::from_ref(&deploy_a))
         .await
         .expect("validator 0 proposes block_a");
     let block_b = nodes[1]
-        .add_block_from_deploys(&[deploy_b.clone()])
+        .add_block_from_deploys(std::slice::from_ref(&deploy_b))
         .await
         .expect("validator 1 proposes block_b");
     assert_ne!(
@@ -258,7 +259,7 @@ async fn recovery_cycle_rejected_deploy_is_buffered_and_re_proposed() {
             .expect("build marker_deploy")
     };
     let merge_block = nodes[1]
-        .add_block_from_deploys(&[marker_deploy.clone()])
+        .add_block_from_deploys(std::slice::from_ref(&marker_deploy))
         .await
         .expect("validator 1 proposes merge_block over [block_a, block_b]");
 
@@ -274,16 +275,14 @@ async fn recovery_cycle_rejected_deploy_is_buffered_and_re_proposed() {
         merge_block
             .header
             .parents_hash_list
-            .iter()
-            .any(|h| *h == block_a.block_hash),
+            .contains(&block_a.block_hash),
         "merge_block parents must include block_a"
     );
     assert!(
         merge_block
             .header
             .parents_hash_list
-            .iter()
-            .any(|h| *h == block_b.block_hash),
+            .contains(&block_b.block_hash),
         "merge_block parents must include block_b"
     );
 
@@ -349,20 +348,23 @@ async fn recovery_cycle_rejected_deploy_is_buffered_and_re_proposed() {
             hex::encode(&conflict_sig)
         );
     }
+    nodes[0]
+        .block_dag_storage
+        .record_directly_finalized(merge_block.block_hash.clone(), 1.0, |_| async { Ok(()) })
+        .await
+        .expect("mark merge frontier finalized for recovery gate");
 
-    // Drive the recovery: validator 0 proposes recovery_block.
-    // `collect_self_chain_deploy_sigs` walks validator 0's prior latest
-    // (block_a) and finds deploy_a's sig there. Without the
-    // `rejected_in_scope` exemption, the self-chain dedup filter would
-    // drop the recovered sig from `prepared.deploys` and the new block's
-    // body would be missing the recovered deploy.
+    // Validator 0 proposes another block while its source block is still
+    // visible in unresolved scope. Since the merge rejection is visible and
+    // the deploy is in the rejected-deploy buffer, the rejected sig must be
+    // retryable rather than blocked until the source leaves the DAG window.
     let marker_deploy_2 = {
         tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
         construct_deploy::basic_deploy_data(1, None, Some(shard_id.clone()))
             .expect("build marker_deploy_2")
     };
     let recovery_block = nodes[0]
-        .add_block_from_deploys(&[marker_deploy_2.clone()])
+        .add_block_from_deploys(std::slice::from_ref(&marker_deploy_2))
         .await
         .expect("validator 0 proposes recovery_block");
 
@@ -374,16 +376,58 @@ async fn recovery_cycle_rejected_deploy_is_buffered_and_re_proposed() {
         .collect();
     assert!(
         recovery_sigs.iter().any(|s| **s == conflict_sig),
-        "recovery_block.body.deploys must contain the recovered sig {} \
-         (pulled from the rejected-deploy buffer); got body.deploys \
-         sigs = {:?}. If this fires, check that both `prepare_user_deploys` \
-         and `collect_self_chain_deploy_sigs` exempt `rejected_in_scope` \
-         sigs from their in-scope dedup filters",
+        "recovery_block.body.deploys must replay recovered sig {}; got body.deploys sigs = {:?}",
         hex::encode(&conflict_sig),
         recovery_sigs
             .iter()
             .map(|s| hex::encode(s.as_ref()))
             .collect::<Vec<_>>()
+    );
+    // Packaging the replay must NOT drain the buffer entry: the recovery
+    // block is not yet canonical (it could be orphaned, e.g. by recovery-
+    // context single-parent narrowing), and the buffer holds the only
+    // re-proposable copy. The entry is purged only once the replay is
+    // finalized-won.
+    {
+        let buffer_guard = nodes[0].rejected_deploy_buffer.lock().expect("buffer lock");
+        assert!(
+            buffer_guard
+                .contains_sig(&conflict_sig)
+                .expect("buffer.contains_sig"),
+            "recovered sig must remain buffered until its replay is finalized-won"
+        );
+    }
+
+    let body_deploy_sigs: std::collections::HashSet<Bytes> = recovery_block
+        .body
+        .deploys
+        .iter()
+        .map(|pd| pd.deploy.sig.clone())
+        .collect();
+    let overlapping_rejected_sigs: Vec<Bytes> = recovery_block
+        .body
+        .rejected_deploys
+        .iter()
+        .filter_map(|rd| body_deploy_sigs.contains(&rd.sig).then_some(rd.sig.clone()))
+        .collect();
+    assert!(
+        overlapping_rejected_sigs.is_empty(),
+        "recovery_block must not list accepted deploy signatures as rejected; overlaps={:?}",
+        overlapping_rejected_sigs
+            .iter()
+            .map(hex::encode)
+            .collect::<Vec<_>>()
+    );
+
+    {
+        let (a, b) = nodes.split_at_mut(1);
+        b[0].sync_with_one(&mut a[0])
+            .await
+            .expect("sync recovery_block 0 -> 1");
+    }
+    assert!(
+        nodes[1].contains(&recovery_block.block_hash),
+        "validator 1 must validate the recovery block with filtered rejected_deploys"
     );
 
     // The surviving sig must remain reachable in the canonical view via
@@ -401,6 +445,40 @@ async fn recovery_cycle_rejected_deploy_is_buffered_and_re_proposed() {
          the deploy index",
         hex::encode(&surviving_sig)
     );
+
+    // Terminal purge: once the replay block is finalized, the next proposal's
+    // buffer scan sees the sig finalized-won and drops the buffer entry.
+    nodes[0]
+        .block_dag_storage
+        .record_directly_finalized(recovery_block.block_hash.clone(), 1.0, |_| async { Ok(()) })
+        .await
+        .expect("mark recovery_block finalized for terminal purge");
+    let marker_deploy_3 = {
+        tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
+        construct_deploy::basic_deploy_data(2, None, Some(shard_id.clone()))
+            .expect("build marker_deploy_3")
+    };
+    let post_finality_block = nodes[0]
+        .add_block_from_deploys(std::slice::from_ref(&marker_deploy_3))
+        .await
+        .expect("validator 0 proposes post-finality block");
+    assert!(
+        !post_finality_block
+            .body
+            .deploys
+            .iter()
+            .any(|pd| pd.deploy.sig == conflict_sig),
+        "a finalized-won sig must not be replayed again"
+    );
+    {
+        let buffer_guard = nodes[0].rejected_deploy_buffer.lock().expect("buffer lock");
+        assert!(
+            !buffer_guard
+                .contains_sig(&conflict_sig)
+                .expect("buffer.contains_sig"),
+            "finalized-won recovered sig must be purged from the rejected-deploy buffer"
+        );
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -447,6 +525,7 @@ async fn three_validator_same_payer_merge_keeps_purses_single_valued_and_live() 
     let sibling_blocks = vec![block_0, block_1, block_2];
 
     for (source, block) in sibling_blocks.iter().enumerate() {
+        #[allow(clippy::needless_range_loop)]
         for target in 0..3 {
             if source != target {
                 nodes[target]
@@ -479,8 +558,7 @@ async fn three_validator_same_payer_merge_keeps_purses_single_valued_and_live() 
             merge_block
                 .header
                 .parents_hash_list
-                .iter()
-                .any(|parent| *parent == block.block_hash),
+                .contains(&block.block_hash),
             "merge block must include sibling {}",
             hex::encode(&block.block_hash)
         );
@@ -494,7 +572,7 @@ async fn three_validator_same_payer_merge_keeps_purses_single_valued_and_live() 
         .collect();
     let conflicting_rejections = deploys
         .iter()
-        .filter(|deploy| rejected_sigs.iter().any(|sig| *sig == deploy.sig))
+        .filter(|deploy| rejected_sigs.contains(&deploy.sig))
         .count();
     assert_eq!(
         conflicting_rejections,
@@ -511,6 +589,7 @@ async fn three_validator_same_payer_merge_keeps_purses_single_valued_and_live() 
         &observed_blocks,
     );
 
+    #[allow(clippy::needless_range_loop)]
     for target in 1..3 {
         nodes[target]
             .process_block(merge_block.clone())
@@ -541,6 +620,7 @@ async fn three_validator_same_payer_merge_keeps_purses_single_valued_and_live() 
             &block.body.state.post_state_hash,
             &observed_blocks,
         );
+        #[allow(clippy::needless_range_loop)]
         for target in 0..3 {
             if target != proposer {
                 nodes[target]

@@ -171,7 +171,7 @@ impl TestNode {
             None, // dummy_deploy_opt
             self.deploy_storage.clone(),
             self.rejected_deploy_buffer.clone(),
-            &mut self.runtime_manager.clone(),
+            &self.runtime_manager.clone(),
             &mut self.block_store.clone(),
             false,
         )
@@ -723,7 +723,7 @@ impl TestNode {
 
             async move {
                 // Clone the block_store (cheap since it's Arc-based) to get a mutable reference
-                let mut block_store = casper.block_store.clone();
+                let block_store = casper.block_store.clone();
                 GraphzGenerator::dag_as_cluster(
                     topo_sort,
                     lfb,
@@ -731,7 +731,7 @@ impl TestNode {
                         show_justification_lines: true,
                     },
                     serializer.clone(),
-                    &mut block_store,
+                    &block_store,
                 )
                 .await
                 .map(|_| ())?;
@@ -860,7 +860,7 @@ impl TestNode {
             > { Box::pin(async move { Ok(()) }) },
         );
 
-        let _ = self.tls.handle_receive(dispatch, handle_streamed).await?;
+        drop(self.tls.handle_receive(dispatch, handle_streamed).await?);
 
         Ok(())
     }
@@ -1075,8 +1075,8 @@ impl TestNode {
             Some(ValidatorIdentity::new(&sk))
         };
 
-        let proposer_opt = match validator_id_opt {
-            Some(ref vi) => Some(new_proposer(
+        let proposer_opt = validator_id_opt.as_ref().map(|vi| {
+            new_proposer(
                 vi.clone(),
                 None,
                 runtime_manager.clone(),
@@ -1089,9 +1089,8 @@ impl TestNode {
                 rp_conf.clone(),
                 event_publisher.clone(),
                 false, // allow_empty_blocks
-            )),
-            None => None,
-        };
+            )
+        });
 
         let bp_dependencies = BlockProcessorDependencies::new(
             block_store.clone(),
@@ -1176,7 +1175,13 @@ impl TestNode {
             finalizer_task_queued: Arc::new(AtomicBool::new(false)),
             heartbeat_signal_ref: crate::rust::heartbeat_signal::new_heartbeat_signal_ref(),
             deploys_in_scope_cache: Arc::new(parking_lot::Mutex::new(
-                None::<(u64, BlockHash, Arc<DashSet<Bytes>>, Arc<DashSet<Bytes>>)>,
+                None::<(
+                    u64,
+                    BlockHash,
+                    Vec<BlockHash>,
+                    Arc<DashSet<Bytes>>,
+                    Arc<DashSet<Bytes>>,
+                )>,
             )),
             active_validators_cache: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         };

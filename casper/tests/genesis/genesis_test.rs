@@ -27,12 +27,11 @@ use casper::rust::genesis::contracts::proof_of_stake::ProofOfStake;
 use casper::rust::genesis::contracts::validator::Validator;
 use casper::rust::genesis::genesis::Genesis;
 use casper::rust::util::bonds_parser::BondsParser;
-use casper::rust::util::proto_util;
 use casper::rust::util::rholang::interpreter_util;
 use casper::rust::util::rholang::runtime_manager::RuntimeManager;
 use casper::rust::util::rholang::tools::Tools;
 use casper::rust::util::vault_parser::VaultParser;
-use casper::rust::util::{construct_deploy, rspace_util};
+use casper::rust::util::{construct_deploy, proto_util, rspace_util};
 use comm::rust::test_instances::{LogStub, LogicalTime};
 use crypto::rust::signatures::secp256k1::Secp256k1;
 use crypto::rust::signatures::signatures_alg::SignaturesAlg;
@@ -44,7 +43,7 @@ use tempfile::TempDir;
 
 use crate::helper::block_dag_storage_fixture::with_storage;
 use crate::helper::test_node::TestNode;
-use crate::util::genesis_builder::{DEFAULT_POS_MULTI_SIG_PUBLIC_KEYS, GenesisBuilder};
+use crate::util::genesis_builder::{GenesisBuilder, DEFAULT_POS_MULTI_SIG_PUBLIC_KEYS};
 use crate::util::rholang::resources;
 use crate::util::rholang::resources::generate_scope_id;
 
@@ -413,7 +412,7 @@ async fn genesis_from_input_files_should_create_a_valid_genesis_block() {
                     &genesis,
                     &block_store,
                     &mut mk_casper_snapshot(dag),
-                    &mut runtime_manager,
+                    &runtime_manager,
                     None,
                 )
                 .await
@@ -533,7 +532,7 @@ async fn rev_vault_balance(node: &mut TestNode, shard_id: &str, rev_address: &st
     .expect("Failed to build balance-query deploy");
 
     let block = node
-        .add_block_from_deploys(&[deploy.clone()])
+        .add_block_from_deploys(std::slice::from_ref(&deploy))
         .await
         .expect("Failed to add balance-query block");
 
@@ -601,11 +600,7 @@ async fn genesis_from_input_files_should_parse_the_wallets_file_and_create_corre
     genesis_params.vaults.extend(parsed_vaults.clone());
 
     let genesis_context = GenesisBuilder::new()
-        .build_genesis_with_parameters(Some((
-            validator_key_pairs,
-            genesis_vaults,
-            genesis_params,
-        )))
+        .build_genesis_with_parameters(Some((validator_key_pairs, genesis_vaults, genesis_params)))
         .await
         .expect("Failed to build genesis from parsed wallets");
 

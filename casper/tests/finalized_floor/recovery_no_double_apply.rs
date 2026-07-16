@@ -26,10 +26,9 @@
 
 use std::collections::HashSet;
 
-use prost::bytes::Bytes;
-
 use casper::rust::util::construct_deploy;
 use casper::rust::util::rholang::interpreter_util::canonical_won_sigs;
+use prost::bytes::Bytes;
 
 use crate::helper::block_dag_storage_fixture::with_storage;
 use crate::helper::block_generator::{create_block, create_genesis_block};

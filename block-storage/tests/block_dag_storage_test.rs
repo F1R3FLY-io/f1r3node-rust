@@ -64,22 +64,24 @@ fn proptest_config() -> ProptestConfig {
 
 static RUNTIME: Lazy<Runtime> = Lazy::new(|| Runtime::new().unwrap());
 
-type LookupResult = (
-    Vec<(
-        Option<BlockMetadata>,
-        Option<BlockHash>,
-        Option<BlockMetadata>,
-        Option<imbl::HashSet<BlockHash>>,
-        bool,
-    )>,
-    imbl::HashMap<Validator, BlockHash>,
-    HashMap<Validator, BlockMetadata>,
-    Vec<Vec<BlockHash>>,
-    i64,
-);
+struct BlockLookup {
+    block_metadata: Option<BlockMetadata>,
+    latest_message_hash: Option<BlockHash>,
+    latest_message: Option<BlockMetadata>,
+    children: Option<imbl::HashSet<BlockHash>>,
+    contains: bool,
+}
+
+struct LookupResult {
+    list: Vec<BlockLookup>,
+    latest_message_hashes: imbl::HashMap<Validator, BlockHash>,
+    latest_messages: HashMap<Validator, BlockMetadata>,
+    topo_sort: Vec<Vec<BlockHash>>,
+    latest_block_number: i64,
+}
 
 fn lookup_elements(
-    block_elements: &Vec<BlockMessage>,
+    block_elements: &[BlockMessage],
     dag_storage: &BlockDagKeyValueStorage,
     topo_sort_start_block_number: Option<i64>,
 ) -> LookupResult {
@@ -87,13 +89,7 @@ fn lookup_elements(
     let dag = dag_storage
         .get_representation()
         .expect("dag representation");
-    let list: Vec<(
-        Option<BlockMetadata>,
-        Option<BlockHash>,
-        Option<BlockMetadata>,
-        Option<imbl::HashSet<BlockHash>>,
-        bool,
-    )> = block_elements
+    let list: Vec<BlockLookup> = block_elements
         .iter()
         .map(|block_element| {
             let block_metadata = dag.lookup(&block_element.block_hash).unwrap();
@@ -101,13 +97,13 @@ fn lookup_elements(
             let latest_message = dag.latest_message(&block_element.sender).unwrap();
             let children = dag.children(&block_element.block_hash);
             let contains = dag.contains(&block_element.block_hash);
-            (
+            BlockLookup {
                 block_metadata,
                 latest_message_hash,
                 latest_message,
                 children,
                 contains,
-            )
+            }
         })
         .collect();
 
@@ -115,22 +111,27 @@ fn lookup_elements(
     let latest_messages = dag.latest_messages().unwrap();
     let topo_sort = dag.topo_sort(topo_sort_start_block_number, None).unwrap();
     let latest_block_number = dag.latest_block_number();
-    (
+    LookupResult {
         list,
         latest_message_hashes,
         latest_messages,
         topo_sort,
         latest_block_number,
-    )
+    }
 }
 
 fn test_lookup_elements_result(
     lookup_result: &LookupResult,
-    block_elements: &Vec<BlockMessage>,
+    block_elements: &[BlockMessage],
     genesis: &BlockMessage,
 ) {
-    let (list, latest_message_hashes, latest_messages, topo_sort, latest_block_number) =
-        lookup_result;
+    let LookupResult {
+        list,
+        latest_message_hashes,
+        latest_messages,
+        topo_sort,
+        latest_block_number,
+    } = lookup_result;
 
     let real_latest_messages =
         block_elements
@@ -139,20 +140,25 @@ fn test_lookup_elements_result(
                 if !block_element.sender.is_empty() {
                     acc.insert(
                         block_element.sender.clone(),
-                        BlockMetadata::from_block(&block_element, false, None, None),
+                        BlockMetadata::from_block(block_element, false, None, None),
                     );
                 }
                 acc
             });
 
-    list.iter().zip(block_elements.iter()).for_each(
-        |(
-            (block_metadata, latest_message_hash, latest_message, children, contains),
-            block_element,
-        )| {
+    list.iter()
+        .zip(block_elements.iter())
+        .for_each(|(block_lookup, block_element)| {
+            let BlockLookup {
+                block_metadata,
+                latest_message_hash,
+                latest_message,
+                children,
+                contains,
+            } = block_lookup;
             assert_eq!(
                 *block_metadata,
-                Some(BlockMetadata::from_block(&block_element, false, None, None))
+                Some(BlockMetadata::from_block(block_element, false, None, None))
             );
 
             assert_eq!(
@@ -164,9 +170,7 @@ fn test_lookup_elements_result(
 
             assert_eq!(
                 *latest_message,
-                real_latest_messages
-                    .get(&block_element.sender)
-                    .map(|metadata| metadata.clone())
+                real_latest_messages.get(&block_element.sender).cloned()
             );
 
             let children_set = children.as_ref().map(|dash_set| {
@@ -188,9 +192,8 @@ fn test_lookup_elements_result(
                 .collect();
 
             assert_eq!(children_set, Some(expected_children));
-            assert_eq!(*contains, true);
-        },
-    );
+            assert!(*contains);
+        });
 
     let filtered_latest_message_hashes: HashMap<_, _> = latest_message_hashes
         .iter()
@@ -320,7 +323,7 @@ fn is_dag_ancestor_matches_reflexive_transitive_closure_over_parents() {
         let mut seen: std::collections::HashSet<prost::bytes::Bytes> = std::collections::HashSet::new();
         while let Some(cur) = stack.pop() {
           if !seen.insert(cur.clone()) { continue; }
-          if &cur == anc { return true; }
+          if cur == *anc { return true; }
           if let Some(ps) = parents.get(&cur) { for p in ps { stack.push(p.clone()); } }
         }
         false
@@ -349,7 +352,7 @@ fn dag_storage_should_be_able_to_handle_checking_if_contains_a_block_with_empty_
         .get_representation()
         .expect("dag representation");
     let contains = dag.contains(&prost::bytes::Bytes::new());
-    assert_eq!(contains, false);
+    assert!(!contains);
 }
 
 #[test]
@@ -494,7 +497,7 @@ fn dag_storage_should_be_able_to_restore_invalid_blocks_on_startup() {
 
       let dag = dag_storage.get_representation().expect("dag representation");
       let invalid_blocks = dag.invalid_blocks();
-      let invalid_blocks_set: HashSet<_> = invalid_blocks.iter().map(|item| item.clone()).collect();
+      let invalid_blocks_set: HashSet<_> = invalid_blocks.iter().cloned().collect();
       assert_eq!(invalid_blocks_set, block_elements.into_iter().map(|b| BlockMetadata::from_block(&b, true, None, None)).collect::<HashSet<_>>());
     });
 }
@@ -715,23 +718,20 @@ async fn recording_of_new_directly_finalized_block_should_record_finalized_all_n
         )
         .unwrap();
 
-    assert_eq!(
-        dag.lookup_unsafe(&genesis.block_hash).unwrap().finalized,
-        true
-    );
-    assert_eq!(dag.is_finalized(&genesis.block_hash), true);
+    assert!(dag.lookup_unsafe(&genesis.block_hash).unwrap().finalized);
+    assert!(dag.is_finalized(&genesis.block_hash));
 
-    assert_eq!(dag.lookup_unsafe(&b1.block_hash).unwrap().finalized, false);
-    assert_eq!(dag.is_finalized(&b1.block_hash), false);
+    assert!(!dag.lookup_unsafe(&b1.block_hash).unwrap().finalized);
+    assert!(!dag.is_finalized(&b1.block_hash));
 
-    assert_eq!(dag.lookup_unsafe(&b2.block_hash).unwrap().finalized, false);
-    assert_eq!(dag.is_finalized(&b2.block_hash), false);
+    assert!(!dag.lookup_unsafe(&b2.block_hash).unwrap().finalized);
+    assert!(!dag.is_finalized(&b2.block_hash));
 
-    assert_eq!(dag.lookup_unsafe(&b3.block_hash).unwrap().finalized, false);
-    assert_eq!(dag.is_finalized(&b3.block_hash), false);
+    assert!(!dag.lookup_unsafe(&b3.block_hash).unwrap().finalized);
+    assert!(!dag.is_finalized(&b3.block_hash));
 
-    assert_eq!(dag.lookup_unsafe(&b4.block_hash).unwrap().finalized, false);
-    assert_eq!(dag.is_finalized(&b4.block_hash), false);
+    assert!(!dag.lookup_unsafe(&b4.block_hash).unwrap().finalized);
+    assert!(!dag.is_finalized(&b4.block_hash));
 
     let effects = std::sync::Arc::new(std::sync::Mutex::new(HashSet::new()));
     let effects_clone = effects.clone();
@@ -756,26 +756,26 @@ async fn recording_of_new_directly_finalized_block_should_record_finalized_all_n
         .get_representation()
         .expect("dag representation");
     assert_eq!(dag.last_finalized_block(), b3.block_hash);
-    assert_eq!(dag.is_finalized(&b1.block_hash), true);
-    assert_eq!(dag.is_finalized(&b2.block_hash), true);
-    assert_eq!(dag.is_finalized(&b3.block_hash), true);
-    assert_eq!(dag.is_finalized(&b4.block_hash), false);
+    assert!(dag.is_finalized(&b1.block_hash));
+    assert!(dag.is_finalized(&b2.block_hash));
+    assert!(dag.is_finalized(&b3.block_hash));
+    assert!(!dag.is_finalized(&b4.block_hash));
 
     let b1_meta = dag.lookup_unsafe(&b1.block_hash).unwrap();
-    assert_eq!(b1_meta.finalized, true);
-    assert_eq!(b1_meta.directly_finalized, false);
+    assert!(b1_meta.finalized);
+    assert!(!b1_meta.directly_finalized);
 
     let b2_meta = dag.lookup_unsafe(&b2.block_hash).unwrap();
-    assert_eq!(b2_meta.finalized, true);
-    assert_eq!(b2_meta.directly_finalized, false);
+    assert!(b2_meta.finalized);
+    assert!(!b2_meta.directly_finalized);
 
     let b3_meta = dag.lookup_unsafe(&b3.block_hash).unwrap();
-    assert_eq!(b3_meta.finalized, true);
-    assert_eq!(b3_meta.directly_finalized, true);
+    assert!(b3_meta.finalized);
+    assert!(b3_meta.directly_finalized);
 
     let b4_meta = dag.lookup_unsafe(&b4.block_hash).unwrap();
-    assert_eq!(b4_meta.finalized, false);
-    assert_eq!(b4_meta.directly_finalized, false);
+    assert!(!b4_meta.finalized);
+    assert!(!b4_meta.directly_finalized);
 
     // Check that all finalized blocks were captured in the effects
     let finalized_effects = effects.lock().unwrap();

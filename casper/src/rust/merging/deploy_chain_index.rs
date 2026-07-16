@@ -303,13 +303,30 @@ mod tests {
     fn distinct_chains_tying_on_all_four_policy_keys_still_order_deterministically() {
         let a = mk_index(&[(1, 5), (3, 5)], 7);
         let b = mk_index(&[(1, 5), (4, 5)], 7);
-        assert_ne!(a, b, "the two chains are genuinely distinct (different deploys)");
+        assert_ne!(
+            a, b,
+            "the two chains are genuinely distinct (different deploys)"
+        );
         assert_ne!(
             a.cmp(&b),
             std::cmp::Ordering::Equal,
             "distinct chains must never tie under cmp (else min_by/sort is HashSet-order-dependent => fork)"
         );
-        assert_eq!(a.cmp(&b), b.cmp(&a).reverse(), "cmp must be antisymmetric on the tie");
+        assert_eq!(
+            a.cmp(&b),
+            b.cmp(&a).reverse(),
+            "cmp must be antisymmetric on the tie"
+        );
+    }
+
+    #[test]
+    fn distinct_chains_tying_on_policy_keys_still_order_deterministically() {
+        let a = mk_index(&[(1, 10), (2, 10)], 0x01);
+        let b = mk_index(&[(1, 10), (3, 10)], 0x01);
+
+        assert_ne!(a, b);
+        assert_ne!(a.cmp(&b), std::cmp::Ordering::Equal);
+        assert_eq!(a.cmp(&b), b.cmp(&a).reverse());
     }
 
     proptest! {

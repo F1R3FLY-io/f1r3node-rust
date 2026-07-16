@@ -254,21 +254,18 @@ async fn should_return_false_for_children_uncles_and_cousins_of_last_finalized_b
 
     let engine_cell = create_engine_cell(&nodes[0]).await;
 
-    assert_eq!(
-        is_finalized(&b4, &engine_cell).await,
-        false,
+    assert!(
+        !is_finalized(&b4, &engine_cell).await,
         "b4 (child of b3) should not be finalized"
     );
 
-    assert_eq!(
-        is_finalized(&b6, &engine_cell).await,
-        false,
+    assert!(
+        !is_finalized(&b6, &engine_cell).await,
         "b6 (uncle of b3) should not be finalized"
     );
 
-    assert_eq!(
-        is_finalized(&b7, &engine_cell).await,
-        false,
+    assert!(
+        !is_finalized(&b7, &engine_cell).await,
         "b7 (cousin of b3) should not be finalized"
     );
 }

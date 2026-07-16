@@ -581,14 +581,42 @@ impl CliqueOracle {
             latest_messages,
         )
         .await?;
-        Ok(ft_decides_exact(
+        let decision = ft_decides_exact(
             agreeing,
             max_clique_weight,
             total_stake,
             ftt.num,
             ftt.den,
             strict,
-        ))
+        );
+        if tracing::enabled!(target: "f1r3.trace.oracle", tracing::Level::DEBUG) {
+            let snapshot: Vec<String> = latest_messages
+                .iter()
+                .map(|(v, m)| {
+                    format!(
+                        "{}=>{}",
+                        hex::encode(&v[..4.min(v.len())]),
+                        hex::encode(&m[..8.min(m.len())])
+                    )
+                })
+                .collect();
+            let agreeing_validators: Vec<String> = agreeing_weight_map
+                .iter()
+                .map(|(v, w)| format!("{}:{}", hex::encode(&v[..4.min(v.len())]), w))
+                .collect();
+            tracing::debug!(
+                target: "f1r3.trace.oracle",
+                tgt = %hex::encode(&target_msg[..8.min(target_msg.len())]),
+                agreeing,
+                max_clique_weight,
+                total_stake,
+                decision,
+                snapshot = ?snapshot,
+                agreeing_validators = ?agreeing_validators,
+                "ft_witnessed_exact verdict"
+            );
+        }
+        Ok(decision)
     }
 
     /// Finalizer decision + display value in one clique pass. Computes the max
@@ -810,8 +838,14 @@ mod ft_decides_exact_tests {
         let num = -1_000_000; // θ = -1.0
         let s = 10i64;
         let agreeing = 10i64; // 2·10 > 10 ⇒ gate passes
-        assert!(ft_decides_exact(agreeing, 1, s, num, den, true), "q=1>0 finalizes");
-        assert!(!ft_decides_exact(agreeing, 0, s, num, den, true), "q=0 does not");
+        assert!(
+            ft_decides_exact(agreeing, 1, s, num, den, true),
+            "q=1>0 finalizes"
+        );
+        assert!(
+            !ft_decides_exact(agreeing, 0, s, num, den, true),
+            "q=0 does not"
+        );
     }
 
     #[test]

@@ -31,7 +31,7 @@ async fn uc_112_detector_pass_retains_seed_and_never_stamps_unbonded() {
     );
     fixture.add_block(&old_detector);
     // Record for the offender validators[0], pre-seeded with one detected hash.
-    fixture.add_record(0, 0, &[old_detector.block_hash.clone()]);
+    fixture.add_record(0, 0, std::slice::from_ref(&old_detector.block_hash));
 
     // The validating block bonds validators[1..] — i.e. the offender
     // validators[0] is UNBONDED (absent from the bond map).

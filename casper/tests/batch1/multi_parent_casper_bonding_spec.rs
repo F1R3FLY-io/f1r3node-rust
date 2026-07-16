@@ -61,8 +61,10 @@ async fn multi_parent_casper_should_allow_bonding() {
         DEFAULT_VALIDATOR_KEY_PAIRS[2].clone(),
         (DEFAULT_SEC.clone(), DEFAULT_PUB.clone()),
     ];
-    let validator_pks: Vec<PublicKey> =
-        validator_key_pairs.iter().map(|(_, pk)| pk.clone()).collect();
+    let validator_pks: Vec<PublicKey> = validator_key_pairs
+        .iter()
+        .map(|(_, pk)| pk.clone())
+        .collect();
     let bonds: HashMap<PublicKey, i64> = validator_pks
         .iter()
         .take(3)
@@ -88,8 +90,8 @@ async fn multi_parent_casper_should_allow_bonding() {
     );
 
     // n4 signs a bond deploy; a bonded validator (node 0) carries it into a block.
-    let bond_deploy =
-        bonding_util::bonding_deploy(1000, &DEFAULT_SEC, Some(shard_id.clone())).expect("bond deploy");
+    let bond_deploy = bonding_util::bonding_deploy(1000, &DEFAULT_SEC, Some(shard_id.clone()))
+        .expect("bond deploy");
     let _b1 = TestNode::propagate_block_at_index(&mut nodes, 0, &[bond_deploy])
         .await
         .expect("propagate the bond block");

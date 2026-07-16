@@ -178,7 +178,7 @@ fn compute_parents_post_state_should_not_depend_on_local_finalized_set() {
 async fn run_compute_parents_post_state_finalized_skew_regression() {
     let secp = Secp256k1;
     let (_validator_sk, validator_pk) = secp.new_key_pair();
-    let validator: Bytes = validator_pk.bytes.clone().into();
+    let validator: Bytes = validator_pk.bytes.clone();
     let shard_name = "test-shard".to_string();
 
     let mut kvm = InMemoryStoreManager::new();
@@ -233,7 +233,7 @@ async fn run_compute_parents_post_state_finalized_skew_regression() {
         native_token_decimals: 8,
     };
 
-    let genesis_block = Genesis::create_genesis_block(&mut runtime_manager, &genesis)
+    let genesis_block = Genesis::create_genesis_block(&runtime_manager, &genesis)
         .await
         .expect("Failed to create genesis block");
     block_store
@@ -321,7 +321,7 @@ async fn run_compute_parents_post_state_finalized_skew_regression() {
     );
     snapshot_without_skew.dag.last_finalized_block_hash = genesis_block.block_hash.clone();
 
-    let latest_messages_without: std::collections::BTreeMap<_, _> = snapshot_without_skew
+    let latest_messages_without_skew: std::collections::BTreeMap<_, _> = snapshot_without_skew
         .justifications
         .iter()
         .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
@@ -332,7 +332,7 @@ async fn run_compute_parents_post_state_finalized_skew_regression() {
             parents.clone(),
             &snapshot_without_skew,
             &runtime_manager,
-            &latest_messages_without,
+            &latest_messages_without_skew,
             None,
             None,
         )
@@ -356,7 +356,7 @@ async fn run_compute_parents_post_state_finalized_skew_regression() {
         .finalized_blocks_set
         .insert(b1.block_hash.clone());
 
-    let latest_messages_with: std::collections::BTreeMap<_, _> = snapshot_with_skew
+    let latest_messages_with_skew: std::collections::BTreeMap<_, _> = snapshot_with_skew
         .justifications
         .iter()
         .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
@@ -366,7 +366,7 @@ async fn run_compute_parents_post_state_finalized_skew_regression() {
         parents,
         &snapshot_with_skew,
         &runtime_manager,
-        &latest_messages_with,
+        &latest_messages_with_skew,
         None,
         None,
     )
@@ -384,7 +384,7 @@ async fn run_compute_parents_post_state_finalized_skew_regression() {
 }
 
 #[test]
-fn compute_parents_post_state_should_fail_when_required_mergeable_is_missing() {
+fn compute_parents_post_state_should_reconstruct_required_mergeable_when_missing() {
     let stack_bytes = std::env::var("F1R3_COMPUTE_PARENTS_REGRESSION_STACK_BYTES")
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
@@ -410,7 +410,7 @@ fn compute_parents_post_state_should_fail_when_required_mergeable_is_missing() {
 async fn run_compute_parents_post_state_missing_mergeable_regression() {
     let secp = Secp256k1;
     let (_validator_sk, validator_pk) = secp.new_key_pair();
-    let validator: Bytes = validator_pk.bytes.clone().into();
+    let validator: Bytes = validator_pk.bytes.clone();
     let shard_name = "test-shard".to_string();
 
     let mut kvm = InMemoryStoreManager::new();
@@ -465,7 +465,7 @@ async fn run_compute_parents_post_state_missing_mergeable_regression() {
         native_token_decimals: 8,
     };
 
-    let genesis_block = Genesis::create_genesis_block(&mut runtime_manager, &genesis)
+    let genesis_block = Genesis::create_genesis_block(&runtime_manager, &genesis)
         .await
         .expect("Failed to create genesis block");
     block_store
@@ -568,11 +568,6 @@ async fn run_compute_parents_post_state_missing_mergeable_regression() {
         .iter()
         .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
         .collect();
-    // Force the merge to consult the store rather than a cached BlockIndex or a
-    // cached parents-post-state, so the recompute-on-demand pre-pass is exercised.
-    runtime_manager.parents_post_state_cache.clear();
-    runtime_manager.block_index_cache.clear();
-
     let result = compute_parents_post_state(
         &block_store,
         vec![b2.clone(), b3],
@@ -584,20 +579,17 @@ async fn run_compute_parents_post_state_missing_mergeable_regression() {
     )
     .await;
 
-    // A missing-but-recomputable mergeable entry must no longer fail the merge:
-    // the pre-pass replays the source block to materialize it (the LFS-imported-
-    // without-replay / locally-rejected recovery path that makes merge validity
-    // node-uniform).
     assert!(
         result.is_ok(),
-        "compute_parents_post_state should recover a missing-but-recomputable \
-         mergeable entry by replaying the source block; got {result:?}"
+        "compute_parents_post_state should reconstruct a missing mergeable entry; got {result:?}"
     );
     assert!(
         runtime_manager
-            .has_mergeable_entry(&b2)
-            .expect("has_mergeable_entry query failed"),
-        "The missing mergeable entry should have been recomputed by the merge pre-pass."
+            .get_mergeable_entry_bytes(&b2)
+            .expect("mergeable entry query failed")
+            .1
+            .is_some(),
+        "the missing mergeable entry should be materialized from its source block"
     );
 }
 
@@ -644,9 +636,9 @@ async fn run_visible_blocks_scope_test() {
     let (_v1_sk, v1_pk) = secp.new_key_pair();
     let (_v2_sk, v2_pk) = secp.new_key_pair();
     let (_v3_sk, v3_pk) = secp.new_key_pair();
-    let v1: Bytes = v1_pk.bytes.clone().into();
-    let v2: Bytes = v2_pk.bytes.clone().into();
-    let v3: Bytes = v3_pk.bytes.clone().into();
+    let v1: Bytes = v1_pk.bytes.clone();
+    let v2: Bytes = v2_pk.bytes.clone();
+    let v3: Bytes = v3_pk.bytes.clone();
 
     let mut kvm = InMemoryStoreManager::new();
     let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
@@ -663,7 +655,7 @@ async fn run_visible_blocks_scope_test() {
     let mergeable_store = RuntimeManager::mergeable_store(&mut kvm)
         .await
         .expect("Failed to create mergeable store");
-    let (mut runtime_manager, _) = RuntimeManager::create_with_history(
+    let (runtime_manager, _) = RuntimeManager::create_with_history(
         rspace_store,
         mergeable_store,
         std::sync::Arc::new(Genesis::default_mergeable_tags()),
@@ -701,7 +693,7 @@ async fn run_visible_blocks_scope_test() {
         native_token_decimals: 8,
     };
 
-    let genesis_block = Genesis::create_genesis_block(&mut runtime_manager, &genesis)
+    let genesis_block = Genesis::create_genesis_block(&runtime_manager, &genesis)
         .await
         .expect("Failed to create genesis block");
     block_store

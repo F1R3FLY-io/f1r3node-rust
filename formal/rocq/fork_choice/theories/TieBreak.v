@@ -34,8 +34,18 @@
    ord / ordb                 | Ordering[Long].reverse then hash asc (list_ops:55)
    sort (insertion)           | ListOps::sort_by_with_decreasing_order (:44)
    output_indep_of_input_perm | node-identical ranked tips (S1 no-fork)
-   sort_argmax_unique         | tips[0] = ghost main parent (snapshot.rs:128-134)
+   sort_argmax_unique         | tips[0] = the GHOST head (snapshot.rs:317-323)
    =========================================================================== *)
+
+(* CAVEAT - tips[0] is the GHOST head, NOT necessarily the block's MAIN PARENT.
+   `snapshot.rs:317-323` takes `tips.into_iter().next()` as `ghost_main_parent` and
+   :325-331 sorts the parents so it comes first, but :332 then runs
+   `prefer_deploy_support_main_parent` (:124-185), which can PROMOTE a
+   deploy-carrying branch to index 0 and override it. The estimator/ranking results
+   in THIS module are unaffected (they are about `tips`, which is what they say);
+   the consumer-side re-ordering is modeled in GuardBridge.v seam (3) - see
+   `main_parent_pipeline_deterministic` and the computable refutation
+   `pipeline_head_may_differ_from_ghost`. *)
 
 From Stdlib Require Import Arith.Arith.
 From Stdlib Require Import Lists.List.

@@ -23,14 +23,23 @@
 //     map, so a branch's score is the total genesis-bonded stake of its supporters —
 //     exactly the oracle below.
 //
-//   * T-MP — `formal/rocq/fork_choice/theories/GuardBridge.v`'s
-//     `main_parent_first_deterministic` (snapshot.rs:128-142): the ghost MAIN parent
-//     is `tips.into_iter().next()` (the head of the ranked tips), and the proposer
-//     orders the parent list so that the ghost main parent sorts first, ties by hash.
-//     `main_parent_is_ghost_head_deterministic` pins that on a fixed distinct-stake
-//     fork: the head is the heaviest branch, stable across every input ordering of the
-//     latest-message map, and the snapshot.rs parent-ordering comparator places it
-//     first. (Previously only transitively covered via the whole-vector example.)
+//   * T-MP (STAGE 1) — `formal/rocq/fork_choice/theories/GuardBridge.v`'s
+//     `ghost_sort_first_deterministic` (snapshot.rs:317-331): the GHOST head is
+//     `tips.into_iter().next()` (the head of the ranked tips, :317-323), and the
+//     proposer sorts the parent list so the ghost head comes first, ties by hash
+//     (:325-331). `main_parent_is_ghost_head_deterministic` pins that on a fixed
+//     distinct-stake fork: the head is the heaviest branch, stable across every input
+//     ordering of the latest-message map, and the snapshot.rs parent-ordering
+//     comparator places it first.
+//
+//     SCOPE CAVEAT — this covers STAGE 1 ONLY. The GHOST head is NOT necessarily the
+//     block's MAIN PARENT: snapshot.rs:332 then runs `prefer_deploy_support_main_parent`
+//     (:124-185), which can PROMOTE a deploy-carrying branch to index 0 and override it
+//     (GuardBridge.v `pipeline_head_may_differ_from_ghost` refutes the old
+//     "main parent = ghost head" bridge by computation). Stage 2 is a private fn, so its
+//     proptests live in-module in snapshot.rs's `mod tests` (`deploy_support_*`). The
+//     ESTIMATOR results asserted here are unaffected — see
+//     docs/theory/fork-choice/fork-choice-verification.md §6.2.
 //
 // LOCAL-ONLY verification (not consensus code). Run under `cargo test -p casper` and
 // gated by scripts/check-fork-choice-ALL.sh via the `fork_choice::` filter.
@@ -117,7 +126,11 @@ async fn build_fork(
     block_store: &mut block_storage::rust::key_value_block_store::KeyValueBlockStore,
     block_dag_storage: &mut block_storage::rust::test::indexed_block_dag_storage::IndexedBlockDagStorage,
     shape: &ForkShape,
-) -> (BlockMessage, Vec<BlockMessage>, HashMap<Validator, BlockHash>) {
+) -> (
+    BlockMessage,
+    Vec<BlockMessage>,
+    HashMap<Validator, BlockHash>,
+) {
     let n = shape.stakes.len();
     let validators: Vec<Validator> = (0..n)
         .map(|i| {
@@ -128,7 +141,10 @@ async fn build_fork(
     let bonds: Vec<Bond> = validators
         .iter()
         .zip(shape.stakes.iter())
-        .map(|(v, stake)| Bond { validator: v.clone(), stake: *stake })
+        .map(|(v, stake)| Bond {
+            validator: v.clone(),
+            stake: *stake,
+        })
         .collect();
 
     let genesis = create_genesis_block(
@@ -238,12 +254,18 @@ proptest! {
     }
 }
 
-/// T-MP (GuardBridge.v `main_parent_first_deterministic`, snapshot.rs:128-142): the
-/// ghost MAIN parent is the head of the ranked tips (`tips.into_iter().next()`), it is
-/// the heaviest branch, it is STABLE across every input ordering of the latest-message
-/// map (S1 determinism at the main-parent granularity), and the snapshot.rs
-/// parent-ordering comparator (`is_main DESC, then hash ASC`) sorts it first. A fixed
-/// distinct-stake fork (30 / 20 / 10) makes the heaviest branch unambiguous.
+/// T-MP STAGE 1 (GuardBridge.v `ghost_sort_first_deterministic`, snapshot.rs:317-331):
+/// the GHOST head is the head of the ranked tips (`tips.into_iter().next()`, :317-323),
+/// it is the heaviest branch, it is STABLE across every input ordering of the
+/// latest-message map (S1 determinism at the main-parent granularity), and the
+/// snapshot.rs parent-ordering comparator (`is_main DESC, then hash ASC`, :325-331)
+/// sorts it first. A fixed distinct-stake fork (30 / 20 / 10) makes the heaviest branch
+/// unambiguous.
+///
+/// STAGE 2 (`prefer_deploy_support_main_parent`, :332 -> :124-185) can still PROMOTE a
+/// deploy-carrying branch over this ghost head, so the value asserted here is the GHOST
+/// HEAD, not necessarily the block's final main parent. Stage 2 is covered by the
+/// `deploy_support_*` proptests in snapshot.rs's in-module `mod tests`.
 #[tokio::test]
 async fn main_parent_is_ghost_head_deterministic() {
     with_storage(|mut block_store, mut block_dag_storage| async move {
@@ -265,9 +287,9 @@ async fn main_parent_is_ghost_head_deterministic() {
         // Deterministic across every ordering of the latest-message map: the ghost main
         // parent (tips[0]) is invariant to HashMap iteration order.
         let entries: Vec<(Validator, BlockHash)> = latest.into_iter().collect();
-        let orders: [[usize; 3]; 6] = [
-            [0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0],
-        ];
+        let orders: [[usize; 3]; 6] = [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [
+            2, 1, 0,
+        ]];
         for order in orders {
             let permuted: HashMap<Validator, BlockHash> =
                 order.iter().map(|&i| entries[i].clone()).collect();
@@ -285,15 +307,22 @@ async fn main_parent_is_ghost_head_deterministic() {
             );
         }
 
-        // snapshot.rs:135-142 parent ordering: place the ghost main parent first, then
-        // by hash — asserted on a deliberately shuffled parent list.
+        // snapshot.rs:325-331 STAGE-1 parent ordering: place the ghost head first, then
+        // by hash — asserted on a deliberately shuffled parent list. (Stage 2, :332 ->
+        // :124-185, can still promote a deploy-carrying branch over this head; see the
+        // `deploy_support_*` proptests in snapshot.rs's in-module `mod tests`.)
         let ghost_main_parent = Some(expected_main.clone());
-        let mut parents: Vec<BlockMessage> =
-            vec![branch_blocks[2].clone(), branch_blocks[0].clone(), branch_blocks[1].clone()];
+        let mut parents: Vec<BlockMessage> = vec![
+            branch_blocks[2].clone(),
+            branch_blocks[0].clone(),
+            branch_blocks[1].clone(),
+        ];
         parents.sort_by(|a, b| {
             let a_main = ghost_main_parent.as_ref() == Some(&a.block_hash);
             let b_main = ghost_main_parent.as_ref() == Some(&b.block_hash);
-            b_main.cmp(&a_main).then_with(|| a.block_hash.cmp(&b.block_hash))
+            b_main
+                .cmp(&a_main)
+                .then_with(|| a.block_hash.cmp(&b.block_hash))
         });
         assert_eq!(
             parents.first().map(|b| b.block_hash.clone()),

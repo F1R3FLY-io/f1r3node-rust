@@ -1,4 +1,5 @@
 // See casper/src/test/scala/coop/rchain/casper/helper/BlockGenerator.scala
+#![allow(clippy::too_many_arguments)]
 
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};

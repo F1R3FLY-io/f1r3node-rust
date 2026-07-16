@@ -306,6 +306,18 @@ if command -v cargo >/dev/null 2>&1; then
   else
     fail "Rust tie-break (shared list_ops) proptests failed (see /tmp/fc_rust_listops.log)"; tail -20 /tmp/fc_rust_listops.log | sed 's/^/      /'
   fi
+  # T-MP (seam 3) discharge lives in `snapshot.rs`'s IN-MODULE `mod tests` — the
+  # `prefer_deploy_support_main_parent` / `better_deploy_branch_score` fns are private, so
+  # the properties cannot be reached from the `mod` integration binary. They therefore run
+  # in the LIB target and need their own invocation: the `--test mod` filter above cannot
+  # see them, which would leave the T-MP proptests ungated (they were, until this line).
+  if cargo test -p casper --lib -- snapshot::tests >/tmp/fc_rust_snapshot.log 2>&1 \
+       && grep -q "test result: ok" /tmp/fc_rust_snapshot.log; then
+    n_sn=$(grep -oE 'result: ok\. [0-9]+ passed' /tmp/fc_rust_snapshot.log | grep -oE '[0-9]+' | head -1)
+    pass "Rust T-MP main-parent proptests (${n_sn:-?} passed: better_deploy_branch_score strict total order; deploy-support promotion is a permutation + argmax invariant under input order; identity when no branch scores)"
+  else
+    fail "Rust T-MP main-parent proptests failed (see /tmp/fc_rust_snapshot.log)"; tail -20 /tmp/fc_rust_snapshot.log | sed 's/^/      /'
+  fi
   # C12 receive-side mirror: Validate::parents enforces the SAME depth horizon on the
   # receiving side that filter_deep_parents applies proposer-side — an honest within-horizon
   # parent accepts, a too-deep parent is InvalidParents, and depth_buffer extends the

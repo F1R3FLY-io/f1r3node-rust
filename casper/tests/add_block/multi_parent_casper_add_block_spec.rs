@@ -91,7 +91,7 @@ async fn multi_parent_casper_should_be_able_to_create_a_chain_of_blocks_from_dif
     .unwrap();
 
     let signed_block2 = node
-        .add_block_from_deploys(&[deploy2.clone()])
+        .add_block_from_deploys(std::slice::from_ref(&deploy2))
         .await
         .unwrap();
 
@@ -666,18 +666,28 @@ async fn multi_parent_casper_should_not_ignore_equivocation_blocks_that_are_requ
             .send(&nodes[1].local, &pkt)
             .await
             .expect("send block1_prime to node 1");
-        nodes[1].handle_receive().await.expect("node 1 receives b1p");
+        nodes[1]
+            .handle_receive()
+            .await
+            .expect("node 1 receives b1p");
         nodes[1].handle_receive().await.expect("node 1 second pass");
     }
     eprintln!(
         "PROBE5b2 n1.contains(b3)={} n1.contains(b1p)={} n1.store(b1p)={}",
         nodes[1].contains(&signed_block3.block_hash),
         nodes[1].contains(&signed_block1_prime.block_hash),
-        nodes[1].block_store.get(&signed_block1_prime.block_hash).unwrap().is_some(),
+        nodes[1]
+            .block_store
+            .get(&signed_block1_prime.block_hash)
+            .unwrap()
+            .is_some(),
     );
 
     for _ in 0..4 {
-        nodes[1].handle_receive().await.expect("node 1 settle passes");
+        nodes[1]
+            .handle_receive()
+            .await
+            .expect("node 1 settle passes");
     }
 
     let signed_block4 = nodes[1]

@@ -672,11 +672,9 @@ async fn clique_oracle_should_identify_no_majority_fork_safe_after_union() {
 #[ignore = "diagnostic: run manually for fast clique-oracle growth feedback"]
 async fn clique_oracle_growth_feedback_loop_stale_justification_chain() {
     with_storage(|mut block_store, mut block_dag_storage| async move {
-        let validators = vec![
-            generate_validator(Some("Growth Validator One")),
+        let validators = [generate_validator(Some("Growth Validator One")),
             generate_validator(Some("Growth Validator Two")),
-            generate_validator(Some("Growth Validator Three")),
-        ];
+            generate_validator(Some("Growth Validator Three"))];
         let bonds: Vec<Bond> = validators
             .iter()
             .map(|validator| Bond {
@@ -703,7 +701,7 @@ async fn clique_oracle_growth_feedback_loop_stale_justification_chain() {
         let creator3 = create_block(&bonds, &genesis, &validators[2]);
 
         let checkpoints = [24usize, 48usize, 96usize];
-        let mut latest_by_validator = vec![genesis.clone(), genesis.clone(), genesis.clone()];
+        let mut latest_by_validator = [genesis.clone(), genesis.clone(), genesis.clone()];
         let mut timing_samples: Vec<(usize, u128, f32)> = Vec::with_capacity(checkpoints.len());
 
         for height in 1..=checkpoints[checkpoints.len() - 1] {

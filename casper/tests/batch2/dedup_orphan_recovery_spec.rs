@@ -61,7 +61,7 @@ async fn dedup_orphan_lands_in_rejected_deploy_buffer() {
     let genesis_hash = genesis_block.block_hash.clone();
     let genesis_state = proto_util::post_state_hash(&genesis_block);
     let genesis_bonds = genesis_block.body.state.bonds.clone();
-    let validator: prost::bytes::Bytes = genesis_context.validator_pks()[0].bytes.clone().into();
+    let validator: prost::bytes::Bytes = genesis_context.validator_pks()[0].bytes.clone();
     let shard_name = genesis_block.shard_id.clone();
 
     let mut kvm = mk_test_rnode_store_manager_from_genesis(&genesis_context);
@@ -69,7 +69,7 @@ async fn dedup_orphan_lands_in_rejected_deploy_buffer() {
     let mergeable_store = mergeable_store_from_dyn(&mut *kvm)
         .await
         .expect("mergeable store");
-    let (mut rm, _) = RuntimeManager::create_with_history(
+    let (rm, _) = RuntimeManager::create_with_history(
         rspace_store,
         mergeable_store,
         std::sync::Arc::new(Genesis::default_mergeable_tags()),
@@ -223,7 +223,7 @@ for(@_v <- @"dedup-orphan-shared") { Nil }
             .collect(),
         Vec::<SystemDeployEnum>::new(),
         &mk_snapshot(&genesis_hash),
-        &mut rm,
+        &rm,
         BlockData::from_block(&block_a_raw),
         HashMap::new(),
         None,
@@ -277,7 +277,7 @@ for(@_v <- @"dedup-orphan-shared") { Nil }
             .collect(),
         Vec::<SystemDeployEnum>::new(),
         &mk_snapshot(&genesis_hash),
-        &mut rm,
+        &rm,
         BlockData::from_block(&block_b_raw),
         HashMap::new(),
         None,

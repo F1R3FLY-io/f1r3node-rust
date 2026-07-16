@@ -38,10 +38,9 @@ fn assert_spatial_match(
     let spatial_match_result = spatial_matcher.spatial_match(target, pattern);
     let result = spatial_matcher.free_map;
 
-    if spatial_match_result.is_some() && expected_captures.is_some() {
-        assert_eq!(result, expected_captures.unwrap());
-    } else {
-        assert_eq!(None, expected_captures);
+    match (spatial_match_result.is_some(), expected_captures) {
+        (true, Some(expected)) => assert_eq!(result, expected),
+        (_, expected) => assert_eq!(None, expected),
     }
 
     Ok(())

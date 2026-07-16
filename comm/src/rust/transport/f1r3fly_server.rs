@@ -332,7 +332,7 @@ mod tests {
         assert!(server.is_ok());
         let server = server.unwrap();
         assert_eq!(server.bind_addr, bind_addr);
-        assert_eq!(server.tcp_nodelay, true);
+        assert!(server.tcp_nodelay);
         assert_eq!(server.tcp_keepalive, Some(Duration::from_secs(600)));
     }
 
@@ -357,7 +357,7 @@ mod tests {
                 .http2_keepalive_timeout(Some(Duration::from_secs(10)));
 
         assert_eq!(server.tcp_keepalive, Some(Duration::from_secs(300)));
-        assert_eq!(server.tcp_nodelay, false);
+        assert!(!server.tcp_nodelay);
         assert_eq!(
             server.http2_keepalive_interval,
             Some(Duration::from_secs(60))

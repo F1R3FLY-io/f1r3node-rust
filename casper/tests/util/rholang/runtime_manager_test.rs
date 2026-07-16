@@ -295,12 +295,12 @@ async fn pre_charge_deploy_should_reduce_user_account_balance_by_correct_amount(
                 &mut PreChargeDeploy {
                     charge_amount: 9000000,
                     pk: user_pk.clone(),
-                    rand: Blake2b512Random::create_from_bytes(&vec![0]),
+                    rand: Blake2b512Random::create_from_bytes(&[0]),
                 },
                 &mut PreChargeDeploy {
                     charge_amount: 9000000,
                     pk: user_pk.clone(),
-                    rand: Blake2b512Random::create_from_bytes(&vec![0]),
+                    rand: Blake2b512Random::create_from_bytes(&[0]),
                 },
                 |_| true,
             )
@@ -313,11 +313,11 @@ async fn pre_charge_deploy_should_reduce_user_account_balance_by_correct_amount(
                 &state_hash_0,
                 &mut CheckBalance {
                     pk: user_pk.clone(),
-                    rand: Blake2b512Random::create_from_bytes(&vec![1]),
+                    rand: Blake2b512Random::create_from_bytes(&[1]),
                 },
                 &mut CheckBalance {
                     pk: user_pk.clone(),
-                    rand: Blake2b512Random::create_from_bytes(&vec![1]),
+                    rand: Blake2b512Random::create_from_bytes(&[1]),
                 },
                 |result| *result == 0,
             )
@@ -330,11 +330,11 @@ async fn pre_charge_deploy_should_reduce_user_account_balance_by_correct_amount(
                 &state_hash_1,
                 &mut RefundDeploy {
                     refund_amount: 9000000,
-                    rand: Blake2b512Random::create_from_bytes(&vec![2]),
+                    rand: Blake2b512Random::create_from_bytes(&[2]),
                 },
                 &mut RefundDeploy {
                     refund_amount: 9000000,
-                    rand: Blake2b512Random::create_from_bytes(&vec![2]),
+                    rand: Blake2b512Random::create_from_bytes(&[2]),
                 },
                 |_| true,
             )
@@ -347,11 +347,11 @@ async fn pre_charge_deploy_should_reduce_user_account_balance_by_correct_amount(
                 &state_hash_2,
                 &mut CheckBalance {
                     pk: user_pk.clone(),
-                    rand: Blake2b512Random::create_from_bytes(&vec![3]),
+                    rand: Blake2b512Random::create_from_bytes(&[3]),
                 },
                 &mut CheckBalance {
                     pk: user_pk,
-                    rand: Blake2b512Random::create_from_bytes(&vec![3]),
+                    rand: Blake2b512Random::create_from_bytes(&[3]),
                 },
                 |result| *result == 9000000,
             )
@@ -372,10 +372,10 @@ async fn close_block_should_make_epoch_change_and_reward_validator() {
                 &genesis_context,
                 &genesis_block.body.state.post_state_hash,
                 &mut CloseBlockDeploy {
-                    initial_rand: Blake2b512Random::create_from_bytes(&vec![0]),
+                    initial_rand: Blake2b512Random::create_from_bytes(&[0]),
                 },
                 &mut CloseBlockDeploy {
-                    initial_rand: Blake2b512Random::create_from_bytes(&vec![0]),
+                    initial_rand: Blake2b512Random::create_from_bytes(&[0]),
                 },
                 |_| true,
             )
@@ -396,10 +396,10 @@ async fn close_block_replay_should_fail_with_different_random_seed() {
                 &genesis_context,
                 &genesis_block.body.state.post_state_hash,
                 &mut CloseBlockDeploy {
-                    initial_rand: Blake2b512Random::create_from_bytes(&vec![0]),
+                    initial_rand: Blake2b512Random::create_from_bytes(&[0]),
                 },
                 &mut CloseBlockDeploy {
-                    initial_rand: Blake2b512Random::create_from_bytes(&vec![1]),
+                    initial_rand: Blake2b512Random::create_from_bytes(&[1]),
                 },
                 |_| true,
             )
@@ -423,11 +423,11 @@ async fn balance_deploy_should_compute_rev_balances() {
                 &genesis_block.body.state.post_state_hash,
                 &mut CheckBalance {
                     pk: user_pk.clone(),
-                    rand: Blake2b512Random::create_from_bytes(&vec![]),
+                    rand: Blake2b512Random::create_from_bytes(&[]),
                 },
                 &mut CheckBalance {
                     pk: user_pk.clone(),
-                    rand: Blake2b512Random::create_from_bytes(&vec![]),
+                    rand: Blake2b512Random::create_from_bytes(&[]),
                 },
                 |result| *result == 9000000,
             )
@@ -463,7 +463,7 @@ async fn compute_state_should_capture_rholang_errors() {
             )
             .await;
 
-            assert!(result.1.is_failed == true);
+            assert!(result.1.is_failed);
         },
     )
     .await
@@ -680,7 +680,7 @@ async fn compute_state_should_capture_rholang_parsing_errors_and_charge_for_pars
             )
             .await;
 
-            assert!(result.1.is_failed == true);
+            assert!(result.1.is_failed);
             assert!(result.1.cost.cost == costs::parsing_cost(bad_rholang).value as u64);
         },
     )
@@ -1105,14 +1105,14 @@ async fn compute_state_should_charge_deploys_separately() {
                 .find(|d| d.deploy == first_deploy[0].deploy)
                 .cloned()
                 .expect("Expected at least one matching deploy");
-            assert_eq!(first_deploy_cost, deploy_cost(&vec![matched_first]));
+            assert_eq!(first_deploy_cost, deploy_cost(&[matched_first]));
 
             let matched_second = compound_deploy
                 .iter()
                 .find(|d| d.deploy == second_deploy[0].deploy)
                 .cloned()
                 .expect("Expected at least one matching deploy");
-            assert_eq!(second_deploy_cost, deploy_cost(&vec![matched_second]));
+            assert_eq!(second_deploy_cost, deploy_cost(&[matched_second]));
 
             assert_eq!(first_deploy_cost + second_deploy_cost, compound_deploy_cost);
         },
@@ -1380,10 +1380,7 @@ async fn joins_should_be_replayed_correctly() {
                 .await
                 .unwrap();
 
-            assert_eq!(
-                hex::encode(state_hash.to_vec()),
-                hex::encode(replay_state_hash.to_vec())
-            );
+            assert_eq!(hex::encode(&state_hash), hex::encode(&replay_state_hash));
         },
     )
     .await
@@ -1818,7 +1815,7 @@ async fn bridge_query_survives_multi_parent_merge() {
     let genesis_hash = genesis_block.block_hash.clone();
     let genesis_state = proto_util::post_state_hash(&genesis_block);
     let genesis_bonds = genesis_block.body.state.bonds.clone();
-    let validator: prost::bytes::Bytes = genesis_context.validator_pks()[0].bytes.clone().into();
+    let validator: prost::bytes::Bytes = genesis_context.validator_pks()[0].bytes.clone();
     let shard_name = genesis_block.shard_id.clone();
 
     // Create all stores from the same KVM (shared genesis scope)
@@ -2182,7 +2179,7 @@ async fn concurrent_registry_inserts_should_not_conflict() {
     let genesis_hash = genesis_block.block_hash.clone();
     let genesis_state = proto_util::post_state_hash(&genesis_block);
     let genesis_bonds = genesis_block.body.state.bonds.clone();
-    let validator: prost::bytes::Bytes = genesis_context.validator_pks()[0].bytes.clone().into();
+    let validator: prost::bytes::Bytes = genesis_context.validator_pks()[0].bytes.clone();
     let shard_name = genesis_block.shard_id.clone();
 
     let mut kvm = mk_test_rnode_store_manager_from_genesis(&genesis_context);
@@ -2575,8 +2572,8 @@ async fn concurrent_registry_inserts_should_not_conflict() {
         // Identify which deploy was rejected
         let a_sig = hex::encode(&pd_a[0].deploy.sig[..8]);
         let b_sig = hex::encode(&pd_b[0].deploy.sig[..8]);
-        let a_rejected = rejected_sigs.iter().any(|s| *s == a_sig);
-        let b_rejected = rejected_sigs.iter().any(|s| *s == b_sig);
+        let a_rejected = rejected_sigs.contains(&a_sig);
+        let b_rejected = rejected_sigs.contains(&b_sig);
         tracing::warn!(
             "  Contract A ({}): {}",
             a_sig,
@@ -2717,7 +2714,7 @@ in {
                 eval_result.errors
             );
             let checkpoint = runtime_ops.runtime.create_checkpoint().await;
-            let post_state: StateHash = checkpoint.root.to_bytes_prost().into();
+            let post_state: StateHash = checkpoint.root.to_bytes_prost();
             tracing::info!(
                 "Contract at {}, post_state={}",
                 uri,
@@ -2933,7 +2930,7 @@ async fn stale_diff_application_corrupts_merged_state() {
     let genesis_hash = genesis_block.block_hash.clone();
     let genesis_state = proto_util::post_state_hash(&genesis_block);
     let genesis_bonds = genesis_block.body.state.bonds.clone();
-    let validator: prost::bytes::Bytes = genesis_context.validator_pks()[0].bytes.clone().into();
+    let validator: prost::bytes::Bytes = genesis_context.validator_pks()[0].bytes.clone();
     let shard_name = genesis_block.shard_id.clone();
 
     let mut kvm = mk_test_rnode_store_manager_from_genesis(&genesis_context);
@@ -3341,4 +3338,117 @@ new deployId(`rho:system:deployId`) in {
         bb_data.is_empty(),
         !bd_data.is_empty(),
     );
+}
+
+/// Protocol fault-tolerance-threshold round-trip (floor-divergence regression,
+/// 2026-07-15). The FTT is a CONSENSUS value: the finalized-floor oracle runs
+/// on it, and the floor decides the multi-parent merge base — a validated,
+/// node-identical quantity. It must therefore be baked into the PoS contract
+/// at genesis and be readable back from ANY post-state, because
+/// `hash_set_casper` adopts the on-chain ppm over local configuration at node
+/// startup. The regression this pins: a readonly observer running a different
+/// LOCAL fault-tolerance-threshold (0.1 vs the validators' 0.33) certified
+/// blocks finalized that no validator did, derived a different merge floor,
+/// and permanently invalidated the proposers' blocks
+/// (ComputedPreStateMismatch → UnknownRootError cascade in
+/// test_fault_tolerance_asymmetric_bonds / test_validator_failure_recovery).
+/// With the ppm on-chain, two nodes with ANY local configs read the same
+/// protocol value — the floor threshold ceases to be node-local.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn fault_tolerance_threshold_ppm_round_trips_through_genesis() {
+    use crate::util::genesis_builder::GenesisBuilder;
+    use crate::util::rholang::resources::{
+        mk_runtime_manager_with_history_at, mk_test_rnode_store_manager_from_genesis,
+    };
+
+    // The asymmetric-bonds shard's threshold (0.33 → 330_000 ppm): a value the
+    // default test conf (ppm 0) can never produce by accident.
+    let mut parameters = GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(4));
+    parameters.2.proof_of_stake.fault_tolerance_threshold_ppm = 330_000;
+
+    let genesis_context = GenesisBuilder::new()
+        .build_genesis_with_parameters(Some(parameters))
+        .await
+        .expect("genesis with protocol FTT");
+    let post_state = genesis_context
+        .genesis_block
+        .body
+        .state
+        .post_state_hash
+        .clone();
+
+    let mut kvm = mk_test_rnode_store_manager_from_genesis(&genesis_context);
+    let (runtime_manager, _history) = mk_runtime_manager_with_history_at(&mut *kvm).await;
+
+    // Two independent reads model two nodes with DIFFERENT local configs: the
+    // local threshold is not an input to the read, so both adopt 330_000.
+    let first = runtime_manager
+        .get_fault_tolerance_threshold_ppm(&post_state)
+        .await
+        .expect("on-chain FTT query");
+    let second = runtime_manager
+        .get_fault_tolerance_threshold_ppm(&post_state)
+        .await
+        .expect("on-chain FTT query (second node)");
+
+    assert_eq!(
+        first,
+        Some(330_000),
+        "genesis must bake the protocol fault-tolerance threshold into the PoS \
+         contract and expose it via getFaultToleranceThresholdPpm"
+    );
+    assert_eq!(
+        first, second,
+        "every node must read the identical protocol threshold from chain state"
+    );
+}
+
+/// Strict exploratory-query regression (PR #122 review r3588246166): the
+/// lenient exploratory path degrades a runtime EXECUTION FAILURE into an
+/// empty result — indistinguishable from "the queried contract method does
+/// not exist". For a consensus parameter (the protocol fault-tolerance
+/// threshold) that conflation silently routes a transient failure into the
+/// local-config fallback and re-opens node-local finalized-floor divergence.
+/// The strict variant used by `get_fault_tolerance_threshold_ppm` must
+/// PROPAGATE the failure instead, so node startup fails loudly rather than
+/// running divergent. This pins the contrast on the same failing term.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn strict_exploratory_query_propagates_execution_failure() {
+    with_runtime_manager(
+        |runtime_manager, _genesis_context, genesis_block| async move {
+            let post_state = genesis_block.body.state.post_state_hash;
+            // Fails at reduce time (division by zero evaluated for the send).
+            let failing_source = r#"new x in { x!(1 / 0) }"#;
+            let failing_par =
+                Compiler::source_to_adt(failing_source).expect("compile failing term");
+
+            let runtime = runtime_manager.spawn_runtime().await;
+            let mut ops = RuntimeOps::new(runtime);
+
+            // Lenient path (display/API callers): degrades to an empty result.
+            let lenient = ops
+                .play_exploratory_par(failing_par.clone(), &post_state)
+                .await;
+            assert!(
+                matches!(&lenient, Ok(pars) if pars.is_empty()),
+                "lenient exploratory path degrades execution failure to an empty \
+             result (the hazard the strict variant exists to avoid); got {:?}",
+                lenient
+            );
+
+            // Strict path (consensus reads): the same failure must propagate.
+            let strict = ops
+                .play_exploratory_par_strict(failing_par, &post_state)
+                .await;
+            assert!(
+                strict.is_err(),
+                "strict exploratory path must propagate an execution failure — \
+             degrading it to an empty result would be indistinguishable from \
+             'getter absent' and re-open node-local divergence; got {:?}",
+                strict
+            );
+        },
+    )
+    .await
+    .expect("with_runtime_manager");
 }

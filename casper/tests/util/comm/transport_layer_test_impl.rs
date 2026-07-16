@@ -156,7 +156,7 @@ impl TransportLayer for TransportLayerTestImpl {
     }
 
     async fn stream(&self, peer: &PeerNode, blob: &Blob) -> Result<(), CommError> {
-        self.stream_mult(&[peer.clone()], blob).await
+        self.stream_mult(std::slice::from_ref(peer), blob).await
     }
 
     async fn stream_mult(&self, peers: &[PeerNode], blob: &Blob) -> Result<(), CommError> {

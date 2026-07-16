@@ -43,8 +43,8 @@ pub type NumberChannelsDiff = BTreeMap<Blake2b256Hash, (i64, MergeType)>;
 /// gate in `conflict_set_merger::cal_merged_result`. (A wrapped combine could
 /// otherwise produce an in-range/non-negative value that the apply gate accepts
 /// with a wrong result — see IntegerAdd.v `launder_exhibit` / the Z3 BitVec-64
-/// cross-witness.) `BitmaskOr` is a bitwise OR through `u64` and never overflows,
-/// so it always returns `Some`.
+/// cross-witness.) `BitmaskOr` is a bitwise OR through `u64` and never
+/// overflows, so it always returns `Some`.
 pub fn combine_mergeable_value(a: i64, b: i64, merge_type: MergeType) -> Option<i64> {
     let result = match merge_type {
         MergeType::IntegerAdd => a.checked_add(b),
@@ -2162,16 +2162,18 @@ mod tests {
     }
 }
 
-// === GAP-3: soundness of removing the single-value-cell conflict predicate =====
+// === GAP-3: soundness of removing the single-value-cell conflict predicate
+// =====
 //
 // Rust modality companion to
 // formal/rocq/merge_algebra/theories/ConflictSoundness.v. The REMOVED predicate
 // flagged a conflict when two branches both consume-then-produce on a shared
 // single-value cell (a write-write). We re-implement it as a test ORACLE and
 // assert it is SUBSUMED by the RETAINED double-consume / same-IO-event race
-// detector (`conflicts` Check #1), except on number/foldable channels (which are
-// intrinsically mergeable): for random branch pairs,
-//     removed_oracle(a, b)  =>  !conflicts(a, b).is_empty() || is_number_channel(a, b).
+// detector (`conflicts` Check #1), except on number/foldable channels (which
+// are intrinsically mergeable): for random branch pairs,
+//     removed_oracle(a, b)  =>  !conflicts(a, b).is_empty() ||
+// is_number_channel(a, b).
 //
 // Model: a branch's `produces_consumed` holds the base data destroyed in COMM
 // (the "consume" of a single-value-cell update); `produces_mergeable` marks the

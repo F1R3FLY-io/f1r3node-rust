@@ -60,7 +60,10 @@ use shared::rust::store::key_value_store::KvStoreError;
 use crate::rust::block_status::{BlockError, InvalidBlock, ValidBlock};
 use crate::rust::casper::CasperSnapshot;
 use crate::rust::errors::CasperError;
-use crate::rust::slashing_authorization::validate_received_slash_deploys;
+use crate::rust::slashing_authorization::{
+    epoch_for_block_number, received_slash_deploy_authorized, slash_target_key,
+    validate_received_slash_deploys, SlashAuthError,
+};
 use crate::rust::system_deploy::is_system_deploy_id;
 use crate::rust::util::proto_util;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
@@ -498,50 +501,40 @@ impl Validate {
         Either::Right(ValidBlock::Valid)
     }
 
-    /// Validate no deploy with the same sig has been produced in the chain.
+    /// Validate no deploy with the same sig has been produced in the chain
     /// Agnostic of non-parent justifications.
     ///
-    /// A block deploy is an invalid repeat iff its LATEST canonical disposition
-    /// is a WIN: a clean canonical inclusion (in `body.deploys` of a
-    /// main-parent-chain ancestor) not superseded by a later canonical
-    /// rejection. Its effects are already in canonical state, so re-including it
-    /// would be double-execution.
+    /// Recovery exemption: a sig whose LATEST canonical disposition within
+    /// the BLOCK'S OWN parent scope is a merge rejection is a legitimate
+    /// recovery re-inclusion — the rejected-deploy buffer pipeline
+    /// re-proposes such deploys so their effects can land in canonical
+    /// state. Without this exemption, every recovery-path block would fail
+    /// `InvalidRepeatDeploy`.
     ///
-    /// A keep-one loser (latest canonical disposition = rejection) or a
-    /// never-seen deploy is exempt — a legitimate (re-)inclusion whose effects
-    /// are not yet in canonical state. This is the SAME canonical-won record the
-    /// proposer's `block_creator` gates on, via `canonical_won_sigs`, so
-    /// proposer and validator never disagree (no recovery block is flagged
-    /// `InvalidRepeatDeploy`).
+    /// The exemption is a PURE FUNCTION OF THE BLOCK (its parents and the
+    /// disposition records in their ancestry), never of the validating
+    /// node's live view. An earlier version gated it on the sig's LOCAL
+    /// finalization status (`deploy_finalization_status::resolve`) and the
+    /// validator's own `rejected_in_scope` snapshot set — both node-local:
+    /// two honest validators whose finalization progress differed by one
+    /// step returned opposite verdicts for the same block, forking the
+    /// network (the roaming `InvalidRepeatDeploy` Heavy Pipeline failures).
+    ///
+    /// The double-execution defense is preserved deterministically: if a
+    /// re-inclusion already WON above the rejection in the block's parent
+    /// scope, the latest disposition is a win — not exempt — and the
+    /// ancestor scan below finds the canonical inclusion and flags the
+    /// repeat. A win that exists only on a fork OUTSIDE the block's parent
+    /// scope must NOT poison this block: judged in its own context the
+    /// re-inclusion is legal recovery, and the eventual merge's keep-one
+    /// dedup reconciles the duplicate.
     pub fn repeat_deploy(
         block: &BlockMessage,
         s: &mut CasperSnapshot,
         block_store: &KeyValueBlockStore,
         expiration_threshold: i32,
     ) -> ValidBlockProcessing {
-        // A block deploy is an invalid repeat iff its LATEST canonical
-        // disposition is a WIN — its effect is already in the canonical lineage,
-        // so re-including it double-executes. A keep-one loser (latest
-        // disposition = rejection) or a never-seen deploy is a legitimate
-        // (re-)inclusion. This is the SAME canonical-won record the proposer's
-        // `block_creator` gates on, so proposer and validator never disagree.
-        let earliest_block_number = block.body.state.block_number - expiration_threshold as i64;
-        let canonical_won = match crate::rust::util::rholang::interpreter_util::canonical_won_sigs(
-            block_store,
-            &block.header.parents_hash_list,
-            earliest_block_number,
-        ) {
-            Ok(set) => set,
-            Err(e) => return Either::Left(BlockError::BlockException(e)),
-        };
-        let deploy_key_set: HashSet<Vec<u8>> = block
-            .body
-            .deploys
-            .iter()
-            .filter(|pd| canonical_won.contains(&pd.deploy.sig))
-            .map(|pd| pd.deploy.sig.to_vec())
-            .collect();
-        if deploy_key_set.is_empty() {
+        if block.body.deploys.is_empty() {
             return Either::Right(ValidBlock::Valid);
         }
 
@@ -552,6 +545,36 @@ impl Validate {
             Ok(parents) => parents,
             Err(e) => return Either::Left(BlockError::BlockException(CasperError::from(e))),
         };
+
+        // Calculate max block number and earliest acceptable block number
+        let max_block_number = proto_util::max_block_number_metadata(&init_parents);
+        let earliest_block_number = max_block_number + 1 - expiration_threshold as i64;
+
+        // Latest canonical dispositions within the block's parent scope,
+        // over the same expiration window the ancestor scan uses. This is
+        // exactly the record the proposer's admission logic consults
+        // (`canonical_won_sigs` from its parents), so proposer and every
+        // validator evaluate the same predicate on the same inputs.
+        let canonical_rejected =
+            match crate::rust::util::rholang::interpreter_util::canonical_rejected_sigs(
+                block_store,
+                &block.header.parents_hash_list,
+                earliest_block_number,
+            ) {
+                Ok(sigs) => sigs,
+                Err(e) => return Either::Left(BlockError::BlockException(e)),
+            };
+
+        let deploy_key_set: HashSet<Vec<u8>> = block
+            .body
+            .deploys
+            .iter()
+            .filter(|pd| !canonical_rejected.contains(&pd.deploy.sig))
+            .map(|pd| pd.deploy.sig.to_vec())
+            .collect();
+        if deploy_key_set.is_empty() {
+            return Either::Right(ValidBlock::Valid);
+        }
 
         tracing::debug!(target: "f1r3fly.casper", "before-repeat-deploy-duplicate-block");
         let maybe_duplicated_block_metadata = dag_ops::bf_traverse_find(
@@ -1324,80 +1347,112 @@ impl Validate {
         block: &BlockMessage,
         s: &mut CasperSnapshot,
     ) -> ValidBlockProcessing {
-        let mut invalid_justifications = Vec::new();
-        for justification in &block.justifications {
-            let latest_block_opt = match s.dag.lookup(&justification.latest_block_hash) {
-                Ok(opt) => opt,
-                Err(e) => return Either::Left(BlockError::BlockException(CasperError::from(e))),
+        let epoch_length = s.on_chain_state.shard_conf.epoch_length;
+        let current_epoch =
+            match epoch_for_block_number(block.body.state.block_number, epoch_length) {
+                Ok(epoch) => epoch,
+                Err(error) => {
+                    return Either::Left(BlockError::BlockException(CasperError::from(
+                        SlashAuthError::from(error),
+                    )))
+                }
             };
-            if latest_block_opt.is_some_and(|block_metadata| block_metadata.invalid) {
-                invalid_justifications.push(justification);
-            }
-        }
-
-        // P2-10: build a single bonds index up-front (O(B)) so the
-        // any-invalid-justification check is O(J + B) instead of the prior
-        // O(J · B) `.iter().find(...)` linear scan per justification.
         let bonds = proto_util::bonds(block);
         let bonds_by_validator: HashMap<&Validator, i64> = bonds
             .iter()
             .map(|bond| (&bond.validator, bond.stake))
             .collect();
-        let neglected_invalid_justification = invalid_justifications.iter().any(|justification| {
-            bonds_by_validator
-                .get(&justification.validator)
-                .copied()
-                .is_some_and(|stake| stake > 0)
-        });
+        let mut slash_targets = HashSet::new();
 
-        // Recovery path: if this block carries slash system deploys, allow it through so
-        // validators can converge by slashing the offending branch.
-        let has_slash_system_deploys = block.body.system_deploys.iter().any(|system_deploy| {
-            matches!(system_deploy, ProcessedSystemDeploy::Succeeded {
-                system_deploy: SystemDeployData::Slash { .. },
+        for system_deploy in &block.body.system_deploys {
+            let ProcessedSystemDeploy::Succeeded {
+                system_deploy:
+                    SystemDeployData::Slash {
+                        invalid_block_hash,
+                        issuer_public_key,
+                        target_activation_epoch,
+                    },
                 ..
-            })
-        });
+            } = system_deploy
+            else {
+                continue;
+            };
+            if issuer_public_key.bytes != block.sender {
+                continue;
+            }
 
-        if neglected_invalid_justification && !has_slash_system_deploys {
-            Either::Left(BlockError::Invalid(InvalidBlock::NeglectedInvalidBlock))
-        } else {
-            Either::Right(ValidBlock::Valid)
-        }
-    }
-
-    pub async fn bonds_cache(
-        b: &BlockMessage,
-        runtime_manager: &RuntimeManager,
-    ) -> ValidBlockProcessing {
-        let bonds = proto_util::bonds(b);
-        let tuplespace_hash = proto_util::post_state_hash(b);
-
-        match runtime_manager.compute_bonds(&tuplespace_hash).await {
-            Ok(computed_bonds) => {
-                let bonds_set: HashSet<_> = bonds
-                    .iter()
-                    .map(|bond| (&bond.validator, bond.stake))
-                    .collect();
-                let computed_bonds_set: HashSet<_> = computed_bonds
-                    .iter()
-                    .map(|bond| (&bond.validator, bond.stake))
-                    .collect();
-
-                if bonds_set == computed_bonds_set {
-                    Either::Right(ValidBlock::Valid)
-                } else {
-                    tracing::warn!(
-                        "Bonds in proof of stake contract do not match block's bond cache."
-                    );
-                    Either::Left(BlockError::Invalid(InvalidBlock::InvalidBondsCache))
+            let metadata = match s.dag.lookup(invalid_block_hash) {
+                Ok(Some(metadata)) => metadata,
+                Ok(None) => continue,
+                Err(error) => {
+                    return Either::Left(BlockError::BlockException(CasperError::from(error)))
                 }
-            }
-            Err(ex) => {
-                tracing::warn!("Failed to compute bonds from tuplespace hash: {}", ex);
-                Either::Left(BlockError::BlockException(ex))
+            };
+            let target_activation_epoch = (*target_activation_epoch).into();
+            let bond = bonds_by_validator
+                .get(&metadata.sender)
+                .copied()
+                .unwrap_or(0);
+            let authorized = match received_slash_deploy_authorized(
+                block.body.state.block_number,
+                metadata.block_number,
+                target_activation_epoch,
+                epoch_length,
+                bond,
+                metadata.invalid,
+            ) {
+                Ok(authorized) => authorized,
+                Err(error) => {
+                    return Either::Left(BlockError::BlockException(CasperError::from(
+                        SlashAuthError::from(error),
+                    )))
+                }
+            };
+            if authorized {
+                slash_targets.insert(slash_target_key(&metadata.sender, target_activation_epoch));
             }
         }
+
+        for justification in &block.justifications {
+            let metadata = match s.dag.lookup(&justification.latest_block_hash) {
+                Ok(Some(metadata)) => metadata,
+                Ok(None) => continue,
+                Err(error) => {
+                    return Either::Left(BlockError::BlockException(CasperError::from(error)))
+                }
+            };
+            if !metadata.invalid {
+                continue;
+            }
+
+            let bond = bonds_by_validator
+                .get(&metadata.sender)
+                .or_else(|| bonds_by_validator.get(&justification.validator))
+                .copied()
+                .unwrap_or(0);
+            let slash_required = match received_slash_deploy_authorized(
+                block.body.state.block_number,
+                metadata.block_number,
+                current_epoch,
+                epoch_length,
+                bond,
+                metadata.invalid,
+            ) {
+                Ok(required) => required,
+                Err(error) => {
+                    return Either::Left(BlockError::BlockException(CasperError::from(
+                        SlashAuthError::from(error),
+                    )))
+                }
+            };
+            if slash_required
+                && !slash_targets.contains(&slash_target_key(&metadata.sender, current_epoch))
+            {
+                return Either::Left(BlockError::Invalid(InvalidBlock::NeglectedInvalidBlock));
+            }
+        }
+
+        Either::Right(ValidBlock::Valid)
     }
 
     pub async fn bonds_cache_from_floor(
@@ -1421,7 +1476,10 @@ impl Validate {
             &parent_hashes,
             &latest_messages,
             crate::rust::safety::clique_oracle::FtThreshold::from_ppm(
-                snapshot.on_chain_state.shard_conf.fault_tolerance_threshold_ppm,
+                snapshot
+                    .on_chain_state
+                    .shard_conf
+                    .fault_tolerance_threshold_ppm,
             ),
         )
         .await
@@ -1482,6 +1540,40 @@ impl Validate {
         }
     }
 
+    pub async fn bonds_cache(
+        b: &BlockMessage,
+        runtime_manager: &RuntimeManager,
+    ) -> ValidBlockProcessing {
+        let bonds = proto_util::bonds(b);
+        let tuplespace_hash = proto_util::post_state_hash(b);
+
+        match runtime_manager.compute_bonds(&tuplespace_hash).await {
+            Ok(computed_bonds) => {
+                let bonds_set: HashSet<_> = bonds
+                    .iter()
+                    .map(|bond| (&bond.validator, bond.stake))
+                    .collect();
+                let computed_bonds_set: HashSet<_> = computed_bonds
+                    .iter()
+                    .map(|bond| (&bond.validator, bond.stake))
+                    .collect();
+
+                if bonds_set == computed_bonds_set {
+                    Either::Right(ValidBlock::Valid)
+                } else {
+                    tracing::warn!(
+                        "Bonds in proof of stake contract do not match block's bond cache."
+                    );
+                    Either::Left(BlockError::Invalid(InvalidBlock::InvalidBondsCache))
+                }
+            }
+            Err(ex) => {
+                tracing::warn!("Failed to compute bonds from tuplespace hash: {}", ex);
+                Either::Left(BlockError::BlockException(ex))
+            }
+        }
+    }
+
     /// All of deploys must have greater or equal phloPrice than minPhloPrice
     pub fn phlo_price(b: &BlockMessage, min_phlo_price: i64) -> ValidBlockProcessing {
         if b.body
@@ -1493,5 +1585,164 @@ impl Validate {
         } else {
             Either::Left(BlockError::Invalid(InvalidBlock::LowDeployCost))
         }
+    }
+}
+
+#[cfg(test)]
+mod merge_recovery_validation_tests {
+    use std::collections::BTreeMap;
+
+    use crypto::rust::public_key::PublicKey;
+    use models::rust::block_metadata::BlockMetadata;
+    use models::rust::casper::protocol::casper_message::{
+        Body, Bond, F1r3flyState, Header, Justification,
+    };
+
+    use super::*;
+
+    fn validator(byte: u8) -> Validator { Bytes::from(vec![byte; models::rust::validator::LENGTH]) }
+
+    fn hash(byte: u8) -> BlockHash { Bytes::from(vec![byte; 32]) }
+
+    fn add_metadata(
+        snapshot: &mut CasperSnapshot,
+        block_hash: BlockHash,
+        sender: Validator,
+        block_number: i64,
+        invalid: bool,
+    ) {
+        snapshot.dag.dag_set.insert(block_hash.clone());
+        snapshot
+            .dag
+            .block_metadata_index
+            .write()
+            .add(BlockMetadata {
+                block_hash,
+                parents: Vec::new(),
+                sender,
+                justifications: Vec::new(),
+                weight_map: BTreeMap::new(),
+                block_number,
+                sequence_number: block_number as i32,
+                invalid,
+                directly_finalized: false,
+                finalized: false,
+                fault_tolerance_value: 0.0,
+            })
+            .expect("metadata inserted");
+    }
+
+    fn candidate(
+        block_number: i64,
+        sender: Validator,
+        offender: Validator,
+        invalid_hash: BlockHash,
+        system_deploys: Vec<ProcessedSystemDeploy>,
+    ) -> BlockMessage {
+        BlockMessage {
+            block_hash: hash(0xf0),
+            header: Header {
+                parents_hash_list: Vec::new(),
+                timestamp: block_number,
+                version: 1,
+                extra_bytes: Bytes::new(),
+            },
+            body: Body {
+                state: F1r3flyState {
+                    pre_state_hash: Bytes::new(),
+                    post_state_hash: Bytes::new(),
+                    bonds: vec![
+                        Bond {
+                            validator: offender.clone(),
+                            stake: 1000,
+                        },
+                        Bond {
+                            validator: sender.clone(),
+                            stake: 1000,
+                        },
+                    ],
+                    block_number,
+                },
+                deploys: Vec::new(),
+                rejected_deploys: Vec::new(),
+                system_deploys,
+                extra_bytes: Bytes::new(),
+            },
+            justifications: vec![Justification {
+                validator: offender,
+                latest_block_hash: invalid_hash,
+            }],
+            sender,
+            seq_num: block_number as i32,
+            sig: Bytes::new(),
+            sig_algorithm: "test".to_string(),
+            shard_id: "test".to_string(),
+            extra_bytes: Bytes::new(),
+        }
+    }
+
+    fn slash(
+        invalid_hash: BlockHash,
+        issuer: Validator,
+        target_activation_epoch: i64,
+    ) -> ProcessedSystemDeploy {
+        ProcessedSystemDeploy::Succeeded {
+            event_list: Vec::new(),
+            system_deploy: SystemDeployData::Slash {
+                invalid_block_hash: invalid_hash,
+                issuer_public_key: PublicKey::new(issuer),
+                target_activation_epoch,
+            },
+        }
+    }
+
+    #[test]
+    fn stale_invalid_justification_is_not_slash_obligating() {
+        let mut snapshot =
+            crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+        snapshot.on_chain_state.shard_conf.epoch_length = 10;
+        let offender = validator(2);
+        let proposer = validator(3);
+        let invalid = hash(17);
+        add_metadata(&mut snapshot, invalid.clone(), offender.clone(), 391, true);
+        let block = candidate(4334, proposer, offender, invalid, Vec::new());
+
+        assert!(matches!(
+            Validate::neglected_invalid_block(&block, &mut snapshot),
+            Either::Right(ValidBlock::Valid)
+        ));
+    }
+
+    #[test]
+    fn current_invalid_justification_requires_matching_slash() {
+        let mut snapshot =
+            crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+        snapshot.on_chain_state.shard_conf.epoch_length = 10;
+        let offender = validator(4);
+        let proposer = validator(5);
+        let invalid = hash(34);
+        add_metadata(&mut snapshot, invalid.clone(), offender.clone(), 94, true);
+        let unrelated = hash(51);
+        add_metadata(&mut snapshot, unrelated.clone(), validator(6), 94, true);
+        let block = candidate(
+            95,
+            proposer.clone(),
+            offender.clone(),
+            invalid.clone(),
+            vec![slash(unrelated, proposer.clone(), 9)],
+        );
+
+        assert!(matches!(
+            Validate::neglected_invalid_block(&block, &mut snapshot),
+            Either::Left(BlockError::Invalid(InvalidBlock::NeglectedInvalidBlock))
+        ));
+
+        let block = candidate(95, proposer.clone(), offender, invalid.clone(), vec![
+            slash(invalid, proposer, 9),
+        ]);
+        assert!(matches!(
+            Validate::neglected_invalid_block(&block, &mut snapshot),
+            Either::Right(ValidBlock::Valid)
+        ));
     }
 }

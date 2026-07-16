@@ -2,14 +2,52 @@
 
 use std::collections::HashMap;
 
+use lazy_static::lazy_static;
 use models::rhoapi::connective::ConnectiveInstance;
 use models::rhoapi::Par;
 use models::rust::rholang::sorter::par_sort_matcher::ParSortMatcher;
 use models::rust::rholang::sorter::sortable::Sortable;
+use regex::Regex;
 
 use super::normalize::normalize_ann_proc;
 use crate::rust::interpreter::compiler::exports::ProcVisitInputs;
 use crate::rust::interpreter::errors::InterpreterError;
+
+lazy_static! {
+    static ref FLOAT_RE: Regex = Regex::new(
+        r#"(?x)
+        (?P<str>"(?:[^"\\]|\\.)*") |
+        (?P<backtick>`[^`]*`) |
+        (?P<comment>//.*|/\*[\s\S]*?\*/) |
+        (?P<float>
+            \b\d+\.\d*(?:[eE][+-]?\d+)? |
+            \b\d+[eE][+-]?\d+ |
+            \.\d+(?:[eE][+-]?\d+)?
+        )
+        (?P<suffix>[a-zA-Z0-9_]*)
+    "#
+    )
+    .unwrap();
+}
+
+fn preprocess_floats(source: &str) -> String {
+    FLOAT_RE
+        .replace_all(source, |caps: &regex::Captures| {
+            if let Some(float) = caps.name("float") {
+                let suffix = caps.name("suffix").map(|m| m.as_str()).unwrap_or("");
+                if suffix.is_empty() {
+                    format!("{}f64", float.as_str())
+                } else {
+                    // If it has a suffix, keep it as is
+                    format!("{}{}", float.as_str(), suffix)
+                }
+            } else {
+                // It's a string, backtick, or comment, keep as is
+                caps[0].to_string()
+            }
+        })
+        .to_string()
+}
 
 pub struct Compiler;
 
@@ -22,8 +60,9 @@ impl Compiler {
         source: &str,
         normalizer_env: HashMap<String, Par>,
     ) -> Result<Par, InterpreterError> {
+        let preprocessed_source = preprocess_floats(source);
         let parser = rholang_parser::RholangParser::new();
-        let result = parser.parse(source);
+        let result = parser.parse(&preprocessed_source);
 
         match result {
             validated::Validated::Good(procs) => {

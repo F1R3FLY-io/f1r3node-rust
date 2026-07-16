@@ -61,9 +61,7 @@ const X: u64 = 0xA5;
 fn compute(x: u64) -> u64 {
     // An arbitrary fixed bijection-ish mix; the only property that matters is
     // that it is a pure function of `x` (same input -> same output, always).
-    x.wrapping_mul(0x9E37_79B9_7F4A_7C15)
-        .rotate_left(17)
-        ^ 0x0000_0000_DEAD_BEEF
+    x.wrapping_mul(0x9E37_79B9_7F4A_7C15).rotate_left(17) ^ 0x0000_0000_DEAD_BEEF
 }
 
 type Index = Arc<Mutex<HashMap<u64, u64>>>;
@@ -134,7 +132,8 @@ fn concurrent_memoization_never_tears_or_regresses() {
                     in_domain(r1),
                     "read #1 observed a THIRD value {:?} (not absent, not canonical {}) — \
                      a torn/partial memo write leaked",
-                    r1, canonical
+                    r1,
+                    canonical
                 );
 
                 let r2 = read_key(&index, X);
@@ -142,14 +141,16 @@ fn concurrent_memoization_never_tears_or_regresses() {
                     in_domain(r2),
                     "read #2 observed a THIRD value {:?} (not absent, not canonical {}) — \
                      a torn/partial memo write leaked",
-                    r2, canonical
+                    r2,
+                    canonical
                 );
 
                 // MONOTONE: the memo is write-once and never removed, so once the
                 // canonical value is visible it must stay visible.
                 if r1 == Some(canonical) {
                     assert_eq!(
-                        r2, Some(canonical),
+                        r2,
+                        Some(canonical),
                         "cached value REGRESSED below a prior read: saw canonical then {:?}",
                         r2
                     );
@@ -157,9 +158,15 @@ fn concurrent_memoization_never_tears_or_regresses() {
             })
         };
 
-        writer_a.join().expect("writer A completes on every interleaving");
-        writer_b.join().expect("writer B completes on every interleaving");
-        reader.join().expect("reader completes on every interleaving");
+        writer_a
+            .join()
+            .expect("writer A completes on every interleaving");
+        writer_b
+            .join()
+            .expect("writer B completes on every interleaving");
+        reader
+            .join()
+            .expect("reader completes on every interleaving");
 
         // FINALITY: after both writers quiesce the memoized value is canonical.
         assert_eq!(

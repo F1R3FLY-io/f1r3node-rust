@@ -21,9 +21,16 @@
 //
 //   prop_ghost_argmax — T-GHOST + T-MP: the real `Estimator` on RANDOM weighted fork
 //   DAGs returns the heaviest-subtree ranking (score DESC, hash ASC) led by the GHOST
-//   argmax (Rank.v `rank_head_is_argmax`/`rank_selects_heaviest`), and the ghost main
-//   parent `tips[0]` is deterministic + heaviest (GuardBridge.v
-//   `main_parent_first_deterministic`, snapshot.rs:128-142).
+//   argmax (Rank.v `rank_head_is_argmax`/`rank_selects_heaviest`), and the GHOST head
+//   `tips[0]` is deterministic + heaviest (GuardBridge.v
+//   `ghost_sort_first_deterministic`, snapshot.rs:317-331).
+//
+//   NOTE: `tips[0]` is the GHOST head, NOT necessarily the block's MAIN PARENT —
+//   snapshot.rs:332 then runs `prefer_deploy_support_main_parent` (:124-185), which
+//   can PROMOTE a deploy-carrying branch over it (GuardBridge.v seam (3),
+//   `pipeline_head_may_differ_from_ghost`). That second stage is a private fn, so its
+//   proptests live in-module in snapshot.rs's `mod tests` (`deploy_support_*`), not
+//   here. See docs/theory/fork-choice/fork-choice-verification.md §6.2.
 
 mod prop_bound;
 mod prop_estimator_determinism;

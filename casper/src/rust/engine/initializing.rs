@@ -45,6 +45,7 @@ use crate::rust::engine::engine::{
 use crate::rust::engine::engine_cell::EngineCell;
 use crate::rust::engine::lfs_block_requester::{self, BlockRequesterOps};
 use crate::rust::engine::lfs_tuple_space_requester::{self, StatePartPath, TupleSpaceRequesterOps};
+use crate::rust::engine::running::RunningRecoveryContext;
 use crate::rust::errors::CasperError;
 use crate::rust::estimator::Estimator;
 use crate::rust::metrics_constants::{
@@ -1075,29 +1076,14 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             .unwrap()
             .take()
             .ok_or_else(|| CasperError::RuntimeError("Estimator not available".to_string()))?;
+        let recovery_estimator = estimator.clone();
 
-        // Single exact conversion point: read the on-chain ppm (the exact source
-        // of truth for the finalization DECISION) and derive the f32 for display.
-        let on_chain_ppm =
-            crate::rust::util::token_metadata_check::read_on_chain_fault_tolerance_threshold_ppm(
-                &runtime_manager,
-                &genesis_post_state_hash,
-            )
-            .await?;
-        let on_chain_ftt = (on_chain_ppm as f64 / 1_000_000.0) as f32;
-        let mut casper_shard_conf = self.casper_shard_conf.clone();
-        if casper_shard_conf.fault_tolerance_threshold_ppm != on_chain_ppm {
-            tracing::warn!(
-                event = "fault_tolerance_threshold_sourced_from_genesis",
-                local_ppm = casper_shard_conf.fault_tolerance_threshold_ppm,
-                on_chain_ppm = on_chain_ppm,
-                local = casper_shard_conf.fault_tolerance_threshold,
-                on_chain = on_chain_ftt,
-                "using on-chain fault-tolerance-threshold from genesis"
-            );
-        }
-        casper_shard_conf.fault_tolerance_threshold_ppm = on_chain_ppm;
-        casper_shard_conf.fault_tolerance_threshold = on_chain_ftt;
+        // The on-chain fault-tolerance threshold is read and adopted by
+        // `hash_set_casper` (the single adoption point shared by all three
+        // casper constructors), so this path deliberately does NOT read it
+        // again — a second read here would be a second policy site and could
+        // drift from the one the running casper actually finalizes with.
+        let casper_shard_conf = self.casper_shard_conf.clone();
 
         // Pass Arc<RuntimeManager> directly to hash_set_casper
         let casper = crate::rust::casper::hash_set_casper(
@@ -1114,7 +1100,8 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             casper_shard_conf,
             ab,
             self.heartbeat_signal_ref.clone(),
-        )?;
+        )
+        .await?;
 
         tracing::info!(
             "create_casper_and_transition_to_running: MultiParentCasper instance created"
@@ -1139,6 +1126,22 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             Arc::new(self.transport_layer.clone()),
             self.rp_conf_ask.clone(),
             self.block_retriever.clone(),
+            Some(RunningRecoveryContext {
+                connections_cell: self.connections_cell.clone(),
+                last_approved_block: self.last_approved_block.clone(),
+                block_store: self.block_store.clone(),
+                block_dag_storage: self.block_dag_storage.clone(),
+                deploy_storage: self.deploy_storage.clone(),
+                rejected_deploy_buffer: self.rejected_deploy_buffer.clone(),
+                casper_buffer_storage: self.casper_buffer_storage.clone(),
+                rspace_state_manager: self.rspace_state_manager.clone(),
+                event_publisher: self.event_publisher.clone(),
+                engine_cell: self.engine_cell.clone(),
+                runtime_manager: self.runtime_manager.clone(),
+                estimator: recovery_estimator,
+                casper_shard_conf: self.casper_shard_conf.clone(),
+                heartbeat_signal_ref: self.heartbeat_signal_ref.clone(),
+            }),
             &self.engine_cell,
             &self.event_publisher,
         )

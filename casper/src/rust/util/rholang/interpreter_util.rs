@@ -22,6 +22,7 @@ use rspace_plus_plus::rspace::history::Either;
 
 use super::replay_failure::ReplayFailure;
 use super::runtime_manager::RuntimeManager;
+use crate::rust::api::deploy_finalization_status::{self, DeployFinalizationState};
 use crate::rust::block_status::BlockStatus;
 use crate::rust::casper::CasperSnapshot;
 use crate::rust::errors::CasperError;
@@ -34,75 +35,6 @@ use crate::rust::BlockProcessing;
 
 pub fn mk_term(rho: &str, normalizer_env: HashMap<String, Par>) -> Result<Par, InterpreterError> {
     Compiler::source_to_adt_with_normalizer_env(rho, normalizer_env)
-}
-
-/// Pre-compute admit decisions for a batch of rejected-deploy sigs in a
-/// single canonical-chain scan. The returned set contains the sigs that
-/// *should* be admitted to the rejected-deploy buffer — those whose
-/// current finalization state is `Pending`. Sigs whose state is terminal
-/// (`Finalized` / `Failed` / `Expired`) are absent from the returned
-/// set: they have already been resolved in the local canonical view and
-/// must not be re-proposed (re-proposal would either waste a slot or,
-/// in the catchup case, cause re-execution of already-canonical work
-/// against a different pre-state).
-///
-/// Catastrophic resolver failures (LFB lookup, block-store IO during
-/// the prelude) are treated conservatively as "do not admit" for any
-/// sig in the batch — transient failures must not open the
-/// re-execution hazard; sigs will be retried on the next merge
-/// rejection if still live.
-///
-/// This is the batched replacement for the previous per-sig
-/// `should_admit_to_rejected_buffer`. Cost: one BFS over the
-/// `deploy_lifespan` window regardless of sig count, instead of one
-/// BFS per sig. For an N-rejected merge with M-block window, this is
-/// O(M + N) block fetches versus O(N · M).
-fn compute_rejected_buffer_admits(
-    dag: &block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation,
-    block_store: &KeyValueBlockStore,
-    deploy_lifespan: i64,
-    sigs: &HashSet<Bytes>,
-) -> HashSet<Bytes> {
-    use crate::rust::api::deploy_finalization_status::{resolve_batch, DeployFinalizationState};
-    let __admits_start = std::time::Instant::now();
-    if sigs.is_empty() {
-        metrics::histogram!(
-            crate::rust::metrics_constants::COMPUTE_REJECTED_BUFFER_ADMITS_TIME_METRIC,
-            "source" => crate::rust::metrics_constants::CASPER_METRICS_SOURCE
-        )
-        .record(__admits_start.elapsed().as_secs_f64());
-        return HashSet::new();
-    }
-    let result = match resolve_batch(dag, block_store, deploy_lifespan, sigs) {
-        Ok(statuses) => statuses
-            .into_iter()
-            .filter_map(|(sig, status)| {
-                if status.state == DeployFinalizationState::Pending {
-                    Some(sig)
-                } else {
-                    tracing::debug!(
-                        "RejectedDeployBuffer populate: skipping sig {} (state={:?}) — already resolved in canonical view",
-                        hex::encode(&sig),
-                        status.state
-                    );
-                    None
-                }
-            })
-            .collect(),
-        Err(err) => {
-            tracing::warn!(
-                "RejectedDeployBuffer populate: batched status check failed: {} — admitting nothing for this merge",
-                err
-            );
-            HashSet::new()
-        }
-    };
-    metrics::histogram!(
-        crate::rust::metrics_constants::COMPUTE_REJECTED_BUFFER_ADMITS_TIME_METRIC,
-        "source" => crate::rust::metrics_constants::CASPER_METRICS_SOURCE
-    )
-    .record(__admits_start.elapsed().as_secs_f64());
-    result
 }
 
 /// Sigs whose LATEST canonical disposition across the FULL merge scope is a WIN.
@@ -120,6 +52,23 @@ pub fn canonical_won_sigs(
     block_store: &KeyValueBlockStore,
     parents: &[BlockHash],
     earliest_block_number: i64,
+) -> Result<HashSet<Bytes>, CasperError> {
+    canonical_disposition_sigs(block_store, parents, earliest_block_number, true)
+}
+
+pub fn canonical_rejected_sigs(
+    block_store: &KeyValueBlockStore,
+    parents: &[BlockHash],
+    earliest_block_number: i64,
+) -> Result<HashSet<Bytes>, CasperError> {
+    canonical_disposition_sigs(block_store, parents, earliest_block_number, false)
+}
+
+fn canonical_disposition_sigs(
+    block_store: &KeyValueBlockStore,
+    parents: &[BlockHash],
+    earliest_block_number: i64,
+    target_won: bool,
 ) -> Result<HashSet<Bytes>, CasperError> {
     // sig -> (highest block_number observed, won at that height?). A win and a
     // rejection never share a height (a merge sits one block above its siblings),
@@ -151,8 +100,130 @@ pub fn canonical_won_sigs(
     }
     Ok(disposition
         .into_iter()
-        .filter_map(|(sig, (_, won))| won.then_some(sig))
+        .filter_map(|(sig, (_, won))| (won == target_won).then_some(sig))
         .collect())
+}
+
+fn rejected_sig_has_visible_non_source_win(
+    block_store: &KeyValueBlockStore,
+    visible_blocks: &HashSet<BlockHash>,
+    sig: &Bytes,
+    source_block: &BlockHash,
+) -> Result<bool, CasperError> {
+    let mut disposition: HashMap<Bytes, (i64, bool)> = HashMap::new();
+    for hash in visible_blocks {
+        if hash == source_block {
+            continue;
+        }
+        let Some(block) = block_store.get(hash)? else {
+            continue;
+        };
+        let bn = block.body.state.block_number;
+        for pd in &block.body.deploys {
+            if pd.deploy.sig == *sig {
+                record_disposition(&mut disposition, pd.deploy.sig.clone(), bn, true);
+            }
+        }
+        for rd in &block.body.rejected_deploys {
+            if rd.sig == *sig {
+                record_disposition(&mut disposition, rd.sig.clone(), bn, false);
+            }
+        }
+    }
+    Ok(disposition.get(sig).map(|(_, won)| *won).unwrap_or(false))
+}
+
+#[cfg(test)]
+fn visible_rejected_deploy_sigs(
+    block_store: &KeyValueBlockStore,
+    visible_blocks: &HashSet<BlockHash>,
+) -> Result<HashSet<Bytes>, CasperError> {
+    Ok(
+        visible_rejected_deploy_latest_heights(block_store, visible_blocks)?
+            .into_keys()
+            .collect(),
+    )
+}
+
+fn visible_rejected_deploy_latest_heights(
+    block_store: &KeyValueBlockStore,
+    visible_blocks: &HashSet<BlockHash>,
+) -> Result<HashMap<Bytes, i64>, CasperError> {
+    let mut latest: HashMap<Bytes, i64> = HashMap::new();
+    for hash in visible_blocks {
+        let Some(block) = block_store.get(hash)? else {
+            continue;
+        };
+        for rd in &block.body.rejected_deploys {
+            latest
+                .entry(rd.sig.clone())
+                .and_modify(|height| *height = (*height).max(block.body.state.block_number))
+                .or_insert(block.body.state.block_number);
+        }
+    }
+    Ok(latest)
+}
+
+fn suppress_rejected_pairs_with_later_visible_rejection(
+    block_store: &KeyValueBlockStore,
+    visible_blocks: &HashSet<BlockHash>,
+    rejected_user_pairs: &mut Vec<(Bytes, BlockHash)>,
+) -> Result<usize, CasperError> {
+    if rejected_user_pairs.is_empty() {
+        return Ok(0);
+    }
+
+    let visible_rejected_heights =
+        visible_rejected_deploy_latest_heights(block_store, visible_blocks)?;
+    if visible_rejected_heights.is_empty() {
+        return Ok(0);
+    }
+
+    let before = rejected_user_pairs.len();
+    let mut retained = Vec::with_capacity(rejected_user_pairs.len());
+    for (sig, source_block) in std::mem::take(rejected_user_pairs) {
+        let suppress = match visible_rejected_heights.get(&sig) {
+            Some(rejected_height) => match block_store.get(&source_block)? {
+                Some(source) => *rejected_height > source.body.state.block_number,
+                None => false,
+            },
+            None => false,
+        };
+        if !suppress {
+            retained.push((sig, source_block));
+        }
+    }
+    *rejected_user_pairs = retained;
+    Ok(before.saturating_sub(rejected_user_pairs.len()))
+}
+
+fn retain_pending_rejected_deploys_for_buffer(
+    dag: &KeyValueDagRepresentation,
+    block_store: &KeyValueBlockStore,
+    deploy_lifespan: i64,
+    deploys: &mut Vec<Signed<DeployData>>,
+) -> Result<usize, CasperError> {
+    if deploys.is_empty() {
+        return Ok(0);
+    }
+
+    let sigs: HashSet<Bytes> = deploys.iter().map(|deploy| deploy.sig.clone()).collect();
+    let statuses =
+        deploy_finalization_status::resolve_batch(dag, block_store, deploy_lifespan, &sigs)
+            .map_err(|err| {
+                CasperError::RuntimeError(format!(
+                    "RejectedDeployBuffer finalization-status filter failed: {}",
+                    err
+                ))
+            })?;
+    let before = deploys.len();
+    deploys.retain(|deploy| {
+        statuses
+            .get(&deploy.sig)
+            .map(|status| status.state == DeployFinalizationState::Pending)
+            .unwrap_or(true)
+    });
+    Ok(before - deploys.len())
 }
 
 /// Update `disposition[sig]` toward the latest (highest-block) verdict. A higher
@@ -170,37 +241,6 @@ fn record_disposition(
             disposition.insert(sig, (bn, won));
         }
     }
-}
-
-fn with_ancestors_capped(
-    dag: &KeyValueDagRepresentation,
-    block_hash: &BlockHash,
-    max_nodes: usize,
-) -> Result<Option<HashSet<BlockHash>>, CasperError> {
-    if max_nodes == 0 {
-        return Ok(None);
-    }
-
-    let mut visited: HashSet<BlockHash> = HashSet::new();
-    let mut queue: VecDeque<BlockHash> = VecDeque::from([block_hash.clone()]);
-
-    while let Some(current_hash) = queue.pop_front() {
-        if !visited.insert(current_hash.clone()) {
-            continue;
-        }
-        if visited.len() >= max_nodes {
-            return Ok(None);
-        }
-
-        let metadata = dag.lookup_unsafe(&current_hash)?;
-        for parent in metadata.parents {
-            if !visited.contains(&parent) {
-                queue.push_back(parent);
-            }
-        }
-    }
-
-    Ok(Some(visited))
 }
 
 // Returns (None, checkpoints) if the block's tuplespace hash
@@ -248,7 +288,17 @@ pub async fn validate_block_checkpoint(
 
     match computed_parents_info {
         Ok((computed_pre_state_hash, rejected_deploys, _rejected_slashes)) => {
-            let rejected_deploy_ids: HashSet<_> = rejected_deploys.iter().cloned().collect();
+            let block_deploy_sigs: HashSet<_> = block
+                .body
+                .deploys
+                .iter()
+                .map(|pd| pd.deploy.sig.clone())
+                .collect();
+            let rejected_deploy_ids: HashSet<_> = rejected_deploys
+                .iter()
+                .filter(|sig| !block_deploy_sigs.contains(*sig))
+                .cloned()
+                .collect();
             let block_rejected_deploy_sigs: HashSet<_> = block
                 .body
                 .rejected_deploys
@@ -455,17 +505,16 @@ async fn replay_block(
             }
             Err(replay_error) => {
                 if attempts >= MAX_RETRIES {
-                    // Give up after max retries
                     tracing::error!(
                         block_hash = %PrettyPrinter::build_string_no_limit(&block.block_hash),
                         error = ?replay_error,
                         attempts,
                         "replay failed: giving up after max retries"
                     );
-                    // Convert CasperError to ReplayFailure::InternalError
-                    return Ok(Either::Left(ReplayFailure::internal_error(
-                        replay_error.to_string(),
-                    )));
+                    return Ok(Either::Left(match replay_error {
+                        CasperError::ReplayFailure(replay_failure) => replay_failure,
+                        other => ReplayFailure::internal_error(other.to_string()),
+                    }));
                 } else {
                     // Retry - log error and continue
                     tracing::error!(
@@ -732,9 +781,6 @@ pub(crate) const MAX_FLOOR_DISTANCE_BLOCKS: i64 = 256;
 /// only; the deterministic Δ backstop above is what bounds the merge.
 pub(crate) const MAX_PARENT_MERGE_SCOPE_BLOCKS: usize = 512;
 
-/// Node cap on the lossless covering-parent fast-path ancestor scan.
-pub(crate) const MAX_FULL_ANCESTOR_SCAN_NODES: usize = 8_192;
-
 /// The deterministic merge-scope backstop decision: refuse (`Err`) iff the floor
 /// distance exceeds the cap. A pure function of Δ ONLY — the scope size never
 /// gates (see `MAX_PARENT_MERGE_SCOPE_BLOCKS`). Extracted for direct unit testing
@@ -859,53 +905,6 @@ pub async fn compute_parents_post_state(
                 }
             }
 
-            // Broader fast path: if one parent is an ancestor-descendant cover in DAG
-            // (not only on the main-parent chain), its post-state already subsumes the
-            // remaining parents and merge can be skipped safely.
-            if parents.len() <= 8 {
-                let parent_hashes: HashSet<BlockHash> =
-                    parents.iter().map(|p| p.block_hash.clone()).collect();
-                for candidate in &parents {
-                    let Ok(Some(candidate_closure)) = with_ancestors_capped(
-                        &s.dag,
-                        &candidate.block_hash,
-                        MAX_FULL_ANCESTOR_SCAN_NODES,
-                    ) else {
-                        continue;
-                    };
-
-                    let covers_all = parent_hashes
-                        .iter()
-                        .filter(|hash| **hash != candidate.block_hash)
-                        .all(|hash| candidate_closure.contains(hash));
-
-                    if covers_all {
-                        tracing::debug!(
-                            target: "f1r3fly.casper.compute_parents_post_state.fast_path",
-                            "compute_parents_post_state fast path: dag-descendant parent {} covers all {} parents",
-                            PrettyPrinter::build_string_bytes(&candidate.block_hash),
-                            parents.len()
-                        );
-                        let state = proto_util::post_state_hash(candidate);
-                        tracing::debug!(
-                            target: "f1r3fly.casper.compute_parents_post_state.timing",
-                            "compute_parents_post_state timing: path=dag_descendant_fast_path, parents={}, cache_lookup_ms={}, total_ms={}",
-                            parents.len(),
-                            cache_lookup_started.elapsed().as_millis(),
-                            total_started.elapsed().as_millis()
-                        );
-                        tracing::debug!(
-                            target: "f1r3fly.merge.step",
-                            step = "compute_parents_post_state.EXIT",
-                            path = "dag_descendant_fast_path",
-                            post_state = %hex::encode(&state[..8.min(state.len())]),
-                            "merge.step: exit compute_parents_post_state"
-                        );
-                        return Ok((state, Vec::new(), Vec::new()));
-                    }
-                }
-            }
-
             let mut parent_hashes_for_key: Vec<BlockHash> =
                 parents.iter().map(|p| p.block_hash.clone()).collect();
             parent_hashes_for_key.sort();
@@ -914,6 +913,11 @@ pub async fn compute_parents_post_state(
             let cache_key = super::runtime_manager::ParentsPostStateCacheKey {
                 sorted_parent_hashes: parent_hashes_for_key,
                 snapshot_lfb_hash: s.last_finalized_block.clone(),
+                // BTreeMap iteration is key-ordered, so this is deterministic.
+                sorted_latest_messages: latest_messages
+                    .iter()
+                    .map(|(v, h)| (v.clone(), h.clone()))
+                    .collect(),
                 disable_late_block_filtering,
             };
             if let Some((cached_state, cached_rejected, cached_slashes)) =
@@ -982,16 +986,12 @@ pub async fn compute_parents_post_state(
                 Ok(block_index)
             };
 
-            // Compute scope: the unfinalized band above the finalized floor.
+            // Compute scope: the unsealed band not represented by the finalized floor.
             //
             // H3: derive the floor BEFORE collecting the merge scope so the
-            // ancestor walk can be bounded at the floor's height. Blocks at or
-            // below the floor are already sealed into the floor's post-state, so
-            // scanning them is redundant; bounding here makes the walk O(Δ) (the
-            // unfinalized band) rather than O(chain length) — the prior
-            // `max_parent_depth` bound degenerated to an unbounded scan whenever
-            // the shard left it at its default (≤0 or i32::MAX), which was one
-            // of the O(Δ²) ratchet drivers.
+            // ancestor walk can drop only blocks represented by the floor's
+            // DAG past. A below-floor sibling can still be a direct parent, and
+            // its effects are not in the floor's post-state.
             let parent_hashes: Vec<BlockHash> =
                 parents.iter().map(|p| p.block_hash.clone()).collect();
             let max_parent_block_number = parents
@@ -1034,22 +1034,17 @@ pub async fn compute_parents_post_state(
 
             let include_visible_ancestor =
                 |hash: &BlockHash, dag: &KeyValueDagRepresentation| -> bool {
-                    // IMPORTANT: do not use local finalized status as a merge-scope filter.
-                    // Different validators can have temporarily different finalized views, and
-                    // filtering by `is_finalized` causes non-deterministic parent post-state
-                    // computation for the same parent set. The floor, by contrast, is a pure
-                    // function of the block's frozen justifications — node-identical — so
-                    // bounding the scan at the floor height stays deterministic AND never
-                    // silently drops a parent write above the floor (the config-depth bound
-                    // could cut above the floor and lose the band in between).
                     match dag.lookup(hash) {
-                        Ok(Some(meta)) => meta.block_number >= floor_block_number,
+                        Ok(Some(meta)) => {
+                            meta.block_number >= floor_block_number
+                                || !dag.is_in_main_chain(hash, &floor_hash).unwrap_or(false)
+                        }
                         Ok(None) => false,
                         Err(_) => false,
                     }
                 };
             // Get all ancestors of all parents (including the parents themselves)
-            // Use bounded traversal that stops at finalized blocks to prevent O(chain_length) growth
+            // Use bounded traversal that stops once the floor's represented past is reached.
             let collect_ancestors_started = std::time::Instant::now();
             let mut visible_ancestor_sets_with_parents: Vec<HashSet<BlockHash>> = Vec::new();
             for parent_hash in &parent_hashes {
@@ -1070,13 +1065,9 @@ pub async fn compute_parents_post_state(
                 .collect();
             let flatten_visible_ms = flatten_visible_started.elapsed().as_millis();
 
-            // Scope visible_blocks to blocks at or above the floor: the
-            // unfinalized band the merge resolves. Blocks at or below the floor
-            // are already sealed into the floor's post-state, so merging them is
-            // redundant. The ancestor scan above is already floor-bounded, so
-            // this retain is a defensive no-op (kept for clarity and to drive the
-            // scope tracing). Deterministic — the floor and block numbers are
-            // pure DAG/justification facts.
+            // Scope visible_blocks to blocks not represented by the floor
+            // main chain. Height alone is insufficient because a below-floor
+            // co-parent branch can be finalized outside the floor's main-parent spine.
             let pre_filter_count = visible_blocks.len();
             let pre_filter_blocks: Option<Vec<BlockHash>> = if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG)
             {
@@ -1085,7 +1076,10 @@ pub async fn compute_parents_post_state(
                 None
             };
             visible_blocks.retain(|bh| match s.dag.lookup_unsafe(bh) {
-                Ok(meta) => meta.block_number >= floor_block_number,
+                Ok(meta) => {
+                    meta.block_number >= floor_block_number
+                        || !s.dag.is_in_main_chain(bh, &floor_hash).unwrap_or(false)
+                }
                 Err(_) => true, // keep on lookup error (conservative)
             });
             if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
@@ -1239,12 +1233,24 @@ pub async fn compute_parents_post_state(
                 },
                 &runtime_manager.history_repo,
                 dag_merger::cost_optimal_rejection_alg(),
-                Some(visible_blocks),
+                Some(visible_blocks.clone()),
                 disable_late_block_filtering,
             )?;
             let merge_ms = merge_started.elapsed().as_millis();
 
-            let (state, rejected_user_pairs, rejected_slash_pairs) = merger_result;
+            let (state, mut rejected_user_pairs, rejected_slash_pairs) = merger_result;
+            let suppressed = suppress_rejected_pairs_with_later_visible_rejection(
+                block_store,
+                &visible_blocks,
+                &mut rejected_user_pairs,
+            )?;
+            if suppressed > 0 {
+                tracing::debug!(
+                    target: "f1r3fly.casper.recovery",
+                    "compute_parents_post_state: suppressed {} already-visible rejected deploy(s)",
+                    suppressed
+                );
+            }
             tracing::debug!(
                 target: "f1r3fly.merge.step",
                 step = "compute_parents_post_state.MERGE_POST",
@@ -1262,36 +1268,31 @@ pub async fn compute_parents_post_state(
             // source block at most once keeps the cost proportional to the number of
             // distinct rejected-from blocks.
             //
-            // Catchup gate: before admitting a deploy to the buffer, check its
-            // current finalization status against the local DAG view. Skip any
-            // sig whose state is terminal (Finalized / Failed / Expired) — such
-            // sigs have been resolved elsewhere, and re-proposing them would at
-            // best waste proposal slots and at worst cause a catching-up
-            // validator to re-execute already-canonical work against a
-            // different pre-state.
             if let Some(buffer) = rejected_deploy_buffer {
                 if !rejected_user_pairs.is_empty() {
-                    // Pre-compute admit decisions for all rejected sigs in
-                    // one batched canonical-chain scan, before the
-                    // per-block iteration below. Without batching, the
-                    // catchup hot path was O(rejected_count × DAG_size)
-                    // — a 50-rejected merge with a 200-block deploy-
-                    // lifespan window would do 10 000 block fetches.
-                    // After batching: one BFS regardless of N, then
-                    // dictionary lookups.
-                    let candidate_sigs: HashSet<Bytes> = rejected_user_pairs
-                        .iter()
-                        .map(|(sig, _)| sig.clone())
-                        .collect();
-                    let admit_set: HashSet<Bytes> = compute_rejected_buffer_admits(
-                        &s.dag,
+                    let floor_won = canonical_won_sigs(
                         block_store,
-                        s.on_chain_state.shard_conf.deploy_lifespan,
-                        &candidate_sigs,
-                    );
-
+                        std::slice::from_ref(&floor_hash),
+                        i64::MIN,
+                    )?;
                     let mut by_block: HashMap<BlockHash, Vec<Bytes>> = HashMap::new();
                     for (sig, src_block) in &rejected_user_pairs {
+                        if floor_won.contains(sig)
+                            || rejected_sig_has_visible_non_source_win(
+                                block_store,
+                                &visible_blocks,
+                                sig,
+                                src_block,
+                            )?
+                        {
+                            tracing::debug!(
+                                target: "f1r3fly.casper.recovery",
+                                "RejectedDeployBuffer populate: skipped already-won sig {} from {}",
+                                PrettyPrinter::build_string_bytes(sig),
+                                PrettyPrinter::build_string_bytes(src_block)
+                            );
+                            continue;
+                        }
                         by_block
                             .entry(src_block.clone())
                             .or_default()
@@ -1303,9 +1304,7 @@ pub async fn compute_parents_post_state(
                         match block_store.get(&src_block) {
                             Ok(Some(block)) => {
                                 for pd in &block.body.deploys {
-                                    if sig_set.contains(&pd.deploy.sig)
-                                        && admit_set.contains(&pd.deploy.sig)
-                                    {
+                                    if sig_set.contains(&pd.deploy.sig) {
                                         deploys_to_buffer.push(pd.deploy.clone());
                                     }
                                 }
@@ -1323,6 +1322,28 @@ pub async fn compute_parents_post_state(
                                     err
                                 );
                             }
+                        }
+                    }
+                    match retain_pending_rejected_deploys_for_buffer(
+                        &s.dag,
+                        block_store,
+                        s.on_chain_state.shard_conf.deploy_lifespan,
+                        &mut deploys_to_buffer,
+                    ) {
+                        Ok(skipped) if skipped > 0 => {
+                            tracing::info!(
+                                target: "f1r3fly.casper.recovery",
+                                "RejectedDeployBuffer populate: skipped {} terminal deploy(s)",
+                                skipped
+                            );
+                        }
+                        Ok(_) => {}
+                        Err(err) => {
+                            tracing::warn!(
+                                "RejectedDeployBuffer populate: finalization-status filter failed; skipping populate: {}",
+                                err
+                            );
+                            deploys_to_buffer.clear();
                         }
                     }
                     if !deploys_to_buffer.is_empty() {
@@ -1456,7 +1477,24 @@ pub async fn compute_parents_post_state(
 
 #[cfg(test)]
 mod backstop_tests {
-    use super::{merge_scope_backstop_exceeded, MAX_FLOOR_DISTANCE_BLOCKS};
+    use std::collections::HashSet;
+
+    use block_storage::rust::dag::block_dag_key_value_storage::{
+        BlockDagKeyValueStorage, InsertMode,
+    };
+    use block_storage::rust::key_value_block_store::KeyValueBlockStore;
+    use models::rust::block_implicits;
+    use models::rust::casper::protocol::casper_message::{ProcessedDeploy, RejectedDeploy};
+    use prost::bytes::Bytes;
+    use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+
+    use super::{
+        canonical_won_sigs, merge_scope_backstop_exceeded, rejected_sig_has_visible_non_source_win,
+        retain_pending_rejected_deploys_for_buffer,
+        suppress_rejected_pairs_with_later_visible_rejection, visible_rejected_deploy_sigs,
+        MAX_FLOOR_DISTANCE_BLOCKS,
+    };
+    use crate::rust::util::construct_deploy;
 
     #[test]
     fn backstop_rejects_only_on_floor_distance_over_cap() {
@@ -1480,5 +1518,483 @@ mod backstop_tests {
         let below = merge_scope_backstop_exceeded(MAX_FLOOR_DISTANCE_BLOCKS);
         let above = merge_scope_backstop_exceeded(MAX_FLOOR_DISTANCE_BLOCKS + 1);
         assert!(!below && above);
+    }
+
+    #[tokio::test]
+    async fn visible_non_source_win_in_lower_block_still_blocks_recovery_admission() {
+        let mut kvm = InMemoryStoreManager::new();
+        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
+            .await
+            .expect("block store");
+        let deploy = construct_deploy::source_deploy_now_full(
+            "@9!(9)".to_string(),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("deploy");
+        let sig = deploy.sig.clone();
+        let lower_clean = block_implicits::get_random_block(
+            Some(14),
+            Some(1),
+            None,
+            None,
+            None,
+            None,
+            Some(0),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(vec![ProcessedDeploy::empty(deploy.clone())]),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some("root".to_string()),
+            None,
+        );
+        let higher_source = block_implicits::get_random_block(
+            Some(23),
+            Some(1),
+            None,
+            None,
+            None,
+            None,
+            Some(0),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(vec![ProcessedDeploy::empty(deploy)]),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some("root".to_string()),
+            None,
+        );
+        block_store
+            .put_block_message(&lower_clean)
+            .expect("store lower clean");
+        block_store
+            .put_block_message(&higher_source)
+            .expect("store source");
+
+        let visible_blocks: HashSet<_> = [
+            lower_clean.block_hash.clone(),
+            higher_source.block_hash.clone(),
+        ]
+        .into_iter()
+        .collect();
+
+        assert!(rejected_sig_has_visible_non_source_win(
+            &block_store,
+            &visible_blocks,
+            &sig,
+            &higher_source.block_hash,
+        )
+        .expect("visible win check"));
+    }
+
+    #[tokio::test]
+    async fn later_visible_non_source_rejection_reopens_recovery_admission() {
+        let mut kvm = InMemoryStoreManager::new();
+        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
+            .await
+            .expect("block store");
+        let deploy = construct_deploy::source_deploy_now_full(
+            "@9!(9)".to_string(),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("deploy");
+        let sig = deploy.sig.clone();
+        let lower_clean = block_implicits::get_random_block(
+            Some(14),
+            Some(1),
+            None,
+            None,
+            None,
+            None,
+            Some(0),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(vec![ProcessedDeploy::empty(deploy.clone())]),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some("root".to_string()),
+            None,
+        );
+        let higher_source = block_implicits::get_random_block(
+            Some(23),
+            Some(1),
+            None,
+            None,
+            None,
+            None,
+            Some(0),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(vec![ProcessedDeploy::empty(deploy)]),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some("root".to_string()),
+            None,
+        );
+        let mut later_rejection = block_implicits::get_random_block(
+            Some(24),
+            Some(1),
+            None,
+            None,
+            None,
+            None,
+            Some(0),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some("root".to_string()),
+            None,
+        );
+        later_rejection.body.rejected_deploys = vec![RejectedDeploy { sig: sig.clone() }];
+        block_store
+            .put_block_message(&lower_clean)
+            .expect("store lower clean");
+        block_store
+            .put_block_message(&higher_source)
+            .expect("store source");
+        block_store
+            .put_block_message(&later_rejection)
+            .expect("store later rejection");
+
+        let visible_blocks: HashSet<_> = [
+            lower_clean.block_hash.clone(),
+            higher_source.block_hash.clone(),
+            later_rejection.block_hash.clone(),
+        ]
+        .into_iter()
+        .collect();
+
+        assert!(!rejected_sig_has_visible_non_source_win(
+            &block_store,
+            &visible_blocks,
+            &sig,
+            &higher_source.block_hash,
+        )
+        .expect("visible win check"));
+    }
+
+    #[tokio::test]
+    async fn floor_rejection_is_not_canonical_win() {
+        let mut kvm = InMemoryStoreManager::new();
+        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
+            .await
+            .expect("block store");
+        let rejected_sig = Bytes::from_static(b"floor-rejected");
+        let deploy = construct_deploy::source_deploy_now_full(
+            "@7!(7)".to_string(),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("deploy");
+        let mut rejected_floor = block_implicits::get_random_block(
+            Some(10),
+            Some(1),
+            None,
+            None,
+            None,
+            None,
+            Some(10),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some("root".to_string()),
+            None,
+        );
+        rejected_floor.body.rejected_deploys = vec![RejectedDeploy {
+            sig: rejected_sig.clone(),
+        }];
+        let clean_floor = block_implicits::get_random_block(
+            Some(11),
+            Some(1),
+            None,
+            None,
+            None,
+            None,
+            Some(11),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(vec![ProcessedDeploy::empty(deploy.clone())]),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some("root".to_string()),
+            None,
+        );
+        block_store
+            .put_block_message(&rejected_floor)
+            .expect("store rejected floor");
+        block_store
+            .put_block_message(&clean_floor)
+            .expect("store clean floor");
+
+        let rejected_floor_wins = canonical_won_sigs(
+            &block_store,
+            std::slice::from_ref(&rejected_floor.block_hash),
+            i64::MIN,
+        )
+        .expect("canonical wins for rejected floor");
+        let clean_floor_wins = canonical_won_sigs(
+            &block_store,
+            std::slice::from_ref(&clean_floor.block_hash),
+            i64::MIN,
+        )
+        .expect("canonical wins for clean floor");
+
+        assert!(!rejected_floor_wins.contains(&rejected_sig));
+        assert!(clean_floor_wins.contains(&deploy.sig));
+    }
+
+    #[tokio::test]
+    async fn visible_rejected_deploys_are_detected_from_visible_blocks() {
+        let mut kvm = InMemoryStoreManager::new();
+        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
+            .await
+            .expect("block store");
+        let rejected_sig = Bytes::from_static(b"rejected");
+        let unseen_sig = Bytes::from_static(b"unseen");
+        let mut rejected_block = block_implicits::get_random_block(
+            Some(1),
+            Some(1),
+            None,
+            None,
+            None,
+            None,
+            Some(1),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some("root".to_string()),
+            None,
+        );
+        rejected_block.body.rejected_deploys = vec![RejectedDeploy {
+            sig: rejected_sig.clone(),
+        }];
+        let unseen_block = block_implicits::get_random_block(
+            Some(1),
+            Some(1),
+            None,
+            None,
+            None,
+            None,
+            Some(1),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some("root".to_string()),
+            None,
+        );
+        block_store
+            .put_block_message(&rejected_block)
+            .expect("store rejected block");
+        block_store
+            .put_block_message(&unseen_block)
+            .expect("store unseen block");
+
+        let visible_blocks = [rejected_block.block_hash.clone()].into_iter().collect();
+        let detected =
+            visible_rejected_deploy_sigs(&block_store, &visible_blocks).expect("detect rejected");
+
+        assert!(detected.contains(&rejected_sig));
+        assert!(!detected.contains(&unseen_sig));
+    }
+
+    #[tokio::test]
+    async fn older_visible_rejection_does_not_suppress_recovery_source_rejection() {
+        let mut kvm = InMemoryStoreManager::new();
+        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
+            .await
+            .expect("block store");
+        let recovered_sig = Bytes::from_static(b"recovered");
+        let duplicate_sig = Bytes::from_static(b"duplicate");
+        let mut old_rejection = block_implicits::get_random_block(
+            Some(10),
+            Some(1),
+            None,
+            None,
+            None,
+            None,
+            Some(10),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some("root".to_string()),
+            None,
+        );
+        old_rejection.body.rejected_deploys = vec![RejectedDeploy {
+            sig: recovered_sig.clone(),
+        }];
+        let source = block_implicits::get_random_block(
+            Some(20),
+            Some(1),
+            None,
+            None,
+            None,
+            None,
+            Some(20),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some("root".to_string()),
+            None,
+        );
+        let mut later_rejection = block_implicits::get_random_block(
+            Some(21),
+            Some(1),
+            None,
+            None,
+            None,
+            None,
+            Some(21),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some("root".to_string()),
+            None,
+        );
+        later_rejection.body.rejected_deploys = vec![RejectedDeploy {
+            sig: duplicate_sig.clone(),
+        }];
+        block_store
+            .put_block_message(&old_rejection)
+            .expect("store old rejection");
+        block_store
+            .put_block_message(&source)
+            .expect("store source");
+        block_store
+            .put_block_message(&later_rejection)
+            .expect("store later rejection");
+
+        let visible_blocks: HashSet<_> = [
+            old_rejection.block_hash.clone(),
+            source.block_hash.clone(),
+            later_rejection.block_hash.clone(),
+        ]
+        .into_iter()
+        .collect();
+        let mut rejected_pairs = vec![
+            (recovered_sig.clone(), source.block_hash.clone()),
+            (duplicate_sig.clone(), source.block_hash.clone()),
+        ];
+
+        let suppressed = suppress_rejected_pairs_with_later_visible_rejection(
+            &block_store,
+            &visible_blocks,
+            &mut rejected_pairs,
+        )
+        .expect("suppress rejected pairs");
+
+        assert_eq!(suppressed, 1);
+        assert_eq!(rejected_pairs, vec![(recovered_sig, source.block_hash)]);
+    }
+
+    #[tokio::test]
+    async fn finalized_rejected_deploys_are_not_buffered_again() {
+        let mut kvm = InMemoryStoreManager::new();
+        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
+            .await
+            .expect("block store");
+        let dag_storage = BlockDagKeyValueStorage::new(&mut kvm)
+            .await
+            .expect("dag storage");
+
+        let genesis = block_implicits::get_random_block(
+            Some(0),
+            Some(0),
+            None,
+            None,
+            None,
+            None,
+            Some(0),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some("root".to_string()),
+            None,
+        );
+        let finalized = construct_deploy::source_deploy_now_full(
+            "@1!(1)".to_string(),
+            None,
+            None,
+            None,
+            Some(0),
+            None,
+        )
+        .expect("finalized deploy");
+        let pending = construct_deploy::source_deploy_now_full(
+            "@2!(2)".to_string(),
+            None,
+            None,
+            None,
+            Some(0),
+            None,
+        )
+        .expect("pending deploy");
+        let finalized_block = block_implicits::get_random_block(
+            Some(1),
+            Some(1),
+            None,
+            None,
+            None,
+            None,
+            Some(1),
+            Some(vec![genesis.block_hash.clone()]),
+            Some(Vec::new()),
+            Some(vec![ProcessedDeploy::empty(finalized.clone())]),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some("root".to_string()),
+            None,
+        );
+
+        block_store
+            .put_block_message(&genesis)
+            .expect("store genesis");
+        block_store
+            .put_block_message(&finalized_block)
+            .expect("store finalized");
+        dag_storage
+            .insert(&genesis, InsertMode::Approved)
+            .expect("insert genesis");
+        dag_storage
+            .insert(&finalized_block, InsertMode::Normal)
+            .expect("insert finalized");
+
+        let mut dag = dag_storage.get_representation().expect("dag");
+        dag.last_finalized_block_hash = finalized_block.block_hash.clone();
+
+        let mut deploys = vec![finalized.clone(), pending.clone()];
+        let skipped =
+            retain_pending_rejected_deploys_for_buffer(&dag, &block_store, 50, &mut deploys)
+                .expect("retain pending");
+
+        assert_eq!(skipped, 1);
+        assert_eq!(deploys.len(), 1);
+        assert_eq!(deploys[0].sig, pending.sig);
     }
 }

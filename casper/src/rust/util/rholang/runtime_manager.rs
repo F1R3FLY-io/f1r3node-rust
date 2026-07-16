@@ -89,6 +89,12 @@ pub struct ParentsPostStateCacheKey {
     pub sorted_parent_hashes: Vec<BlockHash>,
     // Snapshot LFB participates in visible-ancestor filtering, so cache key must include it.
     pub snapshot_lfb_hash: BlockHash,
+    // The finalized-floor merge base is derived from the block's frozen
+    // justification snapshot (finality/floor.rs), so identical parent sets
+    // under different justification maps can merge from different floors.
+    // Sorted (validator, latest_block_hash) pairs keep such contexts from
+    // sharing a cache entry.
+    pub sorted_latest_messages: Vec<(Validator, BlockHash)>,
     pub disable_late_block_filtering: bool,
 }
 
@@ -723,6 +729,20 @@ impl RuntimeManager {
         Ok(computed)
     }
 
+    /// On-chain protocol fault-tolerance threshold (ppm) at `start_hash`, or
+    /// `None` when the chain's genesis predates the parameter. Read once at
+    /// casper construction (`hash_set_casper`) — not cached here.
+    pub async fn get_fault_tolerance_threshold_ppm(
+        &self,
+        start_hash: &StateHash,
+    ) -> Result<Option<i64>, CasperError> {
+        let runtime = self.spawn_runtime().await;
+        let mut runtime_ops = RuntimeOps::new(runtime);
+        runtime_ops
+            .get_fault_tolerance_threshold_ppm(start_hash)
+            .await
+    }
+
     pub async fn compute_bonds(&self, hash: &StateHash) -> Result<Vec<Bond>, CasperError> {
         if let Some(cached) = self.bonds_cache.get(hash) {
             Self::touch_cache_key(&self.bonds_cache_order, hash);
@@ -1187,13 +1207,12 @@ impl RuntimeManager {
      * the time. For some situations, we can just use the value directly for better performance.
      */
     pub fn empty_state_hash_fixed() -> StateHash {
-        // Updated 2026-04-29 by Phase 9 of where-clauses-and-match-guards
-        // (plan §7.12): the guard moved from BindPattern.condition (Phase 7)
-        // to TaggedContinuation.guard, dropping a field from BindPattern and
-        // adding one to TaggedContinuation. Both shifts re-encode the
-        // bootstrap registry's installed continuations and patterns.
-        // Coordinated upgrade required.
-        hex::decode("cb7480d13e774ef931c0d22379cbe4deb6fed0f096d7ff93d507a2b3276d7efe")
+        // Updated 2026-07-04 for the versioned registry FIP: Step 2 wires
+        // VersionedRegistry.rho into genesis, adding one more contract to
+        // the initial installed set and re-encoding the bootstrap
+        // registry's continuations. Coordinated upgrade required.
+        // (Prior update: 2026-04-29 by Phase 9 of where-clauses-and-match-guards.)
+        hex::decode("facf59ccc55ee2c04802c7399bcff0d15154f70e0d2bc40cf041aac0a89499c1")
             .unwrap()
             .into()
     }
