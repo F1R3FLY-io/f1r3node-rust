@@ -70,7 +70,9 @@ jobs:
   property-based:
     name: Property-based theorem tests
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # At PROPTEST_CASES=2000 the suite genuinely runs to completion instead
+    # of aborting early; 30 min was exceeded doing real work.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
       - name: Install Rust
@@ -143,10 +145,16 @@ jobs:
 
   tla-model-check:
     name: TLA+ invariant check
+    # Demoted from PR-gate to nightly/dispatch: on hosted runners the FIRST
+    # MC config alone exceeded 60 minutes (job cancelled at the deadline
+    # with zero configs completed), so the full frontier cannot gate PRs
+    # until per-config runtimes are profiled (the nightly run's per-config
+    # progress lines provide exactly that) or the job moves to faster
+    # runners. See docs/theory/slashing/design/14-test-plan.md section 14.9
+    # for the original PR-gate intent this temporarily deviates from.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
-    # 30 min was exceeded on a cold runner (cancelled at the deadline);
-    # TLC across ~10 MC configs plus Java setup needs the headroom.
-    timeout-minutes: 60
+    timeout-minutes: 240
     steps:
       - uses: actions/checkout@v4
       - name: Install Java + TLC
