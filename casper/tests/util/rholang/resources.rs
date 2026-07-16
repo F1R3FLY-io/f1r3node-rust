@@ -218,8 +218,12 @@ pub fn mk_test_rnode_store_manager_with_dual_scope(
 ) -> impl KeyValueStoreManager {
     let (shared_path, _temp_dir) = &*SHARED_LMDB_ENV;
     // Dual-scope variant — same shared-env consideration as
-    // mk_test_rnode_store_manager_with_scope. Bumped from 100 MB to 1 GB.
-    let limit_size = GB;
+    // mk_test_rnode_store_manager_with_scope. Bumped from 100 MB to 1 GB,
+    // then to 4 GB (matching with_scope): scoped-DB data accumulates in the
+    // shared env across store-manager creations, and the slashing proptest
+    // suite filled 1 GB mid-job (MDB_MAP_FULL). map_size is virtual address
+    // space; real disk usage matches data written.
+    let limit_size = 4 * GB;
 
     let db_mappings: Vec<(Db, LmdbEnvConfig)> = rnode_db_mapping(None)
         .into_iter()
