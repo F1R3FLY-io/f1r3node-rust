@@ -2,6 +2,7 @@ use std::time::Duration;
 
 pub mod test_util;
 
+pub mod active_validators_cap_spec;
 pub mod auth_key_spec;
 pub mod block_data_contract_spec;
 pub mod deep_recursion_spec;

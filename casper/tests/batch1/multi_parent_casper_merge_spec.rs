@@ -60,14 +60,17 @@ async fn hash_set_casper_should_handle_multi_parent_blocks_correctly() {
     assert!(nodes[0]
         .block_dag_storage
         .get_representation()
+        .expect("dag representation")
         .is_finalized(&genesis.genesis_block.block_hash));
     assert!(!nodes[0]
         .block_dag_storage
         .get_representation()
+        .expect("dag representation")
         .is_finalized(&block0.block_hash));
     assert!(!nodes[0]
         .block_dag_storage
         .get_representation()
+        .expect("dag representation")
         .is_finalized(&block1.block_hash));
 
     //multiparent block joining block0 and block1 since they do not conflict
@@ -264,8 +267,12 @@ new getBlockData(`rho:block:data`), stdout(`rho:io:stdout`), tCh in {
     let _b2n2 = nodes[1].create_block(&[reg]).await.unwrap();
 }
 
+// Ported from the Scala `MultiParentCasperMergeSpec`, where it was `ignore`d.
+// The Scala design refused to merge conflicting blocks, so the child had a
+// single parent. The Rust multi-parent design instead links every validator's
+// latest message as a parent and resolves the conflict by rejecting one of the
+// conflicting deploys (asserted below via `rejected_deploys`).
 #[tokio::test]
-#[ignore = "Scala ignore"]
 async fn hash_set_casper_should_not_merge_blocks_that_touch_the_same_channel_involving_joins() {
     let genesis = GenesisBuilder::new()
         .build_genesis_with_parameters(Some(
@@ -306,12 +313,12 @@ async fn hash_set_casper_should_not_merge_blocks_that_touch_the_same_channel_inv
 
     let deploys = vec![deploy0, deploy1, deploy2];
 
-    let _block0 = nodes[0]
+    let block0 = nodes[0]
         .add_block_from_deploys(&[deploys[0].clone()])
         .await
         .unwrap();
 
-    let _block1 = nodes[1]
+    let block1 = nodes[1]
         .add_block_from_deploys(&[deploys[1].clone()])
         .await
         .unwrap();
@@ -328,7 +335,37 @@ async fn hash_set_casper_should_not_merge_blocks_that_touch_the_same_channel_inv
 
     nodes[1].handle_receive().await.unwrap();
 
-    assert_eq!(single_parent_block.header.parents_hash_list.len(), 1);
+    // Under multi-parent merging, a proposed block links the latest message of
+    // every bonded validator as a parent. The genesis is bonded to three
+    // validators but only two nodes exist, so the parents are block0
+    // (validator 0), block1 (validator 1) and — for the third bonded-but-absent
+    // validator — the genesis block itself.
+    assert_eq!(single_parent_block.header.parents_hash_list.len(), 3);
+    assert!(single_parent_block
+        .header
+        .parents_hash_list
+        .contains(&block0.block_hash));
+    assert!(single_parent_block
+        .header
+        .parents_hash_list
+        .contains(&block1.block_hash));
+
+    // block0 (`@1!(47)`) produces on channel @1, while block1
+    // (`for(@x <- @1 & @y <- @2){ @1!(x) }`) consumes from @1 through a join.
+    // The two blocks therefore conflict on @1, so their effects must NOT be
+    // merged together: conflict resolution rejects exactly one of the two
+    // conflicting deploys (observed: block0's `@1!(47)` producer), so the
+    // volatile join never fires. This is the multi-parent-merge analogue of the
+    // original Scala expectation that the blocks are "not merged" — contrast the
+    // non-conflicting multi-parent case above, whose merge block carries an
+    // empty `rejected_deploys`.
+    assert_eq!(single_parent_block.body.rejected_deploys.len(), 1);
+    let rejected_sig = &single_parent_block.body.rejected_deploys[0].sig;
+    assert!(
+        *rejected_sig == deploys[0].sig || *rejected_sig == deploys[1].sig,
+        "the rejected deploy must be one of the two conflicting deploys (the @1 producer or the @1 & @2 join)"
+    );
+
     assert!(nodes[0].contains(&single_parent_block.block_hash));
     assert!(nodes[1].knows_about(&single_parent_block.block_hash));
 }
@@ -507,10 +544,12 @@ async fn hash_set_casper_should_produce_identical_merge_results_regardless_of_fi
     assert!(nodes[0]
         .block_dag_storage
         .get_representation()
+        .expect("dag representation")
         .is_finalized(&block0.block_hash));
     assert!(!nodes[1]
         .block_dag_storage
         .get_representation()
+        .expect("dag representation")
         .is_finalized(&block0.block_hash));
 
     // Node2 creates a merge block (node2 has NOT finalized block0 either)

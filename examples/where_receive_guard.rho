@@ -1,0 +1,13 @@
+// Receive-side `where` guard: only commit when both the spatial pattern
+// matches AND the guard evaluates to true. Failing the guard leaves the
+// message in the tuple space — same as a non-matching pattern.
+//
+// Sends three numbers; the receive consumes only the positive one.
+new chan, stdout(`rho:io:stdout`) in {
+    chan!(-3) |
+    chan!(0)  |
+    chan!(7)  |
+    for (@x <- chan where x > 0) {
+        stdout!(("kept", x))
+    }
+}

@@ -40,10 +40,10 @@ pub fn empty_node() -> Node { vec![Item::EmptyItem; NUM_ITEMS] }
 /**
 * Binary codecs for serializing/deserializing Node in Radix tree
 *
-* {{{
+* ```text
 * Coding structure for items:
 *   EmptyItem                   - Empty (not encode)
-
+*
 *   Leaf(prefix,value)    -> [item index] [second byte] [prefix0]..[prefixM] [value0]..[value31]
 *                               where is: [second byte] -> bit7 = 0 (Leaf identifier)
 *                                                          bit6..bit0 - prefix length = M (from 0 to 127)
@@ -58,7 +58,7 @@ pub fn empty_node() -> Node { vec![Item::EmptyItem; NUM_ITEMS] }
 *                  0280FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF
 * where: item 1 (index_secondByte_prefix_value) = 01_02_FFFF_00..0001
 *        item 2 (index_secondByte_prefix_value) = 02_80_empty_FF..FFFF
-* }}}
+* ```
 */
 
 // Default size for non-empty item data

@@ -38,6 +38,49 @@ where
     result
 }
 
+/// Fallible breadth-first traversal. The `neighbors` closure returns
+/// `Result<Vec<A>, E>` so storage errors can be surfaced rather than
+/// silently truncating the traversal.
+///
+/// On the first `Err` the traversal short-circuits and the error is
+/// returned. Otherwise the behavior matches `bf_traverse` exactly.
+///
+/// Use this when the closure performs I/O (storage lookups, network
+/// reads, etc.) whose failure would corrupt the result of a consumer
+/// — e.g. the consensus snapshot's `deploys_in_scope` set, where a
+/// silent shrink could admit duplicate-sig deploys.
+pub fn try_bf_traverse<A, E, F>(start: Vec<A>, mut neighbors: F) -> Result<Vec<A>, E>
+where
+    A: Eq + Hash + Clone,
+    F: FnMut(&A) -> Result<Vec<A>, E>,
+{
+    let mut result = Vec::new();
+    let mut queue = VecDeque::new();
+    let mut visited = HashSet::new();
+
+    for node in start {
+        queue.push_back(node);
+    }
+
+    while let Some(curr) = queue.pop_front() {
+        if visited.contains(&curr) {
+            continue;
+        }
+
+        visited.insert(curr.clone());
+        result.push(curr.clone());
+
+        let ns = neighbors(&curr)?;
+        for n in ns {
+            if !visited.contains(&n) {
+                queue.push_back(n);
+            }
+        }
+    }
+
+    Ok(result)
+}
+
 pub fn bf_traverse_find<A, F, P>(start: Vec<A>, mut neighbors: F, mut predicate: P) -> Option<A>
 where
     A: Eq + Hash + Clone,
@@ -150,6 +193,35 @@ mod tests {
         // The remaining nodes should include 3 and 4 (order may vary)
         assert!(result.contains(&3));
         assert!(result.contains(&4));
+    }
+
+    #[test]
+    fn test_try_bf_traverse_success() {
+        let mut graph: HashMap<i32, Vec<i32>> = HashMap::new();
+        graph.insert(1, vec![2, 3]);
+        graph.insert(2, vec![4]);
+        graph.insert(3, vec![]);
+        graph.insert(4, vec![]);
+
+        let neighbors = |n: &i32| -> Result<Vec<i32>, &'static str> {
+            Ok(graph.get(n).cloned().unwrap_or_default())
+        };
+        let result = try_bf_traverse(vec![1], neighbors).expect("traversal must succeed");
+        assert_eq!(result.len(), 4);
+        assert_eq!(result[0], 1);
+    }
+
+    #[test]
+    fn test_try_bf_traverse_short_circuits_on_error() {
+        let neighbors = |n: &i32| -> Result<Vec<i32>, &'static str> {
+            if *n == 2 {
+                Err("simulated storage failure")
+            } else {
+                Ok(vec![2, 3])
+            }
+        };
+        let err = try_bf_traverse(vec![1], neighbors).expect_err("error must propagate");
+        assert_eq!(err, "simulated storage failure");
     }
 
     #[test]

@@ -405,7 +405,10 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
                 PrettyPrinter::build_string(CasperMessage::BlockMessage(block.clone()), true)
             );
 
-            initializing.block_dag_storage.insert(block, false, true)?;
+            initializing.block_dag_storage.insert(
+                block,
+                block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved,
+            )?;
 
             initializing.request_approved_state(approved_block).await?;
 
@@ -673,7 +676,7 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         // `Estimator::filterDeepParents` and the validator-side parent-depth
         // check in `validate::parents`.
         {
-            let dag = self.block_dag_storage.get_representation();
+            let dag = self.block_dag_storage.get_representation()?;
             let horizon_roots =
                 crate::rust::util::rspace_history_horizon::compute_forward_horizon_roots(
                     &dag,
@@ -768,6 +771,25 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             }
         }
 
+        // Replay blocks to populate the mergeable channel cache. Needed for
+        // multi-parent block validation: any block whose mergeable-channel
+        // metadata predates this node's LFS sync must be replayed against the
+        // stored post-state so `RuntimeManager::load_mergeable_channels`
+        // succeeds during validation.
+        //
+        // Merge of dev (EPOCH-004): dev's `lfs_block_requester::stream` now
+        // routes `MergeableEntryResponse` messages through
+        // `mergeable_message_rx` to populate the cache during sync, which
+        // covers most of the same ground. This explicit replay is the
+        // defensive companion path — it catches any block whose mergeable
+        // entry was missed by the streaming response (e.g. a peer that
+        // didn't ship one), and is a no-op when the cache is already warm.
+        self.replay_blocks_for_mergeable_channels(
+            approved_block,
+            min_block_number_for_deploy_lifespan,
+        )
+        .await?;
+
         // Transition to Running state
         tracing::info!("request_approved_state: transitioning to Running");
         self.create_casper_and_transition_to_running(approved_block)
@@ -808,9 +830,14 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             );
 
             // Scala equivalent: `BlockDagStorage[F].insert(block, invalid = isInvalid)`
-            initializing
-                .block_dag_storage
-                .insert(block, is_invalid, false)?;
+            initializing.block_dag_storage.insert(
+                block,
+                if is_invalid {
+                    block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Invalid
+                } else {
+                    block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal
+                },
+            )?;
 
             Ok(())
         }
@@ -861,6 +888,176 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         Ok(())
     }
 
+    /// Replay blocks in topological order to populate the mergeable channel cache.
+    /// This is necessary for multi-parent block validation, which requires mergeable
+    /// channel data from parent blocks to compute merged state.
+    ///
+    /// The LFS sync transfers the RSpace trie but not the mergeable channel store,
+    /// so we must regenerate it by replaying blocks.
+    async fn replay_blocks_for_mergeable_channels(
+        &self,
+        _approved_block: &ApprovedBlock,
+        min_block_number: i64,
+    ) -> Result<(), CasperError> {
+        tracing::info!("Replaying blocks to populate mergeable channel cache...");
+
+        // Get DAG representation for traversal
+        let dag = self.block_dag_storage.get_representation()?;
+
+        // Get all blocks in the DAG that need replay (from minBlockNumber to LFB)
+        // We process in topological order (by block number, then by hash for determinism)
+        let all_blocks = dag.topo_sort(min_block_number, None)?;
+        let blocks_to_replay: Vec<BlockHash> = all_blocks.into_iter().flatten().collect();
+
+        tracing::info!(
+            "Found {} blocks to replay for mergeable channel cache.",
+            blocks_to_replay.len()
+        );
+
+        // Replay each block to populate mergeable channels
+        for block_hash in blocks_to_replay {
+            let block = self.block_store.get_unsafe(&block_hash);
+            let parents = &block.header.parents_hash_list;
+
+            if parents.is_empty() {
+                // Genesis block - replay from empty state
+                self.replay_genesis_block(&block).await?;
+            } else {
+                self.replay_single_block(&block).await?;
+            }
+        }
+
+        tracing::info!("Mergeable channel cache populated successfully.");
+        Ok(())
+    }
+
+    /// Replay genesis block to populate its mergeable channel cache entry.
+    /// Genesis is special because it starts from empty state.
+    async fn replay_genesis_block(&self, block: &BlockMessage) -> Result<(), CasperError> {
+        let block_hash = &block.block_hash;
+        let block_number = proto_util::block_number(block);
+
+        tracing::debug!(
+            "Replaying genesis block #{} ({})",
+            block_number,
+            PrettyPrinter::build_string_bytes(block_hash)
+        );
+
+        let deploys = proto_util::deploys(block);
+        let system_deploys = proto_util::system_deploys(block);
+        let block_data = rholang::rust::interpreter::system_processes::BlockData::from_block(block);
+
+        // Genesis starts from empty state
+        let pre_state_hash = RuntimeManager::empty_state_hash_fixed();
+
+        // Replay genesis - this will save mergeable channels to the store.
+        // `Arc<RuntimeManager>` is interior-mutable post rspace++ rewrite, so no
+        // outer Mutex / lock acquisition is required.
+        let result = self
+            .runtime_manager
+            .replay_compute_state(
+                &pre_state_hash,
+                deploys,
+                system_deploys,
+                &block_data,
+                None, // No invalid blocks for genesis
+                true, // isGenesis = true
+            )
+            .await;
+
+        match result {
+            Ok(computed_post_state) => {
+                let expected_post_state = &block.body.state.post_state_hash;
+                if computed_post_state == *expected_post_state {
+                    tracing::debug!("Genesis block replayed successfully.");
+                } else {
+                    tracing::warn!(
+                        "Genesis block replay state mismatch: computed={}, expected={}",
+                        PrettyPrinter::build_string_bytes(&computed_post_state),
+                        PrettyPrinter::build_string_bytes(expected_post_state)
+                    );
+                }
+            }
+            Err(e) => {
+                tracing::warn!("Genesis block replay error: {:?}", e);
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Replay a single block to populate its mergeable channel cache entry.
+    async fn replay_single_block(&self, block: &BlockMessage) -> Result<(), CasperError> {
+        let block_hash = &block.block_hash;
+        let block_number = proto_util::block_number(block);
+        let parents = &block.header.parents_hash_list;
+
+        // For single-parent blocks, use parent's post-state
+        // For multi-parent blocks, we need the pre-state from the block itself
+        // (by the time we reach a multi-parent block, all its parents have been replayed)
+        let pre_state_hash = if parents.len() == 1 {
+            let parent_block = self.block_store.get_unsafe(&parents[0]);
+            parent_block.body.state.post_state_hash.clone()
+        } else {
+            // Multi-parent: use the block's recorded pre-state
+            // This works because we're replaying in topological order
+            block.body.state.pre_state_hash.clone()
+        };
+
+        let deploys = proto_util::deploys(block);
+        let system_deploys = proto_util::system_deploys(block);
+        let block_data = rholang::rust::interpreter::system_processes::BlockData::from_block(block);
+        let is_genesis = parents.is_empty();
+
+        // Get invalid blocks map for replay
+        let dag = self.block_dag_storage.get_representation()?;
+        let invalid_blocks_map = dag.invalid_blocks_map()?;
+
+        tracing::debug!(
+            "Replaying block #{} ({}) with {} deploys, {} parents",
+            block_number,
+            PrettyPrinter::build_string_bytes(block_hash),
+            deploys.len(),
+            parents.len()
+        );
+
+        // Replay the block - this will save mergeable channels to the store.
+        // `Arc<RuntimeManager>` is interior-mutable post rspace++ rewrite, so no
+        // outer Mutex / lock acquisition is required.
+        let result = self
+            .runtime_manager
+            .replay_compute_state(
+                &pre_state_hash,
+                deploys,
+                system_deploys,
+                &block_data,
+                Some(invalid_blocks_map),
+                is_genesis,
+            )
+            .await;
+
+        match result {
+            Ok(computed_post_state) => {
+                let expected_post_state = &block.body.state.post_state_hash;
+                if computed_post_state == *expected_post_state {
+                    tracing::debug!("Block #{} replayed successfully.", block_number);
+                } else {
+                    tracing::warn!(
+                        "Block #{} replay state mismatch: computed={}, expected={}",
+                        block_number,
+                        PrettyPrinter::build_string_bytes(&computed_post_state),
+                        PrettyPrinter::build_string_bytes(expected_post_state)
+                    );
+                }
+            }
+            Err(e) => {
+                tracing::warn!("Block #{} replay error: {:?}", block_number, e);
+            }
+        }
+
+        Ok(())
+    }
+
     /// **Scala equivalent**: `private def createCasperAndTransitionToRunning(approvedBlock: ApprovedBlock): F[Unit]`
     async fn create_casper_and_transition_to_running(
         &self,
@@ -879,21 +1076,27 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             .take()
             .ok_or_else(|| CasperError::RuntimeError("Estimator not available".to_string()))?;
 
-        let on_chain_ftt =
-            crate::rust::util::token_metadata_check::read_on_chain_fault_tolerance_threshold(
+        // Single exact conversion point: read the on-chain ppm (the exact source
+        // of truth for the finalization DECISION) and derive the f32 for display.
+        let on_chain_ppm =
+            crate::rust::util::token_metadata_check::read_on_chain_fault_tolerance_threshold_ppm(
                 &runtime_manager,
                 &genesis_post_state_hash,
             )
             .await?;
+        let on_chain_ftt = (on_chain_ppm as f64 / 1_000_000.0) as f32;
         let mut casper_shard_conf = self.casper_shard_conf.clone();
-        if (on_chain_ftt - casper_shard_conf.fault_tolerance_threshold).abs() > 1e-6 {
+        if casper_shard_conf.fault_tolerance_threshold_ppm != on_chain_ppm {
             tracing::warn!(
                 event = "fault_tolerance_threshold_sourced_from_genesis",
+                local_ppm = casper_shard_conf.fault_tolerance_threshold_ppm,
+                on_chain_ppm = on_chain_ppm,
                 local = casper_shard_conf.fault_tolerance_threshold,
                 on_chain = on_chain_ftt,
                 "using on-chain fault-tolerance-threshold from genesis"
             );
         }
+        casper_shard_conf.fault_tolerance_threshold_ppm = on_chain_ppm;
         casper_shard_conf.fault_tolerance_threshold = on_chain_ftt;
 
         // Pass Arc<RuntimeManager> directly to hash_set_casper

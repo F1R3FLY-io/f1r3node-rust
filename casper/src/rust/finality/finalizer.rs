@@ -9,7 +9,7 @@ use models::rust::block_metadata::BlockMetadata;
 use models::rust::validator::Validator;
 use shared::rust::store::key_value_store::KvStoreError;
 
-use crate::rust::safety::clique_oracle::CliqueOracle;
+use crate::rust::safety::clique_oracle::{ft_decides_exact, CliqueOracle, FtThreshold};
 
 /// Block can be recorded as last finalized block (LFB) if Safety oracle outputs fault tolerance (FT)
 /// for this block greater then some predefined threshold. This is defined by [`CliqueOracle::compute_output`]
@@ -136,7 +136,7 @@ impl Finalizer {
     /// Scope of the search is constrained by the lowest height (height of current last finalized message).
     pub async fn run<F, Fut>(
         dag: &KeyValueDagRepresentation,
-        fault_tolerance_threshold: f32,
+        ftt: FtThreshold,
         curr_lfb_height: i64,
         mut new_lfb_found_effect: F,
         finalizer_conf: &crate::rust::casper_conf::FinalizerConf,
@@ -371,7 +371,27 @@ impl Finalizer {
             let ft_upper_bound =
                 Self::fault_tolerance_upper_bound(&message_weight_map, &agreeing_weight_map);
             max_ft_upper_bound = max_ft_upper_bound.max(ft_upper_bound);
-            if ft_upper_bound <= f64::from(fault_tolerance_threshold) {
+            // A9 exact conservative prune: the max clique weight q is bounded above
+            // by the total agreeing stake, so if the strict exact test fails even at
+            // q = agreeing, no real clique can finalize this candidate. This NEVER
+            // prunes a true finalizer at the θ margin (the f32 rounding hazard the
+            // exact decision removes). The f32 `ft_upper_bound` above is retained
+            // for the telemetry metric only.
+            let prune = match (
+                Self::checked_stake_sum(&message_weight_map),
+                Self::checked_stake_sum(&agreeing_weight_map),
+            ) {
+                (Some(total_stake), Some(agreeing_stake)) if total_stake > 0 => !ft_decides_exact(
+                    agreeing_stake,
+                    agreeing_stake,
+                    total_stake,
+                    ftt.num,
+                    ftt.den,
+                    true,
+                ),
+                _ => true,
+            };
+            if prune {
                 upper_bound_pruned_count += 1;
                 continue;
             }
@@ -379,17 +399,26 @@ impl Finalizer {
             clique_eval_count += 1;
             let ft_result = tokio::time::timeout(
                 step_timeout,
-                CliqueOracle::compute_output_with_cache(
+                // A9 atomic activation: the LFB finalizer uses the EXACT STRICT
+                // (`strict=true` ⇒ > θ) decision, distinct from the floor path's ≥.
+                // This exact decision replaces `fault_tolerance > threshold_f32` and
+                // activates atomically with the unreleased branch (all validators
+                // upgrade together; no mixed-version window; no on-chain flag). The
+                // returned f32 is the (2q−S)/S DISPLAY value only.
+                CliqueOracle::compute_decision_with_cache(
                     &message.block_hash,
                     &message_weight_map,
                     &agreeing_weight_map,
                     dag,
                     &mut clique_run_cache,
                     &latest_messages_snapshot,
+                    ftt.num,
+                    ftt.den,
+                    true,
                 ),
             )
             .await;
-            let fault_tolerance = match ft_result {
+            let (finalized, ft_value) = match ft_result {
                 Ok(Ok(value)) => value,
                 Ok(Err(err)) => {
                     tracing::debug!(
@@ -411,9 +440,8 @@ impl Finalizer {
                 }
             };
 
-            if fault_tolerance > fault_tolerance_threshold {
+            if finalized {
                 let lfb_hash = message.block_hash.clone();
-                let ft_value = fault_tolerance as f32;
                 // Only process blocks that aren't already finalized
                 if !dag.is_finalized(&lfb_hash) {
                     new_lfb_found_effect((lfb_hash.clone(), ft_value)).await?;
@@ -423,10 +451,11 @@ impl Finalizer {
             } else {
                 tracing::debug!(
                     target: "f1r3fly.finalizer.timing",
-                    "Finalizer candidate rejected by threshold: hash={:?}, fault_tolerance={:.6}, threshold={:.6}",
+                    "Finalizer candidate rejected by threshold: hash={:?}, fault_tolerance={:.6}, threshold_ppm={}/{}",
                     message.block_hash,
-                    fault_tolerance,
-                    fault_tolerance_threshold
+                    ft_value,
+                    ftt.num,
+                    ftt.den
                 );
             }
         }

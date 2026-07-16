@@ -55,7 +55,7 @@ in {
         ("Update after delete behaves like update on never-set", *test_update_after_delete),
         ("ToMap reflects deletions", *test_to_map_after_delete),
         ("TreeHashMap with depth=1 (max interior sharing)", *test_treehashmap_depth_1),
-        ("GetOrElse returns default after delete", *test_get_or_else_after_delete),
+        ("GetOrElse triggers nil-continuation after delete", *test_get_or_else_after_delete),
         ("Bulk insert + bulk delete + bulk reinsert", *test_bulk_insert_then_bulk_delete_then_reinsert),
         ("Convert to map 0 values", *test_convert_to_map_0_values),
         ("Convert to map 1 values", *test_convert_to_map_1_values),
@@ -379,14 +379,28 @@ in {
         }
       } |
 
-      // After delete, update walks the same code path as update-on-never-set.
-      // With the same `val + 1` update body that yields no result on Nil
-      // input, get must return Nil — matching test_get_after_update_nil.
+      // Update after delete differs from update on a *never-set* key at the
+      // implementation level, even though both leave `get` returning Nil:
+      //   * never-set (test_get_after_update_nil): the interior bitmap bit for
+      //     the key's path is clear, so TreeHashMapUpdater short-circuits and
+      //     NEVER invokes the update function.
+      //   * deleted: delete removes the leaf-map ENTRY but leaves an empty map
+      //     `{}` at the leaf and does NOT clear interior bits (the no-bit-clear
+      //     invariant documented above). Because `{}` is not the sentinel
+      //     integer `0`, TreeHashMapUpdater reaches the leaf and DOES invoke the
+      //     update function, passing the key's current value `{}.get("k")` == Nil.
+      // The update function must therefore be Nil-safe. A Nil-preserving function
+      // keeps the key observably Nil via `get`, matching update-on-never-set.
+      // (The earlier `retCh!(val + 1)` body crashed here with "Multiple
+      // expressions given" because it evaluated `Nil + 1`.)
       contract test_update_after_delete(rhoSpec, _, ackCh) = {
         new ret, setCh, delCh, updCh, getCh, update in {
           TreeHashMap!("init", 3, *ret) |
           contract update(@val, retCh) = {
-            retCh!(val + 1)
+            match val {
+              Nil => retCh!(Nil)
+              _   => retCh!(val + 1)
+            }
           } |
           for (@thm <- ret) {
             TreeHashMap!("set", thm, "k", 50, *setCh) |
@@ -397,7 +411,7 @@ in {
                 for (_ <- updCh) {
                   TreeHashMap!("get", thm, "k", *getCh) |
                   rhoSpec!("assert", (Nil, "== <-", *getCh),
-                    "Update after delete behaves like update on never-set",
+                    "Update after delete leaves the deleted key observably Nil via get",
                     *ackCh)
                 }
               }
@@ -456,20 +470,31 @@ in {
         }
       } |
 
-      // getOrElse on a deleted key must return the default — covers a gap
-      // relative to test_get_or_else_when_key_missing (which only covers
-      // never-set keys).
+      // getOrElse after delete must trigger the nil-continuation (the key is
+      // absent), exactly like getOrElse on a never-set key
+      // (test_get_or_else_when_key_missing). Covers a gap: that test only
+      // exercises never-set keys; this one exercises a set-then-deleted key.
+      //
+      // NOTE: getOrElse's signature is (map, key, valueCh, nilCh) — a
+      // two-continuation API: it pings `nilCh` when the key is absent and sends
+      // the value on `valueCh` when present (see the passing
+      // test_get_or_else_when_key_{missing,present} above). It does NOT take a
+      // default value returned on a single channel. The earlier body passed the
+      // string "default_value" as `valueCh` and the ack channel as `nilCh`, then
+      // asserted a value on that same channel; after delete the key is absent,
+      // so getOrElse only pinged nilCh with an empty message, which never
+      // matched the value-shaped ("== <-") assertion and stalled the suite.
       contract test_get_or_else_after_delete(rhoSpec, _, ackCh) = {
-        new ret, setCh, delCh, geCh in {
+        new ret, setCh, delCh, valueCh, nilCh in {
           TreeHashMap!("init", 3, *ret) |
           for (@thm <- ret) {
             TreeHashMap!("set", thm, "k", "original", *setCh) |
             for (_ <- setCh) {
               TreeHashMap!("delete", thm, "k", *delCh) |
               for (_ <- delCh) {
-                TreeHashMap!("getOrElse", thm, "k", "default_value", *geCh) |
-                rhoSpec!("assert", ("default_value", "== <-", *geCh),
-                  "getOrElse returns default value after key is deleted",
+                TreeHashMap!("getOrElse", thm, "k", *valueCh, *nilCh) |
+                rhoSpec!("assert", ("nothing <-", *nilCh),
+                  "getOrElse triggers the nil-continuation after the key is deleted",
                   *ackCh)
               }
             }

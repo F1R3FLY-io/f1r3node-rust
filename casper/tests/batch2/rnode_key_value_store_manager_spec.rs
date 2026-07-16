@@ -14,7 +14,7 @@ async fn rnode_store_manager_initializes_block_dag_storage_on_fresh_lmdb_dir() {
     let floor_hash = Bytes::from(vec![2; LENGTH]);
 
     dag_storage
-        .floor_index
+        .floor_index_for_tests()
         .put_one(
             BlockHashSerde(block_hash.clone()),
             BlockHashSerde(floor_hash.clone()),
@@ -22,9 +22,37 @@ async fn rnode_store_manager_initializes_block_dag_storage_on_fresh_lmdb_dir() {
         .unwrap();
 
     let stored = dag_storage
-        .floor_index
+        .floor_index_for_tests()
         .get_one(&BlockHashSerde(block_hash))
         .unwrap();
 
     assert_eq!(stored, Some(BlockHashSerde(floor_hash)));
+}
+
+#[tokio::test]
+async fn rnode_store_manager_frontier_index_round_trips() {
+    // The persisted per-block finalized frontier F(X) (the warm up-walk pivot)
+    // must round-trip through the new `frontier-index` LMDB store, exactly like
+    // the floor index. Covers the H2 cache's persistence layer.
+    let dir = TempDir::new().unwrap();
+    let mut kvm = new_key_value_store_manager(dir.path().to_path_buf(), None);
+    let dag_storage = BlockDagKeyValueStorage::new(&mut kvm).await.unwrap();
+
+    let block_hash = Bytes::from(vec![7; LENGTH]);
+    let frontier_hash = Bytes::from(vec![9; LENGTH]);
+
+    dag_storage
+        .frontier_index_for_tests()
+        .put_one(
+            BlockHashSerde(block_hash.clone()),
+            BlockHashSerde(frontier_hash.clone()),
+        )
+        .unwrap();
+
+    let stored = dag_storage
+        .frontier_index_for_tests()
+        .get_one(&BlockHashSerde(block_hash))
+        .unwrap();
+
+    assert_eq!(stored, Some(BlockHashSerde(frontier_hash)));
 }

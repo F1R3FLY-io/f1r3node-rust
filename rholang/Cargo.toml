@@ -13,6 +13,7 @@ path = "src/rholang_cli.rs"
 [dependencies]
 crypto = { path = "../crypto" }
 models = { path = "../models" }
+rho-pure-eval = { path = "../rho-pure-eval" }
 shared = { path = "../shared" }
 rspace_plus_plus = { path = "../rspace++" }
 itertools = { workspace = true }
@@ -63,6 +64,7 @@ async-trait = { workspace = true }
 
 [dev-dependencies]
 pretty_assertions = "1.3.0"
+proptest = { workspace = true }
 rand = { workspace = true }
 
 [features]

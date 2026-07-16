@@ -35,12 +35,20 @@ pub type NumberChannelsDiff = BTreeMap<Blake2b256Hash, (i64, MergeType)>;
 
 /// Combine two values according to the strategy. Used by
 /// `EventLogIndex::combine` to aggregate diffs within a chain and by the merge
-/// engine to combine across chains. For `IntegerAdd` semantics, this performs
-/// wrapping addition; for `BitmaskOr` it performs a bitwise OR through `u64`.
-pub fn combine_mergeable_value(a: i64, b: i64, merge_type: MergeType) -> i64 {
+/// engine to combine across chains.
+///
+/// `IntegerAdd` is OVERFLOW-CHECKED: it returns `None` when the addition would
+/// wrap `i64`, so the caller REJECTS the branch ("fails loudly") instead of
+/// laundering a silently-wrapped value past the apply-time `checked_add >= 0`
+/// gate in `conflict_set_merger::cal_merged_result`. (A wrapped combine could
+/// otherwise produce an in-range/non-negative value that the apply gate accepts
+/// with a wrong result — see IntegerAdd.v `launder_exhibit` / the Z3 BitVec-64
+/// cross-witness.) `BitmaskOr` is a bitwise OR through `u64` and never overflows,
+/// so it always returns `Some`.
+pub fn combine_mergeable_value(a: i64, b: i64, merge_type: MergeType) -> Option<i64> {
     let result = match merge_type {
-        MergeType::IntegerAdd => a.wrapping_add(b),
-        MergeType::BitmaskOr => ((a as u64) | (b as u64)) as i64,
+        MergeType::IntegerAdd => a.checked_add(b),
+        MergeType::BitmaskOr => Some(((a as u64) | (b as u64)) as i64),
     };
     tracing::debug!(
         target: "f1r3fly.merge.step",
@@ -48,7 +56,8 @@ pub fn combine_mergeable_value(a: i64, b: i64, merge_type: MergeType) -> i64 {
         a,
         b,
         merge_type = ?merge_type,
-        result,
+        result = ?result,
+        overflow = result.is_none(),
         "fold two mergeable number-channel values"
     );
     result
@@ -2076,9 +2085,10 @@ mod tests {
 
         #[test]
         fn bitmask_or_is_associative(a: i64, b: i64, c: i64) {
-            let ab = combine_mergeable_value(a, b, MergeType::BitmaskOr);
+            // BitmaskOr never overflows, so it is always Some — unwrap the fold.
+            let ab = combine_mergeable_value(a, b, MergeType::BitmaskOr).unwrap();
             let ab_c = combine_mergeable_value(ab, c, MergeType::BitmaskOr);
-            let bc = combine_mergeable_value(b, c, MergeType::BitmaskOr);
+            let bc = combine_mergeable_value(b, c, MergeType::BitmaskOr).unwrap();
             let a_bc = combine_mergeable_value(a, bc, MergeType::BitmaskOr);
             proptest::prop_assert_eq!(ab_c, a_bc);
         }
@@ -2087,14 +2097,14 @@ mod tests {
         fn bitmask_or_is_idempotent(a: i64) {
             proptest::prop_assert_eq!(
                 combine_mergeable_value(a, a, MergeType::BitmaskOr),
-                a,
+                Some(a),
             );
         }
 
         #[test]
         fn bitmask_or_dominates_each_input(a: i64, b: i64) {
             // a | b must have every bit that's set in a OR in b.
-            let combined = combine_mergeable_value(a, b, MergeType::BitmaskOr) as u64;
+            let combined = combine_mergeable_value(a, b, MergeType::BitmaskOr).unwrap() as u64;
             proptest::prop_assert_eq!(combined & (a as u64), a as u64);
             proptest::prop_assert_eq!(combined & (b as u64), b as u64);
         }
@@ -2109,11 +2119,168 @@ mod tests {
 
         #[test]
         fn integer_add_is_associative(a: i64, b: i64, c: i64) {
-            let ab = combine_mergeable_value(a, b, MergeType::IntegerAdd);
-            let ab_c = combine_mergeable_value(ab, c, MergeType::IntegerAdd);
-            let bc = combine_mergeable_value(b, c, MergeType::IntegerAdd);
-            let a_bc = combine_mergeable_value(a, bc, MergeType::IntegerAdd);
-            proptest::prop_assert_eq!(ab_c, a_bc);
+            // Overflow-checked add is associative only where both groupings
+            // succeed (one grouping can overflow while the other does not, e.g.
+            // a=MAX, b=1, c=-1); compare only when both are Some.
+            let l = combine_mergeable_value(a, b, MergeType::IntegerAdd)
+                .and_then(|ab| combine_mergeable_value(ab, c, MergeType::IntegerAdd));
+            let r = combine_mergeable_value(b, c, MergeType::IntegerAdd)
+                .and_then(|bc| combine_mergeable_value(a, bc, MergeType::IntegerAdd));
+            if let (Some(x), Some(y)) = (l, r) {
+                proptest::prop_assert_eq!(x, y);
+            }
+        }
+
+        #[test]
+        fn integer_add_overflow_returns_none(a: i64, b: i64) {
+            // Matches i64::checked_add exactly: None iff the true sum is out of range.
+            proptest::prop_assert_eq!(
+                combine_mergeable_value(a, b, MergeType::IntegerAdd),
+                a.checked_add(b),
+            );
+        }
+    }
+
+    // Direct unit witnesses for the fail-loudly overflow behavior (the fix for
+    // the IntegerAdd overflow-launder).
+    #[test]
+    fn integer_add_rejects_overflow_and_underflow() {
+        assert_eq!(
+            combine_mergeable_value(i64::MAX, 1, MergeType::IntegerAdd),
+            None,
+            "IntegerAdd must reject (None) on positive overflow, not wrap"
+        );
+        assert_eq!(
+            combine_mergeable_value(i64::MIN, -1, MergeType::IntegerAdd),
+            None,
+            "IntegerAdd must reject (None) on negative overflow, not wrap"
+        );
+        assert!(
+            combine_mergeable_value(i64::MAX, 1, MergeType::BitmaskOr).is_some(),
+            "BitmaskOr never overflows"
+        );
+    }
+}
+
+// === GAP-3: soundness of removing the single-value-cell conflict predicate =====
+//
+// Rust modality companion to
+// formal/rocq/merge_algebra/theories/ConflictSoundness.v. The REMOVED predicate
+// flagged a conflict when two branches both consume-then-produce on a shared
+// single-value cell (a write-write). We re-implement it as a test ORACLE and
+// assert it is SUBSUMED by the RETAINED double-consume / same-IO-event race
+// detector (`conflicts` Check #1), except on number/foldable channels (which are
+// intrinsically mergeable): for random branch pairs,
+//     removed_oracle(a, b)  =>  !conflicts(a, b).is_empty() || is_number_channel(a, b).
+//
+// Model: a branch's `produces_consumed` holds the base data destroyed in COMM
+// (the "consume" of a single-value-cell update); `produces_mergeable` marks the
+// number-channel (mergeable) base data. The retained produce-race fires on
+// (produces_consumed ∩) minus (produces_mergeable ∩), non-persistent -- so a
+// shared non-persistent consumed base that is NOT both-mergeable is caught by
+// `conflicts`, and one that IS both-mergeable is a number channel (exempt).
+#[cfg(test)]
+mod merge_algebra_gap3_tests {
+    use std::collections::HashSet;
+
+    use proptest::prelude::*;
+    use shared::rust::hashable_set::HashableSet;
+
+    use super::conflicts;
+    use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+    use crate::rspace::merger::event_log_index::EventLogIndex;
+    use crate::rspace::trace::event::Produce;
+
+    fn mk_hash(byte: u8) -> Blake2b256Hash { Blake2b256Hash::from_bytes(vec![byte; 32]) }
+
+    // base datum `id`: identity is its `hash` (Produce::eq is hash-only), so the
+    // same `id` in two branches is the SAME shared base produce.
+    fn mk_produce(id: u8, persistent: bool) -> Produce {
+        Produce::new(mk_hash(id), mk_hash(id), persistent)
+    }
+
+    // spec[i] = (in_a_pc, in_b_pc, in_a_pm, in_b_pm, persistent) for base datum i.
+    fn build(specs: &[[bool; 5]], pick_pc: usize, pick_pm: usize) -> EventLogIndex {
+        let mut e = EventLogIndex::empty();
+        let mut pc: HashSet<Produce> = HashSet::new();
+        let mut pm: HashSet<Produce> = HashSet::new();
+        for (i, s) in specs.iter().enumerate() {
+            let p = mk_produce(i as u8, s[4]);
+            if s[pick_pc] {
+                pc.insert(p.clone());
+            }
+            if s[pick_pm] {
+                pm.insert(p);
+            }
+        }
+        e.produces_consumed = HashableSet(pc);
+        e.produces_mergeable = HashableSet(pm);
+        e
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(400))]
+
+        #[test]
+        fn removed_predicate_is_subsumed_by_retained_or_number_channel(
+            specs in prop::collection::vec(any::<[bool; 5]>(), 1..7),
+        ) {
+            let a = build(&specs, 0, 2); // in_a_pc = s[0], in_a_pm = s[2]
+            let b = build(&specs, 1, 3); // in_b_pc = s[1], in_b_pm = s[3]
+
+            // the REMOVED oracle: some shared non-persistent base datum was
+            // consumed in BOTH branches (both did the consume-then-produce).
+            let removed_oracle =
+                specs.iter().any(|s| s[0] && s[1] && !s[4]);
+            // number-channel exemption: such a shared datum is both-mergeable.
+            let is_number_channel =
+                specs.iter().any(|s| s[0] && s[1] && !s[4] && s[2] && s[3]);
+
+            let retained_fires = !conflicts(&a, &b).0.is_empty();
+
+            prop_assert!(
+                !removed_oracle || retained_fires || is_number_channel,
+                "removed single-value-cell predicate must be subsumed by the retained \
+                 conflict detector or be a number channel (specs={:?})",
+                specs
+            );
+        }
+
+        // §3c PRODUCE-ONLY BLIND SPOT (RCA-asi-devnet-finality-halt). A produce
+        // that does NOT consume the base (a produce-only write) never lands in
+        // produces_consumed, so the retained double-consume race detector cannot
+        // see it: with no consumes and no base-join touches, `conflicts` is EMPTY
+        // even though BOTH branches produce onto the SAME single-value cell (an
+        // over-fill). This is the gap the Rocq `overfill_not_retained` /
+        // `svc_guard_not_subsumed_exhibit` (ConflictSoundness.v Section Overfill)
+        // capture and the §3c `check_single_value_cell_not_overfilled` guard
+        // closes on the non-mergeable path (dag_merger.rs:965). It proves §3c is a
+        // SEPARATE, non-subsumed detector -- the retained detector alone is blind.
+        #[test]
+        fn produce_only_overfill_escapes_retained_detector(
+            ids in prop::collection::vec(any::<u8>(), 1..6),
+        ) {
+            // Both branches PRODUCE the shared base datum(s) but neither CONSUMES
+            // any: produce-only writes populate produces_linear only, leaving
+            // produces_consumed / consumes_* / produces_touching_base_joins empty.
+            let produced: HashSet<Produce> =
+                ids.iter().map(|id| mk_produce(*id, false)).collect();
+            let mut a = EventLogIndex::empty();
+            let mut b = EventLogIndex::empty();
+            a.produces_linear = HashableSet(produced.clone());
+            b.produces_linear = HashableSet(produced);
+
+            // The retained detector finds NO conflict -- the produce-only
+            // over-fill is invisible to it (Check #1 needs a shared CONSUMED base;
+            // Check #2 needs a consume; Check #3 needs a base-join touch -- all
+            // empty here). Hence the §3c guard is required and non-redundant.
+            prop_assert!(
+                conflicts(&a, &b).0.is_empty(),
+                "produce-only writes must ESCAPE the retained detector (that is why \
+                 the §3c single-value-cell guard is a separate, non-subsumed \
+                 mechanism); ids={:?}",
+                ids
+            );
         }
     }
 }

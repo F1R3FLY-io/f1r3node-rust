@@ -1,0 +1,87 @@
+' Methodology Diagram 06 — Differential divergence classification (activity).
+'
+' Walks an observed Rust-vs-Scala divergence δ through the
+' threat-model classification used by §3 of
+' docs/theory/slashing/methodology/differential-and-metamorphic/01-differential-rust-vs-scala.md.
+' Every outcome leaf is colour-coded by threat-model class, matching
+' the conventions used in diagram 05:
+'   light green  (#E8F5E9) — permitted_bug_fix
+'   light purple (#F3E5F5) — candidate_boundary
+'   light blue   (#E3F2FD) — bisimilar
+'   red          (#FFCDD2) — unexpected (halt & investigate)
+'
+' Decision diamonds use the methodology-suite convention from
+' docs/theory/slashing/methodology/02-glossary-and-notation.md §7:
+'   background #FFF7EE, border #E65100.
+'
+' Render:
+'   plantuml -tsvg docs/theory/slashing/methodology/diagrams/06-differential-divergence-classification.puml
+
+@startuml 06-differential-divergence-classification
+!theme plain
+
+skinparam ActivityBackgroundColor        #FFFFFF
+skinparam ActivityBorderColor            #333333
+skinparam ActivityDiamondBackgroundColor #FFF7EE
+skinparam ActivityDiamondBorderColor     #E65100
+skinparam ActivityDiamondFontColor       #1A1A1A
+skinparam ActivityFontColor              #1A1A1A
+skinparam ActivityStartColor             #2E7D32
+skinparam ActivityEndColor               #C62828
+skinparam NoteBackgroundColor            #FFE0B2
+skinparam NoteBorderColor                #E65100
+skinparam ArrowColor                     #333333
+skinparam ArrowFontColor                 #1565C0
+skinparam ArrowFontSize                  10
+skinparam defaultFontName                "sans-serif"
+skinparam defaultFontSize                11
+
+title Divergence classification — δ → threat-model class
+
+legend right
+  | Colour | Outcome class |
+  |<#E8F5E9>| permitted_bug_fix |
+  |<#F3E5F5>| candidate_boundary |
+  |<#E3F2FD>| bisimilar |
+  |<#FFCDD2>| unexpected — halt & investigate |
+endlegend
+
+start
+
+:Observed divergence δ
+between Rust and Scala
+on the same input;
+note right
+  Sources include:
+  Sage differential_bisimilarity_model,
+  Hypothesis rust_differential_corpus,
+  proptest triple-bisim driver.
+end note
+
+if (Q1: Is δ in the bug-fix manifest\n(../design/09-…)?) then (YES)
+  :class = permitted_bug_fix
+cite bug-fix manifest entry; <<#E8F5E9>>
+  stop
+else (NO)
+  if (Q2: Is δ at an explicit\ntheorem precondition boundary?) then (YES)
+    :class = candidate_boundary
+document precondition in
+slashing-specification.md; <<#F3E5F5>>
+    stop
+  else (NO)
+    if (Q3: Is δ an internal-only divergence?\n(state, logs, hash ordering, ids …)) then (YES)
+      :class = bisimilar
+record as expected agreement
+(no source change); <<#E3F2FD>>
+      stop
+    else (NO)
+      :class = unexpected
+HALT and investigate
+(must be reclassified
+before commit); <<#FFCDD2>>
+      end
+    endif
+  endif
+endif
+
+@enduml

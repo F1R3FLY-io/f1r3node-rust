@@ -148,7 +148,8 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
         use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
 
         let deploy_storage = KeyValueDeployStorage::new(&mut rnode_store_manager).await?;
-        let deploy_storage_arc = Arc::new(Mutex::new(deploy_storage.clone()));
+        // Phase 9 (A-3): deploy_storage uses parking_lot::Mutex.
+        let deploy_storage_arc = Arc::new(parking_lot::Mutex::new(deploy_storage.clone()));
         (deploy_storage, deploy_storage_arc)
     };
 
@@ -808,6 +809,10 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
         let gc_interval = conf.casper.mergeable_channels_gc_interval;
         let gc_casper_shard_conf = CasperShardConf {
             fault_tolerance_threshold: conf.casper.fault_tolerance_threshold,
+            fault_tolerance_threshold_ppm:
+                casper::rust::genesis::contracts::proof_of_stake::ProofOfStake::fault_tolerance_threshold_to_ppm(
+                    conf.casper.fault_tolerance_threshold,
+                ),
             shard_name: conf.casper.shard_name.clone(),
             parent_shard_id: conf.casper.parent_shard_id.clone(),
             finalization_rate: conf.casper.finalization_rate,
@@ -824,6 +829,7 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
             quarantine_length: conf.casper.genesis_block_data.quarantine_length,
             min_phlo_price: conf.casper.min_phlo_price,
             disable_late_block_filtering: conf.casper.disable_late_block_filtering,
+            deploy_heartbeat_wake_enabled: false,
             disable_validator_progress_check: conf.standalone,
             enable_mergeable_channel_gc: conf.casper.enable_mergeable_channel_gc,
             mergeable_channels_gc_depth_buffer: conf.casper.mergeable_channels_gc_depth_buffer,
@@ -839,6 +845,13 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
             native_token_name: conf.casper.genesis_block_data.native_token_name.clone(),
             native_token_symbol: conf.casper.genesis_block_data.native_token_symbol.clone(),
             native_token_decimals: conf.casper.genesis_block_data.native_token_decimals,
+            // Phase 13 defaults centralized as named consts in
+            // `casper::rust::casper`. When `CasperConf` gains corresponding
+            // fields, plumb them through here; the consts are then the
+            // documented fallback.
+            finalizer_blocking_timeout: casper::rust::casper::FINALIZER_BLOCKING_TIMEOUT_DEFAULT,
+            active_validators_cache_max_entries:
+                casper::rust::casper::ACTIVE_VALIDATORS_CACHE_MAX_ENTRIES_DEFAULT,
         };
 
         Some(Arc::new(
@@ -856,7 +869,9 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
                     tokio::time::sleep(gc_interval).await;
 
                     // Run GC
-                    let dag = gc_block_dag_storage.get_representation();
+                    let dag = gc_block_dag_storage
+                        .get_representation()
+                        .map_err(|e| CasperError::RuntimeError(e.to_string()))?;
                     mergeable_channels_gc::collect_garbage(
                         &dag,
                         &gc_block_store,

@@ -150,7 +150,9 @@ async fn estimator_on_empty_latest_messages_should_return_the_genesis_regardless
             justifications!(v1 => b7.block_hash, v2 => b4.block_hash),
         );
 
-        let mut dag = block_dag_storage.get_representation();
+        let mut dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
         let estimator = Estimator::apply(i32::MAX, None);
         let forkchoice = estimator
             .tips_with_latest_messages(&mut dag, &genesis, HashMap::new())
@@ -261,7 +263,9 @@ async fn estimator_on_simple_dag_should_return_the_appropriate_score_map_and_for
             justifications!(v1 => b7.block_hash, v2 => b4.block_hash),
         );
 
-        let mut dag = block_dag_storage.get_representation();
+        let mut dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
         let latest_blocks = HashMap::from([
             (v1.clone(), b8.block_hash.clone()),
             (v2.clone(), b6.block_hash.clone()),
@@ -384,7 +388,7 @@ async fn estimator_on_flipping_forkchoice_dag_should_return_the_appropriate_scor
             justifications!(v1 => b6.block_hash, v2 => b5.block_hash, v3 => b4.block_hash),
         );
 
-        let mut dag = block_dag_storage.get_representation();
+        let mut dag = block_dag_storage.get_representation().expect("dag representation");
         let latest_blocks = HashMap::from([
             (v1.clone(), b6.block_hash.clone()),
             (v2.clone(), b8.block_hash.clone()),

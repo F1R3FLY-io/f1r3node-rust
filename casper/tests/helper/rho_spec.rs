@@ -13,7 +13,7 @@ use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use crypto::rust::private_key::PrivateKey;
 use crypto::rust::signatures::secp256k1::Secp256k1;
 use crypto::rust::signatures::signed::Signed;
-use models::rhoapi::{BindPattern, ListParWithRandom};
+use models::rhoapi::{BindPattern, ListParWithRandom, TaggedContinuation};
 use models::rust::casper::protocol::casper_message::DeployData;
 use rholang::rust::build::compile_rholang_source::CompiledRholangSource;
 use rholang::rust::interpreter::errors::InterpreterError;
@@ -21,6 +21,7 @@ use rholang::rust::interpreter::matcher::r#match::Matcher;
 use rholang::rust::interpreter::pretty_printer::PrettyPrinter;
 use rholang::rust::interpreter::rho_runtime::{create_runtime_from_kv_store, RhoRuntime};
 use rholang::rust::interpreter::system_processes::{byte_name, Definition};
+use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::r#match::Match;
 
 use crate::genesis::contracts::test_util::TestUtil;
@@ -29,7 +30,7 @@ use crate::helper::{
     secp256k1_sign_contract, sys_auth_token_contract,
 };
 use crate::util::genesis_builder::{GenesisBuilder, GenesisParameters};
-use crate::util::rholang::resources::{generate_scope_id, mk_test_rnode_store_manager_shared};
+use crate::util::rholang::resources::mk_test_rnode_store_manager_shared;
 
 const SHARD_ID: &str = "root-shard";
 const RHO_SPEC_PRIVATE_KEY: &str =
@@ -154,6 +155,20 @@ impl RhoSpec {
             test_result_collector,
         )
         .await?;
+
+        // Anti-vacuity guard: a suite that never reported completion or collected zero
+        // assertions is a HARNESS failure, not a pass — it must never read as green. (Only the
+        // framework path goes through `run_tests`; the low-level `failing_result_collector` /
+        // `timeout` specs call `get_results` directly and legitimately inspect `has_finished`.)
+        if !result.has_finished || result.assertions.is_empty() {
+            return Err(InterpreterError::BugFoundError(format!(
+                "RhoSpec suite '{}' did not complete (has_finished={}) or collected no assertions \
+                 (count={}). The test runtime is likely missing genesis/registry state.",
+                self.test_object.path,
+                result.has_finished,
+                result.assertions.len(),
+            )));
+        }
 
         // Run mkTest for each assertion
         for (test_name, test_attempts) in &result.assertions {
@@ -299,16 +314,19 @@ pub async fn get_results(
     test_result_collector: Arc<TestResultCollector>,
 ) -> Result<TestResult, InterpreterError> {
     let mut genesis_builder = GenesisBuilder::new();
-    let _genesis = genesis_builder
+    let genesis = genesis_builder
         .build_genesis_with_parameters(Some(genesis_parameters))
         .await
         .map_err(|e| {
             InterpreterError::BugFoundError(format!("Failed to build genesis: {:?}", e))
         })?;
 
-    let scope_id = generate_scope_id();
-
-    let mut kvs_manager = mk_test_rnode_store_manager_shared(scope_id);
+    // Run the suite against the GENESIS post-state (registry, ListOps, PoS, vaults, …), not a
+    // fresh empty scope. Otherwise the RhoSpec framework — whose `testSuite` contracts are gated
+    // on `rho:lang:listOps` (RhoSpecContract.rho) — never installs, no assertions are collected,
+    // and every genesis spec passes VACUOUSLY. Open the same shared RSpace scope genesis was
+    // written into and reset the runtime to the genesis root below.
+    let mut kvs_manager = mk_test_rnode_store_manager_shared(genesis.rspace_scope_id.clone());
     let r_store = kvs_manager.r_space_stores().await.map_err(|e| {
         InterpreterError::BugFoundError(format!("Failed to create RSpaceStore: {}", e))
     })?;
@@ -317,12 +335,12 @@ pub async fn get_results(
     // is created automatically (see rspace++/libs/rspace_rhotypes/src/lib.rs).
     // In pure Rust code (without JNA), we must create the Matcher explicitly here,
     // as RSpace::create(stores, matcher) requires it as a parameter.
-    let matcher =
-        Arc::new(Box::new(Matcher::default()) as Box<dyn Match<BindPattern, ListParWithRandom>>);
+    let matcher = Arc::new(Box::new(Matcher::default())
+        as Box<dyn Match<BindPattern, ListParWithRandom, TaggedContinuation>>);
 
     let mut additional_system_processes = test_framework_contracts(test_result_collector.clone());
 
-    let runtime = create_runtime_from_kv_store(
+    let mut runtime = create_runtime_from_kv_store(
         r_store,
         std::sync::Arc::new(Genesis::default_mergeable_tags()),
         true,
@@ -331,6 +349,14 @@ pub async fn get_results(
         rholang::rust::interpreter::external_services::ExternalServices::noop(),
     )
     .await;
+
+    // Position the runtime at the genesis post-state so the standard library / registry
+    // (rho:lang:listOps, rho:system:pos, rho:vault:*, …) resolve for the test suite.
+    runtime
+        .reset(&Blake2b256Hash::from_bytes_prost(
+            &genesis.genesis_block.body.state.post_state_hash,
+        ))
+        .await?;
 
     println!("Starting tests from {}", test_object.path);
 

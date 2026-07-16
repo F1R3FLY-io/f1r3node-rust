@@ -1,0 +1,113 @@
+' Component Diagram 01 — Slashing subsystem topology.
+'
+' Shows all 11 components in the slashing pipeline (plus the Bond map and
+' Coop vault data artifacts) and their dependencies.
+' The orange (#FFE0B2) "race window" callout marks the lock-free surface
+' that bug fix #2 closes.
+'
+' Source of truth for Figure 3.1 in docs/theory/slashing/slashing-specification.md.
+'
+' Render:
+'   plantuml -tsvg docs/theory/slashing/diagrams/01-component-overview.puml
+
+@startuml 01-component-overview
+!theme plain
+
+skinparam componentStyle rectangle
+skinparam package {
+  BackgroundColor<<Detection>>     #FFF7EE
+  BackgroundColor<<Storage>>       #EEFAF1
+  BackgroundColor<<Proposing>>     #EEF2FF
+  BackgroundColor<<Effect>>        #F3E5F5
+  BackgroundColor<<ForkChoice>>    #E3F2FD
+  BorderColor #444444
+}
+skinparam component {
+  BackgroundColor #FFFFFF
+  BorderColor     #333333
+}
+skinparam note {
+  BackgroundColor #FFE0B2
+  BorderColor     #E65100
+}
+skinparam defaultFontName "sans-serif"
+skinparam defaultFontSize 11
+
+title Slashing subsystem — component topology
+
+' Edge color legend (consistent across diagrams 02, 03, 04, 05, 09 sequence diagrams):
+'   blue   (#1565C0) = read query (lookups, snapshots)
+'   orange (#E65100) = detection verdict / record creation / slash effect
+'   purple (#6A1B9A) = Rholang / system-deploy invocation
+'   teal   (#00838F) = inter-component message
+'   gray   (#546E7A) = internal delegation
+
+package "Detection layer" <<Detection>> {
+  component "Validate\n(17+ checks → InvalidBlock)"             <<component>> as Validate
+  component "EquivocationDetector\n(admissible / ignorable /\n neglected)" <<component>> as Detector
+  component "MultiParentCasperImpl\n(orchestrator)"             <<component>> as Casper
+}
+
+package "Storage layer" <<Storage>> {
+  component "BlockDagStorage\n(invalid-block index)"            <<component>> as DagStore
+  component "EquivocationTrackerStore\n(KV: (validator, seqNum) → Set[BlockHash])" <<component>> as Tracker
+  component "DeployStorage\n(currently bypassed by\nslash deploys — fix #8)" <<component>> as DeployStore
+}
+
+package "Proposing layer" <<Proposing>> {
+  component "BlockCreator\n(prepare_slashing_deploys)"          <<component>> as Creator
+  component "SlashDeploy\n(SystemDeployEnum::Slash)"            <<component>> as SlashDep
+  component "SystemDeployUtil\n(splitByte(1) seed)"             <<component>> as SysDepUtil
+}
+
+package "Effect layer" <<Effect>> {
+  component "PoS Rholang contract\n(@PoS!(\"slash\", …))"       <<artifact>>  as PoS
+  database  "Bond map / Validator registry"                     <<artifact>>  as Bonds
+  database  "Coop vault\n(forfeited stake)"                     <<artifact>>  as Vault
+}
+
+package "Fork-choice layer" <<ForkChoice>> {
+  component "ForkChoice estimator\n(filters slashed latest-msgs)" <<component>> as FC
+}
+
+' === Detection edges ===
+Validate    -[#E65100]-> Casper       : InvalidBlock variants
+Detector    -[#E65100]-> Casper       : Admissible/Ignorable/Neglected
+Casper      -[#E65100]-> DagStore     : insert(block, invalid=true)
+Casper      -[#E65100]-> Tracker      : equivocation_records()\n              insert/update_record()
+
+note as RaceWindow
+  ⚠ Race window (Rust regression):
+  Casper.handle_invalid_block reads
+  Tracker, then writes without locking.
+  Two threads can race and overwrite
+  accumulated hashes with Set::empty.
+  Bug fix #2 (T-9.2) re-locks the
+  read-modify-write window through
+  Casper's access_equivocations_tracker.
+end note
+RaceWindow .. Casper
+RaceWindow .. Tracker
+
+' === Storage edges ===
+DagStore  -[#546E7A]down-> Tracker    : delegates equivocation\n             record persistence
+DagStore  -[#546E7A]down-> DeployStore : (slash deploys NOT persisted —\n              fix #8 ; T-9.8)
+
+' === Proposing edges ===
+Creator     -[#1565C0]-> DagStore     : authorized invalid-block\n             evidence index\n             (§15.3; Bug #14 / T-LivenessGap;\n             replaces invalid_latest_messages)
+Creator     -[#00838F]-> SlashDep     : 1 SlashDeploy per offender
+SlashDep    -[#546E7A]-> SysDepUtil   : generate slash random seed
+Creator     -[#546E7A,dashed]-> DeployStore  : (TODO: persist slash deploys)
+
+' === Effect edges ===
+SlashDep    -[#6A1B9A]-> PoS          : @PoS!("slash", offender, …)
+PoS         -[#E65100]-> Bonds        : zero bond, remove from active
+PoS         -[#E65100]-> Vault        : transfer forfeited stake
+
+' === Fork-choice edge ===
+' Direction is FC → Bonds (a *pull*): the estimator reads bonds_map on
+' every fork-choice round and filters validators with bond = 0. PoS does
+' not push a slashed-set notification.
+FC          -[#1565C0]-> Bonds        : reads bonds_map on every\nfork-choice round; filters\nvalidators where bond = 0
+
+@enduml

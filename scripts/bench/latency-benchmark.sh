@@ -41,7 +41,7 @@ OUT_DIR="${OUT_DIR:-/tmp/f1r3fly-bench-$(date +%Y%m%d-%H%M%S)}"
 
 # Funded deployer — defaults to bootstrap's key (funded locally, funded in
 # wallets.txt as validator4's REV address via commit 993c239 for distributed)
-DEPLOYER_KEY="${DEPLOYER_KEY:-5f668a7ee96d944a4494cc947e4005e172d7ab3461ee5538f1f2a45a835e9657}"
+DEPLOYER_KEY="${DEPLOYER_KEY:?DEPLOYER_KEY must be set}"
 
 # Status polling
 POLL_INTERVAL="${POLL_INTERVAL:-3}"

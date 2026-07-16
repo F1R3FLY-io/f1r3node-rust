@@ -477,7 +477,22 @@ where
                             key, existing.1, incoming_mt,
                         )));
                     }
-                    existing.0 = combine_mergeable_value(existing.0, incoming_diff, incoming_mt);
+                    existing.0 = match combine_mergeable_value(
+                        existing.0,
+                        incoming_diff,
+                        incoming_mt,
+                    ) {
+                        Some(v) => v,
+                        // Survivors already passed the per-branch overflow gate, so
+                        // this should be unreachable; error rather than write a
+                        // wrapped value if it ever is.
+                        None => {
+                            return Err(HistoryError::MergeError(format!(
+                                "IntegerAdd overflow combining mergeable channel {:?}",
+                                key,
+                            )))
+                        }
+                    };
                 }
                 None => {
                     all_mergeable_channels.insert(key.clone(), (incoming_diff, incoming_mt));
@@ -723,21 +738,35 @@ fn cal_merged_result<R: Clone + Eq + std::hash::Hash>(
         n_origin_channels = origin_result.len());
 
     // Combine all channel diffs from the branch using per-channel merge strategy.
-    let diff = branch.0.iter().map(|r| mergeable_channels(r)).fold(
-        NumberChannelsDiff::new(),
-        |mut acc, x| {
-            for (k, v) in x {
-                let (incoming_diff, incoming_mt) = v;
-                acc.entry(k)
-                    .and_modify(|existing| {
-                        existing.0 =
-                            combine_mergeable_value(existing.0, incoming_diff, incoming_mt);
-                    })
-                    .or_insert((incoming_diff, incoming_mt));
+    // IntegerAdd overflow HERE means the branch's per-channel diffs sum out of
+    // i64 range: reject the branch (fail loudly, return None) rather than fold a
+    // silently-wrapped value that could then pass the apply-time
+    // `checked_add >= 0` gate below with a wrong result (the overflow-launder;
+    // see IntegerAdd.v). BitmaskOr never overflows.
+    let mut diff = NumberChannelsDiff::new();
+    for r in branch.0.iter() {
+        for (k, v) in mergeable_channels(r) {
+            let (incoming_diff, incoming_mt) = v;
+            match diff.get_mut(&k) {
+                Some(existing) => {
+                    match combine_mergeable_value(existing.0, incoming_diff, incoming_mt) {
+                        Some(combined) => existing.0 = combined,
+                        None => {
+                            tracing::debug!(target: "f1r3fly.merge.step",
+                                step = "cal_merged_result.COMBINE_OVERFLOW",
+                                channel = %hex::encode(k.clone().bytes()),
+                                existing = existing.0,
+                                incoming = incoming_diff);
+                            return None;
+                        }
+                    }
+                }
+                None => {
+                    diff.insert(k, (incoming_diff, incoming_mt));
+                }
             }
-            acc
-        },
-    );
+        }
+    }
 
     if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
         let diff_channels: Vec<(String, i64)> = diff
@@ -1028,5 +1057,87 @@ mod tests {
         assert!(result.is_ok());
         let (_new_state, rejected) = result.unwrap();
         assert!(!rejected.0.is_empty());
+    }
+
+    // ---- IntegerAdd overflow-launder regression (Phase 6 W3/W4) --------------
+    // Two chains in the SAME branch contribute IntegerAdd diffs to one channel
+    // whose sum overflows i64. The intra-branch combine must REJECT the branch
+    // (return None) — "fail loudly" — rather than wrap the value and let it pass
+    // the apply-time checked_add >= 0 gate with a wrong result (the launder).
+
+    #[test]
+    fn cal_merged_result_rejects_integer_add_overflow_launder() {
+        let ch = Blake2b256Hash::from_bytes(vec![7u8; 32]);
+        let br = branch(&[1, 2]); // both items in ONE branch
+        let mergeable = |r: &i32| {
+            let mut d = NumberChannelsDiff::new();
+            let v = if *r == 1 { i64::MAX } else { 1 }; // MAX + 1 overflows
+            d.insert(ch.clone(), (v, MergeType::IntegerAdd));
+            d
+        };
+        assert_eq!(
+            cal_merged_result(&br, HashMap::new(), mergeable),
+            None,
+            "combine overflow must reject the branch (no silent wrap / launder)"
+        );
+    }
+
+    #[test]
+    fn cal_merged_result_rejects_integer_add_true_launder_wraps_nonnegative() {
+        // A DISCRIMINATING launder witness: three IntegerAdd diffs whose sum is 2^64,
+        // which wraps to 0 — a NON-NEGATIVE value that would sail through the apply-time
+        // `checked_add >= 0` gate if the combine used wrapping. Only the checked_add in
+        // the combine fold (which overflows on MAX + MAX) rejects it. Contrast the
+        // [MAX, 1] case above, whose wrap to i64::MIN is caught by the `>= 0` gate anyway
+        // and so does NOT isolate the overflow check.
+        let ch = Blake2b256Hash::from_bytes(vec![7u8; 32]);
+        let br = branch(&[1, 2, 3]); // three chains in ONE branch
+        let mergeable = |r: &i32| {
+            let mut d = NumberChannelsDiff::new();
+            let v = match *r {
+                1 => i64::MAX,
+                2 => i64::MAX,
+                _ => 2, // MAX + MAX + 2 == 2^64 ≡ 0 (mod 2^64): wraps NON-NEGATIVE
+            };
+            d.insert(ch.clone(), (v, MergeType::IntegerAdd));
+            d
+        };
+        assert_eq!(
+            cal_merged_result(&br, HashMap::new(), mergeable),
+            None,
+            "a sum that wraps to a NON-NEGATIVE value must still be rejected by checked_add \
+             in the combine (the >= 0 gate alone would not catch it)"
+        );
+    }
+
+    #[test]
+    fn cal_merged_result_accepts_non_overflowing_integer_add() {
+        let ch = Blake2b256Hash::from_bytes(vec![7u8; 32]);
+        let br = branch(&[1, 2]);
+        let mergeable = |r: &i32| {
+            let mut d = NumberChannelsDiff::new();
+            let v = if *r == 1 { 100 } else { 23 };
+            d.insert(ch.clone(), (v, MergeType::IntegerAdd));
+            d
+        };
+        // 100 + 23 = 123, applied to base 0, >= 0 -> accepted with the TRUE sum.
+        assert_eq!(
+            cal_merged_result(&br, HashMap::new(), mergeable),
+            Some(HashMap::from([(ch, 123)]))
+        );
+    }
+
+    #[test]
+    fn cal_merged_result_bitmask_or_never_rejects() {
+        let ch = Blake2b256Hash::from_bytes(vec![7u8; 32]);
+        let br = branch(&[1, 2]);
+        let mergeable = |r: &i32| {
+            let mut d = NumberChannelsDiff::new();
+            let v = if *r == 1 { i64::MAX } else { 1 };
+            d.insert(ch.clone(), (v, MergeType::BitmaskOr)); // OR never overflows
+            d
+        };
+        let out = cal_merged_result(&br, HashMap::new(), mergeable);
+        assert_eq!(out, Some(HashMap::from([(ch, i64::MAX)])));
     }
 }
