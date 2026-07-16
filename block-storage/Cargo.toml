@@ -60,4 +60,12 @@ required-features = ["test-internals"]
 [[test]]
 name = "loom_equivocations_tracker"
 
+# C10: exhaustive thread-interleaving model check that the finalized-floor
+# floor_index/frontier_index memoization (a write-once, node-identical pure
+# function) can never observe a torn or regressed cached value. Uses
+# `loom::sync::*` types directly, so no `--cfg loom` flag is needed.
+# See block-storage/tests/loom_frontier_floor_cache.rs.
+[[test]]
+name = "loom_frontier_floor_cache"
+
 [build-dependencies]
