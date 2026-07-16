@@ -366,6 +366,34 @@ pub fn non_deterministic_ops() -> HashSet<i64> {
         BodyRefs::OLLAMA_MODELS,
         BodyRefs::GRPC_TELL,
         BodyRefs::CHROMA_QUERY,
+        // File I/O native primitives (FIP 2026-02-06). Every
+        // primitive that observes or mutates host state goes
+        // through the `FailedNonDeterministicCall` path
+        // (`dispatch.rs`) so the lead node's result is captured
+        // and replayed to followers. `NATIVE_CLOSE` is included
+        // for defense-in-depth even though closing a known fd is
+        // deterministic given deterministic prior state; the fd
+        // itself came from a non-deterministic `NATIVE_OPEN`, so
+        // routing the close through the same replay log keeps
+        // the fd-table timeline coherent across nodes.
+        BodyRefs::NATIVE_OPEN,
+        BodyRefs::NATIVE_CLOSE,
+        BodyRefs::NATIVE_READ,
+        BodyRefs::NATIVE_WRITE,
+        BodyRefs::NATIVE_SEEK,
+        BodyRefs::NATIVE_TELL,
+        BodyRefs::NATIVE_SIZE,
+        BodyRefs::NATIVE_TRUNCATE,
+        BodyRefs::NATIVE_FLUSH,
+        BodyRefs::NATIVE_STAT,
+        BodyRefs::NATIVE_ENTRIES,
+        BodyRefs::NATIVE_EXISTS,
+        BodyRefs::NATIVE_RENAME,
+        BodyRefs::NATIVE_COPY_FILE,
+        BodyRefs::NATIVE_REMOVE_FILE,
+        BodyRefs::NATIVE_REMOVE_DIR,
+        BodyRefs::NATIVE_CHMOD,
+        BodyRefs::NATIVE_QUARANTINE,
     ])
 }
 
@@ -2185,8 +2213,20 @@ impl SystemProcesses {
             return Err(illegal_argument_error("native_read"));
         };
 
+        // Per-call ceiling on the buffer we allocate. Set below the
+        // point where a hostile deploy could exhaust node memory via
+        // `nativeRead(fd, i64::MAX)`. Callers wanting larger reads
+        // issue multiple calls or go through the agent-layer
+        // `lines`/`text` methods (which iterate internally).
+        const MAX_READ_BYTES: i64 = 64 * 1024 * 1024;
+
         let response_par = if n < 0 {
             response::err(response::FSERR_BAD_ARG, format!("negative read length {n}"))
+        } else if n > MAX_READ_BYTES {
+            response::err(
+                response::FSERR_BAD_ARG,
+                format!("read length {n} exceeds MAX_READ_BYTES {MAX_READ_BYTES}"),
+            )
         } else {
             match self.file_handles.get(fd).await {
                 None => response::err(response::FSERR_CLOSED, format!("fd {fd} is not open")),
@@ -2432,10 +2472,24 @@ impl SystemProcesses {
             return Err(illegal_argument_error("native_truncate"));
         };
 
+        // Per-call ceiling on the size a single truncate can request.
+        // On sparse-file filesystems (ext4, apfs) `set_len(n)` is
+        // O(1) at any n, so a hostile deploy calling
+        // `nativeTruncate(fd, i64::MAX)` would report success. On
+        // non-sparse filesystems the same call fills the disk. Cap
+        // at 16 GiB per call as a defensive ceiling; per-deploy
+        // quotas belong in the powerbox layer.
+        const MAX_TRUNCATE_BYTES: i64 = 16 * 1024 * 1024 * 1024;
+
         let response_par = if n < 0 {
             response::err(
                 response::FSERR_BAD_ARG,
                 format!("negative truncate length {n}"),
+            )
+        } else if n > MAX_TRUNCATE_BYTES {
+            response::err(
+                response::FSERR_BAD_ARG,
+                format!("truncate length {n} exceeds MAX_TRUNCATE_BYTES {MAX_TRUNCATE_BYTES}"),
             )
         } else {
             match self.file_handles.get(fd).await {
@@ -2613,10 +2667,23 @@ impl SystemProcesses {
 
     /// `nativeExists(path: String) -> [true, bool] | [false, code, msg]`.
     ///
-    /// Reports whether the path exists. A dangling symlink counts as
-    /// non-existent (matches `tokio::fs::try_exists`, which follows
-    /// symlinks). Callers who need the "path exists as symlink"
-    /// distinction use `nativeStat`, which uses `symlink_metadata`.
+    /// Reports whether the path exists as a filesystem entry, WITHOUT
+    /// following symlinks. A symlink present at `path` reports
+    /// `true` regardless of whether its target exists -- consistent
+    /// with `nativeStat`, which uses `symlink_metadata` and reports
+    /// such a path as `kind: "symlink"`.
+    ///
+    /// The alternative (`tokio::fs::try_exists`, which follows
+    /// symlinks) would let two adjacent primitives disagree on the
+    /// same path: a caller could use `exists` for the "is there
+    /// anything at this path?" check and then `stat` for details,
+    /// and get contradictory answers when the path is a dangling
+    /// symlink or a symlink to an in-quarantine target. Uniform
+    /// non-follow semantics avoids that footgun.
+    ///
+    /// Callers who want follow-symlink semantics open the file (via
+    /// `nativeOpen`, which uses `OpenOptions::open` and does follow)
+    /// and observe via the resulting fd.
     pub async fn native_exists(
         &self,
         contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
@@ -2633,8 +2700,11 @@ impl SystemProcesses {
             return Err(illegal_argument_error("native_exists"));
         };
 
-        let response_par = match tokio::fs::try_exists(&path_str).await {
-            Ok(present) => response::ok(vec![RhoBoolean::create_par(present)]),
+        let response_par = match tokio::fs::symlink_metadata(&path_str).await {
+            Ok(_) => response::ok(vec![RhoBoolean::create_par(true)]),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                response::ok(vec![RhoBoolean::create_par(false)])
+            }
             Err(e) => response::from_io_error(e),
         };
 
@@ -3127,6 +3197,70 @@ impl RhoTestAssertion {
             RhoTestAssertion::RhoAssertNotEquals {
                 unexpected, actual, ..
             } => actual != unexpected,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn non_deterministic_ops_covers_every_fileio_body_ref() {
+        // Every fileio native primitive must be in the non-det set
+        // so the `FailedNonDeterministicCall` path (dispatch.rs)
+        // captures the lead node's result and replays it on
+        // followers. Missing entries would let a consensus deploy
+        // that touches the filesystem diverge between nodes.
+        //
+        // This test asserts the complete list; if a new NATIVE_*
+        // BodyRef is added, it must land here too or this test
+        // breaks (intentionally -- forcing a decision).
+        let expected: &[i64] = &[
+            BodyRefs::NATIVE_OPEN,
+            BodyRefs::NATIVE_CLOSE,
+            BodyRefs::NATIVE_READ,
+            BodyRefs::NATIVE_WRITE,
+            BodyRefs::NATIVE_SEEK,
+            BodyRefs::NATIVE_TELL,
+            BodyRefs::NATIVE_SIZE,
+            BodyRefs::NATIVE_TRUNCATE,
+            BodyRefs::NATIVE_FLUSH,
+            BodyRefs::NATIVE_STAT,
+            BodyRefs::NATIVE_ENTRIES,
+            BodyRefs::NATIVE_EXISTS,
+            BodyRefs::NATIVE_RENAME,
+            BodyRefs::NATIVE_COPY_FILE,
+            BodyRefs::NATIVE_REMOVE_FILE,
+            BodyRefs::NATIVE_REMOVE_DIR,
+            BodyRefs::NATIVE_CHMOD,
+            BodyRefs::NATIVE_QUARANTINE,
+        ];
+        let ops = non_deterministic_ops();
+        for &r in expected {
+            assert!(
+                ops.contains(&r),
+                "fileio BodyRef {r} missing from non_deterministic_ops"
+            );
+        }
+    }
+
+    #[test]
+    fn non_deterministic_ops_still_covers_prior_ai_and_grpc_refs() {
+        // Regression guard: the fileio addition must not have
+        // dropped the pre-existing entries.
+        let ops = non_deterministic_ops();
+        for &r in &[
+            BodyRefs::GPT4,
+            BodyRefs::DALLE3,
+            BodyRefs::TEXT_TO_AUDIO,
+            BodyRefs::OLLAMA_CHAT,
+            BodyRefs::OLLAMA_GENERATE,
+            BodyRefs::OLLAMA_MODELS,
+            BodyRefs::GRPC_TELL,
+            BodyRefs::CHROMA_QUERY,
+        ] {
+            assert!(ops.contains(&r), "pre-existing BodyRef {r} missing");
         }
     }
 }

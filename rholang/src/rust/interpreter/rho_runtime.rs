@@ -1298,6 +1298,24 @@ fn dispatch_table_creator(
     Arc::new(tokio::sync::RwLock::new(dispatch_table))
 }
 
+/// URNs that satisfy this predicate are handled by an installed
+/// system-process handler but are **not** published in the
+/// user-reachable `urn_map`. `eval_new` will only resolve them
+/// through per-deploy `NormalizerEnv` injections, populated at
+/// genesis time for the FS-agent deploy.
+///
+/// Publishing the `rho:io:fs:native:*` URNs in `urn_map` would
+/// grant every deploy on the network write access to the
+/// primitives, which are unauthenticated arbitrary-host-FS
+/// operations. Filtering here keeps the handlers registered on
+/// their fixed channels (so `introduce_system_process` still
+/// wires them) but hidden from `new x(URN)` resolution.
+///
+/// Prefix-based rather than a per-Definition flag so introducing
+/// a new internal primitive is a URN-naming decision, not a
+/// boolean that someone might forget to set.
+fn is_internal_urn(urn: &str) -> bool { urn.starts_with("rho:io:fs:native:") }
+
 fn basic_processes() -> HashMap<String, Par> {
     let mut map = HashMap::new();
 
@@ -1448,6 +1466,7 @@ fn setup_maps_and_refs(
     let mut urn_map: HashMap<_, _> = basic_processes();
     combined_processes
         .iter()
+        .filter(|def| !is_internal_urn(&def.urn))
         .map(|process| process.to_urn_map())
         .for_each(|(key, value)| {
             urn_map.insert(key, value);
@@ -1763,4 +1782,49 @@ pub async fn create_runtime_from_kv_store(
     .await;
 
     runtime
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn internal_urns_are_the_fileio_native_prefix_and_nothing_else() {
+        // Native primitives are hidden from the user-reachable
+        // resolver path. Non-native URNs (registry, stdio, crypto,
+        // AI, etc.) stay public.
+        assert!(is_internal_urn("rho:io:fs:native:1.0.0/open"));
+        assert!(is_internal_urn("rho:io:fs:native:1.0.0/chmod"));
+        assert!(is_internal_urn("rho:io:fs:native:2.0.0/anything"));
+
+        // Nothing outside the prefix, in particular:
+        assert!(!is_internal_urn("rho:io:fs:1.0.0")); // Public FS agent URN.
+        assert!(!is_internal_urn("rho:io:stdout"));
+        assert!(!is_internal_urn("rho:registry:lookup"));
+        assert!(!is_internal_urn("rho:registry:1.0.0"));
+        assert!(!is_internal_urn("rho:internal:registry_lookup"));
+        assert!(!is_internal_urn("rho:sys:ui:1.0.0/filePicker"));
+        assert!(!is_internal_urn(""));
+        // Guard against a substring rather than prefix mismatch.
+        assert!(!is_internal_urn("rho:not:rho:io:fs:native:1.0.0/open"));
+    }
+
+    #[test]
+    fn setup_maps_and_refs_hides_native_fileio_urns_from_urn_map() {
+        // The urn_map filter in setup_maps_and_refs must strip every
+        // rho:io:fs:native:* entry before publication. If a future
+        // Definition slips one in (say, by copy-paste), this test
+        // catches it -- any leak here is a full arbitrary-host-FS
+        // authority to every deploy on the network.
+        let extra: Vec<Definition> = Vec::new();
+        let (_bd, _ib, _dd, urn_map, _pd) = setup_maps_and_refs(&extra);
+        for key in urn_map.keys() {
+            assert!(
+                !is_internal_urn(key),
+                "internal URN {key} leaked into urn_map"
+            );
+        }
+        // Positive sanity: some well-known public URN should be present.
+        assert!(urn_map.contains_key("rho:io:stdout"));
+    }
 }
