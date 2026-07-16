@@ -150,12 +150,22 @@ jobs:
           # accepted because it is transient by definition (seen from
           # rust-fuzz.github.io during a GitHub Pages blip); a genuinely
           # dead link returns 404/410, not 503.
+          #
+          # `--timeout 60` overrides lychee's 20-second default per-
+          # request timeout. Academic-hosting endpoints (notably
+          # `softwarefoundations.cis.upenn.edu`, IACR mirrors, and
+          # university department servers) intermittently respond
+          # slower than 20s; the URL is live but the response is late.
+          # A real dead link doesn't hang -- it 404s promptly -- so
+          # the longer timeout doesn't hide real problems, it just
+          # stops transient CI failures on the reference bibliography.
           args: >-
             --no-progress
             --exclude-loopback
             --exclude 'https://www\.gutenberg\.org/ebooks/132'
             --max-retries 2
             --retry-wait-time 5
+            --timeout 60
             --accept 200..=299,403,429,503
             './**/*.md'
           fail: true
