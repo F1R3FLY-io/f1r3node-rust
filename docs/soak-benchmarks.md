@@ -61,6 +61,16 @@ start receiving alerts and every mail carries an unsubscribe link. The
 recipient list is stored in OCI (view it with `oci ons subscription list
 --topic-id <topic-ocid> ...`) — never in this repository.
 
+**Removing an address** (maintainer-side, e.g. a departed team member or a
+mistyped address — recipients can always just use the unsubscribe link):
+
+```bash
+oci ons subscription list \
+  --compartment-id <compartment-ocid> \
+  --topic-id <topic-ocid> --all      # find the subscription OCID by endpoint
+oci ons subscription delete --subscription-id <subscription-ocid>
+```
+
 ## Operational notes
 
 - Benchmarks run **only** in the 72h weekend soak (`duration_seconds ==
