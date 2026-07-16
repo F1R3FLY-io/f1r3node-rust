@@ -868,15 +868,16 @@ pub async fn compute_parents_post_state(
         // such system deploys are not mergeable, so take them from one of the parents.
         _ => {
             let cache_lookup_started = std::time::Instant::now();
-            // Fast path: if one parent is descendant of all others, its post-state already
-            // includes all effects from the remaining parents and we can skip DAG merge.
             for candidate in &parents {
+                if !candidate.body.deploys.is_empty() {
+                    continue;
+                }
                 let covers_all = parents
                     .iter()
                     .filter(|p| p.block_hash != candidate.block_hash)
                     .all(|p| {
                         s.dag
-                            .is_in_main_chain(&p.block_hash, &candidate.block_hash)
+                            .is_dag_ancestor(&p.block_hash, &candidate.block_hash)
                             .unwrap_or(false)
                     });
                 if covers_all {

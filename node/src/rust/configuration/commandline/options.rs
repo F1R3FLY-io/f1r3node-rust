@@ -572,6 +572,13 @@ pub struct RunOptions {
         hide_short_help = true
     )]
     pub heartbeat_advanced_deploy_recovery_max_lag: Option<i64>,
+
+    #[arg(
+        long = "heartbeat-advanced-empty-frontier-max-unfinalized-blocks",
+        value_parser = ValueParser::new(parse_non_negative_i64),
+        hide_short_help = true
+    )]
+    pub heartbeat_advanced_empty_frontier_max_unfinalized_blocks: Option<i64>,
 }
 
 /// Keygen subcommand - Generates a public/private key pair

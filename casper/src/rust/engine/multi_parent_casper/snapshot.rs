@@ -184,6 +184,41 @@ fn prefer_deploy_support_main_parent(
     Ok(reordered)
 }
 
+fn prune_dag_covered_parents(
+    dag: &KeyValueDagRepresentation,
+    parents: Vec<BlockMessage>,
+) -> Result<Vec<BlockMessage>, CasperError> {
+    if parents.len() <= 1 {
+        return Ok(parents);
+    }
+
+    for (idx, candidate) in parents.iter().enumerate() {
+        if !candidate.body.deploys.is_empty() {
+            continue;
+        }
+        let mut covers_all = true;
+        for (other_idx, other) in parents.iter().enumerate() {
+            if idx == other_idx {
+                continue;
+            }
+            if !dag.is_dag_ancestor(&other.block_hash, &candidate.block_hash)? {
+                covers_all = false;
+                break;
+            }
+        }
+        if covers_all {
+            tracing::info!(
+                target: "f1r3fly.casper.parent_selection",
+                original_parents = parents.len(),
+                pruned_parents = 1,
+                "Parent selection collapsed to DAG-covering parent"
+            );
+            return Ok(vec![candidate.clone()]);
+        }
+    }
+    Ok(parents)
+}
+
 fn candidate_scope_has_rejected_deploys(
     dag: &KeyValueDagRepresentation,
     block_store: &KeyValueBlockStore,
@@ -386,10 +421,11 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
     };
 
     let unfiltered_parents_count = unfiltered_parents.len();
+    let compacted_parents = prune_dag_covered_parents(&dag, unfiltered_parents)?;
 
     // C15 / Smell-3: shared wire-convention constant — see
     // `crate::rust::casper::UNLIMITED_PARENTS`.
-    let mut parents_after_count_limit = unfiltered_parents;
+    let mut parents_after_count_limit = compacted_parents;
     if this.casper_shard_conf.max_number_of_parents != crate::rust::casper::UNLIMITED_PARENTS {
         parents_after_count_limit.truncate(this.casper_shard_conf.max_number_of_parents as usize);
     }
@@ -737,7 +773,7 @@ mod tests {
 
     use super::{
         candidate_scope_has_rejected_deploys, deploy_scope_cache_key_matches,
-        prefer_deploy_support_main_parent,
+        prefer_deploy_support_main_parent, prune_dag_covered_parents,
     };
 
     #[test]
@@ -770,6 +806,144 @@ mod tests {
             &lfb,
             &[parent_b, parent_a]
         ));
+    }
+
+    #[tokio::test]
+    async fn parent_selection_prunes_dag_covered_parents() {
+        let mut kvm = InMemoryStoreManager::new();
+        let dag_storage = BlockDagKeyValueStorage::new(&mut kvm)
+            .await
+            .expect("dag storage");
+
+        let genesis = block_implicits::get_random_block(
+            Some(0),
+            Some(0),
+            None,
+            None,
+            None,
+            None,
+            Some(0),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            None,
+            Some("test".to_string()),
+            None,
+        );
+        let left = block_implicits::get_random_block(
+            Some(1),
+            Some(1),
+            None,
+            None,
+            None,
+            None,
+            Some(1),
+            Some(vec![genesis.block_hash.clone()]),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            None,
+            Some("test".to_string()),
+            None,
+        );
+        let right = block_implicits::get_random_block(
+            Some(1),
+            Some(2),
+            None,
+            None,
+            None,
+            None,
+            Some(1),
+            Some(vec![genesis.block_hash.clone()]),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            None,
+            Some("test".to_string()),
+            None,
+        );
+        let seal = block_implicits::get_random_block(
+            Some(2),
+            Some(3),
+            None,
+            None,
+            None,
+            None,
+            Some(2),
+            Some(vec![left.block_hash.clone(), right.block_hash.clone()]),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            None,
+            Some("test".to_string()),
+            None,
+        );
+        let left_child = block_implicits::get_random_block(
+            Some(3),
+            Some(4),
+            None,
+            None,
+            None,
+            None,
+            Some(3),
+            Some(vec![seal.block_hash.clone()]),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            None,
+            Some("test".to_string()),
+            None,
+        );
+        let right_child = block_implicits::get_random_block(
+            Some(3),
+            Some(5),
+            None,
+            None,
+            None,
+            None,
+            Some(3),
+            Some(vec![seal.block_hash.clone()]),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            None,
+            Some("test".to_string()),
+            None,
+        );
+
+        dag_storage
+            .insert(&genesis, InsertMode::Approved)
+            .expect("insert genesis");
+        for block in [&left, &right, &seal, &left_child, &right_child] {
+            dag_storage
+                .insert(block, InsertMode::Normal)
+                .expect("insert block");
+        }
+
+        let dag = dag_storage.get_representation().expect("dag");
+        let pruned =
+            prune_dag_covered_parents(&dag, vec![left.clone(), seal.clone(), right.clone()])
+                .expect("prune parents");
+        assert_eq!(pruned.len(), 1);
+        assert_eq!(pruned[0].block_hash, seal.block_hash);
+
+        let siblings = prune_dag_covered_parents(&dag, vec![left.clone(), right.clone()])
+            .expect("keep siblings");
+        assert_eq!(
+            siblings
+                .iter()
+                .map(|block| block.block_hash.clone())
+                .collect::<Vec<_>>(),
+            vec![left.block_hash, right.block_hash]
+        );
+
+        let diverged_from_seal =
+            prune_dag_covered_parents(&dag, vec![left_child.clone(), right_child.clone(), seal])
+                .expect("keep common anchor without single covering parent");
+        assert_eq!(diverged_from_seal.len(), 3);
+        assert_eq!(diverged_from_seal[0].block_hash, left_child.block_hash);
+        assert_eq!(diverged_from_seal[1].block_hash, right_child.block_hash);
     }
 
     #[tokio::test]
