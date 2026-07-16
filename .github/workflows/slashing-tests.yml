@@ -106,8 +106,15 @@ jobs:
         # minutes into the trio with zero test failures (runs 29476110295
         # attempts 1-2). Serialize them and bound cases until the env-eviction
         # fix lands; the nightly job still pushes case counts higher.
+        #
+        # Case budget: these tests carry in-file caps of 5-8 cases because a
+        # single case drives the full dispatch stack (seconds per case), but
+        # proptest's contextualize_config lets PROPTEST_CASES override in-file
+        # caps. 500 was ~100x design scale and blew the job's 90-minute
+        # timeout after ~55 minutes (run 29509886268 attempt 2, where the
+        # bulk pass DID complete). 25 = ~5x design scale, minutes not hours.
         env:
-          PROPTEST_CASES: 500
+          PROPTEST_CASES: 25
           PROPTEST_MAX_GLOBAL_REJECTS: 8192
         run: cargo test --release -p casper -- slashing::prop_t_triple_bisim --test-threads=1
 
@@ -285,9 +292,11 @@ jobs:
       - name: Run triple-bisim extended property tests (serial, bounded cases)
         # Same memory-exhaustion guard as the PR-gate job: the triple-bisim
         # trio run concurrently kills the hosted runner (see PR-gate step
-        # note). Serial + bounded until the env-eviction fix lands.
+        # note). Serial + bounded until the env-eviction fix lands; 100 is
+        # ~20x the trio's in-file design scale (see the PR-gate step note on
+        # why PROPTEST_CASES overrides those caps).
         env:
-          PROPTEST_CASES: 2000
+          PROPTEST_CASES: 100
           PROPTEST_MAX_GLOBAL_REJECTS: 8192
         run: cargo test --release -p casper -- slashing::prop_t_triple_bisim --test-threads=1
 
