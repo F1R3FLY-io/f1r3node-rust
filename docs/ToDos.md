@@ -638,6 +638,76 @@ tasks:
 
 ---
 
+### EPOCH-010: Soak Benchmark Metrics & Reporting
+
+```yaml
+---
+epoch_id: EPOCH-010
+title: "Soak Benchmark Metrics & Reporting"
+status: in_progress
+priority: p2
+user_story: US-004
+blocked_by: []
+created_at: 2026-07-15
+claimed_by: claude-session-810424d7
+claimed_at: 2026-07-15T21:35:00Z
+tasks:
+  - id: TASK-010-1
+    title: "Per-iteration metrics emission in run-merge-recovery-soak.sh"
+    status: in_progress
+    acceptance:
+      - "Each iteration writes metrics.json to its ITERATION_DIR: wall-clock duration, pytest pass/fail/error counts (parsed from pytest.log), provider, exit code"
+      - "Run-level summary.json aggregates: iterations, failure rate, iterations/hour throughput, per-provider split, target ref/sha, started/finished timestamps"
+      - "summary.json uploaded as a workflow artifact by merge-recovery-soak.yml"
+
+  - id: TASK-010-2
+    title: "Node resource + finalization sampling during soak iterations"
+    status: in_progress
+    blocked_by: [TASK-010-1]
+    acceptance:
+      - "Peak node RSS per iteration captured (docker stats for docker provider; harness resource_monitor output for subprocess provider) into metrics.json"
+      - "Deploy-to-finalized latency samples (p50/p95) extracted per iteration from test_load.py timings or node JSON logs (f1r3fly.propose.timing targets)"
+      - "Both metrics roll up into summary.json"
+
+  - id: TASK-010-3
+    title: "Week-over-week compare step with release-gate verdict"
+    status: in_progress
+    blocked_by: [TASK-010-1, TASK-010-2]
+    acceptance:
+      - "Compare job fetches previous week's summary.json (from the Pages data history) and computes deltas for: failure rate, throughput, peak RSS, finalization latency"
+      - "Regression thresholds are configurable in one place; PROPOSED DEFAULTS (need maintainer sign-off, see work log): failure rate +5 percentage points, RSS +20%, finalization p95 +20%, throughput -20%"
+      - "Verdict (pass/regress + per-metric deltas) written to verdict.json artifact; a regression marks the soak workflow run failed"
+      - "Release workflow refuses to promote unless the latest completed soak verdict is pass (explicit maintainer override documented)"
+
+  - id: TASK-010-4
+    title: "GitHub Pages trend dashboard"
+    status: in_progress
+    blocked_by: [TASK-010-1]
+    acceptance:
+      - "Pages enabled on the repo (source: GitHub Actions); site at f1r3fly-io.github.io/f1r3node-rust"
+      - "Soak workflow appends each summary.json to a data history and redeploys the dashboard"
+      - "Dashboard charts all four metrics across weeks with per-provider split and links to per-run artifacts"
+
+  - id: TASK-010-5
+    title: "OCI Notifications (ONS) Monday summary email"
+    status: in_progress
+    blocked_by: [TASK-010-3]
+    acceptance:
+      - "ONS topic (e.g. soak-benchmark-reports) exists; creation scripted (CLI or Terraform) OR documented as manually provisioned — OPEN QUESTION: who administers the topic (see work log)"
+      - "Soak workflow publishes a plain-text Monday summary via instance-principal auth from the OCI runners (no new GitHub secrets): four metrics with week-over-week deltas, gate verdict, dashboard link"
+      - "Subscription/unsubscription flow documented for contributors (ONS confirmation + unsubscribe links)"
+---
+```
+
+**Context:** Implements US-004 plus the delivery/reporting design agreed 2026-07-15: the 72h soak concludes Mondays (weekly cadence); metrics are published to a GitHub Pages trend dashboard (pull) and a plain-text ONS email (push); regressions gate releases. Full design rationale, alternatives considered (email-only, Discussions, bot-committed reports), and open questions are in `docs/work-logs/task-EPOCH-010-2026-07-15T20-57Z.md`.
+
+**Scope:**
+- Included: metrics emission, resource sampling, compare+gate, Pages dashboard, ONS email
+- Excluded: PR #72 residual par-serialization benchmarking (separate concern)
+- Excluded: HTML email formatting (ONS is plain-text; detail lives on the dashboard)
+
+---
+
 ## Epoch Dependency Graph
 
 ```

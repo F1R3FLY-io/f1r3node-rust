@@ -24,6 +24,23 @@ This document captures user stories that drive feature development. User stories
 
 ---
 
+
+#### US-004: 72-hour merge-recovery soak benchmark metrics
+
+> As a **release engineer validating consensus changes**, I want **capture benchmark metrics from the 72-hour merge-recovery soak (per-iteration throughput, failure rate, and node resource/finalization measurements) with a machine-readable summary artifact** so that **sustained-load performance and stability are measurable and comparable across releases instead of pass/fail only**.
+
+**Implemented in:** EPOCH-010
+
+**Status:** Planned
+
+**Acceptance Criteria:**
+- [ ] Each soak iteration records wall-clock duration, pytest pass/fail counts, and provider (docker/subprocess) in a per-iteration metrics file
+- [ ] Node resource metrics (peak RSS, finalization latency) are sampled during each iteration and included in the metrics file
+- [ ] A run-level summary artifact (JSON) aggregates iterations, failure rate, and throughput, and is uploaded by the merge-recovery-soak workflow
+- [ ] Two soak runs can be diffed to detect performance regressions between refs
+
+---
+
 ## Planned Stories
 
 #### US-001: System-Integration Compatibility
