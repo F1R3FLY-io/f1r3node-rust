@@ -12,6 +12,8 @@
 
 pub mod handle_table;
 pub mod mode;
+#[cfg(unix)]
+pub mod nss;
 pub mod path;
 pub mod response;
 pub mod stat;

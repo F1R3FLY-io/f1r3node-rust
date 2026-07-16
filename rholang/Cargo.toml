@@ -44,6 +44,12 @@ dotenv = "0.15.0"
 indexmap = { workspace = true }
 rayon = { workspace = true }
 tempfile = { workspace = true }
+# libc is available transitively (via console, native-tls, etc.), but
+# needed as a direct dep for the getpwnam_r / getgrnam_r / getpwuid_r
+# / getgrgid_r NSS lookups used by the File I/O `nativeChown` and by
+# the stat/entries record's owner/group fields (FIP 2026-02-06 §Entries
+# record shape TODO 8).
+libc = { workspace = true }
 clap = { workspace = true }
 rholang-parser = { workspace = true }
 validated = { workspace = true }

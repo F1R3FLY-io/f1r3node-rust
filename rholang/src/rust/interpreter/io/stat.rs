@@ -12,19 +12,17 @@
 //! - `kind`  : String — one of `"file"`, `"dir"`, `"symlink"`, `"other"`.
 //! - `size`  : Int    — bytes; present for regular files only.
 //! - `mode`  : String — 9-char `"rwxrwxrwx"` style.
+//! - `owner` : String — user name from NSS reverse-lookup; Unix only. Omitted if the uid has no NSS entry.
+//! - `group` : String — group name from NSS reverse-lookup; Unix only. Omitted if the gid has no NSS entry.
 //! - `mtime` : Int    — Unix epoch seconds.
 //! - `ctime` : Int    — Unix epoch seconds.
 //! - `atime` : Int    — Unix epoch seconds.
 //!
-//! `owner` and `group` (FIP TODO 8 extension) are omitted here and
-//! land in the `nativeChown` slice, since both directions of the
-//! translation want the same NSS-lookup code path.
-//!
 //! Consensus-vs-oracular filtering (the FIP TODO 5 promise that
-//! `mtime`/`ctime`/`atime` are omitted in consensus mode) is the
-//! agent layer's job, not the native primitive's. The native layer
-//! emits every field it can compute; the agent layer strips the
-//! per-mode ones before handing to the user.
+//! `mtime`/`ctime`/`atime`/`owner`/`group` are omitted in consensus
+//! mode) is the agent layer's job, not the native primitive's. The
+//! native layer emits every field it can compute; the agent layer
+//! strips the per-mode ones before handing to the user.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -91,18 +89,41 @@ pub fn stat_record(basename: &str, meta: &std::fs::Metadata) -> HashMap<Par, Par
 
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+        use super::nss;
+
         m.insert(
             RhoString::create_par("mode".to_string()),
             RhoString::create_par(mode_string(meta.permissions().mode())),
         );
+
+        // owner/group per FIP §Entries record shape TODO 8. NSS
+        // reverse-lookup may fail (uid orphaned from /etc/passwd,
+        // NSS backend down, non-UTF-8 name); in that case the
+        // field is omitted rather than fabricating a fallback,
+        // matching the convention `mtime`/`ctime`/`atime` follow
+        // for unavailable timestamps.
+        if let Some(name) = nss::user_name(meta.uid()) {
+            m.insert(
+                RhoString::create_par("owner".to_string()),
+                RhoString::create_par(name),
+            );
+        }
+        if let Some(name) = nss::group_name(meta.gid()) {
+            m.insert(
+                RhoString::create_par("group".to_string()),
+                RhoString::create_par(name),
+            );
+        }
     }
     #[cfg(not(unix))]
     {
         // FIP targets macOS + Linux only, but keep the code portable
         // enough that a Windows dev build still compiles cleanly. On
         // non-Unix hosts, emit the readonly-vs-writable bit as an
-        // approximation.
+        // approximation. `owner`/`group` are omitted -- there's no
+        // POSIX-compatible identity to report.
         let m_str = if meta.permissions().readonly() {
             "r--r--r--"
         } else {
@@ -190,5 +211,27 @@ mod tests {
             Some("dir")
         );
         assert!(!rec.contains_key(&RhoString::create_par("size".to_string())));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn stat_record_includes_owner_and_group_on_unix() {
+        // The test process has a real uid/gid backed by /etc/passwd
+        // and /etc/group entries on any CI/dev host we target.
+        // If NSS reverse-lookup produces None (unlikely but possible),
+        // the field is legitimately omitted and this test is
+        // over-strict; if we ever hit that, downgrade to "assert
+        // owner is either present or the uid is missing from NSS."
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let meta = std::fs::metadata(tmp.path()).unwrap();
+        let rec = stat_record(&basename_of(tmp.path()), &meta);
+        assert!(
+            rec.contains_key(&RhoString::create_par("owner".to_string())),
+            "owner field expected for a file owned by the test uid"
+        );
+        assert!(
+            rec.contains_key(&RhoString::create_par("group".to_string())),
+            "group field expected for a file owned by the test gid"
+        );
     }
 }

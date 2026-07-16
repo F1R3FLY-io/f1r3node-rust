@@ -297,6 +297,7 @@ impl FixedChannels {
     pub fn native_remove_dir() -> Par { byte_name(53) }
     pub fn native_chmod() -> Par { byte_name(54) }
     pub fn native_quarantine() -> Par { byte_name(55) }
+    pub fn native_chown() -> Par { byte_name(56) }
 }
 
 pub struct BodyRefs;
@@ -354,6 +355,7 @@ impl BodyRefs {
     pub const NATIVE_REMOVE_DIR: i64 = 52;
     pub const NATIVE_CHMOD: i64 = 53;
     pub const NATIVE_QUARANTINE: i64 = 54;
+    pub const NATIVE_CHOWN: i64 = 55;
 }
 
 pub fn non_deterministic_ops() -> HashSet<i64> {
@@ -394,6 +396,7 @@ pub fn non_deterministic_ops() -> HashSet<i64> {
         BodyRefs::NATIVE_REMOVE_DIR,
         BodyRefs::NATIVE_CHMOD,
         BodyRefs::NATIVE_QUARANTINE,
+        BodyRefs::NATIVE_CHOWN,
     ])
 }
 
@@ -2975,6 +2978,112 @@ impl SystemProcesses {
         produce(&output, ack).await?;
         Ok(output)
     }
+
+    /// `nativeChown(path: String, owner: String, group: String) -> [true] | [false, code, msg]`.
+    ///
+    /// Sets file ownership. Empty string for either `owner` or
+    /// `group` means "don't change" (POSIX `chown(-1, ...)` /
+    /// `chown(..., -1)` semantics, exposed via `std::os::unix::fs::chown`'s
+    /// `Option<u32>` API).
+    ///
+    /// Names are resolved to uid/gid via NSS (`getpwnam_r` /
+    /// `getgrnam_r`). Unknown names return `FSERR_BAD_ARG` --
+    /// consistent with the FIP §Permission management wording that
+    /// numeric uid/gid is not exposed at the Rholang surface, so
+    /// the string is the only handle we accept and a bogus string
+    /// is a caller bug rather than a filesystem error. Numeric
+    /// forms (e.g. `"1000"`) would resolve neither as a user name
+    /// nor a group name and get rejected.
+    ///
+    /// The actual `chown` syscall is synchronous
+    /// (`std::os::unix::fs::chown`); wrapped in `spawn_blocking`
+    /// so the tokio worker isn't blocked. On non-Unix hosts the
+    /// handler returns `FSERR_UNSUPPORTED`, same shape as
+    /// `native_chmod`.
+    pub async fn native_chown(
+        &self,
+        contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
+    ) -> Result<Vec<Par>, InterpreterError> {
+        use crate::rust::interpreter::io::response;
+
+        let Some((produce, _, _, args)) = self.is_contract_call().unapply(contract_args) else {
+            return Err(illegal_argument_error("native_chown"));
+        };
+        let [path_par, owner_par, group_par, ack] = args.as_slice() else {
+            return Err(illegal_argument_error("native_chown"));
+        };
+        let (Some(path_str), Some(owner_str), Some(group_str)) = (
+            RhoString::unapply(path_par),
+            RhoString::unapply(owner_par),
+            RhoString::unapply(group_par),
+        ) else {
+            return Err(illegal_argument_error("native_chown"));
+        };
+
+        #[cfg(unix)]
+        let response_par = {
+            use crate::rust::interpreter::io::nss;
+
+            // Resolve names to ids; empty string means "don't
+            // change" and is passed through as None to std::chown.
+            let uid_result: Result<Option<u32>, Par> = if owner_str.is_empty() {
+                Ok(None)
+            } else {
+                match nss::resolve_uid(&owner_str) {
+                    Some(uid) => Ok(Some(uid)),
+                    None => Err(response::err(
+                        response::FSERR_BAD_ARG,
+                        format!("unknown user {owner_str:?}"),
+                    )),
+                }
+            };
+            let gid_result: Result<Option<u32>, Par> = if group_str.is_empty() {
+                Ok(None)
+            } else {
+                match nss::resolve_gid(&group_str) {
+                    Some(gid) => Ok(Some(gid)),
+                    None => Err(response::err(
+                        response::FSERR_BAD_ARG,
+                        format!("unknown group {group_str:?}"),
+                    )),
+                }
+            };
+
+            match (uid_result, gid_result) {
+                (Err(err_par), _) | (Ok(_), Err(err_par)) => err_par,
+                (Ok(uid), Ok(gid)) => {
+                    // std::os::unix::fs::chown is synchronous;
+                    // shift to a blocking worker so the tokio
+                    // reactor thread stays responsive.
+                    let path = path_str.clone();
+                    let join = tokio::task::spawn_blocking(move || {
+                        std::os::unix::fs::chown(&path, uid, gid)
+                    })
+                    .await;
+                    match join {
+                        Ok(Ok(())) => response::ok(vec![]),
+                        Ok(Err(e)) => response::from_io_error(e),
+                        Err(join_err) => response::err(
+                            response::FSERR_IO,
+                            format!("chown task panicked: {join_err}"),
+                        ),
+                    }
+                }
+            }
+        };
+        #[cfg(not(unix))]
+        let response_par = {
+            let _ = (&path_str, &owner_str, &group_str);
+            response::err(
+                response::FSERR_UNSUPPORTED,
+                "chown is not supported on this platform".to_string(),
+            )
+        };
+
+        let output = vec![response_par];
+        produce(&output, ack).await?;
+        Ok(output)
+    }
 }
 
 // See casper/src/test/scala/coop/rchain/casper/helper/RhoSpec.scala
@@ -3235,6 +3344,7 @@ mod tests {
             BodyRefs::NATIVE_REMOVE_DIR,
             BodyRefs::NATIVE_CHMOD,
             BodyRefs::NATIVE_QUARANTINE,
+            BodyRefs::NATIVE_CHOWN,
         ];
         let ops = non_deterministic_ops();
         for &r in expected {
