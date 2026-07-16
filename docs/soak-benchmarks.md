@@ -47,19 +47,19 @@ logs a warning and proceeds).
 
 The topic is `soak-benchmark-reports` (provisioned via
 `scripts/oci/create-ons-topic.sh`; its OCID is the repo Actions variable
-`SOAK_ONS_TOPIC_OCID`). To subscribe an address:
+`SOAK_ONS_TOPIC_OCID`). The same script subscribes recipient addresses —
+pass them as arguments (or via `SUBSCRIBER_EMAILS`); re-running it is safe,
+already-subscribed addresses are skipped:
 
 ```bash
-oci ons subscription create \
-  --compartment-id <compartment-ocid> \
-  --topic-id <topic-ocid> \
-  --protocol EMAIL \
-  --subscription-endpoint user@example.com
+COMPARTMENT_OCID=<compartment-ocid> \
+  scripts/oci/create-ons-topic.sh user@example.com admin@example.com
 ```
 
-ONS emails a confirmation link; the recipient confirms to start receiving
-alerts and every mail carries an unsubscribe link — no recipient list is
-maintained in this repository.
+ONS emails each new address a confirmation link; the recipient confirms to
+start receiving alerts and every mail carries an unsubscribe link. The
+recipient list is stored in OCI (view it with `oci ons subscription list
+--topic-id <topic-ocid> ...`) — never in this repository.
 
 ## Operational notes
 
