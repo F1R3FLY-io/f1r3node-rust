@@ -1,14 +1,14 @@
 (* ═══════════════════════════════════════════════════════════════════════════
    BugFixAtomicTracker.v — Proof for Bug Fix #2 (T-9.2)
 
-   Bug (Rust regression). multi_parent_casper_impl.rs:1046-1075 reads
-   then writes the equivocation tracker without holding a lock. Two
-   threads concurrently processing AdmissibleEquivocation for the same
-   (v, baseSeq) can both observe "record absent" and both insert,
-   overwriting accumulated equivocationDetectedBlockHashes with empty.
+   Bug (Rust regression, since fixed). Without a lock the equivocation-tracker
+   read-modify-write (now validation_dispatcher.rs:459-473) reads then writes
+   unsynchronized: two threads processing AdmissibleEquivocation for the same
+   (v, baseSeq) both observe "record absent" and both insert, overwriting
+   accumulated equivocationDetectedBlockHashes with empty.
 
-   Fix. Re-introduce access_equivocations_tracker (matching Scala) which
-   holds a global semaphore around the read-modify-write window.
+   Fix. access_equivocations_tracker (matching Scala) holds a global semaphore
+   around the read-modify-write window (validation_dispatcher.rs:459-473).
 
    Theorem T-9.2. Under the lock, the record monotonicity property T-4
    holds for arbitrary thread schedules — i.e., no hash inserted by any

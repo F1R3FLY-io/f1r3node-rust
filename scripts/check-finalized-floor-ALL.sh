@@ -266,7 +266,7 @@ echo "== [7/8] Rust proptests + floor-selection lib tests (fail-soft) =="
 # any proptest failure fails the gate.
 if command -v cargo >/dev/null 2>&1; then
   if cargo test -p casper --test mod -- finalized_floor:: >/tmp/ff_rust_prop.log 2>&1 \
-       && grep -q "test result: ok" /tmp/ff_rust_prop.log; then
+       && grep -qE "test result: ok\. [1-9][0-9]* passed" /tmp/ff_rust_prop.log; then
     n_rust=$(grep -oE 'result: ok\. [0-9]+ passed' /tmp/ff_rust_prop.log | grep -oE '[0-9]+' | head -1)
     pass "Rust finalized-floor proptests (${n_rust:-?} passed: G2 provenance/round-trip + P1 committee PLAY≡REPLAY)"
   else
@@ -278,7 +278,7 @@ if command -v cargo >/dev/null 2>&1; then
   # pick and the incompatible-fork safety error. These are LIB unit tests (not the `mod`
   # integration binary), so they need their own invocation.
   if cargo test -p casper --lib finality::floor:: >/tmp/ff_rust_lib.log 2>&1 \
-       && grep -q "test result: ok" /tmp/ff_rust_lib.log; then
+       && grep -qE "test result: ok\. [1-9][0-9]* passed" /tmp/ff_rust_lib.log; then
     n_lib=$(grep -oE 'result: ok\. [0-9]+ passed' /tmp/ff_rust_lib.log | grep -oE '[0-9]+' | head -1)
     pass "Rust floor-selection lib tests (${n_lib:-?} passed: T-LIN Case-A + T-DET maximality + T-FIN + Case-B + incompatible-fork)"
   else
@@ -301,7 +301,7 @@ echo "== [8/8] Loom concurrency (fail-soft) =="
 # or the loom test cannot be built in this cfg; a genuine interleaving violation FAILS.
 if command -v cargo >/dev/null 2>&1; then
   if cargo test -p block-storage --test loom_frontier_floor_cache >/tmp/ff_loom.log 2>&1; then
-    if grep -q "test result: ok" /tmp/ff_loom.log; then
+    if grep -qE "test result: ok\. [1-9][0-9]* passed" /tmp/ff_loom.log; then
       pass "Loom finalized-floor cache (no torn/regressed value on any interleaving; write-once memo + single-key MVCC)"
     else
       skip "Loom finalized-floor cache: test target unavailable in this build cfg (fail-soft; see /tmp/ff_loom.log)"

@@ -107,6 +107,36 @@ expect("max-union JOIN idempotent (vunion(x,x) = x)", s, "unsat")
 s = Solver(); s.add(xdom + ydom); s.add(neq(cmax(x, y), cancel(vunion(x, y))))
 expect("combine_max == cancel ∘ vunion (semilattice join, deferred single cancel)", s, "unsat")
 
+# === THE GUARD PRECONDITION: no order-dependent survivor pair reaches apply =======
+# The runtime OrderDependenceGuard (casper conflict_set_merger.rs) trips iff a datum
+# is contributed to a side by >= 2 distinct survivors. When it does NOT trip, the
+# per-datum contribution list satisfies "no-dup": the summed multiplicity per side is
+# <= 1. Under that precondition the SHIPPED (non-associative) cmax fold is genuinely
+# ORDER-INDEPENDENT (both associations agree) AND equals the deferred-cancel sum-fold
+# cancel(csum-fold). SMT witness for Rocq combine_max_order_independent_under_no_dup
+# (the guard's soundness), on the 3-survivor fold.
+def no_dup(*changes):
+    return [Sum([ch[0] for ch in changes]) <= 1, Sum([ch[1] for ch in changes]) <= 1]
+
+# (i) under no-dup, the two associations of the shipped cmax fold AGREE
+#     (order-independent): refute a disagreement -> unsat.
+s = Solver(); s.add(adom + bdom + cdom); s.add(no_dup(a, b, c))
+s.add(neq(cmax(cmax(a, b), c), cmax(a, cmax(b, c))))
+expect("no-dup => shipped cmax fold is order-independent (associations agree)", s, "unsat")
+
+# (ii) under no-dup, the shipped cmax fold EQUALS the deferred single cancel of the
+#      sum-union fold (deployed = deferred-cancel netting): refute disagreement -> unsat.
+s = Solver(); s.add(adom + bdom + cdom); s.add(no_dup(a, b, c))
+s.add(neq(cmax(cmax(a, b), c), cancel(csum(csum(a, b), c))))
+expect("no-dup => cmax-fold == cancel(sum-fold) (deferred-cancel netting)", s, "unsat")
+
+# (iii) the Finding-A associativity gap REQUIRES a duplicated side — exactly what the
+#       guard catches: a disagreement witness necessarily breaks no-dup. Expect SAT.
+s = Solver(); s.add(adom + bdom + cdom)
+s.add(neq(cmax(cmax(a, b), c), cmax(a, cmax(b, c))))
+s.add(Or(Sum([a[0], b[0], c[0]]) >= 2, Sum([a[1], b[1], c[1]]) >= 2))
+expect("Finding-A gap requires a duplicated side (the guard's trip condition)", s, "sat")
+
 print("== Z3 channel-netting monoid cross-witness: ALL PASS =="
       if ok else "== FAILURES ==")
 import sys

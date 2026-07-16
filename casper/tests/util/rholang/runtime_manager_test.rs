@@ -2145,14 +2145,21 @@ in {{
     );
 }
 
-/// Exercises the conflict-detection path for two independent contracts both
-/// calling insertArbitrary. Under multi-parent DAG semantics with
-/// non-persistent Rholang produces on shared system channels, concurrent
-/// operations on the same channel legitimately race and one must be rejected;
-/// the test's `rejected.is_empty()` assertion encodes an obsolete premise and
-/// needs to be rewritten once the rejected-deploy recovery mechanism lands.
+/// Two independent contracts both call insertArbitrary, inserting DISTINCT
+/// registry leaves from sibling branches. They genuinely RACE at the raw level —
+/// both read-modify-write the SAME shared TreeHashMap internal-node produce
+/// channels (`racesForSameIOEvent: produceRaces=2`) — yet because they touch
+/// DIFFERENT leaves the merge keeps BOTH: the keep-one / §3c discriminator
+/// classifies the shared-internal-node produces as mergeable, not a genuine
+/// single-value-cell conflict. The correct outcome is therefore `rejected == 0`
+/// with both contracts' data present in the merged state (verified below).
+///
+/// Historical note: this was `#[ignore]`d under an earlier premise that one insert
+/// "must be rejected"; the current keep-one design correctly merges these distinct
+/// leaves, so that premise no longer holds and the test is re-enabled. The genuine
+/// raw race is asserted (below) so `rejected == 0` is a real keep-one result, not a
+/// vacuous merge of disjoint branches.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "assertion contradicts multi-parent DAG design; awaits rewrite"]
 async fn concurrent_registry_inserts_should_not_conflict() {
     use block_storage::rust::key_value_block_store::KeyValueBlockStore;
     use casper::rust::casper::{CasperShardConf, CasperSnapshot, OnChainCasperState};
@@ -2437,6 +2444,14 @@ async fn concurrent_registry_inserts_should_not_conflict() {
             .filter(|p| !p.persistent)
             .collect();
         tracing::info!("Racing produces: {}", racing_produces.len());
+        // Non-vacuity: the two inserts must GENUINELY race on shared internal-node
+        // produce channels, else `rejected == 0` below would be a trivial merge of
+        // disjoint branches rather than a real keep-one/exemption result.
+        assert!(
+            !racing_produces.is_empty(),
+            "expected a genuine shared-channel race between the two registry inserts \
+             (else the no-conflict assertion is vacuous); got 0 racing produces"
+        );
         // Collect racing channel hashes for COMM tracing
         let racing_channels: std::collections::HashSet<_> = racing_produces
             .iter()
@@ -2586,14 +2601,17 @@ async fn concurrent_registry_inserts_should_not_conflict() {
         );
     }
 
-    // The key assertion: both deploys should be kept.
-    // If one is rejected, insertArbitrary calls falsely conflict.
+    // Key assertion: keep-one correctly keeps BOTH inserts (0 rejected). They
+    // raw-race on the shared TreeHashMap internal-node produce channels (asserted
+    // non-empty above), but write DISTINCT leaves, so the §3c discriminator
+    // classifies those shared-node produces as mergeable rather than a genuine
+    // single-value-cell conflict. A rejection here would be a real regression: a
+    // genuinely-mergeable race mis-rejected.
     assert!(
         rejected.is_empty(),
-        "Concurrent insertArbitrary calls should not conflict. \
-         {} deploys rejected during merge of two independent registry inserts. \
-         This is a false positive in conflict detection — both contracts write \
-         to different TreeHashMap leaf channels but share internal node channels.",
+        "concurrent insertArbitrary to DISTINCT registry leaves must merge with 0 \
+         rejected (they share TreeHashMap internal nodes, but the produces there are \
+         mergeable); got {} rejected — keep-one wrongly rejected a mergeable race.",
         rejected.len(),
     );
 

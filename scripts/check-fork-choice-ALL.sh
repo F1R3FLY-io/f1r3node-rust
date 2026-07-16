@@ -291,7 +291,7 @@ if command -v cargo >/dev/null 2>&1; then
   #   score-monoid + T-10 filter), prop_lca (LUCA converges/common-ancestor/lowest),
   #   prop_bound (B2/B3/B4 sentinel/overflow/empty seams).
   if cargo test -p casper --test mod -- fork_choice:: >/tmp/fc_rust_prop.log 2>&1 \
-       && grep -q "test result: ok" /tmp/fc_rust_prop.log; then
+       && grep -qE "test result: ok\. [1-9][0-9]* passed" /tmp/fc_rust_prop.log; then
     n_rust=$(grep -oE 'result: ok\. [0-9]+ passed' /tmp/fc_rust_prop.log | grep -oE '[0-9]+' | head -1)
     pass "Rust fork-choice proptests (${n_rust:-?} passed: filter_deep_parents ⊨ within_depth/prop_filter; estimator determinism + score-monoid + T-10 filter; LUCA converges/common-ancestor/lowest; B2/B3/B4 bound seams)"
   else
@@ -300,7 +300,7 @@ if command -v cargo >/dev/null 2>&1; then
   # The tie-break total-order proptests live in the `shared` crate (list_ops), the
   # realization of TieBreak.v `sort_total_order` the estimator's ranking depends on.
   if cargo test -p shared list_ops >/tmp/fc_rust_listops.log 2>&1 \
-       && grep -q "test result: ok" /tmp/fc_rust_listops.log; then
+       && grep -qE "test result: ok\. [1-9][0-9]* passed" /tmp/fc_rust_listops.log; then
     n_lo=$(grep -oE 'result: ok\. [0-9]+ passed' /tmp/fc_rust_listops.log | grep -oE '[0-9]+' | head -1)
     pass "Rust tie-break proptests (${n_lo:-?} passed: sort_by_with_decreasing_order — perm-invariant + is-permutation + argmax-unique)"
   else
@@ -312,7 +312,7 @@ if command -v cargo >/dev/null 2>&1; then
   # in the LIB target and need their own invocation: the `--test mod` filter above cannot
   # see them, which would leave the T-MP proptests ungated (they were, until this line).
   if cargo test -p casper --lib -- snapshot::tests >/tmp/fc_rust_snapshot.log 2>&1 \
-       && grep -q "test result: ok" /tmp/fc_rust_snapshot.log; then
+       && grep -qE "test result: ok\. [1-9][0-9]* passed" /tmp/fc_rust_snapshot.log; then
     n_sn=$(grep -oE 'result: ok\. [0-9]+ passed' /tmp/fc_rust_snapshot.log | grep -oE '[0-9]+' | head -1)
     pass "Rust T-MP main-parent proptests (${n_sn:-?} passed: better_deploy_branch_score strict total order; deploy-support promotion is a permutation + argmax invariant under input order; identity when no branch scores)"
   else
@@ -324,7 +324,7 @@ if command -v cargo >/dev/null 2>&1; then
   # horizon. Extends the abstract GuardBridge bridge to the real validator predicate.
   # Integration test in the `mod` binary (casper/tests/batch2/validate_test.rs).
   if cargo test -p casper --test mod -- parent_validation_enforces_max_parent_depth_horizon >/tmp/fc_rust_parents.log 2>&1 \
-       && grep -q "test result: ok" /tmp/fc_rust_parents.log; then
+       && grep -qE "test result: ok\. [1-9][0-9]* passed" /tmp/fc_rust_parents.log; then
     pass "Rust Validate::parents depth-horizon (C12 receive-side: accept within / reject beyond / buffer extends)"
   else
     fail "Rust Validate::parents depth-horizon test failed (see /tmp/fc_rust_parents.log)"; tail -20 /tmp/fc_rust_parents.log | sed 's/^/      /'
