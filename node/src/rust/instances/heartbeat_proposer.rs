@@ -441,6 +441,7 @@ async fn check_lfb_and_propose(
     } else {
         lfb_lag_blocks <= pending_deploy_max_lag
     };
+    let lag_recovery_leader = is_lag_recovery_leader(&snapshot, validator_identity);
     let pending_deploys_due =
         has_pending_deploys && (!self_recently_proposed || can_propose_pending_deploys_while_ahead);
     // Backstop: even when high lag throttles pending-deploy proposals, force a bounded
@@ -467,14 +468,15 @@ async fn check_lfb_and_propose(
         && (!self_proposed_too_recently || allow_cooldown_override_for_deploy_recovery);
     let frontier_follow_due = !has_pending_deploys
         && has_new_parents
+        && lag_recovery_leader
         && can_follow_frontier_without_pending_deploys
         && (!self_recently_proposed
             || can_chase_frontier_while_ahead
             || allow_frontier_follow_while_ahead_for_deploy_parent);
     let stale_lfb_recovery_due = lfb_is_stale
         && stale_recovery_window_open
+        && lag_recovery_leader
         && (!self_recently_proposed || can_chase_frontier_while_ahead);
-    let lag_recovery_leader = is_lag_recovery_leader(&snapshot, validator_identity);
     let lag_recovery_threshold = pending_deploy_max_lag;
     let moderate_lag_recovery_threshold = std::cmp::max(1, lag_recovery_threshold / 2);
     let stale_lfb_leader_recovery_due = lfb_is_stale
@@ -1103,18 +1105,28 @@ mod tests {
             (count, func)
         }
 
+        fn create_bonded_snapshot(validator_id: Validator) -> CasperSnapshot {
+            let mut snapshot =
+                casper::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+            casper::rust::casper::test_helpers::TestCasperWithSnapshot::bond_validator_in_snapshot(
+                &mut snapshot,
+                validator_id.clone(),
+            );
+            snapshot.parents[0]
+                .body
+                .state
+                .bonds
+                .retain(|bond| bond.validator == validator_id);
+            snapshot
+        }
+
         #[tokio::test]
         async fn do_heartbeat_check_triggers_propose_with_pending_deploys() {
             let validator = create_test_validator_identity();
             let validator_id = validator.public_key.bytes.clone();
 
             // Snapshot with bonded validator
-            let mut snapshot =
-                casper::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
-            casper::rust::casper::test_helpers::TestCasperWithSnapshot::bond_validator_in_snapshot(
-                &mut snapshot,
-                validator_id.into(),
-            );
+            let snapshot = create_bonded_snapshot(validator_id);
 
             // Fresh LFB (100ms old)
             let lfb = create_lfb_with_age(100);
@@ -1157,12 +1169,7 @@ mod tests {
             let validator_id = validator.public_key.bytes.clone();
 
             // Create snapshot with no deploys but validator is bonded
-            let mut snapshot =
-                casper::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
-            casper::rust::casper::test_helpers::TestCasperWithSnapshot::bond_validator_in_snapshot(
-                &mut snapshot,
-                validator_id.into(),
-            );
+            let snapshot = create_bonded_snapshot(validator_id);
 
             // Stale LFB (60 seconds old)
             let lfb = create_lfb_with_age(60000);
@@ -1243,12 +1250,7 @@ mod tests {
             let validator_id = validator.public_key.bytes.clone();
 
             // Create snapshot with no deploys but validator is bonded
-            let mut snapshot =
-                casper::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
-            casper::rust::casper::test_helpers::TestCasperWithSnapshot::bond_validator_in_snapshot(
-                &mut snapshot,
-                validator_id.into(),
-            );
+            let snapshot = create_bonded_snapshot(validator_id);
 
             // Fresh LFB (100ms old)
             let lfb = create_lfb_with_age(100);
@@ -1292,12 +1294,7 @@ mod tests {
             let validator_id = validator.public_key.bytes.clone();
 
             // Snapshot with EMPTY deploys_in_scope but validator is bonded
-            let mut snapshot =
-                casper::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
-            casper::rust::casper::test_helpers::TestCasperWithSnapshot::bond_validator_in_snapshot(
-                &mut snapshot,
-                validator_id.into(),
-            );
+            let snapshot = create_bonded_snapshot(validator_id);
 
             // Fresh LFB so LFB is NOT stale
             let lfb = create_lfb_with_age(100);

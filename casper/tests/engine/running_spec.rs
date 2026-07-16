@@ -424,6 +424,41 @@ mod tests {
         );
         engine_cell.set(Arc::new(running)).await;
 
+        let in_flight_hash = Bytes::from_static(b"in-flight-block");
+        fixture.blocks_in_processing.insert(in_flight_hash.clone());
+
+        update_fork_choice_tips_if_stuck(
+            &engine_cell,
+            &fixture.transport_layer,
+            &fixture.connections_cell,
+            &fixture.rp_conf_ask,
+            Duration::from_secs(1),
+        )
+        .await
+        .unwrap();
+
+        let engine = engine_cell.get().await;
+        assert!(
+            engine.with_casper().is_some(),
+            "stale validator should stay Running while block processing is active"
+        );
+
+        let expected_proto = ApprovedBlockRequestProto {
+            identifier: "".to_string(),
+            trim_state: true,
+        };
+        let expected_content = Bytes::from(expected_proto.encode_to_vec());
+        let requests = fixture.transport_layer.get_all_requests();
+        assert!(!requests.iter().any(|req| {
+            if let Some(ProtocolMessage::Packet(packet)) = &req.msg.message {
+                packet.content == expected_content
+            } else {
+                false
+            }
+        }));
+
+        fixture.transport_layer.reset();
+        fixture.blocks_in_processing.remove(&in_flight_hash);
         update_fork_choice_tips_if_stuck(
             &engine_cell,
             &fixture.transport_layer,
@@ -440,11 +475,6 @@ mod tests {
             "stale validator should leave Running and transition into Initializing"
         );
 
-        let expected_proto = ApprovedBlockRequestProto {
-            identifier: "".to_string(),
-            trim_state: true,
-        };
-        let expected_content = Bytes::from(expected_proto.encode_to_vec());
         let requests = fixture.transport_layer.get_all_requests();
         let found_approved_block_request = requests.iter().any(|req| {
             if let Some(ProtocolMessage::Packet(packet)) = &req.msg.message {

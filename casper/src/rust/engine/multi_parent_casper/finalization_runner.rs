@@ -165,16 +165,14 @@ fn deploy_cleanup_sets_for_finalized_frontier(
         .map(|oldest| oldest.min((lfb_height - deploy_lifespan).max(0)))
         .unwrap_or((lfb_height - deploy_lifespan).max(0));
 
-    let mut lfb_ancestor_set: HashSet<BlockHash> = HashSet::new();
-    let mut lfb_frontier: Vec<BlockHash> = vec![finalized_lfb.clone()];
-    while let Some(block_hash) = lfb_frontier.pop() {
-        if !lfb_ancestor_set.insert(block_hash.clone()) {
+    for block_hash in &dag.finalized_blocks_set {
+        if block_hash == finalized_lfb || dag.is_in_main_chain(block_hash, finalized_lfb)? {
             continue;
         }
         let height = dag.block_number(&block_hash).ok_or_else(|| {
             KvStoreError::KeyNotFound(format!(
-                "finalized ancestor {} has no block number",
-                PrettyPrinter::build_string_bytes(&block_hash)
+                "finalized block {} has no block number",
+                PrettyPrinter::build_string_bytes(block_hash)
             ))
         })?;
         if height < scan_floor {
@@ -182,39 +180,21 @@ fn deploy_cleanup_sets_for_finalized_frontier(
         }
         let block = block_store.get(&block_hash)?.ok_or_else(|| {
             KvStoreError::KeyNotFound(format!(
-                "finalized ancestor {} not present in store",
-                PrettyPrinter::build_string_bytes(&block_hash)
+                "finalized block {} not present in store",
+                PrettyPrinter::build_string_bytes(block_hash)
             ))
         })?;
-        for parent in &block.header.parents_hash_list {
-            if !lfb_ancestor_set.contains(parent) {
-                lfb_frontier.push(parent.clone());
-            }
-        }
-    }
-
-    let mut finalized_history: HashSet<BlockHash> =
-        dag.finalized_blocks_set.iter().cloned().collect();
-    finalized_history.extend(finalized_set.iter().cloned());
-    for block_hash in finalized_history {
-        if lfb_ancestor_set.contains(&block_hash) {
-            continue;
-        }
-        let Some(height) = dag.block_number(&block_hash) else {
-            continue;
-        };
-        if height < scan_floor {
-            continue;
-        }
-        let Some(block) = block_store.get(&block_hash)? else {
-            continue;
-        };
         for processed in &block.body.deploys {
-            if !processed.is_failed {
-                if let Some(state) = states.get_mut(&processed.deploy.sig) {
-                    state.clean_events.push((height, block_hash.clone(), true));
-                }
+            if processed.is_failed {
+                continue;
             }
+            let sig = processed.deploy.sig.clone();
+            states.entry(sig).or_insert_with(|| CleanupState {
+                deploy: processed.deploy.clone(),
+                clean_events: Vec::new(),
+                failed_event: None,
+                rejected_event: None,
+            });
         }
     }
 
@@ -847,6 +827,109 @@ mod tests {
         assert_eq!(terminal.len(), 1);
         assert_eq!(terminal[0].sig, deploy.sig);
         assert!(recoverable.is_empty());
+    }
+
+    #[tokio::test]
+    async fn cleanup_recovers_finalized_deploy_outside_lfb_ancestry() {
+        let mut kvm = InMemoryStoreManager::new();
+        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
+            .await
+            .expect("block store");
+        let dag_storage = BlockDagKeyValueStorage::new(&mut kvm)
+            .await
+            .expect("dag storage");
+        let genesis = block_implicits::get_random_block(
+            Some(0),
+            Some(0),
+            None,
+            None,
+            None,
+            None,
+            Some(0),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            None,
+            Some("test".to_string()),
+            None,
+        );
+        let deploy = construct_deploy::source_deploy(
+            "@7!(7)".to_string(),
+            1,
+            None,
+            None,
+            None,
+            Some(0),
+            None,
+        )
+        .expect("deploy");
+        let clean = block_implicits::get_random_block(
+            Some(1),
+            Some(1),
+            None,
+            None,
+            None,
+            None,
+            Some(1),
+            Some(vec![genesis.block_hash.clone()]),
+            Some(Vec::new()),
+            Some(vec![ProcessedDeploy::empty(deploy.clone())]),
+            Some(Vec::new()),
+            None,
+            Some("test".to_string()),
+            None,
+        );
+        let main = block_implicits::get_random_block(
+            Some(1),
+            Some(2),
+            None,
+            None,
+            None,
+            None,
+            Some(1),
+            Some(vec![genesis.block_hash.clone()]),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            None,
+            Some("test".to_string()),
+            None,
+        );
+
+        block_store
+            .put_block_message(&genesis)
+            .expect("store genesis");
+        block_store.put_block_message(&clean).expect("store clean");
+        block_store.put_block_message(&main).expect("store main");
+        dag_storage
+            .insert(&genesis, InsertMode::Approved)
+            .expect("insert genesis");
+        dag_storage
+            .insert(&clean, InsertMode::Normal)
+            .expect("insert clean");
+        dag_storage
+            .insert(&main, InsertMode::Normal)
+            .expect("insert main");
+        dag_storage
+            .record_directly_finalized(clean.block_hash.clone(), 1.0, |_| async { Ok(()) })
+            .await
+            .expect("finalize clean");
+
+        let dag = dag_storage.get_representation().expect("dag");
+        let finalized_set = HashSet::new();
+        let (terminal, recoverable) = deploy_cleanup_sets_for_finalized_frontier(
+            &dag,
+            &block_store,
+            50,
+            &main.block_hash,
+            &finalized_set,
+        )
+        .expect("cleanup sets");
+
+        assert!(terminal.is_empty());
+        assert_eq!(recoverable.len(), 1);
+        assert_eq!(recoverable[0].sig, deploy.sig);
     }
 
     #[tokio::test]

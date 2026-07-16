@@ -423,6 +423,9 @@ impl<T: TransportLayer + Send + Sync> Running<T> {
         let Some(validator_id) = self.casper.get_validator() else {
             return Ok(false);
         };
+        if !self.blocks_in_processing.is_empty() {
+            return Ok(false);
+        }
 
         let validator = validator_id.public_key.bytes.clone();
         let dag = self.casper.block_dag().await?;

@@ -149,16 +149,16 @@ struct FinalityLagStats {
 /// for per-shard control — when that happens the rename target is
 /// already in place.
 const DEPLOY_SELECTION_RESERVE_TAIL_ENABLED: bool = true;
-const ORDINARY_DEPLOY_PROPOSAL_CAP: usize = 128;
+const ORDINARY_DEPLOY_PROPOSAL_CAP: usize = 8;
 const USER_DEPLOY_BYTE_PROPOSAL_BUDGET: usize = 2 * 1024 * 1024;
 const USER_DEPLOY_BACKPRESSURE_BYTE_PROPOSAL_BUDGET: usize = 512 * 1024;
-const RETRY_DEPLOY_REPROPOSAL_CAP: usize = 32;
+const RETRY_DEPLOY_REPROPOSAL_CAP: usize = 8;
 const NON_LEADER_FALLBACK_ORDINARY_DEPLOY_CAP: usize = 8;
 const NON_LEADER_FALLBACK_MIN_ORDINARY_DEPLOY_CAP: usize = 4;
 const NON_LEADER_FALLBACK_MEDIUM_ORDINARY_DEPLOY_CAP: usize = 16;
 const NON_LEADER_FALLBACK_MAX_ORDINARY_DEPLOY_CAP: usize = 32;
-const DEPLOY_INCLUSION_LEASE_BLOCKS: i64 = 3;
-const DEPLOY_INCLUSION_LEASE_MILLIS: i64 = 30_000;
+const DEPLOY_INCLUSION_LEASE_BLOCKS: i64 = 12;
+const DEPLOY_INCLUSION_LEASE_MILLIS: i64 = 120_000;
 const FRESH_DEPLOY_MAX_ADMISSION_DELAY_MILLIS: i64 = 60_000;
 const FRESH_DEPLOY_ESCALATED_ADMISSION_DELAY_MILLIS: i64 = 120_000;
 const FRESH_DEPLOY_MAX_ESCALATED_ADMISSION_DELAY_MILLIS: i64 = 300_000;
@@ -1674,6 +1674,14 @@ fn is_recovered_deploy_leader(
         .unwrap_or(true)
 }
 
+fn recovered_deploy_admission_allowed(
+    rejected_buffer_non_empty: bool,
+    recovered_deploy_leader: bool,
+    self_chain_rejected_buffered: bool,
+) -> bool {
+    rejected_buffer_non_empty || recovered_deploy_leader || self_chain_rejected_buffered
+}
+
 fn finalized_ancestor_deploy_sigs(
     casper_snapshot: &CasperSnapshot,
     block_store: &KeyValueBlockStore,
@@ -1995,19 +2003,19 @@ fn adaptive_normal_ordinary_deploy_cap(
     if normal_cap == 0 {
         return (0, false);
     }
-    let cap = if finality_lag_stats.lag >= FINALITY_LAG_HARD_BACKPRESSURE_BLOCKS
+    let (cap, backpressure) = if finality_lag_stats.lag >= FINALITY_LAG_HARD_BACKPRESSURE_BLOCKS
         || (stale_in_scope_work && deploy_inclusion_staleness.signature_stale)
     {
-        NON_LEADER_FALLBACK_MIN_ORDINARY_DEPLOY_CAP
-    } else if finality_lag_stats.lag >= FINALITY_LAG_SOFT_BACKPRESSURE_BLOCKS
-        || (stale_in_scope_work && deploy_inclusion_staleness.stale)
+        (NON_LEADER_FALLBACK_MIN_ORDINARY_DEPLOY_CAP, true)
+    } else if (stale_in_scope_work && deploy_inclusion_staleness.stale)
+        || finality_lag_stats.lag >= FINALITY_LAG_SOFT_BACKPRESSURE_BLOCKS
     {
-        NON_LEADER_FALLBACK_ORDINARY_DEPLOY_CAP
+        (NON_LEADER_FALLBACK_ORDINARY_DEPLOY_CAP, true)
     } else {
-        normal_cap
+        (normal_cap, false)
     };
     let effective = normal_cap.min(cap);
-    (effective, effective < normal_cap)
+    (effective, backpressure)
 }
 
 fn fresh_admission_fallback(
@@ -2431,9 +2439,19 @@ pub async fn create(
         // leader. Owner replay is deterministic and duplicate-safe — if another
         // validator re-proposes the same sig, the merge's keep-one dedup picks
         // exactly one copy by (block_number, hash).
-        let allow_recovered_deploys =
-            is_recovered_deploy_leader(casper_snapshot, validator_identity)
-                || self_chain_rejected_buffered;
+        let rejected_buffer_non_empty = {
+            let buffer_guard = rejected_deploy_buffer
+                .lock()
+                .map_err(|e| CasperError::LockError(e.to_string()))?;
+            buffer_guard
+                .non_empty()
+                .map_err(CasperError::KvStoreError)?
+        };
+        let allow_recovered_deploys = recovered_deploy_admission_allowed(
+            rejected_buffer_non_empty,
+            is_recovered_deploy_leader(casper_snapshot, validator_identity),
+            self_chain_rejected_buffered,
+        );
         let inclusion_progress = deploy_inclusion_progress(casper_snapshot, block_store)?;
         let allow_deploy_inclusion = inclusion_progress
             .leader
@@ -2473,14 +2491,6 @@ pub async fn create(
             in_scope_local_stats,
             finality_lag_stats,
         );
-        let rejected_buffer_non_empty = {
-            let buffer_guard = rejected_deploy_buffer
-                .lock()
-                .map_err(|e| CasperError::LockError(e.to_string()))?;
-            buffer_guard
-                .non_empty()
-                .map_err(CasperError::KvStoreError)?
-        };
         let admission_policy = ordinary_admission_policy(
             casper_snapshot,
             rejected_buffer_non_empty,
@@ -3568,6 +3578,12 @@ mod tests {
     }
 
     #[test]
+    fn non_leader_admits_nonempty_recovery_buffer() {
+        assert!(recovered_deploy_admission_allowed(true, false, false));
+        assert!(!recovered_deploy_admission_allowed(false, false, false));
+    }
+
+    #[test]
     fn recovered_deploy_leader_falls_back_to_stable_validator_set_floor() {
         let mut snapshot =
             crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
@@ -3919,7 +3935,7 @@ mod tests {
             stale,
             lag(3, 2),
         );
-        assert_eq!(policy.ordinary_cap, 128);
+        assert_eq!(policy.ordinary_cap, ORDINARY_DEPLOY_PROPOSAL_CAP);
         assert!(policy.reserve_tail);
         assert!(!policy.backpressure);
 
@@ -3938,6 +3954,21 @@ mod tests {
         assert_eq!(policy.ordinary_cap, NON_LEADER_FALLBACK_ORDINARY_DEPLOY_CAP);
         assert!(!policy.reserve_tail);
         assert!(policy.backpressure);
+
+        let policy = ordinary_admission_policy(
+            &snapshot,
+            false,
+            false,
+            true,
+            true,
+            FreshAdmissionFallback::default(),
+            FreshAdmissionFallback::default(),
+            DeployInclusionStaleness::default(),
+            lag(3, 2),
+        );
+        assert_eq!(policy.ordinary_cap, ORDINARY_DEPLOY_PROPOSAL_CAP);
+        assert!(policy.reserve_tail);
+        assert!(!policy.backpressure);
 
         let policy = ordinary_admission_policy(
             &snapshot,
@@ -4084,7 +4115,7 @@ mod tests {
             },
             lag(10, 9),
         );
-        assert_eq!(medium.cap, NON_LEADER_FALLBACK_MEDIUM_ORDINARY_DEPLOY_CAP);
+        assert_eq!(medium.cap, ORDINARY_DEPLOY_PROPOSAL_CAP);
         assert!(!medium.backpressure);
 
         let max = fresh_admission_fallback(
@@ -4097,7 +4128,7 @@ mod tests {
             },
             lag(10, 9),
         );
-        assert_eq!(max.cap, NON_LEADER_FALLBACK_MAX_ORDINARY_DEPLOY_CAP);
+        assert_eq!(max.cap, ORDINARY_DEPLOY_PROPOSAL_CAP);
         assert!(!max.backpressure);
 
         let soft = fresh_admission_fallback(
@@ -4152,10 +4183,14 @@ mod tests {
 
         assert!(!deploy_inclusion_progress_is_stale(
             &progress,
-            12,
+            10 + DEPLOY_INCLUSION_LEASE_BLOCKS - 1,
             1_000 + DEPLOY_INCLUSION_LEASE_MILLIS - 1
         ));
-        assert!(deploy_inclusion_progress_is_stale(&progress, 13, 1_000));
+        assert!(deploy_inclusion_progress_is_stale(
+            &progress,
+            10 + DEPLOY_INCLUSION_LEASE_BLOCKS,
+            1_000
+        ));
         assert!(deploy_inclusion_progress_is_stale(
             &progress,
             11,
@@ -4792,8 +4827,8 @@ mod tests {
         .await
         .expect("prepare deploys");
 
-        assert_eq!(prepared.deploys.len(), 32);
-        assert_eq!(prepared.effective_cap, 32);
+        assert_eq!(prepared.deploys.len(), ORDINARY_DEPLOY_PROPOSAL_CAP);
+        assert_eq!(prepared.effective_cap, ORDINARY_DEPLOY_PROPOSAL_CAP);
         assert!(prepared.cap_hit);
         assert!(prepared
             .deploys

@@ -104,35 +104,6 @@ fn canonical_disposition_sigs(
         .collect())
 }
 
-fn rejected_sig_has_visible_non_source_win(
-    block_store: &KeyValueBlockStore,
-    visible_blocks: &HashSet<BlockHash>,
-    sig: &Bytes,
-    source_block: &BlockHash,
-) -> Result<bool, CasperError> {
-    let mut disposition: HashMap<Bytes, (i64, bool)> = HashMap::new();
-    for hash in visible_blocks {
-        if hash == source_block {
-            continue;
-        }
-        let Some(block) = block_store.get(hash)? else {
-            continue;
-        };
-        let bn = block.body.state.block_number;
-        for pd in &block.body.deploys {
-            if pd.deploy.sig == *sig {
-                record_disposition(&mut disposition, pd.deploy.sig.clone(), bn, true);
-            }
-        }
-        for rd in &block.body.rejected_deploys {
-            if rd.sig == *sig {
-                record_disposition(&mut disposition, rd.sig.clone(), bn, false);
-            }
-        }
-    }
-    Ok(disposition.get(sig).map(|(_, won)| *won).unwrap_or(false))
-}
-
 #[cfg(test)]
 fn visible_rejected_deploy_sigs(
     block_store: &KeyValueBlockStore,
@@ -1277,14 +1248,7 @@ pub async fn compute_parents_post_state(
                     )?;
                     let mut by_block: HashMap<BlockHash, Vec<Bytes>> = HashMap::new();
                     for (sig, src_block) in &rejected_user_pairs {
-                        if floor_won.contains(sig)
-                            || rejected_sig_has_visible_non_source_win(
-                                block_store,
-                                &visible_blocks,
-                                sig,
-                                src_block,
-                            )?
-                        {
+                        if floor_won.contains(sig) {
                             tracing::debug!(
                                 target: "f1r3fly.casper.recovery",
                                 "RejectedDeployBuffer populate: skipped already-won sig {} from {}",
@@ -1489,7 +1453,7 @@ mod backstop_tests {
     use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 
     use super::{
-        canonical_won_sigs, merge_scope_backstop_exceeded, rejected_sig_has_visible_non_source_win,
+        canonical_won_sigs, merge_scope_backstop_exceeded,
         retain_pending_rejected_deploys_for_buffer,
         suppress_rejected_pairs_with_later_visible_rejection, visible_rejected_deploy_sigs,
         MAX_FLOOR_DISTANCE_BLOCKS,
@@ -1518,169 +1482,6 @@ mod backstop_tests {
         let below = merge_scope_backstop_exceeded(MAX_FLOOR_DISTANCE_BLOCKS);
         let above = merge_scope_backstop_exceeded(MAX_FLOOR_DISTANCE_BLOCKS + 1);
         assert!(!below && above);
-    }
-
-    #[tokio::test]
-    async fn visible_non_source_win_in_lower_block_still_blocks_recovery_admission() {
-        let mut kvm = InMemoryStoreManager::new();
-        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
-            .await
-            .expect("block store");
-        let deploy = construct_deploy::source_deploy_now_full(
-            "@9!(9)".to_string(),
-            None,
-            None,
-            None,
-            None,
-            None,
-        )
-        .expect("deploy");
-        let sig = deploy.sig.clone();
-        let lower_clean = block_implicits::get_random_block(
-            Some(14),
-            Some(1),
-            None,
-            None,
-            None,
-            None,
-            Some(0),
-            Some(Vec::new()),
-            Some(Vec::new()),
-            Some(vec![ProcessedDeploy::empty(deploy.clone())]),
-            Some(Vec::new()),
-            Some(Vec::new()),
-            Some("root".to_string()),
-            None,
-        );
-        let higher_source = block_implicits::get_random_block(
-            Some(23),
-            Some(1),
-            None,
-            None,
-            None,
-            None,
-            Some(0),
-            Some(Vec::new()),
-            Some(Vec::new()),
-            Some(vec![ProcessedDeploy::empty(deploy)]),
-            Some(Vec::new()),
-            Some(Vec::new()),
-            Some("root".to_string()),
-            None,
-        );
-        block_store
-            .put_block_message(&lower_clean)
-            .expect("store lower clean");
-        block_store
-            .put_block_message(&higher_source)
-            .expect("store source");
-
-        let visible_blocks: HashSet<_> = [
-            lower_clean.block_hash.clone(),
-            higher_source.block_hash.clone(),
-        ]
-        .into_iter()
-        .collect();
-
-        assert!(rejected_sig_has_visible_non_source_win(
-            &block_store,
-            &visible_blocks,
-            &sig,
-            &higher_source.block_hash,
-        )
-        .expect("visible win check"));
-    }
-
-    #[tokio::test]
-    async fn later_visible_non_source_rejection_reopens_recovery_admission() {
-        let mut kvm = InMemoryStoreManager::new();
-        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
-            .await
-            .expect("block store");
-        let deploy = construct_deploy::source_deploy_now_full(
-            "@9!(9)".to_string(),
-            None,
-            None,
-            None,
-            None,
-            None,
-        )
-        .expect("deploy");
-        let sig = deploy.sig.clone();
-        let lower_clean = block_implicits::get_random_block(
-            Some(14),
-            Some(1),
-            None,
-            None,
-            None,
-            None,
-            Some(0),
-            Some(Vec::new()),
-            Some(Vec::new()),
-            Some(vec![ProcessedDeploy::empty(deploy.clone())]),
-            Some(Vec::new()),
-            Some(Vec::new()),
-            Some("root".to_string()),
-            None,
-        );
-        let higher_source = block_implicits::get_random_block(
-            Some(23),
-            Some(1),
-            None,
-            None,
-            None,
-            None,
-            Some(0),
-            Some(Vec::new()),
-            Some(Vec::new()),
-            Some(vec![ProcessedDeploy::empty(deploy)]),
-            Some(Vec::new()),
-            Some(Vec::new()),
-            Some("root".to_string()),
-            None,
-        );
-        let mut later_rejection = block_implicits::get_random_block(
-            Some(24),
-            Some(1),
-            None,
-            None,
-            None,
-            None,
-            Some(0),
-            Some(Vec::new()),
-            Some(Vec::new()),
-            Some(Vec::new()),
-            Some(Vec::new()),
-            Some(Vec::new()),
-            Some("root".to_string()),
-            None,
-        );
-        later_rejection.body.rejected_deploys = vec![RejectedDeploy { sig: sig.clone() }];
-        block_store
-            .put_block_message(&lower_clean)
-            .expect("store lower clean");
-        block_store
-            .put_block_message(&higher_source)
-            .expect("store source");
-        block_store
-            .put_block_message(&later_rejection)
-            .expect("store later rejection");
-
-        let visible_blocks: HashSet<_> = [
-            lower_clean.block_hash.clone(),
-            higher_source.block_hash.clone(),
-            later_rejection.block_hash.clone(),
-        ]
-        .into_iter()
-        .collect();
-
-        assert!(!rejected_sig_has_visible_non_source_win(
-            &block_store,
-            &visible_blocks,
-            &sig,
-            &higher_source.block_hash,
-        )
-        .expect("visible win check"));
     }
 
     #[tokio::test]
