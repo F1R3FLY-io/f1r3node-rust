@@ -97,7 +97,19 @@ jobs:
         env:
           PROPTEST_CASES: 2000
           PROPTEST_MAX_GLOBAL_REJECTS: 8192
-        run: cargo test --release -p casper -- slashing::prop_t_
+        run: cargo test --release -p casper -- slashing::prop_t_ --skip slashing::prop_t_triple_bisim
+      - name: Run triple-bisim property tests (serial, bounded cases)
+        # The three triple-bisim tests each drive the full dispatch stack per
+        # case and accumulate scoped LMDB envs monotonically. Run concurrently
+        # at PROPTEST_CASES=2000 they exhaust the hosted runner's memory: two
+        # consecutive runs died with a runner shutdown signal (exit 143) ~30
+        # minutes into the trio with zero test failures (runs 29476110295
+        # attempts 1-2). Serialize them and bound cases until the env-eviction
+        # fix lands; the nightly job still pushes case counts higher.
+        env:
+          PROPTEST_CASES: 500
+          PROPTEST_MAX_GLOBAL_REJECTS: 8192
+        run: cargo test --release -p casper -- slashing::prop_t_triple_bisim --test-threads=1
 
   pre-fix-regressions:
     name: Pre-fix regression backstops
@@ -269,7 +281,15 @@ jobs:
         env:
           PROPTEST_CASES: 10000
           PROPTEST_MAX_GLOBAL_REJECTS: 40960
-        run: cargo test --release -p casper -- slashing::prop_t_
+        run: cargo test --release -p casper -- slashing::prop_t_ --skip slashing::prop_t_triple_bisim
+      - name: Run triple-bisim extended property tests (serial, bounded cases)
+        # Same memory-exhaustion guard as the PR-gate job: the triple-bisim
+        # trio run concurrently kills the hosted runner (see PR-gate step
+        # note). Serial + bounded until the env-eviction fix lands.
+        env:
+          PROPTEST_CASES: 2000
+          PROPTEST_MAX_GLOBAL_REJECTS: 8192
+        run: cargo test --release -p casper -- slashing::prop_t_triple_bisim --test-threads=1
 
   search-horizon-nightly:
     name: Search-horizon nightly tier (1M fuzz runs)
