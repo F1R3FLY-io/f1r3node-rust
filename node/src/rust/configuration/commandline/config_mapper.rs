@@ -374,6 +374,35 @@ impl ConfigMapper<Options> for NodeConf {
                 &mut self.casper.heartbeat_conf.advanced.deploy_recovery_max_lag,
                 run.heartbeat_advanced_deploy_recovery_max_lag,
             );
+
+            // File I/O static provisioning (FIP 2026-02-06 §"With
+            // flags"). CLI-flag entries APPEND to whatever the
+            // config file's `[file-io]` block declared -- flags are
+            // additive rather than overriding, because they name
+            // individual entries not the whole list. The wrapping
+            // `from_flag` constructors apply the per-surface
+            // defaults ("r" for files, "rw" for dirs).
+            use crate::rust::configuration::file_io::{StaticDirEntry, StaticFileEntry};
+            self.file_io.oracle_static_files.extend(
+                run.oracle_static_file
+                    .into_iter()
+                    .map(StaticFileEntry::from_flag),
+            );
+            self.file_io.oracle_static_dirs.extend(
+                run.oracle_static_dir
+                    .into_iter()
+                    .map(StaticDirEntry::from_flag),
+            );
+            self.file_io.consensus_static_files.extend(
+                run.consensus_static_file
+                    .into_iter()
+                    .map(StaticFileEntry::from_flag),
+            );
+            self.file_io.consensus_static_dirs.extend(
+                run.consensus_static_dir
+                    .into_iter()
+                    .map(StaticDirEntry::from_flag),
+            );
         }
     }
 
@@ -678,6 +707,10 @@ mod tests {
                 heartbeat_advanced_deploy_recovery_max_lag: Some(333),
                 synchrony_finalized_baseline_enabled: Some(false),
                 synchrony_finalized_baseline_max_distance: Some(666666),
+                oracle_static_file: Vec::new(),
+                oracle_static_dir: Vec::new(),
+                consensus_static_file: Vec::new(),
+                consensus_static_dir: Vec::new(),
             })),
         };
 
@@ -822,6 +855,7 @@ mod tests {
                 deployer_private_key: None,
             },
             openai: Default::default(),
+            file_io: Default::default(),
         };
 
         // Apply CLI options to the configuration
@@ -1144,5 +1178,106 @@ mod tests {
                 .genesis_ceremony
                 .genesis_validator_mode
         );
+    }
+
+    /// File I/O flags append onto whatever `[file-io]` block the
+    /// config file supplied; they don't replace it. This test seeds
+    /// the config with one entry per list, then hands
+    /// `override_config_values` a RunOptions where only the file-io
+    /// fields are populated, and asserts each flag occurrence lands
+    /// as an additional entry with the FIP-mandated per-surface
+    /// default mode ("r" for files, "rw" for dirs).
+    ///
+    /// Uses the existing full-shell `NodeConf` from
+    /// `test_cli_options_override_defaults` as a starting point
+    /// (paste of that block would be huge; the shorter route is to
+    /// clone the shell inline via a small helper).
+    #[test]
+    fn file_io_cli_flags_append_to_config_entries() {
+        use std::path::PathBuf;
+
+        use crate::rust::configuration::file_io::{FileIo, StaticDirEntry, StaticFileEntry};
+
+        // The FileIo section is orthogonal to everything else on
+        // NodeConf, so we only need to construct enough of NodeConf
+        // to be well-formed. The test test_cli_options_override_defaults
+        // above already exercises the rest of the override machinery;
+        // this test is scoped to file-io.
+        let mut cfg = build_minimal_node_conf_for_file_io_test();
+        cfg.file_io = FileIo {
+            oracle_static_files: vec![StaticFileEntry {
+                path: PathBuf::from("/config/file.dat"),
+                mode: "r+".to_string(),
+            }],
+            oracle_static_dirs: vec![StaticDirEntry {
+                path: PathBuf::from("/config/dir"),
+                mode: "rw".to_string(),
+            }],
+            ..Default::default()
+        };
+
+        let opts = Options {
+            grpc_host: "localhost".to_string(),
+            grpc_port: None,
+            grpc_max_recv_message_size: 16 * 1024 * 1024,
+            profile: None,
+            log_level: None,
+            log_format: None,
+            log_sink: None,
+            subcommand: Some(OptionsSubCommand::Run(RunOptions {
+                oracle_static_file: vec![PathBuf::from("/flag/one.txt")],
+                oracle_static_dir: vec![PathBuf::from("/flag/dir1"), PathBuf::from("/flag/dir2")],
+                consensus_static_file: vec![PathBuf::from("/flag/cf.txt")],
+                consensus_static_dir: vec![PathBuf::from("/flag/cd")],
+                // Every other RunOptions field is None/false/empty
+                // via the derive(Default) on RunOptions.
+                ..Default::default()
+            })),
+        };
+
+        cfg.override_config_values(opts);
+
+        // Config entries preserved, flag entries appended in order.
+        assert_eq!(cfg.file_io.oracle_static_files.len(), 2);
+        assert_eq!(
+            cfg.file_io.oracle_static_files[0].path,
+            PathBuf::from("/config/file.dat")
+        );
+        assert_eq!(cfg.file_io.oracle_static_files[0].mode, "r+");
+        assert_eq!(
+            cfg.file_io.oracle_static_files[1].path,
+            PathBuf::from("/flag/one.txt")
+        );
+        assert_eq!(cfg.file_io.oracle_static_files[1].mode, "r");
+
+        assert_eq!(cfg.file_io.oracle_static_dirs.len(), 3);
+        assert_eq!(
+            cfg.file_io.oracle_static_dirs[1].path,
+            PathBuf::from("/flag/dir1")
+        );
+        assert_eq!(cfg.file_io.oracle_static_dirs[1].mode, "rw");
+        assert_eq!(
+            cfg.file_io.oracle_static_dirs[2].path,
+            PathBuf::from("/flag/dir2")
+        );
+
+        assert_eq!(cfg.file_io.consensus_static_files.len(), 1);
+        assert_eq!(cfg.file_io.consensus_static_files[0].mode, "r");
+
+        assert_eq!(cfg.file_io.consensus_static_dirs.len(), 1);
+        assert_eq!(cfg.file_io.consensus_static_dirs[0].mode, "rw");
+    }
+
+    /// Load NodeConf from the embedded defaults.conf. Cheap enough
+    /// to call per-test since HOCON parsing is under a millisecond.
+    /// Every field is populated to a sane default; tests that need
+    /// to exercise a specific field mutate it after construction.
+    fn build_minimal_node_conf_for_file_io_test() -> NodeConf {
+        use crate::rust::configuration::EMBEDDED_DEFAULTS;
+        hocon::HoconLoader::new()
+            .load_str(EMBEDDED_DEFAULTS)
+            .expect("load embedded defaults.conf")
+            .resolve()
+            .expect("deserialize defaults into NodeConf")
     }
 }

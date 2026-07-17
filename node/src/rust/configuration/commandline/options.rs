@@ -129,7 +129,7 @@ pub enum OptionsSubCommand {
 }
 
 /// Run subcommand - Start RNode server
-#[derive(Args, Debug, Clone)]
+#[derive(Args, Debug, Clone, Default)]
 pub struct RunOptions {
     /// Path to the configuration file for RNode server
     #[arg(short = 'c', long = "config-file")]
@@ -572,6 +572,45 @@ pub struct RunOptions {
         hide_short_help = true
     )]
     pub heartbeat_advanced_deploy_recovery_max_lag: Option<i64>,
+
+    // --- File I/O static provisioning (FIP 2026-02-06 §"With flags") ---
+    //
+    // Each flag can appear multiple times; each occurrence adds one
+    // entry to the corresponding `NodeConf::file_io` list, in
+    // addition to whatever the config file's `[file-io]` block
+    // already declared.
+    //
+    // Mode defaults:
+    // - Files: `"r"` (same as config-file default).
+    // - Dirs:  `"rw"` per FIP §"With the config file" (the flag
+    //   form is intended for interactive/dev use where broader
+    //   default authority is convenient; server deployments should
+    //   use the config-file form, whose default is `"r"`, and opt
+    //   in per-dir).
+    //
+    // Neither form supports specifying a mode on the CLI; if you
+    // need a specific mode, put the entry in the config file.
+    /// Grant the deployment read authority (mode "r") over the
+    /// given file at boot, oracular side. Repeatable.
+    #[arg(long = "oracle-static-file")]
+    pub oracle_static_file: Vec<PathBuf>,
+
+    /// Grant the deployment authority over the given dir at boot,
+    /// oracular side. Repeatable; each entry defaults to mode "rw".
+    #[arg(long = "oracle-static-dir")]
+    pub oracle_static_dir: Vec<PathBuf>,
+
+    /// Static file entry for the (deferred-follow-up FIP)
+    /// consensus side. Accepted and stored but not exercised by
+    /// this FIP. Repeatable.
+    #[arg(long = "consensus-static-file")]
+    pub consensus_static_file: Vec<PathBuf>,
+
+    /// Static dir entry for the consensus side. Same "accepted but
+    /// not exercised" status as `--consensus-static-file`.
+    /// Repeatable; each entry defaults to mode "rw".
+    #[arg(long = "consensus-static-dir")]
+    pub consensus_static_dir: Vec<PathBuf>,
 }
 
 /// Keygen subcommand - Generates a public/private key pair

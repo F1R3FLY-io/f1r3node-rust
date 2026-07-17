@@ -48,6 +48,14 @@ pub struct NodeConf {
     /// OpenAI configuration - ported from Scala PR #123
     #[serde(default)]
     pub openai: OpenAIConf,
+
+    /// File I/O static-provisioning (FIP 2026-02-06 File-I/O
+    /// §"With the config file"). Empty by default; deployments that
+    /// need pre-authorized files/dirs at boot populate it via the
+    /// config-file block or the CLI flags. See
+    /// `crate::rust::configuration::file_io` for the semantics.
+    #[serde(rename = "file-io", default)]
+    pub file_io: super::file_io::FileIo,
 }
 
 /// Protocol server configuration

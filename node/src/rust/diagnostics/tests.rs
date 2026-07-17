@@ -164,6 +164,7 @@ mod tests {
                 deployer_private_key: None,
             },
             openai: Default::default(),
+            file_io: Default::default(),
         }
     }
 

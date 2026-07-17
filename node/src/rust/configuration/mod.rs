@@ -6,6 +6,7 @@
 
 pub mod commandline;
 pub mod config_check;
+pub mod file_io;
 pub mod model;
 
 pub use commandline::Options;
@@ -15,7 +16,7 @@ pub use model::{NodeConf, Profile};
 /// the optional `<data-dir>/rnode.conf` override and CLI flags. Baked in
 /// at compile time so the binary is self-contained (no `DEFAULT_DIR` env
 /// var, no on-disk `node/src/main/resources/defaults.conf` lookup).
-const EMBEDDED_DEFAULTS: &str = include_str!("../../main/resources/defaults.conf");
+pub const EMBEDDED_DEFAULTS: &str = include_str!("../../main/resources/defaults.conf");
 
 /// Configuration building and parsing functionality
 pub mod builder {
