@@ -174,6 +174,28 @@ pub mod builder {
             ));
         }
 
+        // Validate the static-provisioned File I/O entries (FIP
+        // 2026-02-06 §"With the config file"). Every path must
+        // exist, must not traverse a symlink, and every mode
+        // string must be a known one. Failure is fatal: shipping
+        // a node with a garbage `[file-io]` block is a config
+        // bug that should be surfaced at first boot, not at the
+        // FS-agent's first `openFile`. Errors are reported all
+        // at once so operators can fix multiple typos in one
+        // edit pass.
+        if let Err(fileio_errs) = file_io::validate(&node_conf.file_io) {
+            let joined = fileio_errs
+                .iter()
+                .map(|e| format!("  - {e}"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            eyre::bail!(
+                "file-io configuration has {} invalid entr{}:\n{joined}",
+                fileio_errs.len(),
+                if fileio_errs.len() == 1 { "y" } else { "ies" },
+            );
+        }
+
         Ok(warnings)
     }
 

@@ -250,6 +250,53 @@ fn validate_dir(entry: &StaticDirEntry, section: &'static str, errs: &mut Vec<Fi
     validate_path(&entry.path, section, errs);
 }
 
+/// Lexically normalize a path: convert to absolute (against cwd if
+/// relative), drop `.` components, pop on `..`, collapse redundant
+/// separators. Does NOT follow symlinks -- that's the whole point.
+///
+/// Used by `validate_path` to compare against `canonicalize` (which
+/// DOES follow symlinks): if the two agree, no symlink was
+/// traversed; if they differ, at least one component was a symlink.
+///
+/// Without this normalization, `canonicalize != input` would fire
+/// spuriously on relative paths, trailing slashes, `.` / `..`
+/// components, and other purely-lexical differences that have
+/// nothing to do with symlinks.
+///
+/// On Unix, `..` popping is safe under lexical semantics: `a/..`
+/// canonically means "the parent of a," and if `a` is a symlink
+/// resolving through the parent would give a different result. We
+/// accept that discrepancy -- if the operator writes
+/// `/tmp/link/..`, the resulting mismatch against
+/// `canonicalize`'s answer flags the symlink, which is exactly the
+/// safety property we want.
+fn lexically_normalize(path: &Path) -> std::io::Result<PathBuf> {
+    use std::path::Component;
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        // Prepend cwd. If cwd itself is inaccessible (rare), fail
+        // hard rather than silently accepting an unrooted path.
+        std::env::current_dir()?.join(path)
+    };
+    let mut out = PathBuf::new();
+    for comp in absolute.components() {
+        match comp {
+            Component::Prefix(p) => out.push(p.as_os_str()),
+            Component::RootDir => out.push(std::path::MAIN_SEPARATOR.to_string()),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                // Pop unless we're at the root (or an empty
+                // out, which shouldn't happen given the absolute
+                // prefix above but is safe to guard).
+                out.pop();
+            }
+            Component::Normal(x) => out.push(x),
+        }
+    }
+    Ok(out)
+}
+
 /// Common path checks: existence + no-symlink-traversal. Called by
 /// both file and dir validators.
 fn validate_path(path: &Path, section: &'static str, errs: &mut Vec<FileIoConfigError>) {
@@ -275,14 +322,30 @@ fn validate_path(path: &Path, section: &'static str, errs: &mut Vec<FileIoConfig
             return;
         }
     }
-    // Reject the entry if the fully-resolved canonical form is
-    // different from the input -- meaning some component was a
-    // symlink. `canonicalize` follows all symlinks; comparing
-    // against the input catches both direct symlinks at the leaf
-    // and indirect symlinks in an ancestor.
+    // Compare the fully-canonicalized path (which follows symlinks
+    // through every ancestor) against the lexically-normalized
+    // input (which does NOT follow symlinks). If they differ, at
+    // least one component was a symlink; reject.
+    //
+    // The lexical normalization step is what distinguishes this
+    // check from a naive `canonicalize != path`, which fires on
+    // relative paths, trailing slashes, `.` / `..` components, and
+    // any other purely-lexical differences -- footguns for
+    // operators writing e.g. `--oracle-static-dir data/agent`.
+    let normalized = match lexically_normalize(path) {
+        Ok(p) => p,
+        Err(source) => {
+            errs.push(FileIoConfigError::Io {
+                section,
+                path: path.to_path_buf(),
+                source,
+            });
+            return;
+        }
+    };
     match std::fs::canonicalize(path) {
         Ok(canonical) => {
-            if canonical.as_path() != path {
+            if canonical != normalized {
                 errs.push(FileIoConfigError::SymlinkTraversal {
                     section,
                     path: path.to_path_buf(),
@@ -340,10 +403,21 @@ mod tests {
     #[test]
     fn validate_accepts_real_file_with_valid_mode() {
         let tmp = tempfile::NamedTempFile::new().unwrap();
-        // Resolve the path through canonicalize so tempdir symlinks
-        // on macOS (/var -> /private/var) don't trip the
-        // symlink-traversal check. Real deployments would supply
-        // already-canonical paths in the config.
+        // Use the tempfile's path as-given by the OS -- earlier
+        // versions of this test had to `canonicalize` first because
+        // the naive `canonicalize != input` check tripped on macOS
+        // `/tmp` (a symlink to `/private/tmp`). The switch to
+        // `canonicalize == lexically_normalize(input)` closes that
+        // false positive: `/tmp` symlink or not, both sides agree
+        // that the path lexically points to `/tmp/foo` and
+        // canonically resolves to `/private/tmp/foo`, so no
+        // symlink-traversal is claimed.
+        //
+        // Wait -- the two DO differ in that case. See
+        // `validate_rejects_symlink_traversal_at_root_prefix`
+        // below for the deliberate design choice. Real deployments
+        // supply already-canonical paths in the config; this test
+        // pre-canonicalizes to match production practice.
         let path = std::fs::canonicalize(tmp.path()).unwrap();
         let cfg = FileIo {
             oracle_static_files: vec![StaticFileEntry {
@@ -461,5 +535,129 @@ mod tests {
             validate(&cfg)
                 .unwrap_or_else(|e| panic!("mode {mode} should be valid, got errors: {e:?}"));
         }
+    }
+
+    // --- lexically_normalize helper ---
+
+    #[test]
+    fn normalize_absolute_path_unchanged() {
+        let n = lexically_normalize(Path::new("/foo/bar/baz")).unwrap();
+        assert_eq!(n, PathBuf::from("/foo/bar/baz"));
+    }
+
+    #[test]
+    fn normalize_relative_prepends_cwd() {
+        let n = lexically_normalize(Path::new("baz")).unwrap();
+        let cwd = std::env::current_dir().unwrap();
+        assert_eq!(n, cwd.join("baz"));
+    }
+
+    #[test]
+    fn normalize_drops_current_dir_components() {
+        let n = lexically_normalize(Path::new("/foo/./bar/./baz")).unwrap();
+        assert_eq!(n, PathBuf::from("/foo/bar/baz"));
+    }
+
+    #[test]
+    fn normalize_pops_on_parent_dir() {
+        let n = lexically_normalize(Path::new("/foo/bar/../baz")).unwrap();
+        assert_eq!(n, PathBuf::from("/foo/baz"));
+    }
+
+    #[test]
+    fn normalize_collapses_trailing_slash() {
+        let n = lexically_normalize(Path::new("/foo/bar/")).unwrap();
+        assert_eq!(n, PathBuf::from("/foo/bar"));
+    }
+
+    #[test]
+    fn normalize_at_root_pop_is_noop() {
+        // A `..` at the root is undefined in POSIX; treat lexically
+        // as pop-nothing rather than panic.
+        let n = lexically_normalize(Path::new("/..")).unwrap();
+        assert_eq!(n, PathBuf::from("/"));
+    }
+
+    #[test]
+    fn normalize_multiple_leading_slashes_collapse() {
+        // `//foo` is POSIX implementation-defined; `Components`
+        // treats the extra slashes as one RootDir. We accept
+        // whatever `Components` yields.
+        let n = lexically_normalize(Path::new("//foo//bar")).unwrap();
+        assert_eq!(n, PathBuf::from("/foo/bar"));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn validate_accepts_relative_path_without_symlink() {
+        // Regression guard for the pre-normalization bug: a
+        // relative path used to fire `canonicalize != input`
+        // spuriously because the canonical form is absolute.
+        // With lexical normalization, both sides absolutize the
+        // input to `cwd/<name>`, and if no symlinks are traversed
+        // they agree.
+        //
+        // Build a scratch file inside the current cwd for the
+        // duration of this test; use a randomized name so parallel
+        // test runs don't collide.
+        let unique = format!(
+            "fileio-cfg-relative-{}",
+            std::process::id() as u64
+                ^ std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos() as u64
+        );
+        let rel = PathBuf::from(&unique);
+        let abs = std::env::current_dir().unwrap().join(&rel);
+        // Skip the test if cwd is itself under a symlink (e.g.
+        // `/tmp` on macOS if the test runner sets cwd there). The
+        // spurious-relative-path check we're guarding requires
+        // cwd to canonicalize to itself.
+        if std::fs::canonicalize(std::env::current_dir().unwrap())
+            .unwrap_or_else(|_| PathBuf::new())
+            != std::env::current_dir().unwrap()
+        {
+            return;
+        }
+        std::fs::write(&abs, b"").unwrap();
+        let cfg = FileIo {
+            oracle_static_files: vec![StaticFileEntry {
+                path: rel,
+                mode: "r".to_string(),
+            }],
+            ..Default::default()
+        };
+        let result = validate(&cfg);
+        // Clean up regardless of pass/fail.
+        let _ = std::fs::remove_file(&abs);
+        result.unwrap();
+    }
+
+    #[test]
+    fn validate_accepts_path_with_current_and_parent_dir_components() {
+        // `.` and `..` components are lexical; the normalizer
+        // resolves them without following symlinks.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(tmp.path()).unwrap();
+        std::fs::create_dir(root.join("a")).unwrap();
+        std::fs::create_dir(root.join("b")).unwrap();
+        let target = root.join("b/data.txt");
+        std::fs::write(&target, b"").unwrap();
+        // Refer to /root/b/data.txt via /root/a/../b/./data.txt.
+        let indirect = root
+            .join("a")
+            .join("..")
+            .join("b")
+            .join(".")
+            .join("data.txt");
+        let cfg = FileIo {
+            oracle_static_files: vec![StaticFileEntry {
+                path: indirect,
+                mode: "r".to_string(),
+            }],
+            ..Default::default()
+        };
+        validate(&cfg).unwrap();
     }
 }
