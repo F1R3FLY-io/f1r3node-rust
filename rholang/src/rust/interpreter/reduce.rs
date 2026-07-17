@@ -1292,8 +1292,17 @@ impl DebruijnInterpreter {
 
             let add_urn = |new_env: &mut Env<Par>, urn: String| {
                 if !self.urn_map.contains_key(&urn) {
-                    // TODO: Injections (from normalizer) are not used currently, see [[NormalizerEnv]].
-                    // If `urn` can't be found in `urnMap`, it must be referencing an injection - OLD
+                    // URN missed the shared urn_map; fall through to
+                    // this deploy's per-New injections. Injections
+                    // are populated by the normalizer from the
+                    // `NormalizerEnv: HashMap<String, Par>` argument
+                    // to `Compiler::source_to_adt_with_normalizer_env`
+                    // (or equivalently `RhoRuntime::evaluate_with_env`).
+                    // The File I/O FS-agent's genesis deploy uses this
+                    // path to bind the `rho:io:fs:native:1.0.0/*` URNs
+                    // (which are deliberately hidden from `urn_map`)
+                    // to their fixed-channel Pars -- see
+                    // `crate::rust::interpreter::io::injections`.
                     match new.injections.get(&urn) {
                         Some(p) => {
                             if let Some(gunf) = RhoUnforgeable::unapply(p) {

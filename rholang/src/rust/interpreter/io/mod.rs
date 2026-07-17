@@ -11,6 +11,7 @@
 //! per the FIP.
 
 pub mod handle_table;
+pub mod injections;
 pub mod mode;
 #[cfg(unix)]
 pub mod nss;
