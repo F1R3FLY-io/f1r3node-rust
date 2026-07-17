@@ -2582,9 +2582,20 @@ impl SystemProcesses {
         let response_par = match tokio::fs::symlink_metadata(path).await {
             Err(e) => response::from_io_error(e),
             Ok(meta) => {
+                // stat_record does NSS reverse-lookup (user_name /
+                // group_name) which is synchronous and can block
+                // on hosts using LDAP/NIS/sssd. Push the work off
+                // the tokio event thread.
                 let basename = stat::basename_of(path);
-                let record = stat::stat_record(&basename, &meta);
-                response::ok(vec![RhoMap::create_par(record)])
+                let join =
+                    tokio::task::spawn_blocking(move || stat::stat_record(&basename, &meta)).await;
+                match join {
+                    Ok(record) => response::ok(vec![RhoMap::create_par(record)]),
+                    Err(join_err) => response::err(
+                        response::FSERR_IO,
+                        format!("stat task panicked: {join_err}"),
+                    ),
+                }
             }
         };
 
@@ -2652,12 +2663,29 @@ impl SystemProcesses {
                 match err {
                     Some(e) => response::from_io_error(e),
                     None => {
-                        collected.sort_by(|a, b| a.0.cmp(&b.0));
-                        let entries: Vec<Par> = collected
-                            .into_iter()
-                            .map(|(name, meta)| RhoMap::create_par(stat::stat_record(&name, &meta)))
-                            .collect();
-                        response::ok(vec![RhoList::create_par(entries)])
+                        // Sort + per-entry stat_record are both
+                        // synchronous; the latter does NSS reverse-
+                        // lookup, which can block on hosts using
+                        // LDAP/NIS/sssd. One spawn_blocking covers
+                        // the whole batch so we don't hop tokio
+                        // threads per entry.
+                        let join = tokio::task::spawn_blocking(move || {
+                            collected.sort_by(|a, b| a.0.cmp(&b.0));
+                            collected
+                                .into_iter()
+                                .map(|(name, meta)| {
+                                    RhoMap::create_par(stat::stat_record(&name, &meta))
+                                })
+                                .collect::<Vec<Par>>()
+                        })
+                        .await;
+                        match join {
+                            Ok(entries) => response::ok(vec![RhoList::create_par(entries)]),
+                            Err(join_err) => response::err(
+                                response::FSERR_IO,
+                                format!("entries task panicked: {join_err}"),
+                            ),
+                        }
                     }
                 }
             }
@@ -3024,51 +3052,57 @@ impl SystemProcesses {
         let response_par = {
             use crate::rust::interpreter::io::nss;
 
-            // Resolve names to ids; empty string means "don't
-            // change" and is passed through as None to std::chown.
-            let uid_result: Result<Option<u32>, Par> = if owner_str.is_empty() {
-                Ok(None)
-            } else {
-                match nss::resolve_uid(&owner_str) {
-                    Some(uid) => Ok(Some(uid)),
-                    None => Err(response::err(
-                        response::FSERR_BAD_ARG,
-                        format!("unknown user {owner_str:?}"),
-                    )),
-                }
-            };
-            let gid_result: Result<Option<u32>, Par> = if group_str.is_empty() {
-                Ok(None)
-            } else {
-                match nss::resolve_gid(&group_str) {
-                    Some(gid) => Ok(Some(gid)),
-                    None => Err(response::err(
-                        response::FSERR_BAD_ARG,
-                        format!("unknown group {group_str:?}"),
-                    )),
-                }
-            };
-
-            match (uid_result, gid_result) {
-                (Err(err_par), _) | (Ok(_), Err(err_par)) => err_par,
-                (Ok(uid), Ok(gid)) => {
-                    // std::os::unix::fs::chown is synchronous;
-                    // shift to a blocking worker so the tokio
-                    // reactor thread stays responsive.
-                    let path = path_str.clone();
-                    let join = tokio::task::spawn_blocking(move || {
-                        std::os::unix::fs::chown(&path, uid, gid)
-                    })
-                    .await;
-                    match join {
-                        Ok(Ok(())) => response::ok(vec![]),
-                        Ok(Err(e)) => response::from_io_error(e),
-                        Err(join_err) => response::err(
-                            response::FSERR_IO,
-                            format!("chown task panicked: {join_err}"),
-                        ),
+            // Both the NSS lookups and the chown syscall are
+            // synchronous, and NSS in particular can block for
+            // seconds on hosts using LDAP/NIS/sssd. Do everything
+            // inside one spawn_blocking so the tokio reactor
+            // thread stays responsive. The closure returns
+            // Result<(), Box<Par>>: Ok(()) for a successful chown,
+            // or the boxed error-shaped response Par for any of the
+            // failure modes we want to surface. Par is ~250 bytes,
+            // so boxing keeps the Ok path a single word and
+            // silences clippy::result_large_err.
+            let path = path_str.clone();
+            let owner = owner_str.clone();
+            let group = group_str.clone();
+            let join = tokio::task::spawn_blocking(move || -> Result<(), Box<Par>> {
+                let uid = if owner.is_empty() {
+                    None
+                } else {
+                    match nss::resolve_uid(&owner) {
+                        Some(uid) => Some(uid),
+                        None => {
+                            return Err(Box::new(response::err(
+                                response::FSERR_BAD_ARG,
+                                format!("unknown user {owner:?}"),
+                            )));
+                        }
                     }
-                }
+                };
+                let gid = if group.is_empty() {
+                    None
+                } else {
+                    match nss::resolve_gid(&group) {
+                        Some(gid) => Some(gid),
+                        None => {
+                            return Err(Box::new(response::err(
+                                response::FSERR_BAD_ARG,
+                                format!("unknown group {group:?}"),
+                            )));
+                        }
+                    }
+                };
+                std::os::unix::fs::chown(&path, uid, gid)
+                    .map_err(|e| Box::new(response::from_io_error(e)))
+            })
+            .await;
+            match join {
+                Ok(Ok(())) => response::ok(vec![]),
+                Ok(Err(err_par)) => *err_par,
+                Err(join_err) => response::err(
+                    response::FSERR_IO,
+                    format!("chown task panicked: {join_err}"),
+                ),
             }
         };
         #[cfg(not(unix))]
