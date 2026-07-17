@@ -288,6 +288,7 @@ Events published during startup are buffered and replayed to clients that connec
 - Config validation failures (empty token name, invalid decimals)
 - Genesis ceremony failures (required signatures not met)
 - Token metadata verification mismatch (joiner config disagrees with on-chain state)
+- Mergeable-channel cache replay failures at bootstrap: a block missing from the block store, a replay error, or a post-state hash mismatch while repopulating the mergeable-channel cache. A corrupt or partial block store now **fails startup loudly** rather than logging a warning and continuing with a silently incomplete cache — an incomplete cache is a consensus hazard once the node reaches the Running state, so a store that previously appeared to bootstrap successfully can now fail here.
 - Any runtime panic or unrecoverable error
 
 The error chain propagates cleanly: `verify_token_metadata_matches_config → Err(CasperError) → ? in casper_launch.launch() → ? in NodeRuntime::main() → handle_unrecoverable_errors → process::exit(1)`. Destructors fire in order; no mid-async process::exit calls.

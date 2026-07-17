@@ -629,6 +629,12 @@ where
         [continuations, data, joins].concat()
     }
 
+    // Acquires `checkpoint_lock` for a consistent view of all five maps (see
+    // the field comment). `std::sync::Mutex` is not reentrant, so `to_map` must
+    // not be called while already holding this lock — no current caller does:
+    // the other holders (snapshot/changes/set_state/clear) never call `to_map`,
+    // and every external caller (rspace/replay_rspace/reporting_rspace) delegates
+    // from outside any checkpoint-lock scope.
     fn to_map(&self) -> HashMap<Vec<C>, Row<P, A, K>> {
         let _guard = self.checkpoint_lock.lock().expect("checkpoint lock");
         let data: HashMap<Vec<C>, Vec<Datum<A>>> = self
