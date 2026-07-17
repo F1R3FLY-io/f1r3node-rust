@@ -54,11 +54,15 @@ env:
   # Validation workflow sources that file) — bump both in the same commit.
   SYSTEM_INTEGRATION_REF: 06f2020cc6c14c035c5bb08bffebc0ecad0294d9
   # Pinned OCI CLI installer (release tag + sha256) and CLI version. The
-  # checksum fails closed if the tag is ever moved; OCI_CLI_VERSION pins what
-  # the installer pulls from PyPI (without it the installer floats to latest).
-  # Keep identical to oci-validation.yml; bump all three together.
+  # install.sh checksum fails closed if the tag is ever moved; OCI_CLI_VERSION
+  # pins what the installer pulls from PyPI (without it the installer floats to
+  # latest) and makes install.sh fetch the version-pinned install.py from the
+  # v${OCI_CLI_VERSION} tag; OCI_CLI_INSTALLER_PY_SHA256 is passed to install.sh
+  # --verify-checksum so a moved/compromised install.py fails closed too.
+  # Keep identical to oci-validation.yml; bump all four together.
   OCI_CLI_INSTALLER_URL: "https://raw.githubusercontent.com/oracle/oci-cli/v3.89.1/scripts/install/install.sh"
   OCI_CLI_INSTALLER_SHA256: "079dcc9a3e2a61ec692400e30169c9996b2998ac8c4e205198ed5863283fcb76"
+  OCI_CLI_INSTALLER_PY_SHA256: "f66dc9e2b69cbbd269374db638ffa9c0b08a5a4ea0b836b81336d6581aab9eed"
   OCI_CLI_VERSION: "3.89.1"
 
 jobs:
@@ -178,11 +182,15 @@ jobs:
           # fetched from a movable ref. Fails closed on any checksum mismatch.
           # Retries cover transient raw.githubusercontent.com 429s, which curl
           # treats as retryable; the pinned checksum still gates what runs.
+          # --verify-checksum gates the install.py that install.sh downloads
+          # from the v${OCI_CLI_VERSION} tag; if it fails, install.py is not run
+          # and the `oci --version` guard below fails the step.
           curl -fsSL --retry 5 --retry-delay 10 "$OCI_CLI_INSTALLER_URL" -o /tmp/oci-install.sh
           echo "$OCI_CLI_INSTALLER_SHA256  /tmp/oci-install.sh" | sha256sum -c -
           bash /tmp/oci-install.sh \
             --accept-all-defaults --install-dir /opt/oci-cli --exec-dir /usr/local/bin \
-            --oci-cli-version "$OCI_CLI_VERSION"
+            --oci-cli-version "$OCI_CLI_VERSION" \
+            --verify-checksum "$OCI_CLI_INSTALLER_PY_SHA256"
           oci --version
 
       - name: Configure OCI auth from secrets
