@@ -72,6 +72,7 @@ async-trait = { workspace = true }
 
 [dev-dependencies]
 pretty_assertions = "1.3.0"
+proptest = { workspace = true }
 rand = { workspace = true }
 
 [features]
