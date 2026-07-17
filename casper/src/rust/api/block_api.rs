@@ -73,6 +73,9 @@ fn recoverable_propose_failure_message(status: &ProposeStatus) -> Option<String>
         ProposeStatus::Failure(ProposeFailure::NoNewDeploys) => {
             Some("No new deploys to propose.".to_string())
         }
+        ProposeStatus::Failure(ProposeFailure::RecoveryDeferred) => {
+            Some("Rejected deploy recovery deferred to selected leader.".to_string())
+        }
         ProposeStatus::Failure(ProposeFailure::CheckConstraintsFailure(
             CheckProposeConstraintsFailure::NotEnoughNewBlocks,
         )) => Some("No new blocks from peers yet; synchronize with network first.".to_string()),

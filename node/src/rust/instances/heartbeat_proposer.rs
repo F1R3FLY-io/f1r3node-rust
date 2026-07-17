@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use casper::rust::blocks::proposer::propose_result::{ProposeFailure, ProposeStatus};
 use casper::rust::blocks::proposer::proposer::ProposerResult;
@@ -36,6 +36,7 @@ pub struct HeartbeatProposer;
 struct HeartbeatCheckResult {
     bug_failure: bool,
     refresh_deploy_grace_window: bool,
+    idle_recovery_attempted: bool,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -43,6 +44,61 @@ struct EmptyFrontierPressure {
     unfinalized_blocks: usize,
     max_unfinalized_blocks: usize,
     backpressure: bool,
+}
+
+#[derive(Debug)]
+struct FinalityProgress {
+    last_finalized_block: Option<BlockHash>,
+    last_progress_at: Instant,
+    last_recovery_attempt_at: Option<Instant>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct FinalityProgressStatus {
+    stalled_for: Duration,
+    stalled: bool,
+    recovery_round_due: bool,
+}
+
+impl FinalityProgress {
+    fn new(now: Instant) -> Self {
+        Self {
+            last_finalized_block: None,
+            last_progress_at: now,
+            last_recovery_attempt_at: None,
+        }
+    }
+
+    fn observe(
+        &mut self,
+        last_finalized_block: &BlockHash,
+        now: Instant,
+        timeout: Duration,
+    ) -> FinalityProgressStatus {
+        if self.last_finalized_block.as_ref() != Some(last_finalized_block) {
+            self.last_finalized_block = Some(last_finalized_block.clone());
+            self.last_progress_at = now;
+            self.last_recovery_attempt_at = None;
+        }
+
+        let stalled_for = now.saturating_duration_since(self.last_progress_at);
+        let stalled = stalled_for >= timeout;
+        let recovery_round_due = stalled
+            && self
+                .last_recovery_attempt_at
+                .map(|attempted_at| now.saturating_duration_since(attempted_at) >= timeout)
+                .unwrap_or(true);
+
+        FinalityProgressStatus {
+            stalled_for,
+            stalled,
+            recovery_round_due,
+        }
+    }
+
+    fn record_recovery_attempt(&mut self, now: Instant) {
+        self.last_recovery_attempt_at = Some(now);
+    }
 }
 
 const DEPLOY_RECOVERY_FRONTIER_CHASE_MAX_LAG: i64 = 2;
@@ -180,6 +236,7 @@ impl HeartbeatProposer {
             let mut consecutive_failures: u32 = 0;
             let mut backoff_until: Option<std::time::Instant> = None;
             let mut deploy_grace_until: Option<std::time::Instant> = None;
+            let mut finality_progress = FinalityProgress::new(Instant::now());
 
             loop {
                 // Race between timer and signal - whichever completes first triggers wake
@@ -211,6 +268,7 @@ impl HeartbeatProposer {
                         &config,
                         standalone,
                         deploy_grace_active,
+                        &mut finality_progress,
                     )
                     .await
                     {
@@ -294,8 +352,14 @@ async fn do_heartbeat_check(
     config: &HeartbeatConf,
     standalone: bool,
     deploy_grace_active: bool,
+    finality_progress: &mut FinalityProgress,
 ) -> Result<HeartbeatCheckResult, casper::rust::errors::CasperError> {
     let snapshot: CasperSnapshot = casper.get_snapshot().await?;
+    let progress_status = finality_progress.observe(
+        &snapshot.last_finalized_block,
+        Instant::now(),
+        config.finality_progress_timeout,
+    );
 
     let is_bonded = snapshot
         .parents
@@ -315,7 +379,7 @@ async fn do_heartbeat_check(
         Ok(HeartbeatCheckResult::default())
     } else {
         tracing::debug!("Heartbeat: Validator is bonded, checking LFB age");
-        return check_lfb_and_propose(
+        let outcome = check_lfb_and_propose(
             casper.clone(),
             snapshot,
             trigger_propose,
@@ -323,8 +387,13 @@ async fn do_heartbeat_check(
             config,
             standalone,
             deploy_grace_active,
+            progress_status,
         )
-        .await;
+        .await?;
+        if outcome.idle_recovery_attempted {
+            finality_progress.record_recovery_attempt(Instant::now());
+        }
+        Ok(outcome)
     }
 }
 
@@ -336,6 +405,7 @@ async fn check_lfb_and_propose(
     config: &HeartbeatConf,
     standalone: bool,
     deploy_grace_active: bool,
+    finality_progress: FinalityProgressStatus,
 ) -> Result<HeartbeatCheckResult, casper::rust::errors::CasperError> {
     // Tuning thresholds for lag caps and recovery timing. Read once into
     // locals to keep the predicate sites below readable.
@@ -476,7 +546,10 @@ async fn check_lfb_and_propose(
         );
     }
     let stale_recovery_interval_elapsed = frontier_age_ms >= stale_recovery_min_interval_ms;
-    let stale_recovery_window_open = stale_recovery_interval_elapsed || deploy_recovery_hint;
+    let idle_recovery_window_open =
+        finality_progress.stalled && finality_progress.recovery_round_due;
+    let stale_recovery_window_open =
+        stale_recovery_interval_elapsed || deploy_recovery_hint || idle_recovery_window_open;
 
     // Proposal logic:
     // - Prioritize pending deploys, but avoid lag-amplification loops:
@@ -509,7 +582,7 @@ async fn check_lfb_and_propose(
             .unwrap_or(true)
         && (!self_proposed_too_recently || deploy_grace_active);
     let can_follow_frontier_without_pending_deploys =
-        deploy_recovery_hint || stale_recovery_interval_elapsed;
+        deploy_recovery_hint || stale_recovery_interval_elapsed || idle_recovery_window_open;
     // Cooldown protects idle clusters from empty-block churn, but during deploy-driven
     // recovery/finalization we should not wait out the full cooldown before advancing finality.
     let allow_cooldown_override_for_deploy_recovery =
@@ -526,18 +599,19 @@ async fn check_lfb_and_propose(
         && has_new_parents
         && lag_recovery_leader
         && !empty_frontier_backpressure
+        && (has_new_parent_with_user_deploys || idle_recovery_window_open)
         && can_follow_frontier_without_pending_deploys
         && (!self_recently_proposed
             || can_chase_frontier_while_ahead
             || allow_frontier_follow_while_ahead_for_deploy_parent);
-    let stale_lfb_recovery_due = lfb_is_stale
+    let stale_lfb_recovery_due = idle_recovery_window_open
         && stale_recovery_window_open
         && lag_recovery_leader
         && !empty_frontier_backpressure
         && (!self_recently_proposed || can_chase_frontier_while_ahead);
     let lag_recovery_threshold = pending_deploy_max_lag;
     let moderate_lag_recovery_threshold = std::cmp::max(1, lag_recovery_threshold / 2);
-    let stale_lfb_leader_recovery_due = lfb_is_stale
+    let stale_lfb_leader_recovery_due = idle_recovery_window_open
         && (frontier_is_stale || lfb_lag_blocks > moderate_lag_recovery_threshold)
         && !has_pending_deploys
         && lfb_lag_blocks > 0
@@ -547,6 +621,7 @@ async fn check_lfb_and_propose(
         && (!self_proposed_too_recently || deploy_grace_active)
         && !stale_lfb_recovery_due;
     let high_lag_recovery_due = !has_pending_deploys
+        && idle_recovery_window_open
         && lfb_lag_blocks > lag_recovery_threshold
         && lag_recovery_leader
         && stale_recovery_window_open
@@ -556,7 +631,7 @@ async fn check_lfb_and_propose(
     // propose a convergence block that references all known tips. This breaks the deadlock
     // where validators diverge into independent forks and normal throttling prevents any
     // validator from proposing a multi-parent convergence block.
-    let convergence_recovery_due = lfb_is_stale
+    let convergence_recovery_due = idle_recovery_window_open
         && has_new_parents
         && self_recently_proposed
         && !can_chase_frontier_while_ahead
@@ -573,6 +648,7 @@ async fn check_lfb_and_propose(
         || convergence_recovery_due;
 
     if should_propose {
+        let idle_recovery_attempted = !has_pending_deploys && !has_new_parent_with_user_deploys;
         let reason = if pending_deploy_backstop_due {
             format!(
                 "pending deploy recovery backstop: lag={} exceeds cap={} while ahead; forcing propose after {}ms",
@@ -665,20 +741,33 @@ async fn check_lfb_and_propose(
                     bug_failure: false,
                     refresh_deploy_grace_window: has_pending_deploys
                         || has_new_parent_with_user_deploys,
+                    idle_recovery_attempted: false,
                 })
             }
             ProposerResult::Failure(status, seq_num) => {
-                tracing::warn!(
-                    "Heartbeat: Propose failed with {} (seqNum {})",
+                if matches!(
                     status,
-                    seq_num
-                );
+                    ProposeStatus::Failure(ProposeFailure::RecoveryDeferred)
+                ) {
+                    tracing::debug!(
+                        "Heartbeat: Propose deferred with {} (seqNum {})",
+                        status,
+                        seq_num
+                    );
+                } else {
+                    tracing::warn!(
+                        "Heartbeat: Propose failed with {} (seqNum {})",
+                        status,
+                        seq_num
+                    );
+                }
                 // Only escalate backoff for explicit bug failures.
                 // Recoverable propose races should retry on the normal heartbeat cadence.
                 Ok(HeartbeatCheckResult {
                     bug_failure: matches!(status, ProposeStatus::Failure(ProposeFailure::BugError)),
                     refresh_deploy_grace_window: has_pending_deploys
                         || has_new_parent_with_user_deploys,
+                    idle_recovery_attempted,
                 })
             }
             ProposerResult::Success(_, _) => {
@@ -687,6 +776,7 @@ async fn check_lfb_and_propose(
                     bug_failure: false,
                     refresh_deploy_grace_window: has_pending_deploys
                         || has_new_parent_with_user_deploys,
+                    idle_recovery_attempted,
                 })
             }
             ProposerResult::Started(seq_num) => {
@@ -695,6 +785,7 @@ async fn check_lfb_and_propose(
                     bug_failure: false,
                     refresh_deploy_grace_window: has_pending_deploys
                         || has_new_parent_with_user_deploys,
+                    idle_recovery_attempted,
                 })
             }
         }
@@ -705,6 +796,17 @@ async fn check_lfb_and_propose(
                 empty_frontier_pressure.unfinalized_blocks,
                 empty_frontier_pressure.max_unfinalized_blocks
             )
+        } else if !has_pending_deploys
+            && !has_new_parent_with_user_deploys
+            && !finality_progress.stalled
+        {
+            format!(
+                "finality advanced {}ms ago; idle recovery waits {}ms",
+                finality_progress.stalled_for.as_millis(),
+                config.finality_progress_timeout.as_millis()
+            )
+        } else if finality_progress.stalled && !finality_progress.recovery_round_due {
+            "bounded idle recovery round already attempted for current finalized block".to_string()
         } else if !lfb_is_stale {
             if has_pending_deploys
                 && self_recently_proposed
@@ -800,6 +902,7 @@ async fn check_lfb_and_propose(
         Ok(HeartbeatCheckResult {
             bug_failure: false,
             refresh_deploy_grace_window: has_pending_deploys || has_new_parent_with_user_deploys,
+            idle_recovery_attempted: false,
         })
     }
 }
@@ -1128,6 +1231,32 @@ mod tests {
         assert_eq!(effective_frontier_chase_cap(20, false, false), 20);
     }
 
+    #[test]
+    fn finality_progress_resets_recovery_budget_on_lfb_change() {
+        let start = Instant::now();
+        let timeout = Duration::from_secs(30);
+        let first = BlockHash::from(vec![1; 32]);
+        let second = BlockHash::from(vec![2; 32]);
+        let mut progress = FinalityProgress::new(start);
+
+        let initial = progress.observe(&first, start, timeout);
+        assert!(!initial.stalled);
+        assert!(!initial.recovery_round_due);
+
+        let stalled = progress.observe(&first, start + timeout, timeout);
+        assert!(stalled.stalled);
+        assert!(stalled.recovery_round_due);
+
+        progress.record_recovery_attempt(start + timeout);
+        let bounded = progress.observe(&first, start + timeout + Duration::from_secs(1), timeout);
+        assert!(bounded.stalled);
+        assert!(!bounded.recovery_round_due);
+
+        let advanced = progress.observe(&second, start + timeout + Duration::from_secs(1), timeout);
+        assert!(!advanced.stalled);
+        assert!(!advanced.recovery_round_due);
+    }
+
     // ==================== Decision Logic Tests (Direct Method Calls) ====================
     // Tests that call do_heartbeat_check directly for deterministic behavior
 
@@ -1347,10 +1476,18 @@ mod tests {
                 self_propose_cooldown: Duration::from_secs(15),
                 ..HeartbeatConf::default()
             };
+            let mut finality_progress = FinalityProgress::new(Instant::now());
 
-            // Call do_heartbeat_check directly (standalone=false for multi-node test)
-            let result =
-                do_heartbeat_check(casper, &*propose_func, &validator, &config, false, false).await;
+            let result = do_heartbeat_check(
+                casper,
+                &*propose_func,
+                &validator,
+                &config,
+                false,
+                false,
+                &mut finality_progress,
+            )
+            .await;
 
             assert!(result.is_ok(), "do_heartbeat_check should succeed");
             assert_eq!(
@@ -1386,12 +1523,25 @@ mod tests {
                 check_interval: Duration::from_secs(1),
                 max_lfb_age: Duration::from_secs(1),
                 self_propose_cooldown: Duration::from_secs(15),
+                finality_progress_timeout: Duration::from_secs(1),
                 ..HeartbeatConf::default()
             };
+            let mut finality_progress = FinalityProgress {
+                last_finalized_block: Some(BlockHash::new()),
+                last_progress_at: Instant::now() - Duration::from_secs(2),
+                last_recovery_attempt_at: None,
+            };
 
-            // Call do_heartbeat_check directly (standalone=false for multi-node test)
-            let result =
-                do_heartbeat_check(casper, &*propose_func, &validator, &config, false, false).await;
+            let result = do_heartbeat_check(
+                casper,
+                &*propose_func,
+                &validator,
+                &config,
+                false,
+                false,
+                &mut finality_progress,
+            )
+            .await;
 
             assert!(result.is_ok(), "do_heartbeat_check should succeed");
             assert_eq!(
@@ -1428,10 +1578,18 @@ mod tests {
                 self_propose_cooldown: Duration::from_secs(15),
                 ..HeartbeatConf::default()
             };
+            let mut finality_progress = FinalityProgress::new(Instant::now());
 
-            // Call do_heartbeat_check directly (standalone=false for multi-node test)
-            let result =
-                do_heartbeat_check(casper, &*propose_func, &validator, &config, false, false).await;
+            let result = do_heartbeat_check(
+                casper,
+                &*propose_func,
+                &validator,
+                &config,
+                false,
+                false,
+                &mut finality_progress,
+            )
+            .await;
 
             assert!(result.is_ok(), "do_heartbeat_check should succeed");
             assert_eq!(
@@ -1442,7 +1600,7 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn do_heartbeat_check_proposes_when_lfb_fresh_and_validator_has_no_latest_block() {
+        async fn do_heartbeat_check_skips_idle_propose_while_finality_progress_is_fresh() {
             // Create validator identity
             let validator = create_test_validator_identity();
             let validator_id = validator.public_key.bytes.clone();
@@ -1469,16 +1627,24 @@ mod tests {
                 self_propose_cooldown: Duration::from_secs(15),
                 ..HeartbeatConf::default()
             };
+            let mut finality_progress = FinalityProgress::new(Instant::now());
 
-            // Call do_heartbeat_check directly (standalone=false for multi-node test)
-            let result =
-                do_heartbeat_check(casper, &*propose_func, &validator, &config, false, false).await;
+            let result = do_heartbeat_check(
+                casper,
+                &*propose_func,
+                &validator,
+                &config,
+                false,
+                false,
+                &mut finality_progress,
+            )
+            .await;
 
             assert!(result.is_ok(), "do_heartbeat_check should succeed");
             assert_eq!(
                 propose_count.load(Ordering::SeqCst),
-                1,
-                "Should trigger propose when validator has no latest block (frontier-follow path), even if LFB is fresh"
+                0,
+                "Should not trigger an idle frontier-follow proposal while finality progress is fresh"
             );
         }
 
@@ -1513,10 +1679,18 @@ mod tests {
                 self_propose_cooldown: Duration::from_secs(15),
                 ..HeartbeatConf::default()
             };
+            let mut finality_progress = FinalityProgress::new(Instant::now());
 
-            // Call do_heartbeat_check directly (standalone=false for multi-node test)
-            let result =
-                do_heartbeat_check(casper, &*propose_func, &validator, &config, false, false).await;
+            let result = do_heartbeat_check(
+                casper,
+                &*propose_func,
+                &validator,
+                &config,
+                false,
+                false,
+                &mut finality_progress,
+            )
+            .await;
 
             assert!(result.is_ok(), "do_heartbeat_check should succeed");
             // FAILS before fix: heartbeat checks deploys_in_scope (empty) instead of storage

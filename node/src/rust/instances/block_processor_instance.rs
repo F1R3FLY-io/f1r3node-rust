@@ -381,7 +381,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorInstance<T> {
 /// 4. validateWithEffects
 /// 5. Enqueue dependency-free blocks from buffer
 /// 6. Trigger propose if configured
-async fn process_block_with_steps<T: TransportLayer + Send + Sync>(
+async fn process_block_with_steps<T: TransportLayer + Send + Sync + 'static>(
     block_processor: Arc<BlockProcessor<T>>,
     casper: Arc<dyn MultiParentCasper + Send + Sync + 'static>,
     block: BlockMessage,

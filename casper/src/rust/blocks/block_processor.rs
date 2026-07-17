@@ -12,7 +12,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
 use block_storage::rust::dag::block_dag_key_value_storage::{
@@ -28,6 +28,7 @@ use models::rust::casper::protocol::casper_message::{BlockMessage, CasperMessage
 use prost::Message;
 use rspace_plus_plus::rspace::history::Either;
 use shared::rust::env;
+use tokio::sync::Semaphore;
 
 use crate::rust::block_status::{BlockError, InvalidBlock};
 use crate::rust::casper::{Casper, CasperSnapshot};
@@ -65,6 +66,8 @@ const MISSING_DEPENDENCY_ATTEMPTS_MAX_DEFAULT: u32 = 32;
 const MISSING_DEPENDENCY_ATTEMPTS_MAX_ENV: &str = "F1R3_MISSING_DEPENDENCY_ATTEMPTS_MAX";
 const MISSING_DEPENDENCY_QUARANTINE_MS_DEFAULT: u64 = 120_000;
 const MISSING_DEPENDENCY_QUARANTINE_MS_ENV: &str = "F1R3_MISSING_DEPENDENCY_QUARANTINE_MS";
+const BLOCK_HASH_NOTIFICATION_MAX_IN_FLIGHT: usize = 32;
+const BLOCK_HASH_NOTIFICATION_TIMEOUT: Duration = Duration::from_secs(1);
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 const MALLOC_TRIM_INTERVAL_BLOCKS_DEFAULT: u64 = 64;
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
@@ -168,7 +171,7 @@ fn missing_dependency_quarantine_ms() -> u64 {
     })
 }
 
-impl<T: TransportLayer + Send + Sync> BlockProcessor<T> {
+impl<T: TransportLayer + Send + Sync + 'static> BlockProcessor<T> {
     pub fn new(dependencies: BlockProcessorDependencies<T>) -> Self { Self { dependencies } }
 
     /// check if block should be processed
@@ -418,9 +421,10 @@ pub struct BlockProcessorDependencies<T: TransportLayer + Send + Sync> {
     casper_buffer_last_prune_ms: Arc<AtomicU64>,
     missing_dependency_attempts: Arc<Mutex<HashMap<BlockHash, u32>>>,
     missing_dependency_quarantine_until: Arc<Mutex<HashMap<BlockHash, u64>>>,
+    block_hash_notification_slots: Arc<Semaphore>,
 }
 
-impl<T: TransportLayer + Send + Sync> BlockProcessorDependencies<T> {
+impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorDependencies<T> {
     pub fn new(
         block_store: KeyValueBlockStore,
         casper_buffer: CasperBufferKeyValueStorage,
@@ -441,6 +445,9 @@ impl<T: TransportLayer + Send + Sync> BlockProcessorDependencies<T> {
             casper_buffer_last_prune_ms: Arc::new(AtomicU64::new(0)),
             missing_dependency_attempts: Arc::new(Mutex::new(HashMap::new())),
             missing_dependency_quarantine_until: Arc::new(Mutex::new(HashMap::new())),
+            block_hash_notification_slots: Arc::new(Semaphore::new(
+                BLOCK_HASH_NOTIFICATION_MAX_IN_FLIGHT,
+            )),
         }
     }
 
@@ -904,6 +911,49 @@ impl<T: TransportLayer + Send + Sync> BlockProcessorDependencies<T> {
         Ok(())
     }
 
+    fn notify_block_hash_best_effort(&self, block: &BlockMessage, context: &'static str) {
+        let Ok(permit) = self
+            .block_hash_notification_slots
+            .clone()
+            .try_acquire_owned()
+        else {
+            tracing::debug!(
+                "Dropping block hash notification {} during {} because the bounded notifier is full",
+                PrettyPrinter::build_string_bytes(&block.block_hash),
+                context
+            );
+            return;
+        };
+        let transport = Arc::clone(&self.transport);
+        let connections_cell = self.connections_cell.clone();
+        let conf = self.conf.clone();
+        let block_hash = block.block_hash.clone();
+        let sender = block.sender.clone();
+
+        tokio::spawn(async move {
+            match tokio::time::timeout(
+                BLOCK_HASH_NOTIFICATION_TIMEOUT,
+                transport.send_block_hash(&connections_cell, &conf, &block_hash, &sender),
+            )
+            .await
+            {
+                Ok(Ok(())) => {}
+                Ok(Err(err)) => tracing::debug!(
+                    "Failed to send block hash {} during {}: {}",
+                    PrettyPrinter::build_string_bytes(&block_hash),
+                    context,
+                    err
+                ),
+                Err(_) => tracing::debug!(
+                    "Timed out sending block hash {} during {}",
+                    PrettyPrinter::build_string_bytes(&block_hash),
+                    context
+                ),
+            }
+            drop(permit);
+        });
+    }
+
     /// Equivalent to Scala's: effectsForInvalidBlock = (c: Casper[F], b: BlockMessage, r: InvalidBlock, s: CasperSnapshot[F]) => { ... }
     pub async fn effects_for_invalid_block(
         &self,
@@ -913,24 +963,7 @@ impl<T: TransportLayer + Send + Sync> BlockProcessorDependencies<T> {
         snapshot: &CasperSnapshot,
     ) -> Result<KeyValueDagRepresentation, CasperError> {
         let dag = casper.handle_invalid_block(block, invalid_block, &snapshot.dag)?;
-
-        // Equivalent to Scala's: CommUtil[F].sendBlockHash(b.blockHash, b.sender)
-        if let Err(err) = self
-            .transport
-            .send_block_hash(
-                &self.connections_cell,
-                &self.conf,
-                &block.block_hash,
-                &block.sender,
-            )
-            .await
-        {
-            tracing::warn!(
-                "Failed to send block hash {} to sender during invalid-block effects: {}",
-                PrettyPrinter::build_string_bytes(&block.block_hash),
-                err
-            );
-        }
+        self.notify_block_hash_best_effort(block, "invalid-block effects");
 
         Ok(dag)
     }
@@ -942,24 +975,7 @@ impl<T: TransportLayer + Send + Sync> BlockProcessorDependencies<T> {
         block: &BlockMessage,
     ) -> Result<KeyValueDagRepresentation, CasperError> {
         let dag = { casper.handle_valid_block(block).await? };
-
-        // Equivalent to Scala's: CommUtil[F].sendBlockHash(b.blockHash, b.sender)
-        if let Err(err) = self
-            .transport
-            .send_block_hash(
-                &self.connections_cell,
-                &self.conf,
-                &block.block_hash,
-                &block.sender,
-            )
-            .await
-        {
-            tracing::warn!(
-                "Failed to send block hash {} to sender during valid-block effects: {}",
-                PrettyPrinter::build_string_bytes(&block.block_hash),
-                err
-            );
-        }
+        self.notify_block_hash_best_effort(block, "valid-block effects");
 
         Ok(dag)
     }
@@ -967,7 +983,7 @@ impl<T: TransportLayer + Send + Sync> BlockProcessorDependencies<T> {
 
 /// Constructor function equivalent to Scala's companion object apply method
 /// Creates unified dependencies and BlockProcessor
-pub fn new_block_processor<T: TransportLayer + Send + Sync>(
+pub fn new_block_processor<T: TransportLayer + Send + Sync + 'static>(
     block_store: KeyValueBlockStore,
     casper_buffer: CasperBufferKeyValueStorage,
     block_dag_storage: BlockDagKeyValueStorage,
