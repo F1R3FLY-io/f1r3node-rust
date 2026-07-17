@@ -26,32 +26,40 @@
 //! the right authority level for the FS-agent, which owns the
 //! channel and never leaks the name; user code has no path to
 //! obtain the private name because the URN isn't in `urn_map`.
+//!
+//! # Visibility discipline
+//!
+//! `fileio_native_urns()` is `pub(crate)` on purpose: callers
+//! outside `rholang` must not obtain the raw bundle, since
+//! merging it into any user-reachable env would grant
+//! unauthenticated arbitrary-host-FS authority. The one
+//! legitimate consumer (the FS-agent's genesis deploy) goes
+//! through [`compile_fileio_genesis_source`], which merges the
+//! bundle in-crate and returns only the compiled `Par`. A
+//! downstream crate accidentally reaching for
+//! `injections::fileio_native_urns()` will then be a compile
+//! error, not a code-review invariant.
 
 use std::collections::HashMap;
 
 use models::rhoapi::Par;
 
+use crate::rust::interpreter::compiler::compiler::Compiler;
+use crate::rust::interpreter::errors::InterpreterError;
 use crate::rust::interpreter::system_processes::FixedChannels;
 
 /// Return the `NormalizerEnv` bundle for the File I/O native
-/// primitives: the seventeen `rho:io:fs:native:1.0.0/*` URNs
+/// primitives: the nineteen `rho:io:fs:native:1.0.0/*` URNs
 /// registered in `std_system_processes()`, each mapped to its
 /// fixed-channel `Par` (a `GUnforgeable::GPrivate` under the
 /// hood).
 ///
-/// The FS-agent's genesis deploy passes this map (merged with
-/// whatever other genesis bindings it needs) to
-/// `Compiler::source_to_adt_with_normalizer_env` so its
-/// `new nOpen(`rho:io:fs:native:1.0.0/open`), ...` binding
-/// resolves at compile-into-`injections` time and at runtime via
-/// `eval_new`'s injection fallback.
-///
-/// Consumers must NOT publish this map on any user-reachable
-/// surface. Handing the map to user Rholang would immediately
-/// grant that Rholang unauthenticated arbitrary-host-FS
-/// authority.
-pub fn fileio_native_urns() -> HashMap<String, Par> {
-    let mut m = HashMap::with_capacity(17);
+/// Kept `pub(crate)` -- external callers must go through
+/// [`compile_fileio_genesis_source`] so the raw bundle never
+/// crosses the crate boundary. See the module docstring's
+/// "Visibility discipline" section.
+pub(crate) fn fileio_native_urns() -> HashMap<String, Par> {
+    let mut m = HashMap::with_capacity(19);
     m.insert(
         "rho:io:fs:native:1.0.0/open".to_string(),
         FixedChannels::native_open(),
@@ -129,6 +137,37 @@ pub fn fileio_native_urns() -> HashMap<String, Par> {
         FixedChannels::native_chown(),
     );
     m
+}
+
+/// Compile the FS-agent's genesis Rholang source with the
+/// fileio-native URN bundle spliced into the normalizer env.
+/// The raw bundle is never returned; callers only see the
+/// compiled `Par`, which carries the fixed-channel `Par`s inside
+/// each `New` node's `injections` map where `eval_new` can
+/// resolve them but nothing else can name them.
+///
+/// `extra_env` lets the caller add its own bindings (e.g. the
+/// per-deploy `deployId`/`deployerId` pair from
+/// `normalizer_env_from_deploy`). Collisions with the fileio
+/// namespace are rejected -- the fileio URNs are a fixed
+/// vocabulary, so a caller attempting to shadow one is a
+/// programming error, not a legitimate override.
+pub fn compile_fileio_genesis_source(
+    source: &str,
+    extra_env: HashMap<String, Par>,
+) -> Result<Par, InterpreterError> {
+    let fileio_env = fileio_native_urns();
+    for k in extra_env.keys() {
+        if fileio_env.contains_key(k) {
+            return Err(InterpreterError::BugFoundError(format!(
+                "compile_fileio_genesis_source: extra_env shadows a fileio native URN ({})",
+                k
+            )));
+        }
+    }
+    let mut env = fileio_env;
+    env.extend(extra_env);
+    Compiler::source_to_adt_with_normalizer_env(source, env)
 }
 
 #[cfg(test)]
@@ -273,5 +312,66 @@ mod tests {
         );
         // Silence unused-import warning under this test-arm-only path.
         let _ = ExprInstance::GBool(true);
+    }
+
+    /// Wrapper happy-path: `compile_fileio_genesis_source` with
+    /// no extra env produces a Par whose top-level `New` carries
+    /// the fileio URN in `injections`.
+    #[test]
+    fn wrapper_compiles_fileio_source_and_injects_bundle() {
+        let src = "new nOpen(`rho:io:fs:native:1.0.0/open`) in { Nil }";
+        let par = compile_fileio_genesis_source(src, HashMap::new())
+            .expect("wrapper should compile with default fileio env");
+        assert_eq!(par.news.len(), 1);
+        let expected = FixedChannels::native_open();
+        let injected = par.news[0]
+            .injections
+            .get("rho:io:fs:native:1.0.0/open")
+            .expect("wrapper must inject fileio URN");
+        assert_eq!(injected, &expected);
+    }
+
+    /// Wrapper rejects any `extra_env` key that shadows a fileio
+    /// URN. Prevents a caller from swapping the FS-agent's channel
+    /// out from under itself (either accidentally or maliciously).
+    #[test]
+    fn wrapper_rejects_extra_env_shadowing_a_fileio_urn() {
+        let src = "new nOpen(`rho:io:fs:native:1.0.0/open`) in { Nil }";
+        let mut extra = HashMap::new();
+        extra.insert("rho:io:fs:native:1.0.0/open".to_string(), Par::default());
+        let err =
+            compile_fileio_genesis_source(src, extra).expect_err("collision should be rejected");
+        assert!(
+            format!("{:?}", err).contains("shadows a fileio native URN"),
+            "unexpected error: {:?}",
+            err
+        );
+    }
+
+    /// Wrapper merges caller-supplied env alongside the fileio
+    /// bundle: a non-colliding extra binding lands in the compiled
+    /// New's injections just like the fileio URNs.
+    #[test]
+    fn wrapper_preserves_non_colliding_extra_env() {
+        use models::rhoapi::g_unforgeable::UnfInstance;
+        use models::rhoapi::{GPrivate, GUnforgeable};
+
+        let extra_par = Par::default().with_unforgeables(vec![GUnforgeable {
+            unf_instance: Some(UnfInstance::GPrivateBody(GPrivate { id: vec![0xEE; 64] })),
+        }]);
+        let mut extra = HashMap::new();
+        extra.insert("rho:test:injection:custom".to_string(), extra_par.clone());
+
+        let src = r#"new nOpen(`rho:io:fs:native:1.0.0/open`),
+                          custom(`rho:test:injection:custom`) in { Nil }"#;
+        let par = compile_fileio_genesis_source(src, extra)
+            .expect("wrapper should compile with mixed env");
+        assert_eq!(par.news.len(), 1);
+        let injections = &par.news[0].injections;
+        assert!(injections.contains_key("rho:io:fs:native:1.0.0/open"));
+        assert_eq!(
+            injections.get("rho:test:injection:custom"),
+            Some(&extra_par)
+        );
     }
 }
