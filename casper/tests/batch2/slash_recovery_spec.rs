@@ -522,6 +522,7 @@ async fn e1c_re_issues_merge_rejected_slash() {
         .collect();
     let cache_key = ParentsPostStateCacheKey {
         sorted_parent_hashes,
+        main_parent_hash: snapshot.parents[0].block_hash.clone(),
         snapshot_lfb_hash: snapshot.last_finalized_block.clone(),
         sorted_latest_messages: key_latest_messages.into_iter().collect(),
         disable_late_block_filtering: snapshot
@@ -704,6 +705,7 @@ async fn rejected_slash_recovery_keeps_empty_proposer_alive() {
         .collect();
     let cache_key = ParentsPostStateCacheKey {
         sorted_parent_hashes,
+        main_parent_hash: snapshot.parents[0].block_hash.clone(),
         snapshot_lfb_hash: snapshot.last_finalized_block.clone(),
         sorted_latest_messages: key_latest_messages.into_iter().collect(),
         disable_late_block_filtering: snapshot

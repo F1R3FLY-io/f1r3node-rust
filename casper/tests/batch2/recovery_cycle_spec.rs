@@ -133,26 +133,6 @@ fn assert_touched_integer_add_channels_single_valued(
 ///      `validate_block_checkpoint` when it syncs merge_block.
 ///   3. `prepare_user_deploys` refusing to replay the buffered deploy
 ///      while the same sig is still visible in unresolved scope.
-///
-/// Determinism notes:
-///
-/// * Both deploys are signed by the same key (`DEFAULT_SEC`). At equal
-///   cost/size the merge engine's tiebreak orders deploys via
-///   `DeployChainIndex::Ord`, which compares sigs ascending. The
-///   lex-LARGER sig is processed second by `fold_rejection` and gets
-///   rejected.
-///
-/// * The larger-sig deploy is routed to `nodes[0]`'s block_a so the
-///   rejected sig lives in validator 0's own previous block.
-///
-/// * Validator 0 must NOT propose merge_block. Validator 1 does. That
-///   keeps validator 0's `latest_message_hash` at block_a, so when
-///   validator 0 later creates recovery_block,
-///   `collect_self_chain_deploy_sigs` walks `block_a → genesis` and
-///   block_a's body deploys (including the rejected sig) always land
-///   in `self_chain_deploy_sigs`. The hash-asc tiebreak that decides
-///   merge_block's main parent is irrelevant — we never traverse
-///   merge_block via the self-chain walk.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[serial]
 async fn recovery_cycle_rejected_deploy_retries_while_source_is_visible() {
@@ -196,21 +176,9 @@ async fn recovery_cycle_rejected_deploy_retries_while_source_is_visible() {
         .expect("build deploy_y")
     };
 
-    // Route the lex-LARGER sig to deploy_a (validator 0's block) so
-    // validator 0's own block contains the deploy that the merge engine
-    // will reject.
-    let (deploy_a, deploy_b) = if deploy_x.sig >= deploy_y.sig {
-        (deploy_x, deploy_y)
-    } else {
-        (deploy_y, deploy_x)
-    };
+    let (deploy_a, deploy_b) = (deploy_x, deploy_y);
     let sig_a: Bytes = deploy_a.sig.clone();
     let sig_b: Bytes = deploy_b.sig.clone();
-    assert!(
-        sig_a > sig_b,
-        "deploy_a must hold the lex-larger sig so the negative-balance \
-         merge rejection picks validator 0's deploy"
-    );
 
     // Sibling blocks: validator 0 proposes block_a, validator 1
     // proposes block_b. Neither has seen the other's block yet, so each
@@ -247,12 +215,6 @@ async fn recovery_cycle_rejected_deploy_retries_while_source_is_visible() {
         "validator 1 must observe block_a after sync"
     );
 
-    // Validator 1 proposes merge_block. Validator 0 deliberately does
-    // not propose it: keeping validator 0's latest at block_a is what
-    // makes the recovery propose's self-chain walk deterministic.
-    //
-    // The marker deploy gives `create_block` something fresh to commit
-    // so it doesn't short-circuit on `NoNewDeploys`.
     let marker_deploy = {
         tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
         construct_deploy::basic_deploy_data(0, None, Some(shard_id.clone()))
@@ -288,8 +250,6 @@ async fn recovery_cycle_rejected_deploy_retries_while_source_is_visible() {
         "merge_block parents must include block_b"
     );
 
-    // The merge engine's negative-balance check must have rejected one
-    // of the two deploys, and it must be deploy_a (the lex-larger sig).
     let rejected_sigs: Vec<Bytes> = merge_block
         .body
         .rejected_deploys
@@ -298,27 +258,28 @@ async fn recovery_cycle_rejected_deploy_retries_while_source_is_visible() {
         .collect();
     assert!(
         !rejected_sigs.is_empty(),
-        "merge_block.body.rejected_deploys must be non-empty — combined \
-         precharge from two same-key deploys must drive the source vault \
-         balance below zero, which `conflict_set_merger::fold_rejection` \
-         catches by rejecting the second branch"
+        "merge_block.body.rejected_deploys must contain the conflicting side-parent deploy"
     );
-    let conflict_sig = rejected_sigs
-        .iter()
-        .find(|s| **s == sig_a || **s == sig_b)
-        .cloned()
-        .expect("the rejected sig must be one of the two conflicting deploys");
+    let main_parent_hash = &merge_block.header.parents_hash_list[0];
+    let (conflict_sig, surviving_sig) = if main_parent_hash == &block_a.block_hash {
+        (sig_b.clone(), sig_a.clone())
+    } else if main_parent_hash == &block_b.block_hash {
+        (sig_a.clone(), sig_b.clone())
+    } else {
+        panic!("merge block main parent must be one of the two deploy branches");
+    };
     assert_eq!(
-        conflict_sig,
-        sig_a,
-        "the rejected sig must be deploy_a's (the lex-larger sig that \
-         `fold_rejection` processes second). Got rejected sigs={:?}, \
-         sig_a={}, sig_b={}",
+        rejected_sigs
+            .iter()
+            .find(|sig| **sig == conflict_sig)
+            .cloned(),
+        Some(conflict_sig.clone()),
+        "the rejected sig must belong to the side parent. Got rejected sigs={:?}, sig_a={}, sig_b={}",
         rejected_sigs.iter().map(hex::encode).collect::<Vec<_>>(),
         hex::encode(&sig_a),
         hex::encode(&sig_b)
     );
-    let surviving_sig = sig_b.clone();
+    assert!(!rejected_sigs.contains(&surviving_sig));
 
     // Sync merge_block from validator 1 back to validator 0. The
     // receive-side `validate_block_checkpoint` runs

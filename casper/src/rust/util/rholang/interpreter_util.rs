@@ -839,41 +839,38 @@ pub async fn compute_parents_post_state(
         // such system deploys are not mergeable, so take them from one of the parents.
         _ => {
             let cache_lookup_started = std::time::Instant::now();
-            // Fast path: if one parent is descendant of all others, its post-state already
-            // includes all effects from the remaining parents and we can skip DAG merge.
-            for candidate in &parents {
-                let covers_all = parents
-                    .iter()
-                    .filter(|p| p.block_hash != candidate.block_hash)
-                    .all(|p| {
-                        s.dag
-                            .is_in_main_chain(&p.block_hash, &candidate.block_hash)
-                            .unwrap_or(false)
-                    });
-                if covers_all {
-                    tracing::debug!(
-                        target: "f1r3fly.casper.compute_parents_post_state.fast_path",
-                        "compute_parents_post_state fast path: descendant parent {} covers all {} parents",
-                        PrettyPrinter::build_string_bytes(&candidate.block_hash),
-                        parents.len()
-                    );
-                    let state = proto_util::post_state_hash(candidate);
-                    tracing::debug!(
-                        target: "f1r3fly.casper.compute_parents_post_state.timing",
-                        "compute_parents_post_state timing: path=descendant_fast_path, parents={}, cache_lookup_ms={}, total_ms={}",
-                        parents.len(),
-                        cache_lookup_started.elapsed().as_millis(),
-                        total_started.elapsed().as_millis()
-                    );
-                    tracing::debug!(
-                        target: "f1r3fly.merge.step",
-                        step = "compute_parents_post_state.EXIT",
-                        path = "descendant_fast_path",
-                        post_state = %hex::encode(&state[..8.min(state.len())]),
-                        "merge.step: exit compute_parents_post_state"
-                    );
-                    return Ok((state, Vec::new(), Vec::new()));
-                }
+            let main_parent = &parents[0];
+            let main_parent_hash = main_parent.block_hash.clone();
+            let main_parent_state =
+                Blake2b256Hash::from_bytes_prost(&main_parent.body.state.post_state_hash);
+            let main_parent_covers_all = parents.iter().skip(1).all(|parent| {
+                s.dag
+                    .is_dag_ancestor(&parent.block_hash, &main_parent_hash)
+                    .unwrap_or(false)
+            });
+            if main_parent_covers_all {
+                let state = proto_util::post_state_hash(main_parent);
+                tracing::debug!(
+                    target: "f1r3fly.casper.compute_parents_post_state.fast_path",
+                    "compute_parents_post_state fast path: main parent {} covers all {} parents",
+                    PrettyPrinter::build_string_bytes(&main_parent_hash),
+                    parents.len()
+                );
+                tracing::debug!(
+                    target: "f1r3fly.casper.compute_parents_post_state.timing",
+                    "compute_parents_post_state timing: path=descendant_fast_path, parents={}, cache_lookup_ms={}, total_ms={}",
+                    parents.len(),
+                    cache_lookup_started.elapsed().as_millis(),
+                    total_started.elapsed().as_millis()
+                );
+                tracing::debug!(
+                    target: "f1r3fly.merge.step",
+                    step = "compute_parents_post_state.EXIT",
+                    path = "descendant_fast_path",
+                    post_state = %hex::encode(&state[..8.min(state.len())]),
+                    "merge.step: exit compute_parents_post_state"
+                );
+                return Ok((state, Vec::new(), Vec::new()));
             }
 
             let mut parent_hashes_for_key: Vec<BlockHash> =
@@ -883,6 +880,7 @@ pub async fn compute_parents_post_state(
                 .unwrap_or(s.on_chain_state.shard_conf.disable_late_block_filtering);
             let cache_key = super::runtime_manager::ParentsPostStateCacheKey {
                 sorted_parent_hashes: parent_hashes_for_key,
+                main_parent_hash: main_parent_hash.clone(),
                 snapshot_lfb_hash: s.last_finalized_block.clone(),
                 // BTreeMap iteration is key-ordered, so this is deterministic.
                 sorted_latest_messages: latest_messages
@@ -999,8 +997,6 @@ pub async fn compute_parents_post_state(
                     hex::encode(&floor_hash[..8.min(floor_hash.len())])
                 ))
             })?;
-            let floor_state =
-                Blake2b256Hash::from_bytes_prost(&floor_block.body.state.post_state_hash);
             let floor_block_number = floor_block.body.state.block_number;
 
             let include_visible_ancestor =
@@ -1188,7 +1184,8 @@ pub async fn compute_parents_post_state(
                 target: "f1r3fly.merge.step",
                 step = "compute_parents_post_state.MERGE_PRE",
                 floor = %hex::encode(&floor_hash[..8.min(floor_hash.len())]),
-                base_state = %hex::encode(&floor_state.bytes()[..8.min(floor_state.bytes().len())]),
+                main_parent = %hex::encode(&main_parent_hash[..8.min(main_parent_hash.len())]),
+                base_state = %hex::encode(&main_parent_state.bytes()[..8.min(main_parent_state.bytes().len())]),
                 scope_blocks = visible_blocks_len,
                 disable_late_block_filtering,
                 "merge.step: dag_merger::merge begin"
@@ -1196,8 +1193,8 @@ pub async fn compute_parents_post_state(
             let merge_started = std::time::Instant::now();
             let merger_result = dag_merger::merge(
                 &s.dag,
-                &floor_hash,
-                &floor_state,
+                &main_parent_hash,
+                &main_parent_state,
                 |hash: &BlockHash| -> Result<Vec<DeployChainIndex>, CasperError> {
                     let block_index = block_index_f(hash)?;
                     Ok(block_index.deploy_chains)
@@ -1210,6 +1207,18 @@ pub async fn compute_parents_post_state(
             let merge_ms = merge_started.elapsed().as_millis();
 
             let (state, mut rejected_user_pairs, rejected_slash_pairs) = merger_result;
+            for (deploy_id, source_block) in rejected_user_pairs
+                .iter()
+                .chain(rejected_slash_pairs.iter())
+            {
+                if s.dag.is_dag_ancestor(source_block, &main_parent_hash)? {
+                    return Err(CasperError::RuntimeError(format!(
+                        "main-parent anchored merge rejected committed deploy {} from block {}",
+                        hex::encode(&deploy_id[..8.min(deploy_id.len())]),
+                        hex::encode(&source_block[..8.min(source_block.len())]),
+                    )));
+                }
+            }
             let suppressed = suppress_rejected_pairs_with_later_visible_rejection(
                 block_store,
                 &visible_blocks,

@@ -934,6 +934,7 @@ in {
                                                 (_, errorMessage) => {
                                                   stateUpdateCh!(state, (false, "transfer failed: " ++ errorMessage))
                                                 }
+                                              }
                                             }
                                           }
                                         }

@@ -272,6 +272,7 @@ mod heartbeat_conf_hocon_tests {
               frontier-chase-max-lag = 1
               pending-deploy-max-lag = 33
               deploy-recovery-max-lag = 99
+              empty-frontier-max-unfinalized-blocks = 44
             }
             "#,
         );
@@ -285,6 +286,7 @@ mod heartbeat_conf_hocon_tests {
         assert_eq!(cfg.advanced.frontier_chase_max_lag, 1);
         assert_eq!(cfg.advanced.pending_deploy_max_lag, 33);
         assert_eq!(cfg.advanced.deploy_recovery_max_lag, 99);
+        assert_eq!(cfg.advanced.empty_frontier_max_unfinalized_blocks, 44);
     }
 
     #[test]
@@ -324,6 +326,7 @@ mod heartbeat_conf_hocon_tests {
         assert_eq!(cfg.advanced.frontier_chase_max_lag, 0);
         assert_eq!(cfg.advanced.pending_deploy_max_lag, 7);
         assert_eq!(cfg.advanced.deploy_recovery_max_lag, 64);
+        assert_eq!(cfg.advanced.empty_frontier_max_unfinalized_blocks, 64);
     }
 
     #[test]
@@ -336,6 +339,7 @@ mod heartbeat_conf_hocon_tests {
             "frontier-chase-max-lag",
             "pending-deploy-max-lag",
             "deploy-recovery-max-lag",
+            "empty-frontier-max-unfinalized-blocks",
         ] {
             let hocon = format!(
                 r#"

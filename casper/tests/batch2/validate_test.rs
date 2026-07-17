@@ -1153,6 +1153,18 @@ async fn repeat_deploy_validation_should_not_accept_blocks_with_a_repeated_deplo
     .await
 }
 
+fn mark_deploy_rejected(
+    block_store: &mut KeyValueBlockStore,
+    block: &casper_message::BlockMessage,
+    sig: Bytes,
+) {
+    let mut patched = block.clone();
+    patched.body.rejected_deploys = vec![casper_message::RejectedDeploy { sig }];
+    block_store
+        .put(block.block_hash.clone(), &patched)
+        .expect("re-store patched block with rejected deploy");
+}
+
 /// Regression test for `repeat_deploy`'s `rejected_in_scope` exemption.
 ///
 /// Without the exemption, validation rejects any block that re-includes a

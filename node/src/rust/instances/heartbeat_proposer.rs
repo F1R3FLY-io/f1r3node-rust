@@ -38,7 +38,42 @@ struct HeartbeatCheckResult {
     refresh_deploy_grace_window: bool,
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+struct EmptyFrontierPressure {
+    unfinalized_blocks: usize,
+    max_unfinalized_blocks: usize,
+    backpressure: bool,
+}
+
 const DEPLOY_RECOVERY_FRONTIER_CHASE_MAX_LAG: i64 = 2;
+
+fn empty_frontier_pressure(
+    snapshot: &CasperSnapshot,
+    max_unfinalized_blocks: i64,
+    has_pending_deploys: bool,
+    has_new_parent_with_user_deploys: bool,
+    deploy_grace_active: bool,
+    self_recently_proposed: bool,
+) -> Result<EmptyFrontierPressure, casper::rust::errors::CasperError> {
+    let max_unfinalized_blocks = usize::try_from(max_unfinalized_blocks).unwrap_or(usize::MAX);
+    if has_pending_deploys
+        || has_new_parent_with_user_deploys
+        || deploy_grace_active
+        || !self_recently_proposed
+    {
+        return Ok(EmptyFrontierPressure {
+            max_unfinalized_blocks,
+            ..EmptyFrontierPressure::default()
+        });
+    }
+
+    let unfinalized_blocks = snapshot.dag.non_finalized_blocks()?.len();
+    Ok(EmptyFrontierPressure {
+        unfinalized_blocks,
+        max_unfinalized_blocks,
+        backpressure: unfinalized_blocks > max_unfinalized_blocks,
+    })
+}
 
 impl HeartbeatProposer {
     /// Create a heartbeat proposer stream that periodically checks if a block
@@ -420,6 +455,26 @@ async fn check_lfb_and_propose(
         deploy_recovery_hint,
         deploy_grace_active,
     );
+    let empty_frontier_pressure = empty_frontier_pressure(
+        &snapshot,
+        config.advanced.empty_frontier_max_unfinalized_blocks,
+        has_pending_deploys,
+        has_new_parent_with_user_deploys,
+        deploy_grace_active,
+        self_recently_proposed,
+    )?;
+    let empty_frontier_backpressure = empty_frontier_pressure.backpressure;
+    if empty_frontier_backpressure {
+        tracing::info!(
+            target: "f1r3fly.casper.heartbeat.backpressure",
+            "Heartbeat: Empty frontier backpressure active (unfinalized_blocks={}, cap={}, lag={}, latest_height={}, lfb_height={})",
+            empty_frontier_pressure.unfinalized_blocks,
+            empty_frontier_pressure.max_unfinalized_blocks,
+            lfb_lag_blocks,
+            latest_block_number,
+            last_finalized_block_number
+        );
+    }
     let stale_recovery_interval_elapsed = frontier_age_ms >= stale_recovery_min_interval_ms;
     let stale_recovery_window_open = stale_recovery_interval_elapsed || deploy_recovery_hint;
 
@@ -465,10 +520,12 @@ async fn check_lfb_and_propose(
         has_new_parent_with_user_deploys && lfb_lag_blocks <= effective_frontier_chase_cap;
     let can_chase_frontier_while_ahead = lfb_lag_blocks <= effective_frontier_chase_cap
         && has_new_parents
+        && !empty_frontier_backpressure
         && (!self_proposed_too_recently || allow_cooldown_override_for_deploy_recovery);
     let frontier_follow_due = !has_pending_deploys
         && has_new_parents
         && lag_recovery_leader
+        && !empty_frontier_backpressure
         && can_follow_frontier_without_pending_deploys
         && (!self_recently_proposed
             || can_chase_frontier_while_ahead
@@ -476,6 +533,7 @@ async fn check_lfb_and_propose(
     let stale_lfb_recovery_due = lfb_is_stale
         && stale_recovery_window_open
         && lag_recovery_leader
+        && !empty_frontier_backpressure
         && (!self_recently_proposed || can_chase_frontier_while_ahead);
     let lag_recovery_threshold = pending_deploy_max_lag;
     let moderate_lag_recovery_threshold = std::cmp::max(1, lag_recovery_threshold / 2);
@@ -485,12 +543,14 @@ async fn check_lfb_and_propose(
         && lfb_lag_blocks > 0
         && lag_recovery_leader
         && stale_recovery_window_open
+        && !empty_frontier_backpressure
         && (!self_proposed_too_recently || deploy_grace_active)
         && !stale_lfb_recovery_due;
     let high_lag_recovery_due = !has_pending_deploys
         && lfb_lag_blocks > lag_recovery_threshold
         && lag_recovery_leader
         && stale_recovery_window_open
+        && !empty_frontier_backpressure
         && (!self_proposed_too_recently || deploy_grace_active);
     // Convergence recovery: when the LFB is stale and we have unjustified peer blocks,
     // propose a convergence block that references all known tips. This breaks the deadlock
@@ -502,7 +562,8 @@ async fn check_lfb_and_propose(
         && !can_chase_frontier_while_ahead
         && frontier_is_stale
         && lag_recovery_leader
-        && stale_recovery_window_open;
+        && stale_recovery_window_open
+        && !empty_frontier_backpressure;
     let should_propose = pending_deploys_due
         || pending_deploy_backstop_due
         || frontier_follow_due
@@ -638,7 +699,13 @@ async fn check_lfb_and_propose(
             }
         }
     } else {
-        let reason = if !lfb_is_stale {
+        let reason = if empty_frontier_backpressure {
+            format!(
+                "empty frontier backpressure: unfinalized_blocks={} exceeds cap {}; no pending deploys or deploy-carrying peer parent",
+                empty_frontier_pressure.unfinalized_blocks,
+                empty_frontier_pressure.max_unfinalized_blocks
+            )
+        } else if !lfb_is_stale {
             if has_pending_deploys
                 && self_recently_proposed
                 && !can_propose_pending_deploys_while_ahead
@@ -1065,9 +1132,12 @@ mod tests {
     // Tests that call do_heartbeat_check directly for deterministic behavior
 
     mod decision_logic_tests {
+        use std::collections::BTreeMap;
         use std::sync::atomic::{AtomicUsize, Ordering};
 
         use casper::rust::casper::MultiParentCasper;
+        use models::rust::block_metadata::BlockMetadata;
+        use prost::bytes::Bytes;
 
         use super::*;
 
@@ -1105,6 +1175,119 @@ mod tests {
             (count, func)
         }
 
+        fn test_hash(byte: u8) -> BlockHash { Bytes::from(vec![byte; 32]) }
+
+        fn add_test_metadata(
+            snapshot: &mut CasperSnapshot,
+            hash: BlockHash,
+            sender: Bytes,
+            parents: Vec<BlockHash>,
+            block_number: i64,
+            finalized: bool,
+        ) {
+            let metadata = BlockMetadata {
+                block_hash: hash.clone(),
+                parents: parents.clone(),
+                sender,
+                justifications: Vec::new(),
+                weight_map: BTreeMap::new(),
+                block_number,
+                sequence_number: block_number as i32,
+                invalid: false,
+                directly_finalized: finalized,
+                finalized,
+                fault_tolerance_value: 1.0,
+            };
+            snapshot.dag.dag_set.insert(hash.clone());
+            snapshot
+                .dag
+                .height_map
+                .entry(block_number)
+                .or_default()
+                .insert(hash.clone());
+            snapshot
+                .dag
+                .block_number_map
+                .insert(hash.clone(), block_number);
+            for parent in &parents {
+                snapshot
+                    .dag
+                    .child_map
+                    .entry(parent.clone())
+                    .or_default()
+                    .insert(hash.clone());
+            }
+            if let Some(parent) = parents.first() {
+                snapshot
+                    .dag
+                    .main_parent_map
+                    .insert(hash.clone(), parent.clone());
+            }
+            if finalized {
+                snapshot.dag.finalized_blocks_set.insert(hash.clone());
+                snapshot.dag.last_finalized_block_hash = hash.clone();
+                snapshot.last_finalized_block = hash.clone();
+            }
+            snapshot
+                .dag
+                .block_metadata_index
+                .write()
+                .add(metadata)
+                .expect("insert metadata");
+        }
+
+        fn wide_unfinalized_snapshot(validator_id: Bytes) -> CasperSnapshot {
+            let mut snapshot =
+                casper::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+            casper::rust::casper::test_helpers::TestCasperWithSnapshot::bond_validator_in_snapshot(
+                &mut snapshot,
+                validator_id.clone().into(),
+            );
+            let peer = Bytes::from(vec![0x44; models::rust::validator::LENGTH]);
+            let lfb = test_hash(1);
+            let self_one = test_hash(2);
+            let self_two = test_hash(3);
+            let peer_one = test_hash(4);
+            add_test_metadata(
+                &mut snapshot,
+                lfb.clone(),
+                validator_id.clone(),
+                Vec::new(),
+                0,
+                true,
+            );
+            add_test_metadata(
+                &mut snapshot,
+                self_one.clone(),
+                validator_id.clone(),
+                vec![lfb.clone()],
+                1,
+                false,
+            );
+            add_test_metadata(
+                &mut snapshot,
+                self_two.clone(),
+                validator_id.clone(),
+                vec![self_one],
+                2,
+                false,
+            );
+            add_test_metadata(
+                &mut snapshot,
+                peer_one.clone(),
+                peer.clone(),
+                vec![lfb],
+                1,
+                false,
+            );
+            snapshot
+                .dag
+                .latest_messages_map
+                .insert(validator_id, self_two);
+            snapshot.dag.latest_messages_map.insert(peer, peer_one);
+            snapshot
+        }
+
         fn create_bonded_snapshot(validator_id: Validator) -> CasperSnapshot {
             let mut snapshot =
                 casper::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
@@ -1118,6 +1301,21 @@ mod tests {
                 .bonds
                 .retain(|bond| bond.validator == validator_id);
             snapshot
+        }
+
+        #[test]
+        fn empty_frontier_pressure_blocks_only_empty_recovery() {
+            let validator = create_test_validator_identity();
+            let snapshot = wide_unfinalized_snapshot(validator.public_key.bytes);
+            let pressure =
+                empty_frontier_pressure(&snapshot, 2, false, false, false, true).expect("pressure");
+            assert!(pressure.backpressure);
+            assert_eq!(pressure.unfinalized_blocks, 3);
+
+            let pending =
+                empty_frontier_pressure(&snapshot, 2, true, false, false, true).expect("pending");
+            assert!(!pending.backpressure);
+            assert_eq!(pending.unfinalized_blocks, 0);
         }
 
         #[tokio::test]

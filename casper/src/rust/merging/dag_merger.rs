@@ -349,29 +349,25 @@ fn split_unavailable_resolved_branches(
     )
         -> Result<Vec<Vec<u8>>, rspace_plus_plus::rspace::errors::HistoryError>,
 ) -> Result<HashableSet<DeployChainIndex>, rspace_plus_plus::rspace::errors::HistoryError> {
-    let mut kept_branches = Vec::new();
-    let mut rejected_all = HashableSet(HashSet::new());
-
-    for branch in std::mem::take(&mut resolved.to_merge) {
-        let (kept, rejected) = split_unavailable_branch_consumes(
-            branch,
-            depends,
-            state_changes,
-            mergeable_channels,
-            base_data,
-            base_continuations,
-        )?;
-        for chain in rejected.0 {
-            rejected_all.0.insert(chain.clone());
-            resolved.rejected.0.insert(chain);
-        }
-        if let Some(kept) = kept {
-            kept_branches.push(kept);
-        }
+    let accepted = HashableSet(
+        std::mem::take(&mut resolved.to_merge)
+            .into_iter()
+            .flat_map(|branch| branch.0)
+            .collect(),
+    );
+    let (kept, rejected) = split_unavailable_branch_consumes(
+        accepted,
+        depends,
+        state_changes,
+        mergeable_channels,
+        base_data,
+        base_continuations,
+    )?;
+    for chain in &rejected.0 {
+        resolved.rejected.0.insert(chain.clone());
     }
-
-    resolved.to_merge = kept_branches;
-    Ok(rejected_all)
+    resolved.to_merge = kept.into_iter().collect();
+    Ok(rejected)
 }
 
 /// §3c keep-one: among the surviving (`to_merge`) branches, reject the minimal
@@ -583,7 +579,7 @@ pub fn merge(
             // Avoid unbounded full-DAG ancestor scans. Check each scope block against LFB directly.
             let mut result = HashSet::new();
             for candidate in scope_blocks {
-                if !dag.is_in_main_chain(candidate, lfb)? {
+                if !dag.is_dag_ancestor(candidate, lfb)? {
                     result.insert(candidate.clone());
                 }
             }
@@ -879,6 +875,24 @@ pub fn merge(
     let actual_seq_all = actual_set_vec;
     let late_seq_all = late_set_vec;
 
+    let mut source_blocks: Vec<BlockHash> = actual_seq_all
+        .iter()
+        .map(|chain| chain.source_block_hash.clone())
+        .collect();
+    source_blocks.sort();
+    source_blocks.dedup();
+    let mut source_block_dependencies: HashMap<BlockHash, HashSet<BlockHash>> = HashMap::new();
+    for target in &source_blocks {
+        for source in &source_blocks {
+            if target != source && dag.is_dag_ancestor(source, target)? {
+                source_block_dependencies
+                    .entry(target.clone())
+                    .or_default()
+                    .insert(source.clone());
+            }
+        }
+    }
+
     struct BranchDerived {
         user_deploy_ids: HashSet<Bytes>,
         combined_all_event_log: rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex,
@@ -989,6 +1003,13 @@ pub fn merge(
                     .count());
         }
         consume_dep
+    };
+
+    let availability_depends_fn = |target: &DeployChainIndex, source: &DeployChainIndex| -> bool {
+        depends_fn(target, source)
+            || source_block_dependencies
+                .get(&target.source_block_hash)
+                .is_some_and(|sources| sources.contains(&source.source_block_hash))
     };
 
     let state_changes_fn = |chain: &DeployChainIndex| Ok(chain.state_changes.clone());
@@ -1269,7 +1290,7 @@ pub fn merge(
         |resolved: &mut conflict_set_merger::ResolvedConflicts<DeployChainIndex>| {
             let mut rejected = split_unavailable_resolved_branches(
                 resolved,
-                &depends_fn,
+                &availability_depends_fn,
                 &state_changes_fn,
                 &mergeable_channels_fn,
                 &|channel| history_reader.get_data_proj_binary(channel),
@@ -2002,6 +2023,69 @@ mod tests {
     }
 
     #[test]
+    fn unavailable_floor_consumes_allow_canonical_lineage_across_resolved_branches() {
+        let channel = Blake2b256Hash::from_bytes(vec![0x23; 32]);
+        let datum_a = vec![0xaa; 32];
+        let datum_b = vec![0xbb; 32];
+        let datum_c = vec![0xcc; 32];
+        let ancestor = chain(
+            1,
+            1,
+            1,
+            datum_change(
+                channel.clone(),
+                vec![datum_a.clone()],
+                vec![datum_b.clone()],
+            ),
+        );
+        let descendant = chain(
+            2,
+            10,
+            2,
+            datum_change(channel.clone(), vec![datum_b], vec![datum_c]),
+        );
+        let mut resolved = conflict_set_merger::ResolvedConflicts {
+            to_merge: vec![
+                HashableSet(HashSet::from([ancestor.clone()])),
+                HashableSet(HashSet::from([descendant.clone()])),
+            ],
+            rejected: HashableSet(HashSet::new()),
+            late_set_size: 0,
+            actual_set_size: 2,
+            branches_count: 2,
+            rejected_as_dependents_count: 0,
+            optimal_rejection_count: 0,
+            conflict_map_conflicts_count: 0,
+            rejection_options_count: 0,
+            branches_time: std::time::Duration::ZERO,
+            conflicts_map_time: std::time::Duration::ZERO,
+            rejection_options_time: std::time::Duration::ZERO,
+        };
+
+        let rejected = split_unavailable_resolved_branches(
+            &mut resolved,
+            &|target, source| target == &descendant && source == &ancestor,
+            &|chain| Ok(chain.state_changes.clone()),
+            &|_| BTreeMap::new(),
+            &|base_channel| {
+                if base_channel == &channel {
+                    Ok(vec![datum_a.clone()])
+                } else {
+                    Ok(Vec::new())
+                }
+            },
+            &|_| Ok(Vec::new()),
+        )
+        .expect("split canonical lineage");
+
+        assert!(rejected.0.is_empty());
+        assert!(resolved.rejected.0.is_empty());
+        assert_eq!(resolved.to_merge.len(), 1);
+        assert!(resolved.to_merge[0].0.contains(&ancestor));
+        assert!(resolved.to_merge[0].0.contains(&descendant));
+    }
+
+    #[test]
     fn unavailable_floor_consumes_reject_dependents_of_rejected_chain() {
         let channel = Blake2b256Hash::from_bytes(vec![0x33; 32]);
         let datum_a = vec![0xaa; 32];
@@ -2223,7 +2307,7 @@ mod tests {
         )
         .expect("retrying unavailable conflicts should reject dependents");
 
-        assert_eq!(unavailable_count, 1);
+        assert_eq!(unavailable_count, 2);
         assert!(resolved.rejected.0.contains(&unavailable_winner));
         assert!(resolved.rejected.0.contains(&dependent));
         assert!(!resolved.rejected.0.contains(&rescued_branch));

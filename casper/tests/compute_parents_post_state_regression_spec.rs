@@ -390,7 +390,7 @@ async fn run_compute_parents_post_state_finalized_skew_regression() {
 }
 
 #[test]
-fn compute_parents_post_state_should_not_skip_merge_for_secondary_parent_ancestry() {
+fn compute_parents_post_state_should_preserve_main_parent_state() {
     let stack_bytes = std::env::var("F1R3_COMPUTE_PARENTS_REGRESSION_STACK_BYTES")
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
@@ -404,7 +404,7 @@ fn compute_parents_post_state_should_not_skip_merge_for_secondary_parent_ancestr
                 .enable_all()
                 .build()
                 .expect("Failed to build Tokio runtime");
-            runtime.block_on(run_compute_parents_secondary_parent_merge_regression());
+            runtime.block_on(run_compute_parents_main_parent_anchor_regression());
         })
         .expect("Failed to spawn regression test thread");
 
@@ -413,7 +413,7 @@ fn compute_parents_post_state_should_not_skip_merge_for_secondary_parent_ancestr
         .expect("Regression test thread panicked before completing");
 }
 
-async fn run_compute_parents_secondary_parent_merge_regression() {
+async fn run_compute_parents_main_parent_anchor_regression() {
     let secp = Secp256k1;
     let (_validator_sk, validator_pk) = secp.new_key_pair();
     let validator: Bytes = validator_pk.bytes.clone().into();
@@ -581,7 +581,7 @@ async fn run_compute_parents_secondary_parent_merge_regression() {
         "side deploy must change state"
     );
 
-    let mut cover = build_empty_block(
+    let cover_raw = build_empty_block(
         2,
         3,
         validator.clone(),
@@ -590,29 +590,29 @@ async fn run_compute_parents_secondary_parent_merge_regression() {
         main.body.state.bonds.clone(),
         shard_name.clone(),
     );
-    cover.body.state.post_state_hash = proto_util::post_state_hash(&main);
-    cover.body.state.bonds = main.body.state.bonds.clone();
-    block_store
-        .put_block_message(&cover)
-        .expect("Failed to store cover block");
-    dag_storage
-        .insert(
-            &cover,
-            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal,
-        )
-        .expect("Failed to insert cover block");
+    let cover = step_block(
+        &mut block_store,
+        &dag_storage,
+        &mut runtime_manager,
+        &cover_raw,
+        validator.clone(),
+        shard_name.clone(),
+        genesis_hash.clone(),
+    )
+    .await
+    .expect("Failed to step cover block");
 
     let mut snapshot = mk_snapshot(
         dag_storage
             .get_representation()
             .expect("dag representation"),
         validator.clone(),
-        shard_name,
+        shard_name.clone(),
         genesis_hash.clone(),
     );
-    snapshot.dag.last_finalized_block_hash = genesis_hash;
+    snapshot.dag.last_finalized_block_hash = genesis_hash.clone();
     let mut latest_messages = std::collections::BTreeMap::new();
-    latest_messages.insert(validator, cover.block_hash.clone());
+    latest_messages.insert(validator.clone(), cover.block_hash.clone());
     runtime_manager.parents_post_state_cache.clear();
     runtime_manager.block_index_cache.clear();
 
@@ -632,11 +632,158 @@ async fn run_compute_parents_secondary_parent_merge_regression() {
         rejected.is_empty(),
         "non-conflicting side deploy should merge cleanly"
     );
-    assert_ne!(
+    assert_eq!(
         merged_state,
         proto_util::post_state_hash(&cover),
-        "secondary-parent DAG ancestry is not enough to skip the merge"
+        "a valid DAG-covering parent should already contain the secondary parent's effects"
     );
+    assert!(
+        runtime_manager.parents_post_state_cache.is_empty(),
+        "DAG-covering parent fast path should not populate the merge cache"
+    );
+
+    let init_deploy = construct_deploy::source_deploy_now_full(
+        r#"@"main-parent-anchor-cell"!(0)"#.to_string(),
+        None,
+        Some(2),
+        Some(construct_deploy::DEFAULT_SEC.clone()),
+        None,
+        Some(shard_name.clone()),
+    )
+    .expect("Failed to build anchor initialization deploy");
+    let init_raw = block_implicits::get_random_block(
+        Some(3),
+        Some(4),
+        Some(proto_util::post_state_hash(&cover)),
+        Some(StateHash::default()),
+        Some(validator.clone()),
+        Some(1),
+        Some(now_millis()),
+        Some(vec![cover.block_hash.clone()]),
+        Some(Vec::new()),
+        Some(vec![ProcessedDeploy::empty(init_deploy)]),
+        Some(Vec::new()),
+        Some(cover.body.state.bonds.clone()),
+        Some(shard_name.clone()),
+        None,
+    );
+    let init = step_block(
+        &mut block_store,
+        &dag_storage,
+        &mut runtime_manager,
+        &init_raw,
+        validator.clone(),
+        shard_name.clone(),
+        genesis_hash.clone(),
+    )
+    .await
+    .expect("Failed to step anchor initialization block");
+
+    let main_deploy = construct_deploy::source_deploy_now_full(
+        r#"for (@value <- @"main-parent-anchor-cell") { @"main-parent-anchor-cell"!(value + 1) }"#
+            .to_string(),
+        None,
+        Some(3),
+        Some(construct_deploy::DEFAULT_SEC.clone()),
+        None,
+        Some(shard_name.clone()),
+    )
+    .expect("Failed to build main anchor deploy");
+    let main_sig = main_deploy.sig.clone();
+    let main_raw = block_implicits::get_random_block(
+        Some(4),
+        Some(5),
+        Some(proto_util::post_state_hash(&init)),
+        Some(StateHash::default()),
+        Some(validator.clone()),
+        Some(1),
+        Some(now_millis()),
+        Some(vec![init.block_hash.clone()]),
+        Some(Vec::new()),
+        Some(vec![ProcessedDeploy::empty(main_deploy)]),
+        Some(Vec::new()),
+        Some(init.body.state.bonds.clone()),
+        Some(shard_name.clone()),
+        None,
+    );
+    let main = step_block(
+        &mut block_store,
+        &dag_storage,
+        &mut runtime_manager,
+        &main_raw,
+        validator.clone(),
+        shard_name.clone(),
+        genesis_hash.clone(),
+    )
+    .await
+    .expect("Failed to step main anchor block");
+
+    let side_deploy = construct_deploy::source_deploy_now_full(
+        r#"for (@value <- @"main-parent-anchor-cell") { @"main-parent-anchor-cell"!(value + 2) }"#
+            .to_string(),
+        None,
+        Some(3),
+        Some(construct_deploy::DEFAULT_SEC.clone()),
+        None,
+        Some(shard_name.clone()),
+    )
+    .expect("Failed to build side anchor deploy");
+    let side_sig = side_deploy.sig.clone();
+    let side_raw = block_implicits::get_random_block(
+        Some(4),
+        Some(6),
+        Some(proto_util::post_state_hash(&init)),
+        Some(StateHash::default()),
+        Some(validator.clone()),
+        Some(1),
+        Some(now_millis()),
+        Some(vec![init.block_hash.clone()]),
+        Some(Vec::new()),
+        Some(vec![ProcessedDeploy::empty(side_deploy)]),
+        Some(Vec::new()),
+        Some(init.body.state.bonds.clone()),
+        Some(shard_name.clone()),
+        None,
+    );
+    let side = step_block(
+        &mut block_store,
+        &dag_storage,
+        &mut runtime_manager,
+        &side_raw,
+        validator.clone(),
+        shard_name.clone(),
+        genesis_hash.clone(),
+    )
+    .await
+    .expect("Failed to step side anchor block");
+
+    let mut anchor_snapshot = mk_snapshot(
+        dag_storage
+            .get_representation()
+            .expect("dag representation"),
+        validator,
+        shard_name,
+        genesis_hash.clone(),
+    );
+    anchor_snapshot.dag.last_finalized_block_hash = genesis_hash;
+    runtime_manager.parents_post_state_cache.clear();
+    runtime_manager.block_index_cache.clear();
+
+    let (anchored_state, rejected, _rejected_slashes) = compute_parents_post_state(
+        &block_store,
+        vec![main.clone(), side],
+        &anchor_snapshot,
+        &runtime_manager,
+        &std::collections::BTreeMap::new(),
+        None,
+        None,
+    )
+    .await
+    .expect("Failed to compute main-parent anchored state");
+
+    assert_eq!(anchored_state, proto_util::post_state_hash(&main));
+    assert!(rejected.contains(&side_sig));
+    assert!(!rejected.contains(&main_sig));
 }
 
 #[test]

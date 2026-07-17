@@ -79,7 +79,7 @@ const FAULT_TOLERANCE_THRESHOLD_QUERY: &str = r#"
     new ret, rl(`rho:registry:lookup`), posCh in {
       rl!(`rho:system:pos`, *posCh) |
       for (@(_, PoS) <- posCh) {
-        @PoS!("getFaultToleranceThreshold", *ret)
+        @PoS!("getFaultToleranceThresholdPpm", *ret)
       }
     }
 "#;
@@ -98,7 +98,7 @@ pub async fn read_on_chain_fault_tolerance_threshold_ppm(
 
     let ppm = result.first().and_then(RhoNumber::unapply).ok_or_else(|| {
         CasperError::RuntimeError(
-            "PoS getFaultToleranceThreshold returned no value or a non-integer".to_string(),
+            "PoS getFaultToleranceThresholdPpm returned no value or a non-integer".to_string(),
         )
     })?;
 
