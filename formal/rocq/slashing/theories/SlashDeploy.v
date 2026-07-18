@@ -13,6 +13,7 @@
    SlashDeploy             │ SystemDeployEnum::Slash                          │
    sd_target               │ invalid_block_hash → looked up in invalidBlocks   │
    sd_proposer             │ validator_identity.public_key                    │
+   sd_issuer               │ SystemDeployData::Slash.issuer_public_key         │
    sd_seed                 │ generate_slash_deploy_random_seed(self, seqNum, invalid_block_hash) │
    ─────────────────────────────────────────────────────────────────────────
 
@@ -32,7 +33,11 @@ Record SlashDeploy : Type := mkSlashDeploy {
   sd_target_hash  : BlockHash;       (* hash of the offending invalid block *)
   sd_proposer     : Validator;       (* public key of the deployer *)
   sd_target_epoch : nat;             (* validator lifetime/epoch being targeted *)
-  sd_seed         : nat              (* deterministic seed input includes target hash *)
+  sd_seed         : nat;             (* deterministic seed input includes target hash *)
+  sd_issuer       : Validator        (* issuer_public_key carried in the Slash system
+                                        deploy; the §9.8 receive gate rejects a block
+                                        whose slash deploy has sd_issuer ≠ block sender
+                                        (slashing_authorization.rs:425-432) *)
 }.
 
 Definition slash_seed_input

@@ -20,9 +20,15 @@
 EXTENDS Integers, Sequences, FiniteSets, TLC
 
 CONSTANTS
-    Validators,     \* Set of validator identifiers
-    MaxSeqNum,      \* Maximum sequence number any validator may reach
-    MaxBlocksPerSeq \* Bound on how many blocks a validator may sign at one seq
+    Validators,      \* Set of validator identifiers
+    MaxSeqNum,       \* Maximum sequence number any validator may reach
+    MaxBlocksPerSeq, \* Bound on how many blocks a validator may sign at one seq
+    \* FV audit #6 (unbonded-window record pollution fork). Two BOOLEAN model
+    \* selectors gate the bond-status / witness-set machinery so the EXISTING
+    \* detector configs are behaviourally unchanged (both FALSE ⇒ `bonded` stays
+    \* all-TRUE and `recordWitness` stays all-empty, adding NO reachable states):
+    EnableBondDynamics, \* enable Unbond/Rebond (offender bond status may toggle)
+    EnableStampWitness  \* enable StampWitness = the PRE-FIX Detected-arm stamp
 
 VARIABLES
     \* DAG abstraction: blocks(v) is a function seq → set of distinct block IDs
@@ -45,9 +51,22 @@ VARIABLES
     \* Set of (validator, baseSeqNum) pairs for which an EquivocationRecord
     \* has been created.  In the abstract, we assume creation is atomic with
     \* detection; the ConcurrentTracker spec models the locking question.
-    equivocationRecords
+    equivocationRecords,
 
-vars == <<blocks, requestedAsDependency, detectableInView, detectedStatus, equivocationRecords>>
+    \* FV audit #6: offender bond status.  bonded[v] = TRUE iff v is currently
+    \* bonded (has positive stake).  An offender may Unbond then Rebond.
+    bonded,
+
+    \* FV audit #6: the record witness set — the TLA+ image of
+    \* EquivocationRecord.equivocation_detected_block_hashes.  recordWitness[<<v,
+    \* base>>] is the set of observer block IDs stamped into v's record at
+    \* baseSeq `base`.  POST-FIX this stays empty (the unbonded/stake-0 offender
+    \* resolves to Oblivious, so the caller never stamps); PRE-FIX StampWitness
+    \* pollutes it while v is unbonded — the root of the fork.
+    recordWitness
+
+vars == <<blocks, requestedAsDependency, detectableInView, detectedStatus,
+          equivocationRecords, bonded, recordWitness>>
 
 (****************************************************************************)
 (* TypeOK — state-shape invariant                                           *)
@@ -63,6 +82,8 @@ TypeOK ==
     /\ detectedStatus \in [Validators \X (1..MaxSeqNum) \X (1..MaxBlocksPerSeq) ->
                             {"none", "valid", "admissible", "ignorable", "neglected"}]
     /\ equivocationRecords \subseteq (Validators \X (0..MaxSeqNum))
+    /\ bonded \in [Validators -> BOOLEAN]
+    /\ recordWitness \in [(Validators \X (0..MaxSeqNum)) -> SUBSET (1..MaxBlocksPerSeq)]
 
 (****************************************************************************)
 (* Helper: does (v, s) describe a real equivocation in the current DAG?     *)
@@ -83,6 +104,8 @@ Init ==
     /\ detectedStatus =
             [t \in Validators \X (1..MaxSeqNum) \X (1..MaxBlocksPerSeq) |-> "none"]
     /\ equivocationRecords = {}
+    /\ bonded = [v \in Validators |-> TRUE]
+    /\ recordWitness = [k \in (Validators \X (0..MaxSeqNum)) |-> {}]
 
 (****************************************************************************)
 (* Action: validator v signs a (possibly fresh, possibly equivocating)      *)
@@ -95,7 +118,8 @@ SignBlock(v, s, b) ==
     /\ b \notin blocks[v][s]
     /\ blocks' = [blocks EXCEPT
                     ![v] = [@ EXCEPT ![s] = @ \cup {b}]]
-    /\ UNCHANGED <<requestedAsDependency, detectableInView, detectedStatus, equivocationRecords>>
+    /\ UNCHANGED <<requestedAsDependency, detectableInView, detectedStatus,
+                   equivocationRecords, bonded, recordWitness>>
 
 (****************************************************************************)
 (* Action: another block in the DAG cites (v, s, b) in its justifications.  *)
@@ -107,7 +131,8 @@ MarkAsDependency(v, s, b) ==
     /\ requestedAsDependency[<<v, s, b>>] = FALSE
     /\ requestedAsDependency' =
             [requestedAsDependency EXCEPT ![<<v, s, b>>] = TRUE]
-    /\ UNCHANGED <<blocks, detectableInView, detectedStatus, equivocationRecords>>
+    /\ UNCHANGED <<blocks, detectableInView, detectedStatus,
+                   equivocationRecords, bonded, recordWitness>>
 
 (****************************************************************************)
 (* Action: a later block's latest-message view can detect the record.       *)
@@ -119,7 +144,8 @@ MarkDetectableInView(v, s, b) ==
     /\ detectableInView[<<v, s, b>>] = FALSE
     /\ detectableInView' =
             [detectableInView EXCEPT ![<<v, s, b>>] = TRUE]
-    /\ UNCHANGED <<blocks, requestedAsDependency, detectedStatus, equivocationRecords>>
+    /\ UNCHANGED <<blocks, requestedAsDependency, detectedStatus,
+                   equivocationRecords, bonded, recordWitness>>
 
 (****************************************************************************)
 (* Action: detector (re-)classifies an arrival.                             *)
@@ -154,20 +180,81 @@ DetectArrival(v, s, b) ==
            /\ IF new_status = "admissible"
               THEN equivocationRecords' = equivocationRecords \cup {<<v, s - 1>>}
               ELSE equivocationRecords' = equivocationRecords
-    /\ UNCHANGED <<blocks, requestedAsDependency, detectableInView>>
+    /\ UNCHANGED <<blocks, requestedAsDependency, detectableInView, bonded, recordWitness>>
 
 (****************************************************************************)
-(* Action: a later block's latest-message view makes the record detectable. *)
+(* Action: a later block's latest-message view makes the record detectable.  *)
+(*                                                                          *)
+(* FV audit #6 changes, mirroring the post-fix Rust detector:               *)
+(*   - `bonded[v]` guard: neglect is emitted ONLY for a bonded offender.     *)
+(*     In the Rust, EquivocationNeglected comes exclusively from the bonded  *)
+(*     stake>0 branch (equivocation_detector.rs:306); the unbonded/stake-0   *)
+(*     branches now return Oblivious.                                        *)
+(*   - witness disjunct `b \in recordWitness[<<v, s-1>>]`: mirrors the        *)
+(*     equivocation_detected_block_hashes.contains(..) early return           *)
+(*     (:351-356).  POST-FIX recordWitness is empty, so this disjunct never   *)
+(*     fires and neglect requires a genuine detectable-in-view equivocation.  *)
 (****************************************************************************)
 DetectNeglected(v, s, b) ==
     /\ v \in Validators
     /\ s \in 1..MaxSeqNum
     /\ b \in blocks[v][s]
     /\ <<v, s - 1>> \in equivocationRecords
-    /\ detectableInView[<<v, s, b>>] = TRUE
+    /\ bonded[v]
+    /\ ( detectableInView[<<v, s, b>>] = TRUE
+         \/ b \in recordWitness[<<v, s - 1>>] )
     /\ detectedStatus[<<v, s, b>>] # "neglected"
     /\ detectedStatus' = [detectedStatus EXCEPT ![<<v, s, b>>] = "neglected"]
-    /\ UNCHANGED <<blocks, requestedAsDependency, detectableInView, equivocationRecords>>
+    /\ UNCHANGED <<blocks, requestedAsDependency, detectableInView,
+                   equivocationRecords, bonded, recordWitness>>
+
+(****************************************************************************)
+(* FV audit #6 actions: offender bond-status dynamics + the PRE-FIX stamp.   *)
+(****************************************************************************)
+
+\* Unbond an offender.  Guarded by EnableBondDynamics so the existing detector
+\* configs (which set it FALSE) see `bonded` frozen all-TRUE.  A validator that
+\* currently carries a "neglected" verdict does NOT voluntarily unbond (it is
+\* slated for slashing / removal) — this keeps neglect-implies-bonded a genuine
+\* state invariant (Inv_NeglectNotFromUnbondedPollution) rather than a fact only
+\* about the detection instant.
+Unbond(v) ==
+    /\ EnableBondDynamics
+    /\ v \in Validators
+    /\ bonded[v] = TRUE
+    /\ ~(\E ss \in 1..MaxSeqNum, bb \in 1..MaxBlocksPerSeq :
+            detectedStatus[<<v, ss, bb>>] = "neglected")
+    /\ bonded' = [bonded EXCEPT ![v] = FALSE]
+    /\ UNCHANGED <<blocks, requestedAsDependency, detectableInView,
+                   detectedStatus, equivocationRecords, recordWitness>>
+
+\* Re-bond an offender (the fork trigger in the pre-fix: after re-bond the
+\* polluted witness resurrected a spurious neglect).
+Rebond(v) ==
+    /\ EnableBondDynamics
+    /\ v \in Validators
+    /\ bonded[v] = FALSE
+    /\ bonded' = [bonded EXCEPT ![v] = TRUE]
+    /\ UNCHANGED <<blocks, requestedAsDependency, detectableInView,
+                   detectedStatus, equivocationRecords, recordWitness>>
+
+\* PRE-FIX ONLY: the caller's EquivocationDetected arm stamped the currently-
+\* validated observer block hash `b` into the UNBONDED offender's record
+\* (equivocation_detector.rs:213-216, pre-fix).  Guarded by EnableStampWitness:
+\* the POST-FIX model omits it (EnableStampWitness=FALSE) so `recordWitness`
+\* stays empty (the fix); the PRE-FIX model enables it, reproducing the
+\* observation-order-dependent pollution that violates Inv_NoStampAgainstUnbonded.
+StampWitness(v, s, b) ==
+    /\ EnableStampWitness
+    /\ v \in Validators
+    /\ s \in 1..MaxSeqNum
+    /\ b \in 1..MaxBlocksPerSeq
+    /\ <<v, s - 1>> \in equivocationRecords
+    /\ ~bonded[v]
+    /\ b \notin recordWitness[<<v, s - 1>>]
+    /\ recordWitness' = [recordWitness EXCEPT ![<<v, s - 1>>] = @ \cup {b}]
+    /\ UNCHANGED <<blocks, requestedAsDependency, detectableInView,
+                   detectedStatus, equivocationRecords, bonded>>
 
 (****************************************************************************)
 (* Next-state relation                                                      *)
@@ -183,6 +270,10 @@ Next ==
             DetectArrival(v, s, b)
     \/ \E v \in Validators, s \in 1..MaxSeqNum, b \in 1..MaxBlocksPerSeq :
             DetectNeglected(v, s, b)
+    \/ \E v \in Validators : Unbond(v)
+    \/ \E v \in Validators : Rebond(v)
+    \/ \E v \in Validators, s \in 1..MaxSeqNum, b \in 1..MaxBlocksPerSeq :
+            StampWitness(v, s, b)
 
 (****************************************************************************)
 (* Spec = Init ∧ □[Next]_vars ∧ Fairness                                    *)
@@ -216,14 +307,53 @@ Live_DetectionComplete ==
 (****************************************************************************)
 (* Invariant: taxonomy correctness (T-3).                                   *)
 (*                                                                          *)
-(* The set of statuses the detector emits is exactly                        *)
-(*   {valid, admissible, ignorable, neglected} ∪ {none}                     *)
-(* No other variant can leak in.                                            *)
+(* Ranges over the REAL 27-variant InvalidBlock enum                        *)
+(*   (casper/src/rust/block_status.rs) and PINS the 19-element is_slashable  *)
+(* set (block_status.rs:191-236), then asserts:                             *)
+(*   (a) the enum has 27 variants and the slashable set has 19, contained    *)
+(*       in the enum;                                                        *)
+(*   (b) the detector's status set is closed AND every non-valid status the  *)
+(*       detector emits (admissible/ignorable/neglected) maps to a slashable  *)
+(*       InvalidBlock variant.                                              *)
+(* This replaces the prior 5-element status-range-only check (which the      *)
+(* README overclaimed as covering the 17 slashable variants).               *)
 (****************************************************************************)
+InvalidBlockVariants ==
+    { "AdmissibleEquivocation", "IgnorableEquivocation", "NeglectedEquivocation",
+      "NeglectedInvalidBlock", "JustificationRegression", "InvalidParents",
+      "InvalidFollows", "InvalidBlockNumber", "InvalidSequenceNumber",
+      "InvalidShardId", "InvalidRepeatDeploy", "DeployNotSigned",
+      "InvalidTransaction", "InvalidBondsCache", "InvalidBlockHash",
+      "UnauthorizedSlashDeploy", "ContainsExpiredDeploy",
+      "ContainsTimeExpiredDeploy", "ContainsFutureDeploy",
+      "InvalidFormat", "InvalidSignature", "InvalidSender", "InvalidVersion",
+      "InvalidTimestamp", "InvalidRejectedDeploy", "NotOfInterest",
+      "LowDeployCost" }
+
+SlashableVariants ==
+    { "AdmissibleEquivocation", "IgnorableEquivocation", "NeglectedEquivocation",
+      "NeglectedInvalidBlock", "JustificationRegression", "InvalidParents",
+      "InvalidFollows", "InvalidBlockNumber", "InvalidSequenceNumber",
+      "InvalidShardId", "InvalidRepeatDeploy", "DeployNotSigned",
+      "InvalidTransaction", "InvalidBondsCache", "InvalidBlockHash",
+      "UnauthorizedSlashDeploy", "ContainsExpiredDeploy",
+      "ContainsTimeExpiredDeploy", "ContainsFutureDeploy" }
+
+StatusInvalidBlock(st) ==
+    CASE st = "admissible" -> "AdmissibleEquivocation"
+      [] st = "ignorable"  -> "IgnorableEquivocation"
+      [] st = "neglected"  -> "NeglectedEquivocation"
+      [] OTHER             -> "AdmissibleEquivocation"
+
 Inv_TaxonomyCorrect ==
-    \A v \in Validators, s \in 1..MaxSeqNum, b \in 1..MaxBlocksPerSeq :
-        detectedStatus[<<v, s, b>>] \in
-            {"none", "valid", "admissible", "ignorable", "neglected"}
+    /\ Cardinality(InvalidBlockVariants) = 27
+    /\ Cardinality(SlashableVariants) = 19
+    /\ SlashableVariants \subseteq InvalidBlockVariants
+    /\ \A v \in Validators, s \in 1..MaxSeqNum, b \in 1..MaxBlocksPerSeq :
+         /\ detectedStatus[<<v, s, b>>] \in
+              {"none", "valid", "admissible", "ignorable", "neglected"}
+         /\ ( detectedStatus[<<v, s, b>>] \in {"admissible", "ignorable", "neglected"}
+              => StatusInvalidBlock(detectedStatus[<<v, s, b>>]) \in SlashableVariants )
 
 Inv_NeglectedHasDetectableView ==
     \A v \in Validators, s \in 1..MaxSeqNum, b \in 1..MaxBlocksPerSeq :
@@ -343,5 +473,30 @@ Inv_RecordHasWitness ==
         LET v == r[1]
             base == r[2]
         IN  base + 1 \in 1..MaxSeqNum /\ IsRealEquivocation(v, base + 1)
+
+(****************************************************************************)
+(* FV audit #6 invariants (unbonded-window record pollution fork).          *)
+(****************************************************************************)
+
+\* PRIMARY. No witness hash is ever recorded against an UNBONDED offender.
+\* POST-FIX (StampWitness absent) recordWitness is empty, so this holds
+\* trivially.  PRE-FIX (StampWitness present) a stamp lands while the offender
+\* is unbonded, so recordWitness[<<v, base>>] becomes non-empty with
+\* bonded[v] = FALSE — VIOLATING this invariant.  This is the invariant the
+\* pre-fix config must reproduce a counterexample to.
+Inv_NoStampAgainstUnbonded ==
+    \A vk \in DOMAIN recordWitness :
+        ~bonded[vk[1]] => recordWitness[vk] = {}
+
+\* DOWNSTREAM. A "neglected" verdict is never produced from unbonded-window
+\* pollution: it is backed by a genuine detectable-in-view equivocation AND a
+\* currently-bonded offender.  POST-FIX recordWitness is empty, so neglect can
+\* only come from `detectableInView`, and the DetectNeglected `bonded[v]` guard
+\* (together with the Unbond guard that a neglected offender does not unbond)
+\* keeps `bonded[v]` true.
+Inv_NeglectNotFromUnbondedPollution ==
+    \A v \in Validators, s \in 1..MaxSeqNum, b \in 1..MaxBlocksPerSeq :
+        detectedStatus[<<v, s, b>>] = "neglected" =>
+            (bonded[v] /\ detectableInView[<<v, s, b>>] = TRUE)
 
 ============================================================================

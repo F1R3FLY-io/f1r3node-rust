@@ -15,7 +15,7 @@ unreliable under adversarial proposer rotation. Post-fix, every
 ## 2 · Discovery technique
 
 **Primary**: code-walking review of the dispatcher catch-all arm
-(`multi_parent_casper_impl.rs:1090-1099`), which carried the TODO
+(`engine/multi_parent_casper/validation_dispatcher.rs:502-512`), which carried the TODO
 *“Slash block for status except InvalidUnslashableBlock - OLD”*.
 
 **Corroborating**: Sage differential model surfaced 15 distinct

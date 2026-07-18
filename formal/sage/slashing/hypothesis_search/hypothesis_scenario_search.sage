@@ -1719,10 +1719,17 @@ def dag_rust_projection(blocks, validators):
                 neglected = True
                 status_rows.append({"record": list(record_key), "status": "EquivocationNeglected", "children": children})
                 break
+            # FV audit #6 remediation (unbonded-window record pollution fork): an
+            # unbonded/stake-0 offender now resolves to EquivocationOblivious and
+            # records NO witness hash (equivocation_detector.rs:280,311). The stamp
+            # into record["detected_hashes"] is SUPPRESSED, so the witness set stays
+            # empty and a later re-bond cannot resurrect a spurious NeglectedEquivocation
+            # (detectability then rests solely on the deterministic children-count
+            # mechanism). The observation is still surfaced as a report (telemetry),
+            # mirroring the retained tracing::warn! in the Rust detector.
             if detectable and not bonded:
                 reports = reports.union(Set([(sender, offender)]))
-                record["detected_hashes"] = record["detected_hashes"].union(Set([block_hash]))
-                status_rows.append({"record": list(record_key), "status": "EquivocationDetected", "children": children})
+                status_rows.append({"record": list(record_key), "status": "EquivocationOblivious", "children": children})
             else:
                 status_rows.append({"record": list(record_key), "status": "EquivocationOblivious", "children": children})
         key = (sender, int(block["seq"]))
