@@ -20,6 +20,7 @@ block-storage = { path = "../block-storage" }
 casper = { path = "../casper" }
 crypto = { path = "../crypto" }
 dashmap = "6.1"
+parking_lot = "0.12"
 futures = "0.3"
 imbl = "7"
 libfuzzer-sys = { version = "0.4", features = ["arbitrary-derive"] }

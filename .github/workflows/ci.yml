@@ -84,6 +84,48 @@ jobs:
 
           echo "Version: $VERSION | Branch: $BRANCH"
 
+      - name: Verify OCI/system-integration pin consistency
+        shell: bash -euo pipefail {0}
+        run: |
+          # SYSTEM_INTEGRATION_REF and the OCI installer pins are duplicated
+          # because the reusable workflow (_integration-pipeline.yml) cannot
+          # source .github/oci-validation.env at env-resolution time. Fail closed
+          # if any duplicated value drifts, so the secret-bearing launch paths can
+          # never diverge. Keep the key list in sync with those env blocks.
+          env_file=.github/oci-validation.env
+          oci_yml=.github/workflows/oci-validation.yml
+          pipe_yml=.github/workflows/_integration-pipeline.yml
+
+          # value of a `KEY=value` line in a dotenv file
+          envval() { grep -E "^$1=" "$2" | head -1 | cut -d= -f2- | sed -E 's/[[:space:]]*$//'; }
+          # value of a `KEY: "value"` line in a workflow env block (quotes stripped)
+          yval() { grep -E "^[[:space:]]*$1:" "$2" | head -1 | sed -E 's/^[^:]*:[[:space:]]*//; s/[[:space:]]*(#.*)?$//; s/"//g'; }
+
+          fail=0
+          check() { # label expected actual
+            if [ "$2" != "$3" ]; then
+              echo "::error::pin drift for $1: '$2' != '$3'"
+              fail=1
+            else
+              echo "ok: $1 = $2"
+            fi
+          }
+
+          check "SYSTEM_INTEGRATION_REF (oci-validation.env vs _integration-pipeline.yml)" \
+            "$(envval SYSTEM_INTEGRATION_REF "$env_file")" \
+            "$(yval SYSTEM_INTEGRATION_REF "$pipe_yml")"
+
+          for key in OCI_CLI_INSTALLER_URL OCI_CLI_INSTALLER_SHA256 OCI_CLI_INSTALLER_PY_SHA256 OCI_CLI_VERSION; do
+            check "$key (oci-validation.yml vs _integration-pipeline.yml)" \
+              "$(yval "$key" "$oci_yml")" \
+              "$(yval "$key" "$pipe_yml")"
+          done
+
+          if [ "$fail" -ne 0 ]; then
+            echo "::error::OCI/system-integration pins are out of sync across .github files; bump them together."
+            exit 1
+          fi
+
   lint:
     name: Lint
     needs: build_base
@@ -560,6 +602,28 @@ jobs:
           docker rm "$CONTAINER_ID"
           test -f /tmp/artifacts/f1r3node-linux-arm64 || { echo 'arm64 binary extraction failed'; exit 1; }
 
+      - name: Determine release type
+        id: release_type
+        shell: bash -ex {0}
+        run: |
+          # Tag format: refs/tags/v{MAJOR}.{MINOR}.{PATCH}[-prerelease]
+          # A bare vX.Y.0 (no pre-release suffix) is a stable release; any
+          # pre-release suffix or non-zero PATCH is a GitHub prerelease.
+          # Unrecognized tag shapes fail the job rather than defaulting.
+          TAG="${GITHUB_REF#refs/tags/}"
+          if [[ "$TAG" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)(-[0-9A-Za-z.-]+)?$ ]]; then
+            PATCH="${BASH_REMATCH[3]}"
+            PRE="${BASH_REMATCH[4]}"
+            if [ -z "$PRE" ] && [ "$PATCH" = "0" ]; then
+              echo "prerelease=false" >> "$GITHUB_OUTPUT"
+            else
+              echo "prerelease=true" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            echo "::error::Unexpected release tag '$TAG'; expected vMAJOR.MINOR.PATCH[-prerelease]"
+            exit 1
+          fi
+
       - name: Extract release notes for this version
         shell: bash -ex {0}
         run: |
@@ -570,7 +634,7 @@ jobs:
         uses: ncipollo/release-action@v1
         with:
           artifacts: /tmp/artifacts/f1r3node-linux-amd64,/tmp/artifacts/f1r3node-linux-arm64
-          prerelease: false
+          prerelease: ${{ steps.release_type.outputs.prerelease }}
           draft: false
           allowUpdates: true
           omitBodyDuringUpdate: true
