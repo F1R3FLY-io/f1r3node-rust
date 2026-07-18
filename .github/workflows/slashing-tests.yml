@@ -44,6 +44,11 @@ concurrency:
   group: slashing-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
+# No job here needs more than checkout; keep the default token read-only so
+# a compromised third-party action cannot use it to write to the repo.
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-C target-feature=+aes,+sse2"
@@ -177,12 +182,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install Java + TLC
+        # Pinned release + sha256 (same fail-closed pattern as the OCI CLI
+        # installer pin in _integration-pipeline.yml): a moved or compromised
+        # jar fails the checksum instead of running altered code, and TLC
+        # behavior can't drift under us via `latest`. Bump tag + hash together.
+        env:
+          TLA_TOOLS_URL: https://github.com/tlaplus/tlaplus/releases/download/v1.7.4/tla2tools.jar
+          TLA_TOOLS_SHA256: 936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88
         run: |
           sudo apt-get update
           sudo apt-get install -y default-jre wget
           mkdir -p ~/.tla
-          wget -qO ~/.tla/tla2tools.jar \
-            https://github.com/tlaplus/tlaplus/releases/latest/download/tla2tools.jar
+          wget -qO ~/.tla/tla2tools.jar "$TLA_TOOLS_URL"
+          echo "$TLA_TOOLS_SHA256  $HOME/.tla/tla2tools.jar" | sha256sum -c -
       - name: Run TLA+ invariant suite
         env:
           TLA_TOOLS_JAR: /home/runner/.tla/tla2tools.jar
@@ -205,12 +217,37 @@ jobs:
         run: |
           eval $(opam env)
           make -C formal/rocq/slashing -j1
-      - name: Verify no axioms or admits
+      - name: Verify no axioms or admits (textual pre-filter)
         # Line-anchored so prose in comments (e.g. "per the no-Axiom rule")
-        # cannot trip the guard; only actual vernacular commands match.
+        # cannot trip the guard; only actual vernacular commands match. This
+        # is a fast heuristic with known false-negative gaps (mid-line
+        # `Admitted.`, `Admit Obligations.`, axioms pulled in via imports) —
+        # the kernel-level Print Assumptions step below is the authoritative
+        # gate. The explicit -d check keeps a moved/renamed theories/ from
+        # turning grep's exit 2 into a vacuous pass through `!`.
         run: |
+          test -d formal/rocq/slashing/theories
           ! grep -rnE "^[[:space:]]*(Axioms?|Admitted|Parameters?|Conjectures?|Hypothes[ie]s)\b" \
             formal/rocq/slashing/theories/
+      - name: Verify capstone trust base is closed (Print Assumptions)
+        # Authoritative axiom-freedom check per formal/rocq/slashing/README.md
+        # ("Verifying the trust base"): the kernel reports every axiom, admit,
+        # parameter, or imported assumption the capstone theorems transitively
+        # depend on, regardless of where or how it was introduced. Both
+        # capstones must print "Closed under the global context".
+        run: |
+          eval $(opam env)
+          cd formal/rocq/slashing
+          out=$(coqtop -batch -Q theories Slashing \
+            -e 'Require Import Slashing.MainTheorem.' \
+            -e 'Print Assumptions main_bisimilarity_theorem.' \
+            -e 'Print Assumptions main_bisimilarity_strong.' 2>&1)
+          echo "$out"
+          closed=$(grep -c "Closed under the global context" <<<"$out" || true)
+          if [ "$closed" -ne 2 ]; then
+            echo "FAIL: expected 2 closed trust bases, found $closed — capstone depends on axioms/admits listed above."
+            exit 1
+          fi
 
   search-horizon-smoke:
     name: Search-horizon smoke tier (10k fuzz runs)
