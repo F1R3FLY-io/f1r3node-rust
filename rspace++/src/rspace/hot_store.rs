@@ -171,8 +171,8 @@ where
     history_cache_cont_items: AtomicUsize,
     history_cache_data_items: AtomicUsize,
     history_cache_joins_items: AtomicUsize,
-    // Checkpoint path: acquired only by snapshot/changes/set_state/clear which
-    // need a consistent view of all five maps at once. These are called at the
+    // Checkpoint path: acquired only by snapshot/changes/set_state/clear/to_map
+    // which need a consistent view of all five maps at once. These are called at the
     // end of a deploy after all par-branches have joined, so the lock is never
     // contended during normal execution — it only guards the rare whole-state ops.
     checkpoint_lock: std::sync::Mutex<()>,
@@ -629,7 +629,14 @@ where
         [continuations, data, joins].concat()
     }
 
+    // Acquires `checkpoint_lock` for a consistent view of all five maps (see
+    // the field comment). `std::sync::Mutex` is not reentrant, so `to_map` must
+    // not be called while already holding this lock — no current caller does:
+    // the other holders (snapshot/changes/set_state/clear) never call `to_map`,
+    // and every external caller (rspace/replay_rspace/reporting_rspace) delegates
+    // from outside any checkpoint-lock scope.
     fn to_map(&self) -> HashMap<Vec<C>, Row<P, A, K>> {
+        let _guard = self.checkpoint_lock.lock().expect("checkpoint lock");
         let data: HashMap<Vec<C>, Vec<Datum<A>>> = self
             .data
             .iter()
