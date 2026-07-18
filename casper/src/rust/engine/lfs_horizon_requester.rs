@@ -381,9 +381,6 @@ impl<T: HorizonRequesterOps> HorizonStreamProcessor<T> {
             );
         }
 
-        // Parallel fan-out. Same shape as
-        // `lfs_tuple_space_requester::request_next` (Scala:
-        // `broadcastStreams(ids).parJoinUnbounded`).
         let request_futures: Vec<_> = paths
             .iter()
             .map(|path| async move {
@@ -392,7 +389,15 @@ impl<T: HorizonRequesterOps> HorizonStreamProcessor<T> {
                     .await
             })
             .collect();
-        futures::future::try_join_all(request_futures).await?;
+        let results = futures::future::join_all(request_futures).await;
+        let failed = results.iter().filter(|result| result.is_err()).count();
+        if failed > 0 {
+            tracing::warn!(
+                "LFS forward-horizon: {}/{} chunk send(s) failed; paths remain pending for resend",
+                failed,
+                results.len()
+            );
+        }
 
         Ok(())
     }
@@ -415,7 +420,14 @@ pub async fn stream<T: HorizonRequesterOps>(
     request_ops: T,
     mut store_items_message_receiver: mpsc::Receiver<StoreItemsMessage>,
     request_timeout: Duration,
-) -> Result<impl Stream<Item = ST<StatePartPath>>, CasperError> {
+    overall_deadline: Duration,
+) -> Result<
+    (
+        impl Stream<Item = ST<StatePartPath>>,
+        Arc<Mutex<Option<CasperError>>>,
+    ),
+    CasperError,
+> {
     let total_input = horizon_roots.len();
 
     // Pre-filter roots already present (LFB root is the typical hit, since
@@ -499,6 +511,8 @@ pub async fn stream<T: HorizonRequesterOps>(
 
         let mut current_timeout = request_timeout;
         let mut idle_timeout = Box::pin(tokio::time::sleep(current_timeout));
+        let mut last_progress = std::time::Instant::now();
+        let mut last_done: usize = 0;
 
         loop {
             tokio::select! {
@@ -517,6 +531,11 @@ pub async fn stream<T: HorizonRequesterOps>(
                         .lock()
                         .expect("ST lock")
                         .clone();
+                    let done = current_state.done_count();
+                    if done > last_done {
+                        last_done = done;
+                        last_progress = std::time::Instant::now();
+                    }
                     let is_finished = current_state.is_finished();
 
                     if is_finished {
@@ -535,31 +554,46 @@ pub async fn stream<T: HorizonRequesterOps>(
                 }
 
                 Some(resend_flag) = request_rx.recv() => {
-                    if let Err(e) = processor.request_next(resend_flag).await {
-                        tracing::error!(error = ?e, "LFS forward-horizon request processing failed; terminating stream");
-                        *last_error_for_stream.lock().expect("last_error lock") = Some(e);
-                        break;
-                    }
+                    match processor.request_next(resend_flag).await {
+                        Ok(()) => {
+                            let current_state = st_for_stream
+                                .lock()
+                                .expect("ST lock")
+                                .clone();
+                            if current_state.is_finished() {
+                                yield current_state;
+                                break;
+                            }
 
-                    let current_state = st_for_stream
-                        .lock()
-                        .expect("ST lock")
-                        .clone();
-                    if current_state.is_finished() {
-                        yield current_state;
-                        break;
+                            current_timeout = request_timeout;
+                            idle_timeout = Box::pin(tokio::time::sleep(current_timeout));
+                            yield current_state;
+                        }
+                        Err(e) => {
+                            tracing::warn!(error = ?e, "LFS forward-horizon request dispatch error; resend will retry");
+                        }
                     }
-
-                    current_timeout = request_timeout;
-                    idle_timeout = Box::pin(tokio::time::sleep(current_timeout));
-                    yield current_state;
                 }
 
                 _ = &mut idle_timeout => {
+                    let stalled_for = last_progress.elapsed();
+                    if stalled_for >= overall_deadline {
+                        tracing::error!(
+                            "LFS forward-horizon: no progress for {:?} (deadline {:?}); giving up",
+                            stalled_for,
+                            overall_deadline
+                        );
+                        *last_error_for_stream.lock().expect("last_error lock") =
+                            Some(CasperError::RuntimeError(format!(
+                                "LFS forward-horizon: peer made no progress within {:?}",
+                                overall_deadline
+                            )));
+                        break;
+                    }
                     let next_timeout = current_timeout.saturating_mul(2).min(max_request_timeout);
                     tracing::warn!(
-                        "LFS forward-horizon: no responses for {:?}; resending. backoff -> {:?}",
-                        current_timeout, next_timeout
+                        "LFS forward-horizon: no responses for {:?}; resending (stalled {:?} of {:?}). backoff -> {:?}",
+                        current_timeout, stalled_for, overall_deadline, next_timeout
                     );
                     if request_tx.try_send(true).is_err() {
                         tracing::warn!(
@@ -592,9 +626,7 @@ pub async fn stream<T: HorizonRequesterOps>(
     // however, we don't expose it through this stream's public surface.
     // Callers detect failure via `final ST.is_finished() == false`.
     // Specific error context is logged via `tracing::error!` in the loop.
-    let _ = last_error;
-
-    Ok(stream)
+    Ok((stream, last_error))
 }
 
 #[cfg(test)]
@@ -856,13 +888,14 @@ mod tests {
         let (sends, _) = ops.handles();
         let (_tx, rx) = test_mpsc::channel::<StoreItemsMessage>(2);
 
-        let stream = stream(
+        let (stream, _) = stream(
             vec![r1, r2],
             has_root,
             importer,
             ops,
             rx,
             Duration::from_secs(5),
+            Duration::from_secs(60),
         )
         .await
         .unwrap();
@@ -913,13 +946,14 @@ mod tests {
         // doesn't terminate via is_finished.
         drop(tx);
 
-        let stream = stream(
+        let (stream, _) = stream(
             vec![root],
             post_import_has_root,
             importer,
             ops,
             rx,
             Duration::from_secs(5),
+            Duration::from_secs(60),
         )
         .await
         .unwrap();
@@ -948,13 +982,14 @@ mod tests {
             .unwrap();
         drop(tx);
 
-        let stream = stream(
+        let (stream, _) = stream(
             vec![root],
             has_root,
             importer,
             ops,
             rx,
             Duration::from_secs(5),
+            Duration::from_secs(60),
         )
         .await
         .unwrap();
@@ -1028,13 +1063,14 @@ mod tests {
             drop(tx);
         });
 
-        let stream = stream(
+        let (stream, _) = stream(
             vec![root],
             post_import_has_root,
             importer,
             ops,
             rx,
             Duration::from_secs(5),
+            Duration::from_secs(60),
         )
         .await
         .unwrap();
@@ -1066,13 +1102,14 @@ mod tests {
         let (_tx, rx) = test_mpsc::channel::<StoreItemsMessage>(8);
 
         // Launch the stream and let it pump the initial request cycle.
-        let stream = stream(
+        let (stream, _) = stream(
             roots.clone(),
             has_root,
             importer,
             ops,
             rx,
             Duration::from_secs(1),
+            Duration::from_secs(60),
         )
         .await
         .unwrap();
@@ -1165,13 +1202,14 @@ mod tests {
             drop(tx);
         });
 
-        let stream = stream(
+        let (stream, _) = stream(
             vec![r1.clone(), r2.clone()],
             has_root,
             importer,
             ops,
             rx,
             Duration::from_secs(5),
+            Duration::from_secs(60),
         )
         .await
         .unwrap();

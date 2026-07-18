@@ -125,12 +125,29 @@ Theorem merge_algebra_netting_correct :
    /\ (forall l1 l2, Permutation l1 l2 -> vunion_fold l1 = vunion_fold l2)
    /\ (forall canon, (forall l l', Permutation l l' -> canon l = canon l') ->
         forall l l', Permutation l l' -> deployed_fold canon l = deployed_fold canon l')
-   /\ (forall c, net (cancel c) = net c)).
+   /\ (forall c, net (cancel c) = net c))
+  /\
+  (* (e) GENUINE order-independence under the OrderDependenceGuard (the new
+     runtime guard in casper/src/rust/merging/conflict_set_merger.rs). On a
+     NON-mergeable channel where the guard does NOT trip -- i.e. no datum is
+     contributed to a side (added or removed) by >= 2 distinct survivors, so the
+     per-datum contribution list has `adds l <= 1 /\ rems l <= 1` -- the shipped
+     `combine_max` fold is order-independent over EVERY permutation, STRONGER than
+     the canonical-order determinism of (d). Lemma 1: the identity-canon fold
+     equals the single DEFERRED cancel of the sum-net; Lemma 2 (the headline):
+     hence the fold is permutation-invariant. Finding A (b) is rendered benign
+     here not by the canonical order but by the guard's no-duplicate precondition. *)
+  ((forall l, adds l <= 1 -> rems l <= 1 ->
+       deployed_fold (fun x => x) l = cancel (netting_fold l))
+   /\ (forall l l', Permutation l l' -> adds l <= 1 -> rems l <= 1 ->
+       deployed_fold (fun x => x) l = deployed_fold (fun x => x) l')).
 Proof.
   exact (conj combine_max_comm
           (conj combine_not_assoc_exhibit
             (conj channel_netting_fixed_deterministic
-              channel_netting_deployed_deterministic))).
+              (conj channel_netting_deployed_deterministic
+                (conj deployed_fold_id_eq_cancel_netting
+                  combine_max_order_independent_under_no_dup))))).
 Qed.
 
 (* ===========================================================================

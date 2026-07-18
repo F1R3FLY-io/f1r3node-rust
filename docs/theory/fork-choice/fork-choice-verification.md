@@ -51,7 +51,7 @@ fork choice.
 | scores | `estimator.rs:203-276` (`build_scores_map`); `proto_util.rs:160-193` (`weight_from_validator_by_dag`) |
 | rank | `estimator.rs:278-345` (`rank_forkchoices` + `replace_block_hash_with_children` + `still_same`); `list_ops.rs:44-67` (total tie-break) |
 | depth + count cut | `estimator.rs:108-116,121-170` (`filter_deep_parents`, `take`) |
-| consumers | `snapshot.rs:115-142` (main-parent, proposer); `validate.rs:922` (bound check, **not** recompute) |
+| consumers | `snapshot.rs:317-337` (main-parent, proposer — **two stages**: the ghost head `:317-323` + `(is_main DESC, hash ASC)` sort `:325-331`, then the deploy-support promotion `:332` → `:124-185`); `validate.rs:922` (bound check, **not** recompute) |
 
 Key source files:
 
@@ -96,8 +96,8 @@ convergence-test envelope, so a green gate would miss them):
 | ID | Sev | Evidence | Finding |
 |---|---|---|---|
 | **B1** | Med | `proto_util.rs:168,176` `.expect(...)` | Panics on the fork-choice BFS when a traversed block or its main parent is momentarily absent (sync/prune window). |
-| **B2** | Low | `estimator.rs:115` `take(.. as usize)`; `casper.rs:56` | The `-1` config "unlimited" sentinel reaches the estimator and only worked via `-1 as usize` wrap; two sentinels (`-1`, `i32::MAX`) silently conflated. |
-| **B3** | Low | `estimator.rs:251` `+=` | Unchecked score accumulation; wraps only above `i64::MAX` (a supply-cap violation). |
+| **B2** | Low | `estimator.rs:120-127` `take(.. as usize)`; `casper.rs:56` | The `-1` config "unlimited" sentinel reaches the estimator and only worked via `-1 as usize` wrap; two sentinels (`-1`, `i32::MAX`) silently conflated. |
+| **B3** | Low | `estimator.rs:267-268` (now `checked_add`; was `+=`) | Unchecked score accumulation; wraps only above `i64::MAX` (a supply-cap violation). |
 | **B4** | — | `estimator.rs:144-150` | Already hardened (P2-8 typed `Err` on empty tips); modeled, not re-fixed. |
 
 ---
@@ -128,21 +128,21 @@ Every catalog item maps to a concrete artifact — no "assumed"/"prose-only" row
 
 | ID | Property | Mechanized / checked in |
 |---|---|---|
-| **T-DET** | same `(DAG, latest_messages)` ⟹ identical `(tips, lca, main_parent)` (S1) | Rocq `MainTheorem.fork_choice_determinism_correct`; TLA⁺ `ForkChoice.Inv_Deterministic` |
+| **T-DET** | same `(DAG, latest_messages)` ⟹ identical `(tips, lca, main_parent)` (S1) | Rocq `MainTheorem.fork_choice_determinism_correct`; TLA⁺ `ForkChoice.Inv_Deterministic`; Rust `fork_choice_determinism_correct` (example: the flipping DAG returns `[b8, b7]` for every latest-message map order) + `fork_choice_determinism_over_subsets` (proptest: identical tips across rebuilds of any latest-message sub-relation) (`prop_estimator_determinism.rs`) |
 | **T-TOTAL** | tie-break is a total order on distinct hashes ⟹ unique argmax | Rocq `TieBreak.sort_total_order`, `output_indep_of_input_perm`; Z3 `tiebreak_total_order.py`; Rust `tie_break_is_total_shuffle_invariant_on_distinct` |
-| **T-SCORE** | score accumulation additive/order-independent | Rocq `Score.score_perm_invariant`, `score_eq_support_sum`; Z3 `score_supply_cap_bitvec.py`; Sage `forkchoice_algebra.sage` |
+| **T-SCORE** | score accumulation additive/order-independent | Rocq `Score.score_perm_invariant`, `score_eq_support_sum`; Z3 `score_supply_cap_bitvec.py`; Sage `forkchoice_algebra.sage`; Rust `score_perm_invariant` (proptest: permuting the latest-message order never changes the tips — the score monoid's only observable consequence, `prop_estimator_determinism.rs`) |
 | **weight purity** | weights are block-structural `i64` (no `f32`, no node-local view) | Rocq `Score.weight_is_pure` + `GuardBridge.weight_block_structural` |
-| **T-FILTER** | slashed/invalid latest messages add zero weight (S2) | Rocq `Filter.invalid_excluded` (cites slashing `ForkChoice.v`) |
-| **T-GHOST** | ranking returns the heaviest-subtree leaf | Rocq `Rank.rank_selects_heaviest`, `rank_head_is_argmax`; Wolfram `ghost_heaviest_subtree.wl` |
+| **T-FILTER** | slashed/invalid latest messages add zero weight (S2) | Rocq `Filter.invalid_excluded` (cites slashing `ForkChoice.v`); Rust `filter_t10_invalid_latest_message_excluded` (the real `Estimator` + a DAG-flagged invalid latest message: excluded ⇒ tips identical to omitting it, `prop_estimator_determinism.rs`) |
+| **T-GHOST** | ranking returns the heaviest-subtree leaf | Rocq `Rank.rank_selects_heaviest`, `rank_head_is_argmax`; Wolfram `ghost_heaviest_subtree.wl`; Rust **proptest** `ghost_ranked_tips_are_heaviest_subtree_argmax` (`prop_ghost_argmax.rs`: on RANDOM weighted fork DAGs the real `Estimator`'s ranked tips equal the branches ordered heaviest-subtree-first `(score DESC, hash ASC)`, led by the GHOST argmax, checked against an independent stake-sum oracle) |
 | **T-TERM** | `rank_forkchoices` terminates | Rocq `Rank.rank_terminates`; Wolfram (measure monotone) |
-| **T-LCA** | LCA is a common ancestor (modeled from the fold; termination proved); depth filter deterministic (S6) | Rocq `Lca.lca_is_common_ancestor` (+ `lcua_many_common_ancestor`, `reduce_converges`, `lca_is_lowest` — §6.1), `lca_depth_filter_deterministic`, `lca_empty_is_genesis`; TLA⁺ `ForkChoiceScan.Inv_LcaDeterministic` |
+| **T-LCA** | LCA is a common ancestor (modeled from the fold; termination proved); depth filter deterministic (S6) | Rocq `Lca.lca_is_common_ancestor` (+ `lcua_many_common_ancestor`, `reduce_converges`, `lca_is_lowest` — §6.1), `lca_depth_filter_deterministic`, `lca_empty_is_genesis`; TLA⁺ `ForkChoiceScan.Inv_LcaDeterministic`; Rust proptests `reduce_converges`, `lca_is_common_ancestor`, `lcua_many_is_max`, `lca_single_and_genesis_boundary` (`prop_lca.rs`: the real `DagOperations::lowest_universal_common_ancestor_many` on random DAGs converges, is a common ancestor of every input, and is the lowest such on trees) |
 | **T-BOUND** | count/depth/`i32::MAX` truncations keep the head, never panic (S3/S4) | Rocq `Bound.head_preserved`, `take_never_drops_head`, `empty_tips_typed_err`; Rust `filter_deep_parents` tests |
 | **B1** | missing metadata ⟹ typed error, not panic (S4) | Rust `weight_from_validator_missing_parent_is_typed_err`; bridged by `GuardBridge.weight_block_structural` |
 | **B3** | score overflow ⟹ typed error, not wrap (S5) | Rust (`checked_add`); Z3 `score_supply_cap_bitvec.py` |
-| **T-MP** | main-parent selection deterministic + consistent | Rocq `GuardBridge.main_parent_first_deterministic` |
-| **T-VALID (reframed)** | honest proposer's parents pass `Validate::parents` (not a recompute) | Rocq `GuardBridge.honest_forkchoice_parents_validate`; `derive` in `validate.rs:922` |
+| **T-MP** | main-parent selection is a **deterministic pure function** of `(dag, parents, last_finalized_block)` — **not** the GHOST argmax (see §6.2) | Rocq `GuardBridge.main_parent_pipeline_deterministic` (+ `main_parent_pipeline_permutation`, `dbetter_strict_total_order`, `dbest_hash_perm_invariant`); the old "= ghost head" claim is **refuted by computation** in `GuardBridge.pipeline_head_may_differ_from_ghost`. Rust: `main_parent_is_ghost_head_deterministic` (`prop_ghost_argmax.rs`: `tips[0]` is the heaviest branch, stable across every latest-message map order — this is the ESTIMATOR, still true) + `deploy_support_*` proptests in `snapshot.rs`'s in-module `mod tests` (the real `prefer_deploy_support_main_parent`: permutation-preserving, unique-argmax, strict-total-order) |
+| **T-VALID (reframed)** | honest proposer's parents pass `Validate::parents` (not a recompute) | Rocq `GuardBridge.honest_forkchoice_parents_validate`, derived against the real predicate — `parents` (`validate.rs:945`), which bound-checks count/depth/progress and never recomputes the estimator (§6) |
 | **T-WF (bridge)** | block validation ⟹ acyclic, height-monotone DAG (the premise the proofs derive) | Rocq `GuardBridge.validation_implies_wf_dag` |
-| **T-ROOT (bridge)** | block validation ⟹ single-rooted DAG (exactly one parentless block = the approved genesis); `single_root` DERIVED, not assumed | Rocq `GuardBridge.validation_implies_single_root` (models `validate.rs::justification_follows` :1135-1139 rejecting every other parentless block as `InvalidParents`; genesis admitted via the signed approved-block path `initializing.rs:832-840`) |
+| **T-ROOT (bridge)** | block validation ⟹ single-rooted DAG (exactly one parentless block = the approved genesis); `single_root` DERIVED, not assumed | Rocq `GuardBridge.validation_implies_single_root` (models `justification_follows` rejecting every other parentless block as `InvalidParents` — `validate.rs:1159-1162`; genesis admitted via the signed approved-block path `Validate::approved_block`, `initializing.rs:441`) |
 | **capstone** | all of the above, axiom-free | Rocq `MainTheorem.fork_choice_{determinism,ghost,bound,bridge}_correct` |
 
 ---
@@ -165,7 +165,7 @@ each round (no effect-application/idempotence concern).
 | `Lca.v` | Foundation | `lcua_many` fold + `reduce_converges` (lex-measure termination); `lca_is_common_ancestor` (from the fold, no circular premise), `lca_is_lowest`, `lca_depth_filter_deterministic`, `lca_empty_is_genesis` |
 | `Rank.v` | Foundation, Score, TieBreak | `rank_terminates`, `rank_selects_heaviest`, `still_same_fixpoint` |
 | `Bound.v` | Foundation, Rank | `head_preserved`, `take_never_drops_head`, `cast_usize_safe`, `empty_tips_typed_err` |
-| `GuardBridge.v` | Foundation, Rank, Bound, Filter, Lca | the Rust-enforced seams: `validation_implies_wf_dag`, `validation_implies_single_root` (approved-genesis pin ⟹ `single_root`, DERIVED), `weight_block_structural`, `main_parent_first_deterministic`, `honest_forkchoice_parents_validate`; and `lca_is_common_ancestor_validated` (the capstone-facing LCA property with `single_root` DERIVED) |
+| `GuardBridge.v` | Foundation, Rank, Bound, Filter, Lca | the Rust-enforced seams: `validation_implies_wf_dag`, `validation_implies_single_root` (approved-genesis pin ⟹ `single_root`, DERIVED), `weight_block_structural`, `honest_forkchoice_parents_validate`; the **two-stage** main-parent pipeline (§6.2) — `ghost_sort_first_deterministic` (stage 1; formerly `main_parent_first_deterministic`, kept as a deprecated alias), `dbetter_strict_total_order`, `dbest_hash_perm_invariant`, `main_parent_pipeline_{permutation,deterministic}`, `pipeline_head_may_differ_from_ghost`; and `lca_is_common_ancestor_validated` (the capstone-facing LCA property with `single_root` DERIVED) |
 | `MainTheorem.v` | all | capstones `fork_choice_{determinism,ghost,bound,bridge}_correct` |
 
 Build (memory-capped, 32 GB envelope):
@@ -252,8 +252,8 @@ uc_17}`), and `three_writers_converge_under_load` exercise the estimator end-to-
 
 The intuitive property "a validator recomputes the same fork-choice the proposer used"
 is **false to the code** and must not be asserted. `validate.rs` contains no estimator
-recomputation; `Validate::parents` (`:922`) checks only parent count, depth, and
-progress, and `snapshot.rs:124-126` states it: *"validators replay declared parents, not
+recomputation; `Validate::parents` (`:945`) checks only parent count, depth, and
+progress, and `snapshot.rs:315` states it: *"validators replay declared parents, not
 fork-choice."* The `ghost_main_parent` is computed **proposer-side** only. The honest
 bridge (the finalized-floor GuardBridge lesson: bridge the seam the Rust *enforces*, do
 not assume a premise it doesn't) is therefore:
@@ -338,6 +338,64 @@ never axioms — every headline result is `Print Assumptions` Closed.
 
 ---
 
+### 6.2 The main parent is **not** the GHOST head — REMODELED
+
+A second design boundary of the same shape as §6's T-VALID reframe: the model claimed
+something **stronger than the code does**, and the fix is to weaken the model to the true
+statement — not to weaken the code.
+
+**The drift.** Seam (3) formerly read *"`snapshot.rs` (:136-142) orders parents by
+(is_main DESC, hash ASC); that is a TOTAL order, so the ordering is deterministic"*, and
+modeled the main parent as the **GHOST head**. Both the line citation and the claim are
+now stale: `snapshot.rs` builds the parent list in **two** stages.
+
+| Stage | Code | What it does |
+|---|---|---|
+| 1a | `snapshot.rs:317-323` | `ghost_main_parent = estimator.tips_with_latest_messages(..).tips.into_iter().next()` — the GHOST head |
+| 1b | `snapshot.rs:325-331` | `sort_by` on `(is_main DESC, hash ASC)` — **this is the sort the model cited**, now at `:325-331`, not `:136-142` |
+| 2 | `snapshot.rs:332` → `:124-185` | `prefer_deploy_support_main_parent` scores each parent **branch** by unfinalized user-deploy support and, if a best exists, `remove(best_idx)` + `insert(0, _)` (`:173-174`) — **promoting it over the ghost head** |
+
+So *"the block's main parent = the GHOST argmax"* is **false for the proposer**. This is
+not an opinion: `GuardBridge.pipeline_head_may_differ_from_ghost` **refutes it by
+computation** (ghost head `0`, parents `{0,1}`, branch `1` carrying a deploy ⟹ the
+pipeline yields `[1;0]`, main parent `1 ≠ 0`).
+
+**What is *not* affected.** `Rank.rank_selects_heaviest` / `rank_head_is_argmax` /
+**T-GHOST** are untouched — the `Estimator` still returns the heaviest subtree. Only the
+**consumer** of `tips[0]` re-orders afterwards.
+
+**The true (weaker) statement, now proved axiom-free.** The main parent is a
+**deterministic pure function of `(dag, parents, last_finalized_block)`**:
+
+| Claim | Theorem | Content |
+|---|---|---|
+| (a) permutation | `main_parent_pipeline_permutation` (via `promote_permutation`) | `remove(i)` + `insert(0,_)` is a permutation, so the parent **multiset** is preserved — no parent lost or duplicated |
+| (b) strict total order | `dbetter_strict_total_order` | `better_deploy_branch_score` (`:48-70`) is irreflexive, asymmetric, transitive, and total on distinct hashes — lex on `(deploy_sig_count, latest_deploy_block_number, root_block_number)` then **hash ASC** (the `:68` comparison is reversed, so the *smaller* hash wins) |
+| (c) determinism | `dbest_hash_perm_invariant`, `main_parent_pipeline_deterministic` | from (b) the argmax is **unique**, so *which* branch is promoted is scan-order independent; and the whole pipeline output is invariant under input permutation |
+| (d) soundness | documented link to `finalized_floor/theories/Selection.v:196` `T_PS` | `T_PS` proves floor safety for an **unconstrained parent oracle** (`∀ parents`), so a reordered list is already inside the modeled domain; with (a) the promotion changes only the **order**, never the **set** |
+
+> **Why the composition is load-bearing.** Stage 2 **alone is not** permutation-invariant:
+> when *no* branch scores it returns `parents` **unchanged** (`:163-165`), so its head is
+> then simply whatever came first. Determinism rests on stage 1 **canonicalizing** the list
+> before stage 2 runs. That is precisely why the model composes the two stages rather than
+> asserting stage 2 is order-invariant on its own — and why the Rust proptests below
+> assert argmax-invariance **conditioned on a scored branch existing**, plus whole-pipeline
+> invariance for the composed pipeline.
+
+**Had (b) failed**, the promotion would have been a genuine consensus non-determinism
+bug (two honest proposers scanning the same parents in different `HashSet` orders could
+promote different branches). It holds, so this is a **model-update** obligation, not a
+safety regression.
+
+**Naming.** The old theorem is still true **of stage 1 alone** and is retained, renamed
+`ghost_sort_first_deterministic`; the former name `main_parent_first_deterministic` is
+kept as a **deprecated alias** so `MainTheorem.fork_choice_bridge_correct` clause (c)
+compiles unchanged. Recommended follow-up: retarget `MainTheorem.v:36/:184` at
+`ghost_sort_first_deterministic` and add `main_parent_pipeline_deterministic` as a fifth
+bridge clause.
+
+---
+
 ## 7. Verification status
 
 Run the whole suite with `scripts/check-fork-choice-ALL.sh` (Rocq authoritative;
@@ -351,7 +409,7 @@ TLA⁺/Z3/Sage/Wolfram fail-soft; PlantUML render check). Target result: **ALL G
 | Rocq kernel (coqchk) | **independent kernel re-check** of `ForkChoice.MainTheorem` + all deps ⇒ "Modules were successfully checked" (C3 — the trust root under the `Print Assumptions` claim) |
 | TLA⁺ | `MC_ForkChoice.cfg` + `MC_ForkChoiceScan.cfg` pass; both bug cfgs reproduce their counterexample |
 | Apalache (unbounded) | **`IndInv = TypeOK ∧ Inv_Deterministic ∧ Inv_HeaviestSubtree` proved INDUCTIVE** (BASE `Init ⊨ IndInv` + STEP `Next` preserves `IndInv`) on `ForkChoice_apalache.tla` — over **all of ℤ scores** (native SMT `Int`, strictly beyond TLC's `MaxScore=2`); non-vacuous (`TotalTieBreak=FALSE` ⇒ STEP CTI = the S1 fork). Horizon-free: holds on every reachable state at any trajectory length (C9). Fail-soft. |
-| Rust proptest | **C12** proposer-side `prop_filter_deep_parents` (4/4: `Estimator::filter_deep_parents` ⊨ `GuardBridge.within_depth`/`prop_filter` — soundness + main-parent-retention + completeness + `retained == {main} ∪ prop_filter(secondaries)`) **+ receive-side** `Validate::parents` depth-horizon (accept within / reject beyond / buffer extends); `prop_estimator_determinism` (permutation-invariant tips + score-monoid + T-10 filter); `prop_lca` (LUCA converges / common-ancestor / maximal); `prop_bound` (B2/B3/B4 sentinel/overflow/empty seams); tie-break `sort_by_with_decreasing_order` (perm-invariant + permutation + argmax-unique) — all pass |
+| Rust proptest | **C12** proposer-side `prop_filter_deep_parents` (4/4: `Estimator::filter_deep_parents` ⊨ `GuardBridge.within_depth`/`prop_filter` — soundness + main-parent-retention + completeness + `retained == {main} ∪ prop_filter(secondaries)`) **+ receive-side** `Validate::parents` depth-horizon (accept within / reject beyond / buffer extends); `prop_estimator_determinism` (permutation-invariant tips + score-monoid + T-10 filter); `prop_ghost_argmax` (**T-GHOST** ranked tips = heaviest-subtree argmax on random weighted forks + **T-MP** main-parent `tips[0]` deterministic + heaviest); `prop_lca` (LUCA converges / common-ancestor / maximal); `prop_bound` (B2/B3/B4 sentinel/overflow/empty seams); tie-break `sort_by_with_decreasing_order` (perm-invariant + permutation + argmax-unique) — all pass |
 | Z3 | tie-break total order (5/5) + score supply-cap BitVec (4/4) |
 | Sage | fork-choice algebra ⇒ `ALL PASS` |
 | Wolfram | GHOST heaviest-subtree / termination / LCA-bound — via the licensed MCP evaluator |

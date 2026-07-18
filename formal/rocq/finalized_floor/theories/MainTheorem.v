@@ -179,7 +179,7 @@ Close Scope Z_scope.
    Strengthens the A9 (ftexact) capstone at its one un-modelled seam: the SOURCING
    of the threshold numerator θ_ppm. A9 proves the decision is exact GIVEN θ_ppm;
    this proves θ_ppm is a pure function of the on-chain value (the unconditional
-   override at engine/initializing.rs:1099), so local config cannot drive a fork,
+   override at casper.rs:242), so local config cannot drive a fork,
    AND that the exact decision is i128-overflow-free across the node's FULL
    validated ppm range num ∈ [-den, den] (the token_metadata_check.rs:105 range,
    including the negative-θ sentinels) — not just the narrower [0, den].

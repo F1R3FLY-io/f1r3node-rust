@@ -58,7 +58,7 @@ withdrawal arm (line 619). Bug #10's theorem set
 >
 > | Bug | Theorem | Production location                                                  |
 > |-----|---------|----------------------------------------------------------------------|
-> | #1  | T-9.1   | `block_status.rs:183` — `IgnorableEquivocation` in `is_slashable()`  |
+> | #1  | T-9.1   | `block_status.rs:216` — `IgnorableEquivocation` in `is_slashable()`  |
 > | #2  | T-9.2   | `engine/multi_parent_casper/validation_dispatcher.rs:459` — RMW via `access_equivocations_tracker` |
 > | #3  | T-9.3   | `engine/multi_parent_casper/validation_dispatcher.rs:502` — `status if status.is_slashable()` catch-all |
 > | #4  | T-9.4   | `PoS.rhox:449-515` — `match transferResult` with deterministic failure |
@@ -66,7 +66,7 @@ withdrawal arm (line 619). Bug #10's theorem set
 > | #6  | T-9.6   | `validate.rs:1247-1319` — self-regression filter dropped             |
 > | #7  | T-9.7   | `equivocation_detector.rs` — canonical self-chain child above base    |
 > | #8  | T-9.8   | `block_creator.rs:498-533` — proposer-bond early-return              |
-> | #9  | T-9.9   | `validate.rs:1323-1366` — `has_slash_system_deploys` widening        |
+> | #9  | T-9.9   | `validate.rs:1448-1449` — per-target `slash_targets` exemption (§9.10) |
 > | #10 | T-9.10  | `PoS.rhox:615-651` — `payWithdraw` pattern-match + success-gated `computeRemove` |
 > | #11 | T-9.11  | `equivocation_detector.rs` — total deterministic traversal with distinct child hashes |
 >
@@ -382,10 +382,42 @@ rejects.
 **Cause.** Scala `Validate.scala:727-731` rejects a block whenever
 `neglectedInvalidJustification = ⊤`, even if the block itself
 carries a `Slash` system deploy targeting the offender. Rust's
-`validate.rs:1323-1366` adds an extra branch
-`if neglectedInvalidJustification ∧ ¬ has_slash_system_deploys`
-that *admits* self-correcting blocks. The Scala behavior is a bug;
-the Rust widening is correct.
+`neglected_invalid_block` (`validate.rs:1346`) instead rejects only
+when a neglected justification still *requires* a slash that the block
+does not itself issue (`validate.rs:1448-1449`), so self-correcting
+blocks are *admitted*. The Scala behavior is a bug; the Rust widening
+is correct.
+
+**Exemption granularity — refined by the 2026-07-15 dev merge.** The
+widening was originally a **block-level** predicate: reject iff
+`neglectedInvalidJustification ∧ ¬ has_slash_system_deploys(b)`, true of
+*any* `Slash` system deploy in `b` — the abstraction the Rocq model
+carries as `hs` (mapped to the Rust name by the model↔code table in
+`Block.v`'s module header). The current code refines it to a
+**per-target** exemption: the block first collects the `slash_targets`
+(`validate.rs:1365`) that its own *authorized* slash deploys cover, each
+keyed by `slash_target_key` (`validate.rs:1412`), and excuses a neglected
+justification only when *that offender's* key is present — the
+`slash_targets` membership test at `validate.rs:1448-1449`.
+
+The identifier `has_slash_system_deploys` still exists (`validate.rs:962`),
+but it now governs a different check: the empty-block progress gate,
+where `has_slash_system_deploys` is one disjunct (`validate.rs:1099`).
+It no longer appears on the neglected-invalid-block path.
+
+T-9.9 itself is unaffected. `rejects_neglected_post_fix` (`BugFixSelfRegression.v:99`)
+is **parametric** in its slash flag — it fixes only the shape `hn ∧ ¬hs`
+and says nothing about how that flag is computed — so the theorem holds
+under either reading, and the widening claim (post-fix admits strictly
+more than Scala) still holds: a block that slashes exactly the offender
+it neglects is admitted by Rust and rejected by Scala. What the dev merge
+changes is the **binding**: the model↔code table in `Block.v`'s module
+header still maps the model's flag to the Rust name
+`has_slash_system_deploys`, which no longer implements this path. The
+per-target reading is in fact the intended one — the theorem's own gloss
+is *"lacks a **corresponding** slash deploy"*. Re-pointing that mapping
+table at the `slash_targets` test is a documentation-level follow-up; no
+proof changes.
 
 **Pre-fix Scala behavior.** Block B that cites A's invalid block
 *and* attaches `SlashDeploy(b, A)` is rejected — B must wait for

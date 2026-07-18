@@ -18,7 +18,7 @@
    blk_main_parent   | main-parent, spine <|      | parents_hash_list[0]
    blk_parents       | parents(B), DAG <=         | b.header.parents_hash_list
    walk_spine        | parent_frontier main walk  | floor.rs:291-350 (main loop)
-   spine_walk_terminates | T-TERM (finite spine)  | floor.rs:33 DEEP_WALK_WARN
+   spine_walk_terminates | T-TERM (finite spine)  | floor.rs:60 DEEP_WALK_WARN
    ---------------------------------------------------------------------------
 
    Companion doc: docs/theory/finalized-floor/finalized-floor-verification.md
@@ -172,7 +172,7 @@ Qed.
    main-parent spine is finite and the floor derivation's descent (which H2
    makes O(Delta^2) but which is nonetheless finite) always terminates. The
    height blk_num b is a concrete termination bound - the DEEP_WALK_WARN
-   threshold in floor.rs:33 is thus visibility-only, never a correctness cap.
+   threshold in floor.rs:60 is thus visibility-only, never a correctness cap.
    =========================================================================== *)
 
 Theorem spine_walk_terminates :

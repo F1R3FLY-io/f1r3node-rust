@@ -40,6 +40,7 @@ jobs:
       should_run: ${{ steps.resolve.outputs.should_run }}
       duration_seconds: ${{ steps.resolve.outputs.duration_seconds }}
       target_ref: ${{ steps.resolve.outputs.target_ref }}
+      run_benchmarks: ${{ steps.resolve.outputs.run_benchmarks }}
     steps:
       - name: Resolve schedule
         id: resolve
@@ -70,10 +71,15 @@ jobs:
               duration_seconds=259200
             fi
           fi
+          run_benchmarks=false
+          if [ "$duration_seconds" = "259200" ]; then
+            run_benchmarks=true
+          fi
           {
             echo "should_run=$should_run"
             echo "duration_seconds=$duration_seconds"
             echo "target_ref=$target_ref"
+            echo "run_benchmarks=$run_benchmarks"
           } >> "$GITHUB_OUTPUT"
 
   launch_runner:
@@ -220,9 +226,42 @@ jobs:
           SOAK_OUTPUT_DIR: /tmp/merge-recovery-soak
           SOAK_TARGET_REF: ${{ needs.schedule_gate.outputs.target_ref }}
           SOAK_TARGET_SHA: ${{ steps.target.outputs.sha }}
+          SOAK_RUN_BENCHMARKS: ${{ needs.schedule_gate.outputs.run_benchmarks }}
+          SOAK_NODE_REPO_DIR: ${{ github.workspace }}/node-under-test
           SYSTEM_INTEGRATION_DIR: ${{ github.workspace }}/system-integration
         shell: bash -e {0}
         run: ci-control/scripts/run-merge-recovery-soak.sh
+
+      - name: Aggregate weekly report + verdict
+        if: always() && needs.schedule_gate.outputs.run_benchmarks == 'true'
+        shell: bash -euo pipefail {0}
+        env:
+          SOAK_DIR: /tmp/merge-recovery-soak
+          OUT_DIR: /tmp/merge-recovery-soak/report
+          RUN_ID: ${{ github.run_id }}
+          DURATION_SECONDS: ${{ needs.schedule_gate.outputs.duration_seconds }}
+          DASHBOARD_URL: https://f1r3fly-io.github.io/f1r3node-rust/
+        run: |
+          curl -fsS --max-time 30 "${DASHBOARD_URL}data/latest-summary.json" \
+            -o /tmp/soak-baseline.json 2>/dev/null \
+            && export BASELINE_JSON=/tmp/soak-baseline.json \
+            || echo "no published baseline yet (bootstrap run)"
+          ci-control/scripts/bench/aggregate-perf-report.sh
+          cat "$OUT_DIR/perf-report.md" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish ONS alert email
+        if: always() && needs.schedule_gate.outputs.run_benchmarks == 'true'
+        shell: bash -e {0}
+        env:
+          REPORT_DIR: /tmp/merge-recovery-soak/report
+          ONS_TOPIC_OCID: ${{ vars.SOAK_ONS_TOPIC_OCID }}
+          DASHBOARD_URL: https://f1r3fly-io.github.io/f1r3node-rust/
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          # Instance-principal auth: works only on the OCI runner, no secrets.
+          # Notification failure must never mask the soak result.
+          ci-control/scripts/oci/publish-soak-alert.sh || \
+            echo "::warning::ONS alert publish failed (non-fatal)"
 
       - name: Upload soak results
         if: always()
@@ -231,3 +270,70 @@ jobs:
           name: merge-recovery-soak-${{ needs.schedule_gate.outputs.duration_seconds }}s-${{ github.run_id }}-${{ github.run_attempt }}
           path: /tmp/merge-recovery-soak
           retention-days: 14
+
+  perf_report:
+    name: Publish Soak Dashboard
+    needs: [schedule_gate, soak]
+    if: needs.schedule_gate.outputs.run_benchmarks == 'true' && !cancelled()
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      pages: write
+      id-token: write
+    concurrency:
+      group: soak-pages
+      cancel-in-progress: false
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - name: Checkout CI control files
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: ci-control
+          persist-credentials: false
+
+      - name: Download soak results
+        uses: actions/download-artifact@v4
+        with:
+          name: merge-recovery-soak-${{ needs.schedule_gate.outputs.duration_seconds }}s-${{ github.run_id }}-${{ github.run_attempt }}
+          path: soak-results
+
+      - name: Assemble dashboard site
+        shell: bash -euo pipefail {0}
+        env:
+          DASHBOARD_URL: https://f1r3fly-io.github.io/f1r3node-rust/
+        run: |
+          test -s soak-results/report/weekly-summary.json || {
+            echo "::error::soak artifact has no weekly-summary.json"; exit 1; }
+          mkdir -p site/data
+          cp -r ci-control/site/soak-dashboard/. site/
+          curl -fsS --max-time 30 "${DASHBOARD_URL}data/history.json" \
+            -o /tmp/history.json 2>/dev/null || echo '[]' > /tmp/history.json
+          jq -e 'type == "array"' /tmp/history.json > /dev/null || echo '[]' > /tmp/history.json
+          jq -s '.[0] + [.[1]] | sort_by(.run.date)' \
+            /tmp/history.json soak-results/report/weekly-summary.json \
+            > site/data/history.json
+          cp soak-results/report/weekly-summary.json site/data/latest-summary.json
+          cp soak-results/report/verdict.json site/data/latest-verdict.json
+          cp soak-results/report/perf-report.md site/data/latest-report.md
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - name: Deploy to GitHub Pages
+        id: deploy
+        uses: actions/deploy-pages@v4
+
+      - name: Gate on regression verdict
+        shell: bash -euo pipefail {0}
+        run: |
+          verdict="$(jq -r '.verdict' soak-results/report/verdict.json)"
+          echo "Weekly soak verdict: $verdict"
+          if [ "$verdict" != "pass" ]; then
+            jq -r '.failures[] | "FAIL: " + .' soak-results/report/verdict.json
+            exit 1
+          fi

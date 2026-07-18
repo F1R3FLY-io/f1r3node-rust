@@ -22,6 +22,8 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
       test_bonding_fails_if_deposit_fails,
       test_bonding_fails_if_already_bonded,
       test_bonding_fails_if_bond_too_small,
+      test_bonding_fails_if_not_positive,
+      test_bonding_fails_if_bond_too_large,
       test_pay_succeeds,
       test_refund_succeeds,
       test_commit_random,
@@ -59,6 +61,8 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
               ("payment refund works", *test_refund_succeeds),
               ("bonding fails if already bonded", *test_bonding_fails_if_already_bonded),
               ("bonding fails if bond is too small", *test_bonding_fails_if_bond_too_small),
+              ("bonding fails if bond is not positive", *test_bonding_fails_if_not_positive),
+              ("bonding fails if bond is too large", *test_bonding_fails_if_bond_too_large),
               ("payment is not distributed to inactive validators", *test_dont_reward_inactive_validators),
               // TODO we should reimplement the random test in the future when it is available
               ("commited random matches its image", *test_commit_random),
@@ -594,7 +598,23 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
           } |
 
           contract test_bonding_fails_if_bond_too_small(rhoSpec, _, ackCh) = {
-            test_bonding_failure!(*rhoSpec, "7777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777", -1, "Bond is less than minimum!", *ackCh)
+            // Positive but below minimum_bond (=2 in this spec's genesis): 0 < 1 < 2 reaches the
+            // "less than minimum" gate. (At the builder default minimum_bond=1 this gate is
+            // unreachable for integers — no amount satisfies 0 < amount < 1.)
+            test_bonding_failure!(*rhoSpec, "7777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777", 1, "Bond is less than minimum!", *ackCh)
+          } |
+
+          contract test_bonding_fails_if_not_positive(rhoSpec, _, ackCh) = {
+            // The explicit positive-stake gate (Bug #5 / T-9.5 active_implies_bonded, PoS.rhox):
+            // amount <= 0 is rejected before the minimum-bond check.
+            test_bonding_failure!(*rhoSpec, "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f", -1, "Bond amount must be positive.", *ackCh)
+          } |
+
+          contract test_bonding_fails_if_bond_too_large(rhoSpec, _, ackCh) = {
+            // Above maximum_bond (=100000 in this spec's genesis): the "greater than maximum" gate
+            // fires before the deposit step, so the payer needs no funds. (At the builder default
+            // maximum_bond=i64::MAX this gate is unreachable for i64 amounts.)
+            test_bonding_failure!(*rhoSpec, "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", 200000, "Bond is greater than maximum!", *ackCh)
           } |
 
           contract test_bonding_fails_if_already_bonded(rhoSpec, _, ackCh) = {

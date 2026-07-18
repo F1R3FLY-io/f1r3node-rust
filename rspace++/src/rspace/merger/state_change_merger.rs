@@ -42,6 +42,16 @@ pub fn compute_trie_actions<C: Clone, P: Clone, A: Clone, K: Clone>(
         &NumberChannelsDiff,
     ) -> Result<Option<HotStoreTrieAction<C, P, A, K>>, HistoryError>,
 ) -> Result<Vec<HotStoreTrieAction<C, P, A, K>>, HistoryError> {
+    tracing::debug!(
+        target: "f1r3fly.merge.step",
+        step = "compute_trie_actions.ENTER",
+        cont_changes = changes.cont_changes.len(),
+        datums_changes = changes.datums_changes.len(),
+        joins = changes.consume_channels_to_join_serialized_map.len(),
+        mergeable_chs = mergeable_chs.len(),
+        "computing trie actions for merged state change",
+    );
+
     // Sort continuation changes by hash of consume channels for deterministic
     // ordering
     let mut cont_changes_sorted: Vec<_> = changes
@@ -72,13 +82,44 @@ pub fn compute_trie_actions<C: Clone, P: Clone, A: Clone, K: Clone>(
                 result
             };
 
+            if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
+                let removed_bytes: usize = channel_change.removed.iter().map(|k| k.len()).sum();
+                let added_bytes: usize = channel_change.added.iter().map(|k| k.len()).sum();
+                tracing::debug!(
+                    target: "f1r3fly.merge.step",
+                    step = "compute_trie_actions.CONT_CHANGE",
+                    consume_pointer = %hex::encode(history_pointer.clone().bytes()),
+                    n_channels = consume_channels.len(),
+                    base_konts = init.len(),
+                    removed_konts = channel_change.removed.len(),
+                    removed_bytes,
+                    added_konts = channel_change.added.len(),
+                    added_bytes,
+                    new_konts = new_val.len(),
+                    "cont change: applying removed/added to base konts",
+                );
+            }
+
             if init == new_val {
+                tracing::debug!(
+                    target: "f1r3fly.merge.step",
+                    step = "compute_trie_actions.CONT_NOOP_ERR",
+                    consume_pointer = %hex::encode(history_pointer.clone().bytes()),
+                    "empty consume change (init == new_val) -> merge error",
+                );
                 Err(HistoryError::MergeError(
                     "Merging logic error: empty consume change when computing trie action."
                         .to_string(),
                 ))
             } else if init.is_empty() {
                 // No konts were in base state and some are added - insert konts and add join.
+                tracing::debug!(
+                    target: "f1r3fly.merge.step",
+                    step = "compute_trie_actions.CONT_INSERT",
+                    consume_pointer = %hex::encode(history_pointer.clone().bytes()),
+                    new_konts = new_val.len(),
+                    "base empty -> TrieInsertConsume + AddJoin",
+                );
                 Ok(ConsumeAndJoinActions {
                     consume_action: HotStoreTrieAction::TrieInsertAction(
                         TrieInsertAction::TrieInsertBinaryConsume(TrieInsertBinaryConsume {
@@ -90,6 +131,13 @@ pub fn compute_trie_actions<C: Clone, P: Clone, A: Clone, K: Clone>(
                 })
             } else if new_val.is_empty() {
                 // All konts present in base are removed - remove consume, remove join.
+                tracing::debug!(
+                    target: "f1r3fly.merge.step",
+                    step = "compute_trie_actions.CONT_DELETE",
+                    consume_pointer = %hex::encode(history_pointer.clone().bytes()),
+                    base_konts = init.len(),
+                    "all base konts removed -> TrieDeleteConsume + RemoveJoin",
+                );
                 Ok(ConsumeAndJoinActions {
                     consume_action: HotStoreTrieAction::TrieDeleteAction(
                         TrieDeleteAction::TrieDeleteConsume(TrieDeleteConsume {
@@ -101,6 +149,14 @@ pub fn compute_trie_actions<C: Clone, P: Clone, A: Clone, K: Clone>(
             } else {
                 // Konts were updated but consume is present in base state - update konts, no
                 // joins.
+                tracing::debug!(
+                    target: "f1r3fly.merge.step",
+                    step = "compute_trie_actions.CONT_UPDATE",
+                    consume_pointer = %hex::encode(history_pointer.clone().bytes()),
+                    base_konts = init.len(),
+                    new_konts = new_val.len(),
+                    "konts updated, consume present in base -> TrieInsertConsume, no join change",
+                );
                 Ok(ConsumeAndJoinActions {
                     consume_action: HotStoreTrieAction::TrieInsertAction(
                         TrieInsertAction::TrieInsertBinaryConsume(TrieInsertBinaryConsume {
@@ -130,38 +186,65 @@ pub fn compute_trie_actions<C: Clone, P: Clone, A: Clone, K: Clone>(
     let produce_trie_actions = datums_changes_sorted
         .iter()
         .map(|(history_pointer, changes)| {
-            handle_channel_change(history_pointer, changes, mergeable_chs).and_then(|action| {
-                action.map(Ok).unwrap_or_else(|| {
-                    make_trie_action(
-                        history_pointer,
-                        |hash| base_reader.get_data_proj_binary(hash),
-                        changes,
-                        |hash| {
-                            HotStoreTrieAction::TrieDeleteAction(
-                                TrieDeleteAction::TrieDeleteProduce(TrieDeleteProduce {
-                                    hash: hash.clone(),
-                                }),
-                            )
-                        },
-                        |hash, data| {
-                            HotStoreTrieAction::TrieInsertAction(
-                                TrieInsertAction::TrieInsertBinaryProduce(
-                                    TrieInsertBinaryProduce {
-                                        hash: hash.clone(),
-                                        data,
-                                    },
-                                ),
-                            )
-                        },
-                    )
-                })
-            })
+            if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
+                let removed_bytes: usize = changes.removed.iter().map(|d| d.len()).sum();
+                let added_bytes: usize = changes.added.iter().map(|d| d.len()).sum();
+                tracing::debug!(
+                    target: "f1r3fly.merge.step",
+                    step = "compute_trie_actions.DATUM_CHANGE",
+                    channel = %hex::encode(history_pointer.clone().bytes()),
+                    removed = changes.removed.len(),
+                    removed_bytes,
+                    added = changes.added.len(),
+                    added_bytes,
+                    "datum change for channel -> produce trie action",
+                );
+            }
+
+            // Number-channel (mergeable) override path, if any.
+            let override_action = handle_channel_change(history_pointer, changes, mergeable_chs)?;
+            match override_action {
+                Some(action) => {
+                    tracing::debug!(
+                        target: "f1r3fly.merge.step",
+                        step = "compute_trie_actions.NUMBER_CHANNEL",
+                        channel = %hex::encode(history_pointer.clone().bytes()),
+                        "handle_channel_change produced number-channel trie action (override)",
+                    );
+                    Ok(action)
+                }
+                None => make_trie_action(
+                    history_pointer,
+                    |hash| base_reader.get_data_proj_binary(hash),
+                    changes,
+                    |hash| {
+                        HotStoreTrieAction::TrieDeleteAction(TrieDeleteAction::TrieDeleteProduce(
+                            TrieDeleteProduce { hash: hash.clone() },
+                        ))
+                    },
+                    |hash, data| {
+                        HotStoreTrieAction::TrieInsertAction(
+                            TrieInsertAction::TrieInsertBinaryProduce(TrieInsertBinaryProduce {
+                                hash: hash.clone(),
+                                data,
+                            }),
+                        )
+                    },
+                ),
+            }
         })
         .collect::<Result<Vec<_>, _>>()?;
 
     // Process joins changes
     let joins_channels_to_body_map = &changes.consume_channels_to_join_serialized_map;
     let mut joins_changes = std::collections::HashMap::new();
+
+    tracing::debug!(
+        target: "f1r3fly.merge.step",
+        step = "compute_trie_actions.JOINS_ENTER",
+        consume_actions = consume_with_join_actions.len(),
+        "collecting join changes from consume actions",
+    );
 
     // Collect join changes from consume actions
     for consume_and_join_action in &consume_with_join_actions {
@@ -197,6 +280,13 @@ pub fn compute_trie_actions<C: Clone, P: Clone, A: Clone, K: Clone>(
         }
     }
 
+    tracing::debug!(
+        target: "f1r3fly.merge.step",
+        step = "compute_trie_actions.JOINS_COLLECTED",
+        join_channels = joins_changes.len(),
+        "join changes collected per channel",
+    );
+
     // Sort joins changes by history pointer for deterministic ordering
     let mut joins_changes_sorted: Vec<_> = joins_changes.into_iter().collect();
     joins_changes_sorted.sort_by_key(|(history_pointer, _)| history_pointer.clone());
@@ -204,6 +294,16 @@ pub fn compute_trie_actions<C: Clone, P: Clone, A: Clone, K: Clone>(
     let joins_trie_actions = joins_changes_sorted
         .iter()
         .map(|(history_pointer, changes)| {
+            if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
+                tracing::debug!(
+                    target: "f1r3fly.merge.step",
+                    step = "compute_trie_actions.JOIN_CHANGE",
+                    channel = %hex::encode(history_pointer.clone().bytes()),
+                    removed = changes.removed.len(),
+                    added = changes.added.len(),
+                    "join change for channel -> join trie action",
+                );
+            }
             make_trie_action(
                 history_pointer,
                 |hash| base_reader.get_joins_proj_binary(hash),
@@ -226,10 +326,23 @@ pub fn compute_trie_actions<C: Clone, P: Clone, A: Clone, K: Clone>(
         .collect::<Result<Vec<_>, _>>()?;
 
     // Combine all trie actions
+    let n_produce = produce_trie_actions.len();
+    let n_consume = consume_trie_actions.len();
+    let n_joins = joins_trie_actions.len();
     let mut result = Vec::new();
     result.extend(produce_trie_actions);
     result.extend(consume_trie_actions);
     result.extend(joins_trie_actions);
+
+    tracing::debug!(
+        target: "f1r3fly.merge.step",
+        step = "compute_trie_actions.EXIT",
+        produce_actions = n_produce,
+        consume_actions = n_consume,
+        join_actions = n_joins,
+        total_actions = result.len(),
+        "trie actions computed",
+    );
 
     Ok(result)
 }
@@ -250,14 +363,55 @@ fn make_trie_action<C: Clone, P: Clone, A: Clone, K: Clone>(
         result
     };
 
+    if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
+        let base_bytes: usize = init.iter().map(|d| d.len()).sum();
+        let removed_bytes: usize = changes.removed.iter().map(|d| d.len()).sum();
+        let added_bytes: usize = changes.added.iter().map(|d| d.len()).sum();
+        let new_bytes: usize = new_val.iter().map(|d| d.len()).sum();
+        tracing::debug!(
+            target: "f1r3fly.merge.step",
+            step = "make_trie_action.ENTER",
+            channel = %hex::encode(history_pointer.clone().bytes()),
+            base_items = init.len(),
+            base_bytes,
+            removed = changes.removed.len(),
+            removed_bytes,
+            added = changes.added.len(),
+            added_bytes,
+            new_items = new_val.len(),
+            new_bytes,
+            "applied removed/added to base value",
+        );
+    }
+
     if new_val.is_empty() && !init.is_empty() {
         // Case 1: All items present in base are removed - remove action
+        tracing::debug!(
+            target: "f1r3fly.merge.step",
+            step = "make_trie_action.DELETE",
+            channel = %hex::encode(history_pointer.clone().bytes()),
+            base_items = init.len(),
+            "result EMPTY (channel emptied) -> TrieDelete",
+        );
         Ok(remove_action(history_pointer))
     } else if init != new_val {
         // Case 2: Items were updated - update action
+        tracing::debug!(
+            target: "f1r3fly.merge.step",
+            step = "make_trie_action.INSERT",
+            channel = %hex::encode(history_pointer.clone().bytes()),
+            new_items = new_val.len(),
+            "result NON-EMPTY (channel retained) -> TrieInsert",
+        );
         Ok(update_action(history_pointer, new_val))
     } else {
         // Case 3: Error case - no changes
+        tracing::debug!(
+            target: "f1r3fly.merge.step",
+            step = "make_trie_action.NOOP_ERR",
+            channel = %hex::encode(history_pointer.clone().bytes()),
+            "init == new_val (no change) -> merge error",
+        );
         Err(HistoryError::MergeError(
             "Merging logic error: empty channel change for produce or join when computing trie \
              action."

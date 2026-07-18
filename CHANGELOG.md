@@ -4,6 +4,22 @@ All notable changes to the Rust implementation of F1r3node will be documented in
 This changelog is automatically generated from conventional commits.
 
 
+## [0.4.21] - 2026-07-16
+
+### CI
+
+- ignore soak dashboard URL in link check until first Pages deploy
+
+### Documentation
+
+- document maintainer-side removal of alert email subscriptions
+
+### Features
+
+- subscribe alert recipient emails via create-ons-topic.sh
+- weekend benchmark metrics, gates, dashboard, and alerts (EPOCH-010)
+
+
 ## [0.4.19] - 2026-07-14
 
 ### CI

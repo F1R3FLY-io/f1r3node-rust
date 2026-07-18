@@ -68,11 +68,11 @@ total order — and the fold *additionally* relies on it because `combine` is **
 | index chain + user/system split | `deploy_chain_index.rs:42` (`new`), `:70-88` (split by `is_system_deploy_id`, `EventLogIndex::combine`) |
 | dedup → branches | `conflict_set_merger.rs:109` (`resolve_conflicts`, `compute_branches`) |
 | conflict map | `merging_logic.rs:262` (`conflicts` — Checks #1/#2/#3) |
-| **consumer 1** greedy keep-one / rejection | `dag_merger.rs:50` (`dependency_ordered_branch_items`; `pending ← branch.0.iter()` `:54`; `.min_by(cmp)` `:65`), `:120` (`split_unavailable_branch_consumes`) |
+| **consumer 1** greedy keep-one / rejection | `dag_merger.rs:81` (`dependency_ordered_branch_items`; `pending ← branch.0.iter()` `:85`; `.min_by(cmp)` `:96`), `:151` (`split_unavailable_branch_consumes`) |
 | **consumer 2** merged-state fold | `conflict_set_merger.rs:360` (`compute_merged_state`); sort `:385` (`compare_branches`) + `:391` (`branch_items.sort()`); fold `:426` (`combined.combine(item)`) |
 | the total order both consumers use | `deploy_chain_index.rs:151-230` (`impl Ord::cmp`, the 5-key tower) |
 | the fold operator (non-assoc) | `channel_change.rs:17` (`ChannelChange::combine`); `state_change.rs:507` (`StateChange::combine`, composes it per channel at `:541,:589`) |
-| recompute + reject (validator) | `interpreter_util.rs:228` (`compute_parents_post_state`), `:259` (pre-state mismatch), `:269` (rejected-set mismatch) |
+| recompute + reject (validator) | `interpreter_util.rs:268` (`compute_parents_post_state`), `:309` (pre-state mismatch), `:319` (rejected-set mismatch) |
 
 Key source files:
 
@@ -144,8 +144,8 @@ prime suspect (**Finding B**) is a **real, live fork hazard** and is **fixed**.
 | ID | Sev | Evidence | Finding |
 |---|---|---|---|
 | **B** | **High** (live fork) | `deploy_chain_index.rs` 4-key `cmp` + `Eq` on `deploys_with_cost` only | `cmp` could return `Equal` for two **distinct** chains ⟹ reseeded-`HashSet` `min_by`/`sort` winner ⟹ node-dependent rejected set ⟹ **fork**. |
-| **A** | Disclosed | `channel_change.rs:17,25` max-union `combine` | `combine` is commutative but **non-associative**; the fold order matters. Benign **only** under the Finding-B fix; a semantics-changing fix is disclosed, not made. |
-| **GAP-3** | Sound | `merging_logic.rs:262` retained detector; commit `f3360e84` | The removed single-value-cell check is fully subsumed by the retained double-consume detector ∪ the number-channel exemption. |
+| **A** | Disclosed | `channel_change.rs:17,25` max-union `combine` | `combine` is commutative but **non-associative**; the fold order matters. Benign **only** under the Finding-B fix; a semantics-changing fix is disclosed, not made. The assumption that no order-dependent survivor pair reaches apply is now **runtime-enforced** by `OrderDependenceGuard` (`conflict_set_merger.rs`; sound by `ChannelNetting.v combine_max_order_independent_under_no_dup`). |
+| **GAP-3** | Sound | `merging_logic.rs:262` retained `conflicts` detector; commit `f3360e84` | The removed single-value-cell check is fully subsumed by the retained double-consume detector ∪ the number-channel exemption. |
 | **§3c** | **High** (finality halt) | `rholang_merging_logic.rs:194`; `dag_merger.rs:965` | A **produce-only** write over-fills a single-value NUMBER cell (`[0]`→`[0,5e9]`) → IntegerAdd invariant trips at read → **finalization halt**. The retained detector is blind (no consume); the §3c guard closes it (S7). |
 | **P2** | Sound | `event_log_index.rs:343` `combine` (set union) | The user/system split recombines to the monolithic index; it hides no conflict. |
 
@@ -212,7 +212,7 @@ Every catalog item maps to a concrete artifact — no "assumed"/"prose-only" row
 | **T-SVC** | the §3c guard rejects a single-value NUMBER cell merge **iff** it would over-fill it (`result_len > 1`); non-number bases exempt (S7) | Rocq `ConflictSoundness.svc_guard_catches_overfill`, `svc_invariant_iff_both_detectors` (Section Overfill); Rust `svc_guard_rejects_iff_result_len_gt_one` (rholang) |
 | **T-OVERFILL** | a **produce-only** over-fill escapes the retained detector (consumes no base) ⟹ §3c is a separate, non-subsumed detector; the two together are exactly complete (S7) | Rocq `ConflictSoundness.overfill_not_retained`, `svc_guard_not_subsumed_exhibit`; Rust `produce_only_overfill_escapes_retained_detector` (rspace++) |
 | **T-SPLIT** | `combine(fold user, fold system) = fold all` ⟹ the split hides no conflict (S5) | Rocq `EventLogSplit.combine_split_eq`, `conflicts_split_complete`, `event_log_split_sound`; Rust `split_then_recombine_equals_monolithic_for_conflicts` |
-| **T-RECOMPUTE** | validation recomputes the merge and rejects on any `(pre-state \| rejected-set)` mismatch | Rust `interpreter_util.rs:228` (recompute), `:259` (pre-state mismatch ⟹ reject/no-replay), `:269` (rejected-set mismatch ⟹ `invalid_rejected_deploy` `:302`); Rust test `validate_block_checkpoint_recompute_rejects_pre_state_and_rejected_deploy_tampering` (honest baseline ⟹ `Right(Some)`; pre-state byte-flip ⟹ `Right(None)` no-replay; bogus `rejected_deploys` sig ⟹ `InvalidRejectedDeploy`) |
+| **T-RECOMPUTE** | validation recomputes the merge and rejects on any `(pre-state \| rejected-set)` mismatch | Rust `interpreter_util.rs:268` (`compute_parents_post_state` recompute), `:309` (pre-state mismatch ⟹ reject/no-replay), `:319` (rejected-set mismatch ⟹ `invalid_rejected_deploy` `:352`); Rust test `validate_block_checkpoint_recompute_rejects_pre_state_and_rejected_deploy_tampering` (honest baseline ⟹ `Right(Some)`; pre-state byte-flip ⟹ `Right(None)` no-replay; bogus `rejected_deploys` sig ⟹ `InvalidRejectedDeploy`) |
 | **T-APPEND** | the fix is append-only over `v0.4.16` ⟹ rolling-upgrade-safe (S6) | `deploy_chain_index.rs:210-228` (the KEPT key-4 comment); `git show origin/master` (4-key `cmp` terminating at `post_state_hash`); commit `c0b7609e` |
 | **capstone** | all of the above, axiom-free | Rocq `MainTheorem.merge_algebra_{keeporder,netting,conflict,split}_correct` |
 
@@ -334,6 +334,20 @@ commutative but non-associative (`combine_max_comm`, `combine_not_assoc_exhibit`
 sum-union monoid `channel_netting_fixed_deterministic` (the *disclosed, not-shipped*
 alternative) is what order-independence would cost in semantics. Choosing the total-order fix
 keeps the merge's meaning intact while removing the fork.
+
+**Runtime enforcement of the no-fork assumption.** The canonical-order determinism above assumes
+the non-associative operator only ever folds a survivor set on which *no order-dependent pair
+reaches apply*. That assumption is now **enforced at runtime** by `OrderDependenceGuard`
+(`conflict_set_merger.rs`): it trips iff a datum is contributed to a side (`added` or `removed`)
+by **≥ 2 distinct survivors** on a **non-mergeable** channel — the exact precondition under which
+the max-union fold differs from the order-independent sum-union fold. It is **detection-only**
+(`debug_assert!` in debug/CI + a release `tracing::error!` / metric): post-state, trie actions,
+and the merged root are byte-identical whether or not it fires, so it cannot itself fork. Number
+channels are excluded (they merge via the commutative-group `combine_mergeable_value`). Soundness
+is `ChannelNetting.v` `combine_max_order_independent_under_no_dup`: under the guard's precondition
+the shipped fold is **genuinely permutation-invariant** (`deployed_fold id l = cancel (netting_fold
+l)`, and `netting_fold` is permutation-invariant), not merely canonical-order deterministic — so a
+non-firing guard certifies true order-independence for that merge.
 
 ### 6.1 Why the fix is append-only — RESOLVED
 

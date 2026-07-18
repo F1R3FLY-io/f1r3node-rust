@@ -261,6 +261,41 @@ fi
 info "Wrote $REPORT"
 cat "$REPORT" >&2
 
+# --- Emit metrics.json (machine-readable companion to the txt reports) ---
+METRICS_JSON="$OUT_DIR/metrics.json"
+if [[ -s "$OUT_DIR/latencies.raw" ]]; then
+  awk '
+    { a[NR]=$1; sum+=$1 }
+    END {
+      n=NR
+      p50=a[int((n+1)*0.5)]; p95=a[int((n+1)*0.95)]
+      printf "{\"samples\":%d,\"min_ms\":%d,\"p50_ms\":%d,\"p95_ms\":%d,\"max_ms\":%d,\"avg_ms\":%.1f}", n, a[1], p50, p95, a[n], sum/n
+    }' "$OUT_DIR/latencies.raw" > "$OUT_DIR/latency-stats.json"
+else
+  printf '{"samples":0}' > "$OUT_DIR/latency-stats.json"
+fi
+jq -n \
+  --slurpfile lat "$OUT_DIR/latency-stats.json" \
+  --arg target "${HOST:-localhost}/$CONTAINER" \
+  --argjson duration "$DURATION" \
+  --argjson rate "$DEPLOYS_PER_SEC" \
+  --argjson submitted "$SUBMITTED" \
+  --argjson failed "$FAILED" \
+  --argjson finalized "$MATCHED" \
+  --argjson throughput "$THROUGHPUT" \
+  '{
+    target: $target,
+    duration_s: $duration,
+    target_rate: $rate,
+    submitted: $submitted,
+    submit_errors: $failed,
+    finalized: $finalized,
+    finalization_rate: (if $submitted > 0 then ($finalized / $submitted) else 0 end),
+    observed_throughput: $throughput,
+    latency: $lat[0]
+  }' > "$METRICS_JSON"
+info "Wrote $METRICS_JSON"
+
 # Also run the log-level profiler for per-validator propose/replay latencies
 if [[ -x "${SCRIPT_DIR}/profile-casper-latency.sh" ]]; then
   info "Running profile-casper-latency.sh for per-validator timings"

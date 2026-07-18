@@ -158,10 +158,10 @@ async fn bond_status_should_return_false_for_not_bonded_validators() {
     );
 }
 
-// TODO: Bonding not fully implemented with multi-parent merging.
-// Scala ignored this in PR #288.
+// Bonding through consensus IS implemented in the Rust port: a bond deploy propagated
+// through the network makes the validator bonded (the "Scala ignore" from PR #288 is stale —
+// this test passes against the current PoS + multi-parent merging).
 #[tokio::test]
-#[ignore = "Scala ignore"]
 async fn bond_status_should_return_true_for_newly_bonded_validator() {
     let ctx = TestContext::new().await;
 

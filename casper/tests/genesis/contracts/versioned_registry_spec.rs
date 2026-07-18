@@ -1,16 +1,20 @@
 // Spec for the Versioned Registry FIP rollout (Step 3).
 //
-// Does NOT use RhoSpec — see ../../regver-known-issues.md item #2. The
-// RhoSpec harness silently passes across the existing suite, so this
-// spec calls `get_results` directly and walks the recorded
-// `TestResultCollector` with an explicit non-emptiness guard so a
-// vacuous pass would surface as a failure.
+// Does not go through `RhoSpec::run_tests`; it calls `get_results`
+// directly and walks the recorded `TestResultCollector` itself, because
+// the probe in VersionedRegistryTest.rho drives `rho:test:assertAck`
+// directly rather than declaring RhoSpec `testSuite` blocks. The
+// EXPECTED_TEST_NAMES guard below is the anti-vacuity check for this
+// path: every named test must have recorded at least one assertion, so
+// a probe that silently never reaches an `assert` fails loudly instead
+// of passing for nothing.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use casper::rust::genesis::contracts::standard_deploys;
 use casper::rust::helper::test_result_collector::TestResultCollector;
+use crypto::rust::signatures::signed::Signed;
+use models::rust::casper::protocol::casper_message::DeployData;
 use rholang::rust::build::compile_rholang_source::CompiledRholangSource;
 use rholang::rust::interpreter::pretty_printer::PrettyPrinter;
 
@@ -69,10 +73,32 @@ async fn versioned_registry_spec() {
     )
     .expect("Failed to compile VersionedRegistryTest.rho");
 
-    // VersionedRegistry.rho has to be re-deployed in the test runtime
-    // because the test harness creates a fresh scope_id rather than
-    // inheriting the genesis scope (see regver-known-issues.md #2).
-    let extra_libs = vec![standard_deploys::versioned_registry("root-shard")];
+    // NO extra libs. VersionedRegistry.rho is a *genesis* contract
+    // (`genesis.rs` pushes `standard_deploys::versioned_registry`), and
+    // `get_results` resets the runtime to the genesis post-state, so the
+    // contract, its `_versionedRegistryStore` cell, and its bootstrap
+    // hold are already present. Re-deploying it here would NOT create a
+    // second, isolated instance -- it would corrupt the live one:
+    //
+    //   * `standard_deploys::versioned_registry` pins a fixed PK and
+    //     timestamp, and unforgeable names are derived from exactly
+    //     (pk, timestamp) (`Tools::unforgeable_name_rng`). A re-deploy
+    //     therefore reproduces the *same* `_versionedRegistryStore`
+    //     channel that genesis already populated.
+    //   * `VersionedRegistry.rho`'s `_versionedRegistryStore!({...})`
+    //     store-init sits outside the `for (v1Api <- v1ApiCh)` bootstrap
+    //     hold, so it re-fires unconditionally and leaves a SECOND
+    //     `{"lib": {}, "serve": {}}` token on that channel.
+    //   * The store is a one-token state cell: every operation does
+    //     `for (@store <- _versionedRegistryStore) { ... !(store') }`.
+    //     With two tokens, concurrent operations grab different tokens,
+    //     read divergent snapshots, and clobber each other's writes --
+    //     duplicate inserts succeed, version sets split, and lookups
+    //     miss keys that were just inserted.
+    //
+    // (The contracts themselves are not double-installed: `bootstrap()`
+    // is a one-time non-persistent receive, already consumed at genesis.)
+    let extra_libs: Vec<Signed<DeployData>> = vec![];
 
     let test_result_collector = Arc::new(TestResultCollector::new());
 

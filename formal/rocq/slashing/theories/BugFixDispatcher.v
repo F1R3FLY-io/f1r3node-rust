@@ -1,12 +1,12 @@
 (* ═══════════════════════════════════════════════════════════════════════════
    BugFixDispatcher.v — Proof for Bug Fix #3 (T-9.3)
 
-   Bug. multi_parent_casper_impl.rs:1090-1099 only marks slashable invalid
-   blocks invalid; no EquivocationRecord is created and no slash effect
-   runs unless a future proposer happens to pick up the offender.
+   Bug (since fixed). Marking a slashable invalid block invalid without
+   minting an EquivocationRecord means no slash effect runs unless a future
+   proposer happens to pick up the offender.
 
-   Fix. Dispatch every is_slashable() = true variant through the same
-   record-creation path used by AdmissibleEquivocation.
+   Fix. validation_dispatcher.rs:502-505 (engine/multi_parent_casper) dispatches
+   every is_slashable()=true variant through record_evidence, as AdmissibleEquivocation.
 
    Theorem T-9.3 (Dispatch completeness). Under the fix, every slashable
    invalid block triggers a record in finite steps. (Liveness gap closed.)

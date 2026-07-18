@@ -37,15 +37,16 @@ in {
               for (thisDecr <- letCh) {
                 // Checks mint and either decreases the balance of this purse by the given amount and returns true or
                 // doesn't not decrease and returns false.
-                // The legacy syntax `@=*thisDecr` (used before the rholang-rs parser update) required
-                // callers to pass the exact `thisDecr` capability. The new parser rejects that syntax,
-                // so we emulate the same check explicitly.
-                contract thisPurse(@providedDecr, @amount, return) = {
+                // The `"decr"` method tag makes this contract's RSpace consume unambiguous so it can
+                // only match genuine decr invocations (never `setLog`/`split`/... 3-tuples on the same
+                // `thisPurse` channel), and the `=*thisDecr` VarRef exact-match below enforces that
+                // callers supply this purse's exact `thisDecr` capability.
+                contract thisPurse(@"decr", @providedDecr, @amount, return) = {
                   new success, thisPurseDecrCh, decrCh,
                       bd(`rho:block:data`), bdCh
                   in {
                     match providedDecr {
-                      *thisDecr => {
+                      =*thisDecr => {
                         // Checks that this purse has been provided with the correct decr.
                         decrCh!(bundle0{*decr}) |
                         thisPurse!("decr", *thisPurseDecrCh) |
@@ -135,7 +136,7 @@ in {
                         for (@addSuccess <- addSuccessCh) {
                           if (addSuccess) {
                             // No overflow occurred.
-                            @src!(bundle0{bundle0{src}|*decr}, amount, *result) | //call src decr function.
+                            @src!("decr", bundle0{bundle0{src}|*decr}, amount, *result) | //call src decr function.
                             for (@decrSuccess <- result) {
                               if (decrSuccess) {
                                 // Proper authority to subtract amount from src, amount subtracted from src.

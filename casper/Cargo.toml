@@ -43,7 +43,6 @@ humantime = { workspace = true }
 tonic = { workspace = true }
 eyre = { workspace = true }
 metrics = { workspace = true }
-proptest = { workspace = true }
 parking_lot = "0.12"
 tempfile = { workspace = true, optional = true }
 
@@ -54,6 +53,7 @@ casper = { path = ".", features = ["test-utils"] }
 # builds of casper do NOT enable this feature.
 block-storage = { path = "../block-storage", features = ["test-internals"] }
 metrics-util = { workspace = true }
+proptest = { workspace = true }
 k256 = { workspace = true }
 serial_test = { workspace = true }
 env_logger = "0.11.8"

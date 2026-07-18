@@ -1,0 +1,4 @@
+# Soak-benchmark dashboard (EPOCH-010): the Pages site 404s until Pages is
+# enabled (Settings -> Pages -> source "GitHub Actions") and the first weekend
+# soak deploys it. Remove this entry after the first successful deploy.
+https://f1r3fly-io.github.io/f1r3node-rust/

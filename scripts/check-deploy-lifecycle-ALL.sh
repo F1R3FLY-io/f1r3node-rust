@@ -77,18 +77,21 @@ else
 fi
 
 echo "== [2/2] Rust purge unit (fail-soft) =="
-# Direct unit for the DL-1 finalization purge, now factored into
-# finalization_runner::purge_finalized_deploys_from_buffer: finalizing a block removes from
-# the rejected-deploy buffer BOTH its INCLUDED deploys AND every sig in
-# body.rejected_deploys, while an unrelated buffered deploy survives. Pins the exact purge
-# the casper_engine split dropped (the TLA+ layer above proves the invariant; this proves
-# the Rust realization enforces it). SKIPPED if cargo is absent; a failure fails the gate.
+# The DL-1 deploy-lifecycle invariant (no finalized deploy stays re-proposable) is NOT
+# enforced by a finalization-time rejected-deploy-buffer purge: that purge was re-derived
+# and MEASURED harmful during the 2026-07-15 dev merge (it evicts keep-one losers before
+# recovery — see the "DO NOT re-add" note atop finalization_runner.rs) and is deliberately
+# absent. The hazard is handled at ADMISSION instead: block_creator / `canonical_won_sigs`
+# drop already-canonical sigs when a deploy lands, pinned by the
+# `interpreter_util::backstop_tests` recovery-admission suite (the TLA+ layer above proves
+# the invariant; this proves the Rust realization enforces it). SKIPPED if cargo is absent;
+# a failure fails the gate.
 if command -v cargo >/dev/null 2>&1; then
-  if cargo test -p casper --lib finalization_runner::tests >/tmp/dl_rust_purge.log 2>&1 \
-       && grep -q "test result: ok" /tmp/dl_rust_purge.log; then
-    pass "Rust purge unit (included + body.rejected_deploys purged; unrelated buffered deploy survives)"
+  if cargo test -p casper --lib interpreter_util::backstop_tests >/tmp/dl_rust_admission.log 2>&1 \
+       && grep -qE "test result: ok\. [1-9][0-9]* passed" /tmp/dl_rust_admission.log; then
+    pass "Rust admission-drop unit (canonical-won deploys blocked from re-proposal at admission; visible win blocks / later rejection reopens recovery)"
   else
-    fail "Rust purge unit failed (see /tmp/dl_rust_purge.log)"; tail -20 /tmp/dl_rust_purge.log | sed 's/^/      /'
+    fail "Rust admission-drop unit failed (see /tmp/dl_rust_admission.log)"; tail -20 /tmp/dl_rust_admission.log | sed 's/^/      /'
   fi
 else
   skip "no cargo on PATH"
