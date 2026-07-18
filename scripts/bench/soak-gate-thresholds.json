@@ -1,0 +1,9 @@
+{
+  "comment": "Week-over-week regression gates for the 72h soak (EPOCH-010, maintainer-approved 2026-07-15). Passive metrics gate the run and releases; active-segment metrics warn.",
+  "failure_rate_max_increase_pts": 0.05,
+  "rss_peak_max_increase_pct": 0.20,
+  "finalization_p95_max_increase_pct": 0.20,
+  "throughput_max_decrease_pct": 0.20,
+  "active_p95_warn_increase_pct": 0.20,
+  "active_throughput_warn_decrease_pct": 0.20
+}
