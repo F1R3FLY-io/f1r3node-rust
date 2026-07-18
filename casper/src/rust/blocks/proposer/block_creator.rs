@@ -322,6 +322,35 @@ async fn prepare_user_deploys_with_policy(
         } else {
             HashSet::new()
         };
+    let parent_hashes: Vec<BlockHash> = casper_snapshot
+        .parents
+        .iter()
+        .map(|p| p.block_hash.clone())
+        .collect();
+    let earliest_block_number =
+        block_number - casper_snapshot.on_chain_state.shard_conf.deploy_lifespan;
+    let expired_buffered: Vec<Signed<DeployData>> = buffered_deploys
+        .iter()
+        .filter(|deploy| deploy.data.is_expired_at(current_time_millis))
+        .cloned()
+        .collect();
+    if !expired_buffered.is_empty() {
+        tracing::info!(
+            target: "f1r3fly.casper.recovery",
+            "Removing {} expired rejected-buffer deploy(s) from storage and rejected-deploy buffer",
+            expired_buffered.len()
+        );
+        deploy_storage_guard.remove(expired_buffered.clone())?;
+        rejected_deploy_buffer
+            .lock()
+            .map_err(|e| CasperError::LockError(e.to_string()))?
+            .remove(expired_buffered.clone())?;
+        let expired_sigs: HashSet<Bytes> = expired_buffered
+            .into_iter()
+            .map(|deploy| deploy.sig)
+            .collect();
+        buffered_deploys.retain(|deploy| !expired_sigs.contains(&deploy.sig));
+    }
     let mut buffered_sigs: HashSet<Bytes> =
         buffered_deploys.iter().map(|d| d.sig.clone()).collect();
 
@@ -341,13 +370,6 @@ async fn prepare_user_deploys_with_policy(
         );
     }
 
-    let parent_hashes: Vec<BlockHash> = casper_snapshot
-        .parents
-        .iter()
-        .map(|p| p.block_hash.clone())
-        .collect();
-    let earliest_block_number =
-        block_number - casper_snapshot.on_chain_state.shard_conf.deploy_lifespan;
     let buffer_scan_floor = buffered_deploys
         .iter()
         .map(|d| d.data.valid_after_block_number)
@@ -1823,6 +1845,56 @@ fn in_scope_local_deploy_stats(
     })
 }
 
+fn rejected_buffer_has_recoverable_deploys(
+    casper_snapshot: &CasperSnapshot,
+    block_number: i64,
+    current_time_millis: i64,
+    rejected_deploy_buffer: &Arc<Mutex<KeyValueRejectedDeployBuffer>>,
+    block_store: &KeyValueBlockStore,
+) -> Result<bool, CasperError> {
+    let buffered_deploys = rejected_deploy_buffer
+        .lock()
+        .map_err(|e| CasperError::LockError(e.to_string()))?
+        .read_all()?;
+    if buffered_deploys.is_empty() {
+        return Ok(false);
+    }
+    let parent_hashes: Vec<BlockHash> = casper_snapshot
+        .parents
+        .iter()
+        .map(|p| p.block_hash.clone())
+        .collect();
+    let earliest_block_number =
+        block_number - casper_snapshot.on_chain_state.shard_conf.deploy_lifespan;
+    let candidates: Vec<_> = buffered_deploys
+        .iter()
+        .filter(|deploy| {
+            let rejected_in_scope = casper_snapshot.rejected_in_scope.contains(&deploy.sig);
+            let clean_in_scope =
+                casper_snapshot.deploys_in_scope.contains(&deploy.sig) && !rejected_in_scope;
+            !clean_in_scope
+                && not_future_deploy(block_number, &deploy.data)
+                && !deploy.data.is_expired_at(current_time_millis)
+                && (rejected_in_scope || not_expired_deploy(earliest_block_number, &deploy.data))
+        })
+        .collect();
+    if candidates.is_empty() {
+        return Ok(false);
+    }
+    let scan_floor = candidates
+        .iter()
+        .map(|d| d.data.valid_after_block_number)
+        .min()
+        .map(|h| h.min(earliest_block_number))
+        .unwrap_or(earliest_block_number);
+    let canonical_won =
+        interpreter_util::canonical_won_sigs(block_store, &parent_hashes, scan_floor)?;
+
+    Ok(candidates
+        .iter()
+        .any(|deploy| !canonical_won.contains(&deploy.sig)))
+}
+
 fn should_skip_empty_recovery_heartbeat(
     suppress_empty_recovery_block_by_non_leader: bool,
     user_work_in_flight: bool,
@@ -2344,14 +2416,13 @@ pub async fn create(
             in_scope_local_stats,
             finality_lag_stats,
         );
-        let rejected_buffer_non_empty = {
-            let buffer_guard = rejected_deploy_buffer
-                .lock()
-                .map_err(|e| CasperError::LockError(e.to_string()))?;
-            buffer_guard
-                .non_empty()
-                .map_err(CasperError::KvStoreError)?
-        };
+        let rejected_buffer_non_empty = rejected_buffer_has_recoverable_deploys(
+            casper_snapshot,
+            next_block_num,
+            now_millis,
+            &rejected_deploy_buffer,
+            block_store,
+        )?;
         let admission_policy = ordinary_admission_policy(
             casper_snapshot,
             rejected_buffer_non_empty,
@@ -2641,7 +2712,7 @@ pub async fn create(
                 target: "f1r3fly.casper.recovery",
                 "Skipping empty recovery-context block creation: rejected deploy recovery is deferred to validator-set leader"
             );
-            return Ok(BlockCreatorResult::NoNewDeploys);
+            return Ok(BlockCreatorResult::RecoveryDeferred);
         }
         if !allow_empty_blocks {
             tracing::info!(
@@ -4607,6 +4678,156 @@ mod tests {
             .deploys
             .iter()
             .any(|deploy| deploy.sig == buffered.sig));
+    }
+
+    #[tokio::test]
+    async fn rejected_buffer_backlog_requires_selectable_deploy() {
+        let mut kvm = InMemoryStoreManager::new();
+        let rejected_deploy_buffer = Arc::new(Mutex::new(
+            KeyValueRejectedDeployBuffer::new(&mut kvm)
+                .await
+                .expect("rejected deploy buffer"),
+        ));
+        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
+            .await
+            .expect("block store");
+        let mut snapshot =
+            crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+        snapshot.on_chain_state.shard_conf.deploy_lifespan = 50;
+        let now = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .expect("time")
+            .as_millis() as i64;
+        let mut expired = construct_deploy::source_deploy_now(
+            "@expired-buffer!(0)".to_string(),
+            None,
+            Some(10),
+            Some("test".to_string()),
+        )
+        .expect("expired deploy");
+        expired.data.expiration_timestamp = Some(now - 1);
+        let old = construct_deploy::source_deploy_now(
+            "@old-buffer!(0)".to_string(),
+            None,
+            Some(-40),
+            Some("test".to_string()),
+        )
+        .expect("old deploy");
+        let future = construct_deploy::source_deploy_now(
+            "@future-buffer!(0)".to_string(),
+            None,
+            Some(20),
+            Some("test".to_string()),
+        )
+        .expect("future deploy");
+        rejected_deploy_buffer
+            .lock()
+            .expect("rejected buffer lock")
+            .add(vec![expired, old, future])
+            .expect("seed rejected buffer");
+
+        assert!(!rejected_buffer_has_recoverable_deploys(
+            &snapshot,
+            20,
+            now,
+            &rejected_deploy_buffer,
+            &block_store
+        )
+        .expect("check unselectable buffer"));
+
+        let fresh = construct_deploy::source_deploy_now(
+            "@fresh-buffer!(0)".to_string(),
+            None,
+            Some(19),
+            Some("test".to_string()),
+        )
+        .expect("fresh deploy");
+        rejected_deploy_buffer
+            .lock()
+            .expect("rejected buffer lock")
+            .add(vec![fresh])
+            .expect("seed fresh buffer");
+
+        assert!(rejected_buffer_has_recoverable_deploys(
+            &snapshot,
+            20,
+            now,
+            &rejected_deploy_buffer,
+            &block_store
+        )
+        .expect("check selectable buffer"));
+    }
+
+    #[tokio::test]
+    async fn prepare_user_deploys_purges_expired_rejected_buffer_entries() {
+        let mut kvm = InMemoryStoreManager::new();
+        let deploy_storage = Arc::new(parking_lot::Mutex::new(
+            KeyValueDeployStorage::new(&mut kvm)
+                .await
+                .expect("deploy storage"),
+        ));
+        let rejected_deploy_buffer = Arc::new(Mutex::new(
+            KeyValueRejectedDeployBuffer::new(&mut kvm)
+                .await
+                .expect("rejected deploy buffer"),
+        ));
+        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
+            .await
+            .expect("block store");
+        let mut snapshot =
+            crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+        snapshot
+            .on_chain_state
+            .shard_conf
+            .max_user_deploys_per_block = 10;
+        snapshot.on_chain_state.shard_conf.deploy_lifespan = 50;
+        let now = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .expect("time")
+            .as_millis() as i64;
+        let mut expired = construct_deploy::source_deploy_now(
+            "@expired-purge!(0)".to_string(),
+            None,
+            Some(10),
+            Some("test".to_string()),
+        )
+        .expect("expired deploy");
+        expired.data.expiration_timestamp = Some(now - 1);
+        deploy_storage
+            .lock()
+            .add(vec![expired.clone()])
+            .expect("seed deploy storage");
+        rejected_deploy_buffer
+            .lock()
+            .expect("rejected buffer lock")
+            .add(vec![expired.clone()])
+            .expect("seed rejected buffer");
+
+        let prepared = prepare_user_deploys(
+            &snapshot,
+            20,
+            now,
+            deploy_storage.clone(),
+            rejected_deploy_buffer.clone(),
+            &block_store,
+            true,
+            true,
+        )
+        .await
+        .expect("prepare deploys");
+
+        assert!(prepared.deploys.is_empty());
+        assert!(!deploy_storage
+            .lock()
+            .read_all()
+            .expect("read storage")
+            .iter()
+            .any(|deploy| deploy.sig == expired.sig));
+        assert!(!rejected_deploy_buffer
+            .lock()
+            .expect("rejected buffer lock")
+            .contains_sig(&expired.sig)
+            .expect("buffer contains"));
     }
 
     #[tokio::test]

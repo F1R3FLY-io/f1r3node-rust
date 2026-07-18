@@ -7,15 +7,18 @@
 //! module while the trait method is a one-line delegate in `traits.rs`.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::SystemTime;
 
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
+use block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use comm::rust::transport::transport_layer::TransportLayer;
+use crypto::rust::signatures::signed::Signed;
 use models::rust::block_hash::BlockHash;
 use models::rust::block_metadata::BlockMetadata;
 use models::rust::casper::pretty_printer::PrettyPrinter;
-use models::rust::casper::protocol::casper_message::{BlockMessage, Justification};
+use models::rust::casper::protocol::casper_message::{BlockMessage, DeployData, Justification};
 use models::rust::validator::Validator;
 use prost::bytes::Bytes;
 use shared::rust::dag::dag_ops;
@@ -29,6 +32,7 @@ use crate::rust::metrics_constants::{
     DEPLOYS_IN_SCOPE_SIG_BYTES_ESTIMATE_METRIC, DEPLOYS_IN_SCOPE_SIZE_METRIC,
 };
 use crate::rust::util::proto_util;
+use crate::rust::util::rholang::interpreter_util;
 
 /// C15 / Smell-1: byte-size estimate for a secp256k1 compact-encoded
 /// deploy signature. ~64 bytes signature + 1 byte prefix. Used to
@@ -212,6 +216,50 @@ fn candidate_scope_has_rejected_deploys(
     Ok(false)
 }
 
+fn local_rejected_buffer_has_recoverable_deploys(
+    block_store: &KeyValueBlockStore,
+    rejected_deploy_buffer: &Arc<Mutex<KeyValueRejectedDeployBuffer>>,
+    parent_hashes: &[BlockHash],
+    current_block_number: i64,
+    current_time_millis: i64,
+    deploy_lifespan: i64,
+) -> Result<bool, CasperError> {
+    let buffered_deploys: HashSet<Signed<DeployData>> = {
+        let buffer_guard = rejected_deploy_buffer
+            .lock()
+            .map_err(|err| CasperError::LockError(err.to_string()))?;
+        buffer_guard.read_all().map_err(CasperError::from)?
+    };
+    if buffered_deploys.is_empty() {
+        return Ok(false);
+    }
+
+    let earliest_block_number = current_block_number - deploy_lifespan;
+    let candidates: Vec<_> = buffered_deploys
+        .iter()
+        .filter(|deploy| {
+            deploy.data.valid_after_block_number < current_block_number
+                && deploy.data.valid_after_block_number > earliest_block_number
+                && !deploy.data.is_expired_at(current_time_millis)
+        })
+        .collect();
+    if candidates.is_empty() {
+        return Ok(false);
+    }
+    let scan_floor = candidates
+        .iter()
+        .map(|deploy| deploy.data.valid_after_block_number)
+        .min()
+        .map(|height| height.min(earliest_block_number))
+        .unwrap_or(earliest_block_number);
+    let canonical_won =
+        interpreter_util::canonical_won_sigs(block_store, parent_hashes, scan_floor)?;
+
+    Ok(candidates
+        .iter()
+        .any(|deploy| !canonical_won.contains(&deploy.sig)))
+}
+
 fn deploy_scope_cache_key_matches(
     cached_generation: u64,
     cached_lfb: &BlockHash,
@@ -336,14 +384,15 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
         &dag.last_finalized_block(),
     )?;
 
-    let rejected_deploys_in_candidate_scope = if sorted_parents_list.is_empty() {
-        false
+    let (rejected_deploys_in_candidate_scope, recovery_backlog) = if sorted_parents_list.is_empty()
+    {
+        (false, false)
     } else {
         let sorted_parent_hashes: Vec<BlockHash> = sorted_parents_list
             .iter()
             .map(|block| block.block_hash.clone())
             .collect();
-        let sorted_parent_metas = dag.lookups_unsafe(sorted_parent_hashes)?;
+        let sorted_parent_metas = dag.lookups_unsafe(sorted_parent_hashes.clone())?;
         let candidate_block_number = proto_util::max_block_number_metadata(&sorted_parent_metas)
             .checked_add(1)
             .ok_or_else(|| {
@@ -351,21 +400,32 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
                     "candidate max_block_num overflow while checking recovery context".to_string(),
                 )
             })?;
-        candidate_scope_has_rejected_deploys(
+        let rejected_deploys_in_candidate_scope = candidate_scope_has_rejected_deploys(
             &dag,
             &this.block_store,
             sorted_parent_metas,
             candidate_block_number,
             this.casper_shard_conf.deploy_lifespan,
-        )?
-    };
-
-    let recovery_backlog = {
-        let buffer_guard = this
-            .rejected_deploy_buffer
-            .lock()
-            .map_err(|err| CasperError::LockError(err.to_string()))?;
-        buffer_guard.non_empty().map_err(CasperError::from)?
+        )?;
+        let now_u128 = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map_err(CasperError::from)?
+            .as_millis();
+        let now_millis = i64::try_from(now_u128).map_err(|_| {
+            CasperError::RuntimeError(format!(
+                "Current timestamp millis {} exceeds i64::MAX",
+                now_u128
+            ))
+        })?;
+        let recovery_backlog = local_rejected_buffer_has_recoverable_deploys(
+            &this.block_store,
+            &this.rejected_deploy_buffer,
+            &sorted_parent_hashes,
+            candidate_block_number,
+            now_millis,
+            this.casper_shard_conf.deploy_lifespan,
+        )?;
+        (rejected_deploys_in_candidate_scope, recovery_backlog)
     };
     let recovery_context = recovery_backlog || rejected_deploys_in_candidate_scope;
 
@@ -727,9 +787,13 @@ pub(crate) async fn get_on_chain_state<T: TransportLayer + Send + Sync>(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{Arc, Mutex};
+    use std::time::SystemTime;
+
     use block_storage::rust::dag::block_dag_key_value_storage::{
         BlockDagKeyValueStorage, InsertMode,
     };
+    use block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer;
     use block_storage::rust::key_value_block_store::KeyValueBlockStore;
     use models::rust::block_implicits;
     use models::rust::casper::protocol::casper_message::{ProcessedDeploy, RejectedDeploy};
@@ -737,7 +801,7 @@ mod tests {
 
     use super::{
         candidate_scope_has_rejected_deploys, deploy_scope_cache_key_matches,
-        prefer_deploy_support_main_parent,
+        local_rejected_buffer_has_recoverable_deploys, prefer_deploy_support_main_parent,
     };
 
     #[test]
@@ -770,6 +834,141 @@ mod tests {
             &lfb,
             &[parent_b, parent_a]
         ));
+    }
+
+    #[tokio::test]
+    async fn local_rejected_backlog_requires_selectable_deploy() {
+        let mut kvm = InMemoryStoreManager::new();
+        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
+            .await
+            .expect("block store");
+        let rejected_deploy_buffer = Arc::new(Mutex::new(
+            KeyValueRejectedDeployBuffer::new(&mut kvm)
+                .await
+                .expect("rejected deploy buffer"),
+        ));
+        let now = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .expect("time")
+            .as_millis() as i64;
+        let mut expired = crate::rust::util::construct_deploy::source_deploy_now(
+            "@expired!(0)".to_string(),
+            None,
+            Some(10),
+            Some("test".to_string()),
+        )
+        .expect("expired deploy");
+        expired.data.expiration_timestamp = Some(now - 1);
+        let old = crate::rust::util::construct_deploy::source_deploy_now(
+            "@old!(0)".to_string(),
+            None,
+            Some(-40),
+            Some("test".to_string()),
+        )
+        .expect("old deploy");
+        let future = crate::rust::util::construct_deploy::source_deploy_now(
+            "@future!(0)".to_string(),
+            None,
+            Some(20),
+            Some("test".to_string()),
+        )
+        .expect("future deploy");
+        rejected_deploy_buffer
+            .lock()
+            .expect("buffer lock")
+            .add(vec![expired, old, future])
+            .expect("seed buffer");
+
+        assert!(!local_rejected_buffer_has_recoverable_deploys(
+            &block_store,
+            &rejected_deploy_buffer,
+            &[],
+            20,
+            now,
+            50
+        )
+        .expect("check unselectable backlog"));
+
+        let fresh = crate::rust::util::construct_deploy::source_deploy_now(
+            "@fresh!(0)".to_string(),
+            None,
+            Some(19),
+            Some("test".to_string()),
+        )
+        .expect("fresh deploy");
+        rejected_deploy_buffer
+            .lock()
+            .expect("buffer lock")
+            .add(vec![fresh])
+            .expect("seed fresh");
+
+        assert!(local_rejected_buffer_has_recoverable_deploys(
+            &block_store,
+            &rejected_deploy_buffer,
+            &[],
+            20,
+            now,
+            50
+        )
+        .expect("check selectable backlog"));
+    }
+
+    #[tokio::test]
+    async fn local_rejected_backlog_ignores_canonical_wins() {
+        let mut kvm = InMemoryStoreManager::new();
+        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
+            .await
+            .expect("block store");
+        let rejected_deploy_buffer = Arc::new(Mutex::new(
+            KeyValueRejectedDeployBuffer::new(&mut kvm)
+                .await
+                .expect("rejected deploy buffer"),
+        ));
+        let canonical = crate::rust::util::construct_deploy::source_deploy_now(
+            "@canonical!(0)".to_string(),
+            None,
+            Some(10),
+            Some("test".to_string()),
+        )
+        .expect("canonical deploy");
+        let parent = block_implicits::get_random_block(
+            Some(19),
+            Some(19),
+            None,
+            None,
+            None,
+            None,
+            Some(19),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(vec![ProcessedDeploy::empty(canonical.clone())]),
+            Some(Vec::new()),
+            None,
+            Some("test".to_string()),
+            None,
+        );
+        block_store
+            .put_block_message(&parent)
+            .expect("store parent");
+        rejected_deploy_buffer
+            .lock()
+            .expect("buffer lock")
+            .add(vec![canonical])
+            .expect("seed buffer");
+        let now = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .expect("time")
+            .as_millis() as i64;
+
+        assert!(!local_rejected_buffer_has_recoverable_deploys(
+            &block_store,
+            &rejected_deploy_buffer,
+            std::slice::from_ref(&parent.block_hash),
+            20,
+            now,
+            50
+        )
+        .expect("check canonical backlog"));
     }
 
     #[tokio::test]
