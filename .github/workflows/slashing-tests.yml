@@ -230,19 +230,35 @@ jobs:
           ! grep -rnE "^[[:space:]]*(Axioms?|Admitted|Parameters?|Conjectures?|Hypothes[ie]s)\b" \
             formal/rocq/slashing/theories/
       - name: Verify capstone trust base is closed (Print Assumptions)
-        # Authoritative axiom-freedom check per formal/rocq/slashing/README.md
-        # ("Verifying the trust base"): the kernel reports every axiom, admit,
+        # Authoritative axiom-freedom check (kernel-level, cf. the README's
+        # "Verifying the trust base"): the kernel reports every axiom, admit,
         # parameter, or imported assumption the capstone theorems transitively
         # depend on, regardless of where or how it was introduced. Both
         # capstones must print "Closed under the global context".
+        #
+        # Implemented as a coqc-compiled check file rather than `coqtop -e`:
+        # `coqtop -batch` exits after argument parsing without a reliable -e
+        # across versions (first CI attempt died in 40ms with no output), and
+        # coqc is already proven present by the make step above. Output is
+        # captured with -e suspended so the assumption listing always reaches
+        # the log, even when the check fails.
         run: |
           eval $(opam env)
           cd formal/rocq/slashing
-          out=$(coqtop -batch -Q theories Slashing \
-            -e 'Require Import Slashing.MainTheorem.' \
-            -e 'Print Assumptions main_bisimilarity_theorem.' \
-            -e 'Print Assumptions main_bisimilarity_strong.' 2>&1)
+          cat > "${RUNNER_TEMP}/CheckAssumptions.v" <<'EOF'
+          From Slashing Require Import MainTheorem.
+          Print Assumptions main_bisimilarity_theorem.
+          Print Assumptions main_bisimilarity_strong.
+          EOF
+          set +e
+          out=$(coqc -Q theories Slashing "${RUNNER_TEMP}/CheckAssumptions.v" 2>&1)
+          status=$?
+          set -e
           echo "$out"
+          if [ "$status" -ne 0 ]; then
+            echo "FAIL: assumption check did not run cleanly (coqc exit $status; output above)."
+            exit 1
+          fi
           closed=$(grep -c "Closed under the global context" <<<"$out" || true)
           if [ "$closed" -ne 2 ]; then
             echo "FAIL: expected 2 closed trust bases, found $closed — capstone depends on axioms/admits listed above."
