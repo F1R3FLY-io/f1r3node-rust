@@ -382,6 +382,12 @@ pub struct HeartbeatAdvancedConf {
         default = "default_deploy_recovery_max_lag"
     )]
     pub deploy_recovery_max_lag: i64,
+    #[serde(
+        rename = "empty-frontier-max-unfinalized-blocks",
+        deserialize_with = "de_non_negative_i64",
+        default = "default_empty_frontier_max_unfinalized_blocks"
+    )]
+    pub empty_frontier_max_unfinalized_blocks: i64,
 }
 
 impl Default for HeartbeatAdvancedConf {
@@ -390,6 +396,7 @@ impl Default for HeartbeatAdvancedConf {
             frontier_chase_max_lag: default_frontier_chase_max_lag(),
             pending_deploy_max_lag: default_pending_deploy_max_lag(),
             deploy_recovery_max_lag: default_deploy_recovery_max_lag(),
+            empty_frontier_max_unfinalized_blocks: default_empty_frontier_max_unfinalized_blocks(),
         }
     }
 }
@@ -399,6 +406,8 @@ fn default_frontier_chase_max_lag() -> i64 { 0 }
 fn default_pending_deploy_max_lag() -> i64 { 20 }
 
 fn default_deploy_recovery_max_lag() -> i64 { 64 }
+
+fn default_empty_frontier_max_unfinalized_blocks() -> i64 { 64 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FinalizerConf {
