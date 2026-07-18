@@ -444,12 +444,27 @@ jobs:
           docker tag ${{ env.DOCKER_IMAGE_NAME }}:amd64 ${{ env.DOCKER_IMAGE_NAME }}
 
       - name: Reserve node host ports
-        shell: bash -ex {0}
+        shell: bash -e {0}
         # 40400-40455 sit inside the kernel ephemeral range (32768-60999); a
         # transient outbound connection can grab one as its source port and
         # fail the bind with "address already in use". Reserving them excludes
-        # them from ephemeral allocation.
-        run: sudo sysctl -w net.ipv4.ip_local_reserved_ports=40400-40455
+        # them from ephemeral allocation. Reservation only stops NEW
+        # allocations — a socket that grabbed a port in the range before this
+        # step ran (runner provisioning, artifact download) still holds it
+        # (observed: run 29629049175, validator2 bind on 40420 failing with
+        # the reservation already in place). Wait for the range to drain
+        # (TIME_WAIT <= 60s) before starting anything that binds.
+        run: |
+          sudo sysctl -w net.ipv4.ip_local_reserved_ports=40400-40455
+          for i in $(seq 1 18); do
+            busy=$(ss -Htan 'sport >= :40400 and sport <= :40455' | wc -l)
+            [ "$busy" -eq 0 ] && exit 0
+            echo "  [${i}] ${busy} pre-existing socket(s) in 40400-40455; waiting for drain..."
+            sleep 5
+          done
+          echo "FAIL: sockets still holding node ports after 90s:"
+          sudo ss -tanp 'sport >= :40400 and sport <= :40455' || true
+          exit 1
 
       - name: Start standalone node
         shell: bash -ex {0}
@@ -538,10 +553,22 @@ jobs:
           docker tag ${{ env.DOCKER_IMAGE_NAME }}:amd64 ${{ env.DOCKER_IMAGE_NAME }}
 
       - name: Reserve node host ports
-        shell: bash -ex {0}
+        shell: bash -e {0}
         # Same ephemeral-port hazard as the standalone smoke; observed as
-        # rnode.validator2 failing to bind 0.0.0.0:40420 (run 28917696069).
-        run: sudo sysctl -w net.ipv4.ip_local_reserved_ports=40400-40455
+        # rnode.validator2 failing to bind 0.0.0.0:40420 (run 28917696069,
+        # and again in run 29629049175 with the reservation alone in place —
+        # a pre-existing socket survives the sysctl, so also drain the range).
+        run: |
+          sudo sysctl -w net.ipv4.ip_local_reserved_ports=40400-40455
+          for i in $(seq 1 18); do
+            busy=$(ss -Htan 'sport >= :40400 and sport <= :40455' | wc -l)
+            [ "$busy" -eq 0 ] && exit 0
+            echo "  [${i}] ${busy} pre-existing socket(s) in 40400-40455; waiting for drain..."
+            sleep 5
+          done
+          echo "FAIL: sockets still holding node ports after 90s:"
+          sudo ss -tanp 'sport >= :40400 and sport <= :40455' || true
+          exit 1
 
       - name: Start shard
         shell: bash -ex {0}
@@ -639,10 +666,21 @@ jobs:
         run: just setup-standalone
 
       - name: Reserve node host ports
-        shell: bash -ex {0}
+        shell: bash -e {0}
         # Same ephemeral-port hazard as the docker smokes: the node binary
-        # binds 40400-40405 directly on the host.
-        run: sudo sysctl -w net.ipv4.ip_local_reserved_ports=40400-40455
+        # binds 40400-40405 directly on the host. Reservation + drain, same
+        # rationale as the docker smoke steps above.
+        run: |
+          sudo sysctl -w net.ipv4.ip_local_reserved_ports=40400-40455
+          for i in $(seq 1 18); do
+            busy=$(ss -Htan 'sport >= :40400 and sport <= :40455' | wc -l)
+            [ "$busy" -eq 0 ] && exit 0
+            echo "  [${i}] ${busy} pre-existing socket(s) in 40400-40455; waiting for drain..."
+            sleep 5
+          done
+          echo "FAIL: sockets still holding node ports after 90s:"
+          sudo ss -tanp 'sport >= :40400 and sport <= :40455' || true
+          exit 1
 
       - name: Start standalone node
         shell: bash -ex {0}

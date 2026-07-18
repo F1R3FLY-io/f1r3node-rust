@@ -354,6 +354,59 @@ pub fn resolve_conflicts<R: Clone + Eq + std::hash::Hash + PartialOrd + Ord>(
     })
 }
 
+/// Finding-A runtime guard (docs/theory/merge-algebra/merge-algebra-verification.md §6).
+/// The shipped merge operator `ChannelChange::combine` (max-union) is
+/// non-associative, yet the merged root is node-identical because survivors are
+/// folded in canonical sorted order AND no order-dependent survivor pair reaches
+/// apply. This accumulator enforces that second premise at runtime: it trips iff
+/// some datum value is contributed to `added` (or `removed`) by >= 2 DISTINCT
+/// survivors on the same NON-mergeable channel — the exact precondition under which
+/// the max-union fold differs from the order-independent sum-union fold
+/// (`ChannelNetting.v` `combine_max_eq_combine_sum_under_no_dup`). It reads only the
+/// survivor set and changes no post-state; a trip means the invariant the proofs
+/// assume was violated (e.g. a conflict-check regression let such a pair through).
+#[derive(Default)]
+struct OrderDependenceGuard {
+    added: HashMap<Blake2b256Hash, HashMap<Vec<u8>, u32>>,
+    removed: HashMap<Blake2b256Hash, HashMap<Vec<u8>, u32>>,
+}
+
+impl OrderDependenceGuard {
+    /// Record one survivor's per-channel datum contributions. Distinct datums per
+    /// channel per survivor are counted once — within-survivor multiplicity is
+    /// irrelevant to the CROSS-survivor order dependence this detects.
+    fn observe(&mut self, changes: &StateChange) {
+        for entry in changes.datums_changes.iter() {
+            let channel = entry.key();
+            let change = entry.value();
+            let per_channel_added = self.added.entry(channel.clone()).or_default();
+            for datum in change.added.iter().collect::<HashSet<_>>() {
+                *per_channel_added.entry(datum.clone()).or_insert(0) += 1;
+            }
+            let per_channel_removed = self.removed.entry(channel.clone()).or_default();
+            for datum in change.removed.iter().collect::<HashSet<_>>() {
+                *per_channel_removed.entry(datum.clone()).or_insert(0) += 1;
+            }
+        }
+    }
+
+    /// The lowest (by hash bytes, so node-identically) NON-mergeable channel on
+    /// which some datum was contributed by >= 2 distinct survivors, or `None` when
+    /// the fold is genuinely order-independent (max-fold == sum-fold). Mergeable /
+    /// number channels are skipped: they merge through the commutative-group
+    /// `combine_mergeable_value`, not max-union, so multiple producers are safe.
+    fn first_offender(&self, mergeable_keys: &HashSet<Blake2b256Hash>) -> Option<Blake2b256Hash> {
+        self.added
+            .iter()
+            .chain(self.removed.iter())
+            .filter(|(channel, counts)| {
+                !mergeable_keys.contains(*channel) && counts.values().any(|&c| c >= 2)
+            })
+            .map(|(channel, _)| channel.clone())
+            .min_by(|a, b| a.0.cmp(&b.0))
+    }
+}
+
 /// Combine the surviving chains' diffs into trie actions and apply them to
 /// the merged base state. Reads `resolved.to_merge` and returns the new state
 /// root; `resolved.rejected` is not read or modified.
@@ -396,6 +449,7 @@ where
         n_items = to_merge_items.len());
 
     // Combine state changes from all items to be merged with timing
+    let mut order_guard = OrderDependenceGuard::default();
     let (all_changes, combine_all_changes_time) =
         measure_result_time(|| -> Result<StateChange, HistoryError> {
             let mut combined = StateChange::empty();
@@ -423,6 +477,9 @@ where
                         conts = item_changes.cont_changes.len(),
                         joins = item_changes.consume_channels_to_join_serialized_map.len());
                 }
+                // Finding-A guard: record this survivor's datum contributions
+                // before `combine` consumes it (detection only, post-state unchanged).
+                order_guard.observe(&item_changes);
                 combined = combined.combine(item_changes);
                 if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
                     for entry in combined.datums_changes.iter() {
@@ -506,6 +563,35 @@ where
         tracing::debug!(target: "f1r3fly.merge.step", step = "compute_merged_state.mergeable_channels",
             n_channels = all_mergeable_channels.len(),
             channels = ?merged_channels);
+    }
+
+    // Finding-A guard check (merge-algebra-verification.md §6): trip iff an
+    // order-dependent survivor pair reached apply — a datum contributed by >= 2
+    // distinct survivors on the same NON-mergeable channel, the precondition under
+    // which the non-associative max-union fold differs from the order-independent
+    // sum-union fold. Mergeable/number channels merge via the commutative-group
+    // operator and are excluded. Detection only: post-state, trie actions, and the
+    // merged root are byte-identical whether or not this fires (ChannelNetting.v §5
+    // + `combine_max_eq_combine_sum_under_no_dup`).
+    let mergeable_keys: HashSet<Blake2b256Hash> = all_mergeable_channels.keys().cloned().collect();
+    if let Some(channel) = order_guard.first_offender(&mergeable_keys) {
+        debug_assert!(
+            false,
+            "order-dependent survivor pair reached apply on channel {} — the \
+             max-union merge fold is not order-independent here (Finding A; \
+             docs/theory/merge-algebra/merge-algebra-verification.md §6)",
+            hex::encode(channel.bytes())
+        );
+        tracing::error!(target: "f1r3fly.merge.step",
+            step = "apply.order_dependent_survivor_pair",
+            channel = %hex::encode(channel.bytes()),
+            "order-dependent survivor pair reached apply; merged post-state may be \
+             association-dependent (Finding-A guard, non-fatal)");
+        metrics::counter!(
+            "dag.merge.order-dependent-survivor-pair",
+            "source" => crate::rust::metrics_constants::MERGING_METRICS_SOURCE
+        )
+        .increment(1);
     }
 
     tracing::debug!(target: "f1r3fly.merge.step", step = "compute_merged_state.compute_trie_actions.ENTER",
@@ -1136,5 +1222,88 @@ mod tests {
         };
         let out = cal_merged_result(&br, HashMap::new(), mergeable);
         assert_eq!(out, Some(HashMap::from([(ch, i64::MAX)])));
+    }
+
+    // ---- Finding-A order-dependence guard (merge-algebra-verification.md §6) ----
+
+    fn datum_state_change(channel: &[u8], added: &[&[u8]], removed: &[&[u8]]) -> StateChange {
+        use rspace_plus_plus::rspace::merger::channel_change::ChannelChange;
+        let sc = StateChange::empty();
+        sc.datums_changes
+            .insert(Blake2b256Hash(channel.to_vec()), ChannelChange {
+                added: added.iter().map(|d| d.to_vec()).collect(),
+                removed: removed.iter().map(|d| d.to_vec()).collect(),
+            });
+        sc
+    }
+
+    #[test]
+    fn order_guard_silent_when_survivors_add_distinct_datums() {
+        // Two survivors add DIFFERENT datums to one channel: max-fold == sum-fold.
+        let mut guard = OrderDependenceGuard::default();
+        guard.observe(&datum_state_change(b"chan", &[b"x"], &[]));
+        guard.observe(&datum_state_change(b"chan", &[b"y"], &[]));
+        assert_eq!(guard.first_offender(&HashSet::new()), None);
+    }
+
+    #[test]
+    fn order_guard_silent_on_single_add_single_remove_netting() {
+        // One survivor produces x, another consumes the base x on the same channel.
+        // `cancel_common` nets them symmetrically — associative-safe, must NOT trip
+        // (the guard checks distinct-survivor duplication, not "did cancel fire").
+        let mut guard = OrderDependenceGuard::default();
+        guard.observe(&datum_state_change(b"chan", &[b"x"], &[]));
+        guard.observe(&datum_state_change(b"chan", &[], &[b"x"]));
+        assert_eq!(guard.first_offender(&HashSet::new()), None);
+    }
+
+    #[test]
+    fn order_guard_trips_when_two_survivors_add_same_datum() {
+        // The same datum contributed to `added` by two distinct survivors — the
+        // precondition under which the max-union fold != the sum-union fold.
+        let mut guard = OrderDependenceGuard::default();
+        guard.observe(&datum_state_change(b"chan", &[b"x"], &[]));
+        guard.observe(&datum_state_change(b"chan", &[b"x"], &[]));
+        assert_eq!(
+            guard.first_offender(&HashSet::new()),
+            Some(Blake2b256Hash(b"chan".to_vec()))
+        );
+    }
+
+    #[test]
+    fn order_guard_skips_mergeable_channels() {
+        // Two producers on a NUMBER channel are safe: mergeable channels merge via
+        // the commutative-group operator, not max-union. Must be excluded.
+        let channel = Blake2b256Hash(b"num".to_vec());
+        let mut guard = OrderDependenceGuard::default();
+        guard.observe(&datum_state_change(b"num", &[b"x"], &[]));
+        guard.observe(&datum_state_change(b"num", &[b"x"], &[]));
+        let mergeable: HashSet<Blake2b256Hash> = HashSet::from([channel]);
+        assert_eq!(guard.first_offender(&mergeable), None);
+    }
+
+    #[test]
+    fn order_guard_is_permutation_invariant() {
+        // The trip decision is a pure function of the survivor SET, independent of
+        // observation order (locks guard (c): canonical fold order).
+        let a = datum_state_change(b"chan", &[b"x"], &[]);
+        let b = datum_state_change(b"chan", &[b"x"], &[]);
+        let c = datum_state_change(b"other", &[b"z"], &[]);
+        let mut forward = OrderDependenceGuard::default();
+        forward.observe(&a);
+        forward.observe(&b);
+        forward.observe(&c);
+        let mut reverse = OrderDependenceGuard::default();
+        reverse.observe(&c);
+        reverse.observe(&b);
+        reverse.observe(&a);
+        assert_eq!(
+            forward.first_offender(&HashSet::new()),
+            reverse.first_offender(&HashSet::new())
+        );
+        assert_eq!(
+            forward.first_offender(&HashSet::new()),
+            Some(Blake2b256Hash(b"chan".to_vec()))
+        );
     }
 }

@@ -74,14 +74,20 @@ macro_rules! justifications {
     };
 }
 
-#[allow(clippy::too_many_arguments)]
+/// The immutable context every block in a test DAG shares: the genesis it
+/// descends from and the bond set that weights fork choice. Both are fixed for
+/// the whole DAG and are always passed together, so they travel as one value.
+struct DagContext<'a> {
+    genesis: &'a BlockMessage,
+    bonds: &'a [Bond],
+}
+
 fn create_test_block(
     block_store: &mut block_storage::rust::key_value_block_store::KeyValueBlockStore,
     block_dag_storage: &mut block_storage::rust::test::indexed_block_dag_storage::IndexedBlockDagStorage,
     parents: &[BlockHash],
-    genesis: &BlockMessage,
+    ctx: &DagContext<'_>,
     creator: &Validator,
-    bonds: &[Bond],
     justifications: HashMap<Validator, BlockHash>,
     invalid: Option<bool>,
 ) -> BlockMessage {
@@ -89,9 +95,9 @@ fn create_test_block(
         block_store,
         block_dag_storage,
         parents.to_vec(),
-        genesis,
+        ctx.genesis,
         Some(creator.clone()),
-        Some(bonds.to_vec()),
+        Some(ctx.bonds.to_vec()),
         Some(justifications),
         None,
         None,
@@ -150,13 +156,17 @@ async fn build_flipping_dag(
         None,
     );
 
+    let ctx = DagContext {
+        genesis: &genesis,
+        bonds: &bonds,
+    };
+
     let b2 = create_test_block(
         block_store,
         block_dag_storage,
         std::slice::from_ref(&genesis.block_hash),
-        &genesis,
+        &ctx,
         &v2,
-        &bonds,
         justifications!(v1 => genesis.block_hash, v2 => genesis.block_hash, v3 => genesis.block_hash),
         None,
     );
@@ -164,9 +174,8 @@ async fn build_flipping_dag(
         block_store,
         block_dag_storage,
         std::slice::from_ref(&genesis.block_hash),
-        &genesis,
+        &ctx,
         &v1,
-        &bonds,
         justifications!(v1 => genesis.block_hash, v2 => genesis.block_hash, v3 => genesis.block_hash),
         None,
     );
@@ -174,9 +183,8 @@ async fn build_flipping_dag(
         block_store,
         block_dag_storage,
         std::slice::from_ref(&b2.block_hash),
-        &genesis,
+        &ctx,
         &v3,
-        &bonds,
         justifications!(v1 => genesis.block_hash, v2 => b2.block_hash, v3 => b2.block_hash),
         None,
     );
@@ -184,9 +192,8 @@ async fn build_flipping_dag(
         block_store,
         block_dag_storage,
         std::slice::from_ref(&b3.block_hash),
-        &genesis,
+        &ctx,
         &v2,
-        &bonds,
         justifications!(v1 => b3.block_hash, v2 => b2.block_hash, v3 => genesis.block_hash),
         None,
     );
@@ -194,9 +201,8 @@ async fn build_flipping_dag(
         block_store,
         block_dag_storage,
         std::slice::from_ref(&b4.block_hash),
-        &genesis,
+        &ctx,
         &v1,
-        &bonds,
         justifications!(v1 => b3.block_hash, v2 => b2.block_hash, v3 => b4.block_hash),
         None,
     );
@@ -204,9 +210,8 @@ async fn build_flipping_dag(
         block_store,
         block_dag_storage,
         std::slice::from_ref(&b5.block_hash),
-        &genesis,
+        &ctx,
         &v3,
-        &bonds,
         justifications!(v1 => b3.block_hash, v2 => b5.block_hash, v3 => b4.block_hash),
         None,
     );
@@ -214,9 +219,8 @@ async fn build_flipping_dag(
         block_store,
         block_dag_storage,
         std::slice::from_ref(&b6.block_hash),
-        &genesis,
+        &ctx,
         &v2,
-        &bonds,
         justifications!(v1 => b6.block_hash, v2 => b5.block_hash, v3 => b4.block_hash),
         None,
     );
@@ -316,14 +320,18 @@ async fn filter_t10_invalid_latest_message_excluded() {
             None,
         );
 
+        let ctx = DagContext {
+            genesis: &genesis,
+            bonds: &bonds,
+        };
+
         // v1's valid block on genesis.
         let b_valid = create_test_block(
             &mut block_store,
             &mut block_dag_storage,
             std::slice::from_ref(&genesis.block_hash),
-            &genesis,
+            &ctx,
             &v1,
-            &bonds,
             justifications!(v1 => genesis.block_hash, v0 => genesis.block_hash),
             None,
         );
@@ -332,9 +340,8 @@ async fn filter_t10_invalid_latest_message_excluded() {
             &mut block_store,
             &mut block_dag_storage,
             std::slice::from_ref(&genesis.block_hash),
-            &genesis,
+            &ctx,
             &v0,
-            &bonds,
             justifications!(v1 => genesis.block_hash, v0 => genesis.block_hash),
             Some(true),
         );

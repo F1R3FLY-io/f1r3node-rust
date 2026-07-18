@@ -13,7 +13,7 @@ record-and-slash path.
 ## 2 · Discovery technique
 
 **Primary**: code-walking review of the `is_slashable()` taxonomy
-(`block_status.rs:191`). The Scala counterpart at
+(`block_status.rs:183`). The Scala counterpart at
 `BlockStatus.scala:62-65` carried an explicit TODO comment naming
 the DOS vector: *“Make IgnorableEquivocation slashable again ...
 will become a DOS vector if not fixed.”*

@@ -248,6 +248,11 @@ jobs:
       - name: Install system dependencies
         run: bash .github/scripts/install-system-dependencies.sh
 
+      - name: Install nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
+
       - name: Run tests
         env:
           RUSTFLAGS: "-C target-feature=+aes,+sse2 -D warnings"
@@ -256,8 +261,20 @@ jobs:
         run: |
           ulimit -n 65536
           mkdir -p /tmp/test-logs
-          cargo test --release -p ${{ matrix.crate }} 2>&1 | tee /tmp/test-logs/${{ matrix.crate }}.txt
-          exit "${PIPESTATUS[0]}"
+          # nextest runs all of the crate's unit + integration tests in one global
+          # parallel pool (vs `cargo test`, which runs each test binary sequentially),
+          # which is what keeps the ~930-test casper crate under the job timeout.
+          # `--no-tests=pass` tolerates a crate whose only tests are doctests.
+          cargo nextest run --release -p ${{ matrix.crate }} --no-tests=pass 2>&1 \
+            | tee /tmp/test-logs/${{ matrix.crate }}.txt
+          nt=${PIPESTATUS[0]}
+          # nextest does NOT run doctests; run them explicitly to preserve the
+          # coverage that plain `cargo test` provided.
+          cargo test --release -p ${{ matrix.crate }} --doc 2>&1 \
+            | tee /tmp/test-logs/${{ matrix.crate }}-doc.txt
+          dt=${PIPESTATUS[0]}
+          echo "nextest exit=$nt doctest exit=$dt"
+          [ "$nt" -eq 0 ] && [ "$dt" -eq 0 ]
 
       - name: Upload test logs
         if: failure()

@@ -132,6 +132,13 @@ Three crates have `build.rs` for protobuf code generation:
   - `git stash list`, `git stash show` are permitted (read-only)
   - `git stash`, `git stash push|save|apply` require user confirmation
   - `git stash pop|drop|clear|branch` are blocked (destructive; can silently lose uncommitted work)
+- `git worktree`: NEVER create a worktree (`git worktree add`) unless the
+  user explicitly asks for one. All work happens in this single checkout —
+  create new branches here, not in sibling directories. Worktrees fragment
+  local state (branches pinned to hidden checkouts, invisible to
+  `/recursive-push` discovery, and a past root cause of an accidental push
+  to a protected branch). `git worktree list` is permitted (read-only);
+  `git worktree remove|prune` requires user confirmation.
 - **Exception:** In agentic mode (`claude-agentic`), all restrictions are lifted
 - The workspace stigmergic guidance to "commit frequently" applies to humans
   and fully-autonomous (YOLO/worktree) modes; in interactive sessions it is

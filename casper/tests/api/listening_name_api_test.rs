@@ -88,11 +88,11 @@ async fn get_listening_name_data_response_should_work_with_unsorted_channels() {
     assert_eq!(length, 1);
 }
 
-// TODO: Update test for multi-parent merging semantics - the main chain concept
-// changes with multi-parent blocks where all validators' blocks are merged.
-// Scala ignored this in PR #288.
+// `getListeningNameDataResponse` returns the accumulated data for a listening name across a chain
+// of blocks. Under the Rust multi-parent finalizer the response matches the expected
+// per-block accumulation, so this passes (the "main chain semantics change" concern from PR #288
+// did not, in fact, break it).
 #[tokio::test]
-#[ignore = "Multi-parent merging changes main chain semantics"]
 async fn get_listening_name_data_response_should_work_across_a_chain() {
     let ctx = TestContext::new().await;
 

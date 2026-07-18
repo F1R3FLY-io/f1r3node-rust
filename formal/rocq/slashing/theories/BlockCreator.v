@@ -66,7 +66,10 @@ Definition prepare_slashing_deploys
        (fun p =>
           match p with
           | (_, h, targetEpoch) =>
-              mkSlashDeploy h proposer targetEpoch (seed_fn proposer seqNum h)
+              (* In honest construction the proposer IS the issuer: the block
+                 sender signs the slash deploy it mints, so sd_issuer = proposer
+                 and the §9.8 receive gate's issuer==sender rule holds. *)
+              mkSlashDeploy h proposer targetEpoch (seed_fn proposer seqNum h) proposer
           end)
        authorized.
 

@@ -594,6 +594,7 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         // Keep LFS retry cadence configurable instead of hard-coding a long startup delay.
         // Falls back to 5s when env var is absent or invalid.
         let lfs_request_timeout = Duration::from_secs(5);
+        const LFS_SYNC_DEADLINE: Duration = Duration::from_secs(600);
 
         // **Scala equivalent**: Create both streams (blockRequestStream and tupleSpaceStream)
         let (block_request_stream_result, tuple_space_stream_result) = tokio::join!(
@@ -614,11 +615,12 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
                 lfs_request_timeout,
                 tuple_space_requester,
                 self.rspace_state_manager.importer.clone(),
+                LFS_SYNC_DEADLINE,
             )
         );
 
         let block_request_stream = block_request_stream_result?;
-        let tuple_space_stream = tuple_space_stream_result?;
+        let (tuple_space_stream, tuple_space_err) = tuple_space_stream_result?;
 
         // **Scala equivalent**: `blockRequestAddDagStream = blockRequestStream.last.unNoneTerminate.evalMap { st => populateDag(...) }`
         // Process block request stream and return the final state for later DAG population
@@ -638,6 +640,9 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             // Stream items are processed by the stream itself, we just consume them to completion
             let mut stream = Box::pin(tuple_space_stream);
             while let Some(_) = stream.next().await {}
+            if let Some(e) = tuple_space_err.lock().unwrap().take() {
+                return Err(e);
+            }
             tracing::info!("Rholang state received and saved to store.");
             Ok::<(), CasperError>(())
         };
@@ -716,25 +721,30 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
                     horizon_requester,
                     horizon_rx,
                     request_timeout,
+                    LFS_SYNC_DEADLINE,
                 )
                 .await;
 
                 // Drop the temporary sender so subsequent StoreItemsMessages
                 // (none expected once Running) don't queue indefinitely.
-                let final_horizon_state = match horizon_stream {
-                    Ok(stream) => {
+                let (final_horizon_state, horizon_err) = match horizon_stream {
+                    Ok((stream, err_handle)) => {
                         let mut stream = Box::pin(stream);
                         let mut final_state = None;
                         while let Some(st) = stream.next().await {
                             final_state = Some(st);
                         }
-                        Ok(final_state)
+                        (Ok(final_state), err_handle.lock().unwrap().take())
                     }
-                    Err(e) => Err(e),
+                    Err(e) => (Err(e), None),
                 };
                 {
                     let mut sender_slot = self.tuple_space_tx.lock().unwrap();
                     *sender_slot = None;
+                }
+
+                if let Some(e) = horizon_err {
+                    return Err(e);
                 }
 
                 // Loud failure: cannot transition to Running without a
@@ -1080,6 +1090,13 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             .ok_or_else(|| CasperError::RuntimeError("Estimator not available".to_string()))?;
         let recovery_estimator = estimator.clone();
 
+        // The on-chain fault-tolerance threshold is read and adopted by
+        // `hash_set_casper` (the single adoption point shared by all three
+        // casper constructors), so this path deliberately does NOT read it
+        // again — a second read here would be a second policy site and could
+        // drift from the one the running casper actually finalizes with.
+        let casper_shard_conf = self.casper_shard_conf.clone();
+
         // Pass Arc<RuntimeManager> directly to hash_set_casper
         let casper = crate::rust::casper::hash_set_casper(
             self.block_retriever.clone(),
@@ -1092,7 +1109,7 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             self.rejected_deploy_buffer.clone(),
             self.casper_buffer_storage.clone(),
             self.validator_id.clone(),
-            self.casper_shard_conf.clone(),
+            casper_shard_conf,
             ab,
             self.heartbeat_signal_ref.clone(),
         )

@@ -109,13 +109,25 @@ impl Estimator {
             .filter_deep_parents(ranked_latest_messages_hashes, dag)
             .await?;
 
-        Ok(ForkChoice {
-            tips: ranked_shallow_hashes
+        // B2: treat BOTH "unlimited" sentinels EXPLICITLY rather than relying on
+        // `-1 as usize` wrapping to usize::MAX. The estimator's own sentinel is
+        // `Self::UNLIMITED_PARENTS` (i32::MAX); the config wire convention
+        // (`casper::UNLIMITED_PARENTS`) is `-1`, and that config value reaches this
+        // field directly (node setup passes `conf.casper.max_number_of_parents`). A
+        // genuine positive cap truncates; any negative value or i32::MAX means
+        // unlimited (take all). Behaviour is unchanged; the cast is now cast-safe and
+        // the two conventions are no longer silently conflated by two's-complement.
+        let tips = if self.max_number_of_parents < 0
+            || self.max_number_of_parents == Self::UNLIMITED_PARENTS
+        {
+            ranked_shallow_hashes
+        } else {
+            ranked_shallow_hashes
                 .into_iter()
                 .take(self.max_number_of_parents as usize)
-                .collect(),
-            lca,
-        })
+                .collect()
+        };
+        Ok(ForkChoice { tips, lca })
     }
 
     async fn filter_deep_parents(
@@ -248,7 +260,18 @@ impl Estimator {
                 }
                 let validator_weight =
                     proto_util::weight_from_validator_by_dag(block_dag, &hash, validator)?;
-                *result.entry(hash.clone()).or_insert(0) += validator_weight;
+                // B3: fail loudly on score overflow rather than wrapping. Reachable
+                // only if the cumulative bonded weight on a block exceeds i64::MAX —
+                // a supply-cap violation (total bonded stake ≤ i64::MAX by construction),
+                // so this can only ever reject an already-invalid state, never a valid one.
+                let entry = result.entry(hash.clone()).or_insert(0);
+                *entry = entry.checked_add(validator_weight).ok_or_else(|| {
+                    KvStoreError::InvalidArgument(
+                        "fork-choice score overflow: cumulative validator weight exceeds i64 \
+                         (total bonded stake must be ≤ i64::MAX by the supply cap)"
+                            .to_string(),
+                    )
+                })?;
                 for parent in hash_parents(&hash, lca_block_num, block_dag)? {
                     if !visited.contains(&parent) {
                         queue.push_back(parent);

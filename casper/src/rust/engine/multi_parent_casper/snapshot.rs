@@ -1140,4 +1140,441 @@ mod tests {
         assert_eq!(reordered[0].block_hash, deploy_parent.block_hash);
         assert_eq!(reordered[1].block_hash, empty.block_hash);
     }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Fork-choice FV — T-MP STAGE 2 (formal/rocq/fork_choice/theories/GuardBridge.v
+    // seam (3)). LOCAL-ONLY verification; not consensus code.
+    //
+    // The proposer picks its main parent in TWO stages (:317-337):
+    //   stage 1 — the GHOST head (:317-323) + the (is_main DESC, hash ASC) sort
+    //             (:325-331);
+    //   stage 2 — `prefer_deploy_support_main_parent` (:332 -> :124-185), which can
+    //             PROMOTE a deploy-carrying branch to index 0, OVERRIDING the ghost
+    //             head. So "main parent == GHOST argmax" is FALSE for the proposer
+    //             (GuardBridge.v refutes it by computation in
+    //             `pipeline_head_may_differ_from_ghost`).
+    //
+    // These proptests discharge GuardBridge.v's WEAKER, TRUE claim — the main parent
+    // is a deterministic pure function of (dag, parents, last_finalized_block) —
+    // against the REAL (private) `prefer_deploy_support_main_parent` and
+    // `better_deploy_branch_score` rather than against a re-implementation:
+    //
+    //   (a) `deploy_support_promotion_is_permutation_and_order_invariant` (part 1)
+    //         <- GuardBridge.main_parent_pipeline_permutation / promote_permutation
+    //   (b) `better_deploy_branch_score_is_strict_total_order`
+    //         <- GuardBridge.dbetter_strict_total_order
+    //   (c) `deploy_support_promotion_is_permutation_and_order_invariant` (parts 2,4)
+    //         <- GuardBridge.dbest_hash_perm_invariant /
+    //            GuardBridge.main_parent_pipeline_deterministic
+    //
+    // and pin the COMPOSITION fact that makes (c) hold at all (part 3): stage 2 ALONE
+    // is NOT order-invariant — it returns `parents` UNTOUCHED when no branch scores
+    // (:163-165) — so determinism genuinely REQUIRES stage 1's canonical sort to run
+    // first. See docs/theory/fork-choice/fork-choice-verification.md §6.2.
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    use std::collections::HashSet as StdHashSet;
+    use std::sync::OnceLock;
+
+    use models::rust::block_hash::BlockHash;
+    use models::rust::casper::protocol::casper_message::BlockMessage;
+    use proptest::prelude::*;
+
+    use super::{
+        better_deploy_branch_score, branch_unfinalized_user_deploy_score, DeployBranchScore,
+        KeyValueDagRepresentation,
+    };
+
+    /// Shared Tokio runtime: `proptest!` emits plain `#[test]` fns, which cannot be
+    /// `#[tokio::test]`. Mirrors casper/tests/fork_choice/prop_ghost_argmax.rs.
+    fn runtime() -> &'static tokio::runtime::Runtime {
+        static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
+        RUNTIME.get_or_init(|| tokio::runtime::Runtime::new().expect("tokio runtime"))
+    }
+
+    /// Mirror of the STAGE-1 comparator at snapshot.rs:325-331. Stage 1 is written
+    /// INLINE in `compute_snapshot` (it is not a callable fn), so the composed-pipeline
+    /// property below mirrors the six-line comparator verbatim. Kept adjacent to the
+    /// real code so the two drift together.
+    fn ghost_sort_mirror(ghost_main_parent: Option<&BlockHash>, parents: &mut [BlockMessage]) {
+        parents.sort_by(|a, b| {
+            let a_main = ghost_main_parent == Some(&a.block_hash);
+            let b_main = ghost_main_parent == Some(&b.block_hash);
+            b_main
+                .cmp(&a_main)
+                .then_with(|| a.block_hash.cmp(&b.block_hash))
+        });
+    }
+
+    /// Every permutation of `items` (n! of them; n <= 4 here, so <= 24).
+    fn all_permutations(items: &[BlockMessage]) -> Vec<Vec<BlockMessage>> {
+        let n = items.len();
+        let mut out = Vec::with_capacity((1..=n).product::<usize>());
+        if n == 0 {
+            out.push(Vec::new());
+            return out;
+        }
+        for i in 0..n {
+            let mut rest = items.to_vec();
+            let head = rest.remove(i);
+            for mut tail in all_permutations(&rest) {
+                let mut perm = Vec::with_capacity(n);
+                perm.push(head.clone());
+                perm.append(&mut tail);
+                out.push(perm);
+            }
+        }
+        out
+    }
+
+    /// Every value the ghost head (`:317-323`) can take: `None` (empty tips), or any
+    /// one of the parents.
+    fn ghost_candidates(parents: &[BlockMessage]) -> Vec<Option<BlockHash>> {
+        let mut out = Vec::with_capacity(parents.len() + 1);
+        out.push(None);
+        out.extend(parents.iter().map(|p| Some(p.block_hash.clone())));
+        out
+    }
+
+    /// Builds `genesis <- {parent_i}`, where branch `i` carries `n_deploys_i` distinct
+    /// user deploys and sits at block number `number_i`. Genesis is the last finalized
+    /// block, so every parent (number >= 1) is in the unfinalized scoring window.
+    /// Mirrors the fixture style of the `deploy_support_*` example tests above.
+    async fn build_deploy_branch_fixture(
+        specs: &[(usize, i64)],
+    ) -> (
+        KeyValueBlockStore,
+        KeyValueDagRepresentation,
+        BlockMessage,
+        Vec<BlockMessage>,
+    ) {
+        let mut kvm = InMemoryStoreManager::new();
+        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
+            .await
+            .expect("block store");
+        let dag_storage = BlockDagKeyValueStorage::new(&mut kvm)
+            .await
+            .expect("dag storage");
+
+        let genesis = block_implicits::get_random_block(
+            Some(0),
+            Some(0),
+            None,
+            None,
+            None,
+            None,
+            Some(0),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            None,
+            Some("test".to_string()),
+            None,
+        );
+
+        let mut parents = Vec::with_capacity(specs.len());
+        let mut deploy_id: i32 = 0;
+        for (idx, (n_deploys, number)) in specs.iter().enumerate() {
+            let mut processed = Vec::with_capacity(*n_deploys);
+            for _ in 0..*n_deploys {
+                deploy_id += 1;
+                let deploy = crate::rust::util::construct_deploy::basic_deploy_data(
+                    deploy_id,
+                    None,
+                    Some("test".to_string()),
+                )
+                .expect("deploy");
+                processed.push(ProcessedDeploy::empty(deploy));
+            }
+            parents.push(block_implicits::get_random_block(
+                Some(*number),
+                Some(idx as i32 + 1),
+                None,
+                None,
+                None,
+                None,
+                Some(*number),
+                Some(vec![genesis.block_hash.clone()]),
+                Some(Vec::new()),
+                Some(processed),
+                Some(Vec::new()),
+                None,
+                Some("test".to_string()),
+                None,
+            ));
+        }
+
+        block_store
+            .put_block_message(&genesis)
+            .expect("store genesis");
+        for parent in &parents {
+            block_store.put_block_message(parent).expect("store parent");
+        }
+        dag_storage
+            .insert(&genesis, InsertMode::Approved)
+            .expect("insert genesis");
+        for parent in &parents {
+            dag_storage
+                .insert(parent, InsertMode::Normal)
+                .expect("insert parent");
+        }
+
+        let dag = dag_storage.get_representation().expect("dag");
+        (block_store, dag, genesis, parents)
+    }
+
+    /// (*) The COMPOSITION fact, pinned DETERMINISTICALLY (the proptest above reaches
+    /// this branch only when it happens to draw an all-empty parent set — ~1 case in 16
+    /// — which is too thin to rely on for a property this load-bearing).
+    ///
+    /// When NO parent branch carries an unfinalized user deploy, `prefer_deploy_support_
+    /// main_parent` returns `parents` EXACTLY as given (:163-165) — it is the identity,
+    /// order included. So stage 2 ALONE is *not* input-order invariant: its head is
+    /// simply whichever parent came first. Determinism of the block's main parent is
+    /// therefore inherited from stage 1's canonical `(is_main DESC, hash ASC)` sort
+    /// (:325-331), which is precisely why GuardBridge.v models the COMPOSED pipeline
+    /// (`main_parent_pipeline = prefer_deploy_support . ghost_sort`) rather than
+    /// claiming stage 2 is order-invariant on its own.
+    #[tokio::test]
+    async fn deploy_support_is_identity_when_no_branch_scores() {
+        // two deploy-free branches off genesis => every branch score is `None`
+        let (block_store, dag, genesis, parents) =
+            build_deploy_branch_fixture(&[(0, 1), (0, 2)]).await;
+
+        for parent in &parents {
+            assert!(
+                branch_unfinalized_user_deploy_score(
+                    &dag,
+                    &block_store,
+                    &parent.block_hash,
+                    &genesis.block_hash,
+                )
+                .expect("branch score")
+                .is_none(),
+                "fixture bug: a deploy-free branch must not score"
+            );
+        }
+
+        // BOTH orderings come back untouched — stage 2 preserves whatever order it got.
+        for perm in all_permutations(&parents) {
+            let out = prefer_deploy_support_main_parent(
+                &dag,
+                &block_store,
+                perm.clone(),
+                &genesis.block_hash,
+            )
+            .expect("prefer deploy support");
+            let want: Vec<BlockHash> = perm.iter().map(|b| b.block_hash.clone()).collect();
+            let got: Vec<BlockHash> = out.iter().map(|b| b.block_hash.clone()).collect();
+            assert_eq!(
+                got, want,
+                "stage 2 must be the exact identity when no branch scores"
+            );
+        }
+    }
+
+    /// A `(DeployBranchScore, BlockHash)` over DELIBERATELY tiny domains, so ties at
+    /// every lexicographic level — and hence the reversed hash tie-break at :68 — are
+    /// hit constantly rather than vanishingly rarely.
+    fn arb_scored_branch() -> impl Strategy<Value = (DeployBranchScore, BlockHash)> {
+        (0usize..3, 0i64..3, 0i64..3, 0u8..4).prop_map(
+            |(deploy_sig_count, latest_deploy_block_number, root_block_number, hash_byte)| {
+                (
+                    DeployBranchScore {
+                        deploy_sig_count,
+                        latest_deploy_block_number,
+                        root_block_number,
+                    },
+                    prost::bytes::Bytes::from(vec![hash_byte]),
+                )
+            },
+        )
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(2048))]
+
+        /// (b) GuardBridge.v `dbetter_strict_total_order`: the REAL
+        /// `better_deploy_branch_score` (:48-70) is a STRICT TOTAL order — irreflexive,
+        /// asymmetric and transitive UNCONDITIONALLY, and total on DISTINCT hashes
+        /// (distinct blocks always have distinct cryptographic-digest hashes).
+        ///
+        /// This is the load-bearing premise: it is what makes the promoted branch the
+        /// UNIQUE argmax, hence the promotion scan-order independent. Had it NOT been a
+        /// total order, two honest proposers enumerating the same parents in different
+        /// `HashSet` orders could promote DIFFERENT branches — a real consensus
+        /// non-determinism bug.
+        #[test]
+        fn better_deploy_branch_score_is_strict_total_order(
+            a in arb_scored_branch(),
+            b in arb_scored_branch(),
+            c in arb_scored_branch(),
+        ) {
+            let better = |x: &(DeployBranchScore, BlockHash), y: &(DeployBranchScore, BlockHash)| {
+                better_deploy_branch_score((&x.0, &x.1), (&y.0, &y.1))
+            };
+
+            prop_assert!(!better(&a, &a), "irreflexivity violated at {:?}", a);
+
+            if better(&a, &b) {
+                prop_assert!(!better(&b, &a), "asymmetry violated: {:?} vs {:?}", a, b);
+            }
+
+            if better(&a, &b) && better(&b, &c) {
+                prop_assert!(
+                    better(&a, &c),
+                    "transitivity violated: {:?} > {:?} > {:?}",
+                    a, b, c
+                );
+            }
+
+            if a.1 != b.1 {
+                prop_assert!(
+                    better(&a, &b) || better(&b, &a),
+                    "totality violated on distinct hashes: {:?} vs {:?}",
+                    a, b
+                );
+            }
+        }
+    }
+
+    proptest! {
+        // Each case builds a fresh in-memory DAG and signs up to 8 deploys, then runs
+        // the real fn over EVERY permutation (<= 24) x EVERY ghost head (<= 5).
+        #![proptest_config(ProptestConfig::with_cases(16))]
+
+        /// T-MP stage 2, against the REAL `prefer_deploy_support_main_parent`:
+        ///
+        ///   1. (a) GuardBridge.main_parent_pipeline_permutation — the output is always
+        ///      a PERMUTATION of the input (no parent lost or duplicated), so the parent
+        ///      MULTISET is preserved. This is what keeps `Selection.T_PS`'s
+        ///      unconstrained-parent-oracle floor soundness applicable.
+        ///   2. (c) GuardBridge.dbest_hash_perm_invariant — WHEN a branch scores, the
+        ///      promoted parent is the UNIQUE argmax, hence identical for every input
+        ///      ordering.
+        ///   3. (*) the composition fact — when NO branch scores, stage 2 is the exact
+        ///      IDENTITY (:163-165), so its head is merely whatever came first. Stage 2
+        ///      alone is therefore NOT order-invariant; determinism is inherited from
+        ///      stage 1's canonical sort.
+        ///   4. (c) GuardBridge.main_parent_pipeline_deterministic — the COMPOSED
+        ///      pipeline (stage-1 mirror then the real stage 2) yields a byte-identical
+        ///      parent list for EVERY input ordering and EVERY possible ghost head.
+        #[test]
+        fn deploy_support_promotion_is_permutation_and_order_invariant(
+            specs in prop::collection::vec((0usize..=2usize, 1i64..=2i64), 2..=4),
+        ) {
+            let (block_store, dag, genesis, parents) =
+                runtime().block_on(build_deploy_branch_fixture(&specs));
+
+            // Distinct parent hashes are the premise `dbetter_total` needs (and what a
+            // cryptographic digest gives the real code). A collision here would be a
+            // FIXTURE bug, so assert it rather than silently weakening the property.
+            let distinct: StdHashSet<BlockHash> =
+                parents.iter().map(|p| p.block_hash.clone()).collect();
+            prop_assert_eq!(
+                distinct.len(),
+                parents.len(),
+                "fixture produced colliding parent hashes"
+            );
+
+            let perms = all_permutations(&parents);
+
+            // 1. PERMUTATION-PRESERVATION (holds unconditionally).
+            for perm in &perms {
+                let out = prefer_deploy_support_main_parent(
+                    &dag,
+                    &block_store,
+                    perm.clone(),
+                    &genesis.block_hash,
+                )
+                .expect("prefer deploy support");
+
+                let mut want: Vec<BlockHash> = perm.iter().map(|b| b.block_hash.clone()).collect();
+                let mut got: Vec<BlockHash> = out.iter().map(|b| b.block_hash.clone()).collect();
+                prop_assert_eq!(got.len(), want.len(), "stage 2 changed the parent count");
+                want.sort();
+                got.sort();
+                prop_assert_eq!(got, want, "stage 2 did not preserve the parent multiset");
+            }
+
+            let any_scored = parents.iter().any(|p| {
+                branch_unfinalized_user_deploy_score(
+                    &dag,
+                    &block_store,
+                    &p.block_hash,
+                    &genesis.block_hash,
+                )
+                .expect("branch score")
+                .is_some()
+            });
+
+            if any_scored {
+                // 2. ARGMAX INVARIANCE.
+                let heads: StdHashSet<BlockHash> = perms
+                    .iter()
+                    .map(|perm| {
+                        prefer_deploy_support_main_parent(
+                            &dag,
+                            &block_store,
+                            perm.clone(),
+                            &genesis.block_hash,
+                        )
+                        .expect("prefer deploy support")[0]
+                            .block_hash
+                            .clone()
+                    })
+                    .collect();
+                prop_assert_eq!(
+                    heads.len(),
+                    1,
+                    "the promoted parent depends on the input order (argmax not unique)"
+                );
+            } else {
+                // 3. IDENTITY when nothing scores — the reason stage 1 is load-bearing.
+                for perm in &perms {
+                    let out = prefer_deploy_support_main_parent(
+                        &dag,
+                        &block_store,
+                        perm.clone(),
+                        &genesis.block_hash,
+                    )
+                    .expect("prefer deploy support");
+                    let want: Vec<BlockHash> = perm.iter().map(|b| b.block_hash.clone()).collect();
+                    let got: Vec<BlockHash> = out.iter().map(|b| b.block_hash.clone()).collect();
+                    prop_assert_eq!(
+                        got,
+                        want,
+                        "stage 2 must be the exact identity when no branch scores"
+                    );
+                }
+            }
+
+            // 4. WHOLE-PIPELINE INVARIANCE (stage 1 then the real stage 2).
+            for ghost in ghost_candidates(&parents) {
+                let outputs: StdHashSet<Vec<BlockHash>> = perms
+                    .iter()
+                    .map(|perm| {
+                        let mut staged = perm.clone();
+                        ghost_sort_mirror(ghost.as_ref(), &mut staged);
+                        prefer_deploy_support_main_parent(
+                            &dag,
+                            &block_store,
+                            staged,
+                            &genesis.block_hash,
+                        )
+                        .expect("prefer deploy support")
+                        .iter()
+                        .map(|b| b.block_hash.clone())
+                        .collect()
+                    })
+                    .collect();
+                prop_assert_eq!(
+                    outputs.len(),
+                    1,
+                    "the composed pipeline output depends on the input parent order"
+                );
+            }
+        }
+    }
 }

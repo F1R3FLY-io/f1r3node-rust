@@ -89,7 +89,7 @@ fn mk_casper_snapshot(
 /// such rejection), so the fabricated record never becomes buildable
 /// history and the recovery block is orphaned with it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn repeat_deploy_correctly_rejects_stale_recovery_when_d_is_finalized() {
+async fn repeat_deploy_grants_exemption_on_parent_rejection_record() {
     crate::init_logger();
 
     with_storage(|mut block_store, mut block_dag_storage| async move {

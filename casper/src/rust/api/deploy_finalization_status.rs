@@ -161,31 +161,38 @@ fn run_prelude(
     block_store: &KeyValueBlockStore,
     sig: &[u8],
 ) -> ApiErr<PreludeOutcome> {
-    let sig_vec: Vec<u8> = sig.to_vec();
-    let sig_bytes: Bytes = Bytes::copy_from_slice(sig);
-
     let Some(first_seen_block_hash) = dag
-        .lookup_by_deploy_id(&sig_vec)
+        .lookup_by_deploy_id(&sig.to_vec())
         .map_err(|e| eyre::eyre!("deploy index lookup failed: {}", e))?
     else {
         return Ok(PreludeOutcome::Unknown);
     };
 
-    let first_seen_block = match block_store.get(&first_seen_block_hash) {
+    run_prelude_from_block(block_store, sig, &first_seen_block_hash)
+}
+
+fn run_prelude_from_block(
+    block_store: &KeyValueBlockStore,
+    sig: &[u8],
+    first_seen_block_hash: &BlockHash,
+) -> ApiErr<PreludeOutcome> {
+    let sig_bytes: Bytes = Bytes::copy_from_slice(sig);
+
+    let first_seen_block = match block_store.get(first_seen_block_hash) {
         Ok(Some(b)) => b,
         Ok(None) => {
             tracing::warn!(
                 target: "f1r3fly.casper.deploy_finalization.validation",
                 "sig {} indexed at block {} but block body absent from store",
                 hex::encode(&sig_bytes),
-                PrettyPrinter::build_string_bytes(&first_seen_block_hash)
+                PrettyPrinter::build_string_bytes(first_seen_block_hash)
             );
             return Ok(PreludeOutcome::Unknown);
         }
         Err(e) => {
             return Err(eyre::eyre!(
                 "block_store.get failed for first-seen block {}: {}",
-                PrettyPrinter::build_string_bytes(&first_seen_block_hash),
+                PrettyPrinter::build_string_bytes(first_seen_block_hash),
                 e
             ));
         }
@@ -212,18 +219,18 @@ fn run_prelude(
                 "sig {} indexed at block {} but missing from that block's \
                  body.deploys — check deploy index vs block store consistency",
                 hex::encode(&sig_bytes),
-                PrettyPrinter::build_string_bytes(&first_seen_block_hash),
+                PrettyPrinter::build_string_bytes(first_seen_block_hash),
             );
             return Err(eyre::Report::new(DeployFinalizationCorruption {
                 sig: sig_bytes,
-                block_hash: first_seen_block_hash,
+                block_hash: first_seen_block_hash.clone(),
             }));
         }
     };
 
     Ok(PreludeOutcome::Active(ResolverState::new(
         sig_bytes,
-        first_seen_block_hash,
+        first_seen_block_hash.clone(),
         valid_after_block_number,
     )))
 }
@@ -592,22 +599,45 @@ pub fn resolve(
     deploy_lifespan: i64,
     sig: &[u8],
 ) -> ApiErr<DeployFinalizationStatus> {
-    let prelude = run_prelude(dag, block_store, sig)?;
-    let state = match prelude {
-        PreludeOutcome::Unknown => return Ok(DeployFinalizationStatus::pending_unknown()),
-        PreludeOutcome::Active(s) => s,
-    };
+    resolve_with_known_block(dag, block_store, deploy_lifespan, sig, None)
+}
 
+fn resolve_from_state(
+    dag: &KeyValueDagRepresentation,
+    block_store: &KeyValueBlockStore,
+    deploy_lifespan: i64,
+    state: ResolverState,
+) -> ApiErr<DeployFinalizationStatus> {
     let mut per_sig: HashMap<Bytes, ResolverState> = HashMap::new();
     per_sig.insert(state.sig_bytes.clone(), state);
-
     bfs_finalized_window(dag, block_store, deploy_lifespan, &mut per_sig)?;
-
     let (_, state) = per_sig
         .into_iter()
         .next()
         .expect("per_sig was populated with one entry above");
     finalize_sig_state(dag, deploy_lifespan, state)
+}
+
+pub fn resolve_with_known_block(
+    dag: &KeyValueDagRepresentation,
+    block_store: &KeyValueBlockStore,
+    deploy_lifespan: i64,
+    sig: &[u8],
+    known_block_hash: Option<&BlockHash>,
+) -> ApiErr<DeployFinalizationStatus> {
+    let prelude = run_prelude(dag, block_store, sig)?;
+    let state = match prelude {
+        PreludeOutcome::Active(state) => state,
+        PreludeOutcome::Unknown => match known_block_hash {
+            Some(block_hash) => match run_prelude_from_block(block_store, sig, block_hash)? {
+                PreludeOutcome::Active(state) => state,
+                PreludeOutcome::Unknown => return Ok(DeployFinalizationStatus::pending_unknown()),
+            },
+            None => return Ok(DeployFinalizationStatus::pending_unknown()),
+        },
+    };
+
+    resolve_from_state(dag, block_store, deploy_lifespan, state)
 }
 
 /// Batched resolver for many sigs in a single canonical-chain scan.
