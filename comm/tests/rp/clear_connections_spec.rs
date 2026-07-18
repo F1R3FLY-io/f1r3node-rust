@@ -5,7 +5,9 @@ use std::time::Duration;
 
 use comm::rust::errors::{timeout, CommError};
 use comm::rust::peer_node::{Endpoint, NodeIdentifier, PeerNode};
-use comm::rust::rp::connect::{clear_connections, Connections, ConnectionsCell};
+use comm::rust::rp::connect::{
+    clear_connections, clear_connections_with_failure_streaks, Connections, ConnectionsCell,
+};
 use comm::rust::rp::rp_conf::{ClearConnectionsConf, RPConf};
 use comm::rust::test_instances::{NodeDiscoveryStub, TransportLayerStub, NETWORK_ID};
 use prost::bytes::Bytes;
@@ -88,6 +90,8 @@ impl comm::rust::discovery::node_discovery::NodeDiscovery for TrackingNodeDiscov
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use super::*;
 
     #[tokio::test]
@@ -326,5 +330,106 @@ mod tests {
             removed_keys.contains(&peer("A").id.key),
             "Non-bootstrap peer should be removed from KademliaStore"
         );
+    }
+
+    #[tokio::test]
+    async fn test_clear_connections_should_require_consecutive_failures() {
+        let connections = mk_connections(&[peer("A"), peer("B")]);
+        let rp_conf = conf(5, Some(2), None);
+        let transport = TransportLayerStub::new();
+        transport.set_responses(|remote, protocol| {
+            if remote.id.key == peer("A").id.key {
+                always_fail(remote, protocol)
+            } else {
+                always_success(remote, protocol)
+            }
+        });
+        let discovery = NodeDiscoveryStub::new();
+        let mut failure_streaks = HashMap::new();
+
+        for expected_streak in 1..3 {
+            let (cleared, failed_peers) = clear_connections_with_failure_streaks(
+                &connections,
+                &rp_conf,
+                &transport,
+                &discovery,
+                &mut failure_streaks,
+                3,
+            )
+            .await
+            .unwrap();
+
+            assert_eq!(cleared, 0);
+            assert!(failed_peers.is_empty());
+            assert_eq!(
+                failure_streaks.get(&peer("A").id.key),
+                Some(&expected_streak)
+            );
+            assert!(connections.read().unwrap().as_slice().contains(&peer("A")));
+        }
+
+        let (cleared, failed_peers) = clear_connections_with_failure_streaks(
+            &connections,
+            &rp_conf,
+            &transport,
+            &discovery,
+            &mut failure_streaks,
+            3,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(cleared, 1);
+        assert_eq!(failed_peers, vec![peer("A")]);
+        assert!(!connections.read().unwrap().as_slice().contains(&peer("A")));
+    }
+
+    #[tokio::test]
+    async fn test_clear_connections_should_reset_failure_streak_after_success() {
+        let connections = mk_connections(&[peer("A")]);
+        let rp_conf = conf(5, Some(1), None);
+        let transport = TransportLayerStub::new();
+        let discovery = NodeDiscoveryStub::new();
+        let mut failure_streaks = HashMap::new();
+
+        transport.set_responses(always_fail);
+        clear_connections_with_failure_streaks(
+            &connections,
+            &rp_conf,
+            &transport,
+            &discovery,
+            &mut failure_streaks,
+            3,
+        )
+        .await
+        .unwrap();
+        assert_eq!(failure_streaks.get(&peer("A").id.key), Some(&1));
+
+        transport.set_responses(always_success);
+        clear_connections_with_failure_streaks(
+            &connections,
+            &rp_conf,
+            &transport,
+            &discovery,
+            &mut failure_streaks,
+            3,
+        )
+        .await
+        .unwrap();
+        assert!(!failure_streaks.contains_key(&peer("A").id.key));
+
+        transport.set_responses(always_fail);
+        let (cleared, _) = clear_connections_with_failure_streaks(
+            &connections,
+            &rp_conf,
+            &transport,
+            &discovery,
+            &mut failure_streaks,
+            3,
+        )
+        .await
+        .unwrap();
+        assert_eq!(cleared, 0);
+        assert_eq!(failure_streaks.get(&peer("A").id.key), Some(&1));
     }
 }

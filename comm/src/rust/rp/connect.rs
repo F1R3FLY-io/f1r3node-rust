@@ -1,8 +1,10 @@
 // See comm/src/main/scala/coop/rchain/comm/rp/Connect.scala
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
+use futures::future::join_all;
+use prost::bytes::Bytes;
 use rand::seq::SliceRandom;
 use tracing::{info, warn};
 
@@ -17,6 +19,7 @@ use crate::rust::rp::rp_conf::RPConf;
 use crate::rust::transport::transport_layer::TransportLayer;
 
 pub type Connection = PeerNode;
+pub const DEFAULT_HEARTBEAT_FAILURE_THRESHOLD: usize = 3;
 
 #[derive(Debug, Clone)]
 pub struct Connections(pub Vec<Connection>);
@@ -181,42 +184,75 @@ pub async fn clear_connections<T: TransportLayer>(
     conf: &RPConf,
     transport: &T,
     node_discovery: &dyn crate::rust::discovery::node_discovery::NodeDiscovery,
-) -> Result<(usize, Vec<PeerNode>), CommError> {
+) -> Result<(usize, Vec<PeerNode>), CommError>
+where
+    T: Sync,
+{
+    let mut failure_streaks = HashMap::new();
+    clear_connections_with_failure_streaks(
+        connections_cell,
+        conf,
+        transport,
+        node_discovery,
+        &mut failure_streaks,
+        1,
+    )
+    .await
+}
+
+pub async fn clear_connections_with_failure_streaks<T: TransportLayer>(
+    connections_cell: &ConnectionsCell,
+    conf: &RPConf,
+    transport: &T,
+    node_discovery: &dyn crate::rust::discovery::node_discovery::NodeDiscovery,
+    failure_streaks: &mut HashMap<Bytes, usize>,
+    failure_threshold: usize,
+) -> Result<(usize, Vec<PeerNode>), CommError>
+where
+    T: Sync,
+{
     let connections = connections_cell.read()?;
     let num_to_ping = conf.clear_connections.num_of_connections_pinged;
     let to_ping = connections.take(num_to_ping);
+    let connected_ids: HashSet<Bytes> =
+        connections.iter().map(|peer| peer.id.key.clone()).collect();
+    failure_streaks.retain(|peer_id, _| connected_ids.contains(peer_id));
+    let failure_threshold = failure_threshold.max(1);
 
-    let mut results = Vec::new();
-
-    // Send heartbeats to each peer
-    for peer in to_ping.iter() {
+    let results = join_all(to_ping.iter().cloned().map(|peer| {
         let heartbeat_msg = protocol_helper::heartbeat(&conf.local, &conf.network_id);
-        let result = transport.send(peer, &heartbeat_msg).await;
-        results.push((peer.clone(), result));
+        async move {
+            let result = transport.send(&peer, &heartbeat_msg).await;
+            (peer, result)
+        }
+    }))
+    .await;
+
+    let mut successful_peers = Vec::new();
+    let mut failed_peers = Vec::new();
+
+    for (peer, result) in results {
+        match result {
+            Ok(()) => {
+                failure_streaks.remove(&peer.id.key);
+                successful_peers.push(peer);
+            }
+            Err(error) => {
+                let streak = failure_streaks.entry(peer.id.key.clone()).or_insert(0);
+                *streak += 1;
+                if *streak >= failure_threshold {
+                    failure_streaks.remove(&peer.id.key);
+                    failed_peers.push(peer);
+                } else {
+                    warn!(
+                        "Heartbeat to {} failed ({}/{}); retaining connection: {}",
+                        peer, streak, failure_threshold, error
+                    );
+                    successful_peers.push(peer);
+                }
+            }
+        }
     }
-
-    // Separate successful and failed peers
-    let successful_peers: Vec<PeerNode> = results
-        .iter()
-        .filter_map(|(peer, result)| {
-            if result.is_ok() {
-                Some(peer.clone())
-            } else {
-                None
-            }
-        })
-        .collect();
-
-    let failed_peers: Vec<PeerNode> = results
-        .iter()
-        .filter_map(|(peer, result)| {
-            if result.is_err() {
-                Some(peer.clone())
-            } else {
-                None
-            }
-        })
-        .collect();
 
     // Bootstrap peer is pinned in KademliaStore so the node can always
     // rediscover it via findAndConnect.  Removing it from the routing
