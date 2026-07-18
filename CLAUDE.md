@@ -97,6 +97,33 @@ Three crates have `build.rs` for protobuf code generation:
 - `rust-toolchain.toml` — nightly channel pin
 - `Cross.toml` — cross-compilation for amd64/arm64
 
+### Recommended Claude Code local settings
+Add to `.claude/settings.local.json` (personal, not committed) when working
+in this repo with Claude Code:
+
+```json
+{
+  "fileCheckpointingEnabled": false,
+  "env": {
+    "BASH_DEFAULT_TIMEOUT_MS": "1200000",
+    "BASH_MAX_TIMEOUT_MS": "1800000"
+  }
+}
+```
+
+- `fileCheckpointingEnabled: false` — Claude Code's checkpointing/rewind
+  feature runs `git stash` + `git reset --hard` against the workspace repo
+  around tool events, taking real `.git/index.lock` locks that collide with
+  concurrent git commands ("Unable to create index.lock"; see
+  anthropics/claude-code#68315). Disabling it trades away `/rewind` file
+  restore in this repo.
+- Bash timeouts raised to 20/30 min — the pre-push hook runs the full
+  release test suite for all 11 crates (~9 min, longer on cold caches),
+  which exceeds the default 10-minute window and gets a `git push` killed
+  mid-gate when run through Claude Code.
+
+Both settings take effect at the next session start.
+
 ## Network Ports
 | Port | Service |
 |------|---------|
