@@ -881,10 +881,13 @@ pub async fn compute_parents_post_state(
         // such system deploys are not mergeable, so take them from one of the parents.
         _ => {
             let cache_lookup_started = std::time::Instant::now();
+            // A parent that DAG-covers every other parent already carries their
+            // effects in its post-state, deploys included — merging a block with
+            // its own ancestors is degenerate (the merger assumes siblings), so
+            // the covering parent short-circuits regardless of deploy content.
+            // (Port note: 6981b37a's empty-deploys guard is deliberately NOT
+            // taken — it re-exposed ancestor-merges on linear chains here.)
             for candidate in &parents {
-                if !candidate.body.deploys.is_empty() {
-                    continue;
-                }
                 let covers_all = parents
                     .iter()
                     .filter(|p| p.block_hash != candidate.block_hash)
