@@ -451,6 +451,17 @@ impl<T: TransportLayer + Send + Sync> Running<T> {
             return Ok(false);
         }
 
+        if !self.casper.has_pending_deploys_in_storage().await? {
+            let snapshot = self.casper.get_snapshot().await?;
+            if snapshot.deploys_in_scope.is_empty() {
+                tracing::debug!(
+                    "Validator latest message {} is stale, but the shard has no pending or unfinalized user deploys; keeping the validator running.",
+                    PrettyPrinter::build_string_bytes(&latest_hash)
+                );
+                return Ok(false);
+            }
+        }
+
         let init = Arc::new(|| {
             Box::pin(async { Ok(()) })
                 as Pin<Box<dyn Future<Output = Result<(), CasperError>> + Send>>

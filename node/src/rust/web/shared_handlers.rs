@@ -7,9 +7,9 @@ use axum::http::request::Parts;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json, Response};
 use casper::rust::api::block_api::{
-    BlockNotFoundError, DeployNotFoundError, DeployValidationError, ExploratoryDeployReadOnlyError,
-    InvalidHashError, InvalidPublicKeyError, LatestBlockMessageError, NoNewDeploysError,
-    ProposeReadOnlyError,
+    BlockNotFoundError, DeployNotFoundError, DeployValidationError, ExploratoryDeployBusyError,
+    ExploratoryDeployReadOnlyError, InvalidHashError, InvalidPublicKeyError,
+    LatestBlockMessageError, NoNewDeploysError, ProposeReadOnlyError,
 };
 use casper::rust::api::block_report_api::BlockReportAPI;
 use casper::rust::errors::CasperError;
@@ -226,6 +226,13 @@ fn classify_error(err: &eyre::Error) -> (StatusCode, &'static str, String) {
             return (
                 StatusCode::BAD_REQUEST,
                 "readonly_node_required",
+                cause.to_string(),
+            );
+        }
+        if cause.downcast_ref::<ExploratoryDeployBusyError>().is_some() {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "observer_busy",
                 cause.to_string(),
             );
         }
@@ -575,5 +582,22 @@ where
     {
         Ok(inner) => inner,
         Err(join_err) => Err(eyre::eyre!("handler task panicked: {}", join_err)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::http::StatusCode;
+    use casper::rust::api::block_api::ExploratoryDeployBusyError;
+
+    use super::classify_error;
+
+    #[test]
+    fn exploratory_deploy_busy_is_service_unavailable() {
+        let error = eyre::Report::new(ExploratoryDeployBusyError);
+        let (status, kind, _) = classify_error(&error);
+
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(kind, "observer_busy");
     }
 }

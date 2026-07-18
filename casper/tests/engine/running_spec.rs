@@ -4,7 +4,7 @@ use std::collections::HashSet;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use casper::rust::block_status::{BlockError, InvalidBlock, ValidBlock};
@@ -41,6 +41,7 @@ mod tests {
     struct ValidatorAwareNoOpsCasper {
         inner: crate::helper::no_ops_casper_effect::NoOpsCasperEffect,
         validator_id: ValidatorIdentity,
+        pending_deploys: bool,
     }
 
     #[async_trait]
@@ -88,14 +89,14 @@ mod tests {
         }
 
         async fn has_pending_deploys_in_storage(&self) -> Result<bool, CasperError> {
-            self.inner.has_pending_deploys_in_storage().await
+            Ok(self.pending_deploys)
         }
     }
 
     #[async_trait]
     impl Casper for ValidatorAwareNoOpsCasper {
         async fn get_snapshot(&self) -> Result<CasperSnapshot, CasperError> {
-            self.inner.get_snapshot().await
+            Ok(casper::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot())
         }
 
         fn contains(&self, hash: &BlockHash) -> bool { self.inner.contains(hash) }
@@ -395,6 +396,7 @@ mod tests {
             Arc::new(ValidatorAwareNoOpsCasper {
                 inner: casper,
                 validator_id: fixture.validator_id.clone(),
+                pending_deploys: true,
             }) as Arc<dyn MultiParentCasper + Send + Sync>,
             approved_block,
             Arc::new(|| {
@@ -492,7 +494,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fresh_validator_should_stay_running_without_approved_block_request() {
+    async fn stale_idle_validator_should_stay_running_without_approved_block_request() {
         let fixture = TestFixture::new().await;
         let engine_cell = Arc::new(EngineCell::init());
 
@@ -501,16 +503,13 @@ mod tests {
             .transport_layer
             .set_responses(|_peer, _protocol| Ok(()));
 
-        let mut fresh_block = fixture.genesis.clone();
-        fresh_block.block_hash = Bytes::from_static(b"fresh-validator-block");
-        fresh_block.sender = fixture.validator_id.public_key.bytes.clone();
-        fresh_block.header.timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as i64;
+        let mut stale_block = fixture.genesis.clone();
+        stale_block.block_hash = Bytes::from_static(b"stale-idle-validator-block");
+        stale_block.sender = fixture.validator_id.public_key.bytes.clone();
+        stale_block.header.timestamp = 0;
 
         let mut casper = fixture.casper.clone();
-        casper.insert_block(fresh_block, false);
+        casper.insert_block(stale_block, false);
 
         let approved_block = ApprovedBlock {
             candidate: ApprovedBlockCandidate {
@@ -526,6 +525,7 @@ mod tests {
             Arc::new(ValidatorAwareNoOpsCasper {
                 inner: casper,
                 validator_id: fixture.validator_id.clone(),
+                pending_deploys: false,
             }) as Arc<dyn MultiParentCasper + Send + Sync>,
             approved_block,
             Arc::new(|| {
@@ -560,7 +560,7 @@ mod tests {
             &fixture.transport_layer,
             &fixture.connections_cell,
             &fixture.rp_conf_ask,
-            Duration::from_secs(60),
+            Duration::from_secs(1),
         )
         .await
         .unwrap();
@@ -568,7 +568,7 @@ mod tests {
         let engine = engine_cell.get().await;
         assert!(
             engine.with_casper().is_some(),
-            "fresh validator should remain in Running"
+            "stale idle validator should remain in Running"
         );
 
         let expected_proto = ApprovedBlockRequestProto {
@@ -587,7 +587,7 @@ mod tests {
 
         assert!(
             !found_approved_block_request,
-            "fresh validator should not request an approved block; requests: {:?}",
+            "stale idle validator should not request an approved block; requests: {:?}",
             requests.iter().map(|r| &r.msg).collect::<Vec<_>>()
         );
     }

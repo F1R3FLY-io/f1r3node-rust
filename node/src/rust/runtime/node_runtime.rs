@@ -625,6 +625,16 @@ impl NodeRuntime {
             };
 
         let bpi_block_queue_tx = block_processor_queue_tx.clone();
+        let is_read_only = self.node_conf.casper.validator_private_key.is_none();
+        let max_parallel_blocks =
+            crate::rust::instances::block_processor_instance::configured_max_parallel_blocks(
+                is_read_only,
+            );
+
+        info!(
+            max_parallel_blocks,
+            is_read_only, "Configured block processing parallelism"
+        );
 
         spawn_named_task(
             &mut critical_tasks,
@@ -639,7 +649,7 @@ impl NodeRuntime {
                     Arc::new(block_processor),
                     block_processor_state,
                     trigger_propose_opt,
-                    100, // max_parallel_blocks - match Scala parallelism
+                    max_parallel_blocks,
                 );
 
                 // BlockProcessorInstance::create spawns the processing task and returns a result receiver

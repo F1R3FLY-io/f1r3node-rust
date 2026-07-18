@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
-use casper::rust::api::block_api::BlockAPI;
+use casper::rust::api::block_api::{BlockAPI, ExploratoryDeployBusyError};
 use casper::rust::api::block_report_api::BlockReportAPI;
 use casper::rust::api::graph_generator::{GraphConfig, GraphzGenerator};
 use casper::rust::engine::engine_cell::EngineCell;
@@ -822,6 +822,9 @@ impl DeployService for DeployGrpcServiceV1Impl {
                 }))
             }
             Err(e) => {
+                if e.downcast_ref::<ExploratoryDeployBusyError>().is_some() {
+                    return Err(tonic::Status::unavailable(e.to_string()));
+                }
                 error!("Deploy service method error exploratory_deploy: {}", e);
                 Ok(tonic::Response::new(ExploratoryDeployResponse {
                     message: Some(

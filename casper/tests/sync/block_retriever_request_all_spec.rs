@@ -10,6 +10,7 @@ mod tests {
     use casper::rust::protocol::{
         extract_packet_from_protocol, verify_block_request, verify_has_block_request,
     };
+    use comm::rust::errors::CommError;
     use comm::rust::peer_node::PeerNode;
     use comm::rust::rp::connect::{Connections, ConnectionsCell};
     use comm::rust::test_instances::{create_rp_conf_ask, TransportLayerStub};
@@ -176,6 +177,47 @@ mod tests {
                         .expect("Should be able to extract packet from protocol");
                     verify_block_request(&packet, &fixture.hash)
                         .expect("Should be BlockRequest with correct hash");
+                }
+
+                #[tokio::test]
+                async fn should_keep_failed_retry_scheduled() {
+                    let fixture = TestFixture::new();
+                    let waiting1 = TestFixture::peer_node("waiting1", 40401);
+                    let waiting2 = TestFixture::peer_node("waiting2", 40402);
+                    let timed_out_timestamp = fixture.create_timed_out_timestamp();
+
+                    fixture
+                        .block_retriever
+                        .set_request_state_for_test(
+                            fixture.hash.clone(),
+                            casper::rust::engine::block_retriever::RequestState {
+                                timestamp: timed_out_timestamp,
+                                initial_timestamp: timed_out_timestamp,
+                                peers: HashSet::new(),
+                                received: false,
+                                in_casper_buffer: false,
+                                waiting_list: vec![waiting1.clone(), waiting2.clone()],
+                                peer_requery_cursor: 0,
+                            },
+                        )
+                        .await
+                        .expect("request state should be set");
+                    fixture
+                        .transport_layer
+                        .set_responses(|_, _| Err(CommError::TimeOut));
+
+                    let result = fixture.block_retriever.request_all(fixture.timeout).await;
+
+                    assert!(result.is_ok());
+                    let request_state = fixture
+                        .block_retriever
+                        .get_request_state_for_test(&fixture.hash)
+                        .await
+                        .expect("request state should be readable")
+                        .expect("request should remain scheduled");
+                    assert_eq!(request_state.timestamp, 0);
+                    assert_eq!(request_state.waiting_list, vec![waiting2]);
+                    assert!(request_state.peers.contains(&waiting1));
                 }
 
                 #[tokio::test]

@@ -147,7 +147,13 @@ impl TransportLayer for TransportLayerStub {
             }
         }
 
-        // For broadcast, we return success for all peers in the stub
+        let reqresp = self.reqresp.lock().unwrap();
+        if let Some(ref response_fn) = *reqresp {
+            for peer in peers {
+                response_fn(peer, msg)?;
+            }
+        }
+
         Ok(())
     }
 

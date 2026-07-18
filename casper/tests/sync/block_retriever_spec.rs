@@ -9,6 +9,7 @@ mod tests {
     use casper::rust::protocol::{
         extract_packet_from_protocol, verify_block_request, verify_has_block_request,
     };
+    use comm::rust::errors::CommError;
     use comm::rust::peer_node::PeerNode;
     use comm::rust::rp::connect::{Connections, ConnectionsCell};
     use comm::rust::test_instances::{create_rp_conf_ask, TransportLayerStub};
@@ -186,6 +187,37 @@ mod tests {
                         .expect("Should be able to extract packet from protocol");
                     verify_block_request(&packet, &fixture.hash)
                         .expect("Should be BlockRequest with correct hash");
+                }
+
+                #[tokio::test]
+                async fn should_keep_request_scheduled_when_initial_send_fails() {
+                    let fixture = TestFixture::new();
+                    fixture
+                        .transport_layer
+                        .set_responses(|_, _| Err(CommError::TimeOut));
+
+                    let result = fixture
+                        .block_retriever
+                        .admit_hash(
+                            fixture.hash.clone(),
+                            Some(fixture.peer.clone()),
+                            TestReason.into(),
+                        )
+                        .await;
+
+                    assert!(result.is_ok());
+                    assert_eq!(fixture.transport_layer.request_count(), 1);
+
+                    let request_state = fixture
+                        .block_retriever
+                        .get_request_state_for_test(&fixture.hash)
+                        .await
+                        .expect("request state should be readable")
+                        .expect("request should remain scheduled");
+
+                    assert_eq!(request_state.timestamp, 0);
+                    assert!(request_state.waiting_list.is_empty());
+                    assert!(request_state.peers.contains(&fixture.peer));
                 }
             }
         }

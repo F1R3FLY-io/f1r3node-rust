@@ -10,7 +10,7 @@ use comm::rust::rp::rp_conf::RPConf;
 use comm::rust::transport::transport_layer::TransportLayer;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::rust::errors::CasperError;
 use crate::rust::metrics_constants::{
@@ -525,6 +525,28 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
             .is_some_and(|until| now < until))
     }
 
+    fn reschedule_failed_send(
+        &self,
+        hash: &BlockHash,
+        failed_peer: Option<&PeerNode>,
+    ) -> Result<(), CasperError> {
+        let mut state = self.requested_blocks.lock().map_err(|_| {
+            CasperError::RuntimeError("Failed to acquire requested_blocks lock".to_string())
+        })?;
+
+        if let Some(request_state) = state.get_mut(hash) {
+            request_state.timestamp = 0;
+            if let Some(peer) = failed_peer {
+                request_state
+                    .waiting_list
+                    .retain(|candidate| candidate != peer);
+                request_state.peers.insert(peer.clone());
+            }
+        }
+
+        Ok(())
+    }
+
     /// Get access to the requested_blocks for testing purposes
     pub fn requested_blocks(&self) -> &RequestedBlocks { &self.requested_blocks }
 
@@ -819,25 +841,46 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
 
         // Handle broadcasting and requesting
         if result.broadcast_request {
-            self.transport
+            if let Err(error) = self
+                .transport
                 .broadcast_has_block_request(&self.connections_cell, &self.conf, &hash)
-                .await?;
-            debug!(
-                "Broadcasted HasBlockRequest for {}",
-                PrettyPrinter::build_string_bytes(&hash)
-            );
+                .await
+            {
+                warn!(
+                    block = %PrettyPrinter::build_string_bytes(&hash),
+                    %error,
+                    "Initial block discovery broadcast failed; request remains scheduled"
+                );
+                self.reschedule_failed_send(&hash, None)?;
+            } else {
+                debug!(
+                    "Broadcasted HasBlockRequest for {}",
+                    PrettyPrinter::build_string_bytes(&hash)
+                );
+            }
         }
 
         if result.request_block {
             if let Some(peer_node) = request_from_peer {
-                self.transport
+                if let Err(error) = self
+                    .transport
                     .request_for_block(&self.conf, &peer_node, hash.clone())
-                    .await?;
-                debug!(
-                    "Requested block {} from {}",
-                    PrettyPrinter::build_string_bytes(&hash),
-                    peer_node.endpoint.host
-                );
+                    .await
+                {
+                    warn!(
+                        block = %PrettyPrinter::build_string_bytes(&hash),
+                        peer = %peer_node.endpoint.host,
+                        %error,
+                        "Initial block request failed; request remains scheduled"
+                    );
+                    self.reschedule_failed_send(&hash, Some(&peer_node))?;
+                } else {
+                    debug!(
+                        "Requested block {} from {}",
+                        PrettyPrinter::build_string_bytes(&hash),
+                        peer_node.endpoint.host
+                    );
+                }
             }
         }
 
@@ -1062,9 +1105,19 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
             )
             .await?;
         if matches!(admit_result.status, AdmitHashStatus::Ignore) {
-            self.transport
+            if let Err(error) = self
+                .transport
                 .broadcast_has_block_request(&self.connections_cell, &self.conf, &hash)
-                .await?;
+                .await
+            {
+                warn!(
+                    block = %PrettyPrinter::build_string_bytes(&hash),
+                    %error,
+                    "Dependency recovery broadcast failed; request remains scheduled"
+                );
+                self.reschedule_failed_send(&hash, None)?;
+                return Ok(());
+            }
         }
 
         self.register_retry_attempt(&hash)?;
@@ -1147,10 +1200,20 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
                         .join(", ")
                 );
 
-                // Request block from the peer
-                self.transport
+                if let Err(error) = self
+                    .transport
                     .request_for_block(&self.conf, &next_peer, hash.clone())
-                    .await?;
+                    .await
+                {
+                    warn!(
+                        block = %PrettyPrinter::build_string_bytes(hash),
+                        peer = %next_peer.endpoint.host,
+                        %error,
+                        "Block retry failed; request remains scheduled"
+                    );
+                    self.reschedule_failed_send(hash, Some(&next_peer))?;
+                    return Ok(false);
+                }
 
                 // If this was the last peer in the waiting list, also broadcast HasBlockRequest.
                 if remaining_waiting.is_empty() {
@@ -1159,9 +1222,17 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
                         PrettyPrinter::build_string_bytes(hash)
                     );
 
-                    self.transport
+                    if let Err(error) = self
+                        .transport
                         .broadcast_has_block_request(&self.connections_cell, &self.conf, hash)
-                        .await?;
+                        .await
+                    {
+                        warn!(
+                            block = %PrettyPrinter::build_string_bytes(hash),
+                            %error,
+                            "Supplemental block discovery broadcast failed"
+                        );
+                    }
                 }
                 Ok(true)
             }
@@ -1202,10 +1273,21 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
                     "No peers in waiting list for block {}. Broadcasting HasBlockRequest.",
                     PrettyPrinter::build_string_bytes(hash)
                 );
-                self.transport
+                if let Err(error) = self
+                    .transport
                     .broadcast_has_block_request(&self.connections_cell, &self.conf, hash)
-                    .await?;
-                Ok(true)
+                    .await
+                {
+                    warn!(
+                        block = %PrettyPrinter::build_string_bytes(hash),
+                        %error,
+                        "Block discovery retry failed; request remains scheduled"
+                    );
+                    self.reschedule_failed_send(hash, None)?;
+                    Ok(false)
+                } else {
+                    Ok(true)
+                }
             }
             RerequestAction::RequestKnownPeer(known_peer, now) => {
                 metrics::counter!(BLOCK_REQUESTS_RETRY_ACTION_METRIC, "source" => BLOCK_RETRIEVER_METRICS_SOURCE, "action" => "peer_requery").increment(1);
@@ -1245,11 +1327,23 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
                     known_peer.endpoint.host,
                     PrettyPrinter::build_string_bytes(hash)
                 );
-                self.transport
+                if let Err(error) = self
+                    .transport
                     .request_for_block(&self.conf, &known_peer, hash.clone())
-                    .await?;
-                self.register_peer_requery_attempt(hash)?;
-                Ok(true)
+                    .await
+                {
+                    warn!(
+                        block = %PrettyPrinter::build_string_bytes(hash),
+                        peer = %known_peer.endpoint.host,
+                        %error,
+                        "Known-peer block retry failed; request remains scheduled"
+                    );
+                    self.reschedule_failed_send(hash, Some(&known_peer))?;
+                    Ok(false)
+                } else {
+                    self.register_peer_requery_attempt(hash)?;
+                    Ok(true)
+                }
             }
             RerequestAction::None => {
                 metrics::counter!(BLOCK_REQUESTS_RETRY_ACTION_METRIC, "source" => BLOCK_RETRIEVER_METRICS_SOURCE, "action" => "none").increment(1);
@@ -1402,6 +1496,7 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
 
 #[cfg(test)]
 mod tests {
+    use comm::rust::errors::CommError;
     use comm::rust::peer_node::{Endpoint, NodeIdentifier, PeerNode};
     use comm::rust::rp::connect::{Connections, ConnectionsCell};
     use comm::rust::test_instances::{create_rp_conf_ask, TransportLayerStub};
@@ -1509,6 +1604,53 @@ mod tests {
             1,
             "recover_dependency should issue a direct request when a connected peer exists"
         );
+    }
+
+    #[tokio::test]
+    async fn recover_dependency_should_keep_failed_broadcast_scheduled() {
+        let local = peer_node("local", 40400);
+        let remote = peer_node("remote", 40401);
+        let rp_conf = create_rp_conf_ask(local, None, None);
+        let connections = Connections::from_vec(vec![remote.clone()]);
+        let connections_cell = ConnectionsCell {
+            peers: Arc::new(Mutex::new(connections)),
+        };
+        let requested_blocks: RequestedBlocks = Arc::new(Mutex::new(HashMap::new()));
+        let transport = Arc::new(TransportLayerStub::new());
+        transport.set_responses(|_, _| Err(CommError::TimeOut));
+        let block_retriever = BlockRetriever::new(
+            requested_blocks.clone(),
+            transport.clone(),
+            connections_cell,
+            rp_conf,
+        );
+
+        let hash: BlockHash = Bytes::from_static(b"failed-recovery-broadcast");
+        block_retriever
+            .set_request_state_for_test(hash.clone(), RequestState {
+                timestamp: 1,
+                initial_timestamp: 1,
+                peers: HashSet::from([remote]),
+                received: false,
+                in_casper_buffer: false,
+                waiting_list: Vec::new(),
+                peer_requery_cursor: 0,
+            })
+            .await
+            .expect("request state should be set");
+
+        block_retriever
+            .recover_dependency(hash.clone())
+            .await
+            .expect("failed broadcast should remain retryable");
+
+        let state = block_retriever
+            .get_request_state_for_test(&hash)
+            .await
+            .expect("request state should be readable")
+            .expect("request should remain scheduled");
+        assert_eq!(state.timestamp, 0);
+        assert_eq!(transport.request_count(), 1);
     }
 
     #[tokio::test]

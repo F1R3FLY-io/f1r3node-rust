@@ -17,6 +17,9 @@ use tokio::sync::mpsc;
 
 const MAX_BLOCKS_IN_PROCESSING_DEFAULT: usize = 512;
 const MAX_BLOCKS_IN_PROCESSING_ENV: &str = "F1R3_MAX_BLOCKS_IN_PROCESSING";
+const MAX_PARALLEL_BLOCKS_DEFAULT: usize = 100;
+const MAX_PARALLEL_BLOCKS_READ_ONLY_DEFAULT: usize = 8;
+const MAX_PARALLEL_BLOCKS_ENV: &str = "F1R3_MAX_PARALLEL_BLOCKS";
 const BLOCK_PROCESSING_RESULT_QUEUE_CAPACITY: usize = 128;
 #[cfg(target_os = "linux")]
 static PROCESSED_BLOCKS: AtomicUsize = AtomicUsize::new(0);
@@ -48,6 +51,20 @@ fn max_blocks_in_processing() -> usize {
             .filter(|v| *v > 0)
             .unwrap_or(MAX_BLOCKS_IN_PROCESSING_DEFAULT)
     })
+}
+
+pub fn configured_max_parallel_blocks(is_read_only: bool) -> usize {
+    let default = if is_read_only {
+        MAX_PARALLEL_BLOCKS_READ_ONLY_DEFAULT
+    } else {
+        MAX_PARALLEL_BLOCKS_DEFAULT
+    };
+
+    std::env::var(MAX_PARALLEL_BLOCKS_ENV)
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(default)
 }
 
 fn trigger_propose_after_block_processing_enabled() -> bool {
