@@ -5,9 +5,7 @@
 //
 // See casper/src/main/scala/coop/rchain/casper/blocks/proposer/BlockCreator.scala
 
-#[cfg(test)]
-use std::collections::HashMap;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
@@ -193,7 +191,7 @@ fn select_recovered_deploys_for_block(
 }
 
 fn deploy_encoded_len(deploy: &Signed<DeployData>) -> usize {
-    DeployData::to_proto(deploy.clone()).encoded_len()
+    DeployData::to_proto_ref(deploy).encoded_len()
 }
 
 fn select_deploys_for_block(
@@ -202,7 +200,13 @@ fn select_deploys_for_block(
     reserve_tail: bool,
     byte_budget: usize,
 ) -> DeploySelection {
-    let total_bytes: usize = deploys.iter().map(deploy_encoded_len).sum();
+    // One proto encoding per deploy per selection call: sizes are computed
+    // here and reused for both the total and the budget loop below.
+    let sizes: HashMap<Bytes, usize> = deploys
+        .iter()
+        .map(|d| (d.sig.clone(), deploy_encoded_len(d)))
+        .collect();
+    let total_bytes: usize = sizes.values().sum();
     let ordered = ordered_user_deploys(deploys);
     if ordered.is_empty() || cap == 0 || byte_budget == 0 {
         return DeploySelection {
@@ -210,7 +214,7 @@ fn select_deploys_for_block(
             strategy: "none",
             selected_bytes: 0,
             deferred_bytes: total_bytes,
-            count_capped: !ordered.is_empty(),
+            count_capped: cap == 0 && !ordered.is_empty(),
             byte_capped: byte_budget == 0 && !ordered.is_empty(),
         };
     }
@@ -229,8 +233,14 @@ fn select_deploys_for_block(
     let mut selected = HashSet::new();
     let mut selected_bytes = 0usize;
     let mut byte_capped = false;
+    // Skip-and-continue is starvation-free, not just best-effort packing: a
+    // budget-skipped deploy keeps its position in the (valid_after, timestamp,
+    // sig) order while everything ahead of it gets selected, included, and
+    // removed from storage — new deploys always sort behind it — so it
+    // strictly advances to the front, where the `selected.is_empty()`
+    // carve-out admits it alone even when it alone exceeds the budget.
     for deploy in candidates {
-        let deploy_bytes = deploy_encoded_len(&deploy);
+        let deploy_bytes = sizes.get(&deploy.sig).copied().unwrap_or_default();
         let next_bytes = selected_bytes.saturating_add(deploy_bytes);
         if next_bytes <= byte_budget || selected.is_empty() {
             selected_bytes = next_bytes;
@@ -1949,6 +1959,22 @@ fn in_scope_local_deploy_stats(
     })
 }
 
+/// Admission-time recoverability check: does the rejected-deploy buffer hold
+/// at least one deploy worth re-proposing from THIS proposer's perspective?
+///
+/// Deliberately NOT the same filter as
+/// `snapshot::local_rejected_buffer_has_recoverable_deploys` — that twin runs
+/// inside `compute_snapshot`, before the snapshot's `deploys_in_scope` /
+/// `rejected_in_scope` sets exist, so it can only approximate with the
+/// block-number window. This copy runs after snapshot completion and refines
+/// with the scope sets (clean-in-scope deploys excluded; rejected-in-scope
+/// deploys keep recovery eligibility past the window). Disagreements are
+/// benign by construction: the snapshot copy only drives the parent-narrowing
+/// heuristic, never admission. Do NOT "harmonize" the filters.
+///
+/// Cost: O(1) when the buffer is empty (the common steady state); otherwise
+/// one canonical-won scan bounded below by `scan_floor` (never deeper than
+/// the deploy-lifespan window).
 fn rejected_buffer_has_recoverable_deploys(
     casper_snapshot: &CasperSnapshot,
     block_number: i64,
@@ -1956,10 +1982,15 @@ fn rejected_buffer_has_recoverable_deploys(
     rejected_deploy_buffer: &Arc<Mutex<KeyValueRejectedDeployBuffer>>,
     block_store: &KeyValueBlockStore,
 ) -> Result<bool, CasperError> {
-    let buffered_deploys = rejected_deploy_buffer
-        .lock()
-        .map_err(|e| CasperError::LockError(e.to_string()))?
-        .read_all()?;
+    let buffered_deploys = {
+        let buffer_guard = rejected_deploy_buffer
+            .lock()
+            .map_err(|e| CasperError::LockError(e.to_string()))?;
+        if !buffer_guard.non_empty()? {
+            return Ok(false);
+        }
+        buffer_guard.read_all()?
+    };
     if buffered_deploys.is_empty() {
         return Ok(false);
     }

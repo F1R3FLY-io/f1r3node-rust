@@ -188,6 +188,12 @@ fn prefer_deploy_support_main_parent(
     Ok(reordered)
 }
 
+/// Collapse the parent set to a single deploy-free parent that DAG-covers
+/// every other candidate. No tip content is lost: covering means every other
+/// parent is already in the candidate's ancestry, so their effects are in its
+/// post-state and "merging" them would be the degenerate ancestor-merge case.
+/// Sibling tips that do not cover each other are always kept (`covers_all`
+/// fails), so genuine multi-parent merges are unaffected.
 fn prune_dag_covered_parents(
     dag: &KeyValueDagRepresentation,
     parents: Vec<BlockMessage>,
@@ -251,6 +257,18 @@ fn candidate_scope_has_rejected_deploys(
     Ok(false)
 }
 
+/// Snapshot-time approximation of buffer recoverability, used only to decide
+/// whether `compute_snapshot` enters a recovery context (which narrows parent
+/// selection). Runs BEFORE the snapshot's `deploys_in_scope` /
+/// `rejected_in_scope` sets exist, so it can only filter by the block-number
+/// window and wall-clock expiry — it is deliberately coarser than its
+/// admission-time twin, `block_creator::rejected_buffer_has_recoverable_deploys`,
+/// which refines the same tail (canonical-won exclusion) with the completed
+/// snapshot's scope sets. Disagreements are benign: true-here/false-there
+/// costs one narrowed-parent propose that then declines recovery;
+/// false-here/true-there skips the narrowing heuristic while recovery still
+/// admits at block creation. Do NOT "harmonize" the filters — this one cannot
+/// use fields that do not exist yet.
 fn local_rejected_buffer_has_recoverable_deploys(
     block_store: &KeyValueBlockStore,
     rejected_deploy_buffer: &Arc<Mutex<KeyValueRejectedDeployBuffer>>,
@@ -263,6 +281,9 @@ fn local_rejected_buffer_has_recoverable_deploys(
         let buffer_guard = rejected_deploy_buffer
             .lock()
             .map_err(|err| CasperError::LockError(err.to_string()))?;
+        if !buffer_guard.non_empty().map_err(CasperError::from)? {
+            return Ok(false);
+        }
         buffer_guard.read_all().map_err(CasperError::from)?
     };
     if buffered_deploys.is_empty() {
