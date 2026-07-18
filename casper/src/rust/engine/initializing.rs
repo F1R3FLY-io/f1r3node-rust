@@ -907,7 +907,12 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
 
         // Replay each block to populate mergeable channels
         for block_hash in blocks_to_replay {
-            let block = self.block_store.get_unsafe(&block_hash);
+            let block = self.block_store.get(&block_hash)?.ok_or_else(|| {
+                CasperError::RuntimeError(format!(
+                    "Block {} missing from block store during mergeable channel replay",
+                    PrettyPrinter::build_string_bytes(&block_hash)
+                ))
+            })?;
             let parents = &block.header.parents_hash_list;
 
             if parents.is_empty() {
@@ -956,23 +961,24 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             )
             .await;
 
-        match result {
-            Ok(computed_post_state) => {
-                let expected_post_state = &block.body.state.post_state_hash;
-                if computed_post_state == *expected_post_state {
-                    tracing::debug!("Genesis block replayed successfully.");
-                } else {
-                    tracing::warn!(
-                        "Genesis block replay state mismatch: computed={}, expected={}",
-                        PrettyPrinter::build_string_bytes(&computed_post_state),
-                        PrettyPrinter::build_string_bytes(expected_post_state)
-                    );
-                }
-            }
-            Err(e) => {
-                tracing::warn!("Genesis block replay error: {:?}", e);
-            }
+        // A replay failure or state mismatch means the mergeable channel
+        // store would be silently incomplete — a consensus hazard once the
+        // node is Running. Fail bootstrap loudly instead.
+        let computed_post_state = result.map_err(|e| {
+            CasperError::RuntimeError(format!(
+                "Genesis block replay failed while populating mergeable channel cache: {:?}",
+                e
+            ))
+        })?;
+        let expected_post_state = &block.body.state.post_state_hash;
+        if computed_post_state != *expected_post_state {
+            return Err(CasperError::RuntimeError(format!(
+                "Genesis block replay state mismatch: computed={}, expected={}",
+                PrettyPrinter::build_string_bytes(&computed_post_state),
+                PrettyPrinter::build_string_bytes(expected_post_state)
+            )));
         }
+        tracing::debug!("Genesis block replayed successfully.");
 
         Ok(())
     }
@@ -987,7 +993,12 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         // For multi-parent blocks, we need the pre-state from the block itself
         // (by the time we reach a multi-parent block, all its parents have been replayed)
         let pre_state_hash = if parents.len() == 1 {
-            let parent_block = self.block_store.get_unsafe(&parents[0]);
+            let parent_block = self.block_store.get(&parents[0])?.ok_or_else(|| {
+                CasperError::RuntimeError(format!(
+                    "Parent block {} missing from block store during mergeable channel replay",
+                    PrettyPrinter::build_string_bytes(&parents[0])
+                ))
+            })?;
             parent_block.body.state.post_state_hash.clone()
         } else {
             // Multi-parent: use the block's recorded pre-state
@@ -1027,24 +1038,25 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             )
             .await;
 
-        match result {
-            Ok(computed_post_state) => {
-                let expected_post_state = &block.body.state.post_state_hash;
-                if computed_post_state == *expected_post_state {
-                    tracing::debug!("Block #{} replayed successfully.", block_number);
-                } else {
-                    tracing::warn!(
-                        "Block #{} replay state mismatch: computed={}, expected={}",
-                        block_number,
-                        PrettyPrinter::build_string_bytes(&computed_post_state),
-                        PrettyPrinter::build_string_bytes(expected_post_state)
-                    );
-                }
-            }
-            Err(e) => {
-                tracing::warn!("Block #{} replay error: {:?}", block_number, e);
-            }
+        // A replay failure or state mismatch means the mergeable channel
+        // store would be silently incomplete — a consensus hazard once the
+        // node is Running. Fail bootstrap loudly instead.
+        let computed_post_state = result.map_err(|e| {
+            CasperError::RuntimeError(format!(
+                "Block #{} replay failed while populating mergeable channel cache: {:?}",
+                block_number, e
+            ))
+        })?;
+        let expected_post_state = &block.body.state.post_state_hash;
+        if computed_post_state != *expected_post_state {
+            return Err(CasperError::RuntimeError(format!(
+                "Block #{} replay state mismatch: computed={}, expected={}",
+                block_number,
+                PrettyPrinter::build_string_bytes(&computed_post_state),
+                PrettyPrinter::build_string_bytes(expected_post_state)
+            )));
         }
+        tracing::debug!("Block #{} replayed successfully.", block_number);
 
         Ok(())
     }
