@@ -2750,7 +2750,7 @@ in {
                 uri
             );
             let (query_result, _) = runtime_manager
-                .play_exploratory_deploy(query_term, &post_state)
+                .play_exploratory_deploy(query_term, &post_state, None)
                 .await
                 .expect("query exploratory deploy");
             tracing::info!("Query with correct var name: {} pars", query_result.len());
@@ -2771,7 +2771,7 @@ in {
                 uri
             );
             let bad_result = runtime_manager
-                .play_exploratory_deploy(bad_term, &post_state)
+                .play_exploratory_deploy(bad_term, &post_state, None)
                 .await;
             assert!(
                 bad_result.is_err(),

@@ -452,7 +452,7 @@ pub async fn estimate_cost_handler(
 ) -> Response {
     let web_api = app_state.web_api.clone();
     match offload(
-        move || async move { web_api.estimate_cost(request.term, query.block_hash).await },
+        move || async move { web_api.estimate_cost(request.term, query.block_hash, request.deployer).await },
     )
     .await
     {
@@ -684,6 +684,7 @@ mod tests {
         async fn estimate_cost(
             &self,
             _: String,
+            _: Option<String>,
             _: Option<String>,
         ) -> eyre::Result<crate::rust::api::web_api::EstimateCostResponse> {
             unimplemented!()

@@ -6,6 +6,7 @@ use std::hash::Hash;
 use std::sync::{Arc, Mutex};
 
 use crypto::rust::hash::blake2b256::Blake2b256;
+use crypto::rust::public_key::PublicKey;
 use crypto::rust::signatures::signed::Signed;
 use dashmap::DashMap;
 use hex::ToHex;
@@ -768,10 +769,13 @@ impl RuntimeManager {
         &self,
         term: String,
         hash: &StateHash,
+        deployer: Option<PublicKey>,
     ) -> Result<(Vec<Par>, u64), CasperError> {
         let runtime = self.spawn_runtime().await;
         let mut runtime_ops = RuntimeOps::new(runtime);
-        runtime_ops.play_exploratory_deploy(term, hash).await
+        runtime_ops
+            .play_exploratory_deploy(term, hash, deployer)
+            .await
     }
 
     pub async fn get_data(&self, hash: StateHash, channel: &Par) -> Result<Vec<Par>, CasperError> {

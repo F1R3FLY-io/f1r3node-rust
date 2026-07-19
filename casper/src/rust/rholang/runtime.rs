@@ -822,22 +822,40 @@ impl RuntimeOps {
         &mut self,
         term: String,
         hash: &StateHash,
+        deployer: Option<PublicKey>,
     ) -> Result<(Vec<Par>, u64), CasperError> {
         let deploy_result = async {
-            let deploy = construct_deploy::source_deploy(
-                term,
-                0,
-                // Hardcoded phlogiston limit / 1 REV if phloPrice=1
-                Some(100 * 1000 * 1000),
-                None,
-                Some(
-                    EXPLORATORY_DEPLOY_KEY
-                        .get_or_init(|| Secp256k1.new_key_pair().0)
-                        .clone(),
-                ),
-                None,
-                None,
-            )?;
+            // Hardcoded phlogiston limit / 1 REV if phloPrice=1
+            let phlo_limit = 100 * 1000 * 1000;
+            let deploy = match deployer {
+                Some(pk) => Signed {
+                    data: DeployData {
+                        term,
+                        time_stamp: 0,
+                        phlo_price: 1,
+                        phlo_limit,
+                        valid_after_block_number: 0,
+                        shard_id: String::new(),
+                        expiration_timestamp: None,
+                    },
+                    pk,
+                    sig: prost::bytes::Bytes::new(),
+                    sig_algorithm: Box::new(Secp256k1),
+                },
+                None => construct_deploy::source_deploy(
+                    term,
+                    0,
+                    Some(phlo_limit),
+                    None,
+                    Some(
+                        EXPLORATORY_DEPLOY_KEY
+                            .get_or_init(|| Secp256k1.new_key_pair().0)
+                            .clone(),
+                    ),
+                    None,
+                    None,
+                )?,
+            };
 
             // Create return channel as first private name created in deploy term
             let mut rand = Tools::unforgeable_name_rng(&deploy.pk, deploy.data.time_stamp);
