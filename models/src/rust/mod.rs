@@ -15,6 +15,7 @@ pub mod par_to_sexpr;
 pub mod path_map_encoder;
 pub mod pathmap_crate_type_mapper;
 pub mod pathmap_integration;
+pub mod pathmap_native_query;
 pub mod pathmap_zipper;
 pub mod rholang;
 pub mod sorted_par_hash_set;

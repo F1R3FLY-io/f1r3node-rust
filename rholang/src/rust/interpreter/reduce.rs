@@ -23,6 +23,9 @@ use models::rust::par_map_type_mapper::ParMapTypeMapper;
 use models::rust::par_set::ParSet;
 use models::rust::par_set_type_mapper::ParSetTypeMapper;
 use models::rust::pathmap_crate_type_mapper::PathMapCrateTypeMapper;
+use models::rust::pathmap_native_query::{
+    collect_child_segments, collect_subtrie_values, path_prefix_exists,
+};
 use models::rust::pathmap_zipper::RholangReadZipper;
 use models::rust::rholang::implicits::{concatenate_pars, single_bundle, single_expr};
 use models::rust::sorted_par_hash_set::SortedParHashSet;
@@ -3649,16 +3652,23 @@ impl DebruijnInterpreter {
                         // Store the COMPLETE ORIGINAL PathMap for correct operations
                         // Display will show absolute paths, but operations will work correctly
                         // TODO: To show relative paths in display, we'd need to modify serialization/display code
-                        let complete_pathmap = pathmap.clone();
+                        //
+                        // The map is MOVED into the zipper (the previous code deep-cloned the
+                        // entire EPathMap a second time here — O(map) uncharged host work per
+                        // readZipperAt call — after `expr_instance.clone()` already produced an
+                        // owned copy). Field values are read out first; the resulting EZipper is
+                        // byte-identical to what the clone-based construction produced.
+                        let locally_free = pathmap.locally_free.clone();
+                        let connective_used = pathmap.connective_used;
 
                         // Create an EZipper with the complete PathMap
                         // current_path indicates the position within the complete tree
                         let ezipper = EZipper {
-                            pathmap: Some(complete_pathmap),
-                            current_path: path_segments.clone(),
+                            pathmap: Some(pathmap),
+                            current_path: path_segments,
                             is_write_zipper: false,
-                            locally_free: pathmap.locally_free.clone(),
-                            connective_used: pathmap.connective_used,
+                            locally_free,
+                            connective_used,
                         };
 
                         Ok(Expr {
@@ -3996,13 +4006,11 @@ impl DebruijnInterpreter {
                             })
                             .collect();
 
-                        // Collect all entries with this prefix
-                        let mut subtrie_elements = Vec::new();
-                        for (key, value) in rholang_pathmap.iter() {
-                            if key.starts_with(&prefix_key) {
-                                subtrie_elements.push(value.clone());
-                            }
-                        }
+                        // Collect all entries with this prefix — native subtrie descent
+                        // (O(prefix + subtrie) instead of the previous whole-map scan);
+                        // yields the same values in the same trie-DFS order (prefix keys
+                        // are a contiguous run of the byte-lex iteration order).
+                        let subtrie_elements = collect_subtrie_values(&rholang_pathmap, &prefix_key);
 
                         // Return as PathMap
                         Ok(Par::default().with_exprs(vec![Expr {
@@ -5004,8 +5012,11 @@ impl DebruijnInterpreter {
                             // Root always exists if PathMap is not empty
                             Ok(!pathmap.ps.is_empty())
                         } else {
-                            // Check if exact path or any path with this prefix exists
-                            Ok(rholang_pathmap.iter().any(|(k, _)| k.starts_with(&key)))
+                            // Check if exact path or any path with this prefix exists —
+                            // native trie-path lookup (O(path) instead of the previous
+                            // whole-map `any(starts_with)` scan; equivalent on the
+                            // pure-insert tries produced by create_pathmap_from_elements).
+                            Ok(path_prefix_exists(&rholang_pathmap, &key))
                         }
                     }
                     ExprInstance::EPathmapBody(pathmap) => {
@@ -5424,23 +5435,11 @@ impl DebruijnInterpreter {
                             })
                             .collect();
 
-                        // Find all unique immediate children
-                        let mut children: Vec<Vec<u8>> = Vec::new();
-
-                        for (key, _) in rholang_pathmap.iter() {
-                            if key.starts_with(&prefix_key) && key.len() > prefix_key.len() {
-                                // Extract first segment after prefix
-                                let remaining = &key[prefix_key.len()..];
-                                if let Some(pos) = remaining.iter().position(|&b| b == 0xFF) {
-                                    let segment = remaining[..pos].to_vec();
-                                    children.push(segment);
-                                }
-                            }
-                        }
-
-                        // Deduplicate
-                        children.sort();
-                        children.dedup();
+                        // Find all unique immediate children — native trie descent
+                        // (O(prefix + distinct child segments) instead of the previous
+                        // whole-map scan). The helper emits distinct segments already in
+                        // the ascending byte-lex order the scan's sort()+dedup() produced.
+                        let children = collect_child_segments(&rholang_pathmap, &prefix_key, None);
 
                         Ok(children.len() as i64)
                     }
@@ -5450,18 +5449,10 @@ impl DebruijnInterpreter {
                             PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap(&pathmap);
                         let rholang_pathmap = pathmap_result.map;
 
-                        let mut children: Vec<Vec<u8>> = Vec::new();
-
-                        for (key, _) in rholang_pathmap.iter() {
-                            // Extract first segment
-                            if let Some(pos) = key.iter().position(|&b| b == 0xFF) {
-                                let segment = key[..pos].to_vec();
-                                children.push(segment);
-                            }
-                        }
-
-                        children.sort();
-                        children.dedup();
+                        // Distinct first segments = child segments below the empty prefix
+                        // (native descent; same result set and order as the retired
+                        // whole-map first-segment scan + sort()+dedup()).
+                        let children = collect_child_segments(&rholang_pathmap, &[], None);
 
                         Ok(children.len() as i64)
                     }
@@ -5527,23 +5518,12 @@ impl DebruijnInterpreter {
                             })
                             .collect();
 
-                        // Find all unique immediate children
-                        let mut children: Vec<Vec<u8>> = Vec::new();
-
-                        for (key, _) in rholang_pathmap.iter() {
-                            if key.starts_with(&prefix_key) && key.len() > prefix_key.len() {
-                                // Extract first segment after prefix
-                                let remaining = &key[prefix_key.len()..];
-                                if let Some(pos) = remaining.iter().position(|&b| b == 0xFF) {
-                                    let segment = remaining[..pos].to_vec();
-                                    children.push(segment);
-                                }
-                            }
-                        }
-
-                        // Sort and deduplicate for deterministic ordering
-                        children.sort();
-                        children.dedup();
+                        // Find the first (byte-lex smallest) immediate child — native
+                        // trie descent with early stop after one emission (O(prefix +
+                        // first segment) instead of the previous whole-map scan +
+                        // sort()+dedup(); the helper emits in exactly that sorted order,
+                        // so the first emission IS the retired `children.first()`).
+                        let children = collect_child_segments(&rholang_pathmap, &prefix_key, Some(1));
 
                         // Get first child
                         if let Some(first_child) = children.first() {
@@ -5636,23 +5616,19 @@ impl DebruijnInterpreter {
                             })
                             .collect();
 
-                        // Find all unique immediate children
-                        let mut children: Vec<Vec<u8>> = Vec::new();
-
-                        for (key, _) in rholang_pathmap.iter() {
-                            if key.starts_with(&prefix_key) && key.len() > prefix_key.len() {
-                                // Extract first segment after prefix
-                                let remaining = &key[prefix_key.len()..];
-                                if let Some(pos) = remaining.iter().position(|&b| b == 0xFF) {
-                                    let segment = remaining[..pos].to_vec();
-                                    children.push(segment);
-                                }
-                            }
-                        }
-
-                        // Sort and deduplicate for deterministic ordering
-                        children.sort();
-                        children.dedup();
+                        // Find the idx-th immediate child in ascending byte-lex order —
+                        // native trie descent with early stop after idx+1 emissions
+                        // (O(prefix + first idx+1 segments) instead of the previous
+                        // whole-map scan + sort()+dedup(); the helper emits in exactly
+                        // that sorted, distinct order).
+                        // (saturating_add: a saturated limit simply enumerates every
+                        // child, and `.get(idx)` still yields None — the retired scan's
+                        // out-of-bounds behavior.)
+                        let children = collect_child_segments(
+                            &rholang_pathmap,
+                            &prefix_key,
+                            Some((idx as usize).saturating_add(1)),
+                        );
 
                         // Get child at index
                         if let Some(child) = children.get(idx as usize) {
@@ -5730,22 +5706,11 @@ impl DebruijnInterpreter {
                             })
                             .collect();
 
-                        // Find all siblings (children of parent)
-                        let mut siblings: Vec<Vec<u8>> = Vec::new();
-
-                        for (key, _) in rholang_pathmap.iter() {
-                            if key.starts_with(&parent_key) && key.len() > parent_key.len() {
-                                let remaining = &key[parent_key.len()..];
-                                if let Some(pos) = remaining.iter().position(|&b| b == 0xFF) {
-                                    let segment = remaining[..pos].to_vec();
-                                    siblings.push(segment);
-                                }
-                            }
-                        }
-
-                        // Sort and deduplicate for deterministic ordering
-                        siblings.sort();
-                        siblings.dedup();
+                        // Find all siblings (children of parent) — native trie descent
+                        // (O(parent + distinct siblings) instead of the previous
+                        // whole-map scan; emitted in the same ascending byte-lex,
+                        // deduplicated order the scan's sort()+dedup() produced).
+                        let siblings = collect_child_segments(&rholang_pathmap, &parent_key, None);
 
                         // Find current position and get next
                         if let Some(current_idx) =
@@ -5831,22 +5796,11 @@ impl DebruijnInterpreter {
                             })
                             .collect();
 
-                        // Find all siblings (children of parent)
-                        let mut siblings: Vec<Vec<u8>> = Vec::new();
-
-                        for (key, _) in rholang_pathmap.iter() {
-                            if key.starts_with(&parent_key) && key.len() > parent_key.len() {
-                                let remaining = &key[parent_key.len()..];
-                                if let Some(pos) = remaining.iter().position(|&b| b == 0xFF) {
-                                    let segment = remaining[..pos].to_vec();
-                                    siblings.push(segment);
-                                }
-                            }
-                        }
-
-                        // Sort and deduplicate for deterministic ordering
-                        siblings.sort();
-                        siblings.dedup();
+                        // Find all siblings (children of parent) — native trie descent
+                        // (O(parent + distinct siblings) instead of the previous
+                        // whole-map scan; emitted in the same ascending byte-lex,
+                        // deduplicated order the scan's sort()+dedup() produced).
+                        let siblings = collect_child_segments(&rholang_pathmap, &parent_key, None);
 
                         // Find current position and get previous
                         if let Some(current_idx) =
