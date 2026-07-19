@@ -862,11 +862,8 @@ impl WebApi for WebApiImpl {
         let (resolved_hash, block_number) = self.resolve_block(block_hash).await?;
 
         let deployer_pk = deployer
-            .map(|hex_str| -> Result<PublicKey> {
-                let bytes = hex::decode(&hex_str)
-                    .map_err(|e| eyre!("Invalid deployer public key hex: {}", e))?;
-                PublicKey::validate_secp256k1_bytes(&bytes)?;
-                Ok(PublicKey::from_bytes(&bytes))
+            .map(|hex_str| {
+                validate_and_decode_pubkey(&hex_str).map(|bytes| PublicKey::from_bytes(&bytes))
             })
             .transpose()?;
 

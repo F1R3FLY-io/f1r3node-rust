@@ -7,7 +7,7 @@ use std::collections::HashMap;
 
 use casper::rust::api::block_api::BlockAPI;
 use casper::rust::util::construct_deploy;
-use casper::rust::util::construct_deploy::DEFAULT_PUB;
+use casper::rust::util::construct_deploy::{DEFAULT_PUB, DEFAULT_SEC};
 use crypto::rust::public_key::PublicKey;
 
 use crate::helper::test_node::TestNode;
@@ -282,13 +282,15 @@ async fn exploratory_deploy_should_return_error_on_bonded_validator() {
 
 /// Estimate-cost with deployer must match real deploy cost (issue #53).
 ///
-/// Verifies that exploratory_deploy correctly passes the deployer public key
-/// through to the execution, so identity-dependent terms (vault transfers)
-/// cost the same as a real deploy.
+/// Deploys an identity-dependent RevVault transfer term signed by DEFAULT_SEC
+/// (which holds a genesis REV vault), then verifies that:
+/// 1. exploratory_deploy with deployer=Some(DEFAULT_PUB) returns the same cost
+/// 2. exploratory_deploy with deployer=None returns a different cost
 ///
-/// This test uses a simple term to validate the mechanism:
-/// - cost with deployer == cost without deployer (for non-identity-dependent terms)
-/// - The deployer key is correctly threaded through the entire call chain
+/// This pins the acceptance criterion of issue #53: for identity-dependent
+/// terms such as REV vault transfers, passing the deployer public key is
+/// essential — without it the term executes under an ephemeral identity and
+/// the returned cost can be significantly lower than the real deploy cost.
 #[tokio::test]
 async fn estimate_cost_with_deployer_matches_real_deploy_cost() {
     // Build genesis with 3 validators at 10 stake each
@@ -309,36 +311,73 @@ async fn estimate_cost_with_deployer_matches_real_deploy_cost() {
 
     let shard_id = genesis.genesis_block.shard_id.clone();
 
-    // Simple term that stores and retrieves data
-    let term = r#"new return in { for (@data <- @"store") { return!(data) } }"#;
+    // Identity-dependent term: RevVault transfer from the deployer's own vault.
+    // The RevAddress is derived from the deployer's identity via deployerId,
+    // so the execution path and cost depend on who the deployer is.
+    // DEFAULT_SEC has a genesis vault with 9M balance.
+    let vault_transfer_term = r#"
+        new
+            rl(`rho:registry:lookup`), SystemVaultCh,
+            deployerId(`rho:system:deployerId`),
+            vaultAddressOps(`rho:vault:address`),
+            vaultAddrCh, vaultCh, targetVaultCh, authKeyCh, ret
+        in {
+            rl!(`rho:vault:system`, *SystemVaultCh) |
+            for (@(_, SystemVault) <- SystemVaultCh) {
+                vaultAddressOps!("fromDeployerId", *deployerId, *vaultAddrCh) |
+                for (@vaultAddr <- vaultAddrCh) {
+                    @SystemVault!("findOrCreate", vaultAddr, *vaultCh) |
+                    @SystemVault!("findOrCreate", "1111111111111111111111111111111111111111111111111111", *targetVaultCh) |
+                    @SystemVault!("deployerAuthKey", *deployerId, *authKeyCh) |
+                    for (@(true, vault) <- vaultCh & @(true, _) <- targetVaultCh & key <- authKeyCh) {
+                        @vault!("transfer", "1111111111111111111111111111111111111111111111111111", 100, *key, *ret)
+                    }
+                }
+            }
+        }
+    "#;
 
-    // First, store some data
-    let store_deploy = construct_deploy::source_deploy(
-        r#"@"store"!("test_data")"#.to_string(),
+    // Step 1: Deploy as a real deploy signed with DEFAULT_SEC
+    let real_deploy = construct_deploy::source_deploy(
+        vault_transfer_term.to_string(),
         1,
+        Some(5_000_000),
         None,
-        None,
-        None,
+        Some(DEFAULT_SEC.clone()),
         None,
         Some(shard_id.clone()),
     )
-    .expect("Failed to create store deploy");
+    .expect("Failed to create deploy");
 
-    let _block0 = TestNode::propagate_block_at_index(&mut nodes, 0, &[store_deploy])
+    // Propagate a block with the real deploy
+    let transfer_block = TestNode::propagate_block_at_index(&mut nodes, 0, &[real_deploy])
         .await
-        .expect("n1 should create block with store deploy");
+        .expect("n1 should create and propagate block");
 
-    // Get the block hash to query against
-    let lfb = BlockAPI::last_finalized_block(&nodes[3].engine_cell)
-        .await
-        .expect("should get LFB");
-    let block_hash = lfb.block_info.map(|b| b.block_hash).unwrap_or_default();
+    // Get the real cost from the processed deploy
+    assert!(
+        !transfer_block.body.deploys.is_empty(),
+        "Block should contain the deploy"
+    );
+    let actual_cost = transfer_block.body.deploys[0].cost.cost;
+    tracing::info!("Real deploy cost: {}", actual_cost);
 
-    // Step 1: Call exploratory_deploy with deployer = Some(DEFAULT_PUB)
+    // Step 2: Get the parent block's post-state hash (state before the transfer)
+    // We need to estimate against the state the real deploy executed against.
+    // The parent is the block just before the transfer block.
+    let parent_hash_hex = transfer_block
+        .header
+        .parents_hash_list
+        .first()
+        .map(|h| hex::encode(h))
+        .expect("Transfer block should have at least one parent");
+
+    // Step 3: Call exploratory_deploy with deployer = Some(DEFAULT_PUB)
+    // against the parent state (same state the real deploy started from)
     let result_with_deployer = BlockAPI::exploratory_deploy(
         &nodes[3].engine_cell,
-        term.to_string(),
-        Some(block_hash.clone()),
+        vault_transfer_term.to_string(),
+        Some(parent_hash_hex.clone()),
         false,
         false,
         Some(DEFAULT_PUB.clone()),
@@ -347,11 +386,19 @@ async fn estimate_cost_with_deployer_matches_real_deploy_cost() {
     .expect("exploratory deploy with deployer should succeed");
     let cost_with_deployer = result_with_deployer.2;
 
-    // Step 2: Call exploratory_deploy with deployer = None (ephemeral identity)
+    // Step 4: Assert costs match exactly
+    assert_eq!(
+        actual_cost, cost_with_deployer,
+        "Cost with deployer ({}) must match real deploy cost ({})",
+        cost_with_deployer, actual_cost
+    );
+
+    // Step 5: Call exploratory_deploy with deployer = None (ephemeral identity)
+    // against the same parent state
     let result_without_deployer = BlockAPI::exploratory_deploy(
         &nodes[3].engine_cell,
-        term.to_string(),
-        Some(block_hash),
+        vault_transfer_term.to_string(),
+        Some(parent_hash_hex),
         false,
         false,
         None,
@@ -360,20 +407,18 @@ async fn estimate_cost_with_deployer_matches_real_deploy_cost() {
     .expect("exploratory deploy without deployer should succeed");
     let cost_without_deployer = result_without_deployer.2;
 
-    // For this non-identity-dependent term, costs should be equal.
-    // The key assertion: the mechanism correctly threads the deployer key
-    // through the entire call chain. For identity-dependent terms (RevVault
-    // transfers), passing the deployer key is essential — without it the
-    // term executes under an ephemeral identity and the returned cost can
-    // be significantly lower than the real deploy cost.
-    assert_eq!(
-        cost_with_deployer, cost_without_deployer,
-        "For non-identity-dependent terms, costs should match: with_deployer={}, without_deployer={}",
-        cost_with_deployer, cost_without_deployer
+    // Step 6: Assert costs differ — this pins the original bug (#53)
+    // Under an ephemeral identity the vault path diverges (no vault exists
+    // for the ephemeral deployer), so the estimate is wrong.
+    assert_ne!(
+        actual_cost, cost_without_deployer,
+        "Cost without deployer ({}) must differ from real deploy cost ({}) — identity-dependent terms require deployer key",
+        cost_without_deployer, actual_cost
     );
 
     tracing::info!(
-        "cost_with_deployer={}, cost_without_deployer={}",
+        "actual_cost={}, cost_with_deployer={}, cost_without_deployer={}",
+        actual_cost,
         cost_with_deployer,
         cost_without_deployer
     );
