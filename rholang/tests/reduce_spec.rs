@@ -548,6 +548,57 @@ async fn eval_of_send_should_place_something_in_the_tuplespace() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn eval_of_wide_par_should_not_panic_across_the_split_byte_width_boundary() {
+    // Regression for the parallel-width split-id routing in `eval`'s `split`
+    // (reduce.rs): widths in [129, 256] used to reach `split_byte(i8)` with
+    // term ids up to 255 and panic with `TryFromIntError` (`PosOverflow`) at
+    // id 128. Width 128 is the largest all-`i8` width and must keep its
+    // historical `split_byte` randomness byte-for-byte (consensus); widths
+    // >= 129 must take the `split_short` path. Each width evaluates a Par of
+    // `width` distinct top-level sends and pins the exact per-term randomness
+    // recorded in the tuplespace.
+    for width in [128usize, 129, 256, 257] {
+        let (space, reducer) =
+            create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+                .await;
+
+        let base_rand = rand();
+        let sends: Vec<Send> = (0..width)
+            .map(|i| Send {
+                chan: Some(new_gint_par(i as i64, Vec::new(), false)),
+                data: vec![new_gint_par(i as i64, Vec::new(), false)],
+                persistent: false,
+                locally_free: Vec::new(),
+                connective_used: false,
+            })
+            .collect();
+        let wide_par = Par::default().with_sends(sends);
+
+        let env: Env<Par> = Env::new();
+        reducer
+            .eval(wide_par, &env, base_rand.clone())
+            .await
+            .expect("eval of a wide Par must complete without error");
+
+        let result = space.to_map().await;
+        let mut expected_elements = HashMap::with_capacity(width);
+        for i in 0..width {
+            let split_rand = if width <= 128 {
+                base_rand.split_byte(i as i8)
+            } else {
+                base_rand.split_short(i as i16)
+            };
+            expected_elements.insert(
+                new_gint_par(i as i64, Vec::new(), false),
+                (vec![new_gint_par(i as i64, Vec::new(), false)], split_rand),
+            );
+        }
+        let expected_result = map_data(expected_elements);
+        assert_eq!(result, expected_result, "parallel width {}", width);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn eval_of_send_should_verify_that_bundle_is_writeable_before_sending_on_bundle() {
     let (space, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()

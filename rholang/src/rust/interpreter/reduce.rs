@@ -214,6 +214,25 @@ impl DebruijnInterpreter {
         .filter(|vec| !vec.is_empty())
         .flatten()
         .collect();
+        // Split-id routing by parallel width. Term indices are 0-based, so a
+        // width-N Par produces ids 0..=N-1:
+        //   - width <= 128: every id (0..=127) is `i8`-representable —
+        //     `split_byte` (ONE domain-separation path byte). Byte-identical
+        //     to the historical behavior; consensus-relevant, do not change.
+        //   - width in [129, 256]: ids reach 128..=255, which overflow `i8`.
+        //     The old boundary (`> 256`) still sent these widths to
+        //     `split_byte`, so `id.try_into().unwrap()` panicked with
+        //     `PosOverflow` at id 128 — this range previously produced NO
+        //     output (it always crashed). It now joins the `split_short`
+        //     path (TWO little-endian path bytes) used by every larger width.
+        //   - width > 256: ids fit `i16` (the Par is capped at
+        //     `term_split_limit = i16::MAX` terms below) — `split_short`,
+        //     unchanged.
+        // The boundary sits at 128 because that is the largest width whose
+        // maximum id (127) still fits `i8`. A `split_short` child appends two
+        // path bytes where a `split_byte` child appends one, so the rerouted
+        // range cannot collide with any defined `split_byte` output of the
+        // same parent generator.
         fn split(
             id: i32,
             terms: &Vec<GeneratedMessage>,
@@ -221,10 +240,16 @@ impl DebruijnInterpreter {
         ) -> Blake2b512Random {
             if terms.len() == 1 {
                 rand
-            } else if terms.len() > 256 {
-                rand.split_short(id.try_into().unwrap())
+            } else if terms.len() > 128 {
+                rand.split_short(
+                    id.try_into()
+                        .expect("term index must fit i16: widths are capped at i16::MAX terms"),
+                )
             } else {
-                rand.split_byte(id.try_into().unwrap())
+                rand.split_byte(
+                    id.try_into()
+                        .expect("term index must fit i8 for parallel widths <= 128"),
+                )
             }
         }
 
