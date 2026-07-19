@@ -797,14 +797,6 @@ impl DeployService for DeployGrpcServiceV1Impl {
         } else {
             Some(request.block_hash.clone())
         };
-        let deployer = if request.deployer.is_empty() {
-            None
-        } else {
-            PublicKey::validate_secp256k1_bytes(&request.deployer).map_err(|e| {
-                tonic::Status::invalid_argument(format!("Invalid deployer public key: {}", e))
-            })?;
-            Some(PublicKey::from_bytes(&request.deployer))
-        };
 
         match BlockAPI::exploratory_deploy(
             &self.engine_cell,
@@ -812,7 +804,7 @@ impl DeployService for DeployGrpcServiceV1Impl {
             block_hash,
             request.use_pre_state_hash,
             self.dev_mode,
-            deployer,
+            None,
         )
         .await
         {

@@ -1187,6 +1187,16 @@ pub struct ExploreDeployRequest {
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct SimpleExploreDeployRequest {
     pub term: String,
+}
+
+/// Request body for POST /api/estimate-cost.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct EstimateCostRequest {
+    pub term: String,
+    /// Hex-encoded 65-byte uncompressed secp256k1 public key (`04`-prefixed).
+    /// For identity-dependent terms such as vault transfers, pass the deployer
+    /// public key; without it the term executes under an ephemeral identity and
+    /// the returned cost can be significantly lower than the real deploy cost.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub deployer: Option<String>,
 }

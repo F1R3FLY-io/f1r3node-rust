@@ -723,6 +723,7 @@ Estimate phlogiston cost of Rholang code without committing. Runs exploratory de
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `term` | string | yes | Rholang source code |
+| `deployer` | string | no | Hex-encoded 65-byte uncompressed secp256k1 public key (`04`-prefixed). For identity-dependent terms such as REV vault transfers, pass the deployer public key; without it the term executes under an ephemeral identity and the returned cost can be significantly lower than the real deploy cost. |
 
 | Parameter | Location | Required | Description |
 |-----------|----------|----------|-------------|
@@ -731,7 +732,7 @@ Estimate phlogiston cost of Rholang code without committing. Runs exploratory de
 ```bash
 curl -X POST http://localhost:40453/api/estimate-cost \
   -H 'Content-Type: application/json' \
-  -d '{"term": "new ret in { ret!(42) }"}'
+  -d '{"term": "new ret in { ret!(42) }", "deployer": "04..."}'
 ```
 
 ```json
@@ -741,7 +742,7 @@ curl -X POST http://localhost:40453/api/estimate-cost \
 | Status | Condition |
 |--------|-----------|
 | `200` | Cost estimated |
-| `400` | Malformed body, invalid Rholang, invalid block hash, or node is not read-only (`invalid_request_body`, `rholang_bad_term`, `invalid_hash`, `readonly_node_required`) |
+| `400` | Malformed body, invalid Rholang, invalid block hash, invalid deployer key, or node is not read-only (`invalid_request_body`, `rholang_bad_term`, `invalid_hash`, `readonly_node_required`) |
 | `404` | Specified block not found (`block_not_found`) |
 | `422` | Term valid but execution failed (`rholang_execution_error`, `out_of_phlogistons`) |
 | `500` | Node-side failure (`interpreter_internal_error`) |

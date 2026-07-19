@@ -828,6 +828,9 @@ impl RuntimeOps {
             // Hardcoded phlogiston limit / 1 REV if phloPrice=1
             let phlo_limit = 100 * 1000 * 1000;
             let deploy = match deployer {
+                // sig is intentionally empty: exploratory deploys are never signature-verified.
+                // pk is only used to derive the deployer identity (RevAddress, unforgeable-name
+                // seed), so identity-dependent terms execute — and cost — the same as a real deploy.
                 Some(pk) => Signed {
                     data: DeployData {
                         term,
