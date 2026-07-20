@@ -1,0 +1,49 @@
+# Block-Merger Determinism — Formal Verification (merge algebra)
+#
+# Mechanizes the consensus-critical DETERMINISM of the F1R3FLY block merger and
+# the algebra of its per-channel / event-log combine operators. Mirrors the
+# fork-choice and finalized-floor developments (axiom-free, Stdlib-only).
+#
+# Properties, and what each rules out (all are no-fork / merge-soundness):
+#   * KeepOneOrder (P3) - the 5-key DeployChainIndex comparator is a STRICT TOTAL
+#     order whose Equal-class is EXACTLY the injective terminal key, so the merge
+#     winner is node-identical. STRICTLY FIRMER than fork_choice/TieBreak.v: NO
+#     NoDup / hash-distinctness premise (the injective key makes distinct entries
+#     orderable BY CONSTRUCTION).
+#   * ChannelNetting (GAP-1) - ChannelChange.combine is commutative; the shipped
+#     max-union operator is NON-associative (Finding A, EXHIBITED as a theorem,
+#     mirror of IntegerAdd.launder_exhibit); the sum-union FIX is a commutative
+#     monoid whose fold is permutation-invariant (order-independent netting).
+#   * ConflictSoundness (GAP-3) - the REMOVED single-value-cell (consume-then-
+#     produce) conflict predicate is SUBSUMED by the retained double-consume race
+#     detector, except on number/foldable channels (intrinsically mergeable).
+#   * EventLogSplit (P2) - the user/system EventLogIndex split is a set-union
+#     semilattice: combine(fold user, fold system) = fold all, so conflict
+#     detection on the split index equals detection on the monolithic index.
+#   * MainTheorem - four end-to-end capstones, each `exact`-discharged from its
+#     module, introducing NO new assumptions.
+#
+# Source under verification:
+#   casper/src/rust/merging/deploy_chain_index.rs            (impl Ord, 5-key tower)
+#   rspace++/src/rspace/merger/channel_change.rs             (combine / vec_union)
+#   rspace++/src/rspace/merger/merging_logic.rs              (conflicts detectors)
+#   rspace++/src/rspace/merger/event_log_index.rs            (combine, split fold)
+#
+# Zero `Admitted`. No custom `Axiom` or `Parameter`. Section `Variable`s
+# (KeepOneOrder g1..g4; ConflictSoundness is_number_ch) are PARAMETERS of the
+# closed term, not axioms and not constraining hypotheses.
+#
+# Module dependency graph (-> = "depends on"):
+#   KeepOneOrder      (standalone: lexicographic 5-key strict total order)
+#   ChannelNetting    (standalone: multiset combine algebra + Finding A exhibit)
+#   ConflictSoundness (standalone: removed-predicate subsumption)
+#   EventLogSplit     (standalone: set-union semilattice split)
+#   MainTheorem -> all four (capstones, axiom-free)
+
+-Q theories MergeAlgebra
+
+theories/KeepOneOrder.v
+theories/ChannelNetting.v
+theories/ConflictSoundness.v
+theories/EventLogSplit.v
+theories/MainTheorem.v

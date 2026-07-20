@@ -15,7 +15,7 @@
 
 services:
   boot:
-    image: ${F1R3FLY_IMAGE:-sjc.ocir.io/axd0qezqa9z3/f1r3fly-rust:latest}
+    image: ${F1R3FLY_IMAGE:-us-sanjose-1.ocir.io/axd0qezqa9z3/f1r3fly-rust:latest}
     user: root
     restart: always
     container_name: rnode.bootstrap

@@ -75,6 +75,58 @@ fn parse_all_tuple(par: &Par) -> Option<(String, String, u32)> {
     Some((name, symbol, decimals as u32))
 }
 
+/// The CANONICAL read of the protocol fault-tolerance threshold: returns the
+/// exact ppm numerator (θ = ppm / 1_000_000) that the finalization DECISION
+/// runs on. The `f32` sibling below is display-only.
+///
+/// There is exactly ONE query mechanism and ONE validity gate, both owned by
+/// `RuntimeOps::get_fault_tolerance_threshold_ppm` (the strict
+/// `getFaultToleranceThresholdPpm` exploratory query + the `[-1e6, 1e6]` range
+/// gate). This function adds the single POLICY on top of it: the on-chain value
+/// is mandatory.
+///
+/// Absent (`None`) is a HARD ERROR, not a fall back to local configuration.
+/// θ is a consensus value — the finalized-floor oracle runs on it and the floor
+/// decides the multi-parent merge base — so a node that silently substituted its
+/// own config would derive a different floor from its peers and permanently
+/// invalidate their blocks (the `ComputedPreStateMismatch` → `UnknownRootError`
+/// cascade). Failing closed also keeps `reconcile(local, onchain) = onchain` a
+/// TOTAL second projection, which is exactly what Rocq
+/// `FtProvenance.reconcile_agrees_on_onchain` proves: local config is not a fork
+/// input. A fallback arm would make that theorem false at `None`.
+///
+/// This is safe to require: the parameter is baked into the PoS contract at
+/// genesis, so only a chain whose genesis predates it could answer `None`, and
+/// no such chain exists on this (unreleased) branch.
+pub async fn read_on_chain_fault_tolerance_threshold_ppm(
+    runtime_manager: &RuntimeManager,
+    post_state_hash: &StateHash,
+) -> Result<i64, CasperError> {
+    runtime_manager
+        .get_fault_tolerance_threshold_ppm(post_state_hash)
+        .await?
+        .ok_or_else(|| {
+            CasperError::RuntimeError(
+                "PoS contract exposes no getFaultToleranceThresholdPpm: the protocol \
+                 fault-tolerance threshold is a consensus value and MUST come from chain \
+                 state; refusing to fall back to local configuration (it would diverge \
+                 this node's finalized-floor merge base from its peers')"
+                    .to_string(),
+            )
+        })
+}
+
+/// LOSSY `f32` view of the on-chain ppm threshold. Retained for display /
+/// back-compat; the exact DECISION path uses
+/// [`read_on_chain_fault_tolerance_threshold_ppm`].
+pub async fn read_on_chain_fault_tolerance_threshold(
+    runtime_manager: &RuntimeManager,
+    post_state_hash: &StateHash,
+) -> Result<f32, CasperError> {
+    let ppm = read_on_chain_fault_tolerance_threshold_ppm(runtime_manager, post_state_hash).await?;
+    Ok((ppm as f64 / 1_000_000.0) as f32)
+}
+
 /// Compares the on-chain token metadata against the node's local config.
 /// Returns `Err` with a descriptive message if any field disagrees.
 ///

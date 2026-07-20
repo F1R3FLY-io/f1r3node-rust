@@ -1057,4 +1057,94 @@ mod frontier_determinism_tests {
             "the derive_floor result must be Finalized over the justification snapshot (T-FIN)"
         );
     }
+
+    // ---- Phase-4 T-DET maximality: derive_floor picks the HIGHEST sound candidate ----
+
+    use proptest::prelude::*;
+    use proptest::test_runner::TestCaseError;
+
+    lazy_static::lazy_static! {
+        // Shared Tokio runtime for the `#[test]` proptest (it cannot be `#[tokio::test]`);
+        // mirrors casper/tests/fork_choice/prop_estimator_determinism.rs.
+        static ref FLOOR_RUNTIME: tokio::runtime::Runtime =
+            tokio::runtime::Runtime::new().expect("tokio runtime");
+    }
+
+    prop_compose! {
+        /// A single-validator linear chain `g=b0 <- b1 <- … <- b_depth` ({v:1}
+        /// committee), a frontier index `k ∈ [1, depth)` (so `frontier(b_depth over
+        /// {v:b_k}) = b_k`, strictly below the parent), and a random `inherited_mask`
+        /// selecting which strict ancestors `b_0..b_{depth-1}` are also fed as inherited
+        /// floors. Every candidate is a DAG-ancestor of the single parent `b_depth`
+        /// (linear chain) ⇒ every candidate is a Case-A sound base ⇒ maximality alone
+        /// decides the floor.
+        fn chain_scenario()(depth in 2usize..=6)(
+            k in 1usize..depth,
+            inherited_mask in prop::collection::vec(any::<bool>(), depth),
+            depth in Just(depth),
+        ) -> (usize, usize, Vec<bool>) {
+            (depth, k, inherited_mask)
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig { cases: 24, max_shrink_iters: 8, ..ProptestConfig::default() })]
+
+        // maximality / T-DET (`Selection.select_highest_sound`): over a
+        // descending-sorted candidate set of Case-A sound bases (inherited parent floors
+        // ∪ the per-parent frontier), `derive_floor` returns the candidate of GREATEST
+        // block number — the highest sound base. This is the general (proptest) form of
+        // the hand-built `derive_floor_selects_highest_sound_finalized_candidate` example:
+        // the candidate multiset is randomly `{inherited b_i} ∪ {frontier b_k}`, and the
+        // chosen floor must always be its maximum, regardless of whether inheritance or
+        // advancement supplies it (monotonicity in BOTH directions).
+        #[test]
+        fn derive_floor_selects_highest_sound_candidate_over_chain((depth, k, mask) in chain_scenario()) {
+            FLOOR_RUNTIME.block_on(async move {
+                let v = h(50);
+                let mut blocks: Vec<BlockMetadata> = Vec::with_capacity(depth + 1);
+                for i in 0..=depth {
+                    let parents = if i == 0 { vec![] } else { vec![h((i - 1) as u8)] };
+                    blocks.push(md_wm(h(i as u8), parents, i as i64, &v, vec![(v.clone(), 1)]));
+                }
+                let dag = build_dag(blocks);
+                let parent = h(depth as u8);
+
+                // frontier(parent over {v:b_k}) = b_k (single-validator chain).
+                let mut j = BTreeMap::new();
+                j.insert(v.clone(), h(k as u8));
+                let thr = FtThreshold::from_f32_lossy(0.1);
+
+                // Inherited candidates: the selected strict ancestors b_0..b_{depth-1}.
+                let mut inherited: Vec<Floor> = Vec::new();
+                for (i, &selected) in mask.iter().enumerate().take(depth) {
+                    if selected {
+                        inherited.push(Floor { hash: h(i as u8), block_number: i as i64 });
+                    }
+                }
+
+                let (floor, _f) = derive_floor(&dag, &[parent], &j, thr, inherited.clone())
+                    .await
+                    .expect("derive_floor");
+
+                // Oracle: the maximum block number over inherited ∪ {frontier k}. All
+                // candidates are distinct chain positions, so the max hash is unambiguous.
+                let expected_num = inherited
+                    .iter()
+                    .map(|f| f.block_number)
+                    .chain(std::iter::once(k as i64))
+                    .max()
+                    .expect("candidate set is non-empty (frontier always present)");
+                prop_assert_eq!(
+                    floor.block_number, expected_num,
+                    "derive_floor must select the HIGHEST sound candidate's block number"
+                );
+                prop_assert_eq!(
+                    floor.hash, h(expected_num as u8),
+                    "derive_floor must select the chain block at the highest candidate number"
+                );
+                Ok::<(), TestCaseError>(())
+            })?;
+        }
+    }
 }

@@ -9,6 +9,35 @@
 //!     `self.update_last_finalized_block` (inherent method here)
 //!   * background task spawned by `update_last_finalized_block` →
 //!     `run_queued_finalizer` → `compute_last_finalized_block`
+//!
+//! ── DO NOT re-add a finalization-time rejected-deploy-buffer purge ──────────
+//!
+//! There is deliberately NO `purge_finalized_deploys_from_buffer` here, and no
+//! `rejected_deploy_buffer` handle in `FinalizationContext`. This looks like the
+//! well-known "the casper_engine split dropped the DL-1 finalization purge"
+//! regression. It is NOT. It was re-derived and MEASURED during the 2026-07-15
+//! dev merge, and the purge is actively harmful against the current recovery
+//! design:
+//!
+//!   run `casper::mod batch2::map_cell_convergence_spec::three_writers_converge_under_load`
+//!     - purge present  ⇒ FAILS, deterministically, same keys every run:
+//!                        "MISSING 2 of 9 keys: [(\"v1_0\", 1), (\"v2_0\", 2)]"
+//!     - purge absent   ⇒ PASSES (308s)
+//!
+//! Why: `v1_0`/`v2_0` are the round-0 keep-one LOSERS. Their writes are supposed
+//! to be re-proposed out of the per-node rejected-deploy buffer (record-driven
+//! recovery). A finalization-time purge of `block.body.rejected_deploys` evicts
+//! exactly those entries, so the losers can never be recovered and their writes
+//! are lost permanently — silently, since the merge itself is still "valid".
+//!
+//! The double-apply hazard the purge originally guarded against is handled
+//! ELSEWHERE now: `block_creator` drops already-canonical sigs at ADMISSION
+//! (`remove_by_sig` + `canonical_won_sigs` + the `rejected_in_scope` exemption),
+//! which is a strictly better place for it — a deploy stops being re-proposable
+//! when it lands canonically, not when some later block finalizes.
+//!
+//! If you are here because a static diff told you a fix went missing: it didn't.
+//! Re-run the test above before restoring anything.
 
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};

@@ -190,7 +190,6 @@ async fn b2_sentinel_and_positive_cap_usize_safe() {
 // B3 (example): a supply-cap-violating weight map (two i64::MAX bonds meeting at
 // the LCA) overflows the score `checked_add` and must yield a typed Err, not a wrap.
 #[tokio::test]
-#[ignore = "expected-red: needs PR #114's estimator typed-overflow fix (fork-choice B3); dev still wraps — un-ignore when that src fix is ported"]
 async fn b3_score_overflow_is_typed_err() {
     with_storage(|mut block_store, mut block_dag_storage| async move {
         let (genesis, latest) =

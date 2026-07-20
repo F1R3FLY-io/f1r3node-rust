@@ -2,7 +2,7 @@
 
 ## 1 · Summary
 
-Pre-fix, `block_creator.rs:298-306` allowed an *unbonded* proposer
+Pre-fix, `block_creator.rs:498-533` allowed an *unbonded* proposer
 to construct slash deploys. An attacker who briefly bonded a
 validator to enter the proposer rotation, equivocated, was slashed,
 and then attempted to propose again could feed an unbonded

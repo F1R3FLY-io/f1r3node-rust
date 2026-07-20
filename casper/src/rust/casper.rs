@@ -209,36 +209,41 @@ pub async fn hash_set_casper<T: TransportLayer + Send + Sync>(
     approved_block: BlockMessage,
     heartbeat_signal_ref: crate::rust::heartbeat_signal::HeartbeatSignalRef,
 ) -> Result<MultiParentCasperImpl<T>, CasperError> {
-    // The fault-tolerance threshold is a CONSENSUS value: the finalized-floor
-    // oracle runs on it, and the floor decides the multi-parent merge base —
-    // a validated, node-identical quantity. Adopt the protocol ppm baked into
-    // the PoS contract at genesis so every node (validator or observer) runs
-    // the same threshold regardless of local configuration. A chain whose
-    // genesis predates the parameter returns None: keep the locally-derived
-    // ppm and warn — such shards must configure all nodes identically.
-    match runtime_manager
-        .get_fault_tolerance_threshold_ppm(&approved_block.body.state.post_state_hash)
-        .await?
-    {
-        Some(onchain_ppm) => {
-            if onchain_ppm != casper_shard_conf.fault_tolerance_threshold_ppm {
-                tracing::info!(
-                    onchain_ppm,
-                    local_ppm = casper_shard_conf.fault_tolerance_threshold_ppm,
-                    "Adopting on-chain protocol fault-tolerance threshold over local configuration"
-                );
-            }
-            casper_shard_conf.fault_tolerance_threshold_ppm = onchain_ppm;
-        }
-        None => {
-            tracing::warn!(
-                local_ppm = casper_shard_conf.fault_tolerance_threshold_ppm,
-                "Chain state exposes no protocol fault-tolerance threshold; using locally-derived \
-                 ppm — ALL nodes in this shard must configure the same fault-tolerance-threshold \
-                 or their merge floors will diverge"
-            );
-        }
+    // SINGLE ADOPTION POINT for the protocol fault-tolerance threshold.
+    //
+    // θ is a CONSENSUS value: the finalized-floor oracle runs on it, and the
+    // floor decides the multi-parent merge base — a validated, node-identical
+    // quantity. Every node (validator or observer) must therefore run the ppm
+    // baked into the PoS contract at genesis, regardless of local config.
+    //
+    // All three constructors of a running casper (`initializing`,
+    // `casper_launch`, `genesis_ceremony_master`) funnel through here, so this
+    // is the only place the adoption can be guaranteed for every path.
+    //
+    // The assignment is UNCONDITIONAL — the `if` gates only the log line. That
+    // is precisely Rocq `FtProvenance.reconcile_agrees_on_onchain`:
+    // `reconcile(local, onchain) = onchain`, so two nodes with ANY two local
+    // configs derive the same floor. Absent/out-of-range now FAILS the node
+    // (see `read_on_chain_fault_tolerance_threshold_ppm`) rather than silently
+    // reopening node-local floor divergence.
+    let onchain_ppm =
+        crate::rust::util::token_metadata_check::read_on_chain_fault_tolerance_threshold_ppm(
+            &runtime_manager,
+            &approved_block.body.state.post_state_hash,
+        )
+        .await?;
+    if onchain_ppm != casper_shard_conf.fault_tolerance_threshold_ppm {
+        tracing::info!(
+            onchain_ppm,
+            local_ppm = casper_shard_conf.fault_tolerance_threshold_ppm,
+            "Adopting on-chain protocol fault-tolerance threshold over local configuration"
+        );
     }
+    casper_shard_conf.fault_tolerance_threshold_ppm = onchain_ppm;
+    // Keep the display f32 in lock-step with the exact ppm that decides
+    // finalization, so the API can never report a threshold the oracle is not
+    // using. The ppm remains the sole DECISION input; this f32 is display-only.
+    casper_shard_conf.fault_tolerance_threshold = (onchain_ppm as f64 / 1_000_000.0) as f32;
 
     Ok(MultiParentCasperImpl {
         block_retriever,
@@ -528,6 +533,32 @@ pub mod test_helpers {
             };
 
             CasperSnapshot::new(dag)
+        }
+
+        pub fn bond_validator_in_snapshot(
+            snapshot: &mut CasperSnapshot,
+            validator: models::rust::validator::Validator,
+        ) {
+            use models::rust::casper::protocol::casper_message::Bond;
+
+            if snapshot.parents.is_empty() {
+                snapshot
+                    .parents
+                    .push(models::rust::block_implicits::get_random_block_default());
+            }
+            let parent = &mut snapshot.parents[0];
+            if !parent
+                .body
+                .state
+                .bonds
+                .iter()
+                .any(|bond| bond.validator == validator)
+            {
+                parent.body.state.bonds.push(Bond {
+                    validator,
+                    stake: 100,
+                });
+            }
         }
     }
 

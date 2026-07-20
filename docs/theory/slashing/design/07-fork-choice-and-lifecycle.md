@@ -94,7 +94,7 @@ SlashPending → Slashed → Removed
 | `Bonded → EquivocatorSuspect`              | Detector observes a second block at same seq num.                                                                                                                                               |
 | `EquivocatorSuspect → EquivocatorRecorded` | `insert_equivocation_record(v, s − 1, ∅)` succeeds.                                                                                                                                             |
 | `EquivocatorRecorded → SlashPending`       | Next proposer's `prepare_slashing_deploys` includes `v`.                                                                                                                                        |
-| `SlashPending → Slashed`                   | `@PoS!("slash", …)` succeeds (atomic stateUpdate at `PoS.rhox:477-486`).                                                                                                                        |
+| `SlashPending → Slashed`                   | `@PoS!("slash", …)` succeeds (atomic stateUpdate at `PoS.rhox:449-510`).                                                                                                                        |
 | `Slashed → Removed`                        | PoS removes `v` from `activeValidators` (same atomic stateUpdate; the two states are not separately observable in the implementation but are listed separately to match the spec §6 lifecycle). |
 | `SlashPending → EquivocatorRecorded`       | Slash fails (transfer FIXME, bug fix #4 closes this — falls back to `EquivocatorRecorded`).                                                                                                     |
 | `Removed → ⊥`                              | Terminal — cannot rejoin without a fresh bond deploy (which transitions to `Unbonded → Bonded`).                                                                                                |
@@ -130,7 +130,7 @@ and to match the spec §6 model: `Slashed` projects on `bond := 0`,
 `Removed` projects on `v ∉ active`. Auditors verifying the
 state-machine should treat the `Slashed → Removed` transition as
 *conceptually instantaneous* — both are projections of the same
-atomic stateUpdate at `PoS.rhox:477-486`. Diagram 06 may visually
+atomic stateUpdate at `PoS.rhox:449-510`. Diagram 06 may visually
 combine them or show them separately depending on the renderer; the
 spec is the authoritative source for state count.
 
@@ -187,7 +187,7 @@ influence.
 |--------------|-------------------------------------------------------------------------------------------|------------------------------|
 | T-7          | `slash_zeros_bond`: after slash, the offender bond is zero.                               | `PoSContract.v:75`           |
 | T-8          | `slash_transfers_stake`: positive pre-slash stake is transferred to the Coop vault.       | `PoSContract.v:95`           |
-| T-Idem (T-9) | `slash_idempotent`: a second slash on the same validator is a no-op.                      | `PoSContract.v:117`          |
+| T-Idem (T-9) | `slash_idempotent`: a second slash on the same validator is a no-op.                      | `PoSContract.v:128`          |
 | T-10         | `fork_choice_exclusion`: slashed validators are removed from latest-message input.        | `ForkChoice.v:60`            |
 | T-9.5        | `t_9_5_slash_preserves_invariant`: slash preserves active-implies-bonded.                 | `BugFixStakeZero.v:36`       |
 | T-9.4        | `t_9_4_transfer_failure_safety`: slash either succeeds with bond-zero or fails no-op.     | `BugFixTransferFailure.v:40` |

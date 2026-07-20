@@ -1,0 +1,104 @@
+' Component Diagram 01 — Merge-algebra: spec <-> Rocq <-> Z3 <-> Rust <-> code.
+'
+' Each box is a block-merger DETERMINISM component, annotated with:
+'   - the spec concern (requirement / safety invariant) it addresses,
+'   - the Rocq module(s) + key lemmas that mechanize it,
+'   - the Z3 witness (where one exists),
+'   - the Rust test + the production code file it guards.
+'
+' The merge is RECOMPUTED by block validation (interpreter_util.rs): a node
+' rejects a block whose recomputed pre-state hash or rejected-deploy set differs
+' from the block's recorded values, so the merge MUST be byte-identical on every
+' node. The linchpin is the P3 keep-one order (Finding B): DeployChainIndex::cmp
+' is a STRICT TOTAL order whose Equal-class is exactly the injective Eq key, so
+' the two order-sensitive consumers (greedy keep-one + merged-state fold) are
+' node-identical regardless of HashSet reseeding. Finding A (the non-associative
+' channel combine) is DISCLOSED, not changed — it is benign only because the
+' Finding-B fix pins a canonical fold order.
+'
+' Source of truth for the traceability table in
+' docs/theory/merge-algebra/merge-algebra-verification.md (section 4).
+'
+' Render:
+'   plantuml -tsvg docs/theory/merge-algebra/diagrams/01-component-correspondence.puml
+
+@startuml 01-component-correspondence
+!theme plain
+
+skinparam componentStyle rectangle
+skinparam component {
+  BackgroundColor #FFFFFF
+  BorderColor     #333333
+}
+skinparam package {
+  BackgroundColor<<KeepOne>>  #FFF7E0
+  BackgroundColor<<Netting>>  #E3F2FD
+  BackgroundColor<<Conflict>> #F3E5F5
+  BackgroundColor<<Split>>    #EEFAF1
+  BackgroundColor<<Bridge>>   #FCE4EC
+  BackgroundColor<<Theorem>>  #E8F5E9
+  BorderColor #444444
+}
+skinparam defaultFontName "monospace"
+skinparam defaultFontSize 10
+
+title Merge-algebra: spec ─ Rocq ─ Z3 ─ Rust ─ code correspondence
+
+' Layer color legend (fill per concept):
+'   keep-one order  (P3, Finding B core) = gold      (#FFE082)
+'   channel netting (GAP-1, Finding A)   = sky blue  (#BBDEFB)
+'   conflict soundness (GAP-3)           = lavender  (#D1C4E9)
+'   event-log split (P2)                 = mint      (#C8E6C9)
+'   recompute boundary (validation)      = pink      (#F8BBD0)
+'   capstone theorem                     = strong grn(#A5D6A7)
+'
+' Edge color legend:
+'   blue   (#1565C0) = feeds / read query (merge pipeline data flow)
+'   orange (#E65100) = produces / emits the recomputed (pre-state, rejected-set)
+'   gray   (#546E7A) = delegates / uses (the total-order comparator)
+'   (hidden edges anchor the capstone on top)
+
+package "Capstone" <<Theorem>> {
+  component "Capstone theorems ── axiom-free\n──────────────────────────────────────\nRocq  MainTheorem.v\n  ▶ merge_algebra_keeporder_correct\n  ▶ merge_algebra_netting_correct\n  ▶ merge_algebra_conflict_correct\n  ▶ merge_algebra_split_correct\nPrint Assumptions ⟹ Closed under the\n  global context (no Axiom / Admitted)\ncoqchk kernel re-check (MainTheorem)" as CAP #A5D6A7
+}
+
+package "Keep-one total order  (P3 core, Finding B)" <<KeepOne>> {
+  component "STRICT TOTAL order  Equal-class ⊆ Eq\n──────────────────────────────────────\nspec  R-ORDER: no two DISTINCT chains tie\n      ⟹ node-identical min_by / sort winner\nRocq  KeepOneOrder.v\n  keep_one_total_order (UNCONDITIONAL),\n  keep_one_equal_impl_eq (cmp=Eq ⟹ a=b),\n  output_indep_of_input_perm,\n  sort_argmax_unique\nZ3    keep_one_total_order.py (+key-5 probe)\nRust  deploy_chain_index.rs impl Ord::cmp\n  (5-key tower, key 5 :229 injective)\n  tests cmp_is_strict_total_order_…,\n        distinct_chains_tying_on_all_four…" as KO #FFE082
+}
+
+package "Order-sensitive consumers" <<Bridge>> {
+  component "(1) greedy keep-one / rejection\n──────────────────────────────────────\nspec  S2: HashSet reseed MUST NOT leak\nRust  dag_merger.rs\n  dependency_ordered_branch_items :50\n  pending ← branch.0.iter() (HashSet)\n  .min_by(cmp) :65\n  split_unavailable_branch_consumes :120\n\n(2) merged-state fold\n──────────────────────────────────────\nspec  S3: branch / item order MUST NOT leak\nRust  conflict_set_merger.rs\n  compute_merged_state :360\n  sort_by(compare_branches) :385\n  branch_items.sort() :391\n  combined.combine(item) :426\n  (fold needs the total order:\n   StateChange::combine is NON-assoc)" as CONS #F8BBD0
+}
+
+package "Channel netting  (GAP-1, Finding A)" <<Netting>> {
+  component "combine commutative, NOT associative\n──────────────────────────────────────\nspec  R-NET: max-union combine commutes;\n      Finding A (non-assoc) is DISCLOSED,\n      not changed (sum-union would change\n      merge SEMANTICS)\nRocq  ChannelNetting.v\n  combine_max_comm,\n  combine_not_assoc_exhibit (Finding A),\n  channel_netting_fixed_deterministic,\n  netting_fold_perm\nZ3    channel_netting_monoid.py\nRust  channel_change.rs combine :17\n  vec_union :25 / cancel_common :34\n  tests combine_is_commutative_as_multiset,\n        fixed_net_is_order_independent,\n        finding_a_…non_associative (#ignore)" as NET #BBDEFB
+}
+
+package "Conflict-detector soundness  (GAP-3)" <<Conflict>> {
+  component "removed check ⊆ retained ∪ number-ch\n──────────────────────────────────────\nspec  R-CONFLICT / S4: dropping the single-\n      value-cell check drops NO real conflict\nRocq  ConflictSoundness.v\n  removed_subset_retained,\n  conflict_removal_sound\nRust  merging_logic.rs conflicts :262\n  test removed_predicate_is_subsumed_by_\n       retained_or_number_channel\ncommit f3360e84 (removed the check)" as CFL #D1C4E9
+}
+
+package "Event-log split soundness  (P2)" <<Split>> {
+  component "combine(fold user, fold system)=fold all\n──────────────────────────────────────\nspec  R-SPLIT / S5: the user/system split\n      hides NO cross-partition conflict\nRocq  EventLogSplit.v\n  combine_split_eq,\n  conflicts_split_complete,\n  event_log_split_sound\nRust  event_log_index.rs combine :343\n  deploy_chain_index.rs new :70-88\n  test split_then_recombine_equals_\n       monolithic_for_conflicts" as SPL #C8E6C9
+}
+
+package "Recompute boundary (validation)" <<Bridge>> {
+  component "validation RECOMPUTES the merge\n──────────────────────────────────────\nspec  R-RECOMPUTE / R-DET / S1: reject on\n      any (pre-state | rejected-set) mismatch\nRust  interpreter_util.rs\n  compute_parents_post_state :228\n  pre-state mismatch ⟹ reject, NO replay :259\n  rejected-set mismatch ⟹ invalid :269\nWHY determinism is load-bearing: a byte\n  difference forks the chain / stalls finality" as REC #F8BBD0
+}
+
+' === Explicit (visible) merge-pipeline edges ===
+KO  -[#546E7A]-> CONS : cmp is the\ntotal order both\nconsumers sort by
+NET -[#1565C0]-> CONS : per-channel diffs\nfolded (consumer 2)
+CFL -[#1565C0]-> CONS : conflict map\ndrives rejection (consumer 1)
+SPL -[#1565C0]-> CFL : combined index\nfeeds conflicts()
+CONS -[#E65100]-> REC : (pre-state hash,\nrejected-set)
+
+' === Hidden edges: anchor the capstone on top, connected to all ===
+CAP -[hidden]-> KO
+CAP -[hidden]-> NET
+CAP -[hidden]-> CFL
+CAP -[hidden]-> SPL
+CAP -[hidden]-> CONS
+CAP -[hidden]-> REC
+
+@enduml

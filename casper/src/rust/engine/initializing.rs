@@ -594,6 +594,7 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         // Keep LFS retry cadence configurable instead of hard-coding a long startup delay.
         // Falls back to 5s when env var is absent or invalid.
         let lfs_request_timeout = Duration::from_secs(5);
+        const LFS_SYNC_DEADLINE: Duration = Duration::from_secs(600);
 
         // **Scala equivalent**: Create both streams (blockRequestStream and tupleSpaceStream)
         let (block_request_stream_result, tuple_space_stream_result) = tokio::join!(
@@ -614,11 +615,12 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
                 lfs_request_timeout,
                 tuple_space_requester,
                 self.rspace_state_manager.importer.clone(),
+                LFS_SYNC_DEADLINE,
             )
         );
 
         let block_request_stream = block_request_stream_result?;
-        let tuple_space_stream = tuple_space_stream_result?;
+        let (tuple_space_stream, tuple_space_err) = tuple_space_stream_result?;
 
         // **Scala equivalent**: `blockRequestAddDagStream = blockRequestStream.last.unNoneTerminate.evalMap { st => populateDag(...) }`
         // Process block request stream and return the final state for later DAG population
@@ -638,6 +640,9 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             // Stream items are processed by the stream itself, we just consume them to completion
             let mut stream = Box::pin(tuple_space_stream);
             while let Some(_) = stream.next().await {}
+            if let Some(e) = tuple_space_err.lock().unwrap().take() {
+                return Err(e);
+            }
             tracing::info!("Rholang state received and saved to store.");
             Ok::<(), CasperError>(())
         };
@@ -716,25 +721,30 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
                     horizon_requester,
                     horizon_rx,
                     request_timeout,
+                    LFS_SYNC_DEADLINE,
                 )
                 .await;
 
                 // Drop the temporary sender so subsequent StoreItemsMessages
                 // (none expected once Running) don't queue indefinitely.
-                let final_horizon_state = match horizon_stream {
-                    Ok(stream) => {
+                let (final_horizon_state, horizon_err) = match horizon_stream {
+                    Ok((stream, err_handle)) => {
                         let mut stream = Box::pin(stream);
                         let mut final_state = None;
                         while let Some(st) = stream.next().await {
                             final_state = Some(st);
                         }
-                        Ok(final_state)
+                        (Ok(final_state), err_handle.lock().unwrap().take())
                     }
-                    Err(e) => Err(e),
+                    Err(e) => (Err(e), None),
                 };
                 {
                     let mut sender_slot = self.tuple_space_tx.lock().unwrap();
                     *sender_slot = None;
+                }
+
+                if let Some(e) = horizon_err {
+                    return Err(e);
                 }
 
                 // Loud failure: cannot transition to Running without a
@@ -929,7 +939,13 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         let mut skipped = 0usize;
         let mut replayed = 0usize;
         for block_hash in blocks_to_replay {
-            let block = self.block_store.get_unsafe(&block_hash);
+            let block = self.block_store.get(&block_hash)?.ok_or_else(|| {
+                CasperError::RuntimeError(format!(
+                    "Block {} missing from block store during mergeable channel replay",
+                    PrettyPrinter::build_string_bytes(&block_hash)
+                ))
+            })?;
+            let parents = &block.header.parents_hash_list;
 
             if self
                 .runtime_manager
@@ -993,23 +1009,24 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             )
             .await;
 
-        match result {
-            Ok(computed_post_state) => {
-                let expected_post_state = &block.body.state.post_state_hash;
-                if computed_post_state == *expected_post_state {
-                    tracing::debug!("Genesis block replayed successfully.");
-                } else {
-                    tracing::warn!(
-                        "Genesis block replay state mismatch: computed={}, expected={}",
-                        PrettyPrinter::build_string_bytes(&computed_post_state),
-                        PrettyPrinter::build_string_bytes(expected_post_state)
-                    );
-                }
-            }
-            Err(e) => {
-                tracing::warn!("Genesis block replay error: {:?}", e);
-            }
+        // A replay failure or state mismatch means the mergeable channel
+        // store would be silently incomplete — a consensus hazard once the
+        // node is Running. Fail bootstrap loudly instead.
+        let computed_post_state = result.map_err(|e| {
+            CasperError::RuntimeError(format!(
+                "Genesis block replay failed while populating mergeable channel cache: {:?}",
+                e
+            ))
+        })?;
+        let expected_post_state = &block.body.state.post_state_hash;
+        if computed_post_state != *expected_post_state {
+            return Err(CasperError::RuntimeError(format!(
+                "Genesis block replay state mismatch: computed={}, expected={}",
+                PrettyPrinter::build_string_bytes(&computed_post_state),
+                PrettyPrinter::build_string_bytes(expected_post_state)
+            )));
         }
+        tracing::debug!("Genesis block replayed successfully.");
 
         Ok(())
     }
@@ -1024,7 +1041,12 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         // For multi-parent blocks, we need the pre-state from the block itself
         // (by the time we reach a multi-parent block, all its parents have been replayed)
         let pre_state_hash = if parents.len() == 1 {
-            let parent_block = self.block_store.get_unsafe(&parents[0]);
+            let parent_block = self.block_store.get(&parents[0])?.ok_or_else(|| {
+                CasperError::RuntimeError(format!(
+                    "Parent block {} missing from block store during mergeable channel replay",
+                    PrettyPrinter::build_string_bytes(&parents[0])
+                ))
+            })?;
             parent_block.body.state.post_state_hash.clone()
         } else {
             // Multi-parent: use the block's recorded pre-state
@@ -1064,24 +1086,25 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             )
             .await;
 
-        match result {
-            Ok(computed_post_state) => {
-                let expected_post_state = &block.body.state.post_state_hash;
-                if computed_post_state == *expected_post_state {
-                    tracing::debug!("Block #{} replayed successfully.", block_number);
-                } else {
-                    tracing::warn!(
-                        "Block #{} replay state mismatch: computed={}, expected={}",
-                        block_number,
-                        PrettyPrinter::build_string_bytes(&computed_post_state),
-                        PrettyPrinter::build_string_bytes(expected_post_state)
-                    );
-                }
-            }
-            Err(e) => {
-                tracing::warn!("Block #{} replay error: {:?}", block_number, e);
-            }
+        // A replay failure or state mismatch means the mergeable channel
+        // store would be silently incomplete — a consensus hazard once the
+        // node is Running. Fail bootstrap loudly instead.
+        let computed_post_state = result.map_err(|e| {
+            CasperError::RuntimeError(format!(
+                "Block #{} replay failed while populating mergeable channel cache: {:?}",
+                block_number, e
+            ))
+        })?;
+        let expected_post_state = &block.body.state.post_state_hash;
+        if computed_post_state != *expected_post_state {
+            return Err(CasperError::RuntimeError(format!(
+                "Block #{} replay state mismatch: computed={}, expected={}",
+                block_number,
+                PrettyPrinter::build_string_bytes(&computed_post_state),
+                PrettyPrinter::build_string_bytes(expected_post_state)
+            )));
         }
+        tracing::debug!("Block #{} replayed successfully.", block_number);
 
         Ok(())
     }
@@ -1105,6 +1128,13 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             .ok_or_else(|| CasperError::RuntimeError("Estimator not available".to_string()))?;
         let recovery_estimator = estimator.clone();
 
+        // The on-chain fault-tolerance threshold is read and adopted by
+        // `hash_set_casper` (the single adoption point shared by all three
+        // casper constructors), so this path deliberately does NOT read it
+        // again — a second read here would be a second policy site and could
+        // drift from the one the running casper actually finalizes with.
+        let casper_shard_conf = self.casper_shard_conf.clone();
+
         // Pass Arc<RuntimeManager> directly to hash_set_casper
         let casper = crate::rust::casper::hash_set_casper(
             self.block_retriever.clone(),
@@ -1117,7 +1147,7 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             self.rejected_deploy_buffer.clone(),
             self.casper_buffer_storage.clone(),
             self.validator_id.clone(),
-            self.casper_shard_conf.clone(),
+            casper_shard_conf,
             ab,
             self.heartbeat_signal_ref.clone(),
         )

@@ -74,7 +74,7 @@ The contribution split:
 
 | Class                                     | Theorems                                                                                                                                                                                                                                                |
 |-------------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| **(a)** Direct mechanizations             | `bm_slash`, `bm_lookup`, `equivocates_b`, `is_slashable`, `detect`, `slash`, `prepare_slashing_deploys`, `filter_slashed`, `slash_step`, `atomic_record_or_update`, `validate_received_slash_deploys`, `checked_pred`, `checked_succ_bounded`           |
+| **(a)** Direct mechanizations             | `bm_slash`, `bm_lookup`, `equivocates_ptr` (detector notion) / `equivocates_b` (auxiliary), `is_slashable`, `detect`, `slash`, `prepare_slashing_deploys`, `filter_slashed`, `slash_step`, `atomic_record_or_update`, `received_slash_deploy_authorized` / `validate_block_slash_deploys`, `checked_pred`, `checked_succ_bounded`           |
 | **(b)** Verifications of paper algorithms | T-1, T-2, T-3, T-4, T-5, T-6, T-7, T-8, T-Idem (slash idempotence; alias T-9), T-10                                                                                                                                                                     |
 | **(c)** Proof-original extensions         | T-11, T-12 (with letter-suffix family T-12-{W, F, C, I, G, A, V, RPT, EID, HYP, AMP, PF, R, D, RET}), T-13a/b/c, T-14, T-15a/b, T-9.1–T-9.15 (including T-9.10', T-9.10″), T-Auth (auth-token guard, §9.16), T-LivenessGap (authorized-index proposer derivation, §9.16) |
 | **(d)** Citable-axiom-gated               | None — all theorems are closed under the global context                                                                                                                                                                                                 |
@@ -336,7 +336,7 @@ The Rocq formalization realizes each rule as a function (e.g. `slash : PoSState 
 
 ### 4.1 Definitions
 
-**Definition 4.1** *(Equivocation in the DAG).*
+**Definition 4.1** *(Same-seq equivocation in the DAG — auxiliary).*
 For a DAG state `S = (D, …)`, validator `v`, and sequence number `n`,
 
 ```
@@ -349,57 +349,82 @@ equivocates(S, v, n) ⇔
 
 Rocq: `equivocates : DAGState → Validator → nat → Prop`
 in `theories/DAGState.v:106`. The boolean version `equivocates_b` is
-proven equivalent (`equivocates_dec` at line 109). Witness extraction
-`equivocates_witnesses` (line 177) is used by all completeness proofs.
+proven decidable (`equivocates_dec` at line 109) and its witness
+extraction `equivocates_witnesses` (line 177) is retained as a
+mathematical characterization of an on-DAG fork.
+
+> **Faithfulness note (FV audit #2).** The Rust detector
+> `check_equivocations` (`equivocation_detector.rs:78-89`) does **not**
+> compute the same-seq/distinct-hash count above. It compares two
+> `Option<BlockHash>` **pointers** — the arriving block's
+> creator-justification (self-parent) against the sender's current
+> latest-message in the DAG:
+> `is_not_equivocation = (creator_justification == latest_message)`.
+> The Rocq detector is therefore modelled over the **pointer** notion the
+> code actually computes (`equivocates_ptr`, Definition 4.1′), not the
+> seq-count notion (which the two provably diverge from — see
+> `equivocates_ptr_diverges_from_seq_count`). `equivocates` / `equivocates_b`
+> remain in `DAGState.v` as an auxiliary, no longer the detector's notion.
+
+**Definition 4.1′** *(Pointer equivocation — the detector's notion).*
+For an arriving block's creator-justification pointer `cj` and the
+sender's latest-message pointer `lm` (both `Option<BlockHash>`),
+
+```
+equivocates_ptr(cj, lm) ⇔ cj ≠ lm
+```
+
+Rocq: `equivocates_ptr : option BlockHash → option BlockHash → bool`
+in `theories/EquivocationDetector.v`.
 
 **Definition 4.2** *(Detector).*
 The detector classifies an arrival as one of four statuses:
 
 ```
-detect(S, v, n, d) =
-  ⎧ DSValid       if ¬equivocates(S, v, n)
-  ⎨ DSAdmissible  if  equivocates(S, v, n) ∧ d = ⊤
-  ⎩ DSIgnorable   if  equivocates(S, v, n) ∧ d = ⊥
+detect(cj, lm, d) =
+  ⎧ DSValid       if ¬equivocates_ptr(cj, lm)
+  ⎨ DSAdmissible  if  equivocates_ptr(cj, lm) ∧ d = ⊤
+  ⎩ DSIgnorable   if  equivocates_ptr(cj, lm) ∧ d = ⊥
 ```
 
-where `d` indicates whether the arriving block was requested as a
+where `cj`/`lm` are the creator-justification and latest-message pointers
+and `d` indicates whether the arriving block was requested as a
 dependency. Rocq:
-`detect : DAGState → Validator → nat → bool → DetectorStatus`
+`detect : option BlockHash → option BlockHash → bool → DetectorStatus`
 in `theories/EquivocationDetector.v:66`.
 
 ### 4.2 Theorem 4.1 (T-1, Detection soundness)
 
-**Statement.** *(`detection_sound`, `EquivocationDetector.v:91`.)*
-For every state `S`, validator `v`, sequence `n`, dependency flag `d`,
-and status `s` returned by the detector,
+**Statement.** *(`detection_sound`, `EquivocationDetector.v:145`.)*
+For every creator-justification pointer `cj`, latest-message pointer `lm`,
+dependency flag `d`, and status `s` returned by the detector,
 
 ```
-  detect(S, v, n, d) = s ∧ s ∈ {DSAdmissible, DSIgnorable}
-    ⟹ equivocates(S, v, n)
+  detect(cj, lm, d) = s ∧ s ∈ {DSAdmissible, DSIgnorable}
+    ⟹ equivocates_ptr(cj, lm)
 ```
 
-**Proof.** By case analysis on the case of `equivocates_b S v n`:
+**Proof.** By case analysis on `equivocates_ptr(cj, lm)`:
 
-- If `equivocates_b S v n = true`: then `equivocates(S, v, n)` holds
-  by reflection.
-- If `equivocates_b S v n = false`: then `detect` returns `DSValid`
+- If `equivocates_ptr(cj, lm) = true`: the conclusion holds directly.
+- If `equivocates_ptr(cj, lm) = false`: then `detect` returns `DSValid`
   regardless of `d`, contradicting `s ∈ {DSAdmissible, DSIgnorable}`.
 
-The Rocq script destructs on `equivocates_b` and uses `discriminate` to
+The Rocq script destructs on `equivocates_ptr` and uses `discriminate` to
 close the contradictory branch. ∎
 
 ### 4.3 Theorem 4.2 (T-2, Detection completeness)
 
-**Statement.** *(`detection_complete`, `EquivocationDetector.v:111`.)*
-For every state `S`, validator `v`, sequence `n`, and flag `d`,
+**Statement.** *(`detection_complete`, `EquivocationDetector.v:166`.)*
+For every creator-justification pointer `cj`, latest-message pointer `lm`,
+and flag `d`,
 
 ```
-  equivocates(S, v, n) ⟹
-    detect(S, v, n, d) = DSAdmissible ∨ detect(S, v, n, d) = DSIgnorable
+  equivocates_ptr(cj, lm) ⟹
+    detect(cj, lm, d) = DSAdmissible ∨ detect(cj, lm, d) = DSIgnorable
 ```
 
-**Proof.** From `equivocates(S, v, n)` we have
-`equivocates_b S v n = true` by reflection. Thus `detect` enters its
+**Proof.** From `equivocates_ptr(cj, lm) = true`, `detect` enters its
 true-branch. Case analysis on `d`: returns `DSAdmissible` if `d = ⊤`,
 `DSIgnorable` otherwise. ∎
 
@@ -413,14 +438,14 @@ return value explicit:
 
 ### 4.4 Theorem 4.3 (T-3, Slashable taxonomy correctness)
 
-**Statement.** *(`slashable_post_fix_extends_pre_fix`, `InvalidBlock.v:151`.)*
+**Statement.** *(`slashable_post_fix_extends_pre_fix`, `InvalidBlock.v:164`.)*
 For every `ib : InvalidBlock`,
 
 ```
   is_slashable_pre_fix(ib) = ⊤ ⟹ is_slashable(ib) = ⊤
 ```
 
-**Proof.** Exhaustive case analysis on the 26-element `InvalidBlock`
+**Proof.** Exhaustive case analysis on the 27-element `InvalidBlock`
 inductive: each variant where `is_slashable_pre_fix` returns `true` also
 has `is_slashable` returning `true`. ∎
 
@@ -632,7 +657,7 @@ offender's bond is positive,
 
 ### 6.3 Theorem 6.3 (T-Idem, Slash idempotence; alias T-9)
 
-**Statement.** *(`slash_idempotent`, `PoSContract.v:117`.)*
+**Statement.** *(`slash_idempotent`, `PoSContract.v:128`.)*
 
 ```
   let (ps₁, _) := slash(ps, v) in
@@ -1285,7 +1310,7 @@ transitive). Proofs in `Bisimulation.v` §2.
 
 ### 8.3 Theorem 8.2 (T-15b, Composed bisimulation closure)
 
-**Statement.** *(`main_bisimilarity_theorem`, `MainTheorem.v:475`.)*
+**Statement.** *(`main_bisimilarity_theorem`, `MainTheorem.v:598`.)*
 For every component triple `(b₁, b₂, v₁, v₂, sl₁, sl₂, offender)` with
 component-wise R-equivalence as the hypothesis,
 
@@ -1578,15 +1603,123 @@ provides a mathematical statement of the proof. All are mechanized in
 ### 9.1 T-9.1 — IgnorableEquivocation safety
 
 **Statement.** *(`post_fix_ignorable_implies_equivocation`,
-`BugFixIgnorable.v:57`.)* If the detector emits `DSIgnorable`, then
-`IBIgnorableEquivocation` is in the post-fix slashable set AND the DAG
-witnesses a real equivocation. Hence no honest validator is wrongly
-slashed.
+`BugFixIgnorable.v`.)* If the detector emits `DSIgnorable`, then
+`IBIgnorableEquivocation` is in the post-fix slashable set AND the
+arriving block's creator justification really disagreed with the sender's
+latest message (`equivocates_ptr(cj, lm) = true` — a genuine pointer
+equivocation). Hence no honest validator is wrongly slashed.
 
 **Proof.** Combining `ignorable_post_fix_slashable`
-(`InvalidBlock.v:173`, T-3 specialization) with
-`ignorable_only_on_real_equivocation` (`BugFixIgnorable.v:45`, T-1
-specialization). ∎
+(T-3 specialization) with `ignorable_only_on_real_equivocation`
+(T-1 specialization, over the pointer notion). ∎
+
+**Honest restatement (FV audit #1).** Adding the 27th slashable variant
+`UnauthorizedSlashDeploy` makes the naïve "every slashable variant is
+pre-fix-slashable ∨ IgnorableEquivocation" statement **false**. The
+corrected capstone `bug_fix_ignorable_safety` (re-exported as
+`main_T9_1_slashable_attributable`) is:
+
+```
+  is_slashable(ib) = true ⟹
+      is_slashable_pre_fix(ib) = true
+    ∨ ib = IBIgnorableEquivocation
+    ∨ ib = IBUnauthorizedSlashDeploy
+```
+
+Every disjunct is an *attributable* offense, so the honest-validator
+safety conclusion still holds. The empty record minted for the
+`UnauthorizedSlashDeploy` branch (`EquivocationRecord::new(V, seq-1, {})`)
+is shown to resolve to `EquivocationOblivious` for an honest bonded
+sender by `unauth_record_honest_oblivious`
+(`BugFixDispatcher.v`, re-exported `main_T9_1_unauth_record_oblivious`) —
+so minting it does not, on its own, corrupt neglected-equivocation
+detection. (The related *observer-hash stamping while the offender is
+unbonded* mechanism — a distinct fork, FV audit #6 — is now RESOLVED; see
+§9.1a below and `design/12-failure-modes.md §12.2.1a`.)
+
+### 9.1a T-9.1a — Unbonded-window record pollution fork (FV audit #6)
+
+**Status.** RESOLVED (remediation shipped). This closes the pre-fix
+observation-order-dependent `NeglectedEquivocation` divergence documented in
+`design/12-failure-modes.md §12.2.1a`.
+
+**Fix.** `get_equivocation_discovery_status` returns `EquivocationOblivious`
+(was `EquivocationDetected`) for an unbonded / stake-0 offender
+(`equivocation_detector.rs:280,311`), matching
+`slashing-specification.md §11.6`. Since the caller
+`check_neglected_equivocation` stamps a witness hash into
+`equivocation_detected_block_hashes` *only* on the `EquivocationDetected`
+arm, that arm becomes unreachable and is hardened to a no-op; the witness
+set of an unbonded offender therefore stays empty, and detectability reduces
+to the deterministic `updated_equivocation_children.len() > 1` mechanism.
+
+**Statements (axiom-free Rocq, `EquivocationDetector.v`, re-exported in
+`MainTheorem.v`).** Let `stamp_on_status(r, st, h)` model the caller
+(only `EDDetected` appends `h` to `r`'s witness list; every other status is
+a no-op), and `discovery_status_bonded(stake, detectable)` the post-fix
+discovery function.
+
+| Theorem (`main_*`) | Statement |
+|--------------------|-----------|
+| `main_T9_1a_unbonded_oblivious` | `∀ d, discovery_status_bonded(0, d) = EDOblivious` — an unbonded offender is always Oblivious, regardless of the observing view's detectability `d`. |
+| `main_T9_1a_unbonded_no_stamp` | `∀ r d h, stamp_on_status(r, discovery_status_bonded(0, d), h) = r` — stamping an unbonded offender's record is a no-op (the witness set is never mutated). |
+| `main_T9_1a_unbonded_order_independent` | `∀ r d h₁ h₂,` with `st = discovery_status_bonded(0, d)`, `stamp_on_status(stamp_on_status(r, st, h₁), st, h₂) = stamp_on_status(stamp_on_status(r, st, h₂), st, h₁) ∧ = r` — two nodes stamping candidate hashes in **either** order reach the **same** record, and that record is exactly the original `r`. |
+
+**Determinism (why the fork is refuted).** By `main_T9_1a_unbonded_no_stamp`
+the unbonded offender's witness set is invariant under any stamping attempt,
+and by `main_T9_1a_unbonded_order_independent` the two-stamp result is
+independent of the `h₁ ↔ h₂` observation order. Since all honest nodes then
+hold the identical (empty) witness set, `is_equivocation_detectable`
+evaluates identically across nodes — the observation-order-dependent
+`NeglectedEquivocation` divergence cannot arise. `Print Assumptions` reports
+all three capstones "Closed under the global context" (no axioms/admits).
+
+**Proof.** Each reduces by computation: `Nat.ltb 0 0 = false` forces the
+Oblivious branch, and `stamp_on_status(r, EDOblivious, h)` reduces to `r` by
+the `match`. ∎
+
+**Model checking (TLA+).** `EquivocationDetector.tla` is enriched with a
+`bonded` map and a `recordWitness` set (the image of
+`equivocation_detected_block_hashes`), plus `Unbond`/`Rebond` and a
+`StampWitness` action (the pre-fix Detected-arm stamp) gated by
+`EnableStampWitness`. Two invariants pin the fix:
+
+- `Inv_NoStampAgainstUnbonded` — no witness is recorded against an unbonded
+  offender (`∀ vk ∈ DOMAIN recordWitness : ¬bonded[vk[1]] ⇒ recordWitness[vk] = {}`).
+- `Inv_NeglectNotFromUnbondedPollution` — a `neglected` verdict is backed by
+  a bonded offender and a genuine detectable-in-view equivocation, never by
+  witness pollution.
+
+The POST-FIX config `MC_EquivocationDetector_unbonded_pollution.cfg`
+(`EnableStampWitness = FALSE`) exhausts its bond-toggling state space and
+PASSES both invariants; the PRE-FIX twin `..._pre_fix.cfg`
+(`EnableStampWitness = TRUE`) reproduces a counterexample to
+`Inv_NoStampAgainstUnbonded` (an equivocation record is created, the
+offender unbonds, and `StampWitness` lands a hash while `¬bonded`). The
+eager model (`EquivocationDetectorEager.tla`) carries the same invariants as
+a static-bonding post-fix witness, and Apalache proves `IndInv` (including
+`Inv_WitnessEmpty`, `Inv_NoStampAgainstUnbonded`,
+`Inv_NeglectNotFromUnbondedPollution`) **inductive** at 3v/3s/3b via
+BASE + STEP.
+
+**Dynamic verification (Rust).** Post-fix characterization tests
+`tier0_unbonded_validator_discovery_is_oblivious_no_stamp`,
+`tier0_polluted_record_falsely_neglects_honest_block`,
+`tier0_cross_node_observation_order_converges` (in the
+`equivocation_detector.rs` test module) plus the randomized-interleaving
+proptest `unbonded_window_never_pollutes_or_falsely_neglects`
+(`casper/tests/slashing/unbonded_window_pollution_determinism.rs`) assert,
+for any schedule of record creation, bond toggles, and block validations,
+that every unbonded-offender witness set stays empty and no honest block is
+rejected `NeglectedEquivocation`.
+
+**Deployment migration (ops step, not consensus logic).** On a network that
+ran the pre-fix code, perform a one-time **deterministic clear** of
+`equivocation_detected_block_hashes` for unbonded offenders' records at a
+coordinated upgrade boundary (equivalently, clear all witness sets and let
+genuine witnesses re-accumulate from the bonded path). Applied identically
+on every node at the same height, this is a state migration, not consensus
+logic, and is unnecessary on a fresh genesis.
 
 ### 9.2 T-9.2 — Atomic tracker correctness
 
@@ -1975,7 +2108,7 @@ honest. Worked example: `design/11-worked-examples.md §11.13`.
 
 **Statement.** *(`unauthorized_unknown_execution_noop`,
 `BugFixSlashAuthorization.v:32`; also
-`main_T9_13_unknown_slash_evidence_noop` in `MainTheorem.v:212`.)*
+`main_T9_13_unknown_slash_evidence_noop` in `MainTheorem.v:280`.)*
 ```
   evidence_hash(ev) ∉ local.invalid_blocks
   ⟹  apply_slash_deploy(state, ev) = state .
@@ -2027,6 +2160,20 @@ parent pre-state. ∎
 `Inv_AmbientZeroDoesNotBlockParentPositiveAuth`, and
 `Inv_ParentZeroRejectsEvenAmbientPositive` in
 `MC_AuthorizedSlashFlow.cfg`.
+
+**Rust realization (why no `ambient ≠ parent` fixture is needed).** The Rocq
+`authorized_slash_candidate_with_ambient` takes both `ambient_bonds` and `parent_bonds`
+precisely so it can *prove* the ambient argument is unused. The Rust receive gate
+`validate_received_slash_deploys` (`slashing_authorization.rs`) is handed a **single**
+snapshot whose `bonds_map` **is** the block's parent pre-state — the ambient view is never
+a parameter — so ambient-independence is enforced *structurally by the function signature*,
+a strictly stronger guarantee than any runtime fixture could give. The two directions of the
+theorem are already covered by `current_epoch_received_slash_deploy_is_accepted`
+(parent-positive ⟹ authorize) and `received_slash_deploy_rejects_unbonded_target`
+(parent-zero ⟹ reject) in `casper/tests/slashing/slash_authorization_regressions.rs`
+(gate `[4/5]`). A discriminating `ambient ≠ parent` fixture therefore has no Rust seam to
+exercise — class **(F)** (a model-level distinction that the realization makes structurally
+impossible to violate).
 
 #### 9.13.3 Theorem 9.13″ (Merge-rejected slash recovery dedup)
 
@@ -2202,7 +2349,7 @@ index*, closing the original Bug #14 liveness gap.
 
 **Statement.** *(`execute_invalid_auth_token_noop`,
 `SlashDeploy.v:142`; also
-`main_TAuth_invalid_token_noop` in `MainTheorem.v:252`.)*
+`main_TAuth_invalid_token_noop` in `MainTheorem.v:375`.)*
 ```
   auth_token(deploy) is invalid
   ⟹  apply_slash_deploy(state, deploy) = state .
@@ -2222,7 +2369,7 @@ on `state` follows. ∎
 
 **Statement.** *(`execute_valid_auth_token_equiv`,
 `SlashDeploy.v:149`; also
-`main_TAuth_valid_token_equiv` in `MainTheorem.v:257`.)*
+`main_TAuth_valid_token_equiv` in `MainTheorem.v:380`.)*
 ```
   auth_token(deploy) is valid
   ⟹  apply_slash_deploy(state, deploy)
@@ -2270,7 +2417,7 @@ construction.
 
 The Rust call site at
 `casper/src/rust/slashing_authorization.rs:183` (invoked from
-`block_creator.rs:309`) is the operational realisation of this fold
+`block_creator.rs:498`) is the operational realisation of this fold
 and is verified to match by the bisimulation result of §8. ∎
 
 Deterministic slash-seed construction is tracked separately:
@@ -2728,7 +2875,7 @@ T2 writes {h2}        store := {h2}     ← h1 lost
 ```
 
 **Implication.** This is the formal evidence for bug #2 (Rust
-regression at `engine/multi_parent_casper/mod.rs:1046-1075`). The post-fix
+regression at `engine/multi_parent_casper/validation_dispatcher.rs:459`). The post-fix
 configuration (`Locked = TRUE`) eliminates the violation, confirming
 the fix proven in Rocq as `t_9_2_atomic_no_overwrite`.
 
@@ -2876,7 +3023,7 @@ formal/rocq/slashing/theories/                 (26 Rocq modules; cf. §1.3)
 ├── Validator.v                       (foundations: BondMap algebra)
 ├── ValidatorLifetime.v               (Bug #13: epoch-scoped lifetime identity)
 ├── Block.v                           (Block, Justification, equivocation predicate)
-├── InvalidBlock.v                    (26-variant taxonomy + is_slashable, T-3)
+├── InvalidBlock.v                    (27-variant taxonomy + is_slashable, 19 slashable, T-3)
 ├── EquivocationRecord.v              (EqStore, T-4, T-5)
 ├── DAGState.v                        (DAG snapshot + equivocates predicate)
 ├── EquivocationDetector.v            (detect, T-1, T-2, T-6, T-9.11)
@@ -3005,6 +3152,41 @@ Rocq's standard library and the slashing theories — no `Admitted`, no
 custom `Axiom`, no `Parameter`, no extracted assumption. Reproducible
 with the exact command above.
 
+**Independent kernel re-check (`coqchk`, C3) + a standing local gate (C7).**
+The `Print Assumptions` output above is produced by the *same* `coqc` that
+elaborated the `.vo` files. To close the elaborator-vs-kernel gap, the new
+`scripts/check-slashing-ALL.sh` gate — the LOCAL-ONLY parity gate that
+finalized-floor and fork-choice already have, so the slashing FV can no longer
+rot silently (its axiom-free claim previously lived only in this section, run by
+hand) — additionally re-verifies the whole library through the trusted kernel:
+`coqchk -Q theories Slashing Slashing.MainTheorem` ⇒ *"Modules were successfully
+checked"*. The gate is **authoritative on Rocq** (it auto-generates a
+`Print Assumptions` for *every* `main_*` capstone in `MainTheorem.v` and asserts
+the count of *"Closed under the global context"* equals the capstone count — 70
+at this writing — so a newly-added theorem that is not axiom-free fails the gate),
+and **fail-soft on TLA⁺**: the fast concurrent-tracker, slash-flow, 1v
+detector-liveness (exercising all detector safety invariants plus
+`Live_DetectionComplete`), and — added in the P0–P3 coverage sweep — the **eager
+liveness-as-safety** model (**C8**, `MC_EquivocationDetectorEager.cfg`: folds
+liveness into the `Inv_LivenessAsSafety` invariant and quotients the 2v space by
+validator symmetry, exhausting fast at 52 650 states) must pass, the pre-fix
+tracker cfg must reproduce its race counterexample, and the heavy exhaustive 2v
+detector-safety run (§10.5, §12.4) is budgeted (`SL_DETECTOR_SAFETY_BUDGET`,
+default 300 s ⇒ skip-with-note; `0` ⇒ run to completion) since Rocq is
+authoritative for detection soundness (T-1/T-6) and that run is defense-in-depth.
+A further **fail-soft Apalache tier** (**C9**) proves `IndInv = TypeOK ∧
+Inv_DetectionSound ∧ Inv_TaxonomyCorrect ∧ Inv_NeglectedHasDetectableView ∧
+Inv_RecordHasWitness ∧ Inv_LivenessAsSafety` **INDUCTIVE** (BASE `Init ⊨ IndInv` +
+STEP `Next` preserves `IndInv`) on `EquivocationDetectorEager_apalache.tla` at
+3v/3s/3b — **horizon-free** (all reachable states at any trajectory length),
+strictly beyond the bounded TLC 2v/2s/2b, and certifying a 3-validator bound where
+explicit TLC enumeration blows up; non-vacuous (breaking eager atomicity ⇒ STEP
+counterexample-to-induction). The `Canonical*`/`DetectorTraversal*` invariants are
+excluded from `IndInv` (state-independent pure-math over `RECURSIVE` helpers,
+unsupported by Apalache; TLC continues to validate them). SKIPs fail-soft if no
+`apalache-mc` on PATH. POLICY: this gate is **local-only** — it is never wired into
+`.github/workflows/*` (an earlier formal-CI workflow was deliberately removed).
+
 The complete theorem set (after all eleven audit-gap closures plus the
 sixteen-bug-fix completion in §9.10..§9.16) covers:
 
@@ -3035,7 +3217,7 @@ All return "Closed under the global context".
 | Rholang interpreter semantics                 | The `slash` Rholang contract is shared between Rust and Scala; we treat the Rholang execution as an abstract function `slash : PoSState → V → PoSState × bool`. |
 | Network-level message-passing                 | Out of scope; the LTS is on local state.                                                                                                                        |
 | Cryptographic signatures                      | Validators are abstract `nat`s; the PoS auth-token check is modeled as a Boolean oracle around slash-deploy execution.                                          |
-| Replay determinism over partial slash deploys | Adjacent (bug fix #8); the proof is structural, not replay-protocol-level.                                                                                      |
+| Replay determinism over partial slash deploys | Adjacent (bug fix #8); the proof is structural, not replay-protocol-level. **G1 (runtime slash-map view-independence):** the slash system-deploy's `invalid_blocks` map is built by `slashed_block_senders` (`casper/util/proto_util.rs`) from each slashed block's *own recorded* target and that target's *immutable* `sender`, never the node's divergent `dag.invalid_blocks` view — so the proposer's PLAY map ≡ the validator's REPLAY map (a byte-identical map ⇒ no `ConsumeFailed`/finalization stall). This runtime map-construction determinism is outside the Rocq detection/dispatch model and is instead pinned on the casper side by a differential example test and a 200-case ∀-views property test (`slashed_block_senders_is_view_independent_{g1,prop_g1}`) — the modality that actually catches a regression that consults the view.                                                                                      |
 | Validator-set genesis                         | Out of scope; we assume an initial `BondMap` and prove preservation under transitions.                                                                          |
 
 ### 14.4 Cited classical lemmas (none in critical path)

@@ -63,7 +63,8 @@ pub enum InvalidBlock {
     // evidence, unbonded offender, duplicate target, or issuer ≠ sender).
     // Raised by `Validate::slash_deploy_authorization`; the rules are in
     // `slashing_authorization.rs::validate_received_slash_deploys` and
-    // proven sufficient by Theorem T-9.8.
+    // proven sufficient by Theorem T-9.13 (see
+    // `formal/rocq/slashing/theories/BugFixSlashAuthorization.v`).
     UnauthorizedSlashDeploy,
     InvalidRejectedDeploy,
     ContainsExpiredDeploy,

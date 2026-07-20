@@ -3,7 +3,7 @@
 ## 1 · Summary
 
 Pre-fix, the equivocation detector at
-`equivocation_detector.rs:184` checked `if stake > 0` to skip stake-
+`equivocation_detector.rs:285` checked `if stake > 0` to skip stake-
 zero validators; this filter silently dropped equivocation
 classifications for validators whose bond had been reduced to zero
 (e.g. by an earlier slash). The result was that a once-slashed
