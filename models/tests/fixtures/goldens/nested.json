@@ -1,0 +1,139 @@
+{
+  "ps": [
+    {
+      "sends": [],
+      "receives": [],
+      "news": [],
+      "exprs": [
+        {
+          "expr_instance": {
+            "EListBody": {
+              "ps": [
+                {
+                  "sends": [],
+                  "receives": [],
+                  "news": [],
+                  "exprs": [
+                    {
+                      "expr_instance": {
+                        "GString": "nest"
+                      }
+                    }
+                  ],
+                  "matches": [],
+                  "unforgeables": [],
+                  "bundles": [],
+                  "connectives": [],
+                  "conditionals": [],
+                  "locally_free": [],
+                  "connective_used": false
+                },
+                {
+                  "sends": [],
+                  "receives": [],
+                  "news": [],
+                  "exprs": [
+                    {
+                      "expr_instance": {
+                        "EPathmapBody": {
+                          "ps": [
+                            {
+                              "sends": [],
+                              "receives": [],
+                              "news": [],
+                              "exprs": [
+                                {
+                                  "expr_instance": {
+                                    "EListBody": {
+                                      "ps": [
+                                        {
+                                          "sends": [],
+                                          "receives": [],
+                                          "news": [],
+                                          "exprs": [
+                                            {
+                                              "expr_instance": {
+                                                "GString": "inner"
+                                              }
+                                            }
+                                          ],
+                                          "matches": [],
+                                          "unforgeables": [],
+                                          "bundles": [],
+                                          "connectives": [],
+                                          "conditionals": [],
+                                          "locally_free": [],
+                                          "connective_used": false
+                                        },
+                                        {
+                                          "sends": [],
+                                          "receives": [],
+                                          "news": [],
+                                          "exprs": [
+                                            {
+                                              "expr_instance": {
+                                                "GString": "leaf"
+                                              }
+                                            }
+                                          ],
+                                          "matches": [],
+                                          "unforgeables": [],
+                                          "bundles": [],
+                                          "connectives": [],
+                                          "conditionals": [],
+                                          "locally_free": [],
+                                          "connective_used": false
+                                        }
+                                      ],
+                                      "locally_free": [],
+                                      "connective_used": false,
+                                      "remainder": null
+                                    }
+                                  }
+                                }
+                              ],
+                              "matches": [],
+                              "unforgeables": [],
+                              "bundles": [],
+                              "connectives": [],
+                              "conditionals": [],
+                              "locally_free": [],
+                              "connective_used": false
+                            }
+                          ],
+                          "locally_free": [],
+                          "connective_used": false,
+                          "remainder": null
+                        }
+                      }
+                    }
+                  ],
+                  "matches": [],
+                  "unforgeables": [],
+                  "bundles": [],
+                  "connectives": [],
+                  "conditionals": [],
+                  "locally_free": [],
+                  "connective_used": false
+                }
+              ],
+              "locally_free": [],
+              "connective_used": false,
+              "remainder": null
+            }
+          }
+        }
+      ],
+      "matches": [],
+      "unforgeables": [],
+      "bundles": [],
+      "connectives": [],
+      "conditionals": [],
+      "locally_free": [],
+      "connective_used": false
+    }
+  ],
+  "locally_free": [],
+  "connective_used": false,
+  "remainder": null
+}

@@ -1,0 +1,187 @@
+{
+  "pathmap": {
+    "ps": [
+      {
+        "sends": [],
+        "receives": [],
+        "news": [],
+        "exprs": [
+          {
+            "expr_instance": {
+              "EListBody": {
+                "ps": [
+                  {
+                    "sends": [],
+                    "receives": [],
+                    "news": [],
+                    "exprs": [
+                      {
+                        "expr_instance": {
+                          "GString": "a"
+                        }
+                      }
+                    ],
+                    "matches": [],
+                    "unforgeables": [],
+                    "bundles": [],
+                    "connectives": [],
+                    "conditionals": [],
+                    "locally_free": [],
+                    "connective_used": false
+                  },
+                  {
+                    "sends": [],
+                    "receives": [],
+                    "news": [],
+                    "exprs": [
+                      {
+                        "expr_instance": {
+                          "GString": "x"
+                        }
+                      }
+                    ],
+                    "matches": [],
+                    "unforgeables": [],
+                    "bundles": [],
+                    "connectives": [],
+                    "conditionals": [],
+                    "locally_free": [],
+                    "connective_used": false
+                  }
+                ],
+                "locally_free": [],
+                "connective_used": false,
+                "remainder": null
+              }
+            }
+          }
+        ],
+        "matches": [],
+        "unforgeables": [],
+        "bundles": [],
+        "connectives": [],
+        "conditionals": [],
+        "locally_free": [],
+        "connective_used": false
+      },
+      {
+        "sends": [],
+        "receives": [],
+        "news": [],
+        "exprs": [
+          {
+            "expr_instance": {
+              "EListBody": {
+                "ps": [
+                  {
+                    "sends": [],
+                    "receives": [],
+                    "news": [],
+                    "exprs": [
+                      {
+                        "expr_instance": {
+                          "GString": "a"
+                        }
+                      }
+                    ],
+                    "matches": [],
+                    "unforgeables": [],
+                    "bundles": [],
+                    "connectives": [],
+                    "conditionals": [],
+                    "locally_free": [],
+                    "connective_used": false
+                  },
+                  {
+                    "sends": [],
+                    "receives": [],
+                    "news": [],
+                    "exprs": [
+                      {
+                        "expr_instance": {
+                          "GString": "y"
+                        }
+                      }
+                    ],
+                    "matches": [],
+                    "unforgeables": [],
+                    "bundles": [],
+                    "connectives": [],
+                    "conditionals": [],
+                    "locally_free": [],
+                    "connective_used": false
+                  }
+                ],
+                "locally_free": [],
+                "connective_used": false,
+                "remainder": null
+              }
+            }
+          }
+        ],
+        "matches": [],
+        "unforgeables": [],
+        "bundles": [],
+        "connectives": [],
+        "conditionals": [],
+        "locally_free": [],
+        "connective_used": false
+      },
+      {
+        "sends": [],
+        "receives": [],
+        "news": [],
+        "exprs": [
+          {
+            "expr_instance": {
+              "EListBody": {
+                "ps": [
+                  {
+                    "sends": [],
+                    "receives": [],
+                    "news": [],
+                    "exprs": [
+                      {
+                        "expr_instance": {
+                          "GString": "b"
+                        }
+                      }
+                    ],
+                    "matches": [],
+                    "unforgeables": [],
+                    "bundles": [],
+                    "connectives": [],
+                    "conditionals": [],
+                    "locally_free": [],
+                    "connective_used": false
+                  }
+                ],
+                "locally_free": [],
+                "connective_used": false,
+                "remainder": null
+              }
+            }
+          }
+        ],
+        "matches": [],
+        "unforgeables": [],
+        "bundles": [],
+        "connectives": [],
+        "conditionals": [],
+        "locally_free": [],
+        "connective_used": false
+      }
+    ],
+    "locally_free": [],
+    "connective_used": false,
+    "remainder": null
+  },
+  "current_path": [
+    [
+      97
+    ]
+  ],
+  "is_write_zipper": false,
+  "locally_free": [],
+  "connective_used": false
+}

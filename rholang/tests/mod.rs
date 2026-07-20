@@ -4,6 +4,8 @@ mod crypto_channels_spec;
 mod concurrent_rspace_architecture_repro_spec;
 mod demo_verification;
 mod deploy_data_spec;
+mod epathmap_charge_trace_spec;
+mod epathmap_differential_scaffold;
 mod external_services;
 mod getsubtrie_spec;
 mod interpreter_spec;

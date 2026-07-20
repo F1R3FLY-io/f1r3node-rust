@@ -1,0 +1,114 @@
+{
+  "ps": [
+    {
+      "sends": [],
+      "receives": [],
+      "news": [],
+      "exprs": [
+        {
+          "expr_instance": {
+            "EListBody": {
+              "ps": [
+                {
+                  "sends": [],
+                  "receives": [],
+                  "news": [],
+                  "exprs": [
+                    {
+                      "expr_instance": {
+                        "GString": "plain"
+                      }
+                    }
+                  ],
+                  "matches": [],
+                  "unforgeables": [],
+                  "bundles": [],
+                  "connectives": [],
+                  "conditionals": [],
+                  "locally_free": [],
+                  "connective_used": false
+                }
+              ],
+              "locally_free": [],
+              "connective_used": false,
+              "remainder": null
+            }
+          }
+        }
+      ],
+      "matches": [],
+      "unforgeables": [],
+      "bundles": [],
+      "connectives": [],
+      "conditionals": [],
+      "locally_free": [],
+      "connective_used": false
+    },
+    {
+      "sends": [],
+      "receives": [],
+      "news": [],
+      "exprs": [
+        {
+          "expr_instance": {
+            "EListBody": {
+              "ps": [
+                {
+                  "sends": [],
+                  "receives": [],
+                  "news": [],
+                  "exprs": [
+                    {
+                      "expr_instance": {
+                        "GString": "lf"
+                      }
+                    }
+                  ],
+                  "matches": [],
+                  "unforgeables": [],
+                  "bundles": [],
+                  "connectives": [],
+                  "conditionals": [],
+                  "locally_free": [],
+                  "connective_used": false
+                },
+                {
+                  "sends": [],
+                  "receives": [],
+                  "news": [],
+                  "exprs": [
+                    {
+                      "expr_instance": {
+                        "GString": "entry"
+                      }
+                    }
+                  ],
+                  "matches": [],
+                  "unforgeables": [],
+                  "bundles": [],
+                  "connectives": [],
+                  "conditionals": [],
+                  "locally_free": [],
+                  "connective_used": false
+                }
+              ],
+              "locally_free": [],
+              "connective_used": false,
+              "remainder": null
+            }
+          }
+        }
+      ],
+      "matches": [],
+      "unforgeables": [],
+      "bundles": [],
+      "connectives": [],
+      "conditionals": [],
+      "locally_free": [],
+      "connective_used": false
+    }
+  ],
+  "locally_free": [],
+  "connective_used": false,
+  "remainder": null
+}

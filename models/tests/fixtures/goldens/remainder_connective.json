@@ -1,0 +1,55 @@
+{
+  "ps": [
+    {
+      "sends": [],
+      "receives": [],
+      "news": [],
+      "exprs": [
+        {
+          "expr_instance": {
+            "EListBody": {
+              "ps": [
+                {
+                  "sends": [],
+                  "receives": [],
+                  "news": [],
+                  "exprs": [
+                    {
+                      "expr_instance": {
+                        "GString": "head"
+                      }
+                    }
+                  ],
+                  "matches": [],
+                  "unforgeables": [],
+                  "bundles": [],
+                  "connectives": [],
+                  "conditionals": [],
+                  "locally_free": [],
+                  "connective_used": false
+                }
+              ],
+              "locally_free": [],
+              "connective_used": false,
+              "remainder": null
+            }
+          }
+        }
+      ],
+      "matches": [],
+      "unforgeables": [],
+      "bundles": [],
+      "connectives": [],
+      "conditionals": [],
+      "locally_free": [],
+      "connective_used": false
+    }
+  ],
+  "locally_free": [],
+  "connective_used": true,
+  "remainder": {
+    "var_instance": {
+      "FreeVar": 0
+    }
+  }
+}
