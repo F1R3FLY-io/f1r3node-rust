@@ -45,6 +45,19 @@ impl<A: Clone> Env<A> {
             .cloned()
     }
 
+    /// Borrow the binding for de Bruijn index `k` without cloning — the same
+    /// index resolution as [`Env::get`], minus its deep clone of the bound
+    /// value.
+    ///
+    /// Additive (EPathMap fix P2): the interpreter's method-chain fusion
+    /// recognizer inspects a chain's base binding BY BORROW to decide whether
+    /// the chain fuses; `get`'s clone is exactly the per-reference
+    /// materialization the fusion removes, so the recognizer must not pay it
+    /// just to look. All existing `get` call sites are unchanged.
+    pub fn get_ref(&self, k: &i32) -> Option<&A> {
+        self.env_map.get(&((self.level + self.shift) - k - 1))
+    }
+
     pub fn shift(&self, j: i32) -> Env<A> {
         Env {
             shift: self.shift + j,

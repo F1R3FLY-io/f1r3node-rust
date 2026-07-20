@@ -78,6 +78,12 @@ cc = "1.0"
 
 [features]
 chromadb = ["dep:chroma", "dep:rust-bert"]
+# EPathMap fix P2 (plan amendment PM-5(3)): compiles the TEST-ONLY fused-vs-unfused
+# force-disable toggle and the shape-keyed fusion-hit counters into the library so the
+# differential integration suite (tests/epathmap_differential_scaffold.rs) can drive both
+# paths. NEVER enabled in production builds — without it no runtime-flippable fusion path
+# exists (a runtime flag would be a node-divergence hazard under a latent parity bug).
+epathmap-fusion-differential = []
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }

@@ -1526,6 +1526,18 @@ impl DebruijnInterpreter {
 
     // Public here for testing purposes
     pub fn eval_expr_to_par(&self, expr: &Expr, env: &Env<Par>) -> Result<Par, InterpreterError> {
+        // EPathMap fix P2 (T3b): the method-chain view-fusion seam runs FIRST in the
+        // EMethodBody dispatch arm (an O(1) name-gated reject — plan amendment PM-5(1);
+        // every non-EMethodBody expr pays one discriminant check). `None` ⇒ not a
+        // fusable chain and the existing per-link path below runs UNCHANGED. Placed
+        // ahead of the arm's `expr_instance` clone so a fused chain also skips the
+        // outermost AST clone.
+        if let Some(ExprInstance::EMethodBody(emethod)) = &expr.expr_instance {
+            if let Some(fused) = self.try_eval_fused_method_chain(emethod, env)? {
+                return Ok(fused);
+            }
+        }
+
         match unwrap_option_safe(expr.expr_instance.clone())? {
             ExprInstance::EVarBody(evar) => {
                 let p = self.eval_var(&unwrap_option_safe(evar.v)?, env)?;
@@ -2714,12 +2726,22 @@ impl DebruijnInterpreter {
                     })
                 }
 
-                ExprInstance::EMethodBody(EMethod {
-                    method_name,
-                    target,
-                    arguments,
-                    ..
-                }) => {
+                ExprInstance::EMethodBody(emethod) => {
+                    // EPathMap fix P2 (T3b): the view-fusion seam runs FIRST in this
+                    // dispatch arm too (the guard-conjunct route: EAnd → eval_to_bool →
+                    // eval_expr_to_expr). PM-4(a): a fused Some(par) routes through the
+                    // SAME eval_single_expr conversion today's path applies to its
+                    // result_par below, so (for example) a Nil chain result raises the
+                    // identical "Error: Multiple expressions given." here.
+                    if let Some(fused) = self.try_eval_fused_method_chain(emethod, env)? {
+                        return self.eval_single_expr(&fused, env);
+                    }
+                    let EMethod {
+                        method_name,
+                        target,
+                        arguments,
+                        ..
+                    } = emethod;
                     self.metering.reserve_primitive(method_call_cost())?;
                     let evaled_target = self.eval_expr(target.as_ref().unwrap(), env)?;
                     let evaled_args = arguments
