@@ -358,10 +358,7 @@ pub fn to_latest_message(
 
 pub fn block_header(parent_hashes: Vec<ByteString>, version: i64, timestamp: i64) -> Header {
     Header {
-        parents_hash_list: parent_hashes
-            .into_iter()
-            .map(|bytes| bytes.into())
-            .collect(),
+        parents_hash_list: parent_hashes.into_iter().map(Into::into).collect(),
         timestamp,
         version,
         extra_bytes: prost::bytes::Bytes::new(),

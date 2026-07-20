@@ -369,7 +369,7 @@ async fn estimate_cost_with_deployer_matches_real_deploy_cost() {
         .header
         .parents_hash_list
         .first()
-        .map(|h| hex::encode(h))
+        .map(hex::encode)
         .expect("Transfer block should have at least one parent");
 
     // Step 3: Call exploratory_deploy with deployer = Some(DEFAULT_PUB)
