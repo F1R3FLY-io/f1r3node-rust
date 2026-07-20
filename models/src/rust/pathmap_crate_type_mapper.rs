@@ -237,7 +237,9 @@ impl EncodeByteSink for CompareSink<'_> {
 /// streaming `Message::encode_raw` through the hasher adapter — an O(map)
 /// walk with zero heap allocation (`encode_raw` is called directly; only
 /// `Message::encode` would re-walk `encoded_len` for its capacity check,
-/// amendment PM-7).
+/// amendment PM-7). P3: a filled shadow cell (on this map or any nested
+/// entry map) turns the corresponding subtree walk into a memcpy of cached
+/// bytes — same digest by the cell invariant.
 pub fn canonical_prost_digest(e_pathmap: &EPathMap) -> [u8; 32] {
     let mut hasher = Blake2b::<U32>::new();
     let mut stream = EncodeStream::new(DigestSink {
@@ -252,6 +254,11 @@ pub fn canonical_prost_digest(e_pathmap: &EPathMap) -> [u8; 32] {
 /// the encode through a comparator, with zero heap allocation. Full prost
 /// fidelity by construction (includes `locally_free` at every level, which
 /// the generated `AlwaysEqual` `==` ignores).
+///
+/// P3 note: this streams `Message::encode_raw`, which uses the candidate's
+/// shadow cell when filled — sound under the cell invariant (cached bytes ==
+/// field bytes, debug-policed), and the store only calls it on cell-empty
+/// candidates anyway (a filled cell short-circuits before the store).
 pub fn matches_canonical_prost(e_pathmap: &EPathMap, canonical: &[u8]) -> bool {
     let mut stream = EncodeStream::new(CompareSink {
         expected: canonical,
@@ -259,6 +266,23 @@ pub fn matches_canonical_prost(e_pathmap: &EPathMap, canonical: &[u8]) -> bool {
         mismatch: false,
     });
     e_pathmap.encode_raw(&mut stream);
+    let CompareSink {
+        position, mismatch, ..
+    } = stream.sink;
+    !mismatch && position == canonical.len()
+}
+
+/// The stale-cell invariant check behind the wrapper's cached-path
+/// `debug_assert`s (P3): like [`matches_canonical_prost`] but streaming the
+/// UNCACHED field walk (`EPathMap::encode_raw_fields`), so a filled cell is
+/// verified against the CURRENT fields rather than against itself.
+pub(crate) fn fields_match_canonical_prost(e_pathmap: &EPathMap, canonical: &[u8]) -> bool {
+    let mut stream = EncodeStream::new(CompareSink {
+        expected: canonical,
+        position: 0,
+        mismatch: false,
+    });
+    e_pathmap.encode_raw_fields(&mut stream);
     let CompareSink {
         position, mismatch, ..
     } = stream.sink;
@@ -387,8 +411,27 @@ fn eval_stable_expr(expr: &Expr) -> bool {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Intern an EPathMap: return the shared [`InternedEPathMap`] for its
-/// canonical prost bytes, building (trie + canonical encoding + classifier)
-/// on first sight.
+/// canonical prost bytes.
+///
+/// P3: the instance's SHADOW CELL is consulted FIRST (`EPathMap::intern`) —
+/// filled ⇒ an O(1) `Arc` clone with NO digest walk, NO store lock, NO K2
+/// verify (the post-P2 profile's #1 residual was exactly this rendezvous
+/// re-walking the map per call). Unfilled ⇒ one [`intern_epathmap_via_store`]
+/// pass fills the cell (store hit or build), and the handle then travels
+/// with every later `Clone` of the instance. All 56 P1 call sites and P2's
+/// fused-chain rendezvous inherit the O(1) path through this one function.
+pub fn interned_epathmap(e_pathmap: &EPathMap) -> Arc<InternedEPathMap> {
+    e_pathmap.intern()
+}
+
+/// The store rendezvous behind the shadow cell (P1's intern body, unchanged
+/// in substance): build (trie + canonical encoding + classifier) on first
+/// sight, dedup by content otherwise.
+///
+/// Called ONLY from `EPathMap::intern`'s `OnceLock::get_or_init` (the cell
+/// is empty for the whole call, so every `encode_raw` below is the field
+/// walk; nested entry-level EPathMaps may still serve their own filled
+/// cells, which is byte-correct under the cell invariant).
 ///
 /// Lookup path (zero heap allocation): one streamed digest walk selects the
 /// bucket; each candidate in the bucket's collision list is certified by the
@@ -400,7 +443,7 @@ fn eval_stable_expr(expr: &Expr) -> bool {
 /// the trie is built OUTSIDE the lock (the landed double-insert-benign
 /// discipline, upgraded to REUSE: the re-lock re-scan returns a racing
 /// winner's `Arc`, keeping every collision list pairwise byte-distinct).
-pub fn interned_epathmap(e_pathmap: &EPathMap) -> Arc<InternedEPathMap> {
+pub(crate) fn intern_epathmap_via_store(e_pathmap: &EPathMap) -> Arc<InternedEPathMap> {
     let digest = canonical_prost_digest(e_pathmap);
 
     {
@@ -574,11 +617,9 @@ impl PathMapCrateTypeMapper {
             ps.push(par.clone());
         }
 
-        EPathMap {
-            ps,
-            locally_free: locally_free.to_vec(),
-            connective_used,
-            remainder,
-        }
+        // P3 (PM-2): construction goes through the constructor — the result
+        // is a NEW value with an EMPTY shadow cell (it was just built from a
+        // trie; its canonical bytes are not those of any interned source).
+        EPathMap::new(ps, locally_free.to_vec(), connective_used, remainder)
     }
 }

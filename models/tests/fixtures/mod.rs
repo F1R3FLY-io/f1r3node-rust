@@ -158,12 +158,9 @@ pub fn e6a_index_epathmap() -> EPathMap {
         ]),
     ];
 
-    EPathMap {
-        ps: entries,
-        locally_free: Vec::new(),
-        connective_used: false,
-        remainder: None,
-    }
+    // EPathMap fix P3 (PM-2): constructor instead of a struct literal
+    // (the wrapper's shadow cell is private).
+    EPathMap::new(entries, Vec::new(), false, None)
 }
 
 /// FIXTURE 2 — an EPathMap carrying a NESTED EPathMap value: entry
@@ -171,18 +168,18 @@ pub fn e6a_index_epathmap() -> EPathMap {
 /// encode/serialize/Ord through the `ps: Vec<Par>` → `Expr` →
 /// `EPathmapBody` cycle.
 pub fn nested_epathmap_value() -> EPathMap {
-    let inner = EPathMap {
-        ps: vec![ground_list(vec![gstring_par("inner"), gstring_par("leaf")])],
-        locally_free: Vec::new(),
-        connective_used: false,
-        remainder: None,
-    };
-    EPathMap {
-        ps: vec![ground_list(vec![gstring_par("nest"), epathmap_par(inner)])],
-        locally_free: Vec::new(),
-        connective_used: false,
-        remainder: None,
-    }
+    let inner = EPathMap::new(
+        vec![ground_list(vec![gstring_par("inner"), gstring_par("leaf")])],
+        Vec::new(),
+        false,
+        None,
+    );
+    EPathMap::new(
+        vec![ground_list(vec![gstring_par("nest"), epathmap_par(inner)])],
+        Vec::new(),
+        false,
+        None,
+    )
 }
 
 /// FIXTURE 3 — an EZipper value: the small map `{| [a,x], [a,y], [b] |}` with
@@ -190,16 +187,16 @@ pub fn nested_epathmap_value() -> EPathMap {
 /// itself. `current_path` segments are raw segment bytes exactly as
 /// `readZipperAt` stores them.
 pub fn ezipper_value() -> EZipper {
-    let map = EPathMap {
-        ps: vec![
+    let map = EPathMap::new(
+        vec![
             ground_list(vec![gstring_par("a"), gstring_par("x")]),
             ground_list(vec![gstring_par("a"), gstring_par("y")]),
             ground_list(vec![gstring_par("b")]),
         ],
-        locally_free: Vec::new(),
-        connective_used: false,
-        remainder: None,
-    };
+        Vec::new(),
+        false,
+        None,
+    );
     EZipper {
         pathmap: Some(map),
         current_path: vec![b"a".to_vec()],
@@ -219,26 +216,26 @@ pub fn ezipper_value() -> EZipper {
 pub fn epathmap_locally_free_entries() -> EPathMap {
     let mut tagged_entry = ground_list(vec![gstring_par("lf"), gstring_par("entry")]);
     tagged_entry.locally_free = create_bit_vector(&[1]);
-    EPathMap {
-        ps: vec![
+    EPathMap::new(
+        vec![
             ground_list(vec![gstring_par("plain")]),
             tagged_entry,
         ],
-        locally_free: create_bit_vector(&[0]),
-        connective_used: false,
-        remainder: None,
-    }
+        create_bit_vector(&[0]),
+        false,
+        None,
+    )
 }
 
 /// FIXTURE 5 — the pattern-position shape: `remainder: Some(FreeVar(0))` and
 /// `connective_used: true` (an EPathMap pattern `{| p₀ … | ...rest |}`).
 pub fn epathmap_remainder_connective() -> EPathMap {
-    EPathMap {
-        ps: vec![ground_list(vec![gstring_par("head")])],
-        locally_free: Vec::new(),
-        connective_used: true,
-        remainder: Some(Var {
+    EPathMap::new(
+        vec![ground_list(vec![gstring_par("head")])],
+        Vec::new(),
+        true,
+        Some(Var {
             var_instance: Some(VarInstance::FreeVar(0)),
         }),
-    }
+    )
 }

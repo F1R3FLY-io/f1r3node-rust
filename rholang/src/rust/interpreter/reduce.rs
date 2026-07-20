@@ -2710,12 +2710,15 @@ impl DebruijnInterpreter {
                         .collect();
 
                     Ok(Expr {
-                        expr_instance: Some(ExprInstance::EPathmapBody(EPathMap {
-                            ps: updated_ps,
-                            locally_free: e1.locally_free.clone(),
-                            connective_used: e1.connective_used,
-                            remainder: None,
-                        })),
+                        // EPathMap fix P3 (PM-2): constructor instead of a
+                        // struct literal (private shadow cell); fresh cell —
+                        // the re-evaluated value interns on first rendezvous.
+                        expr_instance: Some(ExprInstance::EPathmapBody(EPathMap::new(
+                            updated_ps,
+                            e1.locally_free.clone(),
+                            e1.connective_used,
+                            None,
+                        ))),
                     })
                 }
 
@@ -3498,13 +3501,15 @@ impl DebruijnInterpreter {
                             }
                         }
                         Ok(Expr {
+                            // EPathMap fix P3 (PM-2): constructor instead of
+                            // a struct literal (private shadow cell).
                             expr_instance: Some(ExprInstance::EPathmapBody(
-                                models::rhoapi::EPathMap {
-                                    ps: result_elements,
-                                    locally_free: base_rmap.locally_free.clone(),
-                                    connective_used: base_rmap.connective_used,
-                                    remainder: None,
-                                },
+                                models::rhoapi::EPathMap::new(
+                                    result_elements,
+                                    base_rmap.locally_free.clone(),
+                                    base_rmap.connective_used,
+                                    None,
+                                ),
                             )),
                         })
                     }
@@ -4036,12 +4041,14 @@ impl DebruijnInterpreter {
 
                         // Return as PathMap
                         Ok(Par::default().with_exprs(vec![Expr {
-                            expr_instance: Some(ExprInstance::EPathmapBody(EPathMap {
-                                ps: subtrie_elements,
-                                locally_free: pathmap_result.locally_free,
-                                connective_used: pathmap_result.connective_used,
-                                remainder: None,
-                            })),
+                            // EPathMap fix P3 (PM-2): constructor instead of
+                            // a struct literal (private shadow cell).
+                            expr_instance: Some(ExprInstance::EPathmapBody(EPathMap::new(
+                                subtrie_elements,
+                                pathmap_result.locally_free,
+                                pathmap_result.connective_used,
+                                None,
+                            ))),
                         }]))
                     }
                     ExprInstance::EPathmapBody(pathmap) => {
@@ -4580,13 +4587,15 @@ impl DebruijnInterpreter {
                     ExprInstance::EPathmapBody(pathmap) => {
                         // Remove all branches below current position (root = remove everything)
                         Ok(Expr {
+                            // EPathMap fix P3 (PM-2): constructor instead of
+                            // a struct literal (private shadow cell).
                             expr_instance: Some(ExprInstance::EPathmapBody(
-                                models::rhoapi::EPathMap {
-                                    ps: vec![],
-                                    locally_free: pathmap.locally_free,
-                                    connective_used: pathmap.connective_used,
-                                    remainder: pathmap.remainder,
-                                },
+                                models::rhoapi::EPathMap::new(
+                                    vec![],
+                                    pathmap.locally_free,
+                                    pathmap.connective_used,
+                                    pathmap.remainder,
+                                ),
                             )),
                         })
                     }

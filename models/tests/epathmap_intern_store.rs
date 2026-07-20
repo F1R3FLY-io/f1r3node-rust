@@ -75,12 +75,9 @@ fn single_expr_par(instance: ExprInstance) -> Par {
 }
 
 fn map_of(ps: Vec<Par>) -> EPathMap {
-    EPathMap {
-        ps,
-        locally_free: Vec::new(),
-        connective_used: false,
-        remainder: None,
-    }
+    // EPathMap fix P3 (PM-2): constructor instead of a struct literal
+    // (the wrapper's shadow cell is private).
+    EPathMap::new(ps, Vec::new(), false, None)
 }
 
 fn free_var(index: i32) -> Var {
@@ -232,13 +229,15 @@ fn arb_epathmap() -> impl Strategy<Value = EPathMap> {
         proptest::option::of(0usize..2),
     )
         .prop_map(
-            |(ps, with_remainder, connective_used, locally_free_bit)| EPathMap {
-                ps,
-                locally_free: locally_free_bit
-                    .map(|bit| create_bit_vector(&[bit]))
-                    .unwrap_or_default(),
-                connective_used,
-                remainder: with_remainder.then(|| free_var(0)),
+            |(ps, with_remainder, connective_used, locally_free_bit)| {
+                EPathMap::new(
+                    ps,
+                    locally_free_bit
+                        .map(|bit| create_bit_vector(&[bit]))
+                        .unwrap_or_default(),
+                    connective_used,
+                    with_remainder.then(|| free_var(0)),
+                )
             },
         )
 }
@@ -283,7 +282,18 @@ fn mutate(base: &EPathMap, which: u8) -> EPathMap {
             }
         }
     }
-    variant
+    // EPathMap fix P3: rebuild WITHOUT the shadow cell. The menu above edits
+    // fields of a clone; had `base` already been interned, the clone would
+    // carry base's filled cell into a value with DIFFERENT canonical bytes —
+    // exactly the stale-cell hazard the wrapper's debug_assert polices. (In
+    // the current call order no base is interned before mutation, but the
+    // rebuild makes the helper order-independent insurance.)
+    EPathMap::new(
+        variant.ps,
+        variant.locally_free,
+        variant.connective_used,
+        variant.remainder,
+    )
 }
 
 fn arb_epathmap_pair() -> impl Strategy<Value = (EPathMap, EPathMap)> {
@@ -332,9 +342,15 @@ proptest! {
 #[test]
 fn interned_entry_pins_canonical_bytes_len_digest_count_and_lazy_serde() {
     let _guard = store_guard();
-    for (name, fixture) in all_fixture_maps() {
+    for ((name, fixture), (_, fresh_twin)) in
+        all_fixture_maps().into_iter().zip(all_fixture_maps())
+    {
         let interned = interned_epathmap(&fixture);
-        let bytes = prost::Message::encode_to_vec(&fixture);
+        // P3: `fixture`'s cell is now FILLED, so encoding it would serve the
+        // cached bytes — assert against a FRESH structurally-equal twin
+        // (empty cell ⇒ field-walk encoding) to keep the pin
+        // non-self-referential.
+        let bytes = prost::Message::encode_to_vec(&fresh_twin);
         assert_eq!(
             interned.canonical_prost, bytes,
             "canonical_prost must be the full prost encoding ({name})"
@@ -346,7 +362,7 @@ fn interned_entry_pins_canonical_bytes_len_digest_count_and_lazy_serde() {
         );
         assert_eq!(
             interned.digest,
-            canonical_prost_digest(&fixture),
+            canonical_prost_digest(&fresh_twin),
             "the stored digest must be the streamed digest ({name})"
         );
         assert_eq!(
@@ -362,7 +378,15 @@ fn interned_entry_pins_canonical_bytes_len_digest_count_and_lazy_serde() {
         let again = interned_epathmap(&fixture);
         assert!(
             Arc::ptr_eq(&interned, &again),
-            "a digest hit must return the SAME interned Arc ({name})"
+            "a SHADOW-CELL hit must return the SAME interned Arc ({name})"
+        );
+
+        // The store leg (P3: a fresh instance has an empty cell, so this
+        // exercises the digest-walk + K2-verify store hit).
+        let via_store = interned_epathmap(&fresh_twin);
+        assert!(
+            Arc::ptr_eq(&interned, &via_store),
+            "a STORE digest hit must dedup to the same interned Arc ({name})"
         );
     }
 }
@@ -394,7 +418,14 @@ fn results_are_value_identical_across_miss_hit_and_evicted_paths() {
     let miss = PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap(&source);
     let hit = PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap(&source);
     clear_intern_store_for_test(); // the evicted regime: the rebuild path
-    let rebuilt = PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap(&source);
+    // P3: `source`'s shadow cell survives the store clear (per-instance
+    // handle), so the rebuild path needs a FRESH structurally-equal instance
+    // (empty cell ⇒ store miss ⇒ rebuild).
+    let source_evicted = map_of(vec![
+        ground_list(vec![gstring_par("valueParity"), gstring_par("x")]),
+        ground_list(vec![gstring_par("valueParity"), gstring_par("y")]),
+    ]);
+    let rebuilt = PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap(&source_evicted);
 
     let reference = full_stream(&miss.map);
     for (regime, result) in [("hit", &hit), ("evicted", &rebuilt)] {
@@ -475,7 +506,13 @@ fn forced_digest_collision_disambiguates_and_fires_the_diagnostic() {
         "the collision goes into the existing bucket's list, not a new bucket"
     );
 
-    let resolved = interned_epathmap(&victim);
+    // P3: a fresh victim instance (empty cell) so the STORE's collision
+    // list — not the instance's shadow cell — does the disambiguating.
+    let victim_fresh = map_of(vec![ground_list(vec![
+        gstring_par("collisionVictim"),
+        gstring_par("y"),
+    ])]);
+    let resolved = interned_epathmap(&victim_fresh);
     assert!(
         Arc::ptr_eq(&resolved, &victim_interned),
         "the collision list must disambiguate to the byte-matching entry"
@@ -486,7 +523,12 @@ fn forced_digest_collision_disambiguates_and_fires_the_diagnostic() {
         "a successful collision-list resolution is not a collision event"
     );
 
-    let donor_again = interned_epathmap(&donor);
+    // P3: likewise a fresh donor instance to route through the store.
+    let donor_fresh = map_of(vec![ground_list(vec![
+        gstring_par("collisionDonor"),
+        gstring_par("x"),
+    ])]);
+    let donor_again = interned_epathmap(&donor_fresh);
     assert!(
         Arc::ptr_eq(&donor_again, &donor_interned),
         "the donor's own bucket must be untouched by the forgery"
@@ -502,16 +544,19 @@ fn lru_eviction_at_capacity_64_retains_touched_and_evicts_least_recent() {
     let _guard = store_guard();
     clear_intern_store_for_test();
 
-    let maps: Vec<EPathMap> = (0..65)
-        .map(|i| map_of(vec![ground_list(vec![gstring_par(&format!("evictProbe{i}"))])]))
-        .collect();
+    // P3: every store-level probe below uses a FRESH instance from this
+    // builder — a re-used instance would hit its own shadow cell and never
+    // reach the store (cell hits do not refresh LRU ticks, by design).
+    let probe = |i: usize| map_of(vec![ground_list(vec![gstring_par(&format!("evictProbe{i}"))])]);
+    let maps: Vec<EPathMap> = (0..65).map(probe).collect();
 
     let arcs: Vec<Arc<InternedEPathMap>> =
         maps[..64].iter().map(interned_epathmap).collect();
     assert_eq!(intern_store_len_for_test(), 64, "the store fills to capacity");
 
-    // Touch entry 0 so entry 1 becomes the least recently used.
-    let touched = interned_epathmap(&maps[0]);
+    // Touch entry 0 (fresh instance ⇒ store hit ⇒ LRU tick refresh) so
+    // entry 1 becomes the least recently used.
+    let touched = interned_epathmap(&probe(0));
     assert!(Arc::ptr_eq(&touched, &arcs[0]));
 
     // Insert the 65th distinct map: capacity forces one eviction.
@@ -522,13 +567,13 @@ fn lru_eviction_at_capacity_64_retains_touched_and_evicts_least_recent() {
         "capacity must hold at 64 buckets"
     );
 
-    let retained = interned_epathmap(&maps[0]);
+    let retained = interned_epathmap(&probe(0));
     assert!(
         Arc::ptr_eq(&retained, &arcs[0]),
         "the recently-touched entry must survive the eviction"
     );
 
-    let rebuilt = interned_epathmap(&maps[1]);
+    let rebuilt = interned_epathmap(&probe(1));
     assert!(
         !Arc::ptr_eq(&rebuilt, &arcs[1]),
         "the least-recently-used entry must have been evicted (and rebuilt on demand)"
@@ -689,12 +734,7 @@ fn eval_stable_false_on_nested_elist_remainder() {
 
 #[test]
 fn eval_stable_false_on_nested_epathmap_remainder() {
-    let inner = EPathMap {
-        ps: vec![gstring_par("x")],
-        locally_free: Vec::new(),
-        connective_used: false,
-        remainder: Some(free_var(0)),
-    };
+    let inner = EPathMap::new(vec![gstring_par("x")], Vec::new(), false, Some(free_var(0)));
     assert!(!eval_stable_epathmap(&map_of(vec![epathmap_par(inner)])));
 }
 

@@ -996,12 +996,14 @@ impl DebruijnInterpreter {
                             // :4016-4023 — locally_free/connective_used from
                             // the CONVERSION result (the interned entry),
                             // remainder None.
-                            single_expr_par(ExprInstance::EPathmapBody(EPathMap {
-                                ps: elements,
-                                locally_free: chain.interned.locally_free.clone(),
-                                connective_used: chain.interned.connective_used,
-                                remainder: None,
-                            }))
+                            // EPathMap fix P3 (PM-2): constructor instead
+                            // of a struct literal (private shadow cell).
+                            single_expr_par(ExprInstance::EPathmapBody(EPathMap::new(
+                                elements,
+                                chain.interned.locally_free.clone(),
+                                chain.interned.connective_used,
+                                None,
+                            )))
                         }
                         ViewMode::Map => {
                             // :4025-4029 — the whole map back; today's arm

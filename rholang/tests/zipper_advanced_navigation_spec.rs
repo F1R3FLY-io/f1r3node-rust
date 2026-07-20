@@ -25,12 +25,9 @@ mod zipper_advanced_navigation_tests {
             create_path_par(vec!["c".to_string()], "value4"),
         ];
 
-        EPathMap {
-            ps: entries,
-            locally_free: vec![],
-            connective_used: false,
-            remainder: None,
-        }
+        // EPathMap fix P3 (PM-2): constructor instead of a struct literal
+        // (the wrapper's shadow cell is private).
+        EPathMap::new(entries, vec![], false, None)
     }
 
     fn create_path_par(path: Vec<String>, value: &str) -> Par {

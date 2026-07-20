@@ -17,6 +17,9 @@ pub mod pathmap_crate_type_mapper;
 pub mod pathmap_integration;
 pub mod pathmap_native_query;
 pub mod pathmap_zipper;
+// EPathMap fix P3: the hand-maintained `.rhoapi.EPathMap` extern type
+// (shadow-cell wrapper); re-exported from `crate::rhoapi` in lib.rs.
+pub mod rhoapi_ext;
 pub mod rholang;
 pub mod sorted_par_hash_set;
 pub mod sorted_par_map;

@@ -425,18 +425,20 @@ fn ord_compares_in_declaration_order() {
 
     // ps dominates locally_free: shorter-prefix ps < longer ps even when the
     // shorter side's locally_free is larger.
-    let one_entry_big_lf = EPathMap {
-        ps: vec![entry_a.clone()],
-        locally_free: create_bit_vector(&[7]),
-        connective_used: true,
-        remainder: None,
-    };
-    let two_entries_no_lf = EPathMap {
-        ps: vec![entry_a.clone(), entry_b.clone()],
-        locally_free: Vec::new(),
-        connective_used: false,
-        remainder: None,
-    };
+    // EPathMap fix P3 (PM-2): constructors instead of struct literals
+    // (the wrapper's shadow cell is private).
+    let one_entry_big_lf = EPathMap::new(
+        vec![entry_a.clone()],
+        create_bit_vector(&[7]),
+        true,
+        None,
+    );
+    let two_entries_no_lf = EPathMap::new(
+        vec![entry_a.clone(), entry_b.clone()],
+        Vec::new(),
+        false,
+        None,
+    );
     assert_eq!(
         one_entry_big_lf.cmp(&two_entries_no_lf),
         std::cmp::Ordering::Less,
@@ -444,18 +446,13 @@ fn ord_compares_in_declaration_order() {
     );
 
     // locally_free dominates connective_used.
-    let lf_small_conn_true = EPathMap {
-        ps: vec![entry_a.clone()],
-        locally_free: Vec::new(),
-        connective_used: true,
-        remainder: None,
-    };
-    let lf_big_conn_false = EPathMap {
-        ps: vec![entry_a.clone()],
-        locally_free: create_bit_vector(&[0]),
-        connective_used: false,
-        remainder: None,
-    };
+    let lf_small_conn_true = EPathMap::new(vec![entry_a.clone()], Vec::new(), true, None);
+    let lf_big_conn_false = EPathMap::new(
+        vec![entry_a.clone()],
+        create_bit_vector(&[0]),
+        false,
+        None,
+    );
     assert_eq!(
         lf_small_conn_true.cmp(&lf_big_conn_false),
         std::cmp::Ordering::Less,
@@ -464,12 +461,12 @@ fn ord_compares_in_declaration_order() {
 
     // connective_used dominates remainder (false < true; None < Some).
     let conn_false_some_rem = epathmap_remainder_connective_with(false);
-    let conn_true_no_rem = EPathMap {
-        ps: vec![ground_list(vec![gstring_par("head")])],
-        locally_free: Vec::new(),
-        connective_used: true,
-        remainder: None,
-    };
+    let conn_true_no_rem = EPathMap::new(
+        vec![ground_list(vec![gstring_par("head")])],
+        Vec::new(),
+        true,
+        None,
+    );
     assert_eq!(
         conn_false_some_rem.cmp(&conn_true_no_rem),
         std::cmp::Ordering::Less,

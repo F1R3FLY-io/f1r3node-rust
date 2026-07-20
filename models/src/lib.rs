@@ -66,6 +66,13 @@ pub mod casper {
 
 pub mod rhoapi {
     include!(concat!(env!("OUT_DIR"), "/rhoapi.rs"));
+
+    // EPathMap fix P3: `.rhoapi.EPathMap` is an extern_path in
+    // models/build.rs — prost no longer generates the struct here. The
+    // hand-maintained wrapper (shadow-cell handle + cached-bytes Message
+    // impl) is re-exported so every existing `crate::rhoapi::EPathMap` /
+    // `models::rhoapi::EPathMap` path keeps resolving to the ONE type.
+    pub use crate::rust::rhoapi_ext::EPathMap;
 }
 
 pub mod rholang_scala_rust_types {
@@ -610,21 +617,11 @@ impl Hash for EMap {
     }
 }
 
-impl PartialEq for EPathMap {
-    fn eq(&self, other: &Self) -> bool {
-        self.ps == other.ps
-            && self.connective_used == other.connective_used
-            && self.remainder == other.remainder
-    }
-}
-
-impl Hash for EPathMap {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.ps.hash(state);
-        self.connective_used.hash(state);
-        self.remainder.hash(state);
-    }
-}
+// EPathMap fix P3: the AlwaysEqual `PartialEq`/`Hash` impls for `EPathMap`
+// MOVED to models/src/rust/rhoapi_ext.rs (the hand-maintained wrapper owns
+// every one of its impls now that `.rhoapi.EPathMap` is an extern_path).
+// Semantics unchanged: `ps`/`connective_used`/`remainder` compared,
+// `locally_free` ignored.
 
 impl PartialEq for EZipper {
     fn eq(&self, other: &Self) -> bool {

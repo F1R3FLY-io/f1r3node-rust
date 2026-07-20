@@ -241,12 +241,16 @@ pub fn normalize_collection<'ast>(
 
             let constructor =
                 |ps: Vec<Par>, locally_free: Vec<u8>, connective_used: bool| -> Expr {
-                    let mut tmp_e_pathmap = EPathMap {
+                    // EPathMap fix P3 (PM-2): constructor instead of a
+                    // struct literal (private shadow cell). The value is
+                    // FRESH (never interned), so the field write below stays
+                    // sound under the shadow-cell invariant.
+                    let mut tmp_e_pathmap = EPathMap::new(
                         ps,
                         locally_free,
                         connective_used,
-                        remainder: optional_remainder.clone(),
-                    };
+                        optional_remainder.clone(),
+                    );
 
                     tmp_e_pathmap.connective_used =
                         tmp_e_pathmap.connective_used || optional_remainder.is_some();

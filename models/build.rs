@@ -42,6 +42,17 @@ fn main() {
         .build_client(true)
         .build_server(true)
         .btree_map(".")
+        // EPathMap fix P3 (stage L1.5): `.rhoapi.EPathMap` is EXTERN — prost
+        // does not generate the struct; every generated reference (the
+        // `EPathmapBody` oneof variant, `EZipper.pathmap`) resolves to the
+        // hand-maintained wrapper in models/src/rust/rhoapi_ext.rs, which
+        // replicates the generated type's prost/serde/Ord/Debug behavior
+        // byte-identically (P0-golden-gated) and adds the private shadow
+        // cell for O(1) intern rendezvous + cached canonical-bytes encodes.
+        // `crate::rhoapi` re-exports it (models/src/lib.rs), so downstream
+        // import paths are unchanged. The textual post-processing below
+        // continues to apply to the REMAINING generated types.
+        .extern_path(".rhoapi.EPathMap", "crate::rust::rhoapi_ext::EPathMap")
         .message_attribute(
             ".rhoapi",
             "#[derive(serde::Serialize, serde::Deserialize, utoipa::ToSchema)]",

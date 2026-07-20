@@ -119,12 +119,9 @@ fn test_e_pathmap_roundtrip() {
     let par1 = make_list_par(vec!["x", "y"]);
     let par2 = make_list_par(vec!["z", "w"]);
 
-    let e_pathmap1 = EPathMap {
-        ps: vec![par1, par2],
-        locally_free: vec![],
-        connective_used: false,
-        remainder: None,
-    };
+    // EPathMap fix P3 (PM-2): constructor instead of a struct literal
+    // (the wrapper's shadow cell is private).
+    let e_pathmap1 = EPathMap::new(vec![par1, par2], vec![], false, None);
 
     let result = PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap(&e_pathmap1);
     assert_eq!(result.map.val_count(), 2);

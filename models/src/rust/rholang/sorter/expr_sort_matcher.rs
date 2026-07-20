@@ -520,12 +520,16 @@ impl Sortable<Expr> for ExprSortMatcher {
                     let connective_used_score: i64 = if pathmap.connective_used { 1 } else { 0 };
 
                     construct_expr(
-                        ExprInstance::EPathmapBody(EPathMap {
-                            ps: pars.clone().into_iter().map(|p| p.term).collect(),
-                            locally_free: pathmap.locally_free.clone(),
-                            connective_used: pathmap.connective_used,
-                            remainder: pathmap.remainder.clone(),
-                        }),
+                        // EPathMap fix P3 (PM-2): constructor instead of a
+                        // struct literal (the wrapper's shadow cell is
+                        // private). Fresh cell — the sorted value's bytes
+                        // differ from the source's in general.
+                        ExprInstance::EPathmapBody(EPathMap::new(
+                            pars.clone().into_iter().map(|p| p.term).collect(),
+                            pathmap.locally_free.clone(),
+                            pathmap.connective_used,
+                            pathmap.remainder.clone(),
+                        )),
                         Tree::Node(
                             vec![
                                 Tree::<ScoreAtom>::create_leaf_from_i64(Score::EPATHMAP as i64),
@@ -586,12 +590,14 @@ impl Sortable<Expr> for ExprSortMatcher {
 
                     construct_expr(
                         ExprInstance::EZipperBody(EZipper {
-                            pathmap: Some(EPathMap {
-                                ps: pars.clone().into_iter().map(|p| p.term).collect(),
-                                locally_free: pathmap.locally_free.clone(),
-                                connective_used: pathmap.connective_used,
-                                remainder: pathmap.remainder.clone(),
-                            }),
+                            // EPathMap fix P3 (PM-2): constructor instead of
+                            // a struct literal (private shadow cell).
+                            pathmap: Some(EPathMap::new(
+                                pars.clone().into_iter().map(|p| p.term).collect(),
+                                pathmap.locally_free.clone(),
+                                pathmap.connective_used,
+                                pathmap.remainder.clone(),
+                            )),
                             current_path: zipper.current_path.clone(),
                             is_write_zipper: zipper.is_write_zipper,
                             locally_free: zipper.locally_free.clone(),

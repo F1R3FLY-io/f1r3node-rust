@@ -77,12 +77,14 @@ impl<'a, 'path> RholangReadZipper<'a, 'path> {
         // In a full implementation, we'd need a custom Expr type for zippers
         // We'll create an empty PathMap as a placeholder since we can't easily
         // extract the underlying PathMap from the zipper
-        let empty_pathmap = EPathMap {
-            ps: vec![],
-            locally_free: self.locally_free.clone(),
-            connective_used: self.connective_used,
-            remainder: None,
-        };
+        // EPathMap fix P3 (PM-2): constructor instead of a struct literal
+        // (the wrapper's shadow cell is private).
+        let empty_pathmap = EPathMap::new(
+            vec![],
+            self.locally_free.clone(),
+            self.connective_used,
+            None,
+        );
 
         // Create a special Par that represents a read zipper
         // We'll use a special marker to identify it as a zipper

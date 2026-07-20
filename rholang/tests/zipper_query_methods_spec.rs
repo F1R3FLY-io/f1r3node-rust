@@ -21,12 +21,9 @@ mod zipper_query_tests {
             create_path_par(vec!["c".to_string()], "value3"),
         ];
 
-        EPathMap {
-            ps: entries,
-            locally_free: vec![],
-            connective_used: false,
-            remainder: None,
-        }
+        // EPathMap fix P3 (PM-2): constructor instead of a struct literal
+        // (the wrapper's shadow cell is private).
+        EPathMap::new(entries, vec![], false, None)
     }
 
     fn create_path_par(path: Vec<String>, _value: &str) -> Par {
@@ -253,12 +250,7 @@ mod zipper_query_tests {
 
     #[test]
     fn test_path_exists_empty_pathmap() {
-        let empty_pathmap = EPathMap {
-            ps: vec![],
-            locally_free: vec![],
-            connective_used: false,
-            remainder: None,
-        };
+        let empty_pathmap = EPathMap::new(vec![], vec![], false, None);
 
         let exists = !empty_pathmap.ps.is_empty();
         assert!(!exists, "Empty PathMap should not have existing paths");
@@ -353,8 +345,8 @@ mod native_query_identity_tests {
     /// memo included): shared prefixes, multi-segment depth, single-segment
     /// entries.
     fn element_built_map() -> RholangPathMap {
-        let e_pathmap = EPathMap {
-            ps: vec![
+        let e_pathmap = EPathMap::new(
+            vec![
                 string_list_par(&["op", "site0", "left"]),
                 string_list_par(&["op", "site0", "right"]),
                 string_list_par(&["op", "site1"]),
@@ -362,10 +354,10 @@ mod native_query_identity_tests {
                 string_list_par(&["v", "c1", "deep"]),
                 string_list_par(&["w"]),
             ],
-            locally_free: vec![],
-            connective_used: false,
-            remainder: None,
-        };
+            vec![],
+            false,
+            None,
+        );
         PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap(&e_pathmap).map
     }
 
@@ -590,12 +582,12 @@ mod trie_memo_tests {
     }
 
     fn e_pathmap(paths: &[&[&str]]) -> EPathMap {
-        EPathMap {
-            ps: paths.iter().map(|p| string_list_par(p)).collect(),
-            locally_free: vec![],
-            connective_used: false,
-            remainder: None,
-        }
+        EPathMap::new(
+            paths.iter().map(|p| string_list_par(p)).collect(),
+            vec![],
+            false,
+            None,
+        )
     }
 
     fn full_stream(map: &RholangPathMap) -> Vec<(Vec<u8>, Par)> {
