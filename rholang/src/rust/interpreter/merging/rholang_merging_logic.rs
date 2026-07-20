@@ -197,7 +197,7 @@ impl RholangMergingLogic {
 
         // Create datum
         let datum = Datum {
-            a: par_with_rnd,
+            a: std::sync::Arc::new(par_with_rnd),
             persist: false,
             source: produce,
         };

@@ -1876,8 +1876,8 @@ async fn create_soft_checkpoint_should_capture_the_current_state_of_the_store() 
     let continuation = StringsCaptor::new();
 
     let expected_continuation = vec![WaitingContinuation {
-        patterns: patterns.clone(),
-        continuation: continuation.clone(),
+        patterns: std::sync::Arc::new(patterns.clone()),
+        continuation: std::sync::Arc::new(continuation.clone()),
         persist: false,
         peeks: BTreeSet::default(),
         source: Consume::create(&channels, &patterns, &continuation, false),
@@ -1931,8 +1931,8 @@ async fn create_soft_checkpoint_should_create_checkpoints_which_have_separate_st
     let continuation = StringsCaptor::new();
 
     let expected_continuation = vec![WaitingContinuation {
-        patterns: patterns.clone(),
-        continuation: continuation.clone(),
+        patterns: std::sync::Arc::new(patterns.clone()),
+        continuation: std::sync::Arc::new(continuation.clone()),
         persist: false,
         peeks: BTreeSet::default(),
         source: Consume::create(&channels, &patterns, &continuation, false),

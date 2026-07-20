@@ -635,8 +635,8 @@ where
         self.log_consume(consume_ref.clone(), &channels, &patterns, &continuation, persist, &peeks);
 
         let wk = WaitingContinuation {
-            patterns: patterns.clone(),
-            continuation,
+            patterns: Arc::new(patterns.clone()),
+            continuation: Arc::new(continuation),
             persist,
             peeks: peeks.clone(),
             source: consume_ref.clone(),
@@ -852,6 +852,9 @@ where
         produce_ref: Produce,
         grouped_channels: Vec<Vec<C>>,
     ) -> Option<ProduceCandidate<C, P, A, K>> {
+        // P4.1: wrap once — the per-channel speculative candidates below
+        // share the payload by refcount.
+        let data = Arc::new(data);
         self.run_matcher_for_channels(
             grouped_channels,
             |channels| {
@@ -877,7 +880,7 @@ where
                         0,
                         (
                             Datum {
-                                a: data.clone(),
+                                a: Arc::clone(&data),
                                 persist,
                                 source: produce_ref.clone(),
                             },
@@ -1112,7 +1115,7 @@ where
         produce_ref: Produce,
     ) -> MaybeProduceResult<C, P, A, K> {
         self.get_store().put_datum(&channel, Datum {
-            a: data,
+            a: Arc::new(data),
             persist,
             source: produce_ref,
         });
@@ -1208,8 +1211,8 @@ where
 
                     self.get_store()
                         .install_continuation(&channels, WaitingContinuation {
-                            patterns,
-                            continuation,
+                            patterns: Arc::new(patterns),
+                            continuation: Arc::new(continuation),
                             persist: true,
                             peeks: BTreeSet::default(),
                             source: consume_ref,
@@ -1235,6 +1238,10 @@ where
         *self.store.write().expect("store write lock") = Arc::new(next_hot_store);
     }
 
+    // P4.1: the public result stays VALUE-shaped — the single per-fired-COMM
+    // materialization boundary (`Arc::unwrap_or_clone` takes the value when
+    // uniquely owned, clones otherwise — same semantics as the pre-P4.1
+    // moves/clones).
     fn wrap_result(
         &self,
         channels: Vec<C>,
@@ -1243,10 +1250,10 @@ where
         data_candidates: Vec<ConsumeCandidate<C, A>>,
     ) -> MaybeConsumeResult<C, P, A, K> {
         let cont_result = ContResult {
-            continuation: wk.continuation,
+            continuation: Arc::unwrap_or_clone(wk.continuation),
             persistent: wk.persist,
             channels,
-            patterns: wk.patterns,
+            patterns: Arc::unwrap_or_clone(wk.patterns),
             peek: !wk.peeks.is_empty(),
         };
 
@@ -1254,8 +1261,8 @@ where
             .into_iter()
             .map(|data_candidate| RSpaceResult {
                 channel: data_candidate.channel,
-                matched_datum: data_candidate.datum.a,
-                removed_datum: data_candidate.removed_datum,
+                matched_datum: Arc::unwrap_or_clone(data_candidate.datum.a),
+                removed_datum: Arc::unwrap_or_clone(data_candidate.removed_datum),
                 persistent: data_candidate.datum.persist,
             })
             .collect();

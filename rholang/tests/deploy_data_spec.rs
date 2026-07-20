@@ -81,7 +81,9 @@ impl TestDeployDataFixture {
         let data = runtime.get_data(&channel).await;
 
         let result: Vec<Par> = if !data.is_empty() {
-            data.into_iter().flat_map(|datum| datum.a.pars).collect()
+            data.into_iter()
+                .flat_map(|datum| std::sync::Arc::unwrap_or_clone(datum.a).pars)
+                .collect()
         } else {
             Vec::new()
         };

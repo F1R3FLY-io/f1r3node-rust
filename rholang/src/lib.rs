@@ -289,8 +289,8 @@ extern "C" fn create_soft_checkpoint(runtime_ptr: *mut RhoRuntime) -> *const u8 
             .into_iter()
             .map(|wk| {
                 let res = WaitingContinuationProto {
-                    patterns: wk.patterns,
-                    continuation: Some(wk.continuation.clone()),
+                    patterns: std::sync::Arc::unwrap_or_clone(wk.patterns),
+                    continuation: Some((*wk.continuation).clone()),
                     persist: wk.persist,
                     peeks: wk
                         .peeks
@@ -318,8 +318,8 @@ extern "C" fn create_soft_checkpoint(runtime_ptr: *mut RhoRuntime) -> *const u8 
 
     for (key, value) in hot_store_state.installed_continuations.clone().into_iter() {
         let wk = WaitingContinuationProto {
-            patterns: value.patterns,
-            continuation: Some(value.continuation.clone()),
+            patterns: std::sync::Arc::unwrap_or_clone(value.patterns),
+            continuation: Some((*value.continuation).clone()),
             persist: value.persist,
             peeks: value
                 .peeks
@@ -348,7 +348,7 @@ extern "C" fn create_soft_checkpoint(runtime_ptr: *mut RhoRuntime) -> *const u8 
         let datums = value
             .into_iter()
             .map(|datum| DatumProto {
-                a: Some(datum.a),
+                a: Some(std::sync::Arc::unwrap_or_clone(datum.a)),
                 persist: datum.persist,
                 source: Some(ProduceProto {
                     channel_hash: datum.source.channel_hash.bytes(),
@@ -544,8 +544,8 @@ extern "C" fn revert_to_soft_checkpoint(
             .value
             .into_iter()
             .map(|cont_proto| WaitingContinuation {
-                patterns: cont_proto.patterns,
-                continuation: cont_proto.continuation.unwrap(),
+                patterns: std::sync::Arc::new(cont_proto.patterns),
+                continuation: std::sync::Arc::new(cont_proto.continuation.unwrap()),
                 persist: cont_proto.persist,
                 peeks: cont_proto
                     .peeks
@@ -575,8 +575,8 @@ extern "C" fn revert_to_soft_checkpoint(
         let key = map_entry.key;
         let wk_proto = map_entry.value.unwrap();
         let value = WaitingContinuation {
-            patterns: wk_proto.patterns,
-            continuation: wk_proto.continuation.unwrap(),
+            patterns: std::sync::Arc::new(wk_proto.patterns),
+            continuation: std::sync::Arc::new(wk_proto.continuation.unwrap()),
             persist: wk_proto.persist,
             peeks: wk_proto.peeks.iter().map(|element| element.value).collect(),
             source: {
@@ -603,7 +603,7 @@ extern "C" fn revert_to_soft_checkpoint(
             .value
             .into_iter()
             .map(|datum_proto| Datum {
-                a: datum_proto.a.unwrap(),
+                a: std::sync::Arc::new(datum_proto.a.unwrap()),
                 persist: datum_proto.persist,
                 source: {
                     let produce_proto = datum_proto.source.unwrap();
@@ -1000,7 +1000,7 @@ extern "C" fn get_data(
     let datums_protos: Vec<DatumProto> = datums
         .into_iter()
         .map(|datum| DatumProto {
-            a: Some(datum.a),
+            a: Some(std::sync::Arc::unwrap_or_clone(datum.a)),
             persist: datum.persist,
             source: Some(ProduceProto {
                 channel_hash: datum.source.channel_hash.bytes(),
@@ -1079,8 +1079,8 @@ extern "C" fn get_waiting_continuations(
         .into_iter()
         .map(|wk| {
             let res = WaitingContinuationProto {
-                patterns: wk.patterns,
-                continuation: Some(wk.continuation.clone()),
+                patterns: std::sync::Arc::unwrap_or_clone(wk.patterns),
+                continuation: Some((*wk.continuation).clone()),
                 persist: wk.persist,
                 peeks: wk
                     .peeks
@@ -1173,7 +1173,7 @@ extern "C" fn get_hot_changes(runtime_ptr: *mut RhoRuntime) -> *const u8 {
             .data
             .into_iter()
             .map(|datum| DatumProto {
-                a: Some(datum.a),
+                a: Some(std::sync::Arc::unwrap_or_clone(datum.a)),
                 persist: datum.persist,
                 source: Some(ProduceProto {
                     channel_hash: datum.source.channel_hash.bytes(),
@@ -1190,8 +1190,8 @@ extern "C" fn get_hot_changes(runtime_ptr: *mut RhoRuntime) -> *const u8 {
             .into_iter()
             .map(|wk| {
                 let res = WaitingContinuationProto {
-                    patterns: wk.patterns,
-                    continuation: Some(wk.continuation.clone()),
+                    patterns: std::sync::Arc::unwrap_or_clone(wk.patterns),
+                    continuation: Some((*wk.continuation).clone()),
                     persist: wk.persist,
                     peeks: wk
                         .peeks

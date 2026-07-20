@@ -587,7 +587,7 @@ proptest! {
       let _ = hot_store.remove_datum(&key.clone(), index - 1);
       let res = hot_store.get_data(&key);
       let expected: Vec<Datum<String>> = data.into_iter()
-         .filter(|d| d.a != datum_value.clone() + &(11 - index).to_string())
+         .filter(|d| *d.a != datum_value.clone() + &(11 - index).to_string())
          .collect();
       assert!(check_same_elements(res, expected));
   }
@@ -863,8 +863,12 @@ pub struct TestHistory<C: Eq + Hash, P: Clone, A: Clone, K: Clone> {
     state: Arc<Mutex<HotStoreState<C, P, A, K>>>,
 }
 
-impl<C: Clone + Eq + Hash + Send, P: Clone + Send, A: Clone + Send, K: Clone + Send>
-    HistoryReaderBase<C, P, A, K> for TestHistory<C, P, A, K>
+impl<
+    C: Clone + Eq + Hash + Send + Sync,
+    P: Clone + Send + Sync,
+    A: Clone + Send + Sync,
+    K: Clone + Send + Sync,
+> HistoryReaderBase<C, P, A, K> for TestHistory<C, P, A, K>
 {
     fn get_data(&self, channel: &C) -> Vec<Datum<A>> {
         let state_lock = self.state.lock().unwrap();

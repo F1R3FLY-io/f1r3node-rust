@@ -30,9 +30,12 @@ where
     ) -> Option<MatchingDataCandidate<C, A>> {
         for (idx, (datum, data_index)) in data.iter().enumerate() {
             metrics::counter!("rspace.matcher.get_calls", "source" => "rspace").increment(1);
+            // P4.1: the payload travels by `Arc` — the pattern/data copies
+            // handed to the matcher are cost-identical to pre-P4.1 (P4.2
+            // flips the trait to borrows and removes them).
             let t_clone = std::time::Instant::now();
             let pattern_cloned = pattern.clone();
-            let data_cloned = datum.a.clone();
+            let data_cloned = (*datum.a).clone();
             metrics::counter!("rspace.matcher.clone_ns", "source" => "rspace")
                 .increment(t_clone.elapsed().as_nanos() as u64);
             let t_match = std::time::Instant::now();
@@ -53,11 +56,15 @@ where
                     ConsumeCandidate {
                         channel,
                         datum: Datum {
-                            a: mat,
+                            // The MATCHED payload (possibly bind-transformed
+                            // by the matcher) — a fresh value, Arc'd once.
+                            a: std::sync::Arc::new(mat),
                             persist: datum.persist,
                             source: datum.source.clone(),
                         },
-                        removed_datum: datum.a.clone(),
+                        // The stored payload as removed — an Arc bump
+                        // (pre-P4.1: a deep copy per candidate).
+                        removed_datum: std::sync::Arc::clone(&datum.a),
                         datum_index: *data_index,
                     },
                     indexed_datums,
@@ -158,9 +165,11 @@ where
                 // to veto a commit even after every spatial bind has
                 // matched. Used for `where`-clause guards that mention
                 // bindings from multiple channels (plan §7.12).
+                // P4.1: materialize through the Arc (cost-identical to the
+                // pre-P4.1 clone); P4.2 borrows and removes the copy.
                 let matched_data: Vec<A> = data_candidates
                     .iter()
-                    .map(|c| c.as_ref().unwrap().datum.a.clone())
+                    .map(|c| (*c.as_ref().unwrap().datum.a).clone())
                     .collect();
                 if !matcher.check_commit(&cont.continuation, &matched_data) {
                     // Guard rejected: roll back and try the next

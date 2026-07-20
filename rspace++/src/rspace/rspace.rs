@@ -42,6 +42,7 @@ use crate::rspace::checkpoint::Checkpoint;
 use crate::rspace::history::history_repository::{HistoryRepository, HistoryRepositoryInstances};
 use crate::rspace::hot_store::{HotStore, HotStoreInstances};
 use crate::rspace::internal::*;
+use crate::rspace::serializers::serializers::CandidateOrderingBytes;
 use crate::rspace::space_matcher::SpaceMatcher;
 
 #[derive(Clone)]
@@ -142,9 +143,14 @@ where
     }
 }
 
+// P4.1: candidates are Arc-shaped (non-serde) — the ordering bytes come from
+// the serializer twins (`CandidateOrderingBytes`), byte-identical to the
+// pre-P4.1 `bincode::serialize(candidate)` (golden-pinned). Candidate
+// ordering participates in replay-visible COMM selection; the bytes are a
+// consensus surface.
 fn deterministic_candidate_hash<D>(candidate: &D) -> Blake2b256Hash
-where D: Serialize {
-    let bytes = bincode::serialize(candidate).unwrap_or_default();
+where D: CandidateOrderingBytes {
+    let bytes = candidate.candidate_ordering_bytes();
     Blake2b256Hash::new(&bytes)
 }
 
@@ -675,8 +681,8 @@ where
             .increment(t2.elapsed().as_nanos() as u64);
 
         let wk = WaitingContinuation {
-            patterns: patterns.to_vec(),
-            continuation: continuation.clone(),
+            patterns: Arc::new(patterns.to_vec()),
+            continuation: Arc::new(continuation.clone()),
             persist,
             peeks: peeks.clone(),
             source: consume_ref.clone(),
@@ -687,8 +693,12 @@ where
             // can veto even after every spatial bind matched. On false
             // we install the wk and leave the data alone, just as if
             // the spatial match itself had failed (plan §7.12).
+            // P4.1: materialize through the Arc (cost-identical to the
+            // pre-P4.1 clone); P4.2 flips the trait to borrowed slices and
+            // removes the copy.
             Some(data_candidates) => {
-                let matched: Vec<A> = data_candidates.iter().map(|c| c.datum.a.clone()).collect();
+                let matched: Vec<A> =
+                    data_candidates.iter().map(|c| (*c.datum.a).clone()).collect();
                 self.matcher.check_commit(continuation, &matched)
             }
             None => false,
@@ -766,9 +776,14 @@ where
 
         self.log_produce(produce_ref, &channel, &data, persist);
 
+        // P4.1: wrap the produced payload in an `Arc` ONCE — the speculative
+        // candidate below and the `store_data` fallthrough share it by
+        // refcount (previously each took a deep copy).
+        let data = Arc::new(data);
+
         let t1 = Instant::now();
         let extracted = self.extract_produce_candidate(grouped_channels, channel.clone(), Datum {
-            a: data.clone(),
+            a: Arc::clone(&data),
             persist,
             source: produce_ref.clone(),
         });
@@ -920,8 +935,10 @@ where
         // the rendezvous channels, the consumed data, and the firing waiting-continuation
         // (patterns + continuation) — extracted to slices so the observer can clone lock-free.
         if let Some(observer) = &self.step_observer {
+            // P4.1: materialize through the Arc — observer-only path (None in
+            // production), cost-identical to the pre-P4.1 clone.
             let consumed: Vec<A> =
-                data_candidates.iter().map(|candidate| candidate.datum.a.clone()).collect();
+                data_candidates.iter().map(|candidate| (*candidate.datum.a).clone()).collect();
             observer.observe_comm(
                 channels,
                 &consumed,
@@ -997,10 +1014,12 @@ where
         None
     }
 
+    // P4.1: takes the shared `Arc` payload — the datum stored is the same
+    // allocation the speculative candidate borrowed (no copy).
     fn store_data(
         &self,
         channel: C,
-        data: A,
+        data: Arc<A>,
         persist: bool,
         produce_ref: Produce,
     ) -> MaybeProduceResult<C, P, A, K> {
@@ -1100,8 +1119,8 @@ where
 
                     self.get_store()
                         .install_continuation(&channels, WaitingContinuation {
-                            patterns,
-                            continuation,
+                            patterns: Arc::new(patterns),
+                            continuation: Arc::new(continuation),
                             persist: true,
                             peeks: BTreeSet::default(),
                             source: consume_ref,
@@ -1127,6 +1146,12 @@ where
         *self.store.write().expect("store write lock") = Arc::new(next_hot_store);
     }
 
+    // P4.1: the public result stays VALUE-shaped (`RSpaceResult<C, A>` /
+    // `ContResult` unchanged) — this is the single per-fired-COMM
+    // materialization boundary, cost-identical to the pre-P4.1 clones. The
+    // multiplicative per-ATTEMPT copies died in the store/matcher hops; the
+    // dispatch-side copy into the continuation env is stage-L2 territory
+    // (user decision D2, out of P4 scope).
     fn wrap_result(
         &self,
         channels: &[C],
@@ -1135,10 +1160,10 @@ where
         data_candidates: &Vec<ConsumeCandidate<C, A>>,
     ) -> MaybeConsumeResult<C, P, A, K> {
         let cont_result = ContResult {
-            continuation: wk.continuation.clone(),
+            continuation: (*wk.continuation).clone(),
             persistent: wk.persist,
             channels: channels.to_vec(),
-            patterns: wk.patterns.clone(),
+            patterns: (*wk.patterns).clone(),
             peek: !wk.peeks.is_empty(),
         };
 
@@ -1146,8 +1171,8 @@ where
             .iter()
             .map(|data_candidate| RSpaceResult {
                 channel: data_candidate.channel.clone(),
-                matched_datum: data_candidate.datum.a.clone(),
-                removed_datum: data_candidate.removed_datum.clone(),
+                matched_datum: (*data_candidate.datum.a).clone(),
+                removed_datum: (*data_candidate.removed_datum).clone(),
                 persistent: data_candidate.datum.persist,
             })
             .collect();
@@ -1243,7 +1268,7 @@ where
     }
 
     fn shuffle_with_index<D>(&self, t: Vec<D>) -> Vec<(D, i32)>
-    where D: Serialize {
+    where D: CandidateOrderingBytes {
         let mut indexed_vec = t
             .into_iter()
             .enumerate()

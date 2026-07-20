@@ -504,7 +504,7 @@ pub extern "C" fn reset_rspace(
 //     let datums_protos: Vec<DatumProto> = datums
 //         .into_iter()
 //         .map(|datum| DatumProto {
-//             a: Some(datum.a),
+//             a: Some(std::sync::Arc::unwrap_or_clone(datum.a)),
 //             persist: datum.persist,
 //             source: Some(ProduceProto {
 //                 channel_hash: datum.source.channel_hash.bytes(),
@@ -617,7 +617,7 @@ pub extern "C" fn to_map(rspace: *mut Space) -> *const u8 {
             .data
             .into_iter()
             .map(|datum| DatumProto {
-                a: Some(datum.a),
+                a: Some(std::sync::Arc::unwrap_or_clone(datum.a)),
                 persist: datum.persist,
                 source: Some(ProduceProto {
                     channel_hash: datum.source.channel_hash.bytes(),
@@ -634,8 +634,8 @@ pub extern "C" fn to_map(rspace: *mut Space) -> *const u8 {
             .into_iter()
             .map(|wk| {
                 let res = WaitingContinuationProto {
-                    patterns: wk.patterns,
-                    continuation: Some(wk.continuation.clone()),
+                    patterns: std::sync::Arc::unwrap_or_clone(wk.patterns),
+                    continuation: Some((*wk.continuation).clone()),
                     persist: wk.persist,
                     peeks: wk
                         .peeks
@@ -769,7 +769,7 @@ pub extern "C" fn spawn(rspace: *mut Space) -> *mut Space {
 //         let datums = value
 //             .into_iter()
 //             .map(|datum| DatumProto {
-//                 a: Some(datum.a),
+//                 a: Some(std::sync::Arc::unwrap_or_clone(datum.a)),
 //                 persist: datum.persist,
 //                 source: Some(ProduceProto {
 //                     channel_hash: datum.source.channel_hash.bytes(),
@@ -1824,7 +1824,7 @@ pub extern "C" fn get_history_data(
     let datums_protos: Vec<DatumProto> = datums
         .into_iter()
         .map(|datum| DatumProto {
-            a: Some(datum.a),
+            a: Some(std::sync::Arc::unwrap_or_clone(datum.a)),
             persist: datum.persist,
             source: Some(ProduceProto {
                 channel_hash: datum.source.channel_hash.bytes(),
@@ -1880,8 +1880,8 @@ pub extern "C" fn get_history_waiting_continuations(
         .into_iter()
         .map(|wk| {
             let res = WaitingContinuationProto {
-                patterns: wk.patterns,
-                continuation: Some(wk.continuation.clone()),
+                patterns: std::sync::Arc::unwrap_or_clone(wk.patterns),
+                continuation: Some((*wk.continuation).clone()),
                 persist: wk.persist,
                 peeks: wk
                     .peeks

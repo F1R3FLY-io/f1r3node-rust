@@ -1442,7 +1442,7 @@ impl RuntimeOps {
             .get_data(channel)
             .await
             .into_iter()
-            .flat_map(|datum| datum.a.pars)
+            .flat_map(|datum| std::sync::Arc::unwrap_or_clone(datum.a).pars)
             .collect()
     }
 
@@ -1452,8 +1452,10 @@ impl RuntimeOps {
             .await
             .into_iter()
             .filter_map(|wk| {
-                if let Some(TaggedCont::ParBody(par_body)) = wk.continuation.tagged_cont {
-                    Some((wk.patterns, par_body.body.unwrap()))
+                // P4.1: materialize the Arc-shaped payloads (cold readback).
+                let continuation = std::sync::Arc::unwrap_or_clone(wk.continuation);
+                if let Some(TaggedCont::ParBody(par_body)) = continuation.tagged_cont {
+                    Some((std::sync::Arc::unwrap_or_clone(wk.patterns), par_body.body.unwrap()))
                 } else {
                     None
                 }

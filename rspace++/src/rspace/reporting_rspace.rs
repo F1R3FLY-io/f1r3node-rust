@@ -377,10 +377,12 @@ where
         comm: COMM,
         _label: &str,
     ) -> COMM {
+        // P4.1: reporting materializes through the Arcs (reporting-only path,
+        // cost-identical to the pre-P4.1 moves/clones).
         let reporting_consume = ReportingConsume {
             channels: channels.clone(),
-            patterns: wk.patterns,
-            continuation: wk.continuation,
+            patterns: std::sync::Arc::unwrap_or_clone(wk.patterns),
+            continuation: std::sync::Arc::unwrap_or_clone(wk.continuation),
             peeks: wk.peeks.into_iter().collect(),
         };
 
@@ -388,7 +390,7 @@ where
             .iter()
             .map(|dc| ReportingProduce {
                 channel: dc.channel.clone(),
-                data: dc.datum.a.clone(),
+                data: (*dc.datum.a).clone(),
             })
             .collect();
 

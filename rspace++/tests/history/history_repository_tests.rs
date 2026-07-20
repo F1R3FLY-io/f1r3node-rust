@@ -350,8 +350,8 @@ fn join(s: i32) -> Vec<Vec<String>> {
 
 fn continuation(s: i32) -> WaitingContinuation<String, String> {
     WaitingContinuation {
-        patterns: vec![format!("pattern-{}", s)],
-        continuation: format!("cont-{}", s),
+        patterns: std::sync::Arc::new(vec![format!("pattern-{}", s)]),
+        continuation: std::sync::Arc::new(format!("cont-{}", s)),
         persist: true,
         peeks: BTreeSet::new(),
         source: Consume {
@@ -364,7 +364,7 @@ fn continuation(s: i32) -> WaitingContinuation<String, String> {
 
 fn datum(s: i32) -> Datum<String> {
     Datum {
-        a: format!("data-{}", s),
+        a: std::sync::Arc::new(format!("data-{}", s)),
         persist: false,
         source: Produce {
             channel_hash: random_blake(),

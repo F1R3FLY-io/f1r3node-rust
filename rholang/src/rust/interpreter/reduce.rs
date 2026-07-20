@@ -394,10 +394,18 @@ impl DebruijnInterpreter {
         persistent: bool,
     ) -> Result<DispatchType, InterpreterError> {
         self.update_mergeable_channels(&chan).await;
-        let produce_result = self
-            .space
-            .produce(chan.clone(), data.clone(), persistent)
-            .await?;
+        // EPathMap fix P4.1 (plan §0.C "produce_inner clones chan+data",
+        // reduce.rs:399 clone removal): the space CONSUMES the channel and
+        // payload — the only post-call consumer is the persistent-produce
+        // re-fire in `continue_produce_process`, so only a persistent send
+        // retains a copy. A non-persistent send (the common case) hands its
+        // payload to the space with zero copies.
+        let refire = if persistent {
+            Some((chan.clone(), data.clone()))
+        } else {
+            None
+        };
+        let produce_result = self.space.produce(chan, data, persistent).await?;
         let is_replay = self.space.is_replay().await;
 
         match produce_result {
@@ -416,8 +424,7 @@ impl DebruijnInterpreter {
                 let dispatch_type = self
                     .continue_produce_process(
                         unpack_option_with_peek(Some((c, s))),
-                        chan,
-                        data,
+                        refire,
                         persistent,
                         is_replay,
                         produce_event.clone().output_value,
@@ -541,8 +548,10 @@ impl DebruijnInterpreter {
     async fn continue_produce_process(
         &self,
         res: Application,
-        chan: Par,
-        data: ListParWithRandom,
+        // P4.1: `Some((chan, data))` iff the produce was persistent — the
+        // ONLY arm that needs the original send again (the re-fire below);
+        // every other arm runs payload-copy-free.
+        refire: Option<(Par, ListParWithRandom)>,
         persistent: bool,
         is_replay: bool,
         previous_output: Vec<Vec<u8>>,
@@ -570,8 +579,12 @@ impl DebruijnInterpreter {
                     let continuation_clone = continuation.clone();
                     let data_list_clone = data_list.clone();
                     let previous_output_clone = previous_output_as_par.clone();
-                    let chan_clone = chan.clone();
-                    let data_clone = data.clone();
+                    // P4.1: the retained copy moves into the re-fire future
+                    // (no further clone — pre-P4.1 this was the SECOND copy).
+                    let (chan_refire, data_refire) = refire.expect(
+                        "persistent produce retains its channel+payload for the re-fire \
+                         (produce_inner built refire = Some for persistent sends)",
+                    );
                     let persistent_flag = persistent;
                     let is_replay_flag = is_replay;
 
@@ -605,7 +618,7 @@ impl DebruijnInterpreter {
 
                     futures.push(Box::pin(async move {
                         self_clone2
-                            .produce(chan_clone, data_clone, persistent_flag)
+                            .produce(chan_refire, data_refire, persistent_flag)
                             .await
                     })
                         as Pin<
