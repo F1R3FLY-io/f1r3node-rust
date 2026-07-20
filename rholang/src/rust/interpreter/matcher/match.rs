@@ -18,12 +18,20 @@ unsafe impl Send for Matcher {}
 unsafe impl Sync for Matcher {}
 
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/storage/package.scala - matchListPar
+//
+// EPathMap fix P4.2 (amendment PM-3): `get` BORROWS the pattern and the
+// candidate datum — the space no longer clones either per match attempt.
+// The interior pair walk (`fold_match` over borrowed slices) compares
+// non-binding pairs by reference and clones only binding/connective pairs
+// into the owned spatial lattice; the returned `ListParWithRandom` owns
+// exactly the BOUND subterms (free_map values) plus a copy of the datum's
+// `random_state`.
 impl Match<BindPattern, ListParWithRandom, TaggedContinuation> for Matcher {
-    fn get(&self, pattern: BindPattern, data: ListParWithRandom) -> Option<ListParWithRandom> {
+    fn get(&self, pattern: &BindPattern, data: &ListParWithRandom) -> Option<ListParWithRandom> {
         let mut spatial_matcher = SpatialMatcherContext::new();
 
         let fold_match_result =
-            spatial_matcher.fold_match(data.pars, pattern.patterns, pattern.remainder.clone());
+            spatial_matcher.fold_match(&data.pars, &pattern.patterns, pattern.remainder.clone());
         let match_result = match fold_match_result {
             Some(pars) => Some((spatial_matcher.free_map, pars)),
             None => None,
@@ -53,7 +61,7 @@ impl Match<BindPattern, ListParWithRandom, TaggedContinuation> for Matcher {
 
                 Some(ListParWithRandom {
                     pars: bound_pars,
-                    random_state: data.random_state,
+                    random_state: data.random_state.clone(),
                 })
             }
             None => None,
@@ -68,7 +76,7 @@ impl Match<BindPattern, ListParWithRandom, TaggedContinuation> for Matcher {
     /// evaluated via rho-pure-eval. Returns true iff it reduces to
     /// `GBool(true)`. Anything else (false, non-bool, error) means
     /// guard-fail and the consume stays uncommitted. See plan §7.12.
-    fn check_commit(&self, k: &TaggedContinuation, matched: &[ListParWithRandom]) -> bool {
+    fn check_commit(&self, k: &TaggedContinuation, matched: &[&ListParWithRandom]) -> bool {
         let Some(guard) = k.guard.as_ref() else {
             return true;
         };

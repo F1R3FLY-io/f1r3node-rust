@@ -51,6 +51,41 @@ impl SpatialMatcherContext {
             None => None,
         }
     }
+
+    /// EPathMap fix P4.2 (amendment PM-3): the REFERENCE entry to the
+    /// Par-pair matcher — the exact branch structure of
+    /// `SpatialMatcher<Par, Par>::spatial_match` with the ownership decision
+    /// hoisted to the branch that needs it:
+    ///
+    /// * `!pattern.connective_used` — the non-binding comparison. The owned
+    ///   impl already ran `guard(match_pars(&target, &pattern))` BY
+    ///   REFERENCE; entering it through borrows makes the whole path (the
+    ///   discard-heavy failure case of multi-datum channels) copy-free.
+    /// * `connective_used` — a binding/connective pattern. The pair is
+    ///   cloned ONCE into the owned lattice (sub_pars/list_match construct
+    ///   owned intermediates and move bound subterms into the free_map —
+    ///   that machinery is deliberately byte-untouched). For the common
+    ///   free-var bind the clone IS the bound-candidate copy the
+    ///   continuation env receives; it is discarded only when a connective
+    ///   pattern fails midway (pre-P4.2 behavior, minus the two
+    ///   unconditional entry copies).
+    pub fn spatial_match_par_ref(&mut self, target: &Par, pattern: &Par) -> Option<()> {
+        if !pattern.connective_used {
+            // Same predicate as the owned impl's first arm — already
+            // reference-based there.
+            guard(match_pars(target, pattern))
+        } else {
+            let __clone_start = std::time::Instant::now();
+            let target_owned = target.clone();
+            let pattern_owned = pattern.clone();
+            metrics::counter!(
+                crate::rust::interpreter::metrics_constants::RHOLANG_MATCHER_FOLD_MATCH_TAIL_CLONE_NS_METRIC,
+                "source" => crate::rust::interpreter::metrics_constants::RHOLANG_METRICS_SOURCE
+            )
+            .increment(__clone_start.elapsed().as_nanos() as u64);
+            self.spatial_match(target_owned, pattern_owned)
+        }
+    }
 }
 
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/SpatialMatcher.scala - forTuple
@@ -387,7 +422,7 @@ impl SpatialMatcher<Send, Send> for SpatialMatcherContext {
             })
             .and_then(|_| {
                 // println!("\npassed calling spatial_match in Send, Send");
-                self.fold_match(target.data, pattern.data, None)
+                self.fold_match(&target.data, &pattern.data, None)
             });
 
         result.map(|_| ())
@@ -436,7 +471,7 @@ impl SpatialMatcher<Expr, Expr> for SpatialMatcherContext {
                 })),
             ) => {
                 // println!("\n calling fold_match in ElistBody");
-                let matched_rem = self.fold_match(tlist, plist, rem.clone())?;
+                let matched_rem = self.fold_match(&tlist, &plist, rem.clone())?;
                 // println!("\nmatched_rem: {:?}", matched_rem);
 
                 // println!("\ncurrent free_map: {:#?}", self.free_map);
@@ -469,7 +504,7 @@ impl SpatialMatcher<Expr, Expr> for SpatialMatcherContext {
                     locally_free: _,
                     connective_used: _,
                 })),
-            ) => self.fold_match(tlist, plist, None).map(|_| ()),
+            ) => self.fold_match(&tlist, &plist, None).map(|_| ()),
 
             (
                 Some(ESetBody(
@@ -638,7 +673,7 @@ impl SpatialMatcher<Match, Match> for SpatialMatcherContext {
 
         let result = self
             .spatial_match(target.target.unwrap(), pattern.target.unwrap())
-            .and_then(|_| self.fold_match(target.cases, pattern.cases, None));
+            .and_then(|_| self.fold_match(&target.cases, &pattern.cases, None));
 
         result.map(|_| ())
     }

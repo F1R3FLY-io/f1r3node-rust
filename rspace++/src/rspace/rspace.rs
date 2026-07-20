@@ -668,11 +668,8 @@ where
             .increment(t1.elapsed().as_nanos() as u64);
 
         let t2 = Instant::now();
-        let zipped: Vec<(C, P)> = channels
-            .iter()
-            .cloned()
-            .zip(patterns.iter().cloned())
-            .collect();
+        // P4.2: borrow-zip — no per-consume channel/pattern clones.
+        let zipped: Vec<(&C, &P)> = channels.iter().zip(patterns.iter()).collect();
         let options: Option<Vec<ConsumeCandidate<C, A>>> = self
             .extract_data_candidates(&self.matcher, &zipped, &mut channel_to_indexed_data)
             .into_iter()
@@ -693,12 +690,10 @@ where
             // can veto even after every spatial bind matched. On false
             // we install the wk and leave the data alone, just as if
             // the spatial match itself had failed (plan §7.12).
-            // P4.1: materialize through the Arc (cost-identical to the
-            // pre-P4.1 clone); P4.2 flips the trait to borrowed slices and
-            // removes the copy.
+            // P4.2: the guard reads the matched data through borrows — zero
+            // copies (pre-P4.2: one full payload clone per bind).
             Some(data_candidates) => {
-                let matched: Vec<A> =
-                    data_candidates.iter().map(|c| (*c.datum.a).clone()).collect();
+                let matched: Vec<&A> = data_candidates.iter().map(|c| &*c.datum.a).collect();
                 self.matcher.check_commit(continuation, &matched)
             }
             None => false,
@@ -1095,11 +1090,8 @@ where
         } else {
             let consume_ref = Consume::create(&channels, &patterns, &continuation, true);
             let mut channel_to_indexed_data = self.fetch_channel_to_index_data(&channels);
-            let zipped: Vec<(C, P)> = channels
-                .iter()
-                .cloned()
-                .zip(patterns.iter().cloned())
-                .collect();
+            // P4.2: borrow-zip — no per-install channel/pattern clones.
+            let zipped: Vec<(&C, &P)> = channels.iter().zip(patterns.iter()).collect();
             let options: Option<Vec<ConsumeCandidate<C, A>>> = self
                 .extract_data_candidates(&self.matcher, &zipped, &mut channel_to_indexed_data)
                 .into_iter()

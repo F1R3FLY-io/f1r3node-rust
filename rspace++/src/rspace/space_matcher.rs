@@ -30,16 +30,13 @@ where
     ) -> Option<MatchingDataCandidate<C, A>> {
         for (idx, (datum, data_index)) in data.iter().enumerate() {
             metrics::counter!("rspace.matcher.get_calls", "source" => "rspace").increment(1);
-            // P4.1: the payload travels by `Arc` — the pattern/data copies
-            // handed to the matcher are cost-identical to pre-P4.1 (P4.2
-            // flips the trait to borrows and removes them).
-            let t_clone = std::time::Instant::now();
-            let pattern_cloned = pattern.clone();
-            let data_cloned = (*datum.a).clone();
-            metrics::counter!("rspace.matcher.clone_ns", "source" => "rspace")
-                .increment(t_clone.elapsed().as_nanos() as u64);
+            // P4.2: the matcher BORROWS the pattern and the Arc-shared datum
+            // payload — a failing attempt copies nothing at this boundary
+            // (pre-P4.2: one full pattern clone + one full payload clone per
+            // candidate per attempt; the `rspace.matcher.clone_ns` timer that
+            // measured them is retired with the clones).
             let t_match = std::time::Instant::now();
-            let match_result = matcher.get(pattern_cloned, data_cloned);
+            let match_result = matcher.get(pattern, &datum.a);
             metrics::counter!("rspace.matcher.fold_match_ns", "source" => "rspace")
                 .increment(t_match.elapsed().as_nanos() as u64);
 
@@ -76,16 +73,21 @@ where
 
     /// Attempts to match all channel-pattern pairs against the data map.
     /// Records mutations in `rollback` so the caller can undo them on failure.
+    ///
+    /// P4.2: the pairs are BORROWED (`(&C, &P)`) — callers zip references
+    /// into the channels/patterns they already hold instead of cloning a
+    /// pair list per candidate continuation (extract_first_match previously
+    /// cloned every channel and every pattern per candidate iterated).
     fn extract_data_candidates_rollback(
         &self,
         matcher: &Box<dyn Match<P, A, K>>,
-        channel_pattern_pairs: &[(C, P)],
+        channel_pattern_pairs: &[(&C, &P)],
         channel_to_indexed_data: &mut HashMap<C, Vec<(Datum<A>, i32)>>,
         rollback: &mut Vec<(C, Vec<(Datum<A>, i32)>)>,
     ) -> Vec<Option<ConsumeCandidate<C, A>>> {
         let mut acc = Vec::with_capacity(channel_pattern_pairs.len());
 
-        for (channel, pattern) in channel_pattern_pairs {
+        for &(channel, pattern) in channel_pattern_pairs {
             let maybe_tuple: Option<MatchingDataCandidate<C, A>> =
                 match channel_to_indexed_data.get(channel) {
                     Some(indexed_data) => self.find_matching_data_candidate(
@@ -119,7 +121,7 @@ where
     fn extract_data_candidates(
         &self,
         matcher: &Box<dyn Match<P, A, K>>,
-        channel_pattern_pairs: &[(C, P)],
+        channel_pattern_pairs: &[(&C, &P)],
         channel_to_indexed_data: &mut HashMap<C, Vec<(Datum<A>, i32)>>,
     ) -> Vec<Option<ConsumeCandidate<C, A>>> {
         let mut rollback = Vec::new();
@@ -143,12 +145,11 @@ where
         for (cont, index) in &match_candidates {
             metrics::counter!(RSPACE_MATCHER_EXTRACT_FIRST_MATCH_CANDIDATES_ITERATED_METRIC, "source" => RSPACE_METRICS_SOURCE)
                 .increment(1);
+            // P4.2: zip REFERENCES — pre-P4.2 every candidate continuation
+            // cloned every channel and every pattern into an owned pair list.
             let __pair_start = std::time::Instant::now();
-            let channel_pattern_pairs: Vec<(C, P)> = channels
-                .iter()
-                .cloned()
-                .zip(cont.patterns.iter().cloned())
-                .collect();
+            let channel_pattern_pairs: Vec<(&C, &P)> =
+                channels.iter().zip(cont.patterns.iter()).collect();
             metrics::counter!(RSPACE_MATCHER_EXTRACT_FIRST_MATCH_PAIR_CONSTRUCTION_NS_METRIC, "source" => RSPACE_METRICS_SOURCE)
                 .increment(__pair_start.elapsed().as_nanos() as u64);
 
@@ -165,11 +166,12 @@ where
                 // to veto a commit even after every spatial bind has
                 // matched. Used for `where`-clause guards that mention
                 // bindings from multiple channels (plan §7.12).
-                // P4.1: materialize through the Arc (cost-identical to the
-                // pre-P4.1 clone); P4.2 borrows and removes the copy.
-                let matched_data: Vec<A> = data_candidates
+                // P4.2: the guard reads the matched data through borrows —
+                // zero copies (pre-P4.2: one full payload clone per bind
+                // per candidate set).
+                let matched_data: Vec<&A> = data_candidates
                     .iter()
-                    .map(|c| (*c.as_ref().unwrap().datum.a).clone())
+                    .map(|c| &*c.as_ref().unwrap().datum.a)
                     .collect();
                 if !matcher.check_commit(&cont.continuation, &matched_data) {
                     // Guard rejected: roll back and try the next

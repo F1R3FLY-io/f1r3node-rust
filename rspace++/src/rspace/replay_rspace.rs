@@ -757,7 +757,8 @@ where
         let mut channel_to_indexed_data_map: HashMap<C, Vec<(Datum<A>, i32)>> =
             channel_to_indexed_data_list.into_iter().collect();
 
-        let pairs: Vec<(C, P)> = channels.into_iter().zip(patterns.into_iter()).collect();
+        // P4.2: borrow-zip — no per-attempt channel/pattern clones.
+        let pairs: Vec<(&C, &P)> = channels.iter().zip(patterns.iter()).collect();
 
         self.extract_data_candidates(&self.matcher, &pairs, &mut channel_to_indexed_data_map)
             .into_iter()
@@ -1187,11 +1188,8 @@ where
         } else {
             let consume_ref = Consume::create(&channels, &patterns, &continuation, true);
             let mut channel_to_indexed_data = self.fetch_channel_to_index_data(&channels);
-            let zipped: Vec<(C, P)> = channels
-                .iter()
-                .cloned()
-                .zip(patterns.iter().cloned())
-                .collect();
+            // P4.2: borrow-zip — no per-install channel/pattern clones.
+            let zipped: Vec<(&C, &P)> = channels.iter().zip(patterns.iter()).collect();
             let options: Option<Vec<ConsumeCandidate<C, A>>> = self
                 .extract_data_candidates(&self.matcher, &zipped, &mut channel_to_indexed_data)
                 .into_iter()

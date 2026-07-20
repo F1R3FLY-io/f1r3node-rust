@@ -21,7 +21,8 @@ enum Pattern {
 struct StringMatch;
 
 impl Match<Pattern, String, String> for StringMatch {
-    fn get(&self, _p: Pattern, a: String) -> Option<String> { Some(a) }
+    // P4.2: borrowed inputs — clone only the matched (returned) value.
+    fn get(&self, _p: &Pattern, a: &String) -> Option<String> { Some(a.clone()) }
 }
 
 fn build_reporting_rspace()

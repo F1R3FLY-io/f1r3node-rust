@@ -32,12 +32,13 @@ enum Pattern {
 struct StringMatch;
 
 impl Match<Pattern, String, StringsCaptor> for StringMatch {
-    fn get(&self, p: Pattern, a: String) -> Option<String> {
+    // P4.2: borrowed inputs — clone only the matched (returned) value.
+    fn get(&self, p: &Pattern, a: &String) -> Option<String> {
         match p {
-            Pattern::Wildcard => Some(a),
+            Pattern::Wildcard => Some(a.clone()),
             Pattern::StringMatch(value) => {
                 if value == a {
-                    Some(a)
+                    Some(a.clone())
                 } else {
                     None
                 }
