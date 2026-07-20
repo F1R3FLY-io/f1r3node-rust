@@ -915,6 +915,31 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
     /// work to genuinely missing entries instead of full chain depth.
     async fn replay_blocks_for_mergeable_channels(
         &self,
+        approved_block: &ApprovedBlock,
+        min_block_number: i64,
+    ) -> Result<(), CasperError> {
+        // Bounds the replay so a stuck cold-start produces an explicit error
+        // instead of an infinite hang (see issues/05-casper-cold-restart-replay-hang.md).
+        // 20 minutes matches the slowest recovery window the issue itself
+        // considers acceptable (49-71 finalized blocks).
+        const MERGEABLE_CHANNEL_REPLAY_DEADLINE: Duration = Duration::from_secs(1200);
+
+        match tokio::time::timeout(
+            MERGEABLE_CHANNEL_REPLAY_DEADLINE,
+            self.replay_blocks_for_mergeable_channels_inner(approved_block, min_block_number),
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(_) => Err(CasperError::RuntimeError(format!(
+                "replay_blocks_for_mergeable_channels timed out after {:?}; cold-start cannot proceed",
+                MERGEABLE_CHANNEL_REPLAY_DEADLINE
+            ))),
+        }
+    }
+
+    async fn replay_blocks_for_mergeable_channels_inner(
+        &self,
         _approved_block: &ApprovedBlock,
         min_block_number: i64,
     ) -> Result<(), CasperError> {
