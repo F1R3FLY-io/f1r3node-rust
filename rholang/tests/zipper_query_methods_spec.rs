@@ -583,7 +583,8 @@ mod trie_memo_tests {
 
     fn e_pathmap(paths: &[&[&str]]) -> EPathMap {
         EPathMap::new(
-            paths.iter().map(|p| string_list_par(p)).collect(),
+            // L2: turbofish — `new` takes `impl Into<SharedPars>`.
+            paths.iter().map(|p| string_list_par(p)).collect::<Vec<Par>>(),
             vec![],
             false,
             None,

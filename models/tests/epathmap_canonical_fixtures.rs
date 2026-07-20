@@ -226,7 +226,9 @@ fn serde_json_goldens_epathmap_fixtures() {
 fn clear_locally_free(map: &EPathMap) -> EPathMap {
     let mut cleared = map.clone();
     cleared.locally_free = Vec::new();
-    for entry in &mut cleared.ps {
+    // L2: the sanctioned CoW mutator — detaches the shared payload AND
+    // takes any inherited shadow cell (the cleared value's bytes differ).
+    for entry in cleared.ps_make_mut() {
         entry.locally_free = Vec::new();
     }
     cleared

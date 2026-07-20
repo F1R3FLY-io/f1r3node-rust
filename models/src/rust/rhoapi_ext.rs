@@ -1,5 +1,8 @@
 //! EPathMap fix P3 — the hand-maintained `EPathMap` wrapper (full T1, stage
-//! L1.5).
+//! L1.5), extended by stage L2 — the shared-`ps` representation
+//! ([`SharedPars`], USER decision D2 approved 2026-07-20 on the E-6d #2
+//! evidence: clone-class 29.76% flat at ≈44.8 ms/inj across e6d1→e6d2, the
+//! attributed residual being the `Expr::to_vec` deep copies of `ps`).
 //!
 //! `models/build.rs` declares `.rhoapi.EPathMap` as an EXTERN type
 //! (`tonic_prost_build::configure().extern_path(".rhoapi.EPathMap",
@@ -37,9 +40,11 @@
 //!   value must never carry a stale handle).
 //! * `Clone` — propagates the filled cell (`OnceLock::clone` clones the
 //!   inner `Arc`): the handle travels with the clone family, so the
-//!   first-touch digest walk is paid once per family, not per copy. The
-//!   `ps` deep-copy REMAINS — the stated L1.5 limitation (stage L2, shared
-//!   `ps`, is user decision D2).
+//!   first-touch digest walk is paid once per family, not per copy. Stage
+//!   L2: `ps` is a [`SharedPars`] (`Arc<Vec<Par>>`), so the former L1.5
+//!   deep-copy is now an `Arc` bump too — `EPathMap::clone` is O(1) AT THE
+//!   NODE (both the `ps` payload and the intern handle are refcount bumps;
+//!   only `locally_free`/`remainder` still copy, both small).
 //! * `Default`/`Debug` — prost-derive generates both alongside `Message`;
 //!   replicated here (Debug prints the four proto fields in declaration
 //!   order and omits the cell, matching the old derived output).
@@ -74,19 +79,31 @@
 //! consumer, and the `OnceLock` field would make a C layout meaningless
 //! anyway. Amendment PM-5(4).
 //!
-//! MUTATION DISCIPLINE (the shadow-cell invariant): the proto fields stay
-//! `pub` (the ~56 read sites and the struct patterns rely on it), so Rust
-//! cannot forbid `map.ps.push(..)` after the cell fills. The invariant —
-//! "a filled cell certifies the fields still encode to `canonical_prost`" —
-//! holds because the cell fills ONLY at the interpreter's intern rendezvous
-//! (evaluated values treated as immutable thereafter; the workspace survey
-//! found exactly one production field-write, the normalizer's fresh
-//! `tmp_e_pathmap`, which can never have been interned), and every
-//! `&mut`-path through `Message` (`merge_field`/`clear`) resets the cell.
-//! `debug_assert`s in `encoded_len`/`encode_raw` re-verify the fields
-//! against the cached bytes on every cached use, so the entire test fleet
-//! (debug assertions on) polices the invariant continuously; the P0
-//! goldens/differentials gate release behavior.
+//! MUTATION DISCIPLINE (the shadow-cell invariant, tightened by L2): the
+//! proto fields stay `pub` (the ~56 read sites and the struct patterns rely
+//! on it), but `ps` is now a [`SharedPars`] with NO `DerefMut` — the old
+//! silent hazard `map.ps.push(..)` no longer compiles. Every `ps` mutation
+//! is loud: the SANCTIONED route is [`EPathMap::ps_make_mut`], which TAKES
+//! the cell before handing out `&mut Vec<Par>` (exactly the
+//! `merge_field`/`clear` reset discipline — a mutated value re-derives its
+//! bytes from the real fields at the next encode), and the raw bypass
+//! `map.ps.make_mut()` (no cell reset) remains policed by the
+//! `debug_assert`s in `encoded_len`/`encode_raw`, which re-verify the
+//! fields against the cached bytes on every cached use — the entire test
+//! fleet (debug assertions on) polices the invariant continuously
+//! (`stale_cell_mutation_is_policed_in_debug_builds` pins the bypass →
+//! panic path; `ps_make_mut_resets_the_cell` pins the sanctioned path);
+//! the P0 goldens/differentials gate release behavior. The cell fills ONLY
+//! at the interpreter's intern rendezvous, and every `&mut`-path through
+//! `Message` (`merge_field`/`clear`) resets it, as in L1.5.
+//!
+//! L2 SHARING SEMANTICS: sharing is an invisible representation choice —
+//! `==`/`Hash`/`Ord`/serde/prost all read THROUGH the `Arc` to the same
+//! `Vec<Par>` values as before (identity semantics preserved; wire and
+//! serde bytes byte-identical by the P0 goldens). Aliasing is safe by
+//! construction: the only `&mut Vec<Par>` escape is `Arc::make_mut`
+//! (copy-on-write — a shared payload is cloned before mutation, so no
+//! clone sibling can observe a write).
 
 use std::cmp::Ordering;
 use std::fmt;
@@ -103,6 +120,164 @@ use super::pathmap_crate_type_mapper::{
 };
 use crate::rhoapi::{Par, Var};
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Stage L2: SharedPars — the Arc-backed `ps` payload
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// The stage-L2 representation of `EPathMap.ps`: an `Arc<Vec<Par>>`-backed
+/// newtype. Cloning is an `Arc` refcount bump (O(1) — THE clone-class kill
+/// the E-6d #2 profile motivates), reading is transparent
+/// (`Deref<Target = Vec<Par>>` + `IntoIterator for &SharedPars`, so
+/// `map.ps.iter()`, `map.ps.len()`, `for p in &map.ps`, and `&map.ps` →
+/// `&[Par]` coercions all compile unchanged), and writing is LOUD: there is
+/// deliberately NO `DerefMut` — every mutation must go through
+/// [`SharedPars::make_mut`] (`Arc::make_mut` copy-on-write) or, at the
+/// `EPathMap` level, [`EPathMap::ps_make_mut`] (which also resets the
+/// shadow cell). Value semantics are the `Vec`'s throughout: `==`, `Hash`,
+/// `Ord`, `Debug`, serde, and prost all delegate to the payload, so two
+/// `SharedPars` are equal/ordered/hashed/serialized exactly as their
+/// vectors were before L2 — sharing is representation, never meaning.
+pub struct SharedPars(Arc<Vec<Par>>);
+
+impl SharedPars {
+    /// Copy-on-write mutable access: `Arc::make_mut` — O(1) when this is
+    /// the only holder, one `Vec<Par>` deep-clone when shared (the clone
+    /// pays exactly the copy that EVERY clone paid before L2, and only on
+    /// actual mutation).
+    ///
+    /// NOTE: this does NOT touch any enclosing `EPathMap`'s shadow cell —
+    /// production mutation of a map's `ps` goes through
+    /// [`EPathMap::ps_make_mut`], which takes the cell first. A direct
+    /// `map.ps.make_mut()` write after an intern is the (test-exercised)
+    /// bypass the cached-path `debug_assert`s police.
+    pub fn make_mut(&mut self) -> &mut Vec<Par> {
+        Arc::make_mut(&mut self.0)
+    }
+
+    /// Consume into an owned `Vec<Par>`: the payload is MOVED out when this
+    /// is the only holder (O(1)), cloned otherwise (copy-on-extract — the
+    /// by-value census sites, e.g. `graft`'s `extend(source.ps)`, paid this
+    /// copy implicitly before L2 when the source map itself was cloned).
+    pub fn into_vec(self) -> Vec<Par> {
+        Arc::try_unwrap(self.0).unwrap_or_else(|shared| (*shared).clone())
+    }
+
+    /// `true` iff `self` and `other` share one payload allocation — the
+    /// L2 test seam for asserting O(1) clone sharing and CoW detachment.
+    /// Representation-only: never part of value semantics.
+    pub fn ptr_eq(&self, other: &SharedPars) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl From<Vec<Par>> for SharedPars {
+    /// The construct-then-freeze entry: build a `Vec<Par>`, wrap it once.
+    /// Keeps every `EPathMap::new(vec…)` call site compiling unchanged
+    /// (`impl Into<SharedPars>` on the constructor).
+    fn from(ps: Vec<Par>) -> Self {
+        SharedPars(Arc::new(ps))
+    }
+}
+
+impl std::ops::Deref for SharedPars {
+    type Target = Vec<Par>;
+    /// Transparent reads: every `&self` `Vec` API (`len`, `iter`, `first`,
+    /// indexing, `as_slice`, …) and `&SharedPars` → `&Vec<Par>` → `&[Par]`
+    /// coercion works as before L2. No `DerefMut` counterpart — mutation
+    /// is exclusively [`SharedPars::make_mut`] (loud, CoW).
+    fn deref(&self) -> &Vec<Par> {
+        &self.0
+    }
+}
+
+impl<'a> IntoIterator for &'a SharedPars {
+    type Item = &'a Par;
+    type IntoIter = std::slice::Iter<'a, Par>;
+    /// `for p in &map.ps` parity with the pre-L2 `&Vec<Par>` field.
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter()
+    }
+}
+
+impl Clone for SharedPars {
+    /// O(1): an `Arc` refcount bump — the L2 point. The payload is shared,
+    /// never copied; a later mutation on either side detaches via CoW.
+    fn clone(&self) -> Self {
+        SharedPars(Arc::clone(&self.0))
+    }
+}
+
+impl Default for SharedPars {
+    /// An empty payload in a fresh allocation (`Vec::new` itself does not
+    /// allocate; only the `Arc` control block is created).
+    fn default() -> Self {
+        SharedPars(Arc::new(Vec::new()))
+    }
+}
+
+impl fmt::Debug for SharedPars {
+    /// Transparent: prints exactly as the inner `Vec<Par>` did before L2
+    /// (the `EPathMap` Debug output is byte-identical).
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl PartialEq for SharedPars {
+    /// Delegates to `Vec<Par>` equality (the pre-L2 semantics), with an
+    /// `Arc::ptr_eq` fast path — sound because `Par: Eq` (equality is
+    /// reflexive), so one shared allocation is always equal to itself.
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0) || self.0 == other.0
+    }
+}
+
+impl Eq for SharedPars {}
+
+impl Hash for SharedPars {
+    /// Delegates to the `Vec<Par>` hash — identical hash input stream to
+    /// the pre-L2 field (length prefix + per-element hashes), so every
+    /// hash-keyed container sees unchanged keys.
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.0.hash(state);
+    }
+}
+
+impl Ord for SharedPars {
+    /// Delegates to `Vec<Par>` lexicographic ordering — the pre-L2
+    /// semantics `EPathMap`'s derived-order `cmp` chain relies on.
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.0.cmp(&other.0)
+    }
+}
+
+impl PartialOrd for SharedPars {
+    /// Consistent with [`Ord`].
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl serde::Serialize for SharedPars {
+    /// Transparent seq: serializes exactly as the inner `Vec<Par>` (bincode
+    /// = u64-LE length + elements; JSON = array) — the `EPathMap` serde
+    /// layout is byte-identical to pre-L2 (P0 serde goldens + the
+    /// derived-twin differential gate it). Deliberately NOT `Arc`'s serde
+    /// (serde's `rc` impls are feature-gated and layout-equivalent anyway);
+    /// delegation to the payload keeps the layout obligation explicit.
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.0.as_slice().serialize(serializer)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for SharedPars {
+    /// Reads a plain `Vec<Par>` (the exact pre-L2 wire shape) and wraps it
+    /// in a fresh unshared `Arc`.
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Vec::<Par>::deserialize(deserializer).map(SharedPars::from)
+    }
+}
+
 /// The hand-maintained mirror of `message EPathMap` (`RhoTypes.proto:321`),
 /// extended with the P3 shadow cell. Field order and types are EXACTLY the
 /// generated struct's (`ps`, `locally_free`, `connective_used`, `remainder`)
@@ -113,8 +288,15 @@ use crate::rhoapi::{Par, Var};
 /// former literal site is migrated). Struct PATTERNS with `..` keep working.
 #[derive(serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 pub struct EPathMap {
-    /// Path entries (proto tag 1, repeated `Par`).
-    pub ps: Vec<Par>,
+    /// Path entries (proto tag 1, repeated `Par`). Stage L2: an Arc-backed
+    /// [`SharedPars`] — clone = refcount bump, reads transparent via
+    /// `Deref`, writes CoW via [`EPathMap::ps_make_mut`] /
+    /// [`SharedPars::make_mut`]. Serde/prost/`==`/`Hash`/`Ord` all read
+    /// through to the payload — layout and semantics identical to the
+    /// pre-L2 `Vec<Par>` field (P0 goldens). The schema stays `Vec<Par>`
+    /// (the wrapper is invisible to OpenAPI, as to every other consumer).
+    #[schema(value_type = Vec<Par>)]
+    pub ps: SharedPars,
     /// Free-variable bitset (proto tag 3, bytes). Serde serializes this as
     /// EMPTY bytes (serialize-only normalization, `models/build.rs` parity);
     /// prost bytes RETAIN it; `==`/`Hash` ignore it; `Ord` compares it.
@@ -138,19 +320,44 @@ impl EPathMap {
     /// literal (the private cell makes out-of-module literals impossible).
     /// The cell starts EMPTY: a newly built value has no interned handle
     /// until its first rendezvous.
+    ///
+    /// Stage L2: `ps` is `impl Into<SharedPars>`, so every P3-migrated call
+    /// site passing a `Vec<Par>` compiles unchanged (`From<Vec<Par>>` —
+    /// construct-then-freeze), and callers already holding a [`SharedPars`]
+    /// (e.g. rebuilding around an existing payload) pass it through as an
+    /// O(1) `Arc` bump (the reflexive `Into`).
     pub fn new(
-        ps: Vec<Par>,
+        ps: impl Into<SharedPars>,
         locally_free: Vec<u8>,
         connective_used: bool,
         remainder: Option<Var>,
     ) -> Self {
         EPathMap {
-            ps,
+            ps: ps.into(),
             locally_free,
             connective_used,
             remainder,
             intern: OnceLock::new(),
         }
+    }
+
+    /// Stage L2's SANCTIONED `ps` mutator: takes the shadow cell FIRST
+    /// (exactly the `merge_field`/`clear` reset discipline — a mutated
+    /// value must re-derive its bytes from the real fields), then hands out
+    /// the copy-on-write `&mut Vec<Par>` (`Arc::make_mut`: O(1) when the
+    /// payload is unshared, one deep-clone when shared — paid only on
+    /// actual mutation, never on clone).
+    ///
+    /// Every production in-place `ps` write (the zipper write methods:
+    /// `setLeaf` push, `removeLeaf` pop, `graft` extend) routes through
+    /// here; construct-then-freeze sites use [`EPathMap::new`] instead.
+    /// Pinned by `ps_make_mut_resets_the_cell` (sanctioned path) and
+    /// `stale_cell_mutation_is_policed_in_debug_builds` (the raw
+    /// `map.ps.make_mut()` bypass still trips the cached-path
+    /// `debug_assert`s).
+    pub fn ps_make_mut(&mut self) -> &mut Vec<Par> {
+        self.intern.take();
+        self.ps.make_mut()
     }
 
     /// Intern this EPathMap: return the shared [`InternedEPathMap`] for its
@@ -216,7 +423,10 @@ impl EPathMap {
     /// The UNCACHED field-by-field `encoded_len` (prost-derive expansion,
     /// same skip-at-default structure as [`Self::encode_raw_fields`]).
     pub(crate) fn encoded_len_fields(&self) -> usize {
-        encoding::message::encoded_len_repeated(1u32, &self.ps)
+        // L2: `as_slice()` resolves through the `SharedPars` Deref to the
+        // same `&[Par]` the prost-derive expansion passed (a fully concrete
+        // coercion — no reliance on inference through the newtype).
+        encoding::message::encoded_len_repeated(1u32, self.ps.as_slice())
             + if !self.locally_free.is_empty() {
                 encoding::bytes::encoded_len(3u32, &self.locally_free)
             } else {
@@ -253,8 +463,11 @@ impl Default for EPathMap {
 impl Clone for EPathMap {
     /// Clones the proto fields AND propagates the filled shadow cell (an
     /// `Arc` bump via `OnceLock::clone`) — the handle travels with the
-    /// clone family. `ps` remains a deep copy (the stated L1.5 limitation;
-    /// stage L2 shared-`ps` is user decision D2).
+    /// clone family. Stage L2: `ps` is a [`SharedPars`], so its "clone" is
+    /// an `Arc` bump too — the whole clone is O(1) AT THE NODE (the D2
+    /// go-decision; only `locally_free` bytes and the small `remainder`
+    /// still copy). Mutation after cloning is safe by CoW
+    /// ([`EPathMap::ps_make_mut`] detaches the payload before writing).
     fn clone(&self) -> Self {
         EPathMap {
             ps: self.ps.clone(),
@@ -318,7 +531,11 @@ impl prost::Message for EPathMap {
         const STRUCT_NAME: &str = "EPathMap";
         match tag {
             1u32 => {
-                let value = &mut self.ps;
+                // L2: CoW escape — the cell is already taken above, and a
+                // freshly-decoded value's payload is unshared in practice
+                // (`Arc::make_mut` is then O(1); a shared payload would be
+                // detached, exactly the invariant CoW guarantees).
+                let value = self.ps.make_mut();
                 encoding::message::merge_repeated(wire_type, value, buf, ctx).map_err(
                     |mut error| {
                         error.push(STRUCT_NAME, "ps");
@@ -376,8 +593,13 @@ impl prost::Message for EPathMap {
 
     fn clear(&mut self) {
         // prost-derive parity for the proto fields, plus the cell reset.
+        // L2: `ps` DETACHES to a fresh empty payload instead of clearing in
+        // place — O(1) even when shared (a `make_mut().clear()` would
+        // deep-clone a shared payload only to empty it), and observationally
+        // identical (`clear` promises fields-at-defaults, nothing about
+        // capacity).
         self.intern.take();
-        self.ps.clear();
+        self.ps = SharedPars::default();
         self.locally_free.clear();
         self.connective_used = false;
         self.remainder = None;

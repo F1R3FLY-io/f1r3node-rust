@@ -19,9 +19,15 @@
 //!      empty; hand-crafted streams with real bytes deserialize verbatim).
 //!   4. THE ORD/ALWAYSEQUAL WART — `a == b` yet `a.cmp(&b) == Less` when
 //!      only `locally_free` differs, before AND after interning.
-//!   5. STALE-CELL POLICING — mutating a filled-cell value through its pub
-//!      fields trips the wrapper's `debug_assert` on the next cached use
-//!      (debug builds; the invariant's continuous test-fleet police).
+//!   5. STALE-CELL POLICING — mutating a filled-cell value while bypassing
+//!      the cell reset (the raw `SharedPars::make_mut`; the pre-L2 pub-field
+//!      route no longer compiles) trips the wrapper's `debug_assert` on the
+//!      next cached use (debug builds; the invariant's continuous test-fleet
+//!      police).
+//!   6. L2 SHARED-`ps` — `Clone` shares the payload (`SharedPars::ptr_eq`,
+//!      O(1) at the node) with unchanged value semantics; the sanctioned
+//!      mutator `ps_make_mut` takes the cell AND CoW-detaches, isolating
+//!      clone siblings and the intern store from the write.
 //!
 //! The byte-level truth is separately gated by the P0 goldens
 //! (`epathmap_canonical_fixtures.rs` — unchanged, still asserting the
@@ -352,7 +358,9 @@ struct DerivedTwin {
 
 fn derived_twin(map: &EPathMap) -> DerivedTwin {
     DerivedTwin {
-        ps: map.ps.clone(),
+        // L2: the twin keeps a plain `Vec<Par>` (it IS the pre-L2 layout
+        // oracle) — extract an owned copy from the shared payload.
+        ps: map.ps.to_vec(),
         locally_free: map.locally_free.clone(),
         connective_used: map.connective_used,
         remainder: map.remainder.clone(),
@@ -519,18 +527,110 @@ fn debug_output_shows_the_four_proto_fields_and_no_cell() {
 // 5. Stale-cell policing (debug builds)
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Mutating a filled-cell value through its pub fields violates the cell
-/// invariant; the next cached use must trip the debug_assert LOUDLY (this is
-/// the continuous police for the whole test fleet — release builds trust the
-/// audited invariant: the workspace survey found no production
-/// mutation-after-intern).
+/// Mutating a filled-cell value while BYPASSING the cell reset violates the
+/// cell invariant; the next cached use must trip the debug_assert LOUDLY
+/// (this is the continuous police for the whole test fleet — release builds
+/// trust the audited invariant: every production `ps` write routes through
+/// `ps_make_mut`, which resets the cell).
+///
+/// L2 makes the bypass NARROWER and LOUDER than the pre-L2 pub-field hazard:
+/// `mutated.ps.push(..)` no longer compiles (no `DerefMut` on `SharedPars`);
+/// the only remaining bypass is the raw `SharedPars::make_mut` below, which
+/// CoW-detaches the payload (the interned original is untouched) but leaves
+/// the stale cell in place — exactly what this test pins.
 #[cfg(debug_assertions)]
 #[test]
 #[should_panic(expected = "shadow cell is STALE")]
 fn stale_cell_mutation_is_policed_in_debug_builds() {
     let map = e6a_index_epathmap();
     let _ = map.intern();
-    let mut mutated = map.clone(); // carries the filled cell
-    mutated.ps.push(ground_list(vec![gstring_par("staleProbe")])); // invariant violation
+    let mut mutated = map.clone(); // carries the filled cell (and shares ps)
+    mutated
+        .ps
+        .make_mut() // RAW bypass: no cell reset (ps_make_mut is the sanctioned route)
+        .push(ground_list(vec![gstring_par("staleProbe")])); // invariant violation
     let _ = mutated.encoded_len(); // cached path → debug_assert fires
+}
+
+/// L2's sanctioned-mutation contract: `ps_make_mut` (a) TAKES the shadow
+/// cell (a mutated value re-derives bytes from its real fields — no stale
+/// cache can survive the sanctioned route), and (b) CoW-detaches the shared
+/// payload (clone siblings and the intern store never observe the write).
+#[test]
+fn ps_make_mut_resets_the_cell_and_cow_detaches_the_shared_payload() {
+    let _guard = store_guard();
+
+    let map = e6a_index_epathmap();
+    let interned = map.intern();
+    let mut mutated = map.clone();
+    assert!(
+        mutated.shadow_cell_for_test().is_some(),
+        "precondition: the clone carries the filled cell"
+    );
+    assert!(
+        mutated.ps.ptr_eq(&map.ps),
+        "precondition: the clone shares the ps payload (L2 O(1) clone)"
+    );
+
+    mutated.ps_make_mut().push(ground_list(vec![gstring_par("cowProbe")]));
+
+    // (a) The cell is gone — encoded_len/encode_raw take the field walk and
+    // agree with a fresh twin of the mutated fields (no stale-cache panic,
+    // no stale bytes).
+    assert!(
+        mutated.shadow_cell_for_test().is_none(),
+        "ps_make_mut must take the cell"
+    );
+    let twin = fresh_twin(&mutated);
+    assert_eq!(mutated.encoded_len(), twin.encoded_len());
+    assert_eq!(
+        prost::Message::encode_to_vec(&mutated),
+        prost::Message::encode_to_vec(&twin),
+        "post-mutation bytes must re-derive from the REAL fields"
+    );
+
+    // (b) CoW isolation: the original and its interned entry still carry the
+    // pre-mutation payload and bytes.
+    assert!(
+        !mutated.ps.ptr_eq(&map.ps),
+        "ps_make_mut must detach the shared payload"
+    );
+    assert_eq!(map.ps.len() + 1, mutated.ps.len());
+    assert_eq!(
+        prost::Message::encode_to_vec(&map).as_slice(),
+        interned.canonical_prost.as_slice(),
+        "the interned original is untouched by the sibling's mutation"
+    );
+}
+
+/// L2's representation contract: `EPathMap::clone` shares the `ps` payload
+/// (one allocation, refcount bump — O(1) at the node) and the shared value
+/// is semantically indistinguishable from an owned deep copy (`==`, `Ord`,
+/// hash, prost bytes, serde bytes).
+#[test]
+fn clone_shares_the_ps_payload_and_preserves_value_semantics() {
+    for (name, map) in all_fixture_maps() {
+        let clone = map.clone();
+        assert!(
+            clone.ps.ptr_eq(&map.ps),
+            "{name}: clone must share the ps payload (Arc bump, not deep copy)"
+        );
+        assert_eq!(map, clone, "{name}: shared clone must stay ==");
+        assert_eq!(
+            std::cmp::Ordering::Equal,
+            map.cmp(&clone),
+            "{name}: shared clone must compare Equal"
+        );
+        assert_eq!(std_hash(&map), std_hash(&clone), "{name}: hash parity");
+        assert_eq!(
+            prost::Message::encode_to_vec(&map),
+            prost::Message::encode_to_vec(&clone),
+            "{name}: prost byte parity through the shared payload"
+        );
+        assert_eq!(
+            bincode::serialize(&map).expect("bincode map"),
+            bincode::serialize(&clone).expect("bincode clone"),
+            "{name}: serde byte parity through the shared payload"
+        );
+    }
 }

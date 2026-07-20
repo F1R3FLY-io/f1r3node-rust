@@ -525,7 +525,9 @@ impl Sortable<Expr> for ExprSortMatcher {
                         // private). Fresh cell — the sorted value's bytes
                         // differ from the source's in general.
                         ExprInstance::EPathmapBody(EPathMap::new(
-                            pars.clone().into_iter().map(|p| p.term).collect(),
+                            // L2: turbofish — `new` now takes `impl Into<SharedPars>`,
+                            // so a bare `.collect()` cannot infer `Vec<Par>`.
+                            pars.clone().into_iter().map(|p| p.term).collect::<Vec<Par>>(),
                             pathmap.locally_free.clone(),
                             pathmap.connective_used,
                             pathmap.remainder.clone(),
@@ -593,7 +595,9 @@ impl Sortable<Expr> for ExprSortMatcher {
                             // EPathMap fix P3 (PM-2): constructor instead of
                             // a struct literal (private shadow cell).
                             pathmap: Some(EPathMap::new(
-                                pars.clone().into_iter().map(|p| p.term).collect(),
+                                // L2: turbofish (same `impl Into<SharedPars>` inference
+                                // hole as the EPathmapBody arm above).
+                                pars.clone().into_iter().map(|p| p.term).collect::<Vec<Par>>(),
                                 pathmap.locally_free.clone(),
                                 pathmap.connective_used,
                                 pathmap.remainder.clone(),

@@ -364,7 +364,8 @@ fn leaf_par_strategy() -> impl Strategy<Value = Par> {
         (any::<bool>(), proptest::collection::vec("[a-z]{1,4}", 0..3)).prop_map(
             |(interned, entries)| {
                 let map = EPathMap::new(
-                    entries.into_iter().map(|s| gstring_par(&s)).collect(),
+                    // L2: turbofish — `new` takes `impl Into<SharedPars>`.
+                    entries.into_iter().map(|s| gstring_par(&s)).collect::<Vec<Par>>(),
                     Vec::new(),
                     false,
                     None,

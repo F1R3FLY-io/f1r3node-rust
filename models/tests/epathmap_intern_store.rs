@@ -168,7 +168,9 @@ fn always_equal_equality_is_unusable_for_keying_but_k2_is_not() {
     let mut map_level = base.clone();
     map_level.locally_free = create_bit_vector(&[0]);
     let mut entry_level = base.clone();
-    entry_level.ps[0].locally_free = create_bit_vector(&[1]);
+    // L2: CoW index-write through the sanctioned mutator (the raw
+    // `SharedPars` has no `DerefMut`, so `ps[0] = ..` is deliberately loud).
+    entry_level.ps_make_mut()[0].locally_free = create_bit_vector(&[1]);
 
     for (name, variant) in [("map-level", map_level), ("entry-level", entry_level)] {
         assert_eq!(
@@ -256,7 +258,10 @@ fn mutate(base: &EPathMap, which: u8) -> EPathMap {
                 Vec::new()
             };
         }
-        2 => match variant.ps.first_mut() {
+        // L2: every `ps` write below goes through the sanctioned CoW
+        // mutator `ps_make_mut` (detaches the payload shared with `base`
+        // and takes any inherited cell — `base` itself is never touched).
+        2 => match variant.ps_make_mut().first_mut() {
             Some(first) => {
                 first.locally_free = if first.locally_free.is_empty() {
                     create_bit_vector(&[1])
@@ -274,11 +279,12 @@ fn mutate(base: &EPathMap, which: u8) -> EPathMap {
             };
         }
         5 => variant
-            .ps
+            .ps_make_mut()
             .push(ground_list(vec![gstring_par("mutationProbe")])),
         _ => {
-            if variant.ps.pop().is_none() {
-                variant.ps.push(ground_list(vec![gstring_par("refill")]));
+            let entries = variant.ps_make_mut();
+            if entries.pop().is_none() {
+                entries.push(ground_list(vec![gstring_par("refill")]));
             }
         }
     }

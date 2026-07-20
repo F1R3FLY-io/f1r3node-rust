@@ -4112,7 +4112,9 @@ impl DebruijnInterpreter {
                     ExprInstance::EZipperBody(zipper) => {
                         // For a write zipper, set value at current position
                         let mut pathmap = zipper.pathmap.expect("zipper pathmap was None");
-                        pathmap.ps.push(value.clone());
+                        // L2: sanctioned CoW mutation — resets any inherited
+                        // intern cell and detaches the shared payload.
+                        pathmap.ps_make_mut().push(value.clone());
                         // Return the modified PathMap (not zipper)
                         Ok(Expr {
                             expr_instance: Some(ExprInstance::EPathmapBody(pathmap)),
@@ -4121,7 +4123,8 @@ impl DebruijnInterpreter {
                     ExprInstance::EPathmapBody(mut pathmap) => {
                         // For a write zipper, set value at current position
                         // For now, add to the pathmap
-                        pathmap.ps.push(value.clone());
+                        // L2: sanctioned CoW mutation (cell reset + detach).
+                        pathmap.ps_make_mut().push(value.clone());
                         Ok(Expr {
                             expr_instance: Some(ExprInstance::EPathmapBody(pathmap)),
                         })
@@ -4504,7 +4507,8 @@ impl DebruijnInterpreter {
                     }
                     ExprInstance::EPathmapBody(mut pathmap) => {
                         // Remove value at current position (root)
-                        pathmap.ps.pop();
+                        // L2: sanctioned CoW mutation (cell reset + detach).
+                        pathmap.ps_make_mut().pop();
                         Ok(Expr {
                             expr_instance: Some(ExprInstance::EPathmapBody(pathmap)),
                         })
@@ -4671,7 +4675,14 @@ impl DebruijnInterpreter {
                             .expect("source zipper pathmap was None");
 
                         // Graft: copy subtrie from source to destination
-                        dest_pathmap.ps.extend(source_pathmap.ps);
+                        // L2: sanctioned CoW mutation on the destination
+                        // (cell reset + detach); the source payload is
+                        // extracted by value (`into_vec` moves when unshared,
+                        // clones when shared — the copy every pre-L2 clone of
+                        // the source already paid up front).
+                        dest_pathmap
+                            .ps_make_mut()
+                            .extend(source_pathmap.ps.into_vec());
 
                         Ok(Expr {
                             expr_instance: Some(ExprInstance::EPathmapBody(dest_pathmap)),
@@ -4686,7 +4697,14 @@ impl DebruijnInterpreter {
                             dest_zipper.pathmap.expect("dest zipper pathmap was None");
 
                         // Graft: copy subtrie from source to destination
-                        dest_pathmap.ps.extend(source_pathmap.ps);
+                        // L2: sanctioned CoW mutation on the destination
+                        // (cell reset + detach); the source payload is
+                        // extracted by value (`into_vec` moves when unshared,
+                        // clones when shared — the copy every pre-L2 clone of
+                        // the source already paid up front).
+                        dest_pathmap
+                            .ps_make_mut()
+                            .extend(source_pathmap.ps.into_vec());
 
                         Ok(Expr {
                             expr_instance: Some(ExprInstance::EPathmapBody(dest_pathmap)),
@@ -4702,7 +4720,14 @@ impl DebruijnInterpreter {
                             .expect("source zipper pathmap was None");
 
                         // Graft: copy subtrie from source to destination
-                        dest_pathmap.ps.extend(source_pathmap.ps);
+                        // L2: sanctioned CoW mutation on the destination
+                        // (cell reset + detach); the source payload is
+                        // extracted by value (`into_vec` moves when unshared,
+                        // clones when shared — the copy every pre-L2 clone of
+                        // the source already paid up front).
+                        dest_pathmap
+                            .ps_make_mut()
+                            .extend(source_pathmap.ps.into_vec());
 
                         Ok(Expr {
                             expr_instance: Some(ExprInstance::EPathmapBody(dest_pathmap)),
@@ -4714,7 +4739,14 @@ impl DebruijnInterpreter {
                         ExprInstance::EPathmapBody(source_pathmap),
                     ) => {
                         // Graft: copy subtrie from source to destination
-                        dest_pathmap.ps.extend(source_pathmap.ps);
+                        // L2: sanctioned CoW mutation on the destination
+                        // (cell reset + detach); the source payload is
+                        // extracted by value (`into_vec` moves when unshared,
+                        // clones when shared — the copy every pre-L2 clone of
+                        // the source already paid up front).
+                        dest_pathmap
+                            .ps_make_mut()
+                            .extend(source_pathmap.ps.into_vec());
                         Ok(Expr {
                             expr_instance: Some(ExprInstance::EPathmapBody(dest_pathmap)),
                         })
