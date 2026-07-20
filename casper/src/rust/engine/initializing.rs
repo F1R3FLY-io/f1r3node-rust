@@ -945,7 +945,6 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
                     PrettyPrinter::build_string_bytes(&block_hash)
                 ))
             })?;
-            let parents = &block.header.parents_hash_list;
 
             if self
                 .runtime_manager
