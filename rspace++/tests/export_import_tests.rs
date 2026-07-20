@@ -23,6 +23,9 @@ enum Pattern {
     Wildcard,
     StringMatch(String),
 }
+// P4.3: default-body event-hash bytes for the test-local type.
+impl rspace_plus_plus::rspace::hashing::stable_hash_provider::StableHashSerialize for Pattern {}
+
 
 #[derive(Clone)]
 struct StringMatch;

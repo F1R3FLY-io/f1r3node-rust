@@ -176,12 +176,19 @@ impl EPathMap {
         )
     }
 
+    /// P4.3: read-only shadow-cell peek — `Some` iff the intern rendezvous
+    /// has filled the cell. The spliced event-hash emitter
+    /// (`spliced_event_bytes`) keys its intern-aware path on this WITHOUT
+    /// forcing an intern (hashing must never mutate intern-store state; an
+    /// unfilled map simply serializes directly).
+    pub fn interned_handle(&self) -> Option<&Arc<InternedEPathMap>> { self.intern.get() }
+
     /// TEST SEAM: the shadow cell's current content (`None` = unfilled).
     /// Integration tests use this to pin cell propagation/reset semantics
     /// without triggering an intern.
     #[doc(hidden)]
     pub fn shadow_cell_for_test(&self) -> Option<&Arc<InternedEPathMap>> {
-        self.intern.get()
+        self.interned_handle()
     }
 
     /// The UNCACHED field-by-field prost encode — the prost-derive 0.14.3

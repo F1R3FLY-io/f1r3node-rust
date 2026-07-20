@@ -27,6 +27,7 @@ pub mod string_ops;
 pub mod test_utils;
 pub mod utils;
 pub mod serde_helpers;
+pub mod spliced_event_bytes;
 pub mod validator;
 pub mod rhoapi {
     pub mod par_lattice_impl;

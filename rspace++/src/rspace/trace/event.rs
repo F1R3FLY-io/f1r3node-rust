@@ -5,7 +5,9 @@ use proptest_derive::Arbitrary;
 use serde::{Deserialize, Serialize};
 
 use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
-use crate::rspace::hashing::stable_hash_provider::{hash, hash_consume, hash_produce, hash_vec};
+use crate::rspace::hashing::stable_hash_provider::{
+    hash, hash_consume, hash_produce, hash_vec, StableHashSerialize,
+};
 use crate::rspace::internal::ConsumeCandidate;
 
 // See rspace/src/main/scala/coop/rchain/rspace/trace/Event.scala
@@ -126,7 +128,11 @@ impl PartialOrd for Produce {
 }
 
 impl Produce {
-    pub fn create<C: Serialize, A: Serialize>(channel: &C, datum: &A, persistent: bool) -> Produce {
+    pub fn create<C: Serialize, A: StableHashSerialize>(
+        channel: &C,
+        datum: &A,
+        persistent: bool,
+    ) -> Produce {
         let channel_hash = hash(channel);
         let hash = hash_produce(channel_hash.bytes(), datum, persistent);
         Produce {
@@ -192,7 +198,7 @@ pub struct Consume {
 }
 
 impl Consume {
-    pub fn create<C: Serialize, P: Serialize, K: Serialize>(
+    pub fn create<C: Serialize, P: StableHashSerialize, K: StableHashSerialize>(
         channels: &Vec<C>,
         patterns: &Vec<P>,
         continuation: &K,

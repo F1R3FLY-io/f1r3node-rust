@@ -374,6 +374,117 @@ fn event_hash_goldens_consume() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// 3b. P4.3 — the SAME event-hash pins with FILLED intern cells (the spliced
+//     path). The P0 fixtures above run with unfilled cells (the direct
+//     path); these twins intern the map first, so `Produce::create` /
+//     `Consume::create` route through the intern-aware spliced emitter —
+//     which must reproduce the 84a0fbe4 pins byte-identically.
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn event_hash_goldens_produce_with_filled_cell_splices_identically() {
+    let channel = gstring_par("e6a:idx:site0");
+    let rs1 = fixture_random_state();
+
+    let interned_map = e6a_index_epathmap();
+    let _ = interned_map.intern();
+    assert!(
+        interned_map.interned_handle().is_some(),
+        "intern() must fill the shadow cell for the spliced path"
+    );
+
+    let datum = ListParWithRandom {
+        pars: vec![epathmap_par(interned_map)],
+        random_state: rs1,
+    };
+    // Sanity: the spliced path is ACTIVE for this datum.
+    assert_ne!(
+        bincode::serialize(&datum).expect("direct").len(),
+        0,
+        "fixture must serialize"
+    );
+    let produce = Produce::create(&channel, &datum, true);
+
+    check_pinned_hex(
+        "PRODUCE_INDEX_RS1_HASH_HEX (spliced)",
+        pinned::PRODUCE_INDEX_RS1_HASH_HEX,
+        &hex::encode(&produce.hash.bytes()),
+    );
+    check_pinned_hex(
+        "INDEX_CHANNEL_HASH_HEX (spliced)",
+        pinned::INDEX_CHANNEL_HASH_HEX,
+        &hex::encode(&produce.channel_hash.bytes()),
+    );
+}
+
+#[test]
+fn event_hash_goldens_consume_with_filled_cell_splices_identically() {
+    // The discovery consume with a filled-cell map in BOTH the pattern and
+    // the continuation body — the consume legs of the spliced emitter.
+    let channel = gstring_par("e6a:idx:site0");
+
+    let interned_map = e6a_index_epathmap();
+    let _ = interned_map.intern();
+
+    // First: the EXACT P0 consume (map-free) must still pin — the direct
+    // path through the new trait plumbing.
+    let patterns = vec![BindPattern {
+        patterns: vec![new_freevar_par(0, Vec::new())],
+        remainder: None,
+        free_count: 1,
+    }];
+    let continuation = TaggedContinuation {
+        tagged_cont: Some(TaggedCont::ParBody(ParWithRandom {
+            body: Some(gstring_par("continuation-body")),
+            random_state: fixture_random_state(),
+        })),
+        guard: None,
+    };
+    let consume = Consume::create(&vec![channel.clone()], &patterns, &continuation, false);
+    check_pinned_hex(
+        "CONSUME_DISCOVERY_HASH_HEX (trait plumbing)",
+        pinned::CONSUME_DISCOVERY_HASH_HEX,
+        &hex::encode(&consume.hash.bytes()),
+    );
+
+    // Second: map-bearing pattern + continuation — spliced and direct
+    // Consume hashes must agree (byte-level differential at the hash).
+    let map_pattern = vec![BindPattern {
+        patterns: vec![epathmap_par(interned_map.clone())],
+        remainder: None,
+        free_count: 0,
+    }];
+    let map_continuation = TaggedContinuation {
+        tagged_cont: Some(TaggedCont::ParBody(ParWithRandom {
+            body: Some(epathmap_par(interned_map)),
+            random_state: fixture_random_state(),
+        })),
+        guard: None,
+    };
+    let spliced = Consume::create(&vec![channel.clone()], &map_pattern, &map_continuation, false);
+
+    // Rebuild the SAME values with UNFILLED cells (fresh construction —
+    // never interned) so Consume::create takes the direct path.
+    let direct_pattern = vec![BindPattern {
+        patterns: vec![epathmap_par(e6a_index_epathmap())],
+        remainder: None,
+        free_count: 0,
+    }];
+    let direct_continuation = TaggedContinuation {
+        tagged_cont: Some(TaggedCont::ParBody(ParWithRandom {
+            body: Some(epathmap_par(e6a_index_epathmap())),
+            random_state: fixture_random_state(),
+        })),
+        guard: None,
+    };
+    let direct = Consume::create(&vec![channel], &direct_pattern, &direct_continuation, false);
+    assert_eq!(
+        spliced.hash, direct.hash,
+        "spliced and direct consume hashes must be identical for identical values"
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // 4. Ord fixtures — derived declaration-order compare vs AlwaysEqual ==
 // ─────────────────────────────────────────────────────────────────────────────
 

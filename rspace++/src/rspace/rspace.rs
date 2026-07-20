@@ -22,6 +22,7 @@ use tracing::{Level, event};
 use super::checkpoint::SoftCheckpoint;
 use super::errors::{HistoryRepositoryError, RSpaceError};
 use super::hashing::blake2b256_hash::Blake2b256Hash;
+use super::hashing::stable_hash_provider::StableHashSerialize;
 use super::history::history_reader::HistoryReader;
 use super::history::instances::radix_history::RadixHistory;
 use super::logging::{BasicLogger, StepCommObserver};
@@ -75,9 +76,9 @@ pub struct RSpace<C, P, A, K> {
 impl<C, P, A, K> RSpace<C, P, A, K>
 where
     C: Clone + Debug + Default + Serialize + std::hash::Hash + Ord + Eq + 'static + Sync + Send,
-    P: Clone + Debug + Default + Serialize + 'static + Sync + Send,
-    A: Clone + Debug + Default + Serialize + 'static + Sync + Send,
-    K: Clone + Debug + Default + Serialize + 'static + Sync + Send,
+    P: Clone + Debug + Default + Serialize + StableHashSerialize + 'static + Sync + Send,
+    A: Clone + Debug + Default + Serialize + StableHashSerialize + 'static + Sync + Send,
+    K: Clone + Debug + Default + Serialize + StableHashSerialize + 'static + Sync + Send,
 {
     pub fn get_store(&self) -> Arc<Box<dyn HotStore<C, P, A, K>>> {
         self.store.read().expect("store read lock").clone()
@@ -165,9 +166,9 @@ struct ChannelLockGuard {
 impl<C, P, A, K> SpaceMatcher<C, P, A, K> for RSpace<C, P, A, K>
 where
     C: Clone + Debug + Default + Serialize + std::hash::Hash + Ord + Eq + 'static + Sync + Send,
-    P: Clone + Debug + Default + Serialize + 'static + Sync + Send,
-    A: Clone + Debug + Default + Serialize + 'static + Sync + Send,
-    K: Clone + Debug + Default + Serialize + 'static + Sync + Send,
+    P: Clone + Debug + Default + Serialize + StableHashSerialize + 'static + Sync + Send,
+    A: Clone + Debug + Default + Serialize + StableHashSerialize + 'static + Sync + Send,
+    K: Clone + Debug + Default + Serialize + StableHashSerialize + 'static + Sync + Send,
 {
 }
 
@@ -175,9 +176,9 @@ where
 impl<C, P, A, K> ISpace<C, P, A, K> for RSpace<C, P, A, K>
 where
     C: Clone + Debug + Default + Serialize + std::hash::Hash + Ord + Eq + 'static + Sync + Send,
-    P: Clone + Debug + Default + Serialize + 'static + Sync + Send,
-    A: Clone + Debug + Default + Serialize + 'static + Sync + Send,
-    K: Clone + Debug + Default + Serialize + 'static + Sync + Send,
+    P: Clone + Debug + Default + Serialize + StableHashSerialize + 'static + Sync + Send,
+    A: Clone + Debug + Default + Serialize + StableHashSerialize + 'static + Sync + Send,
+    K: Clone + Debug + Default + Serialize + StableHashSerialize + 'static + Sync + Send,
 {
     async fn create_checkpoint(&self) -> Result<Checkpoint, RSpaceError> {
         // Span[F].withMarks("create-checkpoint") from Scala - works because this is NOT
@@ -488,9 +489,9 @@ where
 impl<C, P, A, K> RSpace<C, P, A, K>
 where
     C: Clone + Debug + Default + Serialize + Hash + Ord + Eq + 'static + Sync + Send,
-    P: Clone + Debug + Default + Serialize + 'static + Sync + Send,
-    A: Clone + Debug + Default + Serialize + 'static + Sync + Send,
-    K: Clone + Debug + Default + Serialize + 'static + Sync + Send,
+    P: Clone + Debug + Default + Serialize + StableHashSerialize + 'static + Sync + Send,
+    A: Clone + Debug + Default + Serialize + StableHashSerialize + 'static + Sync + Send,
+    K: Clone + Debug + Default + Serialize + StableHashSerialize + 'static + Sync + Send,
 {
     /**
      * Creates [[RSpace]] from [[HistoryRepository]] and [[HotStore]].

@@ -38,11 +38,11 @@ prost = { workspace = true }
 tonic-prost = { workspace = true }
 utoipa = "5"
 tracing = { workspace = true }
-
-[dev-dependencies]
-# EPathMap fix P0 parity harness (tests/epathmap_canonical_fixtures.rs):
-# golden SERDE encodings pin the event-hash canonical encoding, which is
-# bincode 1.3.3 (workspace pin) end-to-end through stable_hash_provider.
+# EPathMap fix P4.3 (spliced event hashing, src/rust/spliced_event_bytes.rs):
+# the hand-rolled emitter reproduces and composes with bincode 1.3.3
+# (workspace pin) — the event-hash canonical encoding end-to-end through
+# stable_hash_provider. Promoted from dev-dependencies (the P0 parity
+# harness already pinned the same encoding in tests).
 bincode = { workspace = true }
 
 [[test]]

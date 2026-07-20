@@ -9,6 +9,8 @@ use dashmap::DashMap;
 use proptest_derive::Arbitrary;
 use serde::Serialize;
 
+use super::hashing::stable_hash_provider::StableHashSerialize;
+
 use super::trace::event::{Consume, Produce};
 
 // EPathMap fix P4.1 — reference-shaped RSpace transport (plan v1 §1-P4,
@@ -45,7 +47,7 @@ pub struct Datum<A: Clone> {
 }
 
 impl<A> Datum<A>
-where A: Clone + Serialize
+where A: Clone + StableHashSerialize
 {
     pub fn create<C: Serialize>(channel: &C, a: A, persist: bool) -> Datum<A> {
         let source = Produce::create(channel, &a, persist);
@@ -76,8 +78,8 @@ pub struct WaitingContinuation<P: Clone, K: Clone> {
 
 impl<P, K> WaitingContinuation<P, K>
 where
-    P: Clone + Serialize,
-    K: Clone + Serialize,
+    P: Clone + StableHashSerialize,
+    K: Clone + StableHashSerialize,
 {
     pub fn create<C: Clone + Serialize>(
         channels: &Vec<C>,
