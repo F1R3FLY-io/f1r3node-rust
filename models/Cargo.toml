@@ -15,6 +15,13 @@ unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }
 
 [dependencies]
 crypto = { path = "../crypto" }
+# EPathMap fix P1 (pathmap_crate_type_mapper intern store): the SAME blake2
+# version the workspace already resolves via crypto (crypto/Cargo.toml) — no
+# new external crate in the lockfile. Depended on directly so the streamed
+# store-key digest finalizes into a stack [u8; 32] (crypto's Blake2b256
+# wrappers return Vec<u8>, which would put an allocation on the zero-alloc
+# intern lookup path).
+blake2 = "0.10.6"
 rspace_plus_plus = { path = "../rspace++" }
 shared = { path = "../shared" }
 pathmap = "0.2.2"
