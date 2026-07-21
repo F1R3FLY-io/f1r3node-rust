@@ -34,6 +34,25 @@ impl KeyValueDeployStorage {
         )
     }
 
+    pub fn add_if_absent(&mut self, deploy: Signed<DeployData>) -> Result<bool, KvStoreError> {
+        let key: ByteString = deploy.sig.to_vec();
+        if self.contains_sig(&key)? {
+            return Ok(false);
+        }
+        self.store.put(vec![(key, deploy)])?;
+        Ok(true)
+    }
+
+    pub fn contains_sig(&self, sig: &[u8]) -> Result<bool, KvStoreError> {
+        let key: ByteString = sig.to_vec();
+        Ok(self
+            .store
+            .contains(vec![key])?
+            .into_iter()
+            .next()
+            .unwrap_or(false))
+    }
+
     pub fn remove(&mut self, deploys: Vec<Signed<DeployData>>) -> Result<(), KvStoreError> {
         self.store
             .delete(deploys.into_iter().map(|d| d.sig.clone().into()).collect())
