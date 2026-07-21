@@ -353,13 +353,9 @@ impl BlockAPI {
             deploy_data: Signed<DeployData>,
             trigger_propose: &Option<Arc<ProposeFunction>>,
         ) -> ApiErr<String> {
-            let deploy_result = casper.deploy(deploy_data)?;
-            let r: ApiErr<String> = match deploy_result {
-                Either::Left(err) => Err(err.into()),
-                Either::Right(deploy_id) => Ok(format!(
-                    "Success!\nDeployId is: {}",
-                    PrettyPrinter::build_string_no_limit(deploy_id.as_ref())
-                )),
+            let deploy_id = match casper.deploy(deploy_data)? {
+                Either::Left(err) => return Err(err.into()),
+                Either::Right(deploy_id) => deploy_id,
             };
 
             // Trigger propose asynchronously for deploy path to keep do_deploy latency bounded.
@@ -439,8 +435,10 @@ impl BlockAPI {
                 });
             }
 
-            // yield r
-            r
+            Ok(format!(
+                "Success!\nDeployId is: {}",
+                PrettyPrinter::build_string_no_limit(deploy_id.as_ref())
+            ))
         }
 
         // Validation chain - mimics Scala's whenA pattern

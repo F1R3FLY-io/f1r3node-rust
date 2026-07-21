@@ -10,6 +10,7 @@ use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use casper::rust::api::block_api::{BlockAPI, ExploratoryDeployBusyError};
 use casper::rust::api::block_report_api::BlockReportAPI;
 use casper::rust::api::graph_generator::{GraphConfig, GraphzGenerator};
+use casper::rust::casper::DeployError;
 use casper::rust::engine::engine_cell::EngineCell;
 use casper::rust::ProposeFunction;
 use comm::rust::discovery::node_discovery::NodeDiscovery;
@@ -272,7 +273,17 @@ impl DeployService for DeployGrpcServiceV1Impl {
         {
             Ok(result) => Self::create_success_deploy_response(result),
             Err(e) => {
-                error!("Deploy service method error do_deploy: {}", e);
+                let is_duplicate = e.chain().any(|cause| {
+                    matches!(
+                        cause.downcast_ref::<DeployError>(),
+                        Some(DeployError::DuplicateDeploy(_))
+                    )
+                });
+                if is_duplicate {
+                    tracing::debug!("Duplicate deploy rejected: {}", e);
+                } else {
+                    error!("Deploy service method error do_deploy: {}", e);
+                }
                 Self::create_error_deploy_response(e.into_service_error())
             }
         }
