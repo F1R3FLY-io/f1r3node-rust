@@ -149,3 +149,77 @@ async fn event_log_insert_complexity_is_not_quadratic() {
          log_produce, log_consume, log_comm.",
     );
 }
+
+// Investigation for f1r3node-rust#43 / issue-43: real replay data (mntd
+// EVAL ms / PAR x columns) shows a single deploy's evaluate() cost growing
+// with the number of *other* deploys already replayed in the same block
+// (57ms at cap=1 -> 372ms at cap=100 per deploy, identical per-deploy work).
+// PR #72's own fixes and the COMM_CON/COMM_PRO histograms (sub-ms even at
+// cap=100) rule out rspace++ commit/lock work as the cause — this test
+// checks a different candidate: `create_soft_checkpoint()`, which
+// `replay_runtime.rs::run_user_deploy` calls unconditionally at the start of
+// *every* user deploy (for failure rollback) and which measured EVAL time
+// includes. `HotStore::snapshot()` (rspace.rs `hot_store.rs:190`) full-clones
+// all five DashMaps into plain HashMaps -- O(total store size), not O(1) or
+// O(per-deploy work). If the store accumulates entries across deploys within
+// one block (each TransferTerm touches new vault/registry channels), that
+// predicts exactly the observed pattern: a fixed per-deploy Rholang program
+// getting more expensive purely because of *unrelated* prior deploys in the
+// same block.
+//
+// Run explicitly with: cargo test -p rspace_plus_plus soft_checkpoint_cost
+// -- --ignored --nocapture
+#[ignore = "timing-sensitive: run in isolation, not as part of the full suite"]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn soft_checkpoint_cost_scales_with_accumulated_store_size_not_deploy_size() {
+    const SMALL_PREFILL: usize = 100;
+    const LARGE_PREFILL: usize = 10_000;
+    const SAMPLES: usize = 50;
+
+    async fn avg_checkpoint_us(prefill: usize, samples: usize) -> f64 {
+        let space = make_rspace().await;
+        // Simulate `prefill` earlier deploys' worth of accumulated HotStore
+        // state -- distinct channels, one produce each, matching how
+        // TransferTerm deploys each touch their own vault/registry channels.
+        for i in 0..prefill {
+            space
+                .produce(format!("prefill_ch_{i}"), "datum".to_string(), false)
+                .await
+                .unwrap();
+        }
+
+        // Time create_soft_checkpoint() in isolation -- this is exactly what
+        // run_user_deploy() pays once per deploy, before evaluate() even
+        // starts, purely for failure-rollback support.
+        let t0 = Instant::now();
+        for _ in 0..samples {
+            let _ = space.create_soft_checkpoint().await;
+        }
+        t0.elapsed().as_micros() as f64 / samples as f64
+    }
+
+    let small_us = avg_checkpoint_us(SMALL_PREFILL, SAMPLES).await;
+    let large_us = avg_checkpoint_us(LARGE_PREFILL, SAMPLES).await;
+    let ratio = large_us / small_us.max(1e-9);
+    let store_size_ratio = LARGE_PREFILL as f64 / SMALL_PREFILL as f64;
+
+    eprintln!(
+        "soft_checkpoint_cost: store_size={SMALL_PREFILL} -> {small_us:.1}us/call   \
+         store_size={LARGE_PREFILL} -> {large_us:.1}us/call   time_ratio={ratio:.1}x   \
+         store_size_ratio={store_size_ratio:.1}x"
+    );
+
+    // O(1) or O(per-deploy-only) would keep this near 1x regardless of how
+    // much *other* state already exists in the store. Measured: 100x more
+    // store state costs ~30x more time (sub-linear, likely amortized
+    // allocation/hashing, but nowhere near flat) -- more than an order of
+    // magnitude is unambiguous evidence this is NOT O(1) or O(per-deploy).
+    const MIN_RATIO: f64 = 10.0;
+    assert!(
+        ratio > MIN_RATIO,
+        "create_soft_checkpoint() did NOT scale with accumulated store size ({ratio:.1}x for a \
+         {store_size_ratio:.1}x larger store, expected >{MIN_RATIO:.0}x) -- if this fails, the \
+         O(store-size) HotStore::snapshot() hypothesis for issue-43's within-block EVAL-ms \
+         growth needs revisiting.",
+    );
+}
