@@ -46,7 +46,7 @@ Terminology used below:
 | byte goldens | the P4.1 `serializer_byte_goldens.rs` literal cold-store bytes |
 | replay equivalence | the P4.3 spec: log re-derivation (`check_replay_data`), identical play/replay cost, identical checkpoint roots |
 | K2 | user decision D1 (2026-07-20): digest-bucket keying with a mandatory full-byte structural verify on every hit |
-| L1.5 / L2 | wrapper stages: L1.5 = cached-bytes handle on the prost-field struct (landed); L2 = byte-array-backed model / reference-shaped `ps` (NOT landed — user decision D2) |
+| L1.5 / L2 | wrapper stages: L1.5 = cached-bytes handle on the prost-field struct (landed, P3); L2 = reference-shaped `ps` (`SharedPars`, landed `131aecee` under user decision D2 — §12); the full byte-array-backed wire model remains the USER-owned follow-on |
 
 ---
 
@@ -372,9 +372,9 @@ equality, identical play/replay cost, identical checkpoint roots); rspace++
 
 ---
 
-## 10. The full measured arc — four committed data records
+## 10. The full measured arc — five committed data records
 
-All four records live in the mettail repository under
+All five records live in the mettail repository under
 `docs/benchmarks/data/sa-vs-naive/` and re-run the SAME E-6a measured corpus
 (same workloads, seeds, 33-rep/3-warmup protocol, `taskset -c 0-7`,
 performance governor, AMD Threadripper PRO 5975WX; per-record environment
@@ -386,31 +386,34 @@ headers in each directory):
 | `2026-07-19-e6a-postfix/` | + trie-cache (`84a0fbe4`) | 145 | `06e1d9f0` | counters byte-identical; wall does NOT flip (band → 2.44×–37.33×); residual root-caused to by-value EPathMap transport |
 | `2026-07-20-e6d1/` | + P0–P2 (`351e494d`) | 148 | `c631c051` | counters byte-identical; swap16 4.31× / nested16 3.97× vs postfix (all completed cells 1.90×–4.31×); band → 1.30×–8.34×; new #1 cost = the P1 digest pipeline |
 | `2026-07-20-e6d2/` | full stack (`ead2f152`) | 149 | `7b4d5663` | counters byte-identical to ALL THREE baselines; further 1.43× / 1.34× (all cells 1.14×–1.43×); cumulative 6.15× / 5.34×; band → 1.19×–6.35×; digest frames collapsed; residual = the ps-deep-copy floor |
+| `2026-07-20-e6d3/` | + L2 shared `ps` (`131aecee`) | 150 | `e8bc939c` | counters byte-identical to ALL FOUR baselines; **attribution CONFIRMED** (boxed `to_vec` 44.83 → 5.38 ms/inj, −88.0%); further 4.73× / 4.89×; cumulative 29.10× / 26.12×; band → 0.79×–1.37× (treatment FASTER on 4/9); residual = digest ≈15.0 > clone ≈10.4 > drop ≈5.2 ms/inj |
 
-Treatment inj medians (ms) across the arc, from the e6d2 record's four-point
+Treatment inj medians (ms) across the arc, from the e6d3 record's five-point
 table:
 
-| workload | n | pre-fix | + trie-cache | + P0–P2 | + P3–P4 | further (e6d1→e6d2) | cumulative (postfix→e6d2) |
-|---|---|---|---|---|---|---|---|
-| swap_comb | 4 | 41.999 | 38.333 | 13.298 | 10.319 | 1.29× | 3.71× |
-| swap_comb | 16 | 1660.510 | 1541.572 | 357.969 | 250.735 | **1.43×** | **6.15×** |
-| swap_comb | 64 | DNF | DNF | DNF | DNF | — (machine trie-key cap, untouched) | — |
-| multi_rule_shared | 402 | 75.254 | 65.246 | 21.944 | 16.295 | 1.35× | 4.00× |
-| multi_rule_shared | 803 | 623.416 | 567.204 | 150.638 | 109.207 | 1.38× | 5.19× |
-| nested_spine | 2 | 8.543 | 7.832 | 3.737 | 3.190 | 1.17× | 2.46× |
-| nested_spine | 8 | 211.945 | 195.893 | 57.373 | 44.674 | 1.28× | 4.38× |
-| nested_spine | 16 | 1382.703 | 1315.088 | 331.159 | 246.227 | **1.34×** | **5.34×** |
-| lambda_chain | 4 | 56.797 | 53.389 | 28.057 | 24.614 | 1.14× | 2.17× |
-| lambda_chain | 8 | 232.249 | 217.392 | 97.665 | 83.289 | 1.17× | 2.61× |
+| workload | n | pre-fix | + trie-cache | + P0–P2 | + P3–P4 | + L2 | further (e6d2→e6d3) | cumulative (postfix→e6d3) |
+|---|---|---|---|---|---|---|---|---|
+| swap_comb | 4 | 41.999 | 38.333 | 13.298 | 10.319 | 5.445 | 1.90× | 7.04× |
+| swap_comb | 16 | 1660.510 | 1541.572 | 357.969 | 250.735 | 52.980 | **4.73×** | **29.10×** |
+| swap_comb | 64 | DNF | DNF | DNF | DNF | DNF | — (machine trie-key cap, untouched) | — |
+| multi_rule_shared | 402 | 75.254 | 65.246 | 21.944 | 16.295 | 6.454 | 2.52× | 10.11× |
+| multi_rule_shared | 803 | 623.416 | 567.204 | 150.638 | 109.207 | 24.889 | 4.39× | 22.79× |
+| nested_spine | 2 | 8.543 | 7.832 | 3.737 | 3.190 | 2.032 | 1.57× | 3.86× |
+| nested_spine | 8 | 211.945 | 195.893 | 57.373 | 44.674 | 13.345 | 3.35× | 14.68× |
+| nested_spine | 16 | 1382.703 | 1315.088 | 331.159 | 246.227 | 50.342 | **4.89×** | **26.12×** |
+| lambda_chain | 4 | 56.797 | 53.389 | 28.057 | 24.614 | 18.503 | 1.33× | 2.89× |
+| lambda_chain | 8 | 232.249 | 217.392 | 97.665 | 83.289 | 55.403 | 1.50× | 3.92× |
 
 The treatment/control inj ratio band across the arc:
 **2.54×–39.70× (pre-fix) → 2.44×–37.33× (trie-cache) → 1.30×–8.34× (P0–P2) →
-1.19×–6.35× (full stack)**. Statistics per the frozen experiment criteria:
-Welch one-sided with Benjamini–Hochberg across cells (e.g. swap16
-q ≈ 1e-79 at e6d1, q ≈ 4e-37 at e6d2); every completed treatment cell
-significant at both steps.
+1.19×–6.35× (full stack) → 0.79×–1.37× (+ L2)** — after L2 the set-automaton
+treatment arm runs FASTER than the naive control on 4 of the 9 completed
+heavy cells. Statistics per the frozen experiment criteria: Welch one-sided
+with Benjamini–Hochberg across cells (e.g. swap16 q ≈ 1e-79 at e6d1,
+q ≈ 4e-37 at e6d2, q ≈ 4e-115 at e6d3); every completed treatment cell
+significant at every step.
 
-Control-neutrality honesty notes (both recorded in the run READMEs, gate
+Control-neutrality honesty notes (all recorded in the run READMEs, gate
 calls owned by the coordinator): e6d1 had ONE frozen-threshold violation
 as-run (swap_comb 64 control +10.36%) root-caused as a machine-settling
 transient (the settled diagnostic re-probe reproduced postfix +0.4%); e6d2
@@ -419,7 +422,13 @@ ran uniformly FASTER than e6d1 (−0.96%…−8.02%) — either a real shared-tr
 win (P4 sits on the produce/consume path both arms exercise) or a
 between-session machine offset; under the MOST CONSERVATIVE reading
 (ratio-of-ratios) the primary still passes (swap16 1.31×, nested16 1.26×; all
-nine cells 1.08×–1.37×).
+nine cells 1.08×–1.37×). e6d3 showed NO offset signature (9/10 control cells
+within ±2.13%, mixed sign) with ONE as-run violation, swap_comb 64 control
+−5.15% (BH-significant, FASTER) — called idiosyncratic cell noise: within
+that cell's ≈11% five-run spread, within-cell flat (−1.55%), negative
+direction, and a disclosed light status-probe overlap during exactly that
+cell's window; the primary margins (−88.0% vs the −50% bar; 4.73× vs the
+1.1× bar) are robust to a 5% control wobble.
 
 ## 11. Byte-identical counters — the semantic-invariance statement
 
@@ -428,27 +437,83 @@ At EVERY step of the arc, all 15 deterministic counter columns
 attempts} × {median, min, max}) and the extended counters (spread_sends,
 successes, observed_count, receiver_count, plus all 10 `comm.*` classes) were
 byte-identical on every cell/arm to every prior baseline: postfix ≡ pre-fix;
-e6d1 ≡ both; e6d2 ≡ all three. The swap_comb 64 treatment DNF (the machine
-trie-key cap) is unchanged throughout. Combined with the in-repo gates (P0
-goldens, charge traces, fused-vs-unfused differentials, serializer byte
-goldens, replay equivalence), the stack's claim is: NO observable semantics
-changed anywhere in P0–P4 — every measured speedup is uncharged host work
-removed.
+e6d1 ≡ both; e6d2 ≡ all three; e6d3 ≡ all four. The swap_comb 64 treatment
+DNF (the machine trie-key cap) is unchanged throughout. Combined with the
+in-repo gates (P0 goldens, charge traces, fused-vs-unfused differentials,
+serializer byte goldens, replay equivalence), the stack's claim is: NO
+observable semantics changed anywhere in P0–P4 + L2 — every measured speedup
+is uncharged host work removed.
 
-## 12. Known residual — the `ps` deep-copy floor (the L2 junction; USER decision)
+## 12. The `ps` deep-copy floor — L2 landed (`131aecee`), falsification CONFIRMED (E-6d #3)
 
 The e6d2 profile (perf cpu-clock, swap_comb n=16 treatment, calibrated flat
-self-time classifier) shows the clone-class as the new #1 cost class: 29.76%
-of wall, ≈74.6 ms/inj. Within it, the prost boxed-oneof `to_vec` deep-copies
-are absolutely FLAT across e6d1→e6d2 (≈44.6 → ≈44.8 ms/inj) while models
-`Clone::clone` fell −31%: the handle economy (P3 shadow cell + P4 Arc
-transport) removed the digest tax, NOT the boxed-oneof deep-copy floor of
-≈45 ms/inj. That floor is the `ps: Vec<PathMapEntry>` (and general
-boxed-`ExprInstance`) deep-copy that survives because the wrapper still
-carries prost-shaped owned fields — eliminating it is stage L2 (a byte-array-
-backed / reference-shaped model, `RSpaceResult`/`ContResult` dispatch shapes
-included), which is USER DECISION D2 and is deliberately NOT part of this
-stack. No work proceeds on L2 without that decision.
+self-time classifier) showed the clone-class as the then-#1 cost class:
+29.76% of wall, ≈74.6 ms/inj — with the prost boxed-oneof `to_vec`
+deep-copies absolutely FLAT across e6d1→e6d2 (≈44.6 → ≈44.8 ms/inj) while
+models `Clone::clone` fell −31%. Because ~95% of clone-class samples were
+symbol-unresolvable, the ps-attribution was a HYPOTHESIS, so L2 was designed
+as its falsification instrument: make EPathMap `ps` clones O(1), then
+re-measure — a collapse confirms the attribution, flatness refutes it. The
+USER approved proceeding on this evidence (decision D2, "L2 now",
+2026-07-20).
+
+**`131aecee` — perf(models): L2 shared `ps` (Arc-backed SharedPars; O(1)
+clone at the node; CoW mutation census).**
+
+**What it does.** New `SharedPars` in `models/src/rust/rhoapi_ext.rs`: an
+`Arc<Vec<Par>>` newtype with transparent reads (`Deref<Target = Vec<Par>>` +
+`IntoIterator for &SharedPars`) and deliberately LOUD writes — no `DerefMut`;
+the only mutable escapes are `make_mut` (`Arc::make_mut` copy-on-write) and
+`into_vec` (move-when-unique). `EPathMap.ps: SharedPars`; the P3
+`EPathMap::new` constructor migration is what bounds the ripple (`impl
+Into<SharedPars>` absorbs every construction site unchanged). The sanctioned
+mutator `ps_make_mut` takes the P3 shadow cell FIRST (the merge_field/clear
+reset discipline extended to field mutation), then CoW-detaches. Manual serde
+impls keep the plain `Vec<Par>` seq layout; `Clone` now bumps BOTH the ps Arc
+and the intern cell — O(1) at the node. The ps-mutation census was enumerated
+BY THE COMPILER (removing `DerefMut` surfaces every write site as a compile
+error): 7 `reduce.rs` write-method sites via `ps_make_mut`, sorter
+construct-then-freeze ×2, node `web_api.rs` by-value conversions ×2,
+merge_field/clear in the manual impls, and nothing else. Diffstat: 9 files,
++438/−56. Mettail survival: ZERO edits (all its uses are Deref reads and
+`EPathMap::new(vec …)` constructions).
+
+**Consensus-relevance.** From the commit: "representation-only — wire/serde
+bytes byte-identical by golden; identity semantics (==/Hash/Ord, incl. the
+AlwaysEqual/Ord wart) preserved; no charge, event-hash, or sort-order
+movement. Blockchain consensus is unaffected by construction: no encoding, no
+cost, and no ordering surface changes."
+
+**Scala-divergence flag.** Same class as P4.1: Scala's generated model keeps
+`ps` by value — in-memory representation only; log/history bytes identical.
+
+**Gates.** P0 goldens 13/13 byte-identical (prost + serde + event hashes +
+Ord vs the committed `84a0fbe4` bytes); charge traces 9/9; P1 store 44/44;
+P2 differentials feature-off 2/2 + feature-on 5/5; P3 wrapper cell 16/16
+(two NEW pins: `ps_make_mut` resets the cell and CoW-detaches; clone shares
+the payload with ==/Ord/hash/prost/serde parity); P4 spliced 5/5 + replay
+equivalence + rspace++ 295; models 267; the rholang suites; node/comm/casper
+clean; mettail package gates green with zero edits.
+
+**The E-6d #3 verdict (pgmcp experiment 150, criteria frozen BEFORE the run;
+mettail record `2026-07-20-e6d3/` @ `e8bc939c`): CONFIRMED.** Boxed prost
+`Expr::to_vec` on swap_comb n=16 treatment fell **44.83 → 5.38 ms/inj
+(−88.0%)** — the frozen CONFIRMED band was a ≥50% fall, the REFUTED band
+±20% (35.9–53.8 ms). The flat floor WAS the EPathMap `ps` deep-copy.
+Corroborating collapses: clone-class ≈74.6 → ≈10.4 ms/inj (−86%), models
+`Clone::clone` −83%, drop/free −84%, unresolved-allocator −86%. Walls:
+swap16 4.73× / nested16 4.89× further (cumulative 29.10× / 26.12× vs
+postfix); Welch t = −715.7, p ≈ 4.9e-116, Cohen's d ≈ −185, Cliff's
+δ = −1.0.
+
+**Remaining profile after L2** (at 52.980 ms/inj on the probe cell): the
+digest pipeline ≈15.0 ms/inj (now the #1 class at 28.27% of the
+4.73×-smaller wall; its ABSOLUTE still fell −23.5% from e6d2) > clone-class
+≈10.4 > drop/free ≈5.2; the top frames are `Par::encoded_len` /
+`ExprInstance::encoded_len` / the GUnforgeable encoded_len fold. This
+encode/copy tail is the profile packet the USER-owned wire-level byte-array
+EPathMap protobuf model inherits ("I will handle that separately") — no
+further transport work is scheduled in this stack.
 
 ## 13. The held-local Cargo.toml overlay (NEVER committed)
 
@@ -517,11 +582,20 @@ confirm the overlay is absent from the pushed history.
    deviation.
 8. **The overlay hygiene (§13).** Confirm no pushed commit contains the
    held-local Cargo.toml `[patch]` overlay or a drifted `Cargo.lock`.
+9. **The L2 SharedPars shape (`131aecee`).** `EPathMap.ps` is an Arc-backed
+   `SharedPars`: Deref-only reads, NO `DerefMut`; `ps_make_mut` is the one
+   sanctioned mutator and RESETS the intern cell before CoW-detaching.
+   Verify the manual serde impls keep the plain `Vec<Par>` seq layout (P0
+   serde goldens + the derived-twin differential), the merge_field/clear
+   cell discipline, and that the ps-mutation census is still CLOSED at merge
+   time — removing `DerefMut` must surface any new write site introduced
+   upstream as a compile error; confirm no serde "rc" feature appears
+   anywhere in the tree.
 
 Cross-references: mettail run records
 `docs/benchmarks/data/sa-vs-naive/{2026-07-19-e6a, 2026-07-19-e6a-postfix,
-2026-07-20-e6d1, 2026-07-20-e6d2}/` @ mettail commits
-`87faea85`/`06e1d9f0`/`c631c051`/`7b4d5663`; pgmcp experiments 145/148/149
-(and 144 for the Track-B sa-vs-naive protocol these records extend); the
-run-record index in the mettail
+2026-07-20-e6d1, 2026-07-20-e6d2, 2026-07-20-e6d3}/` @ mettail commits
+`87faea85`/`06e1d9f0`/`c631c051`/`7b4d5663`/`e8bc939c`; pgmcp experiments
+145/148/149/150 (and 144 for the Track-B sa-vs-naive protocol these records
+extend); the run-record index in the mettail
 `docs/benchmarks/data/sa-vs-naive/README.md`.
