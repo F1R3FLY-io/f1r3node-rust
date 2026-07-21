@@ -849,6 +849,14 @@ impl BlockDagKeyValueStorage {
     /// Can be used by caches to detect whether the DAG has changed since the last snapshot.
     pub fn current_generation(&self) -> u64 { self.dag_generation.load(Ordering::Relaxed) }
 
+    pub fn contains_deploy(&self, deploy_id: &DeployId) -> Result<bool, KvStoreError> {
+        let _lock_guard = self.global_lock.read();
+        let deploy_index_guard = self.deploy_index.read();
+        deploy_index_guard
+            .get_one(deploy_id)
+            .map(|result| result.is_some())
+    }
+
     /// Public method to get DAG representation with global lock protection.
     /// Matches Scala's lock.withPermit(representation).
     ///

@@ -61,6 +61,7 @@ pub enum DeployError {
     MissingUser,
     UnknownSignatureAlgorithm(String),
     SignatureVerificationFailed,
+    DuplicateDeploy(DeployId),
 }
 
 impl DeployError {
@@ -73,6 +74,8 @@ impl DeployError {
     }
 
     pub fn signature_verification_failed() -> Self { DeployError::SignatureVerificationFailed }
+
+    pub fn duplicate_deploy(deploy_id: DeployId) -> Self { DeployError::DuplicateDeploy(deploy_id) }
 }
 
 impl Display for DeployError {
@@ -84,6 +87,9 @@ impl Display for DeployError {
                 write!(f, "Unknown signature algorithm '{}'", alg)
             }
             DeployError::SignatureVerificationFailed => write!(f, "Signature verification failed"),
+            DeployError::DuplicateDeploy(deploy_id) => {
+                write!(f, "Deploy already known: {}", hex::encode(deploy_id))
+            }
         }
     }
 }
