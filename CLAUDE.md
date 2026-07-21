@@ -143,7 +143,7 @@ This repo was extracted from `F1R3FLY-io/f1r3fly` (`rust/dev` branch). Key diffe
 | Document | Purpose | Location |
 |----------|---------|----------|
 | User Stories | Business needs and acceptance criteria | `docs/UserStories.md` |
-| Tasks/Epochs | Implementation tracking | `docs/ToDos.md` |
+| Tasks/Epics | Implementation tracking | `docs/ToDos.md` |
 | Completed Work | Historical reference | `docs/CompletedTasks.md` |
 | Backlog | Deferred items | `docs/Backlog.md` |
 | Work Logs | Session progress | `docs/work-logs/*.md` |
@@ -230,8 +230,8 @@ This applies to all slash commands and scripts that create configuration files.
 #### Task Management
 - `/nextTask` - Find and select next task to work on
 - `/implement` - Begin implementation of a task
-- `/epoch-review` - Preview and summarize epochs
-- `/epoch-hygiene` - Archive completed epochs
+- `/epic-review` - Preview and summarize epics
+- `/epic-hygiene` - Archive completed epics
 
 #### Workspace Sync
 - `/harmonize` - Sync workspace policies into this repo

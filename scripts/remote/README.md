@@ -1,6 +1,6 @@
 # Remote testbed scripts
 
-Provisioning and teardown scripts for the F1R3FLY distributed OCI testbed (EPOCH-009 / US-003).
+Provisioning and teardown scripts for the F1R3FLY distributed OCI testbed (EPIC-009 / US-003).
 
 **Naming convention.** Script names use an `oci-` prefix for cloud-specific work (e.g. `oci-provision.sh`, `oci-destroy.sh`) and no prefix for cloud-agnostic work (`deploy.sh`, `status.sh`, `teardown.sh`, `image-transfer.sh`). The wrapping Justfile recipes use a neutral `vps-` prefix so the user-facing interface stays stable when other providers (AWS, GCP) are added — see `docs/Backlog.md` BACKLOG-FI-002.
 
