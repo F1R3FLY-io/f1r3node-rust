@@ -2110,7 +2110,9 @@ impl SystemProcesses {
     ) -> Result<Vec<Par>, InterpreterError> {
         use crate::rust::interpreter::io::{mode, response};
 
-        let Some((produce, _, _, args)) = self.is_contract_call().unapply(contract_args) else {
+        let Some((produce, is_replay, previous_output, args)) =
+            self.is_contract_call().unapply(contract_args)
+        else {
             return Err(illegal_argument_error("native_open"));
         };
         let [path_par, mode_par, ack] = args.as_slice() else {
@@ -2121,6 +2123,11 @@ impl SystemProcesses {
         else {
             return Err(illegal_argument_error("native_open"));
         };
+
+        if is_replay {
+            produce(&previous_output, ack).await?;
+            return Ok(previous_output);
+        }
 
         let response_par = match mode::open_options_for(&mode_str) {
             None => response::err(
@@ -2166,7 +2173,9 @@ impl SystemProcesses {
     ) -> Result<Vec<Par>, InterpreterError> {
         use crate::rust::interpreter::io::response;
 
-        let Some((produce, _, _, args)) = self.is_contract_call().unapply(contract_args) else {
+        let Some((produce, is_replay, previous_output, args)) =
+            self.is_contract_call().unapply(contract_args)
+        else {
             return Err(illegal_argument_error("native_close"));
         };
         let [fd_par, ack] = args.as_slice() else {
@@ -2175,6 +2184,11 @@ impl SystemProcesses {
         let Some(fd) = RhoNumber::unapply(fd_par) else {
             return Err(illegal_argument_error("native_close"));
         };
+
+        if is_replay {
+            produce(&previous_output, ack).await?;
+            return Ok(previous_output);
+        }
 
         let response_par = match self.file_handles.remove(fd).await {
             Some(_) => response::ok(vec![]),
@@ -2206,7 +2220,9 @@ impl SystemProcesses {
 
         use crate::rust::interpreter::io::response;
 
-        let Some((produce, _, _, args)) = self.is_contract_call().unapply(contract_args) else {
+        let Some((produce, is_replay, previous_output, args)) =
+            self.is_contract_call().unapply(contract_args)
+        else {
             return Err(illegal_argument_error("native_read"));
         };
         let [fd_par, n_par, ack] = args.as_slice() else {
@@ -2215,6 +2231,11 @@ impl SystemProcesses {
         let (Some(fd), Some(n)) = (RhoNumber::unapply(fd_par), RhoNumber::unapply(n_par)) else {
             return Err(illegal_argument_error("native_read"));
         };
+
+        if is_replay {
+            produce(&previous_output, ack).await?;
+            return Ok(previous_output);
+        }
 
         // Per-call ceiling on the buffer we allocate. Set below the
         // point where a hostile deploy could exhaust node memory via
@@ -2279,7 +2300,9 @@ impl SystemProcesses {
 
         use crate::rust::interpreter::io::response;
 
-        let Some((produce, _, _, args)) = self.is_contract_call().unapply(contract_args) else {
+        let Some((produce, is_replay, previous_output, args)) =
+            self.is_contract_call().unapply(contract_args)
+        else {
             return Err(illegal_argument_error("native_write"));
         };
         let [fd_par, bytes_par, ack] = args.as_slice() else {
@@ -2290,6 +2313,11 @@ impl SystemProcesses {
         else {
             return Err(illegal_argument_error("native_write"));
         };
+
+        if is_replay {
+            produce(&previous_output, ack).await?;
+            return Ok(previous_output);
+        }
 
         let response_par = match self.file_handles.get(fd).await {
             None => response::err(response::FSERR_CLOSED, format!("fd {fd} is not open")),
@@ -2322,7 +2350,9 @@ impl SystemProcesses {
 
         use crate::rust::interpreter::io::response;
 
-        let Some((produce, _, _, args)) = self.is_contract_call().unapply(contract_args) else {
+        let Some((produce, is_replay, previous_output, args)) =
+            self.is_contract_call().unapply(contract_args)
+        else {
             return Err(illegal_argument_error("native_seek"));
         };
         let [fd_par, offset_par, whence_par, ack] = args.as_slice() else {
@@ -2335,6 +2365,11 @@ impl SystemProcesses {
         ) else {
             return Err(illegal_argument_error("native_seek"));
         };
+
+        if is_replay {
+            produce(&previous_output, ack).await?;
+            return Ok(previous_output);
+        }
 
         let seek_from = match whence.as_str() {
             "set" => {
@@ -2389,7 +2424,9 @@ impl SystemProcesses {
 
         use crate::rust::interpreter::io::response;
 
-        let Some((produce, _, _, args)) = self.is_contract_call().unapply(contract_args) else {
+        let Some((produce, is_replay, previous_output, args)) =
+            self.is_contract_call().unapply(contract_args)
+        else {
             return Err(illegal_argument_error("native_tell"));
         };
         let [fd_par, ack] = args.as_slice() else {
@@ -2398,6 +2435,11 @@ impl SystemProcesses {
         let Some(fd) = RhoNumber::unapply(fd_par) else {
             return Err(illegal_argument_error("native_tell"));
         };
+
+        if is_replay {
+            produce(&previous_output, ack).await?;
+            return Ok(previous_output);
+        }
 
         let response_par = match self.file_handles.get(fd).await {
             None => response::err(response::FSERR_CLOSED, format!("fd {fd} is not open")),
@@ -2426,7 +2468,9 @@ impl SystemProcesses {
     ) -> Result<Vec<Par>, InterpreterError> {
         use crate::rust::interpreter::io::response;
 
-        let Some((produce, _, _, args)) = self.is_contract_call().unapply(contract_args) else {
+        let Some((produce, is_replay, previous_output, args)) =
+            self.is_contract_call().unapply(contract_args)
+        else {
             return Err(illegal_argument_error("native_size"));
         };
         let [fd_par, ack] = args.as_slice() else {
@@ -2435,6 +2479,11 @@ impl SystemProcesses {
         let Some(fd) = RhoNumber::unapply(fd_par) else {
             return Err(illegal_argument_error("native_size"));
         };
+
+        if is_replay {
+            produce(&previous_output, ack).await?;
+            return Ok(previous_output);
+        }
 
         let response_par = match self.file_handles.get(fd).await {
             None => response::err(response::FSERR_CLOSED, format!("fd {fd} is not open")),
@@ -2465,7 +2514,9 @@ impl SystemProcesses {
     ) -> Result<Vec<Par>, InterpreterError> {
         use crate::rust::interpreter::io::response;
 
-        let Some((produce, _, _, args)) = self.is_contract_call().unapply(contract_args) else {
+        let Some((produce, is_replay, previous_output, args)) =
+            self.is_contract_call().unapply(contract_args)
+        else {
             return Err(illegal_argument_error("native_truncate"));
         };
         let [fd_par, n_par, ack] = args.as_slice() else {
@@ -2474,6 +2525,11 @@ impl SystemProcesses {
         let (Some(fd), Some(n)) = (RhoNumber::unapply(fd_par), RhoNumber::unapply(n_par)) else {
             return Err(illegal_argument_error("native_truncate"));
         };
+
+        if is_replay {
+            produce(&previous_output, ack).await?;
+            return Ok(previous_output);
+        }
 
         // Per-call ceiling on the size a single truncate can request.
         // On sparse-file filesystems (ext4, apfs) `set_len(n)` is
@@ -2524,7 +2580,9 @@ impl SystemProcesses {
     ) -> Result<Vec<Par>, InterpreterError> {
         use crate::rust::interpreter::io::response;
 
-        let Some((produce, _, _, args)) = self.is_contract_call().unapply(contract_args) else {
+        let Some((produce, is_replay, previous_output, args)) =
+            self.is_contract_call().unapply(contract_args)
+        else {
             return Err(illegal_argument_error("native_flush"));
         };
         let [fd_par, ack] = args.as_slice() else {
@@ -2533,6 +2591,11 @@ impl SystemProcesses {
         let Some(fd) = RhoNumber::unapply(fd_par) else {
             return Err(illegal_argument_error("native_flush"));
         };
+
+        if is_replay {
+            produce(&previous_output, ack).await?;
+            return Ok(previous_output);
+        }
 
         let response_par = match self.file_handles.get(fd).await {
             None => response::err(response::FSERR_CLOSED, format!("fd {fd} is not open")),
@@ -2568,7 +2631,9 @@ impl SystemProcesses {
         use crate::rust::interpreter::io::{response, stat};
         use crate::rust::interpreter::rho_type::RhoMap;
 
-        let Some((produce, _, _, args)) = self.is_contract_call().unapply(contract_args) else {
+        let Some((produce, is_replay, previous_output, args)) =
+            self.is_contract_call().unapply(contract_args)
+        else {
             return Err(illegal_argument_error("native_stat"));
         };
         let [path_par, ack] = args.as_slice() else {
@@ -2577,6 +2642,11 @@ impl SystemProcesses {
         let Some(path_str) = RhoString::unapply(path_par) else {
             return Err(illegal_argument_error("native_stat"));
         };
+
+        if is_replay {
+            produce(&previous_output, ack).await?;
+            return Ok(previous_output);
+        }
 
         let path = std::path::Path::new(&path_str);
         let response_par = match tokio::fs::symlink_metadata(path).await {
@@ -2618,7 +2688,9 @@ impl SystemProcesses {
         use crate::rust::interpreter::io::{response, stat};
         use crate::rust::interpreter::rho_type::{RhoList, RhoMap};
 
-        let Some((produce, _, _, args)) = self.is_contract_call().unapply(contract_args) else {
+        let Some((produce, is_replay, previous_output, args)) =
+            self.is_contract_call().unapply(contract_args)
+        else {
             return Err(illegal_argument_error("native_entries"));
         };
         let [path_par, ack] = args.as_slice() else {
@@ -2627,6 +2699,11 @@ impl SystemProcesses {
         let Some(path_str) = RhoString::unapply(path_par) else {
             return Err(illegal_argument_error("native_entries"));
         };
+
+        if is_replay {
+            produce(&previous_output, ack).await?;
+            return Ok(previous_output);
+        }
 
         let response_par = match tokio::fs::read_dir(&path_str).await {
             Err(e) => response::from_io_error(e),
@@ -2721,7 +2798,9 @@ impl SystemProcesses {
     ) -> Result<Vec<Par>, InterpreterError> {
         use crate::rust::interpreter::io::response;
 
-        let Some((produce, _, _, args)) = self.is_contract_call().unapply(contract_args) else {
+        let Some((produce, is_replay, previous_output, args)) =
+            self.is_contract_call().unapply(contract_args)
+        else {
             return Err(illegal_argument_error("native_exists"));
         };
         let [path_par, ack] = args.as_slice() else {
@@ -2730,6 +2809,11 @@ impl SystemProcesses {
         let Some(path_str) = RhoString::unapply(path_par) else {
             return Err(illegal_argument_error("native_exists"));
         };
+
+        if is_replay {
+            produce(&previous_output, ack).await?;
+            return Ok(previous_output);
+        }
 
         let response_par = match tokio::fs::symlink_metadata(&path_str).await {
             Ok(_) => response::ok(vec![RhoBoolean::create_par(true)]),
@@ -2762,7 +2846,9 @@ impl SystemProcesses {
     ) -> Result<Vec<Par>, InterpreterError> {
         use crate::rust::interpreter::io::response;
 
-        let Some((produce, _, _, args)) = self.is_contract_call().unapply(contract_args) else {
+        let Some((produce, is_replay, previous_output, args)) =
+            self.is_contract_call().unapply(contract_args)
+        else {
             return Err(illegal_argument_error("native_rename"));
         };
         let [from_par, to_par, ack] = args.as_slice() else {
@@ -2773,6 +2859,11 @@ impl SystemProcesses {
         else {
             return Err(illegal_argument_error("native_rename"));
         };
+
+        if is_replay {
+            produce(&previous_output, ack).await?;
+            return Ok(previous_output);
+        }
 
         let response_par = match tokio::fs::rename(&from_str, &to_str).await {
             Ok(()) => response::ok(vec![]),
@@ -2805,7 +2896,9 @@ impl SystemProcesses {
     ) -> Result<Vec<Par>, InterpreterError> {
         use crate::rust::interpreter::io::response;
 
-        let Some((produce, _, _, args)) = self.is_contract_call().unapply(contract_args) else {
+        let Some((produce, is_replay, previous_output, args)) =
+            self.is_contract_call().unapply(contract_args)
+        else {
             return Err(illegal_argument_error("native_copy_file"));
         };
         let [from_par, to_par, ack] = args.as_slice() else {
@@ -2816,6 +2909,11 @@ impl SystemProcesses {
         else {
             return Err(illegal_argument_error("native_copy_file"));
         };
+
+        if is_replay {
+            produce(&previous_output, ack).await?;
+            return Ok(previous_output);
+        }
 
         let response_par = match tokio::fs::copy(&from_str, &to_str).await {
             Ok(n) => response::ok(vec![RhoNumber::create_par(n as i64)]),
@@ -2838,7 +2936,9 @@ impl SystemProcesses {
     ) -> Result<Vec<Par>, InterpreterError> {
         use crate::rust::interpreter::io::response;
 
-        let Some((produce, _, _, args)) = self.is_contract_call().unapply(contract_args) else {
+        let Some((produce, is_replay, previous_output, args)) =
+            self.is_contract_call().unapply(contract_args)
+        else {
             return Err(illegal_argument_error("native_remove_file"));
         };
         let [path_par, ack] = args.as_slice() else {
@@ -2847,6 +2947,11 @@ impl SystemProcesses {
         let Some(path_str) = RhoString::unapply(path_par) else {
             return Err(illegal_argument_error("native_remove_file"));
         };
+
+        if is_replay {
+            produce(&previous_output, ack).await?;
+            return Ok(previous_output);
+        }
 
         let response_par = match tokio::fs::remove_file(&path_str).await {
             Ok(()) => response::ok(vec![]),
@@ -2871,7 +2976,9 @@ impl SystemProcesses {
     ) -> Result<Vec<Par>, InterpreterError> {
         use crate::rust::interpreter::io::response;
 
-        let Some((produce, _, _, args)) = self.is_contract_call().unapply(contract_args) else {
+        let Some((produce, is_replay, previous_output, args)) =
+            self.is_contract_call().unapply(contract_args)
+        else {
             return Err(illegal_argument_error("native_remove_dir"));
         };
         let [path_par, recursive_par, ack] = args.as_slice() else {
@@ -2883,6 +2990,11 @@ impl SystemProcesses {
         ) else {
             return Err(illegal_argument_error("native_remove_dir"));
         };
+
+        if is_replay {
+            produce(&previous_output, ack).await?;
+            return Ok(previous_output);
+        }
 
         let result = if recursive {
             tokio::fs::remove_dir_all(&path_str).await
@@ -2916,7 +3028,9 @@ impl SystemProcesses {
     ) -> Result<Vec<Par>, InterpreterError> {
         use crate::rust::interpreter::io::response;
 
-        let Some((produce, _, _, args)) = self.is_contract_call().unapply(contract_args) else {
+        let Some((produce, is_replay, previous_output, args)) =
+            self.is_contract_call().unapply(contract_args)
+        else {
             return Err(illegal_argument_error("native_chmod"));
         };
         let [path_par, mode_bits_par, ack] = args.as_slice() else {
@@ -2928,6 +3042,11 @@ impl SystemProcesses {
         ) else {
             return Err(illegal_argument_error("native_chmod"));
         };
+
+        if is_replay {
+            produce(&previous_output, ack).await?;
+            return Ok(previous_output);
+        }
 
         let response_par = if !(0..=0o777).contains(&mode_bits) {
             response::err(
@@ -2981,7 +3100,9 @@ impl SystemProcesses {
     ) -> Result<Vec<Par>, InterpreterError> {
         use crate::rust::interpreter::io::{path as pathq, response};
 
-        let Some((produce, _, _, args)) = self.is_contract_call().unapply(contract_args) else {
+        let Some((produce, is_replay, previous_output, args)) =
+            self.is_contract_call().unapply(contract_args)
+        else {
             return Err(illegal_argument_error("native_quarantine"));
         };
         let [root_par, rel_par, ack] = args.as_slice() else {
@@ -2992,6 +3113,11 @@ impl SystemProcesses {
         else {
             return Err(illegal_argument_error("native_quarantine"));
         };
+
+        if is_replay {
+            produce(&previous_output, ack).await?;
+            return Ok(previous_output);
+        }
 
         let root_path = std::path::Path::new(&root_str);
         let response_par = match pathq::canonicalize_and_quarantine(root_path, &rel_str) {
@@ -3034,7 +3160,9 @@ impl SystemProcesses {
     ) -> Result<Vec<Par>, InterpreterError> {
         use crate::rust::interpreter::io::response;
 
-        let Some((produce, _, _, args)) = self.is_contract_call().unapply(contract_args) else {
+        let Some((produce, is_replay, previous_output, args)) =
+            self.is_contract_call().unapply(contract_args)
+        else {
             return Err(illegal_argument_error("native_chown"));
         };
         let [path_par, owner_par, group_par, ack] = args.as_slice() else {
@@ -3047,6 +3175,11 @@ impl SystemProcesses {
         ) else {
             return Err(illegal_argument_error("native_chown"));
         };
+
+        if is_replay {
+            produce(&previous_output, ack).await?;
+            return Ok(previous_output);
+        }
 
         #[cfg(unix)]
         let response_par = {
