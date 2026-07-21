@@ -258,6 +258,15 @@ pub struct RhoRuntimeImpl {
     pub invalid_blocks_param: InvalidBlocks,
     pub deploy_data_ref: Arc<tokio::sync::RwLock<DeployData>>,
     pub merge_chs: Arc<tokio::sync::RwLock<HashMap<Par, MergeType>>>,
+    /// The runtime's single File-I/O open-fd table, shared with
+    /// every fileio native handler via the dispatch-table build.
+    /// Exposed on the runtime (not just buried inside dispatch
+    /// closures) so `evaluate_with_env_and_phlo` can snapshot
+    /// `next_fd` before evaluate and truncate on error paths,
+    /// tying fd lifetime to the same soft-checkpoint boundary
+    /// that rolls rspace state. Tests can also inspect it
+    /// directly to verify fd table state after a deploy.
+    pub file_handles: crate::rust::interpreter::io::handle_table::FileHandleTable,
 }
 
 impl RhoRuntimeImpl {
@@ -268,6 +277,7 @@ impl RhoRuntimeImpl {
         invalid_blocks_param: InvalidBlocks,
         deploy_data_ref: Arc<tokio::sync::RwLock<DeployData>>,
         merge_chs: Arc<tokio::sync::RwLock<HashMap<Par, MergeType>>>,
+        file_handles: crate::rust::interpreter::io::handle_table::FileHandleTable,
     ) -> RhoRuntimeImpl {
         RhoRuntimeImpl {
             reducer,
@@ -276,6 +286,7 @@ impl RhoRuntimeImpl {
             invalid_blocks_param,
             deploy_data_ref,
             merge_chs,
+            file_handles,
         }
     }
 
@@ -301,6 +312,48 @@ impl RhoRuntime for RhoRuntimeImpl {
         metrics::histogram!(EVALUATE_TIME_METRIC, "source" => RUNTIME_METRICS_SOURCE)
             .record(start.elapsed().as_secs_f64());
         res
+    }
+
+    /// Override the trait default so the fileio `FileHandleTable`
+    /// participates in the same soft-checkpoint boundary as
+    /// rspace: snapshot `next_fd` before evaluate, and on any
+    /// error path (Ok-with-errors or hard Err) truncate the
+    /// table back to the snapshot. Otherwise a deploy that
+    /// successfully calls `nativeOpen` and then errors would
+    /// leak the fd -- the OS-level `tokio::fs::File` would sit
+    /// in the table unreachable from Rholang (fds are
+    /// monotonic, and any produce event that mentioned this fd
+    /// was reverted by the rspace restore) but consuming an OS
+    /// file descriptor until the whole runtime drops. Repeated
+    /// hostile deploys of this shape would exhaust the process's
+    /// `ulimit -n`. See `io::handle_table::truncate_to` for the
+    /// safety argument on fd reuse across deploys.
+    async fn evaluate_with_env_and_phlo(
+        &mut self,
+        term: &str,
+        initial_phlo: Cost,
+        normalizer_env: HashMap<String, Par>,
+    ) -> Result<EvaluateResult, InterpreterError> {
+        let rand = Blake2b512Random::create_from_length(128);
+        let fd_snapshot = self.file_handles.snapshot_next_fd();
+        let checkpoint = self.create_soft_checkpoint().await;
+        match self
+            .evaluate(term, initial_phlo, normalizer_env, rand)
+            .await
+        {
+            Ok(eval_result) => {
+                if !eval_result.errors.is_empty() {
+                    self.revert_to_soft_checkpoint(checkpoint).await;
+                    self.file_handles.truncate_to(fd_snapshot).await;
+                }
+                Ok(eval_result)
+            }
+            Err(err) => {
+                self.revert_to_soft_checkpoint(checkpoint).await;
+                self.file_handles.truncate_to(fd_snapshot).await;
+                Err(err)
+            }
+        }
     }
 
     async fn inj(
@@ -1273,6 +1326,7 @@ fn dispatch_table_creator(
     invalid_blocks: InvalidBlocks,
     urn_map: Arc<HashMap<String, Par>>,
     deploy_data: Arc<tokio::sync::RwLock<DeployData>>,
+    file_handles: crate::rust::interpreter::io::handle_table::FileHandleTable,
     extra_system_processes: &mut Vec<Definition>,
     openai_service: SharedOpenAIService,
     ollama_service: SharedOllamaService,
@@ -1292,6 +1346,12 @@ fn dispatch_table_creator(
     all_processes.append(extra_system_processes);
 
     for def in all_processes.iter_mut() {
+        // Every ProcessContext gets the SAME `file_handles`
+        // (cloning `FileHandleTable` shares its inner `Arc`), so
+        // fd inserts by `nativeOpen` are visible to lookups by
+        // every other fd-consuming native. Without this, each
+        // Definition would land in its own empty table and the
+        // whole fileio primitive layer would be non-functional.
         let tuple = def.to_dispatch_table(ProcessContext::create(
             space.clone(),
             dispatcher.clone(),
@@ -1299,6 +1359,7 @@ fn dispatch_table_creator(
             invalid_blocks.clone(),
             deploy_data.clone(),
             urn_map.clone(),
+            file_handles.clone(),
             openai_service.clone(),
             ollama_service.clone(),
             grpc_client_service.clone(),
@@ -1392,6 +1453,7 @@ async fn setup_reducer(
     block_data_ref: Arc<tokio::sync::RwLock<BlockData>>,
     invalid_blocks: InvalidBlocks,
     deploy_data_ref: Arc<tokio::sync::RwLock<DeployData>>,
+    file_handles: crate::rust::interpreter::io::handle_table::FileHandleTable,
     extra_system_processes: &mut Vec<Definition>,
     urn_map: HashMap<String, Par>,
     merge_chs: Arc<tokio::sync::RwLock<HashMap<Par, MergeType>>>,
@@ -1422,6 +1484,7 @@ async fn setup_reducer(
         invalid_blocks,
         urn_map.clone(),
         deploy_data_ref,
+        file_handles,
         extra_system_processes,
         openai_service,
         ollama_service,
@@ -1511,6 +1574,7 @@ pub async fn create_rho_env<T>(
     Arc<tokio::sync::RwLock<BlockData>>,
     InvalidBlocks,
     Arc<tokio::sync::RwLock<DeployData>>,
+    crate::rust::interpreter::io::handle_table::FileHandleTable,
 )
 where
     T: ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>
@@ -1521,6 +1585,14 @@ where
 {
     let maps_and_refs = setup_maps_and_refs(extra_system_processes);
     let (block_data_ref, invalid_blocks, deploy_data_ref, mut urn_map, proc_defs) = maps_and_refs;
+
+    // One `FileHandleTable` per runtime, threaded into every
+    // ProcessContext so all fileio native handlers share one fd
+    // space. Cloning shares the underlying `Arc<RwLock<HashMap>>`;
+    // the same clone is returned to `create_runtime` so
+    // `RhoRuntimeImpl` can also see it (needed for the deploy-scope
+    // snapshot/truncate rollback around `evaluate_with_env_and_phlo`).
+    let file_handles = crate::rust::interpreter::io::handle_table::FileHandleTable::new();
 
     // Expose the bitmask-OR mergeable tag to system contracts (Registry.rho)
     // via a URI binding. Genesis-defined tags are unforgeable names; they must
@@ -1561,6 +1633,7 @@ where
         block_data_ref.clone(),
         invalid_blocks.clone(),
         deploy_data_ref.clone(),
+        file_handles.clone(),
         extra_system_processes,
         urn_map,
         merge_chs,
@@ -1573,7 +1646,13 @@ where
     )
     .await;
 
-    (reducer, block_data_ref, invalid_blocks, deploy_data_ref)
+    (
+        reducer,
+        block_data_ref,
+        invalid_blocks,
+        deploy_data_ref,
+        file_handles,
+    )
 }
 
 // This is from Nassim Taleb's "Skin in the Game"
@@ -1620,7 +1699,7 @@ where
     )
     .await;
 
-    let (reducer, block_ref, invalid_blocks, deploy_ref) = rho_env;
+    let (reducer, block_ref, invalid_blocks, deploy_ref, file_handles) = rho_env;
     let mut runtime = RhoRuntimeImpl::new(
         reducer,
         cost,
@@ -1628,6 +1707,7 @@ where
         invalid_blocks,
         deploy_ref,
         merge_chs,
+        file_handles,
     );
 
     if init_registry {

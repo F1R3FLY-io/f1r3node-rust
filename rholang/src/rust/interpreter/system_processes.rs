@@ -423,6 +423,7 @@ impl ProcessContext {
         invalid_blocks: InvalidBlocks,
         deploy_data: Arc<tokio::sync::RwLock<DeployData>>,
         urn_map: Arc<HashMap<String, Par>>,
+        file_handles: crate::rust::interpreter::io::handle_table::FileHandleTable,
         openai_service: SharedOpenAIService,
         ollama_service: SharedOllamaService,
         grpc_client_service: GrpcClientService,
@@ -441,6 +442,7 @@ impl ProcessContext {
                 block_data,
                 deploy_data,
                 urn_map,
+                file_handles,
                 openai_service,
                 ollama_service,
                 grpc_client_service,
@@ -602,10 +604,15 @@ pub struct SystemProcesses {
     /// legacy URNs.
     pub urn_map: Arc<HashMap<String, Par>>,
     /// Open-file table for the File-I/O native primitives. Shared
-    /// across all clones of this `SystemProcesses` so `nativeOpen`
-    /// on one dispatch worker and `nativeClose` on another see the
-    /// same fd space. Empty at boot; populated by successful
-    /// `nativeOpen` calls.
+    /// across every `Definition`'s handler closure via `Arc`
+    /// interior so `nativeOpen` on one dispatch entry and
+    /// `nativeRead` / `nativeClose` on another see the same fd
+    /// space. Constructed once per runtime in
+    /// `create_rho_env` and passed into every `ProcessContext::create`
+    /// call in the dispatch-table build loop. Empty at boot;
+    /// populated by successful `nativeOpen` calls; rolled back on
+    /// error path via `RhoRuntimeImpl::evaluate_with_env_and_phlo`'s
+    /// snapshot/truncate around the soft-checkpoint boundary.
     pub file_handles: crate::rust::interpreter::io::handle_table::FileHandleTable,
     openai_service: SharedOpenAIService,
     ollama_service: SharedOllamaService,
@@ -622,6 +629,7 @@ impl SystemProcesses {
         block_data: Arc<tokio::sync::RwLock<BlockData>>,
         deploy_data: Arc<tokio::sync::RwLock<DeployData>>,
         urn_map: Arc<HashMap<String, Par>>,
+        file_handles: crate::rust::interpreter::io::handle_table::FileHandleTable,
         openai_service: SharedOpenAIService,
         ollama_service: SharedOllamaService,
         grpc_client_service: GrpcClientService,
@@ -633,7 +641,12 @@ impl SystemProcesses {
             block_data,
             deploy_data,
             urn_map,
-            file_handles: crate::rust::interpreter::io::handle_table::FileHandleTable::new(),
+            // Passed in rather than freshly-created so every
+            // Definition's handler closure sees the SAME
+            // FileHandleTable; otherwise `nativeOpen` inserts fd=N
+            // into one table and `nativeRead(N)` looks it up in a
+            // different (empty) one and returns FSERR_CLOSED.
+            file_handles,
             openai_service,
             ollama_service,
             grpc_client_service,

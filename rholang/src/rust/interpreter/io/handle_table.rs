@@ -90,6 +90,36 @@ impl FileHandleTable {
     pub async fn remove(&self, fd: i64) -> Option<Arc<FileHandle>> {
         self.inner.write().await.remove(&fd)
     }
+
+    /// Capture the current `next_fd` counter so a later
+    /// [`truncate_to`](Self::truncate_to) can identify "fds
+    /// inserted since this snapshot" by monotonicity: any fd
+    /// >= the snapshot was allocated after it. Used by the
+    /// runtime's `evaluate_with_env_and_phlo` to tie fd
+    /// allocation to the same soft-checkpoint boundary that
+    /// wraps rspace state, so a deploy that errors after
+    /// `nativeOpen` doesn't leave zombie fds in the table.
+    pub fn snapshot_next_fd(&self) -> i64 { self.next_fd.load(Ordering::SeqCst) }
+
+    /// Remove every entry with fd >= `snapshot` and reset the
+    /// `next_fd` counter to `snapshot`. Used on the error path
+    /// of `evaluate_with_env_and_phlo` to roll back fd
+    /// allocations from a deploy whose rspace state is being
+    /// reverted -- otherwise the OS-level file descriptors
+    /// held by `tokio::fs::File` inside `Arc<FileHandle>`
+    /// would stay open until the runtime is dropped, giving
+    /// a hostile deploy an easy path to exhaust the process's
+    /// `ulimit -n`.
+    ///
+    /// Reusing fd numbers across deploys is safe: any produce
+    /// event that mentioned a reverted fd was itself reverted
+    /// by the same soft-checkpoint restore, so no surviving
+    /// log entry refers to it.
+    pub async fn truncate_to(&self, snapshot: i64) {
+        let mut map = self.inner.write().await;
+        map.retain(|fd, _| *fd < snapshot);
+        self.next_fd.store(snapshot, Ordering::SeqCst);
+    }
 }
 
 impl Default for FileHandleTable {
