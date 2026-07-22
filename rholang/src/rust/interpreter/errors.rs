@@ -110,6 +110,18 @@ pub enum InterpreterError {
     },
     /// Raised during replay when we encounter a failed non-deterministic produce that we cannot replay.
     CanNotReplayFailedNonDeterministicProcess,
+
+    /// A reduction error tagged with the parallel-tree COORDINATE (path) of the detached task that
+    /// produced it. Introduced by the detached-spawn / atomic-counter reduction driver: each detached
+    /// child task wraps its error (or a captured panic) in `Located` before pushing it to the deploy's
+    /// error sink, so the source position (which parallel branch / continuation) is preserved for
+    /// display. The path is display-only (NOT consensus): `aggregate_evaluator_errors` and `handle_error`
+    /// classify on `root_cause()`, which unwraps `Located`. `source` being named `source` makes thiserror
+    /// auto-implement `std::error::Error::source()` for the wrapped error.
+    Located {
+        path: Vec<u32>,
+        source: Box<InterpreterError>,
+    },
 }
 
 pub fn illegal_argument_error(method_name: &str) -> InterpreterError {
@@ -340,6 +352,29 @@ impl fmt::Display for InterpreterError {
             InterpreterError::CanNotReplayFailedNonDeterministicProcess => {
                 write!(f, "Cannot replay failed non-deterministic process")
             }
+
+            InterpreterError::Located { path, source } => {
+                let coord = path
+                    .iter()
+                    .map(|p| p.to_string())
+                    .collect::<Vec<_>>()
+                    .join(".");
+                write!(f, "[{}] {}", coord, source)
+            }
+        }
+    }
+}
+
+impl InterpreterError {
+    /// Peels any `Located` wrapper(s) to the underlying reduction error. Cost/abort classification in
+    /// `aggregate_evaluator_errors` and `handle_error` must key on this so a `Located`-wrapped
+    /// `UserAbortError` / `OutOfPhlogistonsError` is NOT misclassified into the generic cost arm (which
+    /// would produce a wrong cost -> `ReplayCostMismatch` -> broken consensus). Idempotent on
+    /// non-`Located` variants (returns `self`).
+    pub fn root_cause(&self) -> &InterpreterError {
+        match self {
+            InterpreterError::Located { source, .. } => source.root_cause(),
+            other => other,
         }
     }
 }
