@@ -10,6 +10,7 @@
 //! user-facing code goes through the `Fs` agent under `rho:io:fs:1.*`
 //! per the FIP.
 
+pub mod agents;
 pub mod handle_table;
 pub mod injections;
 pub mod mode;

@@ -107,9 +107,9 @@ async fn open_then_read_shares_fd_table() {
         r#"new nOpen(`rho:io:fs:native:1.0.0/open`),
                 nRead(`rho:io:fs:native:1.0.0/read`),
                 openAck, readAck in {{
-             nOpen!("{path}", "r", *openAck) |
+             nOpen!(*openAck, "{path}", "r") |
              for (@[true, fd] <- openAck) {{
-               nRead!(fd, 5, *readAck) |
+               nRead!(*readAck, fd, 5) |
                for (@result <- readAck) {{ @"sink"!(result) }}
              }}
            }}"#
@@ -170,9 +170,9 @@ async fn successful_deploy_leaves_fds_in_table() {
 
     let term = format!(
         r#"new nOpen(`rho:io:fs:native:1.0.0/open`), ack1, ack2 in {{
-             nOpen!("{path_a}", "r", *ack1) |
+             nOpen!(*ack1, "{path_a}", "r") |
              for (@_ <- ack1) {{
-               nOpen!("{path_b}", "r", *ack2) |
+               nOpen!(*ack2, "{path_b}", "r") |
                for (@_ <- ack2) {{ Nil }}
              }}
            }}"#
@@ -223,7 +223,7 @@ async fn erroring_deploy_rolls_back_fd_allocations() {
     // to revert rspace + truncate the fd table.
     let term = format!(
         r#"new nOpen(`rho:io:fs:native:1.0.0/open`), ack in {{
-             nOpen!("{path}", "r", *ack) |
+             nOpen!(*ack, "{path}", "r") |
              for (@[true, _] <- ack) {{ @0!(1 / 0) }}
            }}"#
     );

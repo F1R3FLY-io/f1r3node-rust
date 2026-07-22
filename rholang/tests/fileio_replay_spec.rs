@@ -165,7 +165,7 @@ async fn exists_replays_false_after_file_is_created_between_runs() {
     let path_for_mutate = path.clone();
     let term = format!(
         r#"new nExists(`rho:io:fs:native:1.0.0/exists`), ret in {{
-             nExists!("{path_for_term}", *ret) |
+             nExists!(*ret, "{path_for_term}") |
              for (@_ <- ret) {{ Nil }}
            }}"#
     );
@@ -197,7 +197,7 @@ async fn exists_replays_true_after_file_is_deleted_between_runs() {
     let path_for_mutate = path.clone();
     let term = format!(
         r#"new nExists(`rho:io:fs:native:1.0.0/exists`), ret in {{
-             nExists!("{path_for_term}", *ret) |
+             nExists!(*ret, "{path_for_term}") |
              for (@_ <- ret) {{ Nil }}
            }}"#
     );
@@ -223,7 +223,7 @@ async fn stat_replays_original_metadata_after_file_is_modified() {
     let path_for_mutate = path.clone();
     let term = format!(
         r#"new nStat(`rho:io:fs:native:1.0.0/stat`), ret in {{
-             nStat!("{path_for_term}", *ret) |
+             nStat!(*ret, "{path_for_term}") |
              for (@_ <- ret) {{ Nil }}
            }}"#
     );

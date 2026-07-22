@@ -1,0 +1,109 @@
+// File agent — wraps a native fd with the FIP `File` method surface.
+//
+// This is the MINIMAL surface: `read`, `size`, `close`, `default`.
+// Extended in follow-up PRs with `write`, `seek`, `tell`, `truncate`,
+// `flush`, `readAt`, `writeAt`, `lockRange`, `chmod`, `chown`, plus
+// line-based `text` / `lines` / `mapReduceLines*`.
+//
+// This file is an `agent` block that expects the enclosing scope
+// to bind:
+//   - `File`               — the agent's constructor channel
+//   - `nRead`, `nSize`,
+//     `nClose`             — fixed-channel Pars for the native
+//                            primitives, obtained via `NormalizerEnv`
+//                            injection at compile time (see
+//                            `interpreter::io::injections`).
+//
+// Constructor calling convention: the `@fd` formal is a process
+// pattern, so the caller sends the fd as a plain Process arg
+// (e.g. `File!(*replyChan, fd)`). The constructor stashes it on
+// a per-instance subchannel keyed on `*this`, and every method
+// peeks (`<<-`) that subchannel to read the fd without removing
+// it. Standard Rholang per-instance-state pattern -- see
+// agent_private_state.rho in the parser corpus.
+//
+// Method dispatch calling convention: the agent-block sugar
+// desugars methods to match arms of shape
+// `[*return, "methodName", ...formals] => body`. Compose via
+// either raw sends in that literal shape
+// (`fileAgent!(*replyChan, "read", n)`) or the method-call
+// sugar `fileAgent!read(n)` (which desugars to
+// `fileAgent!?("read", n)` → `fileAgent!(*tmp, "read", n) |
+// for(_ <- tmp) cont` — return channel first, matches the
+// agent-dispatch shape).
+//
+// Native-call convention: the fileio native handlers destructure
+// args as ack-FIRST (`let [ack, arg0, ..., argN] = ...`),
+// matching what the `!?` sync-send and `try/catch`'s SendReceive
+// source generate. So method bodies use `try @<pat> <-
+// nX!?(args) { ok } catch @[code, msg] { err }` cleanly -- no
+// explicit send-then-for-then-match cascade needed.
+//
+// The genesis-installed `Fs` agent embeds this block inside its
+// own `new`-scope that provides the native URN bindings and
+// never exposes them outward. User code reaches `File` instances
+// through `Fs.openFile`.
+//
+// Default-arm reply idiom: the agent-block sugar desugars
+// `default(...@args) { body }` to `_ => body`. Note that `args`
+// (in-scope name, bound by the outer `for(...@args <= this)`)
+// is still visible in `body` -- and its first element is the
+// caller's return channel (as a Process via `*return`). To
+// reply, destructure `args` in the default body and re-quote
+// the head into a Name to send on. See the `default` arm below.
+agent File {
+  constructor(@fd) {
+    // `@fd` binds the incoming Process (Int) directly; persist it
+    // under a `*this`-keyed subchannel for methods to peek.
+    @(*this, "fd")!(fd)
+  } |
+
+  method read(n) {
+    for (@fd <<- @(*this, "fd")) {
+      try @[bytes] <- nRead!?(fd, n) {
+        return!([true, bytes])
+      }
+      catch @[code, msg] {
+        return!([false, code, msg])
+      }
+    }
+  } |
+
+  method size() {
+    for (@fd <<- @(*this, "fd")) {
+      try @[n] <- nSize!?(fd) {
+        return!([true, n])
+      }
+      catch @[code, msg] {
+        return!([false, code, msg])
+      }
+    }
+  } |
+
+  method close() {
+    // Bare `try <- source { ... }` — no result pattern, success
+    // branch just fires. Native `close` produces `[true]`.
+    for (@fd <<- @(*this, "fd")) {
+      try <- nClose!?(fd) {
+        return!([true])
+      }
+      catch @[code, msg] {
+        return!([false, code, msg])
+      }
+    }
+  } |
+
+  default(...@args) {
+    // `args` is in scope via the outer `for(...@args <= this)`
+    // in the desugared dispatch loop. Its first element is the
+    // caller's return channel as a Process (from the send's
+    // auto-deref of the reply-channel Name); the rest is
+    // `[methodName, ...formals]`. Peel out the return via a
+    // match, re-quote to a Name with `@`, and reply.
+    match args {
+      [returnProc, ...rest] => {
+        @returnProc!([false, "FSERR_UNSUPPORTED", ("File agent has no method:", rest)])
+      }
+    }
+  }
+}
