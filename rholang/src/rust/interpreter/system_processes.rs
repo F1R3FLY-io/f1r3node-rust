@@ -298,6 +298,9 @@ impl FixedChannels {
     pub fn native_chmod() -> Par { byte_name(54) }
     pub fn native_quarantine() -> Par { byte_name(55) }
     pub fn native_chown() -> Par { byte_name(56) }
+    pub fn native_read_line() -> Par { byte_name(57) }
+    pub fn native_read_all_lines() -> Par { byte_name(58) }
+    pub fn native_append_lines() -> Par { byte_name(59) }
 }
 
 pub struct BodyRefs;
@@ -356,6 +359,9 @@ impl BodyRefs {
     pub const NATIVE_CHMOD: i64 = 53;
     pub const NATIVE_QUARANTINE: i64 = 54;
     pub const NATIVE_CHOWN: i64 = 55;
+    pub const NATIVE_READ_LINE: i64 = 56;
+    pub const NATIVE_READ_ALL_LINES: i64 = 57;
+    pub const NATIVE_APPEND_LINES: i64 = 58;
 }
 
 pub fn non_deterministic_ops() -> HashSet<i64> {
@@ -397,6 +403,9 @@ pub fn non_deterministic_ops() -> HashSet<i64> {
         BodyRefs::NATIVE_CHMOD,
         BodyRefs::NATIVE_QUARANTINE,
         BodyRefs::NATIVE_CHOWN,
+        BodyRefs::NATIVE_READ_LINE,
+        BodyRefs::NATIVE_READ_ALL_LINES,
+        BodyRefs::NATIVE_APPEND_LINES,
     ])
 }
 
@@ -3264,6 +3273,322 @@ impl SystemProcesses {
         produce(&output, ack).await?;
         Ok(output)
     }
+
+    /// `nativeReadLine(fd: Int) -> [true, line] | [false, code, msg]`.
+    ///
+    /// Reads bytes from the fd's current position until a `\n` byte
+    /// or EOF, whichever comes first. Advances the cursor to just past
+    /// the newline (or to EOF). Strips the trailing `\n`, and if the
+    /// preceding byte is `\r`, strips that too (CRLF handling).
+    ///
+    /// EOF with no bytes read returns `[true, ""]` — indistinguishable
+    /// from a real empty line. Callers who need to detect EOF unambiguously
+    /// can compare `tell()` against `size()` after the call.
+    ///
+    /// Bytes are decoded as UTF-8; invalid UTF-8 returns
+    /// `FSERR_BAD_ARG` (the line surface targets text; binary files
+    /// should use `read` / `readAt`).
+    ///
+    /// Per-call cap `MAX_LINE_BYTES = 16 MiB` prevents a hostile file
+    /// with no newlines from exhausting node memory on a single call.
+    pub async fn native_read_line(
+        &self,
+        contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
+    ) -> Result<Vec<Par>, InterpreterError> {
+        use std::io::SeekFrom;
+
+        use tokio::io::{AsyncReadExt, AsyncSeekExt};
+
+        use crate::rust::interpreter::io::response;
+
+        let Some((produce, is_replay, previous_output, args)) =
+            self.is_contract_call().unapply(contract_args)
+        else {
+            return Err(illegal_argument_error("native_read_line"));
+        };
+        let [ack, fd_par] = args.as_slice() else {
+            return Err(illegal_argument_error("native_read_line"));
+        };
+        let Some(fd) = RhoNumber::unapply(fd_par) else {
+            return Err(illegal_argument_error("native_read_line"));
+        };
+
+        if is_replay {
+            produce(&previous_output, ack).await?;
+            return Ok(previous_output);
+        }
+
+        const MAX_LINE_BYTES: usize = 16 * 1024 * 1024;
+        const CHUNK_SIZE: usize = 4096;
+
+        let response_par = match self.file_handles.get(fd).await {
+            None => response::err(response::FSERR_CLOSED, format!("fd {fd} is not open")),
+            Some(handle) => {
+                let mut file = handle.file.lock().await;
+                let mut line: Vec<u8> = Vec::new();
+                let mut chunk = vec![0u8; CHUNK_SIZE];
+                let mut io_err: Option<std::io::Error> = None;
+                let mut oversized = false;
+
+                loop {
+                    let n_read = match file.read(&mut chunk).await {
+                        Ok(n) => n,
+                        Err(e) => {
+                            io_err = Some(e);
+                            break;
+                        }
+                    };
+                    if n_read == 0 {
+                        break;
+                    }
+                    if let Some(nl_idx) = chunk[..n_read].iter().position(|&b| b == b'\n') {
+                        line.extend_from_slice(&chunk[..nl_idx]);
+                        // Cursor is now at the byte past the last byte of `chunk[..n_read]`;
+                        // rewind so it sits just past the newline.
+                        let extras = (n_read - nl_idx - 1) as i64;
+                        if extras > 0 {
+                            if let Err(e) = file.seek(SeekFrom::Current(-extras)).await {
+                                io_err = Some(e);
+                            }
+                        }
+                        break;
+                    } else {
+                        line.extend_from_slice(&chunk[..n_read]);
+                        if line.len() > MAX_LINE_BYTES {
+                            oversized = true;
+                            break;
+                        }
+                    }
+                }
+                drop(file);
+
+                match (io_err, oversized) {
+                    (Some(e), _) => response::from_io_error(e),
+                    (_, true) => response::err(
+                        response::FSERR_BAD_ARG,
+                        format!("readLine: single line exceeds MAX_LINE_BYTES {MAX_LINE_BYTES}"),
+                    ),
+                    _ => {
+                        if line.last() == Some(&b'\r') {
+                            line.pop();
+                        }
+                        match String::from_utf8(line) {
+                            Ok(s) => response::ok(vec![RhoString::create_par(s)]),
+                            Err(_) => response::err(
+                                response::FSERR_BAD_ARG,
+                                "readLine: line contains invalid UTF-8".to_string(),
+                            ),
+                        }
+                    }
+                }
+            }
+        };
+
+        let output = vec![response_par];
+        produce(&output, ack).await?;
+        Ok(output)
+    }
+
+    /// `nativeReadAllLines(fd: Int) -> [true, [line, ...]] | [false, code, msg]`.
+    ///
+    /// Reads from the fd's current position to EOF, splits on `\n`,
+    /// and returns the list of lines. Strips a trailing empty element
+    /// if the file ends with a newline (so `"a\nb\n"` yields `["a", "b"]`,
+    /// not `["a", "b", ""]`). Strips a trailing `\r` from each line
+    /// (CRLF handling).
+    ///
+    /// Bytes are decoded as UTF-8; invalid UTF-8 returns `FSERR_BAD_ARG`.
+    ///
+    /// Per-call cap `MAX_READ_BYTES = 64 MiB` matches `native_read`;
+    /// beyond that returns `FSERR_BAD_ARG` (callers with large files
+    /// should stream via `readLine` in a loop).
+    pub async fn native_read_all_lines(
+        &self,
+        contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
+    ) -> Result<Vec<Par>, InterpreterError> {
+        use tokio::io::AsyncReadExt;
+
+        use crate::rust::interpreter::io::response;
+
+        let Some((produce, is_replay, previous_output, args)) =
+            self.is_contract_call().unapply(contract_args)
+        else {
+            return Err(illegal_argument_error("native_read_all_lines"));
+        };
+        let [ack, fd_par] = args.as_slice() else {
+            return Err(illegal_argument_error("native_read_all_lines"));
+        };
+        let Some(fd) = RhoNumber::unapply(fd_par) else {
+            return Err(illegal_argument_error("native_read_all_lines"));
+        };
+
+        if is_replay {
+            produce(&previous_output, ack).await?;
+            return Ok(previous_output);
+        }
+
+        const MAX_READ_BYTES: usize = 64 * 1024 * 1024;
+
+        let response_par = match self.file_handles.get(fd).await {
+            None => response::err(response::FSERR_CLOSED, format!("fd {fd} is not open")),
+            Some(handle) => {
+                let mut file = handle.file.lock().await;
+                let mut buf: Vec<u8> = Vec::new();
+                let mut chunk = vec![0u8; 8192];
+                let mut io_err: Option<std::io::Error> = None;
+                let mut oversized = false;
+
+                loop {
+                    let n = match file.read(&mut chunk).await {
+                        Ok(n) => n,
+                        Err(e) => {
+                            io_err = Some(e);
+                            break;
+                        }
+                    };
+                    if n == 0 {
+                        break;
+                    }
+                    buf.extend_from_slice(&chunk[..n]);
+                    if buf.len() > MAX_READ_BYTES {
+                        oversized = true;
+                        break;
+                    }
+                }
+                drop(file);
+
+                match (io_err, oversized) {
+                    (Some(e), _) => response::from_io_error(e),
+                    (_, true) => response::err(
+                        response::FSERR_BAD_ARG,
+                        format!(
+                            "readAllLines: bytes from current position exceed MAX_READ_BYTES {MAX_READ_BYTES}"
+                        ),
+                    ),
+                    _ => match std::str::from_utf8(&buf) {
+                        Err(_) => response::err(
+                            response::FSERR_BAD_ARG,
+                            "readAllLines: file contains invalid UTF-8".to_string(),
+                        ),
+                        Ok(s) => {
+                            let mut lines: Vec<&str> = s.split('\n').collect();
+                            if lines.last() == Some(&"") {
+                                lines.pop();
+                            }
+                            let par_list: Vec<Par> = lines
+                                .into_iter()
+                                .map(|line| {
+                                    let stripped = line.strip_suffix('\r').unwrap_or(line);
+                                    RhoString::create_par(stripped.to_string())
+                                })
+                                .collect();
+                            response::ok(vec![RhoList::create_par(par_list)])
+                        }
+                    },
+                }
+            }
+        };
+
+        let output = vec![response_par];
+        produce(&output, ack).await?;
+        Ok(output)
+    }
+
+    /// `nativeAppendLines(fd: Int, lines: List[String]) -> [true, nBytes] | [false, code, msg]`.
+    ///
+    /// Writes each String followed by a single `\n` at the fd's current
+    /// position, advancing the cursor. Returns the total number of
+    /// bytes written including the appended newlines.
+    ///
+    /// Line separator is always `\n` (LF); cross-platform line-ending
+    /// negotiation is out of scope for this FIP -- callers that need
+    /// CRLF wire `\r` into the strings themselves.
+    ///
+    /// If any element of `lines` is not a String, returns `FSERR_BAD_ARG`
+    /// without writing anything. Per-call cap `MAX_WRITE_BYTES = 64 MiB`
+    /// on total bytes (including newlines) prevents a hostile deploy
+    /// from writing an arbitrarily-large payload in a single call.
+    pub async fn native_append_lines(
+        &self,
+        contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
+    ) -> Result<Vec<Par>, InterpreterError> {
+        use tokio::io::AsyncWriteExt;
+
+        use crate::rust::interpreter::io::response;
+
+        let Some((produce, is_replay, previous_output, args)) =
+            self.is_contract_call().unapply(contract_args)
+        else {
+            return Err(illegal_argument_error("native_append_lines"));
+        };
+        let [ack, fd_par, lines_par] = args.as_slice() else {
+            return Err(illegal_argument_error("native_append_lines"));
+        };
+        let (Some(fd), Some(lines_list)) =
+            (RhoNumber::unapply(fd_par), RhoList::unapply(lines_par))
+        else {
+            return Err(illegal_argument_error("native_append_lines"));
+        };
+
+        if is_replay {
+            produce(&previous_output, ack).await?;
+            return Ok(previous_output);
+        }
+
+        const MAX_WRITE_BYTES: usize = 64 * 1024 * 1024;
+
+        // Extract Strings up front so a bad element returns BAD_ARG
+        // before we touch the fd. If any element isn't a String, no
+        // bytes are written.
+        let mut extracted: Vec<String> = Vec::with_capacity(lines_list.len());
+        for (i, elt) in lines_list.iter().enumerate() {
+            match RhoString::unapply(elt) {
+                Some(s) => extracted.push(s),
+                None => {
+                    let response_par = response::err(
+                        response::FSERR_BAD_ARG,
+                        format!("appendLines: element {i} is not a String"),
+                    );
+                    let output = vec![response_par];
+                    produce(&output, ack).await?;
+                    return Ok(output);
+                }
+            }
+        }
+
+        let total_bytes: usize = extracted.iter().map(|s| s.len() + 1).sum();
+        if total_bytes > MAX_WRITE_BYTES {
+            let response_par = response::err(
+                response::FSERR_BAD_ARG,
+                format!(
+                    "appendLines: total bytes {total_bytes} exceed MAX_WRITE_BYTES {MAX_WRITE_BYTES}"
+                ),
+            );
+            let output = vec![response_par];
+            produce(&output, ack).await?;
+            return Ok(output);
+        }
+
+        let response_par = match self.file_handles.get(fd).await {
+            None => response::err(response::FSERR_CLOSED, format!("fd {fd} is not open")),
+            Some(handle) => {
+                let mut file = handle.file.lock().await;
+                let mut buf: Vec<u8> = Vec::with_capacity(total_bytes);
+                for line in &extracted {
+                    buf.extend_from_slice(line.as_bytes());
+                    buf.push(b'\n');
+                }
+                match file.write_all(&buf).await {
+                    Ok(()) => response::ok(vec![RhoNumber::create_par(buf.len() as i64)]),
+                    Err(e) => response::from_io_error(e),
+                }
+            }
+        };
+
+        let output = vec![response_par];
+        produce(&output, ack).await?;
+        Ok(output)
+    }
 }
 
 // See casper/src/test/scala/coop/rchain/casper/helper/RhoSpec.scala
@@ -3525,6 +3850,9 @@ mod tests {
             BodyRefs::NATIVE_CHMOD,
             BodyRefs::NATIVE_QUARANTINE,
             BodyRefs::NATIVE_CHOWN,
+            BodyRefs::NATIVE_READ_LINE,
+            BodyRefs::NATIVE_READ_ALL_LINES,
+            BodyRefs::NATIVE_APPEND_LINES,
         ];
         let ops = non_deterministic_ops();
         for &r in expected {

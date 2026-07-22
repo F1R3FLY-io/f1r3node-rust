@@ -1007,6 +1007,54 @@ fn std_system_processes() -> Vec<Definition> {
             remainder: None,
         },
         Definition {
+            urn: "rho:io:fs:native:1.0.0/readLine".to_string(),
+            fixed_channel: FixedChannels::native_read_line(),
+            arity: 2,
+            body_ref: BodyRefs::NATIVE_READ_LINE,
+            handler: Box::new(|ctx| {
+                Box::new(move |args| {
+                    let ctx = ctx.clone();
+                    Box::pin(
+                        async move { ctx.system_processes.clone().native_read_line(args).await },
+                    )
+                })
+            }),
+            remainder: None,
+        },
+        Definition {
+            urn: "rho:io:fs:native:1.0.0/readAllLines".to_string(),
+            fixed_channel: FixedChannels::native_read_all_lines(),
+            arity: 2,
+            body_ref: BodyRefs::NATIVE_READ_ALL_LINES,
+            handler: Box::new(|ctx| {
+                Box::new(move |args| {
+                    let ctx = ctx.clone();
+                    Box::pin(async move {
+                        ctx.system_processes
+                            .clone()
+                            .native_read_all_lines(args)
+                            .await
+                    })
+                })
+            }),
+            remainder: None,
+        },
+        Definition {
+            urn: "rho:io:fs:native:1.0.0/appendLines".to_string(),
+            fixed_channel: FixedChannels::native_append_lines(),
+            arity: 3,
+            body_ref: BodyRefs::NATIVE_APPEND_LINES,
+            handler: Box::new(|ctx| {
+                Box::new(move |args| {
+                    let ctx = ctx.clone();
+                    Box::pin(
+                        async move { ctx.system_processes.clone().native_append_lines(args).await },
+                    )
+                })
+            }),
+            remainder: None,
+        },
+        Definition {
             urn: "rho:io:grpcTell".to_string(),
             fixed_channel: FixedChannels::grpc_tell(),
             arity: 3,

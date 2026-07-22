@@ -155,6 +155,18 @@ fn dir_agent_env() -> HashMap<String, Par> {
         "rho:io:fs:native:1.0.0/close".to_string(),
         FixedChannels::native_close(),
     );
+    env.insert(
+        "rho:io:fs:native:1.0.0/readLine".to_string(),
+        FixedChannels::native_read_line(),
+    );
+    env.insert(
+        "rho:io:fs:native:1.0.0/readAllLines".to_string(),
+        FixedChannels::native_read_all_lines(),
+    );
+    env.insert(
+        "rho:io:fs:native:1.0.0/appendLines".to_string(),
+        FixedChannels::native_append_lines(),
+    );
     env
 }
 
@@ -182,7 +194,10 @@ fn wrap(body: &str, root_path: &str) -> String {
      nSize(`rho:io:fs:native:1.0.0/size`),
      nTruncate(`rho:io:fs:native:1.0.0/truncate`),
      nFlush(`rho:io:fs:native:1.0.0/flush`),
-     nClose(`rho:io:fs:native:1.0.0/close`)
+     nClose(`rho:io:fs:native:1.0.0/close`),
+     nReadLine(`rho:io:fs:native:1.0.0/readLine`),
+     nReadAllLines(`rho:io:fs:native:1.0.0/readAllLines`),
+     nAppendLines(`rho:io:fs:native:1.0.0/appendLines`)
    in {{
      {DIR_AGENT_SRC}
      |

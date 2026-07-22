@@ -1,10 +1,11 @@
 // File agent — wraps a native fd with the FIP `File` method surface.
 //
 // Currently ships: `read`, `write`, `seek`, `tell`, `size`,
-// `truncate`, `flush`, `close`, `default`. Extended in follow-up
-// PRs with `readAt`, `writeAt`, `lockRange` (all need range-lock
-// infrastructure, Phase 4), `chmod`, `chown` (need mode-string
-// parser), plus line-based `text` / `lines` / `mapReduceLines*`.
+// `truncate`, `flush`, `close`, `readLine`, `lines`, `appendLines`,
+// `default`. Extended in follow-up PRs with `readAt`, `writeAt`,
+// `lockRange` (all need range-lock infrastructure, Phase 4),
+// `chmod`, `chown` (need mode-string parser), plus `text` /
+// `forEachLine` / `mapReduceLines*` (need callback-handler dispatch).
 //
 // This file is an `agent` block that expects the enclosing scope
 // to bind:
@@ -12,7 +13,10 @@
 //   - `nRead`, `nWrite`,
 //     `nSeek`, `nTell`,
 //     `nSize`, `nTruncate`,
-//     `nFlush`, `nClose`   — fixed-channel Pars for the native
+//     `nFlush`, `nClose`,
+//     `nReadLine`,
+//     `nReadAllLines`,
+//     `nAppendLines`       — fixed-channel Pars for the native
 //                            primitives, obtained via `NormalizerEnv`
 //                            injection at compile time (see
 //                            `interpreter::io::injections`).
@@ -156,6 +160,67 @@ agent File {
     for (@fd <<- @(*this, "fd")) {
       try <- nClose!?(fd) {
         return!([true])
+      }
+      catch @[code, msg] {
+        return!([false, code, msg])
+      }
+    }
+  } |
+
+  method readLine() {
+    // Reads bytes from the current position until the next `\n`
+    // (or EOF). Advances the cursor to just past the newline.
+    // Returns the line as a String with the trailing `\n` (and
+    // preceding `\r` for CRLF) stripped. EOF with no bytes read
+    // returns [true, ""] -- indistinguishable from a real empty
+    // line; callers who need to detect EOF unambiguously can
+    // compare `tell()` against `size()` afterward. Native caps
+    // any single line at 16 MiB and returns FSERR_BAD_ARG beyond
+    // that.
+    for (@fd <<- @(*this, "fd")) {
+      try @[line] <- nReadLine!?(fd) {
+        return!([true, line])
+      }
+      catch @[code, msg] {
+        return!([false, code, msg])
+      }
+    }
+  } |
+
+  method lines() {
+    // Reads from the current position to EOF, splits on `\n`,
+    // and returns the list of lines. A trailing newline is
+    // absorbed (so `"a\nb\n"` yields `["a", "b"]`, not
+    // `["a", "b", ""]`); each line has any trailing `\r`
+    // stripped. Advances the cursor to EOF. Native caps the
+    // total byte count at 64 MiB per call; larger files should
+    // be streamed via `readLine` in a loop.
+    for (@fd <<- @(*this, "fd")) {
+      try @[list] <- nReadAllLines!?(fd) {
+        return!([true, list])
+      }
+      catch @[code, msg] {
+        return!([false, code, msg])
+      }
+    }
+  } |
+
+  method appendLines(lineList) {
+    // Writes each String in `lineList` followed by a single
+    // `\n` at the current position, advancing the cursor.
+    // Returns `[true, nBytes]` where `nBytes` is total bytes
+    // written including the newlines. Requires a writeable fd
+    // (opened in "w", "a", "r+", "w+", or an "x"-suffixed
+    // variant); otherwise the native returns FSERR_PERM.
+    //
+    // The name "appendLines" refers to writing lines at the
+    // current cursor position -- it does NOT imply the fd was
+    // opened in append mode. For fds opened with "a"/"a+", the
+    // OS overrides the cursor and writes go to EOF, matching
+    // POSIX O_APPEND semantics.
+    for (@fd <<- @(*this, "fd")) {
+      try @[nBytes] <- nAppendLines!?(fd, lineList) {
+        return!([true, nBytes])
       }
       catch @[code, msg] {
         return!([false, code, msg])

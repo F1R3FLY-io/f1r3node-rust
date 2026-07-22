@@ -18,7 +18,8 @@
 //! Native URNs each `.rho` file expects:
 //!
 //! - `file.rho` — `nRead`, `nWrite`, `nSeek`, `nTell`, `nSize`,
-//!   `nTruncate`, `nFlush`, `nClose`.
+//!   `nTruncate`, `nFlush`, `nClose`, `nReadLine`, `nReadAllLines`,
+//!   `nAppendLines`.
 //! - `dir.rho`  — `nQuarantine`, `nEntries`, `nStat`, `nExists`,
 //!   `nRemoveFile`, `nRemoveDir`, `nRename`, `nCopyFile`, `nOpen`,
 //!   plus the `File` constructor channel (`openFile` composes
@@ -26,7 +27,8 @@
 
 /// Source of the `File` agent block. Expects `File`, `nRead`,
 /// `nWrite`, `nSeek`, `nTell`, `nSize`, `nTruncate`, `nFlush`,
-/// `nClose` to be bound in the enclosing scope.
+/// `nClose`, `nReadLine`, `nReadAllLines`, `nAppendLines` to be
+/// bound in the enclosing scope.
 pub const FILE_AGENT_SRC: &str = include_str!("agents/file.rho");
 
 /// Source of the `Dir` agent block. Expects `Dir`, `File`,

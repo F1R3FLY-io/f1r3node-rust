@@ -49,7 +49,7 @@ use crate::rust::interpreter::errors::InterpreterError;
 use crate::rust::interpreter::system_processes::FixedChannels;
 
 /// Return the `NormalizerEnv` bundle for the File I/O native
-/// primitives: the nineteen `rho:io:fs:native:1.0.0/*` URNs
+/// primitives: the twenty-two `rho:io:fs:native:1.0.0/*` URNs
 /// registered in `std_system_processes()`, each mapped to its
 /// fixed-channel `Par` (a `GUnforgeable::GPrivate` under the
 /// hood).
@@ -59,7 +59,7 @@ use crate::rust::interpreter::system_processes::FixedChannels;
 /// crosses the crate boundary. See the module docstring's
 /// "Visibility discipline" section.
 pub(crate) fn fileio_native_urns() -> HashMap<String, Par> {
-    let mut m = HashMap::with_capacity(19);
+    let mut m = HashMap::with_capacity(22);
     m.insert(
         "rho:io:fs:native:1.0.0/open".to_string(),
         FixedChannels::native_open(),
@@ -136,6 +136,18 @@ pub(crate) fn fileio_native_urns() -> HashMap<String, Par> {
         "rho:io:fs:native:1.0.0/chown".to_string(),
         FixedChannels::native_chown(),
     );
+    m.insert(
+        "rho:io:fs:native:1.0.0/readLine".to_string(),
+        FixedChannels::native_read_line(),
+    );
+    m.insert(
+        "rho:io:fs:native:1.0.0/readAllLines".to_string(),
+        FixedChannels::native_read_all_lines(),
+    );
+    m.insert(
+        "rho:io:fs:native:1.0.0/appendLines".to_string(),
+        FixedChannels::native_append_lines(),
+    );
     m
 }
 
@@ -206,6 +218,9 @@ mod tests {
             "rho:io:fs:native:1.0.0/chmod",
             "rho:io:fs:native:1.0.0/quarantine",
             "rho:io:fs:native:1.0.0/chown",
+            "rho:io:fs:native:1.0.0/readLine",
+            "rho:io:fs:native:1.0.0/readAllLines",
+            "rho:io:fs:native:1.0.0/appendLines",
         ];
         for urn in expected {
             assert!(bundle.contains_key(*urn), "bundle missing {urn}");
