@@ -1,0 +1,112 @@
+// Dir agent — wraps a directory root with the FIP `Dir` method surface.
+//
+// Currently ships: `entries`, `stat`, `exists`, `default`. Extended
+// in follow-up PRs with `openFile`, `openDir` (need File-agent
+// composition), `removeFile`, `removeDir`, `rename`, `copyFile`
+// (path-mutating natives), `chmod`, `chown` (need mode-string
+// parser).
+//
+// This file is an `agent` block that expects the enclosing scope
+// to bind:
+//   - `Dir`                — the agent's constructor channel
+//   - `nQuarantine`,
+//     `nEntries`, `nStat`,
+//     `nExists`            — fixed-channel Pars for the native
+//                            primitives, obtained via `NormalizerEnv`
+//                            injection at compile time (see
+//                            `interpreter::io::injections`).
+//
+// Constructor calling convention: the `@rootPath` formal is a
+// process pattern receiving the pre-canonicalized absolute
+// root path as a String (the powerbox canonicalizes it at boot,
+// per `nativeQuarantine`'s documented precondition). Stashed on
+// `@(*this, "root")`.
+//
+// Path-taking methods (`stat`, `exists`) first call
+// `nativeQuarantine(root, relPath)` to canonicalize the relative
+// path and reject any escape via `..` or symlink traversal. Only
+// if quarantine succeeds does the method dispatch to the
+// underlying native with the canonical absolute path. Quarantine
+// failures surface as `[false, "FSERR_QUARANTINE", ...]` tuples
+// directly (they're already in the FSERR shape).
+//
+// `entries()` operates on the root itself and skips quarantine
+// (there's no relPath to check; the root was quarantined at
+// construction time by the powerbox).
+//
+// The genesis-installed `Fs` agent embeds this block inside its
+// own `new`-scope that provides the native URN bindings and
+// never exposes them outward. User code reaches `Dir` instances
+// through `Fs.openDir`.
+//
+// Default-arm reply idiom: same as `File.default` — `args` is in
+// scope via the outer `for(...@args <= this)`, first element is
+// the caller's return channel as a Process, destructure and
+// re-quote with `@` to reply.
+agent Dir {
+  constructor(@rootPath) {
+    // `@rootPath` binds the incoming Process (String) directly.
+    // Persist under a `*this`-keyed subchannel for methods to peek.
+    @(*this, "root")!(rootPath)
+  } |
+
+  method entries() {
+    // Lists the dir root itself. No relPath, so no quarantine
+    // step -- the root was canonicalized + escape-checked at
+    // Dir construction time.
+    for (@root <<- @(*this, "root")) {
+      try @[list] <- nEntries!?(root) {
+        return!([true, list])
+      }
+      catch @[code, msg] {
+        return!([false, code, msg])
+      }
+    }
+  } |
+
+  method stat(relPath) {
+    for (@root <<- @(*this, "root")) {
+      try @[canonPath] <- nQuarantine!?(root, relPath) {
+        try @[record] <- nStat!?(canonPath) {
+          return!([true, record])
+        }
+        catch @[code, msg] {
+          return!([false, code, msg])
+        }
+      }
+      catch @[code, msg] {
+        // Quarantine failure -- typically FSERR_QUARANTINE for
+        // an escape attempt. Forward the tuple verbatim.
+        return!([false, code, msg])
+      }
+    }
+  } |
+
+  method exists(relPath) {
+    for (@root <<- @(*this, "root")) {
+      try @[canonPath] <- nQuarantine!?(root, relPath) {
+        try @[b] <- nExists!?(canonPath) {
+          return!([true, b])
+        }
+        catch @[code, msg] {
+          return!([false, code, msg])
+        }
+      }
+      catch @[code, msg] {
+        return!([false, code, msg])
+      }
+    }
+  } |
+
+  default(...@args) {
+    // Same idiom as `File.default`. `args` is bound by the outer
+    // `for(...@args <= this)` of the desugared dispatch loop;
+    // its first element is the caller's return channel as a
+    // Process. Re-quote with `@` and reply with FSERR_UNSUPPORTED.
+    match args {
+      [returnProc, ...rest] => {
+        @returnProc!([false, "FSERR_UNSUPPORTED", ("Dir agent has no method:", rest)])
+      }
+    }
+  }
+}
