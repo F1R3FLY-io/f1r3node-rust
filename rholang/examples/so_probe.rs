@@ -15,24 +15,59 @@
 //! Both terms are built ITERATIVELY (no build-time / drop-time deep recursion),
 //! so the ONLY deep recursion measured is the evaluator's own call stack.
 
-use models::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
-use models::rust::utils::{new_eplus_par, new_elist_par, new_gint_par};
+use models::rhoapi::expr::ExprInstance;
+use models::rhoapi::{BindPattern, EList, EPlus, Expr, ListParWithRandom, Par, TaggedContinuation};
 use rholang::rust::interpreter::env::Env;
 use rholang::rust::interpreter::test_utils::persistent_store_tester::create_test_space;
 use rspace_plus_plus::rspace::rspace::RSpace;
 
+// Direct, CLONE-FREE constructors. `models::rust::utils::new_eplus_par` /
+// `new_elist_par` route through `Par::with_locally_free`, which does `..self.clone()`
+// — so accumulating with them deep-clones the whole term every iteration (O(n^2) work,
+// O(n) recursive-clone stack). That would overflow in the BUILDER before eval runs and
+// confound the measurement. Here every step MOVES the accumulator (no clone), so build
+// is genuinely O(1) stack per level and the only deep recursion measured is the evaluator.
+fn gint_par(v: i64) -> Par {
+    Par {
+        exprs: vec![Expr {
+            expr_instance: Some(ExprInstance::GInt(v)),
+        }],
+        ..Default::default()
+    }
+}
+
 fn build_plus(depth: usize) -> Par {
-    let mut t = new_gint_par(0, Vec::new(), false);
+    let mut t = gint_par(0);
     for _ in 0..depth {
-        t = new_eplus_par(t, new_gint_par(1, Vec::new(), false));
+        let e = Expr {
+            expr_instance: Some(ExprInstance::EPlusBody(EPlus {
+                p1: Some(t),
+                p2: Some(gint_par(1)),
+            })),
+        };
+        t = Par {
+            exprs: vec![e],
+            ..Default::default()
+        };
     }
     t
 }
 
 fn build_list(depth: usize) -> Par {
-    let mut u = new_gint_par(0, Vec::new(), false);
+    let mut u = gint_par(0);
     for _ in 0..depth {
-        u = new_elist_par(vec![u], Vec::new(), false, None, Vec::new(), false);
+        let e = Expr {
+            expr_instance: Some(ExprInstance::EListBody(EList {
+                ps: vec![u],
+                locally_free: Vec::new(),
+                connective_used: false,
+                remainder: None,
+            })),
+        };
+        u = Par {
+            exprs: vec![e],
+            ..Default::default()
+        };
     }
     u
 }
@@ -67,31 +102,37 @@ fn main() {
     });
 
     let kind_for_thread = kind.clone();
-    let par = match kind.as_str() {
-        "list" => build_list(depth),
-        _ => build_plus(depth),
-    };
 
-    // Evaluate on a fresh thread with the DEFAULT 8 MB stack — this is the point.
+    // Build the term, evaluate it, and DROP both the input term and the (possibly
+    // deeply-nested) result ALL on the worker thread — main only ever sees a shallow
+    // Result<(), String>. This isolates the measurement to the evaluator's recursion:
+    // the term build is iterative (no deep stack) and the deep Drop happens here, on a
+    // thread whose base stack `stack_mib` we control, so neither confounds the eval depth.
     let handle = std::thread::Builder::new()
         .stack_size(stack_mib * 1024 * 1024)
-        .spawn(move || {
+        .spawn(move || -> Result<(), String> {
+            let par = match kind_for_thread.as_str() {
+                "list" => build_list(depth),
+                _ => build_plus(depth),
+            };
             let env: Env<Par> = Env::new();
-            reducer.eval_expr(&par, &env)
+            let result = reducer.eval_expr(&par, &env).map_err(|e| format!("{:?}", e));
+            // `result` (deep for `list`) and `par` drop here, on the worker thread.
+            result.map(|_p| ())
         })
         .expect("spawn eval thread");
 
     match handle.join() {
-        Ok(Ok(_result)) => {
-            println!("OK kind={} depth={}", kind_for_thread, depth);
+        Ok(Ok(())) => {
+            println!("OK kind={} depth={}", kind, depth);
             std::process::exit(0);
         }
         Ok(Err(e)) => {
-            println!("ERR kind={} depth={} err={:?}", kind_for_thread, depth, e);
+            println!("ERR kind={} depth={} err={}", kind, depth, e);
             std::process::exit(2);
         }
         Err(_) => {
-            println!("PANIC kind={} depth={}", kind_for_thread, depth);
+            println!("PANIC kind={} depth={}", kind, depth);
             std::process::exit(3);
         }
     }
