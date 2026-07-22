@@ -171,8 +171,6 @@ pub(crate) fn idle_drive_cell() -> Arc<std::sync::RwLock<Arc<DriveState>>> {
 
 /// RAII decrement of `live`. Dropped LAST inside each detached task (after the error push), so the
 /// sink is complete when `done` fires. Covers Ok / Err / `?` / panic — no missed decrement.
-// dead_code allow removed once `spawn_detached` (below) is wired at the five join sites + `inj`.
-#[allow(dead_code)]
 struct LiveGuard(Arc<DriveState>);
 
 impl Drop for LiveGuard {
@@ -197,7 +195,6 @@ impl Drop for LiveGuard {
 /// The child's `Ok(_)` value is discarded — the five sites only ever conveyed Skip/error upward
 /// (NonDeterministicCall / FailedNonDeterministicCall arise only from the direct-await `else`
 /// branches, never one of the five sites) — only `Err` and panics are captured, wrapped in `Located`.
-#[allow(dead_code)]
 fn spawn_detached<T: std::marker::Send + 'static>(
     drive: &Arc<DriveState>,
     child_path: SmallVec<[u32; 8]>,
@@ -236,7 +233,6 @@ fn spawn_detached<T: std::marker::Send + 'static>(
 
 /// The coordinate (path) carried by a `Located` error, or `&[]` for a bare error. Used by `inj` to
 /// sort the sink into a deterministic DISPLAY order (NOT consensus).
-#[allow(dead_code)]
 fn located_path(e: &InterpreterError) -> &[u32] {
     match e {
         InterpreterError::Located { path, .. } => path,
@@ -261,8 +257,6 @@ pub struct DebruijnInterpreter {
     /// before evaluating and the five join sites snapshot it via `load_drive`. Internal machinery
     /// (not `pub`); holds an `idle` placeholder until `inj` seeds it. `std::sync::RwLock` is spelled
     /// out to avoid clashing with the `tokio::sync::RwLock` import above.
-    // dead_code allow removed once `inj` + the five join sites read it.
-    #[allow(dead_code)]
     pub(crate) drive: Arc<std::sync::RwLock<Arc<DriveState>>>,
 }
 
@@ -709,48 +703,61 @@ impl DebruijnInterpreter {
             metrics::counter!("reducer.eval_par.term_count", "source" => "rholang")
                 .increment(futures.len() as u64);
 
-            let join_start = std::time::Instant::now();
-            let mut unordered = FuturesUnordered::new();
+            // SITE 1 (eval_inner par-join) — DETACHED. Instead of `tokio::spawn` + `await` (which pins
+            // an O(N) parked-parent chain), detach each parallel branch as a COUNTED task on the deploy's
+            // drive: errors flow to the drive sink (Located at the branch coordinate) and surface at
+            // `inj` drain. Concurrency is UNCHANGED (still one task per branch) => COMM order unchanged
+            // => no consensus divergence (proven by the differential harness). The parent returns
+            // immediately with Ok(()).
+            let drive = self.drive.read().expect("drive cell poisoned").clone();
             for (index, fut) in futures.into_iter().enumerate() {
-                // Spawn each branch as its own task. This preserves actual runtime
-                // parallelism and gives deeply recursive branches an independent
-                // task stack while still reporting errors in source order below.
-                let handle = tokio::spawn(fut);
-                unordered.push(async move { (index, handle.await) });
+                let mut child = path.clone();
+                child.push(index as u32);
+                spawn_detached(&drive, child, fut);
             }
-
-            let mut flattened_results: Vec<(usize, InterpreterError)> = Vec::new();
-            while let Some((index, joined)) = unordered.next().await {
-                match joined {
-                    Ok(Ok(())) => {}
-                    Ok(Err(err)) => flattened_results.push((index, err)),
-                    Err(join_error) => flattened_results.push((
-                        index,
-                        InterpreterError::ReduceError(format!(
-                            "parallel eval task failed: {join_error}"
-                        )),
-                    )),
-                }
-            }
-            metrics::counter!("reducer.eval_par.join_ns", "source" => "rholang")
-                .increment(join_start.elapsed().as_nanos() as u64);
-
-            flattened_results.sort_by_key(|(index, _)| *index);
-            let stable_errors = flattened_results
-                .into_iter()
-                .map(|(_, err)| err)
-                .collect::<Vec<_>>();
-
-            match self.aggregate_evaluator_errors(stable_errors) {
-                Ok(_) => Ok(()),
-                Err(e) => Err(e),
-            }
+            Ok(())
         }
     }
 
     pub async fn inj(&self, par: Par, rand: Blake2b512Random) -> Result<(), InterpreterError> {
-        // Root eval task at coordinate []. (Rewritten to seed + drain the DriveState in a later commit.)
-        self.eval(par, &Env::new(), rand).await
+        // Seed a FRESH completion driver for THIS deploy (live=1 = the root eval task) and install it so
+        // every spawn site AND the dispatch re-entry observe it via `self.drive`. Deploys are serialized
+        // by `evaluate(&mut self)`, and `inj` fully drains (awaits live -> 0) before returning, so a
+        // single live driver at a time.
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let drive = Arc::new(DriveState {
+            live: AtomicUsize::new(1),
+            sink: Mutex::new(Vec::new()),
+            done: Mutex::new(Some(tx)),
+        });
+        *self.drive.write().expect("drive cell poisoned") = drive.clone();
+
+        // The root eval runs as task 0 at coordinate []. Its OWN (synchronous) error is recorded
+        // directly here; detached children record theirs through `spawn_detached`.
+        let root = LiveGuard(drive.clone());
+        let env = Env::new();
+        if let Err(e) = self.eval(par, &env, rand).await {
+            drive
+                .sink
+                .lock()
+                .expect("DriveState.sink mutex poisoned")
+                .push(InterpreterError::Located {
+                    path: Vec::new(),
+                    source: Box::new(e),
+                });
+        }
+        drop(root); // may fire `done` immediately if every detached child already finished
+        let _ = rx.await; // wake once live -> 0 (root + every detached task complete)
+
+        // Deterministic DISPLAY order (by coordinate). NOT consensus — `aggregate_evaluator_errors`
+        // classifies on `root_cause()` (Located-unwrapping), preserving the exact cost discriminant.
+        let mut errors =
+            std::mem::take(&mut *drive.sink.lock().expect("DriveState.sink mutex poisoned"));
+        errors.sort_by(|a, b| located_path(a).cmp(located_path(b)));
+        match self.aggregate_evaluator_errors(errors) {
+            Ok(_) => Ok(()),
+            Err(e) => Err(e),
+        }
     }
 
     /**
