@@ -669,3 +669,67 @@ async fn dir_agent_copy_file_duplicates_child() {
         "expected 12 bytes copied, got: {sink}"
     );
 }
+
+/// Regression guard for a HIGH-severity finding from the security
+/// review of PR #141's mutating-methods commit: `removeDir("", true)`
+/// (or `"."`, `"./"`, `"/"`) used to resolve through
+/// `canonicalize_and_quarantine` to the root path itself, letting
+/// a caller who legitimately holds only a `Dir` handle wipe the
+/// entire sandbox via `tokio::fs::remove_dir_all(root)`.
+///
+/// Fix landed in `path.rs`: empty and `.`-only tails now surface
+/// `FSERR_BAD_ARG` before any filesystem op. This test asserts
+/// the reply is that FSERR and the root directory still exists
+/// on disk after the call.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn dir_agent_remove_dir_empty_relpath_is_rejected() {
+    let root = temp_dir("empty_relpath_reject");
+    // Populate the root with a child so we can prove it wasn't
+    // wiped (root existence alone would prove it, but a child
+    // makes the test intent unambiguous).
+    let canary = root.join("canary.txt");
+    std::fs::write(&canary, b"i am still here").expect("write canary");
+
+    // Exercise all four spelling variants of "the root itself":
+    // "", ".", "./", "/". Each must be rejected with the same
+    // FSERR_BAD_ARG code.
+    for rel in ["", ".", "./", "/"] {
+        let body = format!(
+            r#"
+            new rmRet in {{
+              dirAgent!(*rmRet, "removeDir", "{rel}", true) |
+              for (@result <- rmRet) {{ @"sink"!(("attempt", "{rel}", result)) }}
+            }}
+        "#
+        );
+        let src = wrap(&body, &root.to_string_lossy());
+
+        let runtime = mk_runtime().await;
+        let rand = Blake2b512Random::create_from_bytes(&[]);
+        let phlo = Cost::create(i64::MAX, "dir-agent-empty-relpath-reject".to_string());
+        let result = runtime
+            .evaluate(&src, phlo, dir_agent_env(), rand)
+            .await
+            .expect("evaluate");
+        assert!(
+            result.errors.is_empty(),
+            "eval errors for rel={rel:?}: {:?}",
+            result.errors
+        );
+
+        let sink = observe_sink(&runtime).await;
+
+        // Reply must be a false-tuple carrying FSERR_BAD_ARG.
+        assert!(
+            sink.contains("GBool(false)") && sink.contains(r#"GString("FSERR_BAD_ARG")"#),
+            "expected FSERR_BAD_ARG on rel={rel:?}, got: {sink}"
+        );
+        // Root directory and canary must still exist on disk.
+        assert!(
+            root.exists() && canary.exists(),
+            "root or canary was destroyed by removeDir({rel:?}, true)"
+        );
+    }
+
+    let _ = std::fs::remove_dir_all(&root);
+}

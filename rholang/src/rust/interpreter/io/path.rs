@@ -98,6 +98,27 @@ pub fn canonicalize_and_quarantine(root: &Path, rel: &str) -> Result<PathBuf, Qu
     // paths past the join. We also strip a leading `./` for
     // hygiene.
     let stripped: &str = rel.trim_start_matches('/').trim_start_matches("./");
+
+    // Empty or `.`-only tails would resolve to `root` itself,
+    // which lets `removeDir("", true)` (or `removeDir(".", true)`,
+    // `rename("", ...)`, etc.) target the sandbox root -- a
+    // caller who legitimately holds only a `Dir` handle could
+    // wipe the entire sandbox. Reject at the quarantine layer
+    // so every path-taking native inherits the check (rather
+    // than requiring each agent method to remember). A caller
+    // that actually wants to operate on the root uses a
+    // root-scoped method (`entries()`, future `stat()`-on-self)
+    // instead.
+    if stripped.is_empty()
+        || Path::new(stripped)
+            .components()
+            .all(|c| matches!(c, Component::CurDir))
+    {
+        return Err(QuarantineError::BadArg(
+            "rel path resolves to the root itself; use root-scoped methods instead".to_string(),
+        ));
+    }
+
     let joined = root.join(stripped);
 
     // Fast path: fully-existing target.
@@ -267,5 +288,62 @@ mod tests {
         let (_g, root) = scratch_tree();
         let err = canonicalize_and_quarantine(&root, "a\0b").unwrap_err();
         assert_eq!(err.code(), FSERR_BAD_ARG);
+    }
+
+    /// Empty relpath must not resolve to the root itself, or
+    /// `removeDir("", true)` wipes the sandbox.
+    #[test]
+    fn empty_rel_is_bad_arg() {
+        let (_g, root) = scratch_tree();
+        let err = canonicalize_and_quarantine(&root, "").unwrap_err();
+        assert_eq!(err.code(), FSERR_BAD_ARG);
+    }
+
+    /// `"."`, `"./"`, and any all-`CurDir`-components tail must
+    /// also be rejected -- they'd equally resolve to the root.
+    #[test]
+    fn dot_only_rel_is_bad_arg() {
+        let (_g, root) = scratch_tree();
+        for rel in [".", "./", "./.", "././.", "././"] {
+            let err = canonicalize_and_quarantine(&root, rel).unwrap_err();
+            assert_eq!(
+                err.code(),
+                FSERR_BAD_ARG,
+                "expected FSERR_BAD_ARG for rel {rel:?}"
+            );
+        }
+    }
+
+    /// Leading-slash-only forms (`/`, `//`) are stripped to
+    /// empty and must be rejected too.
+    #[test]
+    fn slash_only_rel_is_bad_arg() {
+        let (_g, root) = scratch_tree();
+        for rel in ["/", "//", "///"] {
+            let err = canonicalize_and_quarantine(&root, rel).unwrap_err();
+            assert_eq!(
+                err.code(),
+                FSERR_BAD_ARG,
+                "expected FSERR_BAD_ARG for rel {rel:?}"
+            );
+        }
+    }
+
+    /// Leading slash on a real name still works (stripped, then
+    /// treated as relative-to-root). Regression guard so the
+    /// empty-tail fix doesn't over-reject legitimate paths.
+    #[test]
+    fn leading_slash_on_real_name_still_works() {
+        let (_g, root) = scratch_tree();
+        let out = canonicalize_and_quarantine(&root, "/a").unwrap();
+        assert_eq!(out, root.join("a"));
+    }
+
+    /// `./name` (leading `./` stripped) still works.
+    #[test]
+    fn leading_dot_slash_on_real_name_still_works() {
+        let (_g, root) = scratch_tree();
+        let out = canonicalize_and_quarantine(&root, "./a").unwrap();
+        assert_eq!(out, root.join("a"));
     }
 }
