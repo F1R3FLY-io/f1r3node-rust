@@ -48,15 +48,20 @@
 //! * `Default`/`Debug` — prost-derive generates both alongside `Message`;
 //!   replicated here (Debug prints the four proto fields in declaration
 //!   order and omits the cell, matching the old derived output).
-//! * serde `Serialize`/`Deserialize` — DERIVED, with `#[serde(skip)]` on the
-//!   cell: serde_derive emits `serialize_struct("EPathMap", 4)` + the four
-//!   fields in declaration order, with `locally_free` routed through
-//!   `serialize_as_empty_bytes` — the SAME macro expansion the generated
-//!   struct had (`models/build.rs` injects the identical field attribute),
-//!   so the layout is identical BY CONSTRUCTION. The asymmetry is
-//!   serialize-ONLY: deserialize reads real `locally_free` bytes from the
-//!   stream (no `deserialize_with`), exactly as before. Gated by the P0
-//!   serde goldens + the derived-twin proptest differential.
+//! * serde `Serialize` — HAND-WRITTEN (see the `impl serde::Serialize` below);
+//!   `Deserialize` — DERIVED, with `#[serde(skip)]` on the cell. The
+//!   Serialize impl emits `serialize_struct("EPathMap", 4)` + the four fields
+//!   in declaration order, `locally_free` ALWAYS empty (an inline `EmptyBytes`
+//!   wrapper = `serialize_bytes(&[])`, byte-identical to the dropped
+//!   `serialize_with = serialize_as_empty_bytes` attribute). It differs from a
+//!   pure derive in ONE way: a GROUND map (`eval_stable_epathmap`) serializes
+//!   its `ps` in CANONICAL TRIE ORDER (`ground_canonical_ps`) so the event-hash
+//!   preimage is a pure function of the entry set (producer-independent);
+//!   non-ground/empty maps stay byte-identical to the P3 derived layout. The
+//!   asymmetry is serialize-ONLY: the derived `Deserialize` reads real
+//!   `locally_free` bytes from the stream (no `deserialize_with`), exactly as
+//!   before. Gated by the P0 serde goldens + the canonical-twin proptest
+//!   differential.
 //! * `PartialEq`/`Hash` — the AlwaysEqual impls MOVED from
 //!   `models/src/lib.rs:613-627`: `ps`/`connective_used`/`remainder` only,
 //!   `locally_free` IGNORED (scalapb `AlwaysEqual[BitSet]` parity).
@@ -117,8 +122,8 @@ use prost::DecodeError;
 
 use super::canonical_path::decode_trie_path;
 use super::pathmap_crate_type_mapper::{
-    encode_ground_field8, eval_stable_epathmap, fields_match_canonical_prost, ground_field8_len,
-    ground_path_stream, intern_epathmap_via_store, InternedEPathMap,
+    encode_ground_field8, eval_stable_epathmap, fields_match_canonical_prost, ground_canonical_ps,
+    ground_field8_len, ground_path_stream, intern_epathmap_via_store, InternedEPathMap,
 };
 use crate::rhoapi::{Par, Var};
 
@@ -288,7 +293,7 @@ impl<'de> serde::Deserialize<'de> for SharedPars {
 /// Construction: out-of-module struct literals are impossible (the cell is
 /// private) — use [`EPathMap::new`] or [`Default`] (amendment PM-2; every
 /// former literal site is migrated). Struct PATTERNS with `..` keep working.
-#[derive(serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
+#[derive(serde::Deserialize, utoipa::ToSchema)]
 pub struct EPathMap {
     /// Path entries (proto tag 1, repeated `Par`). Stage L2: an Arc-backed
     /// [`SharedPars`] — clone = refcount bump, reads transparent via
@@ -301,8 +306,10 @@ pub struct EPathMap {
     pub ps: SharedPars,
     /// Free-variable bitset (proto tag 3, bytes). Serde serializes this as
     /// EMPTY bytes (serialize-only normalization, `models/build.rs` parity);
-    /// prost bytes RETAIN it; `==`/`Hash` ignore it; `Ord` compares it.
-    #[serde(serialize_with = "crate::rust::serde_helpers::serialize_as_empty_bytes")]
+    /// prost bytes RETAIN it; `==`/`Hash` ignore it; `Ord` compares it. The
+    /// serialize-only blanking now lives in the hand-written `Serialize` impl
+    /// below (the `serialize_with` attribute was dropped when the derive was);
+    /// the derived `Deserialize` still reads REAL bytes from the stream.
     pub locally_free: Vec<u8>,
     /// Whether a connective is used below (proto tag 4, bool).
     pub connective_used: bool,
@@ -315,6 +322,65 @@ pub struct EPathMap {
     #[serde(skip)]
     #[schema(ignore)]
     intern: OnceLock<Arc<InternedEPathMap>>,
+}
+
+impl serde::Serialize for EPathMap {
+    /// Hand-written (the P3 derive is dropped) so that a GROUND map's serde
+    /// bytes — the bincode/JSON EVENT-HASH PREIMAGE — are a PURE FUNCTION OF
+    /// THE ENTRY SET: producer-, construction-order-, and multiplicity-
+    /// independent. This closes the flaky `spliced_matches_direct_arbitrary`
+    /// root cause (the intern entry is content-addressed by the order-
+    /// insensitive `U(m)` yet the old derive cached an order-SENSITIVE serde
+    /// preimage) and the underlying consensus hazard (two producers building
+    /// the same ground map in different orders emitting different event-hash
+    /// bytes).
+    ///
+    /// Layout — the SAME 4-field struct as the P3 derived twin
+    /// (`serialize_struct("EPathMap", 4)` over `ps`, `locally_free`,
+    /// `connective_used`, `remainder`; the `intern` cell is never serialized):
+    ///
+    ///   * GROUND (`eval_stable_epathmap(self) && !self.ps.is_empty()`): `ps`
+    ///     in CANONICAL trie order (deduped, recursively canonical) via
+    ///     [`ground_canonical_ps`] instead of construction order. The metadata
+    ///     fields are already at their ground defaults (the predicate forces
+    ///     `locally_free` empty, `!connective_used`, `remainder == None`), so
+    ///     the uniform tail below emits `false` / `None` verbatim — matching
+    ///     the GROUND arm of `spliced_event_bytes::emit_epathmap`.
+    ///   * NON-GROUND / empty: BYTE-IDENTICAL to the P3 derived layout — `ps`
+    ///     as-is (the `SharedPars` transparent seq), then the same tail.
+    ///
+    /// `locally_free` is ALWAYS emitted as EMPTY bytes (the serialize-only
+    /// normalization the dropped `serialize_with = serialize_as_empty_bytes`
+    /// attribute used to provide); the derived `Deserialize` is retained and
+    /// still reads the stream's REAL `locally_free` bytes (the documented
+    /// serialize-only asymmetry, plan amendment PM-1).
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+
+        /// The serialize-only `locally_free` normalization: EMPTY bytes
+        /// regardless of content (byte-identical to
+        /// `serde_helpers::serialize_as_empty_bytes` — `serialize_bytes(&[])`).
+        struct EmptyBytes;
+        impl serde::Serialize for EmptyBytes {
+            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                serializer.serialize_bytes(&[])
+            }
+        }
+
+        let mut state = serializer.serialize_struct("EPathMap", 4)?;
+        if eval_stable_epathmap(self) && !self.ps.is_empty() {
+            // GROUND: canonical trie order (producer-independent). The tail
+            // below emits the ground defaults the predicate guarantees.
+            state.serialize_field("ps", &ground_canonical_ps(self))?;
+        } else {
+            // NON-GROUND / empty: the `SharedPars` transparent seq, unchanged.
+            state.serialize_field("ps", &self.ps)?;
+        }
+        state.serialize_field("locally_free", &EmptyBytes)?;
+        state.serialize_field("connective_used", &self.connective_used)?;
+        state.serialize_field("remainder", &self.remainder)?;
+        state.end()
+    }
 }
 
 impl EPathMap {

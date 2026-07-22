@@ -611,7 +611,12 @@ pub(crate) fn ground_canonical_prost(path_stream: &[u8]) -> Vec<u8> {
 /// (`decode∘encode` is the codec's canonical fixed point). This is the order
 /// that makes the structural `EPathMap::eq`/`Hash`/`Ord` insensitive to
 /// construction order.
-fn canonical_ps_from_trie(map: &RholangPathMap) -> Vec<Par> {
+///
+/// `pub(crate)` since the serde/event-hash surface ([`ground_canonical_ps`],
+/// consumed by the hand-written `EPathMap::serialize` and the spliced
+/// `emit_epathmap`) reads a GROUND map's canonical `ps` directly off the
+/// (interned or throwaway) trie.
+pub(crate) fn canonical_ps_from_trie(map: &RholangPathMap) -> Vec<Par> {
     use pathmap::zipper::{ZipperIteration, ZipperMoving};
     let mut rz = map.read_zipper();
     let mut ps = Vec::new();
@@ -620,6 +625,34 @@ fn canonical_ps_from_trie(map: &RholangPathMap) -> Vec<Par> {
         ps.push(decode_trie_path(key).expect("an intern trie key is always a valid codec path"));
     }
     ps
+}
+
+/// The canonical (producer-independent) `ps` of a GROUND map, for the
+/// serde/event-hash preimage: trie order, recursively canonical, deduped —
+/// [`canonical_ps_from_trie`] over the map's trie.
+///
+/// Reuses the interned trie when the shadow cell is ALREADY filled (a
+/// read-only [`EPathMap::interned_handle`] peek — NO trie rebuild, NO intern,
+/// NO global-store mutation: hashing must never mutate intern-store state).
+/// Otherwise it builds a PURE LOCAL THROWAWAY trie via
+/// [`create_pathmap_from_elements`] (which allocates a fresh `RholangPathMap`
+/// and never touches the global store). Either way the result is a function of
+/// the entry SET alone (idempotent insertion = dedup; trie order = canonical),
+/// so a permuted or duplicated construction yields the SAME `ps`.
+///
+/// Byte-equivalence of the two branches: the interned trie is built at
+/// [`intern_epathmap_via_store`]'s ground fast-path by the SAME
+/// `create_pathmap_from_elements(&ps, None)` call the else-branch makes, so
+/// `canonical_ps_from_trie` reads an identical trie either way.
+///
+/// Callers gate on `eval_stable_epathmap(map) && !map.ps.is_empty()` (the
+/// GROUND predicate) — a non-ground or empty map has no canonical reordering
+/// and takes the as-is arm.
+pub(crate) fn ground_canonical_ps(e_pathmap: &EPathMap) -> Vec<Par> {
+    match e_pathmap.interned_handle() {
+        Some(interned) => canonical_ps_from_trie(&interned.map),
+        None => canonical_ps_from_trie(&create_pathmap_from_elements(&e_pathmap.ps, None).map),
+    }
 }
 
 /// Canonicalize a GROUND EPathMap: return an equal-valued map whose `ps` is in

@@ -41,7 +41,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use models::create_bit_vector;
 use models::rhoapi::{EPathMap, Par, Var};
-use models::rust::pathmap_crate_type_mapper::PathMapCrateTypeMapper;
+use models::rust::pathmap_crate_type_mapper::{canonicalize_ground_epathmap, PathMapCrateTypeMapper};
 use proptest::prelude::*;
 use prost::Message;
 
@@ -342,10 +342,14 @@ fn interned_inner_map_composes_byte_identically_in_an_outer_encode() {
 // 3. Serde: derived-twin differential + the serialize-only asymmetry
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// The OLD generated type's serde shape, verbatim (what models/build.rs used
-/// to emit): same struct name, same field names and order, the SAME
-/// `serialize_with` on `locally_free`, no cell. The wrapper must be
-/// serialization-indistinguishable from this twin.
+/// The CANONICAL serde-oracle twin: same struct name, field names and order,
+/// the same `serialize_with` on `locally_free`, no cell — but with the `ps`
+/// already in the wrapper's canonical form (trie order for a GROUND map, as-is
+/// otherwise, via [`canonicalize_ground_epathmap`]). The hand-written
+/// `EPathMap::serialize` canonicalizes ground `ps` at the serializer, so the
+/// wrapper must be serialization-indistinguishable from THIS twin (the pre-
+/// hardening twin used raw construction order and only matched non-ground /
+/// already-canonical maps).
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(rename = "EPathMap")]
 struct DerivedTwin {
@@ -357,10 +361,14 @@ struct DerivedTwin {
 }
 
 fn derived_twin(map: &EPathMap) -> DerivedTwin {
+    // Mirror the wrapper's hand-written Serialize: a GROUND map's `ps` is
+    // canonical trie order (`canonicalize_ground_epathmap` returns an equal
+    // map with canonical `ps`; non-ground/empty maps come back unchanged).
+    let canonical = canonicalize_ground_epathmap(map);
     DerivedTwin {
-        // L2: the twin keeps a plain `Vec<Par>` (it IS the pre-L2 layout
-        // oracle) — extract an owned copy from the shared payload.
-        ps: map.ps.to_vec(),
+        // L2: the twin keeps a plain `Vec<Par>` (it IS the layout oracle) —
+        // extract an owned copy from the shared (canonical) payload.
+        ps: canonical.ps.to_vec(),
         locally_free: map.locally_free.clone(),
         connective_used: map.connective_used,
         remainder: map.remainder.clone(),
@@ -404,10 +412,14 @@ proptest! {
             "a FILLED cell must be JSON-invisible");
 
         // Deserialize differential: the wrapper reads the twin's stream to
-        // the same field values (locally_free EMPTY on this stream — the
+        // the canonical field values (a GROUND map's stream carries `ps` in
+        // trie order — the serialize-only canonicalization; a round trip lands
+        // on `canonicalize_ground_epathmap(map)`, metadata defaults). Non-ground
+        // maps carry `ps` verbatim. `locally_free` is EMPTY on this stream (the
         // twin serialized it as empty).
         let de: EPathMap = bincode::deserialize(&twin_bincode).expect("wrapper de");
-        prop_assert_eq!(&de.ps, &map.ps);
+        let canonical = canonicalize_ground_epathmap(&map);
+        prop_assert_eq!(&de.ps, &canonical.ps);
         prop_assert!(de.locally_free.is_empty());
         prop_assert_eq!(de.connective_used, map.connective_used);
         prop_assert_eq!(&de.remainder, &map.remainder);
