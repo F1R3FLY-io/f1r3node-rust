@@ -33,7 +33,7 @@ use std::path::PathBuf;
 use casper::rust::util::construct_deploy;
 use casper::rust::util::rholang::runtime_manager::RuntimeManager;
 use models::rust::block::state_hash::StateHash;
-use models::rust::casper::protocol::casper_message::{DeployData, ProcessedDeploy};
+use models::rust::casper::protocol::casper_message::{DeployData, Event, ProcessedDeploy};
 use crypto::rust::signatures::signed::Signed;
 use serde::{Deserialize, Serialize};
 
@@ -58,27 +58,27 @@ fn fnv1a(bytes: &[u8]) -> u64 {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct Golden {
     is_failed: bool,
+    /// Per-COMM cost (the fork's consensus cost unit). The ACTUAL COMM count is fixed for a given
+    /// deploy, so this is deterministic across runs/processes (unlike the raw deployLog length).
     cost: u64,
-    /// Number of events in the deployLog. Deterministic (and thus cross-process portable) for programs
-    /// with a deterministic COMM structure; asserted only when `check_log`.
-    deploy_log_len: usize,
-    /// FNV-1a over the SORTED (order-canonical) multiset of per-event Debug renderings. Portable for
-    /// programs with a deterministic COMM multiset over deploy-local channels; asserted only when `check_log`.
-    deploy_log_fnv: u64,
+    /// Number of COMM events (actual matches) in the deployLog. Deterministic: equals the number of
+    /// COMMs that fired (independent of scheduling-dependent dangling deposits / re-install events).
+    comm_count: usize,
+    /// FNV-1a over the SORTED (order-canonical) multiset of the COMM events' Debug renderings. The COMM
+    /// events carry the matched channels + data hashes (deploy-local, deterministic under a fixed deploy
+    /// signature); the STANDALONE Produce/Consume deposits & dangling re-installs — whose count is
+    /// scheduling-dependent EVEN ON THE OLD DRIVER — are excluded, so this IS cross-process portable.
+    comm_fnv: u64,
     /// True iff post_state == genesis pre-state (the program left the tuplespace balanced). Portable.
     balanced: bool,
-    /// Whether this program's deployLog is deterministic across processes (deploy-local channels + a
-    /// deterministic COMM multiset). When false, the deployLog invariants (#4) are covered by Layer-1
-    /// (in-process replay==play) only, because a racy COMM structure (e.g. a persistent send racing
-    /// multiple consumers) makes the absolute deployLog non-portable even on the OLD driver.
-    check_log: bool,
 }
 
-/// A corpus entry: a name, the Rholang source, and whether its deployLog is cross-process deterministic.
+/// A corpus entry: a name and the Rholang source. Every program's cost/is_failed/balanced + COMM
+/// multiset (comm_count/comm_fnv) are asserted cross-process; the full deployLog (incl. non-COMM
+/// deposits/re-installs) is covered per-execution by Layer-1 (replay==play).
 struct Program {
     name: &'static str,
     source: &'static str,
-    check_log: bool,
 }
 
 /// The metered differential corpus. Chosen to exercise the five async join sites feasibly under the
@@ -98,7 +98,6 @@ fn corpus() -> Vec<Program> {
             source: "new a, b, c, d in { a!(1) | b!(2) | c!(3) | d!(4) | \
                      for(@x <- a){ Nil } | for(@y <- b){ Nil } | \
                      for(@z <- c){ Nil } | for(@w <- d){ Nil } }",
-            check_log: true,
         },
         Program {
             // Persistent RECEIVE (`<=`) matched by a single send: exactly one COMM, then the consume
@@ -106,29 +105,28 @@ fn corpus() -> Vec<Program> {
             // racing multiple consumers, whose re-fire count is scheduling-dependent).
             name: "persistent_recv",
             source: "new ch in { for(@x <= ch){ Nil } | ch!(1) }",
-            check_log: true,
         },
         Program {
+            // A persistent contract matched by THREE PARALLEL sends. The actual COMM count (hence cost
+            // and the COMM multiset) is fixed, but the count of dangling re-install consume DEPOSITS in
+            // the deployLog is scheduling-dependent (racy EVEN ON THE OLD DRIVER) — which is exactly why
+            // the Layer-2 fingerprint is over COMM events only, not the whole deployLog.
             name: "contract_calls",
             source: "new loop in { contract loop(@n) = { Nil } | loop!(1) | loop!(2) | loop!(3) }",
-            check_log: true,
         },
         Program {
             name: "peek_read",
             source: "new ch in { ch!(42) | for(@x <<- ch){ Nil } }",
-            check_log: true,
         },
         Program {
             name: "join_two",
             source: "new a, b in { a!(1) | b!(2) | for(@x <- a & @y <- b){ Nil } }",
-            check_log: true,
         },
         Program {
             name: "bounded_loop",
             source: "new loop in { \
                      contract loop(@n) = { match n { 0 => Nil  _ => loop!(n - 1) } } | \
                      loop!(256) }",
-            check_log: true,
         },
         Program {
             name: "bounded_string",
@@ -137,7 +135,6 @@ fn corpus() -> Vec<Program> {
                      for(@s <- x){ \
                        contract loop(@n) = { match n { 0 => Nil  _ => loop!(n - 1) } } | \
                        loop!(s.length()) } }",
-            check_log: true,
         },
     ]
 }
@@ -241,23 +238,31 @@ async fn async_driver_four_invariants_differential() {
                 )
                 .await;
 
-                // CANONICAL (order-independent) deployLog fingerprint: the raw Vec<Event> ORDER is
-                // scheduling-dependent (concurrent COMM emission — true on BOTH the old and new driver;
-                // the consensus deployLog hash is order-canonical, not raw-order). We fingerprint the
-                // SORTED multiset of per-event Debug renderings so the fingerprint captures the COMM
-                // CONTENT (channels + data) independent of emission order.
-                let mut ev: Vec<String> =
-                    pd.deploy_log.iter().map(|e| format!("{:?}", e)).collect();
-                ev.sort();
-                let deploy_log_fnv = fnv1a(ev.join("\n").as_bytes());
+                // COMM-events-only, order-canonical fingerprint. The deployLog's STANDALONE Produce/
+                // Consume events (deposits, dangling re-installs, resting outputs) have a scheduling-
+                // dependent COUNT — non-deterministic run-to-run EVEN ON THE OLD DRIVER — so the whole
+                // deployLog is NOT a stable cross-process quantity. The COMM events (actual matches) ARE
+                // deterministic: their number equals the COMM count (the fork's `cost` unit) and their
+                // content is the matched channels + data (deploy-local, fixed under the fixed deploy
+                // signature). We fingerprint the SORTED multiset of COMM events (order-independent, since
+                // concurrent COMM emission order varies on both drivers). Layer-1 (replay==play) covers
+                // the FULL deployLog byte-exactly for each specific execution.
+                let mut comms: Vec<String> = pd
+                    .deploy_log
+                    .iter()
+                    .filter(|e| matches!(e, Event::Comm(_)))
+                    .map(|e| format!("{:?}", e))
+                    .collect();
+                comms.sort();
+                let comm_count = comms.len();
+                let comm_fnv = fnv1a(comms.join("\n").as_bytes());
 
                 let golden = Golden {
                     is_failed: pd.is_failed,
                     cost: pd.cost.cost,
-                    deploy_log_len: pd.deploy_log.len(),
-                    deploy_log_fnv,
+                    comm_count,
+                    comm_fnv,
                     balanced: play_state == genesis_post_state,
-                    check_log: prog.check_log,
                 };
 
                 // ---- Layer 1: replay self-consistency (exact; all four invariants) ----
@@ -292,7 +297,7 @@ async fn async_driver_four_invariants_differential() {
                     );
                     assert_eq!(
                         golden.cost, old.cost,
-                        "[{}] invariant #2 (cost) diverged old-vs-new",
+                        "[{}] invariant #2 (cost / COMM count) diverged old-vs-new",
                         prog.name
                     );
                     assert_eq!(
@@ -300,20 +305,18 @@ async fn async_driver_four_invariants_differential() {
                         "[{}] invariant #3 (balanced post-state) diverged old-vs-new",
                         prog.name
                     );
-                    // deployLog invariants (#4) are cross-process portable only for programs with a
-                    // deterministic COMM structure; for racy programs Layer-1 (replay==play) covers #4.
-                    if prog.check_log {
-                        assert_eq!(
-                            golden.deploy_log_len, old.deploy_log_len,
-                            "[{}] invariant #4 (deployLog length) diverged old-vs-new",
-                            prog.name
-                        );
-                        assert_eq!(
-                            golden.deploy_log_fnv, old.deploy_log_fnv,
-                            "[{}] invariant #4 (deployLog fingerprint) diverged old-vs-new",
-                            prog.name
-                        );
-                    }
+                    // Invariant #4 (deployLog) — the COMM multiset (actual matches). Deterministic across
+                    // processes; the full deployLog is covered per-execution by Layer-1 above.
+                    assert_eq!(
+                        golden.comm_count, old.comm_count,
+                        "[{}] invariant #4 (COMM count) diverged old-vs-new",
+                        prog.name
+                    );
+                    assert_eq!(
+                        golden.comm_fnv, old.comm_fnv,
+                        "[{}] invariant #4 (COMM multiset fingerprint) diverged old-vs-new",
+                        prog.name
+                    );
                     println!("[{}] Layer-2 OK: {:?}", prog.name, golden);
                 } else {
                     println!("[{}] CAPTURED: {:?}", prog.name, golden);

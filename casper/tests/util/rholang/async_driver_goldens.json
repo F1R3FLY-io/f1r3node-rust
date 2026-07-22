@@ -2,57 +2,50 @@
   "bounded_loop": {
     "is_failed": false,
     "cost": 258,
-    "deploy_log_len": 516,
-    "deploy_log_fnv": 14327494671126776266,
-    "balanced": false,
-    "check_log": true
+    "comm_count": 257,
+    "comm_fnv": 7836363006685253718,
+    "balanced": false
   },
   "bounded_string": {
     "is_failed": false,
     "cost": 36,
-    "deploy_log_len": 70,
-    "deploy_log_fnv": 9499430428222738587,
-    "balanced": false,
-    "check_log": true
+    "comm_count": 34,
+    "comm_fnv": 4461258132602487850,
+    "balanced": false
   },
   "contract_calls": {
     "is_failed": false,
     "cost": 4,
-    "deploy_log_len": 10,
-    "deploy_log_fnv": 12536765575762103528,
-    "balanced": false,
-    "check_log": true
+    "comm_count": 3,
+    "comm_fnv": 10370440951372347860,
+    "balanced": false
   },
   "join_two": {
     "is_failed": false,
     "cost": 3,
-    "deploy_log_len": 4,
-    "deploy_log_fnv": 6030492667649220608,
-    "balanced": true,
-    "check_log": true
+    "comm_count": 1,
+    "comm_fnv": 2844993267425542390,
+    "balanced": true
   },
   "par_sends": {
     "is_failed": false,
     "cost": 8,
-    "deploy_log_len": 12,
-    "deploy_log_fnv": 16269697670964150749,
-    "balanced": true,
-    "check_log": true
+    "comm_count": 4,
+    "comm_fnv": 2740080478666960429,
+    "balanced": true
   },
   "peek_read": {
     "is_failed": false,
     "cost": 2,
-    "deploy_log_len": 4,
-    "deploy_log_fnv": 3351659937580271495,
-    "balanced": false,
-    "check_log": true
+    "comm_count": 1,
+    "comm_fnv": 8707149270055471559,
+    "balanced": false
   },
   "persistent_recv": {
     "is_failed": false,
     "cost": 2,
-    "deploy_log_len": 4,
-    "deploy_log_fnv": 9101972619105042445,
-    "balanced": false,
-    "check_log": true
+    "comm_count": 1,
+    "comm_fnv": 7062926928259690684,
+    "balanced": false
   }
 }
