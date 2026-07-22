@@ -1,17 +1,20 @@
 // Dir agent — wraps a directory root with the FIP `Dir` method surface.
 //
-// Currently ships: `entries`, `stat`, `exists`, `default`. Extended
-// in follow-up PRs with `openFile`, `openDir` (need File-agent
-// composition), `removeFile`, `removeDir`, `rename`, `copyFile`
-// (path-mutating natives), `chmod`, `chown` (need mode-string
-// parser).
+// Currently ships: `entries`, `stat`, `exists`, `removeFile`,
+// `removeDir`, `rename`, `copyFile`, `default`. Extended in
+// follow-up PRs with `openFile`, `openDir` (need File-agent
+// composition), `chmod`, `chown` (need mode-string parser).
 //
 // This file is an `agent` block that expects the enclosing scope
 // to bind:
 //   - `Dir`                — the agent's constructor channel
 //   - `nQuarantine`,
 //     `nEntries`, `nStat`,
-//     `nExists`            — fixed-channel Pars for the native
+//     `nExists`,
+//     `nRemoveFile`,
+//     `nRemoveDir`,
+//     `nRename`,
+//     `nCopyFile`          — fixed-channel Pars for the native
 //                            primitives, obtained via `NormalizerEnv`
 //                            injection at compile time (see
 //                            `interpreter::io::injections`).
@@ -87,6 +90,97 @@ agent Dir {
       try @[canonPath] <- nQuarantine!?(root, relPath) {
         try @[b] <- nExists!?(canonPath) {
           return!([true, b])
+        }
+        catch @[code, msg] {
+          return!([false, code, msg])
+        }
+      }
+      catch @[code, msg] {
+        return!([false, code, msg])
+      }
+    }
+  } |
+
+  method removeFile(relPath) {
+    // Native `removeFile` unlinks a regular file. Calling it on
+    // a directory returns FSERR_PERM (via the host's
+    // PermissionDenied); callers use `removeDir` for those.
+    for (@root <<- @(*this, "root")) {
+      try @[canonPath] <- nQuarantine!?(root, relPath) {
+        try <- nRemoveFile!?(canonPath) {
+          return!([true])
+        }
+        catch @[code, msg] {
+          return!([false, code, msg])
+        }
+      }
+      catch @[code, msg] {
+        return!([false, code, msg])
+      }
+    }
+  } |
+
+  method removeDir(relPath, recursive) {
+    // `recursive` is a Bool. When true, uses `remove_dir_all`
+    // (best-effort atomic per tokio docs) so non-empty trees
+    // can be dropped in one call. When false, requires the
+    // directory to be empty and returns FSERR_IO otherwise.
+    for (@root <<- @(*this, "root")) {
+      try @[canonPath] <- nQuarantine!?(root, relPath) {
+        try <- nRemoveDir!?(canonPath, recursive) {
+          return!([true])
+        }
+        catch @[code, msg] {
+          return!([false, code, msg])
+        }
+      }
+      catch @[code, msg] {
+        return!([false, code, msg])
+      }
+    }
+  } |
+
+  method rename(fromRelPath, toRelPath) {
+    // Atomic rename via POSIX `rename(2)`. Both source and
+    // destination are quarantined independently -- either
+    // escape attempt returns FSERR_QUARANTINE without touching
+    // the filesystem. A cross-filesystem rename returns
+    // FSERR_CROSS_DEVICE; callers who want copy-then-delete
+    // semantics use `copyFile` + `removeFile` explicitly.
+    for (@root <<- @(*this, "root")) {
+      try @[fromCanon] <- nQuarantine!?(root, fromRelPath) {
+        try @[toCanon] <- nQuarantine!?(root, toRelPath) {
+          try <- nRename!?(fromCanon, toCanon) {
+            return!([true])
+          }
+          catch @[code, msg] {
+            return!([false, code, msg])
+          }
+        }
+        catch @[code, msg] {
+          return!([false, code, msg])
+        }
+      }
+      catch @[code, msg] {
+        return!([false, code, msg])
+      }
+    }
+  } |
+
+  method copyFile(fromRelPath, toRelPath) {
+    // Copies bytes from source to destination, replacing the
+    // destination if it exists. Distinct from `rename`: produces
+    // an independent inode and is fine across filesystems.
+    // Returns `[true, nBytes]` on success.
+    for (@root <<- @(*this, "root")) {
+      try @[fromCanon] <- nQuarantine!?(root, fromRelPath) {
+        try @[toCanon] <- nQuarantine!?(root, toRelPath) {
+          try @[nBytes] <- nCopyFile!?(fromCanon, toCanon) {
+            return!([true, nBytes])
+          }
+          catch @[code, msg] {
+            return!([false, code, msg])
+          }
         }
         catch @[code, msg] {
           return!([false, code, msg])

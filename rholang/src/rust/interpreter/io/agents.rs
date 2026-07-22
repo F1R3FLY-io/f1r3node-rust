@@ -19,7 +19,8 @@
 //!
 //! - `file.rho` — `nRead`, `nWrite`, `nSeek`, `nTell`, `nSize`,
 //!   `nTruncate`, `nFlush`, `nClose`.
-//! - `dir.rho`  — `nQuarantine`, `nEntries`, `nStat`, `nExists`.
+//! - `dir.rho`  — `nQuarantine`, `nEntries`, `nStat`, `nExists`,
+//!   `nRemoveFile`, `nRemoveDir`, `nRename`, `nCopyFile`.
 
 /// Source of the `File` agent block. Expects `File`, `nRead`,
 /// `nWrite`, `nSeek`, `nTell`, `nSize`, `nTruncate`, `nFlush`,
@@ -27,6 +28,6 @@
 pub const FILE_AGENT_SRC: &str = include_str!("agents/file.rho");
 
 /// Source of the `Dir` agent block. Expects `Dir`, `nQuarantine`,
-/// `nEntries`, `nStat`, `nExists` to be bound in the enclosing
-/// scope.
+/// `nEntries`, `nStat`, `nExists`, `nRemoveFile`, `nRemoveDir`,
+/// `nRename`, `nCopyFile` to be bound in the enclosing scope.
 pub const DIR_AGENT_SRC: &str = include_str!("agents/dir.rho");

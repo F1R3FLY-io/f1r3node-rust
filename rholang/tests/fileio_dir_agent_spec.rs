@@ -73,7 +73,7 @@ fn temp_dir(tag: &str) -> std::path::PathBuf {
     p.canonicalize().expect("canonicalize temp dir")
 }
 
-/// The four native URNs the `Dir` agent + test harness need.
+/// The native URNs the `Dir` agent + test harness need.
 fn dir_agent_env() -> HashMap<String, Par> {
     let mut env: HashMap<String, Par> = HashMap::new();
     env.insert(
@@ -92,6 +92,22 @@ fn dir_agent_env() -> HashMap<String, Par> {
         "rho:io:fs:native:1.0.0/exists".to_string(),
         FixedChannels::native_exists(),
     );
+    env.insert(
+        "rho:io:fs:native:1.0.0/removeFile".to_string(),
+        FixedChannels::native_remove_file(),
+    );
+    env.insert(
+        "rho:io:fs:native:1.0.0/removeDir".to_string(),
+        FixedChannels::native_remove_dir(),
+    );
+    env.insert(
+        "rho:io:fs:native:1.0.0/rename".to_string(),
+        FixedChannels::native_rename(),
+    );
+    env.insert(
+        "rho:io:fs:native:1.0.0/copyFile".to_string(),
+        FixedChannels::native_copy_file(),
+    );
     env
 }
 
@@ -105,7 +121,11 @@ fn wrap(body: &str, root_path: &str) -> String {
      nQuarantine(`rho:io:fs:native:1.0.0/quarantine`),
      nEntries(`rho:io:fs:native:1.0.0/entries`),
      nStat(`rho:io:fs:native:1.0.0/stat`),
-     nExists(`rho:io:fs:native:1.0.0/exists`)
+     nExists(`rho:io:fs:native:1.0.0/exists`),
+     nRemoveFile(`rho:io:fs:native:1.0.0/removeFile`),
+     nRemoveDir(`rho:io:fs:native:1.0.0/removeDir`),
+     nRename(`rho:io:fs:native:1.0.0/rename`),
+     nCopyFile(`rho:io:fs:native:1.0.0/copyFile`)
    in {{
      {DIR_AGENT_SRC}
      |
@@ -369,5 +389,283 @@ async fn dir_agent_unknown_method_returns_unsupported() {
     assert!(
         sink.contains(r#"GString("nonexistent")"#),
         "expected the method name in the error payload, got: {sink}"
+    );
+}
+
+/// `removeFile(relPath)` unlinks the child; a follow-up
+/// `exists()` confirms it's gone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn dir_agent_remove_file_deletes_child() {
+    let root = temp_dir("remove_file");
+    let target = root.join("doomed.txt");
+    std::fs::write(&target, b"bye").expect("write target");
+    assert!(target.exists(), "precondition: target must exist");
+
+    let body = r#"
+        new rmRet, existRet in {
+          dirAgent!(*rmRet, "removeFile", "doomed.txt") |
+          for (@rmResult <- rmRet) {
+            @"sink"!(("remove", rmResult)) |
+            dirAgent!(*existRet, "exists", "doomed.txt") |
+            for (@existResult <- existRet) {
+              @"sink"!(("exists", existResult))
+            }
+          }
+        }
+    "#;
+    let src = wrap(body, &root.to_string_lossy());
+
+    let runtime = mk_runtime().await;
+    let rand = Blake2b512Random::create_from_bytes(&[]);
+    let phlo = Cost::create(i64::MAX, "dir-agent-remove-file".to_string());
+    let result = runtime
+        .evaluate(&src, phlo, dir_agent_env(), rand)
+        .await
+        .expect("evaluate");
+    assert!(result.errors.is_empty(), "eval errors: {:?}", result.errors);
+
+    let sink = observe_sink(&runtime).await;
+    assert!(!target.exists(), "file should be gone from disk");
+    let _ = std::fs::remove_dir_all(&root);
+
+    // Success tuple on remove ([true]) + [true, false] on exists.
+    assert!(
+        sink.contains(r#"GString("remove")"#) && sink.contains("GBool(true)"),
+        "expected remove success, got: {sink}"
+    );
+    assert!(
+        sink.contains(r#"GString("exists")"#) && sink.contains("GBool(false)"),
+        "expected exists=false after remove, got: {sink}"
+    );
+}
+
+/// `removeDir(relPath, true)` recursively deletes a non-empty
+/// subtree.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn dir_agent_remove_dir_recursive_deletes_tree() {
+    let root = temp_dir("remove_dir");
+    let subdir = root.join("sub");
+    std::fs::create_dir(&subdir).expect("mkdir sub");
+    std::fs::write(subdir.join("nested.txt"), b"x").expect("write nested");
+
+    let body = r#"
+        new rmRet in {
+          dirAgent!(*rmRet, "removeDir", "sub", true) |
+          for (@result <- rmRet) { @"sink"!(result) }
+        }
+    "#;
+    let src = wrap(body, &root.to_string_lossy());
+
+    let runtime = mk_runtime().await;
+    let rand = Blake2b512Random::create_from_bytes(&[]);
+    let phlo = Cost::create(i64::MAX, "dir-agent-remove-dir".to_string());
+    let result = runtime
+        .evaluate(&src, phlo, dir_agent_env(), rand)
+        .await
+        .expect("evaluate");
+    assert!(result.errors.is_empty(), "eval errors: {:?}", result.errors);
+
+    let sink = observe_sink(&runtime).await;
+    assert!(!subdir.exists(), "subdir should be gone from disk");
+    let _ = std::fs::remove_dir_all(&root);
+
+    assert!(
+        sink.contains("GBool(true)"),
+        "expected removeDir success, got: {sink}"
+    );
+}
+
+/// `removeDir(relPath, false)` on a non-empty directory returns
+/// an error (native surfaces the OS's `DirectoryNotEmpty`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn dir_agent_remove_dir_nonrecursive_on_nonempty_errors() {
+    let root = temp_dir("remove_dir_nonempty");
+    let subdir = root.join("sub");
+    std::fs::create_dir(&subdir).expect("mkdir sub");
+    std::fs::write(subdir.join("holds.txt"), b"x").expect("write holds");
+
+    let body = r#"
+        new rmRet in {
+          dirAgent!(*rmRet, "removeDir", "sub", false) |
+          for (@result <- rmRet) { @"sink"!(result) }
+        }
+    "#;
+    let src = wrap(body, &root.to_string_lossy());
+
+    let runtime = mk_runtime().await;
+    let rand = Blake2b512Random::create_from_bytes(&[]);
+    let phlo = Cost::create(i64::MAX, "dir-agent-remove-dir-nonempty".to_string());
+    let result = runtime
+        .evaluate(&src, phlo, dir_agent_env(), rand)
+        .await
+        .expect("evaluate");
+    assert!(result.errors.is_empty(), "eval errors: {:?}", result.errors);
+
+    let sink = observe_sink(&runtime).await;
+    assert!(subdir.exists(), "subdir should still be on disk");
+    let _ = std::fs::remove_dir_all(&root);
+
+    assert!(
+        sink.contains("GBool(false)"),
+        "expected error tuple on non-empty non-recursive remove, got: {sink}"
+    );
+}
+
+/// `rename(from, to)` moves a file within the root. Both source
+/// and destination are quarantined.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn dir_agent_rename_moves_child_within_root() {
+    let root = temp_dir("rename");
+    let source = root.join("old.txt");
+    std::fs::write(&source, b"payload").expect("write source");
+    let dest = root.join("new.txt");
+
+    let body = r#"
+        new renRet in {
+          dirAgent!(*renRet, "rename", "old.txt", "new.txt") |
+          for (@result <- renRet) { @"sink"!(result) }
+        }
+    "#;
+    let src = wrap(body, &root.to_string_lossy());
+
+    let runtime = mk_runtime().await;
+    let rand = Blake2b512Random::create_from_bytes(&[]);
+    let phlo = Cost::create(i64::MAX, "dir-agent-rename".to_string());
+    let result = runtime
+        .evaluate(&src, phlo, dir_agent_env(), rand)
+        .await
+        .expect("evaluate");
+    assert!(result.errors.is_empty(), "eval errors: {:?}", result.errors);
+
+    let sink = observe_sink(&runtime).await;
+    assert!(!source.exists(), "source should be gone");
+    assert!(dest.exists(), "dest should exist");
+    assert_eq!(
+        std::fs::read(&dest).expect("read dest"),
+        b"payload",
+        "dest contents should match source"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+
+    assert!(
+        sink.contains("GBool(true)"),
+        "expected rename success, got: {sink}"
+    );
+}
+
+/// `rename` where the SOURCE escapes root — quarantine catches
+/// it, no filesystem call. Escape target file exists to prove
+/// rejection is on principle.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn dir_agent_rename_rejects_escape_in_source() {
+    let root = temp_dir("rename_escape_src");
+    let outside = root.parent().unwrap().join("outsider.txt");
+    std::fs::write(&outside, b"external").expect("write outside");
+
+    let body = r#"
+        new renRet in {
+          dirAgent!(*renRet, "rename", "../outsider.txt", "captured.txt") |
+          for (@result <- renRet) { @"sink"!(result) }
+        }
+    "#;
+    let src = wrap(body, &root.to_string_lossy());
+
+    let runtime = mk_runtime().await;
+    let rand = Blake2b512Random::create_from_bytes(&[]);
+    let phlo = Cost::create(i64::MAX, "dir-agent-rename-escape-src".to_string());
+    let result = runtime
+        .evaluate(&src, phlo, dir_agent_env(), rand)
+        .await
+        .expect("evaluate");
+    assert!(result.errors.is_empty(), "eval errors: {:?}", result.errors);
+
+    let sink = observe_sink(&runtime).await;
+    assert!(outside.exists(), "outside file should be untouched");
+    let _ = std::fs::remove_file(&outside);
+    let _ = std::fs::remove_dir_all(&root);
+
+    assert!(
+        sink.contains(r#"GString("FSERR_QUARANTINE")"#),
+        "expected FSERR_QUARANTINE on rejected source, got: {sink}"
+    );
+}
+
+/// `rename` where the DESTINATION escapes root — same rejection
+/// via the second quarantine call, no filesystem side effect.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn dir_agent_rename_rejects_escape_in_destination() {
+    let root = temp_dir("rename_escape_dst");
+    let source = root.join("valid.txt");
+    std::fs::write(&source, b"stayput").expect("write source");
+    let out_of_root = root.parent().unwrap().join("escaped.txt");
+
+    let body = r#"
+        new renRet in {
+          dirAgent!(*renRet, "rename", "valid.txt", "../escaped.txt") |
+          for (@result <- renRet) { @"sink"!(result) }
+        }
+    "#;
+    let src = wrap(body, &root.to_string_lossy());
+
+    let runtime = mk_runtime().await;
+    let rand = Blake2b512Random::create_from_bytes(&[]);
+    let phlo = Cost::create(i64::MAX, "dir-agent-rename-escape-dst".to_string());
+    let result = runtime
+        .evaluate(&src, phlo, dir_agent_env(), rand)
+        .await
+        .expect("evaluate");
+    assert!(result.errors.is_empty(), "eval errors: {:?}", result.errors);
+
+    let sink = observe_sink(&runtime).await;
+    assert!(source.exists(), "source should be untouched");
+    assert!(!out_of_root.exists(), "escaped destination must NOT exist");
+    let _ = std::fs::remove_dir_all(&root);
+
+    assert!(
+        sink.contains(r#"GString("FSERR_QUARANTINE")"#),
+        "expected FSERR_QUARANTINE on rejected destination, got: {sink}"
+    );
+}
+
+/// `copyFile(from, to)` duplicates a file within the root. The
+/// reply carries the number of bytes copied.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn dir_agent_copy_file_duplicates_child() {
+    let root = temp_dir("copyfile");
+    let source = root.join("orig.txt");
+    std::fs::write(&source, b"duplicate me").expect("write source");
+    let dest = root.join("copy.txt");
+
+    let body = r#"
+        new cpRet in {
+          dirAgent!(*cpRet, "copyFile", "orig.txt", "copy.txt") |
+          for (@result <- cpRet) { @"sink"!(result) }
+        }
+    "#;
+    let src = wrap(body, &root.to_string_lossy());
+
+    let runtime = mk_runtime().await;
+    let rand = Blake2b512Random::create_from_bytes(&[]);
+    let phlo = Cost::create(i64::MAX, "dir-agent-copyfile".to_string());
+    let result = runtime
+        .evaluate(&src, phlo, dir_agent_env(), rand)
+        .await
+        .expect("evaluate");
+    assert!(result.errors.is_empty(), "eval errors: {:?}", result.errors);
+
+    let sink = observe_sink(&runtime).await;
+    assert!(source.exists(), "source must still exist");
+    assert!(dest.exists(), "dest must exist");
+    assert_eq!(std::fs::read(&dest).expect("read dest"), b"duplicate me");
+    let _ = std::fs::remove_dir_all(&root);
+
+    // Reply is [true, 12] (12 = len("duplicate me")).
+    assert!(
+        sink.contains("GBool(true)"),
+        "expected copyFile success, got: {sink}"
+    );
+    assert!(
+        sink.contains("GInt(12)"),
+        "expected 12 bytes copied, got: {sink}"
     );
 }
