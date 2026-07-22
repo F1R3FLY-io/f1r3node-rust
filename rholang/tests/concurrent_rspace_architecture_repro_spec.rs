@@ -43,11 +43,20 @@ fn concurrent_rspace_architecture_repro_eval_loop_must_not_use_join_all() {
 
     assert!(
         !reducer.contains("futures::future::join_all"),
-        "reduce.rs still uses join_all; the documented design requires completion-order branch draining"
+        "reduce.rs still uses join_all; the design requires non-blocking concurrent branch completion"
+    );
+    // The eval-parallel + continuation joins now DETACH each branch onto the atomic-counter completion
+    // driver (`spawn_detached`) instead of the parent awaiting a `FuturesUnordered` join. This is an even
+    // stronger form of completion-order, non-parent-pinning draining: it removes the O(N) parked-parent
+    // chain entirely (the parent returns immediately; the driver awaits live -> 0 at the inj/eval drain).
+    // Supersedes the earlier `FuturesUnordered` requirement.
+    assert!(
+        reducer.contains("spawn_detached"),
+        "reduce.rs no longer detaches eval branches onto the atomic-counter completion driver (spawn_detached)"
     );
     assert!(
-        reducer.contains("FuturesUnordered"),
-        "reduce.rs does not use FuturesUnordered for completion-order branch draining"
+        !reducer.contains("FuturesUnordered"),
+        "reduce.rs still awaits a FuturesUnordered join; the detached-spawn driver removes the parent await"
     );
 }
 
