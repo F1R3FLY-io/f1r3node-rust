@@ -4,6 +4,7 @@
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::{EList, EPathMap, EZipper, Expr, Par};
 use models::rust::pathmap_crate_type_mapper::PathMapCrateTypeMapper;
+use models::rust::pathmap_native_query::collect_child_segments;
 
 #[cfg(test)]
 mod zipper_advanced_navigation_tests {
@@ -152,18 +153,11 @@ mod zipper_advanced_navigation_tests {
         let pathmap_result = PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap(&pathmap);
         let rholang_pathmap = pathmap_result.map;
 
-        // Count children at root
-        let mut children: Vec<Vec<u8>> = Vec::new();
-
-        for (key, _) in rholang_pathmap.iter() {
-            if let Some(pos) = key.iter().position(|&b| b == 0xFF) {
-                let segment = key[..pos].to_vec();
-                children.push(segment);
-            }
-        }
-
-        children.sort();
-        children.dedup();
+        // Count children at root. W2b-1 re-key (why bytes moved): child
+        // segments are the codec DFS (production collect_child_segments) now,
+        // not the retired inline 0xFF-separator scan. The COUNT (3 distinct
+        // first segments: a, b, c) is invariant under the re-key.
+        let children = collect_child_segments(&rholang_pathmap, &[], None);
 
         // Should have 3 children at root: a, b, c
         assert_eq!(children.len(), 3, "Root should have 3 children");
@@ -226,21 +220,14 @@ mod zipper_advanced_navigation_tests {
         let pathmap_result = PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap(&pathmap);
         let rholang_pathmap = pathmap_result.map;
 
-        // Get first child at root
-        let mut children: Vec<Vec<u8>> = Vec::new();
-
-        for (key, _) in rholang_pathmap.iter() {
-            if let Some(pos) = key.iter().position(|&b| b == 0xFF) {
-                let segment = key[..pos].to_vec();
-                children.push(segment);
-            }
-        }
-
-        children.sort();
-        children.dedup();
+        // Get first child at root. W2b-1 re-key (why bytes moved): the codec
+        // DFS (production collect_child_segments) already yields children in
+        // ascending order, replacing the retired inline 0xFF scan + sort.
+        // Non-emptiness and first-child-exists are invariant.
+        let children = collect_child_segments(&rholang_pathmap, &[], None);
 
         assert!(!children.is_empty(), "Should have children at root");
-        // First child after sorting
+        // First (byte-lex smallest) child
         let first = children.first().unwrap();
         assert!(!first.is_empty(), "First child should exist");
     }

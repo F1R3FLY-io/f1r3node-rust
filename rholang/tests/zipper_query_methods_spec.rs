@@ -7,7 +7,7 @@
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::{EList, EPathMap, EZipper, Expr, Par};
 use models::rust::pathmap_crate_type_mapper::PathMapCrateTypeMapper;
-use models::rust::pathmap_integration::par_to_path;
+use models::rust::pathmap_integration::{par_to_path, segments_to_key};
 
 #[cfg(test)]
 mod zipper_query_tests {
@@ -97,7 +97,7 @@ mod zipper_query_tests {
         let rholang_pathmap = pathmap_result.map;
 
         // Builds key from current_path segments using the same encoding as par_to_path
-        let key: Vec<u8> = zipper
+        let segments: Vec<Vec<u8>> = zipper
             .current_path
             .iter()
             .flat_map(|seg| {
@@ -107,13 +107,13 @@ mod zipper_query_tests {
                         String::from_utf8(seg.clone()).unwrap(),
                     )),
                 }]);
-                let segments = par_to_path(&par);
-                segments.into_iter().flat_map(|mut seg| {
-                    seg.push(0xFF);
-                    seg
-                })
+                par_to_path(&par)
             })
             .collect();
+        // W2b-1 (why bytes moved): FULL codec key = the codec segments joined
+        // with the split-list 0x00 terminator (was the retired per-segment
+        // 0xFF), matching create_pathmap_from_elements' encode_trie_path.
+        let key: Vec<u8> = segments_to_key(&segments, true);
 
         let has_val = rholang_pathmap.get(&key).is_some();
         assert!(has_val, "Expected value at path ['a']");
@@ -137,7 +137,7 @@ mod zipper_query_tests {
         let rholang_pathmap = pathmap_result.map;
 
         // Builds key from current_path segments using the same encoding as par_to_path
-        let key: Vec<u8> = zipper
+        let segments: Vec<Vec<u8>> = zipper
             .current_path
             .iter()
             .flat_map(|seg| {
@@ -147,13 +147,13 @@ mod zipper_query_tests {
                         String::from_utf8(seg.clone()).unwrap(),
                     )),
                 }]);
-                let segments = par_to_path(&par);
-                segments.into_iter().flat_map(|mut seg| {
-                    seg.push(0xFF);
-                    seg
-                })
+                par_to_path(&par)
             })
             .collect();
+        // W2b-1 (why bytes moved): FULL codec key = the codec segments joined
+        // with the split-list 0x00 terminator (was the retired per-segment
+        // 0xFF), matching create_pathmap_from_elements' encode_trie_path.
+        let key: Vec<u8> = segments_to_key(&segments, true);
 
         let has_val = rholang_pathmap.get(&key).is_some();
         assert!(!has_val, "Expected no value at path ['x']");
@@ -170,13 +170,10 @@ mod zipper_query_tests {
         // Builds key from path ["a"] using par_to_path encoding
         let path_par = create_path_list(vec!["a".to_string()]);
         let segments = par_to_path(&path_par);
-        let key: Vec<u8> = segments
-            .into_iter()
-            .flat_map(|mut seg| {
-                seg.push(0xFF);
-                seg
-            })
-            .collect();
+        // W2b-1 (why bytes moved): atPath is a FULL leaf lookup — the codec key
+        // is the segments joined with the split-list 0x00 terminator (was the
+        // retired per-segment 0xFF).
+        let key: Vec<u8> = segments_to_key(&segments, true);
 
         let value = rholang_pathmap.get(&key);
 
@@ -218,13 +215,10 @@ mod zipper_query_tests {
         // Builds prefix key from path ["a"] using par_to_path encoding
         let path_par = create_path_list(vec!["a".to_string()]);
         let segments = par_to_path(&path_par);
-        let prefix_key: Vec<u8> = segments
-            .into_iter()
-            .flat_map(|mut seg| {
-                seg.push(0xFF);
-                seg
-            })
-            .collect();
+        // W2b-1 (why bytes moved): pathExists is a PREFIX check — the codec
+        // prefix key is the non-terminated segment concatenation (was the
+        // retired per-segment 0xFF).
+        let prefix_key: Vec<u8> = segments_to_key(&segments, false);
 
         let exists = rholang_pathmap
             .iter()
@@ -269,32 +263,57 @@ mod native_query_identity_tests {
     use models::rhoapi::expr::ExprInstance;
     use models::rhoapi::{EList, EPathMap, Expr, Par};
     use models::rust::pathmap_crate_type_mapper::PathMapCrateTypeMapper;
+    use models::rust::canonical_path::{encode_trie_segment, segment_extent, tag};
     use models::rust::pathmap_integration::RholangPathMap;
     use models::rust::pathmap_native_query::{
         collect_child_segments, collect_subtrie_values, path_prefix_exists,
     };
 
-    // ---- Oracles: the retired reduce.rs scan algorithms, verbatim ----
+    // ---- Oracles: the retired reduce.rs scan algorithms ----
 
-    /// The retired childCount/descendFirst/descendIndexedBranch/toNextSibling/
-    /// toPrevSibling scan: whole-map iteration, first-segment extraction,
-    /// sort()+dedup(). (With `prefix = &[]` this is also the retired
-    /// childCount EPathmapBody-arm scan: `starts_with(&[])` is always true and
-    /// keys are never empty.)
+    /// The childCount/descendFirst/descendIndexedBranch/toNextSibling/
+    /// toPrevSibling reference scan, W2b-1 re-keyed: whole-map iteration,
+    /// FIRST CODEC SEGMENT extraction (`segment_extent`, replacing the retired
+    /// first-`0xFF` split), sort()+dedup(). The split-list terminator (`0x00`)
+    /// at the prefix boundary means "an entry ends here" and is excluded — the
+    /// same rule the parser-state DFS (`collect_child_segments_codec`) follows.
     fn oracle_child_segments(map: &RholangPathMap, prefix: &[u8]) -> Vec<Vec<u8>> {
         let mut children: Vec<Vec<u8>> = Vec::new();
         for (key, _) in map.iter() {
             if key.starts_with(prefix) && key.len() > prefix.len() {
                 let remaining = &key[prefix.len()..];
-                if let Some(pos) = remaining.iter().position(|&b| b == 0xFF) {
-                    let segment = remaining[..pos].to_vec();
-                    children.push(segment);
+                // Exclude the split-list terminator boundary ("entry ends here").
+                if remaining[0] == tag::TERM {
+                    continue;
+                }
+                // The first COMPLETE codec segment is the child segment.
+                if let Some(extent) = segment_extent(remaining) {
+                    children.push(remaining[..extent].to_vec());
                 }
             }
         }
         children.sort();
         children.dedup();
         children
+    }
+
+    // ---- Codec helpers (W2b-1): build split-form codec paths for raw fixtures ----
+
+    /// One codec segment for a GString element (`encode_trie_segment`).
+    fn codec_seg(s: &str) -> Vec<u8> {
+        encode_trie_segment(&Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::GString(s.to_string())),
+        }]))
+    }
+
+    /// A full split-form codec path: `concat(codec_seg(segs)) ∥ 0x00`.
+    fn codec_path(segs: &[&str]) -> Vec<u8> {
+        let mut key = Vec::new();
+        for s in segs {
+            key.extend_from_slice(&codec_seg(s));
+        }
+        key.push(tag::TERM);
+        key
     }
 
     /// The retired getSubtrie scan: whole-map iteration filtered by prefix, in
@@ -361,11 +380,13 @@ mod native_query_identity_tests {
         PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap(&e_pathmap).map
     }
 
-    /// The adversarial RAW trie exercising cases the SExpr encoding cannot
-    /// produce (segments that are byte-prefixes of sibling segments; an empty
-    /// segment) plus a value exactly at an interior separator boundary. The
-    /// native helpers are defined at the raw-bytes level, so their identity
-    /// with the scans must hold here too.
+    /// The adversarial RAW trie: 0xFF-delimited byte keys exercising cases the
+    /// pre-codec SExpr encoding could not produce (byte-prefix sibling
+    /// segments; an empty first segment; a value at an interior separator
+    /// boundary). Retained for the BYTE-GENERIC helpers (`collect_subtrie_values`
+    /// / `path_prefix_exists` are `starts_with`-based and remain correct on any
+    /// raw keys). The codec-specific `collect_child_segments` DFS is exercised
+    /// on [`codec_adversarial_map`] instead (see W2b-1 note there).
     fn raw_adversarial_map() -> RholangPathMap {
         let mut map = RholangPathMap::new();
         map.insert(b"ab\xFF".to_vec(), gint_par(1)); // value exactly at segment end
@@ -376,27 +397,38 @@ mod native_query_identity_tests {
         map
     }
 
+    /// The codec-keyed adversarial trie (W2b-1): split-form codec paths whose
+    /// segments are PREFIX-FREE (so the pre-codec byte-prefix-sibling and
+    /// empty-segment cases cannot occur). It still exercises the DFS behaviours
+    /// the retired raw map did: four distinct root segments (a, b, c, d); a
+    /// value at the INTERIOR node "a" whose `0x00` boundary is excluded from
+    /// a's children; sibling segments (x, y) under "a"; and leaves.
+    fn codec_adversarial_map() -> RholangPathMap {
+        let mut map = RholangPathMap::new();
+        map.insert(codec_path(&["a", "x"]), gint_par(1));
+        map.insert(codec_path(&["a", "y"]), gint_par(2));
+        map.insert(codec_path(&["a"]), gint_par(3)); // interior value at "a"
+        map.insert(codec_path(&["b"]), gint_par(4));
+        map.insert(codec_path(&["c"]), gint_par(5));
+        map.insert(codec_path(&["d"]), gint_par(6));
+        map
+    }
+
     // ---- collect_child_segments ----
 
     #[test]
     fn child_segments_match_scan_on_element_built_map() {
         let map = element_built_map();
         let seg_op: Vec<u8> = {
-            // Flattened one-segment prefix for "op" (encoded segment + 0xFF),
-            // recovered from the map itself so the test does not re-implement
-            // the encoder: it is the shortest child segment at root that leads
-            // to three grandchildren.
+            // W2b-1 (why bytes moved): the codec segment for the "op"-like top
+            // child, recovered from the map itself. Codec segments are
+            // self-delimiting and PREFIX-FREE, so the segment IS the prefix —
+            // no `0xFF` separator is appended. It is the top segment with two
+            // children (site0, site1).
             let top = oracle_child_segments(&map, &[]);
-            let mut k = top
-                .into_iter()
-                .find(|seg| {
-                    let mut p = seg.clone();
-                    p.push(0xFF);
-                    oracle_child_segments(&map, &p).len() == 2
-                })
-                .expect("an 'op'-like top segment with two children must exist");
-            k.push(0xFF);
-            k
+            top.into_iter()
+                .find(|seg| oracle_child_segments(&map, seg).len() == 2)
+                .expect("an 'op'-like top segment with two children must exist")
         };
 
         for prefix in [&[][..], &seg_op[..]] {
@@ -404,14 +436,14 @@ mod native_query_identity_tests {
             let actual = collect_child_segments(&map, prefix, None);
             assert_eq!(
                 actual, expected,
-                "child segments (values AND order) must match the retired scan at prefix {:?}",
+                "child segments (values AND order) must match the reference scan at prefix {:?}",
                 prefix
             );
             assert!(!expected.is_empty(), "fixture must exercise a non-trivial prefix");
         }
 
         // Nonexistent prefix → empty in both forms.
-        let bogus = b"\x01bogus\xFF".to_vec();
+        let bogus = codec_seg("nonexistent");
         assert_eq!(
             collect_child_segments(&map, &bogus, None),
             oracle_child_segments(&map, &bogus)
@@ -420,40 +452,50 @@ mod native_query_identity_tests {
     }
 
     #[test]
-    fn child_segments_match_scan_on_raw_adversarial_map() {
-        let map = raw_adversarial_map();
+    fn child_segments_match_scan_on_codec_adversarial_map() {
+        let map = codec_adversarial_map();
 
-        // Root: the scan's sort() puts "" first and "ab" BEFORE "abc" (raw
-        // byte-lex on segments), even though the separator byte 0xFF sorts
-        // AFTER 'c' inside the trie — the exact order-inversion hazard the
-        // terminator-first DFS exists to neutralize.
+        // Root: production DFS == reference scan, both ascending byte-lex; four
+        // distinct root segments (a, b, c, d). W2b-1 (why bytes moved): the
+        // pre-codec raw map's 0xFF-segment order-inversion hazard is gone —
+        // codec segments are self-delimiting, so plain ascending traversal is
+        // already the canonical order.
+        let root = collect_child_segments(&map, &[], None);
+        assert_eq!(root, oracle_child_segments(&map, &[]));
         let expected_root = vec![
-            b"".to_vec(),
-            b"ab".to_vec(),
-            b"abc".to_vec(),
-            b"b".to_vec(),
+            codec_seg("a"),
+            codec_seg("b"),
+            codec_seg("c"),
+            codec_seg("d"),
         ];
-        assert_eq!(oracle_child_segments(&map, &[]), expected_root);
-        assert_eq!(collect_child_segments(&map, &[], None), expected_root);
+        assert_eq!(root, expected_root);
+        assert!(root.windows(2).all(|w| w[0] < w[1]), "ascending byte-lex");
 
-        // Interior prefix.
+        // Interior prefix "a": two children (x, y); the ["a"] value's split-list
+        // 0x00 boundary is excluded from a's children.
+        let a = codec_seg("a");
         assert_eq!(
-            collect_child_segments(&map, b"ab\xFF", None),
-            oracle_child_segments(&map, b"ab\xFF")
+            collect_child_segments(&map, &a, None),
+            oracle_child_segments(&map, &a)
         );
-        assert_eq!(collect_child_segments(&map, b"ab\xFF", None), vec![b"q".to_vec()]);
+        assert_eq!(
+            collect_child_segments(&map, &a, None),
+            vec![codec_seg("x"), codec_seg("y")]
+        );
 
-        // A leaf path (value present, no children) → no child segments.
+        // A full leaf key (value present, no children) → no child segments.
+        let leaf = codec_path(&["b"]);
         assert_eq!(
-            collect_child_segments(&map, b"b\xFFq\xFF", None),
-            oracle_child_segments(&map, b"b\xFFq\xFF")
+            collect_child_segments(&map, &leaf, None),
+            oracle_child_segments(&map, &leaf)
         );
-        assert!(collect_child_segments(&map, b"b\xFFq\xFF", None).is_empty());
+        assert!(collect_child_segments(&map, &leaf, None).is_empty());
     }
 
     #[test]
     fn child_segments_limit_is_a_prefix_of_the_full_order() {
-        let map = raw_adversarial_map();
+        // W2b-1: codec-keyed fixture (4 distinct root segments a, b, c, d).
+        let map = codec_adversarial_map();
         let full = collect_child_segments(&map, &[], None);
         assert_eq!(full.len(), 4);
         for k in 0..=full.len() + 1 {
@@ -478,8 +520,8 @@ mod native_query_identity_tests {
         // child subtrie.
         let mut prefixes: Vec<Vec<u8>> = vec![Vec::new()];
         for seg in oracle_child_segments(&element_map, &[]) {
-            let mut p = seg;
-            p.push(0xFF);
+            // W2b-1: codec segments are self-delimiting prefixes — no 0xFF.
+            let p = seg;
             prefixes.push(p);
         }
         for prefix in &prefixes {
@@ -543,8 +585,8 @@ mod native_query_identity_tests {
 
         let element_map = element_built_map();
         for seg in oracle_child_segments(&element_map, &[]) {
-            let mut p = seg;
-            p.push(0xFF);
+            // W2b-1: codec segments are self-delimiting prefixes — no 0xFF.
+            let p = seg;
             assert!(path_prefix_exists(&element_map, &p));
             assert!(oracle_prefix_exists(&element_map, &p));
         }

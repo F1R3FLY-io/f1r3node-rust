@@ -23,6 +23,7 @@ use models::rust::par_map_type_mapper::ParMapTypeMapper;
 use models::rust::par_set::ParSet;
 use models::rust::par_set_type_mapper::ParSetTypeMapper;
 use models::rust::pathmap_crate_type_mapper::PathMapCrateTypeMapper;
+use models::rust::pathmap_integration::segments_to_key;
 use models::rust::pathmap_native_query::{
     collect_child_segments, collect_subtrie_values, path_prefix_exists,
 };
@@ -3397,15 +3398,35 @@ impl DebruijnInterpreter {
                     ) => {
                         let base_rmap =
                             PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap(&base_pathmap);
-                        let other_rmap =
-                            PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap(&other_pathmap);
+                        // W2b-1 SWEEP fix: `restriction` wraps PathMap::restrict, a
+                        // PREFIX/subtrie op (base paths are kept under the paths
+                        // LEADING TO VALUES in `other`). Under the codec a prefix
+                        // is the NON-terminated segment concatenation — the same
+                        // prefix-op principle applied to getSubtrie/pathExists/
+                        // prunePath. Building `other` with terminated FULL keys
+                        // (0x00) makes them prefix-free of base's keys, silently
+                        // degenerating restrict to exact-match (a consensus-behavior
+                        // change); non-terminated keys preserve the pre-codec
+                        // prefix-restriction. `other_rmap` metadata is unused here
+                        // (the result carries base's connective/locally_free).
+                        let mut other_prefix_map =
+                            models::rust::pathmap_integration::RholangPathMap::new();
+                        for entry in &other_pathmap.ps {
+                            other_prefix_map.insert(
+                                segments_to_key(
+                                    &models::rust::pathmap_integration::par_to_path(entry),
+                                    false,
+                                ),
+                                entry.clone(),
+                            );
+                        }
 
                         self.outer
                             .metering
                             .reserve_incremental_primitive(union_cost(
                                 other_pathmap.ps.len() as i64
                             ))?;
-                        let result_map = base_rmap.map.restrict(&other_rmap.map);
+                        let result_map = base_rmap.map.restrict(&other_prefix_map);
 
                         Ok(Expr {
                             expr_instance: Some(ExprInstance::EPathmapBody(
@@ -3952,15 +3973,7 @@ impl DebruijnInterpreter {
 
                         // Use the zipper's current_path to look up the value
                         // Build the key from current_path segments (same encoding as create_pathmap_from_elements)
-                        let key: Vec<u8> = zipper
-                            .current_path
-                            .iter()
-                            .flat_map(|seg| {
-                                let mut s = seg.clone();
-                                s.push(0xFF); // separator
-                                s
-                            })
-                            .collect();
+                        let key: Vec<u8> = segments_to_key(&zipper.current_path, true);
 
                         // Look up value at this path
                         if let Some(value) = rholang_pathmap.get(&key) {
@@ -4036,15 +4049,7 @@ impl DebruijnInterpreter {
                         let rholang_pathmap = pathmap_result.map;
 
                         // Build prefix key from current_path
-                        let prefix_key: Vec<u8> = zipper
-                            .current_path
-                            .iter()
-                            .flat_map(|seg| {
-                                let mut s = seg.clone();
-                                s.push(0xFF); // separator
-                                s
-                            })
-                            .collect();
+                        let prefix_key: Vec<u8> = segments_to_key(&zipper.current_path, false);
 
                         // Collect all entries with this prefix — native subtrie descent
                         // (O(prefix + subtrie) instead of the previous whole-map scan);
@@ -4191,15 +4196,7 @@ impl DebruijnInterpreter {
                             PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap(&pathmap);
                         let mut rholang_pathmap = pathmap_result.map;
 
-                        let prefix_key: Vec<u8> = zipper
-                            .current_path
-                            .iter()
-                            .flat_map(|seg| {
-                                let mut s = seg.clone();
-                                s.push(0xFF);
-                                s
-                            })
-                            .collect();
+                        let prefix_key: Vec<u8> = segments_to_key(&zipper.current_path, false);
 
                         // Step 2: Remove all entries with this prefix
                         let keys_to_remove: Vec<Vec<u8>> = rholang_pathmap
@@ -4227,14 +4224,7 @@ impl DebruijnInterpreter {
                             absolute_segments.extend(source_segments.clone());
 
                             // Encode as key
-                            let key: Vec<u8> = absolute_segments
-                                .iter()
-                                .flat_map(|seg| {
-                                    let mut s = seg.clone();
-                                    s.push(0xFF);
-                                    s
-                                })
-                                .collect();
+                            let key: Vec<u8> = segments_to_key(&absolute_segments, true);
 
                             // Build the Par that represents the absolute path
                             // Extract elements from an existing entry to understand their structure
@@ -4275,24 +4265,25 @@ impl DebruijnInterpreter {
 
                             // If no existing entry found, reconstruct Par elements from current_path bytes
                             if !found_existing {
-                                use models::rust::path_map_encoder::SExpr;
-                                for segment_bytes in &zipper.current_path {
-                                    // Decode the S-expr bytes to extract the string
-                                    if let Ok(sexpr) = SExpr::decode(segment_bytes) {
-                                        if let SExpr::Symbol(mut s) = sexpr {
-                                            // Strip quotes if present (S-expr includes them for string literals)
-                                            if s.starts_with('"')
-                                                && s.ends_with('"')
-                                                && s.len() >= 2
-                                            {
-                                                s = s[1..s.len() - 1].to_string();
-                                            }
-                                            absolute_elements.push(new_gstring_par(
-                                                s,
-                                                vec![],
-                                                false,
-                                            ));
-                                        }
+                                // W2b-1 (D2): reconstruct the current_path
+                                // elements faithfully via the codec. Each
+                                // segment is `encode_trie_segment(element)`, so
+                                // the split-form path `concat(segments) ∥ 0x00`
+                                // decodes back to the ground EList of those
+                                // elements — restoring ANY eval_stable element
+                                // (nested lists, numerics, GPrivate leaves), a
+                                // behavior FIX over the former lossy
+                                // GString-only SExpr quote-strip.
+                                use models::rust::canonical_path::decode_trie_path;
+                                let full_key =
+                                    segments_to_key(&zipper.current_path, true);
+                                if let Ok(decoded) = decode_trie_path(&full_key) {
+                                    if let Some(ExprInstance::EListBody(list)) = decoded
+                                        .exprs
+                                        .first()
+                                        .and_then(|e| e.expr_instance.as_ref())
+                                    {
+                                        absolute_elements.extend(list.ps.clone());
                                     }
                                 }
                             }
@@ -4324,15 +4315,7 @@ impl DebruijnInterpreter {
                         // Step 3b: If source is empty, add current_path as entry
                         if source.ps.is_empty() && !zipper.current_path.is_empty() {
                             // Encode current_path as key
-                            let key: Vec<u8> = zipper
-                                .current_path
-                                .iter()
-                                .flat_map(|seg| {
-                                    let mut s = seg.clone();
-                                    s.push(0xFF);
-                                    s
-                                })
-                                .collect();
+                            let key: Vec<u8> = segments_to_key(&zipper.current_path, true);
 
                             // Build the Par for current_path
                             let mut absolute_elements = Vec::new();
@@ -4372,24 +4355,25 @@ impl DebruijnInterpreter {
 
                             // If no existing entry found, reconstruct Par elements from current_path bytes
                             if !found_existing {
-                                use models::rust::path_map_encoder::SExpr;
-                                for segment_bytes in &zipper.current_path {
-                                    // Decode the S-expr bytes to extract the string
-                                    if let Ok(sexpr) = SExpr::decode(segment_bytes) {
-                                        if let SExpr::Symbol(mut s) = sexpr {
-                                            // Strip quotes if present (S-expr includes them for string literals)
-                                            if s.starts_with('"')
-                                                && s.ends_with('"')
-                                                && s.len() >= 2
-                                            {
-                                                s = s[1..s.len() - 1].to_string();
-                                            }
-                                            absolute_elements.push(new_gstring_par(
-                                                s,
-                                                vec![],
-                                                false,
-                                            ));
-                                        }
+                                // W2b-1 (D2): reconstruct the current_path
+                                // elements faithfully via the codec. Each
+                                // segment is `encode_trie_segment(element)`, so
+                                // the split-form path `concat(segments) ∥ 0x00`
+                                // decodes back to the ground EList of those
+                                // elements — restoring ANY eval_stable element
+                                // (nested lists, numerics, GPrivate leaves), a
+                                // behavior FIX over the former lossy
+                                // GString-only SExpr quote-strip.
+                                use models::rust::canonical_path::decode_trie_path;
+                                let full_key =
+                                    segments_to_key(&zipper.current_path, true);
+                                if let Ok(decoded) = decode_trie_path(&full_key) {
+                                    if let Some(ExprInstance::EListBody(list)) = decoded
+                                        .exprs
+                                        .first()
+                                        .and_then(|e| e.expr_instance.as_ref())
+                                    {
+                                        absolute_elements.extend(list.ps.clone());
                                     }
                                 }
                             }
@@ -4480,15 +4464,7 @@ impl DebruijnInterpreter {
                         let mut rholang_pathmap = pathmap_result.map;
 
                         // Build key from current_path
-                        let key: Vec<u8> = zipper
-                            .current_path
-                            .iter()
-                            .flat_map(|seg| {
-                                let mut s = seg.clone();
-                                s.push(0xFF); // separator
-                                s
-                            })
-                            .collect();
+                        let key: Vec<u8> = segments_to_key(&zipper.current_path, true);
 
                         // Remove value at this path
                         rholang_pathmap.remove(&key);
@@ -4561,15 +4537,7 @@ impl DebruijnInterpreter {
                         let mut rholang_pathmap = pathmap_result.map;
 
                         // Build prefix key from current_path
-                        let prefix_key: Vec<u8> = zipper
-                            .current_path
-                            .iter()
-                            .flat_map(|seg| {
-                                let mut s = seg.clone();
-                                s.push(0xFF); // separator
-                                s
-                            })
-                            .collect();
+                        let prefix_key: Vec<u8> = segments_to_key(&zipper.current_path, false);
 
                         // Remove all branches with this prefix
                         // Collect keys to remove (can't modify while iterating)
@@ -4985,14 +4953,7 @@ impl DebruijnInterpreter {
                         full_path.extend(path_segments);
 
                         // Build key from full path
-                        let key: Vec<u8> = full_path
-                            .iter()
-                            .flat_map(|seg| {
-                                let mut s = seg.clone();
-                                s.push(0xFF); // separator
-                                s
-                            })
-                            .collect();
+                        let key: Vec<u8> = segments_to_key(&full_path, true);
 
                         // Get value at this path
                         match rholang_pathmap.get(&key) {
@@ -5009,14 +4970,7 @@ impl DebruijnInterpreter {
                         let rholang_pathmap = pathmap_result.map;
 
                         let path_segments = par_to_path(path_par);
-                        let key: Vec<u8> = path_segments
-                            .iter()
-                            .flat_map(|seg| {
-                                let mut s = seg.clone();
-                                s.push(0xFF); // separator
-                                s
-                            })
-                            .collect();
+                        let key: Vec<u8> = segments_to_key(&path_segments, true);
 
                         match rholang_pathmap.get(&key) {
                             Some(val) => Ok(val.clone()),
@@ -5073,15 +5027,7 @@ impl DebruijnInterpreter {
                         let rholang_pathmap = pathmap_result.map;
 
                         // Build key from current_path
-                        let key: Vec<u8> = zipper
-                            .current_path
-                            .iter()
-                            .flat_map(|seg| {
-                                let mut s = seg.clone();
-                                s.push(0xFF); // separator
-                                s
-                            })
-                            .collect();
+                        let key: Vec<u8> = segments_to_key(&zipper.current_path, false);
 
                         // Check if path exists (either has value or has children)
                         if key.is_empty() {
@@ -5229,15 +5175,7 @@ impl DebruijnInterpreter {
                         let mut rholang_pathmap = pathmap_result.map;
 
                         // Build key from current_path
-                        let prefix_key: Vec<u8> = zipper
-                            .current_path
-                            .iter()
-                            .flat_map(|seg| {
-                                let mut s = seg.clone();
-                                s.push(0xFF); // separator
-                                s
-                            })
-                            .collect();
+                        let prefix_key: Vec<u8> = segments_to_key(&zipper.current_path, false);
 
                         // Remove all entries at and below this path
                         let keys_to_remove: Vec<Vec<u8>> = rholang_pathmap
@@ -5501,15 +5439,7 @@ impl DebruijnInterpreter {
                         let rholang_pathmap = pathmap_result.map;
 
                         // Build prefix from current_path
-                        let prefix_key: Vec<u8> = zipper
-                            .current_path
-                            .iter()
-                            .flat_map(|seg| {
-                                let mut s = seg.clone();
-                                s.push(0xFF);
-                                s
-                            })
-                            .collect();
+                        let prefix_key: Vec<u8> = segments_to_key(&zipper.current_path, false);
 
                         // Find all unique immediate children — native trie descent
                         // (O(prefix + distinct child segments) instead of the previous
@@ -5584,15 +5514,7 @@ impl DebruijnInterpreter {
                         let rholang_pathmap = pathmap_result.map;
 
                         // Build prefix from current_path
-                        let prefix_key: Vec<u8> = zipper
-                            .current_path
-                            .iter()
-                            .flat_map(|seg| {
-                                let mut s = seg.clone();
-                                s.push(0xFF);
-                                s
-                            })
-                            .collect();
+                        let prefix_key: Vec<u8> = segments_to_key(&zipper.current_path, false);
 
                         // Find the first (byte-lex smallest) immediate child — native
                         // trie descent with early stop after one emission (O(prefix +
@@ -5682,15 +5604,7 @@ impl DebruijnInterpreter {
                         let rholang_pathmap = pathmap_result.map;
 
                         // Build prefix from current_path
-                        let prefix_key: Vec<u8> = zipper
-                            .current_path
-                            .iter()
-                            .flat_map(|seg| {
-                                let mut s = seg.clone();
-                                s.push(0xFF);
-                                s
-                            })
-                            .collect();
+                        let prefix_key: Vec<u8> = segments_to_key(&zipper.current_path, false);
 
                         // Find the idx-th immediate child in ascending byte-lex order —
                         // native trie descent with early stop after idx+1 emissions
@@ -5773,14 +5687,7 @@ impl DebruijnInterpreter {
                         // Get parent path and current segment
                         let current_segment = zipper.current_path.last().unwrap().clone();
                         let parent_path = &zipper.current_path[..zipper.current_path.len() - 1];
-                        let parent_key: Vec<u8> = parent_path
-                            .iter()
-                            .flat_map(|seg| {
-                                let mut s = seg.clone();
-                                s.push(0xFF);
-                                s
-                            })
-                            .collect();
+                        let parent_key: Vec<u8> = segments_to_key(parent_path, false);
 
                         // Find all siblings (children of parent) — native trie descent
                         // (O(parent + distinct siblings) instead of the previous
@@ -5863,14 +5770,7 @@ impl DebruijnInterpreter {
                         // Get parent path and current segment
                         let current_segment = zipper.current_path.last().unwrap().clone();
                         let parent_path = &zipper.current_path[..zipper.current_path.len() - 1];
-                        let parent_key: Vec<u8> = parent_path
-                            .iter()
-                            .flat_map(|seg| {
-                                let mut s = seg.clone();
-                                s.push(0xFF);
-                                s
-                            })
-                            .collect();
+                        let parent_key: Vec<u8> = segments_to_key(parent_path, false);
 
                         // Find all siblings (children of parent) — native trie descent
                         // (O(parent + distinct siblings) instead of the previous

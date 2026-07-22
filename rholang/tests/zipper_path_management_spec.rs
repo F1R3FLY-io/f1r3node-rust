@@ -79,16 +79,13 @@ mod zipper_path_management_tests {
         assert_eq!(initial_count, 4, "Should start with 4 entries");
 
         // Build S-expression encoded prefix for ["a", "b"]
-        use models::rust::pathmap_integration::par_to_path;
+        use models::rust::pathmap_integration::{par_to_path, segments_to_key};
         let path_segments = par_to_path(&create_path_list(vec!["a".to_string(), "b".to_string()]));
-        let prefix_key: Vec<u8> = path_segments
-            .iter()
-            .flat_map(|seg| {
-                let mut s = seg.clone();
-                s.push(0xFF);
-                s
-            })
-            .collect();
+        // W2b-1 re-key (why bytes moved): prunePath is a PREFIX op; the codec
+        // prefix key is the non-terminated segment concatenation (formerly the
+        // 0xFF-per-segment join). Matches reduce.rs prunePath (segments_to_key
+        // .., false).
+        let prefix_key: Vec<u8> = segments_to_key(&path_segments, false);
 
         let keys_to_remove: Vec<Vec<u8>> = rholang_pathmap
             .iter()
@@ -123,20 +120,17 @@ mod zipper_path_management_tests {
         assert_eq!(initial_count, 4, "Should start with 4 entries");
 
         // Build S-expression encoded prefix for ["a", "b", "c"]
-        use models::rust::pathmap_integration::par_to_path;
+        use models::rust::pathmap_integration::{par_to_path, segments_to_key};
         let path_segments = par_to_path(&create_path_list(vec![
             "a".to_string(),
             "b".to_string(),
             "c".to_string(),
         ]));
-        let prefix_key: Vec<u8> = path_segments
-            .iter()
-            .flat_map(|seg| {
-                let mut s = seg.clone();
-                s.push(0xFF);
-                s
-            })
-            .collect();
+        // W2b-1 re-key (why bytes moved): prunePath is a PREFIX op; the codec
+        // prefix key is the non-terminated segment concatenation (formerly the
+        // 0xFF-per-segment join). Matches reduce.rs prunePath (segments_to_key
+        // .., false).
+        let prefix_key: Vec<u8> = segments_to_key(&path_segments, false);
 
         let keys_to_remove: Vec<Vec<u8>> = rholang_pathmap
             .iter()

@@ -5,7 +5,7 @@
 
 use pathmap::zipper::{ReadZipperUntracked, WriteZipperUntracked, ZipperHead};
 
-use super::pathmap_integration::{par_to_path, RholangPathMap};
+use super::pathmap_integration::{par_to_path, segments_to_key, RholangPathMap};
 use crate::rhoapi::{EPathMap, Par};
 
 /// Wrapper for PathMap ReadZipper that maintains Rholang context
@@ -222,24 +222,37 @@ impl<'a> RholangZipperHead<'a> {
     }
 }
 
-/// Helper function to flatten path segments with 0xFF separator
+/// Build a FULL trie key from per-element codec segments (W2b-1): the
+/// concatenation of the prefix-free `encode_trie_segment` bytes plus the
+/// split-list `0x00` terminator — identical to
+/// `create_pathmap_from_elements`' `encode_trie_path`, so a zipper positioned
+/// here lands on the leaf. Supersedes the retired `0xFF`-per-segment join.
 pub(crate) fn flatten_segments(segments: &[Vec<u8>]) -> Vec<u8> {
-    segments
-        .iter()
-        .flat_map(|seg| {
-            let mut v = seg.clone();
-            v.push(0xFF); // separator
-            v
-        })
-        .collect()
+    segments_to_key(segments, true)
 }
 
-/// Helper function to unflatten path segments (split by 0xFF separator)
+/// Split a codec trie key back into its per-element segments (W2b-1): the
+/// parser-state successor to the retired `split(0xFF)`. Segment boundaries
+/// are the codec grammar's `segment_extent`, and the trailing split-list
+/// `0x00` terminator is not a segment.
 #[allow(dead_code)]
 pub(crate) fn unflatten_segments(flattened: &[u8]) -> Vec<Vec<u8>> {
-    flattened
-        .split(|&b| b == 0xFF)
-        .filter(|seg| !seg.is_empty())
-        .map(|seg| seg.to_vec())
-        .collect()
+    use super::canonical_path::{segment_extent, tag};
+    let mut segments = Vec::new();
+    let mut rest = flattened;
+    while let Some(&first) = rest.first() {
+        // The split-list terminator ends the path and is not a segment.
+        if first == tag::TERM {
+            break;
+        }
+        match segment_extent(rest) {
+            Some(extent) if extent > 0 => {
+                segments.push(rest[..extent].to_vec());
+                rest = &rest[extent..];
+            }
+            // Not a well-formed codec segment boundary — stop.
+            _ => break,
+        }
+    }
+    segments
 }

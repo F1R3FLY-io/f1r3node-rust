@@ -1,7 +1,9 @@
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::{EList, EPathMap, Expr, Par};
 use models::rust::pathmap_crate_type_mapper::PathMapCrateTypeMapper;
-use models::rust::pathmap_integration::{create_pathmap_from_elements, RholangPathMap};
+use models::rust::pathmap_integration::{
+    create_pathmap_from_elements, par_to_path, segments_to_key, RholangPathMap,
+};
 
 fn make_string_par(s: &str) -> Par {
     Par {
@@ -89,9 +91,16 @@ fn test_pathmap_restriction() {
     let prefix = make_list_par(vec!["books", "fiction"]);
 
     let map = create_pathmap_from_elements(&[par1, par2, par3], None);
-    let prefix_map = create_pathmap_from_elements(&[prefix], None);
+    // W2b-1 (why bytes moved): PathMap::restrict is a PREFIX/subtrie op; under
+    // the codec a prefix is the NON-terminated segment concatenation (the FULL
+    // encode_trie_path key terminates with 0x00 and is thus prefix-free of the
+    // longer keys, degenerating restrict to exact-match). Build the restricting
+    // map with prefix keys — mirroring the production `restriction` method
+    // (reduce.rs) — so restrict prefix-matches and yields the 2 fiction books.
+    let mut prefix_map = RholangPathMap::new();
+    prefix_map.insert(segments_to_key(&par_to_path(&prefix), false), prefix.clone());
 
-    let restricted = map.map.restrict(&prefix_map.map);
+    let restricted = map.map.restrict(&prefix_map);
     // Should have only the 2 fiction books
     assert_eq!(restricted.val_count(), 2);
 }

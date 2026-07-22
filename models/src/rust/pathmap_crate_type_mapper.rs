@@ -345,7 +345,11 @@ pub fn eval_stable_epathmap(e_pathmap: &EPathMap) -> bool {
 /// A Par in ground normal form: either a single-expr carrier over the stable
 /// expr alphabet, or the reflect GPrivate leaf. Every other Par field must
 /// be empty and `locally_free`/`connective_used` at their ground defaults.
-fn eval_stable_par(par: &Par) -> bool {
+///
+/// `pub(crate)` since the canonical path codec (`canonical_path.rs`) uses THIS
+/// function as its ground-domain gate — the codec grammar and `eval_stable_par`
+/// must remain ONE grammar, pinned by the codec's agreement property test.
+pub(crate) fn eval_stable_par(par: &Par) -> bool {
     if !par.sends.is_empty()
         || !par.receives.is_empty()
         || !par.news.is_empty()

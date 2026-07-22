@@ -130,9 +130,9 @@ use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::var::VarInstance;
 use models::rhoapi::{EMethod, EPathMap, EZipper, Expr, Par};
 use models::rust::pathmap_crate_type_mapper::{interned_epathmap, InternedEPathMap};
-use models::rust::pathmap_integration::par_to_path;
+use models::rust::pathmap_integration::{par_to_path, segments_to_key};
 use models::rust::pathmap_native_query::{
-    collect_child_segments, collect_subtrie_values, path_prefix_exists, SEGMENT_SEPARATOR,
+    collect_child_segments, collect_subtrie_values, path_prefix_exists,
 };
 use models::rust::pathmap_zipper::RholangReadZipper;
 
@@ -481,17 +481,24 @@ enum ViewMode {
     Nil,
 }
 
-/// The 0xFF-terminated key flattening (reduce.rs:3998-4007): every segment
-/// contributes `seg ∥ SEGMENT_SEPARATOR`. Preallocated to the exact final
-/// length.
-fn flatten_key(segments: &[Vec<u8>]) -> Vec<u8> {
-    let mut key = Vec::with_capacity(segments.iter().map(|seg| seg.len() + 1).sum());
-    for seg in segments {
-        key.extend_from_slice(seg);
-        key.push(SEGMENT_SEPARATOR);
-    }
-    key
-}
+// W2b-1 RETIREMENT: the former `0xFF`-per-segment key flattening is
+// superseded by the canonical path codec. Trie keys are now built with
+// `models::rust::pathmap_integration::segments_to_key(segments, terminate)`:
+// concatenation of the prefix-free codec segments, with the split-list
+// `0x00` terminator appended for FULL (getLeaf/atPath) keys and omitted for
+// PREFIX (getSubtrie/childCount/descend/pathExists/sibling) keys — the same
+// per-site full/prefix classification as the reduce.rs zipper methods this
+// fused chain mirrors. Kept commented (not deleted) per the retirement
+// convention; every call site below now routes through `segments_to_key`.
+//
+// fn flatten_key(segments: &[Vec<u8>]) -> Vec<u8> {
+//     let mut key = Vec::with_capacity(segments.iter().map(|seg| seg.len() + 1).sum());
+//     for seg in segments {
+//         key.extend_from_slice(seg);
+//         key.push(SEGMENT_SEPARATOR);
+//     }
+//     key
+// }
 
 /// `MethodNotDefined` with the exact payloads today's arms construct.
 fn method_not_defined(kind: LinkKind, other_type: &str) -> InterpreterError {
@@ -718,7 +725,7 @@ impl DebruijnInterpreter {
                             // :5526 — first (byte-lex smallest) child.
                             let children = collect_child_segments(
                                 &chain.interned.map,
-                                &flatten_key(focus),
+                                &segments_to_key(focus, false),
                                 Some(1),
                             );
                             match children.into_iter().next() {
@@ -771,7 +778,7 @@ impl DebruijnInterpreter {
                                 // yields None).
                                 let children = collect_child_segments(
                                     &chain.interned.map,
-                                    &flatten_key(focus),
+                                    &segments_to_key(focus, false),
                                     Some((idx as usize).saturating_add(1)),
                                 );
                                 match children.into_iter().nth(idx as usize) {
@@ -872,7 +879,8 @@ impl DebruijnInterpreter {
                                     .last()
                                     .expect("non-empty focus has a last segment")
                                     .clone();
-                                let parent_key = flatten_key(&focus[..focus.len() - 1]);
+                                let parent_key =
+                                    segments_to_key(&focus[..focus.len() - 1], false);
                                 // :5713/:5803 — all siblings, ascending
                                 // byte-lex, deduplicated.
                                 let siblings = collect_child_segments(
@@ -934,7 +942,7 @@ impl DebruijnInterpreter {
                 LinkKind::PathExists => {
                     let exists = match &mode {
                         ViewMode::Zipper { focus, .. } => {
-                            let key = flatten_key(focus);
+                            let key = segments_to_key(focus, false);
                             if key.is_empty() {
                                 // :5011-5013 — root exists iff the EMBEDDED
                                 // message is non-empty; the embedded message
@@ -959,7 +967,7 @@ impl DebruijnInterpreter {
                     let value = match &mode {
                         ViewMode::Zipper { focus, .. } => {
                             // :3915-3930 — key from focus; absent ⇒ Nil.
-                            let key = flatten_key(focus);
+                            let key = segments_to_key(focus, true);
                             match chain.interned.map.get(&key) {
                                 Some(value) => value.clone(),
                                 None => Par::default(),
@@ -992,7 +1000,7 @@ impl DebruijnInterpreter {
                             // :3999-4013 — native subtrie descent below the
                             // focus prefix.
                             let elements =
-                                collect_subtrie_values(&chain.interned.map, &flatten_key(focus));
+                                collect_subtrie_values(&chain.interned.map, &segments_to_key(focus, false));
                             // :4016-4023 — locally_free/connective_used from
                             // the CONVERSION result (the interned entry),
                             // remainder None.
@@ -1022,7 +1030,7 @@ impl DebruijnInterpreter {
                         ViewMode::Zipper { focus, .. } => {
                             // :5428-5444 — distinct immediate children below
                             // the focus.
-                            collect_child_segments(&chain.interned.map, &flatten_key(focus), None)
+                            collect_child_segments(&chain.interned.map, &segments_to_key(focus, false), None)
                                 .len() as i64
                         }
                         ViewMode::Map => {
@@ -1044,10 +1052,10 @@ impl DebruijnInterpreter {
                             // :4906-4919 — focus ++ argument path.
                             let mut full_path = focus.clone();
                             full_path.extend(par_to_path(path_par));
-                            flatten_key(&full_path)
+                            segments_to_key(&full_path, true)
                         }
                         // :4935-4943 — argument path from root.
-                        ViewMode::Map => flatten_key(&par_to_path(path_par)),
+                        ViewMode::Map => segments_to_key(&par_to_path(path_par), true),
                         ViewMode::Nil => unreachable!("Nil views return at step (c)"),
                     };
                     // :4922-4925/:4945-4948 — value or Nil, UNWRAPPED.

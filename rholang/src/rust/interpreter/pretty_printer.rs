@@ -450,37 +450,39 @@ impl PrettyPrinter {
                         format!("{{|{}|}}", elements)
                     };
 
-                    // Format current_path as a readable list
+                    // Format current_path as a readable list. W2b-1: each
+                    // segment is a codec `encode_trie_segment(element)`; frame
+                    // it as a 1-element split path (`seg ∥ 0x00`) to recover
+                    // the element Par faithfully (ANY eval_stable element, vs
+                    // the former lossy GString-only SExpr decode) and render
+                    // it. Zipper display strings move accordingly (re-pinned).
                     let current_path_repr = if zipper.current_path.is_empty() {
                         "[]".to_string()
                     } else {
-                        use models::rust::path_map_encoder::SExpr;
+                        use models::rust::canonical_path::{decode_trie_path, tag};
 
-                        let path_segments: Vec<String> = zipper
-                            .current_path
-                            .iter()
-                            .map(|segment| {
-                                // Decode S-expression to get readable format
-                                SExpr::decode(segment)
-                                    .ok()
-                                    .map(|sexpr| {
-                                        // For simple symbols, the string may already have quotes
-                                        // (e.g., from Rholang strings like "books")
-                                        match sexpr {
-                                            SExpr::Symbol(s) => {
-                                                // If it's already quoted, use as-is; otherwise add quotes
-                                                if s.starts_with('"') && s.ends_with('"') {
-                                                    s
-                                                } else {
-                                                    format!("\"{}\"", s)
-                                                }
-                                            }
-                                            SExpr::List(_) => sexpr.to_string(),
-                                        }
-                                    })
-                                    .unwrap_or_else(|| format!("0x{}", hex::encode(segment)))
-                            })
-                            .collect();
+                        let mut path_segments: Vec<String> =
+                            Vec::with_capacity(zipper.current_path.len());
+                        for segment in &zipper.current_path {
+                            let mut framed = segment.clone();
+                            framed.push(tag::TERM);
+                            let rendered = match decode_trie_path(&framed) {
+                                Ok(par) => match par
+                                    .exprs
+                                    .first()
+                                    .and_then(|ex| ex.expr_instance.as_ref())
+                                {
+                                    Some(ExprInstance::EListBody(list))
+                                        if !list.ps.is_empty() =>
+                                    {
+                                        self.build_channel_string(&list.ps[0])
+                                    }
+                                    _ => format!("0x{}", hex::encode(segment)),
+                                },
+                                Err(_) => format!("0x{}", hex::encode(segment)),
+                            };
+                            path_segments.push(rendered);
+                        }
                         format!("[{}]", path_segments.join(", "))
                     };
 

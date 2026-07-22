@@ -13,6 +13,11 @@ pub mod par_set;
 pub mod par_set_type_mapper;
 pub mod par_to_sexpr;
 pub mod path_map_encoder;
+// EPathMap wire: the navigable trie-key codec (Job A) — the per-element,
+// prefix-free, invertible canonical path codec the PathMap zippers require.
+// NO top-level value-arm wire codec (that Job-B path was never brought over);
+// nested-map canonicalization is a PathMap zipper trie-walk (no sort).
+pub mod canonical_path;
 pub mod pathmap_crate_type_mapper;
 pub mod pathmap_integration;
 pub mod pathmap_native_query;
