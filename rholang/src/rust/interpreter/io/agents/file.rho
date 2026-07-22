@@ -1,15 +1,18 @@
 // File agent — wraps a native fd with the FIP `File` method surface.
 //
-// This is the MINIMAL surface: `read`, `size`, `close`, `default`.
-// Extended in follow-up PRs with `write`, `seek`, `tell`, `truncate`,
-// `flush`, `readAt`, `writeAt`, `lockRange`, `chmod`, `chown`, plus
-// line-based `text` / `lines` / `mapReduceLines*`.
+// Currently ships: `read`, `write`, `seek`, `tell`, `size`,
+// `truncate`, `flush`, `close`, `default`. Extended in follow-up
+// PRs with `readAt`, `writeAt`, `lockRange` (all need range-lock
+// infrastructure, Phase 4), `chmod`, `chown` (need mode-string
+// parser), plus line-based `text` / `lines` / `mapReduceLines*`.
 //
 // This file is an `agent` block that expects the enclosing scope
 // to bind:
 //   - `File`               — the agent's constructor channel
-//   - `nRead`, `nSize`,
-//     `nClose`             — fixed-channel Pars for the native
+//   - `nRead`, `nWrite`,
+//     `nSeek`, `nTell`,
+//     `nSize`, `nTruncate`,
+//     `nFlush`, `nClose`   — fixed-channel Pars for the native
 //                            primitives, obtained via `NormalizerEnv`
 //                            injection at compile time (see
 //                            `interpreter::io::injections`).
@@ -73,6 +76,73 @@ agent File {
     for (@fd <<- @(*this, "fd")) {
       try @[n] <- nSize!?(fd) {
         return!([true, n])
+      }
+      catch @[code, msg] {
+        return!([false, code, msg])
+      }
+    }
+  } |
+
+  method write(bytes) {
+    // Writes `bytes` at the current position and advances it.
+    // Requires the fd to have been opened in a writeable mode
+    // ("w", "a", "r+", "w+", or their "x"-suffixed variants);
+    // otherwise the native returns FSERR_PERM.
+    for (@fd <<- @(*this, "fd")) {
+      try @[nWritten] <- nWrite!?(fd, bytes) {
+        return!([true, nWritten])
+      }
+      catch @[code, msg] {
+        return!([false, code, msg])
+      }
+    }
+  } |
+
+  method seek(offset, whence) {
+    // `whence` is "set" (absolute; requires non-negative offset),
+    // "cur" (relative to current position), or "end" (relative to
+    // file end). Returns the new absolute position.
+    for (@fd <<- @(*this, "fd")) {
+      try @[newPos] <- nSeek!?(fd, offset, whence) {
+        return!([true, newPos])
+      }
+      catch @[code, msg] {
+        return!([false, code, msg])
+      }
+    }
+  } |
+
+  method tell() {
+    for (@fd <<- @(*this, "fd")) {
+      try @[pos] <- nTell!?(fd) {
+        return!([true, pos])
+      }
+      catch @[code, msg] {
+        return!([false, code, msg])
+      }
+    }
+  } |
+
+  method truncate(n) {
+    // Sets the file size to `n` bytes, padding with zeros if the
+    // file grows. Requires a writeable fd. Native imposes a per-
+    // call ceiling (MAX_TRUNCATE_BYTES = 16 GiB); larger `n`
+    // returns FSERR_BAD_ARG.
+    for (@fd <<- @(*this, "fd")) {
+      try <- nTruncate!?(fd, n) {
+        return!([true])
+      }
+      catch @[code, msg] {
+        return!([false, code, msg])
+      }
+    }
+  } |
+
+  method flush() {
+    // Forces a durable write via `sync_all` (data + metadata).
+    for (@fd <<- @(*this, "fd")) {
+      try <- nFlush!?(fd) {
+        return!([true])
       }
       catch @[code, msg] {
         return!([false, code, msg])

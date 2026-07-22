@@ -84,7 +84,7 @@ fn temp_path(tag: &str) -> String {
     p.to_string_lossy().into_owned()
 }
 
-/// The four native URNs the `File` agent + test harness need.
+/// The native URNs the `File` agent + test harness need.
 /// Populated as a `NormalizerEnv` so the enclosing `new`-scope's
 /// URN bindings resolve to the fixed-channel `Par`s.
 fn file_agent_env() -> HashMap<String, Par> {
@@ -98,8 +98,28 @@ fn file_agent_env() -> HashMap<String, Par> {
         FixedChannels::native_read(),
     );
     env.insert(
+        "rho:io:fs:native:1.0.0/write".to_string(),
+        FixedChannels::native_write(),
+    );
+    env.insert(
+        "rho:io:fs:native:1.0.0/seek".to_string(),
+        FixedChannels::native_seek(),
+    );
+    env.insert(
+        "rho:io:fs:native:1.0.0/tell".to_string(),
+        FixedChannels::native_tell(),
+    );
+    env.insert(
         "rho:io:fs:native:1.0.0/size".to_string(),
         FixedChannels::native_size(),
+    );
+    env.insert(
+        "rho:io:fs:native:1.0.0/truncate".to_string(),
+        FixedChannels::native_truncate(),
+    );
+    env.insert(
+        "rho:io:fs:native:1.0.0/flush".to_string(),
+        FixedChannels::native_flush(),
     );
     env.insert(
         "rho:io:fs:native:1.0.0/close".to_string(),
@@ -109,22 +129,28 @@ fn file_agent_env() -> HashMap<String, Par> {
 }
 
 /// Wrap `body` in the outer `new`-scope + inject the `File` agent
-/// block. The body has `File` (agent constructor), `nOpen` (native
-/// open URN — separate from the ones the agent needs), and a
-/// `@"sink"` channel to publish observable results on.
-fn wrap(body: &str, path: &str) -> String {
+/// block. Takes `mode` so writeable-fd tests can use `"w+"` or
+/// `"r+"` while read-only tests use `"r"`. The body has `File`
+/// (agent constructor) and a `@"sink"` channel to publish
+/// observable results on.
+fn wrap_with_mode(body: &str, path: &str, mode: &str) -> String {
     format!(
         r#"new
      File,
      nOpen(`rho:io:fs:native:1.0.0/open`),
      nRead(`rho:io:fs:native:1.0.0/read`),
+     nWrite(`rho:io:fs:native:1.0.0/write`),
+     nSeek(`rho:io:fs:native:1.0.0/seek`),
+     nTell(`rho:io:fs:native:1.0.0/tell`),
      nSize(`rho:io:fs:native:1.0.0/size`),
+     nTruncate(`rho:io:fs:native:1.0.0/truncate`),
+     nFlush(`rho:io:fs:native:1.0.0/flush`),
      nClose(`rho:io:fs:native:1.0.0/close`),
      openAck
    in {{
      {FILE_AGENT_SRC}
      |
-     nOpen!(*openAck, "{path}", "r") |
+     nOpen!(*openAck, "{path}", "{mode}") |
      for (@[true, fd] <- openAck) {{
        // File's constructor uses `@fd` (process pattern), so we
        // pass the fd Process directly. Agent constructor desugars
@@ -147,6 +173,9 @@ fn wrap(body: &str, path: &str) -> String {
    }}"#
     )
 }
+
+/// Read-only convenience wrapper — opens `path` with mode "r".
+fn wrap(body: &str, path: &str) -> String { wrap_with_mode(body, path, "r") }
 
 async fn observe_sink(runtime: &RhoRuntimeImpl) -> String {
     let sink_channel = Par::default().with_exprs(vec![models::rhoapi::Expr {
@@ -333,5 +362,203 @@ async fn file_agent_unknown_method_returns_unsupported() {
     assert!(
         sink.contains(r#"GString("nonexistent")"#),
         "expected the method name in the error payload, got: {sink}"
+    );
+}
+
+/// `write(bytes)` writes at the current position and returns
+/// `[true, nWritten]`. Follow-up `seek(0, "set")` + `read` reads
+/// them back, proving the write reached disk and that fd-table
+/// state persists across four method invocations
+/// (write → seek → read → sink).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn file_agent_write_then_readback_roundtrip() {
+    let path = temp_path("write_roundtrip");
+    // Precondition: file must exist for "w+" to succeed on all
+    // platforms (macOS's `w+` is fine on missing files too, but
+    // touching first keeps the test portable).
+    std::fs::write(&path, b"").expect("precondition touch");
+
+    // Write 5 bytes, seek to start, read them back. Publish the
+    // read result on @"sink" for inspection.
+    //
+    // `"68656c6c6f".hexToBytes()` gives the ASCII bytes of
+    // "hello". Using .hexToBytes() rather than
+    // "hello".toByteArray() because the latter protobuf-encodes
+    // the string as a Rholang Par -- not what we want on disk.
+    let body = r#"
+        new writeRet, seekRet, readRet in {
+          fileAgent!(*writeRet, "write", "68656c6c6f".hexToBytes()) |
+          for (@_ <- writeRet) {
+            fileAgent!(*seekRet, "seek", 0, "set") |
+            for (@_ <- seekRet) {
+              fileAgent!(*readRet, "read", 5) |
+              for (@result <- readRet) { @"sink"!(result) }
+            }
+          }
+        }
+    "#;
+    let src = wrap_with_mode(body, &path, "w+");
+
+    let runtime = mk_runtime().await;
+    let rand = Blake2b512Random::create_from_bytes(&[]);
+    let phlo = Cost::create(i64::MAX, "file-agent-write-roundtrip".to_string());
+    let result = runtime
+        .evaluate(&src, phlo, file_agent_env(), rand)
+        .await
+        .expect("evaluate");
+    assert!(result.errors.is_empty(), "eval errors: {:?}", result.errors);
+
+    let sink = observe_sink(&runtime).await;
+    let _ = std::fs::remove_file(&path);
+
+    assert!(
+        sink.contains("GBool(true)"),
+        "expected success tuple on sink, got: {sink}"
+    );
+    assert!(
+        sink.contains("GByteArray([104, 101, 108, 108, 111])"),
+        "expected the ASCII bytes of \"hello\" round-tripped, got: {sink}"
+    );
+}
+
+/// `seek(3, "set")` moves to position 3; `tell()` reports it.
+/// Also exercises the "cur" whence: subsequent `seek(2, "cur")`
+/// should land at position 5.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn file_agent_seek_and_tell_report_position() {
+    let path = temp_path("seek_tell");
+    std::fs::write(&path, b"0123456789").expect("precondition write");
+
+    let body = r#"
+        new seekRet1, tellRet1, seekRet2, tellRet2 in {
+          fileAgent!(*seekRet1, "seek", 3, "set") |
+          for (@_ <- seekRet1) {
+            fileAgent!(*tellRet1, "tell") |
+            for (@r1 <- tellRet1) {
+              @"sink"!(("after-set", r1)) |
+              fileAgent!(*seekRet2, "seek", 2, "cur") |
+              for (@_ <- seekRet2) {
+                fileAgent!(*tellRet2, "tell") |
+                for (@r2 <- tellRet2) { @"sink"!(("after-cur", r2)) }
+              }
+            }
+          }
+        }
+    "#;
+    let src = wrap(body, &path);
+
+    let runtime = mk_runtime().await;
+    let rand = Blake2b512Random::create_from_bytes(&[]);
+    let phlo = Cost::create(i64::MAX, "file-agent-seek-tell".to_string());
+    let result = runtime
+        .evaluate(&src, phlo, file_agent_env(), rand)
+        .await
+        .expect("evaluate");
+    assert!(result.errors.is_empty(), "eval errors: {:?}", result.errors);
+
+    let sink = observe_sink(&runtime).await;
+    let _ = std::fs::remove_file(&path);
+
+    // Expected: two tuples on sink -- ("after-set", [true, 3]) and
+    // ("after-cur", [true, 5]).
+    assert!(
+        sink.contains(r#"GString("after-set")"#) && sink.contains("GInt(3)"),
+        "expected tell to report 3 after seek(3,\"set\"), got: {sink}"
+    );
+    assert!(
+        sink.contains(r#"GString("after-cur")"#) && sink.contains("GInt(5)"),
+        "expected tell to report 5 after seek(2,\"cur\") from 3, got: {sink}"
+    );
+}
+
+/// `truncate(3)` shrinks a 10-byte file to 3 bytes. `size()`
+/// then reports 3. Exercises write mode + truncate reaching the
+/// underlying `File::set_len`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn file_agent_truncate_shrinks_file() {
+    let path = temp_path("truncate");
+    std::fs::write(&path, b"0123456789").expect("precondition write");
+
+    let body = r#"
+        new truncRet, sizeRet in {
+          fileAgent!(*truncRet, "truncate", 3) |
+          for (@truncResult <- truncRet) {
+            @"sink"!(("trunc", truncResult)) |
+            fileAgent!(*sizeRet, "size") |
+            for (@sizeResult <- sizeRet) { @"sink"!(("size", sizeResult)) }
+          }
+        }
+    "#;
+    // "r+" opens read+write on existing file (no truncate on open,
+    // unlike "w+"). Correct for a shrink test.
+    let src = wrap_with_mode(body, &path, "r+");
+
+    let runtime = mk_runtime().await;
+    let rand = Blake2b512Random::create_from_bytes(&[]);
+    let phlo = Cost::create(i64::MAX, "file-agent-truncate".to_string());
+    let result = runtime
+        .evaluate(&src, phlo, file_agent_env(), rand)
+        .await
+        .expect("evaluate");
+    assert!(result.errors.is_empty(), "eval errors: {:?}", result.errors);
+
+    let sink = observe_sink(&runtime).await;
+    let disk_size = std::fs::metadata(&path)
+        .map(|m| m.len())
+        .unwrap_or(u64::MAX);
+    let _ = std::fs::remove_file(&path);
+
+    assert!(
+        sink.contains(r#"GString("trunc")"#) && sink.contains("GBool(true)"),
+        "expected truncate to succeed, got: {sink}"
+    );
+    assert!(
+        sink.contains(r#"GString("size")"#) && sink.contains("GInt(3)"),
+        "expected size=3 after truncate(3), got: {sink}"
+    );
+    assert_eq!(
+        disk_size, 3,
+        "expected the file on disk to be 3 bytes after truncate"
+    );
+}
+
+/// `flush()` returns `[true]`. Sanity check that the wrapper
+/// resolves the URN and the try/catch destructures the empty
+/// success payload correctly.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn file_agent_flush_returns_success() {
+    let path = temp_path("flush");
+    std::fs::write(&path, b"").expect("precondition touch");
+
+    // `"616263".hexToBytes()` = ASCII "abc" (3 bytes). Content
+    // doesn't matter here -- test only cares that flush returns
+    // a `[true]` success tuple.
+    let body = r#"
+        new writeRet, flushRet in {
+          fileAgent!(*writeRet, "write", "616263".hexToBytes()) |
+          for (@_ <- writeRet) {
+            fileAgent!(*flushRet, "flush") |
+            for (@result <- flushRet) { @"sink"!(result) }
+          }
+        }
+    "#;
+    let src = wrap_with_mode(body, &path, "w+");
+
+    let runtime = mk_runtime().await;
+    let rand = Blake2b512Random::create_from_bytes(&[]);
+    let phlo = Cost::create(i64::MAX, "file-agent-flush".to_string());
+    let result = runtime
+        .evaluate(&src, phlo, file_agent_env(), rand)
+        .await
+        .expect("evaluate");
+    assert!(result.errors.is_empty(), "eval errors: {:?}", result.errors);
+
+    let sink = observe_sink(&runtime).await;
+    let _ = std::fs::remove_file(&path);
+
+    // Success reply is a bare `[true]` -- a 1-element list.
+    assert!(
+        sink.contains("GBool(true)"),
+        "expected flush success tuple on sink, got: {sink}"
     );
 }
