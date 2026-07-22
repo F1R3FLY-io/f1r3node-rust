@@ -1352,11 +1352,14 @@ impl DebruijnInterpreter {
             // Out Of Phlogiston or User Abort error is always single
             // - if one execution path hits these, the whole evaluation stops as well
             // UserAbortError takes precedence over OutOfPhlogistonsError
-            // Use single-pass find() to avoid double iteration
+            // Use single-pass find() to avoid double iteration.
+            // COST-DISCRIMINANT SAFETY (async counter driver): detached tasks wrap their errors in
+            // `Located`, so classify on `root_cause()` — a Located-wrapped UserAbort/OOP must NOT fall
+            // through to the generic single/aggregate arms (wrong cost -> ReplayCostMismatch).
             err_list
                 if err_list
                     .iter()
-                    .find(|e| matches!(e, InterpreterError::UserAbortError))
+                    .find(|e| matches!(e.root_cause(), InterpreterError::UserAbortError))
                     .is_some() =>
             {
                 Err(InterpreterError::UserAbortError)
@@ -1365,16 +1368,19 @@ impl DebruijnInterpreter {
             err_list
                 if err_list
                     .iter()
-                    .find(|e| matches!(e, InterpreterError::OutOfPhlogistonsError))
+                    .find(|e| matches!(e.root_cause(), InterpreterError::OutOfPhlogistonsError))
                     .is_some() =>
             {
                 Err(InterpreterError::OutOfPhlogistonsError)
             }
 
-            // Rethrow single error
-            [ex] => Err(ex.clone()),
+            // Rethrow single error — unwrap any `Located` so handle_error sees the raw variant it
+            // classifies on (e.g. IfConditionTypeError / OperatorNotDefined cost arms).
+            [ex] => Err(ex.root_cause().clone()),
 
-            // Collect errors from parallel execution
+            // Collect errors from parallel execution. KEEP the `Located` elements here: handle_error's
+            // Aggregate arm ignores element variants and this preserves the per-lane coordinate for
+            // DISPLAY (the elements' Display renders "[path] source").
             err_list => Err(InterpreterError::AggregateError {
                 interpreter_errors: err_list.to_vec(),
             }),
