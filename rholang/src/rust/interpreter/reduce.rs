@@ -12,7 +12,6 @@ use futures::FutureExt;
 use smallvec::SmallVec;
 
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
-use futures::stream::{FuturesUnordered, StreamExt};
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::g_unforgeable::UnfInstance;
 use models::rhoapi::tagged_continuation::TaggedCont;
@@ -1317,34 +1316,23 @@ impl DebruijnInterpreter {
         >,
         path: SmallVec<[u32; 8]>,
     ) -> Result<DispatchType, InterpreterError> {
-        // `path` is the coordinate base for the detached continuation spawns (used when this join is
-        // detached in a following commit); the fan-out index is appended per continuation.
-        let _ = &path;
-        let mut unordered = FuturesUnordered::new();
+        // SITES 2-5 (the four produce/consume persistent+peek continuation joins funnel here) —
+        // DETACHED. Detach each continuation as a COUNTED task on the deploy's drive at path+[index]
+        // instead of tokio::spawn+await. RETURN-CONTRACT: on success these branches only ever conveyed
+        // `Skip` (the empty-error aggregate) upward — NonDeterministicCall / FailedNonDeterministicCall
+        // arise solely from the non-persistent-non-peek `else` branch's DIRECT dispatch, never here — so
+        // returning Ok(Skip) preserves the caller's success value exactly. A child Err/panic now flows to
+        // the drive sink (Located) and surfaces at `inj` drain, byte-identically to the former aggregate
+        // (both discard Ok(_) — including FailedNonDeterministicCall — and capture only Err). This
+        // collapses the parked-parent chain while preserving concurrency (same spawns) => COMM order
+        // unchanged => no consensus divergence.
+        let drive = self.drive.read().expect("drive cell poisoned").clone();
         for (index, fut) in futures.into_iter().enumerate() {
-            // Persistent/peek continuations must progress independently; spawning
-            // preserves parallel execution and isolates deep recursive branches.
-            let handle = tokio::spawn(fut);
-            unordered.push(async move { (index, handle.await) });
+            let mut child = path.clone();
+            child.push(index as u32);
+            spawn_detached(&drive, child, fut);
         }
-
-        let mut errors = Vec::new();
-        while let Some((index, joined)) = unordered.next().await {
-            match joined {
-                Ok(Ok(_)) => {}
-                Ok(Err(err)) => errors.push((index, err)),
-                Err(join_error) => errors.push((
-                    index,
-                    InterpreterError::ReduceError(format!(
-                        "parallel dispatch task failed: {join_error}"
-                    )),
-                )),
-            }
-        }
-
-        errors.sort_by_key(|(index, _)| *index);
-        let stable_errors = errors.into_iter().map(|(_, err)| err).collect();
-        self.aggregate_evaluator_errors(stable_errors)
+        Ok(DispatchType::Skip)
     }
 
     /* Collect mergeable channels */
