@@ -273,7 +273,7 @@ agent Dir {
               }
             }
             _ => {
-              return!([false, "FSERR_BAD_ARG", ("path is not a directory:", relPath)])
+              return!([false, "FSERR_BAD_ARG", "path is not a directory: " ++ relPath])
             }
           }
         }
