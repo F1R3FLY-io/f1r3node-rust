@@ -894,7 +894,25 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
     /// channel data from parent blocks to compute merged state.
     ///
     /// The LFS sync transfers the RSpace trie but not the mergeable channel store,
-    /// so we must regenerate it by replaying blocks.
+    /// so we must regenerate any entries the streaming `MergeableEntryRequest`/
+    /// `MergeableEntryResponse` exchange in `lfs_block_requester` didn't already
+    /// fill in (see its `process_mergeable_entry`). That streaming path covers
+    /// every block downloaded during sync when the responding peer has an
+    /// entry, so this function is expected to find most (often all) blocks
+    /// already cached — it exists to catch the remainder (peer soft-misses,
+    /// blocks the node already had locally before this sync, etc).
+    ///
+    /// Before this fix, this loop replayed EVERY block from `min_block_number`
+    /// to the LFB unconditionally, regardless of whether its cache entry was
+    /// already present. With `disable-lfs=true` (or any join where
+    /// `min_block_number` resolves to genesis), that meant single-threaded,
+    /// full-history block execution gating the transition to `Running` — and
+    /// since the chain tip keeps advancing while this runs, a joiner that
+    /// falls far enough behind can never finish before it needs to start
+    /// over, wedging permanently short of the tip (see
+    /// f1r3fly-io/f1r3node-rust "observer permanent early stall" report).
+    /// Skipping blocks whose entry already exists bounds the actual replay
+    /// work to genuinely missing entries instead of full chain depth.
     async fn replay_blocks_for_mergeable_channels(
         &self,
         _approved_block: &ApprovedBlock,
@@ -911,11 +929,15 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         let blocks_to_replay: Vec<BlockHash> = all_blocks.into_iter().flatten().collect();
 
         tracing::info!(
-            "Found {} blocks to replay for mergeable channel cache.",
+            "Found {} blocks in range for mergeable channel cache check.",
             blocks_to_replay.len()
         );
 
-        // Replay each block to populate mergeable channels
+        // Replay each block to populate mergeable channels, skipping any block
+        // whose entry is already cached (typically filled in by the streaming
+        // MergeableEntryResponse exchange during block download above).
+        let mut skipped = 0usize;
+        let mut replayed = 0usize;
         for block_hash in blocks_to_replay {
             let block = self.block_store.get(&block_hash)?.ok_or_else(|| {
                 CasperError::RuntimeError(format!(
@@ -923,17 +945,32 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
                     PrettyPrinter::build_string_bytes(&block_hash)
                 ))
             })?;
-            let parents = &block.header.parents_hash_list;
 
+            if self
+                .runtime_manager
+                .get_mergeable_entry_bytes(&block)
+                .map(|(_, value)| value.is_some())
+                .unwrap_or(false)
+            {
+                skipped += 1;
+                continue;
+            }
+
+            let parents = &block.header.parents_hash_list;
             if parents.is_empty() {
                 // Genesis block - replay from empty state
                 self.replay_genesis_block(&block).await?;
             } else {
                 self.replay_single_block(&block).await?;
             }
+            replayed += 1;
         }
 
-        tracing::info!("Mergeable channel cache populated successfully.");
+        tracing::info!(
+            "Mergeable channel cache populated: {} already cached (skipped), {} replayed.",
+            skipped,
+            replayed
+        );
         Ok(())
     }
 
