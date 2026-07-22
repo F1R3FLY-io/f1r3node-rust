@@ -92,6 +92,9 @@ impl ContractCall {
                                             })
                                         })
                                         .collect::<Result<Vec<_>, _>>()?,
+                                    // System-contract producer: outside the deploy's parallel tree, so
+                                    // its continuation eval starts at the empty coordinate.
+                                    smallvec::SmallVec::new(),
                                 )
                                 .await
                         }

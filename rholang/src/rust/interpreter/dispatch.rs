@@ -1,5 +1,7 @@
 use std::sync::{Arc, OnceLock, Weak};
 
+use smallvec::SmallVec;
+
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use models::rhoapi::tagged_continuation::TaggedCont;
 use models::rhoapi::{ListParWithRandom, Par, TaggedContinuation};
@@ -46,6 +48,10 @@ impl RholangAndScalaDispatcher {
         data_list: Vec<ListParWithRandom>,
         is_replay: bool,
         previous_output: Vec<Par>,
+        // Coordinate of the dispatching continuation (async counter driver): forwarded to the
+        // ParBody re-entry `reducer.eval` so the recursion's error coordinates continue the tree.
+        // Inherent method (no trait change). Display-only (NOT consensus).
+        path: SmallVec<[u32; 8]>,
     ) -> Result<DispatchType, InterpreterError> {
         // println!("\ndispatcher dispatch");
         // println!("continuation: {:?}", continuation);
@@ -70,7 +76,7 @@ impl RholangAndScalaDispatcher {
                         })?;
                     let body = unwrap_option_safe(par_with_rand.body)?;
                     let merged_rand = Blake2b512Random::merge(randoms);
-                    reducer.eval(body, &env, merged_rand).await?;
+                    reducer.eval_with_path(body, &env, merged_rand, path).await?;
 
                     Ok(DispatchType::DeterministicCall)
                 }

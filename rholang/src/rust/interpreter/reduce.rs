@@ -538,6 +538,8 @@ impl DebruijnInterpreter {
         child
     }
 
+    /// Public reduction entry point (STABLE signature — external callers, tests). Seeds the empty
+    /// parallel-tree coordinate; coordinate threading is internal machinery (see `eval_with_path`).
     pub fn eval<'a>(
         &'a self,
         par: Par,
@@ -548,8 +550,24 @@ impl DebruijnInterpreter {
             dyn std::future::Future<Output = Result<(), InterpreterError>> + std::marker::Send + 'a,
         >,
     > {
+        self.eval_with_path(par, env, rand, SmallVec::new())
+    }
+
+    /// Coordinate-threaded reduction entry (async counter driver). `path` is this eval task's position
+    /// in the parallel-reduction tree; the width-N terms in `eval_inner` fan out at `path + [i]`.
+    pub(crate) fn eval_with_path<'a>(
+        &'a self,
+        par: Par,
+        env: &'a Env<Par>,
+        rand: Blake2b512Random,
+        path: SmallVec<[u32; 8]>,
+    ) -> Pin<
+        Box<
+            dyn std::future::Future<Output = Result<(), InterpreterError>> + std::marker::Send + 'a,
+        >,
+    > {
         Box::pin(StackGrowingFuture {
-            inner: self.eval_inner(par, env, rand),
+            inner: self.eval_inner(par, env, rand, path),
         })
     }
 
@@ -558,6 +576,10 @@ impl DebruijnInterpreter {
         par: Par,
         env: &Env<Par>,
         rand: Blake2b512Random,
+        // Coordinate of THIS eval task in the parallel-reduction tree. Each of the width-N parallel
+        // terms below is evaluated at `path + [i]` (the term index i also seeds the rand split), so a
+        // detached branch's error is localizable. Display-only (NOT consensus).
+        path: SmallVec<[u32; 8]>,
     ) -> Result<(), InterpreterError> {
         let terms: Vec<GeneratedMessage> = vec![
             par.sends
@@ -665,9 +687,12 @@ impl DebruijnInterpreter {
                     let term_clone = term.clone();
                     let env_clone = env.clone();
                     let rand_split = split(index.try_into().unwrap(), &terms, rand.clone());
+                    // Child coordinate for parallel term `index` (matches the rand split index).
+                    let mut child = path.clone();
+                    child.push(index as u32);
                     Box::pin(async move {
                         self_clone
-                            .generated_message_eval(&term_clone, &env_clone, rand_split)
+                            .generated_message_eval(&term_clone, &env_clone, rand_split, child)
                             .await
                     })
                         as Pin<
@@ -724,6 +749,7 @@ impl DebruijnInterpreter {
     }
 
     pub async fn inj(&self, par: Par, rand: Blake2b512Random) -> Result<(), InterpreterError> {
+        // Root eval task at coordinate []. (Rewritten to seed + drain the DriveState in a later commit.)
         self.eval(par, &Env::new(), rand).await
     }
 
@@ -739,6 +765,7 @@ impl DebruijnInterpreter {
         chan: Par,
         data: ListParWithRandom,
         persistent: bool,
+        path: SmallVec<[u32; 8]>,
     ) -> Pin<
         Box<
             dyn std::future::Future<Output = Result<DispatchType, InterpreterError>>
@@ -747,7 +774,7 @@ impl DebruijnInterpreter {
         >,
     > {
         Box::pin(StackGrowingFuture {
-            inner: self.produce_inner(chan, data, persistent),
+            inner: self.produce_inner(chan, data, persistent, path),
         })
     }
 
@@ -775,6 +802,7 @@ impl DebruijnInterpreter {
         chan: Par,
         data: ListParWithRandom,
         persistent: bool,
+        path: SmallVec<[u32; 8]>,
     ) -> Result<DispatchType, InterpreterError> {
         self.update_mergeable_channels(&chan).await;
         // EPathMap fix P4.1 (plan §0.C "produce_inner clones chan+data",
@@ -812,6 +840,7 @@ impl DebruijnInterpreter {
                         is_replay,
                         produce_event.clone().output_value,
                         produce_event.failed,
+                        path,
                     )
                     .await?;
 
@@ -858,6 +887,7 @@ impl DebruijnInterpreter {
         persistent: bool,
         peek: bool,
         guard: Option<Par>,
+        path: SmallVec<[u32; 8]>,
     ) -> Pin<
         Box<
             dyn std::future::Future<Output = Result<DispatchType, InterpreterError>>
@@ -866,7 +896,7 @@ impl DebruijnInterpreter {
         >,
     > {
         Box::pin(StackGrowingFuture {
-            inner: self.consume_inner(binds, body, persistent, peek, guard),
+            inner: self.consume_inner(binds, body, persistent, peek, guard, path),
         })
     }
 
@@ -877,6 +907,7 @@ impl DebruijnInterpreter {
         persistent: bool,
         peek: bool,
         guard: Option<Par>,
+        path: SmallVec<[u32; 8]>,
     ) -> Result<DispatchType, InterpreterError> {
         let (patterns, sources): (Vec<BindPattern>, Vec<Par>) = binds.clone().into_iter().unzip();
 
@@ -924,6 +955,7 @@ impl DebruijnInterpreter {
             is_replay,
             Vec::new(),
             guard,
+            path,
         )
         .await
     }
@@ -939,6 +971,7 @@ impl DebruijnInterpreter {
         is_replay: bool,
         previous_output: Vec<Vec<u8>>,
         trace_failed: bool,
+        path: SmallVec<[u32; 8]>,
     ) -> Result<DispatchType, InterpreterError> {
         // During replay, if the trace shows a failed non-deterministic process,
         // we cannot replay it - the external service call failed during original execution
@@ -970,6 +1003,10 @@ impl DebruijnInterpreter {
                     );
                     let persistent_flag = persistent;
                     let is_replay_flag = is_replay;
+                    // Coordinate continuity: the dispatch + re-fire continuations carry the produce's
+                    // path (run_parallel_dispatches adds the fan-out index at the detached spawn).
+                    let path_dispatch = path.clone();
+                    let path_refire = path.clone();
 
                     let mut futures: Vec<
                         Pin<
@@ -988,6 +1025,7 @@ impl DebruijnInterpreter {
                                 data_list_clone,
                                 is_replay_flag,
                                 previous_output_clone,
+                                path_dispatch,
                             )
                             .await
                     })
@@ -1001,7 +1039,7 @@ impl DebruijnInterpreter {
 
                     futures.push(Box::pin(async move {
                         self_clone2
-                            .produce(chan_refire, data_refire, persistent_flag)
+                            .produce(chan_refire, data_refire, persistent_flag, path_refire)
                             .await
                     })
                         as Pin<
@@ -1016,16 +1054,17 @@ impl DebruijnInterpreter {
                     // peeked data on other channels was removed by RSpace. Re-issue it
                     // to preserve peek semantics (data should remain after peek read).
                     if peek {
-                        futures.extend(self.produce_peeks(data_list, 2).await);
+                        futures.extend(self.produce_peeks(data_list, 2, path.clone()).await);
                     }
 
-                    self.run_parallel_dispatches(futures).await
+                    self.run_parallel_dispatches(futures, path).await
                 } else if peek {
                     // dispatchAndRun
                     let self_clone = self.with_metering_child(0);
                     let continuation_clone = continuation.clone();
                     let data_list_clone = data_list.clone();
                     let previous_output_clone = previous_output_as_par.clone();
+                    let path_dispatch = path.clone();
 
                     let mut futures: Vec<
                         Pin<
@@ -1042,14 +1081,15 @@ impl DebruijnInterpreter {
                                 data_list_clone,
                                 is_replay,
                                 previous_output_clone,
+                                path_dispatch,
                             )
                             .await
                     })];
-                    futures.extend(self.produce_peeks(data_list, 1).await);
+                    futures.extend(self.produce_peeks(data_list, 1, path.clone()).await);
 
-                    self.run_parallel_dispatches(futures).await
+                    self.run_parallel_dispatches(futures, path).await
                 } else {
-                    self.dispatch(continuation, data_list, is_replay, previous_output_as_par)
+                    self.dispatch(continuation, data_list, is_replay, previous_output_as_par, path)
                         .await
                 }
             }
@@ -1067,6 +1107,7 @@ impl DebruijnInterpreter {
         is_replay: bool,
         previous_output: Vec<Vec<u8>>,
         guard: Option<Par>,
+        path: SmallVec<[u32; 8]>,
     ) -> Result<DispatchType, InterpreterError> {
         let previous_output_as_par = previous_output
             .into_iter()
@@ -1090,6 +1131,9 @@ impl DebruijnInterpreter {
                     let peek_flag = peek;
                     let is_replay_flag = is_replay;
                     let guard_clone = guard.clone();
+                    // Coordinate continuity: dispatch + re-install continuations carry the consume's path.
+                    let path_dispatch = path.clone();
+                    let path_reconsume = path.clone();
 
                     let mut futures: Vec<
                         Pin<
@@ -1108,6 +1152,7 @@ impl DebruijnInterpreter {
                                 data_list_clone,
                                 is_replay_flag,
                                 previous_output_clone,
+                                path_dispatch,
                             )
                             .await
                     })
@@ -1127,6 +1172,7 @@ impl DebruijnInterpreter {
                                 persistent_flag,
                                 peek_flag,
                                 guard_clone,
+                                path_reconsume,
                             )
                             .await
                     })
@@ -1138,13 +1184,14 @@ impl DebruijnInterpreter {
                             >,
                         >);
 
-                    self.run_parallel_dispatches(futures).await
+                    self.run_parallel_dispatches(futures, path).await
                 } else if _peek {
                     // dispatchAndRun
                     let self_clone = self.with_metering_child(0);
                     let continuation_clone = continuation.clone();
                     let data_list_clone = data_list.clone();
                     let previous_output_clone = previous_output_as_par.clone();
+                    let path_dispatch = path.clone();
 
                     let mut futures: Vec<
                         Pin<
@@ -1161,14 +1208,15 @@ impl DebruijnInterpreter {
                                 data_list_clone,
                                 is_replay,
                                 previous_output_clone,
+                                path_dispatch,
                             )
                             .await
                     })];
-                    futures.extend(self.produce_peeks(data_list, 1).await);
+                    futures.extend(self.produce_peeks(data_list, 1, path.clone()).await);
 
-                    self.run_parallel_dispatches(futures).await
+                    self.run_parallel_dispatches(futures, path).await
                 } else {
-                    self.dispatch(continuation, data_list, is_replay, previous_output_as_par)
+                    self.dispatch(continuation, data_list, is_replay, previous_output_as_par, path)
                         .await
                 }
             }
@@ -1182,6 +1230,7 @@ impl DebruijnInterpreter {
         data_list: Vec<(Par, ListParWithRandom, ListParWithRandom, bool)>,
         is_replay: bool,
         previous_output: Vec<Par>,
+        path: SmallVec<[u32; 8]>,
     ) -> Pin<
         Box<
             dyn std::future::Future<Output = Result<DispatchType, InterpreterError>>
@@ -1190,7 +1239,7 @@ impl DebruijnInterpreter {
         >,
     > {
         Box::pin(StackGrowingFuture {
-            inner: self.dispatch_inner(continuation, data_list, is_replay, previous_output),
+            inner: self.dispatch_inner(continuation, data_list, is_replay, previous_output, path),
         })
     }
 
@@ -1200,6 +1249,7 @@ impl DebruijnInterpreter {
         data_list: Vec<(Par, ListParWithRandom, ListParWithRandom, bool)>,
         is_replay: bool,
         previous_output: Vec<Par>,
+        path: SmallVec<[u32; 8]>,
     ) -> Result<DispatchType, InterpreterError> {
         self.dispatcher
             .dispatch(
@@ -1207,6 +1257,7 @@ impl DebruijnInterpreter {
                 data_list.into_iter().map(|tuple| tuple.1).collect(),
                 is_replay,
                 previous_output,
+                path,
             )
             .await
     }
@@ -1215,6 +1266,7 @@ impl DebruijnInterpreter {
         &self,
         data_list: Vec<(Par, ListParWithRandom, ListParWithRandom, bool)>,
         start_component: usize,
+        path: SmallVec<[u32; 8]>,
     ) -> Vec<
         Pin<
             Box<
@@ -1230,7 +1282,10 @@ impl DebruijnInterpreter {
             .enumerate()
             .map(|(index, (chan, _, removed_data, _))| {
                 let self_clone = self.with_metering_child(start_component + index);
-                Box::pin(async move { self_clone.produce(chan, removed_data, false).await })
+                let path_peek = path.clone();
+                Box::pin(async move {
+                    self_clone.produce(chan, removed_data, false, path_peek).await
+                })
                     as Pin<
                         Box<
                             dyn futures::Future<Output = Result<DispatchType, InterpreterError>>
@@ -1253,7 +1308,11 @@ impl DebruijnInterpreter {
                 >,
             >,
         >,
+        path: SmallVec<[u32; 8]>,
     ) -> Result<DispatchType, InterpreterError> {
+        // `path` is the coordinate base for the detached continuation spawns (used when this join is
+        // detached in a following commit); the fan-out index is appended per continuation.
+        let _ = &path;
         let mut unordered = FuturesUnordered::new();
         for (index, fut) in futures.into_iter().enumerate() {
             // Persistent/peek continuations must progress independently; spawning
@@ -1392,13 +1451,14 @@ impl DebruijnInterpreter {
         term: &GeneratedMessage,
         env: &Env<Par>,
         rand: Blake2b512Random,
+        path: SmallVec<[u32; 8]>,
     ) -> Result<(), InterpreterError> {
         match term {
             GeneratedMessage::Send(term) => {
                 metrics::counter!(REDUCER_EVAL_SEND_CALLS_METRIC, "source" => RHOLANG_METRICS_SOURCE)
                     .increment(1);
                 let start = std::time::Instant::now();
-                let result = self.eval_send(term, env, rand).await;
+                let result = self.eval_send(term, env, rand, path).await;
                 metrics::counter!(REDUCER_EVAL_SEND_TIME_NS_METRIC, "source" => RHOLANG_METRICS_SOURCE)
                     .increment(start.elapsed().as_nanos() as u64);
                 result
@@ -1407,7 +1467,7 @@ impl DebruijnInterpreter {
                 metrics::counter!(REDUCER_EVAL_RECEIVE_CALLS_METRIC, "source" => RHOLANG_METRICS_SOURCE)
                     .increment(1);
                 let start = std::time::Instant::now();
-                let result = self.eval_receive(term, env, rand).await;
+                let result = self.eval_receive(term, env, rand, path).await;
                 metrics::counter!(REDUCER_EVAL_RECEIVE_TIME_NS_METRIC, "source" => RHOLANG_METRICS_SOURCE)
                     .increment(start.elapsed().as_nanos() as u64);
                 result
@@ -1416,7 +1476,7 @@ impl DebruijnInterpreter {
                 metrics::counter!(REDUCER_EVAL_NEW_CALLS_METRIC, "source" => RHOLANG_METRICS_SOURCE)
                     .increment(1);
                 let start = std::time::Instant::now();
-                let result = self.eval_new(term, env.clone(), rand).await;
+                let result = self.eval_new(term, env.clone(), rand, path).await;
                 metrics::counter!(REDUCER_EVAL_NEW_TIME_NS_METRIC, "source" => RHOLANG_METRICS_SOURCE)
                     .increment(start.elapsed().as_nanos() as u64);
                 result
@@ -1425,13 +1485,13 @@ impl DebruijnInterpreter {
                 metrics::counter!(REDUCER_EVAL_MATCH_CALLS_METRIC, "source" => RHOLANG_METRICS_SOURCE)
                     .increment(1);
                 let start = std::time::Instant::now();
-                let result = self.eval_match(term, env, rand).await;
+                let result = self.eval_match(term, env, rand, path).await;
                 metrics::counter!(REDUCER_EVAL_MATCH_TIME_NS_METRIC, "source" => RHOLANG_METRICS_SOURCE)
                     .increment(start.elapsed().as_nanos() as u64);
                 result
             }
-            GeneratedMessage::If(term) => self.eval_if(term, env, rand).await,
-            GeneratedMessage::Bundle(term) => self.eval_bundle(term, env, rand).await,
+            GeneratedMessage::If(term) => self.eval_if(term, env, rand, path).await,
+            GeneratedMessage::Bundle(term) => self.eval_bundle(term, env, rand, path).await,
             GeneratedMessage::Expr(term) => match &term.expr_instance {
                 Some(expr_instance) => match expr_instance {
                     ExprInstance::EVarBody(e) => {
@@ -1439,7 +1499,7 @@ impl DebruijnInterpreter {
                         // Reactive per-reduction seam: dereference `*N` — `res` is the resolved quoted
                         // process about to be evaluated. Two `is_none` checks, no alloc in production.
                         self.observe_and_pause(&res, ReductionKind::Deref).await?;
-                        self.eval(res, env, rand).await
+                        self.eval_with_path(res, env, rand, path).await
                     }
                     ExprInstance::EMethodBody(e) => {
                         let res = self.eval_expr_to_par(
@@ -1450,7 +1510,7 @@ impl DebruijnInterpreter {
                         )?;
                         // Reactive per-reduction seam: method call re-eval. None-op in production.
                         self.observe_and_pause(&res, ReductionKind::Method).await?;
-                        self.eval(res, env, rand).await
+                        self.eval_with_path(res, env, rand, path).await
                     }
                     other => Err(InterpreterError::BugFoundError(format!(
                         "Undefined term: {:?}",
@@ -1481,6 +1541,7 @@ impl DebruijnInterpreter {
         send: &Send,
         env: &Env<Par>,
         rand: Blake2b512Random,
+        path: SmallVec<[u32; 8]>,
     ) -> Result<(), InterpreterError> {
         // D3 (DR-9, OD-3): a send is a token-consuming COMM — the consensus
         // cost unit (one token per COMM). `send_eval_cost` is the diagnostic
@@ -1523,6 +1584,7 @@ impl DebruijnInterpreter {
                 random_state: rand.to_bytes(),
             },
             send.persistent,
+            path,
         )
         .await?;
         Ok(())
@@ -1533,6 +1595,7 @@ impl DebruijnInterpreter {
         receive: &Receive,
         env: &Env<Par>,
         rand: Blake2b512Random,
+        path: SmallVec<[u32; 8]>,
     ) -> Result<(), InterpreterError> {
         // D3 (DR-9, OD-3): a receive is a token-consuming COMM — the consensus
         // cost unit (one token per COMM). `receive_eval_cost` is the diagnostic
@@ -1600,6 +1663,7 @@ impl DebruijnInterpreter {
             receive.persistent,
             receive.peek,
             subst_guard,
+            path,
         )
         .await?;
         Ok(())
@@ -1643,6 +1707,7 @@ impl DebruijnInterpreter {
         mat: &Match,
         env: &Env<Par>,
         rand: Blake2b512Random,
+        path: SmallVec<[u32; 8]>,
     ) -> Result<(), InterpreterError> {
         fn add_to_env(env: &Env<Par>, free_map: BTreeMap<i32, Par>, free_count: i32) -> Env<Par> {
             (0..free_count).fold(env.clone(), |mut acc, e| {
@@ -1711,7 +1776,7 @@ impl DebruijnInterpreter {
                                     // Reactive per-reduction seam: a `match` case body firing.
                                     // None-op in production.
                                     self.observe_and_pause(&case_body, ReductionKind::Match).await?;
-                                    self.eval(case_body, &case_env, rand).await?;
+                                    self.eval_with_path(case_body, &case_env, rand, path.clone()).await?;
 
                                     return Ok(());
                                 }
@@ -1744,6 +1809,7 @@ impl DebruijnInterpreter {
         conditional: &If,
         env: &Env<Par>,
         rand: Blake2b512Random,
+        path: SmallVec<[u32; 8]>,
     ) -> Result<(), InterpreterError> {
         // D3 (DR-9, OD-3): `if` is a non-COMM structural reduction —
         // DIAGNOSTIC only (metered for fidelity, 0 toward consensus cost).
@@ -1767,7 +1833,7 @@ impl DebruijnInterpreter {
                     .expect("If.if_true: normalizer post-condition");
                 // Reactive per-reduction seam: an `if` true-branch firing. None-op in production.
                 self.observe_and_pause(&branch, ReductionKind::If).await?;
-                self.eval(branch, env, rand).await
+                self.eval_with_path(branch, env, rand, path).await
             }
             Some(false) => {
                 let branch = conditional
@@ -1776,7 +1842,7 @@ impl DebruijnInterpreter {
                     .expect("If.if_false: normalizer post-condition");
                 // Reactive per-reduction seam: an `if` false-branch firing. None-op in production.
                 self.observe_and_pause(&branch, ReductionKind::If).await?;
-                self.eval(branch, env, rand).await
+                self.eval_with_path(branch, env, rand, path).await
             }
             None => Err(InterpreterError::IfConditionTypeError {
                 actual_type: describe_par_type(&subst_cond),
@@ -1794,6 +1860,7 @@ impl DebruijnInterpreter {
         new: &New,
         env: Env<Par>,
         mut rand: Blake2b512Random,
+        path: SmallVec<[u32; 8]>,
     ) -> Result<(), InterpreterError> {
         let mut alloc = |count: usize, urns: Vec<String>| {
             let simple_news =
@@ -1888,7 +1955,7 @@ impl DebruijnInterpreter {
                 // Reactive per-reduction seam: a `new` scope body, after fresh-name allocation.
                 // None-op in production.
                 self.observe_and_pause(&body, ReductionKind::New).await?;
-                self.eval(body, &env, rand).await
+                self.eval_with_path(body, &env, rand, path).await
             }
             Err(e) => Err(e),
         }
@@ -1919,11 +1986,12 @@ impl DebruijnInterpreter {
         bundle: &Bundle,
         env: &Env<Par>,
         rand: Blake2b512Random,
+        path: SmallVec<[u32; 8]>,
     ) -> Result<(), InterpreterError> {
         let body = unwrap_option_safe(bundle.body.clone())?;
         // Reactive per-reduction seam: a `bundle` body, after unwrapping. None-op in production.
         self.observe_and_pause(&body, ReductionKind::Bundle).await?;
-        self.eval(body, env, rand).await
+        self.eval_with_path(body, env, rand, path).await
     }
 
     // Public here for testing purposes
