@@ -50,13 +50,18 @@ async fn eval_rholang_code(code: &str, timeout: Duration) -> Result<(), String> 
 /// Regression test for https://github.com/F1R3FLY-io/f1r3node/issues/305
 ///
 /// shortslow.rho: direct recursive contract that calls itself 32768 times.
-/// Without StackGrowingFuture, this causes stack overflow in debug builds.
+/// Resolved structurally by the detached-spawn + atomic-counter reduction driver: the
+/// eval->produce/consume->dispatch->eval recursion runs as independent O(1)-native-stack
+/// tokio tasks (no StackGrowingFuture / dynamic stack growth), so there is no stack
+/// overflow AND no O(N) parked-parent chain. The timeout is TIGHTENED from the former 300s
+/// "task-explosion budget" to 180s to codify the heap-bound (observed ~90s debug; the old
+/// parked-parent chain needed the larger budget).
 #[tokio::test]
 async fn deep_recursion_shortslow_should_not_stackoverflow() {
     let code = crate::util::rholang::test_rho_loader::load_test_rho("shortslow.rho")
         .expect("Failed to load shortslow.rho");
 
-    let result = eval_rholang_code(&code, Duration::from_secs(300)).await;
+    let result = eval_rholang_code(&code, Duration::from_secs(180)).await;
     assert!(
         result.is_ok(),
         "shortslow deep recursion failed: {:?}",
@@ -69,12 +74,13 @@ async fn deep_recursion_shortslow_should_not_stackoverflow() {
 /// longslow.rho: sends a 32768-char string to a channel, reads its length,
 /// then recurses that many times. This exercises produce/consume + string ops
 /// in addition to deep recursion, matching the exact integration test scenario.
+/// Same heap-bound as shortslow (detached-spawn driver); timeout tightened 300s -> 180s.
 #[tokio::test]
 async fn deep_recursion_longslow_should_not_stackoverflow() {
     let code = crate::util::rholang::test_rho_loader::load_test_rho("longslow.rho")
         .expect("Failed to load longslow.rho");
 
-    let result = eval_rholang_code(&code, Duration::from_secs(300)).await;
+    let result = eval_rholang_code(&code, Duration::from_secs(180)).await;
     assert!(
         result.is_ok(),
         "longslow deep recursion failed: {:?}",
