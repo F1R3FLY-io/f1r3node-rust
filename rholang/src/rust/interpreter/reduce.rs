@@ -14,7 +14,8 @@ use models::rhoapi::tagged_continuation::TaggedCont;
 use models::rhoapi::var::VarInstance;
 use models::rhoapi::{
     BindPattern, Bundle, EAnd, EDiv, EEq, EGt, EGte, EList, ELt, ELte, EMatches, EMethod, EMinus,
-    EMinusMinus, EMod, EMult, ENeq, EOr, EPathMap, EPercentPercent, EPlus, EPlusPlus, ETuple, EVar,
+    EMap, EMinusMinus, EMod, EMult, ENeq, EOr, EPathMap, EPercentPercent, EPlus, EPlusPlus, ESet,
+    ETuple, EVar,
     EZipper, Expr, GPrivate, GUnforgeable, If, KeyValuePair, ListParWithRandom, Match, MatchCase,
     New, Par, ParWithRandom, Receive, ReceiveBind, Send, TaggedContinuation, Var,
 };
@@ -139,6 +140,252 @@ type Application = Option<(
 trait Method {
     fn apply(&self, p: Par, args: Vec<Par>, env: &Env<Par>) -> Result<Par, InterpreterError>;
 }
+
+// ============================================================================
+// LEG-2: explicit-worklist TRAMPOLINE for the expression evaluator SCC.
+//
+// The six mutually-recursive expression evaluators (`eval_expr`,
+// `eval_expr_to_par`, `eval_expr_to_expr`, `eval_single_expr`, `eval_to_bool`,
+// `eval_to_i64`) form a post-order fold whose call-stack depth is Theta(term
+// nesting depth). Deeply-nested ground terms (e.g. `((..(1+1)..)+1)` or
+// `[[..[0]..]]`) overflow the 8 MiB stack at depth ~1.5k / ~0.75k. Leg-2
+// replaces the CALL stack with an explicit HEAP worklist (`drive`), keeping the
+// native stack O(1) while preserving byte-identical results and — crucially for
+// a consensus reducer — a byte-identical charge (cost) trace.
+//
+// Structure:
+//   * `EvVal`  — a produced value, tagged by the producing evaluator's return
+//                type (Par / Expr / bool / i64).
+//   * `EvWork` — a pending unit of work: evaluate a borrowed AST node under one
+//                of the six evaluators, or run a post-order `Combine`.
+//   * `EvKont` — the post-order continuation for a `Combine`: it names the arm
+//                being reassembled and carries the borrowed AST metadata (and
+//                child counts) the arm needs that are NOT child values.
+//   * `drive`  — the single LIFO loop: pop work; a `descend_*` handler either
+//                pushes a leaf value, or (pre-order charge, then) pushes
+//                `Combine(k)` followed by the children in REVERSE so they pop
+//                left-to-right; a `Combine` pops the children's values, runs the
+//                arm's post-order body (post-order charge + build) and pushes the
+//                result value. Exactly one value remains at the end.
+//
+// Charge preservation (the crux — see the module test `differential`):
+//   * PRE-order charges (`method_call_cost`; `op_call_cost` for %% / ++ / --)
+//     run in the `descend_*` handler BEFORE any child is pushed.
+//   * POST-order charges run in `Combine` AFTER all child values are available.
+//   * Each arm's INTERNAL statement order (e.g. reserve(division_cost) THEN the
+//     rhs==0 check) is reproduced verbatim by the shared `combine_*` helper.
+//   * A `?` abort discards `work`/`vals` and leaves already-reserved charges
+//     reserved — identical to the recursive `?`.
+//
+// Owned intermediates (eval_var results, method-apply results, %% map contents,
+// Set/Map arithmetic results, and the SORTED elements of Set/Map literals) are
+// NOT the deep structural spine; they are re-evaluated by DIRECT calls to the
+// (now trampolined) wrappers, each starting a fresh bounded `drive`. This keeps
+// the native stack O(1) for the reported plus/list overflow AND for method
+// chains (whose deep target is a worklisted child), while matching the recursive
+// evaluator's behaviour on the shallow re-eval paths.
+// ============================================================================
+
+/// A produced value, tagged by the evaluator that produced it.
+enum EvVal {
+    Par(Par),
+    Expr(Expr),
+    Bool(bool),
+    I64(i64),
+}
+
+/// A pending unit of work. All AST references borrow the input term (`'e`); the
+/// worklist therefore performs ZERO deep clones on the structural spine.
+enum EvWork<'e> {
+    /// `eval_expr(par)`  -> EvVal::Par
+    EEval(&'e Par),
+    /// `eval_expr_to_par(expr)`  -> EvVal::Par
+    EToPar(&'e Expr),
+    /// `eval_expr_to_expr(expr)`  -> EvVal::Expr
+    EToExpr(&'e Expr),
+    /// `eval_single_expr(par)`  -> EvVal::Expr
+    ESingle(&'e Par),
+    /// `eval_to_bool(par)`  -> EvVal::Bool
+    EBool(&'e Par),
+    /// `eval_to_i64(par)`  -> EvVal::I64
+    EI64(&'e Par),
+    /// Post-order reassembly.
+    Combine(EvKont<'e>),
+}
+
+/// Post-order continuation. Names the arm + carries borrowed metadata / child
+/// counts (never child values — those live on the `vals` stack).
+enum EvKont<'e> {
+    // ---- eval_expr ----
+    /// Fold `concatenate_pars` over `n` child Pars onto the shell of `par`.
+    Join { par: &'e Par, n: usize },
+    // ---- eval_expr_to_par ----
+    /// `Par::default().with_exprs(vec![child_expr])`.
+    ToParWrap,
+    /// `method.apply(target, args)` -> Par (Display "Unimplemented method" error).
+    ToParMethod { emethod: &'e EMethod, argc: usize },
+    // ---- eval_expr_to_expr (unary) ----
+    Neg,
+    Not,
+    // ---- eval_expr_to_expr (binary numeric / relational) ----
+    Mult,
+    Div,
+    Mod,
+    Plus,
+    Minus,
+    Relop {
+        relopb: fn(bool, bool) -> bool,
+        relopi: fn(i64, i64) -> bool,
+        relops: fn(String, String) -> bool,
+    },
+    // ---- eval_expr_to_expr (equality / boolean / matches) ----
+    Eq,
+    Neq,
+    And,
+    Or,
+    Matches { pattern: &'e Par },
+    // ---- eval_expr_to_expr (interpolation / append / remove) ----
+    PercentPercent,
+    PlusPlus,
+    MinusMinus,
+    // ---- eval_expr_to_expr (collections that worklist their elements) ----
+    EListK { e1: &'e EList, n: usize },
+    ETupleK { e1: &'e ETuple, n: usize },
+    EPathmapK { e1: &'e EPathMap, n: usize },
+    // ---- eval_expr_to_expr (method) ----
+    EMethodExprK { emethod: &'e EMethod, argc: usize },
+    // ---- eval_to_bool / eval_to_i64 ([e] arm: extract from an evaluated Expr) ----
+    BoolExtract,
+    I64Extract,
+}
+
+// ---------------------------------------------------------------------------
+// value-stack pop helpers (type discipline: the producing EvWork guarantees the
+// variant; a mismatch is a trampoline bug, hence `expect`).
+// ---------------------------------------------------------------------------
+#[inline]
+fn ev_pop_par(vals: &mut Vec<EvVal>) -> Par {
+    match vals.pop() {
+        Some(EvVal::Par(p)) => p,
+        _ => unreachable!("eval_drive: expected Par on value stack"),
+    }
+}
+#[inline]
+fn ev_pop_expr(vals: &mut Vec<EvVal>) -> Expr {
+    match vals.pop() {
+        Some(EvVal::Expr(e)) => e,
+        _ => unreachable!("eval_drive: expected Expr on value stack"),
+    }
+}
+#[inline]
+fn ev_pop_bool(vals: &mut Vec<EvVal>) -> bool {
+    match vals.pop() {
+        Some(EvVal::Bool(b)) => b,
+        _ => unreachable!("eval_drive: expected Bool on value stack"),
+    }
+}
+// (no `ev_pop_i64`: an i64 value is only ever produced as a drive ROOT — for the
+// `eval_to_i64` wrapper / `nth` — and never pushed as a child, so no `Combine`
+// pops one off the value stack.)
+/// Pop `n` Pars, returning them in FORWARD (push) order.
+#[inline]
+fn ev_pop_n_par(vals: &mut Vec<EvVal>, n: usize) -> Vec<Par> {
+    let mut out = Vec::with_capacity(n);
+    for _ in 0..n {
+        out.push(ev_pop_par(vals));
+    }
+    out.reverse();
+    out
+}
+
+/// By-reference equivalent of `expr.locally_free(expr.clone(), 0)` (the
+/// `<Expr as HasLocallyFree<Expr>>::locally_free` reader, whose `&self` is unused
+/// and whose `e` param is only read for CACHED `locally_free` fields — never
+/// recursed into children). The by-value form deep-CLONES the whole subtree per
+/// element, an O(depth) recursive clone that reintroduces the stack overflow on
+/// nested collections AFTER the eval SCC is trampolined; this reads the cached
+/// bitset in O(1) per node. Byte-identical result (validated by the differential
+/// harness). `EVar` clones only the SHALLOW `Var`, matching the original.
+fn expr_locally_free_ref(expr: &Expr) -> Vec<u8> {
+    match &expr.expr_instance {
+        Some(ExprInstance::GBool(_)) => Vec::new(),
+        Some(ExprInstance::GInt(_)) => Vec::new(),
+        Some(ExprInstance::GDouble(_)) => Vec::new(),
+        Some(ExprInstance::GBigInt(_)) => Vec::new(),
+        Some(ExprInstance::GBigRat(_)) => Vec::new(),
+        Some(ExprInstance::GFixedPoint(_)) => Vec::new(),
+        Some(ExprInstance::GString(_)) => Vec::new(),
+        Some(ExprInstance::GUri(_)) => Vec::new(),
+        Some(ExprInstance::GByteArray(_)) => Vec::new(),
+
+        Some(ExprInstance::EListBody(e)) => e.locally_free.clone(),
+        Some(ExprInstance::ETupleBody(e)) => e.locally_free.clone(),
+        Some(ExprInstance::ESetBody(e)) => e.locally_free.clone(),
+        Some(ExprInstance::EMapBody(e)) => e.locally_free.clone(),
+        Some(ExprInstance::EPathmapBody(e)) => e.locally_free.clone(),
+        Some(ExprInstance::EZipperBody(e)) => e.locally_free.clone(),
+
+        Some(ExprInstance::EVarBody(EVar { v })) => v.clone().unwrap().locally_free(v.clone().unwrap(), 0),
+        Some(ExprInstance::ENotBody(enot)) => enot.p.as_ref().unwrap().locally_free.clone(),
+        Some(ExprInstance::ENegBody(eneg)) => eneg.p.as_ref().unwrap().locally_free.clone(),
+
+        Some(ExprInstance::EMultBody(EMult { p1, p2 })) => {
+            union(p1.as_ref().unwrap().locally_free.clone(), p2.as_ref().unwrap().locally_free.clone())
+        }
+        Some(ExprInstance::EDivBody(EDiv { p1, p2 })) => {
+            union(p1.as_ref().unwrap().locally_free.clone(), p2.as_ref().unwrap().locally_free.clone())
+        }
+        Some(ExprInstance::EModBody(EMod { p1, p2 })) => {
+            union(p1.as_ref().unwrap().locally_free.clone(), p2.as_ref().unwrap().locally_free.clone())
+        }
+        Some(ExprInstance::EPlusBody(EPlus { p1, p2 })) => {
+            union(p1.as_ref().unwrap().locally_free.clone(), p2.as_ref().unwrap().locally_free.clone())
+        }
+        Some(ExprInstance::EMinusBody(EMinus { p1, p2 })) => {
+            union(p1.as_ref().unwrap().locally_free.clone(), p2.as_ref().unwrap().locally_free.clone())
+        }
+        Some(ExprInstance::ELtBody(ELt { p1, p2 })) => {
+            union(p1.as_ref().unwrap().locally_free.clone(), p2.as_ref().unwrap().locally_free.clone())
+        }
+        Some(ExprInstance::ELteBody(ELte { p1, p2 })) => {
+            union(p1.as_ref().unwrap().locally_free.clone(), p2.as_ref().unwrap().locally_free.clone())
+        }
+        Some(ExprInstance::EGtBody(EGt { p1, p2 })) => {
+            union(p1.as_ref().unwrap().locally_free.clone(), p2.as_ref().unwrap().locally_free.clone())
+        }
+        Some(ExprInstance::EGteBody(EGte { p1, p2 })) => {
+            union(p1.as_ref().unwrap().locally_free.clone(), p2.as_ref().unwrap().locally_free.clone())
+        }
+        Some(ExprInstance::EEqBody(EEq { p1, p2 })) => {
+            union(p1.as_ref().unwrap().locally_free.clone(), p2.as_ref().unwrap().locally_free.clone())
+        }
+        Some(ExprInstance::ENeqBody(ENeq { p1, p2 })) => {
+            union(p1.as_ref().unwrap().locally_free.clone(), p2.as_ref().unwrap().locally_free.clone())
+        }
+        Some(ExprInstance::EAndBody(EAnd { p1, p2 })) => {
+            union(p1.as_ref().unwrap().locally_free.clone(), p2.as_ref().unwrap().locally_free.clone())
+        }
+        Some(ExprInstance::EOrBody(EOr { p1, p2 })) => {
+            union(p1.as_ref().unwrap().locally_free.clone(), p2.as_ref().unwrap().locally_free.clone())
+        }
+
+        Some(ExprInstance::EMethodBody(e)) => e.locally_free.clone(),
+        Some(ExprInstance::EMatchesBody(EMatches { target, .. })) => target.as_ref().unwrap().locally_free.clone(),
+
+        Some(ExprInstance::EPercentPercentBody(EPercentPercent { p1, p2 })) => {
+            union(p1.as_ref().unwrap().locally_free.clone(), p2.as_ref().unwrap().locally_free.clone())
+        }
+        Some(ExprInstance::EPlusPlusBody(EPlusPlus { p1, p2 })) => {
+            union(p1.as_ref().unwrap().locally_free.clone(), p2.as_ref().unwrap().locally_free.clone())
+        }
+        Some(ExprInstance::EMinusMinusBody(EMinusMinus { p1, p2 })) => {
+            union(p1.as_ref().unwrap().locally_free.clone(), p2.as_ref().unwrap().locally_free.clone())
+        }
+
+        None => Vec::new(),
+    }
+}
+
 
 /**
  * Materialize a send in the store, optionally returning the matched continuation.
@@ -1539,25 +1786,1826 @@ impl DebruijnInterpreter {
     }
 
     // Public here for testing purposes
+
+
+    // =======================================================================
+    // The single driver loop. Native stack is O(1); recursion lives in `work`.
+    // =======================================================================
+    fn eval_drive<'e>(
+        &self,
+        root: EvWork<'e>,
+        env: &Env<Par>,
+    ) -> Result<EvVal, InterpreterError> {
+        let mut work: Vec<EvWork<'e>> = Vec::with_capacity(64);
+        let mut vals: Vec<EvVal> = Vec::with_capacity(64);
+        work.push(root);
+        while let Some(w) = work.pop() {
+            match w {
+                EvWork::EEval(p) => self.descend_eval(p, env, &mut work, &mut vals)?,
+                EvWork::EToPar(e) => self.descend_to_par(e, env, &mut work, &mut vals)?,
+                EvWork::EToExpr(e) => self.descend_to_expr(e, env, &mut work, &mut vals)?,
+                EvWork::ESingle(p) => self.descend_single(p, env, &mut work, &mut vals)?,
+                EvWork::EBool(p) => self.descend_bool(p, env, &mut work, &mut vals)?,
+                EvWork::EI64(p) => self.descend_i64(p, env, &mut work, &mut vals)?,
+                EvWork::Combine(k) => self.combine(k, env, &mut vals)?,
+            }
+        }
+        Ok(vals.pop().expect("eval_drive: exactly one value must remain"))
+    }
+
+    // =======================================================================
+    // The six SCC entry points — now THIN wrappers over `eval_drive`. Their
+    // signatures are unchanged, so every external caller and every method-body
+    // callback is covered transitively (a callback that re-enters simply starts
+    // a fresh bounded `drive`).
+    // =======================================================================
+    pub fn eval_expr(&self, par: &Par, env: &Env<Par>) -> Result<Par, InterpreterError> {
+        match self.eval_drive(EvWork::EEval(par), env)? {
+            EvVal::Par(p) => Ok(p),
+            _ => unreachable!("eval_expr: drive produced non-Par"),
+        }
+    }
     pub fn eval_expr_to_par(&self, expr: &Expr, env: &Env<Par>) -> Result<Par, InterpreterError> {
-        // EPathMap fix P2 (T3b): the method-chain view-fusion seam runs FIRST in the
-        // EMethodBody dispatch arm (an O(1) name-gated reject — plan amendment PM-5(1);
-        // every non-EMethodBody expr pays one discriminant check). `None` ⇒ not a
-        // fusable chain and the existing per-link path below runs UNCHANGED. Placed
-        // ahead of the arm's `expr_instance` clone so a fused chain also skips the
-        // outermost AST clone.
+        match self.eval_drive(EvWork::EToPar(expr), env)? {
+            EvVal::Par(p) => Ok(p),
+            _ => unreachable!("eval_expr_to_par: drive produced non-Par"),
+        }
+    }
+    // Kept for SCC API symmetry (the six evaluators are all thin wrappers). In
+    // PRODUCTION the drive reaches `EToExpr` internally (descend_to_expr), so no
+    // caller invokes this wrapper directly; the differential harness DOES call it
+    // (vs `eval_expr_to_expr_recursive`), so it is live under `cfg(test)`.
+    #[cfg_attr(not(test), allow(dead_code))]
+    fn eval_expr_to_expr(&self, expr: &Expr, env: &Env<Par>) -> Result<Expr, InterpreterError> {
+        match self.eval_drive(EvWork::EToExpr(expr), env)? {
+            EvVal::Expr(e) => Ok(e),
+            _ => unreachable!("eval_expr_to_expr: drive produced non-Expr"),
+        }
+    }
+    fn eval_single_expr(&self, p: &Par, env: &Env<Par>) -> Result<Expr, InterpreterError> {
+        match self.eval_drive(EvWork::ESingle(p), env)? {
+            EvVal::Expr(e) => Ok(e),
+            _ => unreachable!("eval_single_expr: drive produced non-Expr"),
+        }
+    }
+    fn eval_to_bool(&self, p: &Par, env: &Env<Par>) -> Result<bool, InterpreterError> {
+        match self.eval_drive(EvWork::EBool(p), env)? {
+            EvVal::Bool(b) => Ok(b),
+            _ => unreachable!("eval_to_bool: drive produced non-Bool"),
+        }
+    }
+    fn eval_to_i64(&self, p: &Par, env: &Env<Par>) -> Result<i64, InterpreterError> {
+        match self.eval_drive(EvWork::EI64(p), env)? {
+            EvVal::I64(i) => Ok(i),
+            _ => unreachable!("eval_to_i64: drive produced non-I64"),
+        }
+    }
+
+    /// Byte-identical shallow equivalent of `par.with_exprs(Vec::new())`: clears
+    /// `exprs` and clones every OTHER field. `with_exprs` builds `Par { exprs:
+    /// new, ..self.clone() }`, i.e. it deep-clones `exprs` then discards them —
+    /// on a D-deep spine that is a D-deep recursive clone (a second SO source and
+    /// O(D^2) waste). This produces the identical value without touching `exprs`.
+    fn ev_par_shell(par: &Par) -> Par {
+        Par {
+            exprs: Vec::new(),
+            sends: par.sends.clone(),
+            receives: par.receives.clone(),
+            news: par.news.clone(),
+            matches: par.matches.clone(),
+            unforgeables: par.unforgeables.clone(),
+            bundles: par.bundles.clone(),
+            connectives: par.connectives.clone(),
+            conditionals: par.conditionals.clone(),
+            locally_free: par.locally_free.clone(),
+            connective_used: par.connective_used,
+        }
+    }
+
+    // =======================================================================
+    // descend_* handlers: pop one work item; push a leaf value, or (pre-order
+    // charge then) push Combine(k) + children reversed, or direct-eval an owned
+    // intermediate. One per EvWork non-Combine variant.
+    // =======================================================================
+
+    // eval_expr: fold eval_expr_to_par over par.exprs.
+    fn descend_eval<'e>(
+        &self,
+        par: &'e Par,
+        _env: &Env<Par>,
+        work: &mut Vec<EvWork<'e>>,
+        _vals: &mut Vec<EvVal>,
+    ) -> Result<(), InterpreterError> {
+        work.push(EvWork::Combine(EvKont::Join { par, n: par.exprs.len() }));
+        for expr in par.exprs.iter().rev() {
+            work.push(EvWork::EToPar(expr));
+        }
+        Ok(())
+    }
+
+    // eval_expr_to_par.
+    fn descend_to_par<'e>(
+        &self,
+        expr: &'e Expr,
+        env: &Env<Par>,
+        work: &mut Vec<EvWork<'e>>,
+        vals: &mut Vec<EvVal>,
+    ) -> Result<(), InterpreterError> {
+        // Fused method-chain seam (runs FIRST; charges internally, may short-circuit).
+        if let Some(ExprInstance::EMethodBody(emethod)) = &expr.expr_instance {
+            if let Some(fused) = self.try_eval_fused_method_chain(emethod, env)? {
+                vals.push(EvVal::Par(fused));
+                return Ok(());
+            }
+        }
+        let expr_instance = match &expr.expr_instance {
+            Some(ei) => ei,
+            None => {
+                return Err(InterpreterError::UndefinedRequiredProtobufFieldError(format!(
+                    "{:?}",
+                    std::any::type_name::<ExprInstance>()
+                )))
+            }
+        };
+        match expr_instance {
+            ExprInstance::EVarBody(evar) => {
+                // eval_var (charges var_eval_cost) then re-eval via eval_expr (direct).
+                let p = self.eval_var(&unwrap_option_safe(evar.v.clone())?, env)?;
+                let evaled_p = self.eval_expr(&p, env)?;
+                vals.push(EvVal::Par(evaled_p));
+                Ok(())
+            }
+            ExprInstance::EMethodBody(emethod) => {
+                self.metering.reserve_primitive(method_call_cost())?;
+                // Reproduce `unwrap_option_safe(emethod.target.clone())?`'s None error
+                // (type_name::<Par>) without cloning the (possibly deep) target.
+                let target = match emethod.target.as_ref() {
+                    Some(t) => t,
+                    None => {
+                        return Err(InterpreterError::UndefinedRequiredProtobufFieldError(format!(
+                            "{:?}",
+                            std::any::type_name::<Par>()
+                        )))
+                    }
+                };
+                work.push(EvWork::Combine(EvKont::ToParMethod {
+                    emethod,
+                    argc: emethod.arguments.len(),
+                }));
+                for arg in emethod.arguments.iter().rev() {
+                    work.push(EvWork::EEval(arg));
+                }
+                work.push(EvWork::EEval(target));
+                Ok(())
+            }
+            _ => {
+                work.push(EvWork::Combine(EvKont::ToParWrap));
+                work.push(EvWork::EToExpr(expr));
+                Ok(())
+            }
+        }
+    }
+
+    // eval_single_expr.
+    fn descend_single<'e>(
+        &self,
+        p: &'e Par,
+        _env: &Env<Par>,
+        work: &mut Vec<EvWork<'e>>,
+        _vals: &mut Vec<EvVal>,
+    ) -> Result<(), InterpreterError> {
+        if !p.sends.is_empty()
+            || !p.receives.is_empty()
+            || !p.news.is_empty()
+            || !p.matches.is_empty()
+            || !p.unforgeables.is_empty()
+            || !p.bundles.is_empty()
+        {
+            return Err(InterpreterError::ReduceError(String::from(
+                "Error: parallel or non expression found where expression expected.",
+            )));
+        }
+        match p.exprs.as_slice() {
+            [e] => {
+                // The EToExpr value IS the eval_single_expr result (identity).
+                work.push(EvWork::EToExpr(e));
+                Ok(())
+            }
+            _ => Err(InterpreterError::ReduceError(
+                "Error: Multiple expressions given.".to_string(),
+            )),
+        }
+    }
+
+    // eval_to_bool.
+    fn descend_bool<'e>(
+        &self,
+        p: &'e Par,
+        env: &Env<Par>,
+        work: &mut Vec<EvWork<'e>>,
+        vals: &mut Vec<EvVal>,
+    ) -> Result<(), InterpreterError> {
+        if !p.sends.is_empty()
+            && !p.receives.is_empty()
+            && !p.news.is_empty()
+            && !p.matches.is_empty()
+            && !p.unforgeables.is_empty()
+            && !p.bundles.is_empty()
+        {
+            return Err(InterpreterError::ReduceError(String::from(
+                "Error: parallel or non expression found where expression expected.",
+            )));
+        }
+        match p.exprs.as_slice() {
+            [Expr { expr_instance: Some(ExprInstance::GBool(b)) }] => {
+                vals.push(EvVal::Bool(*b));
+                Ok(())
+            }
+            [Expr { expr_instance: Some(ExprInstance::EVarBody(EVar { v })) }] => {
+                let pv = self.eval_var(&unwrap_option_safe(v.clone())?, env)?;
+                let b = self.eval_to_bool(&pv, env)?;
+                vals.push(EvVal::Bool(b));
+                Ok(())
+            }
+            [e] => {
+                work.push(EvWork::Combine(EvKont::BoolExtract));
+                work.push(EvWork::EToExpr(e));
+                Ok(())
+            }
+            _ => Err(InterpreterError::ReduceError(
+                "Error: Multiple expressions given.".to_string(),
+            )),
+        }
+    }
+
+    // eval_to_i64.
+    fn descend_i64<'e>(
+        &self,
+        p: &'e Par,
+        env: &Env<Par>,
+        work: &mut Vec<EvWork<'e>>,
+        vals: &mut Vec<EvVal>,
+    ) -> Result<(), InterpreterError> {
+        if !p.sends.is_empty()
+            && !p.receives.is_empty()
+            && !p.news.is_empty()
+            && !p.matches.is_empty()
+            && !p.unforgeables.is_empty()
+            && !p.bundles.is_empty()
+        {
+            return Err(InterpreterError::ReduceError(String::from(
+                "Error: parallel or non expression found where expression expected.",
+            )));
+        }
+        match p.exprs.as_slice() {
+            [Expr { expr_instance: Some(ExprInstance::GInt(v)) }] => {
+                vals.push(EvVal::I64(*v));
+                Ok(())
+            }
+            [Expr { expr_instance: Some(ExprInstance::EVarBody(EVar { v })) }] => {
+                let pv = self.eval_var(&unwrap_option_safe(v.clone())?, env)?;
+                let i = self.eval_to_i64(&pv, env)?;
+                vals.push(EvVal::I64(i));
+                Ok(())
+            }
+            [e] => {
+                work.push(EvWork::Combine(EvKont::I64Extract));
+                work.push(EvWork::EToExpr(e));
+                Ok(())
+            }
+            _ => Err(InterpreterError::ReduceError(
+                "Error: Integer expected, or unimplemented expression.".to_string(),
+            )),
+        }
+    }
+
+    // eval_expr_to_expr — the ~35-arm dispatcher.
+    fn descend_to_expr<'e>(
+        &self,
+        expr: &'e Expr,
+        env: &Env<Par>,
+        work: &mut Vec<EvWork<'e>>,
+        vals: &mut Vec<EvVal>,
+    ) -> Result<(), InterpreterError> {
+        let expr_instance = match &expr.expr_instance {
+            Some(ei) => ei,
+            None => {
+                return Err(InterpreterError::ReduceError(format!(
+                    "Unimplemented expression: {:?}",
+                    expr
+                )))
+            }
+        };
+        match expr_instance {
+            // ---- ground leaves (no charge, no children) ----
+            ExprInstance::GBool(x) => {
+                vals.push(EvVal::Expr(Expr { expr_instance: Some(ExprInstance::GBool(*x)) }));
+                Ok(())
+            }
+            ExprInstance::GInt(x) => {
+                vals.push(EvVal::Expr(Expr { expr_instance: Some(ExprInstance::GInt(*x)) }));
+                Ok(())
+            }
+            ExprInstance::GString(x) => {
+                vals.push(EvVal::Expr(Expr { expr_instance: Some(ExprInstance::GString(x.clone())) }));
+                Ok(())
+            }
+            ExprInstance::GUri(x) => {
+                vals.push(EvVal::Expr(Expr { expr_instance: Some(ExprInstance::GUri(x.clone())) }));
+                Ok(())
+            }
+            ExprInstance::GByteArray(x) => {
+                vals.push(EvVal::Expr(Expr { expr_instance: Some(ExprInstance::GByteArray(x.clone())) }));
+                Ok(())
+            }
+            ExprInstance::GDouble(x) => {
+                vals.push(EvVal::Expr(Expr { expr_instance: Some(ExprInstance::GDouble(*x)) }));
+                Ok(())
+            }
+            ExprInstance::GBigInt(x) => {
+                vals.push(EvVal::Expr(Expr { expr_instance: Some(ExprInstance::GBigInt(x.clone())) }));
+                Ok(())
+            }
+            ExprInstance::GBigRat(x) => {
+                vals.push(EvVal::Expr(Expr { expr_instance: Some(ExprInstance::GBigRat(x.clone())) }));
+                Ok(())
+            }
+            ExprInstance::GFixedPoint(x) => {
+                vals.push(EvVal::Expr(Expr { expr_instance: Some(ExprInstance::GFixedPoint(x.clone())) }));
+                Ok(())
+            }
+            ExprInstance::EZipperBody(zipper) => {
+                vals.push(EvVal::Expr(Expr {
+                    expr_instance: Some(ExprInstance::EZipperBody(zipper.clone())),
+                }));
+                Ok(())
+            }
+
+            // ---- unary ----
+            ExprInstance::ENotBody(enot) => {
+                work.push(EvWork::Combine(EvKont::Not));
+                work.push(EvWork::EBool(enot.p.as_ref().unwrap()));
+                Ok(())
+            }
+            ExprInstance::ENegBody(eneg) => {
+                work.push(EvWork::Combine(EvKont::Neg));
+                work.push(EvWork::ESingle(eneg.p.as_ref().unwrap()));
+                Ok(())
+            }
+
+            // ---- binary numeric (ESingle children) ----
+            ExprInstance::EMultBody(EMult { p1, p2 }) => {
+                work.push(EvWork::Combine(EvKont::Mult));
+                work.push(EvWork::ESingle(p2.as_ref().unwrap()));
+                work.push(EvWork::ESingle(p1.as_ref().unwrap()));
+                Ok(())
+            }
+            ExprInstance::EDivBody(EDiv { p1, p2 }) => {
+                work.push(EvWork::Combine(EvKont::Div));
+                work.push(EvWork::ESingle(p2.as_ref().unwrap()));
+                work.push(EvWork::ESingle(p1.as_ref().unwrap()));
+                Ok(())
+            }
+            ExprInstance::EModBody(EMod { p1, p2 }) => {
+                work.push(EvWork::Combine(EvKont::Mod));
+                work.push(EvWork::ESingle(p2.as_ref().unwrap()));
+                work.push(EvWork::ESingle(p1.as_ref().unwrap()));
+                Ok(())
+            }
+            ExprInstance::EPlusBody(EPlus { p1, p2 }) => {
+                work.push(EvWork::Combine(EvKont::Plus));
+                work.push(EvWork::ESingle(p2.as_ref().unwrap()));
+                work.push(EvWork::ESingle(p1.as_ref().unwrap()));
+                Ok(())
+            }
+            ExprInstance::EMinusBody(EMinus { p1, p2 }) => {
+                work.push(EvWork::Combine(EvKont::Minus));
+                work.push(EvWork::ESingle(p2.as_ref().unwrap()));
+                work.push(EvWork::ESingle(p1.as_ref().unwrap()));
+                Ok(())
+            }
+
+            // ---- relational (ESingle children) ----
+            ExprInstance::ELtBody(ELt { p1, p2 }) => {
+                work.push(EvWork::Combine(EvKont::Relop {
+                    relopb: |b1: bool, b2: bool| !b1 & b2,
+                    relopi: |i1: i64, i2: i64| i1 < i2,
+                    relops: |s1: String, s2: String| s1 < s2,
+                }));
+                work.push(EvWork::ESingle(p2.as_ref().unwrap()));
+                work.push(EvWork::ESingle(p1.as_ref().unwrap()));
+                Ok(())
+            }
+            ExprInstance::ELteBody(ELte { p1, p2 }) => {
+                work.push(EvWork::Combine(EvKont::Relop {
+                    relopb: |b1: bool, b2: bool| b1 <= b2,
+                    relopi: |i1: i64, i2: i64| i1 <= i2,
+                    relops: |s1: String, s2: String| s1 <= s2,
+                }));
+                work.push(EvWork::ESingle(p2.as_ref().unwrap()));
+                work.push(EvWork::ESingle(p1.as_ref().unwrap()));
+                Ok(())
+            }
+            ExprInstance::EGtBody(EGt { p1, p2 }) => {
+                work.push(EvWork::Combine(EvKont::Relop {
+                    relopb: |b1: bool, b2: bool| b1 & !b2,
+                    relopi: |i1: i64, i2: i64| i1 > i2,
+                    relops: |s1: String, s2: String| s1 > s2,
+                }));
+                work.push(EvWork::ESingle(p2.as_ref().unwrap()));
+                work.push(EvWork::ESingle(p1.as_ref().unwrap()));
+                Ok(())
+            }
+            ExprInstance::EGteBody(EGte { p1, p2 }) => {
+                work.push(EvWork::Combine(EvKont::Relop {
+                    relopb: |b1: bool, b2: bool| b1 >= b2,
+                    relopi: |i1: i64, i2: i64| i1 >= i2,
+                    relops: |s1: String, s2: String| s1 >= s2,
+                }));
+                work.push(EvWork::ESingle(p2.as_ref().unwrap()));
+                work.push(EvWork::ESingle(p1.as_ref().unwrap()));
+                Ok(())
+            }
+
+            // ---- equality (EEval children) ----
+            ExprInstance::EEqBody(EEq { p1, p2 }) => {
+                work.push(EvWork::Combine(EvKont::Eq));
+                work.push(EvWork::EEval(p2.as_ref().unwrap()));
+                work.push(EvWork::EEval(p1.as_ref().unwrap()));
+                Ok(())
+            }
+            ExprInstance::ENeqBody(ENeq { p1, p2 }) => {
+                work.push(EvWork::Combine(EvKont::Neq));
+                work.push(EvWork::EEval(p2.as_ref().unwrap()));
+                work.push(EvWork::EEval(p1.as_ref().unwrap()));
+                Ok(())
+            }
+
+            // ---- boolean (EBool children — both eager, NOT short-circuit) ----
+            ExprInstance::EAndBody(EAnd { p1, p2 }) => {
+                work.push(EvWork::Combine(EvKont::And));
+                work.push(EvWork::EBool(p2.as_ref().unwrap()));
+                work.push(EvWork::EBool(p1.as_ref().unwrap()));
+                Ok(())
+            }
+            ExprInstance::EOrBody(EOr { p1, p2 }) => {
+                work.push(EvWork::Combine(EvKont::Or));
+                work.push(EvWork::EBool(p2.as_ref().unwrap()));
+                work.push(EvWork::EBool(p1.as_ref().unwrap()));
+                Ok(())
+            }
+
+            // ---- matches (EEval target; pattern substituted in combine) ----
+            ExprInstance::EMatchesBody(EMatches { target, pattern }) => {
+                work.push(EvWork::Combine(EvKont::Matches {
+                    pattern: pattern.as_ref().unwrap(),
+                }));
+                work.push(EvWork::EEval(target.as_ref().unwrap()));
+                Ok(())
+            }
+
+            // ---- interpolation / append / remove (PRE-order op_call_cost) ----
+            ExprInstance::EPercentPercentBody(EPercentPercent { p1, p2 }) => {
+                self.metering.reserve_primitive(op_call_cost())?;
+                work.push(EvWork::Combine(EvKont::PercentPercent));
+                work.push(EvWork::ESingle(p2.as_ref().unwrap()));
+                work.push(EvWork::ESingle(p1.as_ref().unwrap()));
+                Ok(())
+            }
+            ExprInstance::EPlusPlusBody(EPlusPlus { p1, p2 }) => {
+                self.metering.reserve_primitive(op_call_cost())?;
+                work.push(EvWork::Combine(EvKont::PlusPlus));
+                work.push(EvWork::ESingle(p2.as_ref().unwrap()));
+                work.push(EvWork::ESingle(p1.as_ref().unwrap()));
+                Ok(())
+            }
+            ExprInstance::EMinusMinusBody(EMinusMinus { p1, p2 }) => {
+                self.metering.reserve_primitive(op_call_cost())?;
+                work.push(EvWork::Combine(EvKont::MinusMinus));
+                work.push(EvWork::ESingle(p2.as_ref().unwrap()));
+                work.push(EvWork::ESingle(p1.as_ref().unwrap()));
+                Ok(())
+            }
+
+            // ---- var: eval_var (charge) + re-eval single (direct) ----
+            ExprInstance::EVarBody(EVar { v }) => {
+                let p = self.eval_var(v.as_ref().unwrap(), env)?;
+                let expr_val = self.eval_single_expr(&p, env)?;
+                vals.push(EvVal::Expr(expr_val));
+                Ok(())
+            }
+
+            // ---- collections worklisting their (term-borrowed) elements ----
+            ExprInstance::EListBody(e1) => {
+                work.push(EvWork::Combine(EvKont::EListK { e1, n: e1.ps.len() }));
+                for p in e1.ps.iter().rev() {
+                    work.push(EvWork::EEval(p));
+                }
+                Ok(())
+            }
+            ExprInstance::ETupleBody(e1) => {
+                work.push(EvWork::Combine(EvKont::ETupleK { e1, n: e1.ps.len() }));
+                for p in e1.ps.iter().rev() {
+                    work.push(EvWork::EEval(p));
+                }
+                Ok(())
+            }
+            ExprInstance::EPathmapBody(e1) => {
+                work.push(EvWork::Combine(EvKont::EPathmapK { e1, n: e1.ps.len() }));
+                for p in e1.ps.iter().rev() {
+                    work.push(EvWork::EEval(p));
+                }
+                Ok(())
+            }
+
+            // ---- Set/Map: SORTED owned elements -> direct eval via shared helper ----
+            ExprInstance::ESetBody(eset) => {
+                let e = self.combine_eset(eset, |q| self.eval_expr(q, env))?;
+                vals.push(EvVal::Expr(e));
+                Ok(())
+            }
+            ExprInstance::EMapBody(emap) => {
+                let e = self.combine_emap(emap, |q| self.eval_expr(q, env))?;
+                vals.push(EvVal::Expr(e));
+                Ok(())
+            }
+
+            // ---- method: fused-first; else method_call_cost + worklist target+args ----
+            ExprInstance::EMethodBody(emethod) => {
+                if let Some(fused) = self.try_eval_fused_method_chain(emethod, env)? {
+                    let e = self.eval_single_expr(&fused, env)?;
+                    vals.push(EvVal::Expr(e));
+                    return Ok(());
+                }
+                self.metering.reserve_primitive(method_call_cost())?;
+                work.push(EvWork::Combine(EvKont::EMethodExprK {
+                    emethod,
+                    argc: emethod.arguments.len(),
+                }));
+                for arg in emethod.arguments.iter().rev() {
+                    work.push(EvWork::EEval(arg));
+                }
+                work.push(EvWork::EEval(emethod.target.as_ref().unwrap()));
+                Ok(())
+            }
+        }
+    }
+
+    // =======================================================================
+    // combine: pop child values, run the arm's post-order body (via the shared
+    // combine_* helper), push the result value. Re-eval of shallow owned
+    // intermediates is dispatched here (trampoline: self.eval_*) so the shared
+    // helpers stay pure; the recursive twin passes its *_recursive closures.
+    // =======================================================================
+    fn combine(&self, k: EvKont, env: &Env<Par>, vals: &mut Vec<EvVal>) -> Result<(), InterpreterError> {
+        match k {
+            EvKont::Join { par, n } => {
+                let children = ev_pop_n_par(vals, n);
+                let result = children
+                    .into_iter()
+                    .fold(Self::ev_par_shell(par), |acc, expr| concatenate_pars(acc, expr));
+                vals.push(EvVal::Par(result));
+                Ok(())
+            }
+            EvKont::ToParWrap => {
+                let e = ev_pop_expr(vals);
+                vals.push(EvVal::Par(Par::default().with_exprs(vec![e])));
+                Ok(())
+            }
+            EvKont::ToParMethod { emethod, argc } => {
+                let args = ev_pop_n_par(vals, argc);
+                let target = ev_pop_par(vals);
+                let result_par = match self.method_table().get(&emethod.method_name) {
+                    Some(_method) => _method.apply(target, args, env)?,
+                    None => {
+                        return Err(InterpreterError::ReduceError(format!(
+                            "Unimplemented method: {}",
+                            emethod.method_name
+                        )))
+                    }
+                };
+                vals.push(EvVal::Par(result_par));
+                Ok(())
+            }
+            EvKont::Neg => {
+                let v = ev_pop_expr(vals);
+                let e = self.combine_neg(v)?;
+                vals.push(EvVal::Expr(e));
+                Ok(())
+            }
+            EvKont::Not => {
+                let b = ev_pop_bool(vals);
+                vals.push(EvVal::Expr(Expr { expr_instance: Some(ExprInstance::GBool(!b)) }));
+                Ok(())
+            }
+            EvKont::Mult => {
+                let v2 = ev_pop_expr(vals);
+                let v1 = ev_pop_expr(vals);
+                let e = self.combine_mult(v1, v2)?;
+                vals.push(EvVal::Expr(e));
+                Ok(())
+            }
+            EvKont::Div => {
+                let v2 = ev_pop_expr(vals);
+                let v1 = ev_pop_expr(vals);
+                let e = self.combine_div(v1, v2)?;
+                vals.push(EvVal::Expr(e));
+                Ok(())
+            }
+            EvKont::Mod => {
+                let v2 = ev_pop_expr(vals);
+                let v1 = ev_pop_expr(vals);
+                let e = self.combine_mod(v1, v2)?;
+                vals.push(EvVal::Expr(e));
+                Ok(())
+            }
+            EvKont::Plus => {
+                let v2 = ev_pop_expr(vals);
+                let v1 = ev_pop_expr(vals);
+                let e = self.combine_plus(v1, v2, env, |q| self.eval_single_expr(q, env))?;
+                vals.push(EvVal::Expr(e));
+                Ok(())
+            }
+            EvKont::Minus => {
+                let v2 = ev_pop_expr(vals);
+                let v1 = ev_pop_expr(vals);
+                let e = self.combine_minus(v1, v2, env, |q| self.eval_single_expr(q, env))?;
+                vals.push(EvVal::Expr(e));
+                Ok(())
+            }
+            EvKont::Relop { relopb, relopi, relops } => {
+                let v2 = ev_pop_expr(vals);
+                let v1 = ev_pop_expr(vals);
+                let e = self.combine_relop(v1, v2, relopb, relopi, relops)?;
+                vals.push(EvVal::Expr(e));
+                Ok(())
+            }
+            EvKont::Eq => {
+                let v2 = ev_pop_par(vals);
+                let v1 = ev_pop_par(vals);
+                let e = self.combine_eq(v1, v2, env)?;
+                vals.push(EvVal::Expr(e));
+                Ok(())
+            }
+            EvKont::Neq => {
+                let v2 = ev_pop_par(vals);
+                let v1 = ev_pop_par(vals);
+                let e = self.combine_neq(v1, v2, env)?;
+                vals.push(EvVal::Expr(e));
+                Ok(())
+            }
+            EvKont::And => {
+                let b2 = ev_pop_bool(vals);
+                let b1 = ev_pop_bool(vals);
+                self.metering.reserve_primitive(boolean_and_cost())?;
+                vals.push(EvVal::Expr(Expr { expr_instance: Some(ExprInstance::GBool(b1 && b2)) }));
+                Ok(())
+            }
+            EvKont::Or => {
+                let b2 = ev_pop_bool(vals);
+                let b1 = ev_pop_bool(vals);
+                self.metering.reserve_primitive(boolean_or_cost())?;
+                vals.push(EvVal::Expr(Expr { expr_instance: Some(ExprInstance::GBool(b1 || b2)) }));
+                Ok(())
+            }
+            EvKont::Matches { pattern } => {
+                let evaled_target = ev_pop_par(vals);
+                let e = self.combine_matches(evaled_target, pattern, env)?;
+                vals.push(EvVal::Expr(e));
+                Ok(())
+            }
+            EvKont::PercentPercent => {
+                let v2 = ev_pop_expr(vals);
+                let v1 = ev_pop_expr(vals);
+                let e = self.combine_percent_percent(v1, v2, |q| self.eval_single_expr(q, env))?;
+                vals.push(EvVal::Expr(e));
+                Ok(())
+            }
+            EvKont::PlusPlus => {
+                let v2 = ev_pop_expr(vals);
+                let v1 = ev_pop_expr(vals);
+                let e = self.combine_plus_plus(v1, v2, env, |q| self.eval_single_expr(q, env))?;
+                vals.push(EvVal::Expr(e));
+                Ok(())
+            }
+            EvKont::MinusMinus => {
+                let v2 = ev_pop_expr(vals);
+                let v1 = ev_pop_expr(vals);
+                let e = self.combine_minus_minus(v1, v2, env, |q| self.eval_single_expr(q, env))?;
+                vals.push(EvVal::Expr(e));
+                Ok(())
+            }
+            EvKont::EListK { e1, n } => {
+                let evaled_ps = ev_pop_n_par(vals, n);
+                let e = self.combine_elist(evaled_ps, e1)?;
+                vals.push(EvVal::Expr(e));
+                Ok(())
+            }
+            EvKont::ETupleK { e1, n } => {
+                let evaled_ps = ev_pop_n_par(vals, n);
+                let e = self.combine_etuple(evaled_ps, e1)?;
+                vals.push(EvVal::Expr(e));
+                Ok(())
+            }
+            EvKont::EPathmapK { e1, n } => {
+                let evaled_ps = ev_pop_n_par(vals, n);
+                let e = self.combine_epathmap(evaled_ps, e1)?;
+                vals.push(EvVal::Expr(e));
+                Ok(())
+            }
+            EvKont::EMethodExprK { emethod, argc } => {
+                let args = ev_pop_n_par(vals, argc);
+                let target = ev_pop_par(vals);
+                let result_par = self.apply_method_expr(emethod, target, args, env)?;
+                // Re-eval the apply result (direct; a fresh bounded drive).
+                let e = self.eval_single_expr(&result_par, env)?;
+                vals.push(EvVal::Expr(e));
+                Ok(())
+            }
+            EvKont::BoolExtract => {
+                let evaled = ev_pop_expr(vals);
+                let b = Self::extract_bool(evaled)?;
+                vals.push(EvVal::Bool(b));
+                Ok(())
+            }
+            EvKont::I64Extract => {
+                let evaled = ev_pop_expr(vals);
+                let i = Self::extract_i64(evaled)?;
+                vals.push(EvVal::I64(i));
+                Ok(())
+            }
+        }
+    }
+
+    // ---- eval_to_bool / eval_to_i64 [e]-arm extractors ----
+    fn extract_bool(evaled: Expr) -> Result<bool, InterpreterError> {
+        match evaled.expr_instance {
+            Some(expr_instance) => match expr_instance {
+                ExprInstance::GBool(b) => Ok(b),
+                _ => Err(InterpreterError::ReduceError(
+                    "Error: expression didn't evaluate to boolean.".to_string(),
+                )),
+            },
+            None => Err(InterpreterError::MethodNotDefined {
+                method: String::from("expr_instance"),
+                other_type: String::from("None"),
+            }),
+        }
+    }
+    fn extract_i64(evaled: Expr) -> Result<i64, InterpreterError> {
+        match evaled.expr_instance {
+            Some(expr_instance) => match expr_instance {
+                ExprInstance::GInt(v) => Ok(v),
+                _ => Err(InterpreterError::ReduceError(
+                    "Error: expression didn't evaluate to integer.".to_string(),
+                )),
+            },
+            None => Err(InterpreterError::MethodNotDefined {
+                method: String::from("expr_instance"),
+                other_type: String::from("None"),
+            }),
+        }
+    }
+
+    // =======================================================================
+    // combine_* helpers: each is the EXACT post-order body of an eval_expr_to_expr
+    // arm, with the child sub-values passed in as parameters instead of being
+    // produced by `eval_*(child)?`. SHARED by the trampoline `combine` and by the
+    // recursive twin dispatcher, so the intricate arithmetic/charge/error logic
+    // lives in exactly one place.
+    // =======================================================================
+
+    // relop (ELt/ELte/EGt/EGte). v1,v2 already `eval_single_expr`'d.
+    fn combine_relop(
+        &self,
+        v1: Expr,
+        v2: Expr,
+        relopb: fn(bool, bool) -> bool,
+        relopi: fn(i64, i64) -> bool,
+        relops: fn(String, String) -> bool,
+    ) -> Result<Expr, InterpreterError> {
+        match (v1.expr_instance.clone().unwrap(), v2.expr_instance.clone().unwrap()) {
+            (ExprInstance::GBool(b1), ExprInstance::GBool(b2)) => {
+                self.metering.reserve_primitive(comparison_cost())?;
+                Ok(Expr { expr_instance: Some(ExprInstance::GBool(relopb(b1, b2))) })
+            }
+            (ExprInstance::GInt(i1), ExprInstance::GInt(i2)) => {
+                self.metering.reserve_primitive(comparison_cost())?;
+                Ok(Expr { expr_instance: Some(ExprInstance::GBool(relopi(i1, i2))) })
+            }
+            (ExprInstance::GString(s1), ExprInstance::GString(s2)) => {
+                self.metering.reserve_primitive(comparison_cost())?;
+                Ok(Expr { expr_instance: Some(ExprInstance::GBool(relops(s1, s2))) })
+            }
+            (ExprInstance::GDouble(d1), ExprInstance::GDouble(d2)) => {
+                self.metering.reserve_primitive(comparison_cost())?;
+                let f1 = f64::from_bits(d1);
+                let f2 = f64::from_bits(d2);
+                if f1.is_nan() || f2.is_nan() {
+                    Ok(Expr { expr_instance: Some(ExprInstance::GBool(false)) })
+                } else {
+                    Ok(Expr {
+                        expr_instance: Some(ExprInstance::GBool(relopi(
+                            f1.partial_cmp(&f2).map_or(0, |o| o as i64),
+                            0,
+                        ))),
+                    })
+                }
+            }
+            (ExprInstance::GBigInt(b1), ExprInstance::GBigInt(b2)) => {
+                self.metering.reserve_primitive(bigint_comparison_cost(b1.len(), b2.len()))?;
+                let cmp = compare_twos_complement_bytes(&b1, &b2);
+                Ok(Expr { expr_instance: Some(ExprInstance::GBool(relopi(cmp as i64, 0))) })
+            }
+            (ExprInstance::GBigRat(r1), ExprInstance::GBigRat(r2)) => {
+                self.metering.reserve_primitive(bigrat_comparison_cost(
+                    r1.numerator.len(),
+                    r1.denominator.len(),
+                    r2.numerator.len(),
+                    r2.denominator.len(),
+                ))?;
+                let cmp = compare_big_rationals(&r1, &r2);
+                Ok(Expr { expr_instance: Some(ExprInstance::GBool(relopi(cmp as i64, 0))) })
+            }
+            (ExprInstance::GFixedPoint(fp1), ExprInstance::GFixedPoint(fp2)) => {
+                self.metering.reserve_primitive(bigint_comparison_cost(
+                    fp1.unscaled.len(),
+                    fp2.unscaled.len(),
+                ))?;
+                let cmp = compare_fixed_points(&fp1, &fp2)?;
+                Ok(Expr { expr_instance: Some(ExprInstance::GBool(relopi(cmp as i64, 0))) })
+            }
+            _ => Err(InterpreterError::ReduceError(format!(
+                "Unexpected compare: {:?} vs. {:?}",
+                v1, v2
+            ))),
+        }
+    }
+
+    // ENeg. v already `eval_single_expr`'d.
+    fn combine_neg(&self, v: Expr) -> Result<Expr, InterpreterError> {
+        match v.expr_instance.unwrap() {
+            ExprInstance::GInt(i) => {
+                let result = i.checked_neg().ok_or_else(|| {
+                    InterpreterError::ReduceError("Arithmetic overflow in negation".to_string())
+                })?;
+                Ok(Expr { expr_instance: Some(ExprInstance::GInt(result)) })
+            }
+            ExprInstance::GDouble(bits) => {
+                let f = f64::from_bits(bits);
+                Ok(Expr { expr_instance: Some(ExprInstance::GDouble((-f).to_bits())) })
+            }
+            ExprInstance::GBigInt(bytes) => {
+                self.metering.reserve_primitive(bigint_negation_cost(bytes.len()))?;
+                make_bigint_expr(negate_twos_complement(&bytes), "negation")
+            }
+            ExprInstance::GBigRat(rat) => {
+                self.metering.reserve_primitive(bigrat_negation_cost(rat.numerator.len()))?;
+                make_bigrat_expr(
+                    models::rhoapi::GBigRational {
+                        numerator: negate_twos_complement(&rat.numerator),
+                        denominator: rat.denominator,
+                    },
+                    "negation",
+                )
+            }
+            ExprInstance::GFixedPoint(fp) => {
+                self.metering.reserve_primitive(bigint_negation_cost(fp.unscaled.len()))?;
+                make_fixedpoint_expr(
+                    models::rhoapi::GFixedPoint {
+                        unscaled: negate_twos_complement(&fp.unscaled),
+                        scale: fp.scale,
+                    },
+                    "negation",
+                )
+            }
+            other => Err(InterpreterError::OperatorNotDefined {
+                op: "neg".to_string(),
+                other_type: get_type(other),
+            }),
+        }
+    }
+
+    // EMult. v1,v2 already `eval_single_expr`'d.
+    fn combine_mult(&self, v1: Expr, v2: Expr) -> Result<Expr, InterpreterError> {
+        match (v1.expr_instance.unwrap(), v2.expr_instance.unwrap()) {
+            (ExprInstance::GInt(lhs), ExprInstance::GInt(rhs)) => {
+                self.metering.reserve_primitive(multiplication_cost())?;
+                let result = lhs.checked_mul(rhs).ok_or_else(|| {
+                    InterpreterError::ReduceError("Arithmetic overflow in multiplication".to_string())
+                })?;
+                Ok(Expr { expr_instance: Some(ExprInstance::GInt(result)) })
+            }
+            (ExprInstance::GDouble(d1), ExprInstance::GDouble(d2)) => {
+                self.metering.reserve_primitive(multiplication_cost())?;
+                let result = f64::from_bits(d1) * f64::from_bits(d2);
+                Ok(Expr { expr_instance: Some(ExprInstance::GDouble(result.to_bits())) })
+            }
+            (ExprInstance::GBigInt(b1), ExprInstance::GBigInt(b2)) => {
+                self.metering.reserve_primitive(bigint_multiplication_cost(b1.len(), b2.len()))?;
+                make_bigint_expr(multiply_twos_complement(&b1, &b2), "multiplication")
+            }
+            (ExprInstance::GBigRat(r1), ExprInstance::GBigRat(r2)) => {
+                self.metering.reserve_primitive(bigrat_multiplication_cost(
+                    r1.numerator.len(),
+                    r1.denominator.len(),
+                    r2.numerator.len(),
+                    r2.denominator.len(),
+                ))?;
+                make_bigrat_expr(multiply_big_rationals(&r1, &r2), "multiplication")
+            }
+            (ExprInstance::GFixedPoint(fp1), ExprInstance::GFixedPoint(fp2)) => {
+                if fp1.scale != fp2.scale {
+                    return Err(InterpreterError::OperatorExpectedError {
+                        op: "*".to_string(),
+                        expected: format!("FixedPoint(p{})", fp1.scale),
+                        other_type: format!("FixedPoint(p{})", fp2.scale),
+                    });
+                }
+                self.metering.reserve_primitive(bigint_multiplication_cost(
+                    fp1.unscaled.len(),
+                    fp2.unscaled.len(),
+                ))?;
+                make_fixedpoint_expr(multiply_fixed_points(&fp1, &fp2), "multiplication")
+            }
+            (lhs, rhs) => {
+                let lhs_type = get_type(lhs);
+                let rhs_type = get_type(rhs);
+                if lhs_type == rhs_type {
+                    Err(InterpreterError::OperatorNotDefined { op: "*".to_string(), other_type: lhs_type })
+                } else {
+                    Err(InterpreterError::OperatorExpectedError {
+                        op: "*".to_string(),
+                        expected: lhs_type,
+                        other_type: rhs_type,
+                    })
+                }
+            }
+        }
+    }
+
+    // EDiv. v1,v2 already `eval_single_expr`'d.
+    fn combine_div(&self, v1: Expr, v2: Expr) -> Result<Expr, InterpreterError> {
+        match (v1.expr_instance.unwrap(), v2.expr_instance.unwrap()) {
+            (ExprInstance::GInt(lhs), ExprInstance::GInt(rhs)) => {
+                self.metering.reserve_primitive(division_cost())?;
+                if rhs == 0 {
+                    return Err(InterpreterError::ReduceError(
+                        "Division by zero".to_string(),
+                    ));
+                }
+                if lhs == i64::MIN && rhs == -1 {
+                    return Err(InterpreterError::ReduceError(
+                        "Arithmetic overflow in division".to_string(),
+                    ));
+                }
+                Ok(Expr {
+                    expr_instance: Some(ExprInstance::GInt(lhs / rhs)),
+                })
+            }
+            (ExprInstance::GDouble(d1), ExprInstance::GDouble(d2)) => {
+                self.metering.reserve_primitive(division_cost())?;
+                let result = f64::from_bits(d1) / f64::from_bits(d2);
+                Ok(Expr {
+                    expr_instance: Some(ExprInstance::GDouble(result.to_bits())),
+                })
+            }
+            (ExprInstance::GBigInt(b1), ExprInstance::GBigInt(b2)) => {
+                self.metering
+                    .reserve_primitive(bigint_division_cost(b1.len(), b2.len()))?;
+                if is_zero_twos_complement(&b2) {
+                    return Err(InterpreterError::ReduceError(
+                        "Division by zero".to_string(),
+                    ));
+                }
+                make_bigint_expr(divide_twos_complement(&b1, &b2), "division")
+            }
+            (ExprInstance::GBigRat(r1), ExprInstance::GBigRat(r2)) => {
+                self.metering.reserve_primitive(bigrat_division_cost(
+                    r1.numerator.len(),
+                    r1.denominator.len(),
+                    r2.numerator.len(),
+                    r2.denominator.len(),
+                ))?;
+                if is_zero_twos_complement(&r2.numerator) {
+                    return Err(InterpreterError::ReduceError(
+                        "Division by zero".to_string(),
+                    ));
+                }
+                make_bigrat_expr(divide_big_rationals(&r1, &r2), "division")
+            }
+            (ExprInstance::GFixedPoint(fp1), ExprInstance::GFixedPoint(fp2)) => {
+                if fp1.scale != fp2.scale {
+                    return Err(InterpreterError::OperatorExpectedError {
+                        op: "/".to_string(),
+                        expected: format!("FixedPoint(p{})", fp1.scale),
+                        other_type: format!("FixedPoint(p{})", fp2.scale),
+                    });
+                }
+                self.metering.reserve_primitive(bigint_division_cost(
+                    fp1.unscaled.len(),
+                    fp2.unscaled.len(),
+                ))?;
+                if is_zero_twos_complement(&fp2.unscaled) {
+                    return Err(InterpreterError::ReduceError(
+                        "Division by zero".to_string(),
+                    ));
+                }
+                make_fixedpoint_expr(divide_fixed_points(&fp1, &fp2), "division")
+            }
+            (lhs, rhs) => {
+                let lhs_type = get_type(lhs);
+                let rhs_type = get_type(rhs);
+                if lhs_type == rhs_type {
+                    Err(InterpreterError::OperatorNotDefined {
+                        op: "/".to_string(),
+                        other_type: lhs_type,
+                    })
+                } else {
+                    Err(InterpreterError::OperatorExpectedError {
+                        op: "/".to_string(),
+                        expected: lhs_type,
+                        other_type: rhs_type,
+                    })
+                }
+            }
+        }
+    }
+
+    // EMod. v1,v2 already `eval_single_expr`'d.
+    fn combine_mod(&self, v1: Expr, v2: Expr) -> Result<Expr, InterpreterError> {
+        match (v1.expr_instance.unwrap(), v2.expr_instance.unwrap()) {
+            (ExprInstance::GInt(lhs), ExprInstance::GInt(rhs)) => {
+                self.metering.reserve_primitive(modulo_cost())?;
+                if rhs == 0 {
+                    return Err(InterpreterError::ReduceError(
+                        "Modulo by zero".to_string(),
+                    ));
+                }
+                if lhs == i64::MIN && rhs == -1 {
+                    return Err(InterpreterError::ReduceError(
+                        "Arithmetic overflow in modulo".to_string(),
+                    ));
+                }
+                Ok(Expr {
+                    expr_instance: Some(ExprInstance::GInt(lhs % rhs)),
+                })
+            }
+            (ExprInstance::GDouble(_), ExprInstance::GDouble(_)) => {
+                Err(InterpreterError::ReduceError(
+                    "Modulus not defined on floating point".to_string(),
+                ))
+            }
+            (ExprInstance::GBigInt(b1), ExprInstance::GBigInt(b2)) => {
+                self.metering
+                    .reserve_primitive(bigint_modulo_cost(b1.len(), b2.len()))?;
+                if is_zero_twos_complement(&b2) {
+                    return Err(InterpreterError::ReduceError(
+                        "Modulo by zero".to_string(),
+                    ));
+                }
+                make_bigint_expr(modulo_twos_complement(&b1, &b2), "%")
+            }
+            (ExprInstance::GBigRat(_), ExprInstance::GBigRat(r2)) => {
+                if is_zero_twos_complement(&r2.numerator) {
+                    return Err(InterpreterError::ReduceError(
+                        "Modulo by zero".to_string(),
+                    ));
+                }
+                Ok(Expr {
+                    expr_instance: Some(ExprInstance::GBigRat(
+                        models::rhoapi::GBigRational {
+                            numerator: vec![0],
+                            denominator: vec![1],
+                        },
+                    )),
+                })
+            }
+            (ExprInstance::GFixedPoint(fp1), ExprInstance::GFixedPoint(fp2)) => {
+                if fp1.scale != fp2.scale {
+                    return Err(InterpreterError::OperatorExpectedError {
+                        op: "%".to_string(),
+                        expected: format!("FixedPoint(p{})", fp1.scale),
+                        other_type: format!("FixedPoint(p{})", fp2.scale),
+                    });
+                }
+                self.metering.reserve_primitive(bigint_modulo_cost(
+                    fp1.unscaled.len(),
+                    fp2.unscaled.len(),
+                ))?;
+                if is_zero_twos_complement(&fp2.unscaled) {
+                    return Err(InterpreterError::ReduceError(
+                        "Modulo by zero".to_string(),
+                    ));
+                }
+                let ua = bytes_to_bigint(&fp1.unscaled);
+                let ub = bytes_to_bigint(&fp2.unscaled);
+                let remainder = &ua % &ub;
+                make_fixedpoint_expr(
+                    models::rhoapi::GFixedPoint {
+                        unscaled: bigint_to_bytes(&remainder),
+                        scale: fp1.scale,
+                    },
+                    "%",
+                )
+            }
+            (lhs, rhs) => {
+                let lhs_type = get_type(lhs);
+                let rhs_type = get_type(rhs);
+                if lhs_type == rhs_type {
+                    Err(InterpreterError::OperatorNotDefined {
+                        op: "%".to_string(),
+                        other_type: lhs_type,
+                    })
+                } else {
+                    Err(InterpreterError::OperatorExpectedError {
+                        op: "%".to_string(),
+                        expected: lhs_type,
+                        other_type: rhs_type,
+                    })
+                }
+            }
+        }
+    }
+
+    // EPlus. v1,v2 already `eval_single_expr`'d; ESet sub-arm re-evals via `eval_single`.
+    fn combine_plus<F: Fn(&Par) -> Result<Expr, InterpreterError>>(
+        &self, v1: Expr, v2: Expr, env: &Env<Par>, eval_single: F,
+    ) -> Result<Expr, InterpreterError> {
+        match (v1.expr_instance.unwrap(), v2.expr_instance.unwrap()) {
+            (ExprInstance::GInt(lhs), ExprInstance::GInt(rhs)) => {
+                self.metering.reserve_primitive(sum_cost())?;
+                Ok(Expr {
+                    expr_instance: Some(ExprInstance::GInt(lhs.wrapping_add(rhs))),
+                })
+            }
+
+            (ExprInstance::GDouble(d1), ExprInstance::GDouble(d2)) => {
+                self.metering.reserve_primitive(sum_cost())?;
+                let result = f64::from_bits(d1) + f64::from_bits(d2);
+                Ok(Expr {
+                    expr_instance: Some(ExprInstance::GDouble(result.to_bits())),
+                })
+            }
+
+            (ExprInstance::GBigInt(b1), ExprInstance::GBigInt(b2)) => {
+                self.metering
+                    .reserve_primitive(bigint_sum_cost(b1.len(), b2.len()))?;
+                make_bigint_expr(add_twos_complement(&b1, &b2), "+")
+            }
+
+            (ExprInstance::GBigRat(r1), ExprInstance::GBigRat(r2)) => {
+                self.metering.reserve_primitive(bigrat_sum_cost(
+                    r1.numerator.len(),
+                    r1.denominator.len(),
+                    r2.numerator.len(),
+                    r2.denominator.len(),
+                ))?;
+                make_bigrat_expr(add_big_rationals(&r1, &r2), "+")
+            }
+
+            (ExprInstance::GFixedPoint(fp1), ExprInstance::GFixedPoint(fp2)) => {
+                if fp1.scale != fp2.scale {
+                    return Err(InterpreterError::OperatorExpectedError {
+                        op: "+".to_string(),
+                        expected: format!("FixedPoint(p{})", fp1.scale),
+                        other_type: format!("FixedPoint(p{})", fp2.scale),
+                    });
+                }
+                self.metering.reserve_primitive(bigint_sum_cost(
+                    fp1.unscaled.len(),
+                    fp2.unscaled.len(),
+                ))?;
+                make_fixedpoint_expr(
+                    models::rhoapi::GFixedPoint {
+                        unscaled: add_twos_complement(&fp1.unscaled, &fp2.unscaled),
+                        scale: fp1.scale,
+                    },
+                    "+",
+                )
+            }
+
+            (ExprInstance::ESetBody(lhs), rhs) => {
+                self.metering.reserve_primitive(op_call_cost())?;
+                let result_par = self.add_method().apply(
+                    Par::default().with_exprs(vec![Expr {
+                        expr_instance: Some(ExprInstance::ESetBody(lhs)),
+                    }]),
+                    vec![Par::default().with_exprs(vec![Expr {
+                        expr_instance: Some(rhs),
+                    }])],
+                    env,
+                )?;
+
+                let result_expr = eval_single(&result_par)?;
+                Ok(result_expr)
+            }
+
+            (ExprInstance::GInt(_), other)
+            | (ExprInstance::GDouble(_), other)
+            | (ExprInstance::GBigInt(_), other)
+            | (ExprInstance::GBigRat(_), other)
+            | (ExprInstance::GFixedPoint(_), other) => {
+                Err(InterpreterError::OperatorExpectedError {
+                    op: "+".to_string(),
+                    expected: "matching numeric types".to_string(),
+                    other_type: get_type(other),
+                })
+            }
+
+            (other, _) => Err(InterpreterError::OperatorNotDefined {
+                op: "+".to_string(),
+                other_type: get_type(other),
+            }),
+        }
+    }
+
+    // EMinus. v1,v2 already `eval_single_expr`'d; Map/Set sub-arms re-eval via `eval_single`.
+    fn combine_minus<F: Fn(&Par) -> Result<Expr, InterpreterError>>(
+        &self, v1: Expr, v2: Expr, env: &Env<Par>, eval_single: F,
+    ) -> Result<Expr, InterpreterError> {
+        match (v1.expr_instance.unwrap(), v2.expr_instance.unwrap()) {
+            (ExprInstance::GInt(lhs), ExprInstance::GInt(rhs)) => {
+                self.metering.reserve_primitive(subtraction_cost())?;
+                Ok(Expr {
+                    expr_instance: Some(ExprInstance::GInt(lhs.wrapping_sub(rhs))),
+                })
+            }
+
+            (ExprInstance::GDouble(d1), ExprInstance::GDouble(d2)) => {
+                self.metering.reserve_primitive(subtraction_cost())?;
+                let result = f64::from_bits(d1) - f64::from_bits(d2);
+                Ok(Expr {
+                    expr_instance: Some(ExprInstance::GDouble(result.to_bits())),
+                })
+            }
+
+            (ExprInstance::GBigInt(b1), ExprInstance::GBigInt(b2)) => {
+                self.metering
+                    .reserve_primitive(bigint_subtraction_cost(b1.len(), b2.len()))?;
+                make_bigint_expr(subtract_twos_complement(&b1, &b2), "-")
+            }
+
+            (ExprInstance::GBigRat(r1), ExprInstance::GBigRat(r2)) => {
+                self.metering.reserve_primitive(bigrat_subtraction_cost(
+                    r1.numerator.len(),
+                    r1.denominator.len(),
+                    r2.numerator.len(),
+                    r2.denominator.len(),
+                ))?;
+                make_bigrat_expr(subtract_big_rationals(&r1, &r2), "-")
+            }
+
+            (ExprInstance::GFixedPoint(fp1), ExprInstance::GFixedPoint(fp2)) => {
+                if fp1.scale != fp2.scale {
+                    return Err(InterpreterError::OperatorExpectedError {
+                        op: "-".to_string(),
+                        expected: format!("FixedPoint(p{})", fp1.scale),
+                        other_type: format!("FixedPoint(p{})", fp2.scale),
+                    });
+                }
+                self.metering.reserve_primitive(bigint_subtraction_cost(
+                    fp1.unscaled.len(),
+                    fp2.unscaled.len(),
+                ))?;
+                make_fixedpoint_expr(
+                    models::rhoapi::GFixedPoint {
+                        unscaled: subtract_twos_complement(
+                            &fp1.unscaled,
+                            &fp2.unscaled,
+                        ),
+                        scale: fp1.scale,
+                    },
+                    "-",
+                )
+            }
+
+            (ExprInstance::EMapBody(lhs), rhs) => {
+                self.metering.reserve_primitive(op_call_cost())?;
+                let result_par = self.delete_method().apply(
+                    Par::default().with_exprs(vec![Expr {
+                        expr_instance: Some(ExprInstance::EMapBody(lhs)),
+                    }]),
+                    vec![Par::default().with_exprs(vec![Expr {
+                        expr_instance: Some(rhs),
+                    }])],
+                    env,
+                )?;
+
+                let result_expr = eval_single(&result_par)?;
+                Ok(result_expr)
+            }
+
+            (ExprInstance::ESetBody(lhs), rhs) => {
+                self.metering.reserve_primitive(op_call_cost())?;
+                let result_par = self.delete_method().apply(
+                    Par::default().with_exprs(vec![Expr {
+                        expr_instance: Some(ExprInstance::ESetBody(lhs)),
+                    }]),
+                    vec![Par::default().with_exprs(vec![Expr {
+                        expr_instance: Some(rhs),
+                    }])],
+                    env,
+                )?;
+
+                let result_expr = eval_single(&result_par)?;
+                Ok(result_expr)
+            }
+
+            (ExprInstance::GInt(_), other)
+            | (ExprInstance::GDouble(_), other)
+            | (ExprInstance::GBigInt(_), other)
+            | (ExprInstance::GBigRat(_), other)
+            | (ExprInstance::GFixedPoint(_), other) => {
+                Err(InterpreterError::OperatorExpectedError {
+                    op: "-".to_string(),
+                    expected: "matching numeric types".to_string(),
+                    other_type: get_type(other),
+                })
+            }
+
+            (other, _) => Err(InterpreterError::OperatorNotDefined {
+                op: "-".to_string(),
+                other_type: get_type(other),
+            }),
+        }
+    }
+
+    // EEq. v1,v2 already `eval_expr`'d (substitution + NaN-aware compare; substitute is NOT SCC).
+    fn combine_eq(&self, v1: Par, v2: Par, env: &Env<Par>) -> Result<Expr, InterpreterError> {
+        // TODO: build an equality operator that takes in an environment. - OLD
+        let sv1 = self.substitute.substitute_and_charge(&v1, 0, env)?;
+        let sv2 = self.substitute.substitute_and_charge(&v2, 0, env)?;
+        self.metering
+            .reserve_primitive(equality_check_cost(&sv1, &sv2))?;
+
+        let result = if par_contains_nan_double(&sv1) || par_contains_nan_double(&sv2) {
+            false
+        } else {
+            sv1 == sv2
+        };
+        Ok(Expr {
+            expr_instance: Some(ExprInstance::GBool(result)),
+        })
+    }
+
+    // ENeq.
+    fn combine_neq(&self, v1: Par, v2: Par, env: &Env<Par>) -> Result<Expr, InterpreterError> {
+        let sv1 = self.substitute.substitute_and_charge(&v1, 0, env)?;
+        let sv2 = self.substitute.substitute_and_charge(&v2, 0, env)?;
+        self.metering
+            .reserve_primitive(equality_check_cost(&sv1, &sv2))?;
+
+        let result = if par_contains_nan_double(&sv1) || par_contains_nan_double(&sv2) {
+            true
+        } else {
+            sv1 != sv2
+        };
+        Ok(Expr {
+            expr_instance: Some(ExprInstance::GBool(result)),
+        })
+    }
+
+    // EMatches. target already `eval_expr`'d; pattern is the borrowed &Par.
+    fn combine_matches(&self, evaled_target: Par, pattern: &Par, env: &Env<Par>) -> Result<Expr, InterpreterError> {
+        let subst_target =
+            self.substitute
+                .substitute_and_charge(&evaled_target, 0, env)?;
+        let subst_pattern =
+            self.substitute
+                .substitute_and_charge(pattern, 1, env)?;
+
+        let mut spatial_matcher = SpatialMatcherContext::new();
+        let match_result =
+            spatial_matcher.spatial_match_result(subst_target, subst_pattern);
+
+        Ok(Expr {
+            expr_instance: Some(ExprInstance::GBool(match_result.is_some())),
+        })
+    }
+
+    // EPercentPercent (%%). op_call_cost is charged PRE (in descend). v1,v2 `eval_single_expr`'d;
+    // map contents re-eval via `eval_single`.
+    fn combine_percent_percent<F: Fn(&Par) -> Result<Expr, InterpreterError>>(
+        &self, v1: Expr, v2: Expr, eval_single: F,
+    ) -> Result<Expr, InterpreterError> {
+        fn eval_to_string_pair(
+            key_expr: Expr,
+            value_expr: Expr,
+        ) -> Result<(String, String), InterpreterError> {
+            match (
+                key_expr.expr_instance.unwrap(),
+                value_expr.expr_instance.unwrap(),
+            ) {
+                (
+                    ExprInstance::GString(key_string),
+                    ExprInstance::GString(value_string),
+                ) => Ok((key_string, value_string)),
+
+                (ExprInstance::GString(key_string), ExprInstance::GInt(value_int)) => {
+                    Ok((key_string, value_int.to_string()))
+                }
+
+                (
+                    ExprInstance::GString(key_string),
+                    ExprInstance::GBool(value_bool),
+                ) => Ok((key_string, value_bool.to_string())),
+
+                (ExprInstance::GString(key_string), ExprInstance::GUri(uri)) => {
+                    Ok((key_string, uri))
+                }
+
+                // TODO: Add cases for other ground terms as well? Maybe it would be better
+                // to implement cats.Show for all ground terms. - OLD
+                (ExprInstance::GString(_), value) => {
+                    Err(InterpreterError::ReduceError(format!(
+                        "Error: interpolation doesn't support {:?}",
+                        get_type(value),
+                    )))
+                }
+
+                _ => Err(InterpreterError::ReduceError(
+                    "Error: interpolation Map should only contain String keys"
+                        .to_string(),
+                )),
+            }
+        }
+
+        fn interpolate(string: &str, key_value_pairs: &[(String, String)]) -> String {
+            let mut result = String::new();
+            let mut current = string.to_string();
+
+            while !current.is_empty() {
+                let mut found = false;
+
+                for (k, v) in key_value_pairs {
+                    if current.starts_with(&format!("${{{}}}", k)) {
+                        result.push_str(v);
+                        current = current.split_at(k.len() + 3).1.to_string();
+                        found = true;
+
+                        break;
+                    }
+                }
+
+                if !found {
+                    result.push(current.chars().next().unwrap());
+                    current.remove(0);
+                }
+            }
+
+            result
+        }
+        match (v1.expr_instance.unwrap(), v2.expr_instance.unwrap()) {
+            (ExprInstance::GString(lhs), ExprInstance::EMapBody(emap)) => {
+                let rhs = ParMapTypeMapper::emap_to_par_map(emap).ps;
+                if !lhs.is_empty() || !rhs.is_empty() {
+                    let key_value_pairs = rhs
+                        .clone()
+                        .into_iter()
+                        .map(|(k, v)| {
+                            let key_expr = eval_single(&k)?;
+                            let value_expr = eval_single(&v)?;
+                            let result = eval_to_string_pair(key_expr, value_expr)?;
+                            Ok(result)
+                        })
+                        .collect::<Result<Vec<_>, InterpreterError>>()?;
+
+                    self.metering
+                        .reserve_incremental_primitive(interpolate_cost(
+                            lhs.len() as i64,
+                            rhs.length() as i64,
+                        ))?;
+
+                    Ok(Expr {
+                        expr_instance: Some(ExprInstance::GString(interpolate(
+                            &lhs,
+                            &key_value_pairs,
+                        ))),
+                    })
+                } else {
+                    Ok(Expr {
+                        expr_instance: Some(ExprInstance::GString(lhs)),
+                    })
+                }
+            }
+
+            (ExprInstance::GString(_), other) => {
+                Err(InterpreterError::OperatorExpectedError {
+                    op: "%%".to_string(),
+                    expected: String::from("Map"),
+                    other_type: get_type(other),
+                })
+            }
+
+            (other, _) => Err(InterpreterError::OperatorNotDefined {
+                op: String::from("%%"),
+                other_type: get_type(other),
+            }),
+        }
+    }
+
+    // EPlusPlus (++). op_call_cost PRE. Map/Set union sub-arms re-eval via `eval_single`.
+    fn combine_plus_plus<F: Fn(&Par) -> Result<Expr, InterpreterError>>(
+        &self, v1: Expr, v2: Expr, env: &Env<Par>, eval_single: F,
+    ) -> Result<Expr, InterpreterError> {
+        match (v1.expr_instance.unwrap(), v2.expr_instance.unwrap()) {
+            (ExprInstance::GString(lhs), ExprInstance::GString(rhs)) => {
+                self.metering
+                    .reserve_incremental_primitive(string_append_cost(
+                        lhs.len() as i64,
+                        rhs.len() as i64,
+                    ))?;
+                Ok(Expr {
+                    expr_instance: Some(ExprInstance::GString(lhs + &rhs)),
+                })
+            }
+
+            (ExprInstance::GByteArray(lhs), ExprInstance::GByteArray(rhs)) => {
+                self.metering
+                    .reserve_incremental_primitive(byte_array_append_cost(
+                        lhs.clone(),
+                    ))?;
+                Ok(Expr {
+                    expr_instance: Some(ExprInstance::GByteArray(
+                        lhs.into_iter().chain(rhs.into_iter()).collect(),
+                    )),
+                })
+            }
+
+            (ExprInstance::EListBody(lhs), ExprInstance::EListBody(rhs)) => {
+                self.metering
+                    .reserve_incremental_primitive(list_append_cost(lhs.clone().ps))?;
+                Ok(Expr {
+                    expr_instance: Some(ExprInstance::EListBody(EList {
+                        ps: lhs.ps.into_iter().chain(rhs.ps.into_iter()).collect(),
+                        locally_free: union(lhs.locally_free, rhs.locally_free),
+                        connective_used: lhs.connective_used || rhs.connective_used,
+                        remainder: None,
+                    })),
+                })
+            }
+
+            (ExprInstance::EMapBody(lhs), ExprInstance::EMapBody(rhs)) => {
+                let result_par = self.union_method().apply(
+                    Par::default().with_exprs(vec![Expr {
+                        expr_instance: Some(ExprInstance::EMapBody(lhs)),
+                    }]),
+                    vec![Par::default().with_exprs(vec![Expr {
+                        expr_instance: Some(ExprInstance::EMapBody(rhs)),
+                    }])],
+                    env,
+                )?;
+                let result_expr = eval_single(&result_par)?;
+                Ok(result_expr)
+            }
+
+            (ExprInstance::ESetBody(lhs), ExprInstance::ESetBody(rhs)) => {
+                let result_par = self.union_method().apply(
+                    Par::default().with_exprs(vec![Expr {
+                        expr_instance: Some(ExprInstance::ESetBody(lhs)),
+                    }]),
+                    vec![Par::default().with_exprs(vec![Expr {
+                        expr_instance: Some(ExprInstance::ESetBody(rhs)),
+                    }])],
+                    env,
+                )?;
+                let result_expr = eval_single(&result_par)?;
+                Ok(result_expr)
+            }
+
+            (ExprInstance::GString(_), other) => {
+                Err(InterpreterError::OperatorExpectedError {
+                    op: "++".to_string(),
+                    expected: String::from("String"),
+                    other_type: get_type(other),
+                })
+            }
+
+            (ExprInstance::EListBody(_), other) => {
+                Err(InterpreterError::OperatorExpectedError {
+                    op: "++".to_string(),
+                    expected: String::from("List"),
+                    other_type: get_type(other),
+                })
+            }
+
+            (ExprInstance::EMapBody(_), other) => {
+                Err(InterpreterError::OperatorExpectedError {
+                    op: "++".to_string(),
+                    expected: String::from("Map"),
+                    other_type: get_type(other),
+                })
+            }
+
+            (ExprInstance::ESetBody(_), other) => {
+                Err(InterpreterError::OperatorExpectedError {
+                    op: "++".to_string(),
+                    expected: String::from("Set"),
+                    other_type: get_type(other),
+                })
+            }
+
+            (other, _) => Err(InterpreterError::OperatorNotDefined {
+                op: String::from("++"),
+                other_type: get_type(other),
+            }),
+        }
+    }
+
+    // EMinusMinus (--). op_call_cost PRE. Set diff sub-arm re-evals via `eval_single`.
+    fn combine_minus_minus<F: Fn(&Par) -> Result<Expr, InterpreterError>>(
+        &self, v1: Expr, v2: Expr, env: &Env<Par>, eval_single: F,
+    ) -> Result<Expr, InterpreterError> {
+        match (v1.expr_instance.unwrap(), v2.expr_instance.unwrap()) {
+            (ExprInstance::ESetBody(lhs), ExprInstance::ESetBody(rhs)) => {
+                let result_par = self.diff_method().apply(
+                    Par::default().with_exprs(vec![Expr {
+                        expr_instance: Some(ExprInstance::ESetBody(lhs)),
+                    }]),
+                    vec![Par::default().with_exprs(vec![Expr {
+                        expr_instance: Some(ExprInstance::ESetBody(rhs)),
+                    }])],
+                    env,
+                )?;
+                let result_expr = eval_single(&result_par)?;
+                Ok(result_expr)
+            }
+
+            (ExprInstance::ESetBody(_), other) => {
+                Err(InterpreterError::OperatorExpectedError {
+                    op: "--".to_string(),
+                    expected: String::from("Set"),
+                    other_type: get_type(other),
+                })
+            }
+
+            (other, _) => Err(InterpreterError::OperatorNotDefined {
+                op: String::from("--"),
+                other_type: get_type(other),
+            }),
+        }
+    }
+
+    // EList. evaled_ps already `eval_expr`'d (owned -> no p.clone()).
+    fn combine_elist(&self, evaled_ps: Vec<Par>, e1: &EList) -> Result<Expr, InterpreterError> {
+        let updated_ps: Vec<Par> = evaled_ps
+            .into_iter()
+            .map(|p| self.update_locally_free_par(p))
+            .collect();
+
+        Ok(Expr {
+            expr_instance: Some(ExprInstance::EListBody(
+                self.update_locally_free_elist(EList {
+                    ps: updated_ps,
+                    locally_free: e1.locally_free.clone(),
+                    connective_used: e1.connective_used,
+                    remainder: None,
+                }),
+            )),
+        })
+    }
+
+    // ETuple.
+    fn combine_etuple(&self, evaled_ps: Vec<Par>, e1: &ETuple) -> Result<Expr, InterpreterError> {
+        let updated_ps: Vec<Par> = evaled_ps
+            .into_iter()
+            .map(|p| self.update_locally_free_par(p))
+            .collect();
+
+        Ok(Expr {
+            expr_instance: Some(ExprInstance::ETupleBody(
+                self.update_locally_free_etuple(ETuple {
+                    ps: updated_ps,
+                    locally_free: e1.locally_free.clone(),
+                    connective_used: e1.connective_used,
+                }),
+            )),
+        })
+    }
+
+    // EPathmap.
+    fn combine_epathmap(&self, evaled_ps: Vec<Par>, e1: &EPathMap) -> Result<Expr, InterpreterError> {
+        let updated_ps: Vec<Par> = evaled_ps
+            .into_iter()
+            .map(|p| self.update_locally_free_par(p))
+            .collect();
+
+        let rebuilt = EPathMap::new(
+            updated_ps,
+            e1.locally_free.clone(),
+            e1.connective_used,
+            None,
+        );
+        // EPathMap wire: a GROUND eval result canonicalizes to trie
+        // order (a PathMap zipper walk, NO sort) so runtime and
+        // normalization agree — the same map, however constructed,
+        // compares structurally-equal (COMM fires order-insensitively)
+        // and hashes to one canonical preimage. A non-ground result
+        // is returned unchanged.
+        Ok(Expr {
+            expr_instance: Some(ExprInstance::EPathmapBody(
+                models::rust::pathmap_crate_type_mapper::canonicalize_ground_epathmap(
+                    &rebuilt,
+                ),
+            )),
+        })
+    }
+
+    // ESet. SORTED owned elements evaluated via `eval_expr` closure.
+    fn combine_eset<F: Fn(&Par) -> Result<Par, InterpreterError>>(
+        &self, eset: &ESet, eval_expr: F,
+    ) -> Result<Expr, InterpreterError> {
+        let set = ParSetTypeMapper::eset_to_par_set(eset.clone());
+        let evaled_ps = set
+            .ps
+            .sorted_pars
+            .iter()
+            .map(|p| eval_expr(p))
+            .collect::<Result<Vec<_>, InterpreterError>>()?;
+
+        let updated_ps: Vec<Par> = evaled_ps
+            .into_iter()
+            .map(|p| self.update_locally_free_par(p))
+            .collect();
+
+        let mut cloned_set = set.clone();
+        cloned_set.ps = SortedParHashSet::create_from_vec(updated_ps);
+        Ok(Expr {
+            expr_instance: Some(ExprInstance::ESetBody(
+                ParSetTypeMapper::par_set_to_eset(cloned_set),
+            )),
+        })
+    }
+
+    // EMap. SORTED owned key/value pairs via `eval_expr` closure (no update_locally_free_par).
+    fn combine_emap<F: Fn(&Par) -> Result<Par, InterpreterError>>(
+        &self, emap: &EMap, eval_expr: F,
+    ) -> Result<Expr, InterpreterError> {
+        let map = ParMapTypeMapper::emap_to_par_map(emap.clone());
+        let evaled_ps = map
+            .ps
+            .clone()
+            .into_iter()
+            .map(|(k, v)| {
+                let e_key = eval_expr(&k)?;
+                let e_value = eval_expr(&v)?;
+                Ok((e_key, e_value))
+            })
+            .collect::<Result<Vec<_>, InterpreterError>>()?;
+
+        let mut cloned_map = map.clone();
+        cloned_map.ps = SortedParMap::create_from_vec(evaled_ps);
+        Ok(Expr {
+            expr_instance: Some(ExprInstance::EMapBody(
+                ParMapTypeMapper::par_map_to_emap(cloned_map),
+            )),
+        })
+    }
+
+    // EMethod (eval_expr_to_expr site): method_table lookup (Debug error) + apply. The
+    // re-eval of the result via `eval_single_expr` is done by the caller (combine / twin).
+    fn apply_method_expr(&self, emethod: &EMethod, target_val: Par, arg_vals: Vec<Par>, env: &Env<Par>) -> Result<Par, InterpreterError> {
+        let result_par = match self.method_table().get(&emethod.method_name) {
+            Some(method_function) => method_function.apply(target_val, arg_vals, env)?,
+            None => {
+                return Err(InterpreterError::ReduceError(format!(
+                    "Unimplemented method: {:?}",
+                    emethod.method_name
+                )));
+            }
+        };
+        Ok(result_par)
+    }
+
+
+    // =======================================================================
+    // RECURSIVE TWIN — the oracle for the differential harness (`differential`
+    // module). Each function is a faithful recursive dispatcher over the SAME
+    // shared `combine_*` helpers the trampoline uses, so a byte-identical
+    // result + charge trace between the two proves the trampoline's descend/
+    // combine WIRING (the only new logic). cfg(test): excluded from production.
+    // =======================================================================
+    #[cfg(test)]
+    pub(crate) fn eval_expr_recursive(&self, par: &Par, env: &Env<Par>) -> Result<Par, InterpreterError> {
+        let evaled_exprs = par
+            .exprs
+            .iter()
+            .map(|expr| self.eval_expr_to_par_recursive(expr, env))
+            .collect::<Result<Vec<_>, InterpreterError>>()?;
+        let result = evaled_exprs
+            .into_iter()
+            .fold(par.with_exprs(Vec::new()), |acc, expr| concatenate_pars(acc, expr));
+        Ok(result)
+    }
+
+    #[cfg(test)]
+    fn eval_expr_to_par_recursive(&self, expr: &Expr, env: &Env<Par>) -> Result<Par, InterpreterError> {
         if let Some(ExprInstance::EMethodBody(emethod)) = &expr.expr_instance {
             if let Some(fused) = self.try_eval_fused_method_chain(emethod, env)? {
                 return Ok(fused);
             }
         }
-
-        // Leg-1: borrow `expr.expr_instance` instead of deep-cloning the whole
-        // (possibly deeply-nested) AST. The clone was pure waste in the default
-        // arm below (which re-borrows `expr`), and only the shallow inner field
-        // is consumed by the EVar/EMethod arms. The `None` case reproduces
-        // `unwrap_option_safe(expr.expr_instance.clone())`'s error byte-for-byte
-        // (same variant, same `{:?}`-of-`type_name::<ExprInstance>()` payload).
         let expr_instance = match &expr.expr_instance {
             Some(ei) => ei,
             None => {
@@ -1570,19 +3618,18 @@ impl DebruijnInterpreter {
         match expr_instance {
             ExprInstance::EVarBody(evar) => {
                 let p = self.eval_var(&unwrap_option_safe(evar.v.clone())?, env)?;
-                let evaled_p = self.eval_expr(&p, env)?;
+                let evaled_p = self.eval_expr_recursive(&p, env)?;
                 Ok(evaled_p)
             }
             ExprInstance::EMethodBody(emethod) => {
                 self.metering.reserve_primitive(method_call_cost())?;
                 let evaled_target =
-                    self.eval_expr(&unwrap_option_safe(emethod.target.clone())?, env)?;
+                    self.eval_expr_recursive(&unwrap_option_safe(emethod.target.clone())?, env)?;
                 let evaled_args: Vec<Par> = emethod
                     .arguments
                     .iter()
-                    .map(|arg| self.eval_expr(arg, env))
+                    .map(|arg| self.eval_expr_recursive(arg, env))
                     .collect::<Result<Vec<_>, InterpreterError>>()?;
-
                 let result_par = match self.method_table().get(&emethod.method_name) {
                     Some(_method) => _method.apply(evaled_target, evaled_args, env)?,
                     None => {
@@ -1592,1218 +3639,172 @@ impl DebruijnInterpreter {
                         )));
                     }
                 };
-
                 Ok(result_par)
             }
-            _ => Ok(Par::default().with_exprs(vec![self.eval_expr_to_expr(expr, env)?])),
+            _ => Ok(Par::default().with_exprs(vec![self.eval_expr_to_expr_recursive(expr, env)?])),
         }
     }
 
-    fn eval_expr_to_expr(&self, expr: &Expr, env: &Env<Par>) -> Result<Expr, InterpreterError> {
-        let relop = |p1: &Par,
-                     p2: &Par,
-                     relopb: fn(bool, bool) -> bool,
-                     relopi: fn(i64, i64) -> bool,
-                     relops: fn(String, String) -> bool| {
-            let v1 = self.eval_single_expr(p1, env)?;
-            let v2 = self.eval_single_expr(p2, env)?;
-
-            match (
-                v1.expr_instance.clone().unwrap(),
-                v2.expr_instance.clone().unwrap(),
-            ) {
-                (ExprInstance::GBool(b1), ExprInstance::GBool(b2)) => {
-                    self.metering.reserve_primitive(comparison_cost())?;
-                    Ok(Expr {
-                        expr_instance: Some(ExprInstance::GBool(relopb(b1, b2))),
-                    })
-                }
-
-                (ExprInstance::GInt(i1), ExprInstance::GInt(i2)) => {
-                    self.metering.reserve_primitive(comparison_cost())?;
-                    Ok(Expr {
-                        expr_instance: Some(ExprInstance::GBool(relopi(i1, i2))),
-                    })
-                }
-
-                (ExprInstance::GString(s1), ExprInstance::GString(s2)) => {
-                    self.metering.reserve_primitive(comparison_cost())?;
-                    Ok(Expr {
-                        expr_instance: Some(ExprInstance::GBool(relops(s1, s2))),
-                    })
-                }
-
-                (ExprInstance::GDouble(d1), ExprInstance::GDouble(d2)) => {
-                    self.metering.reserve_primitive(comparison_cost())?;
-                    let f1 = f64::from_bits(d1);
-                    let f2 = f64::from_bits(d2);
-                    if f1.is_nan() || f2.is_nan() {
-                        Ok(Expr {
-                            expr_instance: Some(ExprInstance::GBool(false)),
-                        })
-                    } else {
-                        Ok(Expr {
-                            expr_instance: Some(ExprInstance::GBool(relopi(
-                                f1.partial_cmp(&f2).map_or(0, |o| o as i64),
-                                0,
-                            ))),
-                        })
-                    }
-                }
-
-                (ExprInstance::GBigInt(b1), ExprInstance::GBigInt(b2)) => {
-                    self.metering
-                        .reserve_primitive(bigint_comparison_cost(b1.len(), b2.len()))?;
-                    let cmp = compare_twos_complement_bytes(&b1, &b2);
-                    Ok(Expr {
-                        expr_instance: Some(ExprInstance::GBool(relopi(cmp as i64, 0))),
-                    })
-                }
-
-                (ExprInstance::GBigRat(r1), ExprInstance::GBigRat(r2)) => {
-                    self.metering.reserve_primitive(bigrat_comparison_cost(
-                        r1.numerator.len(),
-                        r1.denominator.len(),
-                        r2.numerator.len(),
-                        r2.denominator.len(),
-                    ))?;
-                    let cmp = compare_big_rationals(&r1, &r2);
-                    Ok(Expr {
-                        expr_instance: Some(ExprInstance::GBool(relopi(cmp as i64, 0))),
-                    })
-                }
-
-                (ExprInstance::GFixedPoint(fp1), ExprInstance::GFixedPoint(fp2)) => {
-                    self.metering.reserve_primitive(bigint_comparison_cost(
-                        fp1.unscaled.len(),
-                        fp2.unscaled.len(),
-                    ))?;
-                    let cmp = compare_fixed_points(&fp1, &fp2)?;
-                    Ok(Expr {
-                        expr_instance: Some(ExprInstance::GBool(relopi(cmp as i64, 0))),
-                    })
-                }
-
-                _ => Err(InterpreterError::ReduceError(format!(
-                    "Unexpected compare: {:?} vs. {:?}",
-                    v1, v2
-                ))),
-            }
-        };
-
+    #[cfg(test)]
+    fn eval_expr_to_expr_recursive(&self, expr: &Expr, env: &Env<Par>) -> Result<Expr, InterpreterError> {
         match &expr.expr_instance {
             Some(expr_instance) => match expr_instance {
-                ExprInstance::GBool(x) => Ok(Expr {
-                    expr_instance: Some(ExprInstance::GBool(*x)),
-                }),
-
-                ExprInstance::GInt(x) => Ok(Expr {
-                    expr_instance: Some(ExprInstance::GInt(*x)),
-                }),
-
-                ExprInstance::GString(x) => Ok(Expr {
-                    expr_instance: Some(ExprInstance::GString(x.clone())),
-                }),
-
-                ExprInstance::GUri(x) => Ok(Expr {
-                    expr_instance: Some(ExprInstance::GUri(x.clone())),
-                }),
-
-                ExprInstance::GByteArray(x) => Ok(Expr {
-                    expr_instance: Some(ExprInstance::GByteArray(x.clone())),
-                }),
-
-                ExprInstance::GDouble(x) => Ok(Expr {
-                    expr_instance: Some(ExprInstance::GDouble(*x)),
-                }),
-
-                ExprInstance::GBigInt(x) => Ok(Expr {
-                    expr_instance: Some(ExprInstance::GBigInt(x.clone())),
-                }),
-
-                ExprInstance::GBigRat(x) => Ok(Expr {
-                    expr_instance: Some(ExprInstance::GBigRat(x.clone())),
-                }),
-
-                ExprInstance::GFixedPoint(x) => Ok(Expr {
-                    expr_instance: Some(ExprInstance::GFixedPoint(x.clone())),
-                }),
+                ExprInstance::GBool(x) => Ok(Expr { expr_instance: Some(ExprInstance::GBool(*x)) }),
+                ExprInstance::GInt(x) => Ok(Expr { expr_instance: Some(ExprInstance::GInt(*x)) }),
+                ExprInstance::GString(x) => Ok(Expr { expr_instance: Some(ExprInstance::GString(x.clone())) }),
+                ExprInstance::GUri(x) => Ok(Expr { expr_instance: Some(ExprInstance::GUri(x.clone())) }),
+                ExprInstance::GByteArray(x) => Ok(Expr { expr_instance: Some(ExprInstance::GByteArray(x.clone())) }),
+                ExprInstance::GDouble(x) => Ok(Expr { expr_instance: Some(ExprInstance::GDouble(*x)) }),
+                ExprInstance::GBigInt(x) => Ok(Expr { expr_instance: Some(ExprInstance::GBigInt(x.clone())) }),
+                ExprInstance::GBigRat(x) => Ok(Expr { expr_instance: Some(ExprInstance::GBigRat(x.clone())) }),
+                ExprInstance::GFixedPoint(x) => Ok(Expr { expr_instance: Some(ExprInstance::GFixedPoint(x.clone())) }),
+                ExprInstance::EZipperBody(zipper) => Ok(Expr { expr_instance: Some(ExprInstance::EZipperBody(zipper.clone())) }),
 
                 ExprInstance::ENotBody(enot) => {
-                    let b = self.eval_to_bool(enot.p.as_ref().unwrap(), env)?;
-                    Ok(Expr {
-                        expr_instance: Some(ExprInstance::GBool(!b)),
-                    })
+                    let b = self.eval_to_bool_recursive(enot.p.as_ref().unwrap(), env)?;
+                    Ok(Expr { expr_instance: Some(ExprInstance::GBool(!b)) })
                 }
-
                 ExprInstance::ENegBody(eneg) => {
-                    let v = self.eval_single_expr(eneg.p.as_ref().unwrap(), env)?;
-                    match v.expr_instance.unwrap() {
-                        ExprInstance::GInt(i) => {
-                            let result = i.checked_neg().ok_or_else(|| {
-                                InterpreterError::ReduceError(
-                                    "Arithmetic overflow in negation".to_string(),
-                                )
-                            })?;
-                            Ok(Expr {
-                                expr_instance: Some(ExprInstance::GInt(result)),
-                            })
-                        }
-                        ExprInstance::GDouble(bits) => {
-                            let f = f64::from_bits(bits);
-                            Ok(Expr {
-                                expr_instance: Some(ExprInstance::GDouble((-f).to_bits())),
-                            })
-                        }
-                        ExprInstance::GBigInt(bytes) => {
-                            self.metering
-                                .reserve_primitive(bigint_negation_cost(bytes.len()))?;
-                            make_bigint_expr(negate_twos_complement(&bytes), "negation")
-                        }
-                        ExprInstance::GBigRat(rat) => {
-                            self.metering
-                                .reserve_primitive(bigrat_negation_cost(rat.numerator.len()))?;
-                            make_bigrat_expr(
-                                models::rhoapi::GBigRational {
-                                    numerator: negate_twos_complement(&rat.numerator),
-                                    denominator: rat.denominator,
-                                },
-                                "negation",
-                            )
-                        }
-                        ExprInstance::GFixedPoint(fp) => {
-                            self.metering
-                                .reserve_primitive(bigint_negation_cost(fp.unscaled.len()))?;
-                            make_fixedpoint_expr(
-                                models::rhoapi::GFixedPoint {
-                                    unscaled: negate_twos_complement(&fp.unscaled),
-                                    scale: fp.scale,
-                                },
-                                "negation",
-                            )
-                        }
-                        other => Err(InterpreterError::OperatorNotDefined {
-                            op: "neg".to_string(),
-                            other_type: get_type(other),
-                        }),
-                    }
+                    let v = self.eval_single_expr_recursive(eneg.p.as_ref().unwrap(), env)?;
+                    self.combine_neg(v)
                 }
-
                 ExprInstance::EMultBody(EMult { p1, p2 }) => {
-                    let v1 = self.eval_single_expr(p1.as_ref().unwrap(), env)?;
-                    let v2 = self.eval_single_expr(p2.as_ref().unwrap(), env)?;
-
-                    match (v1.expr_instance.unwrap(), v2.expr_instance.unwrap()) {
-                        (ExprInstance::GInt(lhs), ExprInstance::GInt(rhs)) => {
-                            self.metering.reserve_primitive(multiplication_cost())?;
-                            let result = lhs.checked_mul(rhs).ok_or_else(|| {
-                                InterpreterError::ReduceError(
-                                    "Arithmetic overflow in multiplication".to_string(),
-                                )
-                            })?;
-                            Ok(Expr {
-                                expr_instance: Some(ExprInstance::GInt(result)),
-                            })
-                        }
-                        (ExprInstance::GDouble(d1), ExprInstance::GDouble(d2)) => {
-                            self.metering.reserve_primitive(multiplication_cost())?;
-                            let result = f64::from_bits(d1) * f64::from_bits(d2);
-                            Ok(Expr {
-                                expr_instance: Some(ExprInstance::GDouble(result.to_bits())),
-                            })
-                        }
-                        (ExprInstance::GBigInt(b1), ExprInstance::GBigInt(b2)) => {
-                            self.metering.reserve_primitive(bigint_multiplication_cost(
-                                b1.len(),
-                                b2.len(),
-                            ))?;
-                            make_bigint_expr(multiply_twos_complement(&b1, &b2), "multiplication")
-                        }
-                        (ExprInstance::GBigRat(r1), ExprInstance::GBigRat(r2)) => {
-                            self.metering.reserve_primitive(bigrat_multiplication_cost(
-                                r1.numerator.len(),
-                                r1.denominator.len(),
-                                r2.numerator.len(),
-                                r2.denominator.len(),
-                            ))?;
-                            make_bigrat_expr(multiply_big_rationals(&r1, &r2), "multiplication")
-                        }
-                        (ExprInstance::GFixedPoint(fp1), ExprInstance::GFixedPoint(fp2)) => {
-                            if fp1.scale != fp2.scale {
-                                return Err(InterpreterError::OperatorExpectedError {
-                                    op: "*".to_string(),
-                                    expected: format!("FixedPoint(p{})", fp1.scale),
-                                    other_type: format!("FixedPoint(p{})", fp2.scale),
-                                });
-                            }
-                            self.metering.reserve_primitive(bigint_multiplication_cost(
-                                fp1.unscaled.len(),
-                                fp2.unscaled.len(),
-                            ))?;
-                            make_fixedpoint_expr(
-                                multiply_fixed_points(&fp1, &fp2),
-                                "multiplication",
-                            )
-                        }
-                        (lhs, rhs) => {
-                            let lhs_type = get_type(lhs);
-                            let rhs_type = get_type(rhs);
-                            if lhs_type == rhs_type {
-                                Err(InterpreterError::OperatorNotDefined {
-                                    op: "*".to_string(),
-                                    other_type: lhs_type,
-                                })
-                            } else {
-                                Err(InterpreterError::OperatorExpectedError {
-                                    op: "*".to_string(),
-                                    expected: lhs_type,
-                                    other_type: rhs_type,
-                                })
-                            }
-                        }
-                    }
+                    let v1 = self.eval_single_expr_recursive(p1.as_ref().unwrap(), env)?;
+                    let v2 = self.eval_single_expr_recursive(p2.as_ref().unwrap(), env)?;
+                    self.combine_mult(v1, v2)
                 }
-
                 ExprInstance::EDivBody(EDiv { p1, p2 }) => {
-                    let v1 = self.eval_single_expr(p1.as_ref().unwrap(), env)?;
-                    let v2 = self.eval_single_expr(p2.as_ref().unwrap(), env)?;
-
-                    match (v1.expr_instance.unwrap(), v2.expr_instance.unwrap()) {
-                        (ExprInstance::GInt(lhs), ExprInstance::GInt(rhs)) => {
-                            self.metering.reserve_primitive(division_cost())?;
-                            if rhs == 0 {
-                                return Err(InterpreterError::ReduceError(
-                                    "Division by zero".to_string(),
-                                ));
-                            }
-                            if lhs == i64::MIN && rhs == -1 {
-                                return Err(InterpreterError::ReduceError(
-                                    "Arithmetic overflow in division".to_string(),
-                                ));
-                            }
-                            Ok(Expr {
-                                expr_instance: Some(ExprInstance::GInt(lhs / rhs)),
-                            })
-                        }
-                        (ExprInstance::GDouble(d1), ExprInstance::GDouble(d2)) => {
-                            self.metering.reserve_primitive(division_cost())?;
-                            let result = f64::from_bits(d1) / f64::from_bits(d2);
-                            Ok(Expr {
-                                expr_instance: Some(ExprInstance::GDouble(result.to_bits())),
-                            })
-                        }
-                        (ExprInstance::GBigInt(b1), ExprInstance::GBigInt(b2)) => {
-                            self.metering
-                                .reserve_primitive(bigint_division_cost(b1.len(), b2.len()))?;
-                            if is_zero_twos_complement(&b2) {
-                                return Err(InterpreterError::ReduceError(
-                                    "Division by zero".to_string(),
-                                ));
-                            }
-                            make_bigint_expr(divide_twos_complement(&b1, &b2), "division")
-                        }
-                        (ExprInstance::GBigRat(r1), ExprInstance::GBigRat(r2)) => {
-                            self.metering.reserve_primitive(bigrat_division_cost(
-                                r1.numerator.len(),
-                                r1.denominator.len(),
-                                r2.numerator.len(),
-                                r2.denominator.len(),
-                            ))?;
-                            if is_zero_twos_complement(&r2.numerator) {
-                                return Err(InterpreterError::ReduceError(
-                                    "Division by zero".to_string(),
-                                ));
-                            }
-                            make_bigrat_expr(divide_big_rationals(&r1, &r2), "division")
-                        }
-                        (ExprInstance::GFixedPoint(fp1), ExprInstance::GFixedPoint(fp2)) => {
-                            if fp1.scale != fp2.scale {
-                                return Err(InterpreterError::OperatorExpectedError {
-                                    op: "/".to_string(),
-                                    expected: format!("FixedPoint(p{})", fp1.scale),
-                                    other_type: format!("FixedPoint(p{})", fp2.scale),
-                                });
-                            }
-                            self.metering.reserve_primitive(bigint_division_cost(
-                                fp1.unscaled.len(),
-                                fp2.unscaled.len(),
-                            ))?;
-                            if is_zero_twos_complement(&fp2.unscaled) {
-                                return Err(InterpreterError::ReduceError(
-                                    "Division by zero".to_string(),
-                                ));
-                            }
-                            make_fixedpoint_expr(divide_fixed_points(&fp1, &fp2), "division")
-                        }
-                        (lhs, rhs) => {
-                            let lhs_type = get_type(lhs);
-                            let rhs_type = get_type(rhs);
-                            if lhs_type == rhs_type {
-                                Err(InterpreterError::OperatorNotDefined {
-                                    op: "/".to_string(),
-                                    other_type: lhs_type,
-                                })
-                            } else {
-                                Err(InterpreterError::OperatorExpectedError {
-                                    op: "/".to_string(),
-                                    expected: lhs_type,
-                                    other_type: rhs_type,
-                                })
-                            }
-                        }
-                    }
+                    let v1 = self.eval_single_expr_recursive(p1.as_ref().unwrap(), env)?;
+                    let v2 = self.eval_single_expr_recursive(p2.as_ref().unwrap(), env)?;
+                    self.combine_div(v1, v2)
                 }
-
                 ExprInstance::EModBody(EMod { p1, p2 }) => {
-                    let v1 = self.eval_single_expr(p1.as_ref().unwrap(), env)?;
-                    let v2 = self.eval_single_expr(p2.as_ref().unwrap(), env)?;
-
-                    match (v1.expr_instance.unwrap(), v2.expr_instance.unwrap()) {
-                        (ExprInstance::GInt(lhs), ExprInstance::GInt(rhs)) => {
-                            self.metering.reserve_primitive(modulo_cost())?;
-                            if rhs == 0 {
-                                return Err(InterpreterError::ReduceError(
-                                    "Modulo by zero".to_string(),
-                                ));
-                            }
-                            if lhs == i64::MIN && rhs == -1 {
-                                return Err(InterpreterError::ReduceError(
-                                    "Arithmetic overflow in modulo".to_string(),
-                                ));
-                            }
-                            Ok(Expr {
-                                expr_instance: Some(ExprInstance::GInt(lhs % rhs)),
-                            })
-                        }
-                        (ExprInstance::GDouble(_), ExprInstance::GDouble(_)) => {
-                            Err(InterpreterError::ReduceError(
-                                "Modulus not defined on floating point".to_string(),
-                            ))
-                        }
-                        (ExprInstance::GBigInt(b1), ExprInstance::GBigInt(b2)) => {
-                            self.metering
-                                .reserve_primitive(bigint_modulo_cost(b1.len(), b2.len()))?;
-                            if is_zero_twos_complement(&b2) {
-                                return Err(InterpreterError::ReduceError(
-                                    "Modulo by zero".to_string(),
-                                ));
-                            }
-                            make_bigint_expr(modulo_twos_complement(&b1, &b2), "%")
-                        }
-                        (ExprInstance::GBigRat(_), ExprInstance::GBigRat(r2)) => {
-                            if is_zero_twos_complement(&r2.numerator) {
-                                return Err(InterpreterError::ReduceError(
-                                    "Modulo by zero".to_string(),
-                                ));
-                            }
-                            Ok(Expr {
-                                expr_instance: Some(ExprInstance::GBigRat(
-                                    models::rhoapi::GBigRational {
-                                        numerator: vec![0],
-                                        denominator: vec![1],
-                                    },
-                                )),
-                            })
-                        }
-                        (ExprInstance::GFixedPoint(fp1), ExprInstance::GFixedPoint(fp2)) => {
-                            if fp1.scale != fp2.scale {
-                                return Err(InterpreterError::OperatorExpectedError {
-                                    op: "%".to_string(),
-                                    expected: format!("FixedPoint(p{})", fp1.scale),
-                                    other_type: format!("FixedPoint(p{})", fp2.scale),
-                                });
-                            }
-                            self.metering.reserve_primitive(bigint_modulo_cost(
-                                fp1.unscaled.len(),
-                                fp2.unscaled.len(),
-                            ))?;
-                            if is_zero_twos_complement(&fp2.unscaled) {
-                                return Err(InterpreterError::ReduceError(
-                                    "Modulo by zero".to_string(),
-                                ));
-                            }
-                            let ua = bytes_to_bigint(&fp1.unscaled);
-                            let ub = bytes_to_bigint(&fp2.unscaled);
-                            let remainder = &ua % &ub;
-                            make_fixedpoint_expr(
-                                models::rhoapi::GFixedPoint {
-                                    unscaled: bigint_to_bytes(&remainder),
-                                    scale: fp1.scale,
-                                },
-                                "%",
-                            )
-                        }
-                        (lhs, rhs) => {
-                            let lhs_type = get_type(lhs);
-                            let rhs_type = get_type(rhs);
-                            if lhs_type == rhs_type {
-                                Err(InterpreterError::OperatorNotDefined {
-                                    op: "%".to_string(),
-                                    other_type: lhs_type,
-                                })
-                            } else {
-                                Err(InterpreterError::OperatorExpectedError {
-                                    op: "%".to_string(),
-                                    expected: lhs_type,
-                                    other_type: rhs_type,
-                                })
-                            }
-                        }
-                    }
+                    let v1 = self.eval_single_expr_recursive(p1.as_ref().unwrap(), env)?;
+                    let v2 = self.eval_single_expr_recursive(p2.as_ref().unwrap(), env)?;
+                    self.combine_mod(v1, v2)
                 }
-
                 ExprInstance::EPlusBody(EPlus { p1, p2 }) => {
-                    let v1 = self.eval_single_expr(p1.as_ref().unwrap(), env)?;
-                    let v2 = self.eval_single_expr(p2.as_ref().unwrap(), env)?;
-
-                    match (v1.expr_instance.unwrap(), v2.expr_instance.unwrap()) {
-                        (ExprInstance::GInt(lhs), ExprInstance::GInt(rhs)) => {
-                            self.metering.reserve_primitive(sum_cost())?;
-                            Ok(Expr {
-                                expr_instance: Some(ExprInstance::GInt(lhs.wrapping_add(rhs))),
-                            })
-                        }
-
-                        (ExprInstance::GDouble(d1), ExprInstance::GDouble(d2)) => {
-                            self.metering.reserve_primitive(sum_cost())?;
-                            let result = f64::from_bits(d1) + f64::from_bits(d2);
-                            Ok(Expr {
-                                expr_instance: Some(ExprInstance::GDouble(result.to_bits())),
-                            })
-                        }
-
-                        (ExprInstance::GBigInt(b1), ExprInstance::GBigInt(b2)) => {
-                            self.metering
-                                .reserve_primitive(bigint_sum_cost(b1.len(), b2.len()))?;
-                            make_bigint_expr(add_twos_complement(&b1, &b2), "+")
-                        }
-
-                        (ExprInstance::GBigRat(r1), ExprInstance::GBigRat(r2)) => {
-                            self.metering.reserve_primitive(bigrat_sum_cost(
-                                r1.numerator.len(),
-                                r1.denominator.len(),
-                                r2.numerator.len(),
-                                r2.denominator.len(),
-                            ))?;
-                            make_bigrat_expr(add_big_rationals(&r1, &r2), "+")
-                        }
-
-                        (ExprInstance::GFixedPoint(fp1), ExprInstance::GFixedPoint(fp2)) => {
-                            if fp1.scale != fp2.scale {
-                                return Err(InterpreterError::OperatorExpectedError {
-                                    op: "+".to_string(),
-                                    expected: format!("FixedPoint(p{})", fp1.scale),
-                                    other_type: format!("FixedPoint(p{})", fp2.scale),
-                                });
-                            }
-                            self.metering.reserve_primitive(bigint_sum_cost(
-                                fp1.unscaled.len(),
-                                fp2.unscaled.len(),
-                            ))?;
-                            make_fixedpoint_expr(
-                                models::rhoapi::GFixedPoint {
-                                    unscaled: add_twos_complement(&fp1.unscaled, &fp2.unscaled),
-                                    scale: fp1.scale,
-                                },
-                                "+",
-                            )
-                        }
-
-                        (ExprInstance::ESetBody(lhs), rhs) => {
-                            self.metering.reserve_primitive(op_call_cost())?;
-                            let result_par = self.add_method().apply(
-                                Par::default().with_exprs(vec![Expr {
-                                    expr_instance: Some(ExprInstance::ESetBody(lhs)),
-                                }]),
-                                vec![Par::default().with_exprs(vec![Expr {
-                                    expr_instance: Some(rhs),
-                                }])],
-                                env,
-                            )?;
-
-                            let result_expr = self.eval_single_expr(&result_par, env)?;
-                            Ok(result_expr)
-                        }
-
-                        (ExprInstance::GInt(_), other)
-                        | (ExprInstance::GDouble(_), other)
-                        | (ExprInstance::GBigInt(_), other)
-                        | (ExprInstance::GBigRat(_), other)
-                        | (ExprInstance::GFixedPoint(_), other) => {
-                            Err(InterpreterError::OperatorExpectedError {
-                                op: "+".to_string(),
-                                expected: "matching numeric types".to_string(),
-                                other_type: get_type(other),
-                            })
-                        }
-
-                        (other, _) => Err(InterpreterError::OperatorNotDefined {
-                            op: "+".to_string(),
-                            other_type: get_type(other),
-                        }),
-                    }
+                    let v1 = self.eval_single_expr_recursive(p1.as_ref().unwrap(), env)?;
+                    let v2 = self.eval_single_expr_recursive(p2.as_ref().unwrap(), env)?;
+                    self.combine_plus(v1, v2, env, |q| self.eval_single_expr_recursive(q, env))
                 }
-
                 ExprInstance::EMinusBody(EMinus { p1, p2 }) => {
-                    let v1 = self.eval_single_expr(p1.as_ref().unwrap(), env)?;
-                    let v2 = self.eval_single_expr(p2.as_ref().unwrap(), env)?;
-
-                    match (v1.expr_instance.unwrap(), v2.expr_instance.unwrap()) {
-                        (ExprInstance::GInt(lhs), ExprInstance::GInt(rhs)) => {
-                            self.metering.reserve_primitive(subtraction_cost())?;
-                            Ok(Expr {
-                                expr_instance: Some(ExprInstance::GInt(lhs.wrapping_sub(rhs))),
-                            })
-                        }
-
-                        (ExprInstance::GDouble(d1), ExprInstance::GDouble(d2)) => {
-                            self.metering.reserve_primitive(subtraction_cost())?;
-                            let result = f64::from_bits(d1) - f64::from_bits(d2);
-                            Ok(Expr {
-                                expr_instance: Some(ExprInstance::GDouble(result.to_bits())),
-                            })
-                        }
-
-                        (ExprInstance::GBigInt(b1), ExprInstance::GBigInt(b2)) => {
-                            self.metering
-                                .reserve_primitive(bigint_subtraction_cost(b1.len(), b2.len()))?;
-                            make_bigint_expr(subtract_twos_complement(&b1, &b2), "-")
-                        }
-
-                        (ExprInstance::GBigRat(r1), ExprInstance::GBigRat(r2)) => {
-                            self.metering.reserve_primitive(bigrat_subtraction_cost(
-                                r1.numerator.len(),
-                                r1.denominator.len(),
-                                r2.numerator.len(),
-                                r2.denominator.len(),
-                            ))?;
-                            make_bigrat_expr(subtract_big_rationals(&r1, &r2), "-")
-                        }
-
-                        (ExprInstance::GFixedPoint(fp1), ExprInstance::GFixedPoint(fp2)) => {
-                            if fp1.scale != fp2.scale {
-                                return Err(InterpreterError::OperatorExpectedError {
-                                    op: "-".to_string(),
-                                    expected: format!("FixedPoint(p{})", fp1.scale),
-                                    other_type: format!("FixedPoint(p{})", fp2.scale),
-                                });
-                            }
-                            self.metering.reserve_primitive(bigint_subtraction_cost(
-                                fp1.unscaled.len(),
-                                fp2.unscaled.len(),
-                            ))?;
-                            make_fixedpoint_expr(
-                                models::rhoapi::GFixedPoint {
-                                    unscaled: subtract_twos_complement(
-                                        &fp1.unscaled,
-                                        &fp2.unscaled,
-                                    ),
-                                    scale: fp1.scale,
-                                },
-                                "-",
-                            )
-                        }
-
-                        (ExprInstance::EMapBody(lhs), rhs) => {
-                            self.metering.reserve_primitive(op_call_cost())?;
-                            let result_par = self.delete_method().apply(
-                                Par::default().with_exprs(vec![Expr {
-                                    expr_instance: Some(ExprInstance::EMapBody(lhs)),
-                                }]),
-                                vec![Par::default().with_exprs(vec![Expr {
-                                    expr_instance: Some(rhs),
-                                }])],
-                                env,
-                            )?;
-
-                            let result_expr = self.eval_single_expr(&result_par, env)?;
-                            Ok(result_expr)
-                        }
-
-                        (ExprInstance::ESetBody(lhs), rhs) => {
-                            self.metering.reserve_primitive(op_call_cost())?;
-                            let result_par = self.delete_method().apply(
-                                Par::default().with_exprs(vec![Expr {
-                                    expr_instance: Some(ExprInstance::ESetBody(lhs)),
-                                }]),
-                                vec![Par::default().with_exprs(vec![Expr {
-                                    expr_instance: Some(rhs),
-                                }])],
-                                env,
-                            )?;
-
-                            let result_expr = self.eval_single_expr(&result_par, env)?;
-                            Ok(result_expr)
-                        }
-
-                        (ExprInstance::GInt(_), other)
-                        | (ExprInstance::GDouble(_), other)
-                        | (ExprInstance::GBigInt(_), other)
-                        | (ExprInstance::GBigRat(_), other)
-                        | (ExprInstance::GFixedPoint(_), other) => {
-                            Err(InterpreterError::OperatorExpectedError {
-                                op: "-".to_string(),
-                                expected: "matching numeric types".to_string(),
-                                other_type: get_type(other),
-                            })
-                        }
-
-                        (other, _) => Err(InterpreterError::OperatorNotDefined {
-                            op: "-".to_string(),
-                            other_type: get_type(other),
-                        }),
-                    }
+                    let v1 = self.eval_single_expr_recursive(p1.as_ref().unwrap(), env)?;
+                    let v2 = self.eval_single_expr_recursive(p2.as_ref().unwrap(), env)?;
+                    self.combine_minus(v1, v2, env, |q| self.eval_single_expr_recursive(q, env))
                 }
-
-                ExprInstance::ELtBody(ELt { p1, p2 }) => relop(
-                    p1.as_ref().unwrap(),
-                    p2.as_ref().unwrap(),
-                    |b1: bool, b2: bool| !b1 & b2,
-                    |i1: i64, i2: i64| i1 < i2,
-                    |s1: String, s2: String| s1 < s2,
-                ),
-
-                ExprInstance::ELteBody(ELte { p1, p2 }) => relop(
-                    p1.as_ref().unwrap(),
-                    p2.as_ref().unwrap(),
-                    |b1: bool, b2: bool| b1 <= b2,
-                    |i1: i64, i2: i64| i1 <= i2,
-                    |s1: String, s2: String| s1 <= s2,
-                ),
-
-                ExprInstance::EGtBody(EGt { p1, p2 }) => relop(
-                    p1.as_ref().unwrap(),
-                    p2.as_ref().unwrap(),
-                    |b1: bool, b2: bool| b1 & !b2,
-                    |i1: i64, i2: i64| i1 > i2,
-                    |s1: String, s2: String| s1 > s2,
-                ),
-
-                ExprInstance::EGteBody(EGte { p1, p2 }) => relop(
-                    p1.as_ref().unwrap(),
-                    p2.as_ref().unwrap(),
-                    |b1: bool, b2: bool| b1 >= b2,
-                    |i1: i64, i2: i64| i1 >= i2,
-                    |s1: String, s2: String| s1 >= s2,
-                ),
-
+                ExprInstance::ELtBody(ELt { p1, p2 }) => {
+                    let v1 = self.eval_single_expr_recursive(p1.as_ref().unwrap(), env)?;
+                    let v2 = self.eval_single_expr_recursive(p2.as_ref().unwrap(), env)?;
+                    self.combine_relop(v1, v2, |b1, b2| !b1 & b2, |i1, i2| i1 < i2, |s1, s2| s1 < s2)
+                }
+                ExprInstance::ELteBody(ELte { p1, p2 }) => {
+                    let v1 = self.eval_single_expr_recursive(p1.as_ref().unwrap(), env)?;
+                    let v2 = self.eval_single_expr_recursive(p2.as_ref().unwrap(), env)?;
+                    self.combine_relop(v1, v2, |b1, b2| b1 <= b2, |i1, i2| i1 <= i2, |s1, s2| s1 <= s2)
+                }
+                ExprInstance::EGtBody(EGt { p1, p2 }) => {
+                    let v1 = self.eval_single_expr_recursive(p1.as_ref().unwrap(), env)?;
+                    let v2 = self.eval_single_expr_recursive(p2.as_ref().unwrap(), env)?;
+                    self.combine_relop(v1, v2, |b1, b2| b1 & !b2, |i1, i2| i1 > i2, |s1, s2| s1 > s2)
+                }
+                ExprInstance::EGteBody(EGte { p1, p2 }) => {
+                    let v1 = self.eval_single_expr_recursive(p1.as_ref().unwrap(), env)?;
+                    let v2 = self.eval_single_expr_recursive(p2.as_ref().unwrap(), env)?;
+                    self.combine_relop(v1, v2, |b1, b2| b1 >= b2, |i1, i2| i1 >= i2, |s1, s2| s1 >= s2)
+                }
                 ExprInstance::EEqBody(EEq { p1, p2 }) => {
-                    let v1 = self.eval_expr(p1.as_ref().unwrap(), env)?;
-                    let v2 = self.eval_expr(p2.as_ref().unwrap(), env)?;
-                    // TODO: build an equality operator that takes in an environment. - OLD
-                    let sv1 = self.substitute.substitute_and_charge(&v1, 0, env)?;
-                    let sv2 = self.substitute.substitute_and_charge(&v2, 0, env)?;
-                    self.metering
-                        .reserve_primitive(equality_check_cost(&sv1, &sv2))?;
-
-                    let result = if par_contains_nan_double(&sv1) || par_contains_nan_double(&sv2) {
-                        false
-                    } else {
-                        sv1 == sv2
-                    };
-                    Ok(Expr {
-                        expr_instance: Some(ExprInstance::GBool(result)),
-                    })
+                    let v1 = self.eval_expr_recursive(p1.as_ref().unwrap(), env)?;
+                    let v2 = self.eval_expr_recursive(p2.as_ref().unwrap(), env)?;
+                    self.combine_eq(v1, v2, env)
                 }
-
                 ExprInstance::ENeqBody(ENeq { p1, p2 }) => {
-                    let v1 = self.eval_expr(p1.as_ref().unwrap(), env)?;
-                    let v2 = self.eval_expr(p2.as_ref().unwrap(), env)?;
-                    let sv1 = self.substitute.substitute_and_charge(&v1, 0, env)?;
-                    let sv2 = self.substitute.substitute_and_charge(&v2, 0, env)?;
-                    self.metering
-                        .reserve_primitive(equality_check_cost(&sv1, &sv2))?;
-
-                    let result = if par_contains_nan_double(&sv1) || par_contains_nan_double(&sv2) {
-                        true
-                    } else {
-                        sv1 != sv2
-                    };
-                    Ok(Expr {
-                        expr_instance: Some(ExprInstance::GBool(result)),
-                    })
+                    let v1 = self.eval_expr_recursive(p1.as_ref().unwrap(), env)?;
+                    let v2 = self.eval_expr_recursive(p2.as_ref().unwrap(), env)?;
+                    self.combine_neq(v1, v2, env)
                 }
-
                 ExprInstance::EAndBody(EAnd { p1, p2 }) => {
-                    let b1 = self.eval_to_bool(p1.as_ref().unwrap(), env)?;
-                    let b2 = self.eval_to_bool(p2.as_ref().unwrap(), env)?;
+                    let b1 = self.eval_to_bool_recursive(p1.as_ref().unwrap(), env)?;
+                    let b2 = self.eval_to_bool_recursive(p2.as_ref().unwrap(), env)?;
                     self.metering.reserve_primitive(boolean_and_cost())?;
-
-                    Ok(Expr {
-                        expr_instance: Some(ExprInstance::GBool(b1 && b2)),
-                    })
+                    Ok(Expr { expr_instance: Some(ExprInstance::GBool(b1 && b2)) })
                 }
-
                 ExprInstance::EOrBody(EOr { p1, p2 }) => {
-                    let b1 = self.eval_to_bool(p1.as_ref().unwrap(), env)?;
-                    let b2 = self.eval_to_bool(p2.as_ref().unwrap(), env)?;
+                    let b1 = self.eval_to_bool_recursive(p1.as_ref().unwrap(), env)?;
+                    let b2 = self.eval_to_bool_recursive(p2.as_ref().unwrap(), env)?;
                     self.metering.reserve_primitive(boolean_or_cost())?;
-
-                    Ok(Expr {
-                        expr_instance: Some(ExprInstance::GBool(b1 || b2)),
-                    })
+                    Ok(Expr { expr_instance: Some(ExprInstance::GBool(b1 || b2)) })
                 }
-
                 ExprInstance::EMatchesBody(EMatches { target, pattern }) => {
-                    let evaled_target = self.eval_expr(target.as_ref().unwrap(), env)?;
-                    let subst_target =
-                        self.substitute
-                            .substitute_and_charge(&evaled_target, 0, env)?;
-                    let subst_pattern =
-                        self.substitute
-                            .substitute_and_charge(pattern.as_ref().unwrap(), 1, env)?;
-
-                    let mut spatial_matcher = SpatialMatcherContext::new();
-                    let match_result =
-                        spatial_matcher.spatial_match_result(subst_target, subst_pattern);
-
-                    Ok(Expr {
-                        expr_instance: Some(ExprInstance::GBool(match_result.is_some())),
-                    })
+                    let evaled_target = self.eval_expr_recursive(target.as_ref().unwrap(), env)?;
+                    self.combine_matches(evaled_target, pattern.as_ref().unwrap(), env)
                 }
-
                 ExprInstance::EPercentPercentBody(EPercentPercent { p1, p2 }) => {
-                    fn eval_to_string_pair(
-                        key_expr: Expr,
-                        value_expr: Expr,
-                    ) -> Result<(String, String), InterpreterError> {
-                        match (
-                            key_expr.expr_instance.unwrap(),
-                            value_expr.expr_instance.unwrap(),
-                        ) {
-                            (
-                                ExprInstance::GString(key_string),
-                                ExprInstance::GString(value_string),
-                            ) => Ok((key_string, value_string)),
-
-                            (ExprInstance::GString(key_string), ExprInstance::GInt(value_int)) => {
-                                Ok((key_string, value_int.to_string()))
-                            }
-
-                            (
-                                ExprInstance::GString(key_string),
-                                ExprInstance::GBool(value_bool),
-                            ) => Ok((key_string, value_bool.to_string())),
-
-                            (ExprInstance::GString(key_string), ExprInstance::GUri(uri)) => {
-                                Ok((key_string, uri))
-                            }
-
-                            // TODO: Add cases for other ground terms as well? Maybe it would be better
-                            // to implement cats.Show for all ground terms. - OLD
-                            (ExprInstance::GString(_), value) => {
-                                Err(InterpreterError::ReduceError(format!(
-                                    "Error: interpolation doesn't support {:?}",
-                                    get_type(value),
-                                )))
-                            }
-
-                            _ => Err(InterpreterError::ReduceError(
-                                "Error: interpolation Map should only contain String keys"
-                                    .to_string(),
-                            )),
-                        }
-                    }
-
-                    fn interpolate(string: &str, key_value_pairs: &[(String, String)]) -> String {
-                        let mut result = String::new();
-                        let mut current = string.to_string();
-
-                        while !current.is_empty() {
-                            let mut found = false;
-
-                            for (k, v) in key_value_pairs {
-                                if current.starts_with(&format!("${{{}}}", k)) {
-                                    result.push_str(v);
-                                    current = current.split_at(k.len() + 3).1.to_string();
-                                    found = true;
-
-                                    break;
-                                }
-                            }
-
-                            if !found {
-                                result.push(current.chars().next().unwrap());
-                                current.remove(0);
-                            }
-                        }
-
-                        result
-                    }
-
                     self.metering.reserve_primitive(op_call_cost())?;
-                    let v1 = self.eval_single_expr(p1.as_ref().unwrap(), env)?;
-                    let v2 = self.eval_single_expr(p2.as_ref().unwrap(), env)?;
-
-                    match (v1.expr_instance.unwrap(), v2.expr_instance.unwrap()) {
-                        (ExprInstance::GString(lhs), ExprInstance::EMapBody(emap)) => {
-                            let rhs = ParMapTypeMapper::emap_to_par_map(emap).ps;
-                            if !lhs.is_empty() || !rhs.is_empty() {
-                                let key_value_pairs = rhs
-                                    .clone()
-                                    .into_iter()
-                                    .map(|(k, v)| {
-                                        let key_expr = self.eval_single_expr(&k, env)?;
-                                        let value_expr = self.eval_single_expr(&v, env)?;
-                                        let result = eval_to_string_pair(key_expr, value_expr)?;
-                                        Ok(result)
-                                    })
-                                    .collect::<Result<Vec<_>, InterpreterError>>()?;
-
-                                self.metering
-                                    .reserve_incremental_primitive(interpolate_cost(
-                                        lhs.len() as i64,
-                                        rhs.length() as i64,
-                                    ))?;
-
-                                Ok(Expr {
-                                    expr_instance: Some(ExprInstance::GString(interpolate(
-                                        &lhs,
-                                        &key_value_pairs,
-                                    ))),
-                                })
-                            } else {
-                                Ok(Expr {
-                                    expr_instance: Some(ExprInstance::GString(lhs)),
-                                })
-                            }
-                        }
-
-                        (ExprInstance::GString(_), other) => {
-                            Err(InterpreterError::OperatorExpectedError {
-                                op: "%%".to_string(),
-                                expected: String::from("Map"),
-                                other_type: get_type(other),
-                            })
-                        }
-
-                        (other, _) => Err(InterpreterError::OperatorNotDefined {
-                            op: String::from("%%"),
-                            other_type: get_type(other),
-                        }),
-                    }
+                    let v1 = self.eval_single_expr_recursive(p1.as_ref().unwrap(), env)?;
+                    let v2 = self.eval_single_expr_recursive(p2.as_ref().unwrap(), env)?;
+                    self.combine_percent_percent(v1, v2, |q| self.eval_single_expr_recursive(q, env))
                 }
-
                 ExprInstance::EPlusPlusBody(EPlusPlus { p1, p2 }) => {
                     self.metering.reserve_primitive(op_call_cost())?;
-                    let v1 = self.eval_single_expr(p1.as_ref().unwrap(), env)?;
-                    let v2 = self.eval_single_expr(p2.as_ref().unwrap(), env)?;
-
-                    match (v1.expr_instance.unwrap(), v2.expr_instance.unwrap()) {
-                        (ExprInstance::GString(lhs), ExprInstance::GString(rhs)) => {
-                            self.metering
-                                .reserve_incremental_primitive(string_append_cost(
-                                    lhs.len() as i64,
-                                    rhs.len() as i64,
-                                ))?;
-                            Ok(Expr {
-                                expr_instance: Some(ExprInstance::GString(lhs + &rhs)),
-                            })
-                        }
-
-                        (ExprInstance::GByteArray(lhs), ExprInstance::GByteArray(rhs)) => {
-                            self.metering
-                                .reserve_incremental_primitive(byte_array_append_cost(
-                                    lhs.clone(),
-                                ))?;
-                            Ok(Expr {
-                                expr_instance: Some(ExprInstance::GByteArray(
-                                    lhs.into_iter().chain(rhs.into_iter()).collect(),
-                                )),
-                            })
-                        }
-
-                        (ExprInstance::EListBody(lhs), ExprInstance::EListBody(rhs)) => {
-                            self.metering
-                                .reserve_incremental_primitive(list_append_cost(lhs.clone().ps))?;
-                            Ok(Expr {
-                                expr_instance: Some(ExprInstance::EListBody(EList {
-                                    ps: lhs.ps.into_iter().chain(rhs.ps.into_iter()).collect(),
-                                    locally_free: union(lhs.locally_free, rhs.locally_free),
-                                    connective_used: lhs.connective_used || rhs.connective_used,
-                                    remainder: None,
-                                })),
-                            })
-                        }
-
-                        (ExprInstance::EMapBody(lhs), ExprInstance::EMapBody(rhs)) => {
-                            let result_par = self.union_method().apply(
-                                Par::default().with_exprs(vec![Expr {
-                                    expr_instance: Some(ExprInstance::EMapBody(lhs)),
-                                }]),
-                                vec![Par::default().with_exprs(vec![Expr {
-                                    expr_instance: Some(ExprInstance::EMapBody(rhs)),
-                                }])],
-                                env,
-                            )?;
-                            let result_expr = self.eval_single_expr(&result_par, env)?;
-                            Ok(result_expr)
-                        }
-
-                        (ExprInstance::ESetBody(lhs), ExprInstance::ESetBody(rhs)) => {
-                            let result_par = self.union_method().apply(
-                                Par::default().with_exprs(vec![Expr {
-                                    expr_instance: Some(ExprInstance::ESetBody(lhs)),
-                                }]),
-                                vec![Par::default().with_exprs(vec![Expr {
-                                    expr_instance: Some(ExprInstance::ESetBody(rhs)),
-                                }])],
-                                env,
-                            )?;
-                            let result_expr = self.eval_single_expr(&result_par, env)?;
-                            Ok(result_expr)
-                        }
-
-                        (ExprInstance::GString(_), other) => {
-                            Err(InterpreterError::OperatorExpectedError {
-                                op: "++".to_string(),
-                                expected: String::from("String"),
-                                other_type: get_type(other),
-                            })
-                        }
-
-                        (ExprInstance::EListBody(_), other) => {
-                            Err(InterpreterError::OperatorExpectedError {
-                                op: "++".to_string(),
-                                expected: String::from("List"),
-                                other_type: get_type(other),
-                            })
-                        }
-
-                        (ExprInstance::EMapBody(_), other) => {
-                            Err(InterpreterError::OperatorExpectedError {
-                                op: "++".to_string(),
-                                expected: String::from("Map"),
-                                other_type: get_type(other),
-                            })
-                        }
-
-                        (ExprInstance::ESetBody(_), other) => {
-                            Err(InterpreterError::OperatorExpectedError {
-                                op: "++".to_string(),
-                                expected: String::from("Set"),
-                                other_type: get_type(other),
-                            })
-                        }
-
-                        (other, _) => Err(InterpreterError::OperatorNotDefined {
-                            op: String::from("++"),
-                            other_type: get_type(other),
-                        }),
-                    }
+                    let v1 = self.eval_single_expr_recursive(p1.as_ref().unwrap(), env)?;
+                    let v2 = self.eval_single_expr_recursive(p2.as_ref().unwrap(), env)?;
+                    self.combine_plus_plus(v1, v2, env, |q| self.eval_single_expr_recursive(q, env))
                 }
-
                 ExprInstance::EMinusMinusBody(EMinusMinus { p1, p2 }) => {
                     self.metering.reserve_primitive(op_call_cost())?;
-                    let v1 = self.eval_single_expr(p1.as_ref().unwrap(), env)?;
-                    let v2 = self.eval_single_expr(p2.as_ref().unwrap(), env)?;
-
-                    match (v1.expr_instance.unwrap(), v2.expr_instance.unwrap()) {
-                        (ExprInstance::ESetBody(lhs), ExprInstance::ESetBody(rhs)) => {
-                            let result_par = self.diff_method().apply(
-                                Par::default().with_exprs(vec![Expr {
-                                    expr_instance: Some(ExprInstance::ESetBody(lhs)),
-                                }]),
-                                vec![Par::default().with_exprs(vec![Expr {
-                                    expr_instance: Some(ExprInstance::ESetBody(rhs)),
-                                }])],
-                                env,
-                            )?;
-                            let result_expr = self.eval_single_expr(&result_par, env)?;
-                            Ok(result_expr)
-                        }
-
-                        (ExprInstance::ESetBody(_), other) => {
-                            Err(InterpreterError::OperatorExpectedError {
-                                op: "--".to_string(),
-                                expected: String::from("Set"),
-                                other_type: get_type(other),
-                            })
-                        }
-
-                        (other, _) => Err(InterpreterError::OperatorNotDefined {
-                            op: String::from("--"),
-                            other_type: get_type(other),
-                        }),
-                    }
+                    let v1 = self.eval_single_expr_recursive(p1.as_ref().unwrap(), env)?;
+                    let v2 = self.eval_single_expr_recursive(p2.as_ref().unwrap(), env)?;
+                    self.combine_minus_minus(v1, v2, env, |q| self.eval_single_expr_recursive(q, env))
                 }
-
                 ExprInstance::EVarBody(EVar { v }) => {
                     let p = self.eval_var(v.as_ref().unwrap(), env)?;
-                    let expr_val = self.eval_single_expr(&p, env)?;
-                    Ok(expr_val)
+                    self.eval_single_expr_recursive(&p, env)
                 }
-
                 ExprInstance::EListBody(e1) => {
                     let evaled_ps = e1
                         .ps
                         .iter()
-                        .map(|p| self.eval_expr(p, env))
+                        .map(|p| self.eval_expr_recursive(p, env))
                         .collect::<Result<Vec<_>, InterpreterError>>()?;
-
-                    let updated_ps: Vec<Par> = evaled_ps
-                        .iter()
-                        .map(|p| self.update_locally_free_par(p.clone()))
-                        .collect();
-
-                    Ok(Expr {
-                        expr_instance: Some(ExprInstance::EListBody(
-                            self.update_locally_free_elist(EList {
-                                ps: updated_ps,
-                                locally_free: e1.locally_free.clone(),
-                                connective_used: e1.connective_used,
-                                remainder: None,
-                            }),
-                        )),
-                    })
+                    self.combine_elist(evaled_ps, e1)
                 }
-
                 ExprInstance::ETupleBody(e1) => {
                     let evaled_ps = e1
                         .ps
                         .iter()
-                        .map(|p| self.eval_expr(p, env))
+                        .map(|p| self.eval_expr_recursive(p, env))
                         .collect::<Result<Vec<_>, InterpreterError>>()?;
-
-                    let updated_ps: Vec<Par> = evaled_ps
-                        .iter()
-                        .map(|p| self.update_locally_free_par(p.clone()))
-                        .collect();
-
-                    Ok(Expr {
-                        expr_instance: Some(ExprInstance::ETupleBody(
-                            self.update_locally_free_etuple(ETuple {
-                                ps: updated_ps,
-                                locally_free: e1.locally_free.clone(),
-                                connective_used: e1.connective_used,
-                            }),
-                        )),
-                    })
+                    self.combine_etuple(evaled_ps, e1)
                 }
-
-                ExprInstance::ESetBody(eset) => {
-                    let set = ParSetTypeMapper::eset_to_par_set(eset.clone());
-                    let evaled_ps = set
-                        .ps
-                        .sorted_pars
-                        .iter()
-                        .map(|p| self.eval_expr(p, env))
-                        .collect::<Result<Vec<_>, InterpreterError>>()?;
-
-                    let updated_ps: Vec<Par> = evaled_ps
-                        .iter()
-                        .map(|p| self.update_locally_free_par(p.clone()))
-                        .collect();
-
-                    let mut cloned_set = set.clone();
-                    cloned_set.ps = SortedParHashSet::create_from_vec(updated_ps);
-                    Ok(Expr {
-                        expr_instance: Some(ExprInstance::ESetBody(
-                            ParSetTypeMapper::par_set_to_eset(cloned_set),
-                        )),
-                    })
-                }
-
-                ExprInstance::EMapBody(emap) => {
-                    let map = ParMapTypeMapper::emap_to_par_map(emap.clone());
-                    let evaled_ps = map
-                        .ps
-                        .clone()
-                        .into_iter()
-                        .map(|(k, v)| {
-                            let e_key = self.eval_expr(&k, env)?;
-                            let e_value = self.eval_expr(&v, env)?;
-                            Ok((e_key, e_value))
-                        })
-                        .collect::<Result<Vec<_>, InterpreterError>>()?;
-
-                    let mut cloned_map = map.clone();
-                    cloned_map.ps = SortedParMap::create_from_vec(evaled_ps);
-                    Ok(Expr {
-                        expr_instance: Some(ExprInstance::EMapBody(
-                            ParMapTypeMapper::par_map_to_emap(cloned_map),
-                        )),
-                    })
-                }
-
                 ExprInstance::EPathmapBody(e1) => {
-                    // Similar to EListBody - evaluate all elements
                     let evaled_ps = e1
                         .ps
                         .iter()
-                        .map(|p| self.eval_expr(p, env))
+                        .map(|p| self.eval_expr_recursive(p, env))
                         .collect::<Result<Vec<_>, InterpreterError>>()?;
-
-                    let updated_ps: Vec<Par> = evaled_ps
-                        .iter()
-                        .map(|p| self.update_locally_free_par(p.clone()))
-                        .collect();
-
-                    let rebuilt = EPathMap::new(
-                        updated_ps,
-                        e1.locally_free.clone(),
-                        e1.connective_used,
-                        None,
-                    );
-                    // EPathMap wire: a GROUND eval result canonicalizes to trie
-                    // order (a PathMap zipper walk, NO sort) so runtime and
-                    // normalization agree — the same map, however constructed,
-                    // compares structurally-equal (COMM fires order-insensitively)
-                    // and hashes to one canonical preimage. A non-ground result
-                    // is returned unchanged.
-                    Ok(Expr {
-                        expr_instance: Some(ExprInstance::EPathmapBody(
-                            models::rust::pathmap_crate_type_mapper::canonicalize_ground_epathmap(
-                                &rebuilt,
-                            ),
-                        )),
-                    })
+                    self.combine_epathmap(evaled_ps, e1)
                 }
-
-                ExprInstance::EZipperBody(zipper) => {
-                    // For zippers, just return them as-is (they're already evaluated)
-                    Ok(Expr {
-                        expr_instance: Some(ExprInstance::EZipperBody(zipper.clone())),
-                    })
+                ExprInstance::ESetBody(eset) => {
+                    self.combine_eset(eset, |q| self.eval_expr_recursive(q, env))
                 }
-
+                ExprInstance::EMapBody(emap) => {
+                    self.combine_emap(emap, |q| self.eval_expr_recursive(q, env))
+                }
                 ExprInstance::EMethodBody(emethod) => {
-                    // EPathMap fix P2 (T3b): the view-fusion seam runs FIRST in this
-                    // dispatch arm too (the guard-conjunct route: EAnd → eval_to_bool →
-                    // eval_expr_to_expr). PM-4(a): a fused Some(par) routes through the
-                    // SAME eval_single_expr conversion today's path applies to its
-                    // result_par below, so (for example) a Nil chain result raises the
-                    // identical "Error: Multiple expressions given." here.
                     if let Some(fused) = self.try_eval_fused_method_chain(emethod, env)? {
-                        return self.eval_single_expr(&fused, env);
+                        return self.eval_single_expr_recursive(&fused, env);
                     }
-                    let EMethod {
-                        method_name,
-                        target,
-                        arguments,
-                        ..
-                    } = emethod;
                     self.metering.reserve_primitive(method_call_cost())?;
-                    let evaled_target = self.eval_expr(target.as_ref().unwrap(), env)?;
-                    let evaled_args = arguments
+                    let evaled_target =
+                        self.eval_expr_recursive(emethod.target.as_ref().unwrap(), env)?;
+                    let evaled_args: Vec<Par> = emethod
+                        .arguments
                         .iter()
-                        .map(|arg| self.eval_expr(arg, env))
+                        .map(|arg| self.eval_expr_recursive(arg, env))
                         .collect::<Result<Vec<_>, InterpreterError>>()?;
-
-                    let result_par = match self.method_table().get(method_name) {
-                        Some(method_function) => {
-                            method_function.apply(evaled_target, evaled_args, env)?
-                        }
-                        None => {
-                            return Err(InterpreterError::ReduceError(format!(
-                                "Unimplemented method: {:?}",
-                                method_name
-                            )));
-                        }
-                    };
-
-                    let result_expr = self.eval_single_expr(&result_par, env)?;
-                    Ok(result_expr)
+                    let result_par = self.apply_method_expr(emethod, evaled_target, evaled_args, env)?;
+                    self.eval_single_expr_recursive(&result_par, env)
                 }
             },
             None => Err(InterpreterError::ReduceError(format!(
@@ -2812,6 +3813,89 @@ impl DebruijnInterpreter {
             ))),
         }
     }
+
+    #[cfg(test)]
+    fn eval_single_expr_recursive(&self, p: &Par, env: &Env<Par>) -> Result<Expr, InterpreterError> {
+        if !p.sends.is_empty()
+            || !p.receives.is_empty()
+            || !p.news.is_empty()
+            || !p.matches.is_empty()
+            || !p.unforgeables.is_empty()
+            || !p.bundles.is_empty()
+        {
+            Err(InterpreterError::ReduceError(String::from(
+                "Error: parallel or non expression found where expression expected.",
+            )))
+        } else {
+            match p.exprs.as_slice() {
+                [e] => Ok(self.eval_expr_to_expr_recursive(e, env)?),
+                _ => Err(InterpreterError::ReduceError(
+                    "Error: Multiple expressions given.".to_string(),
+                )),
+            }
+        }
+    }
+
+    #[cfg(test)]
+    fn eval_to_i64_recursive(&self, p: &Par, env: &Env<Par>) -> Result<i64, InterpreterError> {
+        if !p.sends.is_empty()
+            && !p.receives.is_empty()
+            && !p.news.is_empty()
+            && !p.matches.is_empty()
+            && !p.unforgeables.is_empty()
+            && !p.bundles.is_empty()
+        {
+            Err(InterpreterError::ReduceError(String::from(
+                "Error: parallel or non expression found where expression expected.",
+            )))
+        } else {
+            match p.exprs.as_slice() {
+                [Expr { expr_instance: Some(ExprInstance::GInt(v)) }] => Ok(*v),
+                [Expr { expr_instance: Some(ExprInstance::EVarBody(EVar { v })) }] => {
+                    let p = self.eval_var(&unwrap_option_safe(v.clone())?, env)?;
+                    self.eval_to_i64_recursive(&p, env)
+                }
+                [e] => {
+                    let evaled = self.eval_expr_to_expr_recursive(e, env)?;
+                    Self::extract_i64(evaled)
+                }
+                _ => Err(InterpreterError::ReduceError(
+                    "Error: Integer expected, or unimplemented expression.".to_string(),
+                )),
+            }
+        }
+    }
+
+    #[cfg(test)]
+    fn eval_to_bool_recursive(&self, p: &Par, env: &Env<Par>) -> Result<bool, InterpreterError> {
+        if !p.sends.is_empty()
+            && !p.receives.is_empty()
+            && !p.news.is_empty()
+            && !p.matches.is_empty()
+            && !p.unforgeables.is_empty()
+            && !p.bundles.is_empty()
+        {
+            Err(InterpreterError::ReduceError(String::from(
+                "Error: parallel or non expression found where expression expected.",
+            )))
+        } else {
+            match p.exprs.as_slice() {
+                [Expr { expr_instance: Some(ExprInstance::GBool(b)) }] => Ok(*b),
+                [Expr { expr_instance: Some(ExprInstance::EVarBody(EVar { v })) }] => {
+                    let p = self.eval_var(&unwrap_option_safe(v.clone())?, env)?;
+                    self.eval_to_bool_recursive(&p, env)
+                }
+                [e] => {
+                    let evaled = self.eval_expr_to_expr_recursive(e, env)?;
+                    Self::extract_bool(evaled)
+                }
+                _ => Err(InterpreterError::ReduceError(
+                    "Error: Multiple expressions given.".to_string(),
+                )),
+            }
+        }
+    }
+
 
     fn nth_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct NthMethod<'a> {
@@ -7004,27 +8088,7 @@ impl DebruijnInterpreter {
         table
     }
 
-    fn eval_single_expr(&self, p: &Par, env: &Env<Par>) -> Result<Expr, InterpreterError> {
-        if !p.sends.is_empty()
-            || !p.receives.is_empty()
-            || !p.news.is_empty()
-            || !p.matches.is_empty()
-            || !p.unforgeables.is_empty()
-            || !p.bundles.is_empty()
-        {
-            Err(InterpreterError::ReduceError(String::from(
-                "Error: parallel or non expression found where expression expected.",
-            )))
-        } else {
-            match p.exprs.as_slice() {
-                [e] => Ok(self.eval_expr_to_expr(e, env)?),
-
-                _ => Err(InterpreterError::ReduceError(
-                    "Error: Multiple expressions given.".to_string(),
-                )),
-            }
-        }
-    }
+    // (eval_single_expr moved: now a thin wrapper over eval_drive, above.)
 
     fn eval_single_unforgeable<'a>(
         &self,
@@ -7051,103 +8115,9 @@ impl DebruijnInterpreter {
         }
     }
 
-    fn eval_to_i64(&self, p: &Par, env: &Env<Par>) -> Result<i64, InterpreterError> {
-        if !p.sends.is_empty()
-            && !p.receives.is_empty()
-            && !p.news.is_empty()
-            && !p.matches.is_empty()
-            && !p.unforgeables.is_empty()
-            && !p.bundles.is_empty()
-        {
-            Err(InterpreterError::ReduceError(String::from(
-                "Error: parallel or non expression found where expression expected.",
-            )))
-        } else {
-            match p.exprs.as_slice() {
-                [Expr {
-                    expr_instance: Some(ExprInstance::GInt(v)),
-                }] => Ok(*v),
+    // (eval_to_i64 moved: now a thin wrapper over eval_drive, above.)
 
-                [Expr {
-                    expr_instance: Some(ExprInstance::EVarBody(EVar { v })),
-                }] => {
-                    let p = self.eval_var(&unwrap_option_safe(v.clone())?, env)?;
-                    self.eval_to_i64(&p, env)
-                }
-
-                [e] => {
-                    let evaled = self.eval_expr_to_expr(e, env)?;
-
-                    match evaled.expr_instance {
-                        Some(expr_instance) => match expr_instance {
-                            ExprInstance::GInt(v) => Ok(v),
-
-                            _ => Err(InterpreterError::ReduceError(
-                                "Error: expression didn't evaluate to integer.".to_string(),
-                            )),
-                        },
-                        None => Err(InterpreterError::MethodNotDefined {
-                            method: String::from("expr_instance"),
-                            other_type: String::from("None"),
-                        }),
-                    }
-                }
-
-                _ => Err(InterpreterError::ReduceError(
-                    "Error: Integer expected, or unimplemented expression.".to_string(),
-                )),
-            }
-        }
-    }
-
-    fn eval_to_bool(&self, p: &Par, env: &Env<Par>) -> Result<bool, InterpreterError> {
-        if !p.sends.is_empty()
-            && !p.receives.is_empty()
-            && !p.news.is_empty()
-            && !p.matches.is_empty()
-            && !p.unforgeables.is_empty()
-            && !p.bundles.is_empty()
-        {
-            Err(InterpreterError::ReduceError(String::from(
-                "Error: parallel or non expression found where expression expected.",
-            )))
-        } else {
-            match p.exprs.as_slice() {
-                [Expr {
-                    expr_instance: Some(ExprInstance::GBool(b)),
-                }] => Ok(*b),
-
-                [Expr {
-                    expr_instance: Some(ExprInstance::EVarBody(EVar { v })),
-                }] => {
-                    let p = self.eval_var(&unwrap_option_safe(v.clone())?, env)?;
-                    self.eval_to_bool(&p, env)
-                }
-
-                [e] => {
-                    let evaled = self.eval_expr_to_expr(e, env)?;
-
-                    match evaled.expr_instance {
-                        Some(expr_instance) => match expr_instance {
-                            ExprInstance::GBool(b) => Ok(b),
-
-                            _ => Err(InterpreterError::ReduceError(
-                                "Error: expression didn't evaluate to boolean.".to_string(),
-                            )),
-                        },
-                        None => Err(InterpreterError::MethodNotDefined {
-                            method: String::from("expr_instance"),
-                            other_type: String::from("None"),
-                        }),
-                    }
-                }
-
-                _ => Err(InterpreterError::ReduceError(
-                    "Error: Multiple expressions given.".to_string(),
-                )),
-            }
-        }
-    }
+    // (eval_to_bool moved: now a thin wrapper over eval_drive, above.)
 
     fn update_locally_free_par(&self, mut par: Par) -> Par {
         let mut locally_free = Vec::new();
@@ -7180,7 +8150,7 @@ impl DebruijnInterpreter {
             locally_free,
             par.exprs
                 .iter()
-                .flat_map(|expr| expr.locally_free(expr.clone(), 0))
+                .flat_map(|expr| expr_locally_free_ref(expr))
                 .collect(),
         );
 
@@ -7229,26 +8199,7 @@ impl DebruijnInterpreter {
      *
      * Public here to be used in tests / Scala code has it as private but still able to use in tests?
      */
-    pub fn eval_expr(&self, par: &Par, env: &Env<Par>) -> Result<Par, InterpreterError> {
-        let evaled_exprs = par
-            .exprs
-            .iter()
-            .map(|expr| self.eval_expr_to_par(expr, env))
-            .collect::<Result<Vec<_>, InterpreterError>>()?;
-
-        // Note: the locallyFree cache in par could now be invalid, but given
-        // that locallyFree is for use in the matcher, and the matcher uses
-        // substitution, it will resolve in that case. AlwaysEqual makes sure
-        // that this isn't an issue in the rest of cases.
-        let result = evaled_exprs
-            .into_iter()
-            .fold(par.with_exprs(Vec::new()), |acc, expr| {
-                // acc.exprs.iter().chain(expr.exprs.iter()).cloned().collect()
-                concatenate_pars(acc, expr)
-            });
-
-        Ok(result)
-    }
+    // (eval_expr moved: now a thin wrapper over eval_drive, above.)
 
     pub fn new(
         space: RhoISpace,
@@ -7588,4 +8539,383 @@ fn describe_par_type(par: &Par) -> String {
     } else {
         "non-boolean process".to_string()
     }
+}
+
+// ===========================================================================
+// LEG-2 DIFFERENTIAL HARNESS — the correctness proof for the trampoline.
+//
+// For every term it evaluates the SAME term through BOTH the recursive oracle
+// (`eval_expr_recursive`, a faithful copy of the pre-trampoline evaluator over
+// the shared `combine_*` helpers) AND the production trampoline (`eval_expr`),
+// each on a FRESH budget, and asserts:
+//   (1) byte-identical result  (protobuf `encode_to_vec`, or identical Err), AND
+//   (2) identical charge trace  (the ordered `(BillableKind, weight)` sequence
+//       from the budget's canonical event log — "same tokens, same order, same
+//       amounts"), AND
+//   (3) identical aggregate `total_cost`.
+// Any divergence is a trampoline bug (or a genuine can't-fold fork -> STOP).
+// ===========================================================================
+#[cfg(test)]
+mod differential_trampoline {
+    use super::*;
+    use crate::rust::interpreter::accounting::BillableKind;
+    use crate::rust::interpreter::env::Env;
+    use crate::rust::interpreter::test_utils::persistent_store_tester::create_test_space;
+    use models::rhoapi::expr::ExprInstance;
+    use models::rhoapi::{
+        BindPattern, EAnd, EDiv, EEq, EList, EMatches, EMinus, EMod, EMult, ENeg, ENeq, ENot, EOr,
+        EPlus, ETuple, Expr, ListParWithRandom, Par, TaggedContinuation,
+    };
+    use models::rust::utils::{new_gbool_par, new_gint_par, new_gstring_par};
+    use proptest::prelude::*;
+    use rspace_plus_plus::rspace::rspace::RSpace;
+
+    type TestSpace = RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>;
+
+    fn expr_par(ei: ExprInstance) -> Par {
+        Par { exprs: vec![Expr { expr_instance: Some(ei) }], ..Default::default() }
+    }
+    fn eplus(a: Par, b: Par) -> Par { expr_par(ExprInstance::EPlusBody(EPlus { p1: Some(a), p2: Some(b) })) }
+    fn eminus(a: Par, b: Par) -> Par { expr_par(ExprInstance::EMinusBody(EMinus { p1: Some(a), p2: Some(b) })) }
+    fn emult(a: Par, b: Par) -> Par { expr_par(ExprInstance::EMultBody(EMult { p1: Some(a), p2: Some(b) })) }
+    fn ediv(a: Par, b: Par) -> Par { expr_par(ExprInstance::EDivBody(EDiv { p1: Some(a), p2: Some(b) })) }
+    fn emod(a: Par, b: Par) -> Par { expr_par(ExprInstance::EModBody(EMod { p1: Some(a), p2: Some(b) })) }
+    fn eneg(a: Par) -> Par { expr_par(ExprInstance::ENegBody(ENeg { p: Some(a) })) }
+    fn enot(a: Par) -> Par { expr_par(ExprInstance::ENotBody(ENot { p: Some(a) })) }
+    fn eand(a: Par, b: Par) -> Par { expr_par(ExprInstance::EAndBody(EAnd { p1: Some(a), p2: Some(b) })) }
+    fn eor(a: Par, b: Par) -> Par { expr_par(ExprInstance::EOrBody(EOr { p1: Some(a), p2: Some(b) })) }
+    fn eeq(a: Par, b: Par) -> Par { expr_par(ExprInstance::EEqBody(EEq { p1: Some(a), p2: Some(b) })) }
+    fn eneq(a: Par, b: Par) -> Par { expr_par(ExprInstance::ENeqBody(ENeq { p1: Some(a), p2: Some(b) })) }
+    fn ematches(t: Par, p: Par) -> Par {
+        expr_par(ExprInstance::EMatchesBody(EMatches { target: Some(t), pattern: Some(p) }))
+    }
+    fn elist(ps: Vec<Par>) -> Par {
+        expr_par(ExprInstance::EListBody(EList { ps, locally_free: vec![], connective_used: false, remainder: None }))
+    }
+    fn etuple(ps: Vec<Par>) -> Par {
+        expr_par(ExprInstance::ETupleBody(ETuple { ps, locally_free: vec![], connective_used: false }))
+    }
+
+    /// The observable trace of one evaluation path: result bytes (or Err string)
+    /// + the ordered charge tokens + the aggregate cost.
+    #[derive(PartialEq, Debug)]
+    struct Trace {
+        result: Result<Vec<u8>, String>,
+        charges: Vec<(BillableKind, u64)>,
+        total: i64,
+    }
+
+    fn charge_trace(reducer: &DebruijnInterpreter) -> (Vec<(BillableKind, u64)>, i64) {
+        let budget = reducer.metering.budget();
+        let charges = budget
+            .get_canonical_event_log()
+            .into_iter()
+            .map(|e| (e.kind, e.weight))
+            .collect();
+        (charges, budget.total_cost().value)
+    }
+
+    async fn build() -> std::sync::Arc<DebruijnInterpreter> {
+        let (_space, reducer) = create_test_space::<TestSpace>().await;
+        reducer
+    }
+
+    /// Evaluate `term` through BOTH paths (fresh reducer/budget each) and assert
+    /// byte-identical result + identical charge trace + identical total cost.
+    async fn assert_agree(term: &Par) {
+        let env: Env<Par> = Env::new();
+
+        let r_rec = build().await;
+        let res_rec = r_rec.eval_expr_recursive(term, &env);
+        let (charges_rec, total_rec) = charge_trace(&r_rec);
+        let trace_rec = Trace {
+            result: res_rec.map(|p| p.encode_to_vec()).map_err(|e| format!("{:?}", e)),
+            charges: charges_rec,
+            total: total_rec,
+        };
+
+        let r_tr = build().await;
+        let res_tr = r_tr.eval_expr(term, &env);
+        let (charges_tr, total_tr) = charge_trace(&r_tr);
+        let trace_tr = Trace {
+            result: res_tr.map(|p| p.encode_to_vec()).map_err(|e| format!("{:?}", e)),
+            charges: charges_tr,
+            total: total_tr,
+        };
+
+        assert_eq!(
+            trace_rec, trace_tr,
+            "TRAMPOLINE DIVERGENCE on term {:?}\n recursive={:?}\n trampoline={:?}",
+            term, trace_rec, trace_tr
+        );
+    }
+
+    // ---- hand-written arm coverage (incl. error paths) ----
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn arms_cover_all() {
+        let i = |n| new_gint_par(n, vec![], false);
+        let b = |x| new_gbool_par(x, vec![], false);
+        let s = |x: &str| new_gstring_par(x.to_string(), vec![], false);
+        let terms: Vec<Par> = vec![
+            i(7),
+            b(true),
+            s("hi"),
+            eplus(i(7), i(8)),
+            eminus(i(10), i(3)),
+            emult(i(6), i(7)),
+            ediv(i(15), i(3)),
+            emod(i(17), i(5)),
+            ediv(i(1), i(0)),                 // division by zero (error parity)
+            emod(i(1), i(0)),                 // modulo by zero
+            eplus(i(i64::MAX), i(1)),         // wrapping add
+            emult(i(i64::MAX), i(2)),         // multiplication overflow (error parity)
+            eneg(i(5)),
+            eneg(i(i64::MIN)),                // negation overflow (error parity)
+            enot(b(true)),
+            eand(b(true), b(false)),
+            eor(b(false), b(true)),
+            expr_par(ExprInstance::ELtBody(models::rhoapi::ELt { p1: Some(i(1)), p2: Some(i(2)) })),
+            expr_par(ExprInstance::EGteBody(models::rhoapi::EGte { p1: Some(i(2)), p2: Some(i(2)) })),
+            eeq(i(3), i(3)),
+            eneq(i(3), i(4)),
+            eeq(elist(vec![i(1), i(2)]), elist(vec![i(1), i(2)])),
+            ematches(i(5), i(5)),
+            eplus(s("a"), s("b")),            // type error (+ on strings): error parity
+            elist(vec![i(1), eplus(i(2), i(3)), i(4)]),
+            etuple(vec![b(true), i(9)]),
+            // nested arithmetic spine
+            eplus(eplus(eplus(i(1), i(2)), i(3)), i(4)),
+            // nested collections
+            elist(vec![elist(vec![elist(vec![i(0)])])]),
+            // mixed
+            eand(expr_par(ExprInstance::ELtBody(models::rhoapi::ELt { p1: Some(i(1)), p2: Some(i(2)) })), enot(b(false))),
+        ];
+        for t in &terms {
+            assert_agree(t).await;
+        }
+    }
+
+    // ---- the six wrappers each vs their _recursive twin (also exercises the
+    //      eval_expr_to_expr / eval_single_expr / eval_to_bool / eval_to_i64
+    //      wrappers directly) ----
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn wrappers_match_twins() {
+        let env: Env<Par> = Env::new();
+        let i = |n| new_gint_par(n, vec![], false);
+        let b = |x| new_gbool_par(x, vec![], false);
+        // eval_expr_to_par / eval_expr_to_expr on an Expr
+        let e = Expr { expr_instance: Some(ExprInstance::EPlusBody(EPlus { p1: Some(i(2)), p2: Some(i(5)) })) };
+        let r1 = build().await;
+        let r2 = build().await;
+        assert_eq!(
+            r1.eval_expr_to_par_recursive(&e, &env).map_err(|x| format!("{:?}", x)).map(|p| p.encode_to_vec()),
+            r2.eval_expr_to_par(&e, &env).map_err(|x| format!("{:?}", x)).map(|p| p.encode_to_vec()),
+        );
+        let r1 = build().await;
+        let r2 = build().await;
+        assert_eq!(
+            r1.eval_expr_to_expr_recursive(&e, &env).map_err(|x| format!("{:?}", x)),
+            r2.eval_expr_to_expr(&e, &env).map_err(|x| format!("{:?}", x)),
+        );
+        // eval_single_expr
+        let p = emult(i(3), i(4));
+        let r1 = build().await;
+        let r2 = build().await;
+        assert_eq!(
+            r1.eval_single_expr_recursive(&p, &env).map_err(|x| format!("{:?}", x)),
+            r2.eval_single_expr(&p, &env).map_err(|x| format!("{:?}", x)),
+        );
+        // eval_to_i64
+        let r1 = build().await;
+        let r2 = build().await;
+        assert_eq!(r1.eval_to_i64_recursive(&p, &env).ok(), r2.eval_to_i64(&p, &env).ok());
+        // eval_to_bool
+        let pb = eand(b(true), enot(b(false)));
+        let r1 = build().await;
+        let r2 = build().await;
+        assert_eq!(r1.eval_to_bool_recursive(&pb, &env).ok(), r2.eval_to_bool(&pb, &env).ok());
+    }
+
+    // ---- moderate-depth plus/list: the recursive twin (a DEBUG build, big
+    //      frames) survives ~60 levels on the 8 MiB test-thread stack, so both
+    //      paths run and must AGREE. (The heap-bounded 20000-deep proof is the
+    //      separate `so_probe` example, trampoline-only — the twin cannot reach
+    //      it, which is precisely the bug leg-2 fixes.) `current_thread` keeps
+    //      the sync recursion on the RUST_MIN_STACK=8 MiB test thread rather
+    //      than a 2 MiB tokio worker. ----
+    #[tokio::test(flavor = "current_thread")]
+    async fn moderate_depth_plus_and_list_agree() {
+        let mut t = new_gint_par(0, vec![], false);
+        for _ in 0..60 {
+            t = eplus(t, new_gint_par(1, vec![], false));
+        }
+        assert_agree(&t).await;
+        let mut u = new_gint_par(0, vec![], false);
+        for _ in 0..60 {
+            u = elist(vec![u]);
+        }
+        assert_agree(&u).await;
+    }
+
+    // ---- proptest: arbitrary bounded expression trees ----
+    fn arb_par() -> impl Strategy<Value = Par> {
+        let leaf = prop_oneof![
+            (-20i64..20i64).prop_map(|n| new_gint_par(n, vec![], false)),
+            any::<bool>().prop_map(|x| new_gbool_par(x, vec![], false)),
+            "[a-c]{0,3}".prop_map(|s| new_gstring_par(s, vec![], false)),
+        ];
+        leaf.prop_recursive(5, 96, 3, |inner| {
+            prop_oneof![
+                (inner.clone(), inner.clone()).prop_map(|(a, b)| eplus(a, b)),
+                (inner.clone(), inner.clone()).prop_map(|(a, b)| eminus(a, b)),
+                (inner.clone(), inner.clone()).prop_map(|(a, b)| emult(a, b)),
+                (inner.clone(), inner.clone()).prop_map(|(a, b)| ediv(a, b)),
+                (inner.clone(), inner.clone()).prop_map(|(a, b)| emod(a, b)),
+                inner.clone().prop_map(eneg),
+                inner.clone().prop_map(enot),
+                (inner.clone(), inner.clone()).prop_map(|(a, b)| eand(a, b)),
+                (inner.clone(), inner.clone()).prop_map(|(a, b)| eor(a, b)),
+                (inner.clone(), inner.clone()).prop_map(|(a, b)| eeq(a, b)),
+                (inner.clone(), inner.clone()).prop_map(|(a, b)| eneq(a, b)),
+                (inner.clone(), inner.clone()).prop_map(|(a, b)| {
+                    expr_par(ExprInstance::ELtBody(models::rhoapi::ELt { p1: Some(a), p2: Some(b) }))
+                }),
+                (inner.clone(), inner.clone()).prop_map(|(a, b)| ematches(a, b)),
+                prop::collection::vec(inner.clone(), 0..3).prop_map(elist),
+                prop::collection::vec(inner.clone(), 0..3).prop_map(etuple),
+            ]
+        })
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig { cases: 400, max_shrink_iters: 200, ..ProptestConfig::default() })]
+        #[test]
+        fn arbitrary_terms_agree(term in arb_par()) {
+            let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+            rt.block_on(assert_agree(&term));
+        }
+    }
+
+    // ---- re-eval arms (%% / ++ / -- / Set / Map / method), bound vars, big
+    //      numbers, and the remaining ground leaves — the arms whose combine
+    //      logic uses re-eval closures / owned-intermediate handling and that the
+    //      base coverage above omits. ----
+    fn eset(ps: Vec<Par>) -> Par {
+        expr_par(ExprInstance::ESetBody(
+            models::rust::par_set_type_mapper::ParSetTypeMapper::par_set_to_eset(
+                models::rust::par_set::ParSet::create_from_vec(ps),
+            ),
+        ))
+    }
+    fn emap(kv: Vec<(Par, Par)>) -> Par {
+        expr_par(ExprInstance::EMapBody(
+            models::rust::par_map_type_mapper::ParMapTypeMapper::par_map_to_emap(
+                models::rust::par_map::ParMap::create_from_vec(kv),
+            ),
+        ))
+    }
+    fn method(target: Par, name: &str, args: Vec<Par>) -> Par {
+        expr_par(ExprInstance::EMethodBody(models::rhoapi::EMethod {
+            method_name: name.to_string(),
+            target: Some(target),
+            arguments: args,
+            locally_free: vec![],
+            connective_used: false,
+        }))
+    }
+    fn pplus(a: Par, b: Par) -> Par {
+        expr_par(ExprInstance::EPlusPlusBody(models::rhoapi::EPlusPlus { p1: Some(a), p2: Some(b) }))
+    }
+    fn pmod(a: Par, b: Par) -> Par {
+        expr_par(ExprInstance::EPercentPercentBody(models::rhoapi::EPercentPercent {
+            p1: Some(a),
+            p2: Some(b),
+        }))
+    }
+    fn mminus(a: Par, b: Par) -> Par {
+        expr_par(ExprInstance::EMinusMinusBody(models::rhoapi::EMinusMinus {
+            p1: Some(a),
+            p2: Some(b),
+        }))
+    }
+    fn gbigint(bytes: Vec<u8>) -> Par {
+        expr_par(ExprInstance::GBigInt(bytes))
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn reeval_collection_and_ground_arms_agree() {
+        let i = |n| new_gint_par(n, vec![], false);
+        let s = |x: &str| new_gstring_par(x.to_string(), vec![], false);
+        let terms: Vec<Par> = vec![
+            // ground leaves not covered above
+            new_gbool_par(false, vec![], false),
+            expr_par(ExprInstance::GUri("rho:io:stdout".to_string())),
+            expr_par(ExprInstance::GByteArray(vec![1, 2, 3])),
+            expr_par(ExprInstance::GDouble(1.5f64.to_bits())),
+            gbigint(vec![7]),
+            // Set / Map literals (SORTED owned element eval)
+            eset(vec![i(3), i(1), i(2)]),
+            eset(vec![eplus(i(1), i(2)), i(5)]),
+            emap(vec![(s("a"), i(1)), (s("b"), eplus(i(2), i(3)))]),
+            // nested Set / Map
+            eset(vec![eset(vec![i(1)]), eset(vec![i(2)])]),
+            // ++ (append): string, list, map union, set union
+            pplus(s("foo"), s("bar")),
+            pplus(elist(vec![i(1)]), elist(vec![i(2), i(3)])),
+            pplus(emap(vec![(s("a"), i(1))]), emap(vec![(s("b"), i(2))])),
+            pplus(eset(vec![i(1)]), eset(vec![i(2)])),
+            // -- (remove): set diff
+            mminus(eset(vec![i(1), i(2), i(3)]), eset(vec![i(2)])),
+            // %% (interpolation)
+            pmod(s("x=${a}"), emap(vec![(s("a"), i(42))])),
+            // + set-add sub-arm (Set + elem) and - map/set delete sub-arms
+            eplus(eset(vec![i(1)]), i(2)),
+            eminus(emap(vec![(s("a"), i(1)), (s("b"), i(2))]), s("a")),
+            eminus(eset(vec![i(1), i(2)]), i(2)),
+            // methods (EMethod combine: apply + re-eval result)
+            method(elist(vec![i(10), i(20), i(30)]), "nth", vec![i(1)]),
+            method(elist(vec![i(1), i(2), i(3)]), "length", vec![]),
+            method(i(255), "toByteArray", vec![]),
+            method(eset(vec![i(1), i(2)]), "toList", vec![]),
+            // method chain (target-chain descent + per-link re-eval)
+            method(method(elist(vec![elist(vec![i(9)])]), "nth", vec![i(0)]), "nth", vec![i(0)]),
+            // type-error method (error parity)
+            method(i(5), "nth", vec![i(0)]),
+        ];
+        for t in &terms {
+            assert_agree(t).await;
+        }
+    }
+
+    // ---- bound variables (EVar arm: eval_var charge + re-eval) under a
+    //      POPULATED environment, on both eval_expr and eval_to_i64/bool. ----
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn bound_var_arms_agree() {
+        use models::rust::utils::new_boundvar_par;
+        // de Bruijn: get(0) returns the LAST `put`. We want BoundVar(0)->41 (int)
+        // and BoundVar(1)->[1,2] (list), so put the list FIRST, then the int.
+        let mut env: Env<Par> = Env::new();
+        env = env.put(elist(vec![new_gint_par(1, vec![], false), new_gint_par(2, vec![], false)]));
+        env = env.put(new_gint_par(41, vec![], false));
+        let terms: Vec<Par> = vec![
+            new_boundvar_par(0, vec![], false),
+            new_boundvar_par(1, vec![], false),
+            eplus(new_boundvar_par(0, vec![], false), new_gint_par(1, vec![], false)),
+            method(new_boundvar_par(1, vec![], false), "nth", vec![new_gint_par(0, vec![], false)]),
+        ];
+        for t in &terms {
+            let r_rec = build().await;
+            let res_rec = r_rec.eval_expr_recursive(t, &env);
+            let (c_rec, tot_rec) = charge_trace(&r_rec);
+            let r_tr = build().await;
+            let res_tr = r_tr.eval_expr(t, &env);
+            let (c_tr, tot_tr) = charge_trace(&r_tr);
+            assert_eq!(
+                (res_rec.map(|p| p.encode_to_vec()).map_err(|e| format!("{:?}", e)), c_rec, tot_rec),
+                (res_tr.map(|p| p.encode_to_vec()).map_err(|e| format!("{:?}", e)), c_tr, tot_tr),
+                "BOUND-VAR DIVERGENCE on {:?}", t
+            );
+        }
+    }
+
 }

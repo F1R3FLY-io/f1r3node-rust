@@ -5,18 +5,21 @@
 //! One depth per process, so a stack overflow (SIGABRT via the guard-page
 //! handler) only kills THIS process — a driver loop bisects the crossover depth.
 //!
-//! Two term families (each exercises a different clone site in reduce.rs):
+//! Term families (each exercises a different deep-recursion site in reduce.rs):
 //!   * `plus`  : t_{k+1} = EPlus(t_k, 1)   — per-operand `p1.clone()` per level.
 //!   * `list`  : u_{k+1} = [u_k]           — `expr_instance.clone()`@eval_expr_to_par per level.
+//!   * `methodchain`: t_{k+1} = t_k.toByteArray() — deep EMethod target chain (callback path).
 //!
-//! Usage:  so_probe <plus|list> <depth>
+//! Usage:  so_probe <plus|list|methodchain> <depth>
 //! Exit:   0 = evaluated OK, 2 = InterpreterError, 3 = ordinary panic.
 //!         A stack overflow aborts the process (exit 134 = 128 + SIGABRT).
 //! Both terms are built ITERATIVELY (no build-time / drop-time deep recursion),
 //! so the ONLY deep recursion measured is the evaluator's own call stack.
 
 use models::rhoapi::expr::ExprInstance;
-use models::rhoapi::{BindPattern, EList, EPlus, Expr, ListParWithRandom, Par, TaggedContinuation};
+use models::rhoapi::{
+    BindPattern, EList, EMethod, EPlus, Expr, ListParWithRandom, Par, TaggedContinuation,
+};
 use rholang::rust::interpreter::env::Env;
 use rholang::rust::interpreter::test_utils::persistent_store_tester::create_test_space;
 use rspace_plus_plus::rspace::rspace::RSpace;
@@ -72,6 +75,29 @@ fn build_list(depth: usize) -> Par {
     u
 }
 
+// A deep METHOD CHAIN: `1.toByteArray().toByteArray()...` (depth calls). Each
+// method's TARGET is the previous call, so the chain is `depth` nested
+// EMethodBody — the "callback path" the trampoline must keep O(1)-stack: the
+// deep target is a WORKLISTED child, and each `apply` (toByteArray = eval_expr +
+// substitute + serialize of a FLAT ByteArray) is shallow, so no method-internal
+// deep recursion confounds the measurement of the target-chain descent.
+fn build_methodchain(depth: usize) -> Par {
+    let mut t = gint_par(1);
+    for _ in 0..depth {
+        let e = Expr {
+            expr_instance: Some(ExprInstance::EMethodBody(EMethod {
+                method_name: "toByteArray".to_string(),
+                target: Some(t),
+                arguments: Vec::new(),
+                locally_free: Vec::new(),
+                connective_used: false,
+            })),
+        };
+        t = Par { exprs: vec![e], ..Default::default() };
+    }
+    t
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let kind = args.get(1).map(|s| s.as_str()).unwrap_or("plus").to_string();
@@ -113,6 +139,7 @@ fn main() {
         .spawn(move || -> Result<(), String> {
             let par = match kind_for_thread.as_str() {
                 "list" => build_list(depth),
+                "methodchain" => build_methodchain(depth),
                 _ => build_plus(depth),
             };
             let env: Env<Par> = Env::new();
