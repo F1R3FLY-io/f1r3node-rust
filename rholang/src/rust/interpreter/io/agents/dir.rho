@@ -1,20 +1,23 @@
 // Dir agent — wraps a directory root with the FIP `Dir` method surface.
 //
 // Currently ships: `entries`, `stat`, `exists`, `removeFile`,
-// `removeDir`, `rename`, `copyFile`, `default`. Extended in
-// follow-up PRs with `openFile`, `openDir` (need File-agent
-// composition), `chmod`, `chown` (need mode-string parser).
+// `removeDir`, `rename`, `copyFile`, `openFile`, `openDir`,
+// `default`. Extended in follow-up PRs with `chmod`, `chown`
+// (need mode-string parser).
 //
 // This file is an `agent` block that expects the enclosing scope
 // to bind:
 //   - `Dir`                — the agent's constructor channel
+//   - `File`               — the `File` agent's constructor
+//                            channel (`openFile` composes with it)
 //   - `nQuarantine`,
 //     `nEntries`, `nStat`,
 //     `nExists`,
 //     `nRemoveFile`,
 //     `nRemoveDir`,
 //     `nRename`,
-//     `nCopyFile`          — fixed-channel Pars for the native
+//     `nCopyFile`,
+//     `nOpen`              — fixed-channel Pars for the native
 //                            primitives, obtained via `NormalizerEnv`
 //                            injection at compile time (see
 //                            `interpreter::io::injections`).
@@ -180,6 +183,98 @@ agent Dir {
           }
           catch @[code, msg] {
             return!([false, code, msg])
+          }
+        }
+        catch @[code, msg] {
+          return!([false, code, msg])
+        }
+      }
+      catch @[code, msg] {
+        return!([false, code, msg])
+      }
+    }
+  } |
+
+  method openFile(relPath, mode) {
+    // Quarantine the caller-supplied path, open an fd through
+    // `nativeOpen`, then construct a `File` agent around the
+    // fd. Returns `[true, fileBundle]` on success -- `fileBundle`
+    // is the `bundle+{*this}` value from `File`'s constructor,
+    // usable by the caller as a send target for File methods:
+    //
+    //     try @[file] <- dir!openFile("notes.txt", "r") {
+    //       try @[bytes] <- file!?("read", 100) { ... }
+    //       catch @[code, msg] { ... }
+    //     }
+    //     catch @[code, msg] { ... }
+    //
+    // This is the first agent-composition in the fileio stack;
+    // the `Fs` agent's `openFile` will follow the same shape but
+    // operate on the absolute-path level rather than
+    // relative-to-a-Dir-root.
+    //
+    // `mode` is a String from the fopen-style set the native
+    // handler accepts (`"r"`, `"w"`, `"a"`, `"r+"`, `"w+"`,
+    // `"a+"`, `"wx"`, `"w+x"`). Options-map form
+    // (`{"mode": "r+", "create": true}`) deferred to a
+    // follow-up alongside `openDir`'s options.
+    for (@root <<- @(*this, "root")) {
+      try @[canonPath] <- nQuarantine!?(root, relPath) {
+        try @[fd] <- nOpen!?(canonPath, mode) {
+          new fileRet in {
+            File!(*fileRet, fd) |
+            for (@fileBundle <- fileRet) {
+              // fileBundle is the bundle process from File's
+              // constructor -- forward as a Process in the
+              // reply tuple. Caller's `try @[file] <- ...`
+              // binds `file` as a Process; `file!method(...)`
+              // uses it as a channel via Rholang's implicit
+              // process->name quoting.
+              return!([true, fileBundle])
+            }
+          }
+        }
+        catch @[code, msg] {
+          return!([false, code, msg])
+        }
+      }
+      catch @[code, msg] {
+        return!([false, code, msg])
+      }
+    }
+  } |
+
+  method openDir(relPath) {
+    // Quarantine the caller-supplied path, verify it names a
+    // directory via `nativeStat`, then construct a nested `Dir`
+    // agent rooted at the canonical path. Returns
+    // `[true, dirBundle]` on success. Unlike `openFile`, no fd
+    // is opened -- Dir agents hold a path, not an fd.
+    //
+    // `mode` and `path: true` options from the FIP deferred to
+    // a follow-up. Currently returns a fully-privileged Dir
+    // (equivalent to the FIP's `mode: "rw"` default for the
+    // flag form); mode restriction on the returned agent needs
+    // a mode-parameterized Dir constructor.
+    for (@root <<- @(*this, "root")) {
+      try @[canonPath] <- nQuarantine!?(root, relPath) {
+        try @[statRecord] <- nStat!?(canonPath) {
+          // The stat record is a Map; `kind` field is one of
+          // "file"/"dir"/"symlink"/"other". Only "dir" is
+          // acceptable here -- a "file" (or anything else)
+          // means the caller pointed at the wrong thing.
+          match statRecord.get("kind") {
+            "dir" => {
+              new dirRet in {
+                Dir!(*dirRet, canonPath) |
+                for (@dirBundle <- dirRet) {
+                  return!([true, dirBundle])
+                }
+              }
+            }
+            _ => {
+              return!([false, "FSERR_BAD_ARG", ("path is not a directory:", relPath)])
+            }
           }
         }
         catch @[code, msg] {

@@ -24,7 +24,7 @@ use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use models::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
 use rholang::rust::interpreter::accounting::costs::Cost;
 use rholang::rust::interpreter::external_services::ExternalServices;
-use rholang::rust::interpreter::io::agents::DIR_AGENT_SRC;
+use rholang::rust::interpreter::io::agents::{DIR_AGENT_SRC, FILE_AGENT_SRC};
 use rholang::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
 use rholang::rust::interpreter::system_processes::FixedChannels;
 use rholang::rust::interpreter::test_utils::resources::create_runtimes_with_services;
@@ -74,8 +74,16 @@ fn temp_dir(tag: &str) -> std::path::PathBuf {
 }
 
 /// The native URNs the `Dir` agent + test harness need.
+///
+/// Includes all URNs referenced by both `Dir` and (transitively)
+/// `File`, since `Dir.openFile` composes with `File` and Dir's
+/// agent block references `nOpen` + the `File` constructor
+/// channel. The normalizer catches unbound names regardless of
+/// whether the referring method is invoked, so every test's
+/// enclosing scope must supply the full set.
 fn dir_agent_env() -> HashMap<String, Par> {
     let mut env: HashMap<String, Par> = HashMap::new();
+    // Dir's own natives.
     env.insert(
         "rho:io:fs:native:1.0.0/quarantine".to_string(),
         FixedChannels::native_quarantine(),
@@ -108,16 +116,56 @@ fn dir_agent_env() -> HashMap<String, Par> {
         "rho:io:fs:native:1.0.0/copyFile".to_string(),
         FixedChannels::native_copy_file(),
     );
+    // `openFile` needs the open primitive + the File agent's
+    // full native set (since embedding File also requires
+    // resolving its own URN references at normalization time).
+    env.insert(
+        "rho:io:fs:native:1.0.0/open".to_string(),
+        FixedChannels::native_open(),
+    );
+    env.insert(
+        "rho:io:fs:native:1.0.0/read".to_string(),
+        FixedChannels::native_read(),
+    );
+    env.insert(
+        "rho:io:fs:native:1.0.0/write".to_string(),
+        FixedChannels::native_write(),
+    );
+    env.insert(
+        "rho:io:fs:native:1.0.0/seek".to_string(),
+        FixedChannels::native_seek(),
+    );
+    env.insert(
+        "rho:io:fs:native:1.0.0/tell".to_string(),
+        FixedChannels::native_tell(),
+    );
+    env.insert(
+        "rho:io:fs:native:1.0.0/size".to_string(),
+        FixedChannels::native_size(),
+    );
+    env.insert(
+        "rho:io:fs:native:1.0.0/truncate".to_string(),
+        FixedChannels::native_truncate(),
+    );
+    env.insert(
+        "rho:io:fs:native:1.0.0/flush".to_string(),
+        FixedChannels::native_flush(),
+    );
+    env.insert(
+        "rho:io:fs:native:1.0.0/close".to_string(),
+        FixedChannels::native_close(),
+    );
     env
 }
 
-/// Wrap `body` in the outer `new`-scope + inject the `Dir` agent
-/// block. Constructs a Dir instance rooted at `root_path` and
-/// binds `dirAgent` for the body to invoke.
+/// Wrap `body` in the outer `new`-scope + inject BOTH the `Dir`
+/// and `File` agent blocks (Dir.openFile constructs File
+/// instances). Constructs a Dir instance rooted at `root_path`
+/// and binds `dirAgent` for the body to invoke.
 fn wrap(body: &str, root_path: &str) -> String {
     format!(
         r#"new
-     Dir,
+     Dir, File,
      nQuarantine(`rho:io:fs:native:1.0.0/quarantine`),
      nEntries(`rho:io:fs:native:1.0.0/entries`),
      nStat(`rho:io:fs:native:1.0.0/stat`),
@@ -125,9 +173,20 @@ fn wrap(body: &str, root_path: &str) -> String {
      nRemoveFile(`rho:io:fs:native:1.0.0/removeFile`),
      nRemoveDir(`rho:io:fs:native:1.0.0/removeDir`),
      nRename(`rho:io:fs:native:1.0.0/rename`),
-     nCopyFile(`rho:io:fs:native:1.0.0/copyFile`)
+     nCopyFile(`rho:io:fs:native:1.0.0/copyFile`),
+     nOpen(`rho:io:fs:native:1.0.0/open`),
+     nRead(`rho:io:fs:native:1.0.0/read`),
+     nWrite(`rho:io:fs:native:1.0.0/write`),
+     nSeek(`rho:io:fs:native:1.0.0/seek`),
+     nTell(`rho:io:fs:native:1.0.0/tell`),
+     nSize(`rho:io:fs:native:1.0.0/size`),
+     nTruncate(`rho:io:fs:native:1.0.0/truncate`),
+     nFlush(`rho:io:fs:native:1.0.0/flush`),
+     nClose(`rho:io:fs:native:1.0.0/close`)
    in {{
      {DIR_AGENT_SRC}
+     |
+     {FILE_AGENT_SRC}
      |
      new dirRet in {{
        // Dir constructor: `Dir!(replyChan_as_process, rootPath)`.
@@ -732,4 +791,269 @@ async fn dir_agent_remove_dir_empty_relpath_is_rejected() {
     }
 
     let _ = std::fs::remove_dir_all(&root);
+}
+
+// --- openFile / openDir: agent-composition tests ------------------
+//
+// `Dir.openFile(relPath, mode)` and `Dir.openDir(relPath)` are the
+// first agent-composing methods in the fileio stack. They quarantine
+// the caller-supplied path, then construct a `File` (or nested `Dir`)
+// instance around the resolved handle/path and hand back the bundle
+// via the reply tuple. Downstream callers use the returned agent as
+// a plain send channel via Rholang's implicit process->name η.
+//
+// These tests exercise the full composition: `Dir.openFile` -> get a
+// File bundle -> call `File.read` on it -> assert content. Any bug in
+// the composition (wrong reply shape, missing agent binding,
+// mis-bundled `*this`) surfaces here.
+
+/// `openFile` composes correctly: caller receives a File bundle
+/// and uses it to `read` the file's bytes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn dir_agent_open_file_returns_functional_file() {
+    let root = temp_dir("open_file_ok");
+    std::fs::write(root.join("hello.txt"), b"hello").expect("write hello");
+
+    // openFile -> get file bundle -> file!?("read", 5) via raw send
+    // (return-first shape, as in fileio_file_agent_spec.rs). We
+    // bind `file` as a Process via `@[true, file]`; using it as a
+    // send channel relies on Rholang's implicit process->name
+    // quoting.
+    let body = r#"
+        new openRet in {
+          dirAgent!(*openRet, "openFile", "hello.txt", "r") |
+          for (@openResult <- openRet) {
+            match openResult {
+              [true, file] => {
+                new readRet in {
+                  @file!(*readRet, "read", 5) |
+                  for (@readResult <- readRet) { @"sink"!(readResult) }
+                }
+              }
+              _ => @"sink"!(("openFile-failed", openResult))
+            }
+          }
+        }
+    "#;
+    let src = wrap(body, &root.to_string_lossy());
+
+    let runtime = mk_runtime().await;
+    let rand = Blake2b512Random::create_from_bytes(&[]);
+    let phlo = Cost::create(i64::MAX, "dir-open-file-ok".to_string());
+    let result = runtime
+        .evaluate(&src, phlo, dir_agent_env(), rand)
+        .await
+        .expect("evaluate");
+    assert!(result.errors.is_empty(), "eval errors: {:?}", result.errors);
+
+    let sink = observe_sink(&runtime).await;
+    let _ = std::fs::remove_dir_all(&root);
+
+    // Expected: [true, GByteArray([104, 101, 108, 108, 111])]
+    // = "hello" ASCII.
+    assert!(
+        sink.contains("GBool(true)"),
+        "expected read success tuple on sink, got: {sink}"
+    );
+    assert!(
+        sink.contains("GByteArray([104, 101, 108, 108, 111])"),
+        "expected ASCII bytes of \"hello\", got: {sink}"
+    );
+}
+
+/// `openFile` on a `..` escape is caught by quarantine before
+/// any `nativeOpen` fires. Escape target file exists on disk to
+/// prove the rejection is on principle.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn dir_agent_open_file_rejects_escape() {
+    let root = temp_dir("open_file_escape");
+    let outside = root.parent().unwrap().join("secret.txt");
+    std::fs::write(&outside, b"secret").expect("write outside");
+
+    let body = r#"
+        new openRet in {
+          dirAgent!(*openRet, "openFile", "../secret.txt", "r") |
+          for (@result <- openRet) { @"sink"!(result) }
+        }
+    "#;
+    let src = wrap(body, &root.to_string_lossy());
+
+    let runtime = mk_runtime().await;
+    let rand = Blake2b512Random::create_from_bytes(&[]);
+    let phlo = Cost::create(i64::MAX, "dir-open-file-escape".to_string());
+    let result = runtime
+        .evaluate(&src, phlo, dir_agent_env(), rand)
+        .await
+        .expect("evaluate");
+    assert!(result.errors.is_empty(), "eval errors: {:?}", result.errors);
+
+    let sink = observe_sink(&runtime).await;
+    assert!(outside.exists(), "outside file must be untouched");
+    let _ = std::fs::remove_file(&outside);
+    let _ = std::fs::remove_dir_all(&root);
+
+    assert!(
+        sink.contains(r#"GString("FSERR_QUARANTINE")"#),
+        "expected FSERR_QUARANTINE on escape, got: {sink}"
+    );
+}
+
+/// `openFile` on a missing file with mode "r" surfaces the
+/// native's `NotFound` error (mapped to FSERR_NOT_FOUND). Proves
+/// native errors bubble through the openFile composition without
+/// being masked by the agent-composition layer.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn dir_agent_open_file_missing_returns_not_found() {
+    let root = temp_dir("open_file_missing");
+
+    let body = r#"
+        new openRet in {
+          dirAgent!(*openRet, "openFile", "nope.txt", "r") |
+          for (@result <- openRet) { @"sink"!(result) }
+        }
+    "#;
+    let src = wrap(body, &root.to_string_lossy());
+
+    let runtime = mk_runtime().await;
+    let rand = Blake2b512Random::create_from_bytes(&[]);
+    let phlo = Cost::create(i64::MAX, "dir-open-file-missing".to_string());
+    let result = runtime
+        .evaluate(&src, phlo, dir_agent_env(), rand)
+        .await
+        .expect("evaluate");
+    assert!(result.errors.is_empty(), "eval errors: {:?}", result.errors);
+
+    let sink = observe_sink(&runtime).await;
+    let _ = std::fs::remove_dir_all(&root);
+
+    // FSERR_NOT_FOUND (not FSERR_QUARANTINE — path resolves inside
+    // root but doesn't exist).
+    assert!(
+        sink.contains(r#"GString("FSERR_NOT_FOUND")"#),
+        "expected FSERR_NOT_FOUND for missing file, got: {sink}"
+    );
+}
+
+/// `openDir` composes correctly: returned nested Dir handles
+/// `entries()` on the subdirectory.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn dir_agent_open_dir_returns_functional_dir() {
+    let root = temp_dir("open_dir_ok");
+    let sub = root.join("sub");
+    std::fs::create_dir(&sub).expect("mkdir sub");
+    std::fs::write(sub.join("child.txt"), b"c").expect("write child");
+
+    let body = r#"
+        new openRet in {
+          dirAgent!(*openRet, "openDir", "sub") |
+          for (@openResult <- openRet) {
+            match openResult {
+              [true, subDir] => {
+                new entRet in {
+                  @subDir!(*entRet, "entries") |
+                  for (@entResult <- entRet) { @"sink"!(entResult) }
+                }
+              }
+              _ => @"sink"!(("openDir-failed", openResult))
+            }
+          }
+        }
+    "#;
+    let src = wrap(body, &root.to_string_lossy());
+
+    let runtime = mk_runtime().await;
+    let rand = Blake2b512Random::create_from_bytes(&[]);
+    let phlo = Cost::create(i64::MAX, "dir-open-dir-ok".to_string());
+    let result = runtime
+        .evaluate(&src, phlo, dir_agent_env(), rand)
+        .await
+        .expect("evaluate");
+    assert!(result.errors.is_empty(), "eval errors: {:?}", result.errors);
+
+    let sink = observe_sink(&runtime).await;
+    let _ = std::fs::remove_dir_all(&root);
+
+    // Expected: entries() on `sub` returns a list containing
+    // child.txt.
+    assert!(
+        sink.contains("GBool(true)"),
+        "expected entries success, got: {sink}"
+    );
+    assert!(
+        sink.contains(r#"GString("child.txt")"#),
+        "expected child.txt in subdir entries, got: {sink}"
+    );
+}
+
+/// `openDir` on a regular file returns `[false, "FSERR_BAD_ARG", ...]`.
+/// Proves the kind-check fires before constructing a bogus Dir.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn dir_agent_open_dir_on_regular_file_returns_bad_arg() {
+    let root = temp_dir("open_dir_notdir");
+    std::fs::write(root.join("file.txt"), b"not a dir").expect("write file");
+
+    let body = r#"
+        new openRet in {
+          dirAgent!(*openRet, "openDir", "file.txt") |
+          for (@result <- openRet) { @"sink"!(result) }
+        }
+    "#;
+    let src = wrap(body, &root.to_string_lossy());
+
+    let runtime = mk_runtime().await;
+    let rand = Blake2b512Random::create_from_bytes(&[]);
+    let phlo = Cost::create(i64::MAX, "dir-open-dir-notdir".to_string());
+    let result = runtime
+        .evaluate(&src, phlo, dir_agent_env(), rand)
+        .await
+        .expect("evaluate");
+    assert!(result.errors.is_empty(), "eval errors: {:?}", result.errors);
+
+    let sink = observe_sink(&runtime).await;
+    let _ = std::fs::remove_dir_all(&root);
+
+    assert!(
+        sink.contains("GBool(false)"),
+        "expected error tuple on sink, got: {sink}"
+    );
+    assert!(
+        sink.contains(r#"GString("FSERR_BAD_ARG")"#),
+        "expected FSERR_BAD_ARG code on sink, got: {sink}"
+    );
+}
+
+/// `openDir` on a `..` escape is caught by quarantine.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn dir_agent_open_dir_rejects_escape() {
+    let root = temp_dir("open_dir_escape");
+    // Create an outside dir so the escape target exists.
+    let outside_dir = root.parent().unwrap().join("outside_dir");
+    std::fs::create_dir_all(&outside_dir).expect("mkdir outside");
+
+    let body = r#"
+        new openRet in {
+          dirAgent!(*openRet, "openDir", "../outside_dir") |
+          for (@result <- openRet) { @"sink"!(result) }
+        }
+    "#;
+    let src = wrap(body, &root.to_string_lossy());
+
+    let runtime = mk_runtime().await;
+    let rand = Blake2b512Random::create_from_bytes(&[]);
+    let phlo = Cost::create(i64::MAX, "dir-open-dir-escape".to_string());
+    let result = runtime
+        .evaluate(&src, phlo, dir_agent_env(), rand)
+        .await
+        .expect("evaluate");
+    assert!(result.errors.is_empty(), "eval errors: {:?}", result.errors);
+
+    let sink = observe_sink(&runtime).await;
+    assert!(outside_dir.exists(), "outside dir must be untouched");
+    let _ = std::fs::remove_dir_all(&outside_dir);
+    let _ = std::fs::remove_dir_all(&root);
+
+    assert!(
+        sink.contains(r#"GString("FSERR_QUARANTINE")"#),
+        "expected FSERR_QUARANTINE on escape, got: {sink}"
+    );
 }

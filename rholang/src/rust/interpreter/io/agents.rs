@@ -20,14 +20,23 @@
 //! - `file.rho` — `nRead`, `nWrite`, `nSeek`, `nTell`, `nSize`,
 //!   `nTruncate`, `nFlush`, `nClose`.
 //! - `dir.rho`  — `nQuarantine`, `nEntries`, `nStat`, `nExists`,
-//!   `nRemoveFile`, `nRemoveDir`, `nRename`, `nCopyFile`.
+//!   `nRemoveFile`, `nRemoveDir`, `nRename`, `nCopyFile`, `nOpen`,
+//!   plus the `File` constructor channel (`openFile` composes
+//!   with the File agent).
 
 /// Source of the `File` agent block. Expects `File`, `nRead`,
 /// `nWrite`, `nSeek`, `nTell`, `nSize`, `nTruncate`, `nFlush`,
 /// `nClose` to be bound in the enclosing scope.
 pub const FILE_AGENT_SRC: &str = include_str!("agents/file.rho");
 
-/// Source of the `Dir` agent block. Expects `Dir`, `nQuarantine`,
-/// `nEntries`, `nStat`, `nExists`, `nRemoveFile`, `nRemoveDir`,
-/// `nRename`, `nCopyFile` to be bound in the enclosing scope.
+/// Source of the `Dir` agent block. Expects `Dir`, `File`,
+/// `nQuarantine`, `nEntries`, `nStat`, `nExists`, `nRemoveFile`,
+/// `nRemoveDir`, `nRename`, `nCopyFile`, `nOpen` to be bound in
+/// the enclosing scope.
+///
+/// The `File` binding is required because `Dir.openFile`
+/// constructs a `File` instance around the fd returned by
+/// `nativeOpen`. In practice this means the genesis-installed
+/// `Fs` agent's outer `new`-scope must bind BOTH agent
+/// classes and their combined native URN set.
 pub const DIR_AGENT_SRC: &str = include_str!("agents/dir.rho");
