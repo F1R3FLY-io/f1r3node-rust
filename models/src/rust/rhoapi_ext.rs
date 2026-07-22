@@ -115,8 +115,10 @@ use prost::encoding::wire_type::WireType;
 use prost::encoding::{self, DecodeContext};
 use prost::DecodeError;
 
+use super::canonical_path::decode_trie_path;
 use super::pathmap_crate_type_mapper::{
-    fields_match_canonical_prost, intern_epathmap_via_store, InternedEPathMap,
+    encode_ground_field8, eval_stable_epathmap, fields_match_canonical_prost, ground_field8_len,
+    ground_path_stream, intern_epathmap_via_store, InternedEPathMap,
 };
 use crate::rhoapi::{Par, Var};
 
@@ -449,7 +451,14 @@ impl EPathMap {
     /// (never the cached path — the cached path would trivially compare the
     /// cache against itself).
     fn cached_bytes_still_valid(&self, interned: &InternedEPathMap) -> bool {
-        fields_match_canonical_prost(self, &interned.canonical_prost)
+        // Ground VALUE arm (non-empty `path_stream`): the CURRENT entries must
+        // still walk to the cached U(m). Non-ground / empty: the pre-wire field
+        // walk must still stream-encode to the cached canonical bytes.
+        if !interned.path_stream.is_empty() {
+            ground_path_stream(&self.ps) == interned.path_stream
+        } else {
+            fields_match_canonical_prost(self, &interned.canonical_prost)
+        }
     }
 }
 
@@ -506,14 +515,29 @@ impl prost::Message for EPathMap {
             );
             // THE digest-pipeline kill: one memcpy of the canonical bytes
             // instead of the O(map) field walk. Same bytes by construction
-            // (canonical_prost IS this value's field-walk encoding), gated
-            // by the P0 prost goldens.
+            // (canonical_prost IS this value's canonical encoding — field 8
+            // U(m) for a ground map, or the field walk otherwise), gated by
+            // the P0 prost goldens.
             buf.put_slice(&interned.canonical_prost);
+            return;
+        }
+        // Empty cell (incl. during the intern rendezvous). A non-empty GROUND
+        // map emits the VALUE arm: proto field 8 = U(m). These bytes are
+        // IDENTICAL to the interned `canonical_prost`, so the digest is the
+        // same whether or not the cell is filled (interning caches U(m); this
+        // rare pre-intern path rebuilds the trie once). Non-ground / empty
+        // maps take the pre-wire field walk (`ps` at tag 1).
+        if eval_stable_epathmap(self) && !self.ps.is_empty() {
+            encode_ground_field8(&ground_path_stream(&self.ps), buf);
             return;
         }
         self.encode_raw_fields(buf);
     }
 
+    // `DecodeError::new` is prost's only public constructor for a custom
+    // decode error (it is `doc(hidden)` + deprecation-warned but not yet
+    // removed); the tag-8 validation arm needs it.
+    #[allow(deprecated)]
     fn merge_field(
         &mut self,
         tag: u32,
@@ -570,6 +594,46 @@ impl prost::Message for EPathMap {
                     error
                 })
             }
+            8u32 => {
+                // VALUE arm: field 8 (serialized_paths, bytes) = U(m). Decode
+                // the length-framed key stream and reconstruct `ps` by decoding
+                // each trie key. The result is canonical (trie order) by
+                // construction, so a decoded ground map compares
+                // structurally-equal to any permuted construction of the same
+                // entry multiset. (The shadow cell was reset at the top of
+                // merge_field, so the map re-interns on its next touch.)
+                let mut region: Vec<u8> = Vec::new();
+                encoding::bytes::merge(wire_type, &mut region, buf, ctx).map_err(|mut error| {
+                    error.push(STRUCT_NAME, "serialized_paths");
+                    error
+                })?;
+                let mut cursor = 0usize;
+                let mut entries: Vec<Par> = Vec::new();
+                while cursor + 4 <= region.len() {
+                    let len = u32::from_le_bytes(
+                        region[cursor..cursor + 4].try_into().expect("4-byte length"),
+                    ) as usize;
+                    cursor += 4;
+                    let end = cursor.checked_add(len).ok_or_else(|| {
+                        DecodeError::new("EPathMap serialized_paths: key length overflow")
+                    })?;
+                    if end > region.len() {
+                        return Err(DecodeError::new("EPathMap serialized_paths: truncated key"));
+                    }
+                    let par = decode_trie_path(&region[cursor..end]).map_err(|codec_error| {
+                        DecodeError::new(format!("EPathMap serialized_paths key: {codec_error:?}"))
+                    })?;
+                    entries.push(par);
+                    cursor = end;
+                }
+                if cursor != region.len() {
+                    return Err(DecodeError::new(
+                        "EPathMap serialized_paths: trailing bytes after the final key",
+                    ));
+                }
+                self.ps = entries.into();
+                Ok(())
+            }
             _ => encoding::skip_field(wire_type, tag, buf, ctx),
         }
     }
@@ -584,9 +648,14 @@ impl prost::Message for EPathMap {
                  its pub fields violates the P3 cell invariant — rebuild via EPathMap::new instead."
             );
             // O(1): InternedEPathMap.encoded_len == canonical_prost.len()
-            // == the field-walk encoded_len of this value (P1 computed it
-            // from these very fields; the debug_assert re-certifies).
+            // == the canonical encoded_len of this value (P1 computed it; the
+            // debug_assert re-certifies).
             return interned.encoded_len;
+        }
+        // Empty cell: a non-empty GROUND map's length is the field-8 (U(m))
+        // length; non-ground / empty maps use the pre-wire field walk.
+        if eval_stable_epathmap(self) && !self.ps.is_empty() {
+            return ground_field8_len(&ground_path_stream(&self.ps));
         }
         self.encoded_len_fields()
     }

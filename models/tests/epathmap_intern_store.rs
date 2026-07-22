@@ -476,6 +476,7 @@ fn forced_digest_collision_disambiguates_and_fires_the_diagnostic() {
         map: donor_interned.map.clone(),
         connective_used: donor_interned.connective_used,
         locally_free: donor_interned.locally_free.clone(),
+        path_stream: donor_interned.path_stream.clone(),
         canonical_prost: donor_interned.canonical_prost.clone(),
         encoded_len: donor_interned.encoded_len,
         digest: victim_digest,

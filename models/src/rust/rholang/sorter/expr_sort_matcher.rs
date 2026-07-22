@@ -9,6 +9,7 @@ use crate::rhoapi::{
 };
 use crate::rust::par_map::ParMap;
 use crate::rust::par_map_type_mapper::ParMapTypeMapper;
+use crate::rust::pathmap_crate_type_mapper::{canonicalize_ground_epathmap, eval_stable_epathmap};
 use crate::rust::par_set::ParSet;
 use crate::rust::par_set_type_mapper::ParSetTypeMapper;
 use crate::rust::rholang::sorter::par_sort_matcher::ParSortMatcher;
@@ -509,29 +510,41 @@ impl Sortable<Expr> for ExprSortMatcher {
                 }
 
                 ExprInstance::EPathmapBody(pathmap) => {
-                    // Similar to EListBody - sort all Par elements in the pathmap
-                    let pars: Vec<ScoredTerm<Par>> = pathmap
+                    // EPathMap wire: a GROUND map's canonical order is TRIE
+                    // order — a PathMap zipper walk (NO sort), recursively
+                    // canonical (`canonicalize_ground_epathmap`). This makes
+                    // permuted / duplicated constructions of the same entry
+                    // multiset normalize IDENTICALLY, so the structural
+                    // `EPathMap` comparators (and hence COMM matching) fire
+                    // order-insensitively and runtime == normalization. A
+                    // non-ground / empty map keeps the pre-wire behavior:
+                    // recursively sort each entry, preserve entry order.
+                    let canonical = if eval_stable_epathmap(pathmap) && !pathmap.ps.is_empty() {
+                        canonicalize_ground_epathmap(pathmap)
+                    } else {
+                        EPathMap::new(
+                            pathmap
+                                .ps
+                                .iter()
+                                .map(|p| ParSortMatcher::sort_match(p).term)
+                                .collect::<Vec<Par>>(),
+                            pathmap.locally_free.clone(),
+                            pathmap.connective_used,
+                            pathmap.remainder.clone(),
+                        )
+                    };
+                    // Score the (now-canonical) entries so the enclosing sort
+                    // agrees with the emitted term order.
+                    let pars: Vec<ScoredTerm<Par>> = canonical
                         .ps
                         .iter()
                         .map(|p| ParSortMatcher::sort_match(p))
                         .collect();
-
-                    let remainder_score = remainder_score(&pathmap.remainder);
-                    let connective_used_score: i64 = if pathmap.connective_used { 1 } else { 0 };
+                    let remainder_score = remainder_score(&canonical.remainder);
+                    let connective_used_score: i64 = if canonical.connective_used { 1 } else { 0 };
 
                     construct_expr(
-                        // EPathMap fix P3 (PM-2): constructor instead of a
-                        // struct literal (the wrapper's shadow cell is
-                        // private). Fresh cell — the sorted value's bytes
-                        // differ from the source's in general.
-                        ExprInstance::EPathmapBody(EPathMap::new(
-                            // L2: turbofish — `new` now takes `impl Into<SharedPars>`,
-                            // so a bare `.collect()` cannot infer `Vec<Par>`.
-                            pars.clone().into_iter().map(|p| p.term).collect::<Vec<Par>>(),
-                            pathmap.locally_free.clone(),
-                            pathmap.connective_used,
-                            pathmap.remainder.clone(),
-                        )),
+                        ExprInstance::EPathmapBody(canonical),
                         Tree::Node(
                             vec![
                                 Tree::<ScoreAtom>::create_leaf_from_i64(Score::EPATHMAP as i64),

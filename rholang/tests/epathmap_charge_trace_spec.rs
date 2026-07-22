@@ -278,7 +278,12 @@ fn check_trace(label: &str, pinned: &[&str], actual: &[String]) {
 /// charges (persistent publish `send eval`=11, receive `receive eval`=11),
 /// then the publish/receive substitution charges (size-proportional
 /// `substitute_and_charge` `encoded_len` weights — the §0.B mechanism;
-/// `subst=286` is the index-map datum), then the chain: per-link
+/// `subst=186` is the index-map datum — was `subst=286` pre-wire; the
+/// `encoded_len`-proportional charge dropped because a GROUND EPathMap now
+/// serializes as the compact field-8 U(m) key stream instead of the field-1
+/// `ps` walk (487→335 bytes for this fixture). The cost ALGORITHM is
+/// unchanged; the charge follows the smaller wire automatically), then the
+/// chain: per-link
 /// `method call`=10 at dispatch (outermost-first recursion into the target),
 /// the base `var eval`=10, per link innermost-out the link constant
 /// (`incr-prim(1 union cost)=3` for the navigation links,
@@ -294,12 +299,15 @@ const DISCOVERY_TRACE: &[&str] = &[
     "subst=17",
     "subst=24",
     "prim(method call)=10",
-    "subst=286",
+    "subst=186",
     "prim(method call)=10",
     "prim(var eval)=10",
     "incr-prim(1 union cost)=3",
     "prim(lookup)=3",
-    "subst=44",
+    // getSubtrie() RETURNS a ground map; its result substitution is
+    // encoded_len-proportional and follows the compact field-8 U(m) wire
+    // (was subst=44 pre-wire). Cost algorithm unchanged.
+    "subst=36",
     "comm=11",
     "subst=17",
     "subst=11",
@@ -316,7 +324,7 @@ const TAG_GUARD_TRACE: &[&str] = &[
     "subst=7",
     "subst=17",
     "prim(method call)=10",
-    "subst=286",
+    "subst=186",
     "prim(method call)=10",
     "prim(var eval)=10",
     "incr-prim(1 union cost)=3",
@@ -337,7 +345,7 @@ const SIGMA_EXISTS_TRACE: &[&str] = &[
     "subst=7",
     "subst=17",
     "prim(method call)=10",
-    "subst=286",
+    "subst=186",
     "prim(method call)=10",
     "prim(var eval)=10",
     "incr-prim(1 union cost)=3",
@@ -358,7 +366,7 @@ const SIGMA_CHAIN_TRACE: &[&str] = &[
     "subst=7",
     "subst=17",
     "prim(method call)=10",
-    "subst=286",
+    "subst=186",
     "prim(method call)=10",
     "prim(method call)=10",
     "prim(var eval)=10",

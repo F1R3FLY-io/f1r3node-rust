@@ -2723,16 +2723,24 @@ impl DebruijnInterpreter {
                         .map(|p| self.update_locally_free_par(p.clone()))
                         .collect();
 
+                    let rebuilt = EPathMap::new(
+                        updated_ps,
+                        e1.locally_free.clone(),
+                        e1.connective_used,
+                        None,
+                    );
+                    // EPathMap wire: a GROUND eval result canonicalizes to trie
+                    // order (a PathMap zipper walk, NO sort) so runtime and
+                    // normalization agree — the same map, however constructed,
+                    // compares structurally-equal (COMM fires order-insensitively)
+                    // and hashes to one canonical preimage. A non-ground result
+                    // is returned unchanged.
                     Ok(Expr {
-                        // EPathMap fix P3 (PM-2): constructor instead of a
-                        // struct literal (private shadow cell); fresh cell —
-                        // the re-evaluated value interns on first rendezvous.
-                        expr_instance: Some(ExprInstance::EPathmapBody(EPathMap::new(
-                            updated_ps,
-                            e1.locally_free.clone(),
-                            e1.connective_used,
-                            None,
-                        ))),
+                        expr_instance: Some(ExprInstance::EPathmapBody(
+                            models::rust::pathmap_crate_type_mapper::canonicalize_ground_epathmap(
+                                &rebuilt,
+                            ),
+                        )),
                     })
                 }
 

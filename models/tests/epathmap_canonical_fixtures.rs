@@ -55,9 +55,16 @@ use fixtures::{
 
 mod pinned {
     /// `encoded_len` of each fixture's PROST encoding (== golden byte length).
-    pub const E6A_INDEX_ENCODED_LEN: usize = 487;
-    pub const NESTED_ENCODED_LEN: usize = 52;
-    pub const EZIPPER_ENCODED_LEN: usize = 64;
+    ///
+    /// EPathMap wire re-pin: the three GROUND fixtures now serialize as the
+    /// compact field-8 U(m) key stream (a PathMap zipper walk) instead of the
+    /// field-1 `ps` walk — e6a_index 487→335, nested 52→30, ezipper 64→40. The
+    /// two NON-ground fixtures (locally_free, remainder_connective) stay on the
+    /// term arm, byte-identical. The bincode/serde-json/event-hash goldens are
+    /// UNCHANGED (only the prost wire moved).
+    pub const E6A_INDEX_ENCODED_LEN: usize = 335;
+    pub const NESTED_ENCODED_LEN: usize = 30;
+    pub const EZIPPER_ENCODED_LEN: usize = 40;
     pub const LOCALLY_FREE_ENCODED_LEN: usize = 51;
     pub const REMAINDER_CONNECTIVE_ENCODED_LEN: usize = 23;
 

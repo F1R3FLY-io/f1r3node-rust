@@ -44,6 +44,7 @@ use prost::bytes::buf::UninitSlice;
 use prost::bytes::BufMut;
 use prost::Message;
 
+use super::canonical_path::decode_trie_path;
 use super::pathmap_integration::{
     create_pathmap_from_elements, PathMapCreationResult, RholangPathMap,
 };
@@ -85,8 +86,19 @@ pub struct InternedEPathMap {
     /// (union over entries) — NOT the EPathMap's own field (landed
     /// semantics, value-identical).
     pub locally_free: Vec<u8>,
-    /// The canonical prost encoding of the source EPathMap — the K2 verify
-    /// reference (full fidelity: includes `locally_free` at every level).
+    /// U(m) — the GROUND-arm value serialization: the UNCOMPRESSED,
+    /// trie-ordered, length-framed key stream `repeat( u32-LE keylen ++
+    /// trie_key )`, produced ONCE by a PathMap read-zipper walk over `map`
+    /// (no sort; trie order = canonical order). EMPTY for non-ground maps.
+    /// The wire payload of proto field 8 (`serialized_paths`) and, for ground
+    /// maps, the sole content of [`Self::canonical_prost`] / the digest
+    /// preimage. NEVER deflated.
+    pub path_stream: Vec<u8>,
+    /// The canonical prost encoding of the source EPathMap — the digest
+    /// preimage + K2 verify reference. For a GROUND map this is the field-8
+    /// message (just `serialized_paths` = U(m); `locally_free`/
+    /// `connective_used`/`remainder` are at prost defaults and omitted). For a
+    /// non-ground map it is the pre-wire field walk (`ps` at tag 1 + 3/4/5).
     pub canonical_prost: Vec<u8>,
     /// `Message::encoded_len()` of the source EPathMap
     /// (`== canonical_prost.len()`), computed ONCE (amendment PM-7).
@@ -448,6 +460,48 @@ pub fn interned_epathmap(e_pathmap: &EPathMap) -> Arc<InternedEPathMap> {
 /// discipline, upgraded to REUSE: the re-lock re-scan returns a racing
 /// winner's `Arc`, keeping every collision list pairwise byte-distinct).
 pub(crate) fn intern_epathmap_via_store(e_pathmap: &EPathMap) -> Arc<InternedEPathMap> {
+    // GROUND fast-path (non-empty eval_stable map): build the trie ONCE
+    // (idempotent insertion = dedup) and content-address by U(m). A permuted
+    // or duplicated construction yields the SAME trie ⇒ the SAME U(m) ⇒ the
+    // SAME digest ⇒ ONE interned entry. `built` is reused for the entry — no
+    // ~3× rebuild, no encode_raw round-trip through a temp trie.
+    if eval_stable_epathmap(e_pathmap) && !e_pathmap.ps.is_empty() {
+        let built = create_pathmap_from_elements(&e_pathmap.ps, None);
+        let path_stream = path_stream_of(&built.map);
+        let canonical_prost = ground_canonical_prost(&path_stream);
+        let digest = blake2b_256(&canonical_prost);
+        {
+            let mut store = intern_store()
+                .lock()
+                .expect("EPathMap intern store mutex poisoned");
+            if let Some((last_use, bucket)) = store.get_mut(&digest) {
+                for entry in bucket.iter() {
+                    if entry.canonical_prost == canonical_prost {
+                        *last_use = next_intern_tick();
+                        return Arc::clone(entry);
+                    }
+                }
+                note_digest_collision();
+            }
+        }
+        let encoded_len = canonical_prost.len();
+        return store_insert(Arc::new(InternedEPathMap {
+            map: built.map,
+            connective_used: built.connective_used,
+            locally_free: built.locally_free,
+            path_stream,
+            canonical_prost,
+            encoded_len,
+            digest,
+            entry_count: e_pathmap.ps.len(),
+            eval_stable: true,
+            serde_bytes: OnceLock::new(),
+        }));
+    }
+
+    // NON-GROUND (or empty) map: the pre-wire field walk (`ps` at tag 1 + the
+    // 3/4/5 metadata fields), unchanged — zero-alloc streamed-digest lookup,
+    // build + insert on miss.
     let digest = canonical_prost_digest(e_pathmap);
 
     {
@@ -482,6 +536,7 @@ pub(crate) fn intern_epathmap_via_store(e_pathmap: &EPathMap) -> Arc<InternedEPa
         map: built.map,
         connective_used: built.connective_used,
         locally_free: built.locally_free,
+        path_stream: Vec::new(),
         canonical_prost,
         encoded_len,
         digest,
@@ -490,14 +545,118 @@ pub(crate) fn intern_epathmap_via_store(e_pathmap: &EPathMap) -> Arc<InternedEPa
         serde_bytes: OnceLock::new(),
     });
 
+    store_insert(entry)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// U(m) helpers + the shared store rendezvous (EPathMap native byte-array wire)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Blake2b-256 of raw bytes — the digest of a `canonical_prost` preimage.
+fn blake2b_256(bytes: &[u8]) -> [u8; 32] {
+    let mut hasher = Blake2b::<U32>::new();
+    hasher.update(bytes);
+    hasher.finalize().into()
+}
+
+/// U(m) from a built trie: a read-zipper walk yielding, in trie order (NO
+/// sort), `repeat( u32-LE keylen ++ trie_key )`. This is the uncompressed twin
+/// of PathMap's `serialize_paths` walk (minus the disqualifying deflate) — the
+/// canonical, insertion-order-independent value serialization of a ground map.
+pub(crate) fn path_stream_of(map: &RholangPathMap) -> Vec<u8> {
+    use pathmap::zipper::{ZipperIteration, ZipperMoving};
+    let mut rz = map.read_zipper();
+    let mut stream = Vec::new();
+    while rz.to_next_val() {
+        let key = rz.path();
+        stream.extend_from_slice(&(key.len() as u32).to_le_bytes());
+        stream.extend_from_slice(key);
+    }
+    stream
+}
+
+/// U(m) for a ground map's entries: build the trie (idempotent insertion =
+/// dedup) then [`path_stream_of`]. Used by the extern `encode_raw`/`encoded_len`
+/// on the rare pre-intern serialization of a not-yet-interned ground map.
+pub(crate) fn ground_path_stream(ps: &[Par]) -> Vec<u8> {
+    path_stream_of(&create_pathmap_from_elements(ps, None).map)
+}
+
+/// Emit proto field 8 (`serialized_paths`, length-delimited bytes) = U(m).
+pub(crate) fn encode_ground_field8(path_stream: &[u8], buf: &mut impl BufMut) {
+    prost::encoding::encode_key(8u32, prost::encoding::WireType::LengthDelimited, buf);
+    prost::encoding::encode_varint(path_stream.len() as u64, buf);
+    buf.put_slice(path_stream);
+}
+
+/// `encoded_len` of proto field 8 (`serialized_paths`) = U(m).
+pub(crate) fn ground_field8_len(path_stream: &[u8]) -> usize {
+    prost::encoding::key_len(8u32)
+        + prost::encoding::encoded_len_varint(path_stream.len() as u64)
+        + path_stream.len()
+}
+
+/// A ground map's canonical prost bytes: JUST field 8 (`serialized_paths` =
+/// U(m)). `locally_free`/`connective_used`/`remainder` are at prost defaults
+/// (eval_stable ⇒ empty) and omitted.
+pub(crate) fn ground_canonical_prost(path_stream: &[u8]) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(ground_field8_len(path_stream));
+    encode_ground_field8(path_stream, &mut buf);
+    buf
+}
+
+/// The canonical entries of a GROUND map, in trie order (a read-zipper walk,
+/// NO sort), each RECURSIVELY canonical: every entry is `decode_trie_path` of
+/// its trie key, so a nested map's own entries are canonicalized too
+/// (`decode∘encode` is the codec's canonical fixed point). This is the order
+/// that makes the structural `EPathMap::eq`/`Hash`/`Ord` insensitive to
+/// construction order.
+fn canonical_ps_from_trie(map: &RholangPathMap) -> Vec<Par> {
+    use pathmap::zipper::{ZipperIteration, ZipperMoving};
+    let mut rz = map.read_zipper();
+    let mut ps = Vec::new();
+    while rz.to_next_val() {
+        let key = rz.path();
+        ps.push(decode_trie_path(key).expect("an intern trie key is always a valid codec path"));
+    }
+    ps
+}
+
+/// Canonicalize a GROUND EPathMap: return an equal-valued map whose `ps` is in
+/// trie order and recursively canonical (so any permuted/duplicated
+/// construction of the same entry multiset yields the SAME `ps`, and the
+/// structural comparators fire). Non-ground or empty maps are returned
+/// unchanged (their term-arm order is already canonical / irrelevant). The
+/// order is produced by a PathMap zipper walk over a trie built once —
+/// never a `Vec::sort`.
+///
+/// Idempotent: canonicalizing a canonical map reproduces it. The result shares
+/// no shadow cell with the input (a fresh value; it interns to the same entry
+/// on first touch).
+pub fn canonicalize_ground_epathmap(e_pathmap: &EPathMap) -> EPathMap {
+    if !eval_stable_epathmap(e_pathmap) || e_pathmap.ps.is_empty() {
+        return e_pathmap.clone();
+    }
+    let built = create_pathmap_from_elements(&e_pathmap.ps, None);
+    EPathMap::new(
+        canonical_ps_from_trie(&built.map),
+        e_pathmap.locally_free.clone(),
+        e_pathmap.connective_used,
+        e_pathmap.remainder.clone(),
+    )
+}
+
+/// The shared store rendezvous: re-scan the digest bucket (a racing thread may
+/// have interned the same bytes while we built) and reuse its `Arc`, else
+/// insert (LRU-evicting a bucket when the store is at capacity). Keeps every
+/// collision list pairwise byte-distinct.
+fn store_insert(entry: Arc<InternedEPathMap>) -> Arc<InternedEPathMap> {
+    let digest = entry.digest;
     let mut store = intern_store()
         .lock()
         .expect("EPathMap intern store mutex poisoned");
     let tick = next_intern_tick();
     if let Some((last_use, bucket)) = store.get_mut(&digest) {
-        // Re-scan: a racing thread may have interned the same bytes while we
-        // built. Reusing its Arc keeps the collision list pairwise
-        // byte-distinct (both computed the same pure result — benign).
         for existing in bucket.iter() {
             if existing.canonical_prost == entry.canonical_prost {
                 *last_use = tick;
@@ -508,8 +667,6 @@ pub(crate) fn intern_epathmap_via_store(e_pathmap: &EPathMap) -> Arc<InternedEPa
         bucket.push(Arc::clone(&entry));
     } else {
         if store.len() >= INTERN_CAPACITY {
-            // Evict the least-recently-used bucket (O(INTERN_CAPACITY) scan —
-            // negligible against the rebuild the store elides).
             if let Some(lru_digest) = store
                 .iter()
                 .min_by_key(|(_, (last_use, _))| *last_use)

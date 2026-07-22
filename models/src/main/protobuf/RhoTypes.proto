@@ -319,12 +319,23 @@ message EMap {
 }
 
 message EPathMap {
+  // TERM/pattern arm — non-ground entries. Empty for the value arm.
+  // (`.rhoapi.EPathMap` is an extern prost type; the hand-maintained Rust
+  // impl in models/src/rust/rhoapi_ext.rs is authoritative — this message is
+  // documentation-of-record.)
   repeated Par ps = 1;
+  reserved 2, 6, 7; // 6,7 were a retired value_form/value_entries experiment
   bytes locallyFree = 3
       [(scalapb.field).type =
            "coop.rchain.models.AlwaysEqual[scala.collection.immutable.BitSet]"];
   bool connective_used = 4;
   Var remainder = 5;
+  // VALUE arm (GROUND maps only): U(m) = the UNCOMPRESSED, trie-ordered,
+  // length-framed key stream `repeat( u32-LE keylen ++ trie_key )`. NEVER
+  // deflated. The canonical identity + hash preimage of a ground map, produced
+  // by a PathMap read-zipper walk over the intern trie (no sort). A non-empty
+  // `serialized_paths` marks the value arm (presence check, no discriminant).
+  bytes serialized_paths = 8;
 }
 
 /**
