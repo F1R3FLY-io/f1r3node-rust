@@ -6,7 +6,6 @@ use std::panic::AssertUnwindSafe;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::task::{Context, Poll};
 
 use futures::FutureExt;
 use smallvec::SmallVec;
@@ -81,45 +80,11 @@ use crate::rust::interpreter::accounting::costs::{
 use crate::rust::interpreter::matcher::spatial_matcher::SpatialMatcherContext;
 use crate::rust::interpreter::rho_type::RhoTuple2;
 
-/// Minimum remaining stack space (in bytes) before growing.
-/// When the current stack has less than this amount remaining, a new stack segment is allocated.
-// 128 KB is too small: a single recursion frame in the Rholang interpreter
-// (eval → produce/consume → dispatch → eval) consumes more than 128 KB between
-// stacker checks, so the overflow happens before stacker can grow the stack.
-const STACK_RED_ZONE: usize = 1024 * 1024; // 1 MB
-
-/// Size of each new stack segment allocated when the red zone is reached.
-const STACK_GROW_SIZE: usize = 2 * 1024 * 1024; // 2 MB
-
-/// A Future wrapper that dynamically grows the thread stack during polling.
-///
-/// The Rholang interpreter uses deep async recursion: eval → produce/consume → dispatch → eval.
-/// Each poll of this recursive future chain adds stack frames. In debug builds, unoptimized
-/// async state machines consume ~1-2KB per recursion level, causing stack overflow with the
-/// default 2MB thread stack.
-///
-/// `StackGrowingFuture` wraps each recursive entry point (eval, produce, consume, dispatch).
-/// On each poll, `stacker::maybe_grow` checks remaining stack space. If below STACK_RED_ZONE,
-/// it allocates a new STACK_GROW_SIZE segment and runs the poll there. This allows arbitrarily
-/// deep Rholang recursion (e.g., longslow.rho with 32768 iterations) without stack overflow.
-///
-/// See: https://github.com/F1R3FLY-io/f1r3node/issues/305
-/// See: https://github.com/F1R3FLY-io/f1r3node/issues/306
-struct StackGrowingFuture<F> {
-    inner: F,
-}
-
-impl<F: Future> Future for StackGrowingFuture<F> {
-    type Output = F::Output;
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        // SAFETY: Structural pin projection on a single-field struct with no Drop impl.
-        // `inner` is only accessed through this pinned projection, and StackGrowingFuture
-        // does not implement Unpin when F doesn't, preserving pin guarantees.
-        let inner = unsafe { self.map_unchecked_mut(|s| &mut s.inner) };
-        stacker::maybe_grow(STACK_RED_ZONE, STACK_GROW_SIZE, || inner.poll(cx))
-    }
-}
+// NOTE: `StackGrowingFuture` (stacker::maybe_grow-based dynamic stack growth) has been REMOVED. The
+// deep async recursion it guarded (eval -> produce/consume -> dispatch -> eval) is no longer a linear
+// call chain: the detached-spawn + atomic-counter driver below breaks the recursion into independent
+// O(1)-stack tokio tasks, so the interpreter is heap-bounded WITHOUT growing the native stack. See
+// issues #305 / #306 (both resolved by the driver, not by stack growth).
 
 // ============================================================================
 // Detached-spawn + atomic-counter REDUCTION DRIVER.
@@ -559,9 +524,7 @@ impl DebruijnInterpreter {
             dyn std::future::Future<Output = Result<(), InterpreterError>> + std::marker::Send + 'a,
         >,
     > {
-        Box::pin(StackGrowingFuture {
-            inner: self.eval_inner(par, env, rand, path),
-        })
+        Box::pin(self.eval_inner(par, env, rand, path))
     }
 
     async fn eval_inner(
@@ -779,9 +742,7 @@ impl DebruijnInterpreter {
                 + 'a,
         >,
     > {
-        Box::pin(StackGrowingFuture {
-            inner: self.produce_inner(chan, data, persistent, path),
-        })
+        Box::pin(self.produce_inner(chan, data, persistent, path))
     }
 
     /// Reactive single-step per-reduction seam (MeTTaIL OSLF stepper): emit `redex` to the installed
@@ -901,9 +862,7 @@ impl DebruijnInterpreter {
                 + 'a,
         >,
     > {
-        Box::pin(StackGrowingFuture {
-            inner: self.consume_inner(binds, body, persistent, peek, guard, path),
-        })
+        Box::pin(self.consume_inner(binds, body, persistent, peek, guard, path))
     }
 
     async fn consume_inner(
@@ -1244,9 +1203,7 @@ impl DebruijnInterpreter {
                 + 'a,
         >,
     > {
-        Box::pin(StackGrowingFuture {
-            inner: self.dispatch_inner(continuation, data_list, is_replay, previous_output, path),
-        })
+        Box::pin(self.dispatch_inner(continuation, data_list, is_replay, previous_output, path))
     }
 
     async fn dispatch_inner(
