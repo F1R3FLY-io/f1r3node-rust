@@ -496,8 +496,14 @@ impl DebruijnInterpreter {
         child
     }
 
-    /// Public reduction entry point (STABLE signature — external callers, tests). Seeds the empty
-    /// parallel-tree coordinate; coordinate threading is internal machinery (see `eval_with_path`).
+    /// Public reduction entry point (STABLE signature — external callers, tests, and `inj`).
+    /// SELF-CONTAINED: seeds a FRESH completion driver for this reduction (live=1 = the root eval task),
+    /// installs it on `self.drive` so every spawn site AND the dispatch re-entry observe it, runs the
+    /// root eval at coordinate [], drops the root guard, DRAINS (awaits live -> 0), then sort+aggregates
+    /// the Located-wrapped error sink. This is what makes a top-level `eval` await ALL its detached
+    /// descendants. Top-level evals (deploys via `inj`, direct callers) are serialized => one live driver
+    /// at a time; internal recursion + the dispatch ParBody re-entry use `eval_with_path` (the AMBIENT
+    /// drive), never this entry — so there is no nested re-seed.
     pub fn eval<'a>(
         &'a self,
         par: Par,
@@ -508,7 +514,41 @@ impl DebruijnInterpreter {
             dyn std::future::Future<Output = Result<(), InterpreterError>> + std::marker::Send + 'a,
         >,
     > {
-        self.eval_with_path(par, env, rand, SmallVec::new())
+        Box::pin(async move {
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            let drive = Arc::new(DriveState {
+                live: AtomicUsize::new(1),
+                sink: Mutex::new(Vec::new()),
+                done: Mutex::new(Some(tx)),
+            });
+            *self.drive.write().expect("drive cell poisoned") = drive.clone();
+
+            // Root eval task at coordinate []. Its OWN (synchronous) error is recorded directly; detached
+            // children record theirs through `spawn_detached`.
+            let root = LiveGuard(drive.clone());
+            if let Err(e) = self.eval_with_path(par, env, rand, SmallVec::new()).await {
+                drive
+                    .sink
+                    .lock()
+                    .expect("DriveState.sink mutex poisoned")
+                    .push(InterpreterError::Located {
+                        path: Vec::new(),
+                        source: Box::new(e),
+                    });
+            }
+            drop(root); // may fire `done` immediately if every detached child already finished
+            let _ = rx.await; // wake once live -> 0 (root + every detached task complete)
+
+            // Deterministic DISPLAY order (by coordinate). NOT consensus — `aggregate_evaluator_errors`
+            // classifies on `root_cause()` (Located-unwrapping), preserving the exact cost discriminant.
+            let mut errors =
+                std::mem::take(&mut *drive.sink.lock().expect("DriveState.sink mutex poisoned"));
+            errors.sort_by(|a, b| located_path(a).cmp(located_path(b)));
+            match self.aggregate_evaluator_errors(errors) {
+                Ok(_) => Ok(()),
+                Err(e) => Err(e),
+            }
+        })
     }
 
     /// Coordinate-threaded reduction entry (async counter driver). `path` is this eval task's position
@@ -681,45 +721,11 @@ impl DebruijnInterpreter {
         }
     }
 
+    /// The deploy reduction entry: an `eval` at the empty environment. `eval` (above) seeds+drains its
+    /// own completion driver and returns the aggregated result — `inj` is exactly that at `Env::new()`.
     pub async fn inj(&self, par: Par, rand: Blake2b512Random) -> Result<(), InterpreterError> {
-        // Seed a FRESH completion driver for THIS deploy (live=1 = the root eval task) and install it so
-        // every spawn site AND the dispatch re-entry observe it via `self.drive`. Deploys are serialized
-        // by `evaluate(&mut self)`, and `inj` fully drains (awaits live -> 0) before returning, so a
-        // single live driver at a time.
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        let drive = Arc::new(DriveState {
-            live: AtomicUsize::new(1),
-            sink: Mutex::new(Vec::new()),
-            done: Mutex::new(Some(tx)),
-        });
-        *self.drive.write().expect("drive cell poisoned") = drive.clone();
-
-        // The root eval runs as task 0 at coordinate []. Its OWN (synchronous) error is recorded
-        // directly here; detached children record theirs through `spawn_detached`.
-        let root = LiveGuard(drive.clone());
         let env = Env::new();
-        if let Err(e) = self.eval(par, &env, rand).await {
-            drive
-                .sink
-                .lock()
-                .expect("DriveState.sink mutex poisoned")
-                .push(InterpreterError::Located {
-                    path: Vec::new(),
-                    source: Box::new(e),
-                });
-        }
-        drop(root); // may fire `done` immediately if every detached child already finished
-        let _ = rx.await; // wake once live -> 0 (root + every detached task complete)
-
-        // Deterministic DISPLAY order (by coordinate). NOT consensus — `aggregate_evaluator_errors`
-        // classifies on `root_cause()` (Located-unwrapping), preserving the exact cost discriminant.
-        let mut errors =
-            std::mem::take(&mut *drive.sink.lock().expect("DriveState.sink mutex poisoned"));
-        errors.sort_by(|a, b| located_path(a).cmp(located_path(b)));
-        match self.aggregate_evaluator_errors(errors) {
-            Ok(_) => Ok(()),
-            Err(e) => Err(e),
-        }
+        self.eval(par, &env, rand).await
     }
 
     /**
