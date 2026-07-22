@@ -1,0 +1,58 @@
+{
+  "bounded_loop": {
+    "is_failed": false,
+    "cost": 258,
+    "deploy_log_len": 516,
+    "deploy_log_fnv": 14327494671126776266,
+    "balanced": false,
+    "check_log": true
+  },
+  "bounded_string": {
+    "is_failed": false,
+    "cost": 36,
+    "deploy_log_len": 70,
+    "deploy_log_fnv": 9499430428222738587,
+    "balanced": false,
+    "check_log": true
+  },
+  "contract_calls": {
+    "is_failed": false,
+    "cost": 4,
+    "deploy_log_len": 10,
+    "deploy_log_fnv": 12536765575762103528,
+    "balanced": false,
+    "check_log": true
+  },
+  "join_two": {
+    "is_failed": false,
+    "cost": 3,
+    "deploy_log_len": 4,
+    "deploy_log_fnv": 6030492667649220608,
+    "balanced": true,
+    "check_log": true
+  },
+  "par_sends": {
+    "is_failed": false,
+    "cost": 8,
+    "deploy_log_len": 12,
+    "deploy_log_fnv": 16269697670964150749,
+    "balanced": true,
+    "check_log": true
+  },
+  "peek_read": {
+    "is_failed": false,
+    "cost": 2,
+    "deploy_log_len": 4,
+    "deploy_log_fnv": 3351659937580271495,
+    "balanced": false,
+    "check_log": true
+  },
+  "persistent_recv": {
+    "is_failed": false,
+    "cost": 2,
+    "deploy_log_len": 4,
+    "deploy_log_fnv": 9101972619105042445,
+    "balanced": false,
+    "check_log": true
+  }
+}
