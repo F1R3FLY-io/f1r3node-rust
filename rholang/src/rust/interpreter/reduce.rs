@@ -1552,15 +1552,31 @@ impl DebruijnInterpreter {
             }
         }
 
-        match unwrap_option_safe(expr.expr_instance.clone())? {
+        // Leg-1: borrow `expr.expr_instance` instead of deep-cloning the whole
+        // (possibly deeply-nested) AST. The clone was pure waste in the default
+        // arm below (which re-borrows `expr`), and only the shallow inner field
+        // is consumed by the EVar/EMethod arms. The `None` case reproduces
+        // `unwrap_option_safe(expr.expr_instance.clone())`'s error byte-for-byte
+        // (same variant, same `{:?}`-of-`type_name::<ExprInstance>()` payload).
+        let expr_instance = match &expr.expr_instance {
+            Some(ei) => ei,
+            None => {
+                return Err(InterpreterError::UndefinedRequiredProtobufFieldError(format!(
+                    "{:?}",
+                    std::any::type_name::<ExprInstance>()
+                )))
+            }
+        };
+        match expr_instance {
             ExprInstance::EVarBody(evar) => {
-                let p = self.eval_var(&unwrap_option_safe(evar.v)?, env)?;
+                let p = self.eval_var(&unwrap_option_safe(evar.v.clone())?, env)?;
                 let evaled_p = self.eval_expr(&p, env)?;
                 Ok(evaled_p)
             }
             ExprInstance::EMethodBody(emethod) => {
                 self.metering.reserve_primitive(method_call_cost())?;
-                let evaled_target = self.eval_expr(&unwrap_option_safe(emethod.target)?, env)?;
+                let evaled_target =
+                    self.eval_expr(&unwrap_option_safe(emethod.target.clone())?, env)?;
                 let evaled_args: Vec<Par> = emethod
                     .arguments
                     .iter()
@@ -1774,8 +1790,8 @@ impl DebruijnInterpreter {
                 }
 
                 ExprInstance::EMultBody(EMult { p1, p2 }) => {
-                    let v1 = self.eval_single_expr(&p1.clone().unwrap(), env)?;
-                    let v2 = self.eval_single_expr(&p2.clone().unwrap(), env)?;
+                    let v1 = self.eval_single_expr(p1.as_ref().unwrap(), env)?;
+                    let v2 = self.eval_single_expr(p2.as_ref().unwrap(), env)?;
 
                     match (v1.expr_instance.unwrap(), v2.expr_instance.unwrap()) {
                         (ExprInstance::GInt(lhs), ExprInstance::GInt(rhs)) => {
@@ -1849,8 +1865,8 @@ impl DebruijnInterpreter {
                 }
 
                 ExprInstance::EDivBody(EDiv { p1, p2 }) => {
-                    let v1 = self.eval_single_expr(&p1.clone().unwrap(), env)?;
-                    let v2 = self.eval_single_expr(&p2.clone().unwrap(), env)?;
+                    let v1 = self.eval_single_expr(p1.as_ref().unwrap(), env)?;
+                    let v2 = self.eval_single_expr(p2.as_ref().unwrap(), env)?;
 
                     match (v1.expr_instance.unwrap(), v2.expr_instance.unwrap()) {
                         (ExprInstance::GInt(lhs), ExprInstance::GInt(rhs)) => {
@@ -1939,8 +1955,8 @@ impl DebruijnInterpreter {
                 }
 
                 ExprInstance::EModBody(EMod { p1, p2 }) => {
-                    let v1 = self.eval_single_expr(&p1.clone().unwrap(), env)?;
-                    let v2 = self.eval_single_expr(&p2.clone().unwrap(), env)?;
+                    let v1 = self.eval_single_expr(p1.as_ref().unwrap(), env)?;
+                    let v2 = self.eval_single_expr(p2.as_ref().unwrap(), env)?;
 
                     match (v1.expr_instance.unwrap(), v2.expr_instance.unwrap()) {
                         (ExprInstance::GInt(lhs), ExprInstance::GInt(rhs)) => {
@@ -2037,8 +2053,8 @@ impl DebruijnInterpreter {
                 }
 
                 ExprInstance::EPlusBody(EPlus { p1, p2 }) => {
-                    let v1 = self.eval_single_expr(&p1.clone().unwrap(), env)?;
-                    let v2 = self.eval_single_expr(&p2.clone().unwrap(), env)?;
+                    let v1 = self.eval_single_expr(p1.as_ref().unwrap(), env)?;
+                    let v2 = self.eval_single_expr(p2.as_ref().unwrap(), env)?;
 
                     match (v1.expr_instance.unwrap(), v2.expr_instance.unwrap()) {
                         (ExprInstance::GInt(lhs), ExprInstance::GInt(rhs)) => {
@@ -2129,8 +2145,8 @@ impl DebruijnInterpreter {
                 }
 
                 ExprInstance::EMinusBody(EMinus { p1, p2 }) => {
-                    let v1 = self.eval_single_expr(&p1.clone().unwrap(), env)?;
-                    let v2 = self.eval_single_expr(&p2.clone().unwrap(), env)?;
+                    let v1 = self.eval_single_expr(p1.as_ref().unwrap(), env)?;
+                    let v2 = self.eval_single_expr(p2.as_ref().unwrap(), env)?;
 
                     match (v1.expr_instance.unwrap(), v2.expr_instance.unwrap()) {
                         (ExprInstance::GInt(lhs), ExprInstance::GInt(rhs)) => {
@@ -2240,40 +2256,40 @@ impl DebruijnInterpreter {
                 }
 
                 ExprInstance::ELtBody(ELt { p1, p2 }) => relop(
-                    &p1.clone().unwrap(),
-                    &p2.clone().unwrap(),
+                    p1.as_ref().unwrap(),
+                    p2.as_ref().unwrap(),
                     |b1: bool, b2: bool| !b1 & b2,
                     |i1: i64, i2: i64| i1 < i2,
                     |s1: String, s2: String| s1 < s2,
                 ),
 
                 ExprInstance::ELteBody(ELte { p1, p2 }) => relop(
-                    &p1.clone().unwrap(),
-                    &p2.clone().unwrap(),
+                    p1.as_ref().unwrap(),
+                    p2.as_ref().unwrap(),
                     |b1: bool, b2: bool| b1 <= b2,
                     |i1: i64, i2: i64| i1 <= i2,
                     |s1: String, s2: String| s1 <= s2,
                 ),
 
                 ExprInstance::EGtBody(EGt { p1, p2 }) => relop(
-                    &p1.clone().unwrap(),
-                    &p2.clone().unwrap(),
+                    p1.as_ref().unwrap(),
+                    p2.as_ref().unwrap(),
                     |b1: bool, b2: bool| b1 & !b2,
                     |i1: i64, i2: i64| i1 > i2,
                     |s1: String, s2: String| s1 > s2,
                 ),
 
                 ExprInstance::EGteBody(EGte { p1, p2 }) => relop(
-                    &p1.clone().unwrap(),
-                    &p2.clone().unwrap(),
+                    p1.as_ref().unwrap(),
+                    p2.as_ref().unwrap(),
                     |b1: bool, b2: bool| b1 >= b2,
                     |i1: i64, i2: i64| i1 >= i2,
                     |s1: String, s2: String| s1 >= s2,
                 ),
 
                 ExprInstance::EEqBody(EEq { p1, p2 }) => {
-                    let v1 = self.eval_expr(&p1.clone().unwrap(), env)?;
-                    let v2 = self.eval_expr(&p2.clone().unwrap(), env)?;
+                    let v1 = self.eval_expr(p1.as_ref().unwrap(), env)?;
+                    let v2 = self.eval_expr(p2.as_ref().unwrap(), env)?;
                     // TODO: build an equality operator that takes in an environment. - OLD
                     let sv1 = self.substitute.substitute_and_charge(&v1, 0, env)?;
                     let sv2 = self.substitute.substitute_and_charge(&v2, 0, env)?;
@@ -2291,8 +2307,8 @@ impl DebruijnInterpreter {
                 }
 
                 ExprInstance::ENeqBody(ENeq { p1, p2 }) => {
-                    let v1 = self.eval_expr(&p1.clone().unwrap(), env)?;
-                    let v2 = self.eval_expr(&p2.clone().unwrap(), env)?;
+                    let v1 = self.eval_expr(p1.as_ref().unwrap(), env)?;
+                    let v2 = self.eval_expr(p2.as_ref().unwrap(), env)?;
                     let sv1 = self.substitute.substitute_and_charge(&v1, 0, env)?;
                     let sv2 = self.substitute.substitute_and_charge(&v2, 0, env)?;
                     self.metering
@@ -2309,8 +2325,8 @@ impl DebruijnInterpreter {
                 }
 
                 ExprInstance::EAndBody(EAnd { p1, p2 }) => {
-                    let b1 = self.eval_to_bool(&p1.clone().unwrap(), env)?;
-                    let b2 = self.eval_to_bool(&p2.clone().unwrap(), env)?;
+                    let b1 = self.eval_to_bool(p1.as_ref().unwrap(), env)?;
+                    let b2 = self.eval_to_bool(p2.as_ref().unwrap(), env)?;
                     self.metering.reserve_primitive(boolean_and_cost())?;
 
                     Ok(Expr {
@@ -2319,8 +2335,8 @@ impl DebruijnInterpreter {
                 }
 
                 ExprInstance::EOrBody(EOr { p1, p2 }) => {
-                    let b1 = self.eval_to_bool(&p1.clone().unwrap(), env)?;
-                    let b2 = self.eval_to_bool(&p2.clone().unwrap(), env)?;
+                    let b1 = self.eval_to_bool(p1.as_ref().unwrap(), env)?;
+                    let b2 = self.eval_to_bool(p2.as_ref().unwrap(), env)?;
                     self.metering.reserve_primitive(boolean_or_cost())?;
 
                     Ok(Expr {
@@ -2329,13 +2345,13 @@ impl DebruijnInterpreter {
                 }
 
                 ExprInstance::EMatchesBody(EMatches { target, pattern }) => {
-                    let evaled_target = self.eval_expr(&target.clone().unwrap(), env)?;
+                    let evaled_target = self.eval_expr(target.as_ref().unwrap(), env)?;
                     let subst_target =
                         self.substitute
                             .substitute_and_charge(&evaled_target, 0, env)?;
                     let subst_pattern =
                         self.substitute
-                            .substitute_and_charge(&pattern.clone().unwrap(), 1, env)?;
+                            .substitute_and_charge(pattern.as_ref().unwrap(), 1, env)?;
 
                     let mut spatial_matcher = SpatialMatcherContext::new();
                     let match_result =
@@ -2416,8 +2432,8 @@ impl DebruijnInterpreter {
                     }
 
                     self.metering.reserve_primitive(op_call_cost())?;
-                    let v1 = self.eval_single_expr(&p1.clone().unwrap(), env)?;
-                    let v2 = self.eval_single_expr(&p2.clone().unwrap(), env)?;
+                    let v1 = self.eval_single_expr(p1.as_ref().unwrap(), env)?;
+                    let v2 = self.eval_single_expr(p2.as_ref().unwrap(), env)?;
 
                     match (v1.expr_instance.unwrap(), v2.expr_instance.unwrap()) {
                         (ExprInstance::GString(lhs), ExprInstance::EMapBody(emap)) => {
@@ -2470,8 +2486,8 @@ impl DebruijnInterpreter {
 
                 ExprInstance::EPlusPlusBody(EPlusPlus { p1, p2 }) => {
                     self.metering.reserve_primitive(op_call_cost())?;
-                    let v1 = self.eval_single_expr(&p1.clone().unwrap(), env)?;
-                    let v2 = self.eval_single_expr(&p2.clone().unwrap(), env)?;
+                    let v1 = self.eval_single_expr(p1.as_ref().unwrap(), env)?;
+                    let v2 = self.eval_single_expr(p2.as_ref().unwrap(), env)?;
 
                     match (v1.expr_instance.unwrap(), v2.expr_instance.unwrap()) {
                         (ExprInstance::GString(lhs), ExprInstance::GString(rhs)) => {
@@ -2579,8 +2595,8 @@ impl DebruijnInterpreter {
 
                 ExprInstance::EMinusMinusBody(EMinusMinus { p1, p2 }) => {
                     self.metering.reserve_primitive(op_call_cost())?;
-                    let v1 = self.eval_single_expr(&p1.clone().unwrap(), env)?;
-                    let v2 = self.eval_single_expr(&p2.clone().unwrap(), env)?;
+                    let v1 = self.eval_single_expr(p1.as_ref().unwrap(), env)?;
+                    let v2 = self.eval_single_expr(p2.as_ref().unwrap(), env)?;
 
                     match (v1.expr_instance.unwrap(), v2.expr_instance.unwrap()) {
                         (ExprInstance::ESetBody(lhs), ExprInstance::ESetBody(rhs)) => {
@@ -2613,7 +2629,7 @@ impl DebruijnInterpreter {
                 }
 
                 ExprInstance::EVarBody(EVar { v }) => {
-                    let p = self.eval_var(&v.clone().unwrap(), env)?;
+                    let p = self.eval_var(v.as_ref().unwrap(), env)?;
                     let expr_val = self.eval_single_expr(&p, env)?;
                     Ok(expr_val)
                 }
