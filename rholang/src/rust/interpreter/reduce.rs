@@ -2,9 +2,14 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::future::Future;
+use std::panic::AssertUnwindSafe;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
+
+use futures::FutureExt;
+use smallvec::SmallVec;
 
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use futures::stream::{FuturesUnordered, StreamExt};
@@ -117,6 +122,128 @@ impl<F: Future> Future for StackGrowingFuture<F> {
     }
 }
 
+// ============================================================================
+// Detached-spawn + atomic-counter REDUCTION DRIVER.
+//
+// tokio::spawn already gives an O(1) async stack, but each parent `await`ing its children pins an
+// O(N) parked-parent chain (shortslow: 32768 parked parents). The send is coupled to its
+// continuation purely for completion/error plumbing. Detaching the children and tracking completion
+// with a global atomic counter restores async-send (deposit + terminate; the continuation runs
+// independently) and collapses the chain, while PRESERVING concurrency (the same concurrent spawns)
+// => COMM order unchanged => no consensus divergence (proven empirically by the async-driver
+// differential harness). `inj` seeds a fresh DriveState per deploy (live init 1 = the root eval),
+// and drains it (awaits live -> 0) before aggregating. Each of the five async join sites snapshots
+// `self.drive` and `spawn_detached`s its children instead of awaiting them. See the durable spec
+// scratchpad/async_counter_driver_plan.
+// ============================================================================
+
+/// Per-deploy async completion driver. Shared (behind `self.drive`) across every metering-child
+/// clone and reached by the dispatch re-entry, so `inj`'s store is visible to every task.
+/// `pub(crate)` only so the two `DebruijnInterpreter` construction sites (rho_runtime.rs +
+/// the reduce.rs test constructor) can install the placeholder cell via `idle_drive_cell`.
+pub(crate) struct DriveState {
+    /// Outstanding tasks (root + all live detached children). Initialised to 1 (the root eval task).
+    live: AtomicUsize,
+    /// Flat, `Located`-wrapped errors pushed by detached tasks. Push order is non-deterministic;
+    /// `inj` sorts by coordinate for a deterministic DISPLAY order (NOT consensus).
+    sink: Mutex<Vec<InterpreterError>>,
+    /// Fired exactly once, on the 1->0 transition, to wake `inj`.
+    done: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+}
+
+impl DriveState {
+    /// A never-loaded placeholder installed at interpreter construction; `inj` replaces it with a
+    /// live driver before any spawn site runs.
+    fn idle() -> Self {
+        DriveState {
+            live: AtomicUsize::new(0),
+            sink: Mutex::new(Vec::new()),
+            done: Mutex::new(None),
+        }
+    }
+}
+
+/// Build the placeholder drive cell installed at interpreter construction. `pub(crate)` so the two
+/// `DebruijnInterpreter` construction sites can set the `drive` field without naming `DriveState`.
+pub(crate) fn idle_drive_cell() -> Arc<std::sync::RwLock<Arc<DriveState>>> {
+    Arc::new(std::sync::RwLock::new(Arc::new(DriveState::idle())))
+}
+
+/// RAII decrement of `live`. Dropped LAST inside each detached task (after the error push), so the
+/// sink is complete when `done` fires. Covers Ok / Err / `?` / panic — no missed decrement.
+// dead_code allow removed once `spawn_detached` (below) is wired at the five join sites + `inj`.
+#[allow(dead_code)]
+struct LiveGuard(Arc<DriveState>);
+
+impl Drop for LiveGuard {
+    fn drop(&mut self) {
+        if self.0.live.fetch_sub(1, Ordering::AcqRel) == 1 {
+            if let Some(tx) = self
+                .0
+                .done
+                .lock()
+                .expect("DriveState.done mutex poisoned")
+                .take()
+            {
+                let _ = tx.send(());
+            }
+        }
+    }
+}
+
+/// Spawn `fut` as a detached task counted by `drive`. INCREMENT-BEFORE-SPAWN + the RAII guard
+/// guarantee `live` never reaches 0 prematurely and never misses a decrement. `catch_unwind` is
+/// MANDATORY: a panicking deploy must still record an error, else `is_failed` would flip to success.
+/// The child's `Ok(_)` value is discarded — the five sites only ever conveyed Skip/error upward
+/// (NonDeterministicCall / FailedNonDeterministicCall arise only from the direct-await `else`
+/// branches, never one of the five sites) — only `Err` and panics are captured, wrapped in `Located`.
+#[allow(dead_code)]
+fn spawn_detached<T: std::marker::Send + 'static>(
+    drive: &Arc<DriveState>,
+    child_path: SmallVec<[u32; 8]>,
+    fut: Pin<Box<dyn Future<Output = Result<T, InterpreterError>> + std::marker::Send>>,
+) {
+    drive.live.fetch_add(1, Ordering::AcqRel); // INCREMENT BEFORE SPAWN
+    let drive = drive.clone();
+    tokio::spawn(async move {
+        // `_guard` drops LAST (after the push below), so the decrement happens AFTER the error lands
+        // in the sink — the sink is therefore complete when `done` fires.
+        let _guard = LiveGuard(drive.clone());
+        let outcome = AssertUnwindSafe(fut).catch_unwind().await;
+        match outcome {
+            Ok(Ok(_)) => {}
+            Ok(Err(e)) => drive
+                .sink
+                .lock()
+                .expect("DriveState.sink mutex poisoned")
+                .push(InterpreterError::Located {
+                    path: child_path.into_vec(),
+                    source: Box::new(e),
+                }),
+            Err(_panic) => drive
+                .sink
+                .lock()
+                .expect("DriveState.sink mutex poisoned")
+                .push(InterpreterError::Located {
+                    path: child_path.into_vec(),
+                    source: Box::new(InterpreterError::ReduceError(
+                        "reduction task panicked".to_string(),
+                    )),
+                }),
+        }
+    });
+}
+
+/// The coordinate (path) carried by a `Located` error, or `&[]` for a bare error. Used by `inj` to
+/// sort the sink into a deterministic DISPLAY order (NOT consensus).
+#[allow(dead_code)]
+fn located_path(e: &InterpreterError) -> &[u32] {
+    match e {
+        InterpreterError::Located { path, .. } => path,
+        _ => &[],
+    }
+}
+
 /**
  * Reduce is the interface for evaluating Rholang expressions.
  */
@@ -129,6 +256,14 @@ pub struct DebruijnInterpreter {
     pub mergeable_tags: Arc<HashMap<Par, MergeType>>,
     pub metering: MeteredMachine,
     pub substitute: Substitute,
+    /// Async completion driver cell. Shared across every `#[derive(Clone)]` metering-child clone
+    /// (the outer `Arc`) and replaceable per deploy (`RwLock`): `inj` stores a fresh `DriveState`
+    /// before evaluating and the five join sites snapshot it via `load_drive`. Internal machinery
+    /// (not `pub`); holds an `idle` placeholder until `inj` seeds it. `std::sync::RwLock` is spelled
+    /// out to avoid clashing with the `tokio::sync::RwLock` import above.
+    // dead_code allow removed once `inj` + the five join sites read it.
+    #[allow(dead_code)]
+    pub(crate) drive: Arc<std::sync::RwLock<Arc<DriveState>>>,
 }
 
 type Application = Option<(
@@ -8223,6 +8358,7 @@ impl DebruijnInterpreter {
             mergeable_tags,
             metering: metering.clone(),
             substitute: Substitute { metering },
+            drive: idle_drive_cell(),
         });
 
         reducer_cell.set(Arc::downgrade(&reducer)).ok().unwrap();

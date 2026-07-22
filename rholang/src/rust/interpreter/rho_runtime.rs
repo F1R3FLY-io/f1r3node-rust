@@ -1090,6 +1090,7 @@ async fn setup_reducer(
         mergeable_tags,
         metering: metering.clone(),
         substitute: Substitute { metering },
+        drive: super::reduce::idle_drive_cell(),
     });
 
     reducer_cell.set(Arc::downgrade(&reducer)).ok().unwrap();
