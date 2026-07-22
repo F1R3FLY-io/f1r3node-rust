@@ -28,7 +28,7 @@ use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::var::VarInstance;
 use models::rhoapi::{EPathMap, ETuple, EZipper, Expr, Par, Var};
 use models::rust::rholang::implicits::GPrivateBuilder;
-use models::rust::utils::{new_elist_par, new_gstring_par};
+use models::rust::utils::{new_boundvar_par, new_elist_par, new_gstring_par};
 
 /// The fixed language fingerprint of every fixture. The E-6a trie tag uses
 /// its first 8 characters (`e6a_support.rs` `TAG_FINGERPRINT_PREFIX`); the
@@ -207,19 +207,34 @@ pub fn ezipper_value() -> EZipper {
 }
 
 /// FIXTURE 4 — non-empty `locally_free` on BOTH the map and an entry Par:
-/// the map's own bitset is `{0}`, and the second entry Par carries bitset
-/// `{1}`. This is the fixture family that separates the three regimes the
-/// harness pins: PROST bytes INCLUDE `locally_free` (field 3), SERDE
-/// serializes it as EMPTY bytes (models/build.rs `serialize_as_empty_bytes`),
-/// `==`/`Hash` IGNORE it (AlwaysEqual, models/src/lib.rs:613-627), and the
-/// derived `Ord` COMPARES it (declaration order).
+/// the map's own bitset is `{0}`, and the second entry is a genuine term-arm
+/// VARIABLE REFERENCE — a bound-variable `EVar` at de Bruijn index 1, whose
+/// `locally_free` is that real index `{1}` (`connective_used = false`). The
+/// entry is NON-ground BY CONTENT: `eval_stable_par` → `eval_stable_expr`
+/// classifies every `EVar` unstable REGARDLESS of its lf bits, so clearing the
+/// entry's `locally_free` leaves it (and the whole map) non-ground. That is the
+/// point of this fixture family post-hardening: the serialize-only
+/// `locally_free` normalization can be pinned against a FULLY-cleared twin
+/// without a ground↔non-ground flip (the hardened `EPathMap::serialize`
+/// reorders a GROUND map's `ps` — an ORTHOGONAL, ground-only normalization that
+/// would otherwise confound this fixture were its entries ground by content).
+///
+/// This is the fixture family that separates the regimes the harness pins:
+/// PROST bytes INCLUDE `locally_free` (field 3), SERDE serializes it as EMPTY
+/// bytes (models/build.rs `serialize_as_empty_bytes`), `==`/`Hash` IGNORE it
+/// (AlwaysEqual, models/src/lib.rs:613-627), and the derived `Ord` COMPARES it
+/// (declaration order).
 pub fn epathmap_locally_free_entries() -> EPathMap {
-    let mut tagged_entry = ground_list(vec![gstring_par("lf"), gstring_par("entry")]);
-    tagged_entry.locally_free = create_bit_vector(&[1]);
+    // A bound-variable reference (`EVar(BoundVar(1))`) — NON-ground by CONTENT,
+    // independent of its lf bits. `new_boundvar_par` sets `connective_used =
+    // false` and derives `locally_free = bit{index} = {1}` from the index, so
+    // clearing the entry's lf leaves `eval_stable_expr` to reject it on the EVar
+    // content alone.
+    let var_entry = new_boundvar_par(1, create_bit_vector(&[1]), false);
     EPathMap::new(
         vec![
             ground_list(vec![gstring_par("plain")]),
-            tagged_entry,
+            var_entry,
         ],
         create_bit_vector(&[0]),
         false,

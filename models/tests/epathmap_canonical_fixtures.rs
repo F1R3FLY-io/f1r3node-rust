@@ -58,14 +58,28 @@ mod pinned {
     ///
     /// EPathMap wire re-pin: the three GROUND fixtures now serialize as the
     /// compact field-8 U(m) key stream (a PathMap zipper walk) instead of the
-    /// field-1 `ps` walk — e6a_index 487→335, nested 52→30, ezipper 64→40. The
-    /// two NON-ground fixtures (locally_free, remainder_connective) stay on the
-    /// term arm, byte-identical. The bincode/serde-json/event-hash goldens are
-    /// UNCHANGED (only the prost wire moved).
+    /// field-1 `ps` walk — e6a_index 487→335, nested 52→30, ezipper 64→40.
+    ///
+    /// Producer-independent event-hash hardening re-pin: the hand-written
+    /// `EPathMap::serialize` emits a GROUND map's `ps` in CANONICAL trie order,
+    /// so the `e6a_index` bincode + serde-json goldens and the two
+    /// `PRODUCE_INDEX_*` event hashes MOVED (DFS construction order → trie
+    /// order). `nested`/`ezipper` (single-entry / already trie-ordered) and the
+    /// non-ground fixtures did NOT move for the SERIALIZATION change; the channel
+    /// + consume hashes did NOT move (map-free legs); no prost golden moved for
+    /// the serialization change (serde-only).
+    ///
+    /// `locally_free` fixture REPAIR re-pin: the `locally_free` fixture's tagged
+    /// entry was changed from synthetic (a ground list carrying an artificial lf
+    /// bit) to a genuine bound-variable `EVar` — non-ground BY CONTENT, see
+    /// [`fixtures::epathmap_locally_free_entries`]. That FIXTURE-CONTENT change
+    /// (not the serialization) moved `locally_free.{prost.bin,bincode.bin,json}`
+    /// and this `LOCALLY_FREE_ENCODED_LEN` (51→36); it is test-only and feeds no
+    /// event-hash datum (no `PRODUCE_INDEX`/channel/consume hash moved).
     pub const E6A_INDEX_ENCODED_LEN: usize = 335;
     pub const NESTED_ENCODED_LEN: usize = 30;
     pub const EZIPPER_ENCODED_LEN: usize = 40;
-    pub const LOCALLY_FREE_ENCODED_LEN: usize = 51;
+    pub const LOCALLY_FREE_ENCODED_LEN: usize = 36;
     pub const REMAINDER_CONNECTIVE_ENCODED_LEN: usize = 23;
 
     /// Blake2b256 of `bincode(channel)` for the E-6a index channel Par
@@ -74,13 +88,20 @@ mod pinned {
         "5927a6b63fd2ee3b92b4bfd2b4166f4fa4e2f59f99a38fed853c8e1d5bba6301";
 
     /// `Produce::create(channel, ListParWithRandom{[index], rs1}, true).hash`.
+    ///
+    /// MOVED by the producer-independent event-hash hardening: the E-6a index
+    /// is a GROUND map, so its bincode preimage (embedded in this datum) now
+    /// serializes `ps` in CANONICAL trie order instead of DFS construction
+    /// order. The channel hash (`INDEX_CHANNEL_HASH_HEX`) is UNCHANGED (the
+    /// channel is a `GString`, not the map).
     pub const PRODUCE_INDEX_RS1_HASH_HEX: &str =
-        "ae4e288e4ee137d3e2566aa2ec378e315fb9471bd91a8ecdbb8c0141372bcaa0";
+        "9991c1b0e45834315488f58bb395672baade5949d5983ee0aef449a2e04692ea";
 
     /// Same datum pars, `random_state` differing in ONE byte — the hash MUST
     /// differ (pins the per-produce random_state placement inside the datum).
+    /// MOVED for the same reason as `PRODUCE_INDEX_RS1_HASH_HEX`.
     pub const PRODUCE_INDEX_RS2_HASH_HEX: &str =
-        "676962a4d99c5ffcd1c63c25a9460a12e7bd85ff2e84a5987d6696271b9230de";
+        "b86bf7a0a321af4f189dc8969f1e20f3762c7c9eed87d857779d9fe4542ae460";
 
     /// `Consume::create([channel], [freevar bind], ParBody continuation,
     /// false).hash` — the discovery-receive shape.
@@ -242,11 +263,19 @@ fn clear_locally_free(map: &EPathMap) -> EPathMap {
 }
 
 /// THE serialize-only normalization (models/build.rs injects
-/// `serialize_as_empty_bytes` on EVERY `.rhoapi` `locally_free`): serde
-/// output is IDENTICAL whether the bitsets are populated or empty, for both
-/// bincode and JSON. Event hashes therefore never see `locally_free` — the
-/// P4 spliced emitter must replicate exactly this asymmetry (serialize
-/// normalizes, deserialize reads real bytes; plan amendment PM-1).
+/// `serialize_as_empty_bytes` on EVERY `.rhoapi` `locally_free`): serde output
+/// is IDENTICAL whether the bitsets are populated or empty, for both bincode
+/// and JSON. Event hashes therefore never see `locally_free` — the P4 spliced
+/// emitter must replicate exactly this asymmetry (serialize normalizes,
+/// deserialize reads real bytes; plan amendment PM-1).
+///
+/// Both `tagged` and its FULLY-cleared twin are NON-ground: the tagged entry is
+/// a bound-variable `EVar` — non-ground BY CONTENT, not by its lf bits (see
+/// [`epathmap_locally_free_entries`]) — so clearing `locally_free` does NOT flip
+/// the map to ground. Both therefore take the construction-order serialize arm,
+/// and the byte-identity below isolates the `locally_free` normalization from
+/// the producer-independent hardening's ground-`ps` canonicalization (an
+/// orthogonal, ground-only reordering that never applies here).
 #[test]
 fn serde_normalizes_locally_free_to_empty() {
     let tagged = epathmap_locally_free_entries();
@@ -262,6 +291,21 @@ fn serde_normalizes_locally_free_to_empty() {
         serde_json::to_string(&cleared).expect("json"),
         "serde_json must not see locally_free (serialize_as_empty_bytes)"
     );
+
+    // A round trip drops every bitset (map level and entry level) — the
+    // property that makes event hashes lf-blind.
+    let round: EPathMap =
+        bincode::deserialize(&bincode::serialize(&tagged).expect("ser")).expect("de");
+    assert!(
+        round.locally_free.is_empty(),
+        "map-level locally_free must normalize to empty on serialize"
+    );
+    for entry in &round.ps {
+        assert!(
+            entry.locally_free.is_empty(),
+            "entry-level locally_free must normalize to empty on serialize"
+        );
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

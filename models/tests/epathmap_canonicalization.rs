@@ -84,15 +84,26 @@ fn nested_map_of_map_normalizes_equal() {
 
 #[test]
 fn permuted_ground_maps_have_identical_event_hash_preimage() {
-    // The serde bytes (the event-hash preimage) of a NORMALIZED ground map are
-    // a pure function of the entry multiset — consensus-safe (no dependence on
-    // construction order).
-    let forward = normalize(&map_expr(vec![gstr("a"), gint(1), gstr("b")]));
-    let backward = normalize(&map_expr(vec![gstr("b"), gint(1), gstr("a")]));
+    // The serde bytes (the event-hash preimage) of a ground map are a pure
+    // function of the entry multiset — consensus-safe, with NO dependence on
+    // construction order and NO pre-normalization required. The hand-written
+    // `EPathMap::serialize` canonicalizes a ground map's `ps` to trie order AT
+    // THE SERIALIZER, so the RAW (non-normalized) permutations already agree —
+    // the strengthened property the old derived Serialize could only provide
+    // AFTER an explicit `normalize()` (which a raw producer never applies).
+    let forward = map_expr(vec![gstr("a"), gint(1), gstr("b")]);
+    let backward = map_expr(vec![gstr("b"), gint(1), gstr("a")]);
     assert_eq!(
         bincode::serialize(&forward).expect("serialize"),
         bincode::serialize(&backward).expect("serialize"),
-        "normalized permuted maps must have identical serde (event-hash) bytes"
+        "raw (non-normalized) permuted ground maps must have identical serde (event-hash) bytes"
+    );
+    // And the serializer's canonicalization AGREES with the sorter's
+    // normalization (the two canonical forms coincide).
+    assert_eq!(
+        bincode::serialize(&forward).expect("serialize"),
+        bincode::serialize(&normalize(&forward)).expect("serialize"),
+        "serializer canonicalization must agree with sorter normalization"
     );
 }
 

@@ -26,6 +26,7 @@ use models::rhoapi::{
     New, Par, ParWithRandom, Receive, ReceiveBind, Send, TaggedContinuation, Var,
     connective::ConnectiveInstance, var::VarInstance,
 };
+use models::rust::pathmap_crate_type_mapper::{clear_intern_store_for_test, eval_stable_epathmap};
 use models::rust::spliced_event_bytes::{
     event_hash_bytes_bind_pattern, event_hash_bytes_list_par_with_random,
     event_hash_bytes_tagged_continuation,
@@ -346,6 +347,124 @@ fn spliced_serde_bytes_shared_across_family() {
         event_hash_bytes_list_par_with_random(&d1),
         event_hash_bytes_list_par_with_random(&d2),
         "clone-family datums must hash to the same bytes"
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 1b. Producer-independence regressions — the flaky-test root cause, pinned.
+//
+//     A GROUND map's intern entry is content-addressed by the ORDER-insensitive
+//     U(m), but the serde preimage the emitter splices USED to be ORDER-
+//     sensitive (the derived Serialize emitted `ps` in construction order). A
+//     permuted/duplicated twin sharing the first member's filled `serde_bytes`
+//     cache therefore emitted FOREIGN-order bytes ⇒ spliced ≠ direct (the flaky
+//     `spliced_matches_direct_arbitrary` failure) — and, in production, two
+//     producers building the same ground map in different orders would emit
+//     different event-hash bytes. The canonical-ps Serialize makes `direct` a
+//     pure function of the entry SET, so spliced == direct AND every family
+//     member hashes identically, WITHOUT clearing the store.
+//     `clear_intern_store_for_test` here only sets up the deterministic "m1
+//     fills the cache, a permuted m2 shares it" scenario; nextest's
+//     process-per-test already isolates the store, and clearing is benign for
+//     concurrent tests (live cells hold their own `Arc`).
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// A GROUND EPathMap of `GString` entries (permutable, reorderable): every
+/// entry is `eval_stable`, so the map is `eval_stable` ⇒ the canonical-ps arm.
+fn ground_string_map(labels: &[&str]) -> EPathMap {
+    EPathMap::new(
+        labels.iter().map(|l| gstring_par(l)).collect::<Vec<Par>>(),
+        Vec::new(),
+        false,
+        None,
+    )
+}
+
+/// THE flaky-test root cause, pinned deterministically: intern+hash `m1=[a,b,c]`
+/// FIRST (filling the shared entry's `serde_bytes` cache with m1's construction
+/// order), then a permuted twin `m2=[c,b,a]` that SHARES m1's intern entry
+/// (same order-insensitive U(m)). The spliced datum bytes for m2 must equal the
+/// DIRECT bincode (emit==direct even though a foreign-order twin filled the
+/// cache) AND the two family members must hash to identical event-hash bytes
+/// (producer-independence — the real consensus property).
+#[test]
+fn permuted_ground_family_splices_to_identical_event_hash() {
+    clear_intern_store_for_test();
+
+    let m1 = ground_string_map(&["a", "b", "c"]);
+    let _ = m1.intern(); // the shared entry; its serde_bytes fill on first hash
+    let d1 = datum(vec![epathmap_par(m1)]);
+    // Hashing d1 first fills the entry's serde_bytes cache with m1's order.
+    let h1 = event_hash_bytes_list_par_with_random(&d1);
+    assert_spliced_eq_direct_datum("permuted-family-m1", &d1);
+
+    let m2 = ground_string_map(&["c", "b", "a"]); // same SET, permuted order
+    let _ = m2.intern(); // shares m1's entry (order-insensitive U(m))
+    let d2 = datum(vec![epathmap_par(m2)]);
+
+    // emit==direct for the permuted twin sharing the foreign-order-filled cache.
+    assert_spliced_eq_direct_datum("permuted-family-m2", &d2);
+    // producer-independence: identical event-hash preimage.
+    assert_eq!(
+        h1,
+        event_hash_bytes_list_par_with_random(&d2),
+        "permuted ground maps must hash to identical event-hash bytes"
+    );
+}
+
+/// Duplicate entries collapse in the event-hash preimage: `[a,a,b]` and `[a,b]`
+/// share ONE intern entry (idempotent trie insertion = dedup) and emit the SAME
+/// canonical (deduped) serde bytes — emit==direct for both.
+#[test]
+fn duplicate_entry_ground_map_splices_to_deduped_event_hash() {
+    clear_intern_store_for_test();
+
+    let with_dup = ground_string_map(&["a", "a", "b"]);
+    let _ = with_dup.intern();
+    let d_dup = datum(vec![epathmap_par(with_dup)]);
+    assert_spliced_eq_direct_datum("dup-entries", &d_dup);
+
+    let deduped = ground_string_map(&["a", "b"]);
+    let _ = deduped.intern();
+    let d_dedup = datum(vec![epathmap_par(deduped)]);
+    assert_spliced_eq_direct_datum("deduped-entries", &d_dedup);
+
+    assert_eq!(
+        event_hash_bytes_list_par_with_random(&d_dup),
+        event_hash_bytes_list_par_with_random(&d_dedup),
+        "[a,a,b] and [a,b] must hash to identical (deduped) event-hash bytes"
+    );
+}
+
+/// A permuted GROUND submap nested INSIDE a NON-ground outer map (outer
+/// `connective_used = true` ⇒ the outer serializes as-is) still canonicalizes:
+/// the inner submap's Serialize/emit reorders to trie order, so two outer maps
+/// differing only in the inner submap's construction order emit identical bytes
+/// — emit==direct for both, with the inner interned so the SPLICE path fires.
+#[test]
+fn nested_ground_submap_inside_non_ground_outer_splices_identically() {
+    clear_intern_store_for_test();
+
+    let inner_fwd = ground_string_map(&["x", "y", "z"]);
+    let _ = inner_fwd.intern();
+    let outer_fwd = EPathMap::new(vec![epathmap_par(inner_fwd)], Vec::new(), true, None);
+    assert!(
+        !eval_stable_epathmap(&outer_fwd),
+        "outer must be NON-ground (connective_used) so it serializes as-is"
+    );
+    let d_fwd = datum(vec![epathmap_par(outer_fwd)]);
+    assert_spliced_eq_direct_datum("nested-inner-fwd", &d_fwd);
+
+    let inner_bwd = ground_string_map(&["z", "y", "x"]); // shares inner_fwd's entry
+    let _ = inner_bwd.intern();
+    let outer_bwd = EPathMap::new(vec![epathmap_par(inner_bwd)], Vec::new(), true, None);
+    let d_bwd = datum(vec![epathmap_par(outer_bwd)]);
+    assert_spliced_eq_direct_datum("nested-inner-bwd", &d_bwd);
+
+    assert_eq!(
+        event_hash_bytes_list_par_with_random(&d_fwd),
+        event_hash_bytes_list_par_with_random(&d_bwd),
+        "the inner ground submap canonicalizes regardless of the outer being non-ground"
     );
 }
 
