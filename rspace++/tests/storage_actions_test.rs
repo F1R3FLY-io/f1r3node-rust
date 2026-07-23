@@ -1871,8 +1871,12 @@ async fn create_soft_checkpoint_should_capture_the_current_state_of_the_store() 
     let s = rspace.create_soft_checkpoint().await;
 
     // assert that the snapshot contains the continuation
-    let snapshot_continuations_values: Vec<Vec<WaitingContinuation<Pattern, StringsCaptor>>> =
-        s.cache_snapshot.continuations_flat().values().cloned().collect();
+    let snapshot_continuations_values: Vec<Vec<WaitingContinuation<Pattern, StringsCaptor>>> = s
+        .cache_snapshot
+        .continuations_flat()
+        .values()
+        .cloned()
+        .collect();
     assert_eq!(snapshot_continuations_values, vec![expected_continuation.clone()]);
 
     // consume again
@@ -1881,8 +1885,12 @@ async fn create_soft_checkpoint_should_capture_the_current_state_of_the_store() 
         .await;
 
     // assert that the snapshot contains only the first continuation
-    let snapshot_continuations_values: Vec<Vec<WaitingContinuation<Pattern, StringsCaptor>>> =
-        s.cache_snapshot.continuations_flat().values().cloned().collect();
+    let snapshot_continuations_values: Vec<Vec<WaitingContinuation<Pattern, StringsCaptor>>> = s
+        .cache_snapshot
+        .continuations_flat()
+        .values()
+        .cloned()
+        .collect();
     assert_eq!(snapshot_continuations_values, vec![expected_continuation]);
 }
 
@@ -1918,8 +1926,12 @@ async fn create_soft_checkpoint_should_create_checkpoints_which_have_separate_st
     let s1 = rspace.create_soft_checkpoint().await;
 
     // assert that the snapshot contains the continuation
-    let snapshot_continuations_values: Vec<Vec<WaitingContinuation<Pattern, StringsCaptor>>> =
-        s1.cache_snapshot.continuations_flat().values().cloned().collect();
+    let snapshot_continuations_values: Vec<Vec<WaitingContinuation<Pattern, StringsCaptor>>> = s1
+        .cache_snapshot
+        .continuations_flat()
+        .values()
+        .cloned()
+        .collect();
     assert_eq!(snapshot_continuations_values, vec![expected_continuation.clone()]);
 
     // produce thus removing the continuation
@@ -1927,8 +1939,12 @@ async fn create_soft_checkpoint_should_create_checkpoints_which_have_separate_st
     let s2 = rspace.create_soft_checkpoint().await;
 
     // assert that the first snapshot still contains the first continuation
-    let snapshot_continuations_values: Vec<Vec<WaitingContinuation<Pattern, StringsCaptor>>> =
-        s1.cache_snapshot.continuations_flat().values().cloned().collect();
+    let snapshot_continuations_values: Vec<Vec<WaitingContinuation<Pattern, StringsCaptor>>> = s1
+        .cache_snapshot
+        .continuations_flat()
+        .values()
+        .cloned()
+        .collect();
     assert_eq!(snapshot_continuations_values, vec![expected_continuation]);
 
     assert!(
