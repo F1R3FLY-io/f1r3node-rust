@@ -157,12 +157,12 @@ async fn event_log_insert_complexity_is_not_quadratic() {
 // *other* deploys already replayed in the same block (57ms at cap=1 ->
 // 372ms at cap=100 per deploy, identical per-deploy work). PR #72's own
 // fixes and the COMM_CON/COMM_PRO histograms (sub-ms even at cap=100) ruled
-// out rspace++ commit/lock work as the cause. Root cause: `create_soft_checkpoint()`,
-// which `replay_runtime.rs::run_user_deploy` calls unconditionally at the
-// start of *every* user deploy (for failure rollback) and which measured
-// EVAL time includes, called `HotStore::snapshot()`, which used to
-// full-clone all five DashMaps into plain HashMaps -- O(total store size),
-// not O(1) or O(per-deploy work). Before the fix this test measured ~31x
+// out rspace++ commit/lock work as the cause. Root cause:
+// `create_soft_checkpoint()`, which `replay_runtime.rs::run_user_deploy` calls
+// unconditionally at the start of *every* user deploy (for failure rollback)
+// and which measured EVAL time includes, called `HotStore::snapshot()`, which
+// used to full-clone all five DashMaps into plain HashMaps -- O(total store
+// size), not O(1) or O(per-deploy work). Before the fix this test measured ~31x
 // more time for 100x more store state; see git history for that baseline.
 //
 // Fix: HotStore's five state maps are now backed by NUM_SHARDS (256)
@@ -224,8 +224,8 @@ async fn soft_checkpoint_cost_does_not_scale_with_accumulated_store_size() {
     assert!(
         ratio < MAX_RATIO,
         "create_soft_checkpoint() scaled with accumulated store size ({ratio:.1}x for a \
-         {store_size_ratio:.1}x larger store, expected <{MAX_RATIO:.0}x) -- regression back to \
-         an O(store-size) HotStore::snapshot(), the issue-43 root cause. See ShardedMap in \
+         {store_size_ratio:.1}x larger store, expected <{MAX_RATIO:.0}x) -- regression back to an \
+         O(store-size) HotStore::snapshot(), the issue-43 root cause. See ShardedMap in \
          hot_store.rs.",
     );
 }

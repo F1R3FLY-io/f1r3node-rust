@@ -103,7 +103,9 @@ where
 {
     fn new() -> Self {
         Self {
-            shards: (0..NUM_SHARDS).map(|_| std::sync::RwLock::new(imbl::HashMap::new())).collect(),
+            shards: (0..NUM_SHARDS)
+                .map(|_| std::sync::RwLock::new(imbl::HashMap::new()))
+                .collect(),
         }
     }
 
@@ -115,20 +117,33 @@ where
     }
 
     fn get(&self, k: &K) -> Option<V> {
-        self.shards[shard_of(k)].read().expect("shard read lock").get(k).cloned()
+        self.shards[shard_of(k)]
+            .read()
+            .expect("shard read lock")
+            .get(k)
+            .cloned()
     }
 
     fn contains_key(&self, k: &K) -> bool {
-        self.shards[shard_of(k)].read().expect("shard read lock").contains_key(k)
+        self.shards[shard_of(k)]
+            .read()
+            .expect("shard read lock")
+            .contains_key(k)
     }
 
     fn insert(&self, k: K, v: V) -> Option<V> {
         let idx = shard_of(&k);
-        self.shards[idx].write().expect("shard write lock").insert(k, v)
+        self.shards[idx]
+            .write()
+            .expect("shard write lock")
+            .insert(k, v)
     }
 
     fn remove(&self, k: &K) -> Option<V> {
-        self.shards[shard_of(k)].write().expect("shard write lock").remove(k)
+        self.shards[shard_of(k)]
+            .write()
+            .expect("shard write lock")
+            .remove(k)
     }
 
     // Runs a read-modify-write closure against the shard holding `k`. Covers
@@ -142,7 +157,10 @@ where
     }
 
     fn len(&self) -> usize {
-        self.shards.iter().map(|s| s.read().expect("shard read lock").len()).sum()
+        self.shards
+            .iter()
+            .map(|s| s.read().expect("shard read lock").len())
+            .sum()
     }
 
     fn clear(&self) {
@@ -154,7 +172,10 @@ where
     // O(NUM_SHARDS): clone each shard's current persistent map. This is the
     // whole point of the sharded design -- see the type-level doc comment.
     fn snapshot_shards(&self) -> Vec<imbl::HashMap<K, V>> {
-        self.shards.iter().map(|s| s.read().expect("shard read lock").clone()).collect()
+        self.shards
+            .iter()
+            .map(|s| s.read().expect("shard read lock").clone())
+            .collect()
     }
 
     // O(NUM_SHARDS): atomically (per-shard) replace this map's contents with
@@ -279,7 +300,9 @@ where
         joins: HashMap<C, Vec<Vec<C>>>,
         installed_joins: HashMap<C, Vec<Vec<C>>>,
     ) -> Self {
-        fn shard_flat<K: Clone + Hash + Eq, V: Clone>(flat: HashMap<K, V>) -> Vec<imbl::HashMap<K, V>> {
+        fn shard_flat<K: Clone + Hash + Eq, V: Clone>(
+            flat: HashMap<K, V>,
+        ) -> Vec<imbl::HashMap<K, V>> {
             let mut shards: Vec<imbl::HashMap<K, V>> =
                 (0..NUM_SHARDS).map(|_| imbl::HashMap::new()).collect();
             for (k, v) in flat {
@@ -461,7 +484,10 @@ where
         let channels_vec = channels.to_vec();
         // Cloning a Vec<Arc<_>> is just refcount bumps — no continuation-body clone.
         let continuations = self.continuations.get(&channels_vec);
-        let installed = self.installed_continuations.get(&channels_vec).map(Arc::new);
+        let installed = self
+            .installed_continuations
+            .get(&channels_vec)
+            .map(Arc::new);
 
         match (continuations, installed) {
             (Some(conts), Some(inst)) => {
@@ -479,7 +505,8 @@ where
                     .into_iter()
                     .map(Arc::new)
                     .collect();
-                self.continuations.insert(channels_vec, from_history.clone());
+                self.continuations
+                    .insert(channels_vec, from_history.clone());
                 let mut result = Vec::with_capacity(from_history.len() + 1);
                 result.push(inst);
                 result.extend(from_history);
@@ -493,7 +520,8 @@ where
                     .into_iter()
                     .map(Arc::new)
                     .collect();
-                self.continuations.insert(channels_vec, from_history.clone());
+                self.continuations
+                    .insert(channels_vec, from_history.clone());
                 from_history
             }
         }
@@ -581,8 +609,8 @@ where
             return None;
         }
 
-        self.continuations.with_entry(&channels_vec, |map| {
-            match map.get(&channels_vec).cloned() {
+        self.continuations
+            .with_entry(&channels_vec, |map| match map.get(&channels_vec).cloned() {
                 Some(mut existing) => {
                     let len = existing.len();
                     let out_of_bounds = removed_index < 0 || removed_index as usize >= len;
@@ -613,8 +641,7 @@ where
                         Some(())
                     }
                 }
-            }
-        })
+            })
     }
 
     // Data
@@ -655,38 +682,39 @@ where
     }
 
     fn remove_datum(&self, channel: &C, index: i32) -> Result<(), RSpaceError> {
-        self.data.with_entry(channel, |map| match map.get(channel).cloned() {
-            Some(mut existing) => {
-                let out_of_bounds = index < 0 || index as usize >= existing.len();
-                if out_of_bounds {
-                    Err(RSpaceError::BugFoundError(format!(
-                        "Index {} out of bounds when removing datum (len={})",
-                        index,
-                        existing.len()
-                    )))
-                } else {
-                    existing.remove(index as usize);
-                    map.insert(channel.clone(), existing);
-                    Ok(())
+        self.data
+            .with_entry(channel, |map| match map.get(channel).cloned() {
+                Some(mut existing) => {
+                    let out_of_bounds = index < 0 || index as usize >= existing.len();
+                    if out_of_bounds {
+                        Err(RSpaceError::BugFoundError(format!(
+                            "Index {} out of bounds when removing datum (len={})",
+                            index,
+                            existing.len()
+                        )))
+                    } else {
+                        existing.remove(index as usize);
+                        map.insert(channel.clone(), existing);
+                        Ok(())
+                    }
                 }
-            }
-            None => {
-                let mut from_history = self.get_data_from_history_store(channel);
-                let out_of_bounds = index < 0 || index as usize >= from_history.len();
-                if out_of_bounds {
-                    let len = from_history.len();
-                    map.insert(channel.clone(), from_history);
-                    Err(RSpaceError::BugFoundError(format!(
-                        "Index {} out of bounds when removing datum (len={})",
-                        index, len
-                    )))
-                } else {
-                    from_history.remove(index as usize);
-                    map.insert(channel.clone(), from_history);
-                    Ok(())
+                None => {
+                    let mut from_history = self.get_data_from_history_store(channel);
+                    let out_of_bounds = index < 0 || index as usize >= from_history.len();
+                    if out_of_bounds {
+                        let len = from_history.len();
+                        map.insert(channel.clone(), from_history);
+                        Err(RSpaceError::BugFoundError(format!(
+                            "Index {} out of bounds when removing datum (len={})",
+                            index, len
+                        )))
+                    } else {
+                        from_history.remove(index as usize);
+                        map.insert(channel.clone(), from_history);
+                        Ok(())
+                    }
                 }
-            }
-        })
+            })
     }
 
     // Joins
@@ -748,17 +776,18 @@ where
     }
 
     fn install_join(&self, channel: &C, join: &[C]) -> Option<()> {
-        self.installed_joins.with_entry(channel, |map| match map.get(channel).cloned() {
-            Some(mut existing) => {
-                if !existing.iter().any(|j| j.as_slice() == join) {
-                    existing.insert(0, join.to_vec());
-                    map.insert(channel.clone(), existing);
+        self.installed_joins
+            .with_entry(channel, |map| match map.get(channel).cloned() {
+                Some(mut existing) => {
+                    if !existing.iter().any(|j| j.as_slice() == join) {
+                        existing.insert(0, join.to_vec());
+                        map.insert(channel.clone(), existing);
+                    }
                 }
-            }
-            None => {
-                map.insert(channel.clone(), vec![join.to_vec()]);
-            }
-        });
+                None => {
+                    map.insert(channel.clone(), vec![join.to_vec()]);
+                }
+            });
         Some(())
     }
 
@@ -782,27 +811,30 @@ where
             }
             Some(())
         } else {
-            self.joins.with_entry(channel, |map| match map.get(channel).cloned() {
-                Some(mut existing) => {
-                    if let Some(idx) = existing.iter().position(|x| x.as_slice() == join) {
-                        existing.remove(idx);
-                    } else {
-                        warn!("Join not found when removing join");
+            self.joins
+                .with_entry(channel, |map| match map.get(channel).cloned() {
+                    Some(mut existing) => {
+                        if let Some(idx) = existing.iter().position(|x| x.as_slice() == join) {
+                            existing.remove(idx);
+                        } else {
+                            warn!("Join not found when removing join");
+                        }
+                        map.insert(channel.clone(), existing);
+                        Some(())
                     }
-                    map.insert(channel.clone(), existing);
-                    Some(())
-                }
-                None => {
-                    let mut joins_in_history = self.get_joins_from_history_store(channel);
-                    if let Some(idx) = joins_in_history.iter().position(|x| x.as_slice() == join) {
-                        joins_in_history.remove(idx);
-                    } else {
-                        warn!("Join not found when removing join");
+                    None => {
+                        let mut joins_in_history = self.get_joins_from_history_store(channel);
+                        if let Some(idx) =
+                            joins_in_history.iter().position(|x| x.as_slice() == join)
+                        {
+                            joins_in_history.remove(idx);
+                        } else {
+                            warn!("Join not found when removing join");
+                        }
+                        map.insert(channel.clone(), joins_in_history);
+                        Some(())
                     }
-                    map.insert(channel.clone(), joins_in_history);
-                    Some(())
-                }
-            })
+                })
         }
     }
 
@@ -818,7 +850,8 @@ where
                         channels: k,
                     }))
                 } else {
-                    let v: Vec<WaitingContinuation<P, K>> = v.iter().map(|a| (**a).clone()).collect();
+                    let v: Vec<WaitingContinuation<P, K>> =
+                        v.iter().map(|a| (**a).clone()).collect();
                     HotStoreAction::Insert(InsertAction::InsertContinuations(InsertContinuations {
                         channels: k,
                         continuations: v,
@@ -977,9 +1010,11 @@ where
         let _guard = self.checkpoint_lock.lock().expect("checkpoint lock");
         self.data.restore_shards(new_state.data);
         self.continuations.restore_shards(new_state.continuations);
-        self.installed_continuations.restore_shards(new_state.installed_continuations);
+        self.installed_continuations
+            .restore_shards(new_state.installed_continuations);
         self.joins.restore_shards(new_state.joins);
-        self.installed_joins.restore_shards(new_state.installed_joins);
+        self.installed_joins
+            .restore_shards(new_state.installed_joins);
     }
 }
 

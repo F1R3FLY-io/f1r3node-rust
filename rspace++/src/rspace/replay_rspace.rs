@@ -1383,12 +1383,11 @@ mod tests {
     async fn make_replay_rspace() -> ReplayRSpace<String, Wildcard, String, String> {
         let mut kvm = InMemoryStoreManager::new();
         let store = kvm.r_space_stores().await.unwrap();
-        let (_play, replay) =
-            RSpace::<String, Wildcard, String, String>::create_with_replay(
-                store,
-                Arc::new(Box::new(AlwaysMatch)),
-            )
-            .unwrap();
+        let (_play, replay) = RSpace::<String, Wildcard, String, String>::create_with_replay(
+            store,
+            Arc::new(Box::new(AlwaysMatch)),
+        )
+        .unwrap();
         replay
     }
 

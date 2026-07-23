@@ -927,9 +927,8 @@ type StateSetup = (
 
 #[fixture]
 pub fn fixture() -> StateSetup {
-    let history_state = Arc::new(Mutex::new(
-        TestHistoryState::<String, Pattern, String, StringsCaptor>::default(),
-    ));
+    let history_state =
+        Arc::new(Mutex::new(TestHistoryState::<String, Pattern, String, StringsCaptor>::default()));
 
     let history = TestHistory {
         state: history_state.clone(),
@@ -945,9 +944,8 @@ pub fn fixture() -> StateSetup {
 pub fn fixture_with_cache(
     cache: HotStoreState<String, Pattern, String, StringsCaptor>,
 ) -> StateSetup {
-    let history_state = Arc::new(Mutex::new(
-        TestHistoryState::<String, Pattern, String, StringsCaptor>::default(),
-    ));
+    let history_state =
+        Arc::new(Mutex::new(TestHistoryState::<String, Pattern, String, StringsCaptor>::default()));
 
     let history = TestHistory {
         state: history_state.clone(),
