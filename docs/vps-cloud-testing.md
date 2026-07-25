@@ -189,7 +189,7 @@ For when you want real inter-host networking but don't want to use OCI. Works ag
 ```bash
 ./node/docker-commands.sh build-local
 # Tag it with the name the compose files expect
-docker tag f1r3fly-rust:local sjc.ocir.io/axd0qezqa9z3/f1r3fly-rust:latest
+docker tag f1r3fly-rust:local us-sanjose-1.ocir.io/axd0qezqa9z3/f1r3fly-rust:latest
 ```
 
 Transfer the image to both hosts (parallel, via `docker save | gzip | ssh | docker load`). The existing `scripts/remote/image-transfer.sh` handles this:
@@ -413,10 +413,10 @@ For a dry-run first: `./scripts/remote/oci-provision.sh` (no `--apply`).
 
 ```bash
 # Build or pull the image locally first:
-docker pull sjc.ocir.io/axd0qezqa9z3/f1r3fly-rust:latest   # once OCIR publishing is live
+docker pull us-sanjose-1.ocir.io/axd0qezqa9z3/f1r3fly-rust:latest   # once OCIR publishing is live
 # OR
 ./node/docker-commands.sh build-local && \
-  docker tag f1r3fly-rust:local sjc.ocir.io/axd0qezqa9z3/f1r3fly-rust:latest
+  docker tag f1r3fly-rust:local us-sanjose-1.ocir.io/axd0qezqa9z3/f1r3fly-rust:latest
 
 just vps-image-push
 ```

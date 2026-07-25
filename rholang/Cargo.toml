@@ -8,11 +8,20 @@ publish = false
 name = "rholang-cli"
 path = "src/rholang_cli.rs"
 
+[[bin]]
+name = "bench_par_reducer"
+path = "src/bin/bench_par_reducer.rs"
+
+[[bin]]
+name = "bench_par_propose"
+path = "src/bin/bench_par_propose.rs"
+
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
 crypto = { path = "../crypto" }
 models = { path = "../models" }
+rho-pure-eval = { path = "../rho-pure-eval" }
 shared = { path = "../shared" }
 rspace_plus_plus = { path = "../rspace++" }
 itertools = { workspace = true }
@@ -63,6 +72,7 @@ async-trait = { workspace = true }
 
 [dev-dependencies]
 pretty_assertions = "1.3.0"
+proptest = { workspace = true }
 rand = { workspace = true }
 
 [features]

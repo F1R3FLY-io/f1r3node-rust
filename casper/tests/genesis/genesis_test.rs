@@ -27,11 +27,14 @@ use casper::rust::genesis::contracts::proof_of_stake::ProofOfStake;
 use casper::rust::genesis::contracts::validator::Validator;
 use casper::rust::genesis::genesis::Genesis;
 use casper::rust::util::bonds_parser::BondsParser;
-use casper::rust::util::proto_util;
 use casper::rust::util::rholang::interpreter_util;
 use casper::rust::util::rholang::runtime_manager::RuntimeManager;
+use casper::rust::util::rholang::tools::Tools;
 use casper::rust::util::vault_parser::VaultParser;
+use casper::rust::util::{construct_deploy, proto_util, rspace_util};
 use comm::rust::test_instances::{LogStub, LogicalTime};
+use crypto::rust::signatures::secp256k1::Secp256k1;
+use crypto::rust::signatures::signatures_alg::SignaturesAlg;
 use models::rust::casper::protocol::casper_message::{BlockMessage, Bond};
 use models::rust::string_ops::StringOps;
 use prost::bytes::Bytes;
@@ -39,7 +42,8 @@ use rspace_plus_plus::rspace::history::Either;
 use tempfile::TempDir;
 
 use crate::helper::block_dag_storage_fixture::with_storage;
-use crate::util::genesis_builder::DEFAULT_POS_MULTI_SIG_PUBLIC_KEYS;
+use crate::helper::test_node::TestNode;
+use crate::util::genesis_builder::{GenesisBuilder, DEFAULT_POS_MULTI_SIG_PUBLIC_KEYS};
 use crate::util::rholang::resources;
 use crate::util::rholang::resources::generate_scope_id;
 
@@ -232,6 +236,7 @@ async fn from_input_files(
             epoch_length: params.epoch_length,
             quarantine_length: params.quarantine_length,
             number_of_active_validators: params.number_of_active_validators,
+            fault_tolerance_threshold_ppm: 0,
             validators,
             pos_multi_sig_public_keys: DEFAULT_POS_MULTI_SIG_PUBLIC_KEYS.to_vec(),
             pos_multi_sig_quorum: DEFAULT_POS_MULTI_SIG_PUBLIC_KEYS.len() as u32 - 1,
@@ -389,20 +394,25 @@ async fn genesis_from_input_files_should_create_a_valid_genesis_block() {
                 .expect("Genesis creation should succeed");
 
                 block_dag_storage
-                    .insert(&genesis, false, true)
+                    .insert(
+                        &genesis,
+                        block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved,
+                    )
                     .expect("Failed to insert genesis into DAG");
 
                 block_store
                     .put(genesis.block_hash.clone(), &genesis)
                     .expect("Failed to put genesis into block store");
 
-                let dag = block_dag_storage.get_representation();
+                let dag = block_dag_storage
+                    .get_representation()
+                    .expect("dag representation");
 
                 let maybe_post_genesis_state_hash = interpreter_util::validate_block_checkpoint(
                     &genesis,
                     &block_store,
                     &mut mk_casper_snapshot(dag),
-                    &mut runtime_manager,
+                    &runtime_manager,
                     None,
                 )
                 .await
@@ -472,8 +482,140 @@ async fn genesis_from_input_files_should_detect_an_existing_bonds_file_in_the_de
     .await;
 }
 
+// Rholang that reads the on-chain REV vault balance for a single rev address and returns it on
+// `ret`. `ret` is the first `new`-bound (non-urn) name, so its unforgeable id equals the deploy
+// RNG's first output — exactly what `calculate_unforgeable_name` reconstructs for the read-back.
+const BALANCE_QUERY_TEMPLATE: &str = r#"
+new ret, rl(`rho:registry:lookup`), RevVaultCh, vaultCh, balanceCh in {
+  rl!(`rho:vault:system`, *RevVaultCh) |
+  for (@(_, RevVault) <- RevVaultCh) {
+    match "__REV_ADDRESS__" {
+      revAddress => {
+        @RevVault!("findOrCreate", revAddress, *vaultCh) |
+        for (@(true, vault) <- vaultCh) {
+          @vault!("balance", *balanceCh) |
+          for (@balance <- balanceCh) {
+            ret!(balance)
+          }
+        }
+      }
+    }
+  }
+}
+"#;
+
+// A phlo budget that comfortably exceeds the cost of a RevVault balance read (the insufficient-phlo
+// spec proves the read needs > 3000) while staying below the 9_000_000 default deployer vault.
+const BALANCE_QUERY_PHLO_LIMIT: i64 = 4_000_000;
+
+// Reconstructs the unforgeable id of the first `new`-bound name of a deploy signed by DEFAULT_SEC.
+fn calculate_unforgeable_name(timestamp: i64) -> String {
+    let secp256k1 = Secp256k1;
+    let public_key = secp256k1.to_public(&construct_deploy::DEFAULT_SEC);
+    let unforgeable_id = Tools::unforgeable_name_rng(&public_key, timestamp).next();
+    let unforgeable_id_u8: Vec<u8> = unforgeable_id.iter().map(|&b| b as u8).collect();
+    hex::encode(unforgeable_id_u8)
+}
+
+// Deploys a balance query for `rev_address`, adds it in a block, and returns the pretty-printed
+// on-chain balance (a decimal string) read back from the deploy's `ret` channel.
+async fn rev_vault_balance(node: &mut TestNode, shard_id: &str, rev_address: &str) -> String {
+    let term = BALANCE_QUERY_TEMPLATE.replace("__REV_ADDRESS__", rev_address);
+    let deploy = construct_deploy::source_deploy_now_full(
+        term,
+        Some(BALANCE_QUERY_PHLO_LIMIT),
+        None,
+        None,
+        None,
+        Some(shard_id.to_string()),
+    )
+    .expect("Failed to build balance-query deploy");
+
+    let block = node
+        .add_block_from_deploys(std::slice::from_ref(&deploy))
+        .await
+        .expect("Failed to add balance-query block");
+
+    let data = rspace_util::get_data_at_private_channel(
+        &block,
+        &calculate_unforgeable_name(deploy.data.time_stamp),
+        &node.runtime_manager,
+    )
+    .await;
+
+    assert_eq!(
+        data.len(),
+        1,
+        "expected exactly one balance datum on ret for {}, got {:?}",
+        rev_address,
+        data
+    );
+    data.into_iter()
+        .next()
+        .expect("balance datum should be present")
+}
+
+// Parses the wallets input file at genesis and asserts the corresponding REV vault is created
+// on-chain with exactly the wallets-file balance. Exercises the real wallets-file parser
+// (`VaultParser`) end-to-end into genesis vault issuance. (The "Scala ignore" port label was
+// stale — this behavior is directly testable against the current Rust genesis builder.)
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "Scala ignore"]
 async fn genesis_from_input_files_should_parse_the_wallets_file_and_create_corresponding_rev_vaults(
 ) {
+    // A known, valid rev address funded with a known non-zero balance in the wallets file.
+    const KNOWN_REV_ADDRESS: &str = "1111LAd2PWaHsw84gxarNx99YVK2aZhCThhrPsWTV7cs1BPcvHftP";
+    const KNOWN_BALANCE: u64 = 123_456_789;
+
+    // Write and PARSE a wallets file (the behavior under test): `<rev_address>,<balance>` lines
+    // ingested by the genesis wallets parser used by `from_input_files`.
+    let wallets_dir = TempDir::new().expect("Failed to create wallets temp dir");
+    let wallets_path = wallets_dir.path().join("wallets.txt");
+    fs::write(
+        &wallets_path,
+        format!("{},{}\n", KNOWN_REV_ADDRESS, KNOWN_BALANCE),
+    )
+    .expect("Failed to write wallets file");
+
+    let parsed_vaults = VaultParser::parse_from_path_str(
+        wallets_path
+            .to_str()
+            .expect("wallets path must be valid UTF-8"),
+    )
+    .expect("Failed to parse wallets file");
+    assert_eq!(
+        parsed_vaults.len(),
+        1,
+        "wallets file should parse into exactly one vault"
+    );
+    assert_eq!(
+        parsed_vaults[0].vault_address.to_base58(),
+        KNOWN_REV_ADDRESS,
+        "parsed vault address should match the wallets-file address"
+    );
+
+    // Build a genesis whose vault set includes the parsed wallet vault(s). Explicit parameters keep
+    // the custom vault set in the genesis-cache key (no sharing with default-vault geneses).
+    let (validator_key_pairs, genesis_vaults, mut genesis_params) =
+        GenesisBuilder::build_genesis_parameters_with_defaults(None, None);
+    genesis_params.vaults.extend(parsed_vaults.clone());
+
+    let genesis_context = GenesisBuilder::new()
+        .build_genesis_with_parameters(Some((validator_key_pairs, genesis_vaults, genesis_params)))
+        .await
+        .expect("Failed to build genesis from parsed wallets");
+
+    let shard_id = genesis_context.genesis_block.shard_id.clone();
+    let mut node = TestNode::standalone(genesis_context.clone())
+        .await
+        .expect("Failed to create standalone node");
+
+    // Assert the genesis created a corresponding REV vault holding exactly the wallets-file balance.
+    let on_chain_balance = rev_vault_balance(&mut node, &shard_id, KNOWN_REV_ADDRESS).await;
+    assert_eq!(
+        on_chain_balance,
+        KNOWN_BALANCE.to_string(),
+        "genesis REV vault for {} must hold the wallets-file balance {}",
+        KNOWN_REV_ADDRESS,
+        KNOWN_BALANCE
+    );
 }

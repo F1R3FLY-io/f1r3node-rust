@@ -23,7 +23,7 @@ use crypto::rust::private_key::PrivateKey;
 use crypto::rust::signatures::secp256k1::Secp256k1;
 use crypto::rust::signatures::signatures_alg::SignaturesAlg;
 use crypto::rust::signatures::signed::Signed;
-use dashmap::{DashMap, DashSet};
+use dashmap::DashSet;
 use models::rust::casper::protocol::casper_message::{DeployData, Justification};
 use models::rust::validator::Validator;
 use prost::bytes::Bytes;
@@ -101,7 +101,7 @@ fn create_snapshot_with_parent(
         latest_block_hash: parent.block_hash.clone(),
     });
 
-    let max_seq_nums: DashMap<Validator, u64> = DashMap::new();
+    let mut max_seq_nums: HashMap<Validator, u64> = HashMap::new();
     max_seq_nums.insert(validator.clone(), parent.seq_num as u64);
     snapshot.max_seq_nums = max_seq_nums;
 
@@ -157,11 +157,11 @@ async fn run_block_creator_create_memory_profile() {
     let secp = Secp256k1;
     let (validator_sk, validator_pk) = secp.new_key_pair();
     let validator_identity = ValidatorIdentity::new(&validator_sk);
-    let validator: Bytes = validator_pk.bytes.clone().into();
+    let validator: Bytes = validator_pk.bytes.clone();
     let shard_name = "test-shard".to_string();
 
     let mut kvm = InMemoryStoreManager::new();
-    let deploy_storage = Arc::new(Mutex::new(
+    let deploy_storage = Arc::new(parking_lot::Mutex::new(
         KeyValueDeployStorage::new(&mut kvm)
             .await
             .expect("Failed to create deploy storage"),
@@ -185,7 +185,7 @@ async fn run_block_creator_create_memory_profile() {
     let mergeable_store = RuntimeManager::mergeable_store(&mut kvm)
         .await
         .expect("Failed to create mergeable store");
-    let (mut runtime_manager, _) = RuntimeManager::create_with_history(
+    let (runtime_manager, _) = RuntimeManager::create_with_history(
         rspace_store,
         mergeable_store,
         std::sync::Arc::new(Genesis::default_mergeable_tags()),
@@ -206,6 +206,7 @@ async fn run_block_creator_create_memory_profile() {
             epoch_length: 1000,
             quarantine_length: 50000,
             number_of_active_validators: 1,
+            fault_tolerance_threshold_ppm: 0,
             pos_multi_sig_public_keys: vec![
                 "04db91a53a2b72fcdcb201031772da86edad1e4979eb6742928d27731b1771e0bc40c9e9c9fa6554bdec041a87cee423d6f2e09e9dfb408b78e85a4aa611aad20c".to_string(),
                 "042a736b30fffcc7d5a58bb9416f7e46180818c82b15542d0a7819d1a437aa7f4b6940c50db73a67bfc5f5ec5b5fa555d24ef8339b03edaa09c096de4ded6eae14".to_string(),
@@ -220,7 +221,7 @@ async fn run_block_creator_create_memory_profile() {
         native_token_symbol: "F1R3".to_string(),
         native_token_decimals: 8,
     };
-    let parent = Genesis::create_genesis_block(&mut runtime_manager, &genesis)
+    let parent = Genesis::create_genesis_block(&runtime_manager, &genesis)
         .await
         .expect("Failed to create genesis block for block_creator profiling");
 
@@ -228,11 +229,16 @@ async fn run_block_creator_create_memory_profile() {
         .put_block_message(&parent)
         .expect("Failed to store parent block");
     dag_storage
-        .insert(&parent, false, true)
+        .insert(
+            &parent,
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved,
+        )
         .expect("Failed to insert parent block in DAG");
 
     let snapshot = create_snapshot_with_parent(
-        dag_storage.get_representation(),
+        dag_storage
+            .get_representation()
+            .expect("dag representation"),
         parent,
         validator.clone(),
         shard_name.clone(),
@@ -257,7 +263,7 @@ async fn run_block_creator_create_memory_profile() {
     for i in 1..=iterations {
         let deploy = create_deploy(i, &validator_sk, &shard_name);
         {
-            let mut ds = deploy_storage.lock().unwrap();
+            let mut ds = deploy_storage.lock();
             ds.add(vec![deploy]).expect("Failed to add deploy");
         }
 
@@ -269,7 +275,7 @@ async fn run_block_creator_create_memory_profile() {
                 None,
                 deploy_storage.clone(),
                 rejected_deploy_buffer.clone(),
-                &mut runtime_manager,
+                &runtime_manager,
                 &mut block_store,
                 false,
             ),
@@ -299,7 +305,7 @@ async fn run_block_creator_create_memory_profile() {
         };
 
         {
-            let mut ds = deploy_storage.lock().unwrap();
+            let mut ds = deploy_storage.lock();
             let all = ds.read_all().expect("Failed to read deploy pool");
             if !all.is_empty() {
                 ds.remove(all.into_iter().collect())
@@ -405,7 +411,7 @@ async fn run_block_creator_phase_split_memory_profile() {
     let secp = Secp256k1;
     let (validator_sk, validator_pk) = secp.new_key_pair();
     let validator_identity = ValidatorIdentity::new(&validator_sk);
-    let validator: Bytes = validator_pk.bytes.clone().into();
+    let validator: Bytes = validator_pk.bytes.clone();
     let shard_name = "test-shard".to_string();
 
     let mut kvm = InMemoryStoreManager::new();
@@ -423,7 +429,7 @@ async fn run_block_creator_phase_split_memory_profile() {
     let mergeable_store = RuntimeManager::mergeable_store(&mut kvm)
         .await
         .expect("Failed to create mergeable store");
-    let (mut runtime_manager, _) = RuntimeManager::create_with_history(
+    let (runtime_manager, _) = RuntimeManager::create_with_history(
         rspace_store,
         mergeable_store,
         std::sync::Arc::new(Genesis::default_mergeable_tags()),
@@ -444,6 +450,7 @@ async fn run_block_creator_phase_split_memory_profile() {
             epoch_length: 1000,
             quarantine_length: 50000,
             number_of_active_validators: 1,
+            fault_tolerance_threshold_ppm: 0,
             pos_multi_sig_public_keys: vec![
                 "04db91a53a2b72fcdcb201031772da86edad1e4979eb6742928d27731b1771e0bc40c9e9c9fa6554bdec041a87cee423d6f2e09e9dfb408b78e85a4aa611aad20c".to_string(),
                 "042a736b30fffcc7d5a58bb9416f7e46180818c82b15542d0a7819d1a437aa7f4b6940c50db73a67bfc5f5ec5b5fa555d24ef8339b03edaa09c096de4ded6eae14".to_string(),
@@ -458,7 +465,7 @@ async fn run_block_creator_phase_split_memory_profile() {
         native_token_symbol: "F1R3".to_string(),
         native_token_decimals: 8,
     };
-    let parent = Genesis::create_genesis_block(&mut runtime_manager, &genesis)
+    let parent = Genesis::create_genesis_block(&runtime_manager, &genesis)
         .await
         .expect("Failed to create genesis block for phase-split profiling");
 
@@ -466,11 +473,16 @@ async fn run_block_creator_phase_split_memory_profile() {
         .put_block_message(&parent)
         .expect("Failed to store parent block");
     dag_storage
-        .insert(&parent, false, true)
+        .insert(
+            &parent,
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved,
+        )
         .expect("Failed to insert parent block in DAG");
 
     let snapshot = create_snapshot_with_parent(
-        dag_storage.get_representation(),
+        dag_storage
+            .get_representation()
+            .expect("dag representation"),
         parent,
         validator.clone(),
         shard_name.clone(),
@@ -566,14 +578,22 @@ async fn run_block_creator_phase_split_memory_profile() {
                 ),
             }
         } else {
+            let latest_messages: std::collections::BTreeMap<_, _> = snapshot
+                .justifications
+                .iter()
+                .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
+                .collect();
             match compute_parents_post_state(
                 &block_store,
                 snapshot.parents.clone(),
                 &snapshot,
                 &runtime_manager,
+                &latest_messages,
                 None,
                 None,
-            ) {
+            )
+            .await
+            {
                 Ok(result) => result,
                 Err(err) => {
                     error_count += 1;

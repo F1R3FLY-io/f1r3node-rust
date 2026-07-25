@@ -101,9 +101,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          xargs -r -a .github/apt-dependencies.txt sudo apt-get install -y
+        run: bash .github/scripts/install-system-dependencies.sh
 
       - name: Install git-cliff
         uses: orhun/git-cliff-action@v4

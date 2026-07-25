@@ -5,12 +5,13 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use block_storage::rust::dag::block_dag_key_value_storage::InsertMode;
 use casper::rust::api::block_api::BlockAPI;
 use casper::rust::api::deploy_finalization_status::{self, DeployFinalizationState};
 use casper::rust::casper::MultiParentCasper;
 use casper::rust::engine::engine_cell::EngineCell;
 use casper::rust::engine::engine_with_casper::EngineWithCasper;
-use casper::rust::multi_parent_casper_impl::MultiParentCasperImpl;
+use casper::rust::engine::multi_parent_casper::MultiParentCasperImpl;
 use crypto::rust::public_key::PublicKey;
 
 use crate::helper::test_node::TestNode;
@@ -58,7 +59,7 @@ async fn create_engine_cell(node: &TestNode) -> EngineCell {
         finalizer_task_in_progress: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         finalizer_task_queued: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         heartbeat_signal_ref: casper::rust::heartbeat_signal::new_heartbeat_signal_ref(),
-        deploys_in_scope_cache: std::sync::Arc::new(std::sync::Mutex::new(None)),
+        deploys_in_scope_cache: std::sync::Arc::new(parking_lot::Mutex::new(None)),
         active_validators_cache: std::sync::Arc::new(tokio::sync::Mutex::new(
             std::collections::HashMap::new(),
         )),
@@ -175,7 +176,7 @@ async fn resolve_finds_sig_in_secondary_parent_branch() {
         .put_block_message(&genesis_block)
         .expect("store genesis");
     dag_storage
-        .insert(&genesis_block, false, true)
+        .insert(&genesis_block, InsertMode::Approved)
         .expect("dag genesis");
 
     let deploy_b =
@@ -239,19 +240,21 @@ async fn resolve_finds_sig_in_secondary_parent_branch() {
     block_store.put_block_message(&block_b).expect("store B");
     block_store.put_block_message(&block_c).expect("store C");
     dag_storage
-        .insert(&block_a, false, false)
+        .insert(&block_a, InsertMode::Normal)
         .expect("dag insert A");
     dag_storage
-        .insert(&block_b, false, false)
+        .insert(&block_b, InsertMode::Normal)
         .expect("dag insert B");
     dag_storage
-        .insert(&block_c, false, false)
+        .insert(&block_c, InsertMode::Normal)
         .expect("dag insert C");
 
     // Promote C to LFB so the resolver's scan starts there. The DAG state
     // normally bumps LFB only via the finalization pipeline; for this unit
     // test we overwrite the representation's field directly.
-    let mut dag = dag_storage.get_representation();
+    let mut dag = dag_storage
+        .get_representation()
+        .expect("get_representation");
     dag.last_finalized_block_hash = block_c.block_hash.clone();
 
     let deploy_lifespan = 50i64;
@@ -371,7 +374,7 @@ async fn resolve_and_resolve_batch_agree_across_states() {
         .put_block_message(&genesis_block)
         .expect("store genesis");
     dag_storage
-        .insert(&genesis_block, false, true)
+        .insert(&genesis_block, InsertMode::Approved)
         .expect("dag genesis");
 
     // Construct four user deploys; the fifth sig (unknown) is not
@@ -539,19 +542,21 @@ async fn resolve_and_resolve_batch_agree_across_states() {
     block_store.put_block_message(&block_s).expect("store S");
     block_store.put_block_message(&block_c).expect("store C");
     dag_storage
-        .insert(&block_a, false, false)
+        .insert(&block_a, InsertMode::Normal)
         .expect("dag insert A");
     dag_storage
-        .insert(&block_b, false, false)
+        .insert(&block_b, InsertMode::Normal)
         .expect("dag insert B");
     dag_storage
-        .insert(&block_s, false, false)
+        .insert(&block_s, InsertMode::Normal)
         .expect("dag insert S");
     dag_storage
-        .insert(&block_c, false, false)
+        .insert(&block_c, InsertMode::Normal)
         .expect("dag insert C");
 
-    let mut dag = dag_storage.get_representation();
+    let mut dag = dag_storage
+        .get_representation()
+        .expect("get_representation");
     dag.last_finalized_block_hash = block_c.block_hash.clone();
 
     let deploy_lifespan = 50i64;
@@ -739,7 +744,7 @@ async fn resolve_returns_pending_for_unfinalized_inclusion_past_lifespan() {
         .put_block_message(&genesis_block)
         .expect("store genesis");
     dag_storage
-        .insert(&genesis_block, false, true)
+        .insert(&genesis_block, InsertMode::Approved)
         .expect("dag genesis");
 
     // Deploy with explicit valid_after_block_number = 0.
@@ -774,11 +779,13 @@ async fn resolve_returns_pending_for_unfinalized_inclusion_past_lifespan() {
     );
     block_store.put_block_message(&block_b).expect("store B");
     dag_storage
-        .insert(&block_b, false, false)
+        .insert(&block_b, InsertMode::Normal)
         .expect("dag insert B");
 
     // LFB stays at genesis (h=0). Block B sits unfinalized at h=1.
-    let dag = dag_storage.get_representation();
+    let dag = dag_storage
+        .get_representation()
+        .expect("get_representation");
 
     // Lifespan = 0 makes the cutoff equal to valid_after_block_number (0),
     // so tip (1) > 0 → the buggy tip-based expiry triggers; LFB (0) is NOT
@@ -850,7 +857,7 @@ async fn resolve_returns_finalized_for_clean_canonical_after_failed_secondary() 
         .put_block_message(&genesis_block)
         .expect("store genesis");
     dag_storage
-        .insert(&genesis_block, false, true)
+        .insert(&genesis_block, InsertMode::Approved)
         .expect("dag genesis");
 
     let deploy_failed_then_clean = construct_deploy::source_deploy_now_full(
@@ -965,23 +972,25 @@ async fn resolve_returns_finalized_for_clean_canonical_after_failed_secondary() 
     block_store.put_block_message(&block_c).expect("store C");
     block_store.put_block_message(&block_d).expect("store D");
     dag_storage
-        .insert(&block_a, false, false)
+        .insert(&block_a, InsertMode::Normal)
         .expect("dag insert A");
     dag_storage
-        .insert(&block_b, false, false)
+        .insert(&block_b, InsertMode::Normal)
         .expect("dag insert B");
     dag_storage
-        .insert(&block_s, false, false)
+        .insert(&block_s, InsertMode::Normal)
         .expect("dag insert S");
     dag_storage
-        .insert(&block_c, false, false)
+        .insert(&block_c, InsertMode::Normal)
         .expect("dag insert C");
     dag_storage
-        .insert(&block_d, false, false)
+        .insert(&block_d, InsertMode::Normal)
         .expect("dag insert D");
 
     // LFB = D (the clean canonical inclusion).
-    let mut dag = dag_storage.get_representation();
+    let mut dag = dag_storage
+        .get_representation()
+        .expect("get_representation");
     dag.last_finalized_block_hash = block_d.block_hash.clone();
 
     let deploy_lifespan = 50i64;
@@ -1050,7 +1059,7 @@ async fn resolve_returns_finalized_when_canonical_clean_supersedes_canonical_fai
         .put_block_message(&genesis_block)
         .expect("store genesis");
     dag_storage
-        .insert(&genesis_block, false, true)
+        .insert(&genesis_block, InsertMode::Approved)
         .expect("dag genesis");
 
     let deploy = construct_deploy::source_deploy_now_full(
@@ -1130,16 +1139,18 @@ async fn resolve_returns_finalized_when_canonical_clean_supersedes_canonical_fai
     block_store.put_block_message(&block_b).expect("store B");
     block_store.put_block_message(&block_c).expect("store C");
     dag_storage
-        .insert(&block_a, false, false)
+        .insert(&block_a, InsertMode::Normal)
         .expect("dag insert A");
     dag_storage
-        .insert(&block_b, false, false)
+        .insert(&block_b, InsertMode::Normal)
         .expect("dag insert B");
     dag_storage
-        .insert(&block_c, false, false)
+        .insert(&block_c, InsertMode::Normal)
         .expect("dag insert C");
 
-    let mut dag = dag_storage.get_representation();
+    let mut dag = dag_storage
+        .get_representation()
+        .expect("get_representation");
     dag.last_finalized_block_hash = block_c.block_hash.clone();
 
     let deploy_lifespan = 50i64;
@@ -1203,7 +1214,7 @@ async fn resolve_returns_typed_err_for_indexed_but_missing_from_body() {
         .put_block_message(&genesis_block)
         .expect("store genesis");
     dag_storage
-        .insert(&genesis_block, false, true)
+        .insert(&genesis_block, InsertMode::Approved)
         .expect("dag genesis");
 
     // Build a block with NO deploys in its body.
@@ -1225,7 +1236,7 @@ async fn resolve_returns_typed_err_for_indexed_but_missing_from_body() {
     );
     block_store.put_block_message(&block_a).expect("store A");
     dag_storage
-        .insert(&block_a, false, false)
+        .insert(&block_a, InsertMode::Normal)
         .expect("dag insert A");
 
     // Inject the inconsistency: write a fake mapping into the deploy index
@@ -1233,7 +1244,8 @@ async fn resolve_returns_typed_err_for_indexed_but_missing_from_body() {
     // not list it.
     let corrupt_sig = vec![0xDEu8; 32];
     {
-        let deploy_index_guard = dag_storage.deploy_index.write().unwrap();
+        let deploy_index_handle = dag_storage.deploy_index_for_tests();
+        let deploy_index_guard = deploy_index_handle.write();
         deploy_index_guard
             .put(vec![(
                 Bytes::from(corrupt_sig.clone()).into(),
@@ -1242,7 +1254,9 @@ async fn resolve_returns_typed_err_for_indexed_but_missing_from_body() {
             .expect("inject corrupt deploy_index entry");
     }
 
-    let dag = dag_storage.get_representation();
+    let dag = dag_storage
+        .get_representation()
+        .expect("get_representation");
     let deploy_lifespan = 50i64;
 
     let result =
@@ -1264,6 +1278,101 @@ async fn resolve_returns_typed_err_for_indexed_but_missing_from_body() {
         corruption.block_hash, block_a.block_hash,
         "sentinel must carry the inconsistent block hash",
     );
+}
+
+#[tokio::test]
+async fn resolve_with_known_block_uses_fallback_block_when_deploy_index_misses() {
+    use block_storage::rust::key_value_block_store::KeyValueBlockStore;
+    use casper::rust::util::construct_deploy;
+    use models::rust::block_implicits;
+    use models::rust::casper::protocol::casper_message::ProcessedDeploy;
+    use prost::bytes::Bytes;
+    use shared::rust::store::key_value_typed_store::KeyValueTypedStore;
+
+    use crate::util::rholang::resources::{
+        block_dag_storage_from_dyn, mk_test_rnode_store_manager_from_genesis,
+    };
+
+    let ctx = TestContext::new().await;
+    let genesis_block = ctx.genesis.genesis_block.clone();
+    let genesis_hash = genesis_block.block_hash.clone();
+
+    let mut kvm = mk_test_rnode_store_manager_from_genesis(&ctx.genesis);
+    let block_store = KeyValueBlockStore::create_from_kvm(&mut *kvm)
+        .await
+        .expect("block store");
+    let dag_storage = block_dag_storage_from_dyn(&mut *kvm)
+        .await
+        .expect("dag storage");
+
+    block_store
+        .put_block_message(&genesis_block)
+        .expect("store genesis");
+    dag_storage
+        .insert(&genesis_block, InsertMode::Approved)
+        .expect("dag genesis");
+
+    let deploy =
+        construct_deploy::source_deploy_now_full("Nil".to_string(), None, None, None, None, None)
+            .expect("construct deploy");
+    let deploy_sig = deploy.sig.to_vec();
+    let block_a = block_implicits::get_random_block(
+        Some(1),
+        Some(1),
+        None,
+        None,
+        None,
+        None,
+        Some(0),
+        Some(vec![genesis_hash.clone()]),
+        Some(Vec::new()),
+        Some(vec![ProcessedDeploy::empty(deploy)]),
+        Some(Vec::new()),
+        Some(genesis_block.body.state.bonds.clone()),
+        Some(genesis_block.shard_id.clone()),
+        None,
+    );
+
+    block_store.put_block_message(&block_a).expect("store A");
+    dag_storage
+        .insert(&block_a, InsertMode::Normal)
+        .expect("dag insert A");
+
+    {
+        let deploy_index_handle = dag_storage.deploy_index_for_tests();
+        let deploy_index_guard = deploy_index_handle.write();
+        deploy_index_guard
+            .delete(vec![Bytes::from(deploy_sig.clone()).into()])
+            .expect("remove deploy index entry");
+    }
+
+    let mut dag = dag_storage
+        .get_representation()
+        .expect("dag representation");
+    dag.last_finalized_block_hash = block_a.block_hash.clone();
+    let deploy_lifespan = 50i64;
+
+    let without_known_block =
+        deploy_finalization_status::resolve(&dag, &block_store, deploy_lifespan, &deploy_sig)
+            .expect("index-miss resolve should not fail");
+    assert_eq!(without_known_block.state, DeployFinalizationState::Pending);
+    assert!(without_known_block.latest_block_hash.is_none());
+
+    let with_known_block = deploy_finalization_status::resolve_with_known_block(
+        &dag,
+        &block_store,
+        deploy_lifespan,
+        &deploy_sig,
+        Some(&block_a.block_hash),
+    )
+    .expect("known-block resolve should not fail");
+
+    assert_eq!(with_known_block.state, DeployFinalizationState::Finalized);
+    assert_eq!(
+        with_known_block.latest_block_hash.as_ref(),
+        Some(&block_a.block_hash),
+    );
+    assert_eq!(with_known_block.rejection_count, 0);
 }
 
 /// Symmetric clean-side canonical-descendant gate.
@@ -1325,7 +1434,7 @@ async fn resolve_returns_pending_for_non_canonical_clean_with_canonical_reject()
         .put_block_message(&genesis_block)
         .expect("store genesis");
     dag_storage
-        .insert(&genesis_block, false, true)
+        .insert(&genesis_block, InsertMode::Approved)
         .expect("dag genesis");
 
     let deploy = construct_deploy::source_deploy_now_full(
@@ -1421,19 +1530,21 @@ async fn resolve_returns_pending_for_non_canonical_clean_with_canonical_reject()
     block_store.put_block_message(&block_y).expect("store Y");
     block_store.put_block_message(&block_c).expect("store C");
     dag_storage
-        .insert(&block_a, false, false)
+        .insert(&block_a, InsertMode::Normal)
         .expect("dag insert A");
     dag_storage
-        .insert(&block_b, false, false)
+        .insert(&block_b, InsertMode::Normal)
         .expect("dag insert B");
     dag_storage
-        .insert(&block_y, false, false)
+        .insert(&block_y, InsertMode::Normal)
         .expect("dag insert Y");
     dag_storage
-        .insert(&block_c, false, false)
+        .insert(&block_c, InsertMode::Normal)
         .expect("dag insert C");
 
-    let mut dag = dag_storage.get_representation();
+    let mut dag = dag_storage
+        .get_representation()
+        .expect("get_representation");
     dag.last_finalized_block_hash = block_c.block_hash.clone();
 
     let deploy_lifespan = 50i64;

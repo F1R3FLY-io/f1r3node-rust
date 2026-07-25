@@ -8,6 +8,8 @@ use std::time::Instant;
 
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use crypto::rust::public_key::PublicKey;
+use crypto::rust::signatures::secp256k1::Secp256k1;
+use crypto::rust::signatures::signatures_alg::SignaturesAlg;
 use crypto::rust::signatures::signed::Signed;
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::g_unforgeable::UnfInstance;
@@ -32,7 +34,6 @@ use rholang::rust::interpreter::accounting::costs::Cost;
 use rholang::rust::interpreter::accounting::has_cost::HasCost;
 use rholang::rust::interpreter::compiler::compiler::Compiler;
 use rholang::rust::interpreter::env::Env;
-use rholang::rust::interpreter::errors::InterpreterError;
 use rholang::rust::interpreter::interpreter::EvaluateResult;
 use rholang::rust::interpreter::merging::rholang_merging_logic::RholangMergingLogic;
 use rholang::rust::interpreter::rho_runtime::{bootstrap_registry, RhoRuntime, RhoRuntimeImpl};
@@ -66,6 +67,8 @@ use crate::rust::util::rholang::tools::Tools;
 use crate::rust::util::rholang::{interpreter_util, system_deploy_util};
 use crate::rust::util::{construct_deploy, event_converter};
 
+static EXPLORATORY_DEPLOY_KEY: OnceLock<crypto::rust::private_key::PrivateKey> = OnceLock::new();
+
 pub struct RuntimeOps {
     pub runtime: RhoRuntimeImpl,
 }
@@ -83,6 +86,24 @@ fn system_deploy_consume_all_pattern() -> BindPattern {
         patterns: vec![new_freevar_par(0, Vec::new())],
         remainder: None,
         free_count: 1,
+    }
+}
+
+/// Diagnostic label for a system deploy (closeBlock / slash / precharge /
+/// refund). Called lazily inside tracing field evaluation, so it costs nothing
+/// unless the event is enabled.
+fn system_deploy_kind<S: SystemDeployTrait>(sd: &S) -> &'static str {
+    let any = sd.as_any();
+    if any.downcast_ref::<CloseBlockDeploy>().is_some() {
+        "closeBlock"
+    } else if any.downcast_ref::<SlashDeploy>().is_some() {
+        "slash"
+    } else if any.downcast_ref::<PreChargeDeploy>().is_some() {
+        "precharge"
+    } else if any.downcast_ref::<RefundDeploy>().is_some() {
+        "refund"
+    } else {
+        "other"
     }
 }
 
@@ -127,6 +148,19 @@ impl RuntimeOps {
         tracing::info!(target: "f1r3fly.casper.runtime", "compute-state-started");
         if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
             tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "start", rss_kb);
+        }
+        if tracing::enabled!(target: "f1r3fly.casper.invalid_blocks", tracing::Level::DEBUG) {
+            let entries: Vec<String> = invalid_blocks
+                .iter()
+                .map(|(bh, v)| {
+                    format!(
+                        "{}=>{}",
+                        hex::encode(&bh[..8.min(bh.len())]),
+                        hex::encode(&v[..8.min(v.len())])
+                    )
+                })
+                .collect();
+            tracing::debug!(target: "f1r3fly.casper.invalid_blocks", n = invalid_blocks.len(), seq = block_data.seq_num, "PLAY compute_state invalid_blocks: [{}]", entries.join(", "));
         }
         self.runtime.set_block_data(block_data).await;
         if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
@@ -536,22 +570,15 @@ impl RuntimeOps {
         Ok(result)
     }
 
-    /// Deterministic multi-value fold for a mergeable channel that holds more
-    /// than one numeric Datum at observation time. Dispatches by `MergeType`:
-    /// `IntegerAdd` picks the max (conservative for vault balances);
-    /// `BitmaskOr` OR-folds all bitmaps (no set bit is lost). Returns `None`
-    /// for an empty input.
-    pub fn fold_multi_value(values: &[i64], merge_type: MergeType) -> Option<i64> {
+    pub fn fold_bitmask_or(values: &[i64]) -> Option<i64> {
         if values.is_empty() {
             return None;
         }
-        let folded = match merge_type {
-            MergeType::IntegerAdd => *values.iter().max().unwrap(),
-            MergeType::BitmaskOr => values
+        Some(
+            values
                 .iter()
                 .fold(0i64, |acc, v| ((acc as u64) | (*v as u64)) as i64),
-        };
-        Some(folded)
+        )
     }
 
     pub async fn get_number_channel(
@@ -566,9 +593,6 @@ impl RuntimeOps {
         } else {
             let ch_hash = stable_hash_provider::hash(channel);
             if ch_values.len() != 1 {
-                // Liveness-first fallback: ambiguous mergeable channel values should not wedge
-                // proposing. Non-numeric values are skipped — they aren't candidates for the
-                // numeric merge path and fall through to existing conflict handling.
                 let nums: Vec<i64> = ch_values
                     .iter()
                     .filter_map(|datum| {
@@ -576,26 +600,23 @@ impl RuntimeOps {
                     })
                     .collect();
 
-                let num = match Self::fold_multi_value(&nums, merge_type) {
-                    Some(n) => n,
-                    None => return Ok(None),
-                };
-
-                tracing::warn!(
-                    target: "f1r3fly.merge.mergeable_channel.sanitize",
-                    "NumberChannel has {} values; merge_type={:?} dispatched value={} for channel {}",
-                    ch_values.len(),
-                    merge_type,
-                    num,
-                    hex::encode(ch_hash.clone().bytes()),
-                );
-                metrics::counter!(
-                    "mergeable_channel_number_sanitized_total",
-                    "source" => "casper_runtime"
-                )
-                .increment(1);
-
-                return Ok(Some((ch_hash, num)));
+                match merge_type {
+                    MergeType::IntegerAdd => {
+                        return Err(CasperError::RuntimeError(format!(
+                            "number channel {} holds {} values {:?}; IntegerAdd single-value invariant violated",
+                            hex::encode(ch_hash.bytes()),
+                            ch_values.len(),
+                            nums,
+                        )));
+                    }
+                    MergeType::BitmaskOr => {
+                        let num = match Self::fold_bitmask_or(&nums) {
+                            Some(n) => n,
+                            None => return Ok(None),
+                        };
+                        return Ok(Some((ch_hash, num)));
+                    }
+                }
             }
 
             // Single value: opportunistic numeric read. Non-numeric values
@@ -637,13 +658,18 @@ impl RuntimeOps {
                 if let Some(SlashDeploy {
                     invalid_block_hash,
                     pk,
+                    target_activation_epoch,
                     initial_rand: _,
                 }) = system_deploy.as_any().downcast_ref::<SlashDeploy>()
                 {
                     Ok(SystemDeployResult::play_succeeded(
                         final_state_hash,
                         event_log,
-                        SystemDeployData::create_slash(invalid_block_hash.clone(), pk.clone()),
+                        SystemDeployData::create_slash(
+                            invalid_block_hash.clone(),
+                            pk.clone(),
+                            *target_activation_epoch,
+                        ),
                         mcl,
                         system_deploy_result,
                     ))
@@ -716,6 +742,7 @@ impl RuntimeOps {
         &mut self,
         system_deploy: &mut S,
     ) -> Result<SysEvalResult<S>, CasperError> {
+        tracing::debug!(target: "f1r3fly.casper.replay_rho_runtime", kind = system_deploy_kind(system_deploy), "eval_system_deploy ENTER (eval system source, then consume its result)");
         let wrapper_pre_start = Instant::now();
         if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
             tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "start", rss_kb);
@@ -728,7 +755,9 @@ impl RuntimeOps {
         }
 
         let wrapper_mid_start = Instant::now();
+        tracing::debug!(target: "f1r3fly.casper.replay_rho_runtime", n_eval_errors = eval_result.errors.len(), "eval_system_deploy: system source evaluated");
         if !eval_result.errors.is_empty() {
+            tracing::debug!(target: "f1r3fly.casper.replay_rho_runtime", "eval_system_deploy: UnexpectedSystemErrors (system deploy eval ERRORED)");
             return Err(CasperError::SystemRuntimeError(
                 SystemDeployPlatformFailure::UnexpectedSystemErrors(eval_result.errors),
             ));
@@ -762,9 +791,16 @@ impl RuntimeOps {
                     ),
                 )),
             },
-            None => Err(CasperError::SystemRuntimeError(
-                SystemDeployPlatformFailure::ConsumeFailed,
-            )),
+            None => {
+                // INSTRUMENT (temporary): dump the leftover replay COMMs — names
+                // the consume the closeBlock stalled on at replay.
+                if let Err(e) = self.runtime.check_replay_data().await {
+                    tracing::error!(target: "f1r3fly.casper.replay_block", kind = system_deploy_kind(system_deploy), "system-deploy ConsumeFailed replay stall (THIS is the deploy that returned None): {}", e);
+                }
+                Err(CasperError::SystemRuntimeError(
+                    SystemDeployPlatformFailure::ConsumeFailed,
+                ))
+            }
         }?;
         if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
             tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_match_result", rss_kb);
@@ -794,7 +830,11 @@ impl RuntimeOps {
                 // Hardcoded phlogiston limit / 1 REV if phloPrice=1
                 Some(100 * 1000 * 1000),
                 None,
-                Some(construct_deploy::DEFAULT_SEC.clone()),
+                Some(
+                    EXPLORATORY_DEPLOY_KEY
+                        .get_or_init(|| Secp256k1.new_key_pair().0)
+                        .clone(),
+                ),
                 None,
                 None,
             )?;
@@ -815,10 +855,39 @@ impl RuntimeOps {
         deploy_result.await
     }
 
-    async fn play_exploratory_par(
+    /// Lenient exploratory query: a runtime execution failure degrades to an
+    /// empty result (logged, not propagated). Appropriate for display/API
+    /// reads (bonds, active validators) — NEVER for consensus-level reads,
+    /// where "failed" and "absent" must stay distinguishable
+    /// (see [`Self::play_exploratory_par_strict`]).
+    pub async fn play_exploratory_par(
         &mut self,
         par: Par,
         hash: &StateHash,
+    ) -> Result<Vec<Par>, CasperError> {
+        self.play_exploratory_par_with_mode(par, hash, false).await
+    }
+
+    /// Strict variant: a runtime injection failure PROPAGATES as an error
+    /// instead of degrading to an empty result. Required for consensus-level
+    /// reads (the protocol fault-tolerance threshold) where "query failed"
+    /// must never be conflated with "value genuinely absent" — the lenient
+    /// empty-result degradation would silently route a transient execution
+    /// failure into the local-config fallback and re-open node-local
+    /// divergence.
+    pub async fn play_exploratory_par_strict(
+        &mut self,
+        par: Par,
+        hash: &StateHash,
+    ) -> Result<Vec<Par>, CasperError> {
+        self.play_exploratory_par_with_mode(par, hash, true).await
+    }
+
+    async fn play_exploratory_par_with_mode(
+        &mut self,
+        par: Par,
+        hash: &StateHash,
+        strict: bool,
     ) -> Result<Vec<Par>, CasperError> {
         use crate::rust::metrics_constants::{
             BONDS_CACHE_GET_DATA_TIME_METRIC, BONDS_CACHE_INJ_TIME_METRIC,
@@ -876,8 +945,15 @@ impl RuntimeOps {
                 if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
                     tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_inj_err", rss_kb);
                 }
-                tracing::error!(error = ?err, "play_exploratory_par failed");
-                Ok(Vec::new())
+                tracing::error!(error = ?err, strict, "play_exploratory_par failed");
+                if strict {
+                    Err(CasperError::RuntimeError(format!(
+                        "exploratory query execution failed (strict mode): {:?}",
+                        err
+                    )))
+                } else {
+                    Ok(Vec::new())
+                }
             }
         };
 
@@ -947,15 +1023,7 @@ impl RuntimeOps {
         deploy: &Signed<DeployData>,
         name: &Par,
     ) -> Result<(Vec<Par>, u64), CasperError> {
-        match self.capture_results_with_errors(start, deploy, name).await {
-            Ok(result) => Ok(result),
-            Err(err) => Err(CasperError::InterpreterError(
-                InterpreterError::BugFoundError(format!(
-                    "Unexpected error while capturing results from Rholang: {}",
-                    err
-                )),
-            )),
-        }
+        self.capture_results_with_errors(start, deploy, name).await
     }
 
     pub async fn capture_results_with_errors(
@@ -1174,6 +1242,94 @@ impl RuntimeOps {
         .to_string()
     }
 
+    /// Reads the protocol fault-tolerance threshold (parts-per-million) from
+    /// the PoS contract at `start_hash`. Returns `None` when the contract does
+    /// not expose the getter (a chain whose genesis predates the parameter) —
+    /// the caller falls back to its local configuration in that case.
+    pub async fn get_fault_tolerance_threshold_ppm(
+        &mut self,
+        start_hash: &StateHash,
+    ) -> Result<Option<i64>, CasperError> {
+        // STRICT query: a runtime execution failure must PROPAGATE (failing
+        // node startup) rather than degrade to an empty result — the lenient
+        // path's `Ok(vec![])`-on-error would be indistinguishable from "the
+        // getter does not exist" and silently route a transient failure into
+        // the local-config fallback, re-opening node-local floor divergence.
+        // `None` is returned only after a SUCCESSFUL query with no result.
+        let ppm_pars = self
+            .play_exploratory_par_strict(Self::fault_tolerance_ppm_query_par().clone(), start_hash)
+            .await?;
+
+        if ppm_pars.is_empty() {
+            tracing::warn!(
+                "No result from getFaultToleranceThresholdPpm query for state {}; \
+                 genesis predates the on-chain protocol FTT — falling back to local config",
+                PrettyPrinter::build_string_bytes(start_hash)
+            );
+            return Ok(None);
+        }
+        if ppm_pars.len() != 1 {
+            return Err(CasperError::RuntimeError(format!(
+                "Incorrect number of results from getFaultToleranceThresholdPpm query in state {}: {}",
+                PrettyPrinter::build_string_bytes(start_hash),
+                ppm_pars.len()
+            )));
+        }
+
+        let par = &ppm_pars[0];
+        match par.exprs.first().and_then(|e| e.expr_instance.as_ref()) {
+            Some(ExprInstance::GInt(ppm)) => {
+                // RANGE GATE (θ = ppm/1e6 ∈ [-1, 1]). This is the guard that
+                // discharges the `-den <= num <= den` hypothesis of the Rocq
+                // `FtExact.ft_exact_no_overflow` / `ft_decides_exact` decision
+                // `2q·den ⋛ S·(den+num)`. It is NOT decorative:
+                //   * ppm < -1e6 ⇒ den+num < 0 ⇒ rhs < 0 <= lhs ⇒ the oracle
+                //     returns true for ANY q, bypassing the fault-tolerance
+                //     threshold shard-wide;
+                //   * ppm > 1e6 ⇒ rhs > 2·S·den >= lhs ⇒ nothing ever
+                //     finalizes (liveness halt).
+                // `ft_decides_exact`'s `debug_assert!` cannot be relied on: it
+                // compiles out in release, which is how CI runs. Reject at the
+                // single read choke point so no caller can observe an
+                // out-of-range protocol threshold.
+                if !(-1_000_000..=1_000_000).contains(ppm) {
+                    return Err(CasperError::RuntimeError(format!(
+                        "on-chain fault-tolerance-threshold ppm out of range [-1000000, 1000000] \
+                         in state {}: {}",
+                        PrettyPrinter::build_string_bytes(start_hash),
+                        ppm
+                    )));
+                }
+                Ok(Some(*ppm))
+            }
+            other => Err(CasperError::RuntimeError(format!(
+                "getFaultToleranceThresholdPpm returned a non-integer value in state {}: {:?}",
+                PrettyPrinter::build_string_bytes(start_hash),
+                other
+            ))),
+        }
+    }
+
+    fn fault_tolerance_ppm_query_source() -> String {
+        r#"
+          new return, rl(`rho:registry:lookup`), poSCh in {
+          rl!(`rho:system:pos`, *poSCh) |
+          for(@(_, PoS) <- poSCh) {
+            @PoS!("getFaultToleranceThresholdPpm", *return)
+          }
+        }
+      "#
+        .to_string()
+    }
+
+    fn fault_tolerance_ppm_query_par() -> &'static Par {
+        static QUERY: OnceLock<Par> = OnceLock::new();
+        QUERY.get_or_init(|| {
+            Compiler::source_to_adt(&Self::fault_tolerance_ppm_query_source())
+                .expect("Failed to compile fault tolerance ppm query source")
+        })
+    }
+
     fn activate_validator_query_par() -> &'static Par {
         static QUERY: OnceLock<Par> = OnceLock::new();
         QUERY.get_or_init(|| {
@@ -1278,77 +1434,40 @@ mod tests {
     use super::*;
 
     #[test]
-    fn fold_multi_value_empty_returns_none() {
-        assert_eq!(
-            RuntimeOps::fold_multi_value(&[], MergeType::IntegerAdd),
-            None
-        );
-        assert_eq!(
-            RuntimeOps::fold_multi_value(&[], MergeType::BitmaskOr),
-            None
-        );
+    fn fold_bitmask_or_empty_returns_none() {
+        assert_eq!(RuntimeOps::fold_bitmask_or(&[]), None);
     }
 
     #[test]
-    fn fold_multi_value_single_returns_value() {
-        assert_eq!(
-            RuntimeOps::fold_multi_value(&[42], MergeType::IntegerAdd),
-            Some(42)
-        );
-        assert_eq!(
-            RuntimeOps::fold_multi_value(&[42], MergeType::BitmaskOr),
-            Some(42)
-        );
+    fn fold_bitmask_or_single_returns_value() {
+        assert_eq!(RuntimeOps::fold_bitmask_or(&[42]), Some(42));
     }
 
     #[test]
-    fn fold_multi_value_integer_add_returns_max() {
-        // Vault-balance semantics: pick the largest observed value.
-        assert_eq!(
-            RuntimeOps::fold_multi_value(&[10, 5, 20, 15], MergeType::IntegerAdd),
-            Some(20)
-        );
-    }
-
-    #[test]
-    fn fold_multi_value_bitmask_or_returns_or_fold_not_max() {
-        // BitmaskOr must OR-fold all bitmaps; using max() would silently lose
-        // bits set only in non-max values.
-        let a = 0b00010001i64; // bits {0, 4}
-        let b = 0b00100010i64; // bits {1, 5}
-                               // max(a, b) = b = 0b00100010 — would lose bits {0, 4}.
-                               // OR fold = 0b00110011 — bits {0, 1, 4, 5}. Correct.
-        assert_eq!(
-            RuntimeOps::fold_multi_value(&[a, b], MergeType::BitmaskOr),
-            Some(0b00110011),
-        );
-        // Three-way fold sanity.
+    fn fold_bitmask_or_returns_or_fold_not_max() {
+        let a = 0b00010001i64;
+        let b = 0b00100010i64;
+        assert_eq!(RuntimeOps::fold_bitmask_or(&[a, b]), Some(0b00110011));
         let c = 0b01000000i64;
-        assert_eq!(
-            RuntimeOps::fold_multi_value(&[a, b, c], MergeType::BitmaskOr),
-            Some(0b01110011),
-        );
+        assert_eq!(RuntimeOps::fold_bitmask_or(&[a, b, c]), Some(0b01110011));
     }
 
     #[test]
-    fn fold_multi_value_bitmask_or_commutes() {
-        // Result must not depend on observation order.
+    fn fold_bitmask_or_commutes() {
         let xs = [0b0001_0001i64, 0b0010_0010, 0b0100_0100, 0b1000_1000];
         let mut ys = xs;
         ys.reverse();
         assert_eq!(
-            RuntimeOps::fold_multi_value(&xs, MergeType::BitmaskOr),
-            RuntimeOps::fold_multi_value(&ys, MergeType::BitmaskOr),
+            RuntimeOps::fold_bitmask_or(&xs),
+            RuntimeOps::fold_bitmask_or(&ys),
         );
     }
 
     #[test]
-    fn fold_multi_value_bitmask_or_negative_high_bits_preserved() {
-        // i64::MIN sets only the sign bit (bit 63). OR with a positive bitmap
-        // must keep bit 63 set — no narrowing or sign-extension surprise.
+    fn fold_bitmask_or_negative_high_bits_preserved() {
         let neg = i64::MIN;
         let pos = 0b1010i64;
-        let folded = RuntimeOps::fold_multi_value(&[neg, pos], MergeType::BitmaskOr).unwrap();
+        let folded = RuntimeOps::fold_bitmask_or(&[neg, pos]).unwrap();
         assert_eq!(folded as u64, (neg as u64) | (pos as u64));
         assert_ne!(folded & i64::MIN, 0, "sign bit must remain set");
     }

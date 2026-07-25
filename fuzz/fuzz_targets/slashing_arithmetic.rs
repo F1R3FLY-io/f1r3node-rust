@@ -1,0 +1,68 @@
+//! `slashing_arithmetic` — boundary fuzz for the three sequence/epoch helpers.
+//!
+//! Reference: docs/theory/slashing/slashing-specification.md §9.7 + §9.8.
+//! Production code under test: `checked_base_seq`, `checked_next_seq`,
+//! `epoch_for_block_number` in `slashing_authorization.rs`.
+//!
+//! Boundary classes probed (each one is a bug class that has previously
+//! shipped in slashing implementations):
+//!
+//!   1. `checked_base_seq` — exclusive-lower-bound predecessor. `None` for
+//!      ALL `seq <= 0` (not just i32::MIN underflow): sequence 0 has no
+//!      predecessor bound and negatives are invalid wire values. See
+//!      commit db0b979 ("Fix slashing sequence base boundary") and the
+//!      kani_proofs::checked_base_seq_* proofs.
+//!   2. `checked_next_seq` — u64 successor narrowed to i32 wire type.
+//!      Two-step saturation: u64 overflow OR i32 truncation produces `None`.
+//!   3. `epoch_for_block_number` — division by zero or negative epoch
+//!      length. Must return the typed `DomainError` (never panic on `% 0`),
+//!      with `InvalidEpochLength` taking precedence over
+//!      `NegativeBlockNumber` when both hold.
+//!
+//! The asserts compare against re-derived expressions in the harness so
+//! a regression that introduces wrapping arithmetic surfaces immediately.
+
+#![no_main]
+
+use casper::rust::epoch::Epoch;
+use casper::rust::slashing_authorization::{
+    checked_base_seq, checked_next_seq, epoch_for_block_number, DomainError,
+};
+use libfuzzer_sys::fuzz_target;
+
+#[derive(arbitrary::Arbitrary, Debug)]
+struct Input {
+    seq_i32: i32,
+    seq_u64: u64,
+    block_number: i64,
+    epoch_length: i32,
+}
+
+fuzz_target!(|input: Input| {
+    let expected_base = if input.seq_i32 <= 0 {
+        None
+    } else {
+        Some(input.seq_i32 - 1)
+    };
+    assert_eq!(checked_base_seq(input.seq_i32), expected_base);
+
+    let expected_next = input
+        .seq_u64
+        .checked_add(1)
+        .and_then(|seq| i32::try_from(seq).ok());
+    assert_eq!(checked_next_seq(input.seq_u64), expected_next);
+
+    let expected_epoch = if input.epoch_length <= 0 {
+        Err(DomainError::InvalidEpochLength(input.epoch_length))
+    } else if input.block_number < 0 {
+        Err(DomainError::NegativeBlockNumber(input.block_number))
+    } else {
+        Ok(Epoch::new(
+            input.block_number / i64::from(input.epoch_length),
+        ))
+    };
+    assert_eq!(
+        epoch_for_block_number(input.block_number, input.epoch_length),
+        expected_epoch
+    );
+});

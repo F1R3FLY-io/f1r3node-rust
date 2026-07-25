@@ -1,5 +1,26 @@
 // See casper/src/main/scala/coop/rchain/casper/Estimator.scala
 
+//! Fork-choice estimator — GHOST-style heaviest-subtree selection
+//! with the slashing-aware invalid-message filter.
+//!
+//! ## Responsibilities
+//!
+//! * Project the DAG's `latest_message_hashes` through the
+//!   `invalid_latest_messages` filter so slashed validators contribute
+//!   zero weight to fork choice (T-10).
+//! * Rank surviving tips by their cumulative validator-weight score
+//!   (`build_scores_map`), breaking ties on hash for cross-node
+//!   determinism.
+//! * Apply `max_parent_depth` truncation so old parents do not delay
+//!   finalization.
+//!
+//! ## Slashing-protocol position
+//!
+//! See `docs/theory/slashing/slashing-verification.md` §6.4 (T-10) for
+//! the abstract filter property. The operational realization is the
+//! conjunction `(invalid-block-flag) ∧ (bond=0 ⇒ zero weight)` — see
+//! `docs/theory/slashing/design/07-fork-choice-and-lifecycle.md`.
+
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
@@ -44,11 +65,11 @@ impl Estimator {
         dag: &mut KeyValueDagRepresentation,
         genesis: &BlockMessage,
     ) -> Result<ForkChoice, KvStoreError> {
-        let arc_latest_message_hashes = dag.latest_message_hashes();
-        let latest_message_hashes: HashMap<Validator, BlockHash> = arc_latest_message_hashes
-            .iter()
-            .map(|(validator, hash)| (validator.clone(), hash.clone()))
-            .collect();
+        // Phase 12 (PERF-5): `latest_message_hashes()` returns an owned
+        // `imbl::HashMap` (refcount-bump clone). Use `into_iter` to collect
+        // by ownership rather than re-cloning every key/value pair.
+        let latest_message_hashes: HashMap<Validator, BlockHash> =
+            dag.latest_message_hashes().into_iter().collect();
         tracing::debug!(target: "f1r3fly.casper.estimator.tips_primary", "latest-message-hashes");
         self.tips_with_latest_messages(dag, genesis, latest_message_hashes)
             .await
@@ -63,7 +84,7 @@ impl Estimator {
         latest_messages_hashes: HashMap<Validator, BlockHash>,
     ) -> Result<ForkChoice, KvStoreError> {
         let invalid_latest_messages =
-            dag.invalid_latest_messages_from_hashes(latest_messages_hashes.clone())?;
+            dag.invalid_latest_messages_from_hashes(&latest_messages_hashes)?;
 
         let mut filtered_latest_messages_hashes = latest_messages_hashes;
         filtered_latest_messages_hashes
@@ -88,13 +109,25 @@ impl Estimator {
             .filter_deep_parents(ranked_latest_messages_hashes, dag)
             .await?;
 
-        Ok(ForkChoice {
-            tips: ranked_shallow_hashes
+        // B2: treat BOTH "unlimited" sentinels EXPLICITLY rather than relying on
+        // `-1 as usize` wrapping to usize::MAX. The estimator's own sentinel is
+        // `Self::UNLIMITED_PARENTS` (i32::MAX); the config wire convention
+        // (`casper::UNLIMITED_PARENTS`) is `-1`, and that config value reaches this
+        // field directly (node setup passes `conf.casper.max_number_of_parents`). A
+        // genuine positive cap truncates; any negative value or i32::MAX means
+        // unlimited (take all). Behaviour is unchanged; the cast is now cast-safe and
+        // the two conventions are no longer silently conflated by two's-complement.
+        let tips = if self.max_number_of_parents < 0
+            || self.max_number_of_parents == Self::UNLIMITED_PARENTS
+        {
+            ranked_shallow_hashes
+        } else {
+            ranked_shallow_hashes
                 .into_iter()
                 .take(self.max_number_of_parents as usize)
-                .collect(),
-            lca,
-        })
+                .collect()
+        };
+        Ok(ForkChoice { tips, lca })
     }
 
     async fn filter_deep_parents(
@@ -104,7 +137,29 @@ impl Estimator {
     ) -> Result<Vec<BlockHash>, KvStoreError> {
         match self.max_parent_depth_opt {
             Some(max_parent_depth) => {
-                let (main_hash, secondary_hashes) = ranked_latest_hashes.split_first().unwrap();
+                // P2-8: avoid `split_first().unwrap()` panic when
+                // `rank_forkchoices` returns an empty list (e.g.,
+                // genesis-only DAG). Surface as a typed error so the
+                // consensus hot path doesn't panic on an empty tip set.
+                //
+                // The variant choice — `KvStoreError::InvalidArgument` —
+                // is a layering compromise: this function returns
+                // `Result<_, KvStoreError>` (from the surrounding
+                // estimator API), so we encode the consensus-invariant
+                // violation as a precondition-violation on this function's
+                // input. The error message identifies the source clearly
+                // for operator diagnosis. A future cross-crate error
+                // refactor could promote this to a typed
+                // `CasperError::ConsensusInvariant` variant, but doing so
+                // would ripple through the estimator's call graph;
+                // documented as a follow-up.
+                let Some((main_hash, secondary_hashes)) = ranked_latest_hashes.split_first() else {
+                    return Err(KvStoreError::InvalidArgument(
+                        "consensus invariant: rank_forkchoices returned no tips \
+                         (genesis-only DAG?)"
+                            .to_string(),
+                    ));
+                };
 
                 let max_block_number = dag.lookup_unsafe(main_hash)?.block_number;
 
@@ -167,12 +222,15 @@ impl Estimator {
             last_finalized_block_number: i64,
             block_dag: &KeyValueDagRepresentation,
         ) -> Result<Vec<BlockHash>, KvStoreError> {
-            let current_block_number = block_dag.lookup_unsafe(hash)?.block_number;
-
-            if current_block_number < last_finalized_block_number {
+            // Phase 12 (PERF-1): one `lookup_unsafe` call per node, not two.
+            // The prior version read `block_number` and then re-read the
+            // whole `BlockMetadata` for `parents` — doubling lock
+            // acquisitions on the BFS-bound fork-choice path.
+            let meta = block_dag.lookup_unsafe(hash)?;
+            if meta.block_number < last_finalized_block_number {
                 Ok(Vec::new())
             } else {
-                Ok(block_dag.lookup_unsafe(hash)?.parents)
+                Ok(meta.parents)
             }
         }
 
@@ -187,28 +245,38 @@ impl Estimator {
                 .lookup_unsafe(lowest_common_ancestor)?
                 .block_number;
 
-            let mut traversed_hashes: Vec<BlockHash> = Vec::new();
+            // Phase 12 (PERF-2): merge BFS traversal with weight accumulation
+            // instead of building a Vec of traversed hashes then re-iterating.
+            // Saves one clone per node and one Vec allocation. Preallocate
+            // visited/result to a reasonable capacity for typical fork-choice
+            // BFS sizes (≤ ~few hundred blocks).
+            let mut result = score_map;
             let mut queue: VecDeque<BlockHash> = VecDeque::from(vec![latest_block_hash.clone()]);
-            let mut visited: HashSet<BlockHash> = HashSet::new();
+            let mut visited: HashSet<BlockHash> = HashSet::with_capacity(64);
 
             while let Some(hash) = queue.pop_front() {
                 if !visited.insert(hash.clone()) {
                     continue;
                 }
-                traversed_hashes.push(hash.clone());
+                let validator_weight =
+                    proto_util::weight_from_validator_by_dag(block_dag, &hash, validator)?;
+                // B3: fail loudly on score overflow rather than wrapping. Reachable
+                // only if the cumulative bonded weight on a block exceeds i64::MAX —
+                // a supply-cap violation (total bonded stake ≤ i64::MAX by construction),
+                // so this can only ever reject an already-invalid state, never a valid one.
+                let entry = result.entry(hash.clone()).or_insert(0);
+                *entry = entry.checked_add(validator_weight).ok_or_else(|| {
+                    KvStoreError::InvalidArgument(
+                        "fork-choice score overflow: cumulative validator weight exceeds i64 \
+                         (total bonded stake must be ≤ i64::MAX by the supply cap)"
+                            .to_string(),
+                    )
+                })?;
                 for parent in hash_parents(&hash, lca_block_num, block_dag)? {
                     if !visited.contains(&parent) {
                         queue.push_back(parent);
                     }
                 }
-            }
-
-            let mut result = score_map;
-            for hash in traversed_hashes {
-                let curr_score = *result.get(&hash).unwrap_or(&0);
-                let validator_weight =
-                    proto_util::weight_from_validator_by_dag(block_dag, &hash, validator)?;
-                result.insert(hash, curr_score + validator_weight);
             }
 
             Ok(result)

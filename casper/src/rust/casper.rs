@@ -1,6 +1,6 @@
 // See casper/src/main/scala/coop/rchain/casper/Casper.scala
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt::{self, Display};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -15,7 +15,7 @@ use block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejec
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use comm::rust::transport::transport_layer::TransportLayer;
 use crypto::rust::signatures::signed::Signed;
-use dashmap::{DashMap, DashSet};
+use dashmap::DashSet;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::{BlockMessage, DeployData, Justification};
 use models::rust::validator::Validator;
@@ -26,11 +26,34 @@ use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
 
 use crate::rust::block_status::{BlockError, InvalidBlock, ValidBlock};
 use crate::rust::engine::block_retriever::BlockRetriever;
+use crate::rust::engine::multi_parent_casper::MultiParentCasperImpl;
 use crate::rust::errors::CasperError;
 use crate::rust::estimator::Estimator;
-use crate::rust::multi_parent_casper_impl::MultiParentCasperImpl;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 use crate::rust::validator_identity::ValidatorIdentity;
+
+/// Default for `CasperShardConf::finalizer_blocking_timeout`. The
+/// finalizer-run timeout was originally hardcoded at two call sites
+/// (`casper.rs::CasperShardConf::new` and
+/// `node/src/rust/runtime/setup.rs`). Centralizing prevents two-way
+/// drift. When `CasperConf` gains a corresponding field, the
+/// constant becomes the documented fallback.
+pub const FINALIZER_BLOCKING_TIMEOUT_DEFAULT: Duration = Duration::from_secs(15);
+
+/// Default for `CasperShardConf::active_validators_cache_max_entries`.
+/// Mirrors `FINALIZER_BLOCKING_TIMEOUT_DEFAULT`'s rationale — see
+/// commit centralizing Phase 13 hardcoded defaults.
+pub const ACTIVE_VALIDATORS_CACHE_MAX_ENTRIES_DEFAULT: usize = 4096;
+
+/// Wire convention for `CasperShardConf::max_number_of_parents`: `-1`
+/// disables the parent-count cap. C15 / Smell-3: hoisted from two
+/// duplicate `const UNLIMITED_PARENTS: i32 = -1;` definitions (one in
+/// `validate.rs` and one in `engine/multi_parent_casper/snapshot.rs`) so the wire
+/// convention has a single source of truth. NOTE: this is the
+/// config-parsing convention; the `Estimator::UNLIMITED_PARENTS`
+/// (`i32::MAX`) sentinel used internally by the GHOST estimator is
+/// a separate concern.
+pub const UNLIMITED_PARENTS: i32 = -1;
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum DeployError {
@@ -148,6 +171,10 @@ pub trait MultiParentCasper: Casper + Send + Sync {
     /// finalization status.
     fn casper_shard_conf(&self) -> &CasperShardConf;
 
+    fn rejected_deploy_buffer_contains_sig(&self, _sig: &[u8]) -> Result<bool, CasperError> {
+        Ok(false)
+    }
+
     fn runtime_manager(&self) -> Arc<RuntimeManager>;
 
     fn get_validator(&self) -> Option<ValidatorIdentity>;
@@ -167,7 +194,7 @@ pub trait MultiParentCasper: Casper + Send + Sync {
     }
 }
 
-pub fn hash_set_casper<T: TransportLayer + Send + Sync>(
+pub async fn hash_set_casper<T: TransportLayer + Send + Sync>(
     block_retriever: BlockRetriever<T>,
     event_publisher: F1r3flyEvents,
     runtime_manager: Arc<RuntimeManager>,
@@ -178,10 +205,46 @@ pub fn hash_set_casper<T: TransportLayer + Send + Sync>(
     rejected_deploy_buffer: Arc<Mutex<KeyValueRejectedDeployBuffer>>,
     casper_buffer_storage: CasperBufferKeyValueStorage,
     validator_id: Option<ValidatorIdentity>,
-    casper_shard_conf: CasperShardConf,
+    mut casper_shard_conf: CasperShardConf,
     approved_block: BlockMessage,
     heartbeat_signal_ref: crate::rust::heartbeat_signal::HeartbeatSignalRef,
 ) -> Result<MultiParentCasperImpl<T>, CasperError> {
+    // SINGLE ADOPTION POINT for the protocol fault-tolerance threshold.
+    //
+    // θ is a CONSENSUS value: the finalized-floor oracle runs on it, and the
+    // floor decides the multi-parent merge base — a validated, node-identical
+    // quantity. Every node (validator or observer) must therefore run the ppm
+    // baked into the PoS contract at genesis, regardless of local config.
+    //
+    // All three constructors of a running casper (`initializing`,
+    // `casper_launch`, `genesis_ceremony_master`) funnel through here, so this
+    // is the only place the adoption can be guaranteed for every path.
+    //
+    // The assignment is UNCONDITIONAL — the `if` gates only the log line. That
+    // is precisely Rocq `FtProvenance.reconcile_agrees_on_onchain`:
+    // `reconcile(local, onchain) = onchain`, so two nodes with ANY two local
+    // configs derive the same floor. Absent/out-of-range now FAILS the node
+    // (see `read_on_chain_fault_tolerance_threshold_ppm`) rather than silently
+    // reopening node-local floor divergence.
+    let onchain_ppm =
+        crate::rust::util::token_metadata_check::read_on_chain_fault_tolerance_threshold_ppm(
+            &runtime_manager,
+            &approved_block.body.state.post_state_hash,
+        )
+        .await?;
+    if onchain_ppm != casper_shard_conf.fault_tolerance_threshold_ppm {
+        tracing::info!(
+            onchain_ppm,
+            local_ppm = casper_shard_conf.fault_tolerance_threshold_ppm,
+            "Adopting on-chain protocol fault-tolerance threshold over local configuration"
+        );
+    }
+    casper_shard_conf.fault_tolerance_threshold_ppm = onchain_ppm;
+    // Keep the display f32 in lock-step with the exact ppm that decides
+    // finalization, so the API can never report a threshold the oracle is not
+    // using. The ppm remains the sole DECISION input; this f32 is display-only.
+    casper_shard_conf.fault_tolerance_threshold = (onchain_ppm as f64 / 1_000_000.0) as f32;
+
     Ok(MultiParentCasperImpl {
         block_retriever,
         event_publisher,
@@ -189,7 +252,7 @@ pub fn hash_set_casper<T: TransportLayer + Send + Sync>(
         estimator,
         block_store,
         block_dag_storage,
-        deploy_storage: Arc::new(Mutex::new(deploy_storage)),
+        deploy_storage: Arc::new(parking_lot::Mutex::new(deploy_storage)),
         rejected_deploy_buffer,
         casper_buffer_storage,
         validator_id,
@@ -199,7 +262,7 @@ pub fn hash_set_casper<T: TransportLayer + Send + Sync>(
         finalizer_task_in_progress: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         finalizer_task_queued: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         heartbeat_signal_ref,
-        deploys_in_scope_cache: Arc::new(std::sync::Mutex::new(None)),
+        deploys_in_scope_cache: Arc::new(parking_lot::Mutex::new(None)),
         active_validators_cache: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
     })
 }
@@ -216,7 +279,15 @@ pub struct CasperSnapshot {
     pub lca: BlockHash,
     pub tips: Vec<BlockHash>,
     pub parents: Vec<BlockMessage>,
-    pub justifications: DashSet<Justification>,
+    // C13 / Perf-4: `justifications` and `max_seq_nums` are
+    // constructed once per snapshot in `compute_snapshot` and
+    // observed read-only by all downstream consumers (no
+    // production caller mutates either after CasperSnapshot
+    // assembly). DashSet/DashMap's stripe-locking overhead is
+    // pure cost for a zero-contention workload — plain
+    // HashSet/HashMap are strictly cheaper and have the same
+    // iteration/lookup API consumers already use.
+    pub justifications: HashSet<Justification>,
     pub invalid_blocks: HashMap<BlockHash, Validator>,
     /// Signatures of deploys seen in ancestry window.
     /// Keeping signatures avoids retaining full deploy payloads in long-lived snapshots.
@@ -227,7 +298,7 @@ pub struct CasperSnapshot {
     /// creator uses this set to know which in-scope deploys are eligible for re-inclusion.
     pub rejected_in_scope: Arc<DashSet<Bytes>>,
     pub max_block_num: i64,
-    pub max_seq_nums: DashMap<Validator, u64>,
+    pub max_seq_nums: HashMap<Validator, u64>,
     pub on_chain_state: OnChainCasperState,
 }
 
@@ -239,12 +310,12 @@ impl CasperSnapshot {
             lca: BlockHash::default(),
             tips: vec![],
             parents: vec![],
-            justifications: DashSet::new(),
+            justifications: HashSet::new(),
             invalid_blocks: HashMap::new(),
             deploys_in_scope: Arc::new(DashSet::new()),
             rejected_in_scope: Arc::new(DashSet::new()),
             max_block_num: 0,
-            max_seq_nums: DashMap::new(),
+            max_seq_nums: HashMap::new(),
             on_chain_state: OnChainCasperState::new(CasperShardConf::new()),
         }
     }
@@ -269,7 +340,15 @@ impl OnChainCasperState {
 
 #[derive(Debug, Clone)]
 pub struct CasperShardConf {
+    /// Display/back-compat `f32` view of the fault-tolerance threshold θ. The
+    /// finalization DECISION is derived from the exact
+    /// [`fault_tolerance_threshold_ppm`](Self::fault_tolerance_threshold_ppm),
+    /// never from this lossy value.
     pub fault_tolerance_threshold: f32,
+    /// Exact fault-tolerance threshold θ as an on-chain ppm numerator
+    /// (θ = ppm / 1_000_000). Source of truth for the integer-exact finalization
+    /// DECISION (`CliqueOracle::ft_decides_exact`).
+    pub fault_tolerance_threshold_ppm: i64,
     pub shard_name: String,
     pub parent_shard_id: String,
     pub finalization_rate: i32,
@@ -289,6 +368,12 @@ pub struct CasperShardConf {
     pub min_phlo_price: i64,
     /// Disable late block filtering in DagMerger (for testing or special configurations)
     pub disable_late_block_filtering: bool,
+    /// When `true`, `add_deploy` triggers an immediate heartbeat-signal
+    /// wake so the heartbeat task picks up the new deploy on the next
+    /// tick rather than waiting up to `check_interval` seconds. Defaults
+    /// to `false`; Phase 8 (C-4) lifted this from a hardcoded predicate
+    /// to a configuration knob so operators can opt in.
+    pub deploy_heartbeat_wake_enabled: bool,
     /// Disable validator progress check (for standalone mode)
     pub disable_validator_progress_check: bool,
     /// Enable background garbage collection for mergeable channels.
@@ -311,12 +396,26 @@ pub struct CasperShardConf {
     pub native_token_name: String,
     pub native_token_symbol: String,
     pub native_token_decimals: u32,
+    /// Phase 13 (TC-1): blocking timeout for `run_queued_finalizer`'s
+    /// `compute_last_finalized_block` call. Previously a hardcoded
+    /// 15-second constant in `engine/multi_parent_casper/finalization_runner.rs`;
+    /// lifted to configuration so operators can extend the budget for
+    /// deep-DAG finalization sweeps without recompiling.
+    pub finalizer_blocking_timeout: Duration,
+    /// Phase 13 (TC-2): maximum entries in the `active_validators_cache`
+    /// inside `compute_snapshot`. Previously a hardcoded `usize = 4096`
+    /// constant in `engine/multi_parent_casper/types.rs`; lifted to configuration so
+    /// operators can size the cache for their validator set without
+    /// recompiling. Distinct from the `runtime_manager`'s own 256-entry
+    /// validator-key cache.
+    pub active_validators_cache_max_entries: usize,
 }
 
 impl CasperShardConf {
     pub fn new() -> Self {
         Self {
             fault_tolerance_threshold: 0.0,
+            fault_tolerance_threshold_ppm: 0,
             shard_name: "".to_string(),
             parent_shard_id: "".to_string(),
             finalization_rate: 0,
@@ -333,6 +432,7 @@ impl CasperShardConf {
             quarantine_length: 0,
             min_phlo_price: 0,
             disable_late_block_filtering: true,
+            deploy_heartbeat_wake_enabled: false,
             disable_validator_progress_check: false,
             enable_mergeable_channel_gc: false,
             mergeable_channels_gc_depth_buffer: 10,
@@ -342,10 +442,12 @@ impl CasperShardConf {
             synchrony_recovery_max_bypasses: 2,
             synchrony_finalized_baseline_enabled: true,
             synchrony_finalized_baseline_max_distance: 2048,
-            max_user_deploys_per_block: 32,
+            max_user_deploys_per_block: 128,
             native_token_name: "F1R3CAP".to_string(),
             native_token_symbol: "F1R3".to_string(),
             native_token_decimals: 8,
+            finalizer_blocking_timeout: FINALIZER_BLOCKING_TIMEOUT_DEFAULT,
+            active_validators_cache_max_entries: ACTIVE_VALIDATORS_CACHE_MAX_ENTRIES_DEFAULT,
         }
     }
 }
@@ -399,10 +501,11 @@ pub mod test_helpers {
 
         /// Create an empty CasperSnapshot for testing.
         pub fn create_empty_snapshot() -> CasperSnapshot {
-            use std::sync::{Arc, RwLock};
+            use std::sync::Arc;
 
             use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
             use block_storage::rust::dag::block_metadata_store::BlockMetadataStore;
+            use parking_lot::RwLock;
             use rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
             use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
 
@@ -425,9 +528,37 @@ pub mod test_helpers {
                 deploy_index: Arc::new(RwLock::new(KeyValueTypedStoreImpl::new(Arc::new(
                     InMemoryKeyValueStore::new(),
                 )))),
+                floor_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
+                frontier_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
             };
 
             CasperSnapshot::new(dag)
+        }
+
+        pub fn bond_validator_in_snapshot(
+            snapshot: &mut CasperSnapshot,
+            validator: models::rust::validator::Validator,
+        ) {
+            use models::rust::casper::protocol::casper_message::Bond;
+
+            if snapshot.parents.is_empty() {
+                snapshot
+                    .parents
+                    .push(models::rust::block_implicits::get_random_block_default());
+            }
+            let parent = &mut snapshot.parents[0];
+            if !parent
+                .body
+                .state
+                .bonds
+                .iter()
+                .any(|bond| bond.validator == validator)
+            {
+                parent.body.state.bonds.push(Bond {
+                    validator,
+                    stake: 100,
+                });
+            }
         }
     }
 

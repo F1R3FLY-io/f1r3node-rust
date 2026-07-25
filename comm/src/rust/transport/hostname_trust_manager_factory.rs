@@ -116,6 +116,12 @@ impl HostnameTrustManagerFactory {
             ))
         })?;
 
+        // Advertise HTTP/2 via ALPN for symmetry with the server side
+        // (see `server_config` below for the rationale). Tonic-to-tonic
+        // peers ignore the field; BoringSSL-based gRPC peers require it.
+        let mut config = config;
+        config.alpn_protocols = vec![b"h2".to_vec()];
+
         Ok(config)
     }
 
@@ -159,6 +165,16 @@ impl HostnameTrustManagerFactory {
                 e
             ))
         })?;
+
+        // Advertise HTTP/2 via ALPN. Tonic-to-tonic peers skip the ALPN
+        // check (they layer HTTP/2 on the raw TLS stream regardless), but
+        // BoringSSL-based gRPC clients (Python grpcio, system-integration
+        // `NodeClient`) require the server to negotiate `h2` via ALPN or
+        // they fail the handshake with "Cannot check peer: missing
+        // selected ALPN property." Advertising `h2` is backwards-
+        // compatible — tonic peers continue to ignore the ALPN field.
+        let mut config = config;
+        config.alpn_protocols = vec![b"h2".to_vec()];
 
         Ok(config)
     }

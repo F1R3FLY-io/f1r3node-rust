@@ -53,6 +53,7 @@ use crate::util::rholang::resources::mk_test_rnode_store_manager_from_genesis;
 use crate::util::test_mocks::MockKeyValueStore;
 
 /// Test fixture struct to hold all test dependencies
+#[allow(clippy::type_complexity)]
 pub struct TestFixture {
     // Scala: implicit val transportLayer = new TransportLayerStub[Task]
     pub transport_layer: Arc<TransportLayerStub>,
@@ -168,7 +169,7 @@ impl TestFixture {
         // Scala's createWithReplay calls Rust RSpace++ code which uses the real Matcher (not DummyMatcher)
         // In Rust, we must use RuntimeManager::create_with_history to match this behavior
         // Use r_space_stores() from the shared LMDB environment instead of directory-based stores
-        let rspace_store = (&mut *space_kv_manager)
+        let rspace_store = (*space_kv_manager)
             .r_space_stores()
             .await
             .expect("Failed to create RSpace store from shared LMDB");
@@ -256,19 +257,28 @@ impl TestFixture {
         >::new(equivocation_tracker_store);
         let equivocation_tracker = EquivocationTrackerStore::new(equivocation_tracker_typed_store);
 
-        let block_dag_storage_unwrapped = BlockDagKeyValueStorage {
-            global_lock: Arc::new(Mutex::new(())),
-            latest_messages_index: latest_messages_typed_store,
-            block_metadata_index: Arc::new(std::sync::RwLock::new(block_metadata_store)),
-            deploy_index: Arc::new(std::sync::RwLock::new(deploy_index_typed_store)),
-            invalid_blocks_index: invalid_blocks_typed_store,
-            equivocation_tracker_index: equivocation_tracker,
-            dag_generation: Arc::new(AtomicU64::new(0)),
-        };
+        let block_dag_storage_unwrapped = BlockDagKeyValueStorage::from_parts(
+            Arc::new(parking_lot::RwLock::new(())),
+            latest_messages_typed_store,
+            Arc::new(parking_lot::RwLock::new(block_metadata_store)),
+            Arc::new(parking_lot::RwLock::new(deploy_index_typed_store)),
+            invalid_blocks_typed_store,
+            KeyValueTypedStoreImpl::new(Arc::new(
+                rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore::new(),
+            )),
+            KeyValueTypedStoreImpl::new(Arc::new(
+                rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore::new(),
+            )),
+            equivocation_tracker,
+            Arc::new(AtomicU64::new(0)),
+        );
 
         // Insert genesis block into DAG storage (approved = true, invalid = false)
         block_dag_storage_unwrapped
-            .insert(&genesis, false, true)
+            .insert(
+                &genesis,
+                block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved,
+            )
             .expect("Failed to insert genesis into BlockDagStorage");
 
         // OLD CODE (kept for reference, replaced with BlockDagKeyValueStorage):
@@ -313,7 +323,9 @@ impl TestFixture {
         // NoOpsCasperEffect will use the same kvm_blockstorage for its internal block store
         // This ensures consistency with the external block_store
         // NOTE: NoOpsCasperEffect requires KeyValueDagRepresentation, so we get it from BlockDagKeyValueStorage
-        let block_dag_representation = block_dag_storage_unwrapped.get_representation();
+        let block_dag_representation = block_dag_storage_unwrapped
+            .get_representation()
+            .expect("dag representation");
 
         // Wrap RuntimeManager in Arc<Mutex<>> for shared mutable access
         let runtime_manager_shared = Arc::new(runtime_manager);
@@ -421,6 +433,7 @@ impl TestFixture {
             genesis_params.proof_of_stake.epoch_length,
             genesis_params.proof_of_stake.quarantine_length,
             genesis_params.proof_of_stake.number_of_active_validators,
+            genesis_params.proof_of_stake.fault_tolerance_threshold_ppm,
             required_sigs,
             genesis_params
                 .proof_of_stake
@@ -480,6 +493,7 @@ impl TestFixture {
             transport_layer.clone(),
             rp_conf.clone(),
             block_retriever.clone(),
+            None,
         );
 
         Self {
@@ -538,6 +552,7 @@ impl TestFixture {
     }
 
     /// Sync the tracking set with the mpsc channel by draining and re-enqueuing
+    #[allow(clippy::await_holding_lock)]
     async fn sync_block_tracking(&self) {
         let mut rx = self.block_processing_queue_rx.lock().await;
         let mut tracking_set = self.blocks_enqueued_for_processing.lock().unwrap();
@@ -558,27 +573,23 @@ impl TestFixture {
 }
 
 pub fn to_casper_message(p: Protocol) -> CasperMessage {
-    if let Some(packet) = p.message {
-        if let models::routing::protocol::Message::Packet(packet_data) = packet {
-            // This is a simplified stand-in for the full conversion logic,
-            // which would involve looking at the typeId of the packet.
-            // For these tests, we can make assumptions about the message type.
-            if let Ok(bm) = models::casper::BlockMessageProto::decode(packet_data.content.as_ref())
-            {
-                if let Ok(block_message) = BlockMessage::from_proto(bm) {
-                    return CasperMessage::BlockMessage(block_message);
-                }
+    if let Some(models::routing::protocol::Message::Packet(packet_data)) = p.message {
+        // This is a simplified stand-in for the full conversion logic,
+        // which would involve looking at the typeId of the packet.
+        // For these tests, we can make assumptions about the message type.
+        if let Ok(bm) = models::casper::BlockMessageProto::decode(packet_data.content.as_ref()) {
+            if let Ok(block_message) = BlockMessage::from_proto(bm) {
+                return CasperMessage::BlockMessage(block_message);
             }
-            if let Ok(ab) = models::casper::ApprovedBlockProto::decode(packet_data.content.as_ref())
-            {
-                if let Ok(approved_block) = ApprovedBlock::from_proto(ab) {
-                    return CasperMessage::ApprovedBlock(approved_block);
-                }
+        }
+        if let Ok(ab) = models::casper::ApprovedBlockProto::decode(packet_data.content.as_ref()) {
+            if let Ok(approved_block) = ApprovedBlock::from_proto(ab) {
+                return CasperMessage::ApprovedBlock(approved_block);
             }
-            if let Ok(hb) = models::casper::HasBlockProto::decode(packet_data.content.as_ref()) {
-                let has_block = HasBlock::from_proto(hb);
-                return CasperMessage::HasBlock(has_block);
-            }
+        }
+        if let Ok(hb) = models::casper::HasBlockProto::decode(packet_data.content.as_ref()) {
+            let has_block = HasBlock::from_proto(hb);
+            return CasperMessage::HasBlock(has_block);
         }
     }
     panic!("Could not convert protocol to casper message");

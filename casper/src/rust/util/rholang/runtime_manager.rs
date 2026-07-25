@@ -89,6 +89,12 @@ pub struct ParentsPostStateCacheKey {
     pub sorted_parent_hashes: Vec<BlockHash>,
     // Snapshot LFB participates in visible-ancestor filtering, so cache key must include it.
     pub snapshot_lfb_hash: BlockHash,
+    // The finalized-floor merge base is derived from the block's frozen
+    // justification snapshot (finality/floor.rs), so identical parent sets
+    // under different justification maps can merge from different floors.
+    // Sorted (validator, latest_block_hash) pairs keep such contexts from
+    // sharing a cache entry.
+    pub sorted_latest_messages: Vec<(Validator, BlockHash)>,
     pub disable_late_block_filtering: bool,
 }
 
@@ -175,10 +181,16 @@ impl RuntimeManager {
                         SystemDeployData::Slash {
                             invalid_block_hash,
                             issuer_public_key,
+                            target_activation_epoch,
                         } => {
                             bytes.push(0);
                             push_len_prefixed(&mut bytes, invalid_block_hash);
                             push_len_prefixed(&mut bytes, &issuer_public_key.bytes);
+                            // Little-endian is consensus-determined for this
+                            // hash-affecting encoding — every node must agree
+                            // on the bytes fed into the post-state hash. Do
+                            // not switch to big-endian or `to_be_bytes`.
+                            bytes.extend_from_slice(&target_activation_epoch.to_le_bytes());
                         }
                         SystemDeployData::CloseBlockSystemDeployData => {
                             bytes.push(1);
@@ -654,6 +666,12 @@ impl RuntimeManager {
         let pre_state_hash = Blake2b256Hash::from_bytes_prost(start_hash);
         let post_state = state_hash.to_bytes_prost();
 
+        // Phase 9 (G-1): surface persistence failure as a typed
+        // `CasperError` instead of a finalization-task panic. A panic
+        // here would crash the runtime_manager future with an
+        // unhelpful "task panicked" log; the typed Result lets the
+        // caller decide how to react (likely abort the proposal, not
+        // the whole node).
         self.save_mergeable_channels(
             state_hash.clone(),
             sender.bytes,
@@ -661,7 +679,9 @@ impl RuntimeManager {
             mergeable_chs,
             &pre_state_hash,
         )
-        .unwrap_or_else(|e| panic!("Failed to save mergeable channels: {:?}", e));
+        .map_err(|e| {
+            CasperError::RuntimeError(format!("Failed to save mergeable channels: {:?}", e))
+        })?;
 
         // Cache the result for future replays
         if let Some(ref cache) = self.state_hash_cache {
@@ -707,6 +727,20 @@ impl RuntimeManager {
         Self::touch_cache_key(&self.active_validators_cache_order, start_hash);
 
         Ok(computed)
+    }
+
+    /// On-chain protocol fault-tolerance threshold (ppm) at `start_hash`, or
+    /// `None` when the chain's genesis predates the parameter. Read once at
+    /// casper construction (`hash_set_casper`) — not cached here.
+    pub async fn get_fault_tolerance_threshold_ppm(
+        &self,
+        start_hash: &StateHash,
+    ) -> Result<Option<i64>, CasperError> {
+        let runtime = self.spawn_runtime().await;
+        let mut runtime_ops = RuntimeOps::new(runtime);
+        runtime_ops
+            .get_fault_tolerance_threshold_ppm(start_hash)
+            .await
     }
 
     pub async fn compute_bonds(&self, hash: &StateHash) -> Result<Vec<Bond>, CasperError> {
@@ -962,6 +996,63 @@ impl RuntimeManager {
             .map_err(CasperError::KvStoreError)
     }
 
+    /// True iff this node already holds the mergeable-channels entry for `block`.
+    /// Its presence is a byproduct of whether this node executed/replayed the
+    /// block: a block imported via LFS without replay — or rejected locally and
+    /// never replayed — lacks it, while the multi-parent merge requires it for
+    /// every scope block. Without a recompute that makes merge validity node-local.
+    pub fn has_mergeable_entry(
+        &self,
+        block: &models::rust::casper::protocol::casper_message::BlockMessage,
+    ) -> Result<bool, CasperError> {
+        let key = Self::mergeable_key_bytes_for_block(block)?;
+        let value: Option<Vec<DeployMergeableData>> = self.mergeable_store.get_one(&key)?;
+        Ok(value.is_some())
+    }
+
+    /// Materialize the mergeable-channels entry for `block` by replaying it,
+    /// unless already present. The mergeable diffs are a deterministic function
+    /// of the block's content, so a full replay reconstructs exactly the entry
+    /// the proposer stored — making mergeable presence a function of consensus
+    /// data on every node rather than of local execution history.
+    ///
+    /// `invalid_blocks` MUST be the block's own invalid-block set (the set its
+    /// original validation used); otherwise the replay computes a different
+    /// post-state and the entry would be stored under the wrong key.
+    pub async fn ensure_mergeable_entry(
+        &self,
+        block: &models::rust::casper::protocol::casper_message::BlockMessage,
+        invalid_blocks: HashMap<BlockHash, Validator>,
+    ) -> Result<(), CasperError> {
+        if self.has_mergeable_entry(block)? {
+            return Ok(());
+        }
+
+        let block_data = BlockData::from_block(block);
+        let is_genesis = block.header.parents_hash_list.is_empty();
+        self.replay_compute_state(
+            &block.body.state.pre_state_hash,
+            block.body.deploys.clone(),
+            block.body.system_deploys.clone(),
+            &block_data,
+            Some(invalid_blocks),
+            is_genesis,
+        )
+        .await?;
+
+        // Fail closed: the full-replay path persists the entry. If it is still
+        // absent the merge would diverge across nodes, so surface it.
+        if !self.has_mergeable_entry(block)? {
+            return Err(CasperError::RuntimeError(format!(
+                "mergeable entry still absent after recompute for block {} (seq={})",
+                hex::encode(&block.block_hash),
+                block.seq_num,
+            )));
+        }
+
+        Ok(())
+    }
+
     /// Delete mergeable channels entry keyed by (post-state-hash, creator, seq-num).
     /// Returns `true` if the entry existed prior to deletion.
     pub fn delete_mergeable_channels(
@@ -1099,7 +1190,10 @@ impl RuntimeManager {
             initial_values.insert(ch, value);
         }
 
-        // Calculate difference values from final values on number channels
+        // Calculate difference values from final values on number channels. The diff is
+        // the wrapping group inverse (see calculate_num_channel_diff): it faithfully
+        // recovers each deploy's intended delta even when execution overflowed. Over-large
+        // deltas are rejected downstream at merge (combine checked_add / apply checked_add).
         Ok(RholangMergingLogic::calculate_num_channel_diff(
             channels_data,
             move |ch| initial_values.get(ch).copied(),
@@ -1113,7 +1207,12 @@ impl RuntimeManager {
      * the time. For some situations, we can just use the value directly for better performance.
      */
     pub fn empty_state_hash_fixed() -> StateHash {
-        hex::decode("852cc7a4a4e14a05574b9cd0779dbfb1f85489b606e75677f3ce3239dfec4e36")
+        // Updated 2026-07-04 for the versioned registry FIP: Step 2 wires
+        // VersionedRegistry.rho into genesis, adding one more contract to
+        // the initial installed set and re-encoding the bootstrap
+        // registry's continuations. Coordinated upgrade required.
+        // (Prior update: 2026-04-29 by Phase 9 of where-clauses-and-match-guards.)
+        hex::decode("facf59ccc55ee2c04802c7399bcff0d15154f70e0d2bc40cf041aac0a89499c1")
             .unwrap()
             .into()
     }

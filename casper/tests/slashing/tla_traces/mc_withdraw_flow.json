@@ -1,0 +1,18 @@
+{
+  "spec": "MC_WithdrawFlow",
+  "validators": 3,
+  "stake_per_validator": 100,
+  "schedule": [
+    { "action": "WithdrawSucceeds", "args": { "w": "v0" } },
+    { "action": "WithdrawFails",    "args": { "w": "v1" } },
+    { "action": "RetryFromFailed",  "args": { "w": "v1" } },
+    { "action": "WithdrawSucceeds", "args": { "w": "v1" } },
+    { "action": "WithdrawSucceeds", "args": { "w": "v2" } }
+  ],
+  "expected_final": {
+    "slashed": [],
+    "active": ["v0", "v1", "v2"],
+    "coop_vault": 0,
+    "records": []
+  }
+}

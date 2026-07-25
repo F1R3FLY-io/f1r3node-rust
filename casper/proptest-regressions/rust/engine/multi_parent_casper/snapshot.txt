@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 0ab43d5a6b73376e2e3bf955107b0e5c9e42add298afc9d90ebb8e308f17d06d # shrinks to a = (DeployBranchScore { deploy_sig_count: 1, latest_deploy_block_number: 2, root_block_number: 1 }, b"\0"), b = (DeployBranchScore { deploy_sig_count: 1, latest_deploy_block_number: 2, root_block_number: 1 }, b"\x01"), c = (DeployBranchScore { deploy_sig_count: 0, latest_deploy_block_number: 0, root_block_number: 0 }, b"\0")
+cc a97f2906f6d9746da990d29cb0f70b583008cba50c5a88360d9ab78d2138ad37 # shrinks to specs = [(2, 2), (2, 2)]

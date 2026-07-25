@@ -162,6 +162,7 @@ message ProcessedDeployProto {
 message SlashSystemDeployDataProto {
   bytes invalidBlockHash = 1;
   bytes issuerPublicKey = 2;
+  int64 targetActivationEpoch = 3;
 }
 
 message CloseBlockSystemDeployDataProto{

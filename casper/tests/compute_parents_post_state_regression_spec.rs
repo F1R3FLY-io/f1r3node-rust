@@ -10,19 +10,19 @@ use casper::rust::errors::CasperError;
 use casper::rust::genesis::contracts::proof_of_stake::ProofOfStake;
 use casper::rust::genesis::contracts::validator::Validator as GenesisValidator;
 use casper::rust::genesis::genesis::Genesis;
-use casper::rust::util::proto_util;
 use casper::rust::util::rholang::interpreter_util::{
     compute_deploys_checkpoint, compute_parents_post_state,
 };
 use casper::rust::util::rholang::runtime_manager::RuntimeManager;
 use casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum;
+use casper::rust::util::{construct_deploy, proto_util};
 use crypto::rust::signatures::secp256k1::Secp256k1;
 use crypto::rust::signatures::signatures_alg::SignaturesAlg;
-use dashmap::{DashMap, DashSet};
+use dashmap::DashSet;
 use models::rust::block::state_hash::StateHash;
 use models::rust::block_hash::BlockHash;
 use models::rust::block_implicits;
-use models::rust::casper::protocol::casper_message::{BlockMessage, Bond};
+use models::rust::casper::protocol::casper_message::{BlockMessage, Bond, ProcessedDeploy};
 use models::rust::validator::Validator;
 use prost::bytes::Bytes;
 use rholang::rust::interpreter::external_services::ExternalServices;
@@ -46,7 +46,7 @@ fn mk_snapshot(
     let mut snapshot = CasperSnapshot::new(dag);
     snapshot.last_finalized_block = last_finalized_block;
 
-    let max_seq_nums: DashMap<Validator, u64> = DashMap::new();
+    let mut max_seq_nums: HashMap<Validator, u64> = HashMap::new();
     max_seq_nums.insert(validator.clone(), 0);
     snapshot.max_seq_nums = max_seq_nums;
 
@@ -104,7 +104,9 @@ async fn step_block(
     last_finalized_block: BlockHash,
 ) -> Result<BlockMessage, CasperError> {
     let snapshot = mk_snapshot(
-        dag_storage.get_representation(),
+        dag_storage
+            .get_representation()
+            .expect("dag representation"),
         validator,
         shard_name,
         last_finalized_block,
@@ -140,7 +142,10 @@ async fn step_block(
         .put_block_message(&updated)
         .map_err(|e| CasperError::RuntimeError(e.to_string()))?;
     dag_storage
-        .insert(&updated, false, false)
+        .insert(
+            &updated,
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal,
+        )
         .map_err(|e| CasperError::RuntimeError(e.to_string()))?;
 
     Ok(updated)
@@ -173,7 +178,7 @@ fn compute_parents_post_state_should_not_depend_on_local_finalized_set() {
 async fn run_compute_parents_post_state_finalized_skew_regression() {
     let secp = Secp256k1;
     let (_validator_sk, validator_pk) = secp.new_key_pair();
-    let validator: Bytes = validator_pk.bytes.clone().into();
+    let validator: Bytes = validator_pk.bytes.clone();
     let shard_name = "test-shard".to_string();
 
     let mut kvm = InMemoryStoreManager::new();
@@ -212,6 +217,7 @@ async fn run_compute_parents_post_state_finalized_skew_regression() {
             epoch_length: 1000,
             quarantine_length: 50000,
             number_of_active_validators: 1,
+            fault_tolerance_threshold_ppm: 0,
             pos_multi_sig_public_keys: vec![
                 "04db91a53a2b72fcdcb201031772da86edad1e4979eb6742928d27731b1771e0bc40c9e9c9fa6554bdec041a87cee423d6f2e09e9dfb408b78e85a4aa611aad20c".to_string(),
                 "042a736b30fffcc7d5a58bb9416f7e46180818c82b15542d0a7819d1a437aa7f4b6940c50db73a67bfc5f5ec5b5fa555d24ef8339b03edaa09c096de4ded6eae14".to_string(),
@@ -227,14 +233,17 @@ async fn run_compute_parents_post_state_finalized_skew_regression() {
         native_token_decimals: 8,
     };
 
-    let genesis_block = Genesis::create_genesis_block(&mut runtime_manager, &genesis)
+    let genesis_block = Genesis::create_genesis_block(&runtime_manager, &genesis)
         .await
         .expect("Failed to create genesis block");
     block_store
         .put_block_message(&genesis_block)
         .expect("Failed to store genesis block");
     dag_storage
-        .insert(&genesis_block, false, true)
+        .insert(
+            &genesis_block,
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved,
+        )
         .expect("Failed to insert genesis in DAG");
 
     let b1_raw = build_empty_block(
@@ -303,29 +312,40 @@ async fn run_compute_parents_post_state_finalized_skew_regression() {
     let parents = vec![b2.clone(), b3.clone()];
 
     let mut snapshot_without_skew = mk_snapshot(
-        dag_storage.get_representation(),
+        dag_storage
+            .get_representation()
+            .expect("dag representation"),
         validator.clone(),
         shard_name.clone(),
         genesis_block.block_hash.clone(),
     );
     snapshot_without_skew.dag.last_finalized_block_hash = genesis_block.block_hash.clone();
 
+    let latest_messages_without_skew: std::collections::BTreeMap<_, _> = snapshot_without_skew
+        .justifications
+        .iter()
+        .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
+        .collect();
     let (state_without_skew, rejected_without_skew, _rejected_slashes) =
         compute_parents_post_state(
             &block_store,
             parents.clone(),
             &snapshot_without_skew,
             &runtime_manager,
+            &latest_messages_without_skew,
             None,
             None,
         )
+        .await
         .expect("Failed to compute parents post-state without finalized skew");
 
     runtime_manager.parents_post_state_cache.clear();
     runtime_manager.block_index_cache.clear();
 
     let mut snapshot_with_skew = mk_snapshot(
-        dag_storage.get_representation(),
+        dag_storage
+            .get_representation()
+            .expect("dag representation"),
         validator,
         shard_name,
         genesis_block.block_hash.clone(),
@@ -336,14 +356,21 @@ async fn run_compute_parents_post_state_finalized_skew_regression() {
         .finalized_blocks_set
         .insert(b1.block_hash.clone());
 
+    let latest_messages_with_skew: std::collections::BTreeMap<_, _> = snapshot_with_skew
+        .justifications
+        .iter()
+        .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
+        .collect();
     let (state_with_skew, rejected_with_skew, _rejected_slashes) = compute_parents_post_state(
         &block_store,
         parents,
         &snapshot_with_skew,
         &runtime_manager,
+        &latest_messages_with_skew,
         None,
         None,
     )
+    .await
     .expect("Failed to compute parents post-state with finalized skew");
 
     assert_eq!(
@@ -357,21 +384,21 @@ async fn run_compute_parents_post_state_finalized_skew_regression() {
 }
 
 #[test]
-fn compute_parents_post_state_should_fail_when_required_mergeable_is_missing() {
+fn compute_parents_post_state_should_fast_path_when_parent_dag_covers_secondary_parent() {
     let stack_bytes = std::env::var("F1R3_COMPUTE_PARENTS_REGRESSION_STACK_BYTES")
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
         .unwrap_or(64 * 1024 * 1024);
 
     let handle = std::thread::Builder::new()
-        .name("compute-parents-post-state-missing-mergeable".to_string())
+        .name("compute-parents-secondary-parent-merge".to_string())
         .stack_size(stack_bytes)
         .spawn(|| {
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
                 .expect("Failed to build Tokio runtime");
-            runtime.block_on(run_compute_parents_post_state_missing_mergeable_regression());
+            runtime.block_on(run_compute_parents_dag_cover_fast_path_regression());
         })
         .expect("Failed to spawn regression test thread");
 
@@ -380,10 +407,10 @@ fn compute_parents_post_state_should_fail_when_required_mergeable_is_missing() {
         .expect("Regression test thread panicked before completing");
 }
 
-async fn run_compute_parents_post_state_missing_mergeable_regression() {
+async fn run_compute_parents_dag_cover_fast_path_regression() {
     let secp = Secp256k1;
     let (_validator_sk, validator_pk) = secp.new_key_pair();
-    let validator: Bytes = validator_pk.bytes.clone().into();
+    let validator: Bytes = validator_pk.bytes.clone();
     let shard_name = "test-shard".to_string();
 
     let mut kvm = InMemoryStoreManager::new();
@@ -422,6 +449,261 @@ async fn run_compute_parents_post_state_missing_mergeable_regression() {
             epoch_length: 1000,
             quarantine_length: 50000,
             number_of_active_validators: 1,
+            fault_tolerance_threshold_ppm: 0,
+            pos_multi_sig_public_keys: vec![
+                "04db91a53a2b72fcdcb201031772da86edad1e4979eb6742928d27731b1771e0bc40c9e9c9fa6554bdec041a87cee423d6f2e09e9dfb408b78e85a4aa611aad20c".to_string(),
+                "042a736b30fffcc7d5a58bb9416f7e46180818c82b15542d0a7819d1a437aa7f4b6940c50db73a67bfc5f5ec5b5fa555d24ef8339b03edaa09c096de4ded6eae14".to_string(),
+                "047f0f0f5bbe1d6d1a8dac4d88a3957851940f39a57cd89d55fe25b536ab67e6d76fd3f365c83e5bfe11fe7117e549b1ae3dd39bfc867d1c725a4177692c4e7754".to_string(),
+            ],
+            pos_multi_sig_quorum: 2,
+        },
+        vaults: vec![casper::rust::genesis::contracts::vault::Vault {
+            vault_address:
+                rholang::rust::interpreter::util::vault_address::VaultAddress::from_public_key(
+                    &construct_deploy::DEFAULT_PUB,
+                )
+                .expect("Failed to create default deployer vault address"),
+            initial_balance: 9_000_000,
+        }],
+        supply: i64::MAX,
+        version: 1,
+        native_token_name: "F1R3CAP".to_string(),
+        native_token_symbol: "F1R3".to_string(),
+        native_token_decimals: 8,
+    };
+
+    let genesis_block = Genesis::create_genesis_block(&runtime_manager, &genesis)
+        .await
+        .expect("Failed to create genesis block");
+    block_store
+        .put_block_message(&genesis_block)
+        .expect("Failed to store genesis block");
+    dag_storage
+        .insert(
+            &genesis_block,
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved,
+        )
+        .expect("Failed to insert genesis in DAG");
+
+    let genesis_hash = genesis_block.block_hash.clone();
+    let genesis_state = proto_util::post_state_hash(&genesis_block);
+    let genesis_bonds = genesis_block.body.state.bonds.clone();
+
+    let main_raw = build_empty_block(
+        1,
+        1,
+        validator.clone(),
+        vec![genesis_hash.clone()],
+        genesis_state.clone(),
+        genesis_bonds.clone(),
+        shard_name.clone(),
+    );
+    let main = step_block(
+        &mut block_store,
+        &dag_storage,
+        &mut runtime_manager,
+        &main_raw,
+        validator.clone(),
+        shard_name.clone(),
+        genesis_hash.clone(),
+    )
+    .await
+    .expect("Failed to step main block");
+
+    let side_deploy = construct_deploy::source_deploy_now_full(
+        r#"@"secondary-parent-fast-path"!!(1)"#.to_string(),
+        None,
+        Some(1),
+        Some(construct_deploy::DEFAULT_SEC.clone()),
+        None,
+        Some(shard_name.clone()),
+    )
+    .expect("Failed to build side deploy");
+    let side_raw = block_implicits::get_random_block(
+        Some(1),
+        Some(2),
+        Some(genesis_state.clone()),
+        Some(StateHash::default()),
+        Some(validator.clone()),
+        Some(1),
+        Some(now_millis()),
+        Some(vec![genesis_hash.clone()]),
+        Some(Vec::new()),
+        Some(vec![ProcessedDeploy::empty(side_deploy)]),
+        Some(Vec::new()),
+        Some(genesis_bonds.clone()),
+        Some(shard_name.clone()),
+        None,
+    );
+    let side = step_block(
+        &mut block_store,
+        &dag_storage,
+        &mut runtime_manager,
+        &side_raw,
+        validator.clone(),
+        shard_name.clone(),
+        genesis_hash.clone(),
+    )
+    .await
+    .expect("Failed to step side block");
+    assert_eq!(
+        side.body.deploys.len(),
+        1,
+        "side block must process one deploy"
+    );
+    let side_statuses: Vec<_> = side
+        .body
+        .deploys
+        .iter()
+        .map(|pd| {
+            (
+                pd.is_failed,
+                pd.system_deploy_error.clone(),
+                pd.cost.cost,
+                pd.deploy_log.len(),
+            )
+        })
+        .collect();
+    assert!(
+        side.body.deploys.iter().all(|pd| !pd.is_failed),
+        "side deploy must execute cleanly: {:?}",
+        side_statuses
+    );
+    assert_ne!(
+        proto_util::post_state_hash(&side),
+        proto_util::post_state_hash(&main),
+        "side deploy must change state"
+    );
+
+    let cover_raw = build_empty_block(
+        2,
+        3,
+        validator.clone(),
+        vec![main.block_hash.clone(), side.block_hash.clone()],
+        proto_util::post_state_hash(&main),
+        main.body.state.bonds.clone(),
+        shard_name.clone(),
+    );
+    let cover = step_block(
+        &mut block_store,
+        &dag_storage,
+        &mut runtime_manager,
+        &cover_raw,
+        validator.clone(),
+        shard_name.clone(),
+        genesis_hash.clone(),
+    )
+    .await
+    .expect("Failed to step cover block");
+
+    let mut snapshot = mk_snapshot(
+        dag_storage
+            .get_representation()
+            .expect("dag representation"),
+        validator.clone(),
+        shard_name,
+        genesis_hash.clone(),
+    );
+    snapshot.dag.last_finalized_block_hash = genesis_hash;
+    let mut latest_messages = std::collections::BTreeMap::new();
+    latest_messages.insert(validator, cover.block_hash.clone());
+    runtime_manager.parents_post_state_cache.clear();
+    runtime_manager.block_index_cache.clear();
+
+    let (merged_state, rejected, _rejected_slashes) = compute_parents_post_state(
+        &block_store,
+        vec![cover.clone(), side.clone()],
+        &snapshot,
+        &runtime_manager,
+        &latest_messages,
+        None,
+        None,
+    )
+    .await
+    .expect("Failed to compute parents post-state");
+
+    assert!(
+        rejected.is_empty(),
+        "non-conflicting side deploy should merge cleanly"
+    );
+    assert_eq!(
+        merged_state,
+        proto_util::post_state_hash(&cover),
+        "a valid DAG-covering parent should already contain the secondary parent's effects"
+    );
+    assert!(
+        runtime_manager.parents_post_state_cache.is_empty(),
+        "DAG-covering parent fast path should not populate the merge cache"
+    );
+}
+
+#[test]
+fn compute_parents_post_state_should_reconstruct_required_mergeable_when_missing() {
+    let stack_bytes = std::env::var("F1R3_COMPUTE_PARENTS_REGRESSION_STACK_BYTES")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(64 * 1024 * 1024);
+
+    let handle = std::thread::Builder::new()
+        .name("compute-parents-post-state-missing-mergeable".to_string())
+        .stack_size(stack_bytes)
+        .spawn(|| {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("Failed to build Tokio runtime");
+            runtime.block_on(run_compute_parents_post_state_missing_mergeable_regression());
+        })
+        .expect("Failed to spawn regression test thread");
+
+    handle
+        .join()
+        .expect("Regression test thread panicked before completing");
+}
+
+async fn run_compute_parents_post_state_missing_mergeable_regression() {
+    let secp = Secp256k1;
+    let (_validator_sk, validator_pk) = secp.new_key_pair();
+    let validator: Bytes = validator_pk.bytes.clone();
+    let shard_name = "test-shard".to_string();
+
+    let mut kvm = InMemoryStoreManager::new();
+    let mut block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
+        .await
+        .expect("Failed to create block store");
+    let dag_storage = BlockDagKeyValueStorage::new(&mut kvm)
+        .await
+        .expect("Failed to create DAG storage");
+
+    let rspace_store = kvm
+        .r_space_stores()
+        .await
+        .expect("Failed to get rspace stores");
+    let mergeable_store = RuntimeManager::mergeable_store(&mut kvm)
+        .await
+        .expect("Failed to create mergeable store");
+    let (mut runtime_manager, _) = RuntimeManager::create_with_history(
+        rspace_store,
+        mergeable_store,
+        std::sync::Arc::new(Genesis::default_mergeable_tags()),
+        ExternalServices::noop(),
+    );
+
+    let genesis = Genesis {
+        shard_id: shard_name.clone(),
+        timestamp: 0,
+        block_number: 0,
+        proof_of_stake: ProofOfStake {
+            minimum_bond: 1,
+            maximum_bond: i64::MAX,
+            validators: vec![GenesisValidator {
+                pk: validator_pk.clone(),
+                stake: 100,
+            }],
+            epoch_length: 1000,
+            quarantine_length: 50000,
+            number_of_active_validators: 1,
+            fault_tolerance_threshold_ppm: 0,
             pos_multi_sig_public_keys: vec![
                 "04db91a53a2b72fcdcb201031772da86edad1e4979eb6742928d27731b1771e0bc40c9e9c9fa6554bdec041a87cee423d6f2e09e9dfb408b78e85a4aa611aad20c".to_string(),
                 "042a736b30fffcc7d5a58bb9416f7e46180818c82b15542d0a7819d1a437aa7f4b6940c50db73a67bfc5f5ec5b5fa555d24ef8339b03edaa09c096de4ded6eae14".to_string(),
@@ -437,14 +719,17 @@ async fn run_compute_parents_post_state_missing_mergeable_regression() {
         native_token_decimals: 8,
     };
 
-    let genesis_block = Genesis::create_genesis_block(&mut runtime_manager, &genesis)
+    let genesis_block = Genesis::create_genesis_block(&runtime_manager, &genesis)
         .await
         .expect("Failed to create genesis block");
     block_store
         .put_block_message(&genesis_block)
         .expect("Failed to store genesis block");
     dag_storage
-        .insert(&genesis_block, false, true)
+        .insert(
+            &genesis_block,
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved,
+        )
         .expect("Failed to insert genesis in DAG");
 
     let b1_raw = build_empty_block(
@@ -523,25 +808,42 @@ async fn run_compute_parents_post_state_missing_mergeable_regression() {
     );
 
     let mut snapshot = mk_snapshot(
-        dag_storage.get_representation(),
+        dag_storage
+            .get_representation()
+            .expect("dag representation"),
         validator,
         shard_name,
         genesis_block.block_hash.clone(),
     );
     snapshot.dag.last_finalized_block_hash = genesis_block.block_hash;
 
+    let latest_messages: std::collections::BTreeMap<_, _> = snapshot
+        .justifications
+        .iter()
+        .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
+        .collect();
     let result = compute_parents_post_state(
         &block_store,
-        vec![b2, b3],
+        vec![b2.clone(), b3],
         &snapshot,
         &runtime_manager,
+        &latest_messages,
         None,
         None,
-    );
+    )
+    .await;
 
     assert!(
-        matches!(result, Err(CasperError::KvStoreError(_))),
-        "Expected compute_parents_post_state to fail when a required mergeable entry is missing; got {result:?}"
+        result.is_ok(),
+        "compute_parents_post_state should reconstruct a missing mergeable entry; got {result:?}"
+    );
+    assert!(
+        runtime_manager
+            .get_mergeable_entry_bytes(&b2)
+            .expect("mergeable entry query failed")
+            .1
+            .is_some(),
+        "the missing mergeable entry should be materialized from its source block"
     );
 }
 
@@ -588,9 +890,9 @@ async fn run_visible_blocks_scope_test() {
     let (_v1_sk, v1_pk) = secp.new_key_pair();
     let (_v2_sk, v2_pk) = secp.new_key_pair();
     let (_v3_sk, v3_pk) = secp.new_key_pair();
-    let v1: Bytes = v1_pk.bytes.clone().into();
-    let v2: Bytes = v2_pk.bytes.clone().into();
-    let v3: Bytes = v3_pk.bytes.clone().into();
+    let v1: Bytes = v1_pk.bytes.clone();
+    let v2: Bytes = v2_pk.bytes.clone();
+    let v3: Bytes = v3_pk.bytes.clone();
 
     let mut kvm = InMemoryStoreManager::new();
     let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
@@ -607,7 +909,7 @@ async fn run_visible_blocks_scope_test() {
     let mergeable_store = RuntimeManager::mergeable_store(&mut kvm)
         .await
         .expect("Failed to create mergeable store");
-    let (mut runtime_manager, _) = RuntimeManager::create_with_history(
+    let (runtime_manager, _) = RuntimeManager::create_with_history(
         rspace_store,
         mergeable_store,
         std::sync::Arc::new(Genesis::default_mergeable_tags()),
@@ -629,6 +931,7 @@ async fn run_visible_blocks_scope_test() {
             epoch_length: 1000,
             quarantine_length: 50000,
             number_of_active_validators: 3,
+            fault_tolerance_threshold_ppm: 0,
             pos_multi_sig_public_keys: vec![
                 "04db91a53a2b72fcdcb201031772da86edad1e4979eb6742928d27731b1771e0bc40c9e9c9fa6554bdec041a87cee423d6f2e09e9dfb408b78e85a4aa611aad20c".to_string(),
                 "042a736b30fffcc7d5a58bb9416f7e46180818c82b15542d0a7819d1a437aa7f4b6940c50db73a67bfc5f5ec5b5fa555d24ef8339b03edaa09c096de4ded6eae14".to_string(),
@@ -644,14 +947,17 @@ async fn run_visible_blocks_scope_test() {
         native_token_decimals: 8,
     };
 
-    let genesis_block = Genesis::create_genesis_block(&mut runtime_manager, &genesis)
+    let genesis_block = Genesis::create_genesis_block(&runtime_manager, &genesis)
         .await
         .expect("Failed to create genesis block");
     block_store
         .put_block_message(&genesis_block)
         .expect("Failed to store genesis");
     dag_storage
-        .insert(&genesis_block, false, true)
+        .insert(
+            &genesis_block,
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved,
+        )
         .expect("Failed to insert genesis");
 
     let genesis_hash = genesis_block.block_hash.clone();
@@ -705,7 +1011,10 @@ async fn run_visible_blocks_scope_test() {
                 .put_block_message(&block)
                 .expect("Failed to store block");
             dag_storage
-                .insert(&block, false, false)
+                .insert(
+                    &block,
+                    block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal,
+                )
                 .expect("Failed to insert block");
 
             latest.insert(creator, block.block_hash.clone());
@@ -715,7 +1024,9 @@ async fn run_visible_blocks_scope_test() {
                 let parents = proto_util::get_parents(&block_store, &block);
 
                 // Replicate visible_blocks + LCA-scoped filter from compute_parents_post_state
-                let dag_repr = dag_storage.get_representation();
+                let dag_repr = dag_storage
+                    .get_representation()
+                    .expect("dag representation");
                 let max_parent_depth: i64 = i32::MAX as i64;
                 let max_parent_block_number = parents
                     .iter()

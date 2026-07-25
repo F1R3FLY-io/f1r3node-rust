@@ -10,15 +10,18 @@ use models::rust::casper::protocol::casper_message::BlockMessage;
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::GenesisBuilder;
 
-// TODO: Round-robin finalization concept no longer applies with multi-parent merging.
-// Scala deleted this test in PR #288.
+// Round-robin block production still exercises finalization advancement under multi-parent
+// merging in the Rust port: propagating blocks round-robin finalizes block1..block4 in order
+// as later blocks accrue witnessing quorums. (Scala deleted this in PR #288; the Rust
+// finalizer reproduces the expected advancement, so it is restored as real coverage — the
+// sibling `..._advance_finalization_monotonically_in_round_robin` already runs.)
 #[tokio::test]
-#[ignore = "Round-robin finalization concept no longer applies with multi-parent blocks"]
 async fn multi_parent_casper_should_increment_last_finalized_block_as_appropriate_in_round_robin() {
     fn assert_finalized_block(node: &TestNode, expected: &BlockMessage) {
         let last_finalized_block_hash = node
             .block_dag_storage
             .get_representation()
+            .expect("dag representation")
             .last_finalized_block();
 
         // Scala uses withClue to add file:line context to assertions.
@@ -126,6 +129,13 @@ async fn multi_parent_casper_should_advance_finalization_monotonically_in_round_
     let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None, None)
         .await
         .unwrap();
+    // Heartbeat mode: under deploy-inclusion leadership only the leader packages
+    // user deploys while unresolved user work is in the frontier; non-leaders
+    // emit empty support blocks instead of erroring NoNewDeploys. The
+    // assertions below concern LFB monotonicity, not deploy inclusion.
+    for node in nodes.iter_mut() {
+        node.allow_empty_blocks = true;
+    }
 
     let shard_id = genesis.genesis_block.shard_id.clone();
 

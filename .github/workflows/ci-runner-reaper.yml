@@ -84,7 +84,9 @@ jobs:
       - name: Terminate ci-eph-* instances past max age
         shell: bash -e {0}
         env:
-          DRY_RUN: ${{ inputs.dry_run && '1' || '' }}
+          # `== true` guards against string-typed inputs (e.g. via
+          # github.event.inputs), where the string "false" is truthy.
+          DRY_RUN: ${{ inputs.dry_run == true && '1' || '' }}
           MAX_AGE_HOURS: ${{ inputs.max_age_hours || '2' }}
         run: |
           case "$MAX_AGE_HOURS" in

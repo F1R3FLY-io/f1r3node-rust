@@ -84,7 +84,7 @@ mod tests {
             synchrony_recovery_max_bypasses: 2,
             synchrony_finalized_baseline_enabled: true,
             synchrony_finalized_baseline_max_distance: 2048,
-            max_user_deploys_per_block: 32,
+            max_user_deploys_per_block: 128,
         }
     }
 
@@ -129,6 +129,7 @@ mod tests {
                 grpc_max_recv_message_size: 16 * 1024 * 1024,
                 port_http: 40403,
                 port_admin_http: 40405,
+                http_max_body_bytes: 16 * 1024 * 1024,
                 max_blocks_limit: 100,
                 enable_reporting: true,
                 keep_alive_time: Duration::from_secs(60),

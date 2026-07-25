@@ -80,14 +80,14 @@ const HISTORY_HASH_1_STR: &str = "1a";
 /// Scala equivalent: val historyHash2 = createHash("2a")
 const HISTORY_HASH_2_STR: &str = "2a";
 
-/// Chunk 3
+// Chunk 3
 
 /// Invalid test data
 /// Scala equivalent: val invalidHistory = Seq((createHash("666aaaaa"), ByteString.EMPTY))
 const INVALID_HASH_STR: &str = "666aaaaa";
 
-/// Individual test data constants - matching Scala version structure
-/// Scala equivalent: Multiple val declarations for historyPath1, history1, data1, etc.
+// Individual test data constants - matching Scala version structure
+// Scala equivalent: Multiple val declarations for historyPath1, history1, data1, etc.
 
 /// Get approved block state (start of the state)
 /// Scala equivalent: val historyHash1 = createHash("1a")
@@ -165,6 +165,7 @@ pub struct MockImpl {
     /// The actual LFS tuple space requester stream
     /// Scala equivalent: val stream: Stream[F, ST[StatePartPath]] = processingStream
     stream: Option<mpsc::UnboundedReceiver<ST<StatePartPath>>>,
+    err_handle: Arc<Mutex<Option<CasperError>>>,
 }
 
 impl MockImpl {
@@ -423,6 +424,7 @@ impl RSpaceImporter for MockRSpaceImporter {
 /// Scala equivalent: def createMock[F[_]: Concurrent: Time: Log](requestTimeout: FiniteDuration)(test: Mock[F] => F[Unit]): F[Unit]
 pub async fn create_mock<F, Fut>(
     request_timeout: std::time::Duration,
+    overall_deadline: std::time::Duration,
     test_fn: F,
 ) -> Result<(), TestError>
 where
@@ -464,12 +466,13 @@ where
         request_timeout,
         mock_ops,
         Arc::new(mock_importer),
+        overall_deadline,
     )
     .await;
 
     // Handle stream creation error
-    let lfs_stream = match stream_result {
-        Ok(stream) => stream,
+    let (lfs_stream, err_handle) = match stream_result {
+        Ok((stream, err_handle)) => (stream, err_handle),
         Err(e) => {
             eprintln!("Failed to create LFS tuple space requester stream: {:?}", e);
             return Err(TestError::ChannelClosed);
@@ -505,6 +508,7 @@ where
         data_receiver: data_rx,
         validation_state,
         stream: Some(stream_rx),
+        err_handle,
     };
 
     // Execute test function
@@ -517,8 +521,8 @@ where
     test_result
 }
 
-/// Test runner utilities
-/// Scala equivalent: def createBootstrapTest(runProcessingStream: Boolean, requestTimeout: FiniteDuration = 10.days)(test: Mock[Task] => Task[Unit]): Unit
+// Test runner utilities
+// Scala equivalent: def createBootstrapTest(runProcessingStream: Boolean, requestTimeout: FiniteDuration = 10.days)(test: Mock[Task] => Task[Unit]): Unit
 
 /// Creates a bootstrap test with configurable stream processing
 /// Scala equivalent: def createBootstrapTest(runProcessingStream: Boolean, requestTimeout: FiniteDuration = 10.days)
@@ -531,21 +535,25 @@ where
     F: FnOnce(MockImpl) -> Fut,
     Fut: std::future::Future<Output = Result<(), TestError>>,
 {
-    create_mock(request_timeout, |mock| async move {
-        if !run_processing_stream {
-            // Run test function without processing stream
-            // Scala equivalent: if (!runProcessingStream) test(mock)
-            test_fn(mock).await
-        } else {
-            // Run test function concurrently with processing stream
-            // Scala equivalent: else (Stream.eval(test(mock)) concurrently mock.stream).compile.drain
+    create_mock(
+        request_timeout,
+        std::time::Duration::from_secs(60),
+        |mock| async move {
+            if !run_processing_stream {
+                // Run test function without processing stream
+                // Scala equivalent: if (!runProcessingStream) test(mock)
+                test_fn(mock).await
+            } else {
+                // Run test function concurrently with processing stream
+                // Scala equivalent: else (Stream.eval(test(mock)) concurrently mock.stream).compile.drain
 
-            // In this case, the stream is already running in the background from create_mock()
-            // We just need to run the test function
-            // The stream processing happens automatically via the spawned task in create_mock()
-            test_fn(mock).await
-        }
-    })
+                // In this case, the stream is already running in the background from create_mock()
+                // We just need to run the test function
+                // The stream processing happens automatically via the spawned task in create_mock()
+                test_fn(mock).await
+            }
+        },
+    )
     .await
 }
 
@@ -648,9 +656,7 @@ pub async fn assert_no_requests(mock: &mut MockImpl, timeout_ms: u64) -> Result<
         Ok(Some(unexpected_req)) => {
             panic!("Unexpected request received: {:?}", unexpected_req);
         }
-        Ok(None) => {
-            return Err(TestError::ChannelClosed);
-        }
+        Ok(None) => Err(TestError::ChannelClosed),
         Err(_) => {
             // Timeout is expected - no requests should be sent
             Ok(())
@@ -673,9 +679,7 @@ pub async fn assert_no_saved_history(
         Ok(Some(unexpected_save)) => {
             panic!("Unexpected history save received: {:?}", unexpected_save);
         }
-        Ok(None) => {
-            return Err(TestError::ChannelClosed);
-        }
+        Ok(None) => Err(TestError::ChannelClosed),
         Err(_) => {
             // Timeout is expected - no saves should happen
             Ok(())
@@ -695,9 +699,7 @@ pub async fn assert_no_saved_data(mock: &mut MockImpl, timeout_ms: u64) -> Resul
         Ok(Some(unexpected_save)) => {
             panic!("Unexpected data save received: {:?}", unexpected_save);
         }
-        Ok(None) => {
-            return Err(TestError::ChannelClosed);
-        }
+        Ok(None) => Err(TestError::ChannelClosed),
         Err(_) => {
             // Timeout is expected - no saves should happen
             Ok(())
@@ -1179,5 +1181,31 @@ mod tests {
         })
         .await
         .expect("Test should complete successfully");
+    }
+
+    #[tokio::test]
+    async fn tuple_space_gives_up_and_surfaces_error_when_peer_silent() {
+        create_mock(
+            std::time::Duration::from_millis(5),
+            std::time::Duration::from_millis(50),
+            |mut mock| async move {
+                let mut stream_rx = mock.stream.take().expect("stream receiver present");
+                let mut last_state = None;
+                tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                    while let Some(st) = stream_rx.recv().await {
+                        last_state = Some(st);
+                    }
+                })
+                .await
+                .expect("tuple-space sync must terminate via the progress deadline");
+
+                let final_state = last_state.expect("stream must yield a final state");
+                assert!(!final_state.is_finished());
+                assert!(mock.err_handle.lock().unwrap().is_some());
+                Ok(())
+            },
+        )
+        .await
+        .expect("Test harness should complete");
     }
 }

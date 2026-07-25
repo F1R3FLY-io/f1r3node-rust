@@ -1,0 +1,18 @@
+# nextest configuration.
+#
+# `pos_spec` is by far the heaviest genesis-contract RhoSpec test: it runs the full
+# 16-test PoSTest.rho suite through the interpreter over a CUSTOM-parameter genesis
+# (minimum_bond=2 / maximum_bond=100000 => a GENESIS_CACHE miss => a full genesis
+# rebuild every run, unlike the default-param specs which hit the warm cache). Once the
+# RhoSpec harness was made to actually enforce assertions, this became ~50s of real
+# work. Under a fully-parallel `cargo nextest run` of the whole casper crate (~930
+# tests) it is starved for CPU + the shared LMDB environment badly enough to exceed its
+# RhoSpec execution timeout — a scheduling artifact, not a hang or a correctness issue
+# (it passes deterministically in isolation and alongside the 22 genesis siblings).
+#
+# `threads-required = "num-cpus"` makes nextest schedule it with the whole machine to
+# itself (no co-tenant tests), so it runs at its isolated ~50s speed. It is one short
+# island in the run; every other genesis spec is light enough to pass at full parallelism.
+[[profile.default.overrides]]
+filter = 'test(/genesis::contracts::pos_spec::pos_spec/)'
+threads-required = "num-cpus"

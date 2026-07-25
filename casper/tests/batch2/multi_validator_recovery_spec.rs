@@ -26,6 +26,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use block_storage::rust::dag::block_dag_key_value_storage::InsertMode;
 use block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use casper::rust::casper::{CasperShardConf, CasperSnapshot, OnChainCasperState};
@@ -36,7 +37,7 @@ use casper::rust::util::rholang::interpreter_util::{
 use casper::rust::util::rholang::runtime_manager::RuntimeManager;
 use casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum;
 use casper::rust::util::{construct_deploy, proto_util};
-use dashmap::{DashMap, DashSet};
+use dashmap::DashSet;
 use models::rust::block::state_hash::StateHash;
 use models::rust::block_hash::BlockHash;
 use models::rust::block_implicits;
@@ -58,8 +59,8 @@ async fn multi_validator_recovery_dedups_re_proposed_sig() {
     let genesis_hash = genesis_block.block_hash.clone();
     let genesis_state = proto_util::post_state_hash(&genesis_block);
     let genesis_bonds = genesis_block.body.state.bonds.clone();
-    let validator_0: prost::bytes::Bytes = genesis_context.validator_pks()[0].bytes.clone().into();
-    let validator_1: prost::bytes::Bytes = genesis_context.validator_pks()[1].bytes.clone().into();
+    let validator_0: prost::bytes::Bytes = genesis_context.validator_pks()[0].bytes.clone();
+    let validator_1: prost::bytes::Bytes = genesis_context.validator_pks()[1].bytes.clone();
     let shard_name = genesis_block.shard_id.clone();
 
     let mut kvm = mk_test_rnode_store_manager_from_genesis(&genesis_context);
@@ -67,7 +68,7 @@ async fn multi_validator_recovery_dedups_re_proposed_sig() {
     let mergeable_store = mergeable_store_from_dyn(&mut *kvm)
         .await
         .expect("mergeable store");
-    let (mut rm, _) = RuntimeManager::create_with_history(
+    let (rm, _) = RuntimeManager::create_with_history(
         rspace_store,
         mergeable_store,
         std::sync::Arc::new(Genesis::default_mergeable_tags()),
@@ -92,7 +93,7 @@ async fn multi_validator_recovery_dedups_re_proposed_sig() {
         .put_block_message(&genesis_block)
         .expect("store genesis");
     dag_storage
-        .insert(&genesis_block, false, true)
+        .insert(&genesis_block, InsertMode::Approved)
         .expect("dag genesis");
 
     let now_millis = || -> i64 {
@@ -103,9 +104,13 @@ async fn multi_validator_recovery_dedups_re_proposed_sig() {
     };
 
     let mk_snapshot = |lfb: &BlockHash| -> CasperSnapshot {
-        let mut snapshot = CasperSnapshot::new(dag_storage.get_representation());
+        let mut snapshot = CasperSnapshot::new(
+            dag_storage
+                .get_representation()
+                .expect("dag representation"),
+        );
         snapshot.last_finalized_block = lfb.clone();
-        let max_seq_nums: DashMap<prost::bytes::Bytes, u64> = DashMap::new();
+        let mut max_seq_nums: HashMap<prost::bytes::Bytes, u64> = HashMap::new();
         max_seq_nums.insert(validator_0.clone(), 0);
         max_seq_nums.insert(validator_1.clone(), 0);
         snapshot.max_seq_nums = max_seq_nums;
@@ -214,7 +219,7 @@ for(@_v <- @"multi-validator-shared") { Nil }
             .collect(),
         Vec::<SystemDeployEnum>::new(),
         &mk_snapshot(&genesis_hash),
-        &mut rm,
+        &rm,
         BlockData::from_block(&r0_raw),
         HashMap::new(),
         None,
@@ -235,7 +240,7 @@ for(@_v <- @"multi-validator-shared") { Nil }
     r0.body.system_deploys = sys_pd_r0;
     r0.body.state.bonds = bonds_r0;
     block_store.put_block_message(&r0).expect("store R0");
-    dag_storage.insert(&r0, false, false).expect("dag R0");
+    dag_storage.insert(&r0, InsertMode::Normal).expect("dag R0");
 
     // ── Recovery block R1 (sender = validator 1, body = [deploy_x, marker_v1]) ──
     let r1_raw = block_implicits::get_random_block(
@@ -266,7 +271,7 @@ for(@_v <- @"multi-validator-shared") { Nil }
             .collect(),
         Vec::<SystemDeployEnum>::new(),
         &mk_snapshot(&genesis_hash),
-        &mut rm,
+        &rm,
         BlockData::from_block(&r1_raw),
         HashMap::new(),
         None,
@@ -287,7 +292,7 @@ for(@_v <- @"multi-validator-shared") { Nil }
     r1.body.system_deploys = sys_pd_r1;
     r1.body.state.bonds = bonds_r1;
     block_store.put_block_message(&r1).expect("store R1");
-    dag_storage.insert(&r1, false, false).expect("dag R1");
+    dag_storage.insert(&r1, InsertMode::Normal).expect("dag R1");
 
     assert_ne!(
         r0.block_hash, r1.block_hash,
@@ -306,14 +311,21 @@ for(@_v <- @"multi-validator-shared") { Nil }
     // which is unioned into `rejected_user_deploys`. The shared sig_x
     // does NOT appear there: dedup retained it via the winning chain.
     let snapshot = mk_snapshot(&genesis_hash);
+    let latest_messages: std::collections::BTreeMap<_, _> = snapshot
+        .justifications
+        .iter()
+        .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
+        .collect();
     let (_merged_state, rejected_sigs, rejected_slashes) = compute_parents_post_state(
         &block_store,
         vec![r0.clone(), r1.clone()],
         &snapshot,
         &rm,
+        &latest_messages,
         None,
         Some(&rejected_deploy_buffer),
     )
+    .await
     .expect("compute_parents_post_state over [R0, R1]");
 
     assert!(

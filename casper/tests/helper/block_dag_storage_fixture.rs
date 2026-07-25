@@ -35,6 +35,7 @@ use crate::init_logger;
 use crate::util::genesis_builder::GenesisContext;
 use crate::util::rholang::resources;
 
+#[allow(clippy::await_holding_lock)]
 pub async fn with_genesis<F, Fut, R>(context: GenesisContext, f: F) -> R
 where
     F: FnOnce(KeyValueBlockStore, IndexedBlockDagStorage, RuntimeManager) -> Fut,
@@ -43,29 +44,32 @@ where
     // Acquire global lock for shared LMDB to ensure test isolation.
     // This prevents concurrent tests from interfering with each other when using shared LMDB.
     // The lock is held for the entire test duration to guarantee consistency.
-    let _lock_guard = resources::SHARED_LMDB_LOCK.lock().unwrap();
+    let _lock_guard = resources::SHARED_LMDB_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
 
     async fn create(
         genesis_context: &GenesisContext,
     ) -> (KeyValueBlockStore, IndexedBlockDagStorage, RuntimeManager) {
-        let scope_id = genesis_context.rspace_scope_id.clone();
-        let mut kvm = resources::mk_test_rnode_store_manager_shared(scope_id);
+        let mut kvm = resources::mk_test_rnode_store_manager_with_shared_rspace(
+            genesis_context,
+            &genesis_context.rspace_scope_id,
+        )
+        .await
+        .unwrap();
 
         let blocks = KeyValueBlockStore::create_from_kvm(&mut *kvm)
             .await
             .unwrap();
-        blocks
-            .put(
-                genesis_context.genesis_block.block_hash.clone(),
-                &genesis_context.genesis_block,
-            )
-            .expect("Failed to put genesis block");
 
         let dag = resources::block_dag_storage_from_dyn(&mut *kvm)
             .await
             .unwrap();
-        dag.insert(&genesis_context.genesis_block, false, true)
-            .expect("Failed to insert genesis block into DAG");
+        dag.insert(
+            &genesis_context.genesis_block,
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved,
+        )
+        .expect("Failed to insert genesis block into DAG");
 
         let indexed_dag = IndexedBlockDagStorage::new(dag);
 
@@ -79,6 +83,7 @@ where
     f(blocks, indexed_dag, runtime).await
 }
 
+#[allow(clippy::await_holding_lock)]
 pub async fn with_storage<F, Fut, R>(f: F) -> R
 where
     F: FnOnce(KeyValueBlockStore, IndexedBlockDagStorage) -> Fut,
@@ -86,7 +91,9 @@ where
 {
     // Acquire global lock for shared LMDB to ensure test isolation.
     // Same reason as with_genesis - prevents race conditions with shared LMDB.
-    let _lock_guard = resources::SHARED_LMDB_LOCK.lock().unwrap();
+    let _lock_guard = resources::SHARED_LMDB_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
 
     async fn create() -> (KeyValueBlockStore, IndexedBlockDagStorage) {
         let scope_id = resources::generate_scope_id();

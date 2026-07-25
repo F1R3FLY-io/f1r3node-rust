@@ -46,6 +46,24 @@ env:
   # AES/SSE2 CPU features for gxhash (required by PathMap crate)
   RUSTFLAGS: "-C target-feature=+aes,+sse2"
   DOCKER_IMAGE_NAME: "f1r3flyindustries/f1r3fly-rust"
+  # Pinned F1R3FLY-io/system-integration commit (main). The full SHA is the
+  # supply-chain guarantee for the secret-bearing launch job: immutable, so a
+  # repo takeover cannot move it. Bump ONLY via a reviewed PR after diffing
+  # the old..new range in system-integration; never replace with a tag/branch.
+  # MUST be kept identical to .github/oci-validation.env (the Full OCI
+  # Validation workflow sources that file) — bump both in the same commit.
+  SYSTEM_INTEGRATION_REF: 06f2020cc6c14c035c5bb08bffebc0ecad0294d9
+  # Pinned OCI CLI installer (release tag + sha256) and CLI version. The
+  # install.sh checksum fails closed if the tag is ever moved; OCI_CLI_VERSION
+  # pins what the installer pulls from PyPI (without it the installer floats to
+  # latest) and makes install.sh fetch the version-pinned install.py from the
+  # v${OCI_CLI_VERSION} tag; OCI_CLI_INSTALLER_PY_SHA256 is passed to install.sh
+  # --verify-checksum so a moved/compromised install.py fails closed too.
+  # Keep identical to oci-validation.yml; bump all four together.
+  OCI_CLI_INSTALLER_URL: "https://raw.githubusercontent.com/oracle/oci-cli/v3.89.1/scripts/install/install.sh"
+  OCI_CLI_INSTALLER_SHA256: "079dcc9a3e2a61ec692400e30169c9996b2998ac8c4e205198ed5863283fcb76"
+  OCI_CLI_INSTALLER_PY_SHA256: "f66dc9e2b69cbbd269374db638ffa9c0b08a5a4ea0b836b81336d6581aab9eed"
+  OCI_CLI_VERSION: "3.89.1"
 
 jobs:
   # Build Docker image natively on each arch using Oracle Cloud self-hosted runners.
@@ -153,19 +171,30 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: F1R3FLY-io/system-integration
-          ref: a50eeb198c6e542504af8db92389de5c02500422  # pinned system-integration main
+          ref: ${{ env.SYSTEM_INTEGRATION_REF }}
           path: system-integration
           persist-credentials: false
 
-      - name: Install OCI CLI
+      - name: Install OCI CLI (pinned, checksum-verified)
         shell: bash -ex {0}
         run: |
-          bash -c "$(curl -L https://raw.githubusercontent.com/oracle/oci-cli/master/scripts/install/install.sh)" -- \
-            --accept-all-defaults --install-dir /opt/oci-cli --exec-dir /usr/local/bin
+          # This runner later holds OCI_* secrets, so the installer must not be
+          # fetched from a movable ref. Fails closed on any checksum mismatch.
+          # Retries cover transient raw.githubusercontent.com 429s, which curl
+          # treats as retryable; the pinned checksum still gates what runs.
+          # --verify-checksum gates the install.py that install.sh downloads
+          # from the v${OCI_CLI_VERSION} tag; if it fails, install.py is not run
+          # and the `oci --version` guard below fails the step.
+          curl -fsSL --retry 5 --retry-delay 10 "$OCI_CLI_INSTALLER_URL" -o /tmp/oci-install.sh
+          echo "$OCI_CLI_INSTALLER_SHA256  /tmp/oci-install.sh" | sha256sum -c -
+          bash /tmp/oci-install.sh \
+            --accept-all-defaults --install-dir /opt/oci-cli --exec-dir /usr/local/bin \
+            --oci-cli-version "$OCI_CLI_VERSION" \
+            --verify-checksum "$OCI_CLI_INSTALLER_PY_SHA256"
           oci --version
 
       - name: Configure OCI auth from secrets
-        shell: bash -e {0}   # no -x: never trace the multi-line private key
+        shell: bash -e {0} # no -x: never trace the multi-line private key
         env:
           OCI_TENANCY_OCID: ${{ secrets.OCI_TENANCY_OCID }}
           OCI_USER_OCID: ${{ secrets.OCI_USER_OCID }}
@@ -187,7 +216,7 @@ jobs:
           chmod 600 ~/.oci/config
           oci iam region list >/dev/null && echo "OCI auth OK"
 
-      - name: Launch 10 amd64 + 10 arm64 ephemeral runners
+      - name: Launch 2 amd64 + 2 arm64 ephemeral runners
         shell: bash -ex {0}
         env:
           # The default GITHUB_TOKEN can't mint runner registration tokens even
@@ -202,21 +231,44 @@ jobs:
           cd system-integration/ci/oci-runners
           # Launch in parallel; each script exits as soon as the OCI launch
           # API call returns (the VM continues booting in the background and
-          # registers itself via cloud-init). 10 amd64 + 10 arm64 feeds the
-          # 20-job dual-provider matrix (docker × {amd64,arm64} × 5 slots +
-          # subprocess × {amd64,arm64} × 5 slots).
-          for _ in $(seq 1 10); do ./launch-runner.sh amd64 & done
-          for _ in $(seq 1 10); do ./launch-runner.sh arm64 & done
-          wait
-          echo "All 20 ephemeral runner VMs submitted."
+          # registers itself via cloud-init). 2 amd64 + 2 arm64 feeds the
+          # 4-job dual-provider matrix ({docker,subprocess} × {amd64,arm64}).
+          # Kept to one VM per matrix job: OCI daily instance-creation quota
+          # is shared tenancy-wide, and the previous 20-VM layout (5 identical
+          # slots per arch×provider) exhausted it under normal PR traffic.
+          pids=()
+          for _ in $(seq 1 2); do ./launch-runner.sh amd64 & pids+=($!); done
+          for _ in $(seq 1 2); do ./launch-runner.sh arm64 & pids+=($!); done
+          failed=0
+          for pid in "${pids[@]}"; do
+            if ! wait "$pid"; then
+              failed=1
+            fi
+          done
+          if [ "$failed" -ne 0 ]; then
+            echo "At least one OCI runner launch failed."
+            exit 1
+          fi
+          echo "All 4 ephemeral runner VMs submitted."
+
+      - name: Remove OCI credentials
+        if: always()
+        shell: bash -e {0}
+        run: |
+          shred -fu ~/.oci/oci_api_key.pem 2>/dev/null || true
+          rm -rf ~/.oci
 
   # Integration tests run on ephemeral OCI runners — one fresh VM per matrix
   # job, self-terminating after the job completes. The matrix runs the same
   # test suite against TWO node-spawn backends (docker provider, subprocess
-  # provider) on each arch — 20 jobs total. Each arch's 10 jobs share its 10
-  # ephemeral runners (provider is a pytest flag, not a runner concern).
+  # provider) on each arch — 4 jobs total, one ephemeral runner each
+  # (provider is a pytest flag, not a runner concern). The former layout ran
+  # 5 identical slots per arch×provider (20 VMs) — pure repetition carried
+  # over from legacy rust/staging, dropped to conserve OCI daily quota.
+  # Job names must keep the "arch-provider" form: the per-arch aggregators
+  # in ci.yml / ci-fork-pr.yml match on contains("Integration Tests (amd64-").
   integration_tests:
-    name: Integration Tests (${{ matrix.arch }}-${{ matrix.provider }}-${{ matrix.slot }})
+    name: Integration Tests (${{ matrix.arch }}-${{ matrix.provider }})
     needs: [build_docker_image, launch_ephemeral_runners]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
@@ -226,30 +278,54 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # ── amd64 × docker × 5 ───────────────────────────────────────────────
-          - { arch: amd64, provider: docker,     slot: 1, runner: [self-hosted, linux, x64,   f1r3fly-rust-ci-ephemeral, oracle-cloud] }
-          - { arch: amd64, provider: docker,     slot: 2, runner: [self-hosted, linux, x64,   f1r3fly-rust-ci-ephemeral, oracle-cloud] }
-          - { arch: amd64, provider: docker,     slot: 3, runner: [self-hosted, linux, x64,   f1r3fly-rust-ci-ephemeral, oracle-cloud] }
-          - { arch: amd64, provider: docker,     slot: 4, runner: [self-hosted, linux, x64,   f1r3fly-rust-ci-ephemeral, oracle-cloud] }
-          - { arch: amd64, provider: docker,     slot: 5, runner: [self-hosted, linux, x64,   f1r3fly-rust-ci-ephemeral, oracle-cloud] }
-          # ── amd64 × subprocess × 5 ───────────────────────────────────────────
-          - { arch: amd64, provider: subprocess, slot: 1, runner: [self-hosted, linux, x64,   f1r3fly-rust-ci-ephemeral, oracle-cloud] }
-          - { arch: amd64, provider: subprocess, slot: 2, runner: [self-hosted, linux, x64,   f1r3fly-rust-ci-ephemeral, oracle-cloud] }
-          - { arch: amd64, provider: subprocess, slot: 3, runner: [self-hosted, linux, x64,   f1r3fly-rust-ci-ephemeral, oracle-cloud] }
-          - { arch: amd64, provider: subprocess, slot: 4, runner: [self-hosted, linux, x64,   f1r3fly-rust-ci-ephemeral, oracle-cloud] }
-          - { arch: amd64, provider: subprocess, slot: 5, runner: [self-hosted, linux, x64,   f1r3fly-rust-ci-ephemeral, oracle-cloud] }
-          # ── arm64 × docker × 5 ───────────────────────────────────────────────
-          - { arch: arm64, provider: docker,     slot: 1, runner: [self-hosted, linux, arm64, f1r3fly-rust-ci-ephemeral, oracle-cloud] }
-          - { arch: arm64, provider: docker,     slot: 2, runner: [self-hosted, linux, arm64, f1r3fly-rust-ci-ephemeral, oracle-cloud] }
-          - { arch: arm64, provider: docker,     slot: 3, runner: [self-hosted, linux, arm64, f1r3fly-rust-ci-ephemeral, oracle-cloud] }
-          - { arch: arm64, provider: docker,     slot: 4, runner: [self-hosted, linux, arm64, f1r3fly-rust-ci-ephemeral, oracle-cloud] }
-          - { arch: arm64, provider: docker,     slot: 5, runner: [self-hosted, linux, arm64, f1r3fly-rust-ci-ephemeral, oracle-cloud] }
-          # ── arm64 × subprocess × 5 ───────────────────────────────────────────
-          - { arch: arm64, provider: subprocess, slot: 1, runner: [self-hosted, linux, arm64, f1r3fly-rust-ci-ephemeral, oracle-cloud] }
-          - { arch: arm64, provider: subprocess, slot: 2, runner: [self-hosted, linux, arm64, f1r3fly-rust-ci-ephemeral, oracle-cloud] }
-          - { arch: arm64, provider: subprocess, slot: 3, runner: [self-hosted, linux, arm64, f1r3fly-rust-ci-ephemeral, oracle-cloud] }
-          - { arch: arm64, provider: subprocess, slot: 4, runner: [self-hosted, linux, arm64, f1r3fly-rust-ci-ephemeral, oracle-cloud] }
-          - { arch: arm64, provider: subprocess, slot: 5, runner: [self-hosted, linux, arm64, f1r3fly-rust-ci-ephemeral, oracle-cloud] }
+          - {
+              arch: amd64,
+              provider: docker,
+              runner:
+                [
+                  self-hosted,
+                  linux,
+                  x64,
+                  f1r3fly-rust-ci-ephemeral,
+                  oracle-cloud,
+                ],
+            }
+          - {
+              arch: amd64,
+              provider: subprocess,
+              runner:
+                [
+                  self-hosted,
+                  linux,
+                  x64,
+                  f1r3fly-rust-ci-ephemeral,
+                  oracle-cloud,
+                ],
+            }
+          - {
+              arch: arm64,
+              provider: docker,
+              runner:
+                [
+                  self-hosted,
+                  linux,
+                  arm64,
+                  f1r3fly-rust-ci-ephemeral,
+                  oracle-cloud,
+                ],
+            }
+          - {
+              arch: arm64,
+              provider: subprocess,
+              runner:
+                [
+                  self-hosted,
+                  linux,
+                  arm64,
+                  f1r3fly-rust-ci-ephemeral,
+                  oracle-cloud,
+                ],
+            }
     steps:
       - name: Clone Repository
         uses: actions/checkout@v4
@@ -262,7 +338,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: F1R3FLY-io/system-integration
-          ref: a50eeb198c6e542504af8db92389de5c02500422  # pinned system-integration main
+          ref: ${{ env.SYSTEM_INTEGRATION_REF }}
           path: system-integration
           persist-credentials: false
 
@@ -329,13 +405,13 @@ jobs:
             --deselect integration-tests/test/tests/custom/test_active_validator_cap.py \
             --provider=${{ matrix.provider }} \
             -v --tb=short --instafail --maxfail=10 \
-            -n auto --dist=loadgroup --timeout=1200 $SCALE_FLAG
+            -n 16 --dist=loadgroup --timeout=1200 $SCALE_FLAG
 
       - name: Upload Integration Test Logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: integration-logs-${{ matrix.arch }}-${{ matrix.provider }}-slot${{ matrix.slot }}-run${{ github.run_id }}-attempt${{ github.run_attempt }}
+          name: integration-logs-${{ matrix.arch }}-${{ matrix.provider }}-run${{ github.run_id }}-attempt${{ github.run_attempt }}
           path: system-integration/integration-tests/
           retention-days: 7
 
@@ -366,6 +442,29 @@ jobs:
         run: |
           zcat /tmp/rust-node-docker.tar.gz | docker image load
           docker tag ${{ env.DOCKER_IMAGE_NAME }}:amd64 ${{ env.DOCKER_IMAGE_NAME }}
+
+      - name: Reserve node host ports
+        shell: bash -e {0}
+        # 40400-40455 sit inside the kernel ephemeral range (32768-60999); a
+        # transient outbound connection can grab one as its source port and
+        # fail the bind with "address already in use". Reserving them excludes
+        # them from ephemeral allocation. Reservation only stops NEW
+        # allocations — a socket that grabbed a port in the range before this
+        # step ran (runner provisioning, artifact download) still holds it
+        # (observed: run 29629049175, validator2 bind on 40420 failing with
+        # the reservation already in place). Wait for the range to drain
+        # (TIME_WAIT <= 60s) before starting anything that binds.
+        run: |
+          sudo sysctl -w net.ipv4.ip_local_reserved_ports=40400-40455
+          for i in $(seq 1 18); do
+            busy=$(ss -Htan 'sport >= :40400 and sport <= :40455' | wc -l)
+            [ "$busy" -eq 0 ] && exit 0
+            echo "  [${i}] ${busy} pre-existing socket(s) in 40400-40455; waiting for drain..."
+            sleep 5
+          done
+          echo "FAIL: sockets still holding node ports after 90s:"
+          sudo ss -tanp 'sport >= :40400 and sport <= :40455' || true
+          exit 1
 
       - name: Start standalone node
         shell: bash -ex {0}
@@ -452,6 +551,24 @@ jobs:
         run: |
           zcat /tmp/rust-node-docker.tar.gz | docker image load
           docker tag ${{ env.DOCKER_IMAGE_NAME }}:amd64 ${{ env.DOCKER_IMAGE_NAME }}
+
+      - name: Reserve node host ports
+        shell: bash -e {0}
+        # Same ephemeral-port hazard as the standalone smoke; observed as
+        # rnode.validator2 failing to bind 0.0.0.0:40420 (run 28917696069,
+        # and again in run 29629049175 with the reservation alone in place —
+        # a pre-existing socket survives the sysctl, so also drain the range).
+        run: |
+          sudo sysctl -w net.ipv4.ip_local_reserved_ports=40400-40455
+          for i in $(seq 1 18); do
+            busy=$(ss -Htan 'sport >= :40400 and sport <= :40455' | wc -l)
+            [ "$busy" -eq 0 ] && exit 0
+            echo "  [${i}] ${busy} pre-existing socket(s) in 40400-40455; waiting for drain..."
+            sleep 5
+          done
+          echo "FAIL: sockets still holding node ports after 90s:"
+          sudo ss -tanp 'sport >= :40400 and sport <= :40455' || true
+          exit 1
 
       - name: Start shard
         shell: bash -ex {0}
@@ -547,6 +664,23 @@ jobs:
       - name: Setup standalone data
         shell: bash -ex {0}
         run: just setup-standalone
+
+      - name: Reserve node host ports
+        shell: bash -e {0}
+        # Same ephemeral-port hazard as the docker smokes: the node binary
+        # binds 40400-40405 directly on the host. Reservation + drain, same
+        # rationale as the docker smoke steps above.
+        run: |
+          sudo sysctl -w net.ipv4.ip_local_reserved_ports=40400-40455
+          for i in $(seq 1 18); do
+            busy=$(ss -Htan 'sport >= :40400 and sport <= :40455' | wc -l)
+            [ "$busy" -eq 0 ] && exit 0
+            echo "  [${i}] ${busy} pre-existing socket(s) in 40400-40455; waiting for drain..."
+            sleep 5
+          done
+          echo "FAIL: sockets still holding node ports after 90s:"
+          sudo ss -tanp 'sport >= :40400 and sport <= :40455' || true
+          exit 1
 
       - name: Start standalone node
         shell: bash -ex {0}

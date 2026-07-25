@@ -5,7 +5,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use casper::rust::api::block_api::{BlockAPI, DeployNotFoundError};
+use casper::rust::api::block_api::{
+    BlockAPI, DeployNotFoundError, InvalidHashError, InvalidPublicKeyError,
+};
 use casper::rust::api::block_report_api::BlockReportAPI;
 use casper::rust::engine::engine_cell::EngineCell;
 use casper::rust::ProposeFunction;
@@ -484,18 +486,22 @@ impl WebApi for WebApiImpl {
     }
 
     async fn find_deploy(&self, deploy_id: String, view: ViewMode) -> Result<DeployResponse> {
-        let deploy_id_bytes =
-            hex::decode(&deploy_id).map_err(|e| eyre!("Invalid deploy ID format: {}", e))?;
+        let deploy_id_bytes = hex::decode(&deploy_id).map_err(|_| {
+            eyre::Report::new(InvalidHashError(format!(
+                "'{}' is not a valid hex deploy ID",
+                deploy_id
+            )))
+        })?;
 
         let retry_interval_ms = find_deploy_retry_interval_ms();
         let max_attempts = find_deploy_max_attempts();
 
         // Retry loop: deploy may not be visible in DAG immediately after submission
-        let light_block: LightBlockInfoSerde = {
+        let light_block: LightBlockInfo = {
             let mut attempt: u16 = 1;
             loop {
                 match BlockAPI::find_deploy(&self.engine_cell, &deploy_id_bytes).await {
-                    Ok(block) => break LightBlockInfoSerde::from(block),
+                    Ok(block) => break block,
                     Err(err) => {
                         let not_found = err.downcast_ref::<DeployNotFoundError>().is_some();
 
@@ -516,6 +522,10 @@ impl WebApi for WebApiImpl {
                 }
             }
         };
+        let known_block_hash = hex::decode(&light_block.block_hash)
+            .map(prost::bytes::Bytes::from)
+            .map_err(|e| eyre!("Invalid block hash returned by findDeploy: {}", e))?;
+        let light_block = LightBlockInfoSerde::from(light_block);
 
         // Always fetch full block to get deploy execution details
         let block_info = self
@@ -536,6 +546,12 @@ impl WebApi for WebApiImpl {
         })?;
 
         let is_full = view == ViewMode::Full;
+        let finalization = BlockAPI::deploy_finalization_status_with_known_block(
+            &self.engine_cell,
+            &deploy_id_bytes,
+            Some(&known_block_hash),
+        )
+        .await?;
 
         Ok(DeployResponse {
             deploy_id,
@@ -545,6 +561,8 @@ impl WebApi for WebApiImpl {
             cost: deploy.cost,
             errored: deploy.errored,
             is_finalized: light_block.is_finalized,
+            finalization_state: deploy_state_json_label(finalization.state).to_string(),
+            rejection_count: finalization.rejection_count,
             deployer: if is_full {
                 Some(deploy.deployer.clone())
             } else {
@@ -644,8 +662,12 @@ impl WebApi for WebApiImpl {
         &self,
         deploy_sig_hex: String,
     ) -> Result<DeployFinalizationStatusJson> {
-        let sig = hex::decode(deploy_sig_hex.trim_start_matches("0x"))
-            .map_err(|e| eyre!("invalid hex for deploy_sig: {}", e))?;
+        let sig = hex::decode(deploy_sig_hex.trim_start_matches("0x")).map_err(|_| {
+            eyre::Report::new(InvalidHashError(format!(
+                "'{}' is not a valid hex deploy signature",
+                deploy_sig_hex
+            )))
+        })?;
         let status = BlockAPI::deploy_finalization_status(&self.engine_cell, &sig).await?;
         Ok(DeployFinalizationStatusJson {
             state: deploy_state_json_label(status.state).to_string(),
@@ -887,12 +909,12 @@ impl WebApi for WebApiImpl {
         pubkey: String,
         block_hash: Option<String>,
     ) -> Result<ValidatorStatusResponse> {
+        let _ = validate_and_decode_pubkey(&pubkey)?;
+
         let term = r#"new return, rl(`rho:registry:lookup`), poSCh in {
-  rl!(`rho:system:pos`, *poSCh) |
-  for(@(_, PoS) <- poSCh) {
-    @PoS!("getBonds", *return)
-  }
-}"#
+            rl!(`rho:system:pos`, *poSCh) |
+            for(@(_, PoS) <- poSCh) { @PoS!("getBonds", *return) }
+        }"#
         .to_string();
 
         let (resolved_hash, block_number) = self.resolve_block(block_hash).await?;
@@ -930,10 +952,9 @@ impl WebApi for WebApiImpl {
     }
 
     async fn get_bond_status(&self, pubkey: String) -> Result<BondStatusResponse> {
-        let pubkey_bytes =
-            hex::decode(&pubkey).map_err(|e| eyre!("Invalid public key hex: {}", e))?;
+        let pk_bytes = validate_and_decode_pubkey(&pubkey)?;
 
-        let is_bonded = BlockAPI::bond_status(&self.engine_cell, &pubkey_bytes).await?;
+        let is_bonded = BlockAPI::bond_status(&self.engine_cell, &pk_bytes).await?;
 
         Ok(BondStatusResponse {
             public_key: pubkey,
@@ -1139,7 +1160,7 @@ pub struct ExploreDeployRequest {
     pub term: String,
     #[serde(rename = "blockHash")]
     pub block_hash: String,
-    #[serde(rename = "usePreStateHash")]
+    #[serde(rename = "usePreStateHash", default)]
     pub use_pre_state_hash: bool,
 }
 
@@ -1164,7 +1185,7 @@ pub struct DataAtNameByBlockHashRequest {
     pub name: RhoUnforg,
     #[serde(rename = "blockHash")]
     pub block_hash: String,
-    #[serde(rename = "usePreStateHash")]
+    #[serde(rename = "usePreStateHash", default)]
     pub use_pre_state_hash: bool,
 }
 
@@ -1288,6 +1309,10 @@ pub struct DeployResponse {
     pub errored: bool,
     #[serde(rename = "isFinalized")]
     pub is_finalized: bool,
+    #[serde(rename = "finalizationState")]
+    pub finalization_state: String,
+    #[serde(rename = "rejectionCount")]
+    pub rejection_count: u32,
 
     // === Full view only (omitted in summary) ===
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1442,6 +1467,19 @@ impl std::fmt::Display for WebApiError {
 }
 
 impl std::error::Error for WebApiError {}
+
+fn validate_and_decode_pubkey(pubkey_hex: &str) -> Result<Vec<u8>> {
+    let bytes = hex::decode(pubkey_hex).map_err(|e| {
+        eyre::Report::new(InvalidPublicKeyError(format!(
+            "invalid public key hex: {}",
+            e
+        )))
+    })?;
+    PublicKey::validate_secp256k1_bytes(&bytes).map_err(|e| {
+        eyre::Report::new(InvalidPublicKeyError(format!("invalid public key: {}", e)))
+    })?;
+    Ok(bytes)
+}
 
 // Conversion functions
 
@@ -1869,6 +1907,8 @@ mod tests {
             cost: 500,
             errored: false,
             is_finalized: true,
+            finalization_state: "Finalized".to_string(),
+            rejection_count: 0,
             deployer: Some("deployer1".to_string()),
             term: Some("new ret in { ret!(42) }".to_string()),
             system_deploy_error: Some(String::new()),
@@ -1886,6 +1926,8 @@ mod tests {
         assert_eq!(json["blockNumber"], 100);
         assert_eq!(json["cost"], 500);
         assert_eq!(json["isFinalized"], true);
+        assert_eq!(json["finalizationState"], "Finalized");
+        assert_eq!(json["rejectionCount"], 0);
         assert!(json.get("deployer").is_some());
         assert!(json.get("term").is_some());
         assert!(json.get("phloPrice").is_some());
@@ -1903,6 +1945,8 @@ mod tests {
             cost: 500,
             errored: false,
             is_finalized: true,
+            finalization_state: "Pending".to_string(),
+            rejection_count: 2,
             deployer: None,
             term: None,
             system_deploy_error: None,
@@ -1920,6 +1964,8 @@ mod tests {
         assert_eq!(json["blockHash"], "hash1");
         assert_eq!(json["cost"], 500);
         assert_eq!(json["isFinalized"], true);
+        assert_eq!(json["finalizationState"], "Pending");
+        assert_eq!(json["rejectionCount"], 2);
 
         // Optional fields omitted
         assert!(json.get("deployer").is_none());

@@ -8,7 +8,8 @@ on:
       - master
       - staging
       - trying
-    tags: "**"
+    tags:
+      - "**"
   pull_request:
     branches:
       - dev
@@ -19,7 +20,7 @@ on:
 
 # Concurrency: PRs run in parallel (one group per ref) for fast feedback; pushes
 # (dev/master/staging/trying/tags) share a single group so merge and release runs
-# serialize rather than piling up independent 20-VM OCI matrices. Nothing is
+# serialize rather than piling up independent 4-VM OCI matrices. Nothing is
 # cancelled mid-flight — a re-push queues behind its own in-flight run, so release
 # jobs and long integration runs always reach completion.
 concurrency:
@@ -31,6 +32,9 @@ env:
   # AES/SSE2 CPU features for gxhash (required by PathMap crate)
   RUSTFLAGS: "-C target-feature=+aes,+sse2"
   DOCKER_IMAGE_NAME: "f1r3flyindustries/f1r3fly-rust"
+
+permissions:
+  contents: read
 
 jobs:
   # Resolve version + branch env vars once for downstream jobs.
@@ -45,6 +49,7 @@ jobs:
     outputs:
       VERSION: ${{ steps.env.outputs.VERSION }}
       BRANCH: ${{ steps.env.outputs.BRANCH }}
+      SYSTEM_INTEGRATION_REF: ${{ steps.env.outputs.SYSTEM_INTEGRATION_REF }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -70,7 +75,56 @@ jobs:
           fi
           echo "BRANCH=$BRANCH" >> "$GITHUB_OUTPUT"
 
+          source .github/oci-validation.env
+          if [[ ! "$SYSTEM_INTEGRATION_REF" =~ ^[0-9a-f]{40}$ && ! "$SYSTEM_INTEGRATION_REF" =~ ^refs/tags/[A-Za-z0-9._/-]+$ ]]; then
+            echo "SYSTEM_INTEGRATION_REF must be a 40-character commit SHA or refs/tags/<tag>."
+            exit 1
+          fi
+          echo "SYSTEM_INTEGRATION_REF=$SYSTEM_INTEGRATION_REF" >> "$GITHUB_OUTPUT"
+
           echo "Version: $VERSION | Branch: $BRANCH"
+
+      - name: Verify OCI/system-integration pin consistency
+        shell: bash -euo pipefail {0}
+        run: |
+          # SYSTEM_INTEGRATION_REF and the OCI installer pins are duplicated
+          # because the reusable workflow (_integration-pipeline.yml) cannot
+          # source .github/oci-validation.env at env-resolution time. Fail closed
+          # if any duplicated value drifts, so the secret-bearing launch paths can
+          # never diverge. Keep the key list in sync with those env blocks.
+          env_file=.github/oci-validation.env
+          oci_yml=.github/workflows/oci-validation.yml
+          pipe_yml=.github/workflows/_integration-pipeline.yml
+
+          # value of a `KEY=value` line in a dotenv file
+          envval() { grep -E "^$1=" "$2" | head -1 | cut -d= -f2- | sed -E 's/[[:space:]]*$//'; }
+          # value of a `KEY: "value"` line in a workflow env block (quotes stripped)
+          yval() { grep -E "^[[:space:]]*$1:" "$2" | head -1 | sed -E 's/^[^:]*:[[:space:]]*//; s/[[:space:]]*(#.*)?$//; s/"//g'; }
+
+          fail=0
+          check() { # label expected actual
+            if [ "$2" != "$3" ]; then
+              echo "::error::pin drift for $1: '$2' != '$3'"
+              fail=1
+            else
+              echo "ok: $1 = $2"
+            fi
+          }
+
+          check "SYSTEM_INTEGRATION_REF (oci-validation.env vs _integration-pipeline.yml)" \
+            "$(envval SYSTEM_INTEGRATION_REF "$env_file")" \
+            "$(yval SYSTEM_INTEGRATION_REF "$pipe_yml")"
+
+          for key in OCI_CLI_INSTALLER_URL OCI_CLI_INSTALLER_SHA256 OCI_CLI_INSTALLER_PY_SHA256 OCI_CLI_VERSION; do
+            check "$key (oci-validation.yml vs _integration-pipeline.yml)" \
+              "$(yval "$key" "$oci_yml")" \
+              "$(yval "$key" "$pipe_yml")"
+          done
+
+          if [ "$fail" -ne 0 ]; then
+            echo "::error::OCI/system-integration pins are out of sync across .github files; bump them together."
+            exit 1
+          fi
 
   lint:
     name: Lint
@@ -91,9 +145,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          xargs -r -a .github/apt-dependencies.txt sudo apt-get install -y
+        run: bash .github/scripts/install-system-dependencies.sh
 
       - name: Check formatting
         run: cargo fmt --all -- --check
@@ -101,7 +153,7 @@ jobs:
       - name: Run clippy
         env:
           RUSTFLAGS: "-C target-feature=+aes,+sse2 -D warnings"
-        run: cargo clippy --workspace
+        run: cargo clippy --workspace --all-targets
 
   deny:
     name: cargo-deny
@@ -129,12 +181,24 @@ jobs:
       - name: Link Checker
         uses: lycheeverse/lychee-action@v2
         with:
+          # 403 is accepted alongside 200..=299 and 429 because many
+          # citations in `docs/theory/slashing/methodology/references.md`
+          # are DOIs that redirect to publisher portals (ACM DL, Oxford
+          # Academic, IEEE Xplore, IACR ePrint, Medium) which 403 on
+          # unauthenticated/bot requests. A 403 response from these
+          # endpoints still proves the URL is well-formed and the
+          # resource exists; a real broken link would 404. The 429
+          # allowance for rate-limited fetches is unchanged. 503 is
+          # accepted because it is transient by definition (seen from
+          # rust-fuzz.github.io during a GitHub Pages blip); a genuinely
+          # dead link returns 404/410, not 503.
           args: >-
             --no-progress
             --exclude-loopback
+            --exclude 'https://www\.gutenberg\.org/ebooks/132'
             --max-retries 2
             --retry-wait-time 5
-            --accept 200..=299,429
+            --accept 200..=299,403,429,503
             './**/*.md'
           fail: true
 
@@ -172,9 +236,12 @@ jobs:
           shared-key: test-${{ matrix.crate }}
 
       - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          xargs -r -a .github/apt-dependencies.txt sudo apt-get install -y
+        run: bash .github/scripts/install-system-dependencies.sh
+
+      - name: Install nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
 
       - name: Run tests
         env:
@@ -184,8 +251,20 @@ jobs:
         run: |
           ulimit -n 65536
           mkdir -p /tmp/test-logs
-          cargo test --release -p ${{ matrix.crate }} 2>&1 | tee /tmp/test-logs/${{ matrix.crate }}.txt
-          exit "${PIPESTATUS[0]}"
+          # nextest runs all of the crate's unit + integration tests in one global
+          # parallel pool (vs `cargo test`, which runs each test binary sequentially),
+          # which is what keeps the ~930-test casper crate under the job timeout.
+          # `--no-tests=pass` tolerates a crate whose only tests are doctests.
+          cargo nextest run --release -p ${{ matrix.crate }} --no-tests=pass 2>&1 \
+            | tee /tmp/test-logs/${{ matrix.crate }}.txt
+          nt=${PIPESTATUS[0]}
+          # nextest does NOT run doctests; run them explicitly to preserve the
+          # coverage that plain `cargo test` provided.
+          cargo test --release -p ${{ matrix.crate }} --doc 2>&1 \
+            | tee /tmp/test-logs/${{ matrix.crate }}-doc.txt
+          dt=${PIPESTATUS[0]}
+          echo "nextest exit=$nt doctest exit=$dt"
+          [ "$nt" -eq 0 ] && [ "$dt" -eq 0 ]
 
       - name: Upload test logs
         if: failure()
@@ -201,10 +280,22 @@ jobs:
   # receive secrets normally and need no approval gate (gated: false). Fork PRs
   # cannot get secrets on a `pull_request` event, so they skip this job and are
   # served by ci-fork-pr.yml (pull_request_target, maintainer-gated) instead.
+  #
+  # Promotion PRs (head is a push-covered branch: dev/staging/master/trying)
+  # also skip: the push run on the identical commit already runs the identical
+  # pipeline, so the PR-event copy would only double OCI VM creations against
+  # the tenancy's daily limit. Required checks are commit-scoped — the push
+  # run's aggregator results land on the same SHA and gate the PR; the
+  # PR-side aggregators skip alongside (skipped = passing, same semantics the
+  # fork path relies on) and finish long before the push run's real results,
+  # so the real results are the latest and win.
   pipeline:
     name: Heavy Pipeline
     needs: lint
-    if: github.event_name == 'push' || github.event.pull_request.head.repo.fork == false
+    if: >-
+      github.event_name == 'push'
+      || (github.event.pull_request.head.repo.fork == false
+      && !contains(fromJSON('["dev", "staging", "master", "trying"]'), github.event.pull_request.head.ref))
     uses: ./.github/workflows/_integration-pipeline.yml
     with:
       gated: false
@@ -212,15 +303,20 @@ jobs:
 
   # Per-arch aggregators. The branch ruleset requires status checks named
   # exactly `Integration Tests (amd64)` / `(arm64)`. These collapse the reusable
-  # pipeline's 10 per-arch matrix slots into one ruleset gate per arch. They use
+  # pipeline's per-arch matrix jobs into one ruleset gate per arch. They use
   # `contains(...)` (not `startswith`) because reusable-workflow job names are
   # prefixed with the caller job id ("Heavy Pipeline / Integration Tests (...)").
   # Internal-only: fork PRs get this check from ci-fork-pr.yml instead, so this
   # one skips for them (a skipped required check is treated as passing).
+  # Promotion PRs skip too, mirroring the pipeline job's dedupe condition.
   integration_tests_amd64:
     name: Integration Tests (amd64)
     needs: pipeline
-    if: always() && (github.event_name == 'push' || github.event.pull_request.head.repo.fork == false)
+    if: >-
+      always()
+      && (github.event_name == 'push'
+      || (github.event.pull_request.head.repo.fork == false
+      && !contains(fromJSON('["dev", "staging", "master", "trying"]'), github.event.pull_request.head.ref)))
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -249,7 +345,11 @@ jobs:
   integration_tests_arm64:
     name: Integration Tests (arm64)
     needs: pipeline
-    if: always() && (github.event_name == 'push' || github.event.pull_request.head.repo.fork == false)
+    if: >-
+      always()
+      && (github.event_name == 'push'
+      || (github.event.pull_request.head.repo.fork == false
+      && !contains(fromJSON('["dev", "staging", "master", "trying"]'), github.event.pull_request.head.ref)))
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -296,6 +396,7 @@ jobs:
         github.ref == 'refs/heads/trying'
       )
     runs-on: ubuntu-latest
+    environment: ephemeral-launch
     steps:
       - name: Checkout (for version)
         uses: actions/checkout@v4
@@ -505,14 +606,22 @@ jobs:
         id: release_type
         shell: bash -ex {0}
         run: |
-          # Tag format: refs/tags/v{MAJOR}.{MINOR}.{PATCH}
-          # PATCH == 0 → stable (prerelease=false); PATCH > 0 → prerelease=true
-          TAG="${GITHUB_REF#refs/tags/v}"
-          PATCH=$(echo "$TAG" | cut -d. -f3)
-          if [ "$PATCH" = "0" ]; then
-            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          # Tag format: refs/tags/v{MAJOR}.{MINOR}.{PATCH}[-prerelease]
+          # A bare vX.Y.0 (no pre-release suffix) is a stable release; any
+          # pre-release suffix or non-zero PATCH is a GitHub prerelease.
+          # Unrecognized tag shapes fail the job rather than defaulting.
+          TAG="${GITHUB_REF#refs/tags/}"
+          if [[ "$TAG" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)(-[0-9A-Za-z.-]+)?$ ]]; then
+            PATCH="${BASH_REMATCH[3]}"
+            PRE="${BASH_REMATCH[4]}"
+            if [ -z "$PRE" ] && [ "$PATCH" = "0" ]; then
+              echo "prerelease=false" >> "$GITHUB_OUTPUT"
+            else
+              echo "prerelease=true" >> "$GITHUB_OUTPUT"
+            fi
           else
-            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+            echo "::error::Unexpected release tag '$TAG'; expected vMAJOR.MINOR.PATCH[-prerelease]"
+            exit 1
           fi
 
       - name: Extract release notes for this version

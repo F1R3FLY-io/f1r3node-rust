@@ -120,18 +120,26 @@ async fn effects_for_simple_casper_setup(
     shared_kvm_data: Arc<Mutex<HashMap<Vec<u8>, Vec<u8>>>>,
 ) -> (EngineCell, CliqueOracleImpl) {
     block_dag_storage
-        .insert(&genesis_block, false, true)
+        .insert(
+            genesis_block,
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved,
+        )
         .unwrap();
 
     block_dag_storage
-        .insert(&second_block, false, false)
+        .insert(
+            second_block,
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal,
+        )
         .unwrap();
 
     let casper_effect = NoOpsCasperEffect::new_with_shared_kvm(
         None,
         Arc::new(runtime_manager),
         block_store.clone(),
-        block_dag_storage.get_representation(),
+        block_dag_storage
+            .get_representation()
+            .expect("dag representation"),
         shared_kvm_data,
     );
 
@@ -157,12 +165,17 @@ async fn empty_effects(
         None,
         Arc::new(runtime_manager),
         block_store.clone(),
-        block_dag_storage.get_representation(),
+        block_dag_storage
+            .get_representation()
+            .expect("dag representation"),
         shared_kvm_data,
     );
 
     block_dag_storage
-        .insert(&genesis_block, false, true)
+        .insert(
+            genesis_block,
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved,
+        )
         .unwrap();
 
     let engine = EngineWithCasper::new(Arc::new(casper_effect));
@@ -272,7 +285,7 @@ async fn get_block_should_return_successful_block_info_response() {
         .header
         .parents_hash_list
         .iter()
-        .map(|h| hex::encode(h))
+        .map(hex::encode)
         .collect();
     assert_eq!(
         b.parents_hash_list, expected_parents,
@@ -328,7 +341,7 @@ async fn get_block_should_return_successful_block_info_response() {
     let expected_justifications: Vec<JustificationInfo> = second_block
         .justifications
         .iter()
-        .map(|j| justifications_to_justification_infos(j))
+        .map(justifications_to_justification_infos)
         .collect();
     assert_eq!(
         b.justifications, expected_justifications,
@@ -361,10 +374,7 @@ async fn get_block_should_return_error_when_no_block_exists() {
     );
 
     let error_msg = block_query_response.unwrap_err().to_string();
-    let expected_msg = format!(
-        "Error: Failure to find block with hash: {}",
-        BAD_TEST_HASH_QUERY
-    );
+    let expected_msg = format!("Block not found: {}", BAD_TEST_HASH_QUERY);
     assert_eq!(error_msg, expected_msg, "Error message mismatch");
 }
 
@@ -394,10 +404,7 @@ async fn get_block_should_return_error_when_hash_is_invalid_hex_string() {
     );
 
     let error_msg = block_query_response.unwrap_err().to_string();
-    let expected_msg = format!(
-        "Input hash value is not valid hex string: {}",
-        INVALID_HEX_QUERY
-    );
+    let expected_msg = format!("'{}' is not valid block hash", INVALID_HEX_QUERY);
     assert_eq!(error_msg, expected_msg, "Error message mismatch");
 }
 
@@ -428,7 +435,7 @@ async fn get_block_should_return_error_when_hash_is_too_short() {
 
     let error_msg = block_query_response.unwrap_err().to_string();
     let expected_msg = format!(
-        "Input hash value must be at least 6 characters: {}",
+        "'{}' is not a valid block hash (minimum 6 hex characters)",
         TOO_SHORT_QUERY
     );
     assert_eq!(error_msg, expected_msg, "Error message mismatch");
@@ -534,7 +541,7 @@ async fn find_deploy_should_return_successful_block_info_response_when_block_con
         .header
         .parents_hash_list
         .iter()
-        .map(|h| hex::encode(h))
+        .map(hex::encode)
         .collect();
     assert_eq!(
         block_info.parents_hash_list, expected_parents,
@@ -568,7 +575,7 @@ async fn find_deploy_should_return_successful_block_info_response_when_block_con
         .state
         .bonds
         .iter()
-        .map(|b| bond_to_bond_info(b))
+        .map(bond_to_bond_info)
         .collect();
     assert_eq!(
         block_info.bonds.len(),
@@ -597,7 +604,7 @@ async fn find_deploy_should_return_successful_block_info_response_when_block_con
     let expected_justifications: Vec<JustificationInfo> = second_block
         .justifications
         .iter()
-        .map(|j| justifications_to_justification_infos(j))
+        .map(justifications_to_justification_infos)
         .collect();
     assert_eq!(
         block_info.justifications, expected_justifications,

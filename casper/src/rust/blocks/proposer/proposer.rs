@@ -23,8 +23,8 @@ use crate::rust::blocks::proposer::propose_result::{
 };
 use crate::rust::casper::{Casper, CasperSnapshot};
 use crate::rust::engine::block_retriever::BlockRetriever;
+use crate::rust::engine::multi_parent_casper::created_event;
 use crate::rust::errors::CasperError;
-use crate::rust::multi_parent_casper_impl::{self};
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 use crate::rust::validator_identity::ValidatorIdentity;
 use crate::rust::{
@@ -214,6 +214,10 @@ where
                     BlockCreatorResult::NoNewDeploys => {
                         Ok((ProposeResult::failure(ProposeFailure::NoNewDeploys), None))
                     }
+                    BlockCreatorResult::RecoveryDeferred => Ok((
+                        ProposeResult::failure(ProposeFailure::RecoveryDeferred),
+                        None,
+                    )),
                     BlockCreatorResult::Created(block, pre_state_hash, post_state_hash) => {
                         // Publish BlockCreated event immediately after block is created (before validation)
                         self.propose_effect_handler.publish_block_created(&block)?;
@@ -376,10 +380,13 @@ where
             .get(&self.validator.public_key.bytes)
             .map(|seq| *seq as i64)
             .unwrap_or(0);
+        // C13 / Perf-4: HashMap iteration yields `(&K, &V)` tuples
+        // (vs DashMap's `Ref<T>`-wrapped entries); use `.values()`
+        // since the key is unused (clippy::iter_kv_map).
         let observed_max_seq = casper_snapshot
             .max_seq_nums
-            .iter()
-            .map(|entry| *entry.value())
+            .values()
+            .copied()
             .max()
             .unwrap_or(0) as i64;
         let (block_lag, seq_lag) = match casper_snapshot
@@ -509,7 +516,7 @@ pub fn new_proposer<T: TransportLayer + Send + Sync + 'static>(
     dummy_deploy_opt: Option<(PrivateKey, String)>,
     runtime_manager: RuntimeManager,
     block_store: KeyValueBlockStore,
-    deploy_storage: Arc<Mutex<KeyValueDeployStorage>>,
+    deploy_storage: Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
     rejected_deploy_buffer: Arc<Mutex<KeyValueRejectedDeployBuffer>>,
     block_retriever: BlockRetriever<T>,
     transport: Arc<T>,
@@ -525,11 +532,7 @@ pub fn new_proposer<T: TransportLayer + Send + Sync + 'static>(
         dummy_deploy_opt,
         ProductionCasperSnapshotProvider,
         ProductionActiveValidatorChecker,
-        ProductionStakeChecker::new(
-            runtime_manager.clone(),
-            block_store.clone(),
-            validator_arc.clone(),
-        ),
+        ProductionStakeChecker::new(validator_arc.clone()),
         ProductionHeightChecker::new(validator_arc),
         ProductionBlockCreator::new(
             deploy_storage,
@@ -567,11 +570,19 @@ impl ActiveValidatorChecker for ProductionActiveValidatorChecker {
         casper_snapshot: &CasperSnapshot,
         validator_identity: &ValidatorIdentity,
     ) -> CheckProposeConstraintsResult {
-        if casper_snapshot
-            .on_chain_state
-            .active_validators
-            .contains(&validator_identity.public_key.bytes)
-        {
+        let in_committee = casper_snapshot
+            .parents
+            .first()
+            .map(|parent| {
+                parent
+                    .body
+                    .state
+                    .bonds
+                    .iter()
+                    .any(|bond| bond.validator == validator_identity.public_key.bytes)
+            })
+            .unwrap_or(false);
+        if in_committee {
             CheckProposeConstraintsResult::success()
         } else {
             CheckProposeConstraintsResult::not_bonded()
@@ -580,23 +591,11 @@ impl ActiveValidatorChecker for ProductionActiveValidatorChecker {
 }
 
 pub struct ProductionStakeChecker {
-    runtime_manager: RuntimeManager,
-    block_store: KeyValueBlockStore,
     validator: Arc<ValidatorIdentity>,
 }
 
 impl ProductionStakeChecker {
-    pub fn new(
-        runtime_manager: RuntimeManager,
-        block_store: KeyValueBlockStore,
-        validator: Arc<ValidatorIdentity>,
-    ) -> Self {
-        Self {
-            runtime_manager,
-            block_store,
-            validator,
-        }
-    }
+    pub fn new(validator: Arc<ValidatorIdentity>) -> Self { Self { validator } }
 }
 
 impl StakeChecker for ProductionStakeChecker {
@@ -604,13 +603,7 @@ impl StakeChecker for ProductionStakeChecker {
         &self,
         casper_snapshot: &CasperSnapshot,
     ) -> Result<CheckProposeConstraintsResult, CasperError> {
-        synchrony_constraint_checker::check(
-            casper_snapshot,
-            &self.runtime_manager,
-            &self.block_store,
-            &self.validator,
-        )
-        .await
+        synchrony_constraint_checker::check(casper_snapshot, &self.validator).await
     }
 }
 
@@ -632,7 +625,7 @@ impl HeightChecker for ProductionHeightChecker {
 }
 
 pub struct ProductionBlockCreator {
-    deploy_storage: Arc<Mutex<KeyValueDeployStorage>>,
+    deploy_storage: Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
     rejected_deploy_buffer: Arc<Mutex<KeyValueRejectedDeployBuffer>>,
     runtime_manager: RuntimeManager,
     block_store: KeyValueBlockStore,
@@ -640,7 +633,7 @@ pub struct ProductionBlockCreator {
 
 impl ProductionBlockCreator {
     pub fn new(
-        deploy_storage: Arc<Mutex<KeyValueDeployStorage>>,
+        deploy_storage: Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
         rejected_deploy_buffer: Arc<Mutex<KeyValueRejectedDeployBuffer>>,
         runtime_manager: RuntimeManager,
         block_store: KeyValueBlockStore,
@@ -766,7 +759,7 @@ impl<T: TransportLayer + Send + Sync + 'static> ProposeEffectHandler
     fn publish_block_created(&self, block: &BlockMessage) -> Result<(), CasperError> {
         // Publish BlockCreated event
         self.event_publisher
-            .publish(multi_parent_casper_impl::created_event(block))
-            .map_err(|e| CasperError::RuntimeError(e.to_string()))
+            .publish(created_event(block))
+            .map_err(Into::into)
     }
 }

@@ -2,21 +2,22 @@
 // Moved from casper/tests/util/rholang/resources.rs to casper/src/rust/test_utils/util/rholang/resources.rs
 // All imports fixed for library crate context
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicU64;
-use std::sync::{Arc, Mutex, OnceLock, RwLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::{fs, io};
 
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
 use block_storage::rust::dag::block_metadata_store::BlockMetadataStore;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
-use dashmap::{DashMap, DashSet};
+use dashmap::DashSet;
 use lazy_static::lazy_static;
 use models::rhoapi::Par;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::BlockMessage;
+use parking_lot::RwLock;
 use prost::bytes::Bytes;
 use rholang::rust::interpreter::rho_runtime::RhoHistoryRepository;
 use rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
@@ -59,6 +60,7 @@ lazy_static! {
     };
 }
 
+#[allow(clippy::await_holding_lock)]
 pub async fn genesis_context() -> Result<GenesisContext, CasperError> {
     let genesis_arc = CACHED_GENESIS
         .get_or_init(|| Arc::new(Mutex::new(None)))
@@ -122,6 +124,17 @@ pub fn mk_test_rnode_store_manager(dir_path: PathBuf) -> impl KeyValueStoreManag
     LmdbDirStoreManager::new(dir_path, db_mappings.into_iter().collect())
 }
 
+/// LMDB named-DB slot budget for the shared, process-cached test
+/// environments. Scoped DB names accumulate monotonically across
+/// store-manager creations (each mints a fresh `{scope}-{db}` name set,
+/// ~10 slots in the worst env per creation, never reclaimed), and the
+/// slashing-tests CI job runs uncapped proptests at PROPTEST_CASES=10000
+/// with a store manager per case: 10k cases x ~2 managers x ~10 slots
+/// = ~200k. Slot bookkeeping is ~100 bytes each (~20 MB per env at this
+/// cap). Durable fix — reusing or evicting scoped DBs per case — is
+/// tracked in the PR #125 findings comment.
+const TEST_LMDB_MAX_DBS: u32 = 200_000;
+
 pub fn mk_test_rnode_store_manager_with_scope(
     dir_path: PathBuf,
     scope_id: Option<String>,
@@ -137,7 +150,7 @@ pub fn mk_test_rnode_store_manager_with_scope(
             } else {
                 conf
             }
-            .with_max_dbs(10_000);
+            .with_max_dbs(TEST_LMDB_MAX_DBS);
 
             // If scope_id is provided, create a scoped database name using name_override
             // This ensures test isolation while keeping the original ID for lookup
@@ -217,7 +230,7 @@ pub fn mk_test_rnode_store_manager_with_dual_scope(
             } else {
                 conf
             }
-            .with_max_dbs(10_000);
+            .with_max_dbs(TEST_LMDB_MAX_DBS);
 
             // Determine which scope to use based on database type
             let scope_to_use = if db.id().starts_with("rspace-") {
@@ -268,7 +281,10 @@ pub async fn mk_test_rnode_store_manager_with_shared_rspace(
     let new_dag_storage = block_dag_storage_from_dyn(&mut *new_kvm)
         .await
         .map_err(|e| CasperError::RuntimeError(format!("Failed to create DAG storage: {:?}", e)))?;
-    new_dag_storage.insert(&genesis_context.genesis_block, false, true)?;
+    new_dag_storage.insert(
+        &genesis_context.genesis_block,
+        block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved,
+    )?;
 
     Ok(new_kvm)
 }
@@ -320,7 +336,7 @@ pub async fn block_dag_storage_from_dyn(
     shared::rust::store::key_value_store::KvStoreError,
 > {
     use std::collections::BTreeSet;
-    use std::sync::{Arc, RwLock};
+    use std::sync::Arc;
 
     use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
     use block_storage::rust::dag::block_metadata_store::BlockMetadataStore;
@@ -329,6 +345,7 @@ pub async fn block_dag_storage_from_dyn(
     use models::rust::block_metadata::BlockMetadata;
     use models::rust::equivocation_record::SequenceNumber;
     use models::rust::validator::ValidatorSerde;
+    use parking_lot::RwLock;
     use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
 
     let block_metadata_kv_store = kvm.store("block-metadata".to_string()).await.map_err(|e| {
@@ -388,15 +405,17 @@ pub async fn block_dag_storage_from_dyn(
         BlockHashSerde,
     > = KeyValueTypedStoreImpl::new(deploy_index_kv_store);
 
-    Ok(BlockDagKeyValueStorage {
-        global_lock: Arc::new(std::sync::Mutex::new(())),
-        block_metadata_index: Arc::new(RwLock::new(block_metadata_store)),
-        deploy_index: Arc::new(RwLock::new(deploy_index_db)),
-        invalid_blocks_index: invalid_blocks_db,
-        equivocation_tracker_index: equivocation_tracker_store,
-        latest_messages_index: latest_messages_db,
-        dag_generation: Arc::new(AtomicU64::new(0)),
-    })
+    Ok(BlockDagKeyValueStorage::from_parts(
+        Arc::new(RwLock::new(())),
+        latest_messages_db,
+        Arc::new(RwLock::new(block_metadata_store)),
+        Arc::new(RwLock::new(deploy_index_db)),
+        invalid_blocks_db,
+        KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
+        KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
+        equivocation_tracker_store,
+        Arc::new(AtomicU64::new(0)),
+    ))
 }
 
 pub async fn key_value_deploy_storage_from_dyn(
@@ -537,8 +556,8 @@ pub fn create_persisted_temp_dir(prefix: &str) -> PathBuf {
         .expect("Failed to create temp dir");
 
     // Convert to PathBuf which will persist even after TempDir is dropped
-    let path = temp_dir.keep();
-    path
+
+    temp_dir.keep()
 }
 
 /// Copy a template storage directory to a new temporary directory that is persisted
@@ -593,6 +612,8 @@ fn new_key_value_dag_representation() -> KeyValueDagRepresentation {
         deploy_index: Arc::new(RwLock::new(KeyValueTypedStoreImpl::new(Arc::new(
             InMemoryKeyValueStore::new(),
         )))),
+        floor_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
+        frontier_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
     }
 }
 
@@ -605,12 +626,12 @@ pub fn mk_dummy_casper_snapshot() -> CasperSnapshot {
         lca: Bytes::new(),
         tips: Vec::new(),
         parents: Vec::new(),
-        justifications: DashSet::new(),
+        justifications: HashSet::new(),
         invalid_blocks: HashMap::new(),
         deploys_in_scope: Arc::new(DashSet::new()),
         rejected_in_scope: Arc::new(DashSet::new()),
         max_block_num: 0,
-        max_seq_nums: DashMap::new(),
+        max_seq_nums: HashMap::new(),
         on_chain_state: OnChainCasperState {
             shard_conf: CasperShardConf::new(),
             bonds_map: HashMap::new(),

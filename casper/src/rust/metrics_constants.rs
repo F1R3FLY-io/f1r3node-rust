@@ -193,20 +193,107 @@ pub const BLOCK_CREATOR_COMPUTE_PARENTS_POST_STATE_TIME_METRIC: &str =
 pub const BLOCK_CREATOR_COMPUTE_DEPLOYS_CHECKPOINT_TIME_METRIC: &str =
     "block-creator.compute-deploys-checkpoint.time";
 pub const BLOCK_CREATOR_PACKAGE_BLOCK_TIME_METRIC: &str = "block-creator.package-block.time";
+pub const BLOCK_CREATOR_PACKED_BLOCK_BYTES_METRIC: &str = "block-creator.packed-block.bytes";
 pub const BLOCK_CREATOR_TOTAL_TIME_METRIC: &str = "block-creator.total.time";
+pub const BLOCK_CREATOR_DEPLOY_ADMISSION_FRESH_LOCAL_METRIC: &str =
+    "block-creator.deploy-admission.fresh-local";
+pub const BLOCK_CREATOR_DEPLOY_ADMISSION_OLDEST_FRESH_AGE_MS_METRIC: &str =
+    "block-creator.deploy-admission.oldest-fresh-age-ms";
+pub const BLOCK_CREATOR_DEPLOY_ADMISSION_IN_SCOPE_LOCAL_METRIC: &str =
+    "block-creator.deploy-admission.in-scope-local";
+pub const BLOCK_CREATOR_DEPLOY_ADMISSION_STRANDED_IN_SCOPE_METRIC: &str =
+    "block-creator.deploy-admission.stranded-in-scope";
+pub const BLOCK_CREATOR_DEPLOY_ADMISSION_OLDEST_IN_SCOPE_AGE_MS_METRIC: &str =
+    "block-creator.deploy-admission.oldest-in-scope-age-ms";
+pub const BLOCK_CREATOR_DEPLOY_ADMISSION_ALREADY_IN_SCOPE_METRIC: &str =
+    "block-creator.deploy-admission.already-in-scope";
+pub const BLOCK_CREATOR_DEPLOY_ADMISSION_SELECTED_ORDINARY_METRIC: &str =
+    "block-creator.deploy-admission.selected-ordinary";
+pub const BLOCK_CREATOR_DEPLOY_ADMISSION_SELECTED_RETRY_METRIC: &str =
+    "block-creator.deploy-admission.selected-retry";
+pub const BLOCK_CREATOR_DEPLOY_ADMISSION_SELECTED_IN_SCOPE_RECOVERY_METRIC: &str =
+    "block-creator.deploy-admission.selected-in-scope-recovery";
+pub const BLOCK_CREATOR_DEPLOY_ADMISSION_SELECTED_USER_BYTES_METRIC: &str =
+    "block-creator.deploy-admission.selected-user-bytes";
+pub const BLOCK_CREATOR_DEPLOY_ADMISSION_DEFERRED_USER_BYTES_METRIC: &str =
+    "block-creator.deploy-admission.deferred-user-bytes";
+pub const BLOCK_CREATOR_DEPLOY_ADMISSION_USER_BYTE_BUDGET_METRIC: &str =
+    "block-creator.deploy-admission.user-byte-budget";
+pub const BLOCK_CREATOR_DEPLOY_ADMISSION_BYTE_CAP_HIT_METRIC: &str =
+    "block-creator.deploy-admission.byte-cap-hit";
+pub const BLOCK_CREATOR_DEPLOY_ADMISSION_FALLBACK_ENABLED_METRIC: &str =
+    "block-creator.deploy-admission.fallback-enabled";
+pub const BLOCK_CREATOR_DEPLOY_ADMISSION_FALLBACK_CAP_METRIC: &str =
+    "block-creator.deploy-admission.fallback-cap";
+pub const BLOCK_CREATOR_DEPLOY_ADMISSION_BACKPRESSURE_METRIC: &str =
+    "block-creator.deploy-admission.backpressure";
+pub const BLOCK_CREATOR_DEPLOY_ADMISSION_DAG_TIP_METRIC: &str =
+    "block-creator.deploy-admission.dag-tip";
+pub const BLOCK_CREATOR_DEPLOY_ADMISSION_LFB_METRIC: &str =
+    "block-creator.deploy-admission.last-finalized";
+pub const BLOCK_CREATOR_DEPLOY_ADMISSION_LFB_LAG_METRIC: &str =
+    "block-creator.deploy-admission.lfb-lag";
+pub const BLOCK_CREATOR_DEPLOY_ADMISSION_PROGRESS_NEW_SIGS_METRIC: &str =
+    "block-creator.deploy-admission.progress-new-sigs";
+pub const BLOCK_CREATOR_DEPLOY_ADMISSION_PROGRESS_RECYCLED_SIGS_METRIC: &str =
+    "block-creator.deploy-admission.progress-recycled-sigs";
+pub const BLOCK_CREATOR_DEPLOY_ADMISSION_SIGNATURE_STALE_METRIC: &str =
+    "block-creator.deploy-admission.signature-stale";
+pub const BLOCK_CREATOR_DEPLOY_ADMISSION_BLOCK_TIME_STALE_METRIC: &str =
+    "block-creator.deploy-admission.block-time-stale";
+pub const BLOCK_CREATOR_DEPLOY_ADMISSION_MISSING_PROGRESS_METADATA_METRIC: &str =
+    "block-creator.deploy-admission.missing-progress-metadata";
 
 // Finalization pipeline.
 pub const FINALIZER_RUN_TIME_METRIC: &str = "finalizer.run.time";
 pub const CLIQUE_ORACLE_COMPUTE_TIME_METRIC: &str = "clique-oracle.compute.time";
 
-// `compute_rejected_buffer_admits` (called from `compute_parents_post_state`).
-pub const COMPUTE_REJECTED_BUFFER_ADMITS_TIME_METRIC: &str = "compute-rejected-buffer-admits.time";
+// Counter incremented every time `compute_parents_post_state` refuses to build
+// a merge because the finalized-floor distance exceeded the deterministic
+// backstop (`MAX_FLOOR_DISTANCE_BLOCKS`). Unlike the former silent
+// single-parent fallback (which dropped every non-max parent's writes), this
+// now returns an `Err` so the proposer parks/retries and a validator rejects
+// the over-distance block deterministically — never a lossy substitution.
+pub const MERGE_SCOPE_BACKSTOP_ERROR_METRIC: &str =
+    "compute-parents-post-state.merge-scope-backstop.error";
 
-// Counter incremented every time `compute_parents_post_state` falls back to
-// the latest single parent because the visible-blocks set or LCA distance
-// exceeded the configured caps.
-pub const MERGE_SCOPE_TOO_LARGE_FALLBACK_FIRED_METRIC: &str =
-    "compute-parents-post-state.fallback.merge-scope-too-large.fired";
+// Histogram of the finalized-floor distance Δ = num(maxParent) − num(floor)
+// observed per multi-parent merge. This is the deterministic quantity the
+// backstop keys on and the ratchet driver we bound; watching its distribution
+// is how an operator sees finality lag before it approaches the backstop.
+pub const FLOOR_DISTANCE_METRIC: &str = "compute-parents-post-state.floor-distance";
+
+// Histogram of the merge scope size (|visible_blocks| in the unfinalized band).
+// Demoted from a reject condition to an observability metric: unlike the floor
+// distance, the scope size is NOT node-deterministic (it depends on branch
+// width in each node's view), so it must never gate admission — a divergent
+// gate would fork. Kept as a metric to watch merge cost.
+pub const MERGE_SCOPE_SIZE_METRIC: &str = "compute-parents-post-state.merge-scope-size";
+
+// Counter of clique-oracle (`ft_witnessed`) calls made while deriving a parent
+// frontier. This is the expensive-per-step quantity the frontier cache exists
+// to bound; under the fix it is amortized O(1) per merge (up-walk over the
+// finality advance) instead of O(Δ) (full down-walk of the unfinalized band).
+pub const FLOOR_WALK_ORACLE_CALLS_METRIC: &str = "finality.floor.walk.oracle-calls";
+
+// Histogram of the finality advance resolved by one warm frontier up-walk —
+// how many blocks the cached pivot moved up under the larger snapshot. Its sum
+// telescopes to the spine length, which is why the up-walk is amortized O(1).
+pub const FLOOR_FRONTIER_ADVANCE_METRIC: &str = "finality.floor.frontier.advance";
+
+// Counter: warm frontier path taken (cached pivot present, guards passed).
+pub const FLOOR_FRONTIER_CACHE_HIT_METRIC: &str = "finality.floor.frontier.cache-hit";
+
+// Counter: cold frontier path taken (no cached pivot, or a guard tripped).
+pub const FLOOR_FRONTIER_CACHE_MISS_METRIC: &str = "finality.floor.frontier.cache-miss";
+
+// Counter: the warm up-walk was abandoned for the cold down-walk because the
+// committee (corresponding weight map) changed across the band or the pivot no
+// longer finalized over the larger snapshot — the L-ANC / L-SNAP premises that
+// make warm == cold. Falling back keeps the frontier transparent (identical to
+// the cold walk); a nonzero rate flags bonding activity in the finality band.
+pub const FLOOR_INCREMENTAL_GUARD_FALLBACK_METRIC: &str =
+    "finality.floor.frontier.incremental-guard-fallback";
 
 // `BlockDagKeyValueStorage::insert`.
 pub const DAG_INSERT_TIME_METRIC: &str = "dag.insert.time";

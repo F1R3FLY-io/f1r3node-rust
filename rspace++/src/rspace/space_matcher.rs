@@ -23,20 +23,16 @@ where
 {
     fn find_matching_data_candidate(
         &self,
-        matcher: &Box<dyn Match<P, A>>,
+        matcher: &Box<dyn Match<P, A, K>>,
         channel: C,
         data: &[(Datum<A>, i32)],
         pattern: &P,
     ) -> Option<MatchingDataCandidate<C, A>> {
         for (idx, (datum, data_index)) in data.iter().enumerate() {
             metrics::counter!("rspace.matcher.get_calls", "source" => "rspace").increment(1);
-            let t_clone = std::time::Instant::now();
-            let pattern_cloned = pattern.clone();
-            let data_cloned = datum.a.clone();
-            metrics::counter!("rspace.matcher.clone_ns", "source" => "rspace")
-                .increment(t_clone.elapsed().as_nanos() as u64);
+            // Probe by reference — no whole-pattern/whole-datum clone per attempt.
             let t_match = std::time::Instant::now();
-            let match_result = matcher.get(pattern_cloned, data_cloned);
+            let match_result = matcher.get(pattern, &datum.a);
             metrics::counter!("rspace.matcher.fold_match_ns", "source" => "rspace")
                 .increment(t_match.elapsed().as_nanos() as u64);
 
@@ -71,7 +67,7 @@ where
     /// Records mutations in `rollback` so the caller can undo them on failure.
     fn extract_data_candidates_rollback(
         &self,
-        matcher: &Box<dyn Match<P, A>>,
+        matcher: &Box<dyn Match<P, A, K>>,
         channel_pattern_pairs: &[(C, P)],
         channel_to_indexed_data: &mut HashMap<C, Vec<(Datum<A>, i32)>>,
         rollback: &mut Vec<(C, Vec<(Datum<A>, i32)>)>,
@@ -111,7 +107,7 @@ where
     /// Non-rollback version for consume path (no speculative matching).
     fn extract_data_candidates(
         &self,
-        matcher: &Box<dyn Match<P, A>>,
+        matcher: &Box<dyn Match<P, A, K>>,
         channel_pattern_pairs: &[(C, P)],
         channel_to_indexed_data: &mut HashMap<C, Vec<(Datum<A>, i32)>>,
     ) -> Vec<Option<ConsumeCandidate<C, A>>> {
@@ -126,9 +122,9 @@ where
 
     fn extract_first_match(
         &self,
-        matcher: &Box<dyn Match<P, A>>,
+        matcher: &Box<dyn Match<P, A, K>>,
         channels: Vec<C>,
-        match_candidates: Vec<(WaitingContinuation<P, K>, i32)>,
+        match_candidates: Vec<(std::sync::Arc<WaitingContinuation<P, K>>, i32)>,
         mut channel_to_index_data: HashMap<C, Vec<(Datum<A>, i32)>>,
     ) -> Option<ProduceCandidate<C, P, A, K>> {
         metrics::counter!(RSPACE_MATCHER_EXTRACT_FIRST_MATCH_CALLS_METRIC, "source" => RSPACE_METRICS_SOURCE)
@@ -154,11 +150,29 @@ where
             );
 
             if data_candidates.iter().all(|x| x.is_some()) {
+                // Cross-channel commit hook: gives the matcher a chance
+                // to veto a commit even after every spatial bind has
+                // matched. Used for `where`-clause guards that mention
+                // bindings from multiple channels (plan §7.12).
+                let matched_data: Vec<A> = data_candidates
+                    .iter()
+                    .map(|c| c.as_ref().unwrap().datum.a.clone())
+                    .collect();
+                if !matcher.check_commit(&cont.continuation, &matched_data) {
+                    // Guard rejected: roll back and try the next
+                    // waiting continuation, just like a spatial miss.
+                    for (ch, original) in rollback {
+                        channel_to_index_data.insert(ch, original);
+                    }
+                    continue;
+                }
                 metrics::counter!(RSPACE_MATCHER_EXTRACT_FIRST_MATCH_SUCCESS_METRIC, "source" => RSPACE_METRICS_SOURCE)
                     .increment(1);
                 return Some(ProduceCandidate {
                     channels,
-                    continuation: cont.clone(),
+                    // Deref-clone the inner continuation only on a successful
+                    // match — failed probes never deep-clone.
+                    continuation: (**cont).clone(),
                     continuation_index: *index,
                     data_candidates: data_candidates.into_iter().flatten().collect(),
                 });

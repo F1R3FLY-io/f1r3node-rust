@@ -12,6 +12,11 @@ pub fn ast() -> Par {
         bootstrap(FixedChannels::reg_lookup()),
         bootstrap(FixedChannels::reg_insert_random()),
         bootstrap(FixedChannels::reg_insert_signed()),
+        // TODO(cleanup): drop once Step 5b lands and the test-only
+        // rho:registry:v1:internal URN is retired.
+        bootstrap(FixedChannels::reg_v1_internal()),
+        // Public versioned-registry entry point (`rho:registry:1.0.0`).
+        bootstrap(FixedChannels::reg_v1()),
     ])
 }
 
@@ -48,6 +53,7 @@ fn bootstrap(channel: Par) -> New {
                 bind_count: 1,
                 locally_free: Vec::new(),
                 connective_used: false,
+                condition: None,
             }],
             news: Vec::new(),
             exprs: Vec::new(),
@@ -55,6 +61,7 @@ fn bootstrap(channel: Par) -> New {
             unforgeables: Vec::new(),
             bundles: Vec::new(),
             connectives: Vec::new(),
+            conditionals: Vec::new(),
             locally_free: Vec::new(),
             connective_used: false,
         }),

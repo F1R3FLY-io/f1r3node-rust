@@ -3,16 +3,20 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crypto::rust::private_key::PrivateKey;
+#[cfg(any(test, feature = "test-utils"))]
 use crypto::rust::public_key::PublicKey;
 use crypto::rust::signatures::secp256k1::Secp256k1;
+#[cfg(any(test, feature = "test-utils"))]
 use crypto::rust::signatures::signatures_alg::SignaturesAlg;
 use crypto::rust::signatures::signed::Signed;
+#[cfg(any(test, feature = "test-utils"))]
 use lazy_static::lazy_static;
 use models::rhoapi::PCost;
 use models::rust::casper::protocol::casper_message::{DeployData, ProcessedDeploy};
 
 use crate::rust::errors::CasperError;
 
+#[cfg(any(test, feature = "test-utils"))]
 lazy_static! {
     pub static ref DEFAULT_SEC: PrivateKey = PrivateKey::from_bytes(
         &hex::decode("a68a6e6cca30f81bd24a719f3145d20e8424bd7b396309b0708a16c7d8000b76")
@@ -43,7 +47,10 @@ pub fn source_deploy(
     valid_after_block_number: Option<i64>,
     shard_id: Option<String>,
 ) -> Result<Signed<DeployData>, CasperError> {
+    #[cfg(any(test, feature = "test-utils"))]
     let sec = sec.unwrap_or_else(|| DEFAULT_SEC.clone());
+    #[cfg(not(any(test, feature = "test-utils")))]
+    let sec = sec.expect("ConstructDeploy: private key is required");
     let phlo_limit = phlo_limit.unwrap_or(90000);
     let phlo_price = phlo_price.unwrap_or(1);
     let valid_after_block_number = valid_after_block_number.unwrap_or(0);
@@ -68,10 +75,7 @@ pub fn source_deploy_now(
     valid_after_block_number: Option<i64>,
     shard_id: Option<String>,
 ) -> Result<Signed<DeployData>, CasperError> {
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|e| CasperError::RuntimeError(e.to_string()))?
-        .as_millis() as i64;
+    let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as i64;
 
     source_deploy(
         source,
@@ -93,10 +97,7 @@ pub fn source_deploy_now_full(
     shard_id: Option<String>,
 ) -> Result<Signed<DeployData>, CasperError> {
     let phlo_limit = phlo_limit.unwrap_or(1000000);
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|e| CasperError::RuntimeError(e.to_string()))?
-        .as_millis() as i64;
+    let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as i64;
 
     source_deploy(
         source,
