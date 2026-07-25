@@ -296,11 +296,13 @@ async fn pre_charge_deploy_should_reduce_user_account_balance_by_correct_amount(
                     charge_amount: 9000000,
                     pk: user_pk.clone(),
                     rand: Blake2b512Random::create_from_bytes(&[0]),
+                    deploy_id: vec![0],
                 },
                 &mut PreChargeDeploy {
                     charge_amount: 9000000,
                     pk: user_pk.clone(),
                     rand: Blake2b512Random::create_from_bytes(&[0]),
+                    deploy_id: vec![0],
                 },
                 |_| true,
             )
@@ -331,10 +333,12 @@ async fn pre_charge_deploy_should_reduce_user_account_balance_by_correct_amount(
                 &mut RefundDeploy {
                     refund_amount: 9000000,
                     rand: Blake2b512Random::create_from_bytes(&[2]),
+                    deploy_id: vec![0],
                 },
                 &mut RefundDeploy {
                     refund_amount: 9000000,
                     rand: Blake2b512Random::create_from_bytes(&[2]),
+                    deploy_id: vec![0],
                 },
                 |_| true,
             )

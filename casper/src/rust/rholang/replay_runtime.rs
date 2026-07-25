@@ -264,6 +264,7 @@ impl ReplayRuntimeOps {
                 &processed_deploy.deploy,
                 block_data,
             ),
+            deploy_id: processed_deploy.deploy.sig.to_vec(),
         };
 
         tracing::debug!(target: "f1r3fly.casper.replay_rho_runtime", "precharge-started");
@@ -322,6 +323,7 @@ impl ReplayRuntimeOps {
                     &processed_deploy.deploy,
                     block_data,
                 ),
+                deploy_id: processed_deploy.deploy.sig.to_vec(),
             };
 
             let refund_result = self

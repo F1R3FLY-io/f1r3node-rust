@@ -809,8 +809,8 @@ in {
               // Private method which charges a deployer for a deploy.
               // Deployer's funds are deposited into the block sender's vault.
               // Return expects (Boolean, Either[Nil, String])
-              new currentDeployerData in {
-                contract PoS(@"chargeDeploy", @deployerId, @amount, @sysAuthToken, return) = {
+              new deployStateTag in {
+                contract PoS(@"chargeDeploy", @deployerId, @deployId, @amount, @sysAuthToken, return) = {
                   new isValidTokenCh in {
                     sysAuthTokenOps!("check", sysAuthToken, *isValidTokenCh) |
                     for (@isValid <- isValidTokenCh) {
@@ -820,7 +820,7 @@ in {
                           for (@depositResult <- depositCh){
                             match depositResult {
                               (true, _) => {
-                                currentDeployerData!((deployerId, amount)) |
+                                @(*deployStateTag, deployId)!((deployerId, amount)) |
                                 return!(depositResult)
                               }
                               (_, errorMessage) => {
@@ -838,12 +838,12 @@ in {
                 // Private method which refunds a deployer if too much was charged in chargeDeploy.
                 // Funds are transferred from the block sender's vault to the deployer.
                 // Return expects (Boolean, Either[Nil, String])
-                contract PoS(@"refundDeploy", @refundAmount, @sysAuthToken, return) = {
+                contract PoS(@"refundDeploy", @deployId, @refundAmount, @sysAuthToken, return) = {
                   new isValidTokenCh in {
                     sysAuthTokenOps!("check", sysAuthToken, *isValidTokenCh) |
                     for (@isValid <- isValidTokenCh) {
                       if (isValid) {
-                        for (@(deployerId, initialPaymentAmount) <- currentDeployerData){
+                        for (@(deployerId, initialPaymentAmount) <- @(*deployStateTag, deployId)){
                           if (refundAmount > 0) {
                             new vaultAddressCh, transferCh in {
                               vaultAddressOps!("fromDeployerId", deployerId, *vaultAddressCh) |

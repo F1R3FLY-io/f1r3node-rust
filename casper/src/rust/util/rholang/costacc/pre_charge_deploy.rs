@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use crypto::rust::public_key::PublicKey;
 use models::rhoapi::Par;
-use models::rust::utils::new_gint_par;
+use models::rust::utils::{new_gbytearray_par, new_gint_par};
 use rholang::rust::interpreter::rho_type::{RhoBoolean, RhoNil, RhoString};
 use rspace_plus_plus::rspace::history::Either;
 
@@ -17,6 +17,7 @@ pub struct PreChargeDeploy {
     pub charge_amount: i64,
     pub pk: PublicKey,
     pub rand: Blake2b512Random,
+    pub deploy_id: Vec<u8>,
 }
 
 impl SystemDeployTrait for PreChargeDeploy {
@@ -28,13 +29,14 @@ impl SystemDeployTrait for PreChargeDeploy {
           new rl(`rho:registry:lookup`),
           poSCh,
           initialDeployerId(`sys:casper:deployerId`),
+          deployId(`sys:casper:deployId`),
           chargeAmount(`sys:casper:chargeAmount`),
           sysAuthToken(`sys:casper:authToken`),
           return(`sys:casper:return`)
           in {
             rl!(`rho:system:pos`, *poSCh) |
             for(@(_, PoS) <- poSCh) {
-                @PoS!("chargeDeploy", *initialDeployerId, *chargeAmount, *sysAuthToken, *return)
+                @PoS!("chargeDeploy", *initialDeployerId, *deployId, *chargeAmount, *sysAuthToken, *return)
             }
         }"#
     }
@@ -56,6 +58,11 @@ impl SystemDeployTrait for PreChargeDeploy {
 
         let (d_key, d_value) = self.mk_deployer_id(&self.pk);
         env.insert(d_key, d_value);
+
+        env.insert(
+            "sys:casper:deployId".to_string(),
+            new_gbytearray_par(self.deploy_id.clone(), Vec::new(), false),
+        );
 
         env.insert(
             "sys:casper:chargeAmount".to_string(),

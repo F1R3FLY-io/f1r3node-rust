@@ -411,8 +411,17 @@ impl RuntimeOps {
                     charge_amount: deploy.data.total_phlo_charge(),
                     pk: deploy.pk.clone(),
                     rand: pre_charge_rand,
+                    deploy_id: deploy.sig.to_vec(),
                 })
                 .await?;
+            self.get_number_channels_data(&mergeable_channels)
+                .await
+                .map_err(|err| {
+                    CasperError::RuntimeError(format!(
+                        "precharge mergeable validation failed: {}",
+                        err
+                    ))
+                })?;
             if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
                 tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_precharge_internal", rss_kb);
             }
@@ -436,6 +445,12 @@ impl RuntimeOps {
                     // Evaluates user deploy and append event log to local state
                     {
                         let (mut pd, mc) = self.process_deploy(deploy).await?;
+                        self.get_number_channels_data(&mc).await.map_err(|err| {
+                            CasperError::RuntimeError(format!(
+                                "user deploy mergeable validation failed: {}",
+                                err
+                            ))
+                        })?;
                         let deploy_log = mem::take(&mut pd.deploy_log);
                         eval_collector_state.add(deploy_log, mc);
                         pd
@@ -458,8 +473,17 @@ impl RuntimeOps {
                         .play_system_deploy_internal(&mut RefundDeploy {
                             refund_amount: pd.refund_amount(),
                             rand: refund_rand,
+                            deploy_id: pd.deploy.sig.to_vec(),
                         })
                         .await?;
+                    self.get_number_channels_data(&mergeable_channels)
+                        .await
+                        .map_err(|err| {
+                            CasperError::RuntimeError(format!(
+                                "refund mergeable validation failed: {}",
+                                err
+                            ))
+                        })?;
                     eval_collector_state.add(event_log, mergeable_channels);
                     result
                 };

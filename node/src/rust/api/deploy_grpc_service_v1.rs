@@ -28,13 +28,14 @@ use models::casper::{
     BlockQuery, BlocksQuery, BlocksQueryByHeight, BondStatusQuery, ContinuationAtNameQuery,
     DataAtNameByBlockQuery, DeployDataProto, DeployFinalizationStateProto,
     DeployFinalizationStatusInfo, DeployFinalizationStatusQuery, ExploratoryDeployQuery,
-    FindDeployQuery, IsFinalizedQuery, LastFinalizedBlockQuery, MachineVerifyQuery,
+    FindDeployQuery, IsFinalizedQuery, LastFinalizedBlockQuery, LightBlockInfo, MachineVerifyQuery,
     PrivateNamePreviewQuery, ReportQuery, Status, VersionInfo, VisualizeDagQuery,
 };
 use models::servicemodelapi::ServiceError;
-use tokio::time::{sleep, Duration};
+use tokio::time::{sleep, Duration, Instant};
 use tracing::error;
 
+use crate::rust::api::effective_readiness;
 use crate::rust::web::version_info::get_version_info_str;
 
 trait IntoServiceError {
@@ -59,10 +60,18 @@ impl IntoServiceError for casper::rust::api::block_report_api::BlockReportError 
 
 const FIND_DEPLOY_RETRY_INTERVAL_MS: u64 = 100;
 const FIND_DEPLOY_MAX_ATTEMPTS: u8 = 80;
+const MAIN_CHAIN_CACHE_TTL_MS: u64 = 500;
 
 fn find_deploy_retry_interval_ms() -> u64 { FIND_DEPLOY_RETRY_INTERVAL_MS }
 
 fn find_deploy_max_attempts() -> u8 { FIND_DEPLOY_MAX_ATTEMPTS }
+
+#[derive(Clone)]
+struct MainChainCacheEntry {
+    depth: i32,
+    created_at: Instant,
+    blocks: Vec<LightBlockInfo>,
+}
 
 /// Deploy gRPC Service V1 implementation
 #[derive(Clone)]
@@ -86,6 +95,7 @@ pub struct DeployGrpcServiceV1Impl {
     node_discovery: Arc<dyn NodeDiscovery + Send + Sync>,
     epoch_length: i32,
     is_ready: Arc<AtomicBool>,
+    main_chain_cache: Arc<tokio::sync::Mutex<Option<MainChainCacheEntry>>>,
 }
 
 impl DeployGrpcServiceV1Impl {
@@ -130,6 +140,7 @@ impl DeployGrpcServiceV1Impl {
             node_discovery,
             epoch_length,
             is_ready,
+            main_chain_cache: Arc::new(tokio::sync::Mutex::new(None)),
         }
     }
 
@@ -418,11 +429,35 @@ impl DeployService for DeployGrpcServiceV1Impl {
         let request = request.into_inner();
         let (tx, rx) = tokio::sync::mpsc::channel(128);
         let engine_cell = self.engine_cell.clone();
-
         let api_max_blocks_limit = self.api_max_blocks_limit;
+        let main_chain_cache = Arc::clone(&self.main_chain_cache);
         tokio::spawn(async move {
-            let blocks =
-                BlockAPI::show_main_chain(&engine_cell, request.depth, api_max_blocks_limit).await;
+            let blocks = {
+                let mut cache = main_chain_cache.lock().await;
+                match cache.as_ref() {
+                    Some(entry)
+                        if entry.depth == request.depth
+                            && entry.created_at.elapsed()
+                                <= Duration::from_millis(MAIN_CHAIN_CACHE_TTL_MS) =>
+                    {
+                        entry.blocks.clone()
+                    }
+                    _ => {
+                        let blocks = BlockAPI::show_main_chain(
+                            &engine_cell,
+                            request.depth,
+                            api_max_blocks_limit,
+                        )
+                        .await;
+                        *cache = Some(MainChainCacheEntry {
+                            depth: request.depth,
+                            created_at: Instant::now(),
+                            blocks: blocks.clone(),
+                        });
+                        blocks
+                    }
+                }
+            };
 
             for block_info in blocks {
                 let response = BlockInfoResponse {
@@ -994,7 +1029,7 @@ impl DeployService for DeployGrpcServiceV1Impl {
         };
 
         let is_validator = self.trigger_propose_f.is_some();
-        let is_ready = self.is_ready.load(Ordering::Relaxed);
+        let is_ready = effective_readiness(self.is_ready.load(Ordering::Relaxed), lfb_number);
         let current_epoch = if self.epoch_length > 0 && lfb_number >= 0 {
             lfb_number / self.epoch_length as i64
         } else {

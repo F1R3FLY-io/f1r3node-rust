@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use models::rhoapi::Par;
-use models::rust::utils::new_gint_par;
+use models::rust::utils::{new_gbytearray_par, new_gint_par};
 use rholang::rust::interpreter::rho_type::{RhoBoolean, RhoNil, RhoString};
 use rspace_plus_plus::rspace::history::Either;
 
@@ -15,6 +15,7 @@ use crate::rust::util::rholang::system_deploy_user_error::SystemDeployUserError;
 pub struct RefundDeploy {
     pub refund_amount: i64,
     pub rand: Blake2b512Random,
+    pub deploy_id: Vec<u8>,
 }
 
 impl SystemDeployTrait for RefundDeploy {
@@ -25,13 +26,14 @@ impl SystemDeployTrait for RefundDeploy {
         r#"
           new rl(`rho:registry:lookup`),
           poSCh,
+          deployId(`sys:casper:deployId`),
           refundAmount(`sys:casper:refundAmount`),
           sysAuthToken(`sys:casper:authToken`),
           return(`sys:casper:return`)
           in {
             rl!(`rho:system:pos`, *poSCh) |
             for(@(_, PoS) <- poSCh) {
-                @PoS!("refundDeploy", *refundAmount, *sysAuthToken, *return)
+                @PoS!("refundDeploy", *deployId, *refundAmount, *sysAuthToken, *return)
             }
         }"#
     }
@@ -50,6 +52,11 @@ impl SystemDeployTrait for RefundDeploy {
 
     fn env(&mut self) -> HashMap<String, Par> {
         let mut env = HashMap::new();
+
+        env.insert(
+            "sys:casper:deployId".to_string(),
+            new_gbytearray_par(self.deploy_id.clone(), Vec::new(), false),
+        );
 
         env.insert(
             "sys:casper:refundAmount".to_string(),

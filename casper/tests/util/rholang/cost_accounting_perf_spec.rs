@@ -166,6 +166,7 @@ async fn measure_precharge_and_refund_cost() {
                     charge_amount: 100_000,
                     pk: user_pk.clone(),
                     rand: Blake2b512Random::create_from_bytes(&[i as u8, 0]),
+                    deploy_id: vec![i as u8],
                 };
                 let (state_after_charge, precharge_time) = play_system_deploy_timed(
                     &mut runtime_manager,
@@ -185,6 +186,7 @@ async fn measure_precharge_and_refund_cost() {
                 let mut refund = RefundDeploy {
                     refund_amount: 50_000,
                     rand: Blake2b512Random::create_from_bytes(&[i as u8, 1]),
+                    deploy_id: vec![i as u8],
                 };
                 let (state_after_refund, refund_time) = play_system_deploy_timed(
                     &mut runtime_manager,
@@ -515,6 +517,7 @@ async fn time_replay_one_deploy(
             &processed_deploy.deploy,
             block_data,
         ),
+        deploy_id: processed_deploy.deploy.sig.to_vec(),
     };
     let (_, mut precharge_eval) = replay_ops
         .replay_system_deploy_internal(&mut precharge, &processed_deploy.system_deploy_error)
@@ -540,6 +543,7 @@ async fn time_replay_one_deploy(
             &processed_deploy.deploy,
             block_data,
         ),
+        deploy_id: processed_deploy.deploy.sig.to_vec(),
     };
     let (_, mut refund_eval) = replay_ops
         .replay_system_deploy_internal(&mut refund, &None)

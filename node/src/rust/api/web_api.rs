@@ -30,6 +30,7 @@ use tokio::time::sleep;
 use tracing::warn;
 use utoipa::ToSchema;
 
+use crate::rust::api::effective_readiness;
 use crate::rust::api::serde_types::block_info::BlockInfoSerde;
 use crate::rust::api::serde_types::deploy_info::TransferInfoSerde;
 use crate::rust::api::serde_types::light_block_info::LightBlockInfoSerde;
@@ -365,7 +366,7 @@ impl WebApi for WebApiImpl {
         };
 
         let is_validator = self.trigger_propose_f.is_some();
-        let is_ready = self.is_ready.load(Ordering::Relaxed);
+        let is_ready = effective_readiness(self.is_ready.load(Ordering::Relaxed), lfb_number);
         let current_epoch = if self.epoch_length > 0 && lfb_number >= 0 {
             lfb_number / self.epoch_length as i64
         } else {

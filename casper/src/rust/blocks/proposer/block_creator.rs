@@ -1687,6 +1687,12 @@ fn recovered_deploy_leader(casper_snapshot: &CasperSnapshot) -> Option<Validator
     validators.first().cloned()
 }
 
+fn initial_deploy_inclusion_leader(casper_snapshot: &CasperSnapshot) -> Option<Validator> {
+    current_proposal_validators(casper_snapshot)
+        .into_iter()
+        .next()
+}
+
 fn is_recovered_deploy_leader(
     casper_snapshot: &CasperSnapshot,
     validator_identity: &ValidatorIdentity,
@@ -2093,11 +2099,15 @@ fn adaptive_normal_ordinary_deploy_cap(
 fn fresh_admission_fallback(
     casper_snapshot: &CasperSnapshot,
     _stale_in_scope_work: bool,
-    _deploy_inclusion_staleness: DeployInclusionStaleness,
+    deploy_inclusion_staleness: DeployInclusionStaleness,
     fresh_local_stats: FreshLocalDeployStats,
     finality_lag_stats: FinalityLagStats,
 ) -> FreshAdmissionFallback {
-    if fresh_local_stats.count == 0 {
+    if fresh_local_stats.count == 0
+        || (!deploy_inclusion_staleness.stale
+            && fresh_local_stats.oldest_age_millis < FRESH_DEPLOY_MAX_ADMISSION_DELAY_MILLIS
+            && finality_lag_stats.lag < FINALITY_LAG_HARD_BACKPRESSURE_BLOCKS)
+    {
         return FreshAdmissionFallback::default();
     }
     let (cap, backpressure) = adaptive_fallback_ordinary_deploy_cap(
@@ -2162,8 +2172,8 @@ fn ordinary_admission_policy(
         deploy_inclusion_staleness,
         finality_lag_stats,
     );
-    let requires_fallback = (rejected_buffer_non_empty && !allow_recovered_deploys)
-        || (stale_in_scope_work && !allow_deploy_inclusion);
+    let requires_fallback =
+        (rejected_buffer_non_empty && !allow_recovered_deploys) || !allow_deploy_inclusion;
     if requires_fallback {
         return DeployAdmissionPolicy {
             allow_ordinary: fallback.allowed,
@@ -2528,7 +2538,11 @@ pub async fn create(
             .leader
             .as_ref()
             .map(|leader| leader == &validator_identity.public_key.bytes)
-            .unwrap_or(true);
+            .unwrap_or_else(|| {
+                initial_deploy_inclusion_leader(casper_snapshot)
+                    .map(|leader| leader == validator_identity.public_key.bytes)
+                    .unwrap_or(true)
+            });
         let inclusion_staleness =
             deploy_inclusion_progress_staleness(&inclusion_progress, next_block_num, now_millis);
         let finality_lag_stats = finality_lag_stats(casper_snapshot, block_store)?;
@@ -3649,6 +3663,25 @@ mod tests {
     }
 
     #[test]
+    fn initial_deploy_inclusion_leader_uses_stable_validator_set_floor() {
+        let mut snapshot =
+            crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+        snapshot.on_chain_state.active_validators = vec![validator(3), validator(1), validator(2)];
+        snapshot.parents = vec![test_block(
+            invalid_block_hash(9),
+            validator(3),
+            Vec::new(),
+            9,
+            Vec::new(),
+        )];
+
+        assert_eq!(
+            initial_deploy_inclusion_leader(&snapshot),
+            Some(validator(1))
+        );
+    }
+
+    #[test]
     fn non_leader_admits_nonempty_recovery_buffer() {
         assert!(recovered_deploy_admission_allowed(true, false, false));
         assert!(!recovered_deploy_admission_allowed(false, false, false));
@@ -3859,7 +3892,7 @@ mod tests {
             .allow_ordinary
         );
         assert!(
-            ordinary_admission_policy(
+            !ordinary_admission_policy(
                 &snapshot,
                 false,
                 false,
@@ -3879,7 +3912,7 @@ mod tests {
         let snapshot =
             crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
         assert!(
-            ordinary_admission_policy(
+            !ordinary_admission_policy(
                 &snapshot,
                 false,
                 false,
@@ -4111,7 +4144,7 @@ mod tests {
     }
 
     #[test]
-    fn fresh_fallback_uses_bounded_cap_before_age_or_progress_lease() {
+    fn fresh_fallback_waits_for_age_or_progress_lease() {
         let snapshot =
             crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
         let stats = FreshLocalDeployStats {
@@ -4155,6 +4188,16 @@ mod tests {
         let fallback = fresh_admission_fallback(&snapshot, true, stale, young, lag(3, 1));
         assert!(fallback.allowed);
         assert_eq!(fallback.cap, NON_LEADER_FALLBACK_ORDINARY_DEPLOY_CAP);
+        assert!(
+            !fresh_admission_fallback(
+                &snapshot,
+                false,
+                DeployInclusionStaleness::default(),
+                young,
+                lag(3, 1)
+            )
+            .allowed
+        );
         assert!(
             !fresh_admission_fallback(
                 &snapshot,
