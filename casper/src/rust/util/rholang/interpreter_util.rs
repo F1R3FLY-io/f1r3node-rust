@@ -64,6 +64,19 @@ pub fn canonical_rejected_sigs(
     canonical_disposition_sigs(block_store, parents, earliest_block_number, false)
 }
 
+fn block_in_floor_merge_scope(
+    dag: &KeyValueDagRepresentation,
+    hash: &BlockHash,
+    floor_hash: &BlockHash,
+    floor_block_number: i64,
+) -> Result<bool, CasperError> {
+    let meta = dag.lookup_unsafe(hash)?;
+    if meta.block_number > floor_block_number {
+        return Ok(true);
+    }
+    Ok(!dag.is_dag_ancestor(hash, floor_hash)?)
+}
+
 fn canonical_disposition_sigs(
     block_store: &KeyValueBlockStore,
     parents: &[BlockHash],
@@ -868,15 +881,19 @@ pub async fn compute_parents_post_state(
         // such system deploys are not mergeable, so take them from one of the parents.
         _ => {
             let cache_lookup_started = std::time::Instant::now();
-            // Fast path: if one parent is descendant of all others, its post-state already
-            // includes all effects from the remaining parents and we can skip DAG merge.
+            // A parent that DAG-covers every other parent already carries their
+            // effects in its post-state, deploys included — merging a block with
+            // its own ancestors is degenerate (the merger assumes siblings), so
+            // the covering parent short-circuits regardless of deploy content.
+            // (Port note: 6981b37a's empty-deploys guard is deliberately NOT
+            // taken — it re-exposed ancestor-merges on linear chains here.)
             for candidate in &parents {
                 let covers_all = parents
                     .iter()
                     .filter(|p| p.block_hash != candidate.block_hash)
                     .all(|p| {
                         s.dag
-                            .is_in_main_chain(&p.block_hash, &candidate.block_hash)
+                            .is_dag_ancestor(&p.block_hash, &candidate.block_hash)
                             .unwrap_or(false)
                     });
                 if covers_all {
@@ -1034,14 +1051,8 @@ pub async fn compute_parents_post_state(
 
             let include_visible_ancestor =
                 |hash: &BlockHash, dag: &KeyValueDagRepresentation| -> bool {
-                    match dag.lookup(hash) {
-                        Ok(Some(meta)) => {
-                            meta.block_number >= floor_block_number
-                                || !dag.is_in_main_chain(hash, &floor_hash).unwrap_or(false)
-                        }
-                        Ok(None) => false,
-                        Err(_) => false,
-                    }
+                    block_in_floor_merge_scope(dag, hash, &floor_hash, floor_block_number)
+                        .unwrap_or(false)
                 };
             // Get all ancestors of all parents (including the parents themselves)
             // Use bounded traversal that stops once the floor's represented past is reached.
@@ -1065,9 +1076,7 @@ pub async fn compute_parents_post_state(
                 .collect();
             let flatten_visible_ms = flatten_visible_started.elapsed().as_millis();
 
-            // Scope visible_blocks to blocks not represented by the floor
-            // main chain. Height alone is insufficient because a below-floor
-            // co-parent branch can be finalized outside the floor's main-parent spine.
+            // Scope visible_blocks to blocks not represented by the floor.
             let pre_filter_count = visible_blocks.len();
             let pre_filter_blocks: Option<Vec<BlockHash>> = if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG)
             {
@@ -1075,12 +1084,9 @@ pub async fn compute_parents_post_state(
             } else {
                 None
             };
-            visible_blocks.retain(|bh| match s.dag.lookup_unsafe(bh) {
-                Ok(meta) => {
-                    meta.block_number >= floor_block_number
-                        || !s.dag.is_in_main_chain(bh, &floor_hash).unwrap_or(false)
-                }
-                Err(_) => true, // keep on lookup error (conservative)
+            visible_blocks.retain(|bh| {
+                block_in_floor_merge_scope(&s.dag, bh, &floor_hash, floor_block_number)
+                    .unwrap_or(true)
             });
             if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
                 let dropped: Vec<String> = match &pre_filter_blocks {
@@ -1483,14 +1489,19 @@ mod backstop_tests {
         BlockDagKeyValueStorage, InsertMode,
     };
     use block_storage::rust::key_value_block_store::KeyValueBlockStore;
+    use crypto::rust::signatures::secp256k1::Secp256k1;
+    use crypto::rust::signatures::signatures_alg::SignaturesAlg;
+    use models::rust::block_hash::BlockHash;
     use models::rust::block_implicits;
-    use models::rust::casper::protocol::casper_message::{ProcessedDeploy, RejectedDeploy};
+    use models::rust::casper::protocol::casper_message::{
+        BlockMessage, ProcessedDeploy, RejectedDeploy,
+    };
     use prost::bytes::Bytes;
     use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 
     use super::{
-        canonical_won_sigs, merge_scope_backstop_exceeded, rejected_sig_has_visible_non_source_win,
-        retain_pending_rejected_deploys_for_buffer,
+        block_in_floor_merge_scope, canonical_won_sigs, merge_scope_backstop_exceeded,
+        rejected_sig_has_visible_non_source_win, retain_pending_rejected_deploys_for_buffer,
         suppress_rejected_pairs_with_later_visible_rejection, visible_rejected_deploy_sigs,
         MAX_FLOOR_DISTANCE_BLOCKS,
     };
@@ -1518,6 +1529,111 @@ mod backstop_tests {
         let below = merge_scope_backstop_exceeded(MAX_FLOOR_DISTANCE_BLOCKS);
         let above = merge_scope_backstop_exceeded(MAX_FLOOR_DISTANCE_BLOCKS + 1);
         assert!(!below && above);
+    }
+
+    fn scope_test_block(
+        block_number: i64,
+        seq_num: i32,
+        sender: Bytes,
+        parents: Vec<BlockHash>,
+    ) -> BlockMessage {
+        block_implicits::get_random_block(
+            Some(block_number),
+            Some(seq_num),
+            None,
+            None,
+            Some(sender),
+            Some(1),
+            Some(0),
+            Some(parents),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some("root".to_string()),
+            None,
+        )
+    }
+
+    #[tokio::test]
+    async fn floor_scope_drops_finalized_off_main_dag_ancestors() {
+        let mut kvm = InMemoryStoreManager::new();
+        let dag_storage = BlockDagKeyValueStorage::new(&mut kvm)
+            .await
+            .expect("dag storage");
+        let secp = Secp256k1;
+        let (_, v1_pk) = secp.new_key_pair();
+        let (_, v2_pk) = secp.new_key_pair();
+        let (_, v3_pk) = secp.new_key_pair();
+        let v1 = v1_pk.bytes;
+        let v2 = v2_pk.bytes;
+        let v3 = v3_pk.bytes;
+        let genesis = scope_test_block(0, 0, v1.clone(), Vec::new());
+        let main = scope_test_block(1, 1, v1.clone(), vec![genesis.block_hash.clone()]);
+        let off_main = scope_test_block(1, 1, v2.clone(), vec![genesis.block_hash.clone()]);
+        let floor = scope_test_block(2, 2, v1.clone(), vec![
+            main.block_hash.clone(),
+            off_main.block_hash.clone(),
+        ]);
+        let outside = scope_test_block(1, 1, v3.clone(), vec![genesis.block_hash.clone()]);
+        let outside_same_height =
+            scope_test_block(2, 2, v3.clone(), vec![outside.block_hash.clone()]);
+        let descendant = scope_test_block(3, 3, v1, vec![floor.block_hash.clone()]);
+
+        for (block, mode) in [
+            (&genesis, InsertMode::Approved),
+            (&main, InsertMode::Normal),
+            (&off_main, InsertMode::Normal),
+            (&floor, InsertMode::Normal),
+            (&outside, InsertMode::Normal),
+            (&outside_same_height, InsertMode::Normal),
+            (&descendant, InsertMode::Normal),
+        ] {
+            dag_storage.insert(block, mode).expect("insert block");
+        }
+        dag_storage
+            .record_directly_finalized(floor.block_hash.clone(), 1.0, |_| async { Ok(()) })
+            .await
+            .expect("record floor finalized");
+        let dag = dag_storage
+            .get_representation()
+            .expect("dag representation");
+        let floor_block_number = dag
+            .lookup_unsafe(&floor.block_hash)
+            .expect("floor metadata")
+            .block_number;
+
+        assert!(dag.is_finalized(&off_main.block_hash));
+        assert!(!dag
+            .is_in_main_chain(&off_main.block_hash, &floor.block_hash)
+            .expect("main-chain query"));
+        assert!(dag
+            .is_dag_ancestor(&off_main.block_hash, &floor.block_hash)
+            .expect("dag ancestor query"));
+
+        let mut visible_blocks: HashSet<_> = [
+            genesis.block_hash.clone(),
+            main.block_hash.clone(),
+            off_main.block_hash.clone(),
+            floor.block_hash.clone(),
+            outside.block_hash.clone(),
+            outside_same_height.block_hash.clone(),
+            descendant.block_hash.clone(),
+        ]
+        .into_iter()
+        .collect();
+        visible_blocks.retain(|hash| {
+            block_in_floor_merge_scope(&dag, hash, &floor.block_hash, floor_block_number)
+                .expect("scope predicate")
+        });
+
+        assert!(!visible_blocks.contains(&genesis.block_hash));
+        assert!(!visible_blocks.contains(&main.block_hash));
+        assert!(!visible_blocks.contains(&off_main.block_hash));
+        assert!(!visible_blocks.contains(&floor.block_hash));
+        assert!(visible_blocks.contains(&outside.block_hash));
+        assert!(visible_blocks.contains(&outside_same_height.block_hash));
+        assert!(visible_blocks.contains(&descendant.block_hash));
     }
 
     #[tokio::test]

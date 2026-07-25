@@ -897,7 +897,9 @@ impl DeployData {
         }
     }
 
-    pub fn to_proto(dd: Signed<DeployData>) -> DeployDataProto {
+    pub fn to_proto(dd: Signed<DeployData>) -> DeployDataProto { Self::to_proto_ref(&dd) }
+
+    pub fn to_proto_ref(dd: &Signed<DeployData>) -> DeployDataProto {
         DeployDataProto {
             term: dd.data.term.clone(),
             timestamp: dd.data.time_stamp,

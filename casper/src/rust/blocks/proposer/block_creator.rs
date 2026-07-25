@@ -5,9 +5,7 @@
 //
 // See casper/src/main/scala/coop/rchain/casper/blocks/proposer/BlockCreator.scala
 
-#[cfg(test)]
-use std::collections::HashMap;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
@@ -25,6 +23,7 @@ use models::rust::casper::protocol::casper_message::{
 };
 use models::rust::validator::Validator;
 use prost::bytes::Bytes;
+use prost::Message;
 use rholang::rust::interpreter::system_processes::BlockData;
 use rspace_plus_plus::rspace::errors::HistoryError;
 use tracing;
@@ -62,6 +61,9 @@ pub struct PreparedUserDeploys {
     pub selected_in_scope_recovery_count: usize,
     pub selected_in_scope_recovery_sigs: HashSet<Bytes>,
     pub already_in_scope_count: usize,
+    pub selected_user_deploy_bytes: usize,
+    pub deferred_user_deploy_bytes: usize,
+    pub byte_cap_hit: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -120,6 +122,16 @@ struct FreshAdmissionFallback {
     backpressure: bool,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct DeploySelection {
+    deploys: HashSet<Signed<DeployData>>,
+    strategy: &'static str,
+    selected_bytes: usize,
+    deferred_bytes: usize,
+    count_capped: bool,
+    byte_capped: bool,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct FinalityLagStats {
     dag_tip: i64,
@@ -136,6 +148,8 @@ struct FinalityLagStats {
 /// already in place.
 const DEPLOY_SELECTION_RESERVE_TAIL_ENABLED: bool = true;
 const ORDINARY_DEPLOY_PROPOSAL_CAP: usize = 128;
+const USER_DEPLOY_BYTE_PROPOSAL_BUDGET: usize = 2 * 1024 * 1024;
+const USER_DEPLOY_BACKPRESSURE_BYTE_PROPOSAL_BUDGET: usize = 512 * 1024;
 const RETRY_DEPLOY_REPROPOSAL_CAP: usize = 32;
 const NON_LEADER_FALLBACK_ORDINARY_DEPLOY_CAP: usize = 8;
 const NON_LEADER_FALLBACK_MIN_ORDINARY_DEPLOY_CAP: usize = 4;
@@ -167,40 +181,92 @@ fn ordered_user_deploys(deploys: &HashSet<Signed<DeployData>>) -> Vec<Signed<Dep
     ordered
 }
 
+#[cfg(test)]
 fn select_recovered_deploys_for_block(
     deploys: &HashSet<Signed<DeployData>>,
     _block_number: i64,
     cap: usize,
-) -> HashSet<Signed<DeployData>> {
-    let ordered = ordered_user_deploys(deploys);
-    if ordered.is_empty() || cap == 0 {
-        return HashSet::new();
-    }
-    ordered.into_iter().take(cap).collect()
+) -> DeploySelection {
+    select_deploys_for_block(deploys, cap, false, USER_DEPLOY_BYTE_PROPOSAL_BUDGET)
 }
 
-fn select_ordinary_deploys_for_block(
+fn deploy_encoded_len(deploy: &Signed<DeployData>) -> usize {
+    DeployData::to_proto_ref(deploy).encoded_len()
+}
+
+fn select_deploys_for_block(
     deploys: &HashSet<Signed<DeployData>>,
     cap: usize,
     reserve_tail: bool,
-) -> (HashSet<Signed<DeployData>>, &'static str) {
+    byte_budget: usize,
+) -> DeploySelection {
+    // One proto encoding per deploy per selection call: sizes are computed
+    // here and reused for both the total and the budget loop below.
+    let sizes: HashMap<Bytes, usize> = deploys
+        .iter()
+        .map(|d| (d.sig.clone(), deploy_encoded_len(d)))
+        .collect();
+    let total_bytes: usize = sizes.values().sum();
     let ordered = ordered_user_deploys(deploys);
-    if ordered.is_empty() || cap == 0 {
-        return (HashSet::new(), "none");
+    if ordered.is_empty() || cap == 0 || byte_budget == 0 {
+        return DeploySelection {
+            deploys: HashSet::new(),
+            strategy: "none",
+            selected_bytes: 0,
+            deferred_bytes: total_bytes,
+            count_capped: cap == 0 && !ordered.is_empty(),
+            byte_capped: byte_budget == 0 && !ordered.is_empty(),
+        };
     }
-    if ordered.len() <= cap {
-        return (ordered.into_iter().collect(), "uncapped");
-    }
-    if reserve_tail && DEPLOY_SELECTION_RESERVE_TAIL_ENABLED && cap > 1 {
+    let count_capped = ordered.len() > cap;
+    let (candidates, strategy): (Vec<Signed<DeployData>>, &'static str) = if ordered.len() <= cap {
+        (ordered, "uncapped")
+    } else if reserve_tail && DEPLOY_SELECTION_RESERVE_TAIL_ENABLED && cap > 1 {
         let oldest_take = cap.saturating_sub(1);
-        let mut picked: HashSet<Signed<DeployData>> =
+        let mut candidates: Vec<Signed<DeployData>> =
             ordered.iter().take(oldest_take).cloned().collect();
-        if let Some(newest) = ordered.iter().last().cloned() {
-            picked.insert(newest);
-        }
-        (picked, "oldest-plus-newest")
+        candidates.extend(ordered.iter().last().cloned());
+        (candidates, "oldest-plus-newest")
     } else {
         (ordered.into_iter().take(cap).collect(), "oldest-only")
+    };
+    let mut selected = HashSet::new();
+    let mut selected_bytes = 0usize;
+    let mut byte_capped = false;
+    // Skip-and-continue is starvation-free, not just best-effort packing: a
+    // budget-skipped deploy keeps its position in the (valid_after, timestamp,
+    // sig) order while everything ahead of it gets selected, included, and
+    // removed from storage — new deploys always sort behind it — so it
+    // strictly advances to the front, where the `selected.is_empty()`
+    // carve-out admits it alone even when it alone exceeds the budget.
+    for deploy in candidates {
+        let deploy_bytes = sizes.get(&deploy.sig).copied().unwrap_or_default();
+        let next_bytes = selected_bytes.saturating_add(deploy_bytes);
+        if next_bytes <= byte_budget || selected.is_empty() {
+            selected_bytes = next_bytes;
+            selected.insert(deploy);
+        } else {
+            byte_capped = true;
+        }
+    }
+    if selected_bytes > byte_budget {
+        byte_capped = true;
+    }
+    DeploySelection {
+        deploys: selected,
+        strategy,
+        selected_bytes,
+        deferred_bytes: total_bytes.saturating_sub(selected_bytes),
+        count_capped,
+        byte_capped,
+    }
+}
+
+fn user_deploy_byte_budget(admission_policy: DeployAdmissionPolicy) -> usize {
+    if admission_policy.backpressure {
+        USER_DEPLOY_BACKPRESSURE_BYTE_PROPOSAL_BUDGET
+    } else {
+        USER_DEPLOY_BYTE_PROPOSAL_BUDGET
     }
 }
 
@@ -322,6 +388,35 @@ async fn prepare_user_deploys_with_policy(
         } else {
             HashSet::new()
         };
+    let parent_hashes: Vec<BlockHash> = casper_snapshot
+        .parents
+        .iter()
+        .map(|p| p.block_hash.clone())
+        .collect();
+    let earliest_block_number =
+        block_number - casper_snapshot.on_chain_state.shard_conf.deploy_lifespan;
+    let expired_buffered: Vec<Signed<DeployData>> = buffered_deploys
+        .iter()
+        .filter(|deploy| deploy.data.is_expired_at(current_time_millis))
+        .cloned()
+        .collect();
+    if !expired_buffered.is_empty() {
+        tracing::info!(
+            target: "f1r3fly.casper.recovery",
+            "Removing {} expired rejected-buffer deploy(s) from storage and rejected-deploy buffer",
+            expired_buffered.len()
+        );
+        deploy_storage_guard.remove(expired_buffered.clone())?;
+        rejected_deploy_buffer
+            .lock()
+            .map_err(|e| CasperError::LockError(e.to_string()))?
+            .remove(expired_buffered.clone())?;
+        let expired_sigs: HashSet<Bytes> = expired_buffered
+            .into_iter()
+            .map(|deploy| deploy.sig)
+            .collect();
+        buffered_deploys.retain(|deploy| !expired_sigs.contains(&deploy.sig));
+    }
     let mut buffered_sigs: HashSet<Bytes> =
         buffered_deploys.iter().map(|d| d.sig.clone()).collect();
 
@@ -341,13 +436,6 @@ async fn prepare_user_deploys_with_policy(
         );
     }
 
-    let parent_hashes: Vec<BlockHash> = casper_snapshot
-        .parents
-        .iter()
-        .map(|p| p.block_hash.clone())
-        .collect();
-    let earliest_block_number =
-        block_number - casper_snapshot.on_chain_state.shard_conf.deploy_lifespan;
     let buffer_scan_floor = buffered_deploys
         .iter()
         .map(|d| d.data.valid_after_block_number)
@@ -605,46 +693,68 @@ async fn prepare_user_deploys_with_policy(
         HashSet::new()
     };
     let retry_candidate_count = retry_candidates.len();
-    let selected_retries = select_recovered_deploys_for_block(
+    let total_byte_budget = user_deploy_byte_budget(admission_policy);
+    let mut remaining_byte_budget = total_byte_budget;
+    let retry_selection = select_deploys_for_block(
         &retry_candidates,
-        block_number,
         RETRY_DEPLOY_REPROPOSAL_CAP,
+        false,
+        remaining_byte_budget,
     );
-    let retry_capped = retry_candidate_count > selected_retries.len();
+    remaining_byte_budget = remaining_byte_budget.saturating_sub(retry_selection.selected_bytes);
+    let retry_capped = retry_selection.count_capped || retry_selection.byte_capped;
     if retry_capped {
-        let deferred_retries = retry_candidate_count.saturating_sub(selected_retries.len());
+        let deferred_retries = retry_candidate_count.saturating_sub(retry_selection.deploys.len());
         tracing::info!(
             target: "f1r3fly.casper.recovery",
-            "Retry deploy selection capped for block #{}: selected={}, deferred={}, cap={}",
+            "Retry deploy selection capped for block #{}: selected={}, deferred={}, cap={}, selected_bytes={}, deferred_bytes={}, byte_budget={}",
             block_number,
-            selected_retries.len(),
+            retry_selection.deploys.len(),
             deferred_retries,
-            RETRY_DEPLOY_REPROPOSAL_CAP
+            RETRY_DEPLOY_REPROPOSAL_CAP,
+            retry_selection.selected_bytes,
+            retry_selection.deferred_bytes,
+            total_byte_budget
         );
     }
-    let (selected_ordinary, ordinary_selection_strategy) = select_ordinary_deploys_for_block(
+    let ordinary_selection = select_deploys_for_block(
         &ordinary_candidates,
         ordinary_cap,
         admission_policy.reserve_tail,
+        remaining_byte_budget,
     );
-    let ordinary_capped = ordinary_candidates.len() > selected_ordinary.len();
-    let (selected_in_scope_recovery, in_scope_recovery_selection_strategy) =
-        select_ordinary_deploys_for_block(
-            &in_scope_recovery_candidates,
-            in_scope_recovery_cap,
-            false,
-        );
+    remaining_byte_budget = remaining_byte_budget.saturating_sub(ordinary_selection.selected_bytes);
+    let ordinary_capped = ordinary_selection.count_capped || ordinary_selection.byte_capped;
+    let in_scope_recovery_selection = select_deploys_for_block(
+        &in_scope_recovery_candidates,
+        in_scope_recovery_cap,
+        false,
+        remaining_byte_budget,
+    );
     let in_scope_recovery_capped =
-        in_scope_recovery_candidates.len() > selected_in_scope_recovery.len();
+        in_scope_recovery_selection.count_capped || in_scope_recovery_selection.byte_capped;
+    let selected_in_scope_recovery = in_scope_recovery_selection.deploys;
     let selected_in_scope_recovery_sigs: HashSet<Bytes> = selected_in_scope_recovery
         .iter()
         .map(|deploy| deploy.sig.clone())
         .collect();
-    let selected: HashSet<Signed<DeployData>> = selected_retries
+    let selected: HashSet<Signed<DeployData>> = retry_selection
+        .deploys
         .into_iter()
-        .chain(selected_ordinary.into_iter())
+        .chain(ordinary_selection.deploys.into_iter())
         .chain(selected_in_scope_recovery.into_iter())
         .collect();
+    let selected_user_deploy_bytes = retry_selection
+        .selected_bytes
+        .saturating_add(ordinary_selection.selected_bytes)
+        .saturating_add(in_scope_recovery_selection.selected_bytes);
+    let deferred_user_deploy_bytes = retry_selection
+        .deferred_bytes
+        .saturating_add(ordinary_selection.deferred_bytes)
+        .saturating_add(in_scope_recovery_selection.deferred_bytes);
+    let byte_cap_hit = retry_selection.byte_capped
+        || ordinary_selection.byte_capped
+        || in_scope_recovery_selection.byte_capped;
     let selected_retry_count = selected
         .iter()
         .filter(|deploy| is_retry_candidate(deploy))
@@ -669,23 +779,43 @@ async fn prepare_user_deploys_with_policy(
     let cap_hit = retry_capped || ordinary_capped || in_scope_recovery_capped;
     if ordinary_capped {
         tracing::info!(
-            "Ordinary deploy selection capped for block #{}: selected={}, deferred={}, cap={}, strategy={}",
+            "Ordinary deploy selection capped for block #{}: selected={}, deferred={}, cap={}, strategy={}, selected_bytes={}, deferred_bytes={}, remaining_byte_budget={}",
             block_number,
             selected_ordinary_count,
             ordinary_candidates.len().saturating_sub(selected_ordinary_count),
             ordinary_cap,
-            ordinary_selection_strategy
+            ordinary_selection.strategy,
+            ordinary_selection.selected_bytes,
+            ordinary_selection.deferred_bytes,
+            total_byte_budget.saturating_sub(retry_selection.selected_bytes)
         );
     }
     if !selected_in_scope_recovery_sigs.is_empty() || in_scope_recovery_capped {
         tracing::info!(
             target: "f1r3fly.casper.recovery",
-            "In-scope deploy recovery selection for block #{}: selected={}, deferred={}, cap={}, strategy={}",
+            "In-scope deploy recovery selection for block #{}: selected={}, deferred={}, cap={}, strategy={}, selected_bytes={}, deferred_bytes={}, remaining_byte_budget={}",
             block_number,
             selected_in_scope_recovery_count,
             in_scope_recovery_candidates.len().saturating_sub(selected_in_scope_recovery_count),
             in_scope_recovery_cap,
-            in_scope_recovery_selection_strategy
+            in_scope_recovery_selection.strategy,
+            in_scope_recovery_selection.selected_bytes,
+            in_scope_recovery_selection.deferred_bytes,
+            total_byte_budget
+                .saturating_sub(retry_selection.selected_bytes)
+                .saturating_sub(ordinary_selection.selected_bytes)
+        );
+    }
+    if byte_cap_hit {
+        tracing::info!(
+            target: "f1r3fly.casper.recovery",
+            "Deploy selection byte budget capped block #{}: selected_bytes={}, deferred_bytes={}, byte_budget={}, selected={}, deferred={}",
+            block_number,
+            selected_user_deploy_bytes,
+            deferred_user_deploy_bytes,
+            total_byte_budget,
+            selected.len(),
+            deferred
         );
     }
 
@@ -840,9 +970,12 @@ async fn prepare_user_deploys_with_policy(
             cap_hit,
             ordinary_cap,
             in_scope_recovery_cap,
-            ordinary_strategy = ordinary_selection_strategy,
-            in_scope_recovery_strategy = in_scope_recovery_selection_strategy,
+            ordinary_strategy = ordinary_selection.strategy,
+            in_scope_recovery_strategy = in_scope_recovery_selection.strategy,
             deferred,
+            selected_user_deploy_bytes,
+            deferred_user_deploy_bytes,
+            byte_cap_hit,
             chosen = ?chosen,
             "merge.step: final deploy set chosen for block"
         );
@@ -857,6 +990,9 @@ async fn prepare_user_deploys_with_policy(
         selected_in_scope_recovery_count,
         selected_in_scope_recovery_sigs,
         already_in_scope_count,
+        selected_user_deploy_bytes,
+        deferred_user_deploy_bytes,
+        byte_cap_hit,
     })
 }
 
@@ -1823,6 +1959,77 @@ fn in_scope_local_deploy_stats(
     })
 }
 
+/// Admission-time recoverability check: does the rejected-deploy buffer hold
+/// at least one deploy worth re-proposing from THIS proposer's perspective?
+///
+/// Deliberately NOT the same filter as
+/// `snapshot::local_rejected_buffer_has_recoverable_deploys` — that twin runs
+/// inside `compute_snapshot`, before the snapshot's `deploys_in_scope` /
+/// `rejected_in_scope` sets exist, so it can only approximate with the
+/// block-number window. This copy runs after snapshot completion and refines
+/// with the scope sets (clean-in-scope deploys excluded; rejected-in-scope
+/// deploys keep recovery eligibility past the window). Disagreements are
+/// benign by construction: the snapshot copy only drives the parent-narrowing
+/// heuristic, never admission. Do NOT "harmonize" the filters.
+///
+/// Cost: O(1) when the buffer is empty (the common steady state); otherwise
+/// one canonical-won scan bounded below by `scan_floor` (never deeper than
+/// the deploy-lifespan window).
+fn rejected_buffer_has_recoverable_deploys(
+    casper_snapshot: &CasperSnapshot,
+    block_number: i64,
+    current_time_millis: i64,
+    rejected_deploy_buffer: &Arc<Mutex<KeyValueRejectedDeployBuffer>>,
+    block_store: &KeyValueBlockStore,
+) -> Result<bool, CasperError> {
+    let buffered_deploys = {
+        let buffer_guard = rejected_deploy_buffer
+            .lock()
+            .map_err(|e| CasperError::LockError(e.to_string()))?;
+        if !buffer_guard.non_empty()? {
+            return Ok(false);
+        }
+        buffer_guard.read_all()?
+    };
+    if buffered_deploys.is_empty() {
+        return Ok(false);
+    }
+    let parent_hashes: Vec<BlockHash> = casper_snapshot
+        .parents
+        .iter()
+        .map(|p| p.block_hash.clone())
+        .collect();
+    let earliest_block_number =
+        block_number - casper_snapshot.on_chain_state.shard_conf.deploy_lifespan;
+    let candidates: Vec<_> = buffered_deploys
+        .iter()
+        .filter(|deploy| {
+            let rejected_in_scope = casper_snapshot.rejected_in_scope.contains(&deploy.sig);
+            let clean_in_scope =
+                casper_snapshot.deploys_in_scope.contains(&deploy.sig) && !rejected_in_scope;
+            !clean_in_scope
+                && not_future_deploy(block_number, &deploy.data)
+                && !deploy.data.is_expired_at(current_time_millis)
+                && (rejected_in_scope || not_expired_deploy(earliest_block_number, &deploy.data))
+        })
+        .collect();
+    if candidates.is_empty() {
+        return Ok(false);
+    }
+    let scan_floor = candidates
+        .iter()
+        .map(|d| d.data.valid_after_block_number)
+        .min()
+        .map(|h| h.min(earliest_block_number))
+        .unwrap_or(earliest_block_number);
+    let canonical_won =
+        interpreter_util::canonical_won_sigs(block_store, &parent_hashes, scan_floor)?;
+
+    Ok(candidates
+        .iter()
+        .any(|deploy| !canonical_won.contains(&deploy.sig)))
+}
+
 fn should_skip_empty_recovery_heartbeat(
     suppress_empty_recovery_block_by_non_leader: bool,
     user_work_in_flight: bool,
@@ -2024,7 +2231,9 @@ fn record_deploy_admission_metrics(
         BLOCK_CREATOR_DEPLOY_ADMISSION_ALREADY_IN_SCOPE_METRIC,
         BLOCK_CREATOR_DEPLOY_ADMISSION_BACKPRESSURE_METRIC,
         BLOCK_CREATOR_DEPLOY_ADMISSION_BLOCK_TIME_STALE_METRIC,
+        BLOCK_CREATOR_DEPLOY_ADMISSION_BYTE_CAP_HIT_METRIC,
         BLOCK_CREATOR_DEPLOY_ADMISSION_DAG_TIP_METRIC,
+        BLOCK_CREATOR_DEPLOY_ADMISSION_DEFERRED_USER_BYTES_METRIC,
         BLOCK_CREATOR_DEPLOY_ADMISSION_FALLBACK_CAP_METRIC,
         BLOCK_CREATOR_DEPLOY_ADMISSION_FALLBACK_ENABLED_METRIC,
         BLOCK_CREATOR_DEPLOY_ADMISSION_FRESH_LOCAL_METRIC,
@@ -2038,8 +2247,10 @@ fn record_deploy_admission_metrics(
         BLOCK_CREATOR_DEPLOY_ADMISSION_SELECTED_IN_SCOPE_RECOVERY_METRIC,
         BLOCK_CREATOR_DEPLOY_ADMISSION_SELECTED_ORDINARY_METRIC,
         BLOCK_CREATOR_DEPLOY_ADMISSION_SELECTED_RETRY_METRIC,
+        BLOCK_CREATOR_DEPLOY_ADMISSION_SELECTED_USER_BYTES_METRIC,
         BLOCK_CREATOR_DEPLOY_ADMISSION_SIGNATURE_STALE_METRIC,
-        BLOCK_CREATOR_DEPLOY_ADMISSION_STRANDED_IN_SCOPE_METRIC, CASPER_METRICS_SOURCE,
+        BLOCK_CREATOR_DEPLOY_ADMISSION_STRANDED_IN_SCOPE_METRIC,
+        BLOCK_CREATOR_DEPLOY_ADMISSION_USER_BYTE_BUDGET_METRIC, CASPER_METRICS_SOURCE,
     };
     let (progress_new_sigs, progress_recycled_sigs) = inclusion_progress
         .latest_deploy
@@ -2091,6 +2302,26 @@ fn record_deploy_admission_metrics(
         "source" => CASPER_METRICS_SOURCE
     )
     .set(prepared.selected_in_scope_recovery_count as f64);
+    metrics::gauge!(
+        BLOCK_CREATOR_DEPLOY_ADMISSION_SELECTED_USER_BYTES_METRIC,
+        "source" => CASPER_METRICS_SOURCE
+    )
+    .set(prepared.selected_user_deploy_bytes as f64);
+    metrics::gauge!(
+        BLOCK_CREATOR_DEPLOY_ADMISSION_DEFERRED_USER_BYTES_METRIC,
+        "source" => CASPER_METRICS_SOURCE
+    )
+    .set(prepared.deferred_user_deploy_bytes as f64);
+    metrics::gauge!(
+        BLOCK_CREATOR_DEPLOY_ADMISSION_USER_BYTE_BUDGET_METRIC,
+        "source" => CASPER_METRICS_SOURCE
+    )
+    .set(user_deploy_byte_budget(admission_policy) as f64);
+    metrics::gauge!(
+        BLOCK_CREATOR_DEPLOY_ADMISSION_BYTE_CAP_HIT_METRIC,
+        "source" => CASPER_METRICS_SOURCE
+    )
+    .set(metric_bool(prepared.byte_cap_hit));
     metrics::gauge!(
         BLOCK_CREATOR_DEPLOY_ADMISSION_FALLBACK_ENABLED_METRIC,
         "source" => CASPER_METRICS_SOURCE
@@ -2185,8 +2416,9 @@ pub async fn create(
     use crate::rust::metrics_constants::{
         BLOCK_CREATOR_COMPUTE_DEPLOYS_CHECKPOINT_TIME_METRIC,
         BLOCK_CREATOR_COMPUTE_PARENTS_POST_STATE_TIME_METRIC,
-        BLOCK_CREATOR_PACKAGE_BLOCK_TIME_METRIC, BLOCK_CREATOR_PREPARE_USER_DEPLOYS_TIME_METRIC,
-        BLOCK_CREATOR_TOTAL_TIME_METRIC, CASPER_METRICS_SOURCE,
+        BLOCK_CREATOR_PACKAGE_BLOCK_TIME_METRIC, BLOCK_CREATOR_PACKED_BLOCK_BYTES_METRIC,
+        BLOCK_CREATOR_PREPARE_USER_DEPLOYS_TIME_METRIC, BLOCK_CREATOR_TOTAL_TIME_METRIC,
+        CASPER_METRICS_SOURCE,
     };
     let create_started = std::time::Instant::now();
     // Capture current time once to ensure consistency between deploy filtering and block timestamp.
@@ -2344,14 +2576,13 @@ pub async fn create(
             in_scope_local_stats,
             finality_lag_stats,
         );
-        let rejected_buffer_non_empty = {
-            let buffer_guard = rejected_deploy_buffer
-                .lock()
-                .map_err(|e| CasperError::LockError(e.to_string()))?;
-            buffer_guard
-                .non_empty()
-                .map_err(CasperError::KvStoreError)?
-        };
+        let rejected_buffer_non_empty = rejected_buffer_has_recoverable_deploys(
+            casper_snapshot,
+            next_block_num,
+            now_millis,
+            &rejected_deploy_buffer,
+            block_store,
+        )?;
         let admission_policy = ordinary_admission_policy(
             casper_snapshot,
             rejected_buffer_non_empty,
@@ -2641,7 +2872,7 @@ pub async fn create(
                 target: "f1r3fly.casper.recovery",
                 "Skipping empty recovery-context block creation: rejected deploy recovery is deferred to validator-set leader"
             );
-            return Ok(BlockCreatorResult::NoNewDeploys);
+            return Ok(BlockCreatorResult::RecoveryDeferred);
         }
         if !allow_empty_blocks {
             tracing::info!(
@@ -2912,6 +3143,9 @@ pub async fn create(
     let sign_started = std::time::Instant::now();
     let signed_block = validator_identity.sign_block(&unsigned_block);
     let sign_ms = sign_started.elapsed().as_millis();
+    let signed_block_bytes = signed_block.to_proto().encoded_len();
+    metrics::gauge!(BLOCK_CREATOR_PACKED_BLOCK_BYTES_METRIC, "source" => CASPER_METRICS_SOURCE)
+        .set(signed_block_bytes as f64);
 
     let selected_user_deploys_for_buffer_drain: Vec<Signed<DeployData>> = ordered_user_deploys
         .iter()
@@ -2940,9 +3174,10 @@ pub async fn create(
 
     tracing::debug!(
         target: "f1r3fly.block_creator.timing",
-        "Block creator timing: package_ms={}, sign_ms={}, total_create_block_ms={}",
+        "Block creator timing: package_ms={}, sign_ms={}, packed_block_bytes={}, total_create_block_ms={}",
         package_ms,
         sign_ms,
+        signed_block_bytes,
         total_create_block_ms
     );
     metrics::histogram!(
@@ -4610,6 +4845,156 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn rejected_buffer_backlog_requires_selectable_deploy() {
+        let mut kvm = InMemoryStoreManager::new();
+        let rejected_deploy_buffer = Arc::new(Mutex::new(
+            KeyValueRejectedDeployBuffer::new(&mut kvm)
+                .await
+                .expect("rejected deploy buffer"),
+        ));
+        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
+            .await
+            .expect("block store");
+        let mut snapshot =
+            crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+        snapshot.on_chain_state.shard_conf.deploy_lifespan = 50;
+        let now = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .expect("time")
+            .as_millis() as i64;
+        let mut expired = construct_deploy::source_deploy_now(
+            "@expired-buffer!(0)".to_string(),
+            None,
+            Some(10),
+            Some("test".to_string()),
+        )
+        .expect("expired deploy");
+        expired.data.expiration_timestamp = Some(now - 1);
+        let old = construct_deploy::source_deploy_now(
+            "@old-buffer!(0)".to_string(),
+            None,
+            Some(-40),
+            Some("test".to_string()),
+        )
+        .expect("old deploy");
+        let future = construct_deploy::source_deploy_now(
+            "@future-buffer!(0)".to_string(),
+            None,
+            Some(20),
+            Some("test".to_string()),
+        )
+        .expect("future deploy");
+        rejected_deploy_buffer
+            .lock()
+            .expect("rejected buffer lock")
+            .add(vec![expired, old, future])
+            .expect("seed rejected buffer");
+
+        assert!(!rejected_buffer_has_recoverable_deploys(
+            &snapshot,
+            20,
+            now,
+            &rejected_deploy_buffer,
+            &block_store
+        )
+        .expect("check unselectable buffer"));
+
+        let fresh = construct_deploy::source_deploy_now(
+            "@fresh-buffer!(0)".to_string(),
+            None,
+            Some(19),
+            Some("test".to_string()),
+        )
+        .expect("fresh deploy");
+        rejected_deploy_buffer
+            .lock()
+            .expect("rejected buffer lock")
+            .add(vec![fresh])
+            .expect("seed fresh buffer");
+
+        assert!(rejected_buffer_has_recoverable_deploys(
+            &snapshot,
+            20,
+            now,
+            &rejected_deploy_buffer,
+            &block_store
+        )
+        .expect("check selectable buffer"));
+    }
+
+    #[tokio::test]
+    async fn prepare_user_deploys_purges_expired_rejected_buffer_entries() {
+        let mut kvm = InMemoryStoreManager::new();
+        let deploy_storage = Arc::new(parking_lot::Mutex::new(
+            KeyValueDeployStorage::new(&mut kvm)
+                .await
+                .expect("deploy storage"),
+        ));
+        let rejected_deploy_buffer = Arc::new(Mutex::new(
+            KeyValueRejectedDeployBuffer::new(&mut kvm)
+                .await
+                .expect("rejected deploy buffer"),
+        ));
+        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
+            .await
+            .expect("block store");
+        let mut snapshot =
+            crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+        snapshot
+            .on_chain_state
+            .shard_conf
+            .max_user_deploys_per_block = 10;
+        snapshot.on_chain_state.shard_conf.deploy_lifespan = 50;
+        let now = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .expect("time")
+            .as_millis() as i64;
+        let mut expired = construct_deploy::source_deploy_now(
+            "@expired-purge!(0)".to_string(),
+            None,
+            Some(10),
+            Some("test".to_string()),
+        )
+        .expect("expired deploy");
+        expired.data.expiration_timestamp = Some(now - 1);
+        deploy_storage
+            .lock()
+            .add(vec![expired.clone()])
+            .expect("seed deploy storage");
+        rejected_deploy_buffer
+            .lock()
+            .expect("rejected buffer lock")
+            .add(vec![expired.clone()])
+            .expect("seed rejected buffer");
+
+        let prepared = prepare_user_deploys(
+            &snapshot,
+            20,
+            now,
+            deploy_storage.clone(),
+            rejected_deploy_buffer.clone(),
+            &block_store,
+            true,
+            true,
+        )
+        .await
+        .expect("prepare deploys");
+
+        assert!(prepared.deploys.is_empty());
+        assert!(!deploy_storage
+            .lock()
+            .read_all()
+            .expect("read storage")
+            .iter()
+            .any(|deploy| deploy.sig == expired.sig));
+        assert!(!rejected_deploy_buffer
+            .lock()
+            .expect("rejected buffer lock")
+            .contains_sig(&expired.sig)
+            .expect("buffer contains"));
+    }
+
+    #[tokio::test]
     async fn ordinary_storage_selection_uses_ordinary_throughput_cap() {
         let mut kvm = InMemoryStoreManager::new();
         let deploy_storage = Arc::new(parking_lot::Mutex::new(
@@ -4666,6 +5051,79 @@ mod tests {
             .deploys
             .iter()
             .any(|deploy| deploy.sig == first.sig));
+    }
+
+    #[tokio::test]
+    async fn ordinary_storage_selection_uses_byte_budget_for_large_stored_event_batches() {
+        let mut kvm = InMemoryStoreManager::new();
+        let deploy_storage = Arc::new(parking_lot::Mutex::new(
+            KeyValueDeployStorage::new(&mut kvm)
+                .await
+                .expect("deploy storage"),
+        ));
+        let rejected_deploy_buffer = Arc::new(Mutex::new(
+            KeyValueRejectedDeployBuffer::new(&mut kvm)
+                .await
+                .expect("rejected deploy buffer"),
+        ));
+        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
+            .await
+            .expect("block store");
+        let mut snapshot =
+            crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+        snapshot
+            .on_chain_state
+            .shard_conf
+            .max_user_deploys_per_block = 128;
+        snapshot.on_chain_state.shard_conf.deploy_lifespan = 500;
+        let payload = "x".repeat(USER_DEPLOY_BYTE_PROPOSAL_BUDGET / 8);
+        let deploys: Vec<_> = (1..=40)
+            .map(|id| {
+                construct_deploy::source_deploy(
+                    format!("@\"{}{}\"!(Nil)", payload, id),
+                    1_000 + id as i64,
+                    None,
+                    None,
+                    None,
+                    Some(id as i64),
+                    Some("test".to_string()),
+                )
+                .expect("deploy")
+            })
+            .collect();
+
+        deploy_storage
+            .lock()
+            .add(deploys)
+            .expect("seed deploy storage");
+
+        let prepared = prepare_user_deploys_with_policy(
+            &snapshot,
+            300,
+            10_000,
+            deploy_storage,
+            rejected_deploy_buffer,
+            &block_store,
+            false,
+            DeployAdmissionPolicy {
+                allow_ordinary: true,
+                ordinary_cap: ORDINARY_DEPLOY_PROPOSAL_CAP,
+                allow_in_scope_recovery: false,
+                in_scope_recovery_cap: 0,
+                reserve_tail: false,
+                fallback: false,
+                backpressure: false,
+            },
+        )
+        .await
+        .expect("prepare deploys");
+
+        assert!(!prepared.deploys.is_empty());
+        assert!(prepared.deploys.len() < ORDINARY_DEPLOY_PROPOSAL_CAP);
+        assert!(prepared.byte_cap_hit);
+        assert!(prepared.cap_hit);
+        assert!(prepared.selected_user_deploy_bytes <= USER_DEPLOY_BYTE_PROPOSAL_BUDGET);
+        assert!(prepared.deferred_user_deploy_bytes > 0);
     }
 
     #[tokio::test]
@@ -5352,8 +5810,36 @@ mod tests {
         let selected_a = select_recovered_deploys_for_block(&deploys, 10, 4);
         let selected_b = select_recovered_deploys_for_block(&deploys, 11, 4);
 
-        assert_eq!(selected_a.len(), 4);
-        assert_eq!(selected_a, selected_b);
+        assert_eq!(selected_a.deploys.len(), 4);
+        assert_eq!(selected_a.deploys, selected_b.deploys);
+    }
+
+    #[test]
+    fn byte_budget_still_selects_one_oversize_deploy() {
+        let deploy = construct_deploy::source_deploy(
+            format!(
+                "@\"{}\"!(Nil)",
+                "x".repeat(USER_DEPLOY_BYTE_PROPOSAL_BUDGET + 1)
+            ),
+            1_000,
+            None,
+            None,
+            None,
+            Some(1),
+            Some("test".to_string()),
+        )
+        .expect("deploy");
+        let deploys = HashSet::from([deploy]);
+        let selected = select_deploys_for_block(
+            &deploys,
+            ORDINARY_DEPLOY_PROPOSAL_CAP,
+            false,
+            USER_DEPLOY_BYTE_PROPOSAL_BUDGET,
+        );
+
+        assert_eq!(selected.deploys.len(), 1);
+        assert!(selected.selected_bytes > USER_DEPLOY_BYTE_PROPOSAL_BUDGET);
+        assert!(selected.byte_capped);
     }
 
     #[tokio::test]
