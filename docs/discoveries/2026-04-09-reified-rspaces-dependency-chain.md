@@ -1,7 +1,7 @@
 ---
 doc_type: discovery
 discovered_by: claude-session
-relevance: [EPOCH-001, EPOCH-002]
+relevance: [EPIC-001, EPIC-002]
 ---
 
 ## Finding
@@ -28,7 +28,7 @@ new_parser branch (f1r3node)
 
 ## Implications
 
-- EPOCH-001 TASK-001-1 must verify both `new_parser` status and `rholang-rs#83` before any merge work begins
+- EPIC-001 TASK-001-1 must verify both `new_parser` status and `rholang-rs#83` before any merge work begins
 - The agent in f1r3node should check: `git branch -a | grep new_parser` and review `rholang-rs` PR #83 status
 - If `rholang-rs#83` is unmerged, this becomes the true critical path — everything else waits
 - The `rholang-parser` git rev in `Cargo.toml` will need updating to include #83's changes

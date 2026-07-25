@@ -1,8 +1,8 @@
-# Weekend Soak Benchmarks (EPOCH-010)
+# Weekend Soak Benchmarks (EPIC-010)
 
-The 72-hour merge-recovery soak (Friday 22:00 Pacific → Monday) produces
+The 60-hour merge-recovery soak (Friday 22:00 Pacific → Monday morning) produces
 week-over-week benchmark metrics instead of pass/fail only. Design history and
-decisions: [work log](work-logs/task-EPOCH-010-2026-07-15T20-57Z.md), story
+decisions: [work log](work-logs/task-EPIC-010-2026-07-15T20-57Z.md), story
 US-004 in [UserStories.md](UserStories.md).
 
 ## Where to look
@@ -73,8 +73,8 @@ oci ons subscription delete --subscription-id <subscription-ocid>
 
 ## Operational notes
 
-- Benchmarks run **only** in the 72h weekend soak (`duration_seconds ==
-  259200`); the Mon–Thu 24h soaks are unchanged.
+- Benchmarks run **only** in the 60h weekend soak (`duration_seconds ==
+  216000`); the Mon–Thu 24h soaks are unchanged.
 - The dashboard site deploys from the soak workflow via GitHub Pages
   (Settings → Pages → source "GitHub Actions" must be enabled once).
 - Metric emission is fail-soft end-to-end: a broken segment or missing

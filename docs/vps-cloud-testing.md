@@ -53,7 +53,7 @@ Followers on VPS-2 use `40410-40455` to avoid collisions — see [`docker/conf/v
 - Genesis ceremony completes (all validators sign, block #0 finalized)
 - Finalization advances past block #0 via heartbeat or user deploys
 - `curl http://<host>:<http-port>/api/status` returns `{peers, nodes}` matching expected count
-- Added validators can bond via `rholang/examples/bond/bond.rho` — see [TASK-001-4 notes in ToDos.md](./ToDos.md#epoch-001-system-integration-alignment) for evidence
+- Added validators can bond via `rholang/examples/bond/bond.rho` — see [TASK-001-4 notes in ToDos.md](./ToDos.md#epic-001-system-integration-alignment) for evidence
 
 ---
 
@@ -513,8 +513,8 @@ Run `just vps-down` when done.
 
 ## References
 
-- [EPOCH-001 in docs/ToDos.md](./ToDos.md#epoch-001-system-integration-alignment) — TASK-001-4 covers the local verification path
-- [EPOCH-009 in docs/ToDos.md](./ToDos.md#epoch-009-distributed-oci-testbed-for-latency-benchmarking) — distributed testbed implementation tasks
+- [EPIC-001 in docs/ToDos.md](./ToDos.md#epic-001-system-integration-alignment) — TASK-001-4 covers the local verification path
+- [EPIC-009 in docs/ToDos.md](./ToDos.md#epic-009-distributed-oci-testbed-for-latency-benchmarking) — distributed testbed implementation tasks
 - [US-003 in docs/UserStories.md](./UserStories.md#us-003-distributed-oci-testbed-for-latency-benchmarking) — user story
 - [scripts/remote/README.md](../scripts/remote/README.md) — script-level usage, config, naming convention
 - [docker/README.md](../docker/README.md) — local compose flow details (image build, ports, monitoring)
