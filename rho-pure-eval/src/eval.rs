@@ -1,11 +1,13 @@
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::var::VarInstance;
 use models::rhoapi::{
-    EAnd, EEq, EGt, EGte, ELt, ELte, EMinus, EMult, ENeg, ENeq, ENot, EOr, EPlus, Expr, Par, Var,
+    EAnd, EEq, EGt, EGte, ELt, ELte, EMatches, EMinus, EMult, ENeg, ENeq, ENot, EOr, EPlus, Expr,
+    Par, Var,
 };
 
 use crate::env::Env;
 use crate::error::EvalError;
+use crate::oracle::{NoSpatialMatch, SpatialMatch};
 
 /// Evaluates the `exprs` slot of a Par against the given environment.
 ///
@@ -13,7 +15,24 @@ use crate::error::EvalError;
 /// unforgeables, connectives, conditionals) are preserved unchanged in
 /// the returned Par. The `exprs` slot is replaced with the evaluated
 /// values.
+///
+/// Equivalent to [`eval_with`] under the [`NoSpatialMatch`] oracle: no
+/// spatial matcher is available, so `EMatches` yields
+/// `EvalError::UnsupportedExpression { kind: "EMatchesBody" }`. Callers
+/// that can supply a matcher (i.e. `rholang`, which owns one) get the
+/// `EMatches` arm by calling [`eval_with`] instead; every other caller
+/// is unaffected.
 pub fn eval(par: &Par, env: &Env<Par>) -> Result<Par, EvalError> {
+    eval_with(par, env, &NoSpatialMatch)
+}
+
+/// [`eval`], plus a caller-supplied spatial-match oracle for `EMatches`.
+///
+/// `matcher` decides `target matches pattern` for every `EMatchesBody`
+/// encountered anywhere in `par`, at any nesting depth. It must be pure,
+/// total and deterministic — see [`SpatialMatch`] for the contract this
+/// crate's own determinism guarantee rests on.
+pub fn eval_with(par: &Par, env: &Env<Par>, matcher: &dyn SpatialMatch) -> Result<Par, EvalError> {
     let mut acc = Par {
         sends: par.sends.clone(),
         receives: par.receives.clone(),
@@ -29,7 +48,7 @@ pub fn eval(par: &Par, env: &Env<Par>) -> Result<Par, EvalError> {
     };
 
     for expr in &par.exprs {
-        let evaled = eval_expr_to_par(expr, env)?;
+        let evaled = eval_expr_to_par(expr, env, matcher)?;
         acc = concatenate(acc, evaled);
     }
 
@@ -62,7 +81,11 @@ fn union_bytes(mut a: Vec<u8>, b: Vec<u8>) -> Vec<u8> {
     a
 }
 
-fn eval_expr_to_par(expr: &Expr, env: &Env<Par>) -> Result<Par, EvalError> {
+fn eval_expr_to_par(
+    expr: &Expr,
+    env: &Env<Par>,
+    matcher: &dyn SpatialMatch,
+) -> Result<Par, EvalError> {
     let instance = expr
         .expr_instance
         .as_ref()
@@ -92,12 +115,12 @@ fn eval_expr_to_par(expr: &Expr, env: &Env<Par>) -> Result<Par, EvalError> {
         ExprInstance::EVarBody(evar) => {
             let v = evar.v.as_ref().ok_or(EvalError::MissingExprInstance)?;
             let p = resolve_var(v, env)?;
-            eval(&p, env)
+            eval_with(&p, env, matcher)
         }
 
         ExprInstance::ENotBody(ENot { p }) => {
             let inner = require_par(p.as_ref())?;
-            let evaled = eval(&inner, env)?;
+            let evaled = eval_with(&inner, env, matcher)?;
             let v = single_expr_instance(&evaled)?;
             match v {
                 ExprInstance::GBool(b) => Ok(par_with_bool(!b)),
@@ -107,7 +130,7 @@ fn eval_expr_to_par(expr: &Expr, env: &Env<Par>) -> Result<Par, EvalError> {
 
         ExprInstance::ENegBody(ENeg { p }) => {
             let inner = require_par(p.as_ref())?;
-            let evaled = eval(&inner, env)?;
+            let evaled = eval_with(&inner, env, matcher)?;
             let v = single_expr_instance(&evaled)?;
             match v {
                 ExprInstance::GInt(i) => i
@@ -119,50 +142,108 @@ fn eval_expr_to_par(expr: &Expr, env: &Env<Par>) -> Result<Par, EvalError> {
         }
 
         ExprInstance::EAndBody(EAnd { p1, p2 }) => {
-            bool_binop("&&", p1.as_ref(), p2.as_ref(), env, |a, b| a && b)
+            bool_binop("&&", p1.as_ref(), p2.as_ref(), env, matcher, |a, b| a && b)
         }
         ExprInstance::EOrBody(EOr { p1, p2 }) => {
-            bool_binop("||", p1.as_ref(), p2.as_ref(), env, |a, b| a || b)
+            bool_binop("||", p1.as_ref(), p2.as_ref(), env, matcher, |a, b| a || b)
         }
 
-        ExprInstance::EEqBody(EEq { p1, p2 }) => eq_binop(p1.as_ref(), p2.as_ref(), env, true),
-        ExprInstance::ENeqBody(ENeq { p1, p2 }) => eq_binop(p1.as_ref(), p2.as_ref(), env, false),
+        ExprInstance::EEqBody(EEq { p1, p2 }) => {
+            eq_binop(p1.as_ref(), p2.as_ref(), env, matcher, true)
+        }
+        ExprInstance::ENeqBody(ENeq { p1, p2 }) => {
+            eq_binop(p1.as_ref(), p2.as_ref(), env, matcher, false)
+        }
 
         ExprInstance::ELtBody(ELt { p1, p2 }) => {
-            cmp_binop("<", p1.as_ref(), p2.as_ref(), env, |c| c == -1)
+            cmp_binop("<", p1.as_ref(), p2.as_ref(), env, matcher, |c| c == -1)
         }
         ExprInstance::ELteBody(ELte { p1, p2 }) => {
-            cmp_binop("<=", p1.as_ref(), p2.as_ref(), env, |c| c <= 0)
+            cmp_binop("<=", p1.as_ref(), p2.as_ref(), env, matcher, |c| c <= 0)
         }
         ExprInstance::EGtBody(EGt { p1, p2 }) => {
-            cmp_binop(">", p1.as_ref(), p2.as_ref(), env, |c| c == 1)
+            cmp_binop(">", p1.as_ref(), p2.as_ref(), env, matcher, |c| c == 1)
         }
         ExprInstance::EGteBody(EGte { p1, p2 }) => {
-            cmp_binop(">=", p1.as_ref(), p2.as_ref(), env, |c| c >= 0)
+            cmp_binop(">=", p1.as_ref(), p2.as_ref(), env, matcher, |c| c >= 0)
         }
 
-        ExprInstance::EPlusBody(EPlus { p1, p2 }) => {
-            int_binop_checked("+", p1.as_ref(), p2.as_ref(), env, i64::checked_add)
-        }
-        ExprInstance::EMinusBody(EMinus { p1, p2 }) => {
-            int_binop_checked("-", p1.as_ref(), p2.as_ref(), env, i64::checked_sub)
-        }
-        ExprInstance::EMultBody(EMult { p1, p2 }) => {
-            int_binop_checked("*", p1.as_ref(), p2.as_ref(), env, i64::checked_mul)
-        }
-        ExprInstance::EDivBody(models::rhoapi::EDiv { p1, p2 }) => {
-            int_div_or_mod("/", p1.as_ref(), p2.as_ref(), env, i64::checked_div)
-        }
-        ExprInstance::EModBody(models::rhoapi::EMod { p1, p2 }) => {
-            int_div_or_mod("%", p1.as_ref(), p2.as_ref(), env, i64::checked_rem)
+        ExprInstance::EPlusBody(EPlus { p1, p2 }) => int_binop_checked(
+            "+",
+            p1.as_ref(),
+            p2.as_ref(),
+            env,
+            matcher,
+            i64::checked_add,
+        ),
+        ExprInstance::EMinusBody(EMinus { p1, p2 }) => int_binop_checked(
+            "-",
+            p1.as_ref(),
+            p2.as_ref(),
+            env,
+            matcher,
+            i64::checked_sub,
+        ),
+        ExprInstance::EMultBody(EMult { p1, p2 }) => int_binop_checked(
+            "*",
+            p1.as_ref(),
+            p2.as_ref(),
+            env,
+            matcher,
+            i64::checked_mul,
+        ),
+        ExprInstance::EDivBody(models::rhoapi::EDiv { p1, p2 }) => int_div_or_mod(
+            "/",
+            p1.as_ref(),
+            p2.as_ref(),
+            env,
+            matcher,
+            i64::checked_div,
+        ),
+        ExprInstance::EModBody(models::rhoapi::EMod { p1, p2 }) => int_div_or_mod(
+            "%",
+            p1.as_ref(),
+            p2.as_ref(),
+            env,
+            matcher,
+            i64::checked_rem,
+        ),
+
+        // Spatial match. Mirrors `Reduce::combine_matches`
+        // (rholang/src/rust/interpreter/reduce.rs) minus its two
+        // `substitute_and_charge` calls, which are already performed
+        // upstream: `eval_receive` substitutes the whole guard at depth 1
+        // before it is stored on the TaggedContinuation, and
+        // `substitute`'s own `EMatchesBody` arm descends into BOTH
+        // operands at that same depth — so the guard's pattern has
+        // already had exactly the depth-1 substitution `combine_matches`
+        // would apply to it, and (because `maybe_substitute_var` is the
+        // identity at depth != 0) no variable inside it has been
+        // resolved away.
+        //
+        // The target IS evaluated: its variables are ordinary references
+        // to the bound values, resolved against `env`. The pattern is
+        // NOT: its free variables are binders, and evaluating them would
+        // raise `UnboundVariable` instead of matching.
+        ExprInstance::EMatchesBody(EMatches { target, pattern }) => {
+            if !matcher.is_available() {
+                // No oracle injected (the `eval` default). Refuse before
+                // touching either operand — byte-identical to the
+                // behaviour that predates this seam.
+                return Err(EvalError::UnsupportedExpression {
+                    kind: "EMatchesBody",
+                });
+            }
+            let evaled_target = eval_with(&require_par(target.as_ref())?, env, matcher)?;
+            let verbatim_pattern = require_par(pattern.as_ref())?;
+            Ok(par_with_bool(
+                matcher.matches(&evaled_target, &verbatim_pattern),
+            ))
         }
 
         // Stubs — supported in the full reducer but not here yet.
         ExprInstance::EMethodBody(_) => Err(EvalError::UnsupportedExpression {
             kind: "EMethodBody",
-        }),
-        ExprInstance::EMatchesBody(_) => Err(EvalError::UnsupportedExpression {
-            kind: "EMatchesBody",
         }),
         ExprInstance::EPercentPercentBody(_) => Err(EvalError::UnsupportedExpression {
             kind: "EPercentPercentBody",
@@ -244,13 +325,14 @@ fn bool_binop<F>(
     p1: Option<&Par>,
     p2: Option<&Par>,
     env: &Env<Par>,
+    matcher: &dyn SpatialMatch,
     f: F,
 ) -> Result<Par, EvalError>
 where
     F: Fn(bool, bool) -> bool,
 {
-    let v1 = single_expr_instance(&eval(&require_par(p1)?, env)?)?;
-    let v2 = single_expr_instance(&eval(&require_par(p2)?, env)?)?;
+    let v1 = single_expr_instance(&eval_with(&require_par(p1)?, env, matcher)?)?;
+    let v2 = single_expr_instance(&eval_with(&require_par(p2)?, env, matcher)?)?;
     match (&v1, &v2) {
         (ExprInstance::GBool(b1), ExprInstance::GBool(b2)) => Ok(par_with_bool(f(*b1, *b2))),
         _ => Err(operator_mismatch_binary(op, &v1, &v2)),
@@ -261,10 +343,11 @@ fn eq_binop(
     p1: Option<&Par>,
     p2: Option<&Par>,
     env: &Env<Par>,
+    matcher: &dyn SpatialMatch,
     expect_eq: bool,
 ) -> Result<Par, EvalError> {
-    let lhs = eval(&require_par(p1)?, env)?;
-    let rhs = eval(&require_par(p2)?, env)?;
+    let lhs = eval_with(&require_par(p1)?, env, matcher)?;
+    let rhs = eval_with(&require_par(p2)?, env, matcher)?;
     // IEEE 754: any comparison involving NaN is false (so == is false and
     // != is true). Mirrors `par_contains_nan_double` in the full reducer.
     let eq = if par_contains_nan_double(&lhs) || par_contains_nan_double(&rhs) {
@@ -295,13 +378,14 @@ fn cmp_binop<F>(
     p1: Option<&Par>,
     p2: Option<&Par>,
     env: &Env<Par>,
+    matcher: &dyn SpatialMatch,
     interpret: F,
 ) -> Result<Par, EvalError>
 where
     F: Fn(i64) -> bool,
 {
-    let v1 = single_expr_instance(&eval(&require_par(p1)?, env)?)?;
-    let v2 = single_expr_instance(&eval(&require_par(p2)?, env)?)?;
+    let v1 = single_expr_instance(&eval_with(&require_par(p1)?, env, matcher)?)?;
+    let v2 = single_expr_instance(&eval_with(&require_par(p2)?, env, matcher)?)?;
     let order: i64 = match (&v1, &v2) {
         (ExprInstance::GInt(i1), ExprInstance::GInt(i2)) => i64::from(i1.cmp(i2) as i8),
         (ExprInstance::GString(s1), ExprInstance::GString(s2)) => i64::from(s1.cmp(s2) as i8),
@@ -316,13 +400,14 @@ fn int_binop_checked<F>(
     p1: Option<&Par>,
     p2: Option<&Par>,
     env: &Env<Par>,
+    matcher: &dyn SpatialMatch,
     f: F,
 ) -> Result<Par, EvalError>
 where
     F: Fn(i64, i64) -> Option<i64>,
 {
-    let v1 = single_expr_instance(&eval(&require_par(p1)?, env)?)?;
-    let v2 = single_expr_instance(&eval(&require_par(p2)?, env)?)?;
+    let v1 = single_expr_instance(&eval_with(&require_par(p1)?, env, matcher)?)?;
+    let v2 = single_expr_instance(&eval_with(&require_par(p2)?, env, matcher)?)?;
     match (&v1, &v2) {
         (ExprInstance::GInt(i1), ExprInstance::GInt(i2)) => f(*i1, *i2)
             .map(par_with_int)
@@ -336,13 +421,14 @@ fn int_div_or_mod<F>(
     p1: Option<&Par>,
     p2: Option<&Par>,
     env: &Env<Par>,
+    matcher: &dyn SpatialMatch,
     f: F,
 ) -> Result<Par, EvalError>
 where
     F: Fn(i64, i64) -> Option<i64>,
 {
-    let v1 = single_expr_instance(&eval(&require_par(p1)?, env)?)?;
-    let v2 = single_expr_instance(&eval(&require_par(p2)?, env)?)?;
+    let v1 = single_expr_instance(&eval_with(&require_par(p1)?, env, matcher)?)?;
+    let v2 = single_expr_instance(&eval_with(&require_par(p2)?, env, matcher)?)?;
     match (&v1, &v2) {
         (ExprInstance::GInt(_), ExprInstance::GInt(0)) => Err(EvalError::DivisionByZero),
         (ExprInstance::GInt(i1), ExprInstance::GInt(i2)) => f(*i1, *i2)

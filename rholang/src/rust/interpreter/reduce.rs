@@ -77,6 +77,7 @@ use crate::rust::interpreter::accounting::costs::{
     length_method_cost, lookup_cost, match_eval_cost, nth_method_call_cost, remove_cost,
     size_method_cost, slice_cost, take_cost, to_byte_array_cost, to_list_cost, union_cost,
 };
+use crate::rust::interpreter::matcher::r#match::SpatialMatcherOracle;
 use crate::rust::interpreter::matcher::spatial_matcher::SpatialMatcherContext;
 use crate::rust::interpreter::rho_type::RhoTuple2;
 
@@ -1712,9 +1713,18 @@ impl DebruijnInterpreter {
                                     // fall-through rule. `Some(empty Par)` is
                                     // treated as "no guard" so we agree with
                                     // eval_receive and Matcher::check_commit.
+                                    //
+                                    // M-1a: the same `SpatialMatcherOracle`
+                                    // the rspace matcher injects, so a
+                                    // spatial test means the same thing in
+                                    // `match … where` as in `for … where`.
                                     let guard_passes = match &single_case.guard {
                                         Some(g) if g != &Par::default() => {
-                                            match rho_pure_eval::eval(g, &case_env) {
+                                            match rho_pure_eval::eval_with(
+                                                g,
+                                                &case_env,
+                                                &SpatialMatcherOracle,
+                                            ) {
                                                 Ok(result) => extract_bool(&result) == Some(true),
                                                 Err(_) => false,
                                             }

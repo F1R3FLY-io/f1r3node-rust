@@ -5,7 +5,7 @@ use std::i64;
 use std::sync::Arc;
 
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
-use models::rhoapi::connective::ConnectiveInstance::VarRefBody;
+use models::rhoapi::connective::ConnectiveInstance::{ConnInt, VarRefBody};
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::g_unforgeable::UnfInstance;
 use models::rhoapi::tagged_continuation::TaggedCont;
@@ -5364,4 +5364,321 @@ async fn cross_bind_guard_non_commutative_does_not_fire_when_data_violates_per_b
     assert_eq!(row_a.data.len(), 1, "rejected a=50 stays");
     let row_b = result.get(&vec![chan_b]).expect("chan b state present");
     assert_eq!(row_b.data.len(), 1, "rejected b=200 stays");
+}
+
+// =====================================================================
+// M-1a: spatial guards. `rho_pure_eval` used to refuse `EMatchesBody`
+// outright, so every `matches` guard failed shut whatever its truth
+// value; a caller-injected `SpatialMatch` oracle now answers it with
+// RSpace's own spatial matcher. These are the end-to-end checks: the
+// guard travels through `eval_receive`'s depth-1 `substitute_and_charge`
+// (or `eval_match`'s case-guard path) and is decided inside the real
+// matcher, not in a unit-test harness.
+// =====================================================================
+
+/// The `Int` type pattern — a connective, so the spatial matcher takes
+/// its connective path rather than plain structural equality.
+fn int_type_pattern() -> Par {
+    Par::default()
+        .with_connectives(vec![Connective {
+            connective_instance: Some(ConnInt(true)),
+        }])
+        .with_connective_used(true)
+}
+
+/// `BoundVar(0) matches <pattern>`: the guard a `for (@x <- c) where
+/// (x matches P)` lowers to, and the same shape a `match` case guard
+/// uses for its innermost pattern-bound variable.
+fn guard_first_bound_matches(pattern: Par) -> Par {
+    Par::default().with_exprs(vec![Expr {
+        expr_instance: Some(ExprInstance::EMatchesBody(EMatches {
+            target: Some(new_boundvar_par(0, models::create_bit_vector(&[0]), false)),
+            pattern: Some(pattern),
+        })),
+    }])
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn receive_with_satisfied_spatial_guard_should_consume_message() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+
+    let chan = new_gstring_par("c".to_string(), Vec::new(), false);
+
+    // Send an Int; the guard asks `x matches Int` → true → commit.
+    let send = Par::default().with_sends(vec![Send {
+        chan: Some(chan.clone()),
+        data: vec![new_gint_par(5, Vec::new(), false)],
+        persistent: false,
+        locally_free: Vec::new(),
+        connective_used: false,
+    }]);
+
+    let receive = Par::default().with_receives(vec![Receive {
+        binds: vec![ReceiveBind {
+            patterns: vec![new_freevar_par(0, Vec::new())],
+            source: Some(chan.clone()),
+            remainder: None,
+            free_count: 1,
+        }],
+        body: Some(Par::default()),
+        persistent: false,
+        peek: false,
+        bind_count: 1,
+        locally_free: Vec::new(),
+        connective_used: false,
+        condition: Some(guard_first_bound_matches(int_type_pattern())),
+    }]);
+
+    let env: Env<Par> = Env::new();
+    reducer
+        .eval(send, &env, rand().split_byte(0))
+        .await
+        .unwrap();
+    reducer
+        .eval(receive, &env, rand().split_byte(1))
+        .await
+        .unwrap();
+
+    let result = space.to_map().await;
+    assert!(
+        result.is_empty(),
+        "tuple space should be empty after a satisfied spatial guard: {result:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn receive_with_unsatisfied_spatial_guard_should_leave_data_and_continuation() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+
+    let chan = new_gstring_par("c".to_string(), Vec::new(), false);
+
+    // Send a String against an `Int` guard → genuine mismatch → the
+    // datum stays resting and the continuation stays installed. Nothing
+    // is fabricated; this is the E9-E12 fail-shut collapse, unchanged.
+    let send = Par::default().with_sends(vec![Send {
+        chan: Some(chan.clone()),
+        data: vec![new_gstring_par("five".to_string(), Vec::new(), false)],
+        persistent: false,
+        locally_free: Vec::new(),
+        connective_used: false,
+    }]);
+
+    let receive = Par::default().with_receives(vec![Receive {
+        binds: vec![ReceiveBind {
+            patterns: vec![new_freevar_par(0, Vec::new())],
+            source: Some(chan.clone()),
+            remainder: None,
+            free_count: 1,
+        }],
+        body: Some(Par::default()),
+        persistent: false,
+        peek: false,
+        bind_count: 1,
+        locally_free: Vec::new(),
+        connective_used: false,
+        condition: Some(guard_first_bound_matches(int_type_pattern())),
+    }]);
+
+    let env: Env<Par> = Env::new();
+    reducer
+        .eval(send, &env, rand().split_byte(0))
+        .await
+        .unwrap();
+    reducer
+        .eval(receive, &env, rand().split_byte(1))
+        .await
+        .unwrap();
+
+    let result = space.to_map().await;
+    let row = result
+        .get(&vec![chan.clone()])
+        .expect("channel should still hold state after a spatial guard-fail");
+    assert_eq!(row.data.len(), 1, "the unmatched datum stays in the space");
+    assert_eq!(row.wks.len(), 1, "the continuation stays installed");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn receive_with_spatial_guard_filters_among_multiple_messages() {
+    // The String is rejected and stays resting; the Int that follows is
+    // accepted. Pins that a spatial guard discriminates rather than
+    // uniformly passing or uniformly failing.
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+
+    let chan = new_gstring_par("c".to_string(), Vec::new(), false);
+
+    let send_string = Par::default().with_sends(vec![Send {
+        chan: Some(chan.clone()),
+        data: vec![new_gstring_par("nope".to_string(), Vec::new(), false)],
+        persistent: false,
+        locally_free: Vec::new(),
+        connective_used: false,
+    }]);
+    let send_int = Par::default().with_sends(vec![Send {
+        chan: Some(chan.clone()),
+        data: vec![new_gint_par(7, Vec::new(), false)],
+        persistent: false,
+        locally_free: Vec::new(),
+        connective_used: false,
+    }]);
+    let receive = Par::default().with_receives(vec![Receive {
+        binds: vec![ReceiveBind {
+            patterns: vec![new_freevar_par(0, Vec::new())],
+            source: Some(chan.clone()),
+            remainder: None,
+            free_count: 1,
+        }],
+        body: Some(Par::default()),
+        persistent: false,
+        peek: false,
+        bind_count: 1,
+        locally_free: Vec::new(),
+        connective_used: false,
+        condition: Some(guard_first_bound_matches(int_type_pattern())),
+    }]);
+
+    let env: Env<Par> = Env::new();
+    reducer
+        .eval(send_string, &env, rand().split_byte(0))
+        .await
+        .unwrap();
+    reducer
+        .eval(receive, &env, rand().split_byte(1))
+        .await
+        .unwrap();
+    reducer
+        .eval(send_int, &env, rand().split_byte(2))
+        .await
+        .unwrap();
+
+    let result = space.to_map().await;
+    let row = result
+        .get(&vec![chan.clone()])
+        .expect("the rejected String datum keeps the channel non-empty");
+    assert_eq!(row.data.len(), 1, "only the String is left resting");
+    assert_eq!(
+        row.data[0].a.pars,
+        vec![new_gstring_par("nope".to_string(), Vec::new(), false)],
+        "the Int was the one consumed"
+    );
+    assert!(
+        row.wks.is_empty(),
+        "the continuation fired on the Int and is gone"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn match_case_with_satisfied_spatial_guard_should_fire_its_body() {
+    // The SECOND call site: `match … where` (Reduce::eval_match). It uses
+    // the same oracle as the rspace matcher, so a spatial test means the
+    // same thing in both guard positions.
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+
+    let proc = Par::default().with_matches(vec![Match {
+        target: Some(new_gint_par(42, Vec::new(), false)),
+        cases: vec![MatchCase {
+            pattern: Some(new_freevar_par(0, Vec::new())),
+            source: Some(Par::default().with_sends(vec![Send {
+                chan: Some(new_gstring_par("result".to_string(), Vec::new(), false)),
+                data: vec![new_gstring_par("int".to_string(), Vec::new(), false)],
+                persistent: false,
+                locally_free: Vec::new(),
+                connective_used: false,
+            }])),
+            free_count: 1,
+            guard: Some(guard_first_bound_matches(int_type_pattern())),
+        }],
+        locally_free: Vec::new(),
+        connective_used: false,
+    }]);
+
+    let env: Env<Par> = Env::new();
+    reducer
+        .eval(proc, &env, rand().split_byte(3))
+        .await
+        .expect("match with a spatial guard evaluates");
+
+    let result = space.to_map().await;
+    let row = result
+        .get(&vec![new_gstring_par(
+            "result".to_string(),
+            Vec::new(),
+            false,
+        )])
+        .expect("the guarded case body must have fired");
+    assert_eq!(row.data.len(), 1);
+    assert_eq!(
+        row.data[0].a.pars,
+        vec![new_gstring_par("int".to_string(), Vec::new(), false)],
+        "the case whose spatial guard held is the one that fired"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn match_case_with_unsatisfied_spatial_guard_should_fall_through() {
+    // Guard-fail on a `match` case falls through to the next case — the
+    // documented §3.4 rule, unchanged by the seam.
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+
+    let proc = Par::default().with_matches(vec![Match {
+        target: Some(new_gstring_par("forty-two".to_string(), Vec::new(), false)),
+        cases: vec![
+            MatchCase {
+                pattern: Some(new_freevar_par(0, Vec::new())),
+                source: Some(Par::default().with_sends(vec![Send {
+                    chan: Some(new_gstring_par("result".to_string(), Vec::new(), false)),
+                    data: vec![new_gstring_par("int".to_string(), Vec::new(), false)],
+                    persistent: false,
+                    locally_free: Vec::new(),
+                    connective_used: false,
+                }])),
+                free_count: 1,
+                guard: Some(guard_first_bound_matches(int_type_pattern())),
+            },
+            MatchCase {
+                pattern: Some(new_wildcard_par(Vec::new(), true)),
+                source: Some(Par::default().with_sends(vec![Send {
+                    chan: Some(new_gstring_par("result".to_string(), Vec::new(), false)),
+                    data: vec![new_gstring_par("other".to_string(), Vec::new(), false)],
+                    persistent: false,
+                    locally_free: Vec::new(),
+                    connective_used: false,
+                }])),
+                free_count: 0,
+                guard: None,
+            },
+        ],
+        locally_free: Vec::new(),
+        connective_used: false,
+    }]);
+
+    let env: Env<Par> = Env::new();
+    reducer
+        .eval(proc, &env, rand().split_byte(3))
+        .await
+        .expect("match with a failing spatial guard evaluates");
+
+    let result = space.to_map().await;
+    let row = result
+        .get(&vec![new_gstring_par(
+            "result".to_string(),
+            Vec::new(),
+            false,
+        )])
+        .expect("the fall-through case body must have fired");
+    assert_eq!(row.data.len(), 1);
+    assert_eq!(
+        row.data[0].a.pars,
+        vec![new_gstring_par("other".to_string(), Vec::new(), false)],
+        "the guarded case failed shut and the next case fired instead"
+    );
 }

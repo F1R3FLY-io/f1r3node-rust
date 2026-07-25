@@ -14,19 +14,30 @@
 //! Scope: this crate implements a subset of `Reduce::eval_expr` from
 //! `rholang/src/rust/interpreter/reduce.rs` — enough to support `if`
 //! conditions, `where` guards, and match-case guards. Built-in method
-//! calls (`EMethodBody`) and the special-form Expr variants `EMatches`,
+//! calls (`EMethodBody`) and the special-form Expr variants
 //! `EPercentPercent`, `EPlusPlus`, `EMinusMinus`, `EPathmap`, `EZipper`
 //! are not supported and return `EvalError::UnsupportedExpression`.
 //! See the plan at docs/plans/where-clauses-and-match-guards-2026-04-29.md
 //! §3.9 for the longer-term roadmap.
+//!
+//! `EMatches` is supported through a caller-injected oracle — see
+//! [`SpatialMatch`] and [`eval_with`]. The matcher that decides
+//! `target matches pattern` lives in `rholang`, which depends on this
+//! crate; calling it directly would be a dependency cycle, so `rholang`
+//! passes it in instead. [`eval`] keeps its exact signature and
+//! behaviour by injecting [`NoSpatialMatch`], for which `EMatches`
+//! still yields `EvalError::UnsupportedExpression { kind: "EMatchesBody" }`.
+//! Every pre-existing caller is therefore byte-unchanged.
 
 mod env;
 mod error;
 mod eval;
+mod oracle;
 
 pub use env::Env;
 pub use error::EvalError;
-pub use eval::eval;
+pub use eval::{eval, eval_with};
+pub use oracle::{NoSpatialMatch, SpatialMatch};
 
 #[cfg(test)]
 mod tests;
