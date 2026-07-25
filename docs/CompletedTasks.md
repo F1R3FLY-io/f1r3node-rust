@@ -6,7 +6,7 @@ last_updated: 2026-04-15
 
 # Completed Tasks
 
-This document archives completed epochs and tasks for historical reference and progress tracking.
+This document archives completed epics and tasks for historical reference and progress tracking.
 
 **Document Structure**
 - Active work: `docs/ToDos.md`
@@ -16,17 +16,17 @@ This document archives completed epochs and tasks for historical reference and p
 
 ---
 
-## Completed Epochs
+## Completed Epics
 
-<!-- Epochs are listed in reverse chronological order (newest first) -->
+<!-- Epics are listed in reverse chronological order (newest first) -->
 
 ---
 
-### EPOCH-R03: CI/CD Pipeline
+### EPIC-R03: CI/CD Pipeline
 
 ```yaml
 ---
-epoch_id: EPOCH-R03
+epic_id: EPIC-R03
 title: "CI/CD Pipeline"
 status: complete
 priority: p1
@@ -50,11 +50,11 @@ tasks:
 
 ---
 
-### EPOCH-R02: Developer Tooling and Hooks
+### EPIC-R02: Developer Tooling and Hooks
 
 ```yaml
 ---
-epoch_id: EPOCH-R02
+epic_id: EPIC-R02
 title: "Developer Tooling and Hooks"
 status: complete
 priority: p1
@@ -91,11 +91,11 @@ tasks:
 
 ---
 
-### EPOCH-R01: Repository Extraction
+### EPIC-R01: Repository Extraction
 
 ```yaml
 ---
-epoch_id: EPOCH-R01
+epic_id: EPIC-R01
 title: "Repository Extraction"
 status: complete
 priority: p0
@@ -119,7 +119,7 @@ tasks:
 
 ## Completion Statistics
 
-| Period | Epochs Completed | Tasks Completed | Notes |
+| Period | Epics Completed | Tasks Completed | Notes |
 |--------|------------------|-----------------|-------|
 | 2026-03 | 3 | 9 | Repo bootstrap: extraction, tooling, CI |
 
