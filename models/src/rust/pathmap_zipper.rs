@@ -235,7 +235,13 @@ pub(crate) fn flatten_segments(segments: &[Vec<u8>]) -> Vec<u8> {
 /// parser-state successor to the retired `split(0xFF)`. Segment boundaries
 /// are the codec grammar's `segment_extent`, and the trailing split-list
 /// `0x00` terminator is not a segment.
-#[allow(dead_code)]
+///
+/// LIVE since the trie-enumeration surface landed: this is the inverse half of
+/// [`flatten_segments`] that
+/// [`pathmap_native_query::next_value_path`](super::pathmap_native_query::next_value_path)
+/// needs to hand a walked absolute path back to `EZipper.current_path`, which
+/// stores segments. (It carried `#[allow(dead_code)]` until then — the decoder
+/// existed but nothing had yet needed to read a path OUT of the trie.)
 pub(crate) fn unflatten_segments(flattened: &[u8]) -> Vec<Vec<u8>> {
     use super::canonical_path::{segment_extent, tag};
     let mut segments = Vec::new();

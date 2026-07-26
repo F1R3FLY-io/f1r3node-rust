@@ -29,7 +29,8 @@ use models::rust::par_set_type_mapper::ParSetTypeMapper;
 use models::rust::pathmap_crate_type_mapper::PathMapCrateTypeMapper;
 use models::rust::pathmap_integration::segments_to_key;
 use models::rust::pathmap_native_query::{
-    collect_child_segments, collect_subtrie_values, path_prefix_exists,
+    collect_child_segments, collect_subtrie_values, next_value_path, path_prefix_exists,
+    subtrie_value_count,
 };
 use models::rust::pathmap_zipper::RholangReadZipper;
 use models::rust::rholang::implicits::{concatenate_pars, single_bundle, single_expr};
@@ -7116,6 +7117,262 @@ impl DebruijnInterpreter {
         Box::new(ToPrevSiblingMethod { outer: self })
     }
 
+    // ============ ZIPPER ENUMERATION METHODS ============
+    //
+    // `getPath` / `toNextLeaf` / `leafCount` make walking an EPathMap TOTAL:
+    // descend to a leaf, read its key AND its value, advance to the next leaf,
+    // and know the count in advance.
+    //
+    //     z = m.readZipper(); n = z.leafCount();
+    //     n times: z = z.toNextLeaf(); use z.getPath(), z.getLeaf()
+    //
+    // ## This surface is ADDITIVE ONLY — no new state, no wire change
+    //
+    // `EZipper` ALREADY carries its path as wire data: `RhoTypes.proto:352`
+    // `repeated bytes current_path`. `getPath` only READS OUT a field that is
+    // already part of the message and already serialized, decoding it with the
+    // `decode_trie_path` codec this file already uses (see `setSubtrie`). So:
+    //
+    //   * no `.proto` change and no new `ExprInstance`;
+    //   * no new field on any existing message;
+    //   * no change to how any existing method behaves;
+    //   * one previously-dead decoder (`pathmap_zipper::unflatten_segments`)
+    //     becomes live, which is the only reachability change in `models`.
+    //
+    // The consensus surface grows by exactly three method-table entries.
+    //
+    // ## Why enumeration is LEAF-granular
+    //
+    // The navigation methods above move by one CHILD SEGMENT, which is right
+    // for descending a known shape but cannot enumerate: a segment move lands
+    // on interior positions that carry no value, and a caller cannot tell a
+    // value-bearing position from an interior one without probing. `to_next_val`
+    // lands ONLY on positions that carry a value, so `getPath()` and
+    // `getLeaf()` are both guaranteed to answer at every stop of a walk.
+    //
+    // ## ★ CROSS-ENDPOINT CONTRACT with mettail's rhocalc — read before C1
+    //
+    // The two runtimes report an exhausted/failed navigation DIFFERENTLY, and
+    // each is correct in its own house style:
+    //
+    //   f1r3node (here)  -> `Ok(Par::default())`, i.e. **Nil** — the convention
+    //                       every navigation method in this file already uses.
+    //   mettail rhocalc  -> `Err(())`, which its fold body renders as the
+    //                       UNREDUCED term `z.toNextLeaf()` — "stuck".
+    //
+    // C1 (routing rhocalc collection methods into this method table) MUST map
+    // the `Nil` this returns on exhaustion back to mettail's STUCK form. It must
+    // not surface `Nil` as a zipper and must not let a walk continue on it —
+    // `to_next_val` RESETS THE ZIPPER TO THE ROOT when it runs out, so anything
+    // the walk can keep consuming makes the counted-walk idiom silently RESTART
+    // and loop forever, with no error raised anywhere.
+    //
+    // Pinned on both sides:
+    //   * here — `rholang/tests/zipper_enumeration_spec.rs`
+    //            `to_next_leaf_returns_nil_when_exhausted`
+    //   * there — `languages/src/rhocalc/zipper.rs`
+    //            `exhausted_walk_is_stuck_here_and_nil_on_the_reducer`
+
+    fn get_path_method<'a>(&'a self) -> Box<dyn Method + 'a> {
+        struct GetPathMethod<'a> {
+            outer: &'a DebruijnInterpreter,
+        }
+
+        impl<'a> GetPathMethod<'a> {
+            fn get_path(&self, base_expr: &Expr) -> Result<Par, InterpreterError> {
+                match base_expr.expr_instance.clone().unwrap() {
+                    ExprInstance::EZipperBody(zipper) => {
+                        // THE CURSOR KEY, read straight out of the wire field.
+                        // `current_path` holds `encode_trie_segment` blobs, so
+                        // the split-form path `concat(segments) ‖ 0x00` decodes
+                        // back to the ground EList of the key's elements — the
+                        // same codec round-trip `setSubtrie` performs above.
+                        use models::rust::canonical_path::decode_trie_path;
+
+                        let full_key = segments_to_key(&zipper.current_path, true);
+                        match decode_trie_path(&full_key) {
+                            Ok(decoded) => Ok(decoded),
+                            // A focus whose path does not decode names no
+                            // entry; Nil is this file's "no answer" convention.
+                            Err(_) => Ok(Par::default()),
+                        }
+                    }
+                    other => Err(InterpreterError::MethodNotDefined {
+                        method: String::from("getPath"),
+                        other_type: get_type(other),
+                    }),
+                }
+            }
+        }
+
+        impl<'a> Method for GetPathMethod<'a> {
+            fn apply(
+                &self,
+                p: Par,
+                args: Vec<Par>,
+                env: &Env<Par>,
+            ) -> Result<Par, InterpreterError> {
+                if !args.is_empty() {
+                    return Err(InterpreterError::MethodArgumentNumberMismatch {
+                        method: String::from("getPath"),
+                        expected: 0,
+                        actual: args.len(),
+                    });
+                }
+                let base_expr = self.outer.eval_single_expr(&p, env)?;
+                self.outer
+                    .metering
+                    .reserve_incremental_primitive(union_cost(1))?;
+                self.get_path(&base_expr)
+            }
+        }
+
+        Box::new(GetPathMethod { outer: self })
+    }
+
+    fn leaf_count_method<'a>(&'a self) -> Box<dyn Method + 'a> {
+        struct LeafCountMethod<'a> {
+            outer: &'a DebruijnInterpreter,
+        }
+
+        impl<'a> LeafCountMethod<'a> {
+            fn leaf_count(&self, base_expr: &Expr) -> Result<i64, InterpreterError> {
+                match base_expr.expr_instance.clone().unwrap() {
+                    ExprInstance::EZipperBody(zipper) => {
+                        let pathmap = zipper.pathmap.as_ref().expect("zipper pathmap was None");
+                        let rholang_pathmap =
+                            PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap(pathmap).map;
+                        let prefix_key: Vec<u8> = segments_to_key(&zipper.current_path, false);
+                        Ok(subtrie_value_count(&rholang_pathmap, &prefix_key) as i64)
+                    }
+                    ExprInstance::EPathmapBody(pathmap) => {
+                        // At the root this is the map's entry count.
+                        let rholang_pathmap =
+                            PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap(&pathmap).map;
+                        Ok(subtrie_value_count(&rholang_pathmap, &[]) as i64)
+                    }
+                    other => Err(InterpreterError::MethodNotDefined {
+                        method: String::from("leafCount"),
+                        other_type: get_type(other),
+                    }),
+                }
+            }
+        }
+
+        impl<'a> Method for LeafCountMethod<'a> {
+            fn apply(
+                &self,
+                p: Par,
+                args: Vec<Par>,
+                env: &Env<Par>,
+            ) -> Result<Par, InterpreterError> {
+                if !args.is_empty() {
+                    return Err(InterpreterError::MethodArgumentNumberMismatch {
+                        method: String::from("leafCount"),
+                        expected: 0,
+                        actual: args.len(),
+                    });
+                }
+                let base_expr = self.outer.eval_single_expr(&p, env)?;
+                // Charged in TWO parts, both from this file's existing cost
+                // vocabulary — no new metering surface (budgets are
+                // f1r3node's).
+                //
+                //  (1) the flat base every sibling zipper method reserves, taken
+                //      BEFORE the work, exactly as `childCount` does; and
+                //  (2) a PROPORTIONAL part, because this query is O(subtrie) —
+                //      `size_method_cost` is the file's existing count-shaped
+                //      charge (`size`, `toList`). It can only be taken after
+                //      counting, since the count is what it is proportional to.
+                //
+                // Part (2) must use `reserve_incremental_primitive`, not
+                // `reserve_primitive`: `leafCount()` on a missing prefix is 0,
+                // and `reserve_primitive` rejects a non-positive charge with
+                // `BugFoundError("Billable metering cost must be positive")`.
+                // The incremental form treats 0 as a no-op, and part (1) has
+                // already charged for the O(|prefix|) descent that a 0 answer
+                // still costs.
+                self.outer
+                    .metering
+                    .reserve_incremental_primitive(union_cost(1))?;
+                let count = self.leaf_count(&base_expr)?;
+                self.outer
+                    .metering
+                    .reserve_incremental_primitive(size_method_cost(count))?;
+
+                Ok(Par::default().with_exprs(vec![Expr {
+                    expr_instance: Some(ExprInstance::GInt(count)),
+                }]))
+            }
+        }
+
+        Box::new(LeafCountMethod { outer: self })
+    }
+
+    fn to_next_leaf_method<'a>(&'a self) -> Box<dyn Method + 'a> {
+        struct ToNextLeafMethod<'a> {
+            outer: &'a DebruijnInterpreter,
+        }
+
+        impl<'a> ToNextLeafMethod<'a> {
+            fn to_next_leaf(&self, base_expr: &Expr) -> Result<Par, InterpreterError> {
+                match base_expr.expr_instance.clone().unwrap() {
+                    ExprInstance::EZipperBody(mut zipper) => {
+                        let pathmap = zipper.pathmap.as_ref().expect("zipper pathmap was None");
+                        let rholang_pathmap =
+                            PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap(pathmap).map;
+
+                        // The FULL key (terminated) is the walk's starting
+                        // point: the next value strictly after this position.
+                        let from_key: Vec<u8> = segments_to_key(&zipper.current_path, true);
+                        match next_value_path(&rholang_pathmap, &from_key) {
+                            Some(segments) => {
+                                zipper.current_path = segments;
+                                Ok(Par::default().with_exprs(vec![Expr {
+                                    expr_instance: Some(ExprInstance::EZipperBody(zipper)),
+                                }]))
+                            }
+                            // ⚠ EXHAUSTED. Nil, per this file's convention —
+                            // and it MUST NOT be a zipper, because the position
+                            // `to_next_val` leaves behind is the ROOT, which a
+                            // continuing walk would restart from forever. C1
+                            // must translate this Nil to rhocalc's stuck form.
+                            None => Ok(Par::default()),
+                        }
+                    }
+                    other => Err(InterpreterError::MethodNotDefined {
+                        method: String::from("toNextLeaf"),
+                        other_type: get_type(other),
+                    }),
+                }
+            }
+        }
+
+        impl<'a> Method for ToNextLeafMethod<'a> {
+            fn apply(
+                &self,
+                p: Par,
+                args: Vec<Par>,
+                env: &Env<Par>,
+            ) -> Result<Par, InterpreterError> {
+                if !args.is_empty() {
+                    return Err(InterpreterError::MethodArgumentNumberMismatch {
+                        method: String::from("toNextLeaf"),
+                        expected: 0,
+                        actual: args.len(),
+                    });
+                }
+                let base_expr = self.outer.eval_single_expr(&p, env)?;
+                self.outer
+                    .metering
+                    .reserve_incremental_primitive(union_cost(1))?;
+                self.to_next_leaf(&base_expr)
+            }
+        }
+
+        Box::new(ToNextLeafMethod { outer: self })
+    }
+
     // ============ END ZIPPER METHODS ============
 
     fn add_method<'a>(&'a self) -> Box<dyn Method + 'a> {
@@ -8247,6 +8504,12 @@ impl DebruijnInterpreter {
             self.descend_indexed_branch_method(),
         );
         table.insert("childCount".to_string(), self.child_count_method());
+        // Trie enumeration. See the ZIPPER ENUMERATION METHODS block: additive
+        // only (no proto change, no new state), and `toNextLeaf` signals
+        // exhaustion with `Nil`, which C1 must translate to rhocalc's stuck form.
+        table.insert("getPath".to_string(), self.get_path_method());
+        table.insert("toNextLeaf".to_string(), self.to_next_leaf_method());
+        table.insert("leafCount".to_string(), self.leaf_count_method());
         table.insert("add".to_string(), self.add_method());
         table.insert("delete".to_string(), self.delete_method());
         table.insert("contains".to_string(), self.contains_method());

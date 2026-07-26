@@ -97,3 +97,67 @@ pub fn collect_child_segments(
 ) -> Vec<Vec<u8>> {
     collect_child_segments_codec(map, prefix, limit)
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Trie ENUMERATION support (`leafCount` / `toNextLeaf`)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Both SURFACE capability the `pathmap` crate already has — `val_count()` and
+// `to_next_val()` — as SEGMENT-level answers, so `reduce.rs` continues to work
+// in `EZipper.current_path`'s own vocabulary and never handles raw codec bytes
+// for navigation (the same contract `collect_child_segments` already keeps).
+
+/// How many VALUES live at and below `prefix`.
+///
+/// Replaces `collect_subtrie_values(map, prefix).len()`, which materializes and
+/// CLONES every `Par` in the subtrie only to discard them; `val_count()` is the
+/// trie's own catamorphism and allocates nothing.
+///
+/// Identity: `val_count()` counts the values at and below the zipper's focus
+/// (including the focus itself), and a zipper rooted at `prefix` covers exactly
+/// the keys having `prefix` as a byte-prefix — the same set
+/// [`collect_subtrie_values`] streams.
+///
+/// Cost: O(|prefix| + |subtrie|). This is NOT a constant-time query; it is
+/// meant to be read once as a walk bound, not once per step.
+pub fn subtrie_value_count(map: &RholangPathMap, prefix: &[u8]) -> usize {
+    use pathmap::zipper::ZipperMoving;
+    map.read_zipper_at_borrowed_path(prefix).val_count()
+}
+
+/// The path of the next VALUE after `from_key` in depth-first order, as codec
+/// segments — or `None` when `from_key` is at or past the last value.
+///
+/// This is the enumeration step. `to_next_val()` advances to positions that
+/// carry a value, which (unlike a byte- or child-segment move) are always
+/// complete, decodable keys, so the caller can always both decode the path and
+/// read the value there.
+///
+/// ## ⚠ `None` means EXHAUSTED, and the caller must not keep walking
+///
+/// `to_next_val()` does not merely report `false` at the end — it also RESETS
+/// THE ZIPPER TO THE ROOT (`pathmap/src/zipper.rs:546`). The focus it leaves
+/// behind is a valid root position, so a caller that treated the reset zipper
+/// as a legitimate next step would silently RESTART the walk and loop forever
+/// with no error raised anywhere. `None` is therefore load-bearing: it must
+/// terminate the walk, never continue it.
+///
+/// The trailing split-list terminator is not a segment, so the returned vector
+/// is exactly the key's elements — the shape `EZipper.current_path` stores.
+pub fn next_value_path(map: &RholangPathMap, from_key: &[u8]) -> Option<Vec<Vec<u8>>> {
+    use pathmap::zipper::{ZipperAbsolutePath, ZipperIteration, ZipperMoving};
+
+    // Rooted at the trie ROOT with the focus moved to `from_key`: the walk must
+    // be able to ASCEND out of the current branch to reach the next one, which
+    // a zipper rerooted by `read_zipper_at_borrowed_path` cannot do (its
+    // ancestor stack is empty). Rooting at the root also makes `origin_path()`
+    // report the ABSOLUTE key, which is what the segments must describe.
+    let mut zipper = map.read_zipper();
+    zipper.move_to_path(from_key);
+    match zipper.to_next_val() {
+        true => Some(super::pathmap_zipper::unflatten_segments(
+            zipper.origin_path(),
+        )),
+        false => None,
+    }
+}
