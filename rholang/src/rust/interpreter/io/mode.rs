@@ -79,7 +79,9 @@ pub fn parse_open_mode(s: &str) -> Option<OpenIntent> {
     })
 }
 
-/// Translate an `OpenIntent` to `std::fs::OpenOptions`.
+/// Translate an `OpenIntent` to `std::fs::OpenOptions`.  Kept for the
+/// Phase-5 File-agent that may prefer the higher-level API; the native
+/// layer uses `fopen_flags` and issues `openat` directly.
 pub fn open_options(intent: OpenIntent) -> OpenOptions {
     let mut opts = OpenOptions::new();
     match intent.mode {
@@ -106,6 +108,37 @@ pub fn open_options(intent: OpenIntent) -> OpenOptions {
         }
     }
     opts
+}
+
+/// Translate `OpenIntent` to raw `openat(2)` flags plus the file-creation
+/// mode used when `O_CREAT` is set.  Callers (see `path::safe_open`)
+/// combine the returned flags with `O_NOFOLLOW|O_CLOEXEC` before issuing
+/// the syscall.
+pub fn fopen_flags(intent: OpenIntent) -> (libc::c_int, libc::mode_t) {
+    let mut flags: libc::c_int = match intent.mode {
+        AccessMode::Read => libc::O_RDONLY,
+        AccessMode::Write => libc::O_WRONLY,
+        AccessMode::ReadWrite => libc::O_RDWR,
+    };
+    match intent.policy {
+        ExistPolicy::Require => { /* no O_CREAT — open fails if absent */ }
+        ExistPolicy::RequireAbsent => {
+            flags |= libc::O_CREAT | libc::O_EXCL;
+        }
+        ExistPolicy::CreateOrTruncate => {
+            flags |= libc::O_CREAT;
+            if intent.truncate {
+                flags |= libc::O_TRUNC;
+            }
+        }
+        ExistPolicy::CreateOrAppend => {
+            flags |= libc::O_CREAT;
+            if intent.append {
+                flags |= libc::O_APPEND;
+            }
+        }
+    }
+    (flags, 0o644)
 }
 
 /// Parse `"rwxr-xr-x"` (9 chars) to u16 permission bits.

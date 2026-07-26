@@ -90,6 +90,21 @@ impl FileHandleTable {
         let mut table = self.inner.table.write().await;
         table.get_mut(&fd).map(f)
     }
+
+    /// Look up the raw OS fd for a given logical fd handle.  Used by the
+    /// spawn_blocking closures so they can issue libc syscalls without
+    /// holding the tokio RwLock across the syscall.
+    ///
+    /// SAFETY: the returned raw fd is valid only until the underlying
+    /// `FileHandle`'s `File` is dropped (i.e., until `remove` is called).
+    /// Callers must not close it directly, and must not use it after any
+    /// intervening `remove(fd)`.
+    #[cfg(unix)]
+    pub async fn raw_fd(&self, fd: u64) -> Option<i32> {
+        use std::os::fd::AsRawFd;
+        let table = self.inner.table.read().await;
+        table.get(&fd).map(|h| h.file.as_raw_fd())
+    }
 }
 
 impl Default for FileHandleTable {

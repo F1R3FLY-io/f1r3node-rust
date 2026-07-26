@@ -415,6 +415,7 @@ pub struct ProcessContext {
 }
 
 impl ProcessContext {
+    #[allow(clippy::too_many_arguments)]
     pub fn create(
         space: RhoISpace,
         dispatcher: RhoDispatch,
@@ -426,6 +427,8 @@ impl ProcessContext {
         ollama_service: SharedOllamaService,
         grpc_client_service: GrpcClientService,
         chromadb_service: SharedChromaDBService,
+        fs_handles: super::io::handle_table::FileHandleTable,
+        fs_mode: super::io::ConsensusMode,
     ) -> Self {
         ProcessContext {
             space: space.clone(),
@@ -444,6 +447,8 @@ impl ProcessContext {
                 ollama_service,
                 grpc_client_service,
                 chromadb_service,
+                fs_handles,
+                fs_mode,
             ),
         }
     }
@@ -610,6 +615,7 @@ pub struct SystemProcesses {
 }
 
 impl SystemProcesses {
+    #[allow(clippy::too_many_arguments)]
     fn create(
         dispatcher: RhoDispatch,
         space: RhoISpace,
@@ -620,15 +626,14 @@ impl SystemProcesses {
         ollama_service: SharedOllamaService,
         grpc_client_service: GrpcClientService,
         chromadb_service: SharedChromaDBService,
+        fs_handles: super::io::handle_table::FileHandleTable,
+        fs_mode: super::io::ConsensusMode,
     ) -> Self {
         let fs = super::io::handlers::FsProcesses::new(
             dispatcher.clone(),
             space.clone(),
-            super::io::handle_table::FileHandleTable::new(),
-            // TODO: thread ConsensusMode through ProcessContext.  Defaults
-            // to Oracular; the consensus-mode wiring lands with the
-            // consensus-mode filesystem-sync FIP.
-            super::io::ConsensusMode::Oracular,
+            fs_handles,
+            fs_mode,
         );
         SystemProcesses {
             dispatcher,

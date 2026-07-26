@@ -258,9 +258,18 @@ pub struct RhoRuntimeImpl {
     pub invalid_blocks_param: InvalidBlocks,
     pub deploy_data_ref: Arc<tokio::sync::RwLock<DeployData>>,
     pub merge_chs: Arc<tokio::sync::RwLock<HashMap<Par, MergeType>>>,
+    /// Per-runtime File I/O fd table (spec §Phase 1).  Shared with every
+    /// `FsProcesses` handler via `Arc` under the hood so fds opened by
+    /// `fs_open` are visible to `fs_read` / `fs_close` etc.
+    pub fs_handles: super::io::handle_table::FileHandleTable,
+    /// Snapshot of the fd counter captured at soft-checkpoint time.
+    /// On revert we truncate to this value, freeing every fd allocated
+    /// after the checkpoint (spec §Fd-table lifecycle).
+    fs_snapshot: Arc<std::sync::Mutex<Option<u64>>>,
 }
 
 impl RhoRuntimeImpl {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         reducer: Arc<DebruijnInterpreter>,
         cost: _cost,
@@ -268,6 +277,7 @@ impl RhoRuntimeImpl {
         invalid_blocks_param: InvalidBlocks,
         deploy_data_ref: Arc<tokio::sync::RwLock<DeployData>>,
         merge_chs: Arc<tokio::sync::RwLock<HashMap<Par, MergeType>>>,
+        fs_handles: super::io::handle_table::FileHandleTable,
     ) -> RhoRuntimeImpl {
         RhoRuntimeImpl {
             reducer,
@@ -276,6 +286,8 @@ impl RhoRuntimeImpl {
             invalid_blocks_param,
             deploy_data_ref,
             merge_chs,
+            fs_handles,
+            fs_snapshot: Arc::new(std::sync::Mutex::new(None)),
         }
     }
 
@@ -318,6 +330,14 @@ impl RhoRuntime for RhoRuntimeImpl {
     ) -> SoftCheckpoint<Par, BindPattern, ListParWithRandom, TaggedContinuation> {
         let start = Instant::now();
         let checkpoint = self.reducer.space.create_soft_checkpoint().await;
+        // Snapshot the fd counter so an evaluation error can roll back
+        // any opens issued during the deploy — spec §Phase 1 fd-table
+        // lifecycle.  Monotonic counter guarantees no fd aliasing across
+        // rollback boundaries.
+        {
+            let mut snap = self.fs_snapshot.lock().unwrap();
+            *snap = Some(self.fs_handles.snapshot_next_fd());
+        }
         metrics::histogram!(CREATE_SOFT_CHECKPOINT_TIME_METRIC, "source" => RUNTIME_METRICS_SOURCE)
             .record(start.elapsed().as_secs_f64());
         metrics::counter!(RUNTIME_SOFT_CHECKPOINT_TOTAL_METRIC, "source" => RUNTIME_METRICS_SOURCE)
@@ -354,6 +374,15 @@ impl RhoRuntime for RhoRuntimeImpl {
             "source" => RUNTIME_METRICS_SOURCE
         )
         .increment(1);
+        // Roll back the fd table to the snapshot captured at
+        // create_soft_checkpoint time.  Any fds opened during the failed
+        // eval are closed and removed; the monotonic counter is not
+        // rewound so stale fds observed by any caller reliably see
+        // FSERR_CLOSED rather than aliasing a later open.
+        let snap = { self.fs_snapshot.lock().unwrap().take() };
+        if let Some(s) = snap {
+            self.fs_handles.truncate_to(s).await;
+        }
         self.reducer
             .space
             .revert_to_soft_checkpoint(soft_checkpoint)
@@ -832,73 +861,76 @@ fn std_system_processes() -> Vec<Definition> {
             BodyRefs::FS_FLUSH,
             |sp, args| Box::pin(async move { sp.fs.fs_flush(args).await }),
         ),
+        // Arities include the trailing ack channel.  Per B1 fix, every
+        // path-taking handler takes (rootCanon, rel, ...) — see handler
+        // signatures in handlers.rs.
         fs_native_def(
             "rho:io:fs:native:1.0.0/stat",
             FixedChannels::fs_stat(),
-            2,
+            3, // (rootCanon, rel, ack)
             BodyRefs::FS_STAT,
             |sp, args| Box::pin(async move { sp.fs.fs_stat(args).await }),
         ),
         fs_native_def(
             "rho:io:fs:native:1.0.0/exists",
             FixedChannels::fs_exists(),
-            2,
+            3, // (rootCanon, rel, ack)
             BodyRefs::FS_EXISTS,
             |sp, args| Box::pin(async move { sp.fs.fs_exists(args).await }),
         ),
         fs_native_def(
             "rho:io:fs:native:1.0.0/entries",
             FixedChannels::fs_entries(),
-            2,
+            3, // (rootCanon, rel, ack)
             BodyRefs::FS_ENTRIES,
             |sp, args| Box::pin(async move { sp.fs.fs_entries(args).await }),
         ),
         fs_native_def(
             "rho:io:fs:native:1.0.0/entriesStream",
             FixedChannels::fs_entries_stream(),
-            2,
+            3, // (rootCanon, rel, ack)
             BodyRefs::FS_ENTRIES_STREAM,
             |sp, args| Box::pin(async move { sp.fs.fs_entries_stream(args).await }),
         ),
         fs_native_def(
             "rho:io:fs:native:1.0.0/rename",
             FixedChannels::fs_rename(),
-            3,
+            5, // (fromRootCanon, fromRel, toRootCanon, toRel, ack)
             BodyRefs::FS_RENAME,
             |sp, args| Box::pin(async move { sp.fs.fs_rename(args).await }),
         ),
         fs_native_def(
             "rho:io:fs:native:1.0.0/copyFile",
             FixedChannels::fs_copy_file(),
-            3,
+            5, // (fromRootCanon, fromRel, toRootCanon, toRel, ack)
             BodyRefs::FS_COPY_FILE,
             |sp, args| Box::pin(async move { sp.fs.fs_copy_file(args).await }),
         ),
         fs_native_def(
             "rho:io:fs:native:1.0.0/removeFile",
             FixedChannels::fs_remove_file(),
-            2,
+            3, // (rootCanon, rel, ack)
             BodyRefs::FS_REMOVE_FILE,
             |sp, args| Box::pin(async move { sp.fs.fs_remove_file(args).await }),
         ),
         fs_native_def(
             "rho:io:fs:native:1.0.0/removeDir",
             FixedChannels::fs_remove_dir(),
-            3,
+            4, // (rootCanon, rel, recursive, ack)
             BodyRefs::FS_REMOVE_DIR,
             |sp, args| Box::pin(async move { sp.fs.fs_remove_dir(args).await }),
         ),
         fs_native_def(
             "rho:io:fs:native:1.0.0/chmod",
             FixedChannels::fs_chmod(),
-            3,
+            4, // (rootCanon, rel, modeBits, ack)
             BodyRefs::FS_CHMOD,
             |sp, args| Box::pin(async move { sp.fs.fs_chmod(args).await }),
         ),
         fs_native_def(
             "rho:io:fs:native:1.0.0/chown",
             FixedChannels::fs_chown(),
-            4,
+            5, // (rootCanon, rel, owner, group, ack)
             BodyRefs::FS_CHOWN,
             |sp, args| Box::pin(async move { sp.fs.fs_chown(args).await }),
         ),
@@ -1199,6 +1231,7 @@ fn std_rho_chroma_processes() -> Vec<Definition> {
 #[cfg(not(feature = "chromadb"))]
 fn std_rho_chroma_processes() -> Vec<Definition> { vec![] }
 
+#[allow(clippy::too_many_arguments)]
 fn dispatch_table_creator(
     space: RhoISpace,
     dispatcher: RhoDispatch,
@@ -1211,6 +1244,8 @@ fn dispatch_table_creator(
     ollama_service: SharedOllamaService,
     grpc_client_service: GrpcClientService,
     chromadb_service: SharedChromaDBService,
+    fs_handles: super::io::handle_table::FileHandleTable,
+    fs_mode: super::io::ConsensusMode,
 ) -> RhoDispatchMap {
     let mut dispatch_table = HashMap::new();
 
@@ -1236,6 +1271,8 @@ fn dispatch_table_creator(
             ollama_service.clone(),
             grpc_client_service.clone(),
             chromadb_service.clone(),
+            fs_handles.clone(),
+            fs_mode,
         ));
 
         dispatch_table.insert(tuple.0, tuple.1);
@@ -1302,6 +1339,7 @@ fn basic_processes() -> HashMap<String, Par> {
     map
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn setup_reducer(
     charging_rspace: RhoISpace,
     block_data_ref: Arc<tokio::sync::RwLock<BlockData>>,
@@ -1315,6 +1353,8 @@ async fn setup_reducer(
     ollama_service: SharedOllamaService,
     grpc_client_service: GrpcClientService,
     chromadb_service: SharedChromaDBService,
+    fs_handles: super::io::handle_table::FileHandleTable,
+    fs_mode: super::io::ConsensusMode,
     cost: _cost,
 ) -> Arc<DebruijnInterpreter> {
     let reducer_cell = Arc::new(std::sync::OnceLock::new());
@@ -1342,6 +1382,8 @@ async fn setup_reducer(
         ollama_service,
         grpc_client_service,
         chromadb_service,
+        fs_handles,
+        fs_mode,
     );
 
     let dispatcher = Arc::new(RholangAndScalaDispatcher {
@@ -1419,6 +1461,7 @@ fn setup_maps_and_refs(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn create_rho_env<T>(
     mut rspace: T,
     merge_chs: Arc<tokio::sync::RwLock<HashMap<Par, MergeType>>>,
@@ -1431,6 +1474,7 @@ pub async fn create_rho_env<T>(
     Arc<tokio::sync::RwLock<BlockData>>,
     InvalidBlocks,
     Arc<tokio::sync::RwLock<DeployData>>,
+    super::io::handle_table::FileHandleTable,
 )
 where
     T: ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>
@@ -1476,6 +1520,12 @@ where
     let ollama_service = external_services.ollama.clone();
     let grpc_client_service = external_services.grpc_client.clone();
     let chromadb_service = external_services.chroma.clone();
+    // Create the fd table ONCE at runtime setup — all 22 fs handlers
+    // clone into their own ProcessContext but the underlying table is
+    // Arc-shared so fds survive across dispatches within the runtime.
+    let fs_handles = super::io::handle_table::FileHandleTable::new();
+    let fs_mode = super::io::ConsensusMode::default();
+
     let reducer = setup_reducer(
         charging_rspace,
         block_data_ref.clone(),
@@ -1489,11 +1539,19 @@ where
         ollama_service,
         grpc_client_service,
         chromadb_service,
+        fs_handles.clone(),
+        fs_mode,
         cost,
     )
     .await;
 
-    (reducer, block_data_ref, invalid_blocks, deploy_data_ref)
+    (
+        reducer,
+        block_data_ref,
+        invalid_blocks,
+        deploy_data_ref,
+        fs_handles,
+    )
 }
 
 // This is from Nassim Taleb's "Skin in the Game"
@@ -1540,7 +1598,7 @@ where
     )
     .await;
 
-    let (reducer, block_ref, invalid_blocks, deploy_ref) = rho_env;
+    let (reducer, block_ref, invalid_blocks, deploy_ref, fs_handles) = rho_env;
     let mut runtime = RhoRuntimeImpl::new(
         reducer,
         cost,
@@ -1548,6 +1606,7 @@ where
         invalid_blocks,
         deploy_ref,
         merge_chs,
+        fs_handles,
     );
 
     if init_registry {

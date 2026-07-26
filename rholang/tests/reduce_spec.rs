@@ -5317,3 +5317,254 @@ async fn cross_bind_guard_non_commutative_does_not_fire_when_data_violates_per_b
     let row_b = result.get(&vec![chan_b]).expect("chan b state present");
     assert_eq!(row_b.data.len(), 1, "rejected b=200 stays");
 }
+
+// ---------------------------------------------------------------------
+// File I/O FIP Phase 2: validUtf8PrefixLen / decodeUtf8 / concatBytes.
+// Method table registration lives in reduce.rs; these tests exercise
+// the dispatch end-to-end through the reducer.
+// ---------------------------------------------------------------------
+
+use models::rust::utils::new_gbytearray_par;
+
+fn method_call(name: &str, target: Par, args: Vec<Par>) -> Par {
+    Par::default().with_exprs(vec![Expr {
+        expr_instance: Some(ExprInstance::EMethodBody(EMethod {
+            method_name: name.to_string(),
+            target: Some(target),
+            arguments: args,
+            locally_free: vec![],
+            connective_used: false,
+        })),
+    }])
+}
+
+/// Evaluate `method`, sending its Par-value result to a well-known channel
+/// so the test can inspect it via `space.to_map()`.  Returns the first
+/// datum's `pars` (the Par values sent on the "out" channel).
+macro_rules! run_and_read {
+    ($space:expr, $reducer:expr, $call:expr) => {{
+        let split = rand().split_byte(0);
+        let chan = new_gstring_par("out".to_string(), Vec::new(), false);
+        let send = Par::default().with_sends(vec![Send {
+            chan: Some(chan.clone()),
+            data: vec![$call],
+            persistent: false,
+            locally_free: Vec::new(),
+            connective_used: false,
+        }]);
+        $reducer
+            .eval(send, &Env::new(), split.clone())
+            .await
+            .unwrap();
+        let map = $space.to_map().await;
+        let row = map.get(&vec![chan]).expect("send landed").clone();
+        assert!(!row.data.is_empty(), "no data on out channel");
+        row.data[0].a.pars.clone()
+    }};
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn valid_utf8_prefix_len_returns_full_length_on_valid_input() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let bytes = "café".as_bytes().to_vec(); // 5 bytes, all valid UTF-8
+    let target = new_gbytearray_par(bytes.clone(), Vec::new(), false);
+    let call = method_call("validUtf8PrefixLen", target, vec![]);
+    let out = run_and_read!(space, reducer, call);
+    assert_eq!(out.len(), 1);
+    let n = models::rust::rholang::implicits::single_expr(&out[0])
+        .and_then(|e| match e.expr_instance {
+            Some(ExprInstance::GInt(v)) => Some(v),
+            _ => None,
+        })
+        .expect("GInt reply");
+    assert_eq!(n, bytes.len() as i64);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn valid_utf8_prefix_len_stops_at_ill_formed_continuation() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    // Valid "ab" then a bare continuation byte (0x80) with no lead byte.
+    let bytes: Vec<u8> = vec![b'a', b'b', 0x80, 0x81];
+    let target = new_gbytearray_par(bytes, Vec::new(), false);
+    let call = method_call("validUtf8PrefixLen", target, vec![]);
+    let out = run_and_read!(space, reducer, call);
+    let n = models::rust::rholang::implicits::single_expr(&out[0])
+        .and_then(|e| match e.expr_instance {
+            Some(ExprInstance::GInt(v)) => Some(v),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(n, 2);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn valid_utf8_prefix_len_empty_bytes_returns_zero() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let target = new_gbytearray_par(vec![], Vec::new(), false);
+    let call = method_call("validUtf8PrefixLen", target, vec![]);
+    let out = run_and_read!(space, reducer, call);
+    let n = models::rust::rholang::implicits::single_expr(&out[0])
+        .and_then(|e| match e.expr_instance {
+            Some(ExprInstance::GInt(v)) => Some(v),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(n, 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn decode_utf8_substitutes_u_fffd_for_ill_formed_sequences() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let bytes: Vec<u8> = vec![b'a', 0xC3, 0x28, b'b']; // 0xC3,0x28 is ill-formed
+    let target = new_gbytearray_par(bytes, Vec::new(), false);
+    let call = method_call("decodeUtf8", target, vec![]);
+    let out = run_and_read!(space, reducer, call);
+    let s = models::rust::rholang::implicits::single_expr(&out[0])
+        .and_then(|e| match e.expr_instance {
+            Some(ExprInstance::GString(s)) => Some(s),
+            _ => None,
+        })
+        .unwrap();
+    // Rust's from_utf8_lossy replaces the ill-formed sequence with U+FFFD.
+    assert!(
+        s.contains('\u{FFFD}'),
+        "expected U+FFFD substitution, got {s:?}"
+    );
+    assert!(s.starts_with('a'));
+    assert!(s.ends_with('b'));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn decode_utf8_valid_bytes_roundtrip() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = "hello, 世界";
+    let target = new_gbytearray_par(src.as_bytes().to_vec(), Vec::new(), false);
+    let call = method_call("decodeUtf8", target, vec![]);
+    let out = run_and_read!(space, reducer, call);
+    let s = models::rust::rholang::implicits::single_expr(&out[0])
+        .and_then(|e| match e.expr_instance {
+            Some(ExprInstance::GString(s)) => Some(s),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(s, src);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concat_bytes_joins_a_list_of_byte_arrays() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let parts = vec![
+        new_gbytearray_par(b"foo".to_vec(), Vec::new(), false),
+        new_gbytearray_par(b"".to_vec(), Vec::new(), false),
+        new_gbytearray_par(b"bar".to_vec(), Vec::new(), false),
+    ];
+    let list = new_elist_par(parts, Vec::new(), false, None, Vec::new(), false);
+    let call = method_call("concatBytes", list, vec![]);
+    let out = run_and_read!(space, reducer, call);
+    let bytes = models::rust::rholang::implicits::single_expr(&out[0])
+        .and_then(|e| match e.expr_instance {
+            Some(ExprInstance::GByteArray(b)) => Some(b),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(bytes, b"foobar".to_vec());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concat_bytes_empty_list_returns_empty_bytes() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let list = new_elist_par(vec![], Vec::new(), false, None, Vec::new(), false);
+    let call = method_call("concatBytes", list, vec![]);
+    let out = run_and_read!(space, reducer, call);
+    let bytes = models::rust::rholang::implicits::single_expr(&out[0])
+        .and_then(|e| match e.expr_instance {
+            Some(ExprInstance::GByteArray(b)) => Some(b),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(bytes, Vec::<u8>::new());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concat_bytes_non_bytearray_element_raises_method_not_defined() {
+    let (_space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let list = new_elist_par(
+        vec![
+            new_gbytearray_par(b"ok".to_vec(), Vec::new(), false),
+            new_gint_par(42, Vec::new(), false), // wrong type
+        ],
+        Vec::new(),
+        false,
+        None,
+        Vec::new(),
+        false,
+    );
+    let call = method_call("concatBytes", list, vec![]);
+    let res = reducer.eval(call, &Env::new(), rand()).await;
+    assert!(matches!(
+        res,
+        Err(InterpreterError::MethodNotDefined { .. })
+    ));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concat_bytes_non_list_receiver_raises_method_not_defined() {
+    let (_space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let target = new_gstring_par("not a list".to_string(), Vec::new(), false);
+    let call = method_call("concatBytes", target, vec![]);
+    let res = reducer.eval(call, &Env::new(), rand()).await;
+    assert!(matches!(
+        res,
+        Err(InterpreterError::MethodNotDefined { .. })
+    ));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn valid_utf8_prefix_len_non_bytearray_raises() {
+    let (_space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let target = new_gstring_par("hi".to_string(), Vec::new(), false);
+    let call = method_call("validUtf8PrefixLen", target, vec![]);
+    let res = reducer.eval(call, &Env::new(), rand()).await;
+    assert!(matches!(
+        res,
+        Err(InterpreterError::MethodNotDefined { .. })
+    ));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn decode_utf8_arity_mismatch_when_called_with_arg() {
+    let (_space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let target = new_gbytearray_par(b"x".to_vec(), Vec::new(), false);
+    let call = method_call("decodeUtf8", target, vec![new_gint_par(
+        0,
+        Vec::new(),
+        false,
+    )]);
+    let res = reducer.eval(call, &Env::new(), rand()).await;
+    assert!(matches!(
+        res,
+        Err(InterpreterError::MethodArgumentNumberMismatch { .. })
+    ));
+}
