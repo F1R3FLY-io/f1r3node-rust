@@ -5682,3 +5682,194 @@ async fn match_case_with_unsatisfied_spatial_guard_should_fall_through() {
         "the guarded case failed shut and the next case fired instead"
     );
 }
+
+// ════════════════════════════════════════════════════════════════════════════
+// Defect D1 — a `where`-guard rejection backtracks to the next resting datum
+// ════════════════════════════════════════════════════════════════════════════
+
+/// The guard `BoundVar(0) <= 45` — what `for(@px <- @"offer" where px <= 45)`
+/// lowers to for a single bind, with `px` at de Bruijn index 0.
+fn guard_first_bound_at_most_45() -> Par {
+    Par::default().with_exprs(vec![Expr {
+        expr_instance: Some(ExprInstance::ELteBody(models::rhoapi::ELte {
+            p1: Some(new_boundvar_par(0, models::create_bit_vector(&vec![0]), false)),
+            p2: Some(new_gint_par(45, Vec::new(), false)),
+        })),
+    }])
+}
+
+/// A single-bind guarded receive on `@"offer"` with an empty body: what fires
+/// is observable entirely in the store (which datum is gone, which remains).
+fn guarded_offer_receive() -> Par {
+    Par::default().with_receives(vec![Receive {
+        binds: vec![ReceiveBind {
+            patterns: vec![new_freevar_par(0, Vec::new())],
+            source: Some(new_gstring_par("offer".to_string(), Vec::new(), false)),
+            remainder: None,
+            free_count: 1,
+        }],
+        body: Some(Par::default()),
+        persistent: false,
+        peek: false,
+        bind_count: 1,
+        locally_free: Vec::new(),
+        connective_used: false,
+        condition: Some(guard_first_bound_at_most_45()),
+    }])
+}
+
+fn offer_send(amount: i64) -> Par {
+    Par::default().with_sends(vec![Send {
+        chan: Some(new_gstring_par("offer".to_string(), Vec::new(), false)),
+        data: vec![new_gint_par(amount, Vec::new(), false)],
+        persistent: false,
+        locally_free: Vec::new(),
+        connective_used: false,
+    }])
+}
+
+/// The integers resting on `@"offer"`, sorted.
+fn resting_offers(result: &HashMap<Vec<Par>, Row<BindPattern, ListParWithRandom, TaggedContinuation>>) -> Vec<i64> {
+    let key = vec![new_gstring_par("offer".to_string(), Vec::new(), false)];
+    let mut amounts: Vec<i64> = match result.get(&key) {
+        None => Vec::new(),
+        Some(row) => row
+            .data
+            .iter()
+            .flat_map(|datum| datum.a.pars.iter())
+            .flat_map(|par| par.exprs.iter())
+            .filter_map(|expr| match expr.expr_instance {
+                Some(ExprInstance::GInt(value)) => Some(value),
+                _ => None,
+            })
+            .collect(),
+    };
+    amounts.sort();
+    amounts
+}
+
+/// ⚠ Defect **D1**, end to end through the real reducer and the real matcher.
+///
+/// Two offers rest on `@"offer"` — a 55 the guard rejects and a 42 it admits —
+/// and only THEN is the guarded receive installed, so there is no later produce
+/// to re-trigger the rendezvous and whatever the consume decides is final. The
+/// 42 satisfies the guard, so the COMM is enabled, so it must fire; the matcher
+/// used to take one spatial pick, ask the guard once, and on rejection install
+/// the continuation and leave both offers resting.
+///
+/// The `55 | 42` order is the one the settlement demo's Beat 3 uses.
+///
+/// ★ This test and its sibling
+/// [`the_guarded_selection_does_not_depend_on_arrival_order`] are a PAIR, and
+/// the pair is the experiment. They differ only in which send receives which
+/// `split_byte` of the fixed seed — and therefore in the `random_state` each
+/// datum carries, and therefore in the byte order the candidate pool is
+/// canonicalized into. Run against the PRE-FIX matcher in a control worktree,
+/// THIS one passes (that seed happens to present the 42 first, so the single
+/// spatial pick got lucky) and the sibling FAILS (the 55 comes first, the guard
+/// rejects it, and the rendezvous strands). That is the demo's 12-settlements-
+/// 8-stalls split reproduced deterministically: the outcome was decided by
+/// payload bytes nobody wrote. Post-fix both settle, because the guard decides.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn guard_rejection_backtracks_to_the_next_resting_datum() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+
+    let env: Env<Par> = Env::new();
+    reducer
+        .eval(offer_send(55), &env, rand().split_byte(0))
+        .await
+        .expect("the inadmissible offer rests");
+    reducer
+        .eval(offer_send(42), &env, rand().split_byte(1))
+        .await
+        .expect("the admissible offer rests");
+    reducer
+        .eval(guarded_offer_receive(), &env, rand().split_byte(2))
+        .await
+        .expect("the guarded receive evaluates");
+
+    let result = space.to_map().await;
+    assert_eq!(
+        resting_offers(&result),
+        vec![55],
+        "⚠ DEFECT D1: the 42 satisfies the guard, so the COMM was ENABLED and must have fired, \
+         consuming the 42 and leaving the 55 on the book: {result:?}"
+    );
+    let key = vec![new_gstring_par("offer".to_string(), Vec::new(), false)];
+    assert!(
+        result.get(&key).map(|row| row.wks.is_empty()).unwrap_or(true),
+        "the receive fired, so no continuation may still be waiting: {result:?}"
+    );
+}
+
+/// ★ The witness half of the pair (see
+/// [`guard_rejection_backtracks_to_the_next_resting_datum`]): the ORDER in
+/// which the two offers arrive must not decide the outcome. Same program,
+/// produces swapped — which swaps the `random_state` each datum carries and so
+/// flips the canonical candidate order, presenting the inadmissible 55 first.
+/// Against the pre-fix matcher this FAILS: the single spatial pick lands on the
+/// 55, the guard rejects it, and an enabled COMM is left unfired with the 42
+/// still on the book.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_guarded_selection_does_not_depend_on_arrival_order() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+
+    let env: Env<Par> = Env::new();
+    reducer
+        .eval(offer_send(42), &env, rand().split_byte(0))
+        .await
+        .expect("the admissible offer rests");
+    reducer
+        .eval(offer_send(55), &env, rand().split_byte(1))
+        .await
+        .expect("the inadmissible offer rests");
+    reducer
+        .eval(guarded_offer_receive(), &env, rand().split_byte(2))
+        .await
+        .expect("the guarded receive evaluates");
+
+    assert_eq!(
+        resting_offers(&space.to_map().await),
+        vec![55],
+        "arrival order must not decide which datum settles"
+    );
+}
+
+/// The negative: when NO resting offer satisfies the guard, the receive rests.
+/// Every datum stays, the continuation is installed, and nothing is invented —
+/// the property a "fix" that merely weakened the guard would break.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_guard_no_resting_offer_satisfies_leaves_the_book_intact() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+
+    let env: Env<Par> = Env::new();
+    for (index, amount) in [55, 68, 91].into_iter().enumerate() {
+        reducer
+            .eval(offer_send(amount), &env, rand().split_byte(index as i8))
+            .await
+            .expect("the inadmissible offer rests");
+    }
+    reducer
+        .eval(guarded_offer_receive(), &env, rand().split_byte(3))
+        .await
+        .expect("the guarded receive evaluates");
+
+    let result = space.to_map().await;
+    assert_eq!(
+        resting_offers(&result),
+        vec![55, 68, 91],
+        "no offer satisfies the guard, so none may be consumed and none invented: {result:?}"
+    );
+    let key = vec![new_gstring_par("offer".to_string(), Vec::new(), false)];
+    assert_eq!(
+        result.get(&key).map(|row| row.wks.len()).unwrap_or(0),
+        1,
+        "…and the guarded receive is installed and waiting: {result:?}"
+    );
+}

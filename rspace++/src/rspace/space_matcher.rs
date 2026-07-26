@@ -471,8 +471,20 @@ where
             cursor = position + 1;
         }
 
-        // Exhausted: restore this level's pool for whoever scans next.
-        channel_to_indexed_data.insert(channel.clone(), pool);
+        // Exhausted: restore this level's pool for whoever scans next. A last
+        // bind never wrote to the map, so there is nothing to put back.
+        //
+        // The snapshot itself is still taken at every level, including the last,
+        // because the recursive call needs `&mut` on the map and the borrow
+        // checker cannot see that a last bind's recursion only reaches the leaf.
+        // That is where the remaining constant of the quadratic corner lives
+        // (about half of it, measured); buying it back means hoisting the leaf
+        // out of the recursion, which duplicates the one place `check_commit` is
+        // called. Not worth it for a corner only a guarded join over two
+        // well-populated channels can enter.
+        if !is_last_bind {
+            channel_to_indexed_data.insert(channel.clone(), pool);
+        }
         match any_leaf_reached {
             true => SelectionOutcome::GuardRejected,
             false => SelectionOutcome::NoSpatialMatch,
