@@ -1,0 +1,551 @@
+// Buffer.rho — File I/O FIP §Buffers library (MVP slice).
+//
+// This is the first-pass implementation, covering:
+//   - `Buffer` agent with: constructor, capacity, length, remaining,
+//     isEmpty, isFull, unit, writeBytes, read, toByteArray, close,
+//     beginFill, endFill, default.
+//   - `Allocator` agent with `alloc(n, unit)`, `allocBytes`,
+//     `allocUtf8`, `default`.
+//
+// Deferred to follow-up commits:
+//   - `writeByte`, `slice`, `validUtf8PrefixLen`, `view`, `clear`
+//     (§Buffer > Reads / Writes / Lifecycle).
+//   - `Rows` agent + `allocRows` (§Fixed-size line reading).
+//   - Publication to a fixed registry URN (currently the allocator is
+//     minted but not published — tests scope it via inline `new`).
+//   - The pairwise-merge helper `mergePairs` — for the MVP the `read`
+//     method inlines a right-fold chunk gather.  A follow-up will
+//     replace with the Θ(ℓ log ν) balanced pairwise merge required by
+//     §Cost accounting > Buffers (currently Θ(ℓ ν) for ν chunks; still
+//     correct, just costlier).
+//
+// State layout (spec §Buffers > Implementation notes):
+//   metadata @[*private, *metaP]   — a 7-tuple or "REVOKED"
+//   chunks   @[*private, *chunkP, j] — one segment per accepted write,
+//                                       j ∈ [lo, hi); indices MONOTONIC
+//                                       — clear() advances lo to hi.
+//
+// Concurrency: every named method acquires the metadata token via
+// linear-receive with a free-variable pattern (spec §Metadata-token
+// mutex), matches "REVOKED" first, does its work, and re-parks the
+// token on every exit path.  The catch-all `_` arm makes the mutex
+// robust against a hypothetical third payload shape.
+
+new Buffer, Allocator, metaP, chunkP, gatherChunks in {
+
+  // ==================================================================
+  // Buffer agent
+  // ==================================================================
+  agent Buffer {
+    constructor(@capBytes, @unit) {
+      @[*private, *metaP]!((0, 0, capBytes, unit, "none", 0, 0))
+    } |
+
+    // -- Metadata queries (hold the token per spec §Metadata queries) --
+
+    method capacity() {
+      for (@meta <- @[*private, *metaP]) {
+        match meta {
+          "REVOKED" => {
+            @[*private, *metaP]!("REVOKED") |
+            return!([false, "BUFERR_REVOKED", "buffer is closed"])
+          }
+          (_ell, _rho, cap, _u, _l, _lo, _hi) => {
+            @[*private, *metaP]!(meta) |
+            return!([true, cap])
+          }
+          _ => {
+            @[*private, *metaP]!(meta) |
+            return!([false, "BUFERR_REVOKED", "buffer state unrecognized"])
+          }
+        }
+      }
+    } |
+
+    method length() {
+      for (@meta <- @[*private, *metaP]) {
+        match meta {
+          "REVOKED" => {
+            @[*private, *metaP]!("REVOKED") |
+            return!([false, "BUFERR_REVOKED", "buffer is closed"])
+          }
+          (ell, _rho, _cap, _u, _l, _lo, _hi) => {
+            @[*private, *metaP]!(meta) |
+            return!([true, ell])
+          }
+          _ => {
+            @[*private, *metaP]!(meta) |
+            return!([false, "BUFERR_REVOKED", "buffer state unrecognized"])
+          }
+        }
+      }
+    } |
+
+    method remaining() {
+      for (@meta <- @[*private, *metaP]) {
+        match meta {
+          "REVOKED" => {
+            @[*private, *metaP]!("REVOKED") |
+            return!([false, "BUFERR_REVOKED", "buffer is closed"])
+          }
+          (ell, _rho, cap, _u, _l, _lo, _hi) => {
+            @[*private, *metaP]!(meta) |
+            return!([true, cap - ell])
+          }
+          _ => {
+            @[*private, *metaP]!(meta) |
+            return!([false, "BUFERR_REVOKED", "buffer state unrecognized"])
+          }
+        }
+      }
+    } |
+
+    method isEmpty() {
+      for (@meta <- @[*private, *metaP]) {
+        match meta {
+          "REVOKED" => {
+            @[*private, *metaP]!("REVOKED") |
+            return!([false, "BUFERR_REVOKED", "buffer is closed"])
+          }
+          (ell, _rho, _cap, _u, _l, _lo, _hi) => {
+            @[*private, *metaP]!(meta) |
+            return!([true, ell == 0])
+          }
+          _ => {
+            @[*private, *metaP]!(meta) |
+            return!([false, "BUFERR_REVOKED", "buffer state unrecognized"])
+          }
+        }
+      }
+    } |
+
+    method isFull() {
+      for (@meta <- @[*private, *metaP]) {
+        match meta {
+          "REVOKED" => {
+            @[*private, *metaP]!("REVOKED") |
+            return!([false, "BUFERR_REVOKED", "buffer is closed"])
+          }
+          (ell, _rho, cap, _u, _l, _lo, _hi) => {
+            @[*private, *metaP]!(meta) |
+            return!([true, ell == cap])
+          }
+          _ => {
+            @[*private, *metaP]!(meta) |
+            return!([false, "BUFERR_REVOKED", "buffer state unrecognized"])
+          }
+        }
+      }
+    } |
+
+    method unit() {
+      for (@meta <- @[*private, *metaP]) {
+        match meta {
+          "REVOKED" => {
+            @[*private, *metaP]!("REVOKED") |
+            return!([false, "BUFERR_REVOKED", "buffer is closed"])
+          }
+          (_ell, _rho, _cap, u, _l, _lo, _hi) => {
+            @[*private, *metaP]!(meta) |
+            return!([true, u])
+          }
+          _ => {
+            @[*private, *metaP]!(meta) |
+            return!([false, "BUFERR_REVOKED", "buffer state unrecognized"])
+          }
+        }
+      }
+    } |
+
+    // -- Writes ------------------------------------------------------
+
+    // writeBytes(xs) — always a (possibly short) success (spec §Write).
+    // Parks ONE chunk at index `hi` with the k accepted bytes; k = 0
+    // parks nothing (a full buffer cannot accumulate empty chunks).
+    method writeBytes(@xs) {
+      for (@meta <- @[*private, *metaP]) {
+        match meta {
+          "REVOKED" => {
+            @[*private, *metaP]!("REVOKED") |
+            return!([false, "BUFERR_REVOKED", "buffer is closed"])
+          }
+          (ell, rho, cap, u, lease, lo, hi) => {
+            // xs.length() would fail on a non-ByteArray receiver at
+            // runtime with an uncatchable method-not-defined error.
+            // We can't guard against that without try/catch inside
+            // methods; the spec accepts this by having callers only
+            // pass ByteArrays (the File-agent path always does).
+            match xs.length() {
+              xsLen => {
+                match cap - ell {
+                  room => {
+                    match (xsLen <= room) {
+                      true => {
+                        match xsLen == 0 {
+                          true => {
+                            // Zero-length: park nothing.
+                            @[*private, *metaP]!(meta) |
+                            return!([true, 0])
+                          }
+                          false => {
+                            @[*private, *chunkP, hi]!(xs) |
+                            @[*private, *metaP]!(
+                              (ell + xsLen, rho, cap, u, lease, lo, hi + 1)) |
+                            return!([true, xsLen])
+                          }
+                        }
+                      }
+                      false => {
+                        // Short write.
+                        match room == 0 {
+                          true => {
+                            @[*private, *metaP]!(meta) |
+                            return!([true, 0])
+                          }
+                          false => {
+                            @[*private, *chunkP, hi]!(xs.slice(0, room)) |
+                            @[*private, *metaP]!(
+                              (ell + room, rho, cap, u, lease, lo, hi + 1)) |
+                            return!([true, room])
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+          _ => {
+            @[*private, *metaP]!(meta) |
+            return!([false, "BUFERR_REVOKED", "buffer state unrecognized"])
+          }
+        }
+      }
+    } |
+
+    // -- Reads -------------------------------------------------------
+
+    // read(n) — consume up to n bytes from position rho, advancing rho.
+    // Refused with "BUFERR_FILLING" while a lease is held.
+    //
+    // MVP implementation: gathers chunks via a helper that reads each
+    // chunk's segment linearly and re-sends it (storage-neutral).
+    // Uses `gatherChunks` module-level helper that takes the
+    // (privateName, chunkPName, lo, hi) so it can descend into the
+    // instance's chunks.  See §Cost accounting > Buffers — MVP is
+    // linear-fold; follow-up commit substitutes the balanced
+    // pairwise merge.
+    method read(@n) {
+      for (@meta <- @[*private, *metaP]) {
+        match meta {
+          "REVOKED" => {
+            @[*private, *metaP]!("REVOKED") |
+            return!([false, "BUFERR_REVOKED", "buffer is closed"])
+          }
+          (ell, rho, cap, u, lease, lo, hi) => {
+            match lease {
+              "none" => {
+                // r = max(0, min(n, ell - rho))
+                match (n <= 0) {
+                  true => {
+                    @[*private, *metaP]!(meta) |
+                    return!([true, "".hexToBytes()])
+                  }
+                  false => {
+                    match (ell - rho) {
+                      unread => {
+                        match (unread <= 0) {
+                          true => {
+                            @[*private, *metaP]!(meta) |
+                            return!([true, "".hexToBytes()])
+                          }
+                          false => {
+                            new gCh in {
+                              gatherChunks!(*private, *chunkP, lo, hi, *gCh) |
+                              for (@allBytes <- gCh) {
+                                match (n <= unread) {
+                                  true => {
+                                    @[*private, *metaP]!(
+                                      (ell, rho + n, cap, u, lease, lo, hi)) |
+                                    return!([true, allBytes.slice(rho, rho + n)])
+                                  }
+                                  false => {
+                                    @[*private, *metaP]!(
+                                      (ell, rho + unread, cap, u, lease, lo, hi)) |
+                                    return!([true, allBytes.slice(rho, rho + unread)])
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+              _ => {
+                @[*private, *metaP]!(meta) |
+                return!([false, "BUFERR_FILLING", "fill in progress"])
+              }
+            }
+          }
+          _ => {
+            @[*private, *metaP]!(meta) |
+            return!([false, "BUFERR_REVOKED", "buffer state unrecognized"])
+          }
+        }
+      }
+    } |
+
+    // toByteArray() — copy of [0, ell), no cursor move.  Refused under
+    // held lease.
+    method toByteArray() {
+      for (@meta <- @[*private, *metaP]) {
+        match meta {
+          "REVOKED" => {
+            @[*private, *metaP]!("REVOKED") |
+            return!([false, "BUFERR_REVOKED", "buffer is closed"])
+          }
+          (ell, _rho, _cap, _u, lease, lo, hi) => {
+            match lease {
+              "none" => {
+                match ell == 0 {
+                  true => {
+                    @[*private, *metaP]!(meta) |
+                    return!([true, "".hexToBytes()])
+                  }
+                  false => {
+                    new gCh in {
+                      gatherChunks!(*private, *chunkP, lo, hi, *gCh) |
+                      for (@allBytes <- gCh) {
+                        @[*private, *metaP]!(meta) |
+                        return!([true, allBytes.slice(0, ell)])
+                      }
+                    }
+                  }
+                }
+              }
+              _ => {
+                @[*private, *metaP]!(meta) |
+                return!([false, "BUFERR_FILLING", "fill in progress"])
+              }
+            }
+          }
+          _ => {
+            @[*private, *metaP]!(meta) |
+            return!([false, "BUFERR_REVOKED", "buffer state unrecognized"])
+          }
+        }
+      }
+    } |
+
+    // -- Fill lease --------------------------------------------------
+
+    method beginFill() {
+      for (@meta <- @[*private, *metaP]) {
+        match meta {
+          "REVOKED" => {
+            @[*private, *metaP]!("REVOKED") |
+            return!([false, "BUFERR_REVOKED", "buffer is closed"])
+          }
+          (ell, rho, cap, u, lease, lo, hi) => {
+            match lease {
+              "none" => {
+                new fillToken in {
+                  @[*private, *metaP]!((ell, rho, cap, u, *fillToken, lo, hi)) |
+                  return!([true, bundle+{*fillToken}])
+                }
+              }
+              _ => {
+                @[*private, *metaP]!(meta) |
+                return!([false, "BUFERR_FILLING", "lease already held"])
+              }
+            }
+          }
+          _ => {
+            @[*private, *metaP]!(meta) |
+            return!([false, "BUFERR_REVOKED", "buffer state unrecognized"])
+          }
+        }
+      }
+    } |
+
+    method endFill(@presented) {
+      for (@meta <- @[*private, *metaP]) {
+        match meta {
+          "REVOKED" => {
+            @[*private, *metaP]!("REVOKED") |
+            return!([false, "BUFERR_REVOKED", "buffer is closed"])
+          }
+          (ell, rho, cap, u, lease, lo, hi) => {
+            match lease == presented {
+              true => {
+                @[*private, *metaP]!((ell, rho, cap, u, "none", lo, hi)) |
+                return!([true])
+              }
+              false => {
+                @[*private, *metaP]!(meta) |
+                return!([false, "BUFERR_FILLING", "lease token mismatch"])
+              }
+            }
+          }
+          _ => {
+            @[*private, *metaP]!(meta) |
+            return!([false, "BUFERR_REVOKED", "buffer state unrecognized"])
+          }
+        }
+      }
+    } |
+
+    // -- Lifecycle ---------------------------------------------------
+
+    // close() — replace metadata with "REVOKED" tombstone.  For the
+    // MVP the chunks are NOT eagerly consumed (relies on the GC FIP
+    // to reclaim at deploy end).  A follow-up will drain chunks
+    // eagerly to refund storage in-deploy per §Buffers > Lifecycle.
+    method close() {
+      for (@meta <- @[*private, *metaP]) {
+        match meta {
+          "REVOKED" => {
+            @[*private, *metaP]!("REVOKED") |
+            return!([true])
+          }
+          _ => {
+            @[*private, *metaP]!("REVOKED") |
+            return!([true])
+          }
+        }
+      }
+    } |
+
+    // -- Default arm -------------------------------------------------
+
+    default(...@args) {
+      match args {
+        [*ret, ..._] => ret!([false, "BUFERR_UNSUPPORTED", "unknown method"])
+      }
+    }
+  } |
+
+  // ==================================================================
+  // Allocator agent — the buffer factory.
+  // ==================================================================
+  //
+  // Capacity guards ordered `n <= n_max(unit)` BEFORE `n * 4` (avoid
+  // Rholang's checked-Int multiplication overflow — spec §Formal
+  // semantics > Allocation).
+  //
+  // L (platform capacity limit) = 1 GiB.  A quota-agent hook will
+  // override this once §FSERR_QUOTA_EXCEEDED lands.
+  agent Allocator {
+    constructor() { Nil } |
+
+    method alloc(@nUnits, @unit) {
+      match nUnits <= 0 {
+        true  => return!([false, "BUFERR_INVALID_CAPACITY", "nUnits must be positive"])
+        false => {
+          match unit {
+            "bytes" => {
+              match nUnits > 1073741824 {
+                true  => return!([false, "BUFERR_INVALID_CAPACITY", "exceeds platform cap"])
+                false => {
+                  for (@bufHandle <- Buffer!?(nUnits, "bytes")) {
+                    return!([true, bufHandle])
+                  }
+                }
+              }
+            }
+            "utf8" => {
+              match nUnits > 268435456 {
+                true  => return!([false, "BUFERR_INVALID_CAPACITY", "exceeds platform cap"])
+                false => {
+                  for (@bufHandle <- Buffer!?(nUnits * 4, "utf8")) {
+                    return!([true, bufHandle])
+                  }
+                }
+              }
+            }
+            _ => return!([false, "BUFERR_INVALID_UNIT", "unit must be bytes or utf8"])
+          }
+        }
+      }
+    } |
+
+    method allocBytes(@n) {
+      match n <= 0 {
+        true  => return!([false, "BUFERR_INVALID_CAPACITY", "n must be positive"])
+        false => {
+          match n > 1073741824 {
+            true  => return!([false, "BUFERR_INVALID_CAPACITY", "exceeds platform cap"])
+            false => {
+              for (@bufHandle <- Buffer!?(n, "bytes")) {
+                return!([true, bufHandle])
+              }
+            }
+          }
+        }
+      }
+    } |
+
+    method allocUtf8(@n) {
+      match n <= 0 {
+        true  => return!([false, "BUFERR_INVALID_CAPACITY", "n must be positive"])
+        false => {
+          match n > 268435456 {
+            true  => return!([false, "BUFERR_INVALID_CAPACITY", "exceeds platform cap"])
+            false => {
+              for (@bufHandle <- Buffer!?(n * 4, "utf8")) {
+                return!([true, bufHandle])
+              }
+            }
+          }
+        }
+      }
+    } |
+
+    default(...@args) {
+      match args {
+        [*ret, ..._] => ret!([false, "BUFERR_UNSUPPORTED", "unknown method"])
+      }
+    }
+  } |
+
+  // ==================================================================
+  // Module-level helper: gather chunks [lo, hi) into a single ByteArray.
+  //
+  // Takes `privateName` and `chunkPName` as parameters so it can
+  // access an instance's chunks (the caller passes `*private, *chunkP`).
+  // Uses a right-fold — cost is Θ(ℓ ν) not the spec-mandated
+  // Θ(ℓ log ν).  A follow-up commit substitutes the balanced pairwise
+  // merge via concatBytes.
+  //
+  // Storage-neutral: reads each chunk with a linear receive and
+  // immediately re-parks it, so `hi - lo` chunks remain on the
+  // tuplespace after this returns.
+  // ==================================================================
+  contract gatherChunks(@privateName, @chunkPName, @lo, @hi, ret) = {
+    match hi - lo {
+      0 => ret!("".hexToBytes())
+      _ => {
+        // Read chunk `lo`, re-park, then recurse on [lo+1, hi).
+        for (@seg <- @[privateName, chunkPName, lo]) {
+          @[privateName, chunkPName, lo]!(seg) |
+          match hi - lo == 1 {
+            true  => ret!(seg)
+            false => {
+              new tailCh in {
+                gatherChunks!(privateName, chunkPName, lo + 1, hi, *tailCh) |
+                for (@tail <- tailCh) {
+                  // Concat via the linear-charged primitive.
+                  ret!([seg, tail].concatBytes())
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
