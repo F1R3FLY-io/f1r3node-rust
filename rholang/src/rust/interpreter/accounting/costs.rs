@@ -233,6 +233,19 @@ pub fn bytes_to_hex_cost(bytes: &Vec<u8>) -> Cost {
     Cost::create(bytes.len() as i64, "bytes to hex")
 }
 
+// UTF-8 prefix scan: linear in the byte-array length.
+pub fn valid_utf8_prefix_len_cost(bytes: &[u8]) -> Cost {
+    Cost::create(bytes.len() as i64, "valid utf8 prefix len")
+}
+
+// UTF-8 decode with U+FFFD substitution: linear in the byte-array length.
+pub fn decode_utf8_cost(bytes: &[u8]) -> Cost { Cost::create(bytes.len() as i64, "decode utf8") }
+
+// Concatenation of a list of ByteArrays: linear in the total byte length.
+pub fn concat_bytes_cost(total_len: usize) -> Cost {
+    Cost::create(total_len as i64, "concat bytes")
+}
+
 // Both Set#remove and Map#remove have complexity of eC
 pub fn diff_cost(num_elements: i64) -> Cost {
     Cost::create(

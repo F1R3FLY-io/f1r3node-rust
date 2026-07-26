@@ -45,6 +45,7 @@ indexmap = { workspace = true }
 rayon = { workspace = true }
 tempfile = { workspace = true }
 clap = { workspace = true }
+libc = "0.2"
 rholang-parser = { workspace = true }
 validated = { workspace = true }
 smallvec = { version = "1.15.1", features = [

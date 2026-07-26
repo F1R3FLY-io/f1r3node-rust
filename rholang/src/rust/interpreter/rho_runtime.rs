@@ -39,7 +39,7 @@ use super::storage::charging_rspace::ChargingRSpace;
 use super::substitute::Substitute;
 use super::system_processes::{
     Arity, BlockData, BodyRef, Definition, DeployData, InvalidBlocks, Name, ProcessContext,
-    Remainder, RhoDispatchMap,
+    Remainder, RhoDispatchMap, SystemProcesses,
 };
 use crate::rust::interpreter::chromadb_service::SharedChromaDBService;
 use crate::rust::interpreter::external_services::ExternalServices;
@@ -748,7 +748,202 @@ fn std_system_processes() -> Vec<Definition> {
             }),
             remainder: None,
         },
+        // ------------------------------------------------------------------
+        // File I/O native primitives (rho:io:fs:native:1.0.0/*).
+        //
+        // Registered here for fixed-channel dispatch but filtered from the
+        // user-reachable urn_map by `is_internal_fs_native_urn`.  The only
+        // legitimate holder is the genesis-installed `Fs` agent (Phase 6).
+        // ------------------------------------------------------------------
+        fs_native_def(
+            "rho:io:fs:native:1.0.0/open",
+            FixedChannels::fs_open(),
+            4,
+            BodyRefs::FS_OPEN,
+            |sp, args| Box::pin(async move { sp.fs.fs_open(args).await }),
+        ),
+        fs_native_def(
+            "rho:io:fs:native:1.0.0/close",
+            FixedChannels::fs_close(),
+            2,
+            BodyRefs::FS_CLOSE,
+            |sp, args| Box::pin(async move { sp.fs.fs_close(args).await }),
+        ),
+        fs_native_def(
+            "rho:io:fs:native:1.0.0/read",
+            FixedChannels::fs_read(),
+            3,
+            BodyRefs::FS_READ,
+            |sp, args| Box::pin(async move { sp.fs.fs_read(args).await }),
+        ),
+        fs_native_def(
+            "rho:io:fs:native:1.0.0/readAt",
+            FixedChannels::fs_read_at(),
+            4,
+            BodyRefs::FS_READ_AT,
+            |sp, args| Box::pin(async move { sp.fs.fs_read_at(args).await }),
+        ),
+        fs_native_def(
+            "rho:io:fs:native:1.0.0/write",
+            FixedChannels::fs_write(),
+            3,
+            BodyRefs::FS_WRITE,
+            |sp, args| Box::pin(async move { sp.fs.fs_write(args).await }),
+        ),
+        fs_native_def(
+            "rho:io:fs:native:1.0.0/writeAt",
+            FixedChannels::fs_write_at(),
+            4,
+            BodyRefs::FS_WRITE_AT,
+            |sp, args| Box::pin(async move { sp.fs.fs_write_at(args).await }),
+        ),
+        fs_native_def(
+            "rho:io:fs:native:1.0.0/seek",
+            FixedChannels::fs_seek(),
+            4,
+            BodyRefs::FS_SEEK,
+            |sp, args| Box::pin(async move { sp.fs.fs_seek(args).await }),
+        ),
+        fs_native_def(
+            "rho:io:fs:native:1.0.0/tell",
+            FixedChannels::fs_tell(),
+            2,
+            BodyRefs::FS_TELL,
+            |sp, args| Box::pin(async move { sp.fs.fs_tell(args).await }),
+        ),
+        fs_native_def(
+            "rho:io:fs:native:1.0.0/size",
+            FixedChannels::fs_size(),
+            2,
+            BodyRefs::FS_SIZE,
+            |sp, args| Box::pin(async move { sp.fs.fs_size(args).await }),
+        ),
+        fs_native_def(
+            "rho:io:fs:native:1.0.0/truncate",
+            FixedChannels::fs_truncate(),
+            3,
+            BodyRefs::FS_TRUNCATE,
+            |sp, args| Box::pin(async move { sp.fs.fs_truncate(args).await }),
+        ),
+        fs_native_def(
+            "rho:io:fs:native:1.0.0/flush",
+            FixedChannels::fs_flush(),
+            2,
+            BodyRefs::FS_FLUSH,
+            |sp, args| Box::pin(async move { sp.fs.fs_flush(args).await }),
+        ),
+        fs_native_def(
+            "rho:io:fs:native:1.0.0/stat",
+            FixedChannels::fs_stat(),
+            2,
+            BodyRefs::FS_STAT,
+            |sp, args| Box::pin(async move { sp.fs.fs_stat(args).await }),
+        ),
+        fs_native_def(
+            "rho:io:fs:native:1.0.0/exists",
+            FixedChannels::fs_exists(),
+            2,
+            BodyRefs::FS_EXISTS,
+            |sp, args| Box::pin(async move { sp.fs.fs_exists(args).await }),
+        ),
+        fs_native_def(
+            "rho:io:fs:native:1.0.0/entries",
+            FixedChannels::fs_entries(),
+            2,
+            BodyRefs::FS_ENTRIES,
+            |sp, args| Box::pin(async move { sp.fs.fs_entries(args).await }),
+        ),
+        fs_native_def(
+            "rho:io:fs:native:1.0.0/entriesStream",
+            FixedChannels::fs_entries_stream(),
+            2,
+            BodyRefs::FS_ENTRIES_STREAM,
+            |sp, args| Box::pin(async move { sp.fs.fs_entries_stream(args).await }),
+        ),
+        fs_native_def(
+            "rho:io:fs:native:1.0.0/rename",
+            FixedChannels::fs_rename(),
+            3,
+            BodyRefs::FS_RENAME,
+            |sp, args| Box::pin(async move { sp.fs.fs_rename(args).await }),
+        ),
+        fs_native_def(
+            "rho:io:fs:native:1.0.0/copyFile",
+            FixedChannels::fs_copy_file(),
+            3,
+            BodyRefs::FS_COPY_FILE,
+            |sp, args| Box::pin(async move { sp.fs.fs_copy_file(args).await }),
+        ),
+        fs_native_def(
+            "rho:io:fs:native:1.0.0/removeFile",
+            FixedChannels::fs_remove_file(),
+            2,
+            BodyRefs::FS_REMOVE_FILE,
+            |sp, args| Box::pin(async move { sp.fs.fs_remove_file(args).await }),
+        ),
+        fs_native_def(
+            "rho:io:fs:native:1.0.0/removeDir",
+            FixedChannels::fs_remove_dir(),
+            3,
+            BodyRefs::FS_REMOVE_DIR,
+            |sp, args| Box::pin(async move { sp.fs.fs_remove_dir(args).await }),
+        ),
+        fs_native_def(
+            "rho:io:fs:native:1.0.0/chmod",
+            FixedChannels::fs_chmod(),
+            3,
+            BodyRefs::FS_CHMOD,
+            |sp, args| Box::pin(async move { sp.fs.fs_chmod(args).await }),
+        ),
+        fs_native_def(
+            "rho:io:fs:native:1.0.0/chown",
+            FixedChannels::fs_chown(),
+            4,
+            BodyRefs::FS_CHOWN,
+            |sp, args| Box::pin(async move { sp.fs.fs_chown(args).await }),
+        ),
+        fs_native_def(
+            "rho:io:fs:native:1.0.0/quarantine",
+            FixedChannels::fs_quarantine(),
+            3,
+            BodyRefs::FS_QUARANTINE,
+            |sp, args| Box::pin(async move { sp.fs.fs_quarantine(args).await }),
+        ),
     ]
+}
+
+/// URN prefix filter — used by `setup_maps_and_refs` to keep native FS
+/// URNs out of the user-reachable `urn_map`.  Only the genesis `Fs`
+/// agent may see them.
+fn is_internal_fs_native_urn(urn: &str) -> bool { urn.starts_with("rho:io:fs:native:") }
+
+/// Compact factory for the 22 File I/O native `Definition` rows.  Cuts
+/// the boilerplate to two lines per row.
+fn fs_native_def(
+    urn: &'static str,
+    fixed_channel: Name,
+    arity: Arity,
+    body_ref: BodyRef,
+    call: fn(
+        SystemProcesses,
+        (Vec<ListParWithRandom>, bool, Vec<Par>),
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Vec<Par>, InterpreterError>> + Send>,
+    >,
+) -> Definition {
+    Definition {
+        urn: urn.to_string(),
+        fixed_channel,
+        arity,
+        body_ref,
+        handler: Box::new(move |ctx| {
+            Box::new(move |args| {
+                let sp = ctx.system_processes.clone();
+                call(sp, args)
+            })
+        }),
+        remainder: None,
+    }
 }
 
 fn std_rho_crypto_processes() -> Vec<Definition> {
@@ -1201,7 +1396,13 @@ fn setup_maps_and_refs(
         .iter()
         .map(|process| process.to_urn_map())
         .for_each(|(key, value)| {
-            urn_map.insert(key, value);
+            // Filter out fs-native URNs — they are dispatchable via the
+            // fixed-channel mechanism but not user-lookupable through
+            // `new x(`urn`) in ...`.  Only the genesis `Fs` agent holds
+            // them (Phase 6).
+            if !is_internal_fs_native_urn(&key) {
+                urn_map.insert(key, value);
+            }
         });
 
     let proc_defs: Vec<(Par, i32, Option<Var>, i64)> = combined_processes

@@ -275,6 +275,30 @@ impl FixedChannels {
     /// future cleanup may hide it behind the byte_name once eval_new
     /// stops needing to resolve URNs through `urn_map` itself.
     pub fn registry_lookup() -> Par { byte_name(37) }
+
+    // File I/O native primitives (rho:io:fs:native:1.0.0/*).  Bytes 40-61.
+    pub fn fs_open() -> Par { byte_name(40) }
+    pub fn fs_close() -> Par { byte_name(41) }
+    pub fn fs_read() -> Par { byte_name(42) }
+    pub fn fs_read_at() -> Par { byte_name(43) }
+    pub fn fs_write() -> Par { byte_name(44) }
+    pub fn fs_write_at() -> Par { byte_name(45) }
+    pub fn fs_seek() -> Par { byte_name(46) }
+    pub fn fs_tell() -> Par { byte_name(47) }
+    pub fn fs_size() -> Par { byte_name(48) }
+    pub fn fs_truncate() -> Par { byte_name(49) }
+    pub fn fs_flush() -> Par { byte_name(50) }
+    pub fn fs_stat() -> Par { byte_name(51) }
+    pub fn fs_exists() -> Par { byte_name(52) }
+    pub fn fs_entries() -> Par { byte_name(53) }
+    pub fn fs_entries_stream() -> Par { byte_name(54) }
+    pub fn fs_rename() -> Par { byte_name(55) }
+    pub fn fs_copy_file() -> Par { byte_name(56) }
+    pub fn fs_remove_file() -> Par { byte_name(57) }
+    pub fn fs_remove_dir() -> Par { byte_name(58) }
+    pub fn fs_chmod() -> Par { byte_name(59) }
+    pub fn fs_chown() -> Par { byte_name(60) }
+    pub fn fs_quarantine() -> Par { byte_name(61) }
 }
 
 pub struct BodyRefs;
@@ -312,6 +336,30 @@ impl BodyRefs {
     pub const CHROMA_QUERY: i64 = 35;
     pub const CHROMA_DELETE_DOCUMENTS: i64 = 36;
     pub const REGISTRY_LOOKUP: i64 = 30;
+
+    // File I/O native primitives.  40-61.
+    pub const FS_OPEN: i64 = 40;
+    pub const FS_CLOSE: i64 = 41;
+    pub const FS_READ: i64 = 42;
+    pub const FS_READ_AT: i64 = 43;
+    pub const FS_WRITE: i64 = 44;
+    pub const FS_WRITE_AT: i64 = 45;
+    pub const FS_SEEK: i64 = 46;
+    pub const FS_TELL: i64 = 47;
+    pub const FS_SIZE: i64 = 48;
+    pub const FS_TRUNCATE: i64 = 49;
+    pub const FS_FLUSH: i64 = 50;
+    pub const FS_STAT: i64 = 51;
+    pub const FS_EXISTS: i64 = 52;
+    pub const FS_ENTRIES: i64 = 53;
+    pub const FS_ENTRIES_STREAM: i64 = 54;
+    pub const FS_RENAME: i64 = 55;
+    pub const FS_COPY_FILE: i64 = 56;
+    pub const FS_REMOVE_FILE: i64 = 57;
+    pub const FS_REMOVE_DIR: i64 = 58;
+    pub const FS_CHMOD: i64 = 59;
+    pub const FS_CHOWN: i64 = 60;
+    pub const FS_QUARANTINE: i64 = 61;
 }
 
 pub fn non_deterministic_ops() -> HashSet<i64> {
@@ -324,6 +372,30 @@ pub fn non_deterministic_ops() -> HashSet<i64> {
         BodyRefs::OLLAMA_MODELS,
         BodyRefs::GRPC_TELL,
         BodyRefs::CHROMA_QUERY,
+        // File I/O: every syscall must be replay-cached so followers see
+        // byte-identical results even if the underlying disk drifted.
+        BodyRefs::FS_OPEN,
+        BodyRefs::FS_CLOSE,
+        BodyRefs::FS_READ,
+        BodyRefs::FS_READ_AT,
+        BodyRefs::FS_WRITE,
+        BodyRefs::FS_WRITE_AT,
+        BodyRefs::FS_SEEK,
+        BodyRefs::FS_TELL,
+        BodyRefs::FS_SIZE,
+        BodyRefs::FS_TRUNCATE,
+        BodyRefs::FS_FLUSH,
+        BodyRefs::FS_STAT,
+        BodyRefs::FS_EXISTS,
+        BodyRefs::FS_ENTRIES,
+        BodyRefs::FS_ENTRIES_STREAM,
+        BodyRefs::FS_RENAME,
+        BodyRefs::FS_COPY_FILE,
+        BodyRefs::FS_REMOVE_FILE,
+        BodyRefs::FS_REMOVE_DIR,
+        BodyRefs::FS_CHMOD,
+        BodyRefs::FS_CHOWN,
+        BodyRefs::FS_QUARANTINE,
     ])
 }
 
@@ -534,6 +606,7 @@ pub struct SystemProcesses {
     pretty_printer: PrettyPrinter,
     #[allow(dead_code)] // Note: This isn't dead when the chromadb flag is used
     chromadb_service: SharedChromaDBService,
+    pub fs: super::io::handlers::FsProcesses,
 }
 
 impl SystemProcesses {
@@ -548,6 +621,15 @@ impl SystemProcesses {
         grpc_client_service: GrpcClientService,
         chromadb_service: SharedChromaDBService,
     ) -> Self {
+        let fs = super::io::handlers::FsProcesses::new(
+            dispatcher.clone(),
+            space.clone(),
+            super::io::handle_table::FileHandleTable::new(),
+            // TODO: thread ConsensusMode through ProcessContext.  Defaults
+            // to Oracular; the consensus-mode wiring lands with the
+            // consensus-mode filesystem-sync FIP.
+            super::io::ConsensusMode::Oracular,
+        );
         SystemProcesses {
             dispatcher,
             space,
@@ -559,6 +641,7 @@ impl SystemProcesses {
             grpc_client_service,
             pretty_printer: PrettyPrinter::new(),
             chromadb_service,
+            fs,
         }
     }
 
