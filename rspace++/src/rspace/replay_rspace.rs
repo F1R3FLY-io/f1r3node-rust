@@ -73,6 +73,20 @@ where
         self.store.read().expect("store read lock").clone()
     }
 
+    /// `E(S)` for the replay space — see
+    /// [`crate::rspace::space_matcher::SpaceMatcher::enumerate_enabled_rendezvous`],
+    /// which is where the whole query lives. Byte-for-byte the same three lines
+    /// as `RSpace::enabled_rendezvous`; the shared default method is what makes
+    /// play and replay enumerate identically rather than agreeing by assertion.
+    ///
+    /// Read-only: no store mutation, no event log entry, no `replay_data`
+    /// consumption. Replay's pools are the same canonical order play's are
+    /// (`order_candidates_with_index`), so a state that replays to the same hot
+    /// store enumerates to the same `E(S)` in the same order.
+    pub fn enabled_rendezvous(&self) -> Vec<ProduceCandidate<C, P, A, K>> {
+        self.enumerate_enabled_rendezvous(&self.matcher, &self.get_store())
+    }
+
     pub fn get_history_repository(
         &self,
     ) -> Arc<Box<dyn HistoryRepository<C, P, A, K> + Send + Sync + 'static>> {

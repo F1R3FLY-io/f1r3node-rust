@@ -888,7 +888,41 @@ where
         )
     }
 
-    fn process_match_found(
+    /// `E(S)` for this space — see
+    /// [`SpaceMatcher::enumerate_enabled_rendezvous`], which is where the whole
+    /// query lives. This binder supplies nothing but the two private handles
+    /// (`matcher`, hot store); `ReplayRSpace::enabled_rendezvous` is the same
+    /// three lines, so play and replay cannot enumerate differently.
+    ///
+    /// Read-only: no store mutation, no event log entry, no produce counter
+    /// movement. Costs matcher time, not phlogiston.
+    pub fn enabled_rendezvous(&self) -> Vec<ProduceCandidate<C, P, A, K>> {
+        self.enumerate_enabled_rendezvous(&self.matcher, &self.get_store())
+    }
+
+    /// Fire the rendezvous `pc` names: remove its continuation (unless
+    /// persistent), remove the data it selected (highest store index first),
+    /// drop the joins, append the `COMM` event, and return the continuation and
+    /// matched payloads for dispatch.
+    ///
+    /// # Why this is `pub`
+    ///
+    /// `locked_produce` reaches it with a candidate it just *searched for*. A
+    /// speculative evaluator must fire a candidate it *named* — a specific
+    /// member of [`RSpace::enabled_rendezvous`]'s answer, which for a persistent
+    /// continuation or a join is generally not the one a search would return.
+    /// Forcing the choice by trimming the store instead ("install a state in
+    /// which the wanted match is the only one and let the search find it") is
+    /// not sound: a persistent continuation or a join over a channel bound twice
+    /// still admits several selections after any such trim, and the trim itself
+    /// perturbs the very store indices the removal arithmetic below addresses.
+    ///
+    /// The alternative to exporting it is for the caller to reimplement the
+    /// index arithmetic, the join bookkeeping and the event emission outside
+    /// this crate, where they could drift from the consensus behaviour silently.
+    /// Nothing about the method changed: the body below is untouched, and every
+    /// production caller still reaches it through `locked_produce`.
+    pub fn process_match_found(
         &self,
         pc: ProduceCandidate<C, P, A, K>,
     ) -> MaybeConsumeResult<C, P, A, K> {

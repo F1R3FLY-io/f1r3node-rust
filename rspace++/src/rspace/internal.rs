@@ -110,7 +110,13 @@ pub struct ConsumeCandidate<C, A: Clone> {
     pub datum_index: i32,
 }
 
-#[derive(Debug)]
+/// `Clone` mirrors [`ConsumeCandidate`]'s, and is what lets a caller HOLD an
+/// enumerated rendezvous (see
+/// [`crate::rspace::space_matcher::SpaceMatcher::enumerate_enabled_rendezvous`])
+/// while deciding whether to fire it: every field was already `Clone`, and
+/// `process_match_found` consumes its argument by value, so without this a
+/// caller could only fire the rendezvous it happened to own outright.
+#[derive(Clone, Debug)]
 pub struct ProduceCandidate<C, P: Clone, A: Clone, K: Clone> {
     pub channels: Vec<C>,
     pub continuation: WaitingContinuation<P, K>,

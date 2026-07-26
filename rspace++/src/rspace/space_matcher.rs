@@ -1,10 +1,17 @@
 // See rspace/src/main/scala/coop/rchain/rspace/SpaceMatcher.scala
 
 use std::collections::HashMap;
+use std::sync::Arc;
+
+use serde::Serialize;
 
 use super::r#match::Match;
 use super::rspace_interface::ISpace;
+use crate::rspace::candidate_order::order_candidates_with_index;
+use crate::rspace::hot_store::HotStore;
 use crate::rspace::internal::{ConsumeCandidate, Datum, ProduceCandidate, WaitingContinuation};
+use crate::rspace::hashing::stable_hash_provider::StableHashSerialize;
+use crate::rspace::serializers::serializers::CandidateOrderingBytes;
 use crate::rspace::metrics_constants::{
     RSPACE_MATCHER_EXTRACT_FIRST_MATCH_CALLS_METRIC,
     RSPACE_MATCHER_EXTRACT_FIRST_MATCH_CANDIDATES_ITERATED_METRIC,
@@ -541,5 +548,239 @@ where
             }
         }
         None
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // THE ENABLED-RENDEZVOUS QUERY — read-only, no store mutation, no event
+    // ══════════════════════════════════════════════════════════════════════
+
+    /// **Every** admissible selection under `channel_pattern_pairs`, in exactly
+    /// the depth-first order [`SpaceMatcher::search_candidate_selection`] visits
+    /// them.
+    ///
+    /// This is that search with one line changed: where the selector *returns*
+    /// at the first admissible leaf, this *records* the leaf and keeps scanning.
+    /// The two therefore agree on the first element by construction —
+    /// `out[0]` is the lexicographically least admissible selection, i.e. the
+    /// one a real `consume` on this state would take. That identity is the
+    /// bridge between speculative enumeration and ordinary execution, and it is
+    /// asserted directly by `the_enumeration_head_is_the_selector_choice` in
+    /// `rspace++/tests/enabled_rendezvous_spec.rs`.
+    ///
+    /// # Why it is written out rather than parameterising the selector
+    ///
+    /// `search_candidate_selection` returns a [`SelectionOutcome`] and short
+    /// circuits on `Admissible` at *every* level, so "keep going" is not a flag
+    /// that can be threaded through it — a caller that wanted all leaves would
+    /// have to defeat the early return at each level of the recursion. Rather
+    /// than complicate the consensus-critical selector with a mode it never uses
+    /// in production, the enumeration is a sibling with the identical descent.
+    /// Both live in this trait, so play and replay run one enumeration and one
+    /// selector; neither space carries a private copy that could drift.
+    ///
+    /// # Read-only
+    ///
+    /// Nothing here touches the hot store, the event log or the produce counter.
+    /// `channel_to_indexed_data` is the caller's private copy of the pools; it
+    /// is mutated during the descent and restored on the way out, exactly as the
+    /// selector does.
+    ///
+    /// # Cost
+    ///
+    /// Bounded by `Π_j |pool_j|` leaves and `Σ_j Π_{i≤j} |pool_i|` calls to
+    /// `Match::get` — the selector's guard-refuses-everything worst case, paid
+    /// unconditionally because there is no early exit. For the single-bind shape
+    /// (`l = 1`) that is one linear scan of the channel's pool.
+    fn enumerate_admissible_selections(
+        &self,
+        matcher: &Box<dyn Match<P, A, K>>,
+        channel_pattern_pairs: &[(&C, &P)],
+        continuation: &K,
+        channel_to_indexed_data: &mut HashMap<C, Vec<(Datum<A>, i32)>>,
+        level: usize,
+        chosen: &mut Vec<ConsumeCandidate<C, A>>,
+        out: &mut Vec<Vec<ConsumeCandidate<C, A>>>,
+    ) {
+        // Leaf: every bind is filled, so the commit guard decides. Same single
+        // consultation point the selector uses, reading the same borrows.
+        if level == channel_pattern_pairs.len() {
+            let matched: Vec<&A> = chosen.iter().map(|candidate| &*candidate.datum.a).collect();
+            if matcher.check_commit(continuation, &matched) {
+                out.push(chosen.clone());
+            }
+            return;
+        }
+
+        let (channel, pattern) = channel_pattern_pairs[level];
+
+        let pool = match channel_to_indexed_data.get(channel) {
+            Some(indexed_data) => indexed_data.clone(),
+            // No pool for this channel: no selection fills this bind.
+            None => return,
+        };
+
+        let is_last_bind = level + 1 == channel_pattern_pairs.len();
+
+        let mut cursor = 0usize;
+        while let Some((position, candidate)) =
+            self.next_spatial_match(matcher, channel.clone(), &pool, pattern, cursor)
+        {
+            if !is_last_bind {
+                let residual = Self::residual_pool(&pool, position, candidate.datum.persist);
+                channel_to_indexed_data.insert(channel.clone(), residual);
+            }
+            chosen.push(candidate);
+
+            self.enumerate_admissible_selections(
+                matcher,
+                channel_pattern_pairs,
+                continuation,
+                channel_to_indexed_data,
+                level + 1,
+                chosen,
+                out,
+            );
+
+            chosen.pop();
+            cursor = position + 1;
+        }
+
+        if !is_last_bind {
+            channel_to_indexed_data.insert(channel.clone(), pool);
+        }
+    }
+
+    /// `E(S)` — the **enabled rendezvous set** of the state `store` currently
+    /// holds: every (waiting continuation × admissible data selection) pair that
+    /// a COMM could fire right now.
+    ///
+    /// # What a caller gets
+    ///
+    /// A [`ProduceCandidate`] per enabled rendezvous, carrying the channel
+    /// group, the firing [`WaitingContinuation`], its **store index**, and the
+    /// selected [`ConsumeCandidate`]s with **their** store indices. That is
+    /// precisely the argument
+    /// [`crate::rspace::rspace::RSpace::process_match_found`] takes, so an
+    /// enumerated rendezvous can be fired verbatim — the enumeration and the
+    /// firing address the store through the same indices, computed once.
+    ///
+    /// # Determinism — this is a consensus surface
+    ///
+    /// Three orderings compose, and all three are total and content-derived:
+    ///
+    /// 1. **Channel groups** are visited in ascending `Vec<C>` order (`C: Ord`).
+    ///    The group set is read out of a `HashMap`, whose iteration order is
+    ///    seed-dependent, so it is sorted before use. Without this, two
+    ///    validators enumerating the same state would produce the same *set* in
+    ///    different *orders*, and any trace that names a rendezvous by position
+    ///    would diverge.
+    /// 2. **Continuations within a group** are ordered by
+    ///    [`order_candidates_with_index`] — THE canonical candidate order, the
+    ///    same one `produce` uses — with the store index as tie breaker.
+    /// 3. **Selections within a continuation** are ordered by the depth-first
+    ///    descent of [`SpaceMatcher::enumerate_admissible_selections`] over
+    ///    canonically ordered data pools.
+    ///
+    /// # ⚠ The head of a group's selections is NOT "what an ordinary run does"
+    ///
+    /// It is what an ordinary **`consume` arriving at this state** does. An
+    /// ordinary **`produce`** splices its arriving datum into the pool at index
+    /// `-1` (`RSpace::extract_produce_candidate`), ahead of the canonical order,
+    /// so the produce regime's least admissible selection is generally a
+    /// different member of the same set. The *set* is the same — admissibility
+    /// is monotone in the pool — and this query computes that set. A caller that
+    /// wants to reproduce a particular execution must name the selection it
+    /// wants; it must not assume element 0.
+    ///
+    /// # Installed continuations
+    ///
+    /// `HotStore::get_continuations` prepends the group's installed (system)
+    /// continuation, and `order_candidates_with_index` indexes the combined
+    /// vector — which is the indexing `HotStore::remove_continuation` expects
+    /// (it subtracts one when an installed entry is present). System processes
+    /// are therefore enumerated like any other rendezvous, which is what makes
+    /// a speculatively staged `stdout!` visible as enabled.
+    fn enumerate_enabled_rendezvous(
+        &self,
+        matcher: &Box<dyn Match<P, A, K>>,
+        store: &Arc<Box<dyn HotStore<C, P, A, K>>>,
+    ) -> Vec<ProduceCandidate<C, P, A, K>>
+    where
+        C: Ord + Serialize,
+        P: Serialize + StableHashSerialize,
+        A: Serialize + StableHashSerialize,
+        K: Serialize + StableHashSerialize,
+        Datum<A>: CandidateOrderingBytes,
+        WaitingContinuation<P, K>: CandidateOrderingBytes,
+    {
+        let state = store.snapshot();
+
+        // (1) The channel groups, deterministically ordered. A group with an
+        // installed continuation but no ordinary one still holds a rendezvous,
+        // so both maps contribute keys.
+        let mut groups: Vec<Vec<C>> =
+            Vec::with_capacity(state.continuations.len() + state.installed_continuations.len());
+        groups.extend(state.continuations.keys().cloned());
+        groups.extend(state.installed_continuations.keys().cloned());
+        groups.sort();
+        groups.dedup();
+
+        // (2) The data pools, one canonical ordering per channel, computed once
+        // and shared by every continuation that binds that channel.
+        let mut pools: HashMap<C, Vec<(Datum<A>, i32)>> = HashMap::new();
+        for channels in groups.iter() {
+            for channel in channels.iter() {
+                if !pools.contains_key(channel) {
+                    pools.insert(
+                        channel.clone(),
+                        order_candidates_with_index(store.get_data(channel)),
+                    );
+                }
+            }
+        }
+
+        let mut enabled: Vec<ProduceCandidate<C, P, A, K>> = Vec::new();
+        for channels in groups.iter() {
+            let candidates = order_candidates_with_index(store.get_continuations(channels));
+            for (cont, continuation_index) in candidates.iter() {
+                let channel_pattern_pairs: Vec<(&C, &P)> =
+                    channels.iter().zip(cont.patterns.iter()).collect();
+
+                // A FRESH pool map per continuation: the descent mutates and
+                // restores it, but no continuation may observe a sibling's
+                // residue.
+                let mut per_continuation: HashMap<C, Vec<(Datum<A>, i32)>> =
+                    HashMap::with_capacity(channels.len());
+                for channel in channels.iter() {
+                    if let Some(pool) = pools.get(channel) {
+                        per_continuation.insert(channel.clone(), pool.clone());
+                    }
+                }
+
+                let mut chosen: Vec<ConsumeCandidate<C, A>> =
+                    Vec::with_capacity(channel_pattern_pairs.len());
+                let mut selections: Vec<Vec<ConsumeCandidate<C, A>>> = Vec::new();
+                self.enumerate_admissible_selections(
+                    matcher,
+                    &channel_pattern_pairs,
+                    &cont.continuation,
+                    &mut per_continuation,
+                    0,
+                    &mut chosen,
+                    &mut selections,
+                );
+
+                enabled.reserve(selections.len());
+                for data_candidates in selections {
+                    enabled.push(ProduceCandidate {
+                        channels: channels.clone(),
+                        continuation: cont.clone(),
+                        continuation_index: *continuation_index,
+                        data_candidates,
+                    });
+                }
+            }
+        }
+        enabled
     }
 }
