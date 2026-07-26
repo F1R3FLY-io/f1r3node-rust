@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 use shared::rust::store::key_value_store::KeyValueStore;
 use tracing::{Level, event};
 
+use super::candidate_order::order_candidates_with_index;
 use super::checkpoint::SoftCheckpoint;
 use super::errors::{HistoryRepositoryError, RSpaceError};
 use super::hashing::blake2b256_hash::Blake2b256Hash;
@@ -30,7 +31,7 @@ use super::r#match::Match;
 use super::metrics_constants::{
     CHANGES_SPAN, CONSUME_COMM_LABEL, HISTORY_CHECKPOINT_SPAN, LOCKED_CONSUME_SPAN,
     LOCKED_PRODUCE_SPAN, PRODUCE_COMM_LABEL, RESET_SPAN, REVERT_SOFT_CHECKPOINT_SPAN,
-    RSPACE_METRICS_SOURCE,
+    RSPACE_METRICS_SOURCE, RSPACE_PRODUCE_UNCONSUMED_DATUM_STORED_METRIC,
 };
 use super::replay_rspace::ReplayRSpace;
 use super::rspace_interface::{
@@ -142,17 +143,6 @@ where
             .expect("history read lock")
             .clone()
     }
-}
-
-// P4.1: candidates are Arc-shaped (non-serde) — the ordering bytes come from
-// the serializer twins (`CandidateOrderingBytes`), byte-identical to the
-// pre-P4.1 `bincode::serialize(candidate)` (golden-pinned). Candidate
-// ordering participates in replay-visible COMM selection; the bytes are a
-// consensus surface.
-fn deterministic_candidate_hash<D>(candidate: &D) -> Blake2b256Hash
-where D: CandidateOrderingBytes {
-    let bytes = candidate.candidate_ordering_bytes();
-    Blake2b256Hash::new(&bytes)
 }
 
 struct HeldLock {
@@ -671,10 +661,20 @@ where
         let t2 = Instant::now();
         // P4.2: borrow-zip — no per-consume channel/pattern clones.
         let zipped: Vec<(&C, &P)> = channels.iter().zip(patterns.iter()).collect();
-        let options: Option<Vec<ConsumeCandidate<C, A>>> = self
-            .extract_data_candidates(&self.matcher, &zipped, &mut channel_to_indexed_data)
-            .into_iter()
-            .collect();
+        // The complete, guard-aware candidate search (plan §7.12 / defect D1).
+        // A `where` guard on this consume participates in SELECTION, not only
+        // in approval: when it rejects the datum the spatial matcher offered
+        // first, the search advances to the next resting datum instead of
+        // abandoning the rendezvous. It returns `None` only when NO selection
+        // of resting data satisfies both the spatial patterns and the guard —
+        // and then the continuation is installed and the data left alone,
+        // exactly as a spatial miss always did.
+        let options: Option<Vec<ConsumeCandidate<C, A>>> = self.extract_guarded_data_candidates(
+            &self.matcher,
+            &zipped,
+            continuation,
+            &mut channel_to_indexed_data,
+        );
         metrics::counter!("rspace.consume.match_ns", "source" => RSPACE_METRICS_SOURCE)
             .increment(t2.elapsed().as_nanos() as u64);
 
@@ -686,22 +686,8 @@ where
             source: consume_ref.clone(),
         };
 
-        let commit_ok = match &options {
-            // Cross-channel commit hook: a `where` guard on the consume
-            // can veto even after every spatial bind matched. On false
-            // we install the wk and leave the data alone, just as if
-            // the spatial match itself had failed (plan §7.12).
-            // P4.2: the guard reads the matched data through borrows — zero
-            // copies (pre-P4.2: one full payload clone per bind).
-            Some(data_candidates) => {
-                let matched: Vec<&A> = data_candidates.iter().map(|c| &*c.datum.a).collect();
-                self.matcher.check_commit(continuation, &matched)
-            }
-            None => false,
-        };
-
         match options {
-            Some(data_candidates) if commit_ok => {
+            Some(data_candidates) => {
                 let t3 = Instant::now();
                 let produce_counters_closure =
                     |produces: &[Produce]| self.produce_counters(produces);
@@ -724,7 +710,7 @@ where
                 event!(Level::DEBUG, mark = "finished-locked-consume", "locked_consume");
                 Ok(self.wrap_result(channels, &wk, consume_ref, &data_candidates))
             }
-            _ => {
+            None => {
                 let t3 = Instant::now();
                 self.store_waiting_continuation(channels.to_vec(), wk);
                 metrics::counter!("rspace.consume.store_continuation_ns", "source" => RSPACE_METRICS_SOURCE)
@@ -789,12 +775,57 @@ where
         match extracted {
             Some(produce_candidate) => {
                 let t2 = Instant::now();
+                // ★ The produced datum must be either CONSUMED or STORED —
+                // never neither. It rides in its own candidate pool at index
+                // `-1` (`extract_produce_candidate` above), so the fired COMM
+                // consumed it exactly when a candidate carries that index.
+                //
+                // With the guard-aware selector this is unreachable from any
+                // state the fixed matcher itself produced, and the reasoning is
+                // worth writing down because it is what makes the selector safe
+                // on this path: at quiescence no selection of RESTING data
+                // satisfies any waiting continuation (else the consume or
+                // produce that created that state would have fired it), and
+                // admissibility is monotone in the data — adding this datum can
+                // only create selections that CONTAIN it. So every selection
+                // available here contains the fresh datum.
+                //
+                // It is reachable from a state some OTHER matcher produced: a
+                // hot store restored from a checkpoint written before this fix
+                // can hold a resting datum stranded by defect D1 next to the
+                // continuation it satisfies, and a later produce of a datum
+                // that does not match spatially would then fire on the stranded
+                // pair. Dropping the produced message there would be silent
+                // message loss — no rule of the rho calculus discards a
+                // message — so it is stored instead. AFTER `process_match_found`,
+                // which addresses the store by index: `put_datum` inserts at
+                // position 0 and would shift every index out from under it.
+                let comm_consumed_the_produced_datum = produce_candidate
+                    .data_candidates
+                    .iter()
+                    .any(|candidate| candidate.datum_index < 0);
+
                 let result =
                     Ok(self
                         .process_match_found(produce_candidate)
                         .map(|consume_result| {
                             (consume_result.0, consume_result.1, produce_ref.clone())
                         }));
+
+                if !comm_consumed_the_produced_datum {
+                    tracing::debug!(
+                        target: "f1r3fly.rspace",
+                        "a COMM fired on resting data only; storing the produced datum rather \
+                         than dropping it (pre-fix stranded pair — see locked_produce)"
+                    );
+                    metrics::counter!(
+                        RSPACE_PRODUCE_UNCONSUMED_DATUM_STORED_METRIC,
+                        "source" => RSPACE_METRICS_SOURCE
+                    )
+                    .increment(1);
+                    let _ = self.store_data(channel, data, persist, produce_ref.clone());
+                }
+
                 metrics::counter!("rspace.produce.process_match_ns", "source" => RSPACE_METRICS_SOURCE)
                     .increment(t2.elapsed().as_nanos() as u64);
                 event!(Level::DEBUG, mark = "finished-locked-produce", "locked_produce");
@@ -1033,11 +1064,28 @@ where
         data_candidates: &Vec<ConsumeCandidate<C, A>>,
         _peeks: &BTreeSet<i32>,
     ) -> Option<Vec<()>> {
+        // ★ HIGHEST index FIRST, and no `.rev()`.
+        //
+        // `remove_datum` removes POSITIONALLY, so removing a low index shifts
+        // every higher one down by one and the next removal addresses the wrong
+        // element (or runs off the end). Removing from the back leaves the
+        // indices of everything still to be removed untouched. This matters
+        // exactly when one receive takes two data from the SAME channel —
+        // `for(@x <- c; @y <- c)` — because only then do two candidates carry
+        // indices into the same vector.
+        //
+        // The `.rev()` this replaces inverted the sort into ascending order and
+        // so removed exactly one datum of such a pair: the second `remove_datum`
+        // ran out of bounds, its `Err` was swallowed by `.ok()`, and the
+        // caller discards this function's `None`. The datum was therefore
+        // DELIVERED to the continuation and LEFT RESTING — available to be
+        // consumed a second time. Scala's `storePersistentData` sorts
+        // `_.datumIndex` with `Ordering[Int].reverse` and traverses in that
+        // order, i.e. descending; the port re-reversed it.
         let mut sorted_candidates: Vec<_> = data_candidates.iter().collect();
         sorted_candidates.sort_by(|a, b| b.datum_index.cmp(&a.datum_index));
         let results: Vec<_> = sorted_candidates
             .into_iter()
-            .rev()
             .map(|consume_candidate| {
                 let ConsumeCandidate {
                     channel,
@@ -1178,11 +1226,13 @@ where
         channels: &[C],
         data_candidates: &[ConsumeCandidate<C, A>],
     ) -> Option<Vec<()>> {
+        // ★ HIGHEST index FIRST — see `store_persistent_data` for why the
+        // `.rev()` this replaces silently duplicated a datum whenever one
+        // receive took two data from the same channel.
         let mut sorted_candidates: Vec<_> = data_candidates.iter().collect();
         sorted_candidates.sort_by(|a, b| b.datum_index.cmp(&a.datum_index));
         let results: Vec<_> = sorted_candidates
             .into_iter()
-            .rev()
             .map(|consume_candidate| {
                 let ConsumeCandidate {
                     channel,
@@ -1260,25 +1310,17 @@ where
         }
     }
 
+    /// The candidate pool in THE canonical order — see
+    /// [`crate::rspace::candidate_order`], which now owns it so the replay
+    /// space can order its pools identically (the guard-aware selector's
+    /// replay-equivalence argument depends on play and replay enumerating
+    /// candidates in the same order).
+    ///
+    /// The name is historical: this never shuffled. A random shuffle would make
+    /// equally valid matches diverge across validators, so the order is a hash
+    /// of the serialized candidate with the store index as tie breaker.
     fn shuffle_with_index<D>(&self, t: Vec<D>) -> Vec<(D, i32)>
     where D: CandidateOrderingBytes {
-        let mut indexed_vec = t
-            .into_iter()
-            .enumerate()
-            .map(|(i, d)| (d, i as i32))
-            .collect::<Vec<_>>();
-
-        // Candidate ordering participates in replay-visible COMM selection.
-        // A random shuffle can make equally valid matches diverge across
-        // validators, so order by a stable hash of the serialized candidate
-        // and use the original index only as a deterministic tie breaker.
-        indexed_vec.sort_by(|(left, left_index), (right, right_index)| {
-            let left_hash = deterministic_candidate_hash(left);
-            let right_hash = deterministic_candidate_hash(right);
-            left_hash
-                .cmp(&right_hash)
-                .then_with(|| left_index.cmp(right_index))
-        });
-        indexed_vec
+        order_candidates_with_index(t)
     }
 }

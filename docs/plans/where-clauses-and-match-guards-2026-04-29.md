@@ -722,12 +722,21 @@ receive/match (must succeed — keyword is contextual).
 
 ## 7. Risks and open questions
 
-1. **rspace matcher API change.** Extending the matcher to accept and evaluate
-   a guard predicate is the largest piece of new code. The matcher today does
+1. **rspace matcher API change.** ✅ **Closed by Phase 10 — the risk
+   materialized.** Extending the matcher to accept and evaluate a guard
+   predicate is the largest piece of new code. The matcher today does
    not depend on any expression evaluator. The `rho-pure-eval` crate (§3.9)
    makes this clean, but we should validate that the matcher's iteration loop
    correctly tries multiple candidate datums on guard-fail (rather than
    short-circuiting after first spatial match).
+
+   It did short-circuit. Phase 9 shipped without this validation and the
+   result was defect D1 (see Phase 10): one guard-rejected pick stranded a
+   rendezvous that a different resting datum would have satisfied. The
+   iteration loop now exists —
+   `SpaceMatcher::search_candidate_selection` — and is pinned by
+   `rspace++/tests/guarded_matching_tests.rs`, whose witnesses were checked
+   against the pre-fix matcher in a control worktree (7 of 15 fail there).
 
 2. **`;` semantics — already aligned in Phase 1.** Investigation during
    Phase 1 (committed at `1b94fe9`) found the Rust normalizer already
@@ -1047,6 +1056,32 @@ Each phase ends in green tests and is mergeable independently.
   (consume-driven path). Also bumped the empty-state hash and the
   fixed-execution hash. 3 new runtime tests in `reduce_spec.rs`
   (`cross_bind_guard_*`). See §7.12 for full design.
+- **Phase 10 — the guard participates in candidate SELECTION** ✅ **Done**
+  (consensus-affecting). Phase 9 wired `check_commit` into both paths but
+  left it as candidate *approval*: the matcher took ONE spatial pick per
+  bind, asked the guard once, and on rejection advanced to the next waiting
+  CONTINUATION rather than to the next DATUM. §6's second implementation
+  note for rspace ("under guards it must keep iterating past guard-fail
+  candidates rather than concluding 'no match'") and §7's risk 1 ("validate
+  that the matcher's iteration loop correctly tries multiple candidate
+  datums on guard-fail") therefore stood **unimplemented and unvalidated**
+  — the risk register named this exact defect and it was never closed.
+
+  Observed as defect **D1**: `@"offer"!(55) | @"offer"!(42)` under
+  `for(@px <- @"offer" where px <= 45)` settled or stalled depending only
+  on which datum the pool order happened to present first (12 settlements
+  and 8 stalls over 20 runs of a demo beat documented as deterministic).
+  The rho calculus admits no such stuck state, so the search was completed
+  rather than the guard weakened:
+  `SpaceMatcher::extract_guarded_data_candidates` now returns the
+  lexicographically least selection satisfying BOTH the spatial patterns
+  and the guard, and every path that can fire a COMM — play consume, play
+  produce, replay consume, replay produce — goes through it. Candidate
+  order was hoisted into `rspace::candidate_order` and adopted by the
+  replay space (which had used raw store order) so that play and replay
+  enumerate alike; that, plus applying the guard on the replay consume
+  path, is what makes replay reproduce play's SELECTION and not merely its
+  COMM event. 15 tests in `rspace++/tests/guarded_matching_tests.rs`.
 
 ## 9. Out of scope
 

@@ -17,6 +17,7 @@ use dashmap::DashMap;
 use serde::Serialize;
 use tracing::{Level, event};
 
+use super::candidate_order::order_candidates_with_index;
 use super::checkpoint::SoftCheckpoint;
 use super::errors::RSpaceError;
 use super::hashing::blake2b256_hash::Blake2b256Hash;
@@ -661,6 +662,9 @@ where
                 match self.get_comm_and_consume_candidates(
                     channels.clone(),
                     patterns,
+                    // The continuation the commit guard is evaluated against.
+                    // `wk` already owns it behind the `Arc` built above.
+                    &wk.continuation,
                     comms_list.clone(),
                 ) {
                     None => Ok(self.store_waiting_continuation(channels, wk)),
@@ -714,12 +718,10 @@ where
         let mut map = HashMap::with_capacity(channels.len());
         for c in channels {
             let data = self.get_store().get_data(c);
-            let indexed_data: Vec<(Datum<A>, i32)> = data
-                .into_iter()
-                .enumerate()
-                .map(|(i, d)| (d, i as i32))
-                .collect();
-            map.insert(c.clone(), indexed_data);
+            // THE canonical candidate order — the same one the play space uses
+            // (`crate::rspace::candidate_order`). Replay used raw store order
+            // here; see `run_matcher_consume` for why the two must agree.
+            map.insert(c.clone(), order_candidates_with_index(data));
         }
         map
     }
@@ -728,28 +730,52 @@ where
         &self,
         channels: Vec<C>,
         patterns: Vec<P>,
+        continuation: &K,
         comms: Vec<COMM>,
     ) -> Option<(COMM, Vec<ConsumeCandidate<C, A>>)> {
         let run_matcher = |comm: COMM| -> Option<Vec<ConsumeCandidate<C, A>>> {
-            self.run_matcher_consume(channels.clone(), patterns.clone(), comm)
+            self.run_matcher_consume(channels.clone(), patterns.clone(), continuation, comm)
         };
 
         self.get_comm_or_candidate(comms, run_matcher)
     }
 
+    /// Rebuild, under replay, the candidate selection the recorded `comm` says
+    /// the play space made.
+    ///
+    /// ★ Play and replay must agree on the SELECTION, not merely on the COMM.
+    /// `COMM::new` sorts its produce refs, so two selections that permute the
+    /// same data across binds — `for(@x <- c; @y <- c)` fed by two data on `c`
+    /// — build the SAME COMM and slip past the trace assertion while binding
+    /// the receive's variables the other way round, which diverges the
+    /// post-state silently. Two things make that unreachable, and both are
+    /// required:
+    ///
+    /// 1. the pools are ordered by THE canonical candidate order, the same one
+    ///    the play space uses (replay previously used raw store order), and
+    /// 2. the selection is made by the same guard-aware search the play space
+    ///    uses, so a guard that discriminates between two assignments decides
+    ///    the same way on both sides (this path did not consult the guard at
+    ///    all before — it did not need to while a guard rejection could only
+    ///    ever mean "no COMM at all", which defect D1's fix changes).
+    ///
+    /// The COMM filter below only REMOVES candidates, so replay's pool is a
+    /// subsequence of play's and the lexicographically least admissible
+    /// selection is the same in both. See
+    /// [`crate::rspace::space_matcher::SpaceMatcher::extract_guarded_data_candidates`].
     fn run_matcher_consume(
         &self,
         channels: Vec<C>,
         patterns: Vec<P>,
+        continuation: &K,
         comm: COMM,
     ) -> Option<Vec<ConsumeCandidate<C, A>>> {
         let mut channel_to_indexed_data_list: Vec<(C, Vec<(Datum<A>, i32)>)> = Vec::new();
 
         for c in &channels {
             let data = self.get_store().get_data(c);
-            let filtered_data: Vec<(Datum<A>, i32)> = data
+            let filtered_data: Vec<(Datum<A>, i32)> = order_candidates_with_index(data)
                 .into_iter()
-                .zip(0..)
                 .filter(|(d, i)| self.matches(comm.clone(), (d.clone(), *i)))
                 .collect();
             channel_to_indexed_data_list.push((c.clone(), filtered_data));
@@ -761,9 +787,12 @@ where
         // P4.2: borrow-zip — no per-attempt channel/pattern clones.
         let pairs: Vec<(&C, &P)> = channels.iter().zip(patterns.iter()).collect();
 
-        self.extract_data_candidates(&self.matcher, &pairs, &mut channel_to_indexed_data_map)
-            .into_iter()
-            .collect::<Option<Vec<_>>>()
+        self.extract_guarded_data_candidates(
+            &self.matcher,
+            &pairs,
+            continuation,
+            &mut channel_to_indexed_data_map,
+        )
     }
 
     fn locked_produce(
@@ -809,13 +838,33 @@ where
                     produce_ref.clone(),
                     grouped_channels,
                 ) {
-                    Some((comm, pc)) => Ok(self.handle_match(pc, comms).map(|consume_result| {
-                        let p = comm
-                            .produces
-                            .into_iter()
-                            .find(|p| p.hash == produce_ref.hash);
-                        (consume_result.0, consume_result.1, p.unwrap_or(produce_ref))
-                    })),
+                    Some((comm, pc)) => {
+                        // ★ Produced-datum totality, mirroring the play space's
+                        // `locked_produce`: the datum rides in its own pool at
+                        // index `-1`, so the COMM consumed it exactly when a
+                        // candidate carries that index; otherwise it must be
+                        // STORED rather than dropped, or replay's post-state
+                        // diverges from play's. Stored after `handle_match`,
+                        // which addresses the store by index.
+                        let comm_consumed_the_produced_datum = pc
+                            .data_candidates
+                            .iter()
+                            .any(|candidate| candidate.datum_index < 0);
+
+                        let result = self.handle_match(pc, comms).map(|consume_result| {
+                            let p = comm
+                                .produces
+                                .into_iter()
+                                .find(|p| p.hash == produce_ref.hash);
+                            (consume_result.0, consume_result.1, p.unwrap_or(produce_ref.clone()))
+                        });
+
+                        if !comm_consumed_the_produced_datum {
+                            let _ = self.store_data(channel, data, persist, produce_ref);
+                        }
+
+                        Ok(result)
+                    }
                     None => Ok(self.store_data(channel, data, persist, produce_ref)),
                 }
             }
@@ -860,21 +909,19 @@ where
         self.run_matcher_for_channels(
             grouped_channels,
             |channels| {
+                // THE canonical candidate order, as in the play space — the
+                // `extract_first_match` this feeds now makes a guard-aware
+                // selection, so the two sides must enumerate alike (see
+                // `run_matcher_consume`).
                 let continuations = self.get_store().get_continuations(&channels);
-                continuations
+                order_candidates_with_index(continuations)
                     .into_iter()
-                    .enumerate()
-                    .filter(|(_, wc)| comm.consume == wc.source)
-                    .map(|(i, wc)| (wc, i as i32))
+                    .filter(|(wc, _)| comm.consume == wc.source)
                     .collect::<Vec<_>>()
             },
             |c| {
                 let store_data = self.get_store().get_data(&c);
-                let datum_tuples = store_data
-                    .into_iter()
-                    .enumerate()
-                    .map(|(i, d)| (d, i as i32))
-                    .collect::<Vec<_>>();
+                let datum_tuples = order_candidates_with_index(store_data);
 
                 let mut result = datum_tuples;
                 if c == channel {
@@ -1130,10 +1177,13 @@ where
         mut data_candidates: Vec<ConsumeCandidate<C, A>>,
         _peeks: &BTreeSet<i32>,
     ) -> Option<Vec<()>> {
+        // ★ HIGHEST index FIRST — the play space's `store_persistent_data`
+        // carries the full rationale. Positional removal from the front shifts
+        // the indices still to be removed, which silently left one datum of a
+        // same-channel pair resting after it had been delivered.
         data_candidates.sort_by(|a, b| b.datum_index.cmp(&a.datum_index));
         let results: Vec<_> = data_candidates
             .into_iter()
-            .rev()
             .map(|consume_candidate| {
                 let ConsumeCandidate {
                     channel,
@@ -1274,10 +1324,10 @@ where
         channels: Vec<C>,
         mut data_candidates: Vec<ConsumeCandidate<C, A>>,
     ) -> Option<Vec<()>> {
+        // ★ HIGHEST index FIRST — see the play space's `store_persistent_data`.
         data_candidates.sort_by(|a, b| b.datum_index.cmp(&a.datum_index));
         let results: Vec<_> = data_candidates
             .into_iter()
-            .rev()
             .map(|consume_candidate| {
                 let ConsumeCandidate {
                     channel,

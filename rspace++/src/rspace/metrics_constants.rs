@@ -96,6 +96,25 @@ pub const RSPACE_MATCHER_EXTRACT_FIRST_MATCH_CANDIDATES_ITERATED_METRIC: &str =
     "rspace.matcher.extract_first_match.candidates_iterated";
 pub const RSPACE_MATCHER_EXTRACT_FIRST_MATCH_PAIR_CONSTRUCTION_NS_METRIC: &str =
     "rspace.matcher.extract_first_match.pair_construction_ns";
+/// Incremented once per candidate DATUM abandoned because the commit guard
+/// rejected every complete selection built on it — defect D1's missing step.
+/// Necessarily zero on a workload that uses no `where` guard, so this counter
+/// is also the cheap operational answer to "is any guard costing us a re-scan?".
+pub const RSPACE_MATCHER_GUARD_BACKTRACK_METRIC: &str = "rspace.matcher.guard_backtrack";
+/// Incremented once per candidate DATUM abandoned because a LATER bind had no
+/// spatial match left once this one took its datum — the guard-free sibling of
+/// the counter above (`for(@x <- c; @"k" <- c)` where the first bind can swallow
+/// the `"k"`). Before the guard-aware search the whole continuation was
+/// abandoned at that point, leaving an enabled COMM unfired; a non-zero value
+/// here means a program is relying on the repaired behaviour.
+pub const RSPACE_MATCHER_SPATIAL_BACKTRACK_METRIC: &str = "rspace.matcher.spatial_backtrack";
+/// Incremented when a `produce` fires a COMM that does NOT consume the datum it
+/// just produced, so that datum is stored rather than dropped. Unreachable from
+/// a state the guard-aware matcher itself produced (see `locked_produce`); a
+/// non-zero value means the hot store was restored from a checkpoint carrying a
+/// rendezvous stranded by defect D1.
+pub const RSPACE_PRODUCE_UNCONSUMED_DATUM_STORED_METRIC: &str =
+    "rspace.produce.unconsumed_datum_stored";
 
 // Cold-path history reader — bottleneck #2 backing-store instrumentation.
 pub const HISTORY_FETCH_DATA_CALLS_METRIC: &str = "history.fetch_data.calls";
