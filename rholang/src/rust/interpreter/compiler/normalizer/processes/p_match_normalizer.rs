@@ -8,6 +8,7 @@ use crate::rust::interpreter::compiler::normalize_drive::{
 };
 use crate::rust::interpreter::compiler::normalizer::cost_accounting::pattern_guard::reject_cost_syntax_in_pattern;
 use crate::rust::interpreter::errors::InterpreterError;
+use crate::rust::interpreter::guard::{reject_undecidable_guard, MATCH_CASE_WHERE};
 use crate::rust::interpreter::util::filter_and_adjust_bitset;
 
 /// `match E { p₁ => b₁ … }`, descend half — the SCRUTINEE first.
@@ -187,6 +188,13 @@ pub(crate) fn combine_p_match<'ast>(
 
         MatchPhase::Guard => {
             let guard_result = value.into_proc();
+            // ★ THE GUARD-DECIDABILITY GATE, match-case half. `eval_match`
+            // decides a case guard with the SAME `rho_pure_eval::eval_with`
+            // call the receive guard is decided by, so it inherits the same
+            // undecidable class and must inherit the same refusal — gating one
+            // guard language and not the other is precisely how this defect
+            // class recurs.
+            reject_undecidable_guard(&guard_result.par, MATCH_CASE_WHERE)?;
             let body = k.cases[k.case_idx].proc;
             let child_input = ProcVisitInputs {
                 par: Par::default(),

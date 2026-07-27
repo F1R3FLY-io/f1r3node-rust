@@ -15,6 +15,7 @@ pub mod errors;
 pub mod external_services;
 pub mod fused_pathmap_chain;
 pub mod grpc_client_service;
+pub mod guard;
 pub mod interpreter;
 pub mod matcher;
 pub mod metering;

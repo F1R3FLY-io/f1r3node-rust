@@ -77,7 +77,8 @@ use crate::rust::interpreter::accounting::costs::{
     length_method_cost, lookup_cost, match_eval_cost, nth_method_call_cost, remove_cost,
     size_method_cost, slice_cost, take_cost, to_byte_array_cost, to_list_cost, union_cost,
 };
-use crate::rust::interpreter::matcher::r#match::SpatialMatcherOracle;
+use crate::rust::interpreter::guard::MATCH_CASE_WHERE;
+use crate::rust::interpreter::matcher::r#match::{guard_disposition_in_env, GuardDisposition};
 use crate::rust::interpreter::matcher::spatial_matcher::SpatialMatcherContext;
 use crate::rust::interpreter::rho_type::RhoTuple2;
 
@@ -1673,6 +1674,28 @@ impl DebruijnInterpreter {
             _ => None,
         };
 
+        // ★ THE GUARD-DECIDABILITY GATE, reduce half. The normalizer already
+        // refused an undecidable guard written in Rholang source; this catches
+        // the `Receive` Pars that reach the reducer WITHOUT passing through it
+        // — embedders that build `Receive.condition` directly, for which the
+        // compile-time gate does not exist.
+        //
+        // ⚠ POSITION IS LOAD-BEARING. This sits after the substitution (so it
+        // sees the exact Par that would be stored on the `TaggedContinuation`)
+        // and before `consume` (so nothing has been written and there is
+        // nothing to roll back). Raising here therefore stays a pure function
+        // of the receive term, unlike raising from inside `check_commit`,
+        // which would depend on which data happened to be resting.
+        //
+        // Substitution cannot smuggle an undecidable node in: the guard is
+        // substituted at depth 1, and `maybe_substitute_var_view` is the
+        // identity at every depth != 0, so no value is spliced into a guard.
+        // What is checked here is what is decided later.
+        crate::rust::interpreter::guard::reject_undecidable_guard_opt(
+            subst_guard.as_ref(),
+            crate::rust::interpreter::guard::RECEIVE_WHERE,
+        )?;
+
         let binds = receive
             .binds
             .clone()
@@ -1813,19 +1836,39 @@ impl DebruijnInterpreter {
                                     // treated as "no guard" so we agree with
                                     // eval_receive and Matcher::check_commit.
                                     //
-                                    // M-1a: the same `SpatialMatcherOracle`
-                                    // the rspace matcher injects, so a
-                                    // spatial test means the same thing in
-                                    // `match … where` as in `for … where`.
+                                    // Decided by the SAME function the rspace
+                                    // matcher decides `for … where` with
+                                    // (`guard_disposition_in_env`), so the
+                                    // spatial oracle, the boolean projection
+                                    // and the disposition vocabulary are
+                                    // shared rather than reimplemented — the
+                                    // two guard languages cannot drift.
+                                    //
+                                    // ★ A guard the decider has no arm for is
+                                    // NOT a fall-through. Fall-through means
+                                    // "this case did not apply"; an
+                                    // undecidable guard means the case was
+                                    // never tested. Reporting the second as
+                                    // the first silently selects a later case
+                                    // (or `Nil`) on the strength of a decision
+                                    // that was never made, so it is raised
+                                    // instead. Raising is in-band here — a
+                                    // `match` mutates no space, so there is
+                                    // nothing to unwind — and it covers the
+                                    // `Par`s that never met the normalizer's
+                                    // gate.
                                     let guard_passes = match &single_case.guard {
                                         Some(g) if g != &Par::default() => {
-                                            match rho_pure_eval::eval_with(
-                                                g,
-                                                &case_env,
-                                                &SpatialMatcherOracle,
-                                            ) {
-                                                Ok(result) => extract_bool(&result) == Some(true),
-                                                Err(_) => false,
+                                            match guard_disposition_in_env(g, &case_env) {
+                                                GuardDisposition::Undecidable { kind } => {
+                                                    return Err(
+                                                        InterpreterError::UndecidableGuard {
+                                                            clause: MATCH_CASE_WHERE,
+                                                            obstructions: vec![kind.to_string()],
+                                                        },
+                                                    );
+                                                }
+                                                other => other.commits(),
                                             }
                                         }
                                         _ => true,

@@ -20,6 +20,7 @@ use crate::rust::interpreter::compiler::normalizer::remainder_normalizer_matcher
 use crate::rust::interpreter::compiler::receive_binds_sort_matcher::pre_sort_binds;
 use crate::rust::interpreter::compiler::span_utils::SpanContext;
 use crate::rust::interpreter::errors::InterpreterError;
+use crate::rust::interpreter::guard::{reject_undecidable_guard, RECEIVE_WHERE};
 use crate::rust::interpreter::unwrap_option_safe;
 use crate::rust::interpreter::util::filter_and_adjust_bitset;
 
@@ -622,7 +623,17 @@ pub(crate) fn combine_p_input<'ast>(
         }
 
         InputPhase::Guard => {
-            k.guard_out = Some(value.into_proc());
+            let guard_out = value.into_proc();
+            // ★ THE GUARD-DECIDABILITY GATE, receive half. A `where` guard is
+            // decided by `rho-pure-eval` inside the matcher, which implements a
+            // subset of the expression language; a guard outside that subset
+            // used to be reported as `false` — a silently unfireable COMM with
+            // no error to read. Refused here instead, where the source position
+            // is still in hand and refusing costs the author nothing but a
+            // rewrite. See `interpreter::guard` for why refusing beats both
+            // widening the decider and raising from inside the matcher.
+            reject_undecidable_guard(&guard_out.par, RECEIVE_WHERE)?;
+            k.guard_out = Some(guard_out);
             k.phase = InputPhase::Body;
             advance_input(k)
         }

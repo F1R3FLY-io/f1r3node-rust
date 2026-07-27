@@ -122,6 +122,34 @@ pub enum InterpreterError {
         path: Vec<u32>,
         source: Box<InterpreterError>,
     },
+
+    /// A `where` guard contains a construct the guard decider cannot evaluate.
+    ///
+    /// ★ **Why this is an error and not a `false` verdict.** A `where` guard is
+    /// decided by `rho-pure-eval` — a deliberate *subset* of `Reduce::eval_expr`
+    /// (see that crate's `decidable` module) — running inside the RSpace matcher
+    /// and inside `eval_match`'s case-guard arm. Everything outside the subset
+    /// yields `EvalError::UnsupportedExpression`. Collapsing that into "the
+    /// guard did not hold" makes an *undecided* guard indistinguishable from a
+    /// *refuted* one: the program compiles, runs, exits cleanly, admits nothing,
+    /// and reports nothing. A guard as ordinary as `xs.length() == 1` then fails
+    /// closed with no signal at all, and — because the very same expression
+    /// evaluates fine in the receive's BODY — the failure is undiscoverable by
+    /// experiment.
+    ///
+    /// So the undecidable case is refused instead, at the earliest point that
+    /// can name it: the normalizer for source-level programs, and
+    /// `Reduce::{eval_receive, eval_match}` for Pars that reach the reducer by
+    /// another route. Refusing is a pure function of the guard term, so it is
+    /// reproduced identically on every node and under replay.
+    ///
+    /// `clause` is `"where"` (a receive guard) or `"match … where"` (a case
+    /// guard); `obstructions` names each undecidable node in the order the
+    /// evaluator would have reached it.
+    UndecidableGuard {
+        clause: &'static str,
+        obstructions: Vec<String>,
+    },
 }
 
 pub fn illegal_argument_error(method_name: &str) -> InterpreterError {
@@ -360,6 +388,27 @@ impl fmt::Display for InterpreterError {
                     .collect::<Vec<_>>()
                     .join(".");
                 write!(f, "[{}] {}", coord, source)
+            }
+
+            InterpreterError::UndecidableGuard {
+                clause,
+                obstructions,
+            } => {
+                // The message must let the author act. It names the clause
+                // (so they know which guard), every obstruction (so they know
+                // what to remove), and the remedy — binding the value in the
+                // PATTERN, which is where an evaluated value is already
+                // available to the guard.
+                write!(
+                    f,
+                    "`{}` guard cannot be decided: it contains {}. A guard is \
+                     evaluated by the matcher, which decides a subset of the \
+                     expression language and cannot evaluate these. Bind what \
+                     the guard needs in the receive PATTERN instead, where the \
+                     value has already been computed.",
+                    clause,
+                    obstructions.join(", ")
+                )
             }
         }
     }

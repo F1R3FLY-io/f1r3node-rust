@@ -3,7 +3,7 @@ use std::marker::{Send, Sync};
 use models::rhoapi::expr::ExprInstance;
 use models::rust::rholang::implicits::vector_par;
 use models::rust::utils::{new_elist_expr, to_vec};
-use rho_pure_eval::{Env as PureEnv, SpatialMatch};
+use rho_pure_eval::{Env as PureEnv, EvalError, SpatialMatch};
 use rspace_plus_plus::rspace::r#match::Match;
 
 use super::exports::*;
@@ -128,42 +128,142 @@ impl SpatialMatch for SpatialMatcherOracle {
     }
 }
 
-/// Evaluates a guard against the combined cross-bind variables.
-/// Returns true iff the guard reduces to GBool(true). Anything else
-/// (false, non-bool, or eval-error) is treated as guard-fail.
+/// What actually happened when a guard was put to the decider.
 ///
-/// ★ The collapse of "false", "not a boolean" and "evaluation failed"
-/// into one guard-fail verdict is deliberate and consensus-visible:
-/// changing it would change which COMMs commit. It is preserved
-/// verbatim. Diagnosability is paid instead at a non-consensus layer —
-/// the DEBUG events below name which of the two silent cases occurred
-/// without touching the returned verdict.
-fn guard_passes(condition: &Par, bound_pars: &[Par]) -> bool {
+/// ★ **Why this is not a `bool`.** A guard verdict used to be one, and a
+/// single bit cannot hold the distinction the caller most needs: whether the
+/// guard was *decided against* or *never decided at all*. Every failure mode
+/// collapsed into `false`, so a guard containing a construct the decider has
+/// no arm for reported exactly what a refuted guard reports — and the program
+/// then compiled, ran, exited 0, admitted nothing, and said nothing.
+///
+/// The same conflation was diagnosed and removed on the host lane, where the
+/// remedy was a three-valued `GuardDisposition::{Fires, Blocks, Declines}`.
+/// This is that remedy on the machine lane, with the two *decided-but-failed*
+/// cases separated as well, so each variant is one fact:
+///
+/// | variant | evaluated? | what it means |
+/// | --- | --- | --- |
+/// | [`Admits`](Self::Admits) | yes | the predicate holds — commit |
+/// | [`Refutes`](Self::Refutes) | yes | the predicate does not hold — an ordinary, correct non-commit |
+/// | [`NotABoolean`](Self::NotABoolean) | yes | the guard reduced to something that is not a verdict |
+/// | [`Failed`](Self::Failed) | attempted | the guard is decidable but errored on *this* datum (type mismatch, `/0`, overflow, unbound index) |
+/// | [`Undecidable`](Self::Undecidable) | **no** | ★ the decider has no arm for a node in this guard — it never ran |
+///
+/// [`Undecidable`](Self::Undecidable) is the one the gate in
+/// [`crate::rust::interpreter::guard`] exists to make unreachable, and
+/// separating it here is what lets the gate be *checked* rather than assumed.
+#[derive(Clone, Debug, PartialEq)]
+pub enum GuardDisposition {
+    /// Evaluated to `true`.
+    Admits,
+    /// Evaluated to `false`.
+    Refutes,
+    /// Evaluated to a value that is not a single `GBool`.
+    NotABoolean,
+    /// Evaluation ran and failed on this datum. Carries the exact error so a
+    /// diagnostic can name it.
+    Failed(EvalError),
+    /// ★ Evaluation never ran: the guard contains a node kind
+    /// `rho-pure-eval` has no arm for. `kind` is the `ExprInstance` variant
+    /// name, e.g. `"EMethodBody"`.
+    Undecidable { kind: &'static str },
+}
+
+impl GuardDisposition {
+    /// The commit verdict: `true` only for [`Admits`](Self::Admits).
+    ///
+    /// ⚠ **Fail-closed, and the asymmetry is deliberate.** Firing a COMM the
+    /// reducer would not fire is unsoundness in the worst direction, so every
+    /// non-`Admits` disposition declines. What has changed is that declining
+    /// is no longer the *only* thing that happens: the caller has the
+    /// disposition itself and can refuse, log, or raise on it.
+    pub fn commits(&self) -> bool { matches!(self, GuardDisposition::Admits) }
+}
+
+/// Decides a guard against the combined cross-bind variables.
+///
+/// `bound_pars` is the concatenation, in receive-bind order, of every bind's
+/// matched data — which *is* the de Bruijn numbering the normalizer assigned,
+/// so `BoundVar(k)` reads `bound_pars[bound_pars.len() - 1 - k]`.
+///
+/// The environment is built by `put`ting each bound par in order, so this
+/// function is a pure function of `(condition, bound_pars)`: no state carries
+/// between calls, which is what the determinism contract in
+/// [`rho_pure_eval`]'s module docs requires of anything the matcher calls.
+pub fn guard_disposition(condition: &Par, bound_pars: &[Par]) -> GuardDisposition {
     let mut env: PureEnv<Par> = PureEnv::new();
     for p in bound_pars.iter() {
         env = env.put(p.clone());
     }
-    match rho_pure_eval::eval_with(condition, &env, &SpatialMatcherOracle) {
+    guard_disposition_in_env(condition, &env)
+}
+
+/// [`guard_disposition`] against an environment the caller has already built.
+///
+/// `Reduce::eval_match` needs this: a case guard is evaluated in `case_env`,
+/// which is the ENCLOSING environment extended with the case's bindings, not
+/// the bindings alone. Building a fresh environment from the bindings would
+/// silently drop every outer variable the guard mentions and turn it into an
+/// `UnboundVariable` failure.
+///
+/// Both entry points funnel into the same classification, so `for … where`
+/// and `match … where` cannot disagree about what a disposition means.
+pub fn guard_disposition_in_env(condition: &Par, env: &PureEnv<Par>) -> GuardDisposition {
+    match rho_pure_eval::eval_with(condition, env, &SpatialMatcherOracle) {
         Ok(result) => match extract_bool(&result) {
-            Some(verdict) => verdict,
+            Some(true) => GuardDisposition::Admits,
+            Some(false) => GuardDisposition::Refutes,
             None => {
-                tracing::debug!(
+                tracing::error!(
                     target: "f1r3fly.rholang.guard",
                     result = ?result,
-                    "guard did not reduce to a boolean; treating as guard-fail"
+                    "guard did not reduce to a boolean; declining to commit"
                 );
-                false
+                GuardDisposition::NotABoolean
             }
         },
+        // ★ THE ARM THE WHOLE FIX TURNS ON. `UnsupportedExpression` is not a
+        // verdict about the datum — it is the decider reporting that it never
+        // looked. It gets its own disposition and an ERROR-level event naming
+        // the node kind, because reaching it means a guard slipped past both
+        // layers of `interpreter::guard`'s gate and that is a defect in the
+        // node, not in the program.
+        Err(EvalError::UnsupportedExpression { kind }) => {
+            tracing::error!(
+                target: "f1r3fly.rholang.guard",
+                kind,
+                condition = ?condition,
+                "UNDECIDABLE GUARD reached the matcher: `interpreter::guard` \
+                 should have refused this at normalize time or in eval_receive. \
+                 Declining to commit."
+            );
+            GuardDisposition::Undecidable { kind }
+        }
         Err(error) => {
-            tracing::debug!(
+            tracing::error!(
                 target: "f1r3fly.rholang.guard",
                 error = %error,
-                "guard evaluation failed; treating as guard-fail"
+                "guard evaluation failed on this datum; declining to commit"
             );
-            false
+            GuardDisposition::Failed(error)
         }
     }
+}
+
+/// [`guard_disposition`], projected onto the boolean `check_commit` returns.
+///
+/// ★ **Why the projection stays here rather than becoming fallible.**
+/// `Match::check_commit` returns `bool` (`rspace++/src/rspace/match.rs`), and
+/// widening it to a `Result` would thread a new failure path through
+/// `consume`/`produce` in **both** the play and the replay space — the one
+/// place where the comm-event sequence must be reproduced exactly — and would
+/// break every out-of-workspace implementor of the trait. The undecidable case
+/// is removed at its source instead (see
+/// [`crate::rust::interpreter::guard`]), which leaves nothing for a fallible
+/// signature to report.
+fn guard_passes(condition: &Par, bound_pars: &[Par]) -> bool {
+    guard_disposition(condition, bound_pars).commits()
 }
 
 fn extract_bool(par: &Par) -> Option<bool> {
