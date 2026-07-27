@@ -1,0 +1,316 @@
+// Stream.rho — File I/O FIP §Streams library (MVP slice).
+//
+// A `Stream` agent produces a sequence of values incrementally, on
+// demand.  Streams are never constructed directly by user code —
+// producer-side agents (File.chars(), Dir.entries(), etc.) mint them.
+// This library provides the base agent; producer agents in later
+// phases (Phase 5+) supply the producer contract at construction.
+//
+// ## Delivered methods (this MVP)
+//
+//   - `next()` — return next value or [false, "EOS", msg]
+//   - `chunk(n)` — return up to `n` values in a specialization-typed
+//     container; specialization is parameterized via `chunkBuilder`
+//     supplied at construction
+//   - `close()` — release the source; idempotent
+//   - `fold(init, combine)` — sequential fold; auto-close on exit;
+//     catches EOS internally
+//   - `forEach(handler)` — side-effect fold; auto-close on exit
+//   - `default(...@args)` — FSERR_UNSUPPORTED for unknown methods
+//
+// ## Deferred to follow-up commits
+//
+//   - `foldChunks`, `foldConcurrent`, `mapReduce` — parallel combinators
+//   - LineStream single-active-inner rule
+//   - Materialization helpers `toString(cap)` / `toByteArray(cap)` /
+//     `toList(cap)`
+//
+// ## Constructor signature
+//
+//   Stream!?(*producer, *chunkBuilder)
+//
+// where:
+//
+//   `producer(returnCh)` — a contract-shaped channel.  When invoked,
+//     it responds on `returnCh` with either:
+//        [true, value]        — next value in the sequence
+//        [false, "EOS", msg]  — end-of-stream (normal termination)
+//        [false, code, msg]   — real error
+//     Producers are stateful (they hold their own cursor); the Stream
+//     agent invokes them serially, never concurrently.
+//
+//   `chunkBuilder(values, returnCh)` — a contract that packs a List
+//     of individual values into the specialization's chunk container
+//     and replies on `returnCh` with:
+//        [true, container]                    — the packed container
+//        [false, "FSERR_UNSUPPORTED", msg]    — for LineStream
+//     Per-specialization implementations live outside this file:
+//        CharStream:  concat over String values (via ++ or interpolate)
+//        ByteStream:  concatBytes on the list (Phase 2 primitive)
+//        EntryStream: identity — values IS a List already
+//        LineStream:  always returns FSERR_UNSUPPORTED (chunk unsupported)
+//
+// ## State layout
+//
+// Two cells for a clean mutex/immutable separation:
+//
+//   @[*private, *paramsP]  — set at ctor to (producer, builder);
+//                             consumed at close.  Immutable while open.
+//   @[*private, *stateP]   — a transition tag:
+//                              "open"
+//                              ("eos", msg)
+//                              ("error", code, msg)
+//                              "closed"
+//
+// Splitting params from state means chunk() can peek at the builder
+// after gatherN has transitioned state to EOS — the builder is still
+// available.
+//
+// ## Concurrency
+//
+// Same discipline as Buffer.rho: every named method acquires the
+// state token via linear-receive, matches "closed" first, does its
+// work, re-parks on every exit path.  Third-arm _ catch-all keeps
+// the mutex robust against a hypothetical fourth payload shape.
+
+new Stream, paramsP, stateP, gatherN, foldLoop, forEachLoop in {
+
+  agent Stream {
+    constructor(@producer, @chunkBuilder) {
+      @[*private, *paramsP]!((producer, chunkBuilder)) |
+      @[*private, *stateP]!("open")
+    } |
+
+    // -- next() -----------------------------------------------------
+    method next() {
+      for (@state <- @[*private, *stateP]) {
+        match state {
+          "closed" => {
+            @[*private, *stateP]!("closed") |
+            return!([false, "FSERR_CLOSED", "stream is closed"])
+          }
+          ("eos", msg) => {
+            @[*private, *stateP]!(state) |
+            return!([false, "EOS", msg])
+          }
+          ("error", code, msg) => {
+            @[*private, *stateP]!(state) |
+            return!([false, code, msg])
+          }
+          "open" => {
+            // Peek at producer without consuming paramsP (params are
+            // immutable while open).
+            for (@params <<- @[*private, *paramsP]) {
+              match params {
+                (producer, _builder) => {
+                  new retCh in {
+                    @producer!(*retCh) |
+                    for (@reply <- retCh) {
+                      match reply {
+                        [true, val] => {
+                          @[*private, *stateP]!("open") |
+                          return!([true, val])
+                        }
+                        [false, "EOS", msg] => {
+                          @[*private, *stateP]!(("eos", msg)) |
+                          return!([false, "EOS", msg])
+                        }
+                        [false, code, msg] => {
+                          @[*private, *stateP]!(("error", code, msg)) |
+                          return!([false, code, msg])
+                        }
+                        _ => {
+                          @[*private, *stateP]!(("error", "FSERR_IO", "producer malformed reply")) |
+                          return!([false, "FSERR_IO", "producer malformed reply"])
+                        }
+                      }
+                    }
+                  }
+                }
+                _ => {
+                  @[*private, *stateP]!(("error", "FSERR_IO", "params malformed")) |
+                  return!([false, "FSERR_IO", "params malformed"])
+                }
+              }
+            }
+          }
+          _ => {
+            @[*private, *stateP]!("closed") |
+            return!([false, "FSERR_CLOSED", "stream state unrecognized"])
+          }
+        }
+      }
+    } |
+
+    // -- chunk(n) ---------------------------------------------------
+    //
+    // Type-guarded on n before touching state, matching the Buffer.rho
+    // pattern for uncatchable-arithmetic safety.  Gathers up to n
+    // values via internal next() dispatches, then packs the collected
+    // list via the chunk-builder.  Peek at builder via <<- (peek)
+    // reads paramsP without consuming — safe because params are
+    // immutable while the stream is not closed.
+    method chunk(@n) {
+      match n {
+        i /\ Int => {
+          match i <= 0 {
+            true => return!([false, "FSERR_BAD_ARG", "n must be positive"])
+            false => {
+              // Early exit if already terminal.
+              for (@state <<- @[*private, *stateP]) {
+                match state {
+                  "closed" => return!([false, "FSERR_CLOSED", "stream is closed"])
+                  ("eos", msg) => return!([false, "EOS", msg])
+                  ("error", code, msg) => return!([false, code, msg])
+                  "open" => {
+                    // Gather up to i values.
+                    new gCh in {
+                      gatherN!(*this, i, [], *gCh) |
+                      for (@[values, terminal] <- gCh) {
+                        match values {
+                          [] => {
+                            // Nothing gathered — terminal is EOS or error.
+                            return!(terminal)
+                          }
+                          _ => {
+                            // Peek builder from paramsP.
+                            for (@params <<- @[*private, *paramsP]) {
+                              match params {
+                                (_p, cb) => {
+                                  new packCh in {
+                                    @cb!(values, *packCh) |
+                                    for (@packed <- packCh) {
+                                      return!(packed)
+                                    }
+                                  }
+                                }
+                                _ => return!([false, "FSERR_IO", "params malformed"])
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                  _ => return!([false, "FSERR_CLOSED", "stream state unrecognized"])
+                }
+              }
+            }
+          }
+        }
+        _ => return!([false, "FSERR_BAD_ARG", "n must be an integer"])
+      }
+    } |
+
+    // -- close() ----------------------------------------------------
+    method close() {
+      for (@_state <- @[*private, *stateP]) {
+        @[*private, *stateP]!("closed") |
+        return!([true])
+      }
+    } |
+
+    // -- fold(init, combine) ----------------------------------------
+    method fold(@init, @combine) {
+      new loopCh in {
+        foldLoop!(*this, combine, init, *loopCh) |
+        for (@result <- loopCh) {
+          // Auto-close on exit (success, EOS, or error).
+          for (@_ <- @(*this)!?("close")) {
+            return!(result)
+          }
+        }
+      }
+    } |
+
+    // -- forEach(handler) -------------------------------------------
+    method forEach(@handler) {
+      new loopCh in {
+        forEachLoop!(*this, handler, *loopCh) |
+        for (@result <- loopCh) {
+          for (@_ <- @(*this)!?("close")) {
+            return!(result)
+          }
+        }
+      }
+    } |
+
+    // -- Default arm -----------------------------------------------
+
+    default(...@args) {
+      match args {
+        [*ret, ..._] => ret!([false, "FSERR_UNSUPPORTED", "unknown method"])
+      }
+    }
+  } |
+
+  // ==================================================================
+  // Module-level helpers.
+  // ==================================================================
+
+  // gatherN(stream, n, acc, ret) — pull up to n values from `stream`
+  // via successive `next()` calls, accumulating in `acc`.  Returns
+  // ret!([values, terminalReply]) where terminalReply is the last
+  // reply from next() — either the last [true, val] appended, or the
+  // EOS / error that stopped the gather.  If the FIRST call returns
+  // a terminal reply, `values` is [] and the caller propagates the
+  // terminal directly.
+  contract gatherN(@stream, @n, @acc, ret) = {
+    match n <= 0 {
+      true => ret!([acc, [true, Nil]])
+      false => {
+        for (@reply <- @stream!?("next")) {
+          match reply {
+            [true, val] => gatherN!(stream, n - 1, acc ++ [val], *ret)
+            _           => ret!([acc, reply])
+          }
+        }
+      }
+    }
+  } |
+
+  // foldLoop(stream, combine, acc, ret) — sequentially fetch values
+  // and pass each to `combine`, chaining the accumulator.  Reply
+  // [true, acc] on EOS; [false, code, msg] on any other error or on
+  // a combine error.
+  contract foldLoop(@stream, @combine, @acc, ret) = {
+    for (@reply <- @stream!?("next")) {
+      match reply {
+        [true, val] => {
+          new combCh in {
+            @combine!(*combCh, acc, val) |
+            for (@combResult <- combCh) {
+              match combResult {
+                [false, code, msg] => ret!([false, code, msg])
+                newAcc             => foldLoop!(stream, combine, newAcc, *ret)
+              }
+            }
+          }
+        }
+        [false, "EOS", _]  => ret!([true, acc])
+        [false, code, msg] => ret!([false, code, msg])
+        _                  => ret!([false, "FSERR_IO", "unexpected reply shape"])
+      }
+    }
+  } |
+
+  // forEachLoop(stream, handler, ret) — no accumulator; handler is
+  // (returnCh, @value) => (side effect); returnCh!().
+  contract forEachLoop(@stream, @handler, ret) = {
+    for (@reply <- @stream!?("next")) {
+      match reply {
+        [true, val] => {
+          new doneCh in {
+            @handler!(*doneCh, val) |
+            for (@_ <- doneCh) {
+              forEachLoop!(stream, handler, *ret)
+            }
+          }
+        }
+        [false, "EOS", _]  => ret!([true])
+        [false, code, msg] => ret!([false, code, msg])
+        _                  => ret!([false, "FSERR_IO", "unexpected reply shape"])
+      }
+    }
+  }
+}
