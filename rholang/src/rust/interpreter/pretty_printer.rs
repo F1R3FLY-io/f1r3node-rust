@@ -17,6 +17,97 @@ use shared::rust::shared::string_ops::wrap_with_braces;
 
 use super::errors::InterpreterError;
 
+/// The message text the `&dyn Any` dispatch produced for a value it did not
+/// recognise. Preserved **verbatim** — see [`PpNode::Unprintable`].
+pub const UNPRINTABLE_ANY: &str = "Attempt to print unknown prost::Message type: Any { .. }";
+
+/// The **closed** set of nodes the printer can render.
+///
+/// ## ★ Why this replaces `&dyn std::any::Any`
+///
+/// `_build_string_from_message` used to take `&dyn Any` and dispatch through a
+/// chain of `downcast_ref`s ending in an `else` that returned an error. `Any`
+/// **cannot be made exhaustive**: a caller passing a type the chain does not
+/// know gets no compile error, no panic, and no test failure — it gets an error
+/// string spliced silently into the output. The printer's input alphabet was
+/// therefore not finite, which is also why it could not be a machine.
+///
+/// This enum makes the alphabet finite and makes an unhandled node a **compile
+/// error**. Adding a printable type to the family now fails to build here
+/// rather than degrading at runtime.
+///
+/// ## ⚠ There was a live instance, and it is preserved rather than fixed
+///
+/// `_build_string_from_message`'s `Match` arm called
+/// `self.build_string_from_message(&m.target)`, and `m.target` is an
+/// `Option<Par>`, **not** a `Par`. So every `match` term this printer renders
+/// shows its target as
+///
+/// ```text
+/// match <unprintable: Bug found: Attempt to print unknown prost::Message type: Any { .. }> {
+/// ```
+///
+/// Making the dispatch closed turns that call site into a type error, which is
+/// exactly what it is for. But **correcting it is a separate, separately
+/// reviewed change**: `build_channel_string` reaches
+/// `SystemDeployPlatformFailure::UnexpectedResult` -> `Display` -> `error_msg`
+/// -> `ProcessedSystemDeploy::Failed`, which is serialized into the block and
+/// compared byte-for-byte in replay validation
+/// (`casper/src/rust/rholang/replay_runtime.rs:745-758`). Changing what a
+/// `match` target prints changes block-resident bytes, and that must not ride
+/// inside a stack-depth conversion.
+///
+/// So the site is spelled [`PpNode::Unprintable`] with the original message,
+/// making the defect **explicit and greppable** instead of accidental, and
+/// `a_match_target_renders_as_an_error_string_and_that_is_pinned` holds the
+/// bytes still.
+pub enum PpNode<'a> {
+    Var(&'a Var),
+    Send(&'a models::rhoapi::Send),
+    Receive(&'a Receive),
+    Bundle(&'a Bundle),
+    New(&'a New),
+    Expr(&'a Expr),
+    Match(&'a Match),
+    Unforgeable(&'a GUnforgeable),
+    Connective(&'a Connective),
+    Par(&'a Par),
+    /// ⚠ A call site that hands the printer something it has no rendering for.
+    /// Carries the message the `&dyn Any` dispatch used to synthesise, so the
+    /// emitted bytes are unchanged. See the type documentation.
+    Unprintable(&'static str),
+}
+
+/// Lets `build_string_from_message` keep its by-reference call shape at every
+/// existing call site while the dispatch underneath becomes closed.
+///
+/// A type that is not printable simply has no impl, so passing one is a
+/// **compile error** rather than an `<unprintable: …>` string at runtime.
+pub trait AsPpNode {
+    fn as_pp_node(&self) -> PpNode<'_>;
+}
+
+macro_rules! as_pp_node {
+    ($ty:ty, $variant:ident) => {
+        impl AsPpNode for $ty {
+            fn as_pp_node(&self) -> PpNode<'_> {
+                PpNode::$variant(self)
+            }
+        }
+    };
+}
+
+as_pp_node!(Var, Var);
+as_pp_node!(models::rhoapi::Send, Send);
+as_pp_node!(Receive, Receive);
+as_pp_node!(Bundle, Bundle);
+as_pp_node!(New, New);
+as_pp_node!(Expr, Expr);
+as_pp_node!(Match, Match);
+as_pp_node!(GUnforgeable, Unforgeable);
+as_pp_node!(Connective, Connective);
+as_pp_node!(Par, Par);
+
 #[derive(Clone)]
 pub struct PrettyPrinter {
     pub free_shift: i32,
@@ -75,16 +166,24 @@ impl PrettyPrinter {
         self.cap(&self._build_string_from_var(v))
     }
 
-    pub fn build_string_from_message(&mut self, m: &dyn std::any::Any) -> String {
+    /// ⚠ Note the two things this does BESIDES printing, both of which the
+    /// driver has to reproduce: it resets `indent` to **0**, and it **caps**
+    /// the result. Its `_`-prefixed twin does neither. Which of the two a call
+    /// site uses is part of the output, not a style choice.
+    pub fn build_string_from_message<T: AsPpNode + ?Sized>(&mut self, m: &T) -> String {
+        self.build_string_from_node(m.as_pp_node())
+    }
+
+    /// [`build_string_from_message`] for a node that has no `AsPpNode` impl —
+    /// in practice only [`PpNode::Unprintable`].
+    pub fn build_string_from_node(&mut self, node: PpNode<'_>) -> String {
         // Instead of panicking on unknown types, return a fallback string
         // This matches Scala behavior where errors are handled gracefully
-        match self._build_string_from_message(m, 0) {
+        match self._build_string_from_message(node, 0) {
             Ok(str) => self.cap(&str),
-            Err(err) => {
-                // Return a fallback message instead of panicking
-                // This can happen when trying to print unknown protobuf types
-                format!("<unprintable: {}>", err)
-            }
+            // ⚠ The fallback is NOT capped. That asymmetry is the pre-existing
+            // behaviour and the driver's `Catch` frame reproduces it.
+            Err(err) => format!("<unprintable: {}>", err),
         }
     }
 
@@ -669,7 +768,7 @@ impl PrettyPrinter {
         };
 
         self.is_building_channel = true;
-        let str = self._build_string_from_message(p, indent)?;
+        let str = self._build_string_from_message(PpNode::Par(p), indent)?;
         if str.len() > 60 {
             Ok(quote_if_not_new(
                 str,
@@ -691,12 +790,15 @@ impl PrettyPrinter {
 
     fn _build_string_from_message(
         &mut self,
-        m: &dyn std::any::Any,
+        node: PpNode<'_>,
         indent: usize,
     ) -> Result<String, InterpreterError> {
-        if let Some(v) = m.downcast_ref::<Var>() {
+        match node {
+        PpNode::Var(v) => {
             Ok(self.build_string_from_var(v))
-        } else if let Some(s) = m.downcast_ref::<models::rhoapi::Send>() {
+        }
+        PpNode::Unprintable(msg) => Err(InterpreterError::BugFoundError(msg.to_string())),
+        PpNode::Send(s) => {
             let str = if s.persistent {
                 String::from("!!(")
             } else {
@@ -720,7 +822,8 @@ impl PrettyPrinter {
                 str,
                 data_str
             ))
-        } else if let Some(r) = m.downcast_ref::<Receive>() {
+        }
+        PpNode::Receive(r) => {
             let (totally_free, binds_string) = r.binds.iter().enumerate().try_fold(
                 (0, String::from("")),
                 |(previous_free, mut string), (i, bind)| {
@@ -779,19 +882,23 @@ impl PrettyPrinter {
             } else {
                 Ok(format!("for( {} ) {{}}", binds_string))
             }
-        } else if let Some(b) = m.downcast_ref::<Bundle>() {
+        }
+        PpNode::Bundle(b) => {
             Ok(format!(
                 "{}{{\n{}{}\n}}",
                 BundleOps::show(b),
                 self.indent_string().repeat(indent + 1),
                 self._build_string_from_message(
-                    b.body
-                        .as_ref()
-                        .expect("body field on bundle was None, should be Some"),
+                    PpNode::Par(
+                        b.body
+                            .as_ref()
+                            .expect("body field on bundle was None, should be Some")
+                    ),
                     indent + 1
                 )?
             ))
-        } else if let Some(n) = m.downcast_ref::<New>() {
+        }
+        PpNode::New(n) => {
             let introduced_news_shift_idx: Vec<i32> =
                 (0..n.bind_count).map(|i| i + self.bound_shift).collect();
 
@@ -808,8 +915,10 @@ impl PrettyPrinter {
                         .chain(introduced_news_shift_idx)
                         .collect();
                     self._build_string_from_message(
-                        n.p.as_ref()
-                            .expect("p field on New was None, should be Some"),
+                        PpNode::Par(
+                            n.p.as_ref()
+                                .expect("p field on New was None, should be Some"),
+                        ),
                         indent + 1,
                     )?
                 }
@@ -821,12 +930,26 @@ impl PrettyPrinter {
                 self.indent_string().repeat(indent),
                 "}"
             ))
-        } else if let Some(e) = m.downcast_ref::<Expr>() {
+        }
+        PpNode::Expr(e) => {
             Ok(self.build_string_from_expr(e))
-        } else if let Some(m) = m.downcast_ref::<Match>() {
+        }
+        PpNode::Match(m) => {
             let result = format!(
                 "match {} {{\n{}{}",
-                self.build_string_from_message(&m.target),
+                // ⚠ FOUND DEFECT, PRESERVED BYTE-FOR-BYTE. This was
+                // `self.build_string_from_message(&m.target)` — and `m.target`
+                // is an `Option<Par>`, which matched no `downcast_ref` arm, so
+                // EVERY `match` term rendered its target as an error string.
+                // The closed `PpNode` dispatch turns that into a type error;
+                // spelling it `Unprintable` keeps the emitted bytes identical
+                // while making the defect explicit and greppable.
+                //
+                // ⚠ FIXING IT IS A SEPARATE, SEPARATELY REVIEWED CHANGE: these
+                // bytes are block-resident and replay-compared
+                // (`replay_runtime.rs:745-758`). See `PpNode`'s docs and
+                // `a_match_target_renders_as_an_error_string_and_that_is_pinned`.
+                self.build_string_from_node(PpNode::Unprintable(UNPRINTABLE_ANY)),
                 self.indent_string().repeat(indent + 1),
                 m.cases.iter().enumerate().fold(
                     Ok(String::new()),
@@ -851,9 +974,11 @@ impl PrettyPrinter {
                 self.indent_string().repeat(indent),
                 "}"
             ))
-        } else if let Some(u) = m.downcast_ref::<GUnforgeable>() {
+        }
+        PpNode::Unforgeable(u) => {
             self.build_string_from_unforgeable(u)
-        } else if let Some(c) = m.downcast_ref::<Connective>() {
+        }
+        PpNode::Connective(c) => {
             match &c.connective_instance {
                 Some(conn_instance) => match conn_instance {
                     ConnectiveInstance::ConnAndBody(value) => Ok(format!(
@@ -890,7 +1015,8 @@ impl PrettyPrinter {
                 },
                 None => Ok(String::new()),
             }
-        } else if let Some(p) = m.downcast_ref::<Par>() {
+        }
+        PpNode::Par(p) => {
             if self.is_empty_par(p) {
                 Ok(String::from("Nil"))
             } else {
@@ -905,7 +1031,7 @@ impl PrettyPrinter {
                         result.push_str(&format!(" |\n{}", self.indent_string().repeat(indent)));
                     }
                     for (index, bundle) in p.bundles.iter().enumerate() {
-                        result.push_str(&self._build_string_from_message(bundle, indent)?);
+                        result.push_str(&self._build_string_from_message(PpNode::Bundle(bundle), indent)?);
                         if index != p.bundles.len() - 1 {
                             result
                                 .push_str(&format!(" |\n{}", self.indent_string().repeat(indent)));
@@ -920,7 +1046,7 @@ impl PrettyPrinter {
                         result.push_str(&format!(" |\n{}", self.indent_string().repeat(indent)));
                     }
                     for (index, send) in p.sends.iter().enumerate() {
-                        result.push_str(&self._build_string_from_message(send, indent)?);
+                        result.push_str(&self._build_string_from_message(PpNode::Send(send), indent)?);
                         if index != p.sends.len() - 1 {
                             result
                                 .push_str(&format!(" |\n{}", self.indent_string().repeat(indent)));
@@ -935,7 +1061,7 @@ impl PrettyPrinter {
                         result.push_str(&format!(" |\n{}", self.indent_string().repeat(indent)));
                     }
                     for (index, receive) in p.receives.iter().enumerate() {
-                        result.push_str(&self._build_string_from_message(receive, indent)?);
+                        result.push_str(&self._build_string_from_message(PpNode::Receive(receive), indent)?);
                         if index != p.receives.len() - 1 {
                             result
                                 .push_str(&format!(" |\n{}", self.indent_string().repeat(indent)));
@@ -950,7 +1076,7 @@ impl PrettyPrinter {
                         result.push_str(&format!(" |\n{}", self.indent_string().repeat(indent)));
                     }
                     for (index, new_item) in p.news.iter().enumerate() {
-                        result.push_str(&self._build_string_from_message(new_item, indent)?);
+                        result.push_str(&self._build_string_from_message(PpNode::New(new_item), indent)?);
                         if index != p.news.len() - 1 {
                             result
                                 .push_str(&format!(" |\n{}", self.indent_string().repeat(indent)));
@@ -965,7 +1091,7 @@ impl PrettyPrinter {
                         result.push_str(&format!(" |\n{}", self.indent_string().repeat(indent)));
                     }
                     for (index, expr) in p.exprs.iter().enumerate() {
-                        result.push_str(&self._build_string_from_message(expr, indent)?);
+                        result.push_str(&self._build_string_from_message(PpNode::Expr(expr), indent)?);
                         if index != p.exprs.len() - 1 {
                             result
                                 .push_str(&format!(" |\n{}", self.indent_string().repeat(indent)));
@@ -980,7 +1106,7 @@ impl PrettyPrinter {
                         result.push_str(&format!(" |\n{}", self.indent_string().repeat(indent)));
                     }
                     for (index, match_item) in p.matches.iter().enumerate() {
-                        result.push_str(&self._build_string_from_message(match_item, indent)?);
+                        result.push_str(&self._build_string_from_message(PpNode::Match(match_item), indent)?);
                         if index != p.matches.len() - 1 {
                             result
                                 .push_str(&format!(" |\n{}", self.indent_string().repeat(indent)));
@@ -995,7 +1121,7 @@ impl PrettyPrinter {
                         result.push_str(&format!(" |\n{}", self.indent_string().repeat(indent)));
                     }
                     for (index, unforgeable) in p.unforgeables.iter().enumerate() {
-                        result.push_str(&self._build_string_from_message(unforgeable, indent)?);
+                        result.push_str(&self._build_string_from_message(PpNode::Unforgeable(unforgeable), indent)?);
                         if index != p.unforgeables.len() - 1 {
                             result
                                 .push_str(&format!(" |\n{}", self.indent_string().repeat(indent)));
@@ -1010,7 +1136,7 @@ impl PrettyPrinter {
                         result.push_str(&format!(" |\n{}", self.indent_string().repeat(indent)));
                     }
                     for (index, connective) in p.connectives.iter().enumerate() {
-                        result.push_str(&self._build_string_from_message(connective, indent)?);
+                        result.push_str(&self._build_string_from_message(PpNode::Connective(connective), indent)?);
                         if index != p.connectives.len() - 1 {
                             result
                                 .push_str(&format!(" |\n{}", self.indent_string().repeat(indent)));
@@ -1020,11 +1146,7 @@ impl PrettyPrinter {
 
                 Ok(result)
             }
-        } else {
-            Err(InterpreterError::BugFoundError(format!(
-                "Attempt to print unknown prost::Message type: {:?}",
-                m
-            )))
+        }
         }
     }
 
@@ -1105,20 +1227,24 @@ impl PrettyPrinter {
         Ok(format!(
             "{} => {}{}{}",
             self._build_string_from_message(
-                match_case
-                    .pattern
-                    .as_ref()
-                    .expect("pattern field on MatchCase was None, should be Some"),
+                PpNode::Par(
+                    match_case
+                        .pattern
+                        .as_ref()
+                        .expect("pattern field on MatchCase was None, should be Some")
+                ),
                 indent
             )?,
             open_brace,
             {
                 self.bound_shift += pattern_free;
                 self._build_string_from_message(
-                    match_case
-                        .source
-                        .as_ref()
-                        .expect("source field on MatchCase was None, should be Some"),
+                    PpNode::Par(
+                        match_case
+                            .source
+                            .as_ref()
+                            .expect("source field on MatchCase was None, should be Some"),
+                    ),
                     indent + 1,
                 )?
             },
