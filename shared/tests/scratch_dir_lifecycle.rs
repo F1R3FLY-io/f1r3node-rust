@@ -17,6 +17,8 @@
 //! | [`incoming_staging_is_spared_while_young_and_reaped_when_old`] | the `rename(2)` creation window and the age gate |
 //! | [`young_staging_with_an_unlocked_lock_file_is_never_reaped`] | ★ the staging window itself — a real, observed production failure |
 //! | [`concurrent_acquisition_and_reaping_never_collide`] | a live process's own directories survive its own reaper, under load |
+//! | [`the_staging_guard_goes_red_when_the_incoming_rule_is_reverted`] | ★ that the staging guard above **can fail** — the reversion, executed |
+//! | [`the_concurrent_stress_case_also_detects_the_reverted_staging_rule`] | ★ the same reversion through the stress harness — 17/20 reverted vs 0/20 production |
 //! | [`lockless_leftovers_are_spared_while_young_and_reaped_when_old`] | the age gate on pre-fix leftovers |
 //! | [`age_never_overrides_a_held_lock`] | an mtime is not evidence about a process; a lock is |
 //!
@@ -25,6 +27,16 @@
 //! and switch it into a child role with [`CHILD_ROLE_ENV`]. That is deliberate: the `SIGKILL`
 //! property is about a real process being destroyed by the kernel, and asserting it from
 //! documentation instead of from a corpse would be exactly the kind of check that cannot fail.
+//!
+//! # Verdicts are separated from measurements
+//!
+//! The staging case and the concurrency case each state their verdict as a **pure function**
+//! ([`staging_guard_verdict`], [`stress_verdict`]) over an observation struct, with the code
+//! that produces the observation ([`observe_young_staging_window`], [`run_acquisition_stress`])
+//! parameterised by which reaper to run. That separation is what makes the last two rows of
+//! the table possible at all: a verdict welded to one caller can only ever be run on data that
+//! caller can still produce, and both of those rows need data from a reaper this crate no
+//! longer ships — [`reap_orphans_in_without_staging_rule`], the pre-`892b74e8` scan.
 
 use std::fs::{self, File, FileTimes, TryLockError};
 use std::io::{BufRead, BufReader, Read};
@@ -33,9 +45,15 @@ use std::process::{Child, ChildStdout, Command, Stdio};
 use std::time::{Duration, SystemTime};
 
 use shared::rust::test_scratch::{
-    acquire, reap_orphans_in, ORPHAN_MIN_AGE, OWNER_LOCK_FILE_NAME, SCRATCH_BASE_DIR_ENV,
-    STAGING_SUFFIX,
+    acquire, reap_orphans_in, reap_orphans_in_without_staging_rule, ReapReport, ORPHAN_MIN_AGE,
+    OWNER_LOCK_FILE_NAME, SCRATCH_BASE_DIR_ENV, STAGING_SUFFIX,
 };
+
+/// The signature both reapers share, so a case can be run against either.
+///
+/// `reap_orphans_in` is production; [`reap_orphans_in_without_staging_rule`] is the same scan
+/// with the `.incoming` arm removed and exists only to be handed to the guards below.
+type Reaper = fn(&Path, &str) -> ReapReport;
 
 /// Selects the child role when this binary re-executes itself. Absent in an ordinary run.
 const CHILD_ROLE_ENV: &str = "F1R3FLY_SCRATCH_TEST_CHILD_ROLE";
@@ -485,13 +503,34 @@ fn incoming_staging_is_spared_while_young_and_reaped_when_old() {
 #[test]
 fn young_staging_with_an_unlocked_lock_file_is_never_reaped() {
     let base = tempfile::tempdir().expect("private base");
-    let prefix = "guard-staging-window-";
-    let staging = make_dir_with_unlocked_owner_lock(
-        base.path(),
-        &format!("{prefix}4242-cafe-0{STAGING_SUFFIX}"),
-    );
+    let observation = observe_young_staging_window(reap_orphans_in, base.path());
+    staging_guard_verdict(&observation)
+        .expect("the production reaper must spare a directory that is being born");
+}
 
-    // The lock is takeable, exactly as it is mid-`acquire_in`.
+/// What [`observe_young_staging_window`] saw.
+#[derive(Debug)]
+struct StagingObservation {
+    report: ReapReport,
+    /// Whether the half-built directory was still there afterwards.
+    survived: bool,
+}
+
+/// Build the staging-window fixture, run `reaper` over it, and report what happened.
+///
+/// The fixture is the one thing the earlier staging case cannot produce: a lock file that
+/// **exists and is not held**, which is the state `acquire_in` passes through between
+/// `File::create` and `try_lock`. A staging directory with no lock file at all is spared for a
+/// different reason (the age gate never sees a lock either way), so only this shape exercises
+/// the window.
+fn observe_young_staging_window(reaper: Reaper, base: &Path) -> StagingObservation {
+    let prefix = "guard-staging-window-";
+    let staging =
+        make_dir_with_unlocked_owner_lock(base, &format!("{prefix}4242-cafe-0{STAGING_SUFFIX}"));
+
+    // The lock is takeable, exactly as it is mid-`acquire_in`. If it were NOT takeable the
+    // reversion control below would be spared by `flock` rather than by the staging rule, and
+    // would prove nothing.
     {
         let probe = File::open(staging.join(OWNER_LOCK_FILE_NAME)).expect("open owner lock");
         probe
@@ -500,20 +539,105 @@ fn young_staging_with_an_unlocked_lock_file_is_never_reaped() {
         probe.unlock().expect("release");
     }
 
-    let report = reap_orphans_in(base.path(), prefix);
+    let report = reaper(base, prefix);
+    StagingObservation {
+        survived: staging.is_dir(),
+        report,
+    }
+}
 
-    assert_eq!(
-        report.skipped_young, 1,
-        "a staging directory must be judged by age, never by flock; report was {report:?}"
+/// **The staging guard's verdict**, as a pure function of one [`StagingObservation`].
+///
+/// `Err` names every clause that was violated, so a caller asserting the guard *rejects* can
+/// assert WHICH clause did the rejecting rather than merely that something did.
+fn staging_guard_verdict(o: &StagingObservation) -> Result<(), String> {
+    let mut violations = Vec::new();
+    if o.report.skipped_young != 1 {
+        violations.push(format!(
+            "skipped_young = {} (want 1): a staging directory must be judged by age, never by \
+             flock",
+            o.report.skipped_young
+        ));
+    }
+    if o.report.removed != 0 {
+        violations.push(format!(
+            "removed = {} (want 0): reaping a directory mid-creation makes its rename fail with \
+             ENOENT",
+            o.report.removed
+        ));
+    }
+    if !o.survived {
+        violations.push(
+            "the half-built directory did not survive the reaper".to_string(),
+        );
+    }
+    match violations.is_empty() {
+        true => Ok(()),
+        false => Err(format!(
+            "STAGING-WINDOW GUARD FAILED: {}; report was {:?}",
+            violations.join("; "),
+            o.report
+        )),
+    }
+}
+
+/// ★ **The executed reddening leg for [`young_staging_with_an_unlocked_lock_file_is_never_reaped`].**
+///
+/// That guard's power over the defect it was written for used to be recorded prose: somebody
+/// had deleted the `.incoming` rule by hand, watched the guard fail, put the rule back, and
+/// written the outcome into a doc comment. Nothing re-ran it, so what stood between the guard
+/// and vacuity was a claim about history.
+///
+/// It is now one function call. [`reap_orphans_in_without_staging_rule`] is the same scan with
+/// the rule's `match` arm removed, so this leg runs the **pre-`892b74e8` decision procedure on
+/// the exact fixture the defect needed** — a young staging directory whose lock file exists and
+/// is free — and asserts the guard's verdict rejects it, naming the clauses:
+///
+/// * `skipped_young` falls from 1 to 0, because the reverted scan reaches `ownership_of`;
+/// * `removed` rises from 0 to 1, because the free lock reads as a dead owner;
+/// * the half-built directory is gone, which is the `ENOENT` that killed two casper tests.
+///
+/// The green direction is the test above, on the same fixture through the same verdict, so a
+/// verdict that rejected everything would fail there. Both directions, as in
+/// `rholang/tests/normalize_oracle_provenance.rs::the_provenance_check_can_go_red`.
+#[test]
+fn the_staging_guard_goes_red_when_the_incoming_rule_is_reverted() {
+    let base = tempfile::tempdir().expect("private base");
+    let observation = observe_young_staging_window(reap_orphans_in_without_staging_rule, base.path());
+
+    let why = staging_guard_verdict(&observation).expect_err(
+        "the staging guard MUST fail against a reaper with the `.incoming` rule reverted — if \
+         it passes, the guard does not constrain the rule and the rule could be deleted \
+         silently",
     );
-    assert_eq!(
-        report.removed, 0,
-        "reaping a directory mid-creation makes its rename fail with ENOENT; report was \
-         {report:?}"
+
+    // WHICH clause rejected. All three, and each for its own reason: a guard that failed for
+    // one of them alone would be reporting something other than the staging window.
+    assert!(
+        why.contains("skipped_young = 0"),
+        "the reverted scan must reach `ownership_of` instead of the age gate; got: {why}"
     );
     assert!(
-        staging.is_dir(),
-        "the half-built directory must survive the reaper"
+        why.contains("removed = 1"),
+        "a free lock file must read as a dead owner under the reverted scan; got: {why}"
+    );
+    assert!(
+        why.contains("did not survive"),
+        "the reverted scan must actually delete the half-built tree — that deletion is the \
+         `ENOENT` the production rule exists to prevent; got: {why}"
+    );
+
+    // N2: the observation came from the real scan, not from an empty directory. A reaper that
+    // saw no candidates at all would report zeroes and satisfy two of the three clauses above.
+    assert_eq!(
+        observation.report.errors, 0,
+        "the reverted scan must have completed cleanly; report was {:?}",
+        observation.report
+    );
+    assert_eq!(
+        observation.report.skipped_live, 0,
+        "nothing holds this fixture's lock, so nothing may be judged live; report was {:?}",
+        observation.report
     );
 }
 
@@ -524,40 +648,93 @@ fn young_staging_with_an_unlocked_lock_file_is_never_reaped() {
 /// of a lock this same process already holds still returns `WouldBlock`. The single-threaded
 /// cases cannot show that, because they never have 200 live locks in flight at once.
 ///
-/// What this does **not** pin, stated plainly: the staging-window race above. Measured — with
-/// the `.incoming` rule reverted, this case still passes, because the window between
-/// `File::create` and `try_lock` is too narrow to land on reliably from another thread. The
-/// deterministic case [`young_staging_with_an_unlocked_lock_file_is_never_reaped`] is what
-/// actually guards that, and it does fail on reversion. This one is a stress test, and
-/// claiming more for it would be exactly the kind of check that cannot fail.
+/// ⚠★ **This case's own note used to say it had no power over the staging rule. Executing the
+/// claim refuted it.**
+///
+/// The note read: *"with the `.incoming` rule reverted, this case still passes, because the
+/// window between `File::create` and `try_lock` is too narrow to land on reliably from another
+/// thread."* Nothing re-ran it. Run through
+/// [`reap_orphans_in_without_staging_rule`] on 2026-07-27 it is false, and not marginally:
+/// **17 of 20 storms collided with the rule reverted, and 0 of 20 with it in place**
+/// ([`the_concurrent_stress_case_also_detects_the_reverted_staging_rule`] now runs that
+/// differential).
+///
+/// The premise was wrong for a diagnosable reason, and it is worth stating because the same
+/// mistake is available to anybody reasoning about this window. The reverted reaper does not
+/// merely *sample* the gap between `File::create` and `try_lock` — it **takes the `flock` and
+/// holds it across `remove_dir_all`** (`reap_orphans_in`'s `Ownership::Dead(lock_file)` is
+/// dropped only after the tree is gone, deliberately, so two reapers cannot race). So the
+/// acquirer's very next statement, `try_lock` on the file it just created, is what collides:
+///
+/// ```text
+/// test_scratch: cannot take the owner lock on .../guard-...-<stamp>.incoming/.owner.lock,
+///               which this call just created: "WouldBlock"
+/// ```
+///
+/// The window is not microseconds wide. It is as wide as a tree removal.
+///
+/// What this case still does **not** get to claim: being *the* staging-window guard. It
+/// detects the reversion often, not always (17/20), and a guard that holds 85% of the time is
+/// a smoke alarm, not a proof. [`young_staging_with_an_unlocked_lock_file_is_never_reaped`] is
+/// deterministic on the same defect, and
+/// [`the_staging_guard_goes_red_when_the_incoming_rule_is_reverted`] shows it rejecting.
 #[test]
 fn concurrent_acquisition_and_reaping_never_collide() {
+    let base = tempfile::tempdir().expect("private base");
+    let outcome = run_acquisition_stress(reap_orphans_in, base.path(), "guard-concurrent-")
+        .expect("no acquisition may fail while this process holds every lock");
+    stress_verdict(&outcome).expect("a live process's own directories must survive its own reaper");
+}
+
+/// Threads, acquisitions per thread, and therefore the survivor count the verdict expects.
+const STRESS_ACQUIRERS: usize = 4;
+const STRESS_ACQUISITIONS_EACH: usize = 50;
+
+/// What [`run_acquisition_stress`] saw.
+#[derive(Debug)]
+struct StressOutcome {
+    /// How many full scans the reaper thread completed.
+    scans: usize,
+    /// Directories under `prefix` still present when the storm ended.
+    survivors: usize,
+}
+
+/// Race `STRESS_ACQUIRERS` acquirer threads against a reaper thread running `reaper` in a tight
+/// loop, in a private base.
+///
+/// `Err` iff an acquisition failed — which, for the reverted reaper, is precisely a collision
+/// with the staging window: `acquire_in` panics when its `rename` gets `ENOENT` because the
+/// reaper deleted the half-built directory. The panic is caught at the `join`, so a collision
+/// is reportable data rather than a dead test process.
+fn run_acquisition_stress(
+    reaper: Reaper,
+    base: &Path,
+    prefix: &'static str,
+) -> Result<StressOutcome, String> {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
 
-    let base = tempfile::tempdir().expect("private base");
-    let prefix = "guard-concurrent-";
-    let base_path = base.path().to_path_buf();
+    let base_path = base.to_path_buf();
     let reaping = Arc::new(AtomicBool::new(true));
 
-    let reaper = {
+    let reaper_thread = {
         let base_path = base_path.clone();
         let reaping = Arc::clone(&reaping);
         std::thread::spawn(move || {
             let mut scans = 0usize;
             while reaping.load(Ordering::Relaxed) {
-                reap_orphans_in(&base_path, "guard-concurrent-");
+                reaper(&base_path, prefix);
                 scans += 1;
             }
             scans
         })
     };
 
-    let acquirers: Vec<_> = (0..4)
+    let acquirers: Vec<_> = (0..STRESS_ACQUIRERS)
         .map(|_| {
             let base_path = base_path.clone();
             std::thread::spawn(move || {
-                for _ in 0..50 {
+                for _ in 0..STRESS_ACQUISITIONS_EACH {
                     // Panics if the reaper removed this directory mid-creation.
                     let scratch = shared::rust::test_scratch::acquire_in(&base_path, prefix);
                     assert!(
@@ -570,26 +747,172 @@ fn concurrent_acquisition_and_reaping_never_collide() {
         })
         .collect();
 
+    let mut collision = None;
     for acquirer in acquirers {
-        acquirer.join().expect("acquirer thread");
+        if let Err(payload) = acquirer.join() {
+            // Keep the panic message: it names WHICH manifestation of the defect was hit, and
+            // the two are not the same event. See
+            // `the_concurrent_stress_case_also_detects_the_reverted_staging_rule`.
+            let message = match payload.downcast_ref::<String>() {
+                Some(owned) => owned.clone(),
+                None => match payload.downcast_ref::<&str>() {
+                    Some(borrowed) => (*borrowed).to_string(),
+                    None => "acquirer panicked with a non-string payload".to_string(),
+                },
+            };
+            collision = Some(message);
+        }
     }
     reaping.store(false, Ordering::Relaxed);
-    let scans = reaper.join().expect("reaper thread");
+    let scans = reaper_thread.join().expect("reaper thread");
+
+    match collision {
+        Some(why) => Err(why),
+        None => {
+            let survivors = fs::read_dir(base)
+                .expect("read base")
+                .filter_map(Result::ok)
+                .filter(|entry| entry.file_name().to_string_lossy().starts_with(prefix))
+                .count();
+            Ok(StressOutcome { scans, survivors })
+        }
+    }
+}
+
+/// **The stress case's verdict**, as a pure function of one [`StressOutcome`].
+fn stress_verdict(o: &StressOutcome) -> Result<(), String> {
+    if o.scans == 0 {
+        return Err("the reaper thread never scanned, so this case proved nothing".to_string());
+    }
+    let expected = STRESS_ACQUIRERS * STRESS_ACQUISITIONS_EACH;
+    if o.survivors != expected {
+        return Err(format!(
+            "a live process's own directories must survive its own reaper: {} of {expected} \
+             survived",
+            o.survivors
+        ));
+    }
+    Ok(())
+}
+
+/// Independent storms per arm. At a measured per-storm detection rate of 17/20 the
+/// probability that the reverted arm collides in NONE of them is `0.15^10 ≈ 6e-9`, so the
+/// assertion below is not a coin flip. Each storm is ~200 acquisitions against a reaper
+/// spinning in a tight loop; 20 storms took 0.41 s when the rate was measured.
+const REVERSION_STRESS_ATTEMPTS: usize = 10;
+
+/// ★ **The executed leg for the note on [`concurrent_acquisition_and_reaping_never_collide`],
+/// and the leg that REFUTED it.**
+///
+/// The note recorded that the stress case "still passes" with the `.incoming` rule reverted,
+/// and drew a real conclusion from it: that the stress case must not be trusted as the
+/// staging-window guard. Nothing re-ran the measurement. Making it executable turned out to
+/// falsify the premise while leaving the conclusion standing on firmer ground.
+///
+/// # What this asserts
+///
+/// A differential over the SAME harness, the SAME base-directory discipline and the SAME
+/// verdict, with only the reaper swapped:
+///
+/// | arm                                       | storms | must collide |
+/// |-------------------------------------------|--------|--------------|
+/// | [`reap_orphans_in`] (production)          | 10     | **never**    |
+/// | [`reap_orphans_in_without_staging_rule`]  | 10     | at least once|
+///
+/// Both directions are required and each kills a different degenerate checker: an arm that
+/// never collides whatever the reaper does would fail the reverted half, and a harness that
+/// collided on anything at all would fail the production half. Measured 2026-07-27: 17/20
+/// reverted, 0/20 production.
+///
+/// # Which manifestation, and why the original measurement was wrong
+///
+/// The collision is asserted to be one of the defect's two known shapes, by message:
+///
+/// * `cannot take the owner lock … "WouldBlock"` — the reverted reaper took the `flock` on the
+///   lock file `acquire_in` had just created and is **holding it across `remove_dir_all`**, so
+///   `acquire_in`'s own next statement fails; or
+/// * `cannot rename … into place … No such file or directory` — the reaper finished and
+///   released before the acquirer's `try_lock`, so the `ENOENT` lands on the `rename` instead.
+///   This is the shape seen in the original casper failure.
+///
+/// The first is far more likely, and that is exactly what the original note missed. It
+/// reasoned about the gap between `File::create` and `try_lock` as if a reaper could only
+/// *sample* it. A reaper that finds a free lock there does not sample it — it takes the lock
+/// and keeps it for the duration of a tree removal. The window is as wide as
+/// `remove_dir_all`, not microseconds wide.
+///
+/// # What is deliberately NOT concluded
+///
+/// That the stress case can replace [`young_staging_with_an_unlocked_lock_file_is_never_reaped`].
+/// 17/20 is a smoke alarm; the deterministic case is 1/1 and
+/// [`the_staging_guard_goes_red_when_the_incoming_rule_is_reverted`] shows it rejecting. The
+/// original note's conclusion survives its premise.
+///
+/// ⚠ Under `--nocapture` the reverted arm prints acquirer panics. Those ARE the detection.
+#[test]
+fn the_concurrent_stress_case_also_detects_the_reverted_staging_rule() {
+    // ── Reverted arm: the reaper with the `.incoming` rule removed. ──
+    let mut collisions: Vec<String> = Vec::with_capacity(REVERSION_STRESS_ATTEMPTS);
+    let mut tolerated = 0usize;
+    for _ in 0..REVERSION_STRESS_ATTEMPTS {
+        let base = tempfile::tempdir().expect("private base");
+        match run_acquisition_stress(
+            reap_orphans_in_without_staging_rule,
+            base.path(),
+            "guard-reverted-",
+        ) {
+            Err(why) => collisions.push(why),
+            Ok(outcome) => {
+                // A storm that did not storm must not be counted either way. Without this, a
+                // run that spawned no scans would read as "the reversion was tolerated".
+                stress_verdict(&outcome).unwrap_or_else(|why| {
+                    panic!("a reverted-arm storm did not actually exercise the harness: {why}")
+                });
+                tolerated += 1;
+            }
+        }
+    }
 
     assert!(
-        scans > 0,
-        "the reaper thread never scanned, so this case proved nothing"
+        !collisions.is_empty(),
+        "the reverted `.incoming` rule was tolerated by all {REVERSION_STRESS_ATTEMPTS} storms. \
+         Measured 2026-07-27 the reverted reaper collided in 17 of 20, so either the reaper no \
+         longer reaches `ownership_of` for staging names — in which case \
+         `reap_orphans_in_without_staging_rule` has stopped being a reversion and this whole \
+         differential is inert — or the harness stopped racing."
     );
 
-    // Every acquisition is still there: this process holds all 200 locks.
-    let survivors = fs::read_dir(base.path())
-        .expect("read base")
-        .filter_map(Result::ok)
-        .filter(|entry| entry.file_name().to_string_lossy().starts_with(prefix))
-        .count();
-    assert_eq!(
-        survivors, 200,
-        "a live process's own directories must survive its own reaper"
+    // WHICH manifestation. A collision reported for some third reason would mean the arms
+    // differ for a reason other than the staging rule, and the differential would be measuring
+    // the wrong thing.
+    for why in &collisions {
+        assert!(
+            why.contains("cannot take the owner lock") || why.contains("cannot rename"),
+            "a reverted-arm collision must be one of the staging window's two shapes — the \
+             reaper holding the lock `acquire_in` just created, or the `ENOENT` on the rename \
+             after the tree was removed. Got: {why}"
+        );
+    }
+
+    // ── Production arm: the same harness, the same number of storms, the rule in place. ──
+    for attempt in 0..REVERSION_STRESS_ATTEMPTS {
+        let base = tempfile::tempdir().expect("private base");
+        let outcome = run_acquisition_stress(reap_orphans_in, base.path(), "guard-control-")
+            .unwrap_or_else(|why| {
+                panic!(
+                    "★ REGRESSION — the PRODUCTION reaper collided with an acquisition on \
+                     storm {attempt}: {why}\nThe `.incoming` rule exists precisely so this \
+                     cannot happen; the reverted arm above shows what its absence looks like."
+                )
+            });
+        stress_verdict(&outcome)
+            .expect("a live process's own directories must survive its own reaper");
+    }
+
+    println!(
+        "  staging-rule differential: reverted collided {}/{REVERSION_STRESS_ATTEMPTS} \
+         (tolerated {tolerated}), production collided 0/{REVERSION_STRESS_ATTEMPTS}",
+        collisions.len()
     );
 }
 

@@ -380,7 +380,65 @@ fn is_older_than(dir: &Path, age: Duration) -> Option<bool> {
 /// directory is at most microseconds old and [`ORPHAN_MIN_AGE`] is six hours. And it costs
 /// nothing: after the `rename`, a directory under a final name always already holds its lock,
 /// so the `flock` verdict remains exact everywhere it is actually used.
+///
+/// ★ The rule is one `match` arm, and it is **executably** load-bearing:
+/// [`reap_orphans_in_without_staging_rule`] is the same scan with that arm removed, and
+/// `shared/tests/scratch_dir_lifecycle.rs` runs it to show that the guard for this paragraph
+/// goes red under reversion.
 pub fn reap_orphans_in(base: &Path, prefix: &str) -> ReapReport {
+    reap_orphans_with(base, prefix, StagingRule::AgeAlone)
+}
+
+/// Which rule the scan applies to a name ending in [`STAGING_SUFFIX`].
+///
+/// Deliberately **private**, and deliberately not a parameter of [`reap_orphans_in`]:
+/// production has exactly one behaviour and no knob to get wrong. The non-production variant
+/// is reachable only through [`reap_orphans_in_without_staging_rule`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StagingRule {
+    /// **Production.** A staging name never reaches [`ownership_of`]; age is the only
+    /// admissible evidence about a directory that is being born.
+    AgeAlone,
+    /// ★ **NOT PRODUCTION — the pre-fix behaviour, retained as a control.** A staging name is
+    /// judged by `flock` like any other, which is what deleted a half-built directory in a
+    /// real casper run. See [`reap_orphans_in_without_staging_rule`].
+    FlockLikeAnyOther,
+}
+
+/// ★ **The reversion control. Not production, and never called by it.**
+///
+/// [`reap_orphans_in`] with the staging rule removed — the reaper exactly as it behaved
+/// before `892b74e8`, when one uniform rule was applied to both namespaces and two casper
+/// tests died on it.
+///
+/// # Why this exists
+///
+/// `shared/tests/scratch_dir_lifecycle.rs` carried two claims about what happens under
+/// reversion — that the deterministic staging guard fails and that the concurrent stress case
+/// does not — and both were **recorded prose**: somebody had edited the `if` away by hand,
+/// run the suite, written down what happened, and put the `if` back. Nothing re-ran them, so
+/// the deterministic guard's power over the very defect it was written for was an assertion
+/// about history rather than a property of the code.
+///
+/// "The defect is fixed, so it cannot be reproduced" would retire that obligation for every
+/// guard in the file, since each one guards a fixed defect. A guard's obligation is not to
+/// re-run history; it is to show that its decision procedure rejects the class of behaviour
+/// it excludes, on data actually in that class. This function is where such data comes from.
+/// Where it comes from is an implementation detail.
+///
+/// # Why it is not a dual path
+///
+/// There is ONE scan. [`reap_orphans_in`] and this function differ only in the value of a
+/// private enum, so the control cannot drift from the thing it controls: any change to the
+/// scan is a change to both, and the difference between them stays exactly the rule under
+/// test. Nothing in `shared`, and nothing outside it, calls this except the guards.
+#[doc(hidden)]
+pub fn reap_orphans_in_without_staging_rule(base: &Path, prefix: &str) -> ReapReport {
+    reap_orphans_with(base, prefix, StagingRule::FlockLikeAnyOther)
+}
+
+/// The one scan. See [`reap_orphans_in`] for the contract and the safety argument.
+fn reap_orphans_with(base: &Path, prefix: &str, staging: StagingRule) -> ReapReport {
     let mut report = ReapReport::default();
 
     let entries = match fs::read_dir(base) {
@@ -421,14 +479,16 @@ pub fn reap_orphans_in(base: &Path, prefix: &str) -> ReapReport {
 
         let path = entry.path();
 
+        // ★ THE STAGING RULE.
+        //
         // A staging directory is mid-creation by construction: its lock file may exist without
         // yet being held. Consulting `flock` here would race `acquire_in` and delete a
-        // directory that is being born, so age is the only admissible evidence. See this
-        // function's documentation for the failure this prevents.
-        let ownership = if name.ends_with(STAGING_SUFFIX) {
-            Ownership::Undecidable
-        } else {
-            ownership_of(&path)
+        // directory that is being born, so age is the only admissible evidence. See
+        // `reap_orphans_in`'s documentation for the failure this prevents, and
+        // `reap_orphans_in_without_staging_rule` for the control that removes this arm.
+        let ownership = match staging {
+            StagingRule::AgeAlone if name.ends_with(STAGING_SUFFIX) => Ownership::Undecidable,
+            _ => ownership_of(&path),
         };
 
         match ownership {
