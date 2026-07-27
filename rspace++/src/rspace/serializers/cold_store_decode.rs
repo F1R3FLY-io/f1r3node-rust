@@ -57,6 +57,38 @@
 //! benefit is that "which types are decoded by the machine" is an explicit,
 //! greppable list rather than an inference outcome.
 //!
+//! ## The bound sites — the full enumeration
+//!
+//! Converting the four `decode_*` in `serializers.rs` propagates through every
+//! `C`/`P`/`A`/`K`-generic layer above them. **53 bound sites in 8 files**
+//! changed from `for<'a> Deserialize<'a>` to [`ColdStoreDecode`]:
+//!
+//! | file | sites |
+//! |---|---:|
+//! | `rspace++/src/rspace/rspace.rs` | 12 |
+//! | `rspace++/src/rspace/history/history_repository_impl.rs` | 8 |
+//! | `rspace++/src/rspace/history/instances/rspace_history_reader_impl.rs` | 8 |
+//! | `rspace++/src/rspace/reporting_rspace.rs` | 8 |
+//! | `rspace++/src/rspace/serializers/serializers.rs` (the `decode_*` themselves) | 5 |
+//! | `rspace++/src/rspace/history/history_repository.rs` | 4 |
+//! | `rspace++/src/rspace/merger/state_change.rs` | 4 |
+//! | `casper/src/rust/merging/deploy_chain_index.rs` | 4 |
+//! | **total** | **53** |
+//!
+//! (The Steps-C+D commit message states 48; that figure omitted the five sites
+//! in `serializers.rs` itself. The code was, and is, 53.)
+//!
+//! In all six generic-plumbing files the `serde::Deserialize` **import** became
+//! unused as a result — which is the compiler confirming the swap was total
+//! rather than additive, and is worth more than the count itself.
+//!
+//! Four further sites, in `shared/src/rust/store/key_value_typed_store_impl.rs`,
+//! are deliberately **untouched**: that is a general typed key/value store, its
+//! generic bincode path has no instantiation anywhere in the workspace (the two
+//! concrete stores override `encode`/`decode`, and the report store uses
+//! `prost`, which *does* enforce a recursion limit), and nothing it holds
+//! contains a `Par`.
+//!
 //! ## The obligation: LANGUAGE IDENTITY, not byte identity
 //!
 //! The encoder is **not touched**. `Serialize` stays derived,
