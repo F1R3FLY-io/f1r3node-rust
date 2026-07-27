@@ -180,9 +180,11 @@ Both settings take effect at the next session start.
 - Keep commit messages clean and professional
 
 ### Branch Strategy
-- `main` — stable releases
-- `master` — current working branch
-- Feature branches for development
+- `master` — default branch and release line; maintainers promote `dev` → `master`
+- `dev` — integration branch; feature and fix PRs target this
+- Feature branches (`feature/`, `fix/`, `docs/`, `perf/`, `chore/`) branch from and target `dev`
+- `hotfix/` branches from and target `master`, then `master` is merged back into `dev`
+- There is no `main` branch, and `staging` is deprecated (fully contained in `dev`)
 
 ## Relationship to f1r3node
 This repo was extracted from `F1R3FLY-io/f1r3fly` (`rust/dev` branch). Key differences:
