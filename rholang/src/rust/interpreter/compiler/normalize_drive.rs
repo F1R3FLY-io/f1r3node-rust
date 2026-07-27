@@ -436,6 +436,17 @@ pub(crate) struct SendK<'ast> {
     pub free_map: FreeMap<VarSort>,
     pub bound_map_chain: BoundMapChain<VarSort>,
     pub input_par: Par,
+    /// ⚠ Retained but INERT, and deliberately so.
+    ///
+    /// `<Par as HasLocallyFree<Par>>::locally_free` names its depth parameter
+    /// `_depth` — the impl returns the node's cached bitset and never consults
+    /// it — so the Leg-1 removal of that by-value reader removed this field's
+    /// only consumer. It is kept because [`MethodK`] carries the same slot and
+    /// *does* still read it (`prepend_expr` needs the binding depth), and a
+    /// reader comparing the two continuations should see the same shape;
+    /// deleting it here would imply a difference between `Send` and `Method`
+    /// that does not exist.
+    #[allow(dead_code)]
     pub input_depth: i32,
     pub persistent: bool,
 }

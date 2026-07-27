@@ -73,6 +73,7 @@ use models::rust::rholang::sorter::score_tree::{ScoreAtom, ScoredTerm, Tree};
 use models::rust::rholang::sorter::sortable::Sortable;
 use models::rust::utils::new_gint_par;
 use rholang::rust::interpreter::accounting::costs::Cost;
+use rholang::rust::interpreter::compiler::compiler::Compiler;
 use rholang::rust::interpreter::accounting::RuntimeBudget;
 use rholang::rust::interpreter::env::Env;
 use rholang::rust::interpreter::matcher::spatial_matcher::SpatialMatcherContext;
@@ -333,12 +334,14 @@ fn subject(name: &str) -> fn(usize) {
         "encode" => encode_body,
         "bincode_ser" => bincode_ser_body,
         "bincode_de" => bincode_de_body,
+        "normalize" => normalize_body,
         // -------- width axis --------
         "substitute_wide" => substitute_wide_body,
         "sort_wide" => sort_wide_body,
         "score_cmp_wide" => score_cmp_wide_body,
         "pretty_wide" => pretty_wide_body,
         "free_check" => free_check_body,
+        "normalize_wide" => normalize_wide_body,
         "eval_with_nots" => eval_with_nots_body,
         other => panic!("stack_depth_gate: unknown GATE_SUBJECT={:?}", other),
     }
@@ -805,6 +808,80 @@ fn pretty_wide_body(width: usize) {
     dismantle(term);
 }
 
+/// Rholang SOURCE text `[[[…[0]…]]]` with `depth` bracket levels, built
+/// ITERATIVELY so the fixture never measures itself.
+fn nested_list_source(depth: usize) -> String {
+    let mut s = String::with_capacity(2 * depth + 1);
+    for _ in 0..depth {
+        s.push('[');
+    }
+    s.push('0');
+    for _ in 0..depth {
+        s.push(']');
+    }
+    s
+}
+
+/// Rholang SOURCE text `[0, 1, …, n-1]` with `width` siblings, built
+/// iteratively.
+fn wide_list_source(width: usize) -> String {
+    let mut s = String::with_capacity(8 * width + 2);
+    s.push('[');
+    for i in 0..width {
+        if i > 0 {
+            s.push_str(", ");
+        }
+        s.push_str(&i.to_string());
+    }
+    s.push(']');
+    s
+}
+
+/// Count the leading `[` run of a source string — the SOURCE nesting the
+/// normalizer's recursion actually follows. Iterative by construction.
+fn source_bracket_depth(src: &str) -> usize {
+    src.bytes().take_while(|b| *b == b'[').count()
+}
+
+/// Count a flat source list's elements — `[a, b, c]` has one comma fewer than
+/// it has elements. Iterative by construction.
+fn source_sibling_count(src: &str) -> usize {
+    src.matches(", ").count() + 1
+}
+
+/// The NORMALIZER — Θ(*source* nesting), and the only member of the family that
+/// runs before a term exists at all, therefore before metering
+/// (`inj_attempt`'s `build-normalized-term` precedes `set-initial-cost`).
+///
+/// ★ Both ends carry the parameter, per Rule V: the INPUT is checked for its
+/// bracket run and the OUTPUT for its `EList` nesting. A normalizer that
+/// silently produced a shallow term — or one that rejected the input and was
+/// never entered — would read a comfortable zero otherwise.
+fn normalize_body(depth: usize) {
+    let src = nested_list_source(depth);
+    assert_carries("the normalize input's SOURCE nesting", source_bracket_depth(&src), depth);
+    let term = Compiler::source_to_adt(&src).expect("stack_depth_gate: normalize failed");
+    assert_carries("the NORMALIZED term's nesting", par_depth(&term), depth);
+    dismantle(term);
+}
+
+/// The normalizer's WIDTH axis: `fold_match` iterates a collection's elements,
+/// and before the conversion each element was a recursive call. Gated in DEBUG
+/// as well as release, for the same reason `free_check` is: `-O2` may turn a
+/// tail-position loop into a loop by itself, and a release-only gate would
+/// certify the optimiser's discretion rather than the code.
+fn normalize_wide_body(width: usize) {
+    let src = wide_list_source(width);
+    assert_carries(
+        "the normalize_wide input's SOURCE sibling count",
+        source_sibling_count(&src),
+        width,
+    );
+    let term = Compiler::source_to_adt(&src).expect("stack_depth_gate: normalize_wide failed");
+    assert_carries("the NORMALIZED term's sibling count", par_width(&term), width);
+    dismantle(term);
+}
+
 fn clone_body(depth: usize) {
     let term = nested_list(depth);
     assert_carries("the clone input's nesting", par_depth(&term), depth);
@@ -1168,6 +1245,10 @@ fn converted_traversals_are_depth_independent() {
         "eval_with_nots",       // Stage E — rho-pure-eval's own SCC
         "bincode_de",           // Stage F — the cold-store DECODER (par_codec)
         "pretty",               // Stage D — PrettyPrinter's explicit pushdown driver
+        "normalize",            // Stage G — `normalize_ann_proc`'s 26-function SCC becomes
+        //                         `compiler::normalize_drive::norm_drive`. 43,542 → 0 B/level
+        //                         debug and 7,261 → 0 release; the ONLY member that runs
+        //                         before metering exists, so nothing else could have bounded it.
     ];
     let converted_width: &[&str] = &[
         "substitute_wide", // Stage B
@@ -1175,6 +1256,7 @@ fn converted_traversals_are_depth_independent() {
         "score_cmp_wide",  // Stage C-1 — the sibling walk
         "free_check",      // Stage E — the matcher's width-axis member, now a `for` loop
         "pretty_wide",     // Stage D — the same driver, sibling axis
+        "normalize_wide",  // Stage G — the same driver, collection-element axis
     ];
 
     for name in converted_depth {
@@ -1346,6 +1428,69 @@ fn theta_width_tripwire() {
 /// The definition of done for the FAMILY is
 /// `converted_traversals_are_depth_independent` carrying every member at depth
 /// **and width** 256, in **both** profiles — not this test.
+/// ★★ **The 577-byte deploy that killed a release node.**
+///
+/// `[`×288 · `0` · `]`×288 — no `new`, no send, no user-defined process, one
+/// nested list literal, and it fits in a single TCP segment. On the 2 MiB stack
+/// a tokio worker gets when `RUST_MIN_STACK` is unset it aborted a **release**
+/// node with `fatal runtime error: stack overflow`, and it was categorically
+/// worse than every other member of its family:
+///
+/// * it fired in `InterpreterImpl::inj_attempt`'s FIRST phase
+///   (`build-normalized-term`), **before** `set-initial-cost` establishes a
+///   budget — so cost accounting could not bound it, not because the charge was
+///   too small but because no charge existed yet;
+/// * a stack overflow is a `SIGSEGV` on the guard page, not an `Err`, so the
+///   call site's `Err(e) => handle_error(ParserError(..))` arm — which exists
+///   precisely to turn a bad deploy into a *failed deploy* — never ran;
+/// * `ReplayRuntimeOps::run_user_deploy → evaluate → inj_attempt` puts it on the
+///   **validator** path, on source that arrived from the network, and producing
+///   it requires no privilege and no stake.
+///
+/// Bisected max surviving source depth before the conversion: **287 release,
+/// 45 debug**.
+///
+/// ★ **The depths below are NOT profile-dependent, and that is the whole
+/// point.** Its neighbour `reported_reproducer_depth_survives_a_default_worker_stack`
+/// asserts depth 10 in debug and 70 in release, because the traversal it guards
+/// is still profile-sensitive at the margin. Here the profile split is exactly
+/// the defect: 288 aborted release while debug died at 46, so a *depth guard*
+/// could not have been given a single constant that was neither inert in
+/// release nor newly restrictive in debug — which is why the traversal was
+/// converted instead. A regression test that re-introduced a
+/// `cfg!(debug_assertions)` branch would re-import that asymmetry into the very
+/// artefact meant to exclude it. One list, both profiles, or the claim is not
+/// the claim.
+///
+/// It asserts the deploy is *processed*, not merely that the process survives:
+/// `normalize_body` checks that the input carries its bracket run **and** that
+/// the normalized term carries the same `EList` nesting, so a normalizer that
+/// rejected the input — which would also "not abort" — fails here rather than
+/// passing quietly.
+///
+/// ⚠ This is a named regression, not the family's definition of done. That is
+/// `converted_traversals_are_depth_independent`, which carries `normalize` at
+/// parameter 4,096 with a flat minimum stack.
+#[test]
+fn the_577_byte_reproducer_is_a_deploy_and_not_a_node_abort() {
+    const DEFAULT_SPAWNED_THREAD_STACK: usize = 2 * 1024 * 1024;
+    // 288 is the FIRST depth that aborted a release node; 287 was the last that
+    // survived. 1,152 is 4× that, and 100,000 is a 200 kB source — two orders of
+    // magnitude past any ceiling either profile ever had.
+    for depth in [288usize, 1_152, 100_000] {
+        assert!(
+            runs_within(DEFAULT_SPAWNED_THREAD_STACK, depth, "normalize"),
+            "★ REGRESSION — THE REPRODUCER IS BACK. `[`×{depth} `0` `]`×{depth} \
+             ({} bytes of source) no longer normalizes on the {} MiB stack a tokio \
+             worker gets. Before the conversion this aborted the NODE — before \
+             metering existed, through an error arm a SIGSEGV cannot reach, on the \
+             validator path.",
+            2 * depth + 1,
+            DEFAULT_SPAWNED_THREAD_STACK / (1024 * 1024)
+        );
+    }
+}
+
 #[test]
 fn reported_reproducer_depth_survives_a_default_worker_stack() {
     const DEFAULT_SPAWNED_THREAD_STACK: usize = 2 * 1024 * 1024;
