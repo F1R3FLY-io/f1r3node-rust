@@ -1139,19 +1139,21 @@ fn eval_with_nots_body(depth: usize) {
 /// Traversals that have been converted to a heap-bounded (explicit worklist)
 /// form. Membership of this list is the deliverable; it only ever grows.
 ///
-/// ⚠ EMPTY AT PRESENT — see `theta_depth_tripwire` below and
-/// `docs/design/audits/theta-depth-traversals-2026-07-26.md` § "Disposition". No
-/// traversal over the `Par` family is heap-bounded yet, so asserting
-/// depth-independence for any of them here would be a false claim. This test
-/// exists, named and wired, so that converting a traversal is a one-line
-/// addition rather than a new piece of infrastructure somebody has to invent
-/// under pressure.
+/// See `theta_depth_tripwire` below and
+/// `docs/design/audits/theta-depth-traversals-2026-07-26.md` § "Disposition"
+/// for what is still outstanding. A traversal is added here only once its
+/// bisected minimum stack is flat across the whole ladder in **both** profiles;
+/// adding one on the strength of a fixed-stack ladder alone would be a false
+/// claim, because a large intercept reads as a zero slope on a short ladder.
 ///
 /// **Done-for-the-family** is this list containing every hand-written member —
 /// `substitute`, `substitute_no_sort`, `substitute_binders`, `sort`,
 /// `score_cmp`, `tree_drop`, `tree_clone`, `pretty` — on the depth axis, and
 /// `substitute_wide`, `sort_wide`, `score_cmp_wide`, `pretty_wide` on the width
 /// axis, **in both profiles**.
+///
+/// ★ With Stage D (`pretty` / `pretty_wide`) that enumeration is now COMPLETE:
+/// every hand-written member named above is present on both axes.
 #[test]
 fn converted_traversals_are_depth_independent() {
     let converted_depth: &[&str] = &[
@@ -1165,14 +1167,14 @@ fn converted_traversals_are_depth_independent() {
         "tree_clone",           // Stage C-1 — Tree's hand-written Clone
         "eval_with_nots",       // Stage E — rho-pure-eval's own SCC
         "bincode_de",           // Stage F — the cold-store DECODER (par_codec)
-        // "pretty",               // Stage D
+        "pretty",               // Stage D — PrettyPrinter's explicit pushdown driver
     ];
     let converted_width: &[&str] = &[
         "substitute_wide", // Stage B
         "sort_wide",       // Stage C-2
         "score_cmp_wide",  // Stage C-1 — the sibling walk
         "free_check",      // Stage E — the matcher's width-axis member, now a `for` loop
-        // "pretty_wide",          // Stage D
+        "pretty_wide",     // Stage D — the same driver, sibling axis
     ];
 
     for name in converted_depth {
@@ -1237,8 +1239,20 @@ fn theta_depth_tripwire() {
     // at THIS call site, which does not happen when `clone` is probed on its
     // own. Same traversal, larger per-level frame. Ceilings are ~1.5× measured,
     // per profile, as everywhere else in this test.
+    //
+    // ⚠ `pretty` has LEFT this list — it is in
+    // `converted_traversals_are_depth_independent` (Stage D: `PrettyPrinter`
+    // became an explicit pushdown driver, `pretty_printer.rs` `mod drive`).
+    // Measured immediately before the conversion by direct bisection of this
+    // very subject: **41,984 B/level debug** (724,992 B at depth 16, 2,740,224 B
+    // at depth 64) and **4,266 B/level release** (81,920 and 286,720) — i.e. a
+    // maximum nesting depth of ~49 / ~490 on a 2 MiB tokio worker. Measured
+    // immediately after: a FLAT 45,056 B (debug) and 12,288 B (release) at
+    // depths 4, 16, 64 and 4,096 alike, and the width subject `pretty_wide` a
+    // flat 49,152 / 12,288 at widths 4 through 65,536. As always, a traversal
+    // leaves this list only by being converted, never by having its ceiling
+    // raised.
     assert_slope_below("substitute_deep_binding", ceiling(25_000, 12_000), 16, 128);
-    assert_slope_below("pretty", ceiling(65_000, 7_000), 16, 64);
     assert_slope_below("clone", ceiling(25_000, 5_000), 16, 128);
     assert_slope_below("drop", ceiling(1_500, 800), 256, 4096);
     assert_slope_below("encode", ceiling(4_000, 1_500), 64, 1024);
@@ -1321,6 +1335,13 @@ fn theta_width_tripwire() {
 ///   * `compare_score` is still Θ(depth),
 ///   * `compare_score_nodes` is still Θ(**width**), and
 ///   * `PrettyPrinter` is still Θ(depth).
+///
+/// ★ All four of those have since been converted — `ParSortMatcher` and
+/// `compare_score` in Stage C-2/C-1, `compare_score_nodes` in Stage C-1, and
+/// `PrettyPrinter` in Stage D — and all four are now in
+/// `converted_traversals_are_depth_independent`. The note is kept because the
+/// *reasoning* is what matters: this assertion going green is a statement about
+/// one reproducer, not about the family.
 ///
 /// The definition of done for the FAMILY is
 /// `converted_traversals_are_depth_independent` carrying every member at depth
