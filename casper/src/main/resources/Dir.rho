@@ -1,57 +1,53 @@
 // Dir.rho — File I/O FIP §Dir agent library (MVP slice).
 //
-// The Dir agent wraps a canonical filesystem root path with a
-// Rholang-side interface for listing / metadata / composition.
-// Users receive Dir handles from the Fs agent (Phase 6).
+// The Dir agent wraps a canonical filesystem root path plus an
+// accumulated relative sub-path with a Rholang-side interface for
+// listing / metadata / composition.  Users receive Dir handles from the
+// Fs agent (Phase 6).
 //
-// ## Delivered methods (this MVP)
+// ## Delivered methods
 //
-//   - `stat(rel)` — record for the file/dir at `root/rel`
+//   - `stat(rel)` — record for the file/dir at `root/subPath/rel`
 //   - `exists(rel)` — Bool
-//   - `openFile(rel, options)` — quarantine + open + mint a File
-//     agent.  Mode-attenuates monotonically (spec §Dir).
+//   - `openFile(rel, mode)` — quarantine + open + mint a File agent
+//   - `openDir(rel, mode)`  — mint a nested Dir agent
+//   - `removeFile(rel)`, `removeDir(rel, recursive)`, `rename`,
+//     `copyFile`, `chmod`, `chown` — mutation methods, rw-gated
 //   - `default(...@args)` — FSERR_UNSUPPORTED
 //
-// ## Deferred to follow-up commits
+// ## State layout — sandbox safety
 //
-//   - `entries()` — returns an EntryStream (needs Stream + producer
-//     from Phase 4 wired to fs_entriesStream)
-//   - `openDir(rel, options)` — mint a nested Dir (analogous shape)
-//   - Mutation methods (require `"rw"` Dir): `removeFile`,
-//     `removeDir`, `rename`, `copyFile`, `chmod`, `chown`
+//   @[*private, *rootP] — (canonRoot, subPath, mode, FileCtorCh)
+//
+// `canonRoot` is IMMUTABLE from the initial ctor call: it is the boot-
+// canonicalized sandbox root and never changes for any Dir minted from
+// the root Dir chain.  `subPath` accumulates the relative path from
+// `canonRoot` to this Dir's logical directory.  `""` for the root Dir;
+// each `openDir(rel, ...)` produces a child Dir with `subPath ++ "/" ++
+// rel` (or just `rel` when the parent's subPath is empty).
+//
+// This closes the sandbox-escape vector from the prior slice: previously
+// `openDir` composed a new `canonRoot = canonRoot ++ "/" ++ rel` and
+// passed that as the (trusted) root to Phase 1 natives, letting a `..`
+// in `rel` escape the sandbox.  Now `canonRoot` is always the trusted
+// original, and Phase 1's `safe_descend(canonRoot, subPath ++ "/" ++
+// rel)` walks the FULL accumulated path — any `..` at any level is
+// rejected by `safe_descend`'s `Component::ParentDir => EscapesRoot`
+// arm.
 //
 // ## Mode attenuation (spec §Dir)
 //
 // Directory modes are `"r"` (read-only) or `"rw"` (read/write).
-// `openFile(rel, {"mode": M})` succeeds only when M is compatible
-// with the Dir's own mode:
-//
-//   Dir mode "r"  → File modes {"r"}
+//   Dir mode "r"  → File modes {"r"};  openDir "r"
 //   Dir mode "rw" → File modes {"r", "rw", "w", "w+", "a", "a+",
-//                                "wx", "w+x"}
-//
-// A downgrade is fine (`"rw"` Dir opening a `"r"` File); an upgrade
-// returns FSERR_UNSUPPORTED.
-//
-// ## State layout
-//
-//   @[*private, *rootP] — set at ctor to (canonRoot, mode).  Peeked
-//                          only (immutable while the Dir is live).
-//
-// The Dir has no mutable state beyond its immutable root+mode; no
-// close/revocation is needed for the MVP (a Dir is a pure "read/
-// look-up" facade over the underlying filesystem).  Adding lifecycle
-// state would follow the Buffer/Stream pattern with a stateP cell.
+//                                "wx", "w+x"};  openDir "r" or "rw"
+// A downgrade is fine; an upgrade returns FSERR_UNSUPPORTED.
 
 new Dir, rootP in {
 
   agent Dir {
-    constructor(@canonRoot, @mode, @FileCtorCh) {
-      // FileCtorCh is the Ctor channel for the File agent (bound in
-      // the same enclosing scope).  A `new` in genesis / tests binds
-      // File and passes *File as FileCtorCh — Dir uses it to mint
-      // File instances on openFile.
-      @[*private, *rootP]!((canonRoot, mode, FileCtorCh))
+    constructor(@canonRoot, @subPath, @mode, @FileCtorCh) {
+      @[*private, *rootP]!((canonRoot, subPath, mode, FileCtorCh))
     } |
 
     // -- stat(rel) --------------------------------------------------
@@ -60,15 +56,15 @@ new Dir, rootP in {
         r /\ String => {
           for (@params <<- @[*private, *rootP]) {
             match params {
-              (canonRoot, _mode, _fileCtor) => {
-                // Quarantine + stat.  We use fsQuarantine to canonicalize
-                // (rejecting escape/symlink attempts), then pass the
-                // canonical path to fsStat.  Alternative: the native fs_stat
-                // in Phase 1 takes (rootCanon, rel) directly and quarantines
-                // internally — use that.
-                new retCh in {
-                  fsStat!(canonRoot, r, *retCh) |
-                  for (@reply <- retCh) { return!(reply) }
+              (canonRoot, subPath, _mode, _fileCtor) => {
+                new joinedCh in {
+                  joinRel!(subPath, r, *joinedCh) |
+                  for (@joined <- joinedCh) {
+                    new retCh in {
+                      fsStat!(canonRoot, joined, *retCh) |
+                      for (@reply <- retCh) { return!(reply) }
+                    }
+                  }
                 }
               }
               _ => return!([false, "FSERR_IO", "root params malformed"])
@@ -85,10 +81,15 @@ new Dir, rootP in {
         r /\ String => {
           for (@params <<- @[*private, *rootP]) {
             match params {
-              (canonRoot, _mode, _fileCtor) => {
-                new retCh in {
-                  fsExists!(canonRoot, r, *retCh) |
-                  for (@reply <- retCh) { return!(reply) }
+              (canonRoot, subPath, _mode, _fileCtor) => {
+                new joinedCh in {
+                  joinRel!(subPath, r, *joinedCh) |
+                  for (@joined <- joinedCh) {
+                    new retCh in {
+                      fsExists!(canonRoot, joined, *retCh) |
+                      for (@reply <- retCh) { return!(reply) }
+                    }
+                  }
                 }
               }
               _ => return!([false, "FSERR_IO", "root params malformed"])
@@ -101,15 +102,7 @@ new Dir, rootP in {
 
     // -- openFile(rel, mode) ----------------------------------------
     //
-    // MVP takes mode as a separate String arg rather than an options
-    // Map — Rholang's simple-type patterns (Bool/Int/String/Uri/
-    // ByteArray) don't include Map, so a Map-typed options guard
-    // would need Map-shape pattern matching.  Follow-up commit
-    // switches to the spec's `options: Map` shape once the Map-guard
-    // idiom is settled.
-    //
-    // Mode-attenuates monotonically against the Dir's own mode
-    // (spec §Dir > Composition).
+    // Mode-attenuates monotonically against the Dir's own mode.
     method openFile(@rel, @mode) {
       match rel {
         r /\ String => {
@@ -117,32 +110,20 @@ new Dir, rootP in {
             m /\ String => {
               for (@params <<- @[*private, *rootP]) {
                 match params {
-                  (canonRoot, dirMode, fileCtor) => {
-                    // m-3 fix: whitelist mode strings BEFORE
-                    // attenuation.  Previously the ["rw", _] arm
-                    // accepted any string, relying on Phase 1's
-                    // fs_open to reject unknown modes.  Duplicating
-                    // the attenuation whitelist across Rho and native
-                    // layers risks drift; we enumerate here so a mode
-                    // typo is caught with FSERR_BAD_ARG rather than
-                    // being sent to fs_open.
-                    //
-                    // "r" is always permitted (attenuation-safe on
-                    // both Dir modes); any other mode requires
-                    // Dir mode "rw".
+                  (canonRoot, subPath, dirMode, fileCtor) => {
                     match m {
-                      "r" => openFileImpl!(canonRoot, r, "r", fileCtor, *return)
+                      "r" => openFileImpl!(canonRoot, subPath, r, "r", fileCtor, *return)
                       _   => {
                         match dirMode {
                           "rw" => {
                             match m {
-                              "rw"   => openFileImpl!(canonRoot, r, "rw",   fileCtor, *return)
-                              "w"    => openFileImpl!(canonRoot, r, "w",    fileCtor, *return)
-                              "w+"   => openFileImpl!(canonRoot, r, "w+",   fileCtor, *return)
-                              "wx"   => openFileImpl!(canonRoot, r, "wx",   fileCtor, *return)
-                              "w+x"  => openFileImpl!(canonRoot, r, "w+x",  fileCtor, *return)
-                              "a"    => openFileImpl!(canonRoot, r, "a",    fileCtor, *return)
-                              "a+"   => openFileImpl!(canonRoot, r, "a+",   fileCtor, *return)
+                              "rw"   => openFileImpl!(canonRoot, subPath, r, "rw",   fileCtor, *return)
+                              "w"    => openFileImpl!(canonRoot, subPath, r, "w",    fileCtor, *return)
+                              "w+"   => openFileImpl!(canonRoot, subPath, r, "w+",   fileCtor, *return)
+                              "wx"   => openFileImpl!(canonRoot, subPath, r, "wx",   fileCtor, *return)
+                              "w+x"  => openFileImpl!(canonRoot, subPath, r, "w+x",  fileCtor, *return)
+                              "a"    => openFileImpl!(canonRoot, subPath, r, "a",    fileCtor, *return)
+                              "a+"   => openFileImpl!(canonRoot, subPath, r, "a+",   fileCtor, *return)
                               _      => return!([false, "FSERR_BAD_ARG",
                                                  "unknown file mode"])
                             }
@@ -166,13 +147,11 @@ new Dir, rootP in {
 
     // -- openDir(rel, mode) -----------------------------------------
     //
-    // Mirrors openFile's shape: quarantines rel + attenuates mode.
-    // Directory modes are only "r" or "rw"; anything else rejected.
-    // Dir "r" permits only openDir "r"; Dir "rw" permits both.
-    //
-    // Mints a nested Dir agent via the same ctor channel we're inside
-    // (Dir sends to *Dir passed as the DirCtorCh param at ctor time —
-    // for genesis, Fs binds this; for tests, the harness does).
+    // Mints a nested Dir sharing this Dir's immutable canonRoot, with
+    // subPath extended by `rel`.  Validated at mint time via fsStat
+    // (M-2): a rel that escapes the sandbox (`..`) or names a non-
+    // existent / non-directory path fails eagerly rather than yielding
+    // a broken handle whose every method later errors.
     method openDir(@rel, @mode) {
       match rel {
         r /\ String => {
@@ -180,12 +159,12 @@ new Dir, rootP in {
             m /\ String => {
               for (@params <<- @[*private, *rootP]) {
                 match params {
-                  (canonRoot, dirMode, fileCtor) => {
+                  (canonRoot, subPath, dirMode, fileCtor) => {
                     match m {
-                      "r" => openDirImpl!(canonRoot, r, "r", fileCtor, *return)
+                      "r" => openDirImpl!(canonRoot, subPath, r, "r", fileCtor, *return)
                       "rw" => {
                         match dirMode {
-                          "rw" => openDirImpl!(canonRoot, r, "rw", fileCtor, *return)
+                          "rw" => openDirImpl!(canonRoot, subPath, r, "rw", fileCtor, *return)
                           _ => return!([false, "FSERR_UNSUPPORTED",
                             "requested mode exceeds Dir attenuation"])
                         }
@@ -206,19 +185,22 @@ new Dir, rootP in {
     } |
 
     // -- removeFile(rel) --------------------------------------------
-    //
-    // Mutation method — requires Dir mode "rw".
     method removeFile(@rel) {
       match rel {
         r /\ String => {
           for (@params <<- @[*private, *rootP]) {
             match params {
-              (canonRoot, dirMode, _fileCtor) => {
+              (canonRoot, subPath, dirMode, _fileCtor) => {
                 match dirMode {
                   "rw" => {
-                    new retCh in {
-                      fsRemoveFile!(canonRoot, r, *retCh) |
-                      for (@reply <- retCh) { return!(reply) }
+                    new joinedCh in {
+                      joinRel!(subPath, r, *joinedCh) |
+                      for (@joined <- joinedCh) {
+                        new retCh in {
+                          fsRemoveFile!(canonRoot, joined, *retCh) |
+                          for (@reply <- retCh) { return!(reply) }
+                        }
+                      }
                     }
                   }
                   _ => return!([false, "FSERR_UNSUPPORTED",
@@ -241,12 +223,17 @@ new Dir, rootP in {
             b /\ Bool => {
               for (@params <<- @[*private, *rootP]) {
                 match params {
-                  (canonRoot, dirMode, _fileCtor) => {
+                  (canonRoot, subPath, dirMode, _fileCtor) => {
                     match dirMode {
                       "rw" => {
-                        new retCh in {
-                          fsRemoveDir!(canonRoot, r, b, *retCh) |
-                          for (@reply <- retCh) { return!(reply) }
+                        new joinedCh in {
+                          joinRel!(subPath, r, *joinedCh) |
+                          for (@joined <- joinedCh) {
+                            new retCh in {
+                              fsRemoveDir!(canonRoot, joined, b, *retCh) |
+                              for (@reply <- retCh) { return!(reply) }
+                            }
+                          }
                         }
                       }
                       _ => return!([false, "FSERR_UNSUPPORTED",
@@ -265,8 +252,6 @@ new Dir, rootP in {
     } |
 
     // -- rename(from, to) -------------------------------------------
-    //
-    // Both paths quarantined internally by fs_rename (Phase 1).
     method rename(@from, @to) {
       match from {
         f /\ String => {
@@ -274,14 +259,20 @@ new Dir, rootP in {
             t /\ String => {
               for (@params <<- @[*private, *rootP]) {
                 match params {
-                  (canonRoot, dirMode, _fileCtor) => {
+                  (canonRoot, subPath, dirMode, _fileCtor) => {
                     match dirMode {
                       "rw" => {
-                        new retCh in {
-                          // Phase 1 fs_rename signature:
-                          // (fromRootCanon, fromRel, toRootCanon, toRel, ack)
-                          fsRename!(canonRoot, f, canonRoot, t, *retCh) |
-                          for (@reply <- retCh) { return!(reply) }
+                        new jFromCh, jToCh in {
+                          joinRel!(subPath, f, *jFromCh) |
+                          joinRel!(subPath, t, *jToCh) |
+                          for (@jFrom <- jFromCh; @jTo <- jToCh) {
+                            new retCh in {
+                              // Phase 1 fs_rename signature:
+                              // (fromRootCanon, fromRel, toRootCanon, toRel, ack)
+                              fsRename!(canonRoot, jFrom, canonRoot, jTo, *retCh) |
+                              for (@reply <- retCh) { return!(reply) }
+                            }
+                          }
                         }
                       }
                       _ => return!([false, "FSERR_UNSUPPORTED",
@@ -307,12 +298,18 @@ new Dir, rootP in {
             t /\ String => {
               for (@params <<- @[*private, *rootP]) {
                 match params {
-                  (canonRoot, dirMode, _fileCtor) => {
+                  (canonRoot, subPath, dirMode, _fileCtor) => {
                     match dirMode {
                       "rw" => {
-                        new retCh in {
-                          fsCopyFile!(canonRoot, f, canonRoot, t, *retCh) |
-                          for (@reply <- retCh) { return!(reply) }
+                        new jFromCh, jToCh in {
+                          joinRel!(subPath, f, *jFromCh) |
+                          joinRel!(subPath, t, *jToCh) |
+                          for (@jFrom <- jFromCh; @jTo <- jToCh) {
+                            new retCh in {
+                              fsCopyFile!(canonRoot, jFrom, canonRoot, jTo, *retCh) |
+                              for (@reply <- retCh) { return!(reply) }
+                            }
+                          }
                         }
                       }
                       _ => return!([false, "FSERR_UNSUPPORTED",
@@ -331,10 +328,6 @@ new Dir, rootP in {
     } |
 
     // -- chmod(rel, mode) -------------------------------------------
-    //
-    // mode is the 9-character rwx string (spec §Dir).  Parsed via
-    // parseRwxToBits; malformed input returns FSERR_BAD_ARG from the
-    // parser rather than reaching fs_chmod.
     method chmod(@rel, @mode) {
       match rel {
         r /\ String => {
@@ -342,7 +335,7 @@ new Dir, rootP in {
             m /\ String => {
               for (@params <<- @[*private, *rootP]) {
                 match params {
-                  (canonRoot, dirMode, _fileCtor) => {
+                  (canonRoot, subPath, dirMode, _fileCtor) => {
                     match dirMode {
                       "rw" => {
                         new parsedCh in {
@@ -350,9 +343,14 @@ new Dir, rootP in {
                           for (@parsed <- parsedCh) {
                             match parsed {
                               [true, bits] => {
-                                new retCh in {
-                                  fsChmod!(canonRoot, r, bits, *retCh) |
-                                  for (@reply <- retCh) { return!(reply) }
+                                new joinedCh in {
+                                  joinRel!(subPath, r, *joinedCh) |
+                                  for (@joined <- joinedCh) {
+                                    new retCh in {
+                                      fsChmod!(canonRoot, joined, bits, *retCh) |
+                                      for (@reply <- retCh) { return!(reply) }
+                                    }
+                                  }
                                 }
                               }
                               _ => return!(parsed)
@@ -376,15 +374,9 @@ new Dir, rootP in {
     } |
 
     // -- chown(rel, owner, group) -----------------------------------
-    //
-    // owner and group are String or Nil.  Nil means "don't change".
-    // Empty String rejected as FSERR_BAD_ARG (spec §Dir.chown).
-    // Native fs_chown returns FSERR_UNSUPPORTED in consensus mode.
     method chown(@rel, @owner, @group) {
       match rel {
         r /\ String => {
-          // Guard both owner and group.  We accept String or Nil
-          // via a nested match; empty strings are rejected.
           new ownerOk, groupOk in {
                 match owner {
                   s /\ String => {
@@ -415,12 +407,17 @@ new Dir, rootP in {
                     [[true, o], [true, g]] => {
                       for (@params <<- @[*private, *rootP]) {
                         match params {
-                          (canonRoot, dirMode, _fileCtor) => {
+                          (canonRoot, subPath, dirMode, _fileCtor) => {
                             match dirMode {
                               "rw" => {
-                                new retCh in {
-                                  fsChown!(canonRoot, r, o, g, *retCh) |
-                                  for (@reply <- retCh) { return!(reply) }
+                                new joinedCh in {
+                                  joinRel!(subPath, r, *joinedCh) |
+                                  for (@joined <- joinedCh) {
+                                    new retCh in {
+                                      fsChown!(canonRoot, joined, o, g, *retCh) |
+                                      for (@reply <- retCh) { return!(reply) }
+                                    }
+                                  }
                                 }
                               }
                               _ => return!([false, "FSERR_UNSUPPORTED",
@@ -455,50 +452,122 @@ new Dir, rootP in {
   // Module-level helpers.
   // ==================================================================
 
-  contract openFileImpl(@canonRoot, @rel, @mode, @fileCtor, ret) = {
-    new openRetCh in {
-      fsOpen!(canonRoot, rel, mode, *openRetCh) |
-      for (@openReply <- openRetCh) {
-        match openReply {
-          [true, fd] => {
-            // Mint a File agent wrapping the returned fd.  fileCtor
-            // is bound to *File (the File agent's ctor channel) by
-            // whoever set up this scope.
-            new fileCh in {
-              @fileCtor!(*fileCh, fd, canonRoot, mode) |
-              for (@fileHandle <- fileCh) {
-                ret!([true, fileHandle])
+  // joinRel — compose two segments of a relative path.  Callers may
+  // pass an empty subPath (for the root Dir), in which case the result
+  // is just the second segment; safe_descend rejects an empty rel with
+  // QuarantineError::Empty, so this pattern must not produce "" or a
+  // leading "/".
+  contract joinRel(@subPath, @rel, ret) = {
+    match subPath {
+      "" => ret!(rel)
+      _  => ret!(subPath ++ "/" ++ rel)
+    }
+  } |
+
+  contract openFileImpl(@canonRoot, @subPath, @rel, @mode, @fileCtor, ret) = {
+    new joinedCh in {
+      joinRel!(subPath, rel, *joinedCh) |
+      for (@joined <- joinedCh) {
+        // Stat-verify before opening (plan §294): if the target exists
+        // and is a directory, reject with FSERR_BAD_ARG rather than
+        // trying to open it as a file.  fsOpen would fail with EISDIR
+        // on a directory in most modes, but the error mapping is
+        // inconsistent across create/exclusive modes and Phase 1 native
+        // implementations differ; short-circuiting here yields a stable
+        // spec-defined error.
+        //
+        // If stat fails for any reason (not-found, permission, etc.),
+        // we pass through to fsOpen — for creation modes (w/w+/wx/w+x/
+        // a/a+) the target may legitimately not exist yet, and fsOpen
+        // handles the create/exclusive semantics.  For read/rw modes
+        // fsOpen will re-surface the appropriate error (FSERR_NOTFOUND,
+        // etc.).
+        //
+        // Racy against a directory being created between stat and open;
+        // the alternative (bind fd first, fstat inode) requires a
+        // native we don't have.  Phase 6+ can add fs_openIfNotDir.
+        new statRetCh in {
+          fsStat!(canonRoot, joined, *statRetCh) |
+          for (@statReply <- statRetCh) {
+            new statOk in {
+              match statReply {
+                [true, rec] => {
+                  match rec.get("kind") {
+                    "dir" => statOk!([false, "FSERR_BAD_ARG",
+                      "target is a directory; use openDir"])
+                    _     => statOk!([true, Nil])
+                  }
+                }
+                _ => statOk!([true, Nil])   // stat failed; let fsOpen handle it
+              } |
+              for (@decision <- statOk) {
+                match decision {
+                  [false, code, msg] => ret!([false, code, msg])
+                  [true, _] => {
+                    new openRetCh in {
+                      fsOpen!(canonRoot, joined, mode, *openRetCh) |
+                      for (@openReply <- openRetCh) {
+                        match openReply {
+                          [true, fd] => {
+                            // File carries (fd, canonRoot, joined, mode)
+                            // — its chmod/chown/... methods dispatch to
+                            // fs_* with a real rel (B-3 fix).
+                            new fileCh in {
+                              @fileCtor!(*fileCh, fd, canonRoot, joined, mode) |
+                              for (@fileHandle <- fileCh) {
+                                ret!([true, fileHandle])
+                              }
+                            }
+                          }
+                          _ => ret!(openReply)
+                        }
+                      }
+                    }
+                  }
+                }
               }
             }
           }
-          _ => ret!(openReply)
         }
       }
     }
   } |
 
-  // openDirImpl — mints a nested Dir agent for openDir.  Structurally
-  // parallel to openFileImpl but no fs_open dispatch (the native
-  // filesystem doesn't have a separate "open directory" syscall in
-  // Phase 1's surface — Dir is a pure Rholang facade over the
-  // canonical path).  We just construct a fresh Dir with the sub-path
-  // as its new root.
+  // openDirImpl — mints a nested Dir agent for openDir.
   //
-  // In production the Fs agent (Phase 6) would handle path composition
-  // through the powerbox; the MVP just concatenates canonRoot + "/" +
-  // rel.  A follow-up commit switches to the powerbox path when it
-  // lands.
-  contract openDirImpl(@canonRoot, @rel, @mode, @fileCtor, ret) = {
-    new dirCh in {
-      // Compose the child canonical root.  Naive string concat is
-      // OK here because Phase 1's fs_* handlers quarantine on every
-      // call; the child Dir's methods will re-quarantine via
-      // (childRoot, methodRel).  Follow-up: use a proper join helper.
-      match canonRoot ++ "/" ++ rel {
-        childRoot => {
-          Dir!(*dirCh, childRoot, mode, fileCtor) |
-          for (@dirHandle <- dirCh) {
-            ret!([true, dirHandle])
+  // Validates at mint time via fsStat (M-2): if the composed path is
+  // absent, non-directory, or escapes the sandbox (safe_descend rejects
+  // `..`), the caller receives the underlying error instead of a
+  // handle that later fails on every method.
+  contract openDirImpl(@canonRoot, @subPath, @rel, @mode, @fileCtor, ret) = {
+    new joinedCh in {
+      joinRel!(subPath, rel, *joinedCh) |
+      for (@joined <- joinedCh) {
+        new statRetCh in {
+          fsStat!(canonRoot, joined, *statRetCh) |
+          for (@statReply <- statRetCh) {
+            match statReply {
+              [true, rec] => {
+                // Verify the path is actually a directory.  Reading
+                // `rec.get("kind")` returns Nil on absent key rather
+                // than raising — a malformed stat record therefore
+                // routes through the non-"dir" arm as FSERR_BAD_ARG
+                // rather than escaping the mint.
+                match rec.get("kind") {
+                  "dir" => {
+                    new dirCh in {
+                      Dir!(*dirCh, canonRoot, joined, mode, fileCtor) |
+                      for (@dirHandle <- dirCh) {
+                        ret!([true, dirHandle])
+                      }
+                    }
+                  }
+                  _ => ret!([false, "FSERR_BAD_ARG",
+                    "path exists but is not a directory"])
+                }
+              }
+              _ => ret!(statReply)
+            }
           }
         }
       }
@@ -511,20 +580,33 @@ new Dir, rootP in {
   // Reply: [true, bits] or [false, "FSERR_BAD_ARG", msg].
   //
   // Symbolic-delta forms ("u+x") and octal ("0755") are rejected by
-  // the length check — anything not exactly 9 characters fails.
+  // the length check.
   //
-  // Each position i in [0, 9) must be either '-' or the expected
-  // letter for that position:
-  //   i = 0, 3, 6 → 'r'   (owner-r, group-r, other-r)
-  //   i = 1, 4, 7 → 'w'   (owner-w, group-w, other-w)
-  //   i = 2, 5, 8 → 'x'   (owner-x, group-x, other-x)
-  // A match sets bit (1 << (8 - i)) in the accumulator; '-' skips;
-  // any other character returns FSERR_BAD_ARG.
+  // ## UTF-8 safety (B-2 fix)
+  //
+  // The prior implementation used `modeStr.slice(i, i+1)` — a byte-
+  // indexed slice on a Rust `String` that PANICS when `i+1` cuts a
+  // multi-byte UTF-8 codepoint mid-way.  In consensus code, a panic
+  // during reduction diverges deterministic replay across nodes → fork.
+  //
+  // The 9-byte length guard did NOT prevent this: a 9-byte string can
+  // hold a 4-byte codepoint (e.g. an emoji) plus 5 ASCII bytes, and
+  // slicing at byte index 1 would panic.
+  //
+  // Fix: work on the ByteArray form (via toUtf8Bytes) and compare each
+  // byte to the ASCII code of the expected character:
+  //   'r' = 114, 'w' = 119, 'x' = 120, '-' = 45
+  // All bytes of any multi-byte UTF-8 codepoint are >= 128, which does
+  // not match any of these ASCII codes.  Such an input falls to the
+  // "invalid" arm cleanly (returning FSERR_BAD_ARG) with no panic.
+  //
+  // `ByteArray.nth(i)` and byte-integer equality are total operations
+  // on ByteArray — no boundary panic exists at that level.
   contract parseRwxToBits(@modeStr, ret) = {
     match modeStr {
       s /\ String => {
         match s.length() {
-          9 => parseRwxLoop!(s, 0, 0, *ret)
+          9 => parseRwxLoop!(s.toUtf8Bytes(), 0, 0, *ret)
           _ => ret!([false, "FSERR_BAD_ARG",
             "mode must be a 9-character rwx string"])
         }
@@ -533,33 +615,47 @@ new Dir, rootP in {
     }
   } |
 
-  contract parseRwxLoop(@modeStr, @i, @accBits, ret) = {
+  contract parseRwxLoop(@modeBytes, @i, @accBits, ret) = {
     match i {
       9 => ret!([true, accBits])
       _ => {
-        // Look up expected char and bit value for this position.
+        // Look up expected ASCII byte and bit value for this position.
         new spec in {
           match i {
-            0 => spec!(("r", 256))
-            1 => spec!(("w", 128))
-            2 => spec!(("x", 64))
-            3 => spec!(("r", 32))
-            4 => spec!(("w", 16))
-            5 => spec!(("x", 8))
-            6 => spec!(("r", 4))
-            7 => spec!(("w", 2))
-            8 => spec!(("x", 1))
+            0 => spec!((114, 256))  // 'r' owner-r
+            1 => spec!((119, 128))  // 'w' owner-w
+            2 => spec!((120, 64))   // 'x' owner-x
+            3 => spec!((114, 32))   // 'r' group-r
+            4 => spec!((119, 16))   // 'w' group-w
+            5 => spec!((120, 8))    // 'x' group-x
+            6 => spec!((114, 4))    // 'r' other-r
+            7 => spec!((119, 2))    // 'w' other-w
+            8 => spec!((120, 1))    // 'x' other-x
+            // Defense-in-depth: parseRwxToBits only ever calls with
+            // i in [0, 9) so this arm is unreachable in current code.
+            // Without it, a hypothetical future refactor that changed
+            // the recursion bounds would silently hang (no reply on
+            // `spec`, no reply on `ret`, no reachable termination).
+            // A sentinel through `spec` lets the outer `for` still
+            // fire and route to the FSERR_IO arm.
+            _ => spec!(Nil)
           } |
-          for (@(expected, bitValue) <- spec) {
-            match modeStr.slice(i, i + 1) {
-              "-" => parseRwxLoop!(modeStr, i + 1, accBits, *ret)
-              c => {
-                match c == expected {
-                  true  => parseRwxLoop!(modeStr, i + 1, accBits + bitValue, *ret)
-                  false => ret!([false, "FSERR_BAD_ARG",
-                    "malformed rwx mode string"])
+          for (@sp <- spec) {
+            match sp {
+              (expected, bitValue) => {
+                match modeBytes.nth(i) {
+                  45 => parseRwxLoop!(modeBytes, i + 1, accBits, *ret)  // '-'
+                  b => {
+                    match b == expected {
+                      true  => parseRwxLoop!(modeBytes, i + 1, accBits + bitValue, *ret)
+                      false => ret!([false, "FSERR_BAD_ARG",
+                        "malformed rwx mode string"])
+                    }
+                  }
                 }
               }
+              _ => ret!([false, "FSERR_IO",
+                "parseRwxLoop: index out of bounds"])
             }
           }
         }

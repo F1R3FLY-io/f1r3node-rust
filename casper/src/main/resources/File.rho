@@ -5,85 +5,33 @@
 // Callers hold a bundle+{*this} handle and invoke methods via the
 // method-call sugar.
 //
-// ## Delivered methods (this MVP)
-//
-//   - `writeByteArray(bytes)` — write bytes to the current cursor
-//   - `writeString(s)` — write s.toUtf8Bytes() to the current cursor
-//   - `readN(n)` — read up to n bytes from the current cursor
-//   - `seek(offset, whence)` — reposition cursor
-//   - `tell()` — current cursor position
-//   - `size()` — file size in bytes
-//   - `flush()` — fsync (data + metadata)
-//   - `close()` — release the fd and revoke the agent
-//   - `default(...@args)` — FSERR_UNSUPPORTED for unknown methods
-//
-// ## Deferred to follow-up commits
-//
-//   - Stream producers: `chars`, `bytes`, `lines`, `readLine`, `bytesAt`
-//   - Stream consumers: `writeChars`, `writeBytes`, `writeLine`,
-//     `writeLines`, `writeBytesAt`
-//   - Buffer-taking methods: `readInto`, `readAtInto`, `readLineInto`,
-//     `readLinesInto`, `writeFrom`, `writeFromAt`
-//   - Convenience: `linesAsStrings(cap)`, `forEachLine(handler, cap)`
-//   - Permissions: `chmod(mode)`, `chown(owner, group)`
-//   - Truncation: `truncate(n)`
-//   - Explicit range locks: `lockRange(offset, length, mode)`
-//
-// ## Constructor signature
-//
-//   File!?(*fd, *canonRoot, *mode, *fsRead, *fsWrite, *fsSeek,
-//          *fsTell, *fsSize, *fsFlush, *fsClose)
-//
-// The syscall dispatchers are captured from the enclosing `new`
-// scope, so real-world callers (the Fs agent — Phase 6) supply them
-// by binding native URNs like:
-//
-//   new fsRead(`rho:io:fs:native:1.0.0/read`), fsWrite(`...`) in {
-//     ... File definition ...
-//   }
-//
-// while tests supply mock contracts for the same names.  Rather than
-// pass all six dispatchers as ctor args (very awkward), File.rho
-// simply CAPTURES them from its enclosing scope.  The test/genesis
-// wrapper is responsible for binding them.
-//
-// ## Native URN call convention
-//
-// Native fs URNs from Phase 1 use `(args..., ack)` — ack channel is
-// LAST.  The agent-block sugar's `x!?(...)` puts the return channel
-// FIRST.  So we use explicit send patterns:
-//
-//   new retCh in {
-//     fsRead!(fd, n, *retCh) |
-//     for (@reply <- retCh) { ... }
-//   }
-//
-// rather than method-call sugar.  This also documents the syscall
-// dispatchers as taking their args in native order.
-//
 // ## State layout
 //
-//   @[*private, *fdP]     — the fd tuple: (fd, canonRoot, mode) or
-//                            "REVOKED".  Set at ctor, revoked at
-//                            close.  Peeked (<<-) by all methods.
-//   @[*private, *stateP]  — a transition tag:
-//                            "open" | "closed"
-//                           Consumed via linear-receive on every
-//                           mutating call to serialize concurrent
-//                           holders (same discipline as Buffer.rho).
+//   @[*private, *fdP]     — (fd, canonRoot, rel, mode) or "REVOKED".
+//                            `canonRoot` is the sandbox root; `rel` is
+//                            the relative path from `canonRoot` that
+//                            was used to open the fd.  Both are needed
+//                            so path-based fs_* calls (chmod, chown) on
+//                            the underlying inode can dispatch with a
+//                            non-empty rel — Phase 1's safe_descend
+//                            rejects empty rel with FSERR_BAD_ARG, so
+//                            passing `""` would silently break every
+//                            call.  This is the B-3 fix from Phase 5
+//                            review.
+//
+//   @[*private, *stateP]  — "open" | "closed", consumed via linear-
+//                            receive on every mutating call to serialize
+//                            concurrent holders.
 
 new File, fdP, stateP in {
 
   agent File {
-    constructor(@fd, @canonRoot, @mode) {
-      @[*private, *fdP]!((fd, canonRoot, mode)) |
+    constructor(@fd, @canonRoot, @rel, @mode) {
+      @[*private, *fdP]!((fd, canonRoot, rel, mode)) |
       @[*private, *stateP]!("open")
     } |
 
     // -- writeByteArray ---------------------------------------------
-    //
-    // Type-guarded on bytes per the Buffer.rho / Stream.rho pattern.
-    // Dispatches to native fsWrite; reply passes through.
     method writeByteArray(@bytes) {
       match bytes {
         b /\ ByteArray => {
@@ -96,10 +44,9 @@ new File, fdP, stateP in {
               "open" => {
                 for (@params <<- @[*private, *fdP]) {
                   match params {
-                    (fd, _root, mode) => {
+                    (fd, _root, _rel, mode) => {
                       match mode {
                         "r" => {
-                          // Read-only file — reject write.
                           @[*private, *stateP]!("open") |
                           return!([false, "FSERR_UNSUPPORTED", "read-only file"])
                         }
@@ -133,9 +80,6 @@ new File, fdP, stateP in {
     } |
 
     // -- writeString(s) ---------------------------------------------
-    //
-    // Convenience wrapper: dispatches to writeByteArray on
-    // s.toUtf8Bytes().  Type-guarded on s.
     method writeString(@s) {
       match s {
         str /\ String => {
@@ -150,9 +94,7 @@ new File, fdP, stateP in {
     // -- readN(n) ---------------------------------------------------
     //
     // n = 0 is a no-op returning [true, empty ByteArray] — matches
-    // Unix read(2) semantics (a zero-length read is a valid no-op,
-    // not an error).  Negative n is rejected as FSERR_BAD_ARG.  The
-    // fd is not touched when n <= 0.
+    // Unix read(2) semantics.  Negative n is rejected as FSERR_BAD_ARG.
     method readN(@n) {
       match n {
         i /\ Int => {
@@ -171,7 +113,7 @@ new File, fdP, stateP in {
                   "open" => {
                     for (@params <<- @[*private, *fdP]) {
                       match params {
-                        (fd, _root, _mode) => {
+                        (fd, _root, _rel, _mode) => {
                           new retCh in {
                             fsRead!(fd, i, *retCh) |
                             for (@reply <- retCh) {
@@ -217,7 +159,7 @@ new File, fdP, stateP in {
                   "open" => {
                     for (@params <<- @[*private, *fdP]) {
                       match params {
-                        (fd, _root, _mode) => {
+                        (fd, _root, _rel, _mode) => {
                           new retCh in {
                             fsSeek!(fd, o, w, *retCh) |
                             for (@reply <- retCh) {
@@ -258,7 +200,7 @@ new File, fdP, stateP in {
           "open" => {
             for (@params <<- @[*private, *fdP]) {
               match params {
-                (fd, _root, _mode) => {
+                (fd, _root, _rel, _mode) => {
                   new retCh in {
                     fsTell!(fd, *retCh) |
                     for (@reply <- retCh) {
@@ -293,7 +235,7 @@ new File, fdP, stateP in {
           "open" => {
             for (@params <<- @[*private, *fdP]) {
               match params {
-                (fd, _root, _mode) => {
+                (fd, _root, _rel, _mode) => {
                   new retCh in {
                     fsSize!(fd, *retCh) |
                     for (@reply <- retCh) {
@@ -328,7 +270,7 @@ new File, fdP, stateP in {
           "open" => {
             for (@params <<- @[*private, *fdP]) {
               match params {
-                (fd, _root, _mode) => {
+                (fd, _root, _rel, _mode) => {
                   new retCh in {
                     fsFlush!(fd, *retCh) |
                     for (@reply <- retCh) {
@@ -353,10 +295,6 @@ new File, fdP, stateP in {
     } |
 
     // -- close() ----------------------------------------------------
-    //
-    // Dispatches to fsClose and marks the file "closed".  Idempotent.
-    // Does NOT wait for fsClose's reply on the second (already-closed)
-    // path — the native table is idempotent on its side too.
     method close() {
       for (@state <- @[*private, *stateP]) {
         match state {
@@ -367,19 +305,10 @@ new File, fdP, stateP in {
           "open" => {
             for (@params <<- @[*private, *fdP]) {
               match params {
-                (fd, _root, _mode) => {
+                (fd, _root, _rel, _mode) => {
                   new retCh in {
                     fsClose!(fd, *retCh) |
                     for (@reply <- retCh) {
-                      // Always mark the file closed — the Rho-side
-                      // agent is single-use, so a native fsClose
-                      // failure doesn't leave the agent reusable.
-                      // But surface the native error to the caller
-                      // rather than swallowing it (m-1 fix): a
-                      // reply of [true] passes through as [true];
-                      // anything else (e.g. [false, "FSERR_IO", ...])
-                      // is forwarded so the caller can log the
-                      // underlying failure.
                       @[*private, *stateP]!("closed") |
                       match reply {
                         [true] => return!([true])
@@ -405,9 +334,7 @@ new File, fdP, stateP in {
 
     // -- truncate(n) ------------------------------------------------
     //
-    // Spec §File.truncate: "requires a write-capable mode; returns
-    // FSERR_UNSUPPORTED otherwise."  Type-guard n as non-negative
-    // Int; forbid on "r" mode.
+    // Spec §File.truncate: requires write-capable mode.
     method truncate(@n) {
       match n {
         i /\ Int => {
@@ -423,7 +350,7 @@ new File, fdP, stateP in {
                   "open" => {
                     for (@params <<- @[*private, *fdP]) {
                       match params {
-                        (fd, _root, mode) => {
+                        (fd, _root, _rel, mode) => {
                           match mode {
                             "r" => {
                               @[*private, *stateP]!("open") |
@@ -463,11 +390,13 @@ new File, fdP, stateP in {
 
     // -- chmod(mode) ------------------------------------------------
     //
-    // mode is the 9-character rwx string (spec §File.chmod).  Parsed
-    // via parseRwxToBits (captured from outer scope); malformed input
-    // returns FSERR_BAD_ARG from the parser.  Native fs_chmod handles
-    // the actual syscall.  Not gated on File mode — chmod at the OS
-    // level is owner-permission-based, not fd-mode-based.
+    // Spec §File > Permissions (line 1005): "Available only if the file
+    // was opened in a write-capable mode; FSERR_UNSUPPORTED otherwise."
+    // Read-only Files reject chmod (M-1 fix).
+    //
+    // Uses the stored `rel` from the fd tuple (B-3 fix) — the prior
+    // slice passed `""` and every real call broke on Phase 1's
+    // safe_descend, which returns QuarantineError::Empty on empty rel.
     method chmod(@mode) {
       match mode {
         m /\ String => {
@@ -480,32 +409,32 @@ new File, fdP, stateP in {
               "open" => {
                 for (@params <<- @[*private, *fdP]) {
                   match params {
-                    (_fd, canonRoot, _mode) => {
-                      // fs_chmod takes (rootCanon, rel, bits, ack).
-                      // For a File we've already opened, the "rel"
-                      // has been consumed by fs_open — we need to
-                      // reconstruct the target.  For MVP, we store
-                      // the canonRoot as the FULL PATH (Fs agent
-                      // will set this appropriately at File
-                      // construction) and pass "" as rel.  A
-                      // follow-up commit refines the state layout
-                      // to carry (canonRoot, rel) separately.
-                      new parsedCh in {
-                        parseRwxToBits!(m, *parsedCh) |
-                        for (@parsed <- parsedCh) {
-                          match parsed {
-                            [true, bits] => {
-                              new retCh in {
-                                fsChmod!(canonRoot, "", bits, *retCh) |
-                                for (@reply <- retCh) {
+                    (_fd, canonRoot, rel, fmode) => {
+                      match fmode {
+                        "r" => {
+                          @[*private, *stateP]!("open") |
+                          return!([false, "FSERR_UNSUPPORTED",
+                            "chmod requires a write-capable mode"])
+                        }
+                        _ => {
+                          new parsedCh in {
+                            parseRwxToBits!(m, *parsedCh) |
+                            for (@parsed <- parsedCh) {
+                              match parsed {
+                                [true, bits] => {
+                                  new retCh in {
+                                    fsChmod!(canonRoot, rel, bits, *retCh) |
+                                    for (@reply <- retCh) {
+                                      @[*private, *stateP]!("open") |
+                                      return!(reply)
+                                    }
+                                  }
+                                }
+                                _ => {
                                   @[*private, *stateP]!("open") |
-                                  return!(reply)
+                                  return!(parsed)
                                 }
                               }
-                            }
-                            _ => {
-                              @[*private, *stateP]!("open") |
-                              return!(parsed)
                             }
                           }
                         }
@@ -531,9 +460,8 @@ new File, fdP, stateP in {
 
     // -- chown(owner, group) ---------------------------------------
     //
-    // owner and group are String or Nil (spec §File.chown).  Empty
-    // String rejected; Nil means "don't change".  Native fs_chown
-    // returns FSERR_UNSUPPORTED in consensus mode.
+    // Spec §File > Permissions (line 1005): write-capable mode only.
+    // Uses stored `rel` (B-3 fix); gated on write-mode (M-1 fix).
     method chown(@owner, @group) {
       new ownerOk, groupOk in {
         match owner {
@@ -572,12 +500,21 @@ new File, fdP, stateP in {
                   "open" => {
                     for (@params <<- @[*private, *fdP]) {
                       match params {
-                        (_fd, canonRoot, _mode) => {
-                          new retCh in {
-                            fsChown!(canonRoot, "", o, g, *retCh) |
-                            for (@reply <- retCh) {
+                        (_fd, canonRoot, rel, fmode) => {
+                          match fmode {
+                            "r" => {
                               @[*private, *stateP]!("open") |
-                              return!(reply)
+                              return!([false, "FSERR_UNSUPPORTED",
+                                "chown requires a write-capable mode"])
+                            }
+                            _ => {
+                              new retCh in {
+                                fsChown!(canonRoot, rel, o, g, *retCh) |
+                                for (@reply <- retCh) {
+                                  @[*private, *stateP]!("open") |
+                                  return!(reply)
+                                }
+                              }
                             }
                           }
                         }
@@ -600,6 +537,287 @@ new File, fdP, stateP in {
             _ => return!([false, "FSERR_IO", "chown validation malformed"])
           }
         }
+      }
+    } |
+
+    // -- bytes() ---------------------------------------------------
+    //
+    // Sequential ByteStream producer.  Reads bytes from the file's
+    // current cursor position, advancing the fd's cursor as it goes.
+    //
+    // ## Element type
+    //
+    // Per spec §Stream specializations > ByteStream, the element type
+    // is `u8` and the chunk container is `ByteArray`.  Rholang has no
+    // separate byte type — Int is 64-bit and there's no total Int-to-
+    // single-byte conversion, so this MVP represents each element as
+    // a 1-byte `ByteArray` slice.  The chunk builder still returns a
+    // properly-packed ByteArray via `List.concatBytes()`, so callers
+    // that only use `chunk(n)` observe the spec's shape.  A follow-up
+    // slice will migrate elements to Int once we have a Rholang
+    // primitive for it.
+    //
+    // ## Efficiency
+    //
+    // A per-element fsRead(fd, 1) would issue one syscall per byte;
+    // instead the producer buffers a 4KB chunk internally and vends
+    // 1-byte slices from that chunk, refilling on exhaustion.  This
+    // is a per-Stream cell — it does NOT survive close-and-recreate.
+    //
+    // ## Concurrency
+    //
+    // Spec §Read-side stream producers says only one sequential
+    // producer may hold the cursor at a time; a second call should
+    // return FSERR_BUSY.  This MVP does not enforce the exclusion —
+    // Phase 8 lands cursor-lease tracking with `{"wait": true}`
+    // semantics.  Two live sequential streams today will interleave
+    // reads on the same fd; the caller must not create overlapping
+    // sequential streams.  Positional producers (bytesAt) are safe
+    // to interleave with sequential ones by design.
+    method bytes() {
+      for (@state <- @[*private, *stateP]) {
+        match state {
+          "closed" => {
+            @[*private, *stateP]!("closed") |
+            return!([false, "FSERR_CLOSED", "file is closed"])
+          }
+          "open" => {
+            for (@params <<- @[*private, *fdP]) {
+              match params {
+                (fd, _root, _rel, _mode) => {
+                  new byteProducer, byteBuilder, pendingCell in {
+                    pendingCell!(("".hexToBytes(), 0)) |
+
+                    contract byteProducer(retCh) = {
+                      for (@(pending, idx) <- pendingCell) {
+                        match idx < pending.length() {
+                          true => {
+                            pendingCell!((pending, idx + 1)) |
+                            retCh!([true, pending.slice(idx, idx + 1)])
+                          }
+                          false => {
+                            new readCh in {
+                              fsRead!(fd, 4096, *readCh) |
+                              for (@reply <- readCh) {
+                                match reply {
+                                  [true, ba /\ ByteArray] => {
+                                    match ba.length() {
+                                      0 => {
+                                        pendingCell!((pending, idx)) |
+                                        retCh!([false, "EOS", "end of file"])
+                                      }
+                                      _ => {
+                                        pendingCell!((ba, 1)) |
+                                        retCh!([true, ba.slice(0, 1)])
+                                      }
+                                    }
+                                  }
+                                  _ => {
+                                    pendingCell!((pending, idx)) |
+                                    retCh!(reply)
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    } |
+
+                    contract byteBuilder(@values, retCh) = {
+                      match values {
+                        v /\ List => retCh!([true, v.concatBytes()])
+                        _ => retCh!([false, "FSERR_IO",
+                          "chunk builder expected List"])
+                      }
+                    } |
+
+                    for (@streamHandle <- Stream!?(*byteProducer, *byteBuilder)) {
+                      @[*private, *stateP]!("open") |
+                      return!([true, streamHandle])
+                    }
+                  }
+                }
+                _ => {
+                  @[*private, *stateP]!("open") |
+                  return!([false, "FSERR_IO", "fd params malformed"])
+                }
+              }
+            }
+          }
+          _ => {
+            @[*private, *stateP]!("closed") |
+            return!([false, "FSERR_CLOSED", "file state unrecognized"])
+          }
+        }
+      }
+    } |
+
+    // -- bytesAt(offset, length) -----------------------------------
+    //
+    // Positional ByteStream producer.  Reads `length` bytes starting
+    // at absolute file offset `offset` via fsReadAt (pread(2)); does
+    // not touch the sequential cursor.  Multiple positional streams
+    // may coexist on the same File.
+    //
+    // `length` may be `Nil` to mean "to EOF".  The producer tracks
+    // (currentOffset, remaining) internally; `remaining` is `Nil` for
+    // to-EOF mode, else a positive Int decreasing toward 0.
+    method bytesAt(@offset, @length) {
+      match offset {
+        off /\ Int => {
+          match off < 0 {
+            true => return!([false, "FSERR_BAD_ARG",
+              "offset must be non-negative"])
+            false => {
+              // length must be Nil OR non-negative Int.
+              new lenOk in {
+                match length {
+                  n /\ Int => {
+                    match n < 0 {
+                      true => lenOk!([false, "FSERR_BAD_ARG",
+                        "length must be non-negative"])
+                      false => lenOk!([true, n])
+                    }
+                  }
+                  Nil => lenOk!([true, Nil])
+                  _ => lenOk!([false, "FSERR_BAD_ARG",
+                    "length must be Int or Nil"])
+                } |
+                for (@lenValidated <- lenOk) {
+                  match lenValidated {
+                    [false, code, msg] => return!([false, code, msg])
+                    [true, validLen] => {
+                      for (@state <- @[*private, *stateP]) {
+                        match state {
+                          "closed" => {
+                            @[*private, *stateP]!("closed") |
+                            return!([false, "FSERR_CLOSED", "file is closed"])
+                          }
+                          "open" => {
+                            for (@params <<- @[*private, *fdP]) {
+                              match params {
+                                (fd, _root, _rel, _mode) => {
+                                  new patProducer, patBuilder, posCell in {
+                                    // posCell: (nextOffset, remaining,
+                                    //           pending, idx)
+                                    // - remaining: Nil or Int (bytes still
+                                    //   allowed to read from user's length)
+                                    // - pending: 4KB chunk from last fsReadAt
+                                    // - idx: index into pending
+                                    posCell!((off, validLen, "".hexToBytes(), 0)) |
+
+                                    contract patProducer(retCh) = {
+                                      for (@(nextOff, rem, pending, idx) <- posCell) {
+                                        match idx < pending.length() {
+                                          true => {
+                                            posCell!((nextOff, rem, pending, idx + 1)) |
+                                            retCh!([true, pending.slice(idx, idx + 1)])
+                                          }
+                                          false => {
+                                            // Need to refill.  Compute how
+                                            // many bytes we may still read
+                                            // and cap the request accordingly.
+                                            new nToReadCh in {
+                                              match rem {
+                                                Nil => nToReadCh!(4096)
+                                                r /\ Int => {
+                                                  match r <= 0 {
+                                                    true => nToReadCh!(0)
+                                                    false => {
+                                                      match r < 4096 {
+                                                        true => nToReadCh!(r)
+                                                        false => nToReadCh!(4096)
+                                                      }
+                                                    }
+                                                  }
+                                                }
+                                              } |
+                                              for (@nToRead <- nToReadCh) {
+                                                match nToRead {
+                                                  0 => {
+                                                    posCell!((nextOff, rem, pending, idx)) |
+                                                    retCh!([false, "EOS",
+                                                      "length exhausted"])
+                                                  }
+                                                  _ => {
+                                                    new readCh in {
+                                                      fsReadAt!(fd, nextOff, nToRead, *readCh) |
+                                                      for (@reply <- readCh) {
+                                                        match reply {
+                                                          [true, ba /\ ByteArray] => {
+                                                            match ba.length() {
+                                                              0 => {
+                                                                posCell!((nextOff, rem, pending, idx)) |
+                                                                retCh!([false, "EOS", "end of file"])
+                                                              }
+                                                              got => {
+                                                                // Update pending, advance offset,
+                                                                // decrement remaining (if Int).
+                                                                new newRemCh in {
+                                                                  match rem {
+                                                                    Nil => newRemCh!(Nil)
+                                                                    r /\ Int => newRemCh!(r - got)
+                                                                  } |
+                                                                  for (@newRem <- newRemCh) {
+                                                                    posCell!((nextOff + got, newRem, ba, 1)) |
+                                                                    retCh!([true, ba.slice(0, 1)])
+                                                                  }
+                                                                }
+                                                              }
+                                                            }
+                                                          }
+                                                          _ => {
+                                                            posCell!((nextOff, rem, pending, idx)) |
+                                                            retCh!(reply)
+                                                          }
+                                                        }
+                                                      }
+                                                    }
+                                                  }
+                                                }
+                                              }
+                                            }
+                                          }
+                                        }
+                                      }
+                                    } |
+
+                                    contract patBuilder(@values, retCh) = {
+                                      match values {
+                                        v /\ List => retCh!([true, v.concatBytes()])
+                                        _ => retCh!([false, "FSERR_IO",
+                                          "chunk builder expected List"])
+                                      }
+                                    } |
+
+                                    for (@streamHandle <- Stream!?(*patProducer, *patBuilder)) {
+                                      @[*private, *stateP]!("open") |
+                                      return!([true, streamHandle])
+                                    }
+                                  }
+                                }
+                                _ => {
+                                  @[*private, *stateP]!("open") |
+                                  return!([false, "FSERR_IO", "fd params malformed"])
+                                }
+                              }
+                            }
+                          }
+                          _ => {
+                            @[*private, *stateP]!("closed") |
+                            return!([false, "FSERR_CLOSED", "file state unrecognized"])
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+        _ => return!([false, "FSERR_BAD_ARG", "offset must be an integer"])
       }
     } |
 
