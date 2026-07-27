@@ -29,6 +29,10 @@ pub mod rho_runtime;
 pub mod rho_type;
 pub mod storage;
 pub mod substitute;
+pub mod substitute_combine;
+pub mod substitute_drive;
+#[cfg(test)]
+pub mod substitute_oracle;
 pub mod system_processes;
 pub mod test_utils;
 pub mod util;
