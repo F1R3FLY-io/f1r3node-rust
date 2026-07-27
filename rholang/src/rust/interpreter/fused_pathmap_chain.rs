@@ -64,30 +64,30 @@
 //! 2. `reserve_primitive(var_eval_cost())` for a var base (:1217). Literal
 //!    bases charge nothing (:1556's ground fall-through is charge-free).
 //! 3. Per link, innermost→outermost, mirroring each `Method::apply`:
-//!    a. Position-A argument evaluation (:1538-1542) — the SAME
-//!       `self.eval_expr(arg, env)` on the raw argument ASTs, so var/method
-//!       arguments charge exactly as today, at today's position;
-//!    b. the arity check (:3693-3698 et al.) — recognizer-guaranteed exact,
-//!       so in-fusion it cannot fire; wrong-arity chains never fuse and the
-//!       fallback raises the identical `MethodArgumentNumberMismatch`;
-//!    c. the `apply`-entry target check (`eval_single_expr` :7007-7027): a
-//!       Nil view raises the exact `_`-arm
-//!       `ReduceError("Error: Multiple expressions given.")` — the PM-4(d)
-//!       parity target — with the failing link's arguments already charged
-//!       and its constant NOT charged;
-//!    d. Position-B argument re-evaluation for arity-1 links
-//!       (:3701/:3886/:4973/:5402/:5667) — replayed verbatim (charge-free on
-//!       already-evaluated input, but the VALUE pipeline is preserved
-//!       byte-for-byte rather than proven idempotent);
-//!    e. the link constant: `reserve_incremental_primitive(union_cost(1))`
-//!       for the 13 navigation links (:3625/:3704/:3889/:4976/:5051/:5271/
-//!       :5327/:5405/:5484/:5564/:5670/:5760/:5850),
-//!       `reserve_primitive(lookup_cost())` for `getLeaf`/`getSubtrie`
-//!       (:3975/:4054);
-//!    f. the link semantics on the view (see below) — including
-//!       `MethodNotDefined` when the view mode does not match the link's
-//!       accepted arms, and `ascend`/`descendIndexedBranch`'s argument
-//!       extraction errors, which today fire AFTER the union constant.
+//!    - **(a)** Position-A argument evaluation (:1538-1542) — the SAME
+//!      `self.eval_expr(arg, env)` on the raw argument ASTs, so var/method
+//!      arguments charge exactly as today, at today's position;
+//!    - **(b)** the arity check (:3693-3698 et al.) — recognizer-guaranteed
+//!      exact, so in-fusion it cannot fire; wrong-arity chains never fuse and
+//!      the fallback raises the identical `MethodArgumentNumberMismatch`;
+//!    - **(c)** the `apply`-entry target check (`eval_single_expr`
+//!      :7007-7027): a Nil view raises the exact `_`-arm
+//!      `ReduceError("Error: Multiple expressions given.")` — the PM-4(d)
+//!      parity target — with the failing link's arguments already charged
+//!      and its constant NOT charged;
+//!    - **(d)** Position-B argument re-evaluation for arity-1 links
+//!      (:3701/:3886/:4973/:5402/:5667) — replayed verbatim (charge-free on
+//!      already-evaluated input, but the VALUE pipeline is preserved
+//!      byte-for-byte rather than proven idempotent);
+//!    - **(e)** the link constant: `reserve_incremental_primitive(union_cost(1))`
+//!      for the 13 navigation links (:3625/:3704/:3889/:4976/:5051/:5271/
+//!      :5327/:5405/:5484/:5564/:5670/:5760/:5850),
+//!      `reserve_primitive(lookup_cost())` for `getLeaf`/`getSubtrie`
+//!      (:3975/:4054);
+//!    - **(f)** the link semantics on the view (see below) — including
+//!      `MethodNotDefined` when the view mode does not match the link's
+//!      accepted arms, and `ascend`/`descendIndexedBranch`'s argument
+//!      extraction errors, which today fire AFTER the union constant.
 //!
 //! Because primitives carry zero consensus cost units (D3: only `Comm`
 //! charges gate liveness), mid-sequence budget exhaustion behavior is

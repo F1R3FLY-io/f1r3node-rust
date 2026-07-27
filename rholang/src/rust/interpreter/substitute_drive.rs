@@ -824,11 +824,26 @@ fn step_sub_conn(
         | ConnectiveInstance::ConnString(_)
         | ConnectiveInstance::ConnUri(_)
         | ConnectiveInstance::ConnByteArray(_)) => {
+            // ⚠ Through `rebuild_connective`, not `Connective { .. }` inline.
+            // The two are the same bytes — `ConnArm::Ground(i)` rebuilds to
+            // exactly `Connective { connective_instance: Some(i) }` and takes
+            // no children — but they were two SPELLINGS of "rebuild a
+            // connective", one per lane: the oracle went through
+            // `rebuild_connective` for every arm including this one, and this
+            // driver went around it for this arm only.
+            //
+            // That asymmetry was load-bearing in the wrong direction.
+            // `substitute_oracle` is `#[cfg(test)]`, so `ConnArm::Ground` had
+            // no construction site in a lib build at all and
+            // `cargo clippy --workspace` reported the variant as never
+            // constructed — under `-D warnings`, a red gate pointing at a
+            // variant that is in fact reachable, just not from the lane that
+            // ships. Routing this arm through the shared function makes
+            // `rebuild_connective` what its name says: the single place a
+            // `Connective` is rebuilt from its arm, in both lanes.
             let acc = fold_prepend_connective(
                 acc,
-                Connective {
-                    connective_instance: Some(ground),
-                },
+                rebuild_connective(ConnArm::Ground(ground), Vec::new()),
                 ctx.depth,
             );
             work.push(SubWork::SubConn { rest, acc, ctx });

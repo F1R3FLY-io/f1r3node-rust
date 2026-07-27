@@ -323,9 +323,10 @@ mod tests {
                 let mut count = 0;
 
                 // Add a timeout to avoid waiting forever
-                while let Some(_) = tokio::time::timeout(Duration::from_millis(100), stream.next())
+                while tokio::time::timeout(Duration::from_millis(100), stream.next())
                     .await
                     .unwrap_or(None)
+                    .is_some()
                 {
                     count += 1;
                     if count >= 5 {
@@ -419,11 +420,23 @@ mod tests {
         let mut stream = events.consume();
         let buf = events.startup_buffer();
 
-        // Read buffer (simulating WebSocket replay)
-        let guard = buf.lock().unwrap();
-        let buffered = guard.as_ref().expect("Buffer should be Some");
-        assert_eq!(buffered.len(), 1);
-        drop(guard);
+        // Read buffer (simulating WebSocket replay).
+        //
+        // ⚠ The lock lives in a BLOCK, not until the next `drop(guard)`. This
+        // is a `std::sync::Mutex` inside an `async fn`: a guard that is still
+        // alive at an `.await` is captured by the generated future, so the
+        // lock is held across a suspension point and any other task that needs
+        // it deadlocks — and because the future may resume on a different
+        // worker thread, so does releasing it. `drop(guard)` did end the
+        // guard's life early enough, but it made the property a fact about
+        // statement ORDER that any inserted `.await` would silently break;
+        // a block makes it structural. `clippy::await_holding_lock` flags the
+        // `drop` form for exactly this reason.
+        {
+            let guard = buf.lock().unwrap();
+            let buffered = guard.as_ref().expect("Buffer should be Some");
+            assert_eq!(buffered.len(), 1);
+        }
 
         // Phase 3: More events arrive — both buffered AND broadcast (pre-seal)
         events.publish(create_block_created_event()).unwrap();
@@ -436,19 +449,21 @@ mod tests {
         }
 
         // Buffer now has both events (all pre-seal events are buffered)
-        let guard = buf.lock().unwrap();
-        let buffered = guard.as_ref().expect("Buffer should be Some");
-        assert_eq!(buffered.len(), 2, "Both pre-seal events should be buffered");
-        drop(guard);
+        {
+            let guard = buf.lock().unwrap();
+            let buffered = guard.as_ref().expect("Buffer should be Some");
+            assert_eq!(buffered.len(), 2, "Both pre-seal events should be buffered");
+        }
 
         // Phase 4: Seal startup
         events.seal_startup();
 
         // Buffer still has both events (frozen, not cleared)
-        let guard = buf.lock().unwrap();
-        let buffered = guard.as_ref().expect("Buffer should survive seal");
-        assert_eq!(buffered.len(), 2);
-        drop(guard);
+        {
+            let guard = buf.lock().unwrap();
+            let buffered = guard.as_ref().expect("Buffer should survive seal");
+            assert_eq!(buffered.len(), 2);
+        }
 
         // Phase 5: Post-seal events only go to broadcast, not buffer
         events.publish(create_block_added_event()).unwrap();
@@ -461,8 +476,10 @@ mod tests {
         }
 
         // Buffer still only has the 2 pre-seal events
-        let guard = buf.lock().unwrap();
-        let buffered = guard.as_ref().expect("Buffer should survive seal");
-        assert_eq!(buffered.len(), 2, "Post-seal events should not be buffered");
+        {
+            let guard = buf.lock().unwrap();
+            let buffered = guard.as_ref().expect("Buffer should survive seal");
+            assert_eq!(buffered.len(), 2, "Post-seal events should not be buffered");
+        }
     }
 }

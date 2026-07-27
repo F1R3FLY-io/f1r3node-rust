@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicU64;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, LazyLock, Mutex, OnceLock};
 use std::{fs, io};
 
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
@@ -77,6 +77,51 @@ static SHARED_LMDB_DIR: OnceLock<ProcessScratchDir> = OnceLock::new();
 fn shared_lmdb_dir() -> &'static ProcessScratchDir {
     SHARED_LMDB_DIR.get_or_init(|| test_scratch::acquire(SHARED_LMDB_PREFIX))
 }
+
+/// ★ THE SINGLE global lock guarding the shared LMDB environment — for BOTH lanes.
+///
+/// # What it is for
+///
+/// Unlike the Scala tests, where each test creates its own LMDB database, these tests share
+/// one environment ([`shared_lmdb_dir`]) for performance. Every test's
+/// `BlockDagKeyValueStorage` has its own `global_lock`, but those serialize operations only
+/// WITHIN a test; they do not order two tests against each other:
+///
+/// ```text
+///   Test A: insert(block_A) -> unlock -> get_representation() -> reads a snapshot
+///   Test B: insert(block_B) -> unlock -> (writes to the SAME LMDB)
+///   Test A: validate()      -> looks up block_B -> "DAG storage is missing hash"
+/// ```
+///
+/// Acquiring this mutex for a whole fixture body makes shared-storage tests run one at a
+/// time, which is slower than running them in parallel and far faster than rebuilding
+/// genesis per test.
+///
+/// # ⚠ Why it lives HERE and not in the test target
+///
+/// There are two copies of this fixture module — `casper/tests/helper/` (a module of the
+/// `casper/tests/mod.rs` integration target) and `casper/src/rust/test_utils/helper/` (a
+/// `pub` module of the library, so other crates can use it). The lock used to be declared in
+/// the TEST copy only, which made the two copies of `with_genesis` / `with_storage`
+/// *look identical and behave differently*: one serialized against this mutex, the other did
+/// not serialize at all. The library copy — the one another crate would reach for, because
+/// the test copy is not importable — was the unguarded one, and it would have reproduced
+/// exactly the race quoted above with no indication that anything was missing.
+///
+/// Declaring it in the LIBRARY is what makes "the same lock" true rather than merely
+/// intended: the test lane re-exports THIS static (see
+/// `casper/tests/util/rholang/resources.rs`), so both lanes name one mutex. Two mutexes
+/// would be worse than the missing one, because two fixtures in the same process could each
+/// hold "the" lock at once.
+/// ⚠ A `tokio::sync::Mutex`, not a `std::sync::Mutex`. The guard is held across `.await`
+/// points by construction — that is the whole design, since the fixture must serialize a
+/// WHOLE async test body, not one statement of it. A `std` guard held across an await blocks
+/// its worker thread for the duration and deadlocks outright if the awaited work needs the
+/// same lock; `tokio::sync::Mutex` yields instead. `clippy::await_holding_lock` flags the
+/// `std` form for exactly this reason, and it was flagging the test-lane copy before this
+/// moved here.
+pub static SHARED_LMDB_LOCK: LazyLock<tokio::sync::Mutex<()>> =
+    LazyLock::new(|| tokio::sync::Mutex::new(()));
 
 pub async fn genesis_context() -> Result<GenesisContext, CasperError> {
     let genesis_arc = CACHED_GENESIS

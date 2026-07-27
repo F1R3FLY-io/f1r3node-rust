@@ -13,7 +13,13 @@ use comm::rust::discovery::node_discovery::NodeDiscovery;
 use comm::rust::rp::connect::ConnectionsCell;
 use crypto::rust::public_key::PublicKey;
 use crypto::rust::signatures::signatures_alg::SignaturesAlg;
-use crypto::rust::signatures::signed::Signed;
+// ⚠ RETIRED with `to_signed_deploy` (see the note above that function): it was
+// this file's only use of the SINGLE-signature envelope. `to_cosigned_deploy`
+// names `Cosigned`/`Cosigner` at its own site, so nothing here needs `Signed`
+// any more — which is precisely the claim `to_signed_deploy`'s retirement
+// makes, now visible in the import list.
+//
+// use crypto::rust::signatures::signed::Signed;
 #[cfg(feature = "schnorr_secp256k1_experimental")]
 use crypto::rust::signatures::{
     frost_secp256k1::FrostSecp256k1, schnorr_secp256k1::SchnorrSecp256k1,
@@ -1480,25 +1486,48 @@ fn lookup_sig_algorithm(name: &str) -> Result<Box<dyn SignaturesAlg>> {
     }
 }
 
-/// Convert DeployRequest to Signed DeployData (legacy single-sig path).
-/// Used only when `request.cosigners.is_empty()` — the multi-sig path
-/// uses [`to_cosigned_deploy`].
-fn to_signed_deploy(request: &DeployRequest) -> Result<Signed<DeployData>> {
-    // Decode hex strings
-    let pk_bytes = hex::decode(&request.deployer)
-        .map_err(|e| eyre!("Public key is not valid base16 format: {}", e))?;
-
-    let sig_bytes = hex::decode(&request.signature)
-        .map_err(|e| eyre!("Signature is not valid base16 format: {}", e))?;
-
-    let pk = PublicKey::from_bytes(&pk_bytes);
-    let sig_alg = lookup_sig_algorithm(&request.sig_algorithm)?;
-    let deploy_data = request.data.clone();
-
-    Signed::from_signed_data(deploy_data, pk, sig_bytes.into(), sig_alg)
-        .map_err(|e| eyre!("Invalid signature: {}", e))?
-        .ok_or_else(|| eyre!("Failed to create signed deploy"))
-}
+// ⚠ RETIRED, NOT DELETED — `to_signed_deploy`, below, is commented out rather
+// than removed because its disappearance is the evidence for a claim the file
+// still makes elsewhere: that the legacy single-signature path and the
+// multi-signature path are ONE path.
+//
+// Its doc comment said "Used only when `request.cosigners.is_empty()`". That
+// stopped being true when `deploy` was made multi-sig-aware: the handler now
+// calls `to_cosigned_deploy(&request)` UNCONDITIONALLY, and that function
+// folds the empty-cosigners case into a one-element `Cosigned` envelope which
+// `BlockAPI::deploy_cosigned` routes through the legacy single-sig path inside
+// the engine "for byte-identical observable behavior" (see `deploy`, and
+// `to_cosigned_deploy`'s own documentation).
+//
+// So this function had no caller anywhere in the workspace — not in `node`,
+// not in a test — and `cargo clippy --workspace` reported it as never used
+// under the CI gate's `-D warnings`. A second, independently-maintained
+// decode-and-verify path for deploys is exactly the kind of thing that drifts
+// from the one that ships and then gets resurrected by a well-meaning caller;
+// keeping it live would give the single-envelope claim a live counterexample.
+//
+// Nothing else referenced it: `lookup_sig_algorithm`, the one helper it shared
+// with `to_cosigned_deploy`, stays live because `to_cosigned_deploy` calls it.
+//
+// /// Convert DeployRequest to Signed DeployData (legacy single-sig path).
+// /// Used only when `request.cosigners.is_empty()` — the multi-sig path
+// /// uses [`to_cosigned_deploy`].
+// fn to_signed_deploy(request: &DeployRequest) -> Result<Signed<DeployData>> {
+//     // Decode hex strings
+//     let pk_bytes = hex::decode(&request.deployer)
+//         .map_err(|e| eyre!("Public key is not valid base16 format: {}", e))?;
+//
+//     let sig_bytes = hex::decode(&request.signature)
+//         .map_err(|e| eyre!("Signature is not valid base16 format: {}", e))?;
+//
+//     let pk = PublicKey::from_bytes(&pk_bytes);
+//     let sig_alg = lookup_sig_algorithm(&request.sig_algorithm)?;
+//     let deploy_data = request.data.clone();
+//
+//     Signed::from_signed_data(deploy_data, pk, sig_bytes.into(), sig_alg)
+//         .map_err(|e| eyre!("Invalid signature: {}", e))?
+//         .ok_or_else(|| eyre!("Failed to create signed deploy"))
+// }
 
 /// Convert DeployRequest to a [`Cosigned<DeployData>`] envelope. Handles
 /// both legacy single-signature requests (cosigners empty → one-element

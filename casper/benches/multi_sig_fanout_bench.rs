@@ -128,10 +128,23 @@ fn bench_cosigned_threshold_64_choose_32(c: &mut Criterion) {
     }
     c.bench_function("Cosigned::from_signed_data_threshold/64-of-32", |b| {
         b.iter(|| {
+            // ⚠ THREE arguments: `(data, signers, threshold)`. `bf082ee8` (D3 —
+            // replace phlo with per-COMM tokens) dropped the phlo parameter
+            // from `from_signed_data_threshold`, and this call site kept
+            // passing it — so this bench target has not compiled since. It went
+            // unnoticed because neither `cargo test --workspace` nor the CI
+            // `cargo clippy --workspace` builds benches; only `--all-targets`
+            // and `cargo bench` do.
+            //
+            // The rest of the file WAS updated in that commit: see
+            // `baseline_deploy_data`, whose `_phlo_limit` is documented as
+            // "retained as an (ignored) param for caller stability". The
+            // dropped `32 * 1024` here was that same ignored phlo, which is why
+            // removing it leaves the intended `k = 32` threshold — matching the
+            // module header's "(n=64, k=32)" and the bench's own name.
             let cosigned = Cosigned::from_signed_data_threshold(
                 black_box(data.clone()),
                 black_box(all_signers.clone()),
-                black_box(32 * 1024),
                 black_box(32),
             )
             .expect("threshold envelope construction");

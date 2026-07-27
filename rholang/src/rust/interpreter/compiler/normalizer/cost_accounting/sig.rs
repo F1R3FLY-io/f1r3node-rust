@@ -104,12 +104,12 @@ pub(crate) fn descend_sig<'ast>(
             }),
             Signature::Compound(left, right) => Ok(Step::Descend {
                 kont: NormKont::SigCompound {
-                    right: Some(SigInput::Ref(&**right)),
+                    right: Some(SigInput::Ref(right)),
                     bound_map_chain: bound_map_chain.clone(),
                     left: None,
                 },
                 work: NormWork::Sig {
-                    sig: SigInput::Ref(&**left),
+                    sig: SigInput::Ref(left),
                     bound_map_chain,
                 },
             }),

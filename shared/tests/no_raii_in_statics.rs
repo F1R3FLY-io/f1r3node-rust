@@ -81,10 +81,34 @@ const ALLOWLIST: &[(&str, &str, &str)] = &[
     (
         "rspace++/libs/rspace_rhotypes/src/lib.rs",
         "RT",
-        "Never-dropped tokio Runtime in a cdylib: leaks its worker threads and their fds on \
-         every dlopen/dlclose cycle. Separately filed; out of scope for the scratch-directory \
-         work that introduced this gate. Not a scratch directory, so the two-layer cleanup \
-         does not apply.",
+        "Never-dropped tokio Runtime behind `blocking_runtime()` in a crate built as BOTH \
+         cdylib and rlib. EXEMPT, deliberately, and not merely unfixed. \
+         \
+         The leak is real and it is per-LOAD, not per-process: `dlclose` reclaims the \
+         static's storage without running `Runtime::drop`, so each load/unload cycle strands \
+         one multi-threaded runtime's worker threads plus its epoll and timer descriptors, \
+         and nothing on disk records that it happened. \
+         \
+         What bounds it is the loader, not the code. The cdylib exists for one consumer — \
+         the Scala JNA surface this file's own header names, shipped by \
+         scripts/build_rust_libraries*.sh into rust_libraries/ — and a JVM loads a JNA \
+         library once per process and does not unload it. Per-load therefore collapses to \
+         per-process THERE, where exit reclaims it. Nothing in this workspace dlopens the \
+         library at all, so the cycle the leak is measured in is not currently executed \
+         anywhere. \
+         \
+         It is NOT fixed here because the available fix is not obviously correct. A \
+         library destructor (`__attribute__((destructor))`) is the only hook that runs on \
+         `dlclose`, and dropping a tokio Runtime from one is hazardous: the drop blocks \
+         until every blocking task finishes, so a task still parked on FFI work deadlocks \
+         the unloading thread, and the destructor runs at a point where other libraries' \
+         destructors may already have torn down state those tasks touch. Trading a bounded \
+         fd leak for a possible hang during unload is not an improvement, and proving it \
+         safe needs a dlopen/dlclose harness this workspace does not have. \
+         \
+         Re-examine when either premise moves: if an embedder that DOES unload appears, or \
+         if this FFI file is removed as its header says it will be, this entry should go \
+         with it. Not a scratch directory, so the two-layer cleanup does not apply.",
     ),
     (
         "rspace++/src/rspace/shared/env_cache.rs",
@@ -113,6 +137,27 @@ const ALLOWLIST: &[(&str, &str, &str)] = &[
          rationale as block-storage's.",
     ),
 ];
+
+/// Methods that DISARM an RAII guard: they consume the guard and hand back the raw resource,
+/// so the destructor that was the type's whole contract never runs.
+///
+/// `tempfile` spells this `TempDir::keep` (and `NamedTempFile::keep`); `into_path` is the
+/// pre-3.13 name for the same operation and is listed so an older call site, or a
+/// dependency-pinned branch, is caught by the same rule.
+const DISARM_METHODS: &[&str] = &["keep", "into_path"];
+
+/// Types whose disarm the gate refuses. Narrower than [`RAII_TYPES`] on purpose: `keep` is a
+/// common method name (`Iterator`-ish helpers, builder APIs, `retain`-alikes), so the file
+/// must *also* name one of these for a `.keep()` to be read as a disarm.
+const DISARMABLE_TYPES: &[&str] = &["TempDir", "NamedTempFile", "TempPath"];
+
+/// Recorded exemptions for [`DISARM_METHODS`]: `(workspace-relative path, justification)`.
+///
+/// Empty, and that is the point — the one site that existed
+/// (`casper/tests/genesis/genesis_test.rs`'s `genesis_path`) was routed through
+/// `shared::rust::test_scratch` instead. Like [`ALLOWLIST`], an entry that matches nothing
+/// fails the gate.
+const DISARM_ALLOWLIST: &[(&str, &str)] = &[];
 
 /// Directory names never descended into.
 const SKIP_DIRS: &[&str] = &["target", ".git", ".jj", "node_modules", ".cargo"];
@@ -525,6 +570,80 @@ fn find_lazy_statics(relative_path: &str, source: &str) -> Vec<LazyStatic> {
     found
 }
 
+/// One `.keep()` / `.into_path()` that disarms an RAII guard.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct Disarm {
+    file: String,
+    line: usize,
+    method: String,
+}
+
+/// Find every RAII-disarming call in one file's source.
+///
+/// # Why this shape needs its own detector
+///
+/// [`find_lazy_statics`] answers "is a `Drop` type parked where `Drop` cannot run?", and it
+/// looks only at `static` position. `TempDir::new().keep()` is the *same defect stated
+/// directly* — it does not park the guard anywhere, it destroys the guard and keeps the
+/// path — and it is an ordinary local, so the static-position walk cannot see it. That is
+/// not a gap in the walk; it is a second idiom, and it needs a second rule.
+///
+/// # The two conditions, and why both
+///
+/// A hit requires (1) a `.keep(` or `.into_path(` call, and (2) the file to name one of
+/// [`DISARMABLE_TYPES`] somewhere in its CODE. `keep` is far too common a method name to
+/// flag on its own — and this detector cannot resolve types, only text. Requiring the type
+/// name is a deliberately coarse proxy for "the receiver is a temp-file guard": it can still
+/// misfire on a file that both mentions `TempDir` and calls an unrelated `.keep()`, and the
+/// answer to that is [`DISARM_ALLOWLIST`] with a justification, exactly as for
+/// [`ALLOWLIST`].
+///
+/// The source is comment- and literal-blanked first, so the paragraph you are reading — and
+/// the one in `genesis_test.rs` explaining the fix — cannot trip the rule.
+fn find_disarms(relative_path: &str, source: &str) -> Vec<Disarm> {
+    let blanked = blank_comments_and_literals(source);
+    let identifiers = identifiers_in(&blanked);
+    if !DISARMABLE_TYPES
+        .iter()
+        .any(|candidate| identifiers.contains(*candidate))
+    {
+        return Vec::new();
+    }
+
+    let chars: Vec<char> = blanked.chars().collect();
+    let mut found = Vec::new();
+    let mut cursor = 0usize;
+    while cursor < chars.len() {
+        if chars[cursor] == '.' {
+            let mut probe = cursor + 1;
+            while probe < chars.len() && chars[probe].is_whitespace() {
+                probe += 1;
+            }
+            for method in DISARM_METHODS {
+                if keyword_at(&chars, probe, method) {
+                    let mut after = probe + method.len();
+                    while after < chars.len() && chars[after].is_whitespace() {
+                        after += 1;
+                    }
+                    // A CALL, not a field access or a path segment.
+                    if chars.get(after) == Some(&'(') {
+                        found.push(Disarm {
+                            file: relative_path.to_string(),
+                            line: line_of(&chars, probe),
+                            method: (*method).to_string(),
+                        });
+                    }
+                    break;
+                }
+            }
+        }
+        cursor += 1;
+    }
+
+    found.sort();
+    found
+}
+
 // ---------------------------------------------------------------------------------------
 // Walking
 // ---------------------------------------------------------------------------------------
@@ -655,6 +774,85 @@ fn policy_holds_for_the_whole_workspace() {
     );
 }
 
+/// ★ The SECOND idiom: an RAII guard disarmed in place.
+///
+/// `policy_holds_for_the_whole_workspace` asks whether a `Drop` type is parked where `Drop`
+/// cannot run. This asks whether one was destroyed on purpose — `TempDir::new().keep()` —
+/// which leaks exactly the same directory by exactly the same reasoning, from an ordinary
+/// local that the static-position walk is structurally unable to see.
+///
+/// The workspace had precisely one such site, `casper/tests/genesis/genesis_test.rs`'s
+/// `genesis_path()`, and it leaked a full genesis state tree per test. It is now routed
+/// through `shared::rust::test_scratch`, so this gate starts — and is meant to stay — at
+/// zero.
+#[test]
+fn no_raii_guard_is_disarmed_in_place() {
+    let root = workspace_root();
+    let mut files = Vec::new();
+    collect_rust_files(&root, &root, &mut files);
+    files.sort();
+
+    assert!(
+        files.len() >= MIN_FILES_SCANNED,
+        "only {} .rs files were found under {} — expected at least {}. The walk is broken, and \
+         a broken walk would pass this gate by finding nothing.",
+        files.len(),
+        root.display(),
+        MIN_FILES_SCANNED
+    );
+
+    let mut disarms = Vec::new();
+    for (relative, path) in &files {
+        let source = match fs::read_to_string(path) {
+            Ok(source) => source,
+            Err(_) => continue,
+        };
+        disarms.extend(find_disarms(relative, &source));
+    }
+
+    let mut matched_allowlist_entries = BTreeSet::new();
+    let mut violations = Vec::new();
+    for disarm in &disarms {
+        match DISARM_ALLOWLIST
+            .iter()
+            .position(|(file, _)| *file == disarm.file)
+        {
+            Some(index) => {
+                matched_allowlist_entries.insert(index);
+            }
+            None => violations.push(format!(
+                "  {}:{} — `.{}()` disarms an RAII guard: it consumes the guard and returns \
+                 the raw resource, so the destructor never runs.",
+                disarm.file, disarm.line, disarm.method
+            )),
+        }
+    }
+
+    let stale: Vec<String> = DISARM_ALLOWLIST
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| !matched_allowlist_entries.contains(index))
+        .map(|(_, (file, _))| format!("  {file}"))
+        .collect();
+
+    assert!(
+        stale.is_empty(),
+        "DISARM_ALLOWLIST entries that no longer match anything — delete them, or the \
+         exemption outlives the code it was written for:\n{}",
+        stale.join("\n")
+    );
+
+    assert!(
+        violations.is_empty(),
+        "RAII guards disarmed in place:\n{}\n\nA `TempDir` whose destructor has been disarmed \
+         is a directory nobody removes. Use `shared::rust::test_scratch::acquire`, which \
+         cleans up WITHOUT a `Drop` (an `atexit` hook plus an `flock` the owner cannot \
+         outlive), or add the file to DISARM_ALLOWLIST in {} with a justification.",
+        violations.join("\n"),
+        file!()
+    );
+}
+
 // ---------------------------------------------------------------------------------------
 // The detector's own judgement
 // ---------------------------------------------------------------------------------------
@@ -719,6 +917,76 @@ fn detector_flags_the_shapes_it_claims_to_flag() {
         flagged,
         ["LEAKED_DIR", "LEAKED_RUNTIME", "NESTED_LEAK"],
         "the detector must flag exactly the RAII-in-static cases and nothing else"
+    );
+}
+
+/// `no_raii_guard_is_disarmed_in_place` currently finds NOTHING, which is the same shape as a
+/// check that cannot fail. Pin the disarm detector's judgement separately.
+#[test]
+fn detector_flags_the_disarm_idiom() {
+    const LEAKY: &str = r####"
+        use tempfile::TempDir;
+
+        fn leaks() -> PathBuf {
+            TempDir::new().expect("temp dir").keep()
+        }
+
+        fn also_leaks() -> PathBuf {
+            let d = TempDir::new().unwrap();
+            d.into_path()
+        }
+
+        fn fine() {
+            // A comment about calling .keep() on a TempDir must not count.
+            let scoped = TempDir::new().unwrap();
+            drop(scoped);
+        }
+
+        fn also_fine(v: Vec<u8>) -> Vec<u8> {
+            // A field named `keep`, and a path segment, are not calls.
+            let cfg = Config { keep: true };
+            let _ = Retention::keep;
+            v
+        }
+    "####;
+
+    let found = find_disarms("fixture.rs", LEAKY);
+    // Reported in SOURCE order — `Disarm` sorts on `(file, line, method)`, and within one
+    // file that is the line. A reader of a failure gets the hits in the order they would
+    // read them in the file, not alphabetically by method.
+    let hits: Vec<(usize, &str)> = found
+        .iter()
+        .map(|d| (d.line, d.method.as_str()))
+        .collect();
+    assert_eq!(
+        hits,
+        [(5, "keep"), (10, "into_path")],
+        "the detector must flag exactly the two disarming CALLS, at their own lines, and \
+         nothing else: {found:?}"
+    );
+
+    // ⚠ THE NARROWING CONDITION. The same calls in a file that never names a temp-file guard
+    // are not read as disarms — this is what keeps `.keep()` on unrelated APIs out of the
+    // gate, and it is the reason the rule needs an allowlist at all.
+    const NO_GUARD_NAMED: &str = r####"
+        fn unrelated(builder: Builder) -> Output {
+            builder.keep().into_path()
+        }
+    "####;
+    assert!(
+        find_disarms("fixture.rs", NO_GUARD_NAMED).is_empty(),
+        "`.keep()` in a file that names no temp-file guard type must not be reported"
+    );
+
+    // And prose alone never trips it, in either direction.
+    const PROSE_ONLY: &str = r####"
+        /// Explains at length why `TempDir::new().keep()` and `into_path()` leak, and
+        /// mentions NamedTempFile while doing so.
+        fn documented() {}
+    "####;
+    assert!(
+        find_disarms("fixture.rs", PROSE_ONLY).is_empty(),
+        "a doc comment describing the disarm idiom must not be reported as one"
     );
 }
 

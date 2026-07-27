@@ -49,6 +49,19 @@ parking_lot = "0.12"
 tempfile = { version = "3.24.0", optional = true }
 
 [dev-dependencies]
+# ⚠ A SELF dev-dependency, and it is load-bearing rather than decorative.
+#
+# `casper/src/rust/test_utils` is gated behind the `test-utils` feature, and
+# casper's own integration tests link the casper LIB as an external crate — so
+# without this line they see the module "configured out" and fail to compile the
+# moment any of them names it.
+#
+# It compiled before only by accident of feature unification: `node/Cargo.toml`
+# enables `casper = { features = ["test-utils"] }`, so a workspace-wide build
+# turned the feature on for everyone, while `cargo test -p casper` on its own did
+# not. Depending on a sibling crate's feature list to make your own tests build
+# is a trap that springs the first time someone builds the package alone.
+casper = { path = ".", features = ["test-utils"] }
 # P2-16: enable block-storage's test-only RMW bypass helpers for
 # detector-totality / record-lifecycle integration tests. Production
 # builds of casper do NOT enable this feature.

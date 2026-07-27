@@ -36,7 +36,7 @@ use models::rust::casper::protocol::casper_message::{BlockMessage, Bond};
 use models::rust::string_ops::StringOps;
 use prost::bytes::Bytes;
 use rspace_plus_plus::rspace::history::Either;
-use tempfile::TempDir;
+use shared::rust::test_scratch;
 
 use crate::helper::block_dag_storage_fixture::with_storage;
 use crate::util::genesis_builder::DEFAULT_POS_MULTI_SIG_PUBLIC_KEYS;
@@ -46,10 +46,27 @@ use crate::util::rholang::resources::generate_scope_id;
 const AUTOGEN_SHARD_SIZE: usize = 5;
 const RCHAIN_SHARD_ID: &str = "root";
 
+/// A fresh scratch directory for one genesis run.
+///
+/// ⚠ This used to be `TempDir::new().expect(..).keep()`, which is the RAII leak
+/// in its most direct form: `TempDir`'s entire contract is its destructor, and
+/// `keep()` exists to DISARM that destructor and return the raw path. Nothing
+/// removed the directory afterwards, so every genesis test left its whole
+/// on-disk state behind — and on a `tmpfs` `/tmp` that is resident memory.
+///
+/// It is not the shape `no_raii_in_statics.rs` was built to catch: that gate
+/// looks for RAII types in `static` position, and this was an ordinary local.
+/// Same leak, different syntax — which is why that gate now also refuses the
+/// disarm idiom itself (`detector_flags_the_disarm_idiom`), and why this is
+/// routed through the substrate that cleans up WITHOUT a `Drop`.
+///
+/// [`shared::rust::test_scratch::acquire`] returns a directory registered with
+/// the process's `atexit` hook and holding an `flock` its owner cannot outlive,
+/// so it is removed on normal exit and reaped by the next run after a
+/// `SIGKILL`. Dropping the returned handle is correct and expected: the handle
+/// has no destructor, and the cleanup is a property of the process.
 fn genesis_path() -> PathBuf {
-    TempDir::new()
-        .expect("Failed to create genesis temp dir")
-        .keep()
+    test_scratch::acquire("casper-genesis").to_path_buf()
 }
 
 async fn with_gen_resources<F, Fut, R>(body: F) -> R

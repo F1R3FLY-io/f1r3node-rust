@@ -82,6 +82,15 @@ pub(crate) enum UnaryArm {
 
 /// The binary `ExprInstance` arms: two child `Par`s and no other data. Every
 /// one of these is rebuilt as **its own** variant — see the round-trip guard.
+///
+/// ⚠ `clippy::enum_variant_names` objects that every variant starts with `E`.
+/// That prefix is not a stutter to be trimmed: these names are a **1:1 mirror**
+/// of the `ExprInstance` variants they split from and rebuild into
+/// (`ExprInstance::EMultBody` -> `BinaryArm::EMult` -> `ExprInstance::EMultBody`),
+/// and the round-trip guard is readable only because the correspondence is
+/// spelled the same on both sides. Dropping the `E` would rename one half of a
+/// pairing whose whole point is that the halves match.
+#[allow(clippy::enum_variant_names)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum BinaryArm {
     EMult,

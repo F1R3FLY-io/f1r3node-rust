@@ -15,7 +15,6 @@ use casper::rust::genesis::genesis::Genesis;
 use casper::rust::storage::rnode_key_value_store_manager::rnode_db_mapping;
 use casper::rust::util::rholang::runtime_manager::RuntimeManager;
 use dashmap::DashSet;
-use lazy_static::lazy_static;
 use models::rhoapi::Par;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::BlockMessage;
@@ -76,34 +75,19 @@ fn shared_lmdb_dir() -> &'static ProcessScratchDir {
     SHARED_LMDB_DIR.get_or_init(|| test_scratch::acquire(SHARED_LMDB_PREFIX))
 }
 
-lazy_static! {
-    /// Global lock to ensure test isolation when using shared LMDB.
-    ///
-    /// ## Why is this needed?
-    ///
-    /// Unlike Scala tests where each test creates its own LMDB database, Rust tests share
-    /// a single LMDB environment (SHARED_LMDB_DIR) for performance. This creates a race condition:
-    ///
-    /// 1. Each test creates its own BlockDagKeyValueStorage with its own global_lock
-    /// 2. These per-test locks only serialize operations WITHIN a single test
-    /// 3. Multiple tests can write to the same shared LMDB concurrently
-    /// 4. Result: Test A inserts block_A, Test B inserts block_B concurrently,
-    ///    Test A tries to read block_B → CRASH: "DAG storage is missing hash"
-    ///
-    /// ## Solution:
-    ///
-    /// SHARED_LMDB_LOCK is a single global Mutex that ALL tests must acquire before
-    /// accessing shared LMDB (via with_genesis/with_storage helpers). This ensures
-    /// tests run sequentially when using shared storage, preventing race conditions.
-    ///
-    /// ## Trade-off:
-    ///
-    /// - Sequential execution is slower than parallel
-    /// - But still faster than rebuilding genesis once per test, which is what un-sharing
-    ///   the environment would cost
-    /// - And guaranteed correctness is more important than speed
-    pub static ref SHARED_LMDB_LOCK: Mutex<()> = Mutex::new(());
-}
+/// ★ RE-EXPORT, not a second declaration.
+///
+/// This lock used to be declared here, in the test target — and the LIBRARY copy of
+/// `block_dag_storage_fixture` therefore had no lock at all, so the two copies of
+/// `with_genesis` / `with_storage` looked identical and behaved differently. It now lives in
+/// the library, next to the shared environment it guards, and both lanes name THAT one
+/// static. See its documentation for the race it prevents and why a second mutex would be
+/// worse than the missing one.
+///
+/// Every existing call site keeps its spelling except for the lock kind: it is now a
+/// `tokio::sync::Mutex`, so `.lock().unwrap()` becomes `.lock().await`. See the definition
+/// for why a `std` guard was wrong here in the first place.
+pub use casper::rust::test_utils::util::rholang::resources::SHARED_LMDB_LOCK;
 
 pub async fn genesis_context() -> Result<GenesisContext, CasperError> {
     let genesis_arc = CACHED_GENESIS

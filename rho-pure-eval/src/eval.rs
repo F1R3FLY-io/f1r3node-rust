@@ -548,6 +548,25 @@ fn type_name(instance: &ExprInstance) -> &'static str {
 
 /// A produced value. `Inst` is an operand that was extracted with
 /// `single_expr_instance` at its own completion; see the module note above.
+///
+/// ⚠ `clippy::large_enum_variant` objects to the 504-vs-248-byte spread and
+/// suggests boxing `Inst`. **Deliberately not taken**, and the reason is the
+/// access pattern rather than a preference:
+///
+/// * `EvVal` is the element type of the driver's value stack,
+///   `Vec<EvVal>` with `with_capacity(32)`, so the enum's size is a
+///   one-off ~16 KiB reservation per `eval_drive` call — not a per-value cost.
+/// * `Inst` is **not** a rare variant. It is pushed by
+///   `single_expr_instance(&evaled).map(EvVal::Inst)` and popped by
+///   `into_inst()` in `EvKont::Not`, `Neg`, the boolean, `Eq`, comparison,
+///   integer and div/mod combiners — i.e. once per OPERAND of essentially
+///   every operator the evaluator has.
+///
+/// So boxing would trade a stack-slot saving on a fixed-size buffer for a heap
+/// allocation and a free on the evaluator's hottest path, twice per binary
+/// operation. `ExprInstance` is a prost-generated consensus type and is not
+/// ours to shrink.
+#[allow(clippy::large_enum_variant)]
 enum EvVal {
     Par(Par),
     Inst(ExprInstance),

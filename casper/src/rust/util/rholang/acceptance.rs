@@ -68,7 +68,14 @@ use prost::bytes::Bytes;
 // (`CloseBlockDeploy.settlement_debits`) key the map by the same canonical
 // basis (`Sig::lane_hash`) without reaching into rholang internals.
 pub use rholang::rust::interpreter::accounting::delta_sigma::SigKey;
-use rholang::rust::interpreter::accounting::delta_sigma::{self, Decomposition, DemandEntry};
+use rholang::rust::interpreter::accounting::delta_sigma::{Decomposition, DemandEntry};
+// ⚠ The MODULE itself (`delta_sigma::sig_key`, `::demand`, `::is_funded`) is
+// reached only from the `#[cfg(test)]` module below, which pulls it in through
+// `use super::*`. Importing it unconditionally made `cargo clippy --workspace`
+// — which checks the lib target, where those call sites do not exist — report
+// an unused import, and the CI gate runs with `-D warnings`.
+#[cfg(test)]
+use rholang::rust::interpreter::accounting::delta_sigma;
 use rholang::rust::interpreter::accounting::resource_logic::{
     ApportionmentPolicy, DefaultApportionment, DefaultResourceLogic, FlatFeeApportionment,
     GroupShape, GsltPresentation, OslfResourceLogic, PoolDraw, PoolResidual, ResourceSignature,

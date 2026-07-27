@@ -1549,7 +1549,12 @@ mod drive {
                 let mut totally_free: i32 = 0;
                 for bind in &r.binds {
                     previous_free.push(totally_free);
-                    totally_free = bind.free_count + totally_free;
+                    // `+=`, and the operand order flips with it. `i32` addition
+                    // is commutative and its overflow condition is symmetric,
+                    // so this is the same value AND the same panic in the
+                    // `dev` profile — which matters, because the raw property
+                    // corpus compares the two forms by *disposition*.
+                    totally_free += bind.free_count;
                 }
                 work.push(PpWork::Mutate(PpMutation::AddBoundShift(totally_free)));
                 for index in (0..r.binds.len()).rev() {

@@ -1,0 +1,46 @@
+# Clippy configuration for the workspace.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# `ignore-interior-mutability` — why `EPathMap` is listed
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# `clippy::mutable_key_type` fires on `HashMap<Par, _>` / `HashSet<Par>` — 37
+# sites across `models` and `rholang`, and `models` is early enough in the
+# dependency order that under `-D warnings` it aborts the build before clippy
+# reaches any other crate.
+#
+# The lint's reasoning is a reachability walk, and it is correct as far as it
+# goes:
+#
+#     Par -> Vec<Expr> -> Expr -> Option<ExprInstance> -> ExprInstance
+#         -> EPathMap -> OnceLock<Arc<InternedEPathMap>>
+#
+# What the walk cannot see is that the cell it lands on is DERIVED STATE, not
+# part of the value. `EPathMap::intern` is the P3 shadow cell holding the
+# interned entry for the value's canonical prost bytes; it is filled at the
+# first intern rendezvous and propagated by `Clone`.
+#
+# The hazard `mutable_key_type` exists to catch is a key whose hash or equality
+# can change while it sits in a map, which silently corrupts the container.
+# That hazard is absent here, and it is absent BY CONSTRUCTION rather than by
+# convention — the hand-written impls in `models/src/rust/rhoapi_ext.rs` read
+# only `ps`, `connective_used` and `remainder`:
+#
+#   * `impl PartialEq for EPathMap`  (~line 749) — "The shadow cell does not
+#     participate either (it is derived state)."
+#   * `impl Hash for EPathMap`       (~line 762) — "consistent with `==`
+#     (`locally_free` and the cell excluded)."
+#
+# So filling the cell moves neither the hash nor the equivalence class, and a
+# `Par` key is stable in a map for its whole lifetime.
+#
+# This is stated ONCE, here, at the root cause. The alternative — 37
+# `#[allow(clippy::mutable_key_type)]` attributes at the use sites — would put
+# the suppression everywhere except where the reason lives, and each copy would
+# have to be re-audited whenever `EPathMap` changed. A reader who breaks the
+# invariant above (by hashing or comparing `intern`) must delete this entry;
+# `models`'s own `Hash`/`Eq` tests are what would catch them.
+#
+# ⚠ This setting REPLACES clippy's default rather than extending it, so
+# `bytes::Bytes` — the default — is restated.
+ignore-interior-mutability = ["bytes::Bytes", "models::rust::rhoapi_ext::EPathMap"]

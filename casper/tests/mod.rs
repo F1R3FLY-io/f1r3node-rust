@@ -15,9 +15,11 @@ mod genesis;
 mod helper;
 mod merging;
 mod multi_node;
-mod multi_sig_pipeline_spec;
-mod multi_sig_runtime_fanout_spec;
-mod multi_sig_runtime_integration_spec;
+// ⚠ A DIRECTORY, like every other entry in this list. The three multi-sig
+// specs used to be declared here as bare `tests/*.rs` files, which cargo ALSO
+// auto-discovers as standalone integration targets — so each was compiled
+// twice and every test in them ran twice. See `multi_sig/mod.rs`.
+mod multi_sig;
 mod slashing;
 mod sync;
 mod util;
