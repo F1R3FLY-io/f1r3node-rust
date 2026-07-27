@@ -294,6 +294,90 @@ fn wide_score(width: usize) -> Tree<ScoreAtom> {
 }
 
 // ---------------------------------------------------------------------------
+// ★ THE SYNTHETIC CONTROL — a subject whose slope is KNOWN BY CONSTRUCTION
+//
+// Every assertion in this file is a *rejecter*: it exists to refuse a traversal
+// whose native stack grows with a program-controlled parameter. Until 2026-07-27
+// none of them had ever been SHOWN to refuse one. `assert_depth_independent`'s
+// claim that its zero-slope half "cannot be passed by anything with a non-zero
+// slope" was DERIVED from `compare_score`'s recorded numbers, and
+// `theta_width_tripwire`'s entire body was a `println!` — a green test executing
+// nothing. A checker that accepted everything would have satisfied both.
+//
+// The real Θ(depth) traversals cannot supply the missing evidence: they have all
+// been converted, and "the defect is fixed, so it cannot be reproduced" would
+// retire the obligation for every guard whose defect has been fixed — which is
+// all of them. Where the excluded-class datum comes from is an implementation
+// detail; that it is IN the excluded class is the whole requirement. So the gate
+// grows its own.
+//
+// `synthetic_sloped` recurses `param` levels deep with a fixed, non-elidable
+// ballast in every frame — a traversal that is Θ(parameter) on whichever axis it
+// is driven, by construction rather than by measurement. `synthetic_flat` does
+// the identical arithmetic in a `for` loop, so it is Θ(1) by construction. They
+// are the two ends of the property the gate exists to separate, and the checkers
+// must put them on opposite sides.
+//
+// ⚠ Deliberately CHEAP: at 96 B of ballast the depth ladder (4 → 4,096) spans
+// ~400 KB and the width ladder (4 → 65,536) ~6 MB, so a full bisection is
+// seconds. `normalize_recursive` would have served as a real-implementation
+// control, but at 43,542 B/level its 4,096 rung is 178 MB and the bisection is
+// slow — the wrong trade for a control whose only job is to have a slope.
+// ---------------------------------------------------------------------------
+
+/// Bytes of non-elidable ballast in each synthetic frame. Small enough that the
+/// ladders stay cheap, large enough that ~4,000 of them dwarf the gate's
+/// [`ZERO_SLOPE_TOLERANCE`] by more than an order of magnitude.
+const SYNTHETIC_FRAME_BYTES: usize = 96;
+
+/// One frame of KNOWN cost.
+///
+/// Three things keep the frame from being optimised away, and all three are
+/// needed for the control to hold in RELEASE as well as debug:
+///
+/// * `#[inline(never)]` — otherwise `-O2` collapses the recursion into the
+///   caller and the slope disappears into a single frame;
+/// * `ballast` is observed AFTER the recursive call, so it is live across it and
+///   cannot share storage with the callee's;
+/// * there is arithmetic after the call, so this is not a tail call and LLVM
+///   cannot rewrite it into a loop — the very optimisation that makes the real
+///   `compare_score_nodes` read as 0 B/sibling at `-O2` and which the width
+///   tripwire's doc comment warns is "a codegen accident, not a property".
+#[inline(never)]
+fn synthetic_recurse(level: usize) -> u64 {
+    let mut ballast = [0u8; SYNTHETIC_FRAME_BYTES];
+    ballast[0] = level as u8;
+    ballast[SYNTHETIC_FRAME_BYTES - 1] = (level >> 8) as u8;
+    let deeper = match level {
+        0 => 0,
+        n => synthetic_recurse(n - 1),
+    };
+    std::hint::black_box(&ballast);
+    deeper + u64::from(ballast[0]) + u64::from(ballast[SYNTHETIC_FRAME_BYTES - 1])
+}
+
+/// Θ(parameter) native stack, by construction. The subject the checkers must
+/// REJECT.
+fn synthetic_sloped_body(param: usize) {
+    std::hint::black_box(synthetic_recurse(param));
+}
+
+/// Θ(1) native stack, by construction — the same ballast and the same
+/// arithmetic, iteratively. The subject the checkers must ACCEPT, so that a
+/// checker which rejected everything fails too.
+fn synthetic_flat_body(param: usize) {
+    let mut acc = 0u64;
+    for level in 0..=param {
+        let mut ballast = [0u8; SYNTHETIC_FRAME_BYTES];
+        ballast[0] = level as u8;
+        ballast[SYNTHETIC_FRAME_BYTES - 1] = (level >> 8) as u8;
+        std::hint::black_box(&ballast);
+        acc += u64::from(ballast[0]) + u64::from(ballast[SYNTHETIC_FRAME_BYTES - 1]);
+    }
+    std::hint::black_box(acc);
+}
+
+// ---------------------------------------------------------------------------
 // ⚠ Probing has to FORK.
 //
 // A stack overflow is a `SIGSEGV` caught by the runtime's guard-page handler,
@@ -343,6 +427,9 @@ fn subject(name: &str) -> fn(usize) {
         "free_check" => free_check_body,
         "normalize_wide" => normalize_wide_body,
         "eval_with_nots" => eval_with_nots_body,
+        // -------- synthetic controls (either axis; see SYNTHETIC_FRAME_BYTES) --------
+        "synthetic_sloped" => synthetic_sloped_body,
+        "synthetic_flat" => synthetic_flat_body,
         other => panic!("stack_depth_gate: unknown GATE_SUBJECT={:?}", other),
     }
 }
@@ -446,6 +533,14 @@ const ZERO_SLOPE_TOLERANCE: usize = 4 * RESOLUTION;
 /// fixed stack. A still-Θ(depth) comparator would therefore *pass* half (1).
 /// Half (2) spans 4 → 4,096 and cannot be passed by anything with a non-zero
 /// slope, whatever its constant.
+///
+/// ★ Both of those sentences were, until 2026-07-27, ARITHMETIC ON RECORDED
+/// NUMBERS — no subject in this gate had ever been a known-Θ(depth) traversal
+/// fed to [`assert_no_slope`] and seen to fail, so nothing distinguished this
+/// checker from one that accepts everything. `the_depth_checkers_reject_a_known_
+/// theta_depth_subject` (run as the first phase of `theta_depth_tripwire`) now
+/// executes both: the synthetic Θ(depth) control PASSES half (1) at depths 4
+/// through 256 and is REJECTED by half (2), with the rejecting clause asserted.
 fn assert_depth_independent(name: &str, stack: usize) {
     for depth in [4usize, 16, 64, 256] {
         assert!(
@@ -480,31 +575,103 @@ fn assert_width_independent(name: &str, stack: usize) {
     assert_no_slope(name, 4, 65536, "width");
 }
 
-/// The zero-slope half: minimum stack must not grow across a ~1,000× parameter
-/// range. Profile-independent — it compares a traversal against ITSELF.
-fn assert_no_slope(name: &str, lo_param: usize, hi_param: usize, axis: &str) {
-    let lo = min_stack_for(name, lo_param);
-    let hi = min_stack_for(name, hi_param);
-    let growth = hi.saturating_sub(lo);
-    assert!(
-        growth <= ZERO_SLOPE_TOLERANCE,
+/// One rung-pair of a ladder: the bisected minimum stack at each end.
+///
+/// Splitting this out is what makes the verdicts below **pure functions of
+/// observations**, separable from the code that produces them. A verdict that
+/// can only be reached by running a subject cannot be exercised on a subject the
+/// tree no longer contains — which is exactly how [`assert_no_slope`] came to
+/// have no executed rejection for the class it exists to reject. With the
+/// measurement and the decision apart, `the_gate_checkers_can_go_red` can hand
+/// either verdict any observations at all, including a control's.
+#[derive(Debug, Clone, Copy)]
+struct Ladder {
+    lo_param: usize,
+    lo_stack: usize,
+    hi_param: usize,
+    hi_stack: usize,
+}
+
+/// Bisect both ends of a ladder for `name`.
+fn measure_ladder(name: &str, lo_param: usize, hi_param: usize) -> Ladder {
+    Ladder {
+        lo_param,
+        lo_stack: min_stack_for(name, lo_param),
+        hi_param,
+        hi_stack: min_stack_for(name, hi_param),
+    }
+}
+
+impl Ladder {
+    /// Growth in minimum stack across the ladder, in bytes.
+    fn growth(&self) -> usize {
+        self.hi_stack.saturating_sub(self.lo_stack)
+    }
+
+    /// Derived cost per parameter step, in bytes.
+    fn per_step(&self) -> usize {
+        self.growth() / (self.hi_param - self.lo_param)
+    }
+}
+
+/// **The zero-slope VERDICT.** A pure function of one [`Ladder`]: `Ok` iff the
+/// minimum stack did not grow across it. `Err` carries the message, so a caller
+/// can assert WHICH clause rejected rather than only that something did.
+fn zero_slope_verdict(name: &str, axis: &str, l: Ladder) -> Result<(), String> {
+    if l.growth() <= ZERO_SLOPE_TOLERANCE {
+        return Ok(());
+    }
+    Err(format!(
         "ZERO-SLOPE GATE FAILED for `{}` on the {} axis: minimum stack grew {} KiB \
          between {} = {} ({} KiB) and {} = {} ({} KiB), which is {} B per step.\n\
          A converted traversal's native stack must not depend on {}. See\n\
          docs/design/audits/theta-depth-traversals-2026-07-26.md.",
         name,
         axis,
-        growth / 1024,
+        l.growth() / 1024,
         axis,
-        lo_param,
-        lo / 1024,
+        l.lo_param,
+        l.lo_stack / 1024,
         axis,
-        hi_param,
-        hi / 1024,
-        growth / (hi_param - lo_param),
+        l.hi_param,
+        l.hi_stack / 1024,
+        l.per_step(),
         axis
+    ))
+}
+
+/// **The tripwire VERDICT.** A pure function of one [`Ladder`] and a ceiling.
+fn slope_below_verdict(name: &str, ceiling_bytes_per_level: usize, l: Ladder) -> Result<(), String> {
+    if l.per_step() <= ceiling_bytes_per_level {
+        return Ok(());
+    }
+    Err(format!(
+        "Θ(DEPTH) TRIPWIRE for `{}`: {} B/level exceeds the {} B/level ceiling \
+         ({} KiB @ depth {} -> {} KiB @ depth {}).\n\
+         Either a traversal regressed, or codegen changed materially. See\n\
+         docs/design/audits/theta-depth-traversals-2026-07-26.md.",
+        name,
+        l.per_step(),
+        ceiling_bytes_per_level,
+        l.lo_stack / 1024,
+        l.lo_param,
+        l.hi_stack / 1024,
+        l.hi_param
+    ))
+}
+
+/// The zero-slope half: minimum stack must not grow across a ~1,000× parameter
+/// range. Profile-independent — it compares a traversal against ITSELF.
+fn assert_no_slope(name: &str, lo_param: usize, hi_param: usize, axis: &str) {
+    let l = measure_ladder(name, lo_param, hi_param);
+    if let Err(why) = zero_slope_verdict(name, axis, l) {
+        panic!("{why}");
+    }
+    println!(
+        "  {name} ({axis}): O(1) — {} KiB at {lo_param}, {} KiB at {hi_param}",
+        l.lo_stack / 1024,
+        l.hi_stack / 1024
     );
-    println!("  {name} ({axis}): O(1) — {} KiB at {lo_param}, {} KiB at {hi_param}", lo / 1024, hi / 1024);
 }
 
 /// **Tripwire for traversals not yet converted.** Bisects the minimum stack at
@@ -517,25 +684,11 @@ fn assert_slope_below(name: &str, ceiling_bytes_per_level: usize, lo: usize, hi_
     // of the difference and (b) the CHEAP traversals clear the minimum viable
     // thread stack at the deeper point — otherwise both probes bottom out on the
     // same floor and the derived slope is a meaningless 0.
-    let s_lo = min_stack_for(name, lo);
-    let s_hi = min_stack_for(name, hi_depth);
-    let per_level = s_hi.saturating_sub(s_lo) / (hi_depth - lo);
-
-    assert!(
-        per_level <= ceiling_bytes_per_level,
-        "Θ(DEPTH) TRIPWIRE for `{}`: {} B/level exceeds the {} B/level ceiling \
-         ({} KiB @ depth {} -> {} KiB @ depth {}).\n\
-         Either a traversal regressed, or codegen changed materially. See\n\
-         docs/design/audits/theta-depth-traversals-2026-07-26.md.",
-        name,
-        per_level,
-        ceiling_bytes_per_level,
-        s_lo / 1024,
-        lo,
-        s_hi / 1024,
-        hi_depth
-    );
-    println!("  {name}: {per_level} B/level (ceiling {ceiling_bytes_per_level})");
+    let l = measure_ladder(name, lo, hi_depth);
+    if let Err(why) = slope_below_verdict(name, ceiling_bytes_per_level, l) {
+        panic!("{why}");
+    }
+    println!("  {name}: {} B/level (ceiling {ceiling_bytes_per_level})", l.per_step());
 }
 
 /// Per-profile ceiling. Debug frames are ~2–12× release because `-O0` does not
@@ -1273,6 +1426,155 @@ fn converted_traversals_are_depth_independent() {
     }
 }
 
+/// ★ **The executed reddening leg for the depth axis.**
+///
+/// Runs the synthetic control past all three depth-axis checkers and asserts
+/// each one puts `synthetic_sloped` and `synthetic_flat` on OPPOSITE sides:
+///
+/// | checker                       | `synthetic_sloped` | `synthetic_flat` |
+/// |-------------------------------|--------------------|------------------|
+/// | fixed-stack half (1 MiB)      | ACCEPTS ⚠          | accepts          |
+/// | [`zero_slope_verdict`]        | **rejects** ✓      | accepts ✓        |
+/// | [`slope_below_verdict`]       | **rejects** ✓      | accepts ✓        |
+///
+/// The first row is not a defect — it is the measurement that
+/// [`assert_depth_independent`] describes in prose and has never run. A subject
+/// that is Θ(depth) by construction *passes* the fixed-stack half at depths 4
+/// through 256, because 256 levels of a small frame fit inside 1 MiB however
+/// non-zero the slope is. That is precisely why half (2) exists, and it is now
+/// demonstrated rather than derived from `compare_score`'s numbers.
+///
+/// The last two rows are the N1 obligation: each judge is run on data in the
+/// class it excludes, returns a rejection, and the test asserts WHICH clause
+/// produced it. The `synthetic_flat` column is the bidirectionality — a checker
+/// that rejected everything would fail here, so "rejects" means "discriminates".
+fn the_depth_checkers_reject_a_known_theta_depth_subject() {
+    // Two bisections per subject, over the SAME ladder the real bar uses. The
+    // verdicts are pure functions of these observations, so one measurement
+    // feeds every checker below.
+    let sloped = measure_ladder("synthetic_sloped", 4, 4096);
+    let flat = measure_ladder("synthetic_flat", 4, 4096);
+
+    // ── N2: the observations came from the real subject, not from a stub. ──
+    // A frame costs at least its own ballast, and the toy is a toy: anything far
+    // outside this band means the bisection measured something else (a build
+    // that inlined the recursion away, a subject-table mix-up) and the rejections
+    // below would be attributable to the wrong thing.
+    assert!(
+        sloped.per_step() >= SYNTHETIC_FRAME_BYTES,
+        "the synthetic control must actually cost its ballast per level: measured \
+         {} B/level against {SYNTHETIC_FRAME_BYTES} B of ballast ({} KiB at depth 4, \
+         {} KiB at depth 4,096). Below the ballast means the recursion was elided, \
+         and this leg would be certifying nothing.",
+        sloped.per_step(),
+        sloped.lo_stack / 1024,
+        sloped.hi_stack / 1024
+    );
+    assert!(
+        sloped.per_step() <= 16 * SYNTHETIC_FRAME_BYTES,
+        "the synthetic control measured {} B/level, more than 16× its \
+         {SYNTHETIC_FRAME_BYTES} B ballast — that is not the toy this leg thinks it \
+         is driving",
+        sloped.per_step()
+    );
+
+    // The sharpest statement of the difference, and it needs no checker at all:
+    // on the stack that suffices for the FLAT control at parameter 4,096, the
+    // SLOPED one does not survive.
+    assert!(
+        !runs_within(flat.hi_stack, 4096, "synthetic_sloped"),
+        "the two synthetic subjects must be separable at all: `synthetic_flat` needs \
+         {} KiB at 4,096 and `synthetic_sloped` survived the same stack, so the \
+         control has no slope and every rejection below is vacuous",
+        flat.hi_stack / 1024
+    );
+
+    // ── The fixed-stack half, run on a subject that is Θ(depth) by construction.
+    // It ACCEPTS — which is the point. `assert_depth_independent` says so in
+    // prose; this executes it.
+    for depth in [4usize, 16, 64, 256] {
+        assert!(
+            runs_within(1024 * 1024, depth, "synthetic_sloped"),
+            "the fixed-stack half was expected to ACCEPT the Θ(depth) control at depth \
+             {depth} — that is the measurement justifying half (2). If it rejects, the \
+             control's per-level cost has grown past the point where this argument \
+             holds and the ballast should be reduced, not the claim."
+        );
+    }
+
+    // ── Checker 1: the zero-slope half. The class it excludes is exactly what
+    // `synthetic_sloped` is.
+    let why = zero_slope_verdict("synthetic_sloped", "depth", sloped)
+        .expect_err("ZERO-SLOPE must reject a subject that is Θ(depth) by construction");
+    assert!(
+        why.contains("ZERO-SLOPE GATE FAILED"),
+        "the rejection must come from the zero-slope clause, not from something else \
+         that happened to fail; got: {why}"
+    );
+    assert!(
+        why.contains("depth axis"),
+        "the rejection must name the axis it was asked about; got: {why}"
+    );
+    // …and it rejects with room to spare, so the verdict is not riding on the
+    // bisection's 4 KiB resolution.
+    assert!(
+        sloped.growth() > 8 * ZERO_SLOPE_TOLERANCE,
+        "the control's growth ({} KiB) must clear ZERO_SLOPE_TOLERANCE ({} KiB) by an \
+         order of magnitude, or this leg is a coin-flip on bisection noise",
+        sloped.growth() / 1024,
+        ZERO_SLOPE_TOLERANCE / 1024
+    );
+
+    // ── Checker 2: the tripwire's own ceiling comparison, BOTH directions.
+    // Ceilings are derived from the control's measured slope rather than
+    // hardcoded, so this leg is profile-independent exactly like the rest of the
+    // file — no `cfg!(debug_assertions)` constant to drift.
+    let why = slope_below_verdict("synthetic_sloped", sloped.per_step() / 2, sloped)
+        .expect_err("the tripwire must reject a slope twice its ceiling");
+    assert!(
+        why.contains("Θ(DEPTH) TRIPWIRE"),
+        "the rejection must come from the tripwire clause; got: {why}"
+    );
+    slope_below_verdict("synthetic_sloped", sloped.per_step() * 2, sloped).expect(
+        "the tripwire must ACCEPT a slope at half its ceiling — a checker that rejects \
+         unconditionally is no checker",
+    );
+
+    // ── The control column: every checker accepts the Θ(1) subject. ──
+    zero_slope_verdict("synthetic_flat", "depth", flat)
+        .expect("ZERO-SLOPE must accept a subject that is Θ(1) by construction");
+    // The tripwire, at the tightest ceiling this file's own arithmetic admits: the per-step
+    // equivalent of [`ZERO_SLOPE_TOLERANCE`], i.e. the gate's own definition of "no growth".
+    // Over 4 -> 4,096 that is 4 B/level, and the sloped control sits ~40x above it, so the two
+    // synthetics are still separated by a wide margin.
+    //
+    // ⚠ NOT a literal 0. `per_step()` is a quotient of two bisections quantised to
+    // `RESOLUTION`, so a ceiling of 0 demands that two independent measurements land in the
+    // *same* 4 KiB bucket — the one zero-margin comparison in a file whose every other
+    // assertion is explicitly tolerance-based. Measured 25/25 identical here, but a guard
+    // whose margin is one bucket is a guard waiting to flake for a reason that is not a
+    // regression, and a flaky gate gets disabled.
+    let flat_ceiling = ZERO_SLOPE_TOLERANCE / (flat.hi_param - flat.lo_param);
+    slope_below_verdict("synthetic_flat", flat_ceiling, flat).expect(
+        "the tripwire must accept a Θ(1) subject at the gate's own no-growth ceiling — its \
+         minimum stack does not move",
+    );
+    assert!(
+        flat.growth() <= ZERO_SLOPE_TOLERANCE,
+        "the Θ(1) control's minimum stack must not move at all across the ladder; grew {} KiB",
+        flat.growth() / 1024
+    );
+
+    println!(
+        "  synthetic control (depth): sloped {} B/level ({} KiB -> {} KiB over 4 -> 4,096), \
+         flat {} B/level — checkers separate them",
+        sloped.per_step(),
+        sloped.lo_stack / 1024,
+        sloped.hi_stack / 1024,
+        flat.per_step()
+    );
+}
+
 /// Tripwire over every traversal still known to be Θ(depth). Ceilings are ~1.5×
 /// the values measured on 2026-07-26 (recorded in the audit document), so
 /// ordinary codegen drift will not flake while an order-of-magnitude regression
@@ -1280,8 +1582,25 @@ fn converted_traversals_are_depth_independent() {
 ///
 /// A traversal LEAVES this list only by moving to `converted_traversals_are_
 /// depth_independent`, never by having its ceiling raised.
+///
+/// ★ **Its first phase is the executed proof that the depth-axis checkers can
+/// REJECT.** Everything below this line is a rejecter, and until 2026-07-27 none
+/// of them had ever been seen to refuse a Θ(depth) subject: the tripwire's
+/// ceilings were only ever compared against subjects that cleared them, and
+/// `assert_depth_independent`'s claim that its zero-slope half "cannot be passed
+/// by anything with a non-zero slope" was arithmetic on `compare_score`'s
+/// recorded numbers, not an execution. A checker that accepted everything would
+/// have satisfied both, which is to say the guard could not fail.
+///
+/// The phase feeds [`synthetic_sloped_body`] — Θ(parameter) BY CONSTRUCTION, not
+/// by measurement — to all three depth-axis checkers and asserts each one
+/// rejects it, then feeds [`synthetic_flat_body`] to the same checkers and
+/// asserts each one accepts. Both directions, as in
+/// `normalize_oracle_provenance.rs::the_provenance_check_can_go_red`.
 #[test]
 fn theta_depth_tripwire() {
+    the_depth_checkers_reject_a_known_theta_depth_subject();
+
     // measured 2026-07-26 (debug / release), bytes per nesting level:
     //   substitute 195,728 / 27,179    sort 78,579 /  6,495
     //   pretty      41,840 /  4,242    clone      15,875 /  2,852
@@ -1381,8 +1700,101 @@ fn theta_depth_tripwire() {
 /// keep doing it, and it does not hold at `-O0` (201 B/sibling measured). The
 /// ceiling is therefore per-profile and the axis stays gated until the
 /// comparator is an explicit loop.
+/// ★ **This test used to execute nothing.** Its whole body was a `println!`
+/// reporting that no un-converted width-axis subject was in scope — green,
+/// permanently, whatever the width-axis checker did. A `println!` cannot fail,
+/// so "retained, named and wired" was a claim about the infrastructure that the
+/// infrastructure never demonstrated.
+///
+/// It now carries a **synthetic control**: [`synthetic_sloped_body`], driven on
+/// the width ladder, is Θ(width) by construction, and
+/// [`assert_width_independent`]'s own checker must reject it. The real subjects
+/// follow, so a checker that rejected everything fails too.
+///
+/// Why synthetic rather than a real subject: every width-axis member found so
+/// far HAS been converted, and `FoldMatch::free_check` — the one Θ(width)
+/// traversal left in the family — is in the matcher, measured by
+/// `stack_depth_probe.rs`. "The defect is fixed, so it cannot be reproduced"
+/// would retire this obligation permanently, and would retire it for every guard
+/// in this file, since every one of them guards a fixed defect. Where the
+/// excluded-class datum comes from is an implementation detail; that it is in
+/// the class is the requirement.
 #[test]
 fn theta_width_tripwire() {
+    // ── The control, on the SAME ladder `assert_width_independent` uses. ──
+    let sloped = measure_ladder("synthetic_sloped", 4, 65_536);
+    let flat = measure_ladder("synthetic_flat", 4, 65_536);
+
+    // N2: the observations came from the real recursion.
+    //
+    // ⚠ This assertion is load-bearing on the width axis in a way it is not on
+    // the depth axis. The whole reason this test exists is that `-O2` turns
+    // `compare_score_nodes`' tail call into a loop and the measured slope goes to
+    // 0 — "a codegen accident, not a property". If LLVM did the same to
+    // `synthetic_recurse` the control would silently become a second flat
+    // subject and every rejection below would be vacuous. `synthetic_recurse`
+    // is written so it cannot (see its doc comment); this is the check that says
+    // so out loud, in whichever profile the gate is run.
+    assert!(
+        sloped.per_step() >= SYNTHETIC_FRAME_BYTES,
+        "the width control measured {} B/sibling against {SYNTHETIC_FRAME_BYTES} B of \
+         ballast ({} KiB at width 4, {} KiB at width 65,536). Below the ballast means \
+         the recursion became a loop — the exact codegen accident this axis exists to \
+         distrust — and the rejections below would certify nothing.",
+        sloped.per_step(),
+        sloped.lo_stack / 1024,
+        sloped.hi_stack / 1024
+    );
+    assert!(
+        !runs_within(flat.hi_stack, 65_536, "synthetic_sloped"),
+        "the two synthetic subjects must be separable on the width axis: \
+         `synthetic_flat` needs {} KiB at width 65,536 and `synthetic_sloped` survived \
+         the same stack",
+        flat.hi_stack / 1024
+    );
+
+    // The fixed-stack half ACCEPTS it — 256 siblings of a small frame fit in
+    // 1 MiB whatever the slope — which is why `assert_width_independent` also
+    // runs `assert_no_slope`.
+    for width in [4usize, 16, 64, 256] {
+        assert!(
+            runs_within(1024 * 1024, width, "synthetic_sloped"),
+            "the fixed-stack half was expected to ACCEPT the Θ(width) control at width \
+             {width}; that acceptance is the measurement justifying the zero-slope half"
+        );
+    }
+
+    // The checker under test, run on data in the class it excludes.
+    let why = zero_slope_verdict("synthetic_sloped", "width", sloped)
+        .expect_err("the width checker must reject a subject that is Θ(width) by construction");
+    assert!(
+        why.contains("ZERO-SLOPE GATE FAILED"),
+        "the rejection must come from the zero-slope clause; got: {why}"
+    );
+    assert!(
+        why.contains("width axis"),
+        "the rejection must name the WIDTH axis — a checker hardwired to `depth` would \
+         pass every other assertion here; got: {why}"
+    );
+    assert!(
+        sloped.growth() > 8 * ZERO_SLOPE_TOLERANCE,
+        "the control's growth ({} KiB) must clear ZERO_SLOPE_TOLERANCE ({} KiB) by an \
+         order of magnitude",
+        sloped.growth() / 1024,
+        ZERO_SLOPE_TOLERANCE / 1024
+    );
+
+    // Bidirectional: the same checker accepts the Θ(1) synthetic…
+    zero_slope_verdict("synthetic_flat", "width", flat)
+        .expect("the width checker must accept a subject that is Θ(1) by construction");
+
+    // …and it accepts a REAL converted subject. `score_cmp_wide` is the
+    // traversal the width axis was discovered on — `compare_score_nodes`'
+    // sibling walk, Stage C-1 — so this is the checker that just rejected a
+    // sloped subject accepting the very implementation it guards.
+    assert_no_slope("score_cmp_wide", 4, 65_536, "width");
+
+    // ── The real un-converted subjects. ──
     // Every WIDTH-axis member found so far has been converted (Stage C-1: the
     // score-tree sibling walk). The remaining Θ(width) traversal in the family
     // is `FoldMatch::free_check` (483 B per sibling, debug), which is in the
@@ -1390,9 +1802,18 @@ fn theta_width_tripwire() {
     // by `stack_depth_probe.rs` (subject `free_check`) and is not on this
     // conversion's path.
     //
-    // This test is retained, named and wired, so that a newly discovered
-    // Θ(width) traversal is one line rather than new infrastructure.
-    println!("no un-converted width-axis subject in this gate's scope");
+    // The list is empty and that is now an EXECUTED claim rather than a printed
+    // one: adding a subject is one line, and the checker above it has been shown
+    // to be able to refuse.
+    const UNCONVERTED_WIDTH_SUBJECTS: &[(&str, usize, usize, usize)] = &[];
+    for &(name, ceiling_bytes, lo, hi) in UNCONVERTED_WIDTH_SUBJECTS {
+        assert_slope_below(name, ceiling_bytes, lo, hi);
+    }
+    println!(
+        "  width axis: {} un-converted subject(s); control separates at {} B/sibling",
+        UNCONVERTED_WIDTH_SUBJECTS.len(),
+        sloped.per_step()
+    );
 }
 
 /// The reported reproducer, at the depth that aborted the reducer, on the stack
