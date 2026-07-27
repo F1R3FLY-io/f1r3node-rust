@@ -2135,6 +2135,133 @@ mod tests {
         assert_eq!(keys.len(), count, "distinct ground pars must have distinct keys");
     }
 
+    // ── the CURSOR ROUND-TRIP LAW (the bare-element key defect) ──────────────
+    //
+    // `EZipper.current_path` stores per-element segments; every reader rebuilds
+    // the entry's trie key from them with
+    // `pathmap_integration::segments_to_key(current_path, true)`. For that to
+    // address the entry the cursor names, the rebuilt key must equal the key
+    // the entry was INSERTED under:
+    //
+    //     LAW  segments_to_key(par_to_path(p), true) == encode_trie_path(p)
+    //
+    // It holds on the SPLIT arm and fails on the BARE arm, by exactly one
+    // trailing `0x00`: `segments_to_key(par_to_path(p), true)` for a bare `p`
+    // is `encode_trie_path([p])`, the key of the SINGLETON LIST. So the read is
+    // not a miss — it is a valid, canonical key naming a DIFFERENT element.
+    //
+    // ⚠ The insert side is CORRECT and injective and must not move: appending
+    // the terminator there would make `encode_trie_path(5) == encode_trie_path([5])`
+    // and merge two distinct entries (see `distinct_pars_have_distinct_keys`
+    // and `bare_and_singleton_list_are_distinct_entries` below). The lossy
+    // component is the CURSOR: `par_to_path`'s return type discards the
+    // split/bare discriminator, so every reconstruction must guess.
+
+    /// The law's two arms, spelled out on the smallest witnesses.
+    #[test]
+    fn bare_and_singleton_list_are_distinct_entries() {
+        use crate::rust::pathmap_integration::{par_to_path, segments_to_key};
+
+        let bare = gint(5);
+        let singleton = glist(vec![gint(5)]);
+
+        assert_eq!(encode_trie_path(&bare), vec![0x03, 0x0A]);
+        assert_eq!(encode_trie_path(&singleton), vec![0x03, 0x0A, 0x00]);
+        assert_ne!(
+            encode_trie_path(&bare),
+            encode_trie_path(&singleton),
+            "the insert side separates them, and must keep separating them"
+        );
+
+        // SPLIT arm: the law holds.
+        assert_eq!(
+            segments_to_key(&par_to_path(&singleton), true),
+            encode_trie_path(&singleton)
+        );
+        // ⚠ BARE arm: the law FAILS, and the key it produces is the SINGLETON's.
+        assert_ne!(
+            segments_to_key(&par_to_path(&bare), true),
+            encode_trie_path(&bare)
+        );
+        assert_eq!(
+            segments_to_key(&par_to_path(&bare), true),
+            encode_trie_path(&singleton),
+            "★ the read key names a DIFFERENT, existing element — not a miss"
+        );
+    }
+
+    /// `par_to_path` and the codec disagree about WHICH Pars split, on top of
+    /// the terminator itself: `split_carrier_list` (§1.3) additionally requires
+    /// the carrier to hold no sends/receives/news/matches/bundles/connectives/
+    /// conditionals/unforgeables and no par-level `locally_free`, while
+    /// `par_to_path` inspects only `exprs` and the `EList`'s own metadata. A
+    /// list carrier that also carries a send therefore SPLITS in the cursor and
+    /// takes the `0x0F` ESCAPE arm in the key.
+    #[test]
+    fn par_to_path_and_the_codec_disagree_about_which_pars_split() {
+        use crate::rust::pathmap_integration::par_to_path;
+
+        let mut carrier = glist(vec![gint(1)]);
+        carrier.sends = vec![Send {
+            chan: Some(gint(0)),
+            data: vec![],
+            persistent: false,
+            locally_free: Vec::new(),
+            connective_used: false,
+        }];
+
+        assert!(
+            split_carrier_list(&carrier).is_none(),
+            "the codec does NOT treat this as a split carrier"
+        );
+        assert_eq!(
+            encode_trie_path(&carrier)[0],
+            tag::ESCAPE,
+            "it is not eval_stable, so the key is the escape arm"
+        );
+        // …yet the cursor splits it into one segment per list element.
+        assert_eq!(par_to_path(&carrier).len(), 1);
+        assert_ne!(par_to_path(&carrier)[0], encode_trie_path(&carrier));
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(64))]
+
+        /// ⚠ WITNESS OF A DEFECT — the cursor round-trip law, over arbitrary
+        /// Pars. It holds exactly on the split arm; on the bare arm the
+        /// rebuilt key is the key of the singleton list wrapping the entry.
+        ///
+        /// Positive twin: `prop_cursor_key_round_trips_for_every_par`, which
+        /// drops the case split entirely once the cursor carries the
+        /// discriminator.
+        #[test]
+        fn prop_witness_cursor_key_round_trip_holds_only_on_the_split_arm(
+            par in any_par()
+        ) {
+            use crate::rust::pathmap_integration::{par_to_path, segments_to_key};
+
+            let key = encode_trie_path(&par);
+            let rebuilt = segments_to_key(&par_to_path(&par), true);
+            match split_carrier_list(&par).is_some() {
+                // SPLIT: `par_to_path` yields the same per-element segments the
+                // encoder emits, and the terminator the reader appends is the
+                // one the key really carries.
+                true => prop_assert_eq!(rebuilt, key),
+                // BARE: off by exactly the terminator — the singleton's key —
+                // except where `par_to_path` ALSO disagrees about splitting
+                // (the carrier case pinned above), where it is off by more.
+                false => {
+                    prop_assert_ne!(&rebuilt, &key);
+                    if par_to_path(&par).len() == 1 && par_to_path(&par)[0] == key {
+                        let mut singleton_key = key.clone();
+                        singleton_key.push(tag::TERM);
+                        prop_assert_eq!(rebuilt, singleton_key);
+                    }
+                }
+            }
+        }
+    }
+
     // ── the parser-state DFS differential ─────────────────────────────────────
 
     /// Reference twin of the DFS: full scan + the SAME extent scanner.

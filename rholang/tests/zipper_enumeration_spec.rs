@@ -321,3 +321,221 @@ async fn scoped_enumeration_is_algebraic() {
     })
     .await;
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ★ THE BARE-ELEMENT ARM — the coverage gap that let the defect survive
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Every element of `MAP` above is a ground LIST. `encode_trie_path` is a
+// TWO-ARM codec (`canonical_path.rs`, §1.3) and the fixture only ever drove
+// one of them:
+//
+//   split arm (ground list `[e₁..e_k]`)  path = enc(e₁) ‖ … ‖ enc(e_k) ‖ 0x00
+//   bare arm  (anything else)            path = enc(par)          — NO 0x00
+//
+// so no test in this file, or anywhere else, had ever asked what any zipper
+// method does at a BARE entry. `{| 1, 2, 3 |}` is that question, and the
+// answers below are wrong in three independent ways.
+//
+// # The defect, stated once
+//
+// Every reader rebuilds its key with `segments_to_key(current_path, true)`
+// (`pathmap_integration.rs:66`), which appends `tag::TERM` UNCONDITIONALLY.
+// For a bare entry that key is not a miss — it is the valid canonical key of a
+// DIFFERENT element:
+//
+//   bare `1`        key  03 02          (what the map stores)
+//   read key        key  03 02 00   ==  encode_trie_path([1])   — the SINGLETON
+//
+// The insert side is correct and injective and is NOT the bug: appending a
+// terminator at insert would make `encode_trie_path(1) == encode_trie_path([1])`
+// and merge `{| 5, [5] |}` into one entry. The lossy component is
+// `EZipper.current_path` (`RhoTypes.proto:352`, `repeated bytes`), which stores
+// the per-element segments but not the split/bare discriminator, so every
+// reconstruction must guess — and always guesses "split".
+//
+// ⚠ The `witness_` tests below assert the DEFECTIVE answers on purpose, and
+// each names the positive twin that replaces it. Every walk here is BOUNDED by
+// an explicit chain length, never by a termination condition, so a regression
+// FAILS rather than hangs — which matters, because `toNextLeaf` on this
+// fixture is a fixed point and a `leafCount()`-bounded loop over it collects
+// the same entry three times rather than looping forever.
+
+/// Three entries, none of them a list, so all three take the codec's BARE arm.
+/// Trie keys `03 02`, `03 04`, `03 06` — tag `0x03` = `GInt`, payload the
+/// zigzag varint — and NONE of them carries the `0x00` terminator.
+const BARE_MAP: &str = r#"{| 1, 2, 3 |}"#;
+
+/// A map whose elements take BOTH arms, including the pair `5` / `[5]` that
+/// makes the insert side's injectivity load-bearing: they are DIFFERENT
+/// entries with different keys (`03 0A` and `03 0A 00`) and must stay so.
+const MIXED_MAP: &str = r#"{| 5, [5], "a", ["a", "x"] |}"#;
+
+/// `leafCount()` is a PREFIX query — `segments_to_key(current_path, false)` —
+/// so it never appends the terminator and is CORRECT on bare entries today.
+/// That is what makes the rest of this section a contradiction rather than an
+/// absence: the map demonstrably holds three entries that nothing else can read.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn bare_leaf_count_is_correct() {
+    with_runtime("zipper-enum-bare-count-", |mut runtime| async move {
+        let program = format!(
+            r#"
+            @"countRoot"!( {m}.readZipper().leafCount() ) |
+            @"mixedCount"!( {x}.readZipper().leafCount() )
+            "#,
+            m = BARE_MAP,
+            x = MIXED_MAP
+        );
+        eval_ok(&mut runtime, &program).await;
+        assert_int(&runtime, "countRoot", 3).await;
+        // ★ 4, not 3: `5` and `[5]` are DISTINCT entries. The insert side is
+        // injective and must remain so — this is the assertion that would go
+        // red if the terminator were ever appended at insert time.
+        assert_int(&runtime, "mixedCount", 4).await;
+        runtime
+    })
+    .await;
+}
+
+/// ⚠ WITNESS OF A DEFECT — every value read of a bare entry answers `Nil`.
+///
+/// Positive twin: `bare_leaf_reads_back_the_element`, which asserts that each
+/// of the three reads below returns the element itself.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn witness_bare_leaf_reads_back_as_nil() {
+    with_runtime("zipper-enum-bare-read-", |mut runtime| async move {
+        let program = format!(
+            r#"
+            @"getLeafIsNil"!( {m}.readZipperAt(1).getLeaf() == Nil ) |
+            @"atPathBareIsNil"!( {m}.atPath(1) == Nil ) |
+            @"atPathListIsNil"!( {m}.atPath([1]) == Nil )
+            "#,
+            m = BARE_MAP
+        );
+        eval_ok(&mut runtime, &program).await;
+        // The cursor is at the bare entry `1`, whose key is `03 02`; the read
+        // rebuilds `03 02 00`, the key of the singleton list `[1]`.
+        assert_bool(&runtime, "getLeafIsNil").await;
+        // `atPath(1)` asks for the bare entry by name and still misses…
+        assert_bool(&runtime, "atPathBareIsNil").await;
+        // …and `atPath([1])` misses too, because `[1]` really is absent: the
+        // map holds `1`. There is NO spelling that reads a bare entry today.
+        assert_bool(&runtime, "atPathListIsNil").await;
+        runtime
+    })
+    .await;
+}
+
+/// ⚠ WITNESS OF A DEFECT — `toNextLeaf` is a FIXED POINT on bare entries.
+///
+/// `getPath()` reports `[1]` at every step: the wrong entry AND the wrong
+/// shape (a singleton list where the map holds a bare integer), which is why
+/// the `readZipperAt(z.getPath())` round-trip cannot close either.
+///
+/// BOUNDED BY CONSTRUCTION: four explicit steps, not a termination condition.
+///
+/// Positive twin: `bare_walk_visits_every_entry_in_order`, which asserts the
+/// steps report `1`, `2`, `3` and that the fourth is `Nil`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn witness_bare_walk_never_advances() {
+    with_runtime("zipper-enum-bare-walk-", |mut runtime| async move {
+        let program = format!(
+            r#"
+            @"p1"!( {m}.readZipper().toNextLeaf().getPath() == [1] ) |
+            @"p2"!( {m}.readZipper().toNextLeaf().toNextLeaf().getPath() == [1] ) |
+            @"p3"!( {m}.readZipper().toNextLeaf().toNextLeaf().toNextLeaf().getPath() == [1] ) |
+            @"p4"!( {m}.readZipper().toNextLeaf().toNextLeaf().toNextLeaf().toNextLeaf().getPath() == [1] ) |
+            @"v1"!( {m}.readZipper().toNextLeaf().getLeaf() == Nil )
+            "#,
+            m = BARE_MAP
+        );
+        eval_ok(&mut runtime, &program).await;
+        for channel in ["p1", "p2", "p3", "p4"] {
+            assert_bool(&runtime, channel).await;
+        }
+        // …and the leaf the walk is parked on cannot be read either.
+        assert_bool(&runtime, "v1").await;
+        runtime
+    })
+    .await;
+}
+
+/// ⚠ WITNESS OF A DEFECT — the LIVENESS half. The step past the last entry
+/// must be `Nil`; on a bare map no step ever is, so the `leafCount()`-bounded
+/// idiom that `counted_walk_collects_every_trace` proves for lists cannot
+/// terminate here on its own.
+///
+/// Positive twin: `bare_walk_returns_nil_when_exhausted`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn witness_bare_walk_never_exhausts() {
+    with_runtime("zipper-enum-bare-exhaust-", |mut runtime| async move {
+        let program = format!(
+            r#"
+            @"stillNotNil"!(
+              ({m}.readZipper().toNextLeaf().toNextLeaf().toNextLeaf().toNextLeaf() == Nil) == false
+            )
+            "#,
+            m = BARE_MAP
+        );
+        eval_ok(&mut runtime, &program).await;
+        // The FOURTH step on a THREE-entry map is still a live zipper.
+        assert_bool(&runtime, "stillNotNil").await;
+        runtime
+    })
+    .await;
+}
+
+/// ⚠ WITNESS OF A DEFECT — the `leafCount()`-bounded walk, run for real on
+/// bare entries. It TERMINATES (the bound is the loop's own counter) but
+/// collects the SAME trace three times, so the idiom the FIPS lookahead
+/// depends on silently returns duplicates instead of the map's contents.
+///
+/// Positive twin: `bare_counted_walk_collects_every_entry`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn witness_bare_counted_walk_collects_one_entry_three_times() {
+    with_runtime("zipper-enum-bare-fips-", |mut runtime| async move {
+        let program = format!(
+            r#"
+            new walk in {{
+              walk!({m}.readZipper(), {m}.readZipper().leafCount(), []) |
+              for (@z, @remaining, @acc <= walk) {{
+                match remaining {{
+                  0 => @"bareTraces"!(acc)
+                  _ => match z.toNextLeaf() {{
+                         next => walk!(next, remaining - 1, acc ++ [next.getPath()])
+                       }}
+                }}
+              }}
+            }}
+            "#,
+            m = BARE_MAP
+        );
+        eval_ok(&mut runtime, &program).await;
+        let channel = Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::GString("bareTraces".to_string())),
+        }]);
+        let data = runtime.get_data(&channel).await;
+        assert_eq!(data.len(), 1, "the counted walk must still report once");
+        let collected = &data[0].a.pars[0];
+        match collected
+            .exprs
+            .first()
+            .and_then(|e| e.expr_instance.as_ref())
+        {
+            Some(ExprInstance::EListBody(list)) => {
+                assert_eq!(list.ps.len(), 3, "three steps, as leafCount() bounds");
+                assert_eq!(
+                    list.ps[0], list.ps[1],
+                    "★ steps 1 and 2 report the SAME trace"
+                );
+                assert_eq!(
+                    list.ps[1], list.ps[2],
+                    "★ steps 2 and 3 report the SAME trace"
+                );
+            }
+            other => panic!("@\"bareTraces\" expected a list of traces, got {:?}", other),
+        }
+        runtime
+    })
+    .await;
+}

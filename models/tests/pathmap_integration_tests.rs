@@ -1,5 +1,6 @@
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::{EList, EPathMap, Expr, Par};
+use models::rust::canonical_path::encode_trie_path;
 use models::rust::pathmap_crate_type_mapper::PathMapCrateTypeMapper;
 use models::rust::pathmap_integration::{
     create_pathmap_from_elements, par_to_path, segments_to_key, RholangPathMap,
@@ -9,6 +10,29 @@ fn make_string_par(s: &str) -> Par {
     Par {
         exprs: vec![Expr {
             expr_instance: Some(ExprInstance::GString(s.to_string())),
+        }],
+        ..Default::default()
+    }
+}
+
+fn make_int_par(i: i64) -> Par {
+    Par {
+        exprs: vec![Expr {
+            expr_instance: Some(ExprInstance::GInt(i)),
+        }],
+        ..Default::default()
+    }
+}
+
+fn make_list_of(ps: Vec<Par>) -> Par {
+    Par {
+        exprs: vec![Expr {
+            expr_instance: Some(ExprInstance::EListBody(EList {
+                ps,
+                locally_free: vec![],
+                connective_used: false,
+                remainder: None,
+            })),
         }],
         ..Default::default()
     }
@@ -374,6 +398,131 @@ fn test_mixed_list_and_nonlist() {
 
     let result = create_pathmap_from_elements(&[par1, par2], None);
     assert_eq!(result.map.val_count(), 2);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ★ THE MIXED FIXTURE — both codec arms in one map
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// `encode_trie_path` (`canonical_path.rs`, §1.3) is a TWO-ARM codec:
+//
+//   split arm (ground list `[e₁..e_k]`)  path = enc(e₁) ‖ … ‖ enc(e_k) ‖ 0x00
+//   bare arm  (anything else)            path = enc(par)          — NO 0x00
+//
+// Nothing in this file, or in `rholang/tests/zipper_enumeration_spec.rs`, had
+// ever built a map holding BOTH — `test_non_list_par` and
+// `test_mixed_list_and_nonlist` above check only cardinality, which is the one
+// question the defect does not affect. `{| 1, [1], "a", ["a","x"] |}` is the
+// fixture that asks the rest.
+
+/// `{| 1, [1], "a", ["a","x"] |}` — a bare int, its singleton list, a bare
+/// string, and a two-element list sharing that string's segment.
+fn mixed_elements() -> Vec<Par> {
+    vec![
+        make_int_par(1),
+        make_list_of(vec![make_int_par(1)]),
+        make_string_par("a"),
+        make_list_par(vec!["a", "x"]),
+    ]
+}
+
+/// The INSERT side is correct and injective — four elements, four distinct
+/// keys, four entries — and the exact bytes are pinned so that any change to
+/// the insert side is a visible diff rather than a silent re-key.
+///
+/// ★ In particular `1` and `[1]` differ by exactly the trailing terminator, so
+/// "append a terminator at insert" would MERGE them. It is not the fix.
+#[test]
+fn mixed_arms_produce_four_distinct_entries() {
+    let elements = mixed_elements();
+
+    // Tag `0x03` = GInt (payload zigzag varint), `0x04` = GString
+    // (payload uv(len) ++ UTF-8), `0x00` = the split-list terminator.
+    assert_eq!(encode_trie_path(&elements[0]), vec![0x03, 0x02]);
+    assert_eq!(encode_trie_path(&elements[1]), vec![0x03, 0x02, 0x00]);
+    assert_eq!(encode_trie_path(&elements[2]), vec![0x04, 0x01, 0x61]);
+    assert_eq!(
+        encode_trie_path(&elements[3]),
+        vec![0x04, 0x01, 0x61, 0x04, 0x01, 0x78, 0x00]
+    );
+
+    let result = create_pathmap_from_elements(&elements, None);
+    assert_eq!(
+        result.map.val_count(),
+        4,
+        "four distinct keys, so four entries — `1` and `[1]` do NOT collide"
+    );
+    for element in &elements {
+        assert_eq!(
+            result.map.get(encode_trie_path(element)),
+            Some(element),
+            "every element is readable at its own inserted key"
+        );
+    }
+}
+
+/// ⚠ WITNESS OF A DEFECT — the READ side. Every reader rebuilds an entry key
+/// as `segments_to_key(par_to_path(p), true)`; for a bare element that is the
+/// key of the SINGLETON LIST wrapping it, so the read lands on a different
+/// entry (or on nothing).
+///
+/// Positive twin: `every_element_is_addressable_from_its_own_par`.
+#[test]
+fn witness_bare_elements_are_not_addressable_by_the_read_key() {
+    let elements = mixed_elements();
+    let map = create_pathmap_from_elements(&elements, None).map;
+
+    // SPLIT elements: the rebuilt key is the inserted key, so the read lands.
+    for split in [&elements[1], &elements[3]] {
+        let read_key = segments_to_key(&par_to_path(split), true);
+        assert_eq!(read_key, encode_trie_path(split));
+        assert_eq!(map.get(&read_key), Some(split));
+    }
+
+    // ★ BARE `1`: the rebuilt key is `03 02 00` — the key of `[1]`, which is
+    // ALSO in this map. The read succeeds and returns the WRONG element.
+    let bare_int_read_key = segments_to_key(&par_to_path(&elements[0]), true);
+    assert_eq!(bare_int_read_key, vec![0x03, 0x02, 0x00]);
+    assert_eq!(
+        map.get(&bare_int_read_key),
+        Some(&elements[1]),
+        "★ asking for the bare `1` returns the singleton list `[1]`"
+    );
+
+    // ★ BARE `"a"`: the rebuilt key is `04 01 61 00`, which is in no map here,
+    // so the read is a miss — the same defect, presenting as Nil.
+    let bare_string_read_key = segments_to_key(&par_to_path(&elements[2]), true);
+    assert_eq!(bare_string_read_key, vec![0x04, 0x01, 0x61, 0x00]);
+    assert_eq!(map.get(&bare_string_read_key), None);
+}
+
+/// ⚠ WITNESS OF A DEFECT — PREFIX CONFLATION. A bare entry's key is a strict
+/// byte-prefix of the split keys that start with the same element, so bare
+/// entries sit at INTERIOR trie positions and every `terminate = false` reader
+/// (`leafCount`, `childCount`, `getSubtrie`, `pathExists`, `descendFirst`,
+/// `restriction`) sees "the entry `a`" and "the prefix `["a", …]`" as one
+/// position.
+///
+/// This is a SEMANTIC question, not a coding error — it is settled and
+/// documented in the module header of `pathmap_native_query.rs`, and this test
+/// is the executable statement of the situation it settles.
+#[test]
+fn witness_a_bare_entry_key_is_a_prefix_of_the_split_keys_beside_it() {
+    let elements = mixed_elements();
+    let map = create_pathmap_from_elements(&elements, None).map;
+
+    let bare_a = encode_trie_path(&elements[2]); // 04 01 61
+    let split_ax = encode_trie_path(&elements[3]); // 04 01 61 04 01 78 00
+    assert!(
+        split_ax.starts_with(&bare_a),
+        "the bare entry's WHOLE key is a strict prefix of the split key"
+    );
+
+    // The prefix query cannot distinguish "the entry" from "the branch": the
+    // subtrie at `04 01 61` holds BOTH the bare entry and `["a","x"]`. This is
+    // the helper `leafCount()` at a cursor calls.
+    let branch = models::rust::pathmap_native_query::subtrie_value_count(&map, &bare_a);
+    assert_eq!(branch, 2, "the bare entry is counted inside its own branch");
 }
 
 #[test]
