@@ -642,17 +642,33 @@ fn run_probe(what: &str, depth: usize) {
             std::mem::forget(bytes);
             std::mem::forget(t);
         }
-        "bincode_de" => {
+        // ★ CONVERTED (Stage F). `bincode_de` now measures what the node
+        // actually runs on the cold-store read path: `Par::cold_decode`
+        // (`models/src/rust/rholang/par_codec.rs`). Leaving this arm on
+        // `bincode::deserialize` would have been a quiet trap — a later
+        // re-measurement would report the PRE-conversion 28,362 B/level and
+        // read as "nothing changed".
+        //
+        // `bincode_de_derived` retains the old body as the CONTROL, so the
+        // before/after comparison stays available in one run instead of
+        // requiring a checkout of an older commit.
+        "bincode_de" | "bincode_de_derived" => {
+            use rspace_plus_plus::rspace::serializers::cold_store_decode::ColdStoreDecode;
             // Encode on a stack that never binds, so this arm isolates the
-            // DECODER (the same discipline the `decode` arm above uses).
+            // DECODER (the same discipline the `decode` arm above uses). It
+            // matters twice as much now: the ENCODER is still Θ(depth), so an
+            // un-isolated probe would report the encoder's slope.
             let bytes = on_a_big_stack(move || {
                 let t = nested_list(depth);
                 let b = bincode::serialize(&t).expect("stack_depth_probe: bincode encode failed");
                 std::mem::forget(t);
                 b
             });
-            let p: Par =
-                bincode::deserialize(&bytes).expect("stack_depth_probe: bincode_de failed");
+            let p: Par = if what == "bincode_de_derived" {
+                bincode::deserialize(&bytes).expect("stack_depth_probe: bincode_de failed")
+            } else {
+                Par::cold_decode(&bytes).expect("stack_depth_probe: bincode_de failed")
+            };
             assert_eq!(
                 par_depth(&p),
                 depth,

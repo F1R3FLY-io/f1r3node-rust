@@ -79,6 +79,7 @@ use rholang::rust::interpreter::matcher::spatial_matcher::SpatialMatcherContext;
 use rholang::rust::interpreter::metering::MeteredMachine;
 use rholang::rust::interpreter::pretty_printer::PrettyPrinter;
 use rholang::rust::interpreter::substitute::{Substitute, SubstituteTrait};
+use rspace_plus_plus::rspace::serializers::cold_store_decode::ColdStoreDecode;
 use std::collections::BTreeMap;
 
 // ---------------------------------------------------------------------------
@@ -1035,12 +1036,27 @@ fn bincode_ser_body(depth: usize) {
 }
 
 /// The DECODE side. See [`bincode_ser_body`] for why this member matters.
+///
+/// ★ CONVERTED. This subject now exercises `Par::cold_decode`
+/// (`models/src/rust/rholang/par_codec.rs`), the explicit-worklist decoder that
+/// replaced the derived `Deserialize` on the cold-store read path. The derived
+/// impl is retained as a `#[cfg(test)]` oracle and is differentially compared
+/// against the machine over ~1.9M inputs, including every truncation of every
+/// corpus encoding (`models/tests/par_codec_malformed.rs`) — but it is no
+/// longer what the node runs, so it is no longer what this gate measures.
+///
+/// ⚠ `bincode_ser` stays in the tripwire. The ENCODER is deliberately
+/// untouched: leaving `Serialize` derived is what preserves byte identity of
+/// the cold-store leaves by construction, so its Θ(depth) residual (3,052 / 329
+/// B per level) is a separate, still-open item.
 fn bincode_de_body(depth: usize) {
     // ⚠ Encode on a stack that never binds, so this subject isolates the
     // DECODER. Encoding on the gated thread would make every reading
     // `max(encode, decode)` — the same defect that once made the score-tree
     // subjects report 78,573 B/level (the SORTER's constant) instead of the
-    // comparator's 1,329.
+    // comparator's 1,329. It matters twice as much now: the encoder is STILL
+    // Θ(depth), so an un-isolated probe would report the encoder's slope and
+    // this conversion would look like it had not happened.
     let bytes = on_a_big_stack(move || {
         let term = nested_list(depth);
         let b = bincode::serialize(&term).expect("stack_depth_gate: bincode encode failed");
@@ -1048,7 +1064,7 @@ fn bincode_de_body(depth: usize) {
         b
     });
     let decoded: Par =
-        bincode::deserialize(&bytes).expect("stack_depth_gate: bincode_de failed");
+        Par::cold_decode(&bytes).expect("stack_depth_gate: bincode_de failed");
     assert_carries("the DECODED term's nesting", par_depth(&decoded), depth);
     dismantle(decoded);
 }
@@ -1148,6 +1164,7 @@ fn converted_traversals_are_depth_independent() {
         "tree_drop",            // Stage C-1 — Tree's hand-written Drop
         "tree_clone",           // Stage C-1 — Tree's hand-written Clone
         "eval_with_nots",       // Stage E — rho-pure-eval's own SCC
+        "bincode_de",           // Stage F — the cold-store DECODER (par_codec)
         // "pretty",               // Stage D
     ];
     let converted_width: &[&str] = &[
@@ -1226,11 +1243,26 @@ fn theta_depth_tripwire() {
     assert_slope_below("drop", ceiling(1_500, 800), 256, 4096);
     assert_slope_below("encode", ceiling(4_000, 1_500), 64, 1024);
     // ⚠ The RSpace codec — see `bincode_ser_body`. UNCAPPED, unlike `prost`.
-    // Probed SHALLOW: at 28,362 B/level (debug) depth 32 already needs ~900 KiB.
-    // Both probe points clear the subject's own intercept at both ends, so a
+    // Probed SHALLOW: at 3,052 B/level (debug) the ENCODER is the cheap half,
+    // but both probe points still clear its own intercept at both ends, so a
     // large intercept cannot read as a zero slope on a short ladder.
+    //
+    // ⚠ Only the ENCODER is left here. `bincode_de` has LEFT this list — it is
+    // in `converted_traversals_are_depth_independent` (Stage F: the cold-store
+    // decoder became `models/src/rust/rholang/par_codec.rs`, an explicit
+    // obligation-stack machine). Measured immediately before the conversion by
+    // direct bisection of this very subject: 28,331 B/level debug (262,144 B at
+    // depth 8, 942,080 B at depth 32) and 12,971 B/level release (122,880 and
+    // 434,176) — i.e. D_max 73 / 161 on a 2 MiB worker, the SHALLOWEST member
+    // of this family. As always, a traversal leaves this list only by being
+    // converted, never by having its ceiling raised.
+    //
+    // The ENCODER stays Θ(depth) on purpose: leaving `Serialize` derived is
+    // what makes the cold-store leaf bytes byte-identical by construction, and
+    // an encode is only ever performed on a term the node itself built, so it
+    // is a transient worker fault rather than the permanent, replicated one the
+    // decoder was.
     assert_slope_below("bincode_ser", ceiling(5_000, 800), 64, 512);
-    assert_slope_below("bincode_de", ceiling(45_000, 20_000), 8, 32);
     // ⚠ THE NAMED STAGE C-2 RESIDUAL. Ceilings are the MEASURED PRE-CONVERSION
     // BASELINES (79,053 / 82,534 B/level, debug), so this list can only ever
     // certify that the self-contained set/map arms did not get worse. Measured
