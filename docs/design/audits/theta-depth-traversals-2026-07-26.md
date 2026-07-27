@@ -788,3 +788,325 @@ cargo test -p rholang --test stack_depth_gate -- --test-threads 1 --nocapture
 * Commits `bb7fcd20` (Leg-1), `a929a2d6` (Leg-2), `9843e4b6` (removal of
   `stacker`) — the accepted precedent, including the explicit finding that
   Leg-1 alone does not change the class.
+
+---
+
+## 11. Leg-2 — execution record (2026-07-26/27)
+
+> This section is an **amendment**. Sections 1–10 record the state before Leg-2
+> and are left as written, so that a reviewer can see what was predicted and
+> what was found. Where a §1–10 claim has been superseded, the superseding
+> statement is here and says so explicitly.
+
+### 11.1 Three falsification experiments, run before any conversion code
+
+The conversion was preceded by three experiments, each designed to **refute** a
+premise of the plan rather than to confirm it. All three ran on the harness in
+[§10](#10-reproducing-every-number-here), extended with the subjects named below.
+
+#### F1 — "the score tree is a fifth traversal family" (premise UPHELD)
+
+`models/src/rust/rholang/sorter/score_tree.rs` defines `Tree<T>`, a recursive
+**Rust** type that is not a proto message. The enumeration method in
+[§3](#3-the-recursive-type-family) — Tarjan over `RhoTypes.proto` — structurally
+cannot see it. The refutation condition was "all three probes are flat".
+
+| subject | what it drives | debug B/level | release B/level |
+|---|---|---:|---:|
+| `score_cmp` | `compare_score`, **depth** axis | **1,329** | 128 |
+| `score_cmp_wide` | `compare_score_nodes`, **width** axis | **201** | 0 (see below) |
+| `tree_drop` | `drop_in_place::<Tree<ScoreAtom>>` | **370** | 204 |
+| `tree_clone` | derived `<Tree<T> as Clone>::clone` | **1,578** | 485 |
+| `tree_eq` | derived `<Tree<T> as PartialEq>::eq` | **719** | — |
+
+**Not flat. The premise stands and Stage C is five traversals, not one.**
+
+Two findings that only measurement produces:
+
+* **The width axis is real and was never enumerated.**
+  `compare_score_nodes` recursed on the list *tail* (`&left[1..]`), so its
+  native stack grew with **sibling count**. Sibling count is program-controlled.
+  A proto-message SCC cannot express that axis at all, and no gate looked for it.
+* **The release 0 is a codegen accident, not a property.** At `-O2` LLVM turns
+  that tail call into a loop; at `-O0` it does not. A consensus-liveness
+  property must not rest on an optimiser's discretion, which is the argument for
+  an explicit loop rather than for leaving it alone.
+
+⚠ **The gate could not have caught any of this on its own probe shape.** A
+linear chain sorts as a **one-element** vector, and `Vec::sort_by` on one
+element performs **zero comparisons**. Converting `sort_match` alone would have
+left the comparator Θ(depth) *and the gate would have passed*.
+
+#### F2 — "an owned `Env` per work item is acceptable" (premise REFUTED)
+
+`Env::shift(j)` (`rho-pure-eval/src/env.rs`) is
+`Env { shift: self.shift + j, ..(*self).clone() }` — a full
+`HashMap<i32, Par>` clone, hence a `<Par as Clone>::clone` of **every bound
+value**, at **every** binder level.
+
+| subject | environment | debug B/level |
+|---|---|---:|
+| `subst_binders` | populated, bound value of depth `$N$` | **48,878** |
+| `subst_binders_ground_env` | populated, ground bound value | **33,242** |
+| difference | | **15,636** |
+
+15,636 against `Par::clone`'s measured 15,875 — **agreement to 1.5%**. The
+environment clone contributes one full deep clone per level, so a worklist
+storing owned `Env`s would have remained Θ(depth) *however the traversal itself
+was written*. The design therefore carries `(depth, shift_delta)` per item plus
+one **borrowed** root environment.
+
+**Post-conversion the two readings are identical (0 B/level each)** — the
+mechanism, removed, confirmed by the same instrument that found it.
+
+#### F3 — "decode fails safe" (premise REFUTED — this is the most serious finding)
+
+[§1.2(b)](#12-three-corrections-to-the-incoming-analysis) established that
+`prost` decode is capped at 100 nested messages, so it returns `Err` at term
+depth 34. That is true, and it is **not the whole story**: `models/build.rs`
+also attaches `serde::Serialize` / `serde::Deserialize` to every `.rhoapi`
+message, and RSpace serialises datums and continuations with **bincode 1.3.3**
+(`rspace++/src/rspace/serializers/serializers.rs`), which has **no recursion
+limit at all**.
+
+| | debug B/level | release B/level | cap |
+|---|---:|---:|---|
+| `prost` decode | 26,624 | — | **`Err` at term depth 34** (bisected) |
+| **bincode decode** | **28,362** | **12,894** | ⚠ **none — decoded successfully at depth 800** |
+| bincode encode | 3,052 | 329 | none |
+
+Bisected directly: bincode round-trips at depths 33, 34, 40, 100, 200, 400 and
+**800**, where `prost` returns `Err` from 34 onward.
+
+**Why this matters, stated precisely.** Encode is ~9× (debug) to ~39×
+(release) cheaper per level than decode, so a term can be *written* on a stack
+that cannot *read it back* — and the read-back failure is an `abort()`, not an
+`Err`. On a 2 MiB worker in release the bincode decode ceiling is
+
+```math
+D_{\max} = \left\lfloor \frac{2{,}097{,}152 - 20{,}569}{12{,}894} \right\rfloor = 161
+```
+
+Before Leg-2 that was unreachable: `substitute` capped the reducer at depth 75
+in release. **After Leg-2 it is reachable**, and a datum written to LMDB at
+depth > 161 aborts the node on read-back — on every restart, because the datum
+persists. This is a *consequence of the fix*, it is not fixed by the fix, and it
+is recorded here rather than discovered by a validator.
+
+It does not change the disposition of [§7.3](#73-the-prost-decode-ceiling-is-a-constraint-on-the-fix-not-a-defect-to-fix)
+— it makes it sharper: the encode/decode asymmetry that section names as a
+"protocol-visible ceiling that already exists" has a **second, uncapped, harder
+failure mode** on the RSpace codec, and any conversion that raises the reducer's
+reachable depth walks toward it.
+
+### 11.2 The "not separately tabulated" list, now measured
+
+[§5](#5-measured-constants-per-traversal-and-per-profile) named nine candidates
+without measuring them. All nine were measured, on the same harness. The
+threshold for "binding" is `Par::clone`'s 15,875 B/level (debug), because below
+that the derived-traversal residual dominates anyway.
+
+| subject | debug B/level | release B/level | binding? | attribution |
+|---|---:|---:|---|---|
+| `normalize` (`Compiler::source_to_adt`) | **78,579** | 7,247 | **yes** | exactly `sort_match`'s constant; on the **deploy path**, before any term exists |
+| `sorted_par_hash_set::insert` | **78,543** | 6,495 | **yes** | `sort_match` (via `SortedParHashSet::sort`) |
+| `sorted_par_map::insert` | **78,583** | 6,495 | **yes** | `sort_match` |
+| `eval_with` (nested `ENot`) | **21,584** | 3,359 | **yes** | its **own** recursion — a separate SCC in `rho-pure-eval` |
+| `eval_with` (nested `EList`) | 15,914 | 2,611 | — | `<Par as Clone>::clone`; the `EListBody` arm does not descend |
+| `rhoapi_ext::make_mut` | 15,850 | 2,320 | — | `<Par as Clone>::clone` (`Arc::make_mut` copy-on-write) |
+| `par_to_sexpr` | 7,188 | 835 | no | its own recursion |
+| `ParCount::min_max_par` | 5,734 | 1,587 | no | its own recursion, through `connectives` only |
+| `FoldMatch::free_check` | **483 / sibling** | 320 / sibling | no | ⚠ **width** axis — recurses on the slice tail |
+| `pathmap_zipper` / `par_to_path` | 410 | 0 | no | — |
+
+Four consequences.
+
+1. **Three of them are `sort_match` wearing a different name.** Converting the
+   sorter fixes `normalize`, `SortedParHashSet` and `SortedParMap` at once. All
+   three must be **re-measured** after that conversion, because each may have a
+   second-order constant of its own underneath.
+2. **`rho-pure-eval::eval_with` is a genuinely independent Θ(depth) SCC**, at
+   21,584 B/level on expression nesting, and it is not any of rows 1–10. It is
+   reachable from `where`-clause guard evaluation. It is **not** in Leg-2's scope
+   as scoped, and it is named here so that "not measured" is not confused with
+   "not present".
+3. **`FoldMatch::free_check` is a second width-axis member**, in the matcher
+   rather than in the sorter.
+4. `eval_with` on an `EList` chain and `make_mut` are `Par::clone` — the M3
+   discriminator ([§4.3](#43-m3--measurement-as-the-discriminator-of-last-resort))
+   working exactly as described: static analysis proposed, measurement disposed.
+
+### 11.3 What landed
+
+| stage | landed | commit |
+|---|---|---|
+| **A** — harness, canonical child-slot table, iterative `dismantle`, constructed corpus, broadened probe | ✅ | `550b967a` |
+| **B** — the substitution SCC | ✅ | `f11ffb54` |
+| **C-1** — the score tree's five traversals | ✅ | `6ce7c5b9` |
+| **C-2** — `ParSortMatcher` and the nine sorter files | ❌ not landed | — |
+| **D** — `PrettyPrinter` | ❌ not landed | — |
+
+#### Stage A — two harness defects that would have voided a green result
+
+**`generate_par` was totally vacuous.**
+`models/src/rust/test_utils/test_utils.rs` sized every collection with an
+exclusive `0..1`; proptest's `SizeRange::end_incl()` is `end - 1`, so `0..1`
+means *exactly zero elements, always*. `generate_par(d)` produced, for every
+`d`, one of only **two** values, and `generate_send` / `_receive` / `_new` /
+`_match` / `_bundle` / `_connective` were **never invoked**. This is a stronger
+form of the defect recorded as limit #3 in
+[§8.4](#84--the-limits--what-this-standard-does-not-establish): the earlier
+finding was "zero `Expr` nodes across 256 draws"; the cause is that the
+generators below `Par` never ran at all.
+
+Fixed to `0..=2`, with `assert_generator_not_vacuous` and six named guards.
+
+> ⚠ **A consequence for whoever extends `models/tests/scored_term_sort_test.rs`.**
+> The sorter is a **normalizer** and is therefore **not injective**. Directly
+> measured: `Par{exprs:[GInt 1, GInt 2]}` and `Par{exprs:[GInt 2, GInt 1]}` are
+> unequal terms (`Par`'s `PartialEq` compares `exprs` as an ordered `Vec`) that
+> sort to **equal terms with equal scores**. Three tests in that file assert an
+> iff that is consequently false; they pass only because two independent draws
+> are unlikely to be permutations of one another. **They cannot gate the
+> sorter's own conversion**, which is why Stage C-1 carries its own total-order
+> differential.
+
+**The gate's `dismantle` walked `EListBody` only.** Anything else dropped
+recursively, so any broadened probe shape would have measured `Drop` rather
+than its subject. Replaced by
+`models::rust::rholang::par_children::dismantle`, driven by the canonical
+child-slot table.
+
+**The canonical child-slot table.** Four independent enumerations of the
+36-variant `ExprInstance` schema already existed. `par_children.rs` makes drift
+a **compile error** (every match is exhaustive, no `_` arm) and records
+`substitute_descends_into` — the checkable statement that `EPathmapBody` and
+`EZipperBody` are **not** descended into by substitution, which must be
+reproduced verbatim because descending would change signed bytes.
+
+#### Stage B — the substitution SCC
+
+```
+                          debug B/level        release B/level
+  substitute_no_sort      195,728  ->  0       27,179  ->  0
+  substitute (sorted)     195,754  ->  78,583  27,179  ->  6,495   = the SORTER
+  binders, deep env        48,878  ->  0
+  binders, ground env      33,242  ->  0
+  width (siblings)              0  ->  0
+```
+
+`reported_reproducer_depth_survives_a_default_worker_stack` is **green** and no
+longer `#[ignore]`d.
+
+⚠ **The trap [§5.1](#51-what-the-composite-means-operationally) predicted, in
+the measured numbers.** `SubstituteTrait<Par>::substitute` is
+`substitute_no_sort` followed by one `ParSortMatcher::sort_match`. Stage B
+converted the first half, so the sorted entry point moved from 195,754 to
+78,583 B/level — *the sorter's constant to within 0.01%* — which supports depth
+≈ 24 on a 2 MiB worker, comfortably past the depth-10 reproducer. **The
+reproducer test therefore went green while the sorter, the printer and (before
+C-1) the comparator were all still Θ(depth).** That distinction is written into
+the test's own doc comment.
+
+**The named residual.** `Env::get` returns its value cloned, because
+substituting a `BoundVar` splices the bound term into the result and a binding
+may be used many times. Measured 15,850 B/level — `Par::clone` to within 0.2% —
+identical in the recursive form, and bounded by the depth of the **bound value**
+rather than of the term traversed. It sits in the tripwire as
+`substitute_deep_binding`, never in the converted list.
+
+**Breaking change.** `SubstituteTrait<Expr>` is removed. Its `substitute` was
+dead and had diverged from its live twin — the `EMinusBody` arm rebuilt the term
+as an `EPlusBody`. `Expr`'s live capability survives as the inherent
+`Substitute::substitute_expr_no_sort`.
+
+#### Stage C-1 — the score tree
+
+`compare_score`, the sibling walk, `Clone`, `PartialEq` and `Drop` are explicit
+worklists; `Debug` is deliberately left derived (row 6's class; assertion-message
+only; hand-writing it would trade format-drift risk for no liveness gain).
+
+The obligation was discharged as [§8.2](#82-why-each-conversion-is-neutral-by-construction--per-traversal)
+requires for this traversal — *stricter*, not vacuous, because
+`cost_accounting/sig.rs` signs `sort_match(&par).term.encode_to_vec()`:
+agreement with the retained recursive oracle over every ordered pair,
+reflexivity, antisymmetry, transitivity over every ordered triple, and — the
+property `sig.rs` actually depends on — that `sort_vec` produces the **oracle's
+permutation**, not merely a same-multiset ordering.
+
+`sort_by` is kept and `sort_unstable_by` is rejected: the comparator returns
+`Equal` for distinct terms with equal scores, so an unstable sort would be free
+to reorder them and fork the canonical form.
+
+### 11.4 The gate, and one thing it found in itself
+
+`converted_traversals_are_depth_independent` now carries, **in both profiles**:
+
+```
+depth axis   substitute_no_sort   substitute_binders
+             score_cmp            tree_drop            tree_clone
+width axis   substitute_wide      score_cmp_wide
+```
+
+`assert_depth_independent` gained a second half, and it is not decoration.
+The fixed-stack ladder alone is **insufficient** for the cheap members:
+`compare_score` at 1,329 B/level with a ~40 KiB intercept needs 381 KiB at depth
+256, which fits inside the gate's 1 MiB stack — a still-Θ(depth) comparator
+would have **passed**. `assert_no_slope` bisects the minimum stack at the two
+ends of a 4 → 4,096 ladder (4 → 65,536 on the width axis) and requires no
+growth. It is profile-independent because it compares a traversal against
+itself.
+
+Two harness defects the gate found in itself, both fixed:
+
+* the score-tree subjects built their inputs on the gated thread and reported
+  **78,573 B/level** — the sorter's constant to within 0.01%, not the
+  comparator's 1,298;
+* `substitute_binders` reported **443 B/step** because it dropped a deep
+  *environment* through the recursive `drop_in_place` after the traversal had
+  already finished.
+
+Both are the same lesson as the `prost` field-number bug in
+[§4.3](#43-m3--measurement-as-the-discriminator-of-last-resort) and the
+`generate_par` vacuity in §11.3: **a harness that cannot fail loudly will
+eventually report a comfortable number for the wrong reason.** That is now
+three occurrences in this work.
+
+### 11.5 What remains, and the revised endpoint
+
+| traversal | debug B/level | release B/level | why it is still here |
+|---|---:|---:|---|
+| `ParSortMatcher` + 9 sorter files | 78,579 | 6,495 | **Stage C-2, not landed.** It is now the binding constraint on the reduce path, and it is what `substitute` (sorted), `normalize`, `SortedParHashSet` and `SortedParMap` all reduce to. |
+| `PrettyPrinter::_build_string_from_expr` | 41,840 | 4,242 | **Stage D, not landed.** Prerequisite: replacing the `&dyn Any` dispatch with a closed `PpNode` enum — `Any` cannot be made exhaustive, and an unmatched type silently yields `"<unprintable: …>"`. Its state mutates and is never restored, so a driver must reproduce the *interleaving*, not merely the post-order. |
+| `rho-pure-eval::eval_with` | 21,584 | 3,359 | a separate SCC, discovered by §11.2, outside Leg-2's scope as scoped |
+| bincode decode | 28,362 | 12,894 | derived serde; **uncapped**; see §11.1 F3 |
+| `<Par as Clone>::clone` | 15,875 | 2,852 | derived — §7.2 disposition; irreducible at `Env::get` |
+| `FoldMatch::free_check` | 483 / sibling | 320 / sibling | width axis, in the matcher |
+| `drop_in_place::<Par>` | 470 | 219 | the irreducible member — §7.2, §8.4 limit #6 |
+
+**The endpoint stated in [§7.4](#74-not-landed--and-precisely-why) is
+incomplete, and §11.2 is why.** "Convert substitution, the sorter and the
+printer" leaves at least two measured Θ(depth) members above `Par::clone`'s
+constant — `rho-pure-eval::eval_with` and bincode decode — plus a second
+width-axis member in the matcher. Done-for-the-family is
+`converted_traversals_are_depth_independent` carrying **every hand-written
+member on both axes in both profiles**, with each remaining derived member
+named, measured and dispositioned in the tripwire. The set is now enumerated;
+what is left is finite and stated.
+
+### 11.6 Evidence ledger — amendment
+
+| # | claim | provenance |
+|---|---|---|
+| E19 | `Tree<T>` carries five Θ traversals, none flat | **Measured** — F1, §11.1 |
+| E20 | `compare_score_nodes` is Θ(**width**) at 201 B/sibling (debug), 0 at `-O2` | **Measured** — F1; the release 0 is tail-call optimisation |
+| E21 | `Env::shift`'s clone contributes 15,636 B/level, = `Par::clone` to 1.5% | **Measured** — F2, differential of two probes |
+| E22 | bincode decode is Θ(depth) at 28,362 B/level and **uncapped** | **Measured** — F3; round-tripped at depth 800 where `prost` `Err`s at 34 |
+| E23 | `generate_par` never invoked its sub-generators at all | **Read** (`SizeRange::end_incl`) + **measured** (six anti-vacuity guards) |
+| E24 | The sorter is not injective | **Measured** — a two-element permutation with equal terms AND equal scores |
+| E25 | Stage B: `substitute_no_sort` 195,728 → 0 B/level; the reproducer survives | **Measured** — probe + gate, both profiles |
+| E26 | Stage B: deep-env and ground-env binder probes become identical | **Measured** — 48,878 / 33,242 → 0 / 0 |
+| E27 | Stage B residual is `Par::clone` at 15,850 B/level | **Measured** — `subst_deep_binding` |
+| E28 | Stage C-1: five score-tree traversals become O(1) on both axes | **Measured** — gate, depth 4→4,096 and width 4→65,536 |
+| E29 | `normalize`, `SortedParHashSet`, `SortedParMap` are `sort_match` | **Measured** — all three within 0.05% of 78,579 |
+| E30 | `rho-pure-eval::eval_with` has its own Θ(depth) recursion at 21,584 B/level | **Measured** — nested-`ENot` probe; the nested-`EList` probe measures `Par::clone` instead |

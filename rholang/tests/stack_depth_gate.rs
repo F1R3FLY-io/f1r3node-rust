@@ -773,7 +773,15 @@ fn theta_depth_tripwire() {
     assert_slope_below("substitute", ceiling(120_000, 11_000), 16, 64);
     // The named residual: `Env::get`'s `<Par as Clone>::clone` of a deep bound
     // value. See `substitute_deep_binding_body`.
-    assert_slope_below("substitute_deep_binding", ceiling(25_000, 5_000), 16, 128);
+    //
+    // Measured 2026-07-26: 15,850 B/level debug — `<Par as Clone>::clone`'s
+    // 15,872 to within 0.2% — and 7,247 B/level release against `clone`'s own
+    // 2,867. The release factor of ~2.5 is inlining: at `-O2` LLVM folds a
+    // couple of levels of the recursive `Par::clone` into the enclosing frame
+    // at THIS call site, which does not happen when `clone` is probed on its
+    // own. Same traversal, larger per-level frame. Ceilings are ~1.5× measured,
+    // per profile, as everywhere else in this test.
+    assert_slope_below("substitute_deep_binding", ceiling(25_000, 12_000), 16, 128);
     assert_slope_below("sort", ceiling(120_000, 11_000), 16, 64);
     assert_slope_below("pretty", ceiling(65_000, 7_000), 16, 64);
     assert_slope_below("clone", ceiling(25_000, 5_000), 16, 128);

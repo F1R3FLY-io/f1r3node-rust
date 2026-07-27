@@ -312,16 +312,21 @@ pub fn every_expr_instance() -> Vec<(&'static str, ExprInstance)> {
         ),
         (
             "EZipperBody",
+            // `..Default::default()` rather than an exhaustive struct literal:
+            // `EZipper` is a `prost` message and gains fields additively (the
+            // `cursor_kind` cursor-semantics tag, for one). A corpus entry that
+            // enumerated every field would break this file every time the
+            // schema grew, for no coverage — the fields that matter to
+            // substitution are the ones set here, and the exhaustiveness that
+            // DOES matter (one entry per `ExprInstance` variant) is enforced by
+            // `corpus_covers_every_expr_instance_variant`.
             ExprInstance::EZipperBody(EZipper {
                 pathmap: Some(pathmap_of(vec![bound_var(0)])),
                 current_path: vec![vec![1, 2]],
                 is_write_zipper: false,
                 locally_free: vec![0xff],
                 connective_used: false,
-                // Additive `EZipper` field (RhoTypes.proto): 0 = SPLIT, the
-                // cursor semantics that preceded it. Set explicitly only
-                // because this is a struct literal.
-                cursor_kind: 0,
+                ..Default::default()
             }),
         ),
         (
