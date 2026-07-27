@@ -1602,6 +1602,18 @@ does not choose between them.** What it does record is that the two are not
 mutually exclusive and that the measurement above is what any choice must be
 made against.
 
+> ⚠ **SUPERSEDED (2026-07-27) — the decision is made, and it is CONVERT.**
+> `normalize_ann_proc`'s 26-function SCC is an explicit pushdown machine at
+> commit `07853de0`, and `normalize` / `normalize_wide` are gate subjects in
+> `converted_traversals_are_depth_independent` at `88ef41cd`. Measured
+> 43,542 → **0** B/level debug and 7,261 → **0** release; the 577-byte
+> reproducer, and a 200 kB one, normalize on a 2 MiB worker stack in both
+> profiles. **"Bound it first" was rejected on the merits**, and the reason is
+> the profile split this very section measures: release aborted at 288 and debug
+> at 46, so no single constant is neither inert in release nor newly restrictive
+> in debug. Full execution record, including the two derived residuals the
+> conversion exposed: [§13](#13-stage-g--the-normalizer-execution-record-2026-07-27).
+
 ---
 
 ### 12.4 ★ What the enumeration method can and cannot see
@@ -1892,6 +1904,13 @@ tripwired: it is not a gate subject at all, only a `stack_depth_probe.rs`
 subject. Awaiting the decision in
 [§12.3](#123--577-bytes-of-source-abort-a-release-node-before-metering).
 
+> ⚠ **SUPERSEDED (2026-07-27).** Group **(C) is now EMPTY**: `normalize` and
+> `normalize_wide` are in group (A) at `88ef41cd`, both at 0 B/level in both
+> profiles. `normalize` is the only member ever to enter the converted list
+> *from* group (C) rather than from the tripwire — every other conversion was
+> promoted from a measured ceiling, this one from a measured constant with no
+> disposition at all. See [§13](#13-stage-g--the-normalizer-execution-record-2026-07-27).
+
 **What "done for the family" now means.** [§11.5](#115-what-remains-and-the-revised-endpoint)'s
 definition stands and is now within reach of being stated concretely: the
 converted list carries **every hand-written member on both axes in both
@@ -2142,3 +2161,322 @@ arguments in [§8.2](#82-why-each-conversion-is-neutral-by-construction--per-tra
 | E49 | The gate carries 13 converted subjects and 9 tripwire subjects in both profiles at `b9aaa3d4` | **Measured** — `converted_traversals_are_depth_independent` and `theta_depth_tripwire`, `--test-threads 1`, debug and release |
 | E50 | The workspace bar is green: 3,506 run, 3,506 passed, 33 skipped, 663.7 s | **Measured** — `cargo nextest run --workspace --no-fail-fast`; 13 of those tests belong to an unrelated in-flight file, so `b9aaa3d4`'s own count is 3,493 |
 | E51 | The two `deep_recursion_*_should_not_stackoverflow` failures seen under load are wall-clock-budget timeouts, not regressions | **Measured** — the same two tests complete in 93.4 s and 95.0 s in isolation against their internal 180 s budget (`ac2eae51`) |
+
+---
+
+## 13. Stage G — the normalizer, execution record (2026-07-27)
+
+[§12.3](#123--577-bytes-of-source-abort-a-release-node-before-metering) left one
+member of the family with no disposition, and named the choice: convert it, or
+bound it first. This section records that the choice was made, what it cost, and
+the two things the conversion found that no plan had predicted.
+
+**Commits.** `07853de0` (the machine, the oracle twin, the differential) and
+`88ef41cd` (the gate subjects and the named regression). Measurement conditions
+are [§12](#12-reconciliation--the-tree-at-b9aaa3d4-2026-07-27)'s, unchanged.
+
+---
+
+### 13.1 The decision, and why "bound it first" was rejected
+
+A pre-normalization depth limit is cheap, is one `if`, and was rejected on the
+merits rather than on taste. Two reasons, and the second is the one that
+settles it:
+
+1. **It is protocol-visible.** It changes which deploys a node accepts, which
+   is the standing decision [§7.3](#73-the-prost-decode-ceiling-is-a-constraint-on-the-fix-not-a-defect-to-fix)
+   already names — *no new protocol-level nesting cap*.
+2. **★ It cannot be given a profile-independent constant.** This is not a
+   preference; it is arithmetic on the numbers
+   [§12.3](#123--577-bytes-of-source-abort-a-release-node-before-metering)
+   measured. The guard would have to satisfy
+
+   ```math
+   D_{\text{guard}} \;\le\; 287 \quad\text{(release, or the guard is inert)}
+   \qquad\text{and}\qquad
+   D_{\text{guard}} \;\le\; 45 \quad\text{(debug, or the node still aborts)}
+   ```
+
+   so any single constant is either **inert in release** — a `debug`-derived 45
+   rejects nothing release could not already survive, while release still
+   accepts nothing it could not — or **newly restrictive**, refusing at depth 46
+   programs that release handled to 287. A guard whose safe value depends on how
+   the binary was compiled is not a protocol rule; it is a compilation artefact
+   wearing one.
+
+Converting removes the ceiling rather than choosing where to put it. The same
+asymmetry is why the named regression test carries **one** depth list for both
+profiles ([§13.5](#135-the-gate-and-the-named-regression)).
+
+---
+
+### 13.2 What was converted, and the shape that made it hard
+
+The five conversions that preceded this one are **post-order folds**: children
+are independent, so a driver pushes them all at once and reassembles on the way
+up. This SCC's state is **threaded**, and all three carriers thread differently:
+
+```text
+   ┌─ free_map ─────────────────────────────────────────────────────────┐
+   │   sibling₀ ──▶ sibling₁ ──▶ sibling₂        LEFT-TO-RIGHT           │
+   │      binds 1     binds 2      binds 0                               │
+   │      levels 0    levels 1,2   —             a sibling that binds n  │
+   │                                             SHIFTS every later      │
+   │                                             sibling's de Bruijn     │
+   │                                             levels by n             │
+   └─────────────────────────────────────────────────────────────────────┘
+   ┌─ bound_map_chain ──────────────────────────────────────────────────┐
+   │   push on entry to a binder ─────▶ … ─────▶ pop on exit             │
+   │   under the recursion this was STACK UNWINDING; the machine has no  │
+   │   unwinding, so each continuation OWNS the chain it resumes with    │
+   └─────────────────────────────────────────────────────────────────────┘
+   ┌─ ProcVisitInputs.par ──────────────────────────────────────────────┐
+   │   built on the way DOWN — `prepend_expr(input_par, …)` — as well as │
+   │   up, so a post-order `Combine` alone cannot reassemble the result  │
+   └─────────────────────────────────────────────────────────────────────┘
+```
+
+Because child $`i`$'s **input** depends on child $`i-1`$'s **output**, the
+machine schedules one child at a time and each continuation is a *frame*
+holding exactly the locals its recursive counterpart held across its recursive
+call. Three step shapes cover all 26 members:
+
+| shape | what it does | which members |
+|---|---|---|
+| `Step::Done` | publish a value | the leaves — `Nil`, ground literals, `SimpleType`, `ProcVar`, `VarRef`, and the two error arms |
+| `Step::Descend` | push one continuation, then one child | every structural arm |
+| `Step::Tail` | **replace** the obligation | the six desugarings — `let`, `!?`, multi-receipt `for`, complex-source `for`, `recognize_signed_term`, `recognize_signed_join` |
+
+`Step::Tail` is worth its own row because it is the one place the machine is
+*strictly better* than the recursion rather than merely equal to it: those six
+end in an unconditional `normalize_ann_proc(&rewritten, input, …)`, i.e. a
+proper tail call, which the recursive form paid a native frame for anyway. A
+sequential `let` with $`n`$ bindings unrolls through $`n`$ nested `match`
+rewrites; under the recursion that was $`n`$ frames stacked on top of the term's
+own nesting, and it is now flat.
+
+---
+
+### 13.3 The invariants — and why `sort_drive`'s form had to be re-derived
+
+[`sort_drive`](../../../models/src/rust/rholang/sorter/sort_drive.rs) maintains
+
+```math
+|V| \;+\; D \;+\; |C| \;-\; \sum_{k \in C} \mathrm{arity}(k) \;=\; 1
+```
+
+where $`V`$ is the value stack, $`D`$ the pending descends, $`C`$ the pending
+continuations. **That statement holds in the normalizer's machine too, and it
+degenerates.** Every continuation here pops exactly one value — the child that
+just finished — so $`\sum \mathrm{arity} = |C|`$ and the law collapses to
+
+```math
+|V| \;+\; D \;=\; 1 \qquad\text{(the conservation law)}
+```
+
+This is recorded rather than transcribed, for the reason the sorter's own note
+gives about the *previous* correction to this invariant: an invariant that fires
+spuriously is worse than none, and one that **cannot** fire is worth nothing at
+all. The degeneracy is not a weakness of the machine; it is a fact about
+threaded traversals. A batch machine spreads a node's $`n`$ obligations across
+the work stack where a pop-count can see them; a threaded machine holds $`n-1`$
+of them *inside* the continuation, where a pop-count structurally cannot.
+
+The cross-checking strength therefore moves to a **slot invariant**, which is
+where the real bug class lives:
+
+```math
+\forall k \in C:\quad \mathrm{filled}(k) \;<\; \mathrm{arity}(k)
+\qquad\text{and, when }k\text{ runs,}\qquad
+\bigl(\mathrm{filled}(k)+1 = \mathrm{arity}(k)\bigr) \iff k \text{ produced a value}
+```
+
+* `NormKont::arity` — an **independently spelled** exhaustive `match` giving the
+  total child count, read off the *node's* shape: `elements.len()`, `2`, `3`,
+  `1 + args.len()`, `1 + |formals| + 1`, $`\sum_{\text{groups}}|g| + |\text{sources}| + [\text{guard}] + 1`$.
+* `NormKont::filled` — read off the continuation's **accumulators**: vector
+  lengths and `Option` slots, i.e. what the machine has actually delivered.
+
+The two meet exactly once per continuation, and the assertion is two-sided so
+neither "finished early" nor "asked for another" can pass.
+
+> **It fired, during development, on the first term it was given.** `ParSeq`
+> was written with `idx` meaning *the next operand to schedule* while `filled`
+> needs *operands absorbed* — an off-by-one that is invisible in behaviour
+> (the operands are still visited in order) and would have sat in the machine
+> indefinitely. The assertion reported
+> `a continuation absorbed child 50000 of 50000 and then asked for another`
+> on the pre-existing 50,000-operand `p_par` test. That is the whole argument
+> for spelling `arity` twice.
+
+⚠ Both are computed **only** under `debug_assertions`. `Match::filled` sums over
+its completed cases and `Input::filled` over its pattern groups, so evaluating
+them unconditionally would put an $`O(n)`$ read on every $`O(1)`$ machine step
+and make the drive quadratic **in a release node**. They are diagnostics, not
+machinery.
+
+---
+
+### 13.4 ★ The two residuals the conversion exposed, and the ladder down
+
+The conversion did not reach 0 B/level in one step, and the intermediate
+readings are the most useful thing this section records: **removing the largest
+consumer reveals the next one, and the next two were both derived traversals the
+recursion had been masking.** Each was dispositioned exactly as
+[§7.2](#72-derived-traversals--leg-1-only-by-construction) prescribes — delete
+the *call site*, never the impl.
+
+| # | reading (debug) | what it was | how it was removed |
+|---|---:|---|---|
+| 0 | **43,542** | `normalize_ann_proc`'s own recursion | the machine (`07853de0`) |
+| 1 | **15,850** | `<Par as Clone>::clone` | Leg-1 at 14 call sites |
+| 2 | **434** | `drop_in_place::<Par>` | `par_children::dismantle` at 4 sites |
+| 3 | **0** | — | — |
+
+**Reading 1 is recognisable, and that is how it was identified.** 15,850 is
+`<Par as Clone>::clone`'s constant to within 0.2 % of the 15,875 / 15,914
+[§5](#5-measured-constants-per-traversal-and-per-profile) records — the same
+floor `SortedParHashSet` and `SortedParMap` fell onto when the sorter was
+converted ([§12.1](#121-what-landed-after-11-was-written) row 1). Every arm
+cloned its child `Par` into an accumulator and then read `locally_free` /
+`connective_used` off the original; those are **shallow** fields, so they are
+read first and the deep clone is deleted.
+
+> ★ The sharpest instance is the `HasLocallyFree` readers, and it generalises
+> past this file. The impl is
+> ```rust
+> impl HasLocallyFree<Par> for Par {
+>     fn connective_used(&self, p: Par) -> bool { p.connective_used }
+>     fn locally_free(&self, p: Par, _depth: i32) -> Vec<u8> { p.locally_free }
+> }
+> ```
+> — it does not recurse, it reads one cached field, and it takes its subject
+> **by value**. That signature *forces* every caller to write
+> `x.locally_free(x.clone(), d)`: two Θ(depth) deep clones to read one cached
+> bitset. `models`' by-reference readers already exist for exactly this reason;
+> the normalizer's callers now read the fields directly, which is byte-identical
+> by construction because the clone and the original agree on every field.
+
+**Reading 2 is the same residual `b98fa20a` found in `substitute`, in the same
+place.** `Compiler::normalize_term` is `normalize_ann_proc` *then*
+`ParSortMatcher::sort_match`, and the sorter READS its input and BUILDS a fresh
+term — so the un-sorted intermediate falls out of scope, recursively. Both exits
+now hand it to `par_children::dismantle`. Three further sites were fixed for the
+same reason and they matter more than the arithmetic suggests, because they are
+all on the **rejection** path — where a hostile input actually lands:
+`norm_drive`'s `unwind`, the three `bundle` rejections, and the duplicate-channel
+rejection in `for`. A term that is refused must not overflow on the way *out*.
+
+**Measured, both profiles, by direct bisection of the `normalize` probe:**
+
+| profile | ladder | before | after |
+|---|---|---|---|
+| debug | 10 / 20 / 40 / 80 | $`S(N) = 96{,}701 + 43{,}542\,N`$ | — |
+| debug | 4 / 256 / 1,024 / 4,096 | — | $`S(N) = 241{,}664 + 0\,N`$ (236 KiB, flat) |
+| release | 20 / 40 / 80 / 160 | $`S(N) = 17{,}631 + 7{,}261\,N`$ | $`S(N) = 32{,}768 + 0\,N`$ (32 KiB, flat) |
+| release | 4 / 256 / 1,024 / 4,096 | — | 32 KiB at every point |
+
+The "before" fits reproduce [§12.2](#122--a-corrected-attribution--normalize-was-never-the-sorter-in-release)'s
+E37 and E36 **exactly** — 96,701 + 43,542 N and 17,631 + 7,261 N — which is what
+licenses reading the "after" against them.
+
+---
+
+### 13.5 The gate, and the named regression
+
+`normalize` and `normalize_wide` are in
+`converted_traversals_are_depth_independent`, O(1) over 4 → 4,096 (depth) and
+4 → 65,536 (width), in **both** profiles. Group **(C) of
+[§12.6](#126-the-family-at-b9aaa3d4--converted-tripwired-and-open) is now
+empty**, and `normalize` is the only member ever promoted into the converted
+list from it — every other conversion was promoted from a measured *ceiling*,
+this one from a measured *constant with no disposition*.
+
+`the_577_byte_reproducer_is_a_deploy_and_not_a_node_abort` pins the reported
+defect at depths **288, 1,152 and 100,000** on a 2 MiB stack.
+
+> ★ **Those depths do not branch on profile, and the reason is
+> [§13.1](#131-the-decision-and-why-bound-it-first-was-rejected).** Its
+> neighbour `reported_reproducer_depth_survives_a_default_worker_stack` asserts
+> 10 in debug and 70 in release, because the traversal *it* guards is still
+> profile-sensitive at the margin. Here the profile split **is** the defect. A
+> regression test carrying a `cfg!(debug_assertions)` branch would re-import the
+> asymmetry into the one artefact whose job is to exclude it.
+
+Both subjects apply **Rule V at both ends**: the input is checked for its
+bracket run / sibling count and the *output* for its `EList` nesting / sibling
+count, with iterative checkers so nothing measures itself. Without the output
+half the gate would pass for a normalizer that **rejected** the input — which
+also does not abort, and would be a different regression wearing the same green.
+
+---
+
+### 13.6 The proof, and the eighth thing that could not fail
+
+`normalize` is on the deploy **and replay** path, so [§8](#8--the-proof-standard)
+applies in full. There is no charge trace to compare — and that is a property of
+this member, not an omission: it runs before a budget exists, and no function in
+the SCC contains a `reserve_*` or `Cost::` call. Neutrality reduces to *result*
+equality, in full.
+
+* **`compiler::normalize_recursive`** — the 26-function SCC **verbatim** as of
+  `6ccf71f2`, `#[cfg(test)]`, with intra-SCC calls renamed so the copy calls
+  itself and can never re-enter production. Provenance is recorded inline per
+  block as `file:line-line`.
+* **`compiler::normalize_differential`** — 8 tests. Every case compares the
+  normalized term's `encode_to_vec()` **bytes**, the final `FreeMap`, and the
+  final `BoundMapChain` — or, on the error path, the `{:?}` of the error.
+
+**"Both accepted" is deliberately not the claim.** Free-variable numbering is
+consensus-visible, and a mis-threaded driver fails *silently*: it emits a
+well-formed `Par` with different de Bruijn indices. Nothing crashes; only byte
+comparison sees it.
+
+**Anti-vacuity, three ways, because this campaign has been bitten seven times
+([§12.5](#125--the-vacuity-ledger-and-the-two-rules-it-produced)).**
+
+1. Every corpus entry declares how many free bindings it carries, and is
+   **measured against the oracle**. A corpus that quietly collapsed to closed
+   terms — the shape on which a threading defect is invisible — fails.
+2. A dedicated `DIFFERING_SIBLING_BIND_COUNTS` family, plus a test that proves
+   the witnesses *really do* bind different counts per sibling. If every sibling
+   binds the same number, reversing the threading is unobservable and the family
+   is decorative.
+3. ★ **The differential was proven able to go red.** The exact post-order defect
+   — seed every sibling from the *entry* free map instead of its predecessor's —
+   was injected into the **production** machine, not into a mock. It turned the
+   differential red on `[*a, [*b, *c]]` with the signature `16, 2` against
+   `16, 4`: varint de Bruijn index 1 against 2. The injection was then reverted
+   and the suite re-run green.
+
+**Two live defects the differential caught while it was being written**, both of
+which would have passed a "both accepted" check:
+
+| defect | what it was | how it presented |
+|---|---|---|
+| `~P` span | the dispatch passed `proc.span` where the recursive form passed `arg.span` — the span the *free map* records for the connective | byte divergence on `new ch in { for (@{~7} <- ch) { Nil } }` |
+| the harness itself | `format!("{:?}")` on a `HashMap`-backed `FreeMap` compares **iteration order** | a reported divergence on a case whose encoded bytes were byte-**identical** |
+
+The second belongs in the vacuity ledger as its own mechanism, and it is the
+inverse of the other seven: not a check that could not fail, but a check that
+could not *succeed* — a false red rather than a false green. It is the same root
+cause (comparing a rendering instead of a value) and the same remedy (compare
+the value; `HashMap`'s `PartialEq` is order-independent and the derived `Debug`
+is for the failure message only).
+
+---
+
+### 13.7 Evidence ledger — third amendment
+
+| # | claim | provenance |
+|---|---|---|
+| E52 | `normalize` is **0 B/level in both profiles**, flat 4 → 4,096 | **Measured** — `scripts/stack_depth_probe.sh`, $`S(N)=241{,}664+0N`$ debug and $`32{,}768+0N`$ release; gate `converted_traversals_are_depth_independent`, both profiles; **commits** `07853de0`, `88ef41cd` |
+| E53 | The pre-conversion baseline reproduces §12.2 exactly | **Measured** — $`96{,}701 + 43{,}542\,N`$ (debug, depths 10/20/40/80) and $`17{,}631 + 7{,}261\,N`$ (release, 20/40/80/160), identical to E37 / E36 |
+| E54 | ★★ The 577-byte reproducer is now a processed deploy, not a node abort, in **both** profiles — as is a 200 kB one | **Measured** — source depths 288, 1,152 and 100,000 on a 2 MiB thread; `the_577_byte_reproducer_is_a_deploy_and_not_a_node_abort` |
+| E55 | Removing the recursion exposed `<Par as Clone>::clone` at **15,850** B/level — its own constant to 0.2 % — closed by Leg-1 at 14 call sites | **Measured** — intermediate bisection; **read** — `HasLocallyFree<Par>`'s by-value field readers |
+| E56 | Removing the clones exposed `drop_in_place::<Par>` at **434** B/level, the same residual and fix as `b98fa20a` | **Measured** — intermediate bisection; closed by `par_children::dismantle` at 4 sites, three of them on rejection paths |
+| E57 | The slot invariant fires on a real defect: `ParSeq`'s `idx` meant "next" where `filled` needs "absorbed" | **Measured** — it fired on the pre-existing 50,000-operand `p_par` test during development |
+| E58 | ★ The differential can go red, on the shape that fails silently | **Measured** — the post-order defect injected into the production machine diverged on `[*a, [*b, *c]]` (`16,2` vs `16,4`), then reverted |
+| E59 | Two live defects were caught by the differential: the `~P` span, and `Debug`-string comparison of a `HashMap`-backed `FreeMap` | **Measured** — both surfaced as byte/rendering divergences on first run |
+| E60 | Test parity: all 139 pre-existing `#[test]` functions in the compiler subtree are present, plus 8 new | **Measured** — name-by-name set difference against `HEAD`; `-p rholang --lib` 274 run / 274 passed / 0 skipped |
+| E61 | A depth guard cannot be given a profile-independent constant | **Derived** — $`D \le 287`$ (release, else inert) and $`D \le 45`$ (debug, else still aborts) are unsatisfiable together by a useful constant; from E39's measurements |
