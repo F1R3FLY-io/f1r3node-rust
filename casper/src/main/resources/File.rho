@@ -1,0 +1,392 @@
+// File.rho — File I/O FIP §File agent library (MVP slice).
+//
+// The File agent wraps a native fd (opened via the Phase 1
+// rho:io:fs:native:1.0.0/* syscalls) with a Rholang-side interface.
+// Callers hold a bundle+{*this} handle and invoke methods via the
+// method-call sugar.
+//
+// ## Delivered methods (this MVP)
+//
+//   - `writeByteArray(bytes)` — write bytes to the current cursor
+//   - `writeString(s)` — write s.toUtf8Bytes() to the current cursor
+//   - `readN(n)` — read up to n bytes from the current cursor
+//   - `seek(offset, whence)` — reposition cursor
+//   - `tell()` — current cursor position
+//   - `size()` — file size in bytes
+//   - `flush()` — fsync (data + metadata)
+//   - `close()` — release the fd and revoke the agent
+//   - `default(...@args)` — FSERR_UNSUPPORTED for unknown methods
+//
+// ## Deferred to follow-up commits
+//
+//   - Stream producers: `chars`, `bytes`, `lines`, `readLine`, `bytesAt`
+//   - Stream consumers: `writeChars`, `writeBytes`, `writeLine`,
+//     `writeLines`, `writeBytesAt`
+//   - Buffer-taking methods: `readInto`, `readAtInto`, `readLineInto`,
+//     `readLinesInto`, `writeFrom`, `writeFromAt`
+//   - Convenience: `linesAsStrings(cap)`, `forEachLine(handler, cap)`
+//   - Permissions: `chmod(mode)`, `chown(owner, group)`
+//   - Truncation: `truncate(n)`
+//   - Explicit range locks: `lockRange(offset, length, mode)`
+//
+// ## Constructor signature
+//
+//   File!?(*fd, *canonRoot, *mode, *fsRead, *fsWrite, *fsSeek,
+//          *fsTell, *fsSize, *fsFlush, *fsClose)
+//
+// The syscall dispatchers are captured from the enclosing `new`
+// scope, so real-world callers (the Fs agent — Phase 6) supply them
+// by binding native URNs like:
+//
+//   new fsRead(`rho:io:fs:native:1.0.0/read`), fsWrite(`...`) in {
+//     ... File definition ...
+//   }
+//
+// while tests supply mock contracts for the same names.  Rather than
+// pass all six dispatchers as ctor args (very awkward), File.rho
+// simply CAPTURES them from its enclosing scope.  The test/genesis
+// wrapper is responsible for binding them.
+//
+// ## Native URN call convention
+//
+// Native fs URNs from Phase 1 use `(args..., ack)` — ack channel is
+// LAST.  The agent-block sugar's `x!?(...)` puts the return channel
+// FIRST.  So we use explicit send patterns:
+//
+//   new retCh in {
+//     fsRead!(fd, n, *retCh) |
+//     for (@reply <- retCh) { ... }
+//   }
+//
+// rather than method-call sugar.  This also documents the syscall
+// dispatchers as taking their args in native order.
+//
+// ## State layout
+//
+//   @[*private, *fdP]     — the fd tuple: (fd, canonRoot, mode) or
+//                            "REVOKED".  Set at ctor, revoked at
+//                            close.  Peeked (<<-) by all methods.
+//   @[*private, *stateP]  — a transition tag:
+//                            "open" | "closed"
+//                           Consumed via linear-receive on every
+//                           mutating call to serialize concurrent
+//                           holders (same discipline as Buffer.rho).
+
+new File, fdP, stateP in {
+
+  agent File {
+    constructor(@fd, @canonRoot, @mode) {
+      @[*private, *fdP]!((fd, canonRoot, mode)) |
+      @[*private, *stateP]!("open")
+    } |
+
+    // -- writeByteArray ---------------------------------------------
+    //
+    // Type-guarded on bytes per the Buffer.rho / Stream.rho pattern.
+    // Dispatches to native fsWrite; reply passes through.
+    method writeByteArray(@bytes) {
+      match bytes {
+        b /\ ByteArray => {
+          for (@state <- @[*private, *stateP]) {
+            match state {
+              "closed" => {
+                @[*private, *stateP]!("closed") |
+                return!([false, "FSERR_CLOSED", "file is closed"])
+              }
+              "open" => {
+                for (@params <<- @[*private, *fdP]) {
+                  match params {
+                    (fd, _root, mode) => {
+                      match mode {
+                        "r" => {
+                          // Read-only file — reject write.
+                          @[*private, *stateP]!("open") |
+                          return!([false, "FSERR_UNSUPPORTED", "read-only file"])
+                        }
+                        _ => {
+                          new retCh in {
+                            fsWrite!(fd, b, *retCh) |
+                            for (@reply <- retCh) {
+                              @[*private, *stateP]!("open") |
+                              return!(reply)
+                            }
+                          }
+                        }
+                      }
+                    }
+                    _ => {
+                      @[*private, *stateP]!("open") |
+                      return!([false, "FSERR_IO", "fd params malformed"])
+                    }
+                  }
+                }
+              }
+              _ => {
+                @[*private, *stateP]!("closed") |
+                return!([false, "FSERR_CLOSED", "file state unrecognized"])
+              }
+            }
+          }
+        }
+        _ => return!([false, "FSERR_BAD_ARG", "bytes must be a ByteArray"])
+      }
+    } |
+
+    // -- writeString(s) ---------------------------------------------
+    //
+    // Convenience wrapper: dispatches to writeByteArray on
+    // s.toUtf8Bytes().  Type-guarded on s.
+    method writeString(@s) {
+      match s {
+        str /\ String => {
+          for (@reply <- @(*this)!?("writeByteArray", str.toUtf8Bytes())) {
+            return!(reply)
+          }
+        }
+        _ => return!([false, "FSERR_BAD_ARG", "s must be a String"])
+      }
+    } |
+
+    // -- readN(n) ---------------------------------------------------
+    method readN(@n) {
+      match n {
+        i /\ Int => {
+          match i <= 0 {
+            true => return!([false, "FSERR_BAD_ARG", "n must be positive"])
+            false => {
+              for (@state <- @[*private, *stateP]) {
+                match state {
+                  "closed" => {
+                    @[*private, *stateP]!("closed") |
+                    return!([false, "FSERR_CLOSED", "file is closed"])
+                  }
+                  "open" => {
+                    for (@params <<- @[*private, *fdP]) {
+                      match params {
+                        (fd, _root, _mode) => {
+                          new retCh in {
+                            fsRead!(fd, i, *retCh) |
+                            for (@reply <- retCh) {
+                              @[*private, *stateP]!("open") |
+                              return!(reply)
+                            }
+                          }
+                        }
+                        _ => {
+                          @[*private, *stateP]!("open") |
+                          return!([false, "FSERR_IO", "fd params malformed"])
+                        }
+                      }
+                    }
+                  }
+                  _ => {
+                    @[*private, *stateP]!("closed") |
+                    return!([false, "FSERR_CLOSED", "file state unrecognized"])
+                  }
+                }
+              }
+            }
+          }
+        }
+        _ => return!([false, "FSERR_BAD_ARG", "n must be an integer"])
+      }
+    } |
+
+    // -- seek(offset, whence) ---------------------------------------
+    method seek(@offset, @whence) {
+      match offset {
+        o /\ Int => {
+          match whence {
+            w /\ String => {
+              for (@state <- @[*private, *stateP]) {
+                match state {
+                  "closed" => {
+                    @[*private, *stateP]!("closed") |
+                    return!([false, "FSERR_CLOSED", "file is closed"])
+                  }
+                  "open" => {
+                    for (@params <<- @[*private, *fdP]) {
+                      match params {
+                        (fd, _root, _mode) => {
+                          new retCh in {
+                            fsSeek!(fd, o, w, *retCh) |
+                            for (@reply <- retCh) {
+                              @[*private, *stateP]!("open") |
+                              return!(reply)
+                            }
+                          }
+                        }
+                        _ => {
+                          @[*private, *stateP]!("open") |
+                          return!([false, "FSERR_IO", "fd params malformed"])
+                        }
+                      }
+                    }
+                  }
+                  _ => {
+                    @[*private, *stateP]!("closed") |
+                    return!([false, "FSERR_CLOSED", "file state unrecognized"])
+                  }
+                }
+              }
+            }
+            _ => return!([false, "FSERR_BAD_ARG", "whence must be a String"])
+          }
+        }
+        _ => return!([false, "FSERR_BAD_ARG", "offset must be an integer"])
+      }
+    } |
+
+    // -- tell() -----------------------------------------------------
+    method tell() {
+      for (@state <- @[*private, *stateP]) {
+        match state {
+          "closed" => {
+            @[*private, *stateP]!("closed") |
+            return!([false, "FSERR_CLOSED", "file is closed"])
+          }
+          "open" => {
+            for (@params <<- @[*private, *fdP]) {
+              match params {
+                (fd, _root, _mode) => {
+                  new retCh in {
+                    fsTell!(fd, *retCh) |
+                    for (@reply <- retCh) {
+                      @[*private, *stateP]!("open") |
+                      return!(reply)
+                    }
+                  }
+                }
+                _ => {
+                  @[*private, *stateP]!("open") |
+                  return!([false, "FSERR_IO", "fd params malformed"])
+                }
+              }
+            }
+          }
+          _ => {
+            @[*private, *stateP]!("closed") |
+            return!([false, "FSERR_CLOSED", "file state unrecognized"])
+          }
+        }
+      }
+    } |
+
+    // -- size() -----------------------------------------------------
+    method size() {
+      for (@state <- @[*private, *stateP]) {
+        match state {
+          "closed" => {
+            @[*private, *stateP]!("closed") |
+            return!([false, "FSERR_CLOSED", "file is closed"])
+          }
+          "open" => {
+            for (@params <<- @[*private, *fdP]) {
+              match params {
+                (fd, _root, _mode) => {
+                  new retCh in {
+                    fsSize!(fd, *retCh) |
+                    for (@reply <- retCh) {
+                      @[*private, *stateP]!("open") |
+                      return!(reply)
+                    }
+                  }
+                }
+                _ => {
+                  @[*private, *stateP]!("open") |
+                  return!([false, "FSERR_IO", "fd params malformed"])
+                }
+              }
+            }
+          }
+          _ => {
+            @[*private, *stateP]!("closed") |
+            return!([false, "FSERR_CLOSED", "file state unrecognized"])
+          }
+        }
+      }
+    } |
+
+    // -- flush() ----------------------------------------------------
+    method flush() {
+      for (@state <- @[*private, *stateP]) {
+        match state {
+          "closed" => {
+            @[*private, *stateP]!("closed") |
+            return!([false, "FSERR_CLOSED", "file is closed"])
+          }
+          "open" => {
+            for (@params <<- @[*private, *fdP]) {
+              match params {
+                (fd, _root, _mode) => {
+                  new retCh in {
+                    fsFlush!(fd, *retCh) |
+                    for (@reply <- retCh) {
+                      @[*private, *stateP]!("open") |
+                      return!(reply)
+                    }
+                  }
+                }
+                _ => {
+                  @[*private, *stateP]!("open") |
+                  return!([false, "FSERR_IO", "fd params malformed"])
+                }
+              }
+            }
+          }
+          _ => {
+            @[*private, *stateP]!("closed") |
+            return!([false, "FSERR_CLOSED", "file state unrecognized"])
+          }
+        }
+      }
+    } |
+
+    // -- close() ----------------------------------------------------
+    //
+    // Dispatches to fsClose and marks the file "closed".  Idempotent.
+    // Does NOT wait for fsClose's reply on the second (already-closed)
+    // path — the native table is idempotent on its side too.
+    method close() {
+      for (@state <- @[*private, *stateP]) {
+        match state {
+          "closed" => {
+            @[*private, *stateP]!("closed") |
+            return!([true])
+          }
+          "open" => {
+            for (@params <<- @[*private, *fdP]) {
+              match params {
+                (fd, _root, _mode) => {
+                  new retCh in {
+                    fsClose!(fd, *retCh) |
+                    for (@_reply <- retCh) {
+                      @[*private, *stateP]!("closed") |
+                      return!([true])
+                    }
+                  }
+                }
+                _ => {
+                  @[*private, *stateP]!("closed") |
+                  return!([true])
+                }
+              }
+            }
+          }
+          _ => {
+            @[*private, *stateP]!("closed") |
+            return!([true])
+          }
+        }
+      }
+    } |
+
+    // -- Default arm -----------------------------------------------
+
+    default(...@args) {
+      match args {
+        [*ret, ..._] => ret!([false, "FSERR_UNSUPPORTED", "unknown method"])
+      }
+    }
+  }
+}

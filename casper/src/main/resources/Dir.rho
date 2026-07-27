@@ -1,0 +1,181 @@
+// Dir.rho — File I/O FIP §Dir agent library (MVP slice).
+//
+// The Dir agent wraps a canonical filesystem root path with a
+// Rholang-side interface for listing / metadata / composition.
+// Users receive Dir handles from the Fs agent (Phase 6).
+//
+// ## Delivered methods (this MVP)
+//
+//   - `stat(rel)` — record for the file/dir at `root/rel`
+//   - `exists(rel)` — Bool
+//   - `openFile(rel, options)` — quarantine + open + mint a File
+//     agent.  Mode-attenuates monotonically (spec §Dir).
+//   - `default(...@args)` — FSERR_UNSUPPORTED
+//
+// ## Deferred to follow-up commits
+//
+//   - `entries()` — returns an EntryStream (needs Stream + producer
+//     from Phase 4 wired to fs_entriesStream)
+//   - `openDir(rel, options)` — mint a nested Dir (analogous shape)
+//   - Mutation methods (require `"rw"` Dir): `removeFile`,
+//     `removeDir`, `rename`, `copyFile`, `chmod`, `chown`
+//
+// ## Mode attenuation (spec §Dir)
+//
+// Directory modes are `"r"` (read-only) or `"rw"` (read/write).
+// `openFile(rel, {"mode": M})` succeeds only when M is compatible
+// with the Dir's own mode:
+//
+//   Dir mode "r"  → File modes {"r"}
+//   Dir mode "rw" → File modes {"r", "rw", "w", "w+", "a", "a+",
+//                                "wx", "w+x"}
+//
+// A downgrade is fine (`"rw"` Dir opening a `"r"` File); an upgrade
+// returns FSERR_UNSUPPORTED.
+//
+// ## State layout
+//
+//   @[*private, *rootP] — set at ctor to (canonRoot, mode).  Peeked
+//                          only (immutable while the Dir is live).
+//
+// The Dir has no mutable state beyond its immutable root+mode; no
+// close/revocation is needed for the MVP (a Dir is a pure "read/
+// look-up" facade over the underlying filesystem).  Adding lifecycle
+// state would follow the Buffer/Stream pattern with a stateP cell.
+
+new Dir, rootP in {
+
+  agent Dir {
+    constructor(@canonRoot, @mode, @FileCtorCh) {
+      // FileCtorCh is the Ctor channel for the File agent (bound in
+      // the same enclosing scope).  A `new` in genesis / tests binds
+      // File and passes *File as FileCtorCh — Dir uses it to mint
+      // File instances on openFile.
+      @[*private, *rootP]!((canonRoot, mode, FileCtorCh))
+    } |
+
+    // -- stat(rel) --------------------------------------------------
+    method stat(@rel) {
+      match rel {
+        r /\ String => {
+          for (@params <<- @[*private, *rootP]) {
+            match params {
+              (canonRoot, _mode, _fileCtor) => {
+                // Quarantine + stat.  We use fsQuarantine to canonicalize
+                // (rejecting escape/symlink attempts), then pass the
+                // canonical path to fsStat.  Alternative: the native fs_stat
+                // in Phase 1 takes (rootCanon, rel) directly and quarantines
+                // internally — use that.
+                new retCh in {
+                  fsStat!(canonRoot, r, *retCh) |
+                  for (@reply <- retCh) { return!(reply) }
+                }
+              }
+              _ => return!([false, "FSERR_IO", "root params malformed"])
+            }
+          }
+        }
+        _ => return!([false, "FSERR_BAD_ARG", "rel must be a String"])
+      }
+    } |
+
+    // -- exists(rel) ------------------------------------------------
+    method exists(@rel) {
+      match rel {
+        r /\ String => {
+          for (@params <<- @[*private, *rootP]) {
+            match params {
+              (canonRoot, _mode, _fileCtor) => {
+                new retCh in {
+                  fsExists!(canonRoot, r, *retCh) |
+                  for (@reply <- retCh) { return!(reply) }
+                }
+              }
+              _ => return!([false, "FSERR_IO", "root params malformed"])
+            }
+          }
+        }
+        _ => return!([false, "FSERR_BAD_ARG", "rel must be a String"])
+      }
+    } |
+
+    // -- openFile(rel, mode) ----------------------------------------
+    //
+    // MVP takes mode as a separate String arg rather than an options
+    // Map — Rholang's simple-type patterns (Bool/Int/String/Uri/
+    // ByteArray) don't include Map, so a Map-typed options guard
+    // would need Map-shape pattern matching.  Follow-up commit
+    // switches to the spec's `options: Map` shape once the Map-guard
+    // idiom is settled.
+    //
+    // Mode-attenuates monotonically against the Dir's own mode
+    // (spec §Dir > Composition).
+    method openFile(@rel, @mode) {
+      match rel {
+        r /\ String => {
+          match mode {
+            m /\ String => {
+              for (@params <<- @[*private, *rootP]) {
+                match params {
+                  (canonRoot, dirMode, fileCtor) => {
+                    // Dir "r" permits only File "r"; Dir "rw" permits any.
+                    match [dirMode, m] {
+                      ["r", "r"] => openFileImpl!(canonRoot, r, "r", fileCtor, *return)
+                      ["r", _]   => {
+                        return!([false, "FSERR_UNSUPPORTED",
+                          "requested mode exceeds Dir attenuation"])
+                      }
+                      ["rw", _]  => {
+                        openFileImpl!(canonRoot, r, m, fileCtor, *return)
+                      }
+                      _ => return!([false, "FSERR_IO", "invalid Dir mode"])
+                    }
+                  }
+                  _ => return!([false, "FSERR_IO", "root params malformed"])
+                }
+              }
+            }
+            _ => return!([false, "FSERR_BAD_ARG", "mode must be a String"])
+          }
+        }
+        _ => return!([false, "FSERR_BAD_ARG", "rel must be a String"])
+      }
+    } |
+
+    // -- Default arm -----------------------------------------------
+
+    default(...@args) {
+      match args {
+        [*ret, ..._] => ret!([false, "FSERR_UNSUPPORTED", "unknown method"])
+      }
+    }
+  } |
+
+  // ==================================================================
+  // Module-level helper: openFile implementation shared across the
+  // three attenuation paths.  Dispatches to fsOpen and, on success,
+  // mints a File agent with the returned fd.
+  // ==================================================================
+
+  contract openFileImpl(@canonRoot, @rel, @mode, @fileCtor, ret) = {
+    new openRetCh in {
+      fsOpen!(canonRoot, rel, mode, *openRetCh) |
+      for (@openReply <- openRetCh) {
+        match openReply {
+          [true, fd] => {
+            // Mint a File agent wrapping the returned fd.  fileCtor
+            // is bound to *File (the File agent's ctor channel) by
+            // whoever set up this scope.
+            new fileCh in {
+              @fileCtor!(*fileCh, fd, canonRoot, mode) |
+              for (@fileHandle <- fileCh) {
+                ret!([true, fileHandle])
+              }
+            }
+          }
+          _ => ret!(openReply)
+        }
+      }
+    }
+  }
+}
