@@ -742,6 +742,40 @@ finds a limitation that is not named cannot.
    on `Par`, which conflicts with the destructuring moves Leg-1 introduces
    ([§7.2](#72-derived-traversals--leg-1-only-by-construction)). Any claim of
    "fully heap-bounded" must exclude teardown or explain how it was solved.
+7. **Bounding the *stack* can unbound something else.** A Θ(depth) traversal
+   aborts on a deep term; that abort is a fault, but it is also a *ceiling*, and
+   anything downstream of the traversal was incidentally bounded by it. Removing
+   the ceiling removes the bound. The standard establishes $`O(1)`$ native stack
+   and says nothing about what the now-reachable depths cost in heap, output size
+   or time.
+
+   > **Concrete instance, measured 2026-07-27 on the converted pretty printer.**
+   > `PrettyPrinter` indents by nesting level: `PpKont::BundleK`, `NewK`,
+   > `ReceiveK`, `MatchK`, `CaseJoin` and `ParK` each emit
+   > `indent_string().repeat(indent)`, two bytes per level. For $`D`$ nested
+   > `Bundle`s the rendered string is therefore quadratic in $`D`$ — measured
+   > exactly:
+   >
+   > | $`D`$ | 64 | 128 | 256 | 512 | 1,024 |
+   > |---|---:|---:|---:|---:|---:|
+   > | output bytes | 4,929 | 18,049 | 68,865 | 268,801 | 1,061,889 |
+   >
+   > which is $`D^{2} + 13D + 1`$ at every point, i.e. $`\Theta(D^{2})`$. At the
+   > pre-conversion 41,984 B/level (debug) the printer aborted at
+   > $`D_{\max} \approx 50`$ on a 2 MiB worker — 4,929 bytes of output, which is
+   > nothing — so the amplification was capped by the fault, not by any policy.
+   > After Stage D it renders whatever it is handed: a term of $`10^{5}`$ nested
+   > bundles, a few MiB of `Par`, produces a **~10 GB** string, and
+   > `PRETTY_PRINTER_OUTPUT_TRIM_AFTER` cannot help because `PrettyPrinter::cap`
+   > truncates the *finished* string.
+   >
+   > This is not an argument against the conversion; the abort was strictly
+   > worse, being a node-killing fault reachable from untrusted input through
+   > `rho:io:stdout`. It is an argument that **each conversion should state what
+   > the removed ceiling was bounding**, and that a heap or output budget is the
+   > right instrument for what a stack limit was doing by accident. No such
+   > budget exists here yet, which is why this is a named limit and not a
+   > footnote.
 
 **What would falsify neutrality:** a traversal that charges per *step* rather
 than per *result*; an observable outside the compared set; a corpus that does
@@ -1649,13 +1683,15 @@ Every instance in the tree, with its mechanism:
 | 5 | `assert_slope_below("substitute", …, 16, 64)` while `substitute` still had a 437 B/level slope | **0 B/level** | both probe points sat inside the subject's ~136 KiB **intercept**, where 4 KiB bisection cannot resolve 48 × 437 B | `b98fa20a` |
 | 6 | `pretty` asserted only `!s.is_empty()` | a **PASS** for a printer that traverses nothing | `"Nil"` satisfies it — and so does the `<unprintable: …>` fallback, which `739368a4` proved was a **live** output of this very printer for every `match` target | `18419514` |
 | 7 | `encode` / `bincode_ser` asserted only `!bytes.is_empty()` | a **PASS** for any non-empty encoding | a collapsed fixture encodes to a few bytes and still passes | `18419514` |
+| 8 | the pretty printer's drive unwinds to `catches.last_mut()` — the **innermost** open catching scope; mutating it to `catches.first_mut()` passed the whole suite | a **PASS** for an unwind that returns to the wrong frame | `push_catch` emits `EndCatch`, the guarded item and `BeginCatch` together, so each frame is closed before the next opens and `catches` never held more than **one** element. `first` and `last` of a one-element list are the same element: the assertion was quantified over a set on which the two spellings are equal | `bd7cb45f` |
 
-Seven instances, three mechanisms:
+Eight instances, three mechanisms:
 
 ```text
   ┌─ M-a: the fixture does not carry the parameter ───────────────────┐
   │  #1 wrong field number · #2 vacuous generator                     │
   │  #6 empty-string check  · #7 empty-bytes check                    │
+  │  #8 catch stack never reached depth 2                             │
   │  ⇒ the subject is exercised at effective parameter 0              │
   └───────────────────────────────────────────────────────────────────┘
   ┌─ M-b: the window contains a traversal that is not the subject ────┐
@@ -1669,7 +1705,7 @@ Seven instances, three mechanisms:
   └───────────────────────────────────────────────────────────────────┘
 ```
 
-Instance 6 is the sharpest of the seven and deserves the extra sentence, because
+Instance 6 is the sharpest of the eight and deserves the extra sentence, because
 it is the only one where the vacuous branch was **demonstrably reachable in
 production**: `739368a4` established that `_build_string_from_message`'s `Match`
 arm passed an `Option<Par>`, which matched no `downcast_ref` arm, so *every*
@@ -1678,7 +1714,33 @@ arm passed an `Option<Par>`, which matched no `downcast_ref` arm, so *every*
 A `!s.is_empty()` check does not merely *permit* a printer that traverses
 nothing; it was, for that arm, actively certifying one.
 
-**The two rules, stated once, in the method rather than in seven footnotes.**
+That defect is **fixed** as of `bd7cb45f`: the arm now renders `m.target`
+through the entry point the original line named, with the `Option` projected by
+the same `.expect` discipline the printer's six other required `Option<Par>`
+fields already used. The fix is recorded here rather than only in the commit
+because it produced a **second-order** instance of this very failure mode, and
+that generalization is the reusable part:
+
+> **Deleting a defect can vacate the checks that stood on it.**
+> `PpNode::Unprintable` was the drive's only `Err` source and the `Match` arm
+> was its only production construction site, so after the fix **no `Par` can
+> make the printer return `Err`**. Two live properties — "a fallback is spliced
+> mid-render rather than propagated" and "`EndCatch` caps a successful
+> sub-render but not a fallback" — were witnessed by an ordinary `Send`
+> containing a `match`. Both would have kept running, kept passing, and stopped
+> having a subject. They are rebuilt on `cfg(test)` drive seeds
+> (`drive_splice_probe`, `drive_nested_catch_probe`) in the same change.
+
+Instance #8 is what the second of those rebuilds found: with the frames
+reconstructed *deliberately*, the nesting that no in-sequence probe had ever
+produced became expressible, and the `last_mut()` / `first_mut()` claim became
+falsifiable for the first time. Extending mechanism **M-a** past measurement
+parameters to *state* parameters is the generalization: a check that
+discriminates on the shape of a runtime data structure is vacuous unless some
+fixture drives that structure into the shape where the discrimination is
+observable.
+
+**The two rules, stated once, in the method rather than in eight footnotes.**
 Both are now enforced in `rholang/tests/stack_depth_gate.rs`; both are stated
 here because they generalize past this gate to any parameterised measurement.
 
@@ -1691,6 +1753,15 @@ here because they generalize past this gate to any parameterised measurement.
 > contain the *spliced* bound value at full depth, so a substitution that did not
 > substitute would read 0 rather than pass.
 >
+> *Extension, from instance #8 (`bd7cb45f`).* The same obligation applies to a
+> subject's **internal state**, not only to its input and output. Where an
+> assertion discriminates on the shape of a runtime data structure — the depth of
+> a stack, the arity of a frame, the presence of a second element — some fixture
+> must drive that structure into the shape where the discrimination is
+> observable, or the assertion is quantified over a set on which the alternatives
+> coincide and it cannot fail. The check is mechanical: mutate the discriminating
+> expression to its opposite and confirm the suite goes red.
+>
 > **Rule L (ladder).** Both probe points must clear the subject's **own
 > intercept**, and the primary assertion must be a **zero-slope** claim over a
 > range wide enough that no intercept can absorb it (4 → 4,096 on the depth axis,
@@ -1698,7 +1769,7 @@ here because they generalize past this gate to any parameterised measurement.
 > two-point slope is a tripwire: it can only ever certify that a traversal did
 > not get *worse*.
 
-A corollary this campaign paid for seven times: **a green number is evidence only
+A corollary this campaign paid for eight times: **a green number is evidence only
 in proportion to the harness's demonstrated ability to go red.** The routine
 that makes it evidence is to inject the defect deliberately and confirm the
 harness fails — which is what
