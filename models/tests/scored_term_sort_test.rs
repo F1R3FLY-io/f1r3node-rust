@@ -13,7 +13,7 @@ use models::rust::rholang::sorter::match_sort_matcher::MatchSortMatcher;
 use models::rust::rholang::sorter::new_sort_matcher::NewSortMatcher;
 use models::rust::rholang::sorter::par_sort_matcher::ParSortMatcher;
 use models::rust::rholang::sorter::receive_sort_matcher::ReceiveSortMatcher;
-use models::rust::rholang::sorter::score_tree::{ScoreAtom, ScoredTerm, Tree};
+use models::rust::rholang::sorter::score_tree::{compare_score, ScoreAtom, ScoredTerm, Tree};
 use models::rust::rholang::sorter::send_sort_matcher::SendSortMatcher;
 use models::rust::rholang::sorter::sortable::Sortable;
 use models::rust::rholang::sorter::var_sort_matcher::VarSortMatcher;
@@ -156,26 +156,205 @@ fn scored_term_should_sort_so_that_smaller_nodes_are_put_first() {
     assert_eq!(unsorted_terms, sorted_terms);
 }
 
+// ===========================================================================
+// ★ THE SORTER IS A NORMALIZER, AND A NORMALIZER IS NOT INJECTIVE
+// ===========================================================================
+//
+// Three tests used to live here. Each asserted, in different words, the
+// **iff**
+//
+//     sort_match(x).term == sort_match(y).term   ⟺   x == y
+//
+// and each was driven by five draws from `generate_*(2)`. The forward
+// direction is true and is exactly what consensus needs. **The reverse
+// direction is false**, and directly so:
+//
+//     Par { exprs: [GInt 1, GInt 2] }  ≠  Par { exprs: [GInt 2, GInt 1] }
+//
+// — `Par`'s derived `PartialEq` compares `exprs` as an *ordered* `Vec` — yet
+// the two sort to **equal terms with equal scores**, because putting siblings
+// into canonical order is the sorter's entire job. That is not a defect; it is
+// the definition of a canonical form, and `reduce.rs` relies on it (two
+// permuted `Par`s must COMM-match interchangeably).
+//
+// The old tests passed only because two independent draws are unlikely to be
+// permutations of one another — and after Leg-2 Stage A fixed
+// `generate_par`'s vacuity (`vec(…, 0..1)` meant *exactly zero elements,
+// always*, so the sub-generators never ran at all) those draws finally
+// populate collections, which makes a permutation collision reachable. A test
+// that asserts a false property and survives on sampling luck cannot gate a
+// change to the sorter, so the three are replaced here by the properties that
+// are actually true, actually needed, and actually strong enough:
+//
+// | property | statement | why it matters |
+// |---|---|---|
+// | **functionality** | `x == y ⟹ sort(x) == sort(y)` | a validator must reach the same canonical form as the proposer |
+// | **idempotence** | `sort(sort(x)) == sort(x)` | the canonical form is a fixed point, so re-normalising a stored term cannot move it |
+// | **score/term agreement** | equal sorted terms ⟹ equal scores, and conversely | the score is what orders siblings; a disagreement would make the order depend on which of the two was compared |
+// | **permutation collapse** | permuted siblings share one canonical form | the witness that the iff is false, pinned so it cannot be "restored" |
+//
+// See `docs/design/audits/theta-depth-traversals-2026-07-26.md` §11.3 (E24)
+// for the measurement, and `models/tests/sorter_canonical_golden.rs` for the
+// byte-level pin on the canonical form itself.
+
+/// **Functionality.** Equal inputs must produce equal canonical forms *and*
+/// equal scores. This is the direction consensus depends on: a validator
+/// re-normalising the proposer's term must land on the same bytes.
 #[test]
-fn scored_term_should_sort_so_that_whenever_scores_differ_then_result_terms_have_to_differ_and_the_other_way_around(
-) {
+fn sorting_is_a_function_equal_terms_have_equal_canonical_forms_and_scores() {
     fn check<T, F>(generator: impl Strategy<Value = Vec<T>>, sort_fn: F)
     where
         T: Clone + PartialEq + std::fmt::Debug,
-        F: Fn(&T) -> T,
+        F: Fn(&T) -> ScoredTerm<T>,
     {
         proptest!(global_proptest_config(), |(values in generator)| {
             for x in &values {
                 for y in &values {
-                    let x_sorted = sort_fn(x);
-                    let y_sorted = sort_fn(y);
+                    if x == y {
+                        let sx = sort_fn(x);
+                        let sy = sort_fn(y);
+                        assert!(
+                            sx.term == sy.term,
+                            "EQUAL terms produced DIFFERENT canonical forms — sorting is not a \
+                             function of its input, so a validator could not reproduce the \
+                             proposer's bytes:\n  x = {:?}\n  y = {:?}",
+                            x, y
+                        );
+                        assert!(
+                            sx.score == sy.score,
+                            "EQUAL terms produced DIFFERENT scores:\n  x = {:?}\n  y = {:?}",
+                            x, y
+                        );
+                    }
+                }
+            }
+        });
+    }
 
+    check(prop::collection::vec(generate_bundle(2), 5), |x| {
+        BundleSortMatcher::sort_match(x)
+    });
+    check(prop::collection::vec(generate_connective(2), 5), |x| {
+        ConnectiveSortMatcher::sort_match(x)
+    });
+    check(prop::collection::vec(generate_expr(2), 5), |x| {
+        ExprSortMatcher::sort_match(x)
+    });
+    check(prop::collection::vec(generate_match(2), 5), |x| {
+        MatchSortMatcher::sort_match(x)
+    });
+    check(prop::collection::vec(generate_new(2), 5), |x| {
+        NewSortMatcher::sort_match(x)
+    });
+    check(prop::collection::vec(generate_par(2), 5), |x| {
+        ParSortMatcher::sort_match(x)
+    });
+    check(prop::collection::vec(generate_receive(2), 5), |x| {
+        ReceiveSortMatcher::sort_match(x)
+    });
+    check(prop::collection::vec(generate_send(2), 5), |x| {
+        SendSortMatcher::sort_match(x)
+    });
+    check(prop::collection::vec(generate_var(2), 5), |x| {
+        VarSortMatcher::sort_match(x)
+    });
+}
+
+/// **Idempotence.** The canonical form is a *fixed point* of the sorter.
+///
+/// This is the property that makes "canonical" mean anything: a term read back
+/// out of RSpace, or spliced into another term and re-sorted, must not move.
+/// It is also the property that lets the `ESet` / `EMap` / `EPathMap` arms sort
+/// their elements more than once (they do — see
+/// `models/src/rust/rholang/sorter/sort_combine.rs`) without the extra rounds
+/// changing anything.
+#[test]
+fn sorting_is_idempotent_the_canonical_form_is_a_fixed_point() {
+    fn check<T, F>(generator: impl Strategy<Value = Vec<T>>, sort_fn: F)
+    where
+        T: Clone + PartialEq + std::fmt::Debug,
+        F: Fn(&T) -> ScoredTerm<T>,
+    {
+        proptest!(global_proptest_config(), |(values in generator)| {
+            for x in &values {
+                let once = sort_fn(x);
+                let twice = sort_fn(&once.term);
+                assert!(
+                    twice.term == once.term,
+                    "SORTING IS NOT IDEMPOTENT — the canonical form is not a fixed point, so \
+                     re-normalising a stored term would change the signed bytes:\n  \
+                     input       = {:?}\n  sorted once = {:?}\n  sorted twice= {:?}",
+                    x, once.term, twice.term
+                );
+                assert!(
+                    twice.score == once.score,
+                    "the SCORE is not idempotent, so a re-sorted term would order its \
+                     siblings differently:\n  input = {:?}",
+                    x
+                );
+            }
+        });
+    }
+
+    check(prop::collection::vec(generate_bundle(2), 5), |x| {
+        BundleSortMatcher::sort_match(x)
+    });
+    check(prop::collection::vec(generate_connective(2), 5), |x| {
+        ConnectiveSortMatcher::sort_match(x)
+    });
+    check(prop::collection::vec(generate_expr(2), 5), |x| {
+        ExprSortMatcher::sort_match(x)
+    });
+    check(prop::collection::vec(generate_match(2), 5), |x| {
+        MatchSortMatcher::sort_match(x)
+    });
+    check(prop::collection::vec(generate_new(2), 5), |x| {
+        NewSortMatcher::sort_match(x)
+    });
+    check(prop::collection::vec(generate_par(2), 5), |x| {
+        ParSortMatcher::sort_match(x)
+    });
+    check(prop::collection::vec(generate_receive(2), 5), |x| {
+        ReceiveSortMatcher::sort_match(x)
+    });
+    check(prop::collection::vec(generate_send(2), 5), |x| {
+        SendSortMatcher::sort_match(x)
+    });
+    check(prop::collection::vec(generate_var(2), 5), |x| {
+        VarSortMatcher::sort_match(x)
+    });
+}
+
+/// **Score/term agreement.** Two inputs land on the same canonical term *iff*
+/// they land on the same score.
+///
+/// This is the honest version of what the deleted tests were reaching for.
+/// It is a statement about the sorter's two outputs *agreeing with each other*
+/// — not about either of them being injective in the input — and it is the
+/// property `sort_vec` needs: siblings are ordered by score, so two siblings
+/// with the same canonical term must compare `Equal`, and two with different
+/// canonical terms must not silently share a score class in a way that makes
+/// their order depend on which one the comparator saw first.
+#[test]
+fn the_score_and_the_canonical_term_agree_with_each_other() {
+    fn check<T, F>(generator: impl Strategy<Value = Vec<T>>, sort_fn: F)
+    where
+        T: Clone + PartialEq + std::fmt::Debug,
+        F: Fn(&T) -> ScoredTerm<T>,
+    {
+        proptest!(global_proptest_config(), |(values in generator)| {
+            for x in &values {
+                for y in &values {
+                    let sx = sort_fn(x);
+                    let sy = sort_fn(y);
                     assert_eq!(
-                        x_sorted == y_sorted,
-                        x == y,
-                        "Sorted terms and scores do not align for {:?} and {:?}",
-                        x,
-                        y
+                        sx.term == sy.term,
+                        sx.score == sy.score,
+                        "the canonical TERM and the SCORE disagree about whether two inputs \
+                         are the same. Siblings are ordered by score, so a disagreement makes \
+                         the canonical order depend on comparison order:\n  \
+                         x = {:?}\n  y = {:?}\n  sorted x = {:?}\n  sorted y = {:?}",
+                        x, y, sx.term, sy.term
                     );
                 }
             }
@@ -183,174 +362,130 @@ fn scored_term_should_sort_so_that_whenever_scores_differ_then_result_terms_have
     }
 
     check(prop::collection::vec(generate_bundle(2), 5), |x| {
-        BundleSortMatcher::sort_match(x).term
+        BundleSortMatcher::sort_match(x)
     });
-
     check(prop::collection::vec(generate_connective(2), 5), |x| {
-        ConnectiveSortMatcher::sort_match(x).term
+        ConnectiveSortMatcher::sort_match(x)
     });
-
     check(prop::collection::vec(generate_expr(2), 5), |x| {
-        ExprSortMatcher::sort_match(x).term
+        ExprSortMatcher::sort_match(x)
     });
-
     check(prop::collection::vec(generate_match(2), 5), |x| {
-        MatchSortMatcher::sort_match(x).term
+        MatchSortMatcher::sort_match(x)
     });
-
     check(prop::collection::vec(generate_new(2), 5), |x| {
-        NewSortMatcher::sort_match(x).term
+        NewSortMatcher::sort_match(x)
     });
-
     check(prop::collection::vec(generate_par(2), 5), |x| {
-        ParSortMatcher::sort_match(x).term
+        ParSortMatcher::sort_match(x)
     });
-
     check(prop::collection::vec(generate_receive(2), 5), |x| {
-        ReceiveSortMatcher::sort_match(x).term
+        ReceiveSortMatcher::sort_match(x)
     });
-
     check(prop::collection::vec(generate_send(2), 5), |x| {
-        SendSortMatcher::sort_match(x).term
+        SendSortMatcher::sort_match(x)
     });
-
     check(prop::collection::vec(generate_var(2), 5), |x| {
-        VarSortMatcher::sort_match(x).term
+        VarSortMatcher::sort_match(x)
     });
 }
 
+/// ⚠ **The witness.** The measured counterexample to the deleted iff, pinned
+/// so that nobody re-derives the false property from the (true) forward
+/// direction and re-adds it.
+///
+/// Collapsing permuted siblings onto one canonical form is what the sorter is
+/// *for*: it is why `@x!(1 | 2)` and `@x!(2 | 1)` are the same process, and
+/// why two structurally-permuted `Par`s COMM-match interchangeably.
 #[test]
-fn scored_term_should_sort_so_that_whenever_scores_or_result_terms_differ_then_the_initial_terms_differ_and_the_other_way_around(
-) {
-    fn check<T, F>(generator: impl Strategy<Value = Vec<T>>, sort_fn: F)
-    where
-        T: Clone + PartialEq + std::fmt::Debug,
-        F: Fn(&T) -> T,
-    {
-        proptest!(global_proptest_config(), |(values in generator)| {
-            for x in &values {
-                for y in &values {
-                    let x_sorted = sort_fn(x);
-                    let y_sorted = sort_fn(y);
+fn the_sorter_is_a_normalizer_and_is_therefore_not_injective() {
+    let ascending = Par {
+        exprs: vec![
+            Expr {
+                expr_instance: Some(ExprInstance::GInt(1)),
+            },
+            Expr {
+                expr_instance: Some(ExprInstance::GInt(2)),
+            },
+        ],
+        ..Default::default()
+    };
+    let descending = Par {
+        exprs: vec![
+            Expr {
+                expr_instance: Some(ExprInstance::GInt(2)),
+            },
+            Expr {
+                expr_instance: Some(ExprInstance::GInt(1)),
+            },
+        ],
+        ..Default::default()
+    };
 
-                    if x_sorted != y_sorted {
-                        assert_ne!(x, y,"Initial terms should differ when sorted terms or scores differ:\n\
-                            x: {:?}\n\
-                            y: {:?}\n\
-                            x_sorted: {:?}\n\
-                            y_sorted: {:?}", x, y, x_sorted, y_sorted);
-                    } else {
-                        assert_eq!(x, y,"Initial terms should be equal when sorted terms and scores are equal:\n\
-                            x: {:?}\n\
-                            y: {:?}\n\
-                            x_sorted: {:?}\n\
-                            y_sorted: {:?}", x, y, x_sorted, y_sorted);
-                    }
-                }
-            }
-        });
-    }
+    assert_ne!(
+        ascending, descending,
+        "`Par`'s derived PartialEq compares `exprs` as an ORDERED Vec, so these two must be \
+         unequal — the whole point of the witness"
+    );
 
-    check(prop::collection::vec(generate_bundle(2), 5), |x| {
-        BundleSortMatcher::sort_match(x).term
-    });
+    let a = ParSortMatcher::sort_match(&ascending);
+    let d = ParSortMatcher::sort_match(&descending);
 
-    check(prop::collection::vec(generate_connective(2), 5), |x| {
-        ConnectiveSortMatcher::sort_match(x).term
-    });
+    assert!(
+        a.term == d.term,
+        "two PERMUTATIONS of the same Par must share one canonical form — that is what \
+         normalisation means, and `reduce.rs` relies on it for COMM matching"
+    );
+    assert!(
+        a.score == d.score,
+        "two permutations that share a canonical term must share its score"
+    );
 
-    check(prop::collection::vec(generate_expr(2), 5), |x| {
-        ExprSortMatcher::sort_match(x).term
-    });
-
-    check(prop::collection::vec(generate_match(2), 5), |x| {
-        MatchSortMatcher::sort_match(x).term
-    });
-
-    check(prop::collection::vec(generate_new(2), 5), |x| {
-        NewSortMatcher::sort_match(x).term
-    });
-
-    check(prop::collection::vec(generate_par(2), 5), |x| {
-        ParSortMatcher::sort_match(x).term
-    });
-
-    check(prop::collection::vec(generate_receive(2), 5), |x| {
-        ReceiveSortMatcher::sort_match(x).term
-    });
-
-    check(prop::collection::vec(generate_send(2), 5), |x| {
-        SendSortMatcher::sort_match(x).term
-    });
-
-    check(prop::collection::vec(generate_var(2), 5), |x| {
-        VarSortMatcher::sort_match(x).term
-    });
+    // The same statement at the level the sorter's own comparator sees: the
+    // comparator returns `Equal` for these, which is exactly why `sort_vec`
+    // must stay a STABLE sort (`sort_by`, never `sort_unstable_by`).
+    assert_eq!(
+        compare_score(&a.score, &d.score),
+        std::cmp::Ordering::Equal,
+        "the comparator must rank two permutations of one term as Equal"
+    );
 }
 
+/// The same collapse, one level deeper: permuting the elements of a nested
+/// `Par` must not change the enclosing canonical form either.
 #[test]
-fn scored_term_should_sort_so_that_unequal_terms_have_unequal_scores_and_the_other_way_around() {
-    fn check_score_equality<T, F>(generator: impl Strategy<Value = Vec<T>>, sort_fn: F)
-    where
-        T: Clone + PartialEq + std::fmt::Debug,
-        F: Fn(&T) -> T,
-    {
-        proptest!(global_proptest_config(), |(values in generator)| {
-            for x in &values {
-                for y in &values {
-                    if x != y {
-                        assert_ne!(sort_fn(x), sort_fn(y),"Unequal terms should have unequal scores:\n\
-                            x: {:?}\n\
-                            y: {:?}\n\
-                            x_sorted: {:?}\n\
-                            y_sorted: {:?}", x, y, sort_fn(x), sort_fn(y));
-                    } else {
-                        assert_eq!(sort_fn(x), sort_fn(y),"Equal terms should have equal scores:\n\
-                            x: {:?}\n\
-                            y: {:?}\n\
-                            x_sorted: {:?}\n\
-                            y_sorted: {:?}", x, y, sort_fn(x), sort_fn(y));
-                    }
-                }
-            }
-        });
+fn permutation_collapse_survives_nesting() {
+    fn nested(inner: Par) -> Par {
+        Par {
+            sends: vec![models::rhoapi::Send {
+                chan: Some(Par::default()),
+                data: vec![inner],
+                persistent: false,
+                locally_free: vec![],
+                connective_used: false,
+            }],
+            ..Default::default()
+        }
     }
-
-    check_score_equality(prop::collection::vec(generate_bundle(2), 5), |x| {
-        BundleSortMatcher::sort_match(x).term
+    let gi = |v: i64| Expr {
+        expr_instance: Some(ExprInstance::GInt(v)),
+    };
+    let ascending = nested(Par {
+        exprs: vec![gi(1), gi(2), gi(3)],
+        ..Default::default()
+    });
+    let shuffled = nested(Par {
+        exprs: vec![gi(3), gi(1), gi(2)],
+        ..Default::default()
     });
 
-    check_score_equality(prop::collection::vec(generate_connective(2), 5), |x| {
-        ConnectiveSortMatcher::sort_match(x).term
-    });
-
-    check_score_equality(prop::collection::vec(generate_expr(2), 5), |x| {
-        ExprSortMatcher::sort_match(x).term
-    });
-
-    check_score_equality(prop::collection::vec(generate_match(2), 5), |x| {
-        MatchSortMatcher::sort_match(x).term
-    });
-
-    check_score_equality(prop::collection::vec(generate_new(2), 5), |x| {
-        NewSortMatcher::sort_match(x).term
-    });
-
-    check_score_equality(prop::collection::vec(generate_par(2), 5), |x| {
-        ParSortMatcher::sort_match(x).term
-    });
-
-    check_score_equality(prop::collection::vec(generate_receive(2), 5), |x| {
-        ReceiveSortMatcher::sort_match(x).term
-    });
-
-    check_score_equality(prop::collection::vec(generate_send(2), 5), |x| {
-        SendSortMatcher::sort_match(x).term
-    });
-
-    check_score_equality(prop::collection::vec(generate_var(2), 5), |x| {
-        VarSortMatcher::sort_match(x).term
-    });
+    assert_ne!(ascending, shuffled);
+    let a = ParSortMatcher::sort_match(&ascending);
+    let s = ParSortMatcher::sort_match(&shuffled);
+    assert!(
+        a.term == s.term && a.score == s.score,
+        "a permutation NESTED inside a Send did not collapse to one canonical form"
+    );
 }
 
 #[test]

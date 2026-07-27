@@ -1,184 +1,32 @@
 // See models/src/main/scala/coop/rchain/models/rholang/sorter/ParSortMatcher.scala
+//
+// Leg-2 Stage C-2: the recursion moved to `sort_drive` (an explicit heap
+// worklist) and the per-arm assembly to `sort_combine` (single-sourced with the
+// recursive oracle). This file keeps what a caller sees.
 
-use super::score_tree::ScoredTerm;
-use super::send_sort_matcher::SendSortMatcher;
+use super::score_tree::{ScoreAtom, ScoredTerm, Tree};
+use super::sort_combine::split_scored_terms as split_scored_terms_impl;
+use super::sort_drive::sort_par;
 use super::sortable::Sortable;
-use crate::rhoapi::{Bundle, Connective, Expr, GUnforgeable, If, Match, New, Par, Receive, Send};
-use crate::rust::rholang::sorter::bundle_sort_matcher::BundleSortMatcher;
-use crate::rust::rholang::sorter::connective_sort_matcher::ConnectiveSortMatcher;
-use crate::rust::rholang::sorter::expr_sort_matcher::ExprSortMatcher;
-use crate::rust::rholang::sorter::if_sort_matcher::IfSortMatcher;
-use crate::rust::rholang::sorter::match_sort_matcher::MatchSortMatcher;
-use crate::rust::rholang::sorter::new_sort_matcher::NewSortMatcher;
-use crate::rust::rholang::sorter::receive_sort_matcher::ReceiveSortMatcher;
-use crate::rust::rholang::sorter::score_tree::{Score, ScoreAtom, Tree};
-use crate::rust::rholang::sorter::unforgeable_sort_matcher::UnforgeableSortMatcher;
+use crate::rhoapi::Par;
 
 pub struct ParSortMatcher;
 
 impl Sortable<Par> for ParSortMatcher {
+    /// Sort a `Par` into canonical form.
+    ///
+    /// ★ `cost_accounting/sig.rs` signs `sort_match(&par).term.encode_to_vec()`,
+    /// so this function's output IS the consensus-visible canonical form. See
+    /// `sort_drive`'s module documentation for the conversion's neutrality
+    /// argument and the three checks behind it.
     fn sort_match(par: &Par) -> ScoredTerm<Par> {
-        let sends: Vec<ScoredTerm<Send>> = {
-            let mut _sends: Vec<ScoredTerm<Send>> = par
-                .sends
-                .iter()
-                .map(|s| SendSortMatcher::sort_match(s))
-                .collect();
-
-            ScoredTerm::sort_vec(&mut _sends);
-            _sends
-        };
-
-        let receives: Vec<ScoredTerm<Receive>> = {
-            let mut _receives: Vec<ScoredTerm<Receive>> = par
-                .receives
-                .iter()
-                .map(|r| ReceiveSortMatcher::sort_match(r))
-                .collect();
-
-            ScoredTerm::sort_vec(&mut _receives);
-            _receives
-        };
-
-        let exprs: Vec<ScoredTerm<Expr>> = {
-            let mut _exprs: Vec<ScoredTerm<Expr>> = par
-                .exprs
-                .iter()
-                .map(|e| ExprSortMatcher::sort_match(e))
-                .collect();
-
-            ScoredTerm::sort_vec(&mut _exprs);
-            _exprs
-        };
-
-        let news: Vec<ScoredTerm<New>> = {
-            let mut _news: Vec<ScoredTerm<New>> = par
-                .news
-                .iter()
-                .map(|n| NewSortMatcher::sort_match(n))
-                .collect();
-
-            ScoredTerm::sort_vec(&mut _news);
-            _news
-        };
-
-        let matches: Vec<ScoredTerm<Match>> = {
-            let mut _matches: Vec<ScoredTerm<Match>> = par
-                .matches
-                .iter()
-                .map(|m| MatchSortMatcher::sort_match(m))
-                .collect();
-
-            ScoredTerm::sort_vec(&mut _matches);
-            _matches
-        };
-
-        let bundles: Vec<ScoredTerm<Bundle>> = {
-            let mut _bundles: Vec<ScoredTerm<Bundle>> = par
-                .bundles
-                .iter()
-                .map(|b| BundleSortMatcher::sort_match(b))
-                .collect();
-
-            ScoredTerm::sort_vec(&mut _bundles);
-            _bundles
-        };
-
-        let connectives: Vec<ScoredTerm<Connective>> = {
-            let mut _connectives: Vec<ScoredTerm<Connective>> = par
-                .connectives
-                .iter()
-                .map(|c| ConnectiveSortMatcher::sort_match(c))
-                .collect();
-
-            ScoredTerm::sort_vec(&mut _connectives);
-            _connectives
-        };
-
-        let unforgeables: Vec<ScoredTerm<GUnforgeable>> = {
-            let mut _unforgeables: Vec<ScoredTerm<GUnforgeable>> = par
-                .unforgeables
-                .iter()
-                .map(|gu| UnforgeableSortMatcher::sort_match(gu))
-                .collect();
-
-            ScoredTerm::sort_vec(&mut _unforgeables);
-            _unforgeables
-        };
-
-        let conditionals: Vec<ScoredTerm<If>> = {
-            let mut _conditionals: Vec<ScoredTerm<If>> = par
-                .conditionals
-                .iter()
-                .map(IfSortMatcher::sort_match)
-                .collect();
-
-            ScoredTerm::sort_vec(&mut _conditionals);
-            _conditionals
-        };
-
-        let (send_terms, send_scores) = split_scored_terms(sends);
-        let (receive_terms, receive_scores) = split_scored_terms(receives);
-        let (news_terms, news_scores) = split_scored_terms(news);
-        let (expr_terms, expr_scores) = split_scored_terms(exprs);
-        let (match_terms, match_scores) = split_scored_terms(matches);
-        let (bundle_terms, bundle_scores) = split_scored_terms(bundles);
-        let (connective_terms, connective_scores) = split_scored_terms(connectives);
-        let (unforgeable_terms, unforgeable_scores) = split_scored_terms(unforgeables);
-        let (conditional_terms, conditional_scores) = split_scored_terms(conditionals);
-
-        let sorted_par = Par {
-            sends: send_terms,
-            receives: receive_terms,
-            news: news_terms,
-            exprs: expr_terms,
-            matches: match_terms,
-            unforgeables: unforgeable_terms,
-            bundles: bundle_terms,
-            connectives: connective_terms,
-            conditionals: conditional_terms,
-            locally_free: par.locally_free.clone(),
-            connective_used: par.connective_used,
-        };
-
-        let connective_used_score: i64 = if par.connective_used { 1 } else { 0 };
-        let par_score = Tree::<ScoreAtom>::create_node_from_i32(
-            Score::PAR,
-            send_scores
-                .into_iter()
-                .map(|s| s)
-                .chain(
-                    receive_scores
-                        .into_iter()
-                        .chain(expr_scores)
-                        .chain(news_scores)
-                        .chain(match_scores)
-                        .chain(bundle_scores)
-                        .chain(connective_scores)
-                        .chain(unforgeable_scores)
-                        .chain(conditional_scores)
-                        .chain(vec![Tree::<ScoreAtom>::create_leaf_from_i64(
-                            connective_used_score,
-                        )]),
-                )
-                .collect(),
-        );
-
-        ScoredTerm {
-            term: sorted_par,
-            score: par_score,
-        }
+        sort_par(par)
     }
 }
 
-fn split_scored_terms<T>(scored_terms: Vec<ScoredTerm<T>>) -> (Vec<T>, Vec<Tree<ScoreAtom>>) {
-    let mut terms = Vec::with_capacity(scored_terms.len());
-    let mut scores = Vec::with_capacity(scored_terms.len());
-
-    for scored in scored_terms {
-        terms.push(scored.term);
-        scores.push(scored.score);
-    }
-
-    (terms, scores)
+/// Retained at its original path because callers outside the sorter use it.
+/// The implementation lives in [`super::sort_combine`], which both the driver
+/// and its recursive oracle share.
+pub fn split_scored_terms<T>(scored_terms: Vec<ScoredTerm<T>>) -> (Vec<T>, Vec<Tree<ScoreAtom>>) {
+    split_scored_terms_impl(scored_terms)
 }

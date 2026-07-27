@@ -1,7 +1,9 @@
 // See models/src/main/scala/coop/rchain/models/rholang/sorter/BundleSortMatcher.scala
+//
+// Leg-2 Stage C-2: see `sort_drive` / `sort_combine`.
 
-use super::par_sort_matcher::ParSortMatcher;
-use super::score_tree::{Score, ScoreAtom, ScoredTerm, Tree};
+use super::score_tree::ScoredTerm;
+use super::sort_drive::sort_bundle;
 use super::sortable::Sortable;
 use crate::rhoapi::Bundle;
 
@@ -9,27 +11,6 @@ pub struct BundleSortMatcher;
 
 impl Sortable<Bundle> for BundleSortMatcher {
     fn sort_match(b: &Bundle) -> ScoredTerm<Bundle> {
-        let score = if b.write_flag && b.read_flag {
-            Score::BUNDLE_READ_WRITE
-        } else if b.write_flag && !b.read_flag {
-            Score::BUNDLE_WRITE
-        } else if !b.write_flag && b.read_flag {
-            Score::BUNDLE_READ
-        } else {
-            Score::BUNDLE_EQUIV
-        };
-
-        let sorted_par = ParSortMatcher::sort_match(
-            b.body.as_ref().expect("body was None, should be Some(Par)"),
-        );
-
-        ScoredTerm {
-            term: {
-                let mut b_cloned = b.clone();
-                b_cloned.body = Some(sorted_par.term);
-                b_cloned
-            },
-            score: Tree::<ScoreAtom>::create_node_from_i32(score, vec![sorted_par.score]),
-        }
+        sort_bundle(b)
     }
 }

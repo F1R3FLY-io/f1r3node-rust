@@ -236,6 +236,48 @@ fn nested_nots(depth: usize) -> Par {
     p
 }
 
+/// `{{{…{0}…}}}` — `depth` nested `ESet`s.
+///
+/// ⚠ THE NAMED RESIDUAL OF LEG-2 STAGE C-2. The `ESetBody` arm of the sorter
+/// is deliberately NOT worklisted: it routes its elements through
+/// `SortedParHashSet`, which re-enters `ParSortMatcher::sort_match` on OWNED
+/// intermediates (the deduplicated set) rather than on sub-terms of the input.
+/// Each re-entry is its own bounded drive, so a chain of `n` nested sets costs
+/// `n` drive frames rather than `n` sorter frames — and, underneath that,
+/// `HashSet<Par>` invokes the DERIVED `Par: Clone + Hash + Eq`, each of which
+/// is Θ(depth) in its own right (audit row 5, disposition "Leg-1 only: remove
+/// the call sites, not the impl"). No conversion of the SORTER can remove
+/// those. This probe measures what is left instead of assuming it away.
+fn nested_sets(depth: usize) -> Par {
+    let mut p = new_gint_par(0, vec![], false);
+    for _ in 0..depth {
+        p = expr_par(ExprInstance::ESetBody(models::rhoapi::ESet {
+            ps: vec![p],
+            locally_free: vec![],
+            connective_used: false,
+            remainder: None,
+        }));
+    }
+    p
+}
+
+/// The `EMap` counterpart of [`nested_sets`], for the same reason.
+fn nested_maps(depth: usize) -> Par {
+    let mut p = new_gint_par(0, vec![], false);
+    for _ in 0..depth {
+        p = expr_par(ExprInstance::EMapBody(models::rhoapi::EMap {
+            kvs: vec![models::rhoapi::KeyValuePair {
+                key: Some(p),
+                value: Some(new_gint_par(1, vec![], false)),
+            }],
+            locally_free: vec![],
+            connective_used: false,
+            remainder: None,
+        }));
+    }
+    p
+}
+
 /// Rholang source text `[[[…[0]…]]]` with `depth` bracket levels, built
 /// iteratively. Drives the normalizer, whose recursion follows *source*
 /// nesting rather than `Par` nesting.
@@ -310,6 +352,28 @@ fn run_probe(what: &str, depth: usize) {
             let t = nested_list(depth);
             let out = ParSortMatcher::sort_match(&t);
             std::mem::forget(out);
+            std::mem::forget(t);
+        }
+
+        "sort_nested_set" => {
+            let t = nested_sets(depth);
+            let out = ParSortMatcher::sort_match(&t);
+            std::mem::forget(out);
+            std::mem::forget(t);
+        }
+        "sort_nested_map" => {
+            let t = nested_maps(depth);
+            let out = ParSortMatcher::sort_match(&t);
+            std::mem::forget(out);
+            std::mem::forget(t);
+        }
+        "clone_nested_set" => {
+            // The CONTROL for `sort_nested_set`: the derived `<Par as Clone>`
+            // over the same shape. If the two agree, what is left in the set
+            // arm is the derived-traversal class and not the sorter.
+            let t = nested_sets(depth);
+            let c = t.clone();
+            std::mem::forget(c);
             std::mem::forget(t);
         }
 
