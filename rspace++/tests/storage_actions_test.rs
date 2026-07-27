@@ -2091,3 +2091,36 @@ async fn revert_to_soft_checkpoint_should_inject_the_event_log() {
     let s3 = rspace.create_soft_checkpoint().await;
     assert_eq!(s3.log, s1.log);
 }
+
+// ───────────────────────────────────────────────────────────────────────────
+// The cold-store DECODE boundary for this file's test doubles.
+//
+// `ColdStoreDecode` deliberately has NO blanket impl over `DeserializeOwned`:
+// Rust has no specialization, so a blanket would make `Par` un-overridable and
+// the recursive path would silently stay in production while every call site
+// LOOKED converted. The cost of that decision is exactly these one-line
+// delegations. `legacy_prefix` is sound here because these doubles are
+// bounded-depth by definition — none of them contains itself or a `Par`.
+// ───────────────────────────────────────────────────────────────────────────
+
+impl rspace_plus_plus::rspace::serializers::cold_store_decode::ColdStoreDecode for Pattern {
+    fn cold_decode_prefix(
+        bytes: &[u8],
+    ) -> Result<
+        (Self, usize),
+        rspace_plus_plus::rspace::serializers::cold_store_decode::ColdStoreDecodeError,
+    > {
+        rspace_plus_plus::rspace::serializers::cold_store_decode::legacy_prefix(bytes)
+    }
+}
+
+impl rspace_plus_plus::rspace::serializers::cold_store_decode::ColdStoreDecode for StringsCaptor {
+    fn cold_decode_prefix(
+        bytes: &[u8],
+    ) -> Result<
+        (Self, usize),
+        rspace_plus_plus::rspace::serializers::cold_store_decode::ColdStoreDecodeError,
+    > {
+        rspace_plus_plus::rspace::serializers::cold_store_decode::legacy_prefix(bytes)
+    }
+}

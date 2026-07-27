@@ -5,7 +5,7 @@ use std::hash::{Hash, Hasher};
 
 use dashmap::DashMap;
 use rayon::prelude::*;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 use super::channel_change::ChannelChange;
 use super::event_log_index::EventLogIndex;
@@ -15,6 +15,7 @@ use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use crate::rspace::hashing::stable_hash_provider;
 use crate::rspace::history::history_reader::HistoryReader;
 use crate::rspace::history::instances::rspace_history_reader_impl::RSpaceHistoryReaderImpl;
+use crate::rspace::serializers::cold_store_decode::ColdStoreDecode;
 
 /**
  * Datum changes are referenced by channel, continuation changes are
@@ -273,10 +274,10 @@ impl StateChange {
         event_log_index: &EventLogIndex,
     ) -> Result<Self, HistoryError>
     where
-        C: Clone + for<'a> Deserialize<'a> + Serialize + 'static + Sync + Send,
-        P: Clone + for<'a> Deserialize<'a> + 'static + Sync + Send,
-        A: Clone + for<'a> Deserialize<'a> + 'static + Sync + Send,
-        K: Clone + for<'a> Deserialize<'a> + 'static + Sync + Send,
+        C: Clone + ColdStoreDecode + Serialize + 'static + Sync + Send,
+        P: Clone + ColdStoreDecode + 'static + Sync + Send,
+        A: Clone + ColdStoreDecode + 'static + Sync + Send,
+        K: Clone + ColdStoreDecode + 'static + Sync + Send,
     {
         let datums_diff = DashMap::new();
         let cont_diff = DashMap::new();

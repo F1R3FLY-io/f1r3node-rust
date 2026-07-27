@@ -21,6 +21,7 @@ use super::rspace::RSpace;
 use super::trace::Log;
 use super::trace::event::{COMM, Consume, Produce};
 use crate::rspace::rspace_interface::{ISpace, MaybeConsumeResult, MaybeProduceResult};
+use crate::rspace::serializers::cold_store_decode::ColdStoreDecode;
 
 /// ReportingRspace works exactly like how ReplayRspace works. It can replay the
 /// deploy and try to find if the deploy can be replayed well. But instead of
@@ -113,7 +114,7 @@ where
         + Ord
         + Hash
         + Eq
-        + for<'a> Deserialize<'a>
+        + ColdStoreDecode
         + 'static,
     P: Clone
         + Debug
@@ -122,7 +123,7 @@ where
         + Sync
         + Serialize
         + StableHashSerialize
-        + for<'a> Deserialize<'a>
+        + ColdStoreDecode
         + 'static,
     A: Clone
         + Debug
@@ -131,7 +132,7 @@ where
         + Sync
         + Serialize
         + StableHashSerialize
-        + for<'a> Deserialize<'a>
+        + ColdStoreDecode
         + 'static,
     K: Clone
         + Debug
@@ -140,7 +141,7 @@ where
         + Sync
         + Serialize
         + StableHashSerialize
-        + for<'a> Deserialize<'a>
+        + ColdStoreDecode
         + 'static,
 {
     /// Creates [[ReportingRspace]] from [[HistoryRepository]] and [[HotStore]].
@@ -264,7 +265,7 @@ where
         + Ord
         + Hash
         + Eq
-        + for<'a> Deserialize<'a>
+        + ColdStoreDecode
         + 'static,
     P: Clone
         + Debug
@@ -273,7 +274,7 @@ where
         + Sync
         + Serialize
         + StableHashSerialize
-        + for<'a> Deserialize<'a>
+        + ColdStoreDecode
         + 'static,
     A: Clone
         + Debug
@@ -282,7 +283,7 @@ where
         + Sync
         + Serialize
         + StableHashSerialize
-        + for<'a> Deserialize<'a>
+        + ColdStoreDecode
         + 'static,
     K: Clone
         + Debug
@@ -291,7 +292,7 @@ where
         + Sync
         + Serialize
         + StableHashSerialize
-        + for<'a> Deserialize<'a>
+        + ColdStoreDecode
         + 'static,
 {
     async fn create_checkpoint(&self) -> Result<Checkpoint, RSpaceError> {

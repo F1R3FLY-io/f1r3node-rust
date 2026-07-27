@@ -132,7 +132,8 @@ fn continuations_encoding_pinned() {
 #[test]
 fn datum_roundtrip() {
     let datums = vec![fixture_datum(), fixture_datum_persist()];
-    let decoded: Vec<Datum<String>> = decode_datums(&encode_datums(&datums));
+    let decoded: Vec<Datum<String>> =
+        decode_datums(&encode_datums(&datums)).expect("decode_datums must accept its own output");
     // encode_datums sorts by encoded bytes; compare as sets.
     assert_eq!(decoded.len(), datums.len());
     for d in &datums {
@@ -144,6 +145,7 @@ fn datum_roundtrip() {
 fn continuation_roundtrip() {
     let conts = vec![fixture_continuation()];
     let decoded: Vec<WaitingContinuation<String, String>> =
-        decode_continuations(&encode_continuations(&conts));
+        decode_continuations(&encode_continuations(&conts))
+            .expect("decode_continuations must accept its own output");
     assert_eq!(decoded, conts);
 }

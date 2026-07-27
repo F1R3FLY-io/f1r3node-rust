@@ -109,14 +109,14 @@ impl RholangMergingLogic {
         // Calculate merged random generator (use only unique changes as input)
         let new_rnd = if changes.added.iter().collect::<HashSet<_>>().len() == 1 {
             // Single branch, just use available random generator
-            Self::decode_rnd(changes.added.first().unwrap().to_vec())
+            Self::decode_rnd(changes.added.first().unwrap())?
         } else {
             // Multiple branches, merge random generators
             let rnd_added_sorted = changes
                 .added
                 .iter()
-                .map(|bytes| Self::decode_rnd(bytes.to_vec()))
-                .collect::<HashSet<_>>()
+                .map(|bytes| Self::decode_rnd(bytes))
+                .collect::<Result<HashSet<_>, HistoryError>>()?
                 .into_iter()
                 .map(|rnd| (rnd.clone(), rnd.to_bytes()))
                 .collect::<Vec<_>>();
@@ -144,10 +144,20 @@ impl RholangMergingLogic {
         ))
     }
 
-    fn decode_rnd(par_with_rnd_encoded: Vec<u8>) -> Blake2b512Random {
-        let datum: Datum<ListParWithRandom> = serializers::decode_datum(&par_with_rnd_encoded);
+    /// Read the random-generator state out of an encoded `Datum`.
+    ///
+    /// ⚠ Returns `Result` since the cold-store decode boundary became fallible:
+    /// these bytes come from the history trie, which `rspace_importer` fills
+    /// with PEER bytes without ever deep-decoding them, so "this datum does not
+    /// decode" is a state the merger must be able to report. Previously the
+    /// decoder `.expect(..)`d and a malformed or too-deep datum aborted the
+    /// process here — permanently, since the same bytes are re-read on every
+    /// restart. Rejecting the merge is the correct disposition.
+    fn decode_rnd(par_with_rnd_encoded: &[u8]) -> Result<Blake2b512Random, HistoryError> {
+        let datum: Datum<ListParWithRandom> = serializers::decode_datum(par_with_rnd_encoded)
+            .map_err(|e| HistoryError::DecodeError(e.to_string()))?;
 
-        Blake2b512Random::from_bytes(&datum.a.random_state)
+        Ok(Blake2b512Random::from_bytes(&datum.a.random_state))
     }
 
     /// Returns the i64 + RNG pair for a single-Par integer channel value, or

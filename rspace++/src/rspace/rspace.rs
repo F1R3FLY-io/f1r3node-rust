@@ -15,7 +15,7 @@ pub static LOCK_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 use async_trait::async_trait;
 use dashmap::DashMap;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use shared::rust::store::key_value_store::KeyValueStore;
 use tracing::{Level, event};
 
@@ -46,6 +46,7 @@ use crate::rspace::hot_store::{HotStore, HotStoreInstances};
 use crate::rspace::internal::*;
 use crate::rspace::serializers::serializers::CandidateOrderingBytes;
 use crate::rspace::space_matcher::SpaceMatcher;
+use crate::rspace::serializers::cold_store_decode::ColdStoreDecode;
 
 #[derive(Clone)]
 pub struct RSpaceStore {
@@ -530,11 +531,11 @@ where
             + Serialize
             + Ord
             + Hash
-            + for<'a> Deserialize<'a>
+            + ColdStoreDecode
             + 'static,
-        P: Clone + Debug + Default + Send + Sync + Serialize + for<'a> Deserialize<'a> + 'static,
-        A: Clone + Debug + Default + Send + Sync + Serialize + for<'a> Deserialize<'a> + 'static,
-        K: Clone + Debug + Default + Send + Sync + Serialize + for<'a> Deserialize<'a> + 'static,
+        P: Clone + Debug + Default + Send + Sync + Serialize + ColdStoreDecode + 'static,
+        A: Clone + Debug + Default + Send + Sync + Serialize + ColdStoreDecode + 'static,
+        K: Clone + Debug + Default + Send + Sync + Serialize + ColdStoreDecode + 'static,
     {
         let setup = Self::create_history_repo(store).unwrap();
         let (history_reader, store) = setup;
@@ -555,11 +556,11 @@ where
             + Serialize
             + Ord
             + Hash
-            + for<'a> Deserialize<'a>
+            + ColdStoreDecode
             + 'static,
-        P: Clone + Debug + Default + Send + Sync + Serialize + for<'a> Deserialize<'a> + 'static,
-        A: Clone + Debug + Default + Send + Sync + Serialize + for<'a> Deserialize<'a> + 'static,
-        K: Clone + Debug + Default + Send + Sync + Serialize + for<'a> Deserialize<'a> + 'static,
+        P: Clone + Debug + Default + Send + Sync + Serialize + ColdStoreDecode + 'static,
+        A: Clone + Debug + Default + Send + Sync + Serialize + ColdStoreDecode + 'static,
+        K: Clone + Debug + Default + Send + Sync + Serialize + ColdStoreDecode + 'static,
     {
         let setup = Self::create_history_repo(store).unwrap();
         let (history_repo, store) = setup;
@@ -599,13 +600,13 @@ where
             + Send
             + Sync
             + Serialize
-            + for<'a> Deserialize<'a>
+            + ColdStoreDecode
             + Eq
             + Hash
             + 'static,
-        P: Clone + Debug + Default + Send + Sync + Serialize + for<'a> Deserialize<'a> + 'static,
-        A: Clone + Debug + Default + Send + Sync + Serialize + for<'a> Deserialize<'a> + 'static,
-        K: Clone + Debug + Default + Send + Sync + Serialize + for<'a> Deserialize<'a> + 'static,
+        P: Clone + Debug + Default + Send + Sync + Serialize + ColdStoreDecode + 'static,
+        A: Clone + Debug + Default + Send + Sync + Serialize + ColdStoreDecode + 'static,
+        K: Clone + Debug + Default + Send + Sync + Serialize + ColdStoreDecode + 'static,
     {
         let history_repo =
             HistoryRepositoryInstances::lmdb_repository(store.history, store.roots, store.cold)?;

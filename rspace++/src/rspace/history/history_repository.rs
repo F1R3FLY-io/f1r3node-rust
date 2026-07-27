@@ -1,7 +1,7 @@
 use std::marker::PhantomData;
 use std::sync::{Arc, Mutex};
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use shared::rust::store::key_value_store::KeyValueStore;
 
 use super::instances::rspace_history_reader_impl::RSpaceHistoryReaderImpl;
@@ -18,6 +18,7 @@ use crate::rspace::state::instances::rspace_exporter_store::RSpaceExporterStore;
 use crate::rspace::state::instances::rspace_importer_store::RSpaceImporterStore;
 use crate::rspace::state::rspace_exporter::RSpaceExporter;
 use crate::rspace::state::rspace_importer::RSpaceImporter;
+use crate::rspace::serializers::cold_store_decode::ColdStoreDecode;
 
 // See rspace/src/main/scala/coop/rchain/rspace/history/HistoryRepository.scala
 pub trait HistoryRepository<C: Clone, P: Clone, A: Clone, K: Clone>: Send + Sync {
@@ -75,10 +76,10 @@ pub const PREFIX_JOINS: u8 = 0x02;
 
 impl<C, P, A, K> HistoryRepositoryInstances<C, P, A, K>
 where
-    C: Clone + Send + Sync + Serialize + for<'a> Deserialize<'a> + 'static,
-    P: Clone + Send + Sync + Serialize + for<'a> Deserialize<'a> + 'static,
-    A: Clone + Send + Sync + Serialize + for<'a> Deserialize<'a> + 'static,
-    K: Clone + Send + Sync + Serialize + for<'a> Deserialize<'a> + 'static,
+    C: Clone + Send + Sync + Serialize + ColdStoreDecode + 'static,
+    P: Clone + Send + Sync + Serialize + ColdStoreDecode + 'static,
+    A: Clone + Send + Sync + Serialize + ColdStoreDecode + 'static,
+    K: Clone + Send + Sync + Serialize + ColdStoreDecode + 'static,
 {
     pub fn lmdb_repository(
         history_key_value_store: Arc<dyn KeyValueStore>,

@@ -2,7 +2,7 @@ use std::marker::PhantomData;
 use std::sync::{Arc, Mutex};
 
 use rayon::prelude::*;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use shared::rust::store::key_value_store::KeyValueStore;
 use tracing::{Level, debug};
 
@@ -28,6 +28,7 @@ use crate::rspace::hot_store_trie_action::{
 use crate::rspace::serializers::serializers::{encode_continuations, encode_datums, encode_joins};
 use crate::rspace::state::rspace_exporter::RSpaceExporter;
 use crate::rspace::state::rspace_importer::RSpaceImporter;
+use crate::rspace::serializers::cold_store_decode::ColdStoreDecode;
 
 // See rspace/src/main/scala/coop/rchain/rspace/history/HistoryRepositoryImpl.
 // scala
@@ -54,10 +55,10 @@ where
         &self,
     ) -> Box<dyn HistoryRepository<C, P, A, K> + Send + Sync + 'static>
     where
-        C: for<'a> Deserialize<'a> + 'static,
-        P: for<'a> Deserialize<'a> + 'static,
-        A: for<'a> Deserialize<'a> + 'static,
-        K: for<'a> Deserialize<'a> + 'static,
+        C: ColdStoreDecode + 'static,
+        P: ColdStoreDecode + 'static,
+        A: ColdStoreDecode + 'static,
+        K: ColdStoreDecode + 'static,
     {
         Box::new(HistoryRepositoryImpl {
             current_history: self.current_history.clone(),
@@ -308,10 +309,10 @@ where
 
 impl<C, P, A, K> HistoryRepository<C, P, A, K> for HistoryRepositoryImpl<C, P, A, K>
 where
-    C: Clone + Send + Sync + Serialize + for<'a> Deserialize<'a> + 'static,
-    P: Clone + Send + Sync + Serialize + for<'a> Deserialize<'a> + 'static,
-    A: Clone + Send + Sync + Serialize + for<'a> Deserialize<'a> + 'static,
-    K: Clone + Send + Sync + Serialize + for<'a> Deserialize<'a> + 'static,
+    C: Clone + Send + Sync + Serialize + ColdStoreDecode + 'static,
+    P: Clone + Send + Sync + Serialize + ColdStoreDecode + 'static,
+    A: Clone + Send + Sync + Serialize + ColdStoreDecode + 'static,
+    K: Clone + Send + Sync + Serialize + ColdStoreDecode + 'static,
 {
     fn checkpoint(
         &self,

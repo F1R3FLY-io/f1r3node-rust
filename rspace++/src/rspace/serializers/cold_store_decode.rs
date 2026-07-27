@@ -281,6 +281,85 @@ where
     Ok((value, cursor.position() as usize))
 }
 
+/// Read a bincode `u64` length prefix from the start of `bytes`, returning the
+/// length and the number of bytes consumed (always 8).
+///
+/// `IntEncoding::deserialize_len` narrows the `u64` to a `usize`
+/// (`bincode/src/config/int.rs:69-73`); on a 64-bit target that never fails and
+/// an oversized length is caught by the element loop running out of input,
+/// which is exactly where the derived path catches it.
+pub fn read_len_prefix(bytes: &[u8]) -> Result<(usize, usize), ColdStoreDecodeError> {
+    if bytes.len() < 8 {
+        return Err(ColdStoreDecodeError::UnexpectedEof {
+            wanted: "a u64 length prefix",
+            needed: 8,
+            available: bytes.len(),
+        });
+    }
+    let raw = u64::from_le_bytes(bytes[..8].try_into().expect("8 bytes"));
+    let len = usize::try_from(raw).map_err(|_| ColdStoreDecodeError::LengthOverflow(raw))?;
+    Ok((len, 8))
+}
+
+/// serde 1.0.228's sequence pre-allocation cap, reproduced exactly
+/// (`serde/src/core/private/size_hint.rs:12-23`:
+/// `min(hint, 1 MiB / size_of::<Element>())`).
+///
+/// ⚠ Load-bearing, not tidiness. A `u64` length near `usize::MAX` read straight
+/// into `Vec::with_capacity` is an out-of-memory **abort** — a failure mode the
+/// derived path does not have, because serde caps its pre-allocation and then
+/// fails on the first element that runs out of input. Diverging on the
+/// *disposition* of a malformed input is the consensus-visible half of a
+/// decoder; see `models/tests/par_codec_malformed.rs`.
+///
+/// (Historical note: older serde used a flat 4,096-element cap. 1.0.228 uses
+/// the byte-budget form above; the form reproduced here is the one in the
+/// lockfile.)
+pub fn cautious_capacity<T>(hint: usize) -> usize {
+    const MAX_PREALLOC_BYTES: usize = 1024 * 1024;
+    if std::mem::size_of::<T>() == 0 {
+        0
+    } else {
+        hint.min(MAX_PREALLOC_BYTES / std::mem::size_of::<T>())
+    }
+}
+
+/// Decode a `Vec<T>` — a bincode `u64` count followed by that many `T`s — from
+/// the start of `bytes`, returning the vector and the bytes consumed.
+pub fn cold_decode_vec_prefix<T: ColdStoreDecode>(
+    bytes: &[u8],
+) -> Result<(Vec<T>, usize), ColdStoreDecodeError> {
+    let (count, mut consumed) = read_len_prefix(bytes)?;
+    let mut out = Vec::with_capacity(cautious_capacity::<T>(count));
+    for _ in 0..count {
+        let (value, used) = T::cold_decode_prefix(&bytes[consumed..])?;
+        consumed += used;
+        out.push(value);
+    }
+    Ok((out, consumed))
+}
+
+/// Decode the bounded TAIL of a record whose head was decoded by the machine.
+///
+/// `Datum<A>` is `{ a: A, persist: bool, source: Produce }` and
+/// `WaitingContinuation<P, K>` is `{ patterns, continuation, persist, peeks,
+/// source }`: once the `Par`-bearing prefix is consumed, everything that
+/// follows is bounded-depth and can go straight to bincode.
+///
+/// A bincode **tuple** is exactly the concatenation of its elements —
+/// `deserialize_tuple(n)` → `visit_seq`, no framing (`bincode/src/de/mod.rs:
+/// 293-330`) — and a derived struct is `deserialize_struct` →
+/// `deserialize_tuple(fields.len())` (`:402-412`). So splitting a record into
+/// "machine prefix" and "bincode tuple tail" is byte-identical to decoding the
+/// whole struct with the derive, which is why this composition is sound rather
+/// than merely convenient.
+pub fn legacy_tail<T>(bytes: &[u8]) -> Result<T, ColdStoreDecodeError>
+where
+    T: for<'a> Deserialize<'a>,
+{
+    bincode::deserialize(bytes).map_err(|e| ColdStoreDecodeError::Legacy(e.to_string()))
+}
+
 /// `String` is one of the rspace++ **test-double** instantiations
 /// (`RSpace<String, Pattern, String, StringsCaptor>` in
 /// `rspace++/tests/storage_actions_test.rs`), and it is a `std` type, so the

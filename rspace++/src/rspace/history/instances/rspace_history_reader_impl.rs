@@ -1,7 +1,7 @@
 use std::marker::PhantomData;
 use std::sync::Arc;
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use shared::rust::store::key_value_store::KeyValueStore;
 
 use crate::rspace::errors::HistoryError;
@@ -20,6 +20,7 @@ use crate::rspace::metrics_constants::{
     RSPACE_METRICS_SOURCE,
 };
 use crate::rspace::serializers::serializers::{decode_continuations, decode_datums, decode_joins};
+use crate::rspace::serializers::cold_store_decode::ColdStoreDecode;
 
 #[derive(Clone)]
 pub struct RSpaceHistoryReaderImpl<C, P, A, K> {
@@ -104,16 +105,17 @@ impl<C, P, A, K> RSpaceHistoryReaderImpl<C, P, A, K> {
 
 impl<C, P, A, K> HistoryReader<Blake2b256Hash, C, P, A, K> for RSpaceHistoryReaderImpl<C, P, A, K>
 where
-    C: Clone + for<'a> Deserialize<'a> + Serialize + 'static + Sync + Send,
-    P: Clone + for<'a> Deserialize<'a> + 'static + Sync + Send,
-    A: Clone + for<'a> Deserialize<'a> + 'static + Sync + Send,
-    K: Clone + for<'a> Deserialize<'a> + 'static + Sync + Send,
+    C: Clone + ColdStoreDecode + Serialize + 'static + Sync + Send,
+    P: Clone + ColdStoreDecode + 'static + Sync + Send,
+    A: Clone + ColdStoreDecode + 'static + Sync + Send,
+    K: Clone + ColdStoreDecode + 'static + Sync + Send,
 {
     fn root(&self) -> Blake2b256Hash { self.target_history.root() }
 
     fn get_data_proj(&self, key: &Blake2b256Hash) -> Result<Vec<Datum<A>>, HistoryError> {
         match self.fetch_data(PREFIX_DATUM, key)? {
-            Some(PersistedData::Data(data_leaf)) => Ok(decode_datums(&data_leaf.bytes)),
+            Some(PersistedData::Data(data_leaf)) => decode_datums(&data_leaf.bytes)
+                .map_err(|e| HistoryError::DecodeError(e.to_string())),
             Some(p) => {
                 panic!(
                     "Found unexpected leaf while looking for data at key {:?}, data: {:?}",
@@ -144,7 +146,8 @@ where
     ) -> Result<Vec<WaitingContinuation<P, K>>, HistoryError> {
         match self.fetch_data(PREFIX_KONT, key)? {
             Some(PersistedData::Continuations(continuation_leaf)) => {
-                Ok(decode_continuations(&continuation_leaf.bytes))
+                decode_continuations(&continuation_leaf.bytes)
+                    .map_err(|e| HistoryError::DecodeError(e.to_string()))
             }
             Some(p) => {
                 panic!(
@@ -177,7 +180,8 @@ where
 
     fn get_joins_proj(&self, key: &Blake2b256Hash) -> Result<Vec<Vec<C>>, HistoryError> {
         match self.fetch_data(PREFIX_JOINS, key)? {
-            Some(PersistedData::Joins(joins_leaf)) => Ok(decode_joins(&joins_leaf.bytes)),
+            Some(PersistedData::Joins(joins_leaf)) => decode_joins(&joins_leaf.bytes)
+                .map_err(|e| HistoryError::DecodeError(e.to_string())),
             Some(p) => {
                 panic!(
                     "Found unexpected leaf while looking for joins at key {:?}, data: {:?}",
@@ -209,10 +213,10 @@ where
 
         impl<C, P, A, K> HistoryReaderBase<C, P, A, K> for HistoryReaderBaseImpl<C, P, A, K>
         where
-            C: Clone + for<'de> Deserialize<'de> + Serialize + 'static + Sync + Send,
-            P: Clone + for<'de> Deserialize<'de> + 'static + Sync + Send,
-            A: Clone + for<'de> Deserialize<'de> + 'static + Sync + Send,
-            K: Clone + for<'de> Deserialize<'de> + 'static + Sync + Send,
+            C: Clone + ColdStoreDecode + Serialize + 'static + Sync + Send,
+            P: Clone + ColdStoreDecode + 'static + Sync + Send,
+            A: Clone + ColdStoreDecode + 'static + Sync + Send,
+            K: Clone + ColdStoreDecode + 'static + Sync + Send,
         {
             fn get_data_proj(&self, key: &C) -> Vec<Datum<A>> {
                 self.outer
