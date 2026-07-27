@@ -1059,3 +1059,167 @@ fn no_undeclared_pretty_printer_deviations() {
         PP_DEVIATIONS.len()
     );
 }
+
+// ===========================================================================
+// ★ THE THIRD ORACLE — the evaluator's recursive twin, which is NOT a copy
+// ===========================================================================
+//
+// `reduce.rs`'s `*_recursive` family is the oracle for the trampoline
+// differential. `reduce.rs:9249` used to describe it as "a faithful copy of the
+// pre-trampoline evaluator over the shared `combine_*` helpers".
+//
+// The word "copy" was wrong, and measurably so. The twin is a REWRITE: the
+// per-arm arithmetic, comparison and collection logic was lifted into the
+// shared `combine_*` helpers and the twin calls them — the same helpers the
+// trampoline calls. So this section does NOT check byte-identity, because there
+// is none to check. It pins the RELATIONSHIP instead.
+//
+// ⚠ Why an inequality is the right guard here. The hazard the other two
+// sections address is an oracle drifting toward its machine. This oracle
+// already SHARES code with its machine by construction, which bounds what the
+// differential can prove: it proves the descend/combine WIRING and cannot see
+// inside a `combine_*` helper, because both sides would compute the same wrong
+// answer. That bound is a property a reader must be told, and the way it gets
+// silently lost is exactly what happened — a comment calling the twin a "copy".
+// So the numbers are pinned: if someone makes the twin a real copy, or removes
+// the sharing, this test fails and the prose describing the differential's
+// reach has to be rewritten with it.
+
+/// The trampoline conversion. Its parent holds the evaluator this twin replaced.
+const TRAMPOLINE_COMMIT: &str = "a929a2d6^";
+
+/// `(pre-trampoline name, its line count at TRAMPOLINE_COMMIT, twin line count)`.
+///
+/// Re-derived from git and from the live file; every number is checked.
+const TRAMPOLINE_TWIN_SHAPE: &[(&str, usize, usize)] = &[
+    ("eval_expr", 20, 11),
+    ("eval_expr_to_par", 59, 44),
+    ("eval_expr_to_expr", 1213, 167),
+    ("eval_single_expr", 21, 20),
+    ("eval_to_i64", 48, 28),
+    ("eval_to_bool", 48, 28),
+];
+
+const REDUCE: &str = "rholang/src/rust/interpreter/reduce.rs";
+
+/// The lines of the `impl`-level function named `name`, or `None`.
+fn impl_fn_lines(text: &str, name: &str) -> Option<(usize, usize)> {
+    let raw: Vec<&str> = text.lines().collect();
+    let blanked_text = blank_rust(text);
+    let blanked: Vec<&str> = blanked_text.lines().collect();
+    if raw.len() != blanked.len() {
+        panic!("literal blanking changed the line count while looking for `{name}`");
+    }
+    let heads = ["    fn ", "    pub fn ", "    pub(crate) fn "];
+    let start = raw.iter().position(|l| {
+        heads.iter().any(|h| {
+            l.strip_prefix(h).is_some_and(|rest| {
+                rest.starts_with(name)
+                    && !rest[name.len()..].starts_with(|c: char| c.is_alphanumeric() || c == '_')
+            })
+        })
+    })?;
+    let (mut depth, mut opened) = (0i64, false);
+    for (offset, line) in blanked.iter().enumerate().skip(start) {
+        for ch in line.chars() {
+            match ch {
+                '{' => {
+                    depth += 1;
+                    opened = true;
+                }
+                '}' => depth -= 1,
+                _ => {}
+            }
+        }
+        if opened && depth == 0 {
+            return Some((start + 1, offset + 1));
+        }
+    }
+    None
+}
+
+/// ★ The evaluator twin is a REWRITE over shared combiners, not a copy — and the
+/// numbers that say so are checked rather than asserted.
+#[test]
+fn the_trampoline_twin_is_a_rewrite_not_a_copy() {
+    let before = git_show_path(TRAMPOLINE_COMMIT, REDUCE);
+    let now = std::fs::read_to_string(repo_root().join(REDUCE))
+        .unwrap_or_else(|e| panic!("cannot read {REDUCE}: {e}"));
+
+    let mut identical = 0usize;
+    let mut problems = Vec::new();
+    for &(name, want_pre, want_twin) in TRAMPOLINE_TWIN_SHAPE {
+        let twin_name = format!("{name}_recursive");
+        let Some((p1, p2)) = impl_fn_lines(&before, name) else {
+            problems.push(format!(
+                "  `{name}` is not an impl-level fn at {TRAMPOLINE_COMMIT}; the cited \
+                 pre-trampoline evaluator has moved"
+            ));
+            continue;
+        };
+        let Some((c1, c2)) = impl_fn_lines(&now, &twin_name) else {
+            problems.push(format!("  `{twin_name}` no longer exists in {REDUCE}"));
+            continue;
+        };
+        let (pre_len, twin_len) = (p2 - p1 + 1, c2 - c1 + 1);
+        if (pre_len, twin_len) != (want_pre, want_twin) {
+            problems.push(format!(
+                "  `{name}`: the banner in {REDUCE} records {want_pre} pre-trampoline lines \
+                 and {want_twin} twin lines; they are now {pre_len} and {twin_len}"
+            ));
+        }
+
+        // Byte-identity, under the same `_recursive` rename the twin's names took.
+        let pre_body: String = before.lines().collect::<Vec<_>>()[p1 - 1..p2].join("\n");
+        let twin_body: String = now.lines().collect::<Vec<_>>()[c1 - 1..c2].join("\n");
+        let mut renamed = pre_body;
+        let mut names: Vec<&str> = TRAMPOLINE_TWIN_SHAPE.iter().map(|(n, _, _)| *n).collect();
+        names.sort_by_key(|n| std::cmp::Reverse(n.len()));
+        for n in names {
+            renamed = replace_word(&renamed, n, &format!("{n}_recursive"));
+        }
+        if renamed.replace("    pub fn ", "    pub(crate) fn ") == twin_body {
+            identical += 1;
+        }
+    }
+
+    assert!(
+        problems.is_empty(),
+        "\n\u{2605} THE TRAMPOLINE TWIN'S SHAPE HAS MOVED.\n\
+         \n\
+         {REDUCE}'s RECURSIVE TWIN banner states this table, and the differential's reach \
+         is described in terms of it. Update both together.\n{}\n",
+        problems.join("\n")
+    );
+
+    assert_eq!(
+        identical,
+        0,
+        "\n\u{2605} {identical} of the {} twin functions ARE now byte-identical copies of the \
+         pre-trampoline evaluator.\n\
+         \n\
+         That is not a failure in itself — it is a CHANGE OF KIND. The banner in {REDUCE} \
+         says the twin is a rewrite that shares the `combine_*` helpers, and derives from \
+         that the differential's exact reach: it proves the descend/combine WIRING and \
+         cannot see inside a shared combiner. If the twin has become a real copy, that \
+         limitation is gone and the prose describing it is now wrong in the SAFE direction \
+         — which is still wrong. Rewrite the banner, then change this expectation.\n",
+        TRAMPOLINE_TWIN_SHAPE.len()
+    );
+
+    // ANTI-VACUITY: the comparison really did run against a real, large body.
+    let (p1, p2) = impl_fn_lines(&before, "eval_expr_to_expr")
+        .expect("eval_expr_to_expr exists at the cited commit");
+    assert!(
+        p2 - p1 + 1 > 1000,
+        "the cited `eval_expr_to_expr` is only {} lines; this test is comparing against the \
+         wrong thing",
+        p2 - p1 + 1
+    );
+    println!(
+        "trampoline twin: {}/{} byte-identical (expected 0 — it is a rewrite over shared \
+         `combine_*` helpers, not a copy)",
+        identical,
+        TRAMPOLINE_TWIN_SHAPE.len()
+    );
+}

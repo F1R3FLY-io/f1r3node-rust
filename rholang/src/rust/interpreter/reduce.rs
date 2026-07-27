@@ -3861,6 +3861,46 @@ impl DebruijnInterpreter {
     // shared `combine_*` helpers the trampoline uses, so a byte-identical
     // result + charge trace between the two proves the trampoline's descend/
     // combine WIRING (the only new logic). cfg(test): excluded from production.
+    //
+    // ★ PROVENANCE, and what it is NOT.
+    //
+    // These six functions REPLACE `eval_expr`, `eval_expr_to_par`,
+    // `eval_expr_to_expr`, `eval_single_expr`, `eval_to_i64` and `eval_to_bool`
+    // as they stood at `a929a2d6^` (the commit before the trampoline). They are
+    // NOT copies of them, and the difference is not incidental — measured, with
+    // a `_recursive` rename applied:
+    //
+    //   | pre-trampoline fn  | its lines | twin lines | byte-identical |
+    //   |--------------------|-----------|------------|----------------|
+    //   | eval_expr          |        20 |         11 | no             |
+    //   | eval_expr_to_par   |        59 |         44 | no             |
+    //   | eval_expr_to_expr  |     1,213 |        167 | no             |
+    //   | eval_single_expr   |        21 |         20 | no             |
+    //   | eval_to_i64        |        48 |         28 | no             |
+    //   | eval_to_bool       |        48 |         28 | no             |
+    //
+    // ZERO of six. `eval_expr_to_expr` alone collapses 1,213 lines to 167,
+    // because the per-arm arithmetic, comparison and collection logic was
+    // LIFTED OUT into the `combine_*` helpers and the twin now calls them —
+    // the same helpers the trampoline calls.
+    //
+    // ⚠ THE CONSEQUENCE, stated so nobody has to infer it: this oracle SHARES
+    // code with the machine it checks. The differential can therefore prove the
+    // trampoline's descend/combine WIRING — which is the only new logic, and is
+    // what the harness claims — and it CANNOT detect a bug inside a `combine_*`
+    // helper, because both sides would compute the same wrong answer. That is a
+    // deliberate, bounded trade (a duplicated 1,213-line arm table would test
+    // the copy rather than the driving), not an oversight; it is written down
+    // here because "faithful copy" invited exactly the opposite reading.
+    //
+    // `rholang/tests/normalize_oracle_provenance.rs::
+    // the_trampoline_twin_is_a_rewrite_not_a_copy` re-derives the table above
+    // from git and fails if any entry moves.
+    //
+    // ⚠ NO `rustfmt.toml` exclusion, and that is the point: this file asserts no
+    // byte-identity, so formatting it falsifies nothing. An exclusion here would
+    // freeze text whose claim is "shares the combiners", which no formatter can
+    // break — see `2fee95d8` for why the criterion is stated that narrowly.
     // =======================================================================
     #[cfg(test)]
     pub(crate) fn eval_expr_recursive(&self, par: &Par, env: &Env<Par>) -> Result<Par, InterpreterError> {
@@ -9246,9 +9286,17 @@ fn describe_par_type(par: &Par) -> String {
 // LEG-2 DIFFERENTIAL HARNESS — the correctness proof for the trampoline.
 //
 // For every term it evaluates the SAME term through BOTH the recursive oracle
-// (`eval_expr_recursive`, a faithful copy of the pre-trampoline evaluator over
-// the shared `combine_*` helpers) AND the production trampoline (`eval_expr`),
-// each on a FRESH budget, and asserts:
+// (`eval_expr_recursive`) AND the production trampoline (`eval_expr`), each on
+// a FRESH budget, and asserts:
+//
+// ⚠ The oracle is a REWRITE, not a copy. This line used to call it "a faithful
+// copy of the pre-trampoline evaluator over the shared `combine_*` helpers",
+// and the word "copy" was wrong: measured against `a929a2d6^`, ZERO of the six
+// replaced functions are byte-identical and `eval_expr_to_expr` collapses from
+// 1,213 lines to 167. See the RECURSIVE TWIN banner above for the table and for
+// what that costs the differential — briefly, it proves the WIRING and cannot
+// see inside a shared `combine_*` helper.
+//
 //   (1) byte-identical result  (protobuf `encode_to_vec`, or identical Err), AND
 //   (2) identical charge trace  (the ordered `(BillableKind, weight)` sequence
 //       from the budget's canonical event log — "same tokens, same order, same
