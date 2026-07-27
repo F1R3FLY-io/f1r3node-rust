@@ -23,6 +23,49 @@ reviewer can see what was predicted and what was found; each superseded claim
 carries an inline ⚠ pointer to its correction rather than being silently
 rewritten.
 
+---
+
+## 0. Current subject sets — DERIVED FROM THE GATE, NOT TRANSCRIBED
+
+⚠ **This block is the document's only live statement of which traversals are
+converted and which are tripwired.** Every other enumeration in this document is
+**anchored to a commit** and must be read as history: those are evidence of what
+was true at the commit they name, and rewriting them would falsify the ledger.
+
+**Why it is fenced and machine-checked.** The sets below were previously prose,
+transcribed in four places, and every copy drifted from the gate that holds them
+as executable fact — [§11.4](#114-the-gate-and-one-thing-it-found-in-itself)
+named 7 converted subjects, [§12.6](#126-the-family-at-b9aaa3d4--converted-tripwired-and-open)
+and [§12.9](#129-gate-composition-and-the-workspace-bar) named 13, and the gate
+carried 17. Both prose copies went stale *within the hour* of being reconciled,
+twice. Two copies of one truth do not stay equal, so the second copy no longer
+has authority: `rholang/tests/stack_depth_gate.rs` publishes the sets as the
+constants `CONVERTED_DEPTH`, `CONVERTED_WIDTH`, `TRIPWIRE_DEPTH` and
+`TRIPWIRE_WIDTH`, and its test `the_audit_agrees_with_the_gate` **fails** if this
+block disagrees with them. The failure lands on the commit that separates them,
+not at the next audit.
+
+The gate in turn cannot lie about its own constants: `theta_depth_tripwire`
+records every subject it drives through `assert_slope_below` and refuses to
+finish unless that set is exactly `TRIPWIRE_DEPTH`, and
+`converted_traversals_are_depth_independent` *iterates* `CONVERTED_DEPTH` /
+`CONVERTED_WIDTH` rather than listing subjects beside them. So a name here is a
+test that runs, and a test that runs is a name here.
+
+<!-- GATE-SUBJECTS:BEGIN — DERIVED from rholang/tests/stack_depth_gate.rs.
+     Checked by `the_audit_agrees_with_the_gate`; edit the gate's constants first. -->
+```text
+converted-depth: substitute_no_sort, substitute_binders, substitute, sort, score_cmp,
+                 tree_drop, tree_clone, eval_with_nots, bincode_de, pretty, normalize
+converted-width: substitute_wide, sort_wide, score_cmp_wide, free_check, pretty_wide,
+                 normalize_wide
+tripwire-depth:  substitute_deep_binding, clone, par_drop, normalize_drop, encode,
+                 bincode_ser, sort_nested_set, sort_nested_map, clone_nested_set
+tripwire-width:
+totals:          converted=17, tripwired=9
+```
+<!-- GATE-SUBJECTS:END -->
+
 **Why it exists.** A 30-character Rholang program with no guest language, no
 λ-calculus and no user-defined process aborts the reducer:
 
@@ -1181,6 +1224,14 @@ to reorder them and fork the canonical form.
 
 ### 11.4 The gate, and one thing it found in itself
 
+> ⚠ **SUPERSEDED AS STATUS — retained as history.** The list immediately below
+> was true when §11 was written and names **7** subjects; the gate now carries
+> **17**. It is left unedited because §11 is a dated stratum and the ledger
+> records what was known when. For the current sets see
+> [§0](#0-current-subject-sets--derived-from-the-gate-not-transcribed), which is
+> the document's only live enumeration and is checked against the gate by
+> `the_audit_agrees_with_the_gate`.
+
 `converted_traversals_are_depth_independent` now carries, **in both profiles**:
 
 ```
@@ -1795,6 +1846,18 @@ for operand order (`swapping_operands_actually_changes_the_answer`).
 
 ### 12.6 The family at `b9aaa3d4` — converted, tripwired, and open
 
+> ⚠ **ANCHORED TO `b9aaa3d4` — a snapshot, not a status.** The counts and tables
+> in this section describe the tree at that commit (13 converted, 9 tripwired,
+> `pretty` still awaiting conversion). They are evidence and are deliberately not
+> updated. The live sets are in
+> [§0](#0-current-subject-sets--derived-from-the-gate-not-transcribed).
+>
+> Changes since `b9aaa3d4`: `pretty` / `pretty_wide` (Stage D) and `normalize` /
+> `normalize_wide` (Stage G) moved into the converted set, and the tripwire's
+> `drop` was **renamed `par_drop`** — the same subject, under the name
+> mettail-rust's twin gate already used for it — while `normalize_drop` was added
+> alongside it ([§14](#14-the-deploy-path-teardown--par-as-drop-2026-07-27)).
+
 Three dispositions, and every member of the family is in exactly one of them.
 
 ```
@@ -2049,6 +2112,12 @@ and no `_` arm.
 ---
 
 ### 12.9 Gate composition and the workspace bar
+
+> ⚠ **ANCHORED TO `b9aaa3d4`.** The composition below is that commit's — four
+> tests, 13 converted subjects, `pretty` "present but commented out". None of
+> those three facts holds at HEAD. Retained as evidence; the live sets are in
+> [§0](#0-current-subject-sets--derived-from-the-gate-not-transcribed) and the
+> gate now carries seven tests.
 
 **`rholang/tests/stack_depth_gate.rs` at `b9aaa3d4`** — four tests, and what each
 one is for:
@@ -2480,3 +2549,480 @@ is for the failure message only).
 | E59 | Two live defects were caught by the differential: the `~P` span, and `Debug`-string comparison of a `HashMap`-backed `FreeMap` | **Measured** — both surfaced as byte/rendering divergences on first run |
 | E60 | Test parity: all 139 pre-existing `#[test]` functions in the compiler subtree are present, plus 8 new | **Measured** — name-by-name set difference against `HEAD`; `-p rholang --lib` 274 run / 274 passed / 0 skipped |
 | E61 | A depth guard cannot be given a profile-independent constant | **Derived** — $`D \le 287`$ (release, else inert) and $`D \le 45`$ (debug, else still aborts) are unsatisfiable together by a useful constant; from E39's measurements |
+
+---
+
+## 14. The deploy path teardown — `<Par as Drop>` (2026-07-27)
+
+**Stratum.** Written after [§13](#13-stage-g--the-normalizer-execution-record-2026-07-27)
+landed. It records one finding, its reachability verdict, the gate subject added
+to hold it, and a **re-derivation** of the disposition [§7.2] assigned to the
+derived-impl class — re-derived because this campaign has repeatedly found
+recorded rationales naming mechanisms the code did not have, and an inherited
+rationale is not evidence.
+
+### 14.1 The finding, in one sentence
+
+Stage G made the term **builder** heap-bounded and left the term **releaser**
+recursive, so a deploy can now construct a `Par` that the process cannot destroy.
+
+### 14.2 The subject existed; its NAME did not
+
+The defect was reported as "*the repo that defines `Par` is the one not measuring
+its `Drop`*", on the evidence that a search for `par_drop` finds mettail-rust's
+twin gate and nothing here. **The search was right and the conclusion was wrong.**
+This gate had measured `drop_in_place::<Par>` since it was written — under the
+subject name `drop`, which says which operation and never says on what. One
+traversal had two names across two repositories, and the second name was
+indistinguishable from an absence.
+
+It is now `par_drop` in both repositories. That is the whole of the naming fix,
+and it is worth recording because the cost of the divergence was a defect report
+whose central premise was false while its subject matter was real.
+
+### 14.3 Reachability — MEASURED, and the verdict is *yes*
+
+The question that sets the severity is whether a **deploy** can reach the depth
+at which the destructor aborts. It can, and the margin is not close.
+
+Method: `rholang/tests/stack_depth_probe.rs`, one child process per
+$`(\text{subject}, \text{depth}, \text{stack})`$ point, bisecting depth at a
+fixed stack. Debug profile. The stack is fixed at **2 MiB** because that is what
+a tokio worker gets — `node/src/main.rs` builds its runtime with
+`Builder::new_multi_thread().enable_all()` and never calls `thread_stack_size`,
+so workers take Rust's default spawned-thread size, and `RUST_MIN_STACK` is set
+only in `.cargo/config.toml`, i.e. for cargo-launched runs and not for a
+deployed binary.
+
+| subject | stack | max surviving depth | first failing depth |
+|---|---|---:|---:|
+| `normalize` (build the term) | 2 MiB | **≥ 39,960** | not reached |
+| `par_drop` (release the term) | 2 MiB | **4,414** | 4,453 |
+| `par_drop` | 8 MiB | 17,929 | 17,987 |
+
+The two 2 MiB rows are the finding. A source of $`4{,}415`$ bracket levels —
+$`2 \times 4{,}415 + 1 = 8{,}831`$ bytes, one TCP segment — normalizes without
+difficulty and then aborts the process on teardown. At 8 MiB the same shape
+aborts at depth $`17{,}987`$, which reproduces the originally reported
+"32,000 aborts, 16,000 does not" exactly: both reported points lie on opposite
+sides of $`17{,}987`$.
+
+The abort is not a panic:
+
+```text
+thread 'probe' has overflowed its stack
+fatal runtime error: stack overflow, aborting
+```
+
+`SIGSEGV` on the guard page, handled by the runtime, `abort()`. No
+`catch_unwind` sees it, `inj_attempt`'s `Err(e) => handle_error(ParserError(..))`
+arm cannot run, and — because `build-normalized-term` precedes
+`set-initial-cost` — no budget has been established to charge against. This is
+the same shape as the 577-byte reproducer of [§12](#12-reconciliation--the-tree-at-b9aaa3d4-2026-07-27),
+one phase later in the same function.
+
+**Bounded by measurement, not by assumption: the wire path is NOT affected.** A
+`Par` arriving from a peer is decoded by `prost`, whose `DecodeContext` enforces
+`RECURSION_LIMIT = 100` message levels; `models/src/rust/canonical_path.rs`
+records the same envelope and its own `COLLECTION_DEPTH_LIMIT = 32`. So the
+asymmetry is precise and worth stating plainly: **a `Par` too deep to arrive over
+the network can be built from source text.**
+
+### 14.4 Why no existing assertion caught it
+
+```text
+   Compiler::source_to_adt(src)          the Par falls out of scope
+   ────────────────────────────          ───────────────────────────
+   subject `normalize`                   subject `par_drop`
+   CONVERTED, 0 B/level                  TRIPWIRED, ~464 B/level
+   gated at depth 100,000  ✓             gated for slope only  ✓
+                     ╲                   ╱
+                      ╲                 ╱
+                       ▼               ▼
+                  ★ THE JOIN — asserted nowhere
+                    a deploy builds what it cannot release
+```
+
+Both halves were gated; their composition was not. And the gate's own headline
+regression test —
+`the_577_byte_reproducer_is_a_deploy_and_not_a_node_abort`, which certifies
+source depth **100,000** on a 2 MiB worker — passes only because its fixture
+`normalize_body` ends in `par_children::dismantle`. **No production caller does
+that.** `Compiler::source_to_adt` returns the sorted `Par` by value and every
+caller, `InterpreterImpl::inj_attempt` included, releases it through the derived
+destructor. The distance between "depth 100,000 is fine" and "depth 4,415 aborts
+the node" is one function call in a test fixture, and the fixture's choice was
+correct *as isolation* and misleading *as a claim about deploys*.
+
+The new subject `normalize_drop` is `normalize_body` with `dismantle` replaced by
+`drop`. Measured on the gate's own ladder (debug, 256 → 4,096):
+
+| subject | min stack @ 256 | min stack @ 4,096 | B/level |
+|---|---:|---:|---:|
+| `normalize` | 196 KiB | 196 KiB | **0** |
+| `par_drop` | 124 KiB | **1,864 KiB** | 464 |
+| `normalize_drop` | 196 KiB | **1,864 KiB** | 444 |
+
+The deep ends are identical to the byte. The two slopes differ only because
+`normalize_drop`'s shallow end is clamped at the normalizer's 200,704 B floor
+rather than the destructor's 126,976 B one:
+
+```math
+\frac{1{,}908{,}736 - 200{,}704}{4{,}096 - 256} = 444.8
+\qquad
+\frac{1{,}908{,}736 - 126{,}976}{4{,}096 - 256} = 464.0
+```
+
+Because the two traversals run **sequentially** rather than nested, the
+composition costs the maximum and not the sum, which is asserted as a band whose
+ends are structural rather than measured:
+
+```math
+S_{\texttt{par\_drop}} \;\le\; S_{\texttt{normalize\_drop}} \;\le\;
+  S_{\texttt{par\_drop}} + S_{\texttt{normalize}}
+```
+
+`the_deploy_composition_is_bounded_below_by_its_destructor` asserts exactly that.
+Neither end inverts when the defect is fixed — $`\max(a,b) \ge b`$ holds however
+small $`b`$ becomes — which is why the band is the assertion and the *equality*
+(true today) is only recorded. A guard that must be deleted to record success is
+a guard that discourages success.
+
+### 14.5 Anti-vacuity — the checkers are shown to refuse a DESTRUCTOR
+
+[§12](#12-reconciliation--the-tree-at-b9aaa3d4-2026-07-27) established the
+reddening obligation: a checker that has only ever been compared against subjects
+that cleared it has not been shown to be able to fail. The existing control,
+`synthetic_sloped`, is a recursive **function**. `par_drop` is recursive **drop
+glue** — code no call site names, emitted by the compiler from the type. Those
+are different mechanisms, so the destructor gets its own control:
+
+| subject | teardown | measured (debug, 4 → 4,096) |
+|---|---|---:|
+| `synthetic_drop` | derived recursive `Drop` over a `Box`-linked chain | **95 B/level** |
+| `synthetic_drop_flat` | the same chain, detached iteratively | **0 B/level** |
+
+All three depth-axis checkers reject the first and accept the second, and the
+sharpest statement needs no checker at all: on the stack that suffices to tear
+the chain down iteratively at 4,096 links, tearing the *same* chain down
+recursively does not survive.
+
+★ **The control's own N2 check went RED on its first run, and the correction is
+a result.** It asserted the destructor's per-level cost was at least the
+chain link's 96 B ballast, and measured **95**. The floor was wrong, not the
+measurement: `synthetic_recurse` observes its ballast *after* the recursive call,
+so the array is live across it and must occupy a frame slot, whereas drop glue
+drops fields in declaration order and `[u8; N]` has no destructor — the ballast
+is never read and no profile is obliged to keep it. The floor is now derived from
+the ABI instead: a recursive call cannot cost less than the return address it
+pushes, $`\texttt{size\_of::<usize>()}`$, which holds in every profile and still
+catches the only failure the check exists for, since an elided recursion reads
+$`\approx 0`$ and not 8.
+
+### 14.6 Do the two repositories' gates agree?
+
+They agree on the **property** and differ on the **constant**, and the difference
+is fully explained by the fixtures rather than by either gate being wrong.
+
+| | this repo | mettail-rust |
+|---|---|---|
+| subject | `par_drop` | `par_drop` |
+| assertion | `assert_slope_below("par_drop", ceiling(1500, 800), 256, 4096)` | `assert_slope_below("par_drop", ceiling(600, 200), 512, 4096)` |
+| fixture | `nested_list(depth)` — an `EList` chain built directly in `models::rhoapi` | a mettail `Proc` list chain **lowered** by `lower_proc_in_env`, then `drop(par); drop(term);` |
+| measured (debug / release) | 464 / 219 | 368 / 95 |
+
+The mettail subject releases **two** structures (the lowered `Par` *and* the
+`Proc` it came from, whose teardown is the `language!` macro's own) and its `Par`
+is whatever the lowering emits, which is not the single-element `EList` chain
+this fixture builds. Two different terms of the same type, so two different
+per-level costs; the shared claim — a derived, recursive, non-zero-slope
+destructor of order $`10^2`$ B/level — holds in both. Recording it this way is
+deliberate: "the gates agree" would be false, "the gates disagree" would imply a
+defect in one of them, and neither is what the measurement says.
+
+### 14.7 Disposition — RE-DERIVED, not inherited
+
+The recorded disposition is that `drop_in_place::<Par>` is *"irreducible without
+a manual iterative `Drop`, which would forbid the destructuring moves Leg-1
+introduced."* Re-derived below, clause by clause.
+
+**The premise holds.** Rust forbids moving a field out of a type that implements
+`Drop` (E0509). `par_children::dismantle` destructures `Par` field-by-field, and
+`prost`'s derived code moves fields throughout, so a hand-written
+`impl Drop for Par` would break the very worklist that is the existing repair. So
+"a manual iterative `Drop` forbids the destructuring moves" is **correct**, and
+it is correct for a reason the compiler enforces rather than a stylistic one.
+
+**But the conclusion — "therefore irreducible" — does not follow, because it
+enumerates one repair.** Three others exist, and each has a different cost:
+
+1. **Call-site interception (Leg-1, the status quo).** Hand every owner to
+   `dismantle`. Already applied at 4 sites in the normalizer and the substituter.
+   Its weakness is now measured rather than argued: `Compiler::normalize_term`
+   dismantles the un-sorted intermediate and **returns the sorted term to a
+   caller that does not**, so the repair was applied inside the function and
+   missed at its boundary. Completeness here is unbounded and unenforceable —
+   there is no compiler support for "this type must never be dropped implicitly",
+   short of making it non-`Drop`-able, which is repair 3.
+2. **Change the type.** Interpose a wrapper with an iterative destructor on the
+   recursive edge (`EList.ps: Vec<Par>` and its siblings). This is the repair
+   that removes the class rather than its instances, and it is invasive: the
+   `oneof` numbering, the wire codec and every `prost`-derived impl are affected.
+3. **Bound the depth at CONSTRUCTION.** Refuse to *build* a `Par` deeper than
+   $`D_{\max}`$, so no traversal derived over the type — `Drop`, `Clone`,
+   `encode`, `Debug` — can ever be driven past it. **One check bounds the whole
+   derived-impl class.**
+
+**On (3), and on the objection already in this ledger.** [E61] records that *"a
+depth guard cannot be given a profile-independent constant"*, derived from
+$`D \le 287`$ (release) against $`D \le 45`$ (debug): any constant is either
+inert in release or newly restrictive in debug. **That derivation was about the
+normalizer and does not transfer**, for two independent reasons.
+
+* The spread has narrowed. Those figures came from a traversal costing
+  43,542 B/level debug against 7,261 release — a ratio of **6.0**. The
+  destructor costs 464 against **144** (measured 2026-07-27, release, subject
+  `drop` over 256 → 4,096: 44 KiB → 584 KiB), a ratio of **3.2**, so the
+  admissible window $`[D_{\text{debug}}, D_{\text{release}}]`$ is roughly twice
+  as wide as the one E61 found empty.
+  ⚠ **The recorded release figure did not reproduce.** [§12.6]'s table and the
+  gate's own comment carry **219** B/level for this subject; direct bisection of
+  the same subject on a release build of this tree gives **144**. The tripwire's
+  release ceiling (800) is unaffected and the debug figure reproduces (464
+  against the recorded 470, 1.3 %), so this is recorded as a discrepancy to be
+  resolved rather than acted on — the ladder used for the original reading is not
+  stated, and a two-point slope depends on it.
+* More decisively, a construction bound **need not be derived from stack at
+  all**. `prost`'s `RECURSION_LIMIT = 100` and `canonical_path`'s
+  `COLLECTION_DEPTH_LIMIT = 32` are protocol constants, chosen for consensus
+  reasons and sitting two orders of magnitude below *either* profile's abort
+  point. A bound of that kind is profile-independent by construction, which is
+  precisely what E61 says cannot be had — because E61 was looking for a bound
+  derived from the measurement, and this one is not.
+
+**Recommendation, and its ownership.** The principled repair is (3): a
+construction-time depth bound, chosen to match the envelope the wire path already
+enforces, making the source path and the network path agree instead of differ.
+⚠ **It is a consensus-visible change** — it changes which deploys are accepted,
+so it belongs to F1r3node's protocol surface and is **not** taken here. What is
+taken here is the measurement, the gate subject, and this derivation, so that the
+decision is made against evidence rather than against a footnote.
+
+Until then the disposition is: **tripwired, reachable, and named.** `par_drop`
+and `normalize_drop` are in
+[§0](#0-current-subject-sets--derived-from-the-gate-not-transcribed)'s
+`tripwire-depth` set, and a traversal leaves that set only by being converted,
+never by having its ceiling raised.
+
+### 14.8 ⚠ A second Θ(depth) traversal on the same deploy path, found in passing
+
+Establishing 14.3 required reading `InterpreterImpl::inj_attempt` end to end, and
+it performs **three** recursive traversals of the normalized `Par`, not one:
+
+```rust
+let parsed = Compiler::source_to_adt_with_normalizer_env(term, normalizer_env)?;   // 0 B/level
+let signed_process = SignedProcess::metered(parsed, self.c.signature(), …);        // moves it
+self.c.reset_from_signed_process(&signed_process);
+signed_process.source_process().cloned()                                           // ★ CLONE
+    .expect("metered deploy must retain source process")
+```
+
+`SignedProcess::Signed { process: Par, … }` holds the term **by value**, and
+`source_process()` returns `Option<&Par>`, so `.cloned()` is
+`<Par as Clone>::clone` over the whole deploy term — a tripwired subject at
+**15,872 B/level debug** and **2,852 release**. Both figures are re-measured
+here rather than relayed: direct bisection of subject `clone` over 16 → 128 on a
+release build of this tree gives 56 KiB → 368 KiB, i.e. **2,852 B/level**,
+reproducing [§12.6]'s recorded value exactly.
+
+Dividing the 2 MiB a tokio worker gets by those constants gives the deploy
+path's real depth ceilings, and the destructor is **not** the binding one:
+
+| traversal on the deploy path | debug B/level | release B/level | $`D_{\max}`$ @ 2 MiB, release | source bytes |
+|---|---:|---:|---:|---:|
+| `<Par as Clone>::clone` (`inj_attempt`'s `.cloned()`) | 15,872 | 2,852 | **735** | ~1.5 kB |
+| `drop_in_place::<Par>` (`par_drop`) | 464 | 144 | 14,563 | ~29 kB |
+
+★ **735 levels is below the 288-deep AST that [§12]'s 577-byte reproducer
+already produces — by a factor of only 2.6** — and it is an order of magnitude
+tighter than the destructor's own bound.
+
+This is logged rather than fixed: it is a distinct call site with a distinct
+repair (the clone is made to satisfy an ownership requirement of the metering
+handshake, which is F1r3node's surface), and folding it into this change would
+mix a measurement task with a metering-path redesign. It is recorded here with
+its number so the next reader does not have to rediscover it, and so that any
+future $`D_{\max}`$ chosen under 14.7(3) is chosen against **this** bound and not
+against the destructor's.
+
+### 14.9 Evidence ledger — third amendment
+
+| # | claim | provenance |
+|---|---|---|
+| E62 | `drop_in_place::<Par>` was already a gate subject here, named `drop`; the reported absence was a name mismatch with mettail-rust's `par_drop` | **Read** — `subject()` dispatch and `theta_depth_tripwire`, both pre-existing; renamed 2026-07-27 |
+| E63 | ★★ A 2 MiB worker normalizes a source of depth ≥ 39,960 and aborts releasing one of depth 4,453 | **Measured** — `stack_depth_probe.rs`, depth bisection at fixed stack, debug |
+| E64 | The reported 16,000-ok / 32,000-abort pair is reproduced: the 8 MiB boundary is 17,929 / 17,987 | **Measured** — same method, `PROBE_STACK=8388608` |
+| E65 | The abort is `SIGABRT` (exit 134) via the guard-page handler, not a panic | **Measured** — `fatal runtime error: stack overflow, aborting` + core dump |
+| E66 | A deep `Par` cannot arrive over the WIRE: `prost` `RECURSION_LIMIT` = 100 message levels | **Read** — `DecodeContext`; corroborated by `canonical_path.rs`'s `COLLECTION_DEPTH_LIMIT` = 32 |
+| E67 | `normalize_drop` and `par_drop` need the identical minimum stack at depth 4,096 (1,908,736 B); the composition's slope is the destructor's | **Measured** — gate ladders, debug |
+| E68 | ★ The 577-byte reproducer test's depth-100,000 claim depends on its fixture calling `dismantle`, which no production caller does | **Read** — `normalize_body` against `Compiler::source_to_adt`'s callers; **Measured** — the same fixture with `drop` aborts at 4,453 |
+| E69 | The depth checkers reject a recursive DESTRUCTOR and accept an iterative one over the same structure | **Measured** — `synthetic_drop` 95 B/level vs `synthetic_drop_flat` 0 B/level; all three checkers separate them |
+| E70 | The destructor control's ballast-derived floor was wrong (95 vs 96) because drop glue never reads the ballast; the ABI-derived floor is correct | **Measured** — the check went RED on its first run; **Derived** — field-drop order and `[u8; N]`'s absent destructor |
+| E71 | The two repositories' `par_drop` subjects measure different fixtures (464/219 here, 368/95 there) and agree on the class, not the constant | **Read** — both fixtures; **Measured** — both gates' recorded slopes |
+| E72 | ⚠ `inj_attempt` also `.cloned()`s the deploy term through `<Par as Clone>::clone` — 15,872 B/level debug, **2,852 release**, i.e. **735 levels** on a 2 MiB release worker, the deploy path's true depth ceiling | **Read** — `interpreter.rs` `set-initial-cost` phase, `SignedProcess::source_process`; **Measured** — direct bisection of subject `clone`, release, 16 → 128: 56 KiB → 368 KiB |
+| E74 | ⚠ The recorded **219** B/level release figure for `par_drop` does not reproduce; direct bisection gives **144** | **Measured** — release build of this tree, subject `drop` over 256 → 4,096: 44 KiB → 584 KiB. The debug figure DOES reproduce (464 vs recorded 470) |
+| E73 | E61's "no profile-independent depth constant" does not transfer to a construction bound: the profile ratio fell from 6.0 to 2.1, and a protocol constant is not derived from stack at all | **Derived** — from E61's own figures against this section's; corroborated by two existing protocol depth constants |
+
+---
+
+## 15. `deep_recursion_{long,short}slow` — a wall clock measuring work (2026-07-27)
+
+**Stratum.** 2026-07-27. It closes the obligation
+[§12.10](#1210-evidence-ledger--second-amendment)'s caveat left open: *"a
+wall-clock assertion is, structurally, the same kind of claim as a byte-count
+ceiling … and carries the same eventual obligation to be re-derived rather than
+relaxed."*
+
+### 15.1 The defect
+
+`casper/tests/genesis/contracts/deep_recursion_spec.rs` carried a single 180 s
+`tokio::time::timeout` per test, and that one number was asserting two different
+things:
+
+| # | claim | proper instrument |
+|---|---|---|
+| 1 | **liveness** — the driver terminates; a hang must not block the suite | wall clock, loose |
+| 2 | **work** — the driver is heap-bound; the pre-conversion parked-parent chain needed 300 s | *not* the wall clock |
+
+Claim 2 is about computation performed. Wall time is computation divided by the
+share of a CPU the scheduler granted, and that denominator is set by every other
+process on the machine. The consequence is on record: a full-suite run under a
+load average of ~125 reported both tests RED, they were investigated as a
+regression, and they pass in isolation on the same tree.
+
+### 15.2 Re-measurement — the runtime has NOT moved
+
+The first question was whether `07853de0` (the normalizer conversion) had shifted
+these tests, since raising a budget against a stale number is tuning rather than
+fixing. It has not.
+
+Three repetitions, debug, 32 cores, `--test-threads 1`, load average ~6:
+
+| rep | `longslow` | `shortslow` |
+|---|---:|---:|
+| 1 | 91.194 s | 90.368 s |
+| 2 | 90.808 s | 91.177 s |
+| 3 | 92.161 s | 90.805 s |
+| **mean** | **91.39 s** | **90.78 s** |
+
+That agrees with the figure in the test's own comment ("observed ~90s debug") and
+with [§12.10]'s isolation readings of 93.4 / 95.0 s. **The budget was not stale;
+the instrument was wrong.** Idle headroom is $`180 / 91.4 = 1.97\times`$.
+
+### 15.3 Under load — the flake reproduced under a controlled parameter
+
+Contention was applied as $`K`$-fold CPU oversubscription: $`32(K-1)`$ busy-loop
+processes at default `nice` on 32 cores.
+
+| condition | load avg | `longslow` | `shortslow` | factor |
+|---|---:|---:|---:|---:|
+| idle | ~6 | 91.4 s | 90.8 s | 1.00 |
+| 2× (32 spinners) | ~40 | 118.1 s | 122.6 s | 1.29 / 1.35 |
+| 4× (96 spinners) | ~108 | **TIMEOUT 180.7 s** | **TIMEOUT 180.7 s** | ≥ 1.98 |
+
+The reported flake is therefore not an anecdote about one busy afternoon: it is a
+reproducible function of machine load, and 4× oversubscription is enough.
+
+### 15.4 Why a larger number could not have been the fix
+
+A wall budget $`B`$ is safe exactly when
+
+```math
+B \;\ge\; T_{\text{idle}} \cdot C , \qquad
+C = \frac{\text{wall}}{\text{CPU}} = \text{contention imposed by other processes}
+```
+
+$`C`$ is not a property of the code, the test, or the test runner — it is set by
+whatever else the machine is doing, and it is unbounded. **No finite $`B`$ is
+safe**; raising it only moves the load at which it flakes. Option (a) is refuted
+rather than merely disfavoured.
+
+A nextest `threads-required` annotation (option (b)) was rejected on the
+measurement: it serialises a test against the other tests *in its own run*, but
+the contention in the recorded incident was **external** — concurrent build
+jobs — and so was the contention in [§15.3], which used unrelated processes. It
+removes one term of $`C`$ and leaves $`C`$ unbounded. It also cannot help CI,
+which runs `cargo test --release -p <crate>` and not nextest.
+
+Making the test faster (option (c)) was rejected because the 32,768 iterations
+**are** the regression (f1r3node issues #305 and #306); reducing the count would
+silently weaken the property.
+
+### 15.5 The fix — measure work with a clock that measures work
+
+CPU time is invariant to contention, and this is measured, not assumed:
+
+| condition | wall | thread CPU | %CPU |
+|---|---:|---:|---:|
+| idle | 95.96 s | **93.66 s** | 97 % |
+| 2× oversubscription | 121.91 s | **93.73 s** | 77 % |
+
+Wall time moved 27 %; CPU time moved **0.07 s**, or 0.07 %.
+
+So the two claims are separated onto the two clocks that suit them:
+
+* `LIVENESS_TIMEOUT = 900 s`, wall — derived: the work is ~93 s of CPU, so wall
+  $`\approx 93K`$ at $`K\times`$ oversubscription; 900 s tolerates
+  $`K \approx 9.7`$ against the ~3.9× that produced the recorded failure, a
+  margin of ~2.5×, while still bounding a deadlock to fifteen minutes.
+* `CPU_WORK_BUDGET = 180 s`, thread CPU — derived as the geometric mean of the
+  two costs it must separate: 107.4 s (the worst CPU reading observed, under
+  heavy memory-subsystem contention) and 300 s (the budget the parked-parent
+  chain required). $`\sqrt{107.4 \times 300} = 179.5`$, so it sits $`1.68\times`$
+  above the worst measurement and $`1.67\times`$ below the behaviour it must
+  reject. Its numerical coincidence with the wall budget it replaces is an
+  accident of that arithmetic and not a carry-over.
+
+**Instrument.** `/proc/thread-self/stat`, fields 14 and 15, parsed after the LAST
+`)` because `comm` may contain one. **Per-thread and not per-process**, because
+under `cargo test` — what CI runs — up to `nproc` tests share a process and a
+process-wide reading would charge this test with its siblings' CPU. That it
+nevertheless captures the whole cost was measured: sampling
+`/proc/<pid>/task/*/stat` across a complete run found **one of 34 threads holding
+107.40 s of a 107.40 s total**, the other 33 at zero — `#[tokio::test]` builds a
+`current_thread` runtime and drives it with `block_on` on the test's own thread.
+
+### 15.6 Verification — the same load, the opposite result
+
+The 96-spinner configuration of [§15.3], which produced two failures at 180 s, was
+re-run against the fixed tests:
+
+```text
+### AFTER FIX, 96 spinners
+  longslow:  96.0 s CPU (budget 180 s)
+  shortslow: 93.4 s CPU (budget 180 s)
+test result: ok. 2 passed; 0 failed;  finished in 609.62 s
+  wall=609.64 s  user=188.53 s  sys=0.90 s  cpu=31%
+```
+
+Both pass. Wall time inflated $`3.3\times`$ (609.6 s for the pair against 182 s
+idle) while the work bound was satisfied with 47 % of budget to spare.
+
+★ **The run also validates the instrument independently.** The two in-process
+readings sum to $`96.0 + 93.4 = 189.4`$ s; `/usr/bin/time` reports
+$`188.53 + 0.90 = 189.43`$ s for the same process. Agreement to **0.02 %**
+confirms the field indices, the `TICKS_PER_SEC = 100` constant, and the claim
+that one thread carries the cost — three assumptions that would otherwise have
+been arguments.
+
+### 15.7 Evidence ledger — fourth amendment
+
+| # | claim | provenance |
+|---|---|---|
+| E75 | The runtime of both tests is unchanged since the budget was set: 91.39 s / 90.78 s, mean of 3 | **Measured** — debug, `--test-threads 1`, load ~6 |
+| E76 | The flake is a reproducible function of load: 1.00× idle, 1.29–1.35× at 2×, TIMEOUT at 4× | **Measured** — controlled CPU oversubscription |
+| E77 | ★ CPU time is invariant to contention where wall time is not: 27 % wall change, 0.07 % CPU change | **Measured** — `/usr/bin/time -v`, idle vs 32 spinners |
+| E78 | One of 34 threads holds 107.40 s of a 107.40 s process total | **Measured** — `/proc/<pid>/task/*/stat` sampled through a full run |
+| E79 | No finite wall budget is safe | **Derived** — $`B \ge T_{\text{idle}}C`$ with $`C`$ set by other processes and unbounded |
+| E80 | ★ After the fix, the load that previously failed both tests passes both: 96.0 / 93.4 s CPU against 180 s, wall inflated 3.3× | **Measured** — identical 96-spinner configuration |
+| E81 | The in-process instrument agrees with `/usr/bin/time` to 0.02 % (189.4 s vs 189.43 s) | **Measured** — same run; validates field indices, tick constant, and single-thread attribution |

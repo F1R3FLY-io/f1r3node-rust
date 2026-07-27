@@ -362,6 +362,106 @@ fn synthetic_sloped_body(param: usize) {
     std::hint::black_box(synthetic_recurse(param));
 }
 
+// ---------------------------------------------------------------------------
+// ★ THE SYNTHETIC **DESTRUCTOR** CONTROL — a recursive `Drop`, by construction
+//
+// [`synthetic_recurse`] is a recursive *function*: the gate calls it directly.
+// `drop_in_place::<Par>` is recursive *drop glue*: nothing calls it, the
+// compiler emits it from the type and runs it when a value falls out of scope.
+// Those are different mechanisms, and a control for one is not a control for
+// the other — a harness could in principle observe a direct call and miss a
+// destructor (it cannot here, because the bisection observes only whether the
+// child process survived, but "it cannot" is exactly the kind of claim this
+// campaign has repeatedly found to be inherited rather than derived).
+//
+// So the destructor gets its own control, and it is deliberately recursive:
+// `DropChain`'s `Drop` runs `drop_in_place::<Box<DropChain>>` on its tail from
+// inside its own frame, which is precisely the shape `EList.ps: Vec<Par>` gives
+// `Par`. Its flat twin tears the identical structure down with an explicit
+// worklist — the shape `par_children::dismantle` gives `Par`.
+//
+// The pair is what makes the new `par_drop` / `normalize_drop` subjects
+// non-vacuous: it demonstrates that these checkers, applied to a DESTRUCTOR,
+// reject a recursive one and accept an iterative one over the same data.
+// ---------------------------------------------------------------------------
+
+/// A linked list whose derived `Drop` is recursive: dropping the head drops the
+/// `Box`, which drops the next `DropChain`, from inside the head's frame.
+///
+/// `ballast` makes each frame cost something measurable, for the same reason
+/// [`synthetic_recurse`] carries one.
+struct DropChain {
+    ballast: [u8; SYNTHETIC_FRAME_BYTES],
+    next: Option<Box<DropChain>>,
+}
+
+/// Build `param` links ITERATIVELY, so construction is never the constraint —
+/// the same discipline every term builder in this file follows.
+fn drop_chain(param: usize) -> DropChain {
+    let mut head = DropChain {
+        ballast: [0u8; SYNTHETIC_FRAME_BYTES],
+        next: None,
+    };
+    for level in 0..param {
+        let mut ballast = [0u8; SYNTHETIC_FRAME_BYTES];
+        ballast[0] = level as u8;
+        head = DropChain {
+            ballast,
+            next: Some(Box::new(head)),
+        };
+    }
+    head
+}
+
+/// Count the links ITERATIVELY — the anti-vacuity walker for this fixture.
+fn drop_chain_len(head: &DropChain) -> usize {
+    let mut n = 0usize;
+    let mut cur = head.next.as_deref();
+    while let Some(link) = cur {
+        n += 1;
+        cur = link.next.as_deref();
+    }
+    n
+}
+
+/// Θ(parameter) native stack **in a destructor**, by construction. The subject
+/// the checkers must REJECT.
+///
+/// The `Drop` here is the one Rust derives for a type owning a `Box` of itself;
+/// it is not written out, exactly as `drop_in_place::<Par>` is not.
+fn synthetic_drop_body(param: usize) {
+    let head = drop_chain(param);
+    assert_carries(
+        "the synthetic drop chain's length",
+        drop_chain_len(&head),
+        param,
+    );
+    std::hint::black_box(head.ballast[0]);
+    drop(head);
+}
+
+/// Θ(1) native stack, same structure, iterative teardown — the subject the
+/// checkers must ACCEPT, so a checker that rejected every destructor fails too.
+///
+/// This is `par_children::dismantle` in miniature: detach each link into a local
+/// before the previous one is released, so no destructor is ever running inside
+/// another destructor's frame.
+fn synthetic_drop_flat_body(param: usize) {
+    let mut head = drop_chain(param);
+    assert_carries(
+        "the synthetic drop chain's length",
+        drop_chain_len(&head),
+        param,
+    );
+    std::hint::black_box(head.ballast[0]);
+    let mut cursor = head.next.take();
+    while let Some(mut link) = cursor {
+        cursor = link.next.take();
+        // `link` is released here with its `next` already detached, so its
+        // `Drop` has nothing to recurse into.
+    }
+}
+
 /// Θ(1) native stack, by construction — the same ballast and the same
 /// arithmetic, iteratively. The subject the checkers must ACCEPT, so that a
 /// checker which rejected everything fails too.
@@ -414,7 +514,15 @@ fn subject(name: &str) -> fn(usize) {
         "tree_clone" => tree_clone_body,
         "pretty" => pretty_body,
         "clone" => clone_body,
-        "drop" => drop_body,
+        // ⚠ RENAMED 2026-07-27, from `drop`. The subject is `drop_in_place::<Par>`
+        // and it has been here since the gate was written — but under a name that
+        // says only *which operation*, never *on what*. mettail-rust's twin gate
+        // calls the identical traversal `par_drop`, so a cross-repo search for
+        // `par_drop` found the twin and MISSED this one, and the absence was
+        // reported as "the repo that defines `Par` is not measuring its `Drop`".
+        // It was measuring it. One name for one traversal, in both repos.
+        "par_drop" => par_drop_body,
+        "normalize_drop" => normalize_drop_body,
         "encode" => encode_body,
         "bincode_ser" => bincode_ser_body,
         "bincode_de" => bincode_de_body,
@@ -430,6 +538,8 @@ fn subject(name: &str) -> fn(usize) {
         // -------- synthetic controls (either axis; see SYNTHETIC_FRAME_BYTES) --------
         "synthetic_sloped" => synthetic_sloped_body,
         "synthetic_flat" => synthetic_flat_body,
+        "synthetic_drop" => synthetic_drop_body,
+        "synthetic_drop_flat" => synthetic_drop_flat_body,
         other => panic!("stack_depth_gate: unknown GATE_SUBJECT={:?}", other),
     }
 }
@@ -482,6 +592,99 @@ fn runs_within(stack: usize, depth: usize, subject_name: &str) -> bool {
         .status()
         .expect("stack_depth_gate: failed to run child")
         .success()
+}
+
+// ---------------------------------------------------------------------------
+// ★ THE SUBJECT REGISTER — one place, and the audit is checked AGAINST it
+//
+// Until 2026-07-27 the converted and tripwired sets existed twice: here as
+// executable fact, and in `docs/design/audits/theta-depth-traversals-2026-07-26.md`
+// as prose. Two copies of one truth do not stay equal, and these did not: the
+// audit's §11.4 named 7 converted subjects, its §12.6 and §12.9 named 13, and
+// the gate carried 17. Both prose copies had gone stale WITHIN THE HOUR of being
+// reconciled, twice.
+//
+// Reconciling them a third time would buy another hour. So the direction of
+// truth is now declared and CHECKED: these constants are the source, the audit
+// carries one generated block, and `the_audit_agrees_with_the_gate` fails at the
+// commit that separates them rather than at the next audit.
+//
+// ⚠ The constants are not themselves a transcription of the assertions below
+// them. `converted_traversals_are_depth_independent` *iterates* these lists — a
+// name here is a test that runs — and `theta_depth_tripwire` RECORDS every
+// subject it asserts and refuses to finish unless the recorded set is exactly
+// [`TRIPWIRE_DEPTH`]. So a subject cannot be gated without appearing here, and
+// cannot appear here without being gated.
+// ---------------------------------------------------------------------------
+
+/// Depth-axis traversals converted to a heap-bounded (explicit worklist) form.
+/// Membership is the deliverable; it only ever grows. A traversal enters only by
+/// being converted, never by having a ceiling raised.
+const CONVERTED_DEPTH: &[&str] = &[
+    // Stage B — the driver
+    "substitute_no_sort",
+    // Stage B — the driver, under a deep environment
+    "substitute_binders",
+    // Stage C-2 (the sorter) + Stage E (the intermediate is dismantled instead
+    // of dropped recursively)
+    "substitute",
+    // Stage C-2 — ParSortMatcher
+    "sort",
+    // Stage C-1 — the score-tree comparator
+    "score_cmp",
+    // Stage C-1 — Tree's hand-written Drop
+    "tree_drop",
+    // Stage C-1 — Tree's hand-written Clone
+    "tree_clone",
+    // Stage E — rho-pure-eval's own SCC
+    "eval_with_nots",
+    // Stage F — the cold-store DECODER (par_codec)
+    "bincode_de",
+    // Stage D — PrettyPrinter's explicit pushdown driver
+    "pretty",
+    // Stage G — `normalize_ann_proc`'s 26-function SCC becomes
+    // `compiler::normalize_drive::norm_drive`. 43,542 → 0 B/level debug and
+    // 7,261 → 0 release; the ONLY member that runs before metering exists, so
+    // nothing else could have bounded it.
+    "normalize",
+];
+
+/// Width-axis traversals converted to a heap-bounded form. Same rule.
+const CONVERTED_WIDTH: &[&str] = &[
+    "substitute_wide", // Stage B
+    "sort_wide",       // Stage C-2
+    "score_cmp_wide",  // Stage C-1 — the sibling walk
+    "free_check",      // Stage E — the matcher's width-axis member, now a `for` loop
+    "pretty_wide",     // Stage D — the same driver, sibling axis
+    "normalize_wide",  // Stage G — the same driver, collection-element axis
+];
+
+/// Depth-axis traversals still Θ(depth), held under a ceiling that certifies
+/// only "not worse". Every member's rationale is on its `assert_slope_below`
+/// call in [`theta_depth_tripwire`]; this list exists so the audit can be
+/// checked against it, and the tripwire asserts it drove exactly these.
+const TRIPWIRE_DEPTH: &[&str] = &[
+    "substitute_deep_binding", // `Env::get` clones a deep bound value
+    "clone",                   // derived `<Par as Clone>`
+    "par_drop",                // derived `drop_in_place::<Par>`
+    "normalize_drop",          // ★ the DEPLOY composition: flat build, sloped release
+    "encode",                  // prost encoder (capped by RECURSION_LIMIT on decode)
+    "bincode_ser",             // RSpace cold-store ENCODER — uncapped
+    "sort_nested_set",         // Stage C-2 residual, self-contained set arm
+    "sort_nested_map",         // Stage C-2 residual, self-contained map arm
+    "clone_nested_set",        // the derived floor the two above are measured against
+];
+
+/// Width-axis traversals still Θ(width). Empty, and that is an EXECUTED claim —
+/// see `theta_width_tripwire`'s `UNCONVERTED_WIDTH_SUBJECTS`.
+const TRIPWIRE_WIDTH: &[&str] = &[];
+
+/// Every subject [`assert_slope_below`] was driven with on this thread. Each
+/// `#[test]` runs on its own thread, so a thread-local is both correct and
+/// lock-free here — no shared state to interleave, no mutex to contend.
+thread_local! {
+    static SLOPE_SUBJECTS_DRIVEN: std::cell::RefCell<Vec<String>> =
+        const { std::cell::RefCell::new(Vec::new()) };
 }
 
 /// Bisection resolution, in bytes. Both the zero-slope tolerance and the
@@ -680,6 +883,9 @@ fn assert_no_slope(name: &str, lo_param: usize, hi_param: usize, axis: &str) {
 /// This deliberately does NOT claim the traversal is fixed. It claims only that
 /// it has not got worse. Every caller documents why its subject is still here.
 fn assert_slope_below(name: &str, ceiling_bytes_per_level: usize, lo: usize, hi_depth: usize) {
+    // Record the drive, so `TRIPWIRE_DEPTH` is checked against what actually ran
+    // rather than transcribed alongside it. See the subject-register note.
+    SLOPE_SUBJECTS_DRIVEN.with(|s| s.borrow_mut().push(name.to_string()));
     // Two depths far enough apart that (a) the fixed intercept is a small share
     // of the difference and (b) the CHEAP traversals clear the minimum viable
     // thread stack at the deeper point — otherwise both probes bottom out on the
@@ -1002,6 +1208,59 @@ fn source_sibling_count(src: &str) -> usize {
     src.matches(", ").count() + 1
 }
 
+/// ★★ **THE DEPLOY PATH, WITH THE TEARDOWN THE DEPLOY PATH ACTUALLY HAS.**
+///
+/// [`normalize_body`] hands its result to `par_children::dismantle`. That is
+/// correct *for a probe* — it isolates the normalizer — but it is not what any
+/// caller of `Compiler::source_to_adt` does, and it is why the gate's own
+/// headline regression test
+/// [`the_577_byte_reproducer_is_a_deploy_and_not_a_node_abort`] certifies depth
+/// **100,000** on a 2 MiB worker while a deploy of depth ~4,400 aborts the
+/// process. The difference between those two numbers is one function call in a
+/// test fixture.
+///
+/// This subject is [`normalize_body`] with `dismantle` replaced by `drop` —
+/// i.e. the composition `InterpreterImpl::inj_attempt` performs:
+///
+/// ```text
+///   Compiler::source_to_adt(source)   Θ(1) native stack   (Stage G, converted)
+///        │  returns a `Par` of the source's nesting depth
+///        ▼
+///   … the Par falls out of scope …    Θ(depth)            (derived `Drop`)
+/// ```
+///
+/// ⚠ **The two facts are individually gated and jointly unguarded, and that is
+/// the whole finding.** `normalize` is in
+/// [`converted_traversals_are_depth_independent`] at 0 B/level, so the gate
+/// certifies that a term of any depth can be BUILT from a deploy. `par_drop` is
+/// in [`theta_depth_tripwire`] at ~470 B/level, so the gate certifies that
+/// tearing one down costs native stack per level. Nothing asserted the join —
+/// and the join is a `SIGSEGV`, which is neither a panic nor an `Err`, so
+/// `inj_attempt`'s `Err(e) => handle_error(ParserError(..))` arm cannot see it
+/// and no `catch_unwind` can contain it. It takes the node, not the deploy.
+///
+/// ★ Its measured slope must track [`par_drop_body`]'s, because the normalizer
+/// contributes 0: if this subject ever reads materially BELOW `par_drop`, the
+/// fixture has collapsed (a shallow term drops cheaply) and the reading is
+/// vacuous — which is what `assert_carries` on the returned term prevents.
+///
+/// Its bidirectional control is `normalize` itself: same source, same
+/// normalizer, same term, teardown by worklist instead of by recursion, 0
+/// B/level. The ONLY difference between the two ladders is the destructor.
+fn normalize_drop_body(depth: usize) {
+    let src = nested_list_source(depth);
+    assert_carries(
+        "the normalize_drop input's SOURCE nesting",
+        source_bracket_depth(&src),
+        depth,
+    );
+    let term = Compiler::source_to_adt(&src).expect("stack_depth_gate: normalize_drop failed");
+    assert_carries("the NORMALIZED term's nesting", par_depth(&term), depth);
+    // ⚠ NOT `dismantle`. This is the line under test: every production caller of
+    // `Compiler::source_to_adt` releases the term exactly like this.
+    drop(term);
+}
+
 /// The NORMALIZER — Θ(*source* nesting), and the only member of the family that
 /// runs before a term exists at all, therefore before metering
 /// (`inj_attempt`'s `build-normalized-term` precedes `set-initial-cost`).
@@ -1010,9 +1269,17 @@ fn source_sibling_count(src: &str) -> usize {
 /// bracket run and the OUTPUT for its `EList` nesting. A normalizer that
 /// silently produced a shallow term — or one that rejected the input and was
 /// never entered — would read a comfortable zero otherwise.
+///
+/// ⚠ It ends in `dismantle`, which no production caller does. See
+/// [`normalize_drop_body`] for the same composition with the deploy path's own
+/// teardown, and for why the difference is a node abort rather than a detail.
 fn normalize_body(depth: usize) {
     let src = nested_list_source(depth);
-    assert_carries("the normalize input's SOURCE nesting", source_bracket_depth(&src), depth);
+    assert_carries(
+        "the normalize input's SOURCE nesting",
+        source_bracket_depth(&src),
+        depth,
+    );
     let term = Compiler::source_to_adt(&src).expect("stack_depth_gate: normalize failed");
     assert_carries("the NORMALIZED term's nesting", par_depth(&term), depth);
     dismantle(term);
@@ -1044,7 +1311,10 @@ fn clone_body(depth: usize) {
     dismantle(term);
 }
 
-fn drop_body(depth: usize) {
+/// `drop_in_place::<Par>` — `prost`'s DERIVED recursive destructor.
+///
+/// ⚠ Named `drop` until 2026-07-27; see the rename note in [`subject`].
+fn par_drop_body(depth: usize) {
     // The ONE subject that must be allowed to drop recursively — that is the
     // thing under test.
     let term = nested_list(depth);
@@ -1386,31 +1656,10 @@ fn eval_with_nots_body(depth: usize) {
 /// every hand-written member named above is present on both axes.
 #[test]
 fn converted_traversals_are_depth_independent() {
-    let converted_depth: &[&str] = &[
-        "substitute_no_sort",   // Stage B — the driver
-        "substitute_binders",   // Stage B — the driver, under a deep environment
-        "substitute",           // Stage C-2 (the sorter) + Stage E (the intermediate
-        //                         is dismantled instead of dropped recursively)
-        "sort",                 // Stage C-2 — ParSortMatcher
-        "score_cmp",            // Stage C-1 — the score-tree comparator
-        "tree_drop",            // Stage C-1 — Tree's hand-written Drop
-        "tree_clone",           // Stage C-1 — Tree's hand-written Clone
-        "eval_with_nots",       // Stage E — rho-pure-eval's own SCC
-        "bincode_de",           // Stage F — the cold-store DECODER (par_codec)
-        "pretty",               // Stage D — PrettyPrinter's explicit pushdown driver
-        "normalize",            // Stage G — `normalize_ann_proc`'s 26-function SCC becomes
-        //                         `compiler::normalize_drive::norm_drive`. 43,542 → 0 B/level
-        //                         debug and 7,261 → 0 release; the ONLY member that runs
-        //                         before metering exists, so nothing else could have bounded it.
-    ];
-    let converted_width: &[&str] = &[
-        "substitute_wide", // Stage B
-        "sort_wide",       // Stage C-2
-        "score_cmp_wide",  // Stage C-1 — the sibling walk
-        "free_check",      // Stage E — the matcher's width-axis member, now a `for` loop
-        "pretty_wide",     // Stage D — the same driver, sibling axis
-        "normalize_wide",  // Stage G — the same driver, collection-element axis
-    ];
+    // ★ The lists live in [`CONVERTED_DEPTH`] / [`CONVERTED_WIDTH`] so that one
+    // register serves both this test and `the_audit_agrees_with_the_gate`.
+    let converted_depth: &[&str] = CONVERTED_DEPTH;
+    let converted_width: &[&str] = CONVERTED_WIDTH;
 
     for name in converted_depth {
         // 1 MiB is well below what ANY Θ(depth) member needs at depth 256.
@@ -1575,6 +1824,121 @@ fn the_depth_checkers_reject_a_known_theta_depth_subject() {
     );
 }
 
+/// ★ **The executed reddening leg for a DESTRUCTOR.**
+///
+/// [`the_depth_checkers_reject_a_known_theta_depth_subject`] drives the checkers
+/// with a recursive *function*. `par_drop` and `normalize_drop` are recursive
+/// *drop glue* — code no call site names, emitted by the compiler from the type
+/// and run when a value falls out of scope. This leg supplies the missing
+/// datum: a destructor that is Θ(depth) BY CONSTRUCTION
+/// ([`synthetic_drop_body`]), and its iterative twin over the identical
+/// structure ([`synthetic_drop_flat_body`]), on opposite sides of every
+/// depth-axis checker.
+///
+/// Without it, `assert_slope_below("par_drop", …)` would be a ceiling that had
+/// only ever been compared against subjects that cleared it — the thirteenth
+/// check that cannot fail.
+fn the_depth_checkers_reject_a_recursive_destructor() {
+    let recursive = measure_ladder("synthetic_drop", 4, 4096);
+    let iterative = measure_ladder("synthetic_drop_flat", 4, 4096);
+
+    // ── N2: the reading came from the real destructor. ──
+    //
+    // ⚠ **The floor here is NOT the ballast, and the difference is instructive.**
+    // [`synthetic_recurse`] observes its ballast with `black_box` *after* the
+    // recursive call, so the array is live across it and must occupy a frame
+    // slot — which is why that control's floor can be `SYNTHETIC_FRAME_BYTES`.
+    // Drop glue does no such thing: `drop_in_place::<DropChain>` drops fields in
+    // declaration order, and `[u8; N]` has no destructor, so the ballast is
+    // never read and nothing obliges any profile to keep it in the frame. It
+    // costs 95 B/level in debug because `-O0` materialises the whole struct;
+    // `-O2` is free to spill nothing but the tail pointer.
+    //
+    // The first draft of this leg asserted `>= SYNTHETIC_FRAME_BYTES` and went
+    // RED at 95 against 96 — a one-byte margin on a quotient of two bisections
+    // quantised to `RESOLUTION`, which is precisely the flake this file warns
+    // against in [`the_depth_checkers_reject_a_known_theta_depth_subject`]'s
+    // `flat_ceiling` note. So the floor is derived from the ABI instead: a
+    // recursive call cannot cost less than the return address it pushes. That
+    // bound holds in every profile and on every target, and it still catches the
+    // only failure this check exists for — an ELIDED recursion reads ~0, not 8.
+    const RETURN_ADDRESS_BYTES: usize = std::mem::size_of::<usize>();
+    assert!(
+        recursive.per_step() >= RETURN_ADDRESS_BYTES,
+        "the synthetic DESTRUCTOR must cost at least one return address \
+         ({RETURN_ADDRESS_BYTES} B) per level: measured {} B/level ({} KiB at 4, {} KiB at \
+         4,096). Below that means `drop_in_place::<DropChain>` was not recursive in this \
+         build — the glue was flattened — and this leg would certify nothing.",
+        recursive.per_step(),
+        recursive.lo_stack / 1024,
+        recursive.hi_stack / 1024
+    );
+    assert!(
+        recursive.per_step() <= 16 * SYNTHETIC_FRAME_BYTES,
+        "the synthetic destructor measured {} B/level, more than 16x the \
+         {SYNTHETIC_FRAME_BYTES} B chain link it is tearing down — that is not the toy \
+         this leg thinks it is driving",
+        recursive.per_step()
+    );
+
+    // The sharpest statement, needing no checker: on the stack that suffices to
+    // tear the chain down ITERATIVELY at 4,096 links, tearing the SAME chain down
+    // recursively does not survive. The two subjects differ in nothing else.
+    assert!(
+        !runs_within(iterative.hi_stack, 4096, "synthetic_drop"),
+        "the two destructors must be separable at all: `synthetic_drop_flat` needs {} KiB \
+         at 4,096 links and the recursive destructor survived the same stack, so the \
+         control has no slope and every rejection below is vacuous",
+        iterative.hi_stack / 1024
+    );
+
+    // ── Checker 1: the zero-slope half rejects the recursive destructor. ──
+    let why = zero_slope_verdict("synthetic_drop", "depth", recursive)
+        .expect_err("ZERO-SLOPE must reject a destructor that is Θ(depth) by construction");
+    assert!(
+        why.contains("ZERO-SLOPE GATE FAILED"),
+        "the rejection must come from the zero-slope clause; got: {why}"
+    );
+    assert!(
+        recursive.growth() > 8 * ZERO_SLOPE_TOLERANCE,
+        "the destructor control's growth ({} KiB) must clear ZERO_SLOPE_TOLERANCE ({} KiB) \
+         by an order of magnitude, or this leg is a coin-flip on bisection noise",
+        recursive.growth() / 1024,
+        ZERO_SLOPE_TOLERANCE / 1024
+    );
+
+    // ── Checker 2: the tripwire — the checker `par_drop` and `normalize_drop`
+    // are actually asserted with — BOTH directions. Ceilings derived from the
+    // control's own slope, so this leg carries no profile-dependent constant.
+    let why = slope_below_verdict("synthetic_drop", recursive.per_step() / 2, recursive)
+        .expect_err("the tripwire must reject a destructor whose slope is twice its ceiling");
+    assert!(
+        why.contains("Θ(DEPTH) TRIPWIRE"),
+        "the rejection must come from the tripwire clause; got: {why}"
+    );
+    slope_below_verdict("synthetic_drop", recursive.per_step() * 2, recursive).expect(
+        "the tripwire must ACCEPT a destructor at half its ceiling — a checker that rejects \
+         unconditionally is no checker",
+    );
+
+    // ── The control column: the ITERATIVE destructor passes everything. ──
+    zero_slope_verdict("synthetic_drop_flat", "depth", iterative)
+        .expect("ZERO-SLOPE must accept a destructor that is Θ(1) by construction");
+    let flat_ceiling = ZERO_SLOPE_TOLERANCE / (iterative.hi_param - iterative.lo_param);
+    slope_below_verdict("synthetic_drop_flat", flat_ceiling, iterative).expect(
+        "the tripwire must accept an iterative teardown at the gate's own no-growth ceiling",
+    );
+
+    println!(
+        "  synthetic DESTRUCTOR (depth): recursive {} B/level ({} KiB -> {} KiB over 4 -> \
+         4,096), iterative {} B/level — checkers separate them",
+        recursive.per_step(),
+        recursive.lo_stack / 1024,
+        recursive.hi_stack / 1024,
+        iterative.per_step()
+    );
+}
+
 /// Tripwire over every traversal still known to be Θ(depth). Ceilings are ~1.5×
 /// the values measured on 2026-07-26 (recorded in the audit document), so
 /// ordinary codegen drift will not flake while an order-of-magnitude regression
@@ -1600,6 +1964,7 @@ fn the_depth_checkers_reject_a_known_theta_depth_subject() {
 #[test]
 fn theta_depth_tripwire() {
     the_depth_checkers_reject_a_known_theta_depth_subject();
+    the_depth_checkers_reject_a_recursive_destructor();
 
     // measured 2026-07-26 (debug / release), bytes per nesting level:
     //   substitute 195,728 / 27,179    sort 78,579 /  6,495
@@ -1655,7 +2020,15 @@ fn theta_depth_tripwire() {
     // raised.
     assert_slope_below("substitute_deep_binding", ceiling(25_000, 12_000), 16, 128);
     assert_slope_below("clone", ceiling(25_000, 5_000), 16, 128);
-    assert_slope_below("drop", ceiling(1_500, 800), 256, 4096);
+    assert_slope_below("par_drop", ceiling(1_500, 800), 256, 4096);
+    // ★★ THE DEPLOY-REACHABLE COMPOSITION — see `normalize_drop_body`.
+    //
+    // `normalize` is converted (0 B/level) and `par_drop` is not (~470), so a
+    // deploy can BUILD a term the runtime cannot DESTROY. Ceiling is `par_drop`'s
+    // own, because the normalizer contributes nothing: this subject is here to
+    // keep the composition measured, and to fail if the teardown gets worse or
+    // if the normalizer stops being flat.
+    assert_slope_below("normalize_drop", ceiling(1_500, 800), 256, 4096);
     assert_slope_below("encode", ceiling(4_000, 1_500), 64, 1024);
     // ⚠ The RSpace codec — see `bincode_ser_body`. UNCAPPED, unlike `prost`.
     // Probed SHALLOW: at 3,052 B/level (debug) the ENCODER is the cheap half,
@@ -1689,6 +2062,129 @@ fn theta_depth_tripwire() {
     assert_slope_below("sort_nested_map", ceiling(82_534, 10_394), 2, 8);
     // The derived floor the two above are measured against.
     assert_slope_below("clone_nested_set", ceiling(25_000, 9_000), 2, 8);
+
+    // ── ★ Close the register loop. ──
+    // `TRIPWIRE_DEPTH` is what `the_audit_agrees_with_the_gate` publishes; this
+    // asserts it is what actually ran. Adding an `assert_slope_below` above
+    // without listing the subject — or listing one without asserting it — fails
+    // HERE, at the commit that does it, instead of drifting until the next audit.
+    let driven = SLOPE_SUBJECTS_DRIVEN.with(|s| s.borrow().clone());
+    let mut driven_sorted = driven.clone();
+    driven_sorted.sort();
+    let mut expected: Vec<String> = TRIPWIRE_DEPTH.iter().map(|s| (*s).to_string()).collect();
+    expected.sort();
+    assert_eq!(
+        driven_sorted, expected,
+        "THE SUBJECT REGISTER IS OUT OF DATE. `theta_depth_tripwire` drove {:?} but \
+         `TRIPWIRE_DEPTH` lists {:?}. That constant is the one the audit document is \
+         checked against, so a mismatch here is exactly the drift \
+         `the_audit_agrees_with_the_gate` exists to prevent — fix the constant in the \
+         same commit as the assertion.",
+        driven, TRIPWIRE_DEPTH
+    );
+}
+
+/// ★★ **The deploy path's stack requirement is bounded BELOW by its
+/// destructor's — stated as a structural invariant, not as a pinned number.**
+///
+/// `normalize_drop` runs `Compiler::source_to_adt` and then releases the result,
+/// SEQUENTIALLY. Two traversals that do not nest need
+/// $`\max(S_{\text{normalize}}, S_{\text{drop}})`$ of native stack, not their
+/// sum, which puts the composition inside a band both of whose ends are
+/// structural:
+///
+/// ```math
+/// S_{\text{par\_drop}} \;\le\; S_{\text{normalize\_drop}} \;\le\;
+///   S_{\text{par\_drop}} + S_{\text{normalize}}
+/// ```
+///
+/// ⚠ **Neither end inverts when the defect is fixed**, which is why the band is
+/// the assertion and the equality is not. $`\max(a,b) \ge b`$ holds however
+/// small $`b`$ becomes, so converting the destructor leaves this test green —
+/// whereas "the composition costs exactly what the destructor costs" is TRUE
+/// TODAY and would have to be deleted the day somebody fixed it. A guard that
+/// must be deleted to record success is a guard that discourages success.
+///
+/// **What each end catches.**
+///
+/// * The lower bound catches a **collapsed fixture**: if `normalize_drop` ever
+///   needed less than `par_drop`, its term would not be carrying the depth, and
+///   its tripwire reading would be a comfortable, meaningless number. This is
+///   the same failure the audit records three times (§4.3, §11.3, and the
+///   score-tree subjects), approached from the composition side.
+/// * The upper bound catches the composition becoming **nested** rather than
+///   sequential — a future `source_to_adt` that held a Θ(depth) frame chain
+///   alive across the teardown would exceed the sum and trip here, and nothing
+///   else in this file would notice.
+///
+/// **Measured 2026-07-27, debug, over 256 → 4,096** (the arithmetic is recorded
+/// because the band deliberately does not pin it):
+///
+/// | subject | min stack @ 256 | min stack @ 4,096 | B/level |
+/// |---|---:|---:|---:|
+/// | `normalize` | 196 KiB | 196 KiB | **0** |
+/// | `par_drop` | 124 KiB | **1,864 KiB** | 464 |
+/// | `normalize_drop` | 196 KiB | **1,864 KiB** | 444 |
+///
+/// The deep ends are IDENTICAL to the byte, and the two slopes differ only
+/// because the shallow end of `normalize_drop` is clamped at the normalizer's
+/// 200,704 B floor rather than the destructor's 126,976 B one:
+/// $`(1{,}908{,}736 - 200{,}704)/3{,}840 = 444.8`$ against
+/// $`(1{,}908{,}736 - 126{,}976)/3{,}840 = 464.0`$. So at depth the deploy
+/// path's cost *is* the destructor's cost, and the normalizer's conversion
+/// bought a flat term-builder in front of a Θ(depth) term-releaser.
+#[test]
+fn the_deploy_composition_is_bounded_below_by_its_destructor() {
+    let compose = measure_ladder("normalize_drop", 256, 4096);
+    let destruct = measure_ladder("par_drop", 256, 4096);
+    let build = measure_ladder("normalize", 256, 4096);
+
+    // ── Lower bound: sequential composition cannot cost LESS than either part.
+    assert!(
+        compose.hi_stack + ZERO_SLOPE_TOLERANCE >= destruct.hi_stack,
+        "VACUOUS COMPOSITION: `normalize_drop` needed only {} KiB at depth 4,096 while \
+         `par_drop` — the destructor it runs — needed {} KiB. A composition cannot cost \
+         less than a traversal it performs, so the normalized term is not carrying the \
+         depth the subject asked for and its tripwire reading means nothing.",
+        compose.hi_stack / 1024,
+        destruct.hi_stack / 1024
+    );
+
+    // ── Upper bound: the two traversals must not NEST.
+    assert!(
+        compose.hi_stack <= destruct.hi_stack + build.hi_stack + ZERO_SLOPE_TOLERANCE,
+        "`normalize_drop` needed {} KiB at depth 4,096, more than `par_drop` ({} KiB) plus \
+         `normalize` ({} KiB). Those two run one after the other, so the composition should \
+         need the MAXIMUM and not the SUM — exceeding the sum means the normalizer is now \
+         holding a frame chain alive across the teardown, which is a new Θ(depth) member \
+         that no other assertion in this file would see.",
+        compose.hi_stack / 1024,
+        destruct.hi_stack / 1024,
+        build.hi_stack / 1024
+    );
+
+    // ── The normalizer's own contribution to the composition's SLOPE is nil,
+    // and that is the point: the deploy path is flat to build and sloped to
+    // release. Asserted as an inequality so a conversion of the destructor
+    // leaves it green.
+    assert!(
+        build.growth() <= ZERO_SLOPE_TOLERANCE,
+        "`normalize` grew {} KiB across 256 -> 4,096; it is in the converted list and must \
+         be flat, or the attribution of `normalize_drop`'s slope to the destructor is unsound",
+        build.growth() / 1024
+    );
+
+    println!(
+        "  deploy composition: normalize {} B/level, par_drop {} B/level, \
+         normalize_drop {} B/level ({} KiB -> {} KiB); band [{}, {}] KiB at 4,096",
+        build.per_step(),
+        destruct.per_step(),
+        compose.per_step(),
+        compose.lo_stack / 1024,
+        compose.hi_stack / 1024,
+        destruct.hi_stack / 1024,
+        (destruct.hi_stack + build.hi_stack) / 1024
+    );
 }
 
 /// The WIDTH tripwire. `compare_score_nodes` recurses on the list tail, so its
@@ -1809,10 +2305,206 @@ fn theta_width_tripwire() {
     for &(name, ceiling_bytes, lo, hi) in UNCONVERTED_WIDTH_SUBJECTS {
         assert_slope_below(name, ceiling_bytes, lo, hi);
     }
+
+    // ── ★ Close the register loop on the width axis too; see the depth
+    // tripwire's tail for why the register is checked against what RAN.
+    let driven = SLOPE_SUBJECTS_DRIVEN.with(|s| s.borrow().clone());
+    let mut driven_sorted = driven.clone();
+    driven_sorted.sort();
+    let mut expected: Vec<String> = TRIPWIRE_WIDTH.iter().map(|s| (*s).to_string()).collect();
+    expected.sort();
+    assert_eq!(
+        driven_sorted, expected,
+        "THE SUBJECT REGISTER IS OUT OF DATE on the WIDTH axis. `theta_width_tripwire` \
+         drove {:?} but `TRIPWIRE_WIDTH` lists {:?}.",
+        driven, TRIPWIRE_WIDTH
+    );
+
     println!(
         "  width axis: {} un-converted subject(s); control separates at {} B/sibling",
         UNCONVERTED_WIDTH_SUBJECTS.len(),
         sloped.per_step()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// ★★ THE AUDIT IS DERIVED FROM THE GATE, AND THE DERIVATION IS CHECKED
+// ---------------------------------------------------------------------------
+
+/// Path of the audit, relative to this crate's manifest directory.
+const AUDIT_PATH: &str = "../docs/design/audits/theta-depth-traversals-2026-07-26.md";
+
+/// The fence that delimits the audit's ONE live status block.
+const AUDIT_BLOCK_BEGIN: &str = "<!-- GATE-SUBJECTS:BEGIN";
+const AUDIT_BLOCK_END: &str = "<!-- GATE-SUBJECTS:END -->";
+
+/// Every key the block must carry. Needed as a set because a field runs until
+/// the NEXT key, not until the next newline.
+const AUDIT_KEYS: &[&str] = &[
+    "converted-depth",
+    "converted-width",
+    "tripwire-depth",
+    "tripwire-width",
+    "totals",
+];
+
+/// Pull the comma-separated names of the audit block's `key:` field.
+///
+/// ⚠ **A field may WRAP.** The first draft of this function read one `line` and
+/// stopped, and its first RED run under-reported a 9-name field as 5 — a
+/// silent short read, indistinguishable from the document genuinely omitting
+/// four names. A checker whose failure message misstates the evidence is worse
+/// than no checker, and in the other direction (a continuation carrying an
+/// EXTRA name) the short read would have let a disagreeing block PASS.
+///
+/// So a field runs from its own `key:` to the start of the next key in
+/// [`AUDIT_KEYS`], or to the end of the block — line breaks inside it are
+/// whitespace, exactly as a reader would take them.
+fn audit_field(block: &str, key: &str) -> Vec<String> {
+    let prefix = format!("{key}:");
+    let start = block.find(&prefix).unwrap_or_else(|| {
+        panic!(
+            "the audit's GATE-SUBJECTS block has no `{key}:` field. The block is derived from \
+             the gate's subject register and must carry every key the gate publishes; see \
+             `the_audit_agrees_with_the_gate`."
+        )
+    }) + prefix.len();
+    let end = AUDIT_KEYS
+        .iter()
+        .filter(|k| **k != key)
+        .filter_map(|k| block[start..].find(&format!("{k}:")).map(|i| start + i))
+        .min()
+        .unwrap_or(block.len());
+    // ⚠ Backticks are stripped BEFORE whitespace is normalised, not after. The
+    // last field runs to the end of the block, which includes the closing ```
+    // fence, and trimming backticks afterwards left `"tripwired=9 "` — a value
+    // that differs from `"tripwired=9"` only in a character no reader can see.
+    block[start..end]
+        .split(',')
+        .map(|s| s.replace('`', " "))
+        .map(|s| s.split_whitespace().collect::<Vec<_>>().join(" "))
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+/// Compare one key, with a message that says what to do about a mismatch.
+fn assert_audit_key_agrees(block: &str, key: &str, gate: &[&str]) {
+    let mut stated = audit_field(block, key);
+    stated.sort();
+    let mut expected: Vec<String> = gate.iter().map(|s| (*s).to_string()).collect();
+    expected.sort();
+    if stated == expected {
+        return;
+    }
+    let missing: Vec<&String> = expected.iter().filter(|n| !stated.contains(n)).collect();
+    let extra: Vec<&String> = stated.iter().filter(|n| !expected.contains(n)).collect();
+    panic!(
+        "★ THE AUDIT AND THE GATE DISAGREE about `{key}`.\n\
+         \n\
+         gate  ({} subjects): {:?}\n\
+         audit ({} subjects): {:?}\n\
+         \n\
+         in the gate but NOT in the audit: {:?}\n\
+         in the audit but NOT in the gate: {:?}\n\
+         \n\
+         The gate is the source of truth — it is executable, the prose is not. Update the\n\
+         GATE-SUBJECTS block in {AUDIT_PATH} to match, in THIS commit. Do not adjust the\n\
+         constants to match the document: a subject listed there is a test that runs here.",
+        expected.len(),
+        expected,
+        stated.len(),
+        stated,
+        missing,
+        extra
+    );
+}
+
+/// ★★ **The audit's status lists are DERIVED from this gate, and this is the
+/// derivation check.**
+///
+/// **The defect this replaces.** The audit transcribed the converted and
+/// tripwired sets as prose, in four separate places, and every copy drifted:
+/// §11.4 named **7** converted subjects, §12.6 and §12.9 named **13**, and the
+/// gate carried **17**. §12.6 additionally listed `pretty` as "the next
+/// conversion", tripwired — it had been converted in Stage D — and §12.9
+/// asserted `pretty` / `pretty_wide` were "present but commented out", which
+/// they were not. Both prose copies went stale within the hour of being
+/// reconciled, twice. Reconciling by hand a third time buys another hour; the
+/// only stable fix is to remove the second copy's authority.
+///
+/// **The mechanism.** The gate publishes [`CONVERTED_DEPTH`],
+/// [`CONVERTED_WIDTH`], [`TRIPWIRE_DEPTH`] and [`TRIPWIRE_WIDTH`]; the audit
+/// carries ONE generated block; this test asserts they are equal as sets. It
+/// fails at the commit that separates them, which is the campaign's discipline
+/// everywhere else — make the invariant fail where it is broken, not where it is
+/// next inspected.
+///
+/// **What the audit keeps.** Method, dispositions, derivations, per-subject
+/// numbers, and its commit-ANCHORED historical snapshots. Those snapshots
+/// ("the family at `b9aaa3d4`") are evidence, not status: they are true of the
+/// commit they name and rewriting them would falsify the record. This test
+/// therefore checks exactly one block — the one that claims to describe *now* —
+/// and the historical sections are explicitly out of its scope.
+///
+/// ★ **Shown RED.** Adding `par_drop` and `normalize_drop` to the gate without
+/// touching the document made this test fail with both names under "in the gate
+/// but NOT in the audit"; the block was then regenerated and it went green. That
+/// is the whole point: the next subject somebody adds gets the same treatment
+/// automatically.
+#[test]
+fn the_audit_agrees_with_the_gate() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(AUDIT_PATH);
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+        panic!(
+            "cannot read the audit at {}: {e}. The gate publishes the subject register that \
+             document is generated from, so the check cannot be skipped when the file moves \
+             — update AUDIT_PATH.",
+            path.display()
+        )
+    });
+
+    let start = text.find(AUDIT_BLOCK_BEGIN).unwrap_or_else(|| {
+        panic!(
+            "the audit at {} has no `{AUDIT_BLOCK_BEGIN}` fence. That block is the ONLY \
+             place the document is allowed to state the current subject sets; prose \
+             enumerations elsewhere must be anchored to a commit and read as history.",
+            path.display()
+        )
+    });
+    let end = text[start..]
+        .find(AUDIT_BLOCK_END)
+        .map(|i| start + i)
+        .unwrap_or_else(|| panic!("the audit's GATE-SUBJECTS block is not terminated"));
+    let block = &text[start..end];
+
+    assert_audit_key_agrees(block, "converted-depth", CONVERTED_DEPTH);
+    assert_audit_key_agrees(block, "converted-width", CONVERTED_WIDTH);
+    assert_audit_key_agrees(block, "tripwire-depth", TRIPWIRE_DEPTH);
+    assert_audit_key_agrees(block, "tripwire-width", TRIPWIRE_WIDTH);
+
+    // ── The counts the audit states in prose must follow from the same lists,
+    // because "13 subjects" in a heading is the form the drift actually took.
+    let stated_total = audit_field(block, "totals");
+    assert_eq!(
+        stated_total,
+        vec![
+            format!(
+                "converted={}",
+                CONVERTED_DEPTH.len() + CONVERTED_WIDTH.len()
+            ),
+            format!("tripwired={}", TRIPWIRE_DEPTH.len() + TRIPWIRE_WIDTH.len()),
+        ],
+        "the audit's `totals:` line must be derived from the same register as its lists — \
+         the drift this test replaces was as much in the COUNTS (\"13 subjects\") as in the \
+         names"
+    );
+
+    println!(
+        "  audit agrees with the gate: {} converted ({} depth + {} width), {} tripwired",
+        CONVERTED_DEPTH.len() + CONVERTED_WIDTH.len(),
+        CONVERTED_DEPTH.len(),
+        CONVERTED_WIDTH.len(),
+        TRIPWIRE_DEPTH.len() + TRIPWIRE_WIDTH.len()
     );
 }
 
@@ -1892,6 +2584,23 @@ fn theta_width_tripwire() {
 /// ⚠ This is a named regression, not the family's definition of done. That is
 /// `converted_traversals_are_depth_independent`, which carries `normalize` at
 /// parameter 4,096 with a flat minimum stack.
+///
+/// ⚠⚠ **AND ITS SCOPE IS NARROWER THAN ITS NAME.** It drives `normalize`, whose
+/// body ends in `par_children::dismantle`. **No production caller does that** —
+/// `Compiler::source_to_adt` returns the sorted `Par` by value and every caller,
+/// `InterpreterImpl::inj_attempt` included, lets it fall out of scope through
+/// the derived recursive `Drop`. Measured 2026-07-27 on this very fixture with
+/// `dismantle` replaced by `drop` (subject `normalize_drop`): the same 2 MiB
+/// worker carries depth **4,414**, not 100,000, and depth 4,415 aborts with
+/// `fatal runtime error: stack overflow`.
+///
+/// So this test certifies "the *normalizer* no longer aborts the node", which is
+/// exactly what Stage G set out to do and exactly what it achieved. It does not
+/// certify "the deploy no longer aborts the node", and the 100,000 in its own
+/// loop is the distance between those two claims. The join is measured by
+/// [`the_deploy_composition_is_bounded_below_by_its_destructor`] and tripwired
+/// as `normalize_drop`; see [`normalize_drop_body`] for why the residue is a
+/// destructor and not a traversal anybody wrote.
 #[test]
 fn the_577_byte_reproducer_is_a_deploy_and_not_a_node_abort() {
     const DEFAULT_SPAWNED_THREAD_STACK: usize = 2 * 1024 * 1024;
