@@ -226,9 +226,217 @@ impl NewBindRange {
     /// widening would be the mathematically contiguous interval and would
     /// therefore *differ* from the shipped bytes in exactly the regime
     /// (`start + count` past `i32::MAX`) where the two can be told apart.
+    /// ★ The two mutations of this body — widening to `i64`, and dropping the
+    /// [`Self::is_empty`] guard — are EXECUTED, not recorded:
+    /// `representation_mutations::the_recorded_representation_table_is_executable`.
     pub fn contains(&self, idx: i32) -> bool {
+        if mutating_bind_range(BindRangeMutation::ContainsWidenedToI64) {
+            let (idx, start, count) = (idx as i64, self.start as i64, self.count as i64);
+            return count > 0 && idx >= start && idx < start + count;
+        }
+        if mutating_bind_range(BindRangeMutation::ContainsDropsEmptyGuard) {
+            return (idx.wrapping_sub(self.start) as u32) < (self.count as u32);
+        }
         !self.is_empty() && (idx.wrapping_sub(self.start) as u32) < (self.count as u32)
     }
+}
+
+// ===========================================================================
+// ★ The SECOND recorded mutation table, made EXECUTABLE
+// ===========================================================================
+
+/// One deliberate defect in how a `New`'s bound names are REPRESENTED,
+/// addressable by name.
+///
+/// # Why this exists
+///
+/// [`drive`]'s module documentation carries two mutation tables. The first is
+/// about the *traversal* and became executable at `a8ec319f`
+/// ([`drive::DriveMutation`]). The second — five rows about *this*
+/// representation: the recorded interval, its membership predicate, and the
+/// display cap — was still a record. Every one of its rows had been produced by
+/// editing this file by hand, running the suite, writing the outcome down and
+/// reverting the edit, so "these tests stand between that defect and a
+/// regression" was a claim about an afternoon rather than a property of the
+/// code.
+///
+/// ⚠ Executing the *first* table falsified one of its rows: `New` mutating
+/// `bound_shift` before `build_variables` was recorded as caught by 11 tests,
+/// and `a4c23a58` had since made the two orderings observationally identical
+/// without anyone noticing, because nothing re-ran the table. A reader
+/// consulting it would have believed eleven tests stood where none did. That is
+/// the whole argument for executing a table rather than recording one, and it
+/// applies verbatim to the rows below.
+///
+/// # Why these are not [`drive::DriveMutation`]s
+///
+/// A `DriveMutation` perturbs the *worklist driver*, so the recursive twin
+/// still computes the unperturbed answer and the differential separates the two.
+/// The mutations here perturb PURE FUNCTIONS that the driver and the twin
+/// **share** — `pretty_printer_oracle.rs` calls
+/// [`PrettyPrinter::new_bind_range`] and [`PrettyPrinter::build_variables`]
+/// directly — so both forms move together and *no output differential can see
+/// them at all*. They are separated by property assertions instead, which is
+/// exactly why their table has a different shape: it names the assertion that
+/// rejects rather than the witness term that separates.
+///
+/// # Why it costs production nothing
+///
+/// [`mutating_bind_range`] is a `const fn` returning `false` outside
+/// `cfg(test)`, so every site is `if false { … }` in a production build and
+/// folds away before optimisation. There is no runtime switch, no environment
+/// variable and no second code path in a shipped binary — the alternative
+/// branches do not exist in one.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(not(test), allow(dead_code))]
+enum BindRangeMutation {
+    /// `bd7cb45f`'s form: the RECORDED interval is re-clamped to
+    /// `max_var_count`, so the display cap doubles as an allocation bound and a
+    /// slot past the cap stops being marked new-bound.
+    RecordedIntervalReClamped,
+    /// The pre-`bd7cb45f` form: the interval is MATERIALISED again — the same
+    /// `Θ(bind_count)` `Vec<i32>`, built at the same site with the same
+    /// wrapping arithmetic, and RETAINED for the printer's lifetime as that
+    /// form retained it.
+    ///
+    /// ⚠ This mutant is **byte-equivalent** (see
+    /// [`retain_materialised_interval`]) and is bounded by
+    /// [`MAX_MATERIALISED_BIND_COUNT`]; it is a pure-COST defect, which is why
+    /// no byte-level check in the suite can see it and why the row that records
+    /// it is a resource measurement rather than a test outcome.
+    IntervalMaterialisedAgain,
+    /// [`NewBindRange::contains`] widened to `i64` — the mathematically
+    /// contiguous interval instead of the wrap the shipped `release` profile
+    /// performed.
+    ContainsWidenedToI64,
+    /// [`NewBindRange::contains`] with its [`NewBindRange::is_empty`] guard
+    /// dropped, so a negative `count` is read as `count as u32` and reports
+    /// every index as a member.
+    ContainsDropsEmptyGuard,
+    /// [`PrettyPrinter::printed_bind_extent`] off by one, printing one name
+    /// MORE than the display cap allows — the direction that loosens the bound.
+    PrintedExtentOneTooMany,
+    /// The same off-by-one in the other direction, printing one name FEWER.
+    /// Enumerated separately because "off by one" is two mutants, and a cap
+    /// that is checked only from above is checked on one side.
+    PrintedExtentOneTooFew,
+}
+
+/// The largest `bind_count` at which [`BindRangeMutation::IntervalMaterialisedAgain`]
+/// will reproduce the historical allocation.
+///
+/// ⚠ **This is a refusal, not a convenience.** The recorded row for that
+/// mutation is a RESOURCE measurement — ">300 s wall, 7.31 GiB peak RSS,
+/// thrashing against an 8 GiB cgroup with `oom_kill 0`" — i.e. the mutant does
+/// not get killed, it *hangs*, and a suite that ran it would hang with it. The
+/// fixtures reach `bind_count = i32::MAX`, where the materialised form is a
+/// `(2^31 - 1) x 4 B` = ~8 GiB request, so the guard converts an unbounded
+/// allocation into an immediate, explanatory panic. A fixture that grows past
+/// this bound therefore fails loudly in milliseconds instead of taking the
+/// machine down.
+#[cfg(test)]
+const MAX_MATERIALISED_BIND_COUNT: i32 = 100_000;
+
+/// The marker every refusal panic carries, so a harness can tell "this mutation
+/// was declined on this fixture" from "this assertion rejected".
+#[cfg(test)]
+const MATERIALISATION_REFUSED: &str = "REFUSED as a resource hazard";
+
+#[cfg(test)]
+thread_local! {
+    /// The representation mutation this thread's printers should perform, if
+    /// any. Thread-local so the harness cannot perturb a concurrently running
+    /// test.
+    static ACTIVE_BIND_RANGE_MUTATION: std::cell::Cell<Option<BindRangeMutation>> =
+        const { std::cell::Cell::new(None) };
+
+    /// What [`BindRangeMutation::IntervalMaterialisedAgain`] has materialised
+    /// and RETAINED on this thread. Retention is the point: the form this
+    /// mutant reproduces held its `Vec<i32>` in `news_shift_indices` for the
+    /// printer's lifetime, so a mutant that allocated and dropped would model
+    /// its throughput cost and not its FOOTPRINT, which is the cost that made
+    /// it a denial of service.
+    static MATERIALISED_INTERVALS: std::cell::RefCell<Vec<Vec<i32>>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Is `m` the representation mutation currently in force?
+#[cfg(test)]
+fn mutating_bind_range(m: BindRangeMutation) -> bool {
+    ACTIVE_BIND_RANGE_MUTATION.with(|active| active.get() == Some(m))
+}
+
+/// Production: never. `const` so the mutant branches are eliminated rather than
+/// merely untaken.
+#[cfg(not(test))]
+#[inline(always)]
+const fn mutating_bind_range(_m: BindRangeMutation) -> bool { false }
+
+/// ⚠ TEST ONLY. Run `f` with `m` in force, restoring the previous setting — and
+/// releasing anything the mutant retained — even if `f` panics.
+#[cfg(test)]
+fn with_bind_range_mutation<T>(m: BindRangeMutation, f: impl FnOnce() -> T) -> T {
+    struct Restore(Option<BindRangeMutation>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            ACTIVE_BIND_RANGE_MUTATION.with(|active| active.set(self.0));
+            MATERIALISED_INTERVALS.with(|held| held.borrow_mut().clear());
+        }
+    }
+    let _restore = ACTIVE_BIND_RANGE_MUTATION.with(|active| Restore(active.replace(Some(m))));
+    MATERIALISED_INTERVALS.with(|held| held.borrow_mut().clear());
+    f()
+}
+
+/// ⚠ TEST ONLY. The pre-`bd7cb45f` materialisation, performed at the production
+/// site for its COST and bounded by [`MAX_MATERIALISED_BIND_COUNT`].
+///
+/// **This mutant is byte-equivalent, by construction.** It returns nothing, is
+/// called for effect only, and the effect is a `Vec<i32>` no printer reads:
+/// [`PrettyPrinter::new_bind_range`] still returns the same interval, so every
+/// byte of every render is unchanged. A defect invisible to output is invisible
+/// to an output differential — which is why the row recording it cites a
+/// resource measurement, and why the property that stands in its place
+/// (`differential::the_bytes_a_new_retains_do_not_depend_on_bind_count`) is a
+/// FOOTPRINT assertion rather than a string comparison.
+#[cfg(test)]
+fn retain_materialised_interval(start: i32, bind_count: i32) {
+    assert!(
+        bind_count <= MAX_MATERIALISED_BIND_COUNT,
+        "{MATERIALISATION_REFUSED}: a fixture asked the materialising mutant for {bind_count} \
+         names, past the {MAX_MATERIALISED_BIND_COUNT} bound. The historical form allocated 4 \
+         bytes per name and held them, so this request is {} bytes; at `i32::MAX` it is the ~8 \
+         GiB that was measured to take >300 s and 7.31 GiB of RSS while thrashing an 8 GiB \
+         cgroup WITHOUT being OOM-killed. Executing it would hang the suite rather than fail \
+         it, so it is refused here instead.",
+        (bind_count as i64) * 4
+    );
+    let materialised: Vec<i32> = (0..bind_count).map(|i| start.wrapping_add(i)).collect();
+    MATERIALISED_INTERVALS.with(|held| held.borrow_mut().push(materialised));
+}
+
+/// Production: a no-op the `if false` above folds away.
+#[cfg(not(test))]
+#[inline(always)]
+fn retain_materialised_interval(_start: i32, _bind_count: i32) {}
+
+/// ⚠ TEST ONLY. Bytes a printer is holding to record which indices its `New`s
+/// introduced — the interval vector itself, plus whatever the materialising
+/// mutant retained.
+///
+/// This is the observable the interval representation exists to bound. It is
+/// measured from REAL printer state (`news_shift_indices`'s own capacity), so
+/// the unmutated reading is a measurement of the shipped implementation rather
+/// than of the harness.
+#[cfg(test)]
+fn bytes_retained_for_recorded_bounds(printer: &PrettyPrinter) -> usize {
+    printer.news_shift_indices.capacity() * std::mem::size_of::<NewBindRange>()
+        + MATERIALISED_INTERVALS.with(|held| {
+            held.borrow()
+                .iter()
+                .map(|v| v.capacity() * std::mem::size_of::<i32>())
+                .sum::<usize>()
+        })
 }
 
 #[derive(Clone)]
@@ -537,7 +745,21 @@ impl PrettyPrinter {
     /// clamp belongs to *rendering* — see
     /// [`PrettyPrinter::printed_bind_extent`] — because rendering is what
     /// allocates per name; recording the interval does not.
+    ///
+    /// ★ Both defects this body can carry — re-clamping the recorded interval
+    /// and materialising it again — are EXECUTED at
+    /// `representation_mutations::the_recorded_representation_table_is_executable`
+    /// rather than recorded.
     pub(super) fn new_bind_range(&self, bind_count: i32) -> NewBindRange {
+        if mutating_bind_range(BindRangeMutation::IntervalMaterialisedAgain) {
+            retain_materialised_interval(self.bound_shift, bind_count);
+        }
+        if mutating_bind_range(BindRangeMutation::RecordedIntervalReClamped) {
+            return NewBindRange {
+                start: self.bound_shift,
+                count: std::cmp::min(self.max_var_count, bind_count),
+            };
+        }
         NewBindRange {
             start: self.bound_shift,
             count: bind_count,
@@ -570,7 +792,22 @@ impl PrettyPrinter {
     /// is the empty range, so a negative count prints nothing. Returning `0`
     /// instead would be the same value by a longer route; returning
     /// `max_var_count` would silently invent names.
+    ///
+    /// ★ The off-by-one is EXECUTED in **both** directions
+    /// ([`BindRangeMutation::PrintedExtentOneTooMany`] and
+    /// [`BindRangeMutation::PrintedExtentOneTooFew`]); the recorded row
+    /// enumerated one, and a cap checked only from above is checked on one side.
     pub(super) fn printed_bind_extent(&self, bind_count: i32) -> i32 {
+        // ⚠ `saturating_*`, so that a mutant near `i32::MIN` rejects for the
+        // property it perturbs rather than for an overflow the production body
+        // cannot reach. No fixture is within `1` of either extreme, so the
+        // saturation never fires on the executed corpus.
+        if mutating_bind_range(BindRangeMutation::PrintedExtentOneTooMany) {
+            return std::cmp::min(self.max_var_count, bind_count).saturating_add(1);
+        }
+        if mutating_bind_range(BindRangeMutation::PrintedExtentOneTooFew) {
+            return std::cmp::min(self.max_var_count, bind_count).saturating_sub(1);
+        }
         std::cmp::min(self.max_var_count, bind_count)
     }
 
@@ -977,6 +1214,11 @@ mod drive {
     //!
     //! # ★ The differential has teeth — EXECUTED, not remembered
     //!
+    //! Two tables follow. The FIRST is about this traversal and is separated by
+    //! the differential; the SECOND is about the `New` bound's representation
+    //! and is separated by property assertions. Both are executed; neither is a
+    //! record any more.
+    //!
     //! This table used to be a record: each row had been produced by editing
     //! this file by hand, running the suite, writing down the outcome, and
     //! reverting the edit. Nothing re-ran any of them, so "the differential has
@@ -1019,16 +1261,74 @@ mod drive {
     //! was meant to protect is policed by the mutation that still has teeth:
     //! [`DriveMutation::NewIntervalReadsPostMutationShift`].
     //!
-    //! The `New` interval representation ([`super::NewBindRange`]) was measured
-    //! the same way, one mutation at a time:
+    //! # ★ The SECOND table — the `New` bound's REPRESENTATION — also EXECUTED
     //!
-    //! | mutation | caught |
-    //! |---|---|
-    //! | the recorded interval re-clamped to `max_var_count` (`bd7cb45f`'s form) | ✔ 3 tests — `a_new_costs_one_range_however_many_names_it_binds`, `the_star_prefix_survives_past_the_display_cap`, `the_star_prefix_is_exact_across_nested_news` |
-    //! | the interval materialised again, unclamped (the pre-`bd7cb45f` form) | ✔ `the_two_forms_agree_even_where_the_arithmetic_overflows` — 6.92 s / 4 MiB peak becomes >300 s / 7.31 GiB peak under an 8 GiB cgroup |
-    //! | `contains` widened to `i64` (the mathematical interval, not the shipped wrap) | ✔ `a_bind_range_answers_membership_exactly_as_a_vector_did` |
-    //! | the `is_empty` guard dropped from `contains` (negative `count` read as unsigned) | ✔ `a_new_with_a_negative_bind_count_binds_nothing` |
-    //! | `printed_bind_extent` off by one (the display cap alone) | ✔ `a_new_costs_one_range_however_many_names_it_binds` |
+    //! The representation of a `New`'s bound names ([`super::NewBindRange`]) was
+    //! measured the same way and recorded the same way, one mutation at a time,
+    //! by hand. It is now run by
+    //! `super::representation_mutations::the_recorded_representation_table_is_executable`,
+    //! which performs each mutation inside the production function
+    //! ([`super::BindRangeMutation`]), runs every deterministic test that
+    //! observes the representation, and asserts the WHOLE verdict vector — which
+    //! test rejects, which stays green, and **which assertion** did the
+    //! rejecting.
+    //!
+    //! ⚠ These are not [`DriveMutation`]s and their table cannot have the same
+    //! shape. A `DriveMutation` perturbs the driver, so the recursive twin still
+    //! computes the unperturbed answer and the *differential* separates them.
+    //! These perturb pure functions the driver and the twin **share**
+    //! (`pretty_printer_oracle.rs` calls [`PrettyPrinter::new_bind_range`] and
+    //! [`PrettyPrinter::build_variables`] directly), so both forms move together
+    //! and no output differential can see them at all. Property assertions are
+    //! what separate them, so each row names the clause that rejects.
+    //!
+    //! | mutation | recorded | EXECUTED — which assertion rejected |
+    //! |---|---|---|
+    //! | the recorded interval re-clamped to `max_var_count` (`bd7cb45f`'s form) | ✔ 3 tests | ✔ **exactly those 3** — `a_new_costs_one_range_…` at *"one entry with a truncated `count` means the marking was clamped"* (recorded `[{start: 0, count: 128}]` for a `New` binding 1'000), `the_star_prefix_survives_past_the_display_cap` at *"the recorded interval is being truncated at `max_var_count`"*, `the_star_prefix_is_exact_across_nested_news` at *"slot 202 (level 0) lost its `*` prefix"* |
+    //! | the interval materialised again, unclamped (the pre-`bd7cb45f` form) | ✔ `the_two_forms_agree_even_where_the_arithmetic_overflows`; 6.92 s / 4 MiB peak becomes >300 s / 7.31 GiB peak under an 8 GiB cgroup | ⚠ **the ✔ was not an assertion rejecting** — see below. Executed as a SLOPE: `the_bytes_a_new_retains_do_not_depend_on_bind_count` rejects at *"MOVED with `bind_count`"* (32 B flat becomes 32/36/548/4'548/404'548 B), and `a_new_costs_one_range_…`'s `i32::MAX` fixture is REFUSED by [`super::MAX_MATERIALISED_BIND_COUNT`] |
+    //! | `contains` widened to `i64` (the mathematical interval, not the shipped wrap) | ✔ `a_bind_range_answers_membership_exactly_as_a_vector_did` | ✔ **exactly that one**, at *"membership diverged at start = 2147483645, count = 5, idx = -2147483648"* — the wrap regime, as the row intends |
+    //! | the `is_empty` guard dropped from `contains` (negative `count` read as unsigned) | ✔ `a_new_with_a_negative_bind_count_binds_nothing` | ✔ that one at *"is being read as unsigned somewhere"*, **and one the row did not name**: `a_bind_range_answers_membership_…` at *"start = 0, count = -1, idx = -2147483648: the interval says true, the vector it replaced says false"* |
+    //! | `printed_bind_extent` off by one (the display cap alone) | ✔ `a_new_costs_one_range_however_many_names_it_binds` | ✔ that one at *"PRINTED 129 of them — `printed_bind_extent` is not bounding the rendered `Vec<String>`"*, **and one the row did not name**: `the_star_prefix_survives_past_the_display_cap` at *"the display cap is not in force"* |
+    //! | ★ the same off-by-one in the OTHER direction (one name too FEW) | not enumerated | ✔ the same two tests, at *"PRINTED 127 of them"* and *"the header declared 127 names"* — a cap checked only from above is checked on one side, so both directions are now rows |
+    //!
+    //! ## ⚠ The materialisation row's ✔ is not the kind of ✔ the others are
+    //!
+    //! Every other row's ✔ means *an assertion rejected*. This one cannot:
+    //! materialising the interval changes what the printer HOLDS, not what it
+    //! prints, so the mutant is **byte-equivalent** — and that is executed, not
+    //! assumed. `the_materialised_form_costs_four_bytes_per_name` renders the
+    //! corpus with and without the mutant and requires byte-identical output,
+    //! *and* compares the driver against the recursive twin under the mutant —
+    //! which is the very comparison
+    //! `the_two_forms_agree_even_where_the_arithmetic_overflows` performs — and
+    //! requires them equal, because the twin calls the mutated function too. The
+    //! row's ✔ therefore recorded the named test *exhausting memory*, not its
+    //! `prop_assert_eq` rejecting. Those are different events and only one of
+    //! them is a guard.
+    //!
+    //! ⚠ The record disagrees with itself about which event it was: the table
+    //! said ">300 s / 7.31 GiB peak … thrashing" (a HANG) while the property
+    //! test's own documentation says "SIGKILLed by an 8 GiB cgroup" (a KILL).
+    //! Neither is re-run — deliberately: a hang is a worse thing for a suite to
+    //! contain than an un-executed row — so both are retained as prior
+    //! measurements, and what is executed instead is the slope that implies
+    //! either of them: `4 B` per name against the interval's `0 B` per name,
+    //! measured at `bind_count` = 0, 1, 128, 1'000, 10'000 and 100'000, which
+    //! extrapolates to `(2^31 - 1) x 4 B` = 8'589'934'588 B (7.999999999 GiB) at
+    //! the attacker's maximum. The extrapolation is computed; it is never
+    //! allocated.
+    //!
+    //! ## What the second table's execution changed
+    //!
+    //! No row was falsified the way the `bound_shift` row was — every one of the
+    //! five still has teeth. Two were **under-claimed**: they named one test
+    //! where two reject, and a reader picking a fixture to keep would have had
+    //! no way to know the second existed. One (`printed_bind_extent`) covered
+    //! one direction of an off-by-one; the other direction is now a row of its
+    //! own. And one (`materialised`) turns out to be a class the first table has
+    //! no member of — a defect no output comparison can see — which is why the
+    //! property standing in its place is a FOOTPRINT measurement rather than a
+    //! string.
     //!
     //! ---
     //!
@@ -3217,6 +3517,22 @@ mod differential {
         /// with either materialised form restored and `bind_count` drawn raw,
         /// this property is SIGKILLed by an 8 GiB cgroup; with the interval it
         /// completes in seconds.
+        ///
+        /// ⚠⚠ **That sentence is a resource observation, not an assertion.**
+        /// `super::representation_mutations` executed the materialising mutant
+        /// and found this property's `prop_assert_eq` CANNOT reject it: the
+        /// mutant is byte-equivalent, and both sides of the comparison call the
+        /// mutated `new_bind_range` (the twin included), so the two strings are
+        /// identical. What this test contributes to that row is that it *runs
+        /// out of memory*, which is why the row is executed elsewhere as a
+        /// slope — `representation_mutations::the_materialised_form_costs_four_\
+        /// bytes_per_name` — and why this property is deliberately excluded
+        /// from the mutation registry: under that mutant it is the ~8 GiB hang
+        /// itself, and a `proptest` failure would additionally persist a seed
+        /// into `proptest-regressions/`. Note also that the record disagrees
+        /// with itself on the failure MODE — "SIGKILLed" here against ">300 s /
+        /// 7.31 GiB, thrashing, `oom_kill 0`" in the table — and neither is
+        /// re-run.
         #[test]
         fn the_two_forms_agree_even_where_the_arithmetic_overflows(
             term in generate_par(4)
@@ -3241,7 +3557,7 @@ mod differential {
     /// test panicking inside this window prints no message; its failure is
     /// still reported, and in the `release` profile — which is what CI runs —
     /// overflow checks are off, so this path does not even fire.
-    fn quietly<T>(body: impl FnOnce() -> T) -> Result<T, String> {
+    pub(super) fn quietly<T>(body: impl FnOnce() -> T) -> Result<T, String> {
         let previous = std::panic::take_hook();
         std::panic::set_hook(Box::new(|_| {}));
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(body));
@@ -3315,7 +3631,7 @@ mod differential {
     /// A `New` that introduces `bind_count` names over `body`. Used to move
     /// `bound_shift` *mid-traversal*, which is the whole point of the
     /// two-bind corpus below.
-    fn new_par(bind_count: i32, body: Par) -> Par {
+    pub(super) fn new_par(bind_count: i32, body: Par) -> Par {
         Par {
             news: vec![New {
                 bind_count,
@@ -3853,7 +4169,7 @@ mod differential {
     /// `build_variables` builds — would leave the interval assertion green, so
     /// the rendered name count is checked in the same loop.
     #[test]
-    fn a_new_costs_one_range_however_many_names_it_binds() {
+    pub(super) fn a_new_costs_one_range_however_many_names_it_binds() {
         let printer_cap = PrettyPrinter::new().max_var_count;
         assert_eq!(
             printer_cap, 128,
@@ -3924,6 +4240,110 @@ mod differential {
         }
     }
 
+    /// ★ THE FOOTPRINT the interval representation exists to bound — the one
+    /// row of the representation table that no byte-level check can stand in
+    /// for.
+    ///
+    /// # Why this test had to be written
+    ///
+    /// The recorded row reads *"the interval materialised again, unclamped (the
+    /// pre-`bd7cb45f` form) — ✔ `the_two_forms_agree_even_where_the_arithmetic_\
+    /// overflows`; 6.92 s / 4 MiB peak becomes >300 s / 7.31 GiB peak under an
+    /// 8 GiB cgroup"*. Two things about it are unlike every other row in either
+    /// table:
+    ///
+    /// 1. **Its mutant is byte-equivalent.** Materialising the interval changes
+    ///    no rendered byte — it changes what the printer *holds*. Every string
+    ///    comparison in this module is blind to it by construction, so its
+    ///    evidence has to be a resource measurement, and a resource measurement
+    ///    is what the row cites.
+    /// 2. **Its recorded evidence must not be re-run.** The cited property test
+    ///    draws `bind_count` from `any::<i32>()`, so the mutant asks for up to
+    ///    `(2^31 - 1) x 4 B` ~ 8 GiB, and the measurement records it
+    ///    *thrashing* rather than being killed (`oom_kill 0`) — i.e. it HANGS.
+    ///    A suite that ran it would hang with it, which is a worse defect than
+    ///    the un-executed row it would replace.
+    ///
+    /// # What is executed in its place
+    ///
+    /// The row's claim is `Θ(bind_count)` versus `Θ(1)` — a SLOPE. A slope is
+    /// measurable at any scale, and this test measures it at a bounded one:
+    ///
+    /// | leg | where | what it shows |
+    /// |---|---|---|
+    /// | production, bounded | here | the retained footprint is **identical** at `bind_count` = 0, 1, 128, 1'000 and 100'000 — slope `0` bytes/name |
+    /// | production, at the attacker's maximum | [`a_new_costs_one_range_however_many_names_it_binds`] | one interval carrying the raw count at `bind_count = i32::MAX`, which is where a materialised form would ask for ~8 GiB |
+    /// | the counterfactual | `representation_mutations` | the same site under [`super::BindRangeMutation::IntervalMaterialisedAgain`] retains exactly `4 x bind_count` bytes more — slope `4` bytes/name — measured at `bind_count <= 100'000` and *extrapolated* to `i32::MAX`, never executed there |
+    ///
+    /// ⚠ The `i32::MAX` fixture is deliberately NOT in this test's loop. Under
+    /// the materialising mutant it would be refused by
+    /// [`super::MAX_MATERIALISED_BIND_COUNT`]'s guard, and a refusal is not a
+    /// rejection: this test has to go RED under that mutation, not abstain. The
+    /// `i32::MAX` end of the production claim is asserted by the neighbour
+    /// above, whose refusal under the mutant IS the row's resource claim, made
+    /// executable.
+    #[test]
+    pub(super) fn the_bytes_a_new_retains_do_not_depend_on_bind_count() {
+        // Two words, no pointer: the type cannot be hiding a heap allocation
+        // whose growth this test would then be blind to.
+        assert_eq!(
+            std::mem::size_of::<NewBindRange>(),
+            8,
+            "`NewBindRange` is no longer two `i32`s, so `capacity * size_of` is no longer the \
+             footprint of the recorded bounds"
+        );
+
+        let bind_counts = [0i32, 1, 128, 1_000, super::MAX_MATERIALISED_BIND_COUNT];
+        let mut measured: Vec<(i32, usize)> = Vec::with_capacity(bind_counts.len());
+        for bind_count in bind_counts {
+            let term = new_par(bind_count, gint(0));
+            let mut printer = PrettyPrinter::new();
+            let rendered = printer.build_string_from_message(&term);
+
+            // N2 — the observation came from a printer that actually entered
+            // the `New` site, rather than from one that never ran it.
+            assert!(
+                rendered.starts_with("new "),
+                "the fixture did not render as a `New`, so nothing was measured: {rendered:?}"
+            );
+            assert_eq!(
+                printer.news_shift_indices.len(),
+                1,
+                "one `New` entered must record exactly one bound record; found {:?}",
+                printer.news_shift_indices
+            );
+
+            measured.push((
+                bind_count,
+                super::bytes_retained_for_recorded_bounds(&printer),
+            ));
+        }
+
+        let (_, baseline) = measured[0];
+        for (bind_count, bytes) in &measured {
+            assert_eq!(
+                *bytes, baseline,
+                "the bytes retained for a `New`'s bound record MOVED with `bind_count`: \
+                 {bytes} B at bind_count = {bind_count} against {baseline} B at bind_count = 0. \
+                 The record is supposed to be the INTERVAL, whose size is independent of the \
+                 count; a footprint that tracks the count is the materialised form, i.e. an \
+                 attacker-chosen ~8 GiB request on a path reachable from `rho:io:stdout`. \
+                 Full series: {measured:?}"
+            );
+        }
+
+        // ANTI-VACUITY: the largest fixture really does ask for enough names
+        // that a materialised form would be visible here — 100'000 names is
+        // 400'000 B, four orders of magnitude above the baseline — so
+        // "identical" is a bound and not a coincidence of small numbers.
+        let widest = super::MAX_MATERIALISED_BIND_COUNT as usize * std::mem::size_of::<i32>();
+        assert!(
+            widest > baseline * 100,
+            "the widest fixture would materialise {widest} B against a {baseline} B baseline; \
+             that is not a large enough separation for this test to detect the form it excludes"
+        );
+    }
+
     /// The names a rendered `new ... in { ... }` declares, in order.
     fn declared_names(rendered: &str) -> Vec<String> {
         let head = rendered
@@ -3954,7 +4374,7 @@ mod differential {
     /// of "contiguous interval" would disagree with the bytes the node ships
     /// (`release`, `overflow-checks` off, so the materialised form wrapped).
     #[test]
-    fn a_bind_range_answers_membership_exactly_as_a_vector_did() {
+    pub(super) fn a_bind_range_answers_membership_exactly_as_a_vector_did() {
         // (start, count) — materialisable counts only; the huge ones are
         // covered by `a_new_costs_one_range_however_many_names_it_binds`.
         let cases: [(i32, i32); 14] = [
@@ -4064,7 +4484,7 @@ mod differential {
     /// pre-dates `bd7cb45f` — it is the cost of a display cap — and it is now
     /// harmless, because marking no longer allocates.
     #[test]
-    fn the_star_prefix_survives_past_the_display_cap() {
+    pub(super) fn the_star_prefix_survives_past_the_display_cap() {
         let cap = PrettyPrinter::new().max_var_count; // 128
 
         // Slot `cap` — i.e. de Bruijn level `bind_count - cap - 1` — is the
@@ -4136,7 +4556,7 @@ mod differential {
     /// scanning MORE THAN ONE recorded interval, where the outer `[0, 3)` and
     /// the inner `[3, 203)` are adjacent and must not be conflated.
     #[test]
-    fn the_star_prefix_is_exact_across_nested_news() {
+    pub(super) fn the_star_prefix_is_exact_across_nested_news() {
         let cap = PrettyPrinter::new().max_var_count; // 128
         let (outer, inner) = (3i32, 200i32);
         assert!(
@@ -4209,7 +4629,7 @@ mod differential {
     /// either fix, and it is asserted here so the two behaviours are not
     /// conflated.
     #[test]
-    fn a_new_with_a_negative_bind_count_binds_nothing() {
+    pub(super) fn a_new_with_a_negative_bind_count_binds_nothing() {
         for bind_count in [-1i32, -128, -1_000_000] {
             let term = new_par(bind_count, gint(0));
 
@@ -5832,5 +6252,744 @@ mod drive_mutations {
     fn reaches_a_new(term: &Par) -> bool {
         use models::rust::rholang::par_children::reachable_pars;
         reachable_pars(term).iter().any(|p| !p.news.is_empty())
+    }
+}
+
+// ===========================================================================
+// ★ R3, second table — the `New` REPRESENTATION mutations, EXECUTED
+// ===========================================================================
+
+#[cfg(test)]
+mod representation_mutations {
+    //! # The second recorded table, run rather than remembered
+    //!
+    //! [`super::drive`]'s module documentation carries **two** mutation tables.
+    //! `a8ec319f` made the first one — the traversal's — executable, and in
+    //! doing so falsified one of its rows: `New` mutating `bound_shift` before
+    //! `build_variables` was recorded as caught by 11 tests, and `a4c23a58` had
+    //! since made the two orderings observationally identical. Nothing noticed,
+    //! because nothing re-ran the table.
+    //!
+    //! The second table — five rows about how a `New`'s bound names are
+    //! REPRESENTED — was still a record, written the same way and carrying the
+    //! same risk. This module executes it.
+    //!
+    //! # Why this table has a different shape from the first
+    //!
+    //! A [`super::drive::DriveMutation`] perturbs the worklist driver, so the
+    //! recursive twin still computes the unperturbed answer and the
+    //! **differential** separates the two: each row names a witness *term*.
+    //!
+    //! The mutations here perturb pure functions the driver and the twin
+    //! **share** — `pretty_printer_oracle.rs` calls
+    //! [`super::PrettyPrinter::new_bind_range`] and
+    //! [`super::PrettyPrinter::build_variables`] directly — so both forms move
+    //! together and *no output differential can see them at all*. What separates
+    //! them is a property assertion, so each row names the **assertion that
+    //! rejects**, and the harness checks the panic payload for it. A row that
+    //! merely said "some test failed" would not distinguish the assertion that
+    //! is supposed to reject from an unrelated one that happens to.
+    //!
+    //! ## Rule N, discharged
+    //!
+    //! * **N1, the judge.** Every row states, per test, `Red(fragment)`,
+    //!   `Green` or `Refused`, and the harness asserts the *whole* verdict
+    //!   vector — so a test that stops rejecting AND a test that starts
+    //!   rejecting for the wrong reason are both failures. `Red` additionally
+    //!   requires the panic payload to contain the fragment, which is the
+    //!   assertion's own words.
+    //! * **N2, the subject.** The mutations are performed inside the production
+    //!   functions, and every registry test reaches them through the public
+    //!   entry points (`build_string_from_message` / a `NewBindRange` built by
+    //!   hand). The control leg runs the whole registry with no mutation in
+    //!   force and requires it green, so a "separation" cannot be a test that
+    //!   was already failing.
+    //!
+    //! # ⚠ The second row is a RESOURCE claim and is not executed as written
+    //!
+    //! `the interval materialised again, unclamped` is recorded as costing
+    //! ">300 s wall, 7.31 GiB peak RSS, thrashing against an 8 GiB cgroup with
+    //! `oom_kill 0`" — it is not killed, it HANGS, and a suite that ran it would
+    //! hang with it. It is executed as a **slope** instead of a magnitude:
+    //! [`super::MAX_MATERIALISED_BIND_COUNT`] bounds the mutant at 100'000
+    //! names (400 KB), [`the_materialised_form_costs_four_bytes_per_name`]
+    //! measures `4 B/name` against the interval's `0 B/name` and extrapolates
+    //! arithmetically to `i32::MAX`, and any fixture past the bound is REFUSED
+    //! with an explanatory panic — a refusal the table records as a verdict in
+    //! its own right, because "this fixture is where the 8 GiB request lives" is
+    //! exactly what the row says.
+
+    use models::rhoapi::Par;
+
+    use super::differential::{
+        a_bind_range_answers_membership_exactly_as_a_vector_did,
+        a_new_costs_one_range_however_many_names_it_binds,
+        a_new_with_a_negative_bind_count_binds_nothing, new_par, quietly,
+        the_bytes_a_new_retains_do_not_depend_on_bind_count,
+        the_star_prefix_is_exact_across_nested_news, the_star_prefix_survives_past_the_display_cap,
+    };
+    use super::{
+        bytes_retained_for_recorded_bounds, with_bind_range_mutation, BindRangeMutation,
+        PrettyPrinter, MATERIALISATION_REFUSED, MAX_MATERIALISED_BIND_COUNT,
+    };
+
+    // -----------------------------------------------------------------------
+    // the registry and the verdicts
+    // -----------------------------------------------------------------------
+
+    /// Pairs each test with its own name, so the two cannot drift.
+    macro_rules! registry {
+        ($($test:path),* $(,)?) => { vec![$((stringify!($test), $test as fn())),*] };
+    }
+
+    /// Every deterministic test that observes the `New` bound's representation.
+    ///
+    /// ⚠ `the_two_forms_agree_even_where_the_arithmetic_overflows` — the test
+    /// the second row of the recorded table names — is deliberately ABSENT, for
+    /// two independent reasons. It draws `bind_count` from `any::<i32>()`, so
+    /// under the materialising mutant it is the ~8 GiB hang the row measured;
+    /// and it is a `proptest`, so a failure would persist a seed into
+    /// `proptest-regressions/`, making a deliberate mutation leave a permanent
+    /// artefact in the tree. Its property is covered here by
+    /// [`the_bytes_a_new_retains_do_not_depend_on_bind_count`] and
+    /// [`the_materialised_form_costs_four_bytes_per_name`].
+    fn registry() -> Vec<(&'static str, fn())> {
+        registry![
+            a_new_costs_one_range_however_many_names_it_binds,
+            the_bytes_a_new_retains_do_not_depend_on_bind_count,
+            a_bind_range_answers_membership_exactly_as_a_vector_did,
+            the_star_prefix_survives_past_the_display_cap,
+            the_star_prefix_is_exact_across_nested_news,
+            a_new_with_a_negative_bind_count_binds_nothing,
+        ]
+    }
+
+    /// What a registry test must do under one mutation.
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    enum Verdict {
+        /// The test REJECTS, and its panic payload contains this fragment — the
+        /// assertion's own words, so the row records WHICH clause rejected
+        /// rather than merely that something did.
+        Red(&'static str),
+        /// The test passes: this mutation is invisible to it. Recorded rather
+        /// than omitted, because "the suite cannot see this defect" and "this
+        /// test is not the one that sees it" look identical from outside.
+        Green,
+        /// The mutation was DECLINED on this test's fixtures by
+        /// [`super::MAX_MATERIALISED_BIND_COUNT`]'s guard. Only reachable for
+        /// [`BindRangeMutation::IntervalMaterialisedAgain`], and it is evidence
+        /// rather than an abstention: it says this fixture is one where the
+        /// historical form issues the request the row measured.
+        Refused,
+    }
+
+    /// What a registry test actually did.
+    #[derive(Clone, Debug)]
+    enum Observed {
+        Green,
+        Red(String),
+        Refused,
+    }
+
+    impl Observed {
+        fn agrees_with(&self, expected: &Verdict) -> bool {
+            match (self, expected) {
+                (Observed::Green, Verdict::Green) => true,
+                (Observed::Refused, Verdict::Refused) => true,
+                (Observed::Red(payload), Verdict::Red(fragment)) => payload.contains(fragment),
+                _ => false,
+            }
+        }
+
+        fn summary(&self) -> String {
+            match self {
+                Observed::Green => String::from("GREEN"),
+                Observed::Refused => String::from("REFUSED"),
+                Observed::Red(payload) => {
+                    format!("RED({})", payload.lines().next().unwrap_or("").trim())
+                }
+            }
+        }
+    }
+
+    /// One row of the recorded table.
+    struct Row {
+        mutation: BindRangeMutation,
+        /// The row as `drive`'s documentation states it, so a reader can line
+        /// the two up without a second lookup.
+        recorded: &'static str,
+        /// Every registry test, with the verdict this row asserts. Checked for
+        /// completeness against [`registry`], so a new test cannot be added
+        /// without every row deciding what it does.
+        expected: &'static [(&'static str, Verdict)],
+    }
+
+    // The assertion fragments below are substrings of the failure messages the
+    // named tests already carry. They are what makes a row say WHICH clause
+    // rejected; if an assertion is reworded, the row goes red until it is
+    // re-stated, which is the intended coupling.
+    const RECORDED_INTERVAL_TRUNCATED: &str =
+        "one entry with a truncated `count` means the marking was clamped";
+    const EXTENT_NOT_BOUNDING: &str = "`printed_bind_extent` is not bounding the rendered";
+    const MEMBERSHIP_DIVERGED: &str = "membership diverged at start = ";
+    const STAR_LOST_PAST_CAP: &str = "the recorded interval is being truncated at `max_var_count`";
+    const CAP_NOT_IN_FORCE: &str = "the display cap is not in force";
+    const STAR_LOST_IN_NEST: &str = "lost its `*` prefix — every slot in";
+    const NEGATIVE_READ_UNSIGNED: &str = "is being read as unsigned somewhere";
+    const FOOTPRINT_MOVED: &str = "MOVED with `bind_count`";
+
+    /// ★ THE EXECUTED TABLE. Every row below was measured by running it; the
+    /// `recorded` column is what the documentation said before it was.
+    fn table() -> Vec<Row> {
+        vec![
+            Row {
+                mutation: BindRangeMutation::RecordedIntervalReClamped,
+                recorded: "the recorded interval re-clamped to `max_var_count` (`bd7cb45f`'s \
+                           form) — 3 tests",
+                expected: &[
+                    (
+                        "a_new_costs_one_range_however_many_names_it_binds",
+                        Verdict::Red(RECORDED_INTERVAL_TRUNCATED),
+                    ),
+                    (
+                        "the_bytes_a_new_retains_do_not_depend_on_bind_count",
+                        Verdict::Green,
+                    ),
+                    (
+                        "a_bind_range_answers_membership_exactly_as_a_vector_did",
+                        Verdict::Green,
+                    ),
+                    (
+                        "the_star_prefix_survives_past_the_display_cap",
+                        Verdict::Red(STAR_LOST_PAST_CAP),
+                    ),
+                    (
+                        "the_star_prefix_is_exact_across_nested_news",
+                        Verdict::Red(STAR_LOST_IN_NEST),
+                    ),
+                    (
+                        "a_new_with_a_negative_bind_count_binds_nothing",
+                        Verdict::Green,
+                    ),
+                ],
+            },
+            Row {
+                mutation: BindRangeMutation::IntervalMaterialisedAgain,
+                recorded: "the interval materialised again, unclamped (the pre-`bd7cb45f` form) \
+                           — the raw property test; 6.92 s / 4 MiB peak becomes >300 s / 7.31 \
+                           GiB peak under an 8 GiB cgroup",
+                expected: &[
+                    (
+                        "a_new_costs_one_range_however_many_names_it_binds",
+                        Verdict::Refused,
+                    ),
+                    (
+                        "the_bytes_a_new_retains_do_not_depend_on_bind_count",
+                        Verdict::Red(FOOTPRINT_MOVED),
+                    ),
+                    (
+                        "a_bind_range_answers_membership_exactly_as_a_vector_did",
+                        Verdict::Green,
+                    ),
+                    (
+                        "the_star_prefix_survives_past_the_display_cap",
+                        Verdict::Green,
+                    ),
+                    (
+                        "the_star_prefix_is_exact_across_nested_news",
+                        Verdict::Green,
+                    ),
+                    (
+                        "a_new_with_a_negative_bind_count_binds_nothing",
+                        Verdict::Green,
+                    ),
+                ],
+            },
+            Row {
+                mutation: BindRangeMutation::ContainsWidenedToI64,
+                recorded: "`contains` widened to `i64` (the mathematical interval, not the \
+                           shipped wrap) — `a_bind_range_answers_membership_exactly_as_a_\
+                           vector_did`",
+                expected: &[
+                    (
+                        "a_new_costs_one_range_however_many_names_it_binds",
+                        Verdict::Green,
+                    ),
+                    (
+                        "the_bytes_a_new_retains_do_not_depend_on_bind_count",
+                        Verdict::Green,
+                    ),
+                    (
+                        "a_bind_range_answers_membership_exactly_as_a_vector_did",
+                        Verdict::Red(MEMBERSHIP_DIVERGED),
+                    ),
+                    (
+                        "the_star_prefix_survives_past_the_display_cap",
+                        Verdict::Green,
+                    ),
+                    (
+                        "the_star_prefix_is_exact_across_nested_news",
+                        Verdict::Green,
+                    ),
+                    (
+                        "a_new_with_a_negative_bind_count_binds_nothing",
+                        Verdict::Green,
+                    ),
+                ],
+            },
+            Row {
+                mutation: BindRangeMutation::ContainsDropsEmptyGuard,
+                recorded: "the `is_empty` guard dropped from `contains` (negative `count` read \
+                           as unsigned) — `a_new_with_a_negative_bind_count_binds_nothing`",
+                expected: &[
+                    (
+                        "a_new_costs_one_range_however_many_names_it_binds",
+                        Verdict::Green,
+                    ),
+                    (
+                        "the_bytes_a_new_retains_do_not_depend_on_bind_count",
+                        Verdict::Green,
+                    ),
+                    (
+                        "a_bind_range_answers_membership_exactly_as_a_vector_did",
+                        Verdict::Red(MEMBERSHIP_DIVERGED),
+                    ),
+                    (
+                        "the_star_prefix_survives_past_the_display_cap",
+                        Verdict::Green,
+                    ),
+                    (
+                        "the_star_prefix_is_exact_across_nested_news",
+                        Verdict::Green,
+                    ),
+                    (
+                        "a_new_with_a_negative_bind_count_binds_nothing",
+                        Verdict::Red(NEGATIVE_READ_UNSIGNED),
+                    ),
+                ],
+            },
+            Row {
+                mutation: BindRangeMutation::PrintedExtentOneTooMany,
+                recorded: "`printed_bind_extent` off by one (the display cap alone) — \
+                           `a_new_costs_one_range_however_many_names_it_binds`",
+                expected: &[
+                    (
+                        "a_new_costs_one_range_however_many_names_it_binds",
+                        Verdict::Red(EXTENT_NOT_BOUNDING),
+                    ),
+                    (
+                        "the_bytes_a_new_retains_do_not_depend_on_bind_count",
+                        Verdict::Green,
+                    ),
+                    (
+                        "a_bind_range_answers_membership_exactly_as_a_vector_did",
+                        Verdict::Green,
+                    ),
+                    (
+                        "the_star_prefix_survives_past_the_display_cap",
+                        Verdict::Red(CAP_NOT_IN_FORCE),
+                    ),
+                    (
+                        "the_star_prefix_is_exact_across_nested_news",
+                        Verdict::Green,
+                    ),
+                    (
+                        "a_new_with_a_negative_bind_count_binds_nothing",
+                        Verdict::Green,
+                    ),
+                ],
+            },
+            Row {
+                mutation: BindRangeMutation::PrintedExtentOneTooFew,
+                recorded: "the other direction of the same off-by-one, which the recorded row \
+                           did not enumerate",
+                expected: &[
+                    (
+                        "a_new_costs_one_range_however_many_names_it_binds",
+                        Verdict::Red(EXTENT_NOT_BOUNDING),
+                    ),
+                    (
+                        "the_bytes_a_new_retains_do_not_depend_on_bind_count",
+                        Verdict::Green,
+                    ),
+                    (
+                        "a_bind_range_answers_membership_exactly_as_a_vector_did",
+                        Verdict::Green,
+                    ),
+                    (
+                        "the_star_prefix_survives_past_the_display_cap",
+                        Verdict::Red(CAP_NOT_IN_FORCE),
+                    ),
+                    (
+                        "the_star_prefix_is_exact_across_nested_news",
+                        Verdict::Green,
+                    ),
+                    (
+                        "a_new_with_a_negative_bind_count_binds_nothing",
+                        Verdict::Green,
+                    ),
+                ],
+            },
+        ]
+    }
+
+    /// Every mutation exactly once. A new variant that is not given a row is a
+    /// compile error at the exhaustive `match`, and a duplicated one fails the
+    /// assertion.
+    fn every_mutation_has_exactly_one_row(rows: &[Row]) {
+        for row in rows {
+            match row.mutation {
+                BindRangeMutation::RecordedIntervalReClamped
+                | BindRangeMutation::IntervalMaterialisedAgain
+                | BindRangeMutation::ContainsWidenedToI64
+                | BindRangeMutation::ContainsDropsEmptyGuard
+                | BindRangeMutation::PrintedExtentOneTooMany
+                | BindRangeMutation::PrintedExtentOneTooFew => {}
+            }
+        }
+        let mut seen: Vec<String> = rows.iter().map(|r| format!("{:?}", r.mutation)).collect();
+        let total = seen.len();
+        seen.sort();
+        seen.dedup();
+        assert_eq!(
+            seen.len(),
+            total,
+            "a mutation has more than one row: {seen:?}"
+        );
+        assert_eq!(
+            total, 6,
+            "the table has {total} rows; the enum has 6 variants, and a variant without a row is \
+             a mutation nothing measures"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // the runner
+    // -----------------------------------------------------------------------
+
+    /// ★ The executed representation table.
+    #[test]
+    fn the_recorded_representation_table_is_executable() {
+        let rows = table();
+        every_mutation_has_exactly_one_row(&rows);
+
+        // N2, the control: with NO mutation in force the whole registry is
+        // green. Without this, a "rejection" below could be a test that was
+        // already failing for an unrelated reason.
+        for (name, test) in registry() {
+            assert!(
+                quietly(test).is_ok(),
+                "the registry test `{name}` fails with NO mutation in force, so nothing it does \
+                 under one is attributable to the mutation"
+            );
+        }
+
+        let mut report = String::new();
+        for row in &rows {
+            // The row decides every registry test, and only registry tests.
+            let registered: Vec<&str> = registry().into_iter().map(|(name, _)| name).collect();
+            let decided: Vec<&str> = row.expected.iter().map(|(name, _)| *name).collect();
+            assert_eq!(
+                decided, registered,
+                "row {:?} decides {decided:?} but the registry is {registered:?}. Every row must \
+                 state a verdict for every test, or a row could quietly stop covering one",
+                row.mutation
+            );
+
+            let mut reds = 0usize;
+            report.push_str(&format!(
+                "\n  {:?}\n    recorded: {}\n",
+                row.mutation, row.recorded
+            ));
+            for (name, test) in registry() {
+                let expected = row
+                    .expected
+                    .iter()
+                    .find(|(n, _)| *n == name)
+                    .map(|(_, verdict)| *verdict)
+                    .expect("checked exhaustive above");
+
+                let observed = match with_bind_range_mutation(row.mutation, || quietly(test)) {
+                    Ok(()) => Observed::Green,
+                    Err(payload) if payload.contains(MATERIALISATION_REFUSED) => Observed::Refused,
+                    Err(payload) => Observed::Red(payload),
+                };
+                if matches!(observed, Observed::Red(_)) {
+                    reds += 1;
+                }
+                report.push_str(&format!("    {name}: {}\n", observed.summary()));
+
+                assert!(
+                    observed.agrees_with(&expected),
+                    "under {:?}, `{name}` was expected to be {expected:?} but was {}.\n\nA test \
+                     that stopped rejecting is either a stale row — the code changed and this \
+                     mutant is now EQUIVALENT, which needs a proof and a replacement property, \
+                     the way `NewMutatesBeforeVariables` did — or a fixture that stopped \
+                     reaching the site. A test that started rejecting, or rejected with a \
+                     different assertion than the row names, means the row no longer describes \
+                     what the suite does.\n\nFull payload: {:?}",
+                    row.mutation,
+                    observed.summary(),
+                    observed
+                );
+            }
+
+            assert!(
+                reds >= 1,
+                "NO test rejects under {:?}. Either the mutation is now equivalent — in which \
+                 case it needs a proof, and the property it used to protect needs a check that \
+                 still has teeth — or every fixture that reached its site is gone. A row with no \
+                 red is a row that measures nothing.",
+                row.mutation
+            );
+        }
+        println!("{report}");
+    }
+
+    /// ⚠ **The table's judge is itself a checker, and a checker that has not
+    /// been shown to reject is the defect it is supposed to catch.**
+    ///
+    /// [`Observed::agrees_with`] is what turns a run into a verdict. If it
+    /// accepted everything, [`the_recorded_representation_table_is_executable`]
+    /// would pass with every row mis-stated and would still read as evidence.
+    /// So it is exercised on a REAL observation — one row of the table, run for
+    /// real — against the four ways a row can be wrong.
+    #[test]
+    fn the_tables_own_judge_can_reject() {
+        fn observe(mutation: Option<BindRangeMutation>, test: fn()) -> Observed {
+            let run = || match quietly(test) {
+                Ok(()) => Observed::Green,
+                Err(payload) if payload.contains(MATERIALISATION_REFUSED) => Observed::Refused,
+                Err(payload) => Observed::Red(payload),
+            };
+            match mutation {
+                Some(m) => with_bind_range_mutation(m, run),
+                None => run(),
+            }
+        }
+
+        let rejected = observe(
+            Some(BindRangeMutation::ContainsDropsEmptyGuard),
+            a_new_with_a_negative_bind_count_binds_nothing,
+        );
+        assert!(
+            rejected.agrees_with(&Verdict::Red(NEGATIVE_READ_UNSIGNED)),
+            "the row this test stands on no longer holds: {}",
+            rejected.summary()
+        );
+        assert!(
+            !rejected.agrees_with(&Verdict::Green),
+            "a REJECTION satisfied a `Green` row, so a row that claims a mutation is invisible \
+             would pass while the mutation is caught"
+        );
+        assert!(
+            !rejected.agrees_with(&Verdict::Refused),
+            "a REJECTION satisfied a `Refused` row, so a declined fixture and a rejected \
+             assertion are indistinguishable to the table"
+        );
+        assert!(
+            !rejected.agrees_with(&Verdict::Red(MEMBERSHIP_DIVERGED)),
+            "a rejection satisfied a row naming a DIFFERENT assertion. The fragments are what \
+             make a row say WHICH clause rejected; if any rejection matches any fragment, the \
+             table records only that something failed"
+        );
+
+        let passed = observe(None, a_new_with_a_negative_bind_count_binds_nothing);
+        assert!(
+            passed.agrees_with(&Verdict::Green),
+            "the control leg is not green, so nothing below it is attributable: {}",
+            passed.summary()
+        );
+        assert!(
+            !passed.agrees_with(&Verdict::Red(NEGATIVE_READ_UNSIGNED)),
+            "a PASS satisfied a `Red` row, so a mutation that stopped being caught would still \
+             read as caught — which is exactly how the `bound_shift` row survived `a4c23a58`"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // row 2, quantified — the slope, never the magnitude
+    // -----------------------------------------------------------------------
+
+    /// ★ The recorded row's `Θ(bind_count)` versus `Θ(1)`, executed as a SLOPE
+    /// at bounded scale and extrapolated arithmetically to the magnitude the
+    /// row cites.
+    ///
+    /// # What is measured, and what is only computed
+    ///
+    /// | quantity | how it is obtained |
+    /// |---|---|
+    /// | interval footprint at `bind_count` <= 100'000 | MEASURED, from `news_shift_indices`'s own capacity |
+    /// | materialised footprint at `bind_count` <= 100'000 | MEASURED, at the production site under the mutant |
+    /// | `4 B` per name | MEASURED as the exact difference, at five counts spanning five orders of magnitude |
+    /// | ~8 GiB at `bind_count = i32::MAX` | COMPUTED from that slope; never allocated |
+    /// | ">300 s, 7.31 GiB RSS, `oom_kill 0`" | the row's own prior measurement, retained as documentation and deliberately not reproduced |
+    ///
+    /// # The mutant is byte-equivalent, and that is asserted here
+    ///
+    /// Materialising the interval changes what the printer HOLDS and not what
+    /// it prints, so every string comparison in the suite is blind to it. That
+    /// is not an assumption: this test renders the same corpus with and without
+    /// the mutant and requires the bytes to be identical. It is also the reason
+    /// the table's row for this mutation is `Green` almost everywhere — an
+    /// output differential cannot see a pure-cost defect, and a table that
+    /// claimed otherwise would be wrong.
+    #[test]
+    fn the_materialised_form_costs_four_bytes_per_name() {
+        let counts = [0i32, 1, 128, 1_000, 10_000, MAX_MATERIALISED_BIND_COUNT];
+        let mut series: Vec<(i32, usize, usize)> = Vec::with_capacity(counts.len());
+
+        for bind_count in counts {
+            let term = new_par(bind_count, Par::default());
+
+            let mut interval_printer = PrettyPrinter::new();
+            let interval_bytes_render = interval_printer.build_string_from_message(&term);
+            let interval_bytes = bytes_retained_for_recorded_bounds(&interval_printer);
+
+            let (materialised_render, materialised_bytes) =
+                with_bind_range_mutation(BindRangeMutation::IntervalMaterialisedAgain, || {
+                    let mut printer = PrettyPrinter::new();
+                    let render = printer.build_string_from_message(&term);
+                    let bytes = bytes_retained_for_recorded_bounds(&printer);
+                    (render, bytes)
+                });
+
+            // The mutant is a pure-COST defect: not one byte moves.
+            assert_eq!(
+                interval_bytes_render, materialised_render,
+                "the materialising mutant changed the RENDER at bind_count = {bind_count}. It is \
+                 supposed to be byte-equivalent — it allocates and retains, and returns the same \
+                 interval — so if this fires, the table's `Green` verdicts for it are describing \
+                 a different mutation than the one being run"
+            );
+
+            // ★ …and the assertion the recorded row NAMES cannot reject either.
+            // `the_two_forms_agree_even_where_the_arithmetic_overflows` compares
+            // the driver against the recursive twin, and the twin CALLS
+            // `new_bind_range`, so both forms materialise together and their
+            // comparison is between two identical strings. Whatever that row's
+            // ✔ recorded, it was not an assertion rejecting.
+            let twin =
+                with_bind_range_mutation(BindRangeMutation::IntervalMaterialisedAgain, || {
+                    PrettyPrinter::new().oracle_build_string_from_message(&term)
+                });
+            assert_eq!(
+                materialised_render, twin,
+                "the driver and the recursive twin DISAGREED under the materialising mutant at \
+                 bind_count = {bind_count}. The row that records this mutation credits \
+                 `the_two_forms_agree_even_where_the_arithmetic_overflows` with catching it, and \
+                 the reason that credit is wrong is that both forms call the mutated function. \
+                 If this fires they no longer share the site, and the row's disposition has to be \
+                 re-derived rather than corrected"
+            );
+
+            series.push((bind_count, interval_bytes, materialised_bytes));
+        }
+
+        let (_, interval_at_zero, _) = series[0];
+        for (bind_count, interval_bytes, materialised_bytes) in &series {
+            // Θ(1): the interval's footprint does not move at all.
+            assert_eq!(
+                *interval_bytes, interval_at_zero,
+                "the interval form's footprint moved from {interval_at_zero} B to \
+                 {interval_bytes} B at bind_count = {bind_count}"
+            );
+            // Θ(bind_count): the materialised form's does, by exactly 4 B/name.
+            assert_eq!(
+                *materialised_bytes,
+                interval_at_zero + (*bind_count as usize) * std::mem::size_of::<i32>(),
+                "the materialised form retained {materialised_bytes} B at bind_count = \
+                 {bind_count}; the pre-`bd7cb45f` form held one `i32` per name, so the slope \
+                 must be exactly {} B/name over a {interval_at_zero} B baseline. Full series \
+                 (bind_count, interval, materialised): {series:?}",
+                std::mem::size_of::<i32>()
+            );
+        }
+
+        // ANTI-VACUITY: the series really does span the range it claims a slope
+        // over, and the two forms really are separated at the wide end.
+        let (widest, interval_wide, materialised_wide) = *series
+            .last()
+            .expect("the series is non-empty by construction");
+        assert_eq!(widest, MAX_MATERIALISED_BIND_COUNT);
+        assert!(
+            materialised_wide > interval_wide * 1_000,
+            "at bind_count = {widest} the materialised form holds {materialised_wide} B against \
+             the interval's {interval_wide} B; that is not a separation this test can call a \
+             slope"
+        );
+
+        // THE EXTRAPOLATION — computed, never allocated. `bind_count` is an
+        // attacker-controlled `i32`, so the reachable maximum is `i32::MAX`.
+        let at_max = (i32::MAX as i64) * (std::mem::size_of::<i32>() as i64);
+        assert_eq!(
+            at_max, 8_589_934_588,
+            "the fitted line evaluated at `i32::MAX` must be (2^31 - 1) x 4 B"
+        );
+        let gib = at_max as f64 / (1024.0 * 1024.0 * 1024.0);
+        assert!(
+            (7.999..8.0).contains(&gib),
+            "the extrapolated request is {gib} GiB, which is not the ~8 GiB the row records"
+        );
+        println!(
+            "  materialised form: {} B/name over a {interval_at_zero} B baseline; extrapolated \
+             to bind_count = i32::MAX that is {at_max} B ({gib:.9} GiB), measured only up to \
+             bind_count = {widest}",
+            std::mem::size_of::<i32>()
+        );
+    }
+
+    /// ⚠ The guard that keeps the row above from being executed as written.
+    ///
+    /// A fixture that asks the materialising mutant for more than
+    /// [`MAX_MATERIALISED_BIND_COUNT`] names must be REFUSED in milliseconds
+    /// rather than served. This is the property that makes the whole table safe
+    /// to run: without it, a maintainer who adds an `i32::MAX` fixture to any
+    /// registry test would not get a failure, they would get a suite that never
+    /// finishes.
+    #[test]
+    fn the_materialising_mutant_refuses_a_fixture_it_cannot_afford() {
+        let over = new_par(MAX_MATERIALISED_BIND_COUNT + 1, Par::default());
+        let refusal =
+            with_bind_range_mutation(BindRangeMutation::IntervalMaterialisedAgain, || {
+                quietly(|| {
+                    let _ = PrettyPrinter::new().build_string_from_message(&over);
+                })
+            })
+            .expect_err("a fixture past the bound must be refused, not served");
+        assert!(
+            refusal.contains(MATERIALISATION_REFUSED),
+            "the mutant panicked without the refusal marker, so a harness cannot tell a declined \
+             fixture from a rejected assertion: {refusal}"
+        );
+        assert!(
+            refusal.contains("8 GiB"),
+            "the refusal must carry the magnitude it is declining, or it reads as an arbitrary \
+             limit: {refusal}"
+        );
+
+        // ...and exactly at the bound it is served, so the guard is a bound and
+        // not a blanket refusal.
+        let at = new_par(MAX_MATERIALISED_BIND_COUNT, Par::default());
+        let bytes = with_bind_range_mutation(BindRangeMutation::IntervalMaterialisedAgain, || {
+            let mut printer = PrettyPrinter::new();
+            let _ = printer.build_string_from_message(&at);
+            bytes_retained_for_recorded_bounds(&printer)
+        });
+        assert!(
+            bytes >= MAX_MATERIALISED_BIND_COUNT as usize * std::mem::size_of::<i32>(),
+            "at exactly the bound the mutant retained {bytes} B, which is less than the \
+             materialisation it is supposed to have performed"
+        );
+
+        // ...and nothing survives the scope: the retention is released with the
+        // mutation, so one row of the table cannot leak into the next.
+        let after = bytes_retained_for_recorded_bounds(&PrettyPrinter::new());
+        assert_eq!(
+            after,
+            PrettyPrinter::new().news_shift_indices.capacity()
+                * std::mem::size_of::<super::NewBindRange>(),
+            "the materialised intervals outlived their `with_bind_range_mutation` scope"
+        );
     }
 }
