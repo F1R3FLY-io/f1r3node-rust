@@ -42,13 +42,18 @@ jobs:
           # perf_report job. First deploy ships an empty history.
           mkdir -p site/data
           cp -r site/soak-dashboard/. site/
+          # Pages is CDN-backed, so a plain GET can return a copy cached from
+          # before the weekend soak's last publish — and we would then
+          # republish that stale copy over the newer data. A per-run query
+          # string forces a cache miss so we always read current state.
+          cb="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           # Only a 404 proves nothing has been published yet. Every other
           # outcome (outage, timeout, rate limit, 5xx) is transient, and
           # treating it as "no data" would republish an empty dashboard
           # over real soak history — so abort instead.
           for f in history.json latest-summary.json latest-verdict.json latest-report.md; do
-            code="$(curl -sS --max-time 30 -w '%{http_code}' \
-              -o "site/data/${f}" "${DASHBOARD_URL}data/${f}")" || code=000
+            code="$(curl -sS --max-time 30 -H 'Cache-Control: no-cache' -w '%{http_code}' \
+              -o "site/data/${f}" "${DASHBOARD_URL}data/${f}?cb=${cb}")" || code=000
             case "$code" in
               200) ;;
               404) rm -f "site/data/${f}" ;;
@@ -57,6 +62,15 @@ jobs:
                 exit 1
                 ;;
             esac
+          done
+          # HTTP 200 is not proof of valid content — a CDN or proxy error page
+          # is served with 200 too. Republishing one would corrupt the data.
+          for f in history.json latest-summary.json latest-verdict.json; do
+            [ -e "site/data/${f}" ] || continue
+            jq -e . "site/data/${f}" >/dev/null 2>&1 || {
+              echo "::error::published ${f} is not valid JSON; refusing to republish it"
+              exit 1
+            }
           done
           if [ -e site/data/history.json ]; then
             jq -e 'type == "array"' site/data/history.json >/dev/null 2>&1 || {

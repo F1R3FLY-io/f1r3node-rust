@@ -364,13 +364,19 @@ jobs:
     # Runs on a GitHub-hosted runner with user-principal OCI auth so the
     # alert still goes out when the OCI runner itself failed to launch —
     # the in-soak ONS step (instance-principal) cannot cover that case.
+    # `cancelled` counts too: a 60h soak that hits its timeout, is cancelled
+    # by hand, or loses its runner to preemption produced no result either,
+    # and silence there is indistinguishable from success.
     if: >-
       always() &&
       needs.schedule_gate.outputs.should_run == 'true' &&
-      contains(needs.*.result, 'failure')
+      (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
     runs-on: ubuntu-latest
     environment: ephemeral-launch-internal
     timeout-minutes: 10
+    # Alerting needs OCI credentials, never the GitHub API — this job has no
+    # checkout and no reason to hold a token scope.
+    permissions: {}
     steps:
       - name: Install OCI CLI (pinned, checksum-verified)
         shell: bash -e {0}
@@ -403,7 +409,7 @@ jobs:
           EOF
           oci iam region list >/dev/null
 
-      - name: Publish failure alert
+      - name: Publish soak alert
         env:
           ONS_TOPIC_OCID: ${{ vars.SOAK_ONS_TOPIC_OCID }}
           LAUNCH_RESULT: ${{ needs.launch_runner.result }}
@@ -420,8 +426,15 @@ jobs:
             exit 1
           fi
           if [ "$DURATION_SECONDS" = "216000" ]; then kind="weekend-60h"; else kind="daily-24h"; fi
-          title="F1R3FLY soak FAILURE ($kind) $(date -u +%F)"
-          body="Merge Recovery Soak run failed.
+          # Name what actually broke. A soak that never ran and a dashboard
+          # that failed to publish after a clean soak are different pages.
+          case "$LAUNCH_RESULT/$SOAK_RESULT" in
+            failure/*|cancelled/*) what="runner launch $LAUNCH_RESULT" ;;
+            */failure|*/cancelled) what="soak $SOAK_RESULT" ;;
+            *)                     what="dashboard publish $DASHBOARD_RESULT" ;;
+          esac
+          title="F1R3FLY soak alert ($kind): $what — $(date -u +%F)"
+          body="Merge Recovery Soak did not complete cleanly: $what.
 
           Target:    $TARGET_REF
           Duration:  $kind
