@@ -88,6 +88,11 @@ fn extract_reply(par: &Par) -> (bool, String, Option<i64>, Option<Vec<u8>>) {
     (ok, s, i, b)
 }
 
+/// Evaluate `src` and read a single reply from `@"out"`.  If the
+/// out-channel has no data (because a Rholang-side `for` blocked on a
+/// shape mismatch, or the test's Rholang code never reached the send),
+/// panic with a diagnostic that includes the offending source so the
+/// failure isn't just "out channel" — Mi-4 test-quality fix.
 async fn eval_and_read_out(
     space: &impl rspace_plus_plus::rspace::rspace_interface::ISpace<
         Par,
@@ -105,7 +110,16 @@ async fn eval_and_read_out(
         .expect("eval");
     let map = space.to_map().await;
     let chan = new_gstring_par("out".to_string(), Vec::new(), false);
-    let row = map.get(&vec![chan]).expect("out channel");
+    let row = match map.get(&vec![chan]) {
+        Some(r) => r,
+        None => panic!(
+            "no reply on @\"out\" — a Rholang `for` likely blocked on a \
+             shape mismatch or an unfulfilled receive.  Source (first \
+             500 chars):\n{}\n\ntuplespace after eval (keys only):\n{:?}",
+            &src.chars().take(500).collect::<String>(),
+            map.keys().collect::<Vec<_>>()
+        ),
+    };
     row.data[0].a.pars[0].clone()
 }
 
@@ -238,17 +252,29 @@ async fn close_makes_subsequent_next_return_closed() {
     let src = test_over_stream(
         r#"["a", "b"]"#,
         r#"
-        for (@[true] <- @stream!?("close")) {
-          for (@r <- @stream!?("next")) {
-            @"out"!(r)
+        // Bind the close reply as a free variable rather than
+        // pattern-matching [true] — a shape mismatch here would
+        // block the outer `for` forever, and the test would only
+        // fail via the eval_and_read_out "no reply" diagnostic
+        // rather than pinpointing the wrong close reply.
+        for (@closeReply <- @stream!?("close")) {
+          for (@nextReply <- @stream!?("next")) {
+            @"out"!([closeReply, nextReply])
           }
         }
         "#,
     );
     let reply = eval_and_read_out(&space, &reducer, &src).await;
-    let (ok, code, _, _) = extract_reply(&reply);
-    assert!(!ok);
-    assert_eq!(code, "FSERR_CLOSED");
+    // reply is [closeReply, nextReply].  Verify BOTH shapes in Rust.
+    let outer = match single_expr(&reply).unwrap().expr_instance {
+        Some(ExprInstance::EListBody(l)) => l,
+        _ => panic!("expected outer list"),
+    };
+    let (close_ok, _, _, _) = extract_reply(&outer.ps[0]);
+    assert!(close_ok, "close() must reply [true]");
+    let (next_ok, next_code, _, _) = extract_reply(&outer.ps[1]);
+    assert!(!next_ok, "next after close must fail");
+    assert_eq!(next_code, "FSERR_CLOSED");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -464,4 +490,45 @@ async fn line_stream_chunk_unsupported() {
     let (ok, code, _, _) = extract_reply(&reply);
     assert!(!ok);
     assert_eq!(code, "FSERR_UNSUPPORTED");
+}
+
+/// Mi-1 regression: a chunk-builder that returns malformed data
+/// (neither `[true, container]` nor `[false, code, msg]`) must be
+/// intercepted and surfaced as `FSERR_IO` rather than propagated as
+/// a shape-mismatched reply that would break the caller's own pattern
+/// match.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn chunk_builder_malformed_reply_yields_fserr_io() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let bootstrap = r#"
+        new listState, producer, badBuilder in {
+          listState!(["a", "b"]) |
+          contract producer(retCh) = {
+            for (@lst <- listState) {
+              match lst {
+                [] => { listState!([]) | retCh!([false, "EOS", ""]) }
+                [head ...tail] => { listState!(tail) | retCh!([true, head]) }
+              }
+            }
+          } |
+          // Malformed: replies with a bare Int rather than a reply-shaped
+          // list.  Stream.chunk() must catch this and return FSERR_IO,
+          // not propagate the garbage.
+          contract badBuilder(@_vals, retCh) = {
+            retCh!(42)
+          } |
+          for (@stream <- Stream!?(*producer, *badBuilder)) {
+            for (@r <- @stream!?("chunk", 2)) {
+              @"out"!(r)
+            }
+          }
+        }
+    "#;
+    let src = with_lib(bootstrap);
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, code, _, _) = extract_reply(&reply);
+    assert!(!ok);
+    assert_eq!(code, "FSERR_IO");
 }

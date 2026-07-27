@@ -180,7 +180,27 @@ new Stream, paramsP, stateP, gatherN, foldLoop, forEachLoop in {
                                   new packCh in {
                                     @cb!(values, *packCh) |
                                     for (@packed <- packCh) {
-                                      return!(packed)
+                                      // Shape-validate the builder's reply
+                                      // per Mi-1: even a trusted (mint-
+                                      // supplied) builder can have a bug
+                                      // and return malformed data.
+                                      // Accept [true, container] or
+                                      // [false, code, msg]; any other
+                                      // shape is a builder bug rather
+                                      // than a stream error, but we
+                                      // surface it as FSERR_IO so the
+                                      // caller sees a defined error
+                                      // rather than a shape-mismatched
+                                      // reply that breaks their own
+                                      // pattern match.
+                                      match packed {
+                                        [true, _]      => return!(packed)
+                                        [false, _, _]  => return!(packed)
+                                        _              => {
+                                          return!([false, "FSERR_IO",
+                                            "chunk-builder returned malformed reply"])
+                                        }
+                                      }
                                     }
                                   }
                                 }
