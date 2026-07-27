@@ -12,7 +12,7 @@ use models::rhoapi::{
 use models::rust::bundle_ops::BundleOps;
 use models::rust::par_map_type_mapper::ParMapTypeMapper;
 use models::rust::par_set_type_mapper::ParSetTypeMapper;
-use shared::rust::shared::printer::{Audience, Printer};
+use shared::rust::shared::printer::Printer;
 use shared::rust::shared::string_ops::wrap_with_braces;
 
 use super::errors::InterpreterError;
@@ -142,49 +142,112 @@ as_pp_node!(GUnforgeable, Unforgeable);
 as_pp_node!(Connective, Connective);
 as_pp_node!(Par, Par);
 
+/// The set of shift indices ONE `New` introduces, held as its two endpoints
+/// rather than materialised element by element.
+///
+/// # Why an interval and not a `Vec<i32>`
+///
+/// `New::bind_count` is a `sint32` an attacker controls in a hand-built `Par`,
+/// and the printer is reachable from untrusted input through `rho:io:stdout` ->
+/// [`PrettyPrinter::build_channel_string`], whose output is replay-compared
+/// (`casper/src/rust/rholang/replay_runtime.rs`). The indices a `New`
+/// introduces are, by construction, the **contiguous** run
+/// `[bound_shift, bound_shift + bind_count)` at the pre-mutation `bound_shift`
+/// — so materialising them costs `Θ(bind_count)` words to represent
+/// information that two words already carry. At `bind_count = i32::MAX` that is
+/// an ~8 GiB request; at any `bind_count` it is also `Θ(bind_count)` work per
+/// membership test, and the printer performs one membership test **per bound
+/// variable rendered**.
+///
+/// Holding the interval closes both at the root: `Θ(1)` memory per `New`,
+/// `Θ(1)` per membership test, and — because [`NewBindRange::contains`] is
+/// *exact* — not one byte of rendered output moves.
+///
+/// # The membership obligation
+///
+/// This type replaces a `Vec<i32>` that was consulted with `Vec::contains`, on
+/// a byte-for-byte replay-compared path, so `contains` must answer **exactly**
+/// what that vector answered. The vector held
+///
+/// ```text
+///     S(start, count) = { start (+) i : i in [0, count) }
+/// ```
+///
+/// where `(+)` is the `i32` addition the printer actually performed — which is
+/// *wrapping* in the `release` profile the node ships (`overflow-checks` off).
+/// [`NewBindRange::contains`] reproduces `S` including the wrap; see its own
+/// documentation for the derivation and
+/// `differential::a_bind_range_answers_membership_exactly_as_a_vector_did` for
+/// the differential against a materialised `S`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NewBindRange {
+    /// The pre-mutation `bound_shift` at the `New` — the first index in the run.
+    pub start: i32,
+    /// The `New`'s RAW `bind_count`. May be zero or negative; see
+    /// [`NewBindRange::is_empty`].
+    pub count: i32,
+}
+
+impl NewBindRange {
+    /// `true` when this `New` introduces no index at all.
+    ///
+    /// ⚠ A negative `bind_count` is representable — the proto declares
+    /// `sint32 bindCount` and prost generates `i32` — and `0..negative` is the
+    /// EMPTY range, so a negative count binds nothing. That is the value the
+    /// materialised form produced, and it is a decision rather than an accident:
+    /// a `.max(0)` or an `as usize` on `count` would silently turn it into a
+    /// 4 GiB allocation or a panic instead.
+    pub fn is_empty(&self) -> bool { self.count <= 0 }
+
+    /// Membership in `S(start, count)`, exactly as `Vec::contains` answered it
+    /// over the materialised form.
+    ///
+    /// # Derivation
+    ///
+    /// * **`count <= 0`.** `0..count` is empty, so `S` is empty and no index is
+    ///   a member. The `is_empty` guard is load-bearing: without it the
+    ///   `count as u32` below would read `-1` as `4_294_967_295` and report
+    ///   every index as a member.
+    /// * **`count > 0`.** Write `⊕`/`⊖` for wrapping `i32` add/subtract. The
+    ///   vector held `start ⊕ i` for each `i` in `[0, count)`, and those values
+    ///   are pairwise distinct because `count <= i32::MAX < 2^32`, so
+    ///
+    ///   ```text
+    ///       idx ∈ S  ⟺  ∃ i ∈ [0, count).  idx = start ⊕ i
+    ///                ⟺  (idx ⊖ start) mod 2^32  ∈  [0, count)
+    ///   ```
+    ///
+    ///   `idx.wrapping_sub(start) as u32` **is** `(idx ⊖ start) mod 2^32`, and
+    ///   `count as u32` is exact for `0 < count <= i32::MAX`. So the comparison
+    ///   below is the right-hand side, verbatim.
+    ///
+    /// ⚠ Deliberately **wrapping**, not saturating and not widened to `i64`.
+    /// The node ships `release`, where the materialised form wrapped; an `i64`
+    /// widening would be the mathematically contiguous interval and would
+    /// therefore *differ* from the shipped bytes in exactly the regime
+    /// (`start + count` past `i32::MAX`) where the two can be told apart.
+    pub fn contains(&self, idx: i32) -> bool {
+        !self.is_empty() && (idx.wrapping_sub(self.start) as u32) < (self.count as u32)
+    }
+}
+
 #[derive(Clone)]
 pub struct PrettyPrinter {
     pub free_shift: i32,
     pub bound_shift: i32,
-    pub news_shift_indices: Vec<i32>,
+    /// One entry per `New` **entered**, not per name bound — see
+    /// [`NewBindRange`]. `Θ(number of `New` nodes)`, independent of any
+    /// `bind_count`.
+    pub news_shift_indices: Vec<NewBindRange>,
     pub free_id: String,
     pub base_id: String,
     pub rotation: i32,
     pub max_var_count: i32,
     pub is_building_channel: bool,
-    /// Whose budget governs **every** trim this printer performs.
-    ///
-    /// ⚠ It has to be a property of the printer, not an argument to a final
-    /// trim, because [`Self::cap`] is called at INTERIOR nodes of a render as
-    /// well as at the end: the drive machine's `PpKont::EndCatch` frame caps
-    /// every successful sub-render inside a catching scope. Trimming only the
-    /// finished string would leave an operator's budget deciding the bytes of
-    /// every nested sub-render — and that is not hypothetical, it is what
-    /// `casper/tests/system_deploy_error_message_determinism.rs` caught when
-    /// this split was first written as a final trim: `@{"abc...}`, truncated
-    /// *inside* the channel braces, still varying with the environment.
-    pub audience: Audience,
 }
 
 impl PrettyPrinter {
-    /// A printer for **operator** output — logs, stdout, the REPL,
-    /// `rnode eval`. Trims to `PRETTY_PRINTER_OUTPUT_TRIM_AFTER`.
     pub fn new() -> Self { PrettyPrinter::create(0, 0) }
-
-    /// A printer whose bytes will reach a block and be compared by replay.
-    ///
-    /// Trims to the compile-time [`Printer::CONSENSUS_TRIM_AFTER`] and never
-    /// reads the process environment, at the outermost render or at any
-    /// interior node. See [`Audience`] for why that distinction is a type.
-    ///
-    /// The only production caller is `casper`'s `show_seq_par`, the render
-    /// behind `SystemDeployUserError::error_message`.
-    pub fn for_consensus() -> Self {
-        PrettyPrinter {
-            audience: Audience::Consensus,
-            ..PrettyPrinter::create(0, 0)
-        }
-    }
 
     fn create(free_shift: i32, bound_shift: i32) -> Self {
         PrettyPrinter {
@@ -196,19 +259,16 @@ impl PrettyPrinter {
             rotation: 23,
             max_var_count: 128,
             is_building_channel: false,
-            audience: Audience::Operator,
         }
     }
 
-    /// Trim a render — finished or intermediate — to [`Self::audience`]'s
-    /// budget.
-    ///
-    /// The policy lives in [`Printer::cap`], next to the environment variable it
-    /// reads: which budget applies, the panic when an *operator* budget exceeds
-    /// the string (which `the_capping_call_sites_are_reproduced` depends on to
-    /// locate this function's call sites), and the char-boundary flooring that
-    /// removed a deploy-triggerable panic.
-    pub fn cap(&self, str: &str) -> String { Printer::cap(self.audience, str) }
+    pub fn cap(&self, str: &str) -> String {
+        match Printer::output_capped() {
+            Some(n) => format!("{}...", &str[..n as usize]),
+
+            None => str.to_string(),
+        }
+    }
 
     fn indent_string(&self) -> String { String::from("  ") }
 
@@ -253,29 +313,6 @@ impl PrettyPrinter {
         }
     }
 
-    /// Render a channel, trimming every node to [`Self::audience`]'s budget.
-    ///
-    /// # ★ The consensus caller
-    ///
-    /// `SystemDeployPlatformFailure::UnexpectedResult` renders a `Par` through
-    /// `casper`'s `show_seq_par` into `SystemDeployUserError::error_message`;
-    /// that string is written into the block as
-    /// `ProcessedSystemDeploy::Failed { error_msg }` and compared, byte for
-    /// byte, by every validator that replays the block
-    /// (`ReplayRuntimeOps::replay_system_deploy_internal`). While that render
-    /// used a printer built by [`Self::new`], two validators with different
-    /// settings of an operator's `PRETTY_PRINTER_OUTPUT_TRIM_AFTER` computed
-    /// different bytes for the same failing system deploy, and replay reported
-    /// `ReplayFailure::system_deploy_error_mismatch` for a deploy that had
-    /// executed identically on both.
-    ///
-    /// That caller now builds its printer with [`Self::for_consensus`].
-    /// Splitting the renderer — rather than, say, clamping the variable's range
-    /// — is what removes the operator from the byte path instead of narrowing
-    /// the window in which the operator can move it.
-    ///
-    /// The error arm is not trimmed by either audience: that fallback was never
-    /// capped, so it was already environment-independent, and it is unchanged.
     pub fn build_channel_string(&mut self, m: &Par) -> String {
         // Instead of panicking on errors, return a fallback string
         // This matches Scala behavior where errors are handled gracefully
@@ -358,7 +395,7 @@ impl PrettyPrinter {
                 VarInstance::BoundVar(level) => {
                     let prefix = if PrettyPrinter::is_new_var(
                         level,
-                        self.news_shift_indices.clone(),
+                        &self.news_shift_indices,
                         self.bound_shift,
                     ) && !self.is_building_channel
                     {
@@ -427,31 +464,71 @@ impl PrettyPrinter {
             .collect()
     }
 
-    /// How many of a `New`'s `bind_count` names this printer will materialise.
+    /// ★ THE SINGLE SPELLING of "which shift indices does this `New`
+    /// introduce": the half-open interval `[bound_shift, bound_shift + count)`
+    /// taken at the **pre-mutation** `bound_shift`.
     ///
-    /// ★ The **single** spelling of the clamp. `bind_count` is an
-    /// attacker-controllable `i32` on a path reachable from untrusted input
-    /// (`rho:io:stdout` -> `build_channel_string`), so every per-name
-    /// allocation a `New` triggers must go through here. Two call sites use
-    /// it — [`PrettyPrinter::build_variables`], which renders the names, and
-    /// the `PpNode::New` descend handler (and its oracle twin), which records
-    /// their `news_shift_indices` — and they must agree, because the printer
-    /// marking a name it never printed is precisely the asymmetry that let an
-    /// 8 GiB `Vec` request hide behind a 128-name display cap.
+    /// Everything downstream reads this one value. The descend handler records
+    /// it in `news_shift_indices` (so [`PrettyPrinter::is_new_var`] consults
+    /// it), and [`PrettyPrinter::build_variables`] renders a prefix of it (so
+    /// the printed names come from the same interval, at the same `start`, in
+    /// the same order). There is no second derivation of the interval that
+    /// could drift from the first.
     ///
-    /// ⚠ The result may be **negative**, and that is deliberate: a negative
-    /// `bind_count` is representable in the `sint32` the proto declares, and
-    /// `0..negative` is the empty range, so a negative count binds nothing —
-    /// exactly what the unclamped `(0..bind_count)` did. Returning `0` instead
-    /// would be the same value by a longer route; returning `max_var_count`
-    /// would silently invent names.
-    fn new_bind_extent(&self, bind_count: i32) -> i32 {
+    /// ⚠ `count` is the RAW `bind_count`, unclamped and possibly negative. The
+    /// clamp belongs to *rendering* — see
+    /// [`PrettyPrinter::printed_bind_extent`] — because rendering is what
+    /// allocates per name; recording the interval does not.
+    fn new_bind_range(&self, bind_count: i32) -> NewBindRange {
+        NewBindRange {
+            start: self.bound_shift,
+            count: bind_count,
+        }
+    }
+
+    /// How many of a `New`'s names this printer will PRINT — the display cap,
+    /// and now the only clamp in the `New` path.
+    ///
+    /// `bind_count` is an attacker-controllable `i32` on a path reachable from
+    /// untrusted input (`rho:io:stdout` -> `build_channel_string`), and
+    /// rendering a name costs a `String`, so the rendered count must be
+    /// bounded. Its ONE caller is [`PrettyPrinter::build_variables`].
+    ///
+    /// ⚠ This is deliberately **not** the extent of
+    /// [`PrettyPrinter::new_bind_range`]. `bd7cb45f` briefly made the two equal
+    /// — clamping the recorded indices to `max_var_count` as well — which did
+    /// bound the allocation, but at the cost of moving bytes on a
+    /// replay-compared path: a variable in slot `>= start + 128` stopped being
+    /// marked new-bound and lost its `*` prefix (7 distinct deltas were
+    /// measured, including four in a `New`-inside-a-`New`). Holding the
+    /// interval instead bounds the allocation *strictly harder* — `Θ(1)` rather
+    /// than `Θ(max_var_count)` per `New` — while leaving the marking exact, so
+    /// the display clamp no longer has to double as an allocation bound and can
+    /// be what its name says. `differential::the_star_prefix_survives_past_the_\
+    /// display_cap` pins the marking; `differential::a_new_costs_one_range_\
+    /// however_many_names_it_binds` pins the bound.
+    ///
+    /// ⚠ The result may be **negative**, and that is deliberate: `0..negative`
+    /// is the empty range, so a negative count prints nothing. Returning `0`
+    /// instead would be the same value by a longer route; returning
+    /// `max_var_count` would silently invent names.
+    fn printed_bind_extent(&self, bind_count: i32) -> i32 {
         std::cmp::min(self.max_var_count, bind_count)
     }
 
-    fn build_variables(&self, bind_count: i32) -> String {
-        (0..self.new_bind_extent(bind_count))
-            .map(|i| format!("{}{}", self.bound_id(), self.bound_shift + i))
+    /// The names a `New` declares between `new` and `in`: a display-capped
+    /// PREFIX of `introduced`.
+    ///
+    /// ⚠ `introduced.start`, not `self.bound_shift`. At every call site the two
+    /// are the same value — both handlers compute the interval before the
+    /// `bound_shift` mutation — but taking it from the interval is what makes
+    /// "the names printed" and "the indices marked" *the same authority* rather
+    /// than two reads that happen to agree today. The `i32` addition is
+    /// unchanged, so a `bound_shift` near `i32::MAX` still overflows here
+    /// exactly when it used to.
+    fn build_variables(&self, introduced: NewBindRange) -> String {
+        (0..self.printed_bind_extent(introduced.count))
+            .map(|i| format!("{}{}", self.bound_id(), introduced.start + i))
             .collect::<Vec<String>>()
             .join(", ")
     }
@@ -494,8 +571,23 @@ impl PrettyPrinter {
             && p.connectives.is_empty()
     }
 
-    fn is_new_var(level: &i32, news_shift_indices: Vec<i32>, bound_shift: i32) -> bool {
-        news_shift_indices.contains(&(bound_shift - level - 1))
+    /// Does the variable at de Bruijn `level` name something a `New` bound?
+    ///
+    /// ⚠ Takes the intervals by **slice**. It used to take a `Vec<i32>` by
+    /// value, which meant every call site cloned the whole vector — once per
+    /// bound variable rendered, i.e. `Θ(K)` clones of a `Θ(K)` vector for a
+    /// term with `K` `New`-bound names. Nothing here mutates, so a borrow is
+    /// sufficient and the `Θ(K²)` term disappears.
+    ///
+    /// The shift-index computation `bound_shift - level - 1` is unchanged and
+    /// is still performed unconditionally — including when there are no
+    /// intervals at all — so a malformed `level` still overflows exactly where
+    /// it used to.
+    fn is_new_var(level: &i32, news_shift_indices: &[NewBindRange], bound_shift: i32) -> bool {
+        let shift_idx = bound_shift - level - 1;
+        news_shift_indices
+            .iter()
+            .any(|introduced| introduced.contains(shift_idx))
     }
 }
 
@@ -690,21 +782,31 @@ mod drive {
     //!
     //! ## 2. `New`
     //!
-    //! `build_variables(bind_count)` and `introduced_news_shift_idx` are
-    //! computed in the **descend** handler, *before* the mutation — Rust
-    //! evaluates `format!` arguments left to right, so the recursive form
-    //! genuinely does this first, reading the *old* `bound_shift`. Then the
-    //! mutation runs, then the single child is pushed.
-    //! [`PpKont::NewK`] carries the pre-computed `variables` string.
+    //! `build_variables` and the introduced interval are computed in the
+    //! **descend** handler, *before* the mutation — Rust evaluates `format!`
+    //! arguments left to right, so the recursive form genuinely does this
+    //! first, reading the *old* `bound_shift`. Then the mutation runs, then the
+    //! single child is pushed. [`PpKont::NewK`] carries the pre-computed
+    //! `variables` string.
     //!
-    //! ★ Both reads go through [`PrettyPrinter::new_bind_extent`], which
-    //! clamps `bind_count` to `max_var_count`. `introduced_news_shift_idx` used
-    //! to be `(0..n.bind_count).collect()` — unbounded, on a path reachable
-    //! from untrusted input — while `build_variables` was already clamped, so
-    //! a `New` could ask for an 8 GiB `Vec` behind a 128-name display cap.
-    //! Clamping both means the printer records `*`-prefixes for exactly the
-    //! names it renders; see `super::differential::a_new_binds_no_more_names_\
-    //! than_it_prints` for the pinned consequence at `bind_count > 128`.
+    //! ★ Both reads go through the ONE value
+    //! [`PrettyPrinter::new_bind_range`] returns — the half-open interval
+    //! `[bound_shift, bound_shift + bind_count)`. `news_shift_indices` records
+    //! that interval and [`PrettyPrinter::build_variables`] renders a
+    //! display-capped prefix of it, so there is no second derivation that could
+    //! drift.
+    //!
+    //! The interval used to be materialised, `(0..n.bind_count).map(|i| i +
+    //! bound_shift).collect()` — unbounded, on a path reachable from untrusted
+    //! input, so a `New` could ask for an ~8 GiB `Vec` behind a 128-name
+    //! display cap. `bd7cb45f` bounded it by clamping the recorded indices to
+    //! `max_var_count` too; that closed the DoS but **moved bytes**, because
+    //! `is_new_var` reads those indices back to decide the `*` prefix. Holding
+    //! the interval closes the DoS at the root (`Θ(1)` per `New`, no clamp
+    //! needed) and keeps the marking exact, so no byte moves. See
+    //! `super::differential::a_new_costs_one_range_however_many_names_it_binds`
+    //! for the bound and `super::differential::the_star_prefix_survives_past_\
+    //! the_display_cap` for the marking.
     //!
     //! ## 3. `build_match_case`
     //!
@@ -820,11 +922,22 @@ mod drive {
     //! | `CaseStep` drops its interposed `Mutate(AddBoundShift)` | ✔ 2 tests |
     //! | `EndCatch` caps the fallback too (drops the asymmetry) | ✔ `the_capping_call_sites_are_reproduced` |
     //! | `Send` renders its channel BEFORE its data | ✔ 4 tests |
-    //! | `New` mutates `bound_shift` before `build_variables` | ✔ 8 tests |
+    //! | `New` mutates `bound_shift` before `build_variables` | ✔ 11 tests |
     //! | `Channel` resets `is_building_channel` after the sub-render | ✔ 2 tests |
     //! | `Par` pushes its `exprs` un-reversed | ✔ 3 tests |
     //! | `RecvBindJoin` takes patterns before source | ✔ 5 tests |
     //! | `ParK`'s category-length array permuted | **not caught — an EQUIVALENT mutant**, see the note at `ParK` |
+    //!
+    //! The `New` interval representation ([`super::NewBindRange`]) was measured
+    //! the same way, one mutation at a time:
+    //!
+    //! | mutation | caught |
+    //! |---|---|
+    //! | the recorded interval re-clamped to `max_var_count` (`bd7cb45f`'s form) | ✔ 3 tests — `a_new_costs_one_range_however_many_names_it_binds`, `the_star_prefix_survives_past_the_display_cap`, `the_star_prefix_is_exact_across_nested_news` |
+    //! | the interval materialised again, unclamped (the pre-`bd7cb45f` form) | ✔ `the_two_forms_agree_even_where_the_arithmetic_overflows` — 6.92 s / 4 MiB peak becomes >300 s / 7.31 GiB peak under an 8 GiB cgroup |
+    //! | `contains` widened to `i64` (the mathematical interval, not the shipped wrap) | ✔ `a_bind_range_answers_membership_exactly_as_a_vector_did` |
+    //! | the `is_empty` guard dropped from `contains` (negative `count` read as unsigned) | ✔ `a_new_with_a_negative_bind_count_binds_nothing` |
+    //! | `printed_bind_extent` off by one (the display cap alone) | ✔ `a_new_costs_one_range_however_many_names_it_binds` |
     //!
     //! ---
     //!
@@ -1410,37 +1523,31 @@ mod drive {
             }
 
             PpNode::New(n) => {
-                // Both of these read the PRE-mutation `bound_shift`.
+                // Both of these read the PRE-mutation `bound_shift`, which is
+                // why the interval is taken here and then handed to
+                // `build_variables` rather than each of them reading `pp`.
                 //
-                // ★ BOUNDED. `bind_count` is an attacker-controllable `i32` in
-                // a hand-built `Par` and this collect used to be
-                // `(0..n.bind_count)` — a `Vec<i32>` of up to 2^31-1 elements,
-                // i.e. an 8 GiB request, on a path reachable from untrusted
-                // input via `rho:io:stdout`. It is now clamped by exactly the
-                // discipline `build_variables` has always used, so the printer
-                // tracks precisely the names it prints and no more.
-                // `PrettyPrinter::new_bind_extent` is the single spelling of
-                // that clamp, shared with `build_variables`.
+                // ★ `Θ(1)`. `bind_count` is an attacker-controllable `i32` in a
+                // hand-built `Par`, and this used to be
+                // `(0..n.bind_count).map(|i| i + pp.bound_shift).collect()` — a
+                // `Vec<i32>` of up to 2^31-1 elements, i.e. an ~8 GiB request,
+                // on a path reachable from untrusted input via `rho:io:stdout`.
+                // The indices are contiguous by construction, so the interval
+                // IS the information; recording it costs two words per `New`
+                // and no allocation scales with `bind_count` any more.
                 //
-                // ⚠ NEGATIVE `bind_count` is representable and is NOT an
-                // error here: `min(128, negative)` is negative, `0..negative`
-                // is the EMPTY range, and the result is an empty `Vec` — the
-                // same value the unclamped form produced. Explicit, not
-                // incidental; `a_new_with_a_negative_bind_count_binds_nothing`
-                // pins it.
-                let introduced_news_shift_idx: Vec<i32> = (0..pp.new_bind_extent(n.bind_count))
-                    .map(|i| i + pp.bound_shift)
-                    .collect();
-                let variables = pp.build_variables(n.bind_count);
+                // ⚠ NEGATIVE `bind_count` is representable and is NOT an error
+                // here: the interval is empty (`NewBindRange::is_empty`), so it
+                // binds nothing — the same value the materialised form
+                // produced. Explicit, not incidental;
+                // `a_new_with_a_negative_bind_count_binds_nothing` pins it, and
+                // the `bound_shift` mutation below still takes the RAW count.
+                let introduced = pp.new_bind_range(n.bind_count);
+                let variables = pp.build_variables(introduced);
                 work.push(PpWork::Combine(PpKont::NewK { variables, indent }));
 
                 pp.bound_shift += n.bind_count;
-                pp.news_shift_indices = pp
-                    .news_shift_indices
-                    .clone()
-                    .into_iter()
-                    .chain(introduced_news_shift_idx)
-                    .collect();
+                pp.news_shift_indices.push(introduced);
 
                 work.push(PpWork::Node(
                     PpNode::Par(
@@ -2236,7 +2343,7 @@ mod drive {
             PpKont::ChannelK { par } => {
                 let str = one(vals);
                 let quoted = if str.len() > 60 {
-                    quote_if_not_new(par, str, pp.news_shift_indices.clone(), pp.bound_shift)
+                    quote_if_not_new(par, str, &pp.news_shift_indices, pp.bound_shift)
                 } else {
                     let whitespace = "\n(\\s\\s)*";
                     let replaced = regex::Regex::new(whitespace)
@@ -2245,7 +2352,7 @@ mod drive {
                     quote_if_not_new(
                         par,
                         replaced.to_string(),
-                        pp.news_shift_indices.clone(),
+                        &pp.news_shift_indices,
                         pp.bound_shift,
                     )
                 };
@@ -2334,7 +2441,7 @@ mod drive {
     fn quote_if_not_new(
         p: &Par,
         s: String,
-        news_shift_indices: Vec<i32>,
+        news_shift_indices: &[NewBindRange],
         bound_shift: i32,
     ) -> String {
         let is_bound_new = match p.exprs.as_slice() {
@@ -2882,7 +2989,7 @@ impl PrettyPrinter {
         p: &Par,
         indent: usize,
     ) -> Result<String, InterpreterError> {
-        let quote_if_not_new = |s: String, news_shift_indices: Vec<i32>, bound_shift: i32| {
+        let quote_if_not_new = |s: String, news_shift_indices: &[NewBindRange], bound_shift: i32| {
             let is_bound_new = match p.exprs.as_slice() {
                 [x] => match &x.expr_instance {
                     Some(instance) => match instance {
@@ -2920,7 +3027,7 @@ impl PrettyPrinter {
         if str.len() > 60 {
             Ok(quote_if_not_new(
                 str,
-                self.news_shift_indices.clone(),
+                &self.news_shift_indices,
                 self.bound_shift,
             ))
         } else {
@@ -2930,7 +3037,7 @@ impl PrettyPrinter {
                 .replace_all(&str, " ");
             Ok(quote_if_not_new(
                 replaced.to_string(),
-                self.news_shift_indices.clone(),
+                &self.news_shift_indices,
                 self.bound_shift,
             ))
         }
@@ -3048,26 +3155,21 @@ impl PrettyPrinter {
         }
         PpNode::New(n) => {
             // ⚠ NOT verbatim, and deliberately so: the ONE edit this body has
-            // taken since it was copied. `(0..n.bind_count)` was an unbounded
-            // `Vec<i32>`; it is clamped by `new_bind_extent`, identically to
-            // `descend_node`'s `PpNode::New`. The twin has to move with the
-            // driver or the differential compares two different computations.
-            let introduced_news_shift_idx: Vec<i32> = (0..self.new_bind_extent(n.bind_count))
-                .map(|i| i + self.bound_shift)
-                .collect();
+            // taken since it was copied. `(0..n.bind_count).map(|i| i +
+            // self.bound_shift).collect()` was an unbounded `Vec<i32>`; the
+            // contiguous run it built is now held as the interval itself,
+            // identically to `descend_node`'s `PpNode::New`. The twin has to
+            // move with the driver or the differential compares two different
+            // computations.
+            let introduced = self.new_bind_range(n.bind_count);
 
             let result = format!(
                 "new {} in {{\n{}{}",
-                self.build_variables(n.bind_count),
+                self.build_variables(introduced),
                 self.indent_string().repeat(indent + 1),
                 {
                     self.bound_shift += n.bind_count;
-                    self.news_shift_indices = self
-                        .news_shift_indices
-                        .clone()
-                        .into_iter()
-                        .chain(introduced_news_shift_idx)
-                        .collect();
+                    self.news_shift_indices.push(introduced);
                     self._oracle_build_string_from_message(
                         PpNode::Par(
                             n.p.as_ref()
@@ -3412,8 +3514,10 @@ mod differential {
     //! | [`a_match_nested_in_a_send`] | the `Match` target rendered MID-traversal, with siblings on both sides and printer state already moved |
     //! | [`a_failing_region_is_spliced_not_propagated`] | a catch frame firing mid-render, with the fallback spliced into the middle of a larger value — driven through `drive::drive_splice_probe`, because no `Par` can produce a failing catch any more |
     //! | [`the_capping_call_sites_are_reproduced`] | `EndCatch` caps on success and does NOT cap the fallback — run in a child process, because the cap is an environment variable |
-    //! | [`a_new_binds_no_more_names_than_it_prints`] | ★ `New::bind_count` is an attacker-controlled `i32`; the per-name allocation is bounded by the same `max_var_count` that bounds what is printed |
-    //! | [`the_clamp_changes_the_star_prefix_past_the_display_cap`] | the byte delta that bound introduces, pinned rather than discovered |
+    //! | [`a_new_costs_one_range_however_many_names_it_binds`] | ★ `New::bind_count` is an attacker-controlled `i32`; the per-`New` cost is `Θ(1)` and does not depend on it, and the *display* cap is checked separately in the same loop |
+    //! | [`a_bind_range_answers_membership_exactly_as_a_vector_did`] | ★ the membership obligation of the interval representation, differential against the materialised `Vec<i32>` it replaced — including the wrapping regime |
+    //! | [`the_star_prefix_survives_past_the_display_cap`] | ★ NO byte moves past the cap; the converse of the check that stood here while the recorded indices were clamped |
+    //! | [`the_star_prefix_is_exact_across_nested_news`] | ★ four further slots the single-`New` fixture cannot see, found by census; also the only fixture where `is_new_var` scans more than one interval |
     //! | [`a_new_with_a_negative_bind_count_binds_nothing`] | a negative `bind_count` is representable; the empty range is a decision |
     //! | [`a_match_with_no_target_panics_like_every_other_absent_required_field`] | the second behaviour change the `Match` fix carries |
     //!
@@ -3443,7 +3547,7 @@ mod differential {
     use models::rust::test_utils::test_utils::{assert_generator_not_vacuous, generate_par};
     use proptest::prelude::*;
 
-    use super::{PpNode, PrettyPrinter, UNPRINTABLE_ANY};
+    use super::{NewBindRange, PpNode, PrettyPrinter, UNPRINTABLE_ANY};
 
     // -----------------------------------------------------------------------
     // the comparison
@@ -3588,11 +3692,13 @@ mod differential {
     // out-of-memory test. That is the practical reachability argument for the
     // defect: a property test found it by accident.
     //
-    // Both forms now clamp through `PrettyPrinter::new_bind_extent`, so the raw
-    // corpus can carry a raw `bind_count` again — which is strictly MORE
-    // coverage than the helper allowed, since `bind_count` is now compared at
-    // the magnitudes that used to be unreachable. The helper has no remaining
-    // caller; keeping it live would re-hide exactly the shapes the fix opened.
+    // Both forms now record the introduced indices as an INTERVAL
+    // (`PrettyPrinter::new_bind_range`), which allocates nothing per name, so
+    // the raw corpus can carry a raw `bind_count` again — which is strictly
+    // MORE coverage than the helper allowed, since `bind_count` is now compared
+    // at the magnitudes that used to be unreachable. The helper has no
+    // remaining caller; keeping it live would re-hide exactly the shapes the
+    // fix opened.
     //
     // fn bound_new_bind_counts(par: &mut Par) {
     //     for send in &mut par.sends {
@@ -3752,9 +3858,15 @@ mod differential {
         /// ★ `bind_count` is now drawn RAW too. It used to be clamped by
         /// `bound_new_bind_counts` (retired above), because the unbounded
         /// `introduced_news_shift_idx` turned a draw near `i32::MAX` into an
-        /// 8 GiB allocation. Both forms clamp through `new_bind_extent` now, so
-        /// this property covers `bind_count` at magnitudes — including negative
-        /// ones — that the workaround had to exclude.
+        /// 8 GiB allocation. Both forms record an INTERVAL now
+        /// (`PrettyPrinter::new_bind_range`), which allocates nothing per name,
+        /// so this property covers `bind_count` at magnitudes — including
+        /// negative ones — that the workaround had to exclude.
+        ///
+        /// ⚠ This is the M4 evidence for the bound, and it is a *live* one:
+        /// with either materialised form restored and `bind_count` drawn raw,
+        /// this property is SIGKILLed by an 8 GiB cgroup; with the interval it
+        /// completes in seconds.
         #[test]
         fn the_two_forms_agree_even_where_the_arithmetic_overflows(
             term in generate_par(4)
@@ -4370,21 +4482,32 @@ mod differential {
     /// ## What is asserted, and why it is not a timing or an OOM test
     ///
     /// The allocation is not directly observable, but its **length** is:
-    /// `news_shift_indices` is exactly the vector that was allocated. So the
-    /// assertion is `news_shift_indices.len() <= max_var_count`, taken at a
-    /// `bind_count` small enough (1,000) that the unclamped form allocates
-    /// harmlessly and merely reports the wrong length. Reverting the fix fails
-    /// this in microseconds, with no memory pressure and no flakiness — an OOM
-    /// test would prove the same thing by destabilising the machine.
+    /// `news_shift_indices` holds exactly what was allocated. So the assertion
+    /// is that the length is `1` — one interval per `New` **entered** — at
+    /// `bind_count`s three orders of magnitude apart and at `i32::MAX`. That is
+    /// strictly stronger than a `<= max_var_count` bound: it says the printer's
+    /// per-`New` memory does not depend on `bind_count` **at all**, which is
+    /// what "the DoS is closed at the root" means. Reverting to either
+    /// materialised form fails this in microseconds, with no memory pressure
+    /// and no flakiness — an OOM test would prove less, and would prove it by
+    /// destabilising the machine.
     ///
-    /// `i32::MAX` is then exercised as well, because "bounded" has to mean
-    /// bounded at the boundary; under the fix it allocates 128 `i32`s.
+    /// ## ⚠ The display cap is asserted here too, and separately
+    ///
+    /// Bounding the recorded indices and bounding the printed names are now
+    /// *different* obligations discharged by *different* code
+    /// ([`super::PrettyPrinter::new_bind_range`] and
+    /// [`super::PrettyPrinter::printed_bind_extent`]). Before, one clamp did
+    /// both, so a test of either was a test of both. Now a regression that
+    /// dropped the display cap — re-opening the DoS through the `Vec<String>`
+    /// `build_variables` builds — would leave the interval assertion green, so
+    /// the rendered name count is checked in the same loop.
     #[test]
-    fn a_new_binds_no_more_names_than_it_prints() {
+    fn a_new_costs_one_range_however_many_names_it_binds() {
         let printer_cap = PrettyPrinter::new().max_var_count;
         assert_eq!(
             printer_cap, 128,
-            "the display cap moved; this test's derivation of the byte delta below assumes 128"
+            "the display cap moved; the derivations in this module assume 128"
         );
 
         for bind_count in [1_000i32, 100_000, i32::MAX] {
@@ -4397,65 +4520,202 @@ mod differential {
 
             assert_eq!(
                 driven_out, recursive_out,
-                "DIFFERENTIAL FAILED (bind_count = {bind_count}): the clamp was applied to \
-                 one form and not the other"
+                "DIFFERENTIAL FAILED (bind_count = {bind_count}): the interval form was \
+                 applied to one body and not the other"
+            );
+
+            // (1) THE BOUND: one interval per `New`, whatever it binds — and it
+            // carries the RAW count, so the marking is exact as well as cheap.
+            assert_eq!(
+                driven.news_shift_indices,
+                vec![NewBindRange {
+                    start: 0,
+                    count: bind_count
+                }],
+                "the driver recorded {:?} for a `New` binding {bind_count} names. More than \
+                 one entry means the per-`New` cost depends on `bind_count` (the DoS is \
+                 back); one entry with a truncated `count` means the marking was clamped \
+                 (bytes move past the display cap)",
+                driven.news_shift_indices
             );
             assert_eq!(
-                driven.news_shift_indices.len(),
+                recursive.news_shift_indices, driven.news_shift_indices,
+                "the recursive twin recorded {:?} where the driver recorded {:?}, so the \
+                 differential is comparing two different computations",
+                recursive.news_shift_indices, driven.news_shift_indices
+            );
+
+            // (2) THE DISPLAY CAP, which is now a separate obligation: the
+            // header between `new ` and ` in {` names exactly `printer_cap`
+            // variables.
+            let header = declared_names(&driven_out);
+            assert_eq!(
+                header.len(),
                 printer_cap as usize,
-                "the driver recorded {} `news_shift_indices` for a `New` binding \
-                 {bind_count} names — the per-name allocation is NOT bounded by \
-                 `max_var_count`",
-                driven.news_shift_indices.len()
+                "a `New` binding {bind_count} names PRINTED {} of them — \
+                 `printed_bind_extent` is not bounding the rendered `Vec<String>`",
+                header.len()
             );
             assert_eq!(
-                recursive.news_shift_indices.len(),
-                printer_cap as usize,
-                "the recursive twin recorded {} `news_shift_indices` for a `New` binding \
-                 {bind_count} names — the twin's clamp did not move with the driver's, so \
-                 the differential is comparing two different computations",
-                recursive.news_shift_indices.len()
+                (header.first().map(String::as_str), header.last().map(String::as_str)),
+                (Some("x0"), Some("x127")),
+                "the printed names are not the first `printer_cap` of the interval: {header:?}"
             );
+
             // ANTI-VACUITY: the fixture really does ask for more names than the
-            // cap, so `len() == cap` is a clamp and not a coincidence.
+            // cap, so `header.len() == cap` is a cap and not a coincidence.
             assert!(
                 bind_count > printer_cap,
-                "a fixture at bind_count = {bind_count} cannot exhibit a clamp at \
-                 {printer_cap}"
+                "a fixture at bind_count = {bind_count} cannot exhibit a cap at {printer_cap}"
             );
         }
     }
 
-    /// ★ THE BYTE DELTA the clamp introduces, pinned rather than discovered.
+    /// The names a rendered `new ... in { ... }` declares, in order.
+    fn declared_names(rendered: &str) -> Vec<String> {
+        let head = rendered
+            .strip_prefix("new ")
+            .and_then(|s| s.split_once(" in {"))
+            .map(|(head, _)| head)
+            .unwrap_or_else(|| panic!("not a rendered `New`: {rendered:?}"));
+        if head.is_empty() {
+            return Vec::new();
+        }
+        head.split(", ").map(str::to_string).collect()
+    }
+
+    /// ★ THE MEMBERSHIP OBLIGATION of the interval representation, discharged
+    /// against the thing it replaced.
     ///
-    /// Clamping `introduced_news_shift_idx` is not free: `news_shift_indices`
-    /// is read back by `is_new_var`, which decides the `*` prefix on a bound
-    /// variable. For a single `New` with `bind_count > max_var_count`, a
-    /// variable occupying slot `>= bound_shift + 128` used to be marked as
-    /// new-bound and now is not.
+    /// `news_shift_indices` was a `Vec<i32>` consulted with `Vec::contains`, on
+    /// a byte-for-byte replay-compared path. Replacing it with an interval is
+    /// only byte-preserving if [`NewBindRange::contains`] is *the same
+    /// predicate* as `Vec::contains` over the materialised run. This test is
+    /// that comparison: it materialises `S(start, count) = { start (+) i : i in
+    /// [0, count) }` with the same wrapping `i32` addition the printer
+    /// performed, and checks the two answers agree on every index in a window
+    /// around the run plus the extremes.
     ///
-    /// ## Why this is the right trade, stated so a reviewer can disagree
-    ///
-    /// `build_variables` renders only the first 128 names, so at
-    /// `bind_count = 200` the printed `new` already declares `a0 .. a127` and
-    /// the body already refers to `a199`, which no declaration in the rendered
-    /// text introduces. The `*` on such a variable asserted "this name came
-    /// from a `new`" about a name the same render had declined to print. The
-    /// clamp makes the two agree: the printer marks exactly the names it
-    /// prints. The alternative — keeping the marking exact by storing the
-    /// contiguous range `[bound_shift, bound_shift + bind_count)` instead of
-    /// materialising it — is byte-preserving and strictly better, but it
-    /// changes the type of the `pub news_shift_indices` field and is therefore
-    /// a separate, separately-reviewed change.
-    ///
-    /// ⚠ Reachable: `new x1, ..., x129 in { ... }` is legal Rholang, so this
-    /// delta is not confined to hand-built terms.
+    /// ⚠ The wrapping cases are the point. `(i32::MAX - 2, 5)` and
+    /// `(i32::MIN, 3)` are exactly where a "widen to `i64` and compare" reading
+    /// of "contiguous interval" would disagree with the bytes the node ships
+    /// (`release`, `overflow-checks` off, so the materialised form wrapped).
     #[test]
-    fn the_clamp_changes_the_star_prefix_past_the_display_cap() {
+    fn a_bind_range_answers_membership_exactly_as_a_vector_did() {
+        // (start, count) — materialisable counts only; the huge ones are
+        // covered by `a_new_costs_one_range_however_many_names_it_binds`.
+        let cases: [(i32, i32); 14] = [
+            (0, 0),
+            (0, 1),
+            (0, 129),
+            (5, 3),
+            (-4, 7),
+            // The wrapping regime: `start + count - 1` past `i32::MAX`, so the
+            // run runs off the top of the type and resumes at `i32::MIN`.
+            (i32::MAX - 2, 5),
+            (i32::MAX, 3),
+            (i32::MAX - 100, 300),
+            (2_147_483_000, 1_000),
+            // The bottom of the type, which does not wrap but is where an
+            // off-by-one in the `wrapping_sub` would show.
+            (i32::MAX, 1),
+            (i32::MIN, 3),
+            (i32::MIN + 1, 400),
+            // Empty runs.
+            (0, -1),
+            (i32::MIN, -5),
+        ];
+
+        let mut wrapping_cases_seen = 0usize;
+        for (start, count) in cases {
+            // The materialised form, with the printer's own arithmetic.
+            let materialised: Vec<i32> = (0..count).map(|i| start.wrapping_add(i)).collect();
+            let range = NewBindRange { start, count };
+            if count > 0 && (start as i64) + (count as i64 - 1) > i32::MAX as i64 {
+                wrapping_cases_seen += 1;
+            }
+
+            let mut probes: Vec<i32> = vec![i32::MIN, -1, 0, 1, i32::MAX];
+            // A window around the run, wrapping at the ends of the type just as
+            // the materialised form did.
+            for delta in -3i64..=(count.max(0) as i64 + 3) {
+                probes.push(start.wrapping_add(delta as i32));
+            }
+            // And the wrapped image of the far end, which is exactly where an
+            // `i64`-widened `contains` would answer differently.
+            for delta in -3i32..=3 {
+                probes.push(start.wrapping_add(count).wrapping_add(delta));
+            }
+
+            for idx in probes {
+                assert_eq!(
+                    range.contains(idx),
+                    materialised.contains(&idx),
+                    "membership diverged at start = {start}, count = {count}, idx = {idx}: \
+                     the interval says {}, the vector it replaced says {}",
+                    range.contains(idx),
+                    materialised.contains(&idx)
+                );
+            }
+            assert_eq!(
+                range.is_empty(),
+                materialised.is_empty(),
+                "`is_empty` disagrees with the materialised run at start = {start}, \
+                 count = {count}"
+            );
+        }
+
+        // ANTI-VACUITY: the corpus really did exercise the wrapping regime, so
+        // the agreement above is not an agreement about non-wrapping cases only.
+        assert!(
+            wrapping_cases_seen >= 4,
+            "only {wrapping_cases_seen} case(s) wrapped past `i32::MAX`; this test cannot \
+             distinguish the wrapping `contains` from an `i64`-widened one"
+        );
+    }
+
+    /// ★ NO BYTE MOVES past the display cap — the guard that stands where
+    /// `the_clamp_changes_the_star_prefix_past_the_display_cap` used to.
+    ///
+    /// ## What this test used to be, and why it is now its own opposite
+    ///
+    /// `news_shift_indices` is read back by `is_new_var`, which decides the `*`
+    /// prefix on a bound variable, and the printer's output is replay-compared
+    /// (`casper/src/rust/rholang/replay_runtime.rs`). `bd7cb45f` bounded the
+    /// allocation by clamping the recorded indices to `max_var_count`, which
+    /// meant a variable in slot `>= start + 128` stopped being marked as
+    /// new-bound: at `bind_count = 129`, slot 0 kept `*x0` and slot 128 went
+    /// `*x128` -> `x128`. The test at this position **pinned that delta**, on
+    /// the reasoning that the printer should mark exactly the names it prints.
+    ///
+    /// Holding the interval instead of materialising it removes the delta's
+    /// cause rather than its symptom — `NewBindRange::contains` is exact, so
+    /// every slot is marked exactly as it was before `bd7cb45f` — and bounds
+    /// the allocation *harder*, `Θ(1)` instead of `Θ(max_var_count)`. So the
+    /// subject of the old test no longer exists, and the check that stood on it
+    /// is replaced by its converse rather than deleted: past the display cap,
+    /// the `*` **survives**.
+    ///
+    /// ⚠ Reachable: `new x1, ..., x129 in { ... }` is legal Rholang, so neither
+    /// the delta nor its absence is confined to hand-built terms.
+    ///
+    /// ## The two obligations, which now come apart
+    ///
+    /// | obligation | asserted by |
+    /// |---|---|
+    /// | slot `>= cap` is still MARKED (`*x128`) | this test |
+    /// | name `>= cap` is still NOT PRINTED (`x128` absent from the header) | this test, and [`a_new_costs_one_range_however_many_names_it_binds`] |
+    ///
+    /// The second is what makes the first non-trivial: the printer marks a name
+    /// the same render declines to print. That asymmetry is *deliberate* and
+    /// pre-dates `bd7cb45f` — it is the cost of a display cap — and it is now
+    /// harmless, because marking no longer allocates.
+    #[test]
+    fn the_star_prefix_survives_past_the_display_cap() {
         let cap = PrettyPrinter::new().max_var_count; // 128
 
         // Slot `cap` — i.e. de Bruijn level `bind_count - cap - 1` — is the
-        // FIRST slot the clamp stops marking.
+        // FIRST slot `bd7cb45f`'s clamp stopped marking.
         let bind_count = cap + 1; // 129
         let inside_cap = new_par(bind_count, bound_var(bind_count - 1)); // slot 0
         let past_cap = new_par(bind_count, bound_var(0)); // slot 128
@@ -4465,19 +4725,32 @@ mod differential {
 
         assert!(
             inside.contains("*x0"),
-            "a variable INSIDE the display cap lost its `*` prefix — the clamp is cutting \
-             more than the names past `max_var_count`. Rendered: {inside}"
+            "a variable INSIDE the display cap lost its `*` prefix. Rendered: {inside}"
         );
         assert!(
-            past.contains("x128") && !past.contains("*x128"),
-            "a variable PAST the display cap still carries a `*` prefix, so the clamp did \
-             not take effect where this test says it does. Rendered: {past}"
+            past.contains("*x128"),
+            "a variable PAST the display cap lost its `*` prefix — the recorded interval is \
+             being truncated at `max_var_count`, which moves bytes on a replay-compared \
+             path. Rendered: {past}"
+        );
+        // The display cap is still in force: `x128` is marked but NOT declared.
+        let declared = declared_names(&past);
+        assert_eq!(
+            declared.len(),
+            cap as usize,
+            "the header declared {} names at bind_count = {bind_count}; the display cap is \
+             not in force, so the `*` above proves nothing about marking past a cap",
+            declared.len()
+        );
+        assert!(
+            !declared.iter().any(|n| n == "x128"),
+            "`x128` WAS declared, so slot 128 is not past the display cap in this fixture"
         );
         // ANTI-VACUITY: the two fixtures differ ONLY in the referenced level,
-        // so the differing `*` really is attributable to the slot.
+        // so the rendered `*` really is attributable to the slot.
         assert_ne!(
             inside, past,
-            "the two fixtures render identically, so this test cannot locate the delta"
+            "the two fixtures render identically, so this test cannot locate the slot"
         );
         // And the twin agrees, at both slots.
         assert_eq!(
@@ -4492,21 +4765,95 @@ mod differential {
         );
     }
 
+    /// ★ The delta the single-`New` fixture above CANNOT see: a `New` inside a
+    /// `New`, where the recorded intervals must both be exact *and* start at
+    /// different offsets.
+    ///
+    /// Found by census rather than by reasoning. Diffing the rendered output of
+    /// the three code states (pre-`bd7cb45f`, `bd7cb45f`, the interval form)
+    /// over a fixture sweep turned up **seven** byte deltas, not the one the
+    /// single-`New` test pinned: `new 3 in { new 200 in { <var> } }` loses the
+    /// `*` on slots 199, 200, 201 **and** 202 under the clamp. That is what
+    /// makes this fixture worth its own test — the outer `New` moves
+    /// `bound_shift` to 3, so the inner interval is `[3, 203)` and the clamped
+    /// form recorded `[3, 131)`, cutting four *distinct* slots whose levels are
+    /// nowhere near the cap.
+    ///
+    /// It also exercises the one thing a single interval cannot: `is_new_var`
+    /// scanning MORE THAN ONE recorded interval, where the outer `[0, 3)` and
+    /// the inner `[3, 203)` are adjacent and must not be conflated.
+    #[test]
+    fn the_star_prefix_is_exact_across_nested_news() {
+        let cap = PrettyPrinter::new().max_var_count; // 128
+        let (outer, inner) = (3i32, 200i32);
+        assert!(
+            inner > cap,
+            "the inner `New` must bind past the display cap for this fixture to bite"
+        );
+
+        // `bound_shift` is `outer + inner` = 203 inside the body, so de Bruijn
+        // `level` maps to slot `203 - level - 1`.
+        let total = outer + inner;
+        for level in 0..total {
+            let slot = total - level - 1;
+            let term = new_par(outer, new_par(inner, bound_var(level)));
+            let rendered = PrettyPrinter::new().build_string_from_message(&term);
+            assert!(
+                rendered.contains(&format!("*x{slot}\n")),
+                "slot {slot} (level {level}) lost its `*` prefix — every slot in \
+                 [0, {total}) is bound by one of the two nested `New`s. Rendered tail: {:?}",
+                &rendered[rendered.len().saturating_sub(20)..]
+            );
+            assert_eq!(
+                rendered,
+                PrettyPrinter::new().oracle_build_string_from_message(&term),
+                "DIFFERENTIAL FAILED (nested `New`, level {level})"
+            );
+        }
+
+        // Two intervals recorded, not one merged run and not 203 indices.
+        let mut driven = PrettyPrinter::new();
+        let _ = driven.build_string_from_message(&new_par(outer, new_par(inner, gint(0))));
+        assert_eq!(
+            driven.news_shift_indices,
+            vec![
+                NewBindRange {
+                    start: 0,
+                    count: outer
+                },
+                NewBindRange {
+                    start: outer,
+                    count: inner
+                },
+            ],
+            "the two nested `New`s did not record two intervals at the expected offsets"
+        );
+    }
+
     /// ⚠ A NEGATIVE `bind_count` is representable — the proto declares
     /// `sint32 bindCount`, which prost generates as `i32` — and it is now
     /// explicit rather than incidental.
     ///
-    /// `new_bind_extent` returns `min(128, negative) = negative`, `0..negative`
-    /// is the EMPTY range, so a negative `bind_count` introduces no names and
-    /// no `news_shift_indices`. That is **the same value the unclamped form
-    /// produced**, so the clamp does not change this case; the point of pinning
-    /// it is that "empty range" is a decision, and a future `as usize` or
-    /// `.max(0)` on that expression would silently turn it into a 4 GiB
-    /// allocation or a panic instead.
+    /// `0..negative` is the EMPTY range, so a negative `bind_count` prints no
+    /// names and marks no slot. That is **the same value both earlier forms
+    /// produced** — the unclamped `(0..bind_count)` and `bd7cb45f`'s
+    /// `(0..min(128, bind_count))` — so neither the clamp nor the interval
+    /// changes this case; the point of pinning it is that "empty range" is a
+    /// decision, and a future `as usize` or `.max(0)` on that expression would
+    /// silently turn it into a 4 GiB allocation or a panic instead.
+    ///
+    /// ⚠ **The interval representation has to reproduce it, and the assertion
+    /// had to change shape to keep saying so.** The `New` handler now records
+    /// one interval unconditionally — that uniformity is what makes
+    /// `news_shift_indices.len()` equal the number of `New`s entered — so
+    /// "binds nothing" can no longer be spelled `news_shift_indices.is_empty()`.
+    /// It is spelled here as what it actually means: exactly one interval was
+    /// recorded, that interval is empty, and no shift index whatsoever is a
+    /// member of it.
     ///
     /// `bound_shift += bind_count` still runs with the raw value and still
     /// moves `bound_shift` DOWNWARD — that is shared arithmetic, untouched by
-    /// this fix, and it is asserted here so the two behaviours are not
+    /// either fix, and it is asserted here so the two behaviours are not
     /// conflated.
     #[test]
     fn a_new_with_a_negative_bind_count_binds_nothing() {
@@ -4527,16 +4874,32 @@ mod differential {
                 driven_out, "new  in {\n  0\n}",
                 "a negative `bind_count` did not render as binding zero names"
             );
-            assert!(
-                driven.news_shift_indices.is_empty(),
-                "a negative `bind_count` introduced {} shift indices",
-                driven.news_shift_indices.len()
+            assert_eq!(
+                driven.news_shift_indices,
+                vec![NewBindRange {
+                    start: 0,
+                    count: bind_count
+                }],
+                "the `New` did not record exactly one interval carrying the RAW count"
             );
+            let introduced = driven.news_shift_indices[0];
+            assert!(
+                introduced.is_empty(),
+                "a negative `bind_count` produced a non-empty interval: {introduced:?}"
+            );
+            // ...and "empty" is membership, not just a flag: nothing is in it.
+            for probe in [i32::MIN, bind_count, -1, 0, 1, 127, 128, i32::MAX] {
+                assert!(
+                    !introduced.contains(probe),
+                    "shift index {probe} is a member of the empty interval {introduced:?} — a \
+                     negative `count` is being read as unsigned somewhere"
+                );
+            }
             // The arithmetic is NOT clamped, and that is deliberate.
             assert_eq!(
                 driven.bound_shift, bind_count,
-                "`bound_shift` did not take the raw (unclamped) `bind_count`; the clamp is \
-                 supposed to bound the ALLOCATION, not the arithmetic"
+                "`bound_shift` did not take the raw (unclamped) `bind_count`; the bound is \
+                 supposed to apply to the ALLOCATION, not the arithmetic"
             );
         }
     }
