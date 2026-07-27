@@ -31,4 +31,4 @@ requiring physical access to or a compromised host.
 ## Supported Versions
 
 F1R3FLY is under active development with no released or mainnet versions yet. Report against
-the latest `staging` / `dev`.
+the latest `dev`.

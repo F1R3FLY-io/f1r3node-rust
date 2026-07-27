@@ -15,8 +15,8 @@ that conflicts defers to it.
 
 ## Branching and Commits
 
-- Branch from `staging` and open pull requests against `staging`. Maintainers promote
-  `staging` → `dev` → `master`.
+- Branch from `dev` and open pull requests against `dev`. Maintainers promote
+  `dev` → `master`.
 - Branch prefixes: `feature/`, `fix/`, `docs/`, `perf/`, `chore/`.
 - Use [Conventional Commits](https://www.conventionalcommits.org/): `feat:`, `fix:`, `docs:`,
   `perf:`, `refactor:`, `test:`, `chore:`.
@@ -76,7 +76,7 @@ New or occasional contributors should open pull requests from personal forks. Ke
 
 Known recurring contributors may be invited to work from branches in the upstream `F1R3FLY-io/f1r3node-rust` repository. Maintainers grant upstream access based on project need, contributor identity, prior review history, and expected scope of work.
 
-Upstream access does not bypass review. Protected branches such as `master`, `dev`, and `staging` still require pull requests and required checks before merge.
+Upstream access does not bypass review. Protected branches such as `master` and `dev` still require pull requests and required checks before merge.
 
 ## CI Approval for Fork Pull Requests
 
