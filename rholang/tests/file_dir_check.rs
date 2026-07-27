@@ -300,14 +300,17 @@ async fn file_write_then_read_roundtrips() {
     let (space, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
             .await;
+    // Bind every reply as a free variable and forward the collection
+    // of replies to @"out" — a shape mismatch on any step would
+    // otherwise block the outer `for` silently.  Assert on shapes in
+    // Rust via extract_reply (m-2 fix).
     let src = with_libs(
         r#"
         for (@f <- File!?(1, "/root", "rw")) {
-          for (@[true, k] <- @f!?("writeByteArray", "hello".toUtf8Bytes())) {
-            // Seek back to start.
-            for (@[true, _] <- @f!?("seek", 0, "set")) {
-              for (@[true, bytes] <- @f!?("readN", 100)) {
-                @"out"!([k, bytes])
+          for (@writeReply <- @f!?("writeByteArray", "hello".toUtf8Bytes())) {
+            for (@seekReply <- @f!?("seek", 0, "set")) {
+              for (@readReply <- @f!?("readN", 100)) {
+                @"out"!([writeReply, seekReply, readReply])
               }
             }
           }
@@ -319,16 +322,14 @@ async fn file_write_then_read_roundtrips() {
         Some(ExprInstance::EListBody(l)) => l,
         _ => panic!(),
     };
-    let k = match single_expr(&outer.ps[0]).unwrap().expr_instance {
-        Some(ExprInstance::GInt(v)) => v,
-        _ => panic!(),
-    };
-    let bytes = match single_expr(&outer.ps[1]).unwrap().expr_instance {
-        Some(ExprInstance::GByteArray(v)) => v,
-        _ => panic!(),
-    };
-    assert_eq!(k, 5);
-    assert_eq!(bytes, b"hello".to_vec());
+    let (write_ok, _, k, _) = extract_reply(&outer.ps[0]);
+    assert!(write_ok, "writeByteArray must succeed");
+    assert_eq!(k, Some(5));
+    let (seek_ok, _, _, _) = extract_reply(&outer.ps[1]);
+    assert!(seek_ok, "seek to start must succeed");
+    let (read_ok, _, _, bytes) = extract_reply(&outer.ps[2]);
+    assert!(read_ok, "readN must succeed");
+    assert_eq!(bytes, Some(b"hello".to_vec()));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -411,10 +412,10 @@ async fn file_size_and_tell_after_write() {
     let src = with_libs(
         r#"
         for (@f <- File!?(1, "/root", "rw")) {
-          for (@[true, _] <- @f!?("writeByteArray", "abcde".toUtf8Bytes())) {
-            for (@[true, sz] <- @f!?("size")) {
-              for (@[true, pos] <- @f!?("tell")) {
-                @"out"!([sz, pos])
+          for (@writeReply <- @f!?("writeByteArray", "abcde".toUtf8Bytes())) {
+            for (@sizeReply <- @f!?("size")) {
+              for (@tellReply <- @f!?("tell")) {
+                @"out"!([writeReply, sizeReply, tellReply])
               }
             }
           }
@@ -426,16 +427,14 @@ async fn file_size_and_tell_after_write() {
         Some(ExprInstance::EListBody(l)) => l,
         _ => panic!(),
     };
-    let sz = match single_expr(&outer.ps[0]).unwrap().expr_instance {
-        Some(ExprInstance::GInt(v)) => v,
-        _ => panic!(),
-    };
-    let pos = match single_expr(&outer.ps[1]).unwrap().expr_instance {
-        Some(ExprInstance::GInt(v)) => v,
-        _ => panic!(),
-    };
-    assert_eq!(sz, 5);
-    assert_eq!(pos, 5);
+    let (write_ok, _, _, _) = extract_reply(&outer.ps[0]);
+    assert!(write_ok);
+    let (size_ok, _, sz, _) = extract_reply(&outer.ps[1]);
+    assert!(size_ok);
+    assert_eq!(sz, Some(5));
+    let (tell_ok, _, pos, _) = extract_reply(&outer.ps[2]);
+    assert!(tell_ok);
+    assert_eq!(pos, Some(5));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -596,4 +595,157 @@ async fn dir_unknown_method_returns_fserr_unsupported() {
     let (ok, code, _, _) = extract_reply(&reply);
     assert!(!ok);
     assert_eq!(code, "FSERR_UNSUPPORTED");
+}
+
+// ---------------------------------------------------------------------
+// Review-fix regression tests
+// ---------------------------------------------------------------------
+
+/// m-1 regression: File.close must propagate fsClose failures.
+/// Constructs a bespoke source where fsClose returns [false, ...];
+/// verifies File.close forwards it AND still marks the file closed
+/// (so a subsequent readN returns FSERR_CLOSED).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn file_close_propagates_fs_close_error() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = format!(
+        r#"
+        new File, fdP, stateP,
+            fsRead, fsWrite, fsSeek, fsTell, fsSize, fsFlush, fsClose
+        in {{
+          contract fsRead(@_fd, @_n, ret)  = {{ ret!([true, "".hexToBytes()]) }} |
+          contract fsWrite(@_fd, @_xs, ret) = {{ ret!([true, 0]) }} |
+          contract fsSeek(@_fd, @_o, @_w, ret) = {{ ret!([true, 0]) }} |
+          contract fsTell(@_fd, ret) = {{ ret!([true, 0]) }} |
+          contract fsSize(@_fd, ret) = {{ ret!([true, 0]) }} |
+          contract fsFlush(@_fd, ret) = {{ ret!([true]) }} |
+          contract fsClose(@_fd, ret) = {{ ret!([false, "FSERR_IO", "simulated"]) }} |
+
+{}
+
+          |
+          for (@f <- File!?(1, "/root", "rw")) {{
+            for (@closeReply <- @f!?("close")) {{
+              for (@subReply <- @f!?("readN", 8)) {{
+                @"out"!([closeReply, subReply])
+              }}
+            }}
+          }}
+        }}
+        "#,
+        lib_body(FILE_RHO)
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let outer = match single_expr(&reply).unwrap().expr_instance {
+        Some(ExprInstance::EListBody(l)) => l,
+        _ => panic!(),
+    };
+    let (close_ok, close_code, _, _) = extract_reply(&outer.ps[0]);
+    assert!(!close_ok, "close must propagate native failure");
+    assert_eq!(close_code, "FSERR_IO");
+    // State still transitioned — readN after close → FSERR_CLOSED.
+    let (sub_ok, sub_code, _, _) = extract_reply(&outer.ps[1]);
+    assert!(!sub_ok);
+    assert_eq!(sub_code, "FSERR_CLOSED");
+}
+
+/// readN(0) fix regression: n=0 is a valid no-op returning
+/// [true, empty ByteArray] (matches Unix read(2)).  Cursor unmoved.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn file_read_n_zero_returns_empty_bytes() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@f <- File!?(1, "/root", "rw")) {
+          for (@writeReply <- @f!?("writeByteArray", "abc".toUtf8Bytes())) {
+            for (@readReply <- @f!?("readN", 0)) {
+              for (@tellReply <- @f!?("tell")) {
+                @"out"!([writeReply, readReply, tellReply])
+              }
+            }
+          }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let outer = match single_expr(&reply).unwrap().expr_instance {
+        Some(ExprInstance::EListBody(l)) => l,
+        _ => panic!(),
+    };
+    let (write_ok, _, _, _) = extract_reply(&outer.ps[0]);
+    assert!(write_ok);
+    let (read_ok, _, _, bytes) = extract_reply(&outer.ps[1]);
+    assert!(read_ok, "readN(0) must succeed");
+    assert_eq!(bytes, Some(Vec::<u8>::new()), "readN(0) yields empty bytes");
+    let (tell_ok, _, pos, _) = extract_reply(&outer.ps[2]);
+    assert!(tell_ok);
+    assert_eq!(pos, Some(3), "readN(0) must not advance the cursor");
+}
+
+/// Negative n still rejected.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn file_read_n_negative_returns_bad_arg() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@f <- File!?(1, "/root", "rw")) {
+          for (@r <- @f!?("readN", -1)) { @"out"!(r) }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, code, _, _) = extract_reply(&reply);
+    assert!(!ok);
+    assert_eq!(code, "FSERR_BAD_ARG");
+}
+
+/// m-3 regression: Dir.openFile with a mode string outside the
+/// whitelist (r/rw/w/w+/wx/w+x/a/a+) returns FSERR_BAD_ARG.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn dir_open_file_rejects_unknown_mode() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@d <- Dir!?("/root", "rw", *File)) {
+          for (@r <- @d!?("openFile", "some/file.txt", "xyzzy")) {
+            @"out"!(r)
+          }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, code, _, _) = extract_reply(&reply);
+    assert!(!ok);
+    assert_eq!(code, "FSERR_BAD_ARG");
+}
+
+/// m-3 sanity: all whitelisted modes are accepted on a "rw" Dir.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn dir_open_file_accepts_all_whitelisted_modes() {
+    for mode in &["r", "rw", "w", "w+", "wx", "w+x", "a", "a+"] {
+        let (space, reducer) =
+            create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+                .await;
+        let src = with_libs(&format!(
+            r#"
+            for (@d <- Dir!?("/root", "rw", *File)) {{
+              for (@r <- @d!?("openFile", "some/file.txt", "{}")) {{
+                @"out"!(r)
+              }}
+            }}
+            "#,
+            mode
+        ));
+        let reply = eval_and_read_out(&space, &reducer, &src).await;
+        let (ok, _, _, _) = extract_reply(&reply);
+        assert!(ok, "mode {:?} must be accepted on a rw Dir", mode);
+    }
 }

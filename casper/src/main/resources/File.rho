@@ -148,12 +148,20 @@ new File, fdP, stateP in {
     } |
 
     // -- readN(n) ---------------------------------------------------
+    //
+    // n = 0 is a no-op returning [true, empty ByteArray] — matches
+    // Unix read(2) semantics (a zero-length read is a valid no-op,
+    // not an error).  Negative n is rejected as FSERR_BAD_ARG.  The
+    // fd is not touched when n <= 0.
     method readN(@n) {
       match n {
         i /\ Int => {
-          match i <= 0 {
-            true => return!([false, "FSERR_BAD_ARG", "n must be positive"])
+          match i < 0 {
+            true => return!([false, "FSERR_BAD_ARG", "n must be non-negative"])
             false => {
+              match i == 0 {
+                true => return!([true, "".hexToBytes()])
+                false => {
               for (@state <- @[*private, *stateP]) {
                 match state {
                   "closed" => {
@@ -183,6 +191,8 @@ new File, fdP, stateP in {
                     @[*private, *stateP]!("closed") |
                     return!([false, "FSERR_CLOSED", "file state unrecognized"])
                   }
+                }
+              }
                 }
               }
             }
@@ -360,9 +370,21 @@ new File, fdP, stateP in {
                 (fd, _root, _mode) => {
                   new retCh in {
                     fsClose!(fd, *retCh) |
-                    for (@_reply <- retCh) {
+                    for (@reply <- retCh) {
+                      // Always mark the file closed — the Rho-side
+                      // agent is single-use, so a native fsClose
+                      // failure doesn't leave the agent reusable.
+                      // But surface the native error to the caller
+                      // rather than swallowing it (m-1 fix): a
+                      // reply of [true] passes through as [true];
+                      // anything else (e.g. [false, "FSERR_IO", ...])
+                      // is forwarded so the caller can log the
+                      // underlying failure.
                       @[*private, *stateP]!("closed") |
-                      return!([true])
+                      match reply {
+                        [true] => return!([true])
+                        _      => return!(reply)
+                      }
                     }
                   }
                 }

@@ -118,17 +118,39 @@ new Dir, rootP in {
               for (@params <<- @[*private, *rootP]) {
                 match params {
                   (canonRoot, dirMode, fileCtor) => {
-                    // Dir "r" permits only File "r"; Dir "rw" permits any.
-                    match [dirMode, m] {
-                      ["r", "r"] => openFileImpl!(canonRoot, r, "r", fileCtor, *return)
-                      ["r", _]   => {
-                        return!([false, "FSERR_UNSUPPORTED",
-                          "requested mode exceeds Dir attenuation"])
+                    // m-3 fix: whitelist mode strings BEFORE
+                    // attenuation.  Previously the ["rw", _] arm
+                    // accepted any string, relying on Phase 1's
+                    // fs_open to reject unknown modes.  Duplicating
+                    // the attenuation whitelist across Rho and native
+                    // layers risks drift; we enumerate here so a mode
+                    // typo is caught with FSERR_BAD_ARG rather than
+                    // being sent to fs_open.
+                    //
+                    // "r" is always permitted (attenuation-safe on
+                    // both Dir modes); any other mode requires
+                    // Dir mode "rw".
+                    match m {
+                      "r" => openFileImpl!(canonRoot, r, "r", fileCtor, *return)
+                      _   => {
+                        match dirMode {
+                          "rw" => {
+                            match m {
+                              "rw"   => openFileImpl!(canonRoot, r, "rw",   fileCtor, *return)
+                              "w"    => openFileImpl!(canonRoot, r, "w",    fileCtor, *return)
+                              "w+"   => openFileImpl!(canonRoot, r, "w+",   fileCtor, *return)
+                              "wx"   => openFileImpl!(canonRoot, r, "wx",   fileCtor, *return)
+                              "w+x"  => openFileImpl!(canonRoot, r, "w+x",  fileCtor, *return)
+                              "a"    => openFileImpl!(canonRoot, r, "a",    fileCtor, *return)
+                              "a+"   => openFileImpl!(canonRoot, r, "a+",   fileCtor, *return)
+                              _      => return!([false, "FSERR_BAD_ARG",
+                                                 "unknown file mode"])
+                            }
+                          }
+                          _ => return!([false, "FSERR_UNSUPPORTED",
+                            "requested mode exceeds Dir attenuation"])
+                        }
                       }
-                      ["rw", _]  => {
-                        openFileImpl!(canonRoot, r, m, fileCtor, *return)
-                      }
-                      _ => return!([false, "FSERR_IO", "invalid Dir mode"])
                     }
                   }
                   _ => return!([false, "FSERR_IO", "root params malformed"])
