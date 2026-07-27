@@ -142,16 +142,27 @@ fn subject(name: &str) -> fn(usize) {
 
 /// The child entry point. `#[ignore]`d so a normal `cargo test` run never
 /// executes it directly; the parent always invokes it explicitly.
+///
+/// ⚠ It must be a NO-OP when its environment is absent. `cargo test
+/// -- --include-ignored` (and `cargo nextest run --run-ignored all`) will run
+/// every `#[ignore]`d test, including this one, with no `GATE_SUBJECT` set — so
+/// a child entry point that *required* its environment would fail the suite for
+/// a reason that has nothing to do with the property being gated. Skipping is
+/// correct here precisely because this test is a mechanism, not an assertion:
+/// the assertions live in its callers.
 #[test]
 #[ignore = "child process of the gate; driven via GATE_SUBJECT"]
 fn gate_child() {
-    let name = std::env::var("GATE_SUBJECT").expect("GATE_SUBJECT");
+    let Ok(name) = std::env::var("GATE_SUBJECT") else {
+        println!("gate_child: no GATE_SUBJECT — not a child invocation, nothing to do");
+        return;
+    };
     let depth: usize = std::env::var("GATE_DEPTH")
-        .expect("GATE_DEPTH")
+        .expect("GATE_DEPTH must accompany GATE_SUBJECT")
         .parse()
         .expect("GATE_DEPTH must be an integer");
     let stack: usize = std::env::var("GATE_STACK")
-        .expect("GATE_STACK")
+        .expect("GATE_STACK must accompany GATE_SUBJECT")
         .parse()
         .expect("GATE_STACK must be an integer");
 

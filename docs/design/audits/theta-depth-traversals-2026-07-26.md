@@ -354,6 +354,30 @@ D_{\max} \;=\; \left\lfloor \frac{2{,}097{,}152 - a}{b} \right\rfloor
 | debug   | `substitute` | 195,728 | **9** |
 | release | `substitute` | 27,179 | **~76** |
 
+**Measured directly** (bisecting *depth* at a fixed stack, rather than deriving
+it from the fit — post-Leg-1):
+
+| thread stack | where that stack comes from | debug | release |
+|---|---|---:|---:|
+| 2 MiB | Rust's default for a spawned thread when `RUST_MIN_STACK` is unset — **what a tokio worker gets** | **9** | **75** |
+| 8 MiB | `.cargo/config.toml` `[env] RUST_MIN_STACK`, so any cargo-launched run | 41 | 307 |
+| 128 MiB | the `RUST_MIN_STACK=134217728` workaround on every line of `demos/flt-church-desk/RUN-SHEET.md` | 684 | >4095 |
+
+The derived and directly-measured figures agree exactly (`$\lfloor(2{,}097{,}152-34{,}905)/27{,}179\rfloor = 75$`).
+
+Two things follow. **The reported bug is unchanged in debug** — depth 9 is still
+the ceiling, which is what Leg-1 predicted of itself. **Leg-1 did move release**,
+from 56 to 75 (+34%), because the release constant fell 25.4%. Neither is a fix:
+both are a constant away from a program-controlled abort.
+
+**On retiring the `RUST_MIN_STACK=134217728` workaround.** It cannot be retired
+yet, and the audit trail should say why rather than leave it looking like
+over-caution: at 128 MiB the release ceiling is >4095 and the debug ceiling is
+684, versus 75 / 9 at the default. The workaround is load-bearing for the demos
+today. `rholang-runtime/tests/church_desk_demo.rs::every_run_line_in_the_sheet_carries_the_stack_prefix`
+asserts the prefix is present; that assertion inverts when — and only when — the
+traversals in [§7.4](#74-not-landed--and-precisely-why) are converted.
+
 After `substitute` is converted, the constraint moves to `sort_match`
 (`$D_{\max}$` ≈ 26 debug / ≈ 320 release), then `PrettyPrinter`, then `Clone`.
 **This is why the traversals must be converted as a set rather than in
@@ -669,14 +693,22 @@ know that mettail-rust's `codegen-backend = "cranelift"` inflates them again.
 **Current state — stated plainly.**
 
 ```
-converted_traversals_are_depth_independent  … PASS (list is EMPTY)
-theta_depth_tripwire                        … PASS  substitute 195,754 B/level
-                                                    sort        78,592
-                                                    clone       15,872
-                                                    encode       1,932
-                                                    drop           464
-reported_reproducer_depth_survives_…        … #[ignore]d — RED on purpose
+DEBUG                                              RELEASE
+converted_…_are_depth_independent  PASS (empty)    PASS (empty)
+theta_depth_tripwire               PASS            PASS
+    substitute   195,754 B/level                       27,136 B/level
+    sort          78,592                                 6,485
+    clone         15,872                                 2,852
+    encode         1,932                                   302
+    drop             464                                   144
+reported_reproducer_…              RED (depth 10)  PASS (depth 70)
 ```
+
+Both profiles were run (`--include-ignored`, so the reproducer executes). Note
+that the reproducer **passes in release and fails in debug**: the class is
+present in both, but the constant decides which profile notices. That is exactly
+why the real assertion asserts a shape and not a byte count — and why a gate
+validated in only one profile would have reported success here.
 
 The reproducer test asserts the bug is **fixed**. It is not, so it is
 `#[ignore]`d with the reason inline, rather than deleted or weakened. Removing
@@ -707,6 +739,8 @@ numbers were produced by the gate independently of the bisection in
 | E14 | Leg-1 preserves behaviour workspace-wide | **Measured** — `cargo nextest run --workspace`: 3349 tests run, **3349 passed**, 32 skipped, 0 failed |
 | E15 | By-reference readers equal the by-value trait methods on every schema arm | **Measured** — `rholang/tests/by_reference_readers_equivalence.rs`: 36 `ExprInstance` arms + 9 `ConnectiveInstance` arms + both `None` arms + 5 `Var` shapes, each at depths 0–3 |
 | E16 | `generate_par(3)` yields 0 `Expr` nodes over 256 draws | **Measured** — anti-vacuity guard; see §8.4 limit #3 |
+| E17 | Post-Leg-1 max depth: 9/75 (2 MiB), 41/307 (8 MiB), 684/>4095 (128 MiB), debug/release | **Measured** — depth bisected at fixed stack, §5.1 |
+| E18 | Gate passes in BOTH profiles; reproducer is RED in debug and PASS in release | **Measured** — §8.5 |
 
 ---
 
