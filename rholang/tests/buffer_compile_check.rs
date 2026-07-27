@@ -38,7 +38,7 @@ fn buffer_lib_body() -> String {
 /// `Buffer`, `Allocator`, `metaP`, `chunkP`, and `gatherChunks`.
 fn with_lib(test_snippet: &str) -> String {
     format!(
-        "new Buffer, Allocator, metaP, chunkP, gatherChunks in {{\n{}|\n{}\n}}",
+        "new Buffer, Allocator, metaP, chunkP, gatherChunks, drainChunks in {{\n{}|\n{}\n}}",
         buffer_lib_body(),
         test_snippet
     )
@@ -352,4 +352,323 @@ async fn write_short_when_exceeds_capacity() {
         _ => panic!(),
     };
     assert_eq!(k, 4);
+}
+
+// ---------------------------------------------------------------------
+// Regression tests for the fixes to B-1, B-3, B-4, M-1, Mi-3.
+//
+// Prior versions could BRICK the buffer by triggering an uncatchable
+// MethodNotDefined inside the metadata-token critical section: any
+// caller-supplied arg of the wrong type raised on `.length()`/`<=`,
+// consuming the token and never re-parking.  These tests exercise
+// the griefing calls that used to brick and verify the buffer is
+// still responsive after.
+// ---------------------------------------------------------------------
+
+/// Helper: extract [ok, code_or_val, msg?] from a reply Par.
+fn extract_reply(par: &Par) -> (bool, String, Option<i64>, Option<Vec<u8>>) {
+    let list = match single_expr(par).unwrap().expr_instance {
+        Some(ExprInstance::EListBody(l)) => l,
+        other => panic!("expected list reply, got {other:?}"),
+    };
+    let ok = match single_expr(&list.ps[0]).unwrap().expr_instance {
+        Some(ExprInstance::GBool(b)) => b,
+        _ => panic!("head not Bool"),
+    };
+    let (second_str, second_int, second_bytes) = if list.ps.len() >= 2 {
+        match single_expr(&list.ps[1]).unwrap().expr_instance {
+            Some(ExprInstance::GString(s)) => (s, None, None),
+            Some(ExprInstance::GInt(i)) => (String::new(), Some(i), None),
+            Some(ExprInstance::GByteArray(b)) => (String::new(), None, Some(b)),
+            _ => (String::new(), None, None),
+        }
+    } else {
+        (String::new(), None, None)
+    };
+    (ok, second_str, second_int, second_bytes)
+}
+
+async fn eval_and_read_out(
+    space: &impl rspace_plus_plus::rspace::rspace_interface::ISpace<
+        Par,
+        BindPattern,
+        ListParWithRandom,
+        TaggedContinuation,
+    >,
+    reducer: &rholang::rust::interpreter::reduce::DebruijnInterpreter,
+    src: &str,
+) -> Par {
+    let par = ParBuilderUtil::mk_term(src).expect("compile");
+    reducer
+        .eval(par, &Env::new(), rand().split_byte(0))
+        .await
+        .expect("eval");
+    let map = space.to_map().await;
+    let chan = new_gstring_par("out".to_string(), Vec::new(), false);
+    let row = map.get(&vec![chan]).expect("out channel");
+    row.data[0].a.pars[0].clone()
+}
+
+/// B-1 fix regression: writeBytes on a non-ByteArray must reply with
+/// BUFERR_INVALID_ARGUMENT and NOT brick the buffer.  After the bad
+/// call, a subsequent valid call must still work.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn write_bytes_non_bytearray_returns_invalid_argument_and_does_not_brick() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    // Send an Int as `xs` — should reject cleanly.  Then verify the
+    // buffer still works via a follow-up capacity() call.
+    let src = with_lib(
+        r#"
+        for (@alloc <- Allocator!?()) {
+          for (@[true, buf] <- @alloc!?("allocBytes", 16)) {
+            for (@bad <- @buf!?("writeBytes", 42)) {
+              for (@cap <- @buf!?("capacity")) {
+                @"out"!([bad, cap])
+              }
+            }
+          }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    // Reply is [bad, cap] where bad = [false, "BUFERR_INVALID_ARGUMENT", ...]
+    // and cap = [true, 16].
+    let outer = match single_expr(&reply).unwrap().expr_instance {
+        Some(ExprInstance::EListBody(l)) => l,
+        _ => panic!("expected outer list"),
+    };
+    let (bad_ok, bad_code, _, _) = extract_reply(&outer.ps[0]);
+    assert!(!bad_ok, "writeBytes(42) should fail");
+    assert_eq!(bad_code, "BUFERR_INVALID_ARGUMENT");
+    let (cap_ok, _, cap_v, _) = extract_reply(&outer.ps[1]);
+    assert!(cap_ok, "capacity() should still work after bad writeBytes");
+    assert_eq!(cap_v, Some(16), "buffer still has correct capacity");
+}
+
+/// B-3 fix regression: read on a non-Int must reply with
+/// BUFERR_INVALID_ARGUMENT and NOT brick.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn read_non_int_returns_invalid_argument_and_does_not_brick() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_lib(
+        r#"
+        for (@alloc <- Allocator!?()) {
+          for (@[true, buf] <- @alloc!?("allocBytes", 8)) {
+            for (@bad <- @buf!?("read", "not an int")) {
+              for (@cap <- @buf!?("capacity")) {
+                @"out"!([bad, cap])
+              }
+            }
+          }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let outer = match single_expr(&reply).unwrap().expr_instance {
+        Some(ExprInstance::EListBody(l)) => l,
+        _ => panic!(),
+    };
+    let (bad_ok, bad_code, _, _) = extract_reply(&outer.ps[0]);
+    assert!(!bad_ok);
+    assert_eq!(bad_code, "BUFERR_INVALID_ARGUMENT");
+    let (cap_ok, _, cap_v, _) = extract_reply(&outer.ps[1]);
+    assert!(cap_ok);
+    assert_eq!(cap_v, Some(8));
+}
+
+/// M-1 fix regression: endFill("none") on a buffer with no lease held
+/// must fail with BUFERR_FILLING, not falsely succeed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn end_fill_none_on_no_lease_rejects() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_lib(
+        r#"
+        for (@alloc <- Allocator!?()) {
+          for (@[true, buf] <- @alloc!?("allocBytes", 4)) {
+            for (@r <- @buf!?("endFill", "none")) {
+              @"out"!(r)
+            }
+          }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, code, _, _) = extract_reply(&reply);
+    assert!(!ok, "endFill on no-lease-held must reject");
+    assert_eq!(code, "BUFERR_FILLING");
+}
+
+/// Full lease roundtrip: beginFill, endFill with correct token, verify
+/// read then succeeds.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn lease_acquire_and_release_permits_subsequent_read() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_lib(
+        r#"
+        for (@alloc <- Allocator!?()) {
+          for (@[true, buf] <- @alloc!?("allocBytes", 8)) {
+            for (@[true, tok] <- @buf!?("beginFill")) {
+              // Read under lease should be refused with BUFERR_FILLING.
+              for (@refused <- @buf!?("read", 4)) {
+                for (@[true] <- @buf!?("endFill", tok)) {
+                  // After endFill, read succeeds (empty buffer → 0 bytes).
+                  for (@r <- @buf!?("read", 4)) {
+                    @"out"!([refused, r])
+                  }
+                }
+              }
+            }
+          }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let outer = match single_expr(&reply).unwrap().expr_instance {
+        Some(ExprInstance::EListBody(l)) => l,
+        _ => panic!(),
+    };
+    let (refused_ok, refused_code, _, _) = extract_reply(&outer.ps[0]);
+    assert!(!refused_ok, "read under held lease must fail");
+    assert_eq!(refused_code, "BUFERR_FILLING");
+    let (read_ok, _, _, read_bytes) = extract_reply(&outer.ps[1]);
+    assert!(read_ok, "read after endFill must succeed");
+    assert_eq!(
+        read_bytes,
+        Some(vec![]),
+        "empty buffer read yields empty bytes"
+    );
+}
+
+/// Wrong endFill token must reject and NOT release the lease.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn end_fill_with_wrong_token_rejects() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_lib(
+        r#"
+        new fakeToken in {
+          for (@alloc <- Allocator!?()) {
+            for (@[true, buf] <- @alloc!?("allocBytes", 4)) {
+              for (@[true, _realTok] <- @buf!?("beginFill")) {
+                for (@r <- @buf!?("endFill", *fakeToken)) {
+                  @"out"!(r)
+                }
+              }
+            }
+          }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, code, _, _) = extract_reply(&reply);
+    assert!(!ok, "endFill with wrong token must reject");
+    assert_eq!(code, "BUFERR_FILLING");
+}
+
+/// M-2 fix regression: clear() releases a held lease AND resets the
+/// buffer so reads work again.  Verifies the non-destructive escape
+/// hatch.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn clear_releases_lease_and_resets_state() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_lib(
+        r#"
+        for (@alloc <- Allocator!?()) {
+          for (@[true, buf] <- @alloc!?("allocBytes", 8)) {
+            for (@[true, _tok] <- @buf!?("beginFill")) {
+              // Abandon the token.  Now clear() to recover.
+              for (@[true] <- @buf!?("clear")) {
+                // After clear, buffer is empty and no lease is held.
+                for (@len <- @buf!?("length")) {
+                  for (@r <- @buf!?("read", 4)) {
+                    @"out"!([len, r])
+                  }
+                }
+              }
+            }
+          }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let outer = match single_expr(&reply).unwrap().expr_instance {
+        Some(ExprInstance::EListBody(l)) => l,
+        _ => panic!(),
+    };
+    let (len_ok, _, len_v, _) = extract_reply(&outer.ps[0]);
+    assert!(len_ok);
+    assert_eq!(len_v, Some(0), "length after clear() is 0");
+    let (read_ok, _, _, read_bytes) = extract_reply(&outer.ps[1]);
+    assert!(read_ok, "read after clear() succeeds (no lease held)");
+    assert_eq!(read_bytes, Some(vec![]));
+}
+
+/// Monotonic-chunk-index invariant: after clear(), a fresh write goes
+/// to a chunk index STRICTLY GREATER than any used before.  We verify
+/// indirectly by writing 3 bytes, clearing, writing 3 different bytes,
+/// then reading — the read must return the new content.  If clear
+/// rewound `lo` to 0 it would either observe stale chunk 0 or fail.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn clear_then_write_then_read_yields_new_content_not_stale() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_lib(
+        r#"
+        for (@alloc <- Allocator!?()) {
+          for (@[true, buf] <- @alloc!?("allocBytes", 8)) {
+            for (@[true, _k1] <- @buf!?("writeBytes", "AAA".toUtf8Bytes())) {
+              for (@[true] <- @buf!?("clear")) {
+                for (@[true, _k2] <- @buf!?("writeBytes", "BBB".toUtf8Bytes())) {
+                  for (@r <- @buf!?("read", 8)) {
+                    @"out"!(r)
+                  }
+                }
+              }
+            }
+          }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, _, _, bytes) = extract_reply(&reply);
+    assert!(ok);
+    assert_eq!(
+        bytes,
+        Some(b"BBB".to_vec()),
+        "read must return new content, not stale"
+    );
+}
+
+/// Mi-3 fix regression: allocator on a non-Int rejects cleanly (caller
+/// does not hang).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn allocator_non_int_rejects_cleanly() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_lib(
+        r#"
+        for (@alloc <- Allocator!?()) {
+          for (@r <- @alloc!?("allocBytes", "not an int")) {
+            @"out"!(r)
+          }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, code, _, _) = extract_reply(&reply);
+    assert!(!ok);
+    assert_eq!(code, "BUFERR_INVALID_ARGUMENT");
 }

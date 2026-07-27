@@ -31,7 +31,7 @@
 // token on every exit path.  The catch-all `_` arm makes the mutex
 // robust against a hypothetical third payload shape.
 
-new Buffer, Allocator, metaP, chunkP, gatherChunks in {
+new Buffer, Allocator, metaP, chunkP, gatherChunks, drainChunks in {
 
   // ==================================================================
   // Buffer agent
@@ -162,51 +162,61 @@ new Buffer, Allocator, metaP, chunkP, gatherChunks in {
     // writeBytes(xs) — always a (possibly short) success (spec §Write).
     // Parks ONE chunk at index `hi` with the k accepted bytes; k = 0
     // parks nothing (a full buffer cannot accumulate empty chunks).
+    //
+    // Type-guarded per spec §Buffers ("Every method that takes a numeric
+    // or ByteArray argument guards it with match ... before any
+    // arithmetic").  Without this guard, `xs.length()` on a non-ByteArray
+    // caller-supplied value would raise MethodNotDefined — an
+    // uncatchable interpreter error — inside the metadata critical
+    // section, orphaning the token and bricking the buffer permanently.
+    // The guard is BEFORE the token consumption so a bad arg never
+    // touches state.
     method writeBytes(@xs) {
-      for (@meta <- @[*private, *metaP]) {
-        match meta {
-          "REVOKED" => {
-            @[*private, *metaP]!("REVOKED") |
-            return!([false, "BUFERR_REVOKED", "buffer is closed"])
-          }
-          (ell, rho, cap, u, lease, lo, hi) => {
-            // xs.length() would fail on a non-ByteArray receiver at
-            // runtime with an uncatchable method-not-defined error.
-            // We can't guard against that without try/catch inside
-            // methods; the spec accepts this by having callers only
-            // pass ByteArrays (the File-agent path always does).
-            match xs.length() {
-              xsLen => {
-                match cap - ell {
-                  room => {
-                    match (xsLen <= room) {
-                      true => {
-                        match xsLen == 0 {
+      match xs {
+        b /\ ByteArray => {
+          for (@meta <- @[*private, *metaP]) {
+            match meta {
+              "REVOKED" => {
+                @[*private, *metaP]!("REVOKED") |
+                return!([false, "BUFERR_REVOKED", "buffer is closed"])
+              }
+              (ell, rho, cap, u, lease, lo, hi) => {
+                // b is proven a ByteArray by the outer guard; .length()
+                // and .slice() are safe here.
+                match b.length() {
+                  xsLen => {
+                    match cap - ell {
+                      room => {
+                        match (xsLen <= room) {
                           true => {
-                            // Zero-length: park nothing.
-                            @[*private, *metaP]!(meta) |
-                            return!([true, 0])
+                            match xsLen == 0 {
+                              true => {
+                                // Zero-length: park nothing.
+                                @[*private, *metaP]!(meta) |
+                                return!([true, 0])
+                              }
+                              false => {
+                                @[*private, *chunkP, hi]!(b) |
+                                @[*private, *metaP]!(
+                                  (ell + xsLen, rho, cap, u, lease, lo, hi + 1)) |
+                                return!([true, xsLen])
+                              }
+                            }
                           }
                           false => {
-                            @[*private, *chunkP, hi]!(xs) |
-                            @[*private, *metaP]!(
-                              (ell + xsLen, rho, cap, u, lease, lo, hi + 1)) |
-                            return!([true, xsLen])
-                          }
-                        }
-                      }
-                      false => {
-                        // Short write.
-                        match room == 0 {
-                          true => {
-                            @[*private, *metaP]!(meta) |
-                            return!([true, 0])
-                          }
-                          false => {
-                            @[*private, *chunkP, hi]!(xs.slice(0, room)) |
-                            @[*private, *metaP]!(
-                              (ell + room, rho, cap, u, lease, lo, hi + 1)) |
-                            return!([true, room])
+                            // Short write.
+                            match room == 0 {
+                              true => {
+                                @[*private, *metaP]!(meta) |
+                                return!([true, 0])
+                              }
+                              false => {
+                                @[*private, *chunkP, hi]!(b.slice(0, room)) |
+                                @[*private, *metaP]!(
+                                  (ell + room, rho, cap, u, lease, lo, hi + 1)) |
+                                return!([true, room])
+                              }
+                            }
                           }
                         }
                       }
@@ -214,13 +224,14 @@ new Buffer, Allocator, metaP, chunkP, gatherChunks in {
                   }
                 }
               }
+              _ => {
+                @[*private, *metaP]!(meta) |
+                return!([false, "BUFERR_REVOKED", "buffer state unrecognized"])
+              }
             }
           }
-          _ => {
-            @[*private, *metaP]!(meta) |
-            return!([false, "BUFERR_REVOKED", "buffer state unrecognized"])
-          }
         }
+        _ => return!([false, "BUFERR_INVALID_ARGUMENT", "xs must be a ByteArray"])
       }
     } |
 
@@ -236,44 +247,51 @@ new Buffer, Allocator, metaP, chunkP, gatherChunks in {
     // instance's chunks.  See §Cost accounting > Buffers — MVP is
     // linear-fold; follow-up commit substitutes the balanced
     // pairwise merge.
+    // read(n) — type-guarded per spec §Buffers.  Without the guard,
+    // `n <= 0` on a non-Int caller-supplied `n` raises MethodNotDefined
+    // inside the critical section, orphaning the token.
     method read(@n) {
-      for (@meta <- @[*private, *metaP]) {
-        match meta {
-          "REVOKED" => {
-            @[*private, *metaP]!("REVOKED") |
-            return!([false, "BUFERR_REVOKED", "buffer is closed"])
-          }
-          (ell, rho, cap, u, lease, lo, hi) => {
-            match lease {
-              "none" => {
-                // r = max(0, min(n, ell - rho))
-                match (n <= 0) {
-                  true => {
-                    @[*private, *metaP]!(meta) |
-                    return!([true, "".hexToBytes()])
-                  }
-                  false => {
-                    match (ell - rho) {
-                      unread => {
-                        match (unread <= 0) {
-                          true => {
-                            @[*private, *metaP]!(meta) |
-                            return!([true, "".hexToBytes()])
-                          }
-                          false => {
-                            new gCh in {
-                              gatherChunks!(*private, *chunkP, lo, hi, *gCh) |
-                              for (@allBytes <- gCh) {
-                                match (n <= unread) {
-                                  true => {
-                                    @[*private, *metaP]!(
-                                      (ell, rho + n, cap, u, lease, lo, hi)) |
-                                    return!([true, allBytes.slice(rho, rho + n)])
-                                  }
-                                  false => {
-                                    @[*private, *metaP]!(
-                                      (ell, rho + unread, cap, u, lease, lo, hi)) |
-                                    return!([true, allBytes.slice(rho, rho + unread)])
+      match n {
+        i /\ Int => {
+          for (@meta <- @[*private, *metaP]) {
+            match meta {
+              "REVOKED" => {
+                @[*private, *metaP]!("REVOKED") |
+                return!([false, "BUFERR_REVOKED", "buffer is closed"])
+              }
+              (ell, rho, cap, u, lease, lo, hi) => {
+                match lease {
+                  "none" => {
+                    // r = max(0, min(i, ell - rho))
+                    match (i <= 0) {
+                      true => {
+                        @[*private, *metaP]!(meta) |
+                        return!([true, "".hexToBytes()])
+                      }
+                      false => {
+                        match (ell - rho) {
+                          unread => {
+                            match (unread <= 0) {
+                              true => {
+                                @[*private, *metaP]!(meta) |
+                                return!([true, "".hexToBytes()])
+                              }
+                              false => {
+                                new gCh in {
+                                  gatherChunks!(*private, *chunkP, lo, hi, *gCh) |
+                                  for (@allBytes <- gCh) {
+                                    match (i <= unread) {
+                                      true => {
+                                        @[*private, *metaP]!(
+                                          (ell, rho + i, cap, u, lease, lo, hi)) |
+                                        return!([true, allBytes.slice(rho, rho + i)])
+                                      }
+                                      false => {
+                                        @[*private, *metaP]!(
+                                          (ell, rho + unread, cap, u, lease, lo, hi)) |
+                                        return!([true, allBytes.slice(rho, rho + unread)])
+                                      }
+                                    }
                                   }
                                 }
                               }
@@ -283,19 +301,20 @@ new Buffer, Allocator, metaP, chunkP, gatherChunks in {
                       }
                     }
                   }
+                  _ => {
+                    @[*private, *metaP]!(meta) |
+                    return!([false, "BUFERR_FILLING", "fill in progress"])
+                  }
                 }
               }
               _ => {
                 @[*private, *metaP]!(meta) |
-                return!([false, "BUFERR_FILLING", "fill in progress"])
+                return!([false, "BUFERR_REVOKED", "buffer state unrecognized"])
               }
             }
           }
-          _ => {
-            @[*private, *metaP]!(meta) |
-            return!([false, "BUFERR_REVOKED", "buffer state unrecognized"])
-          }
         }
+        _ => return!([false, "BUFERR_INVALID_ARGUMENT", "n must be an integer"])
       }
     } |
 
@@ -353,9 +372,15 @@ new Buffer, Allocator, metaP, chunkP, gatherChunks in {
           (ell, rho, cap, u, lease, lo, hi) => {
             match lease {
               "none" => {
+                // Mint a fresh unforgeable name.  We return `*fillToken`
+                // (the dereferenced name) rather than a bundle+ so that
+                // endFill's equality check `lease == presented` sees the
+                // same Par shape on both sides.  The name is still
+                // unforgeable — a caller cannot construct it — and can
+                // only be used by presenting it back to endFill.
                 new fillToken in {
                   @[*private, *metaP]!((ell, rho, cap, u, *fillToken, lo, hi)) |
-                  return!([true, bundle+{*fillToken}])
+                  return!([true, *fillToken])
                 }
               }
               _ => {
@@ -372,6 +397,14 @@ new Buffer, Allocator, metaP, chunkP, gatherChunks in {
       }
     } |
 
+    // endFill(presented) — release the lease iff `presented` matches
+    // the active fillToken.
+    //
+    // Two-stage check fixes M-1: reject "no lease held" explicitly
+    // BEFORE the equality comparison.  Without this, a caller passing
+    // presented = "none" against lease "none" would get an
+    // indistinguishable "success" reply even though no lease was ever
+    // held — breaking ownership audits.
     method endFill(@presented) {
       for (@meta <- @[*private, *metaP]) {
         match meta {
@@ -380,14 +413,29 @@ new Buffer, Allocator, metaP, chunkP, gatherChunks in {
             return!([false, "BUFERR_REVOKED", "buffer is closed"])
           }
           (ell, rho, cap, u, lease, lo, hi) => {
-            match lease == presented {
-              true => {
-                @[*private, *metaP]!((ell, rho, cap, u, "none", lo, hi)) |
-                return!([true])
-              }
-              false => {
+            match lease {
+              "none" => {
+                // No lease held; reject any presented token — including
+                // presented == "none", which would otherwise falsely
+                // report success (M-1 fix).
                 @[*private, *metaP]!(meta) |
-                return!([false, "BUFERR_FILLING", "lease token mismatch"])
+                return!([false, "BUFERR_FILLING", "no lease held"])
+              }
+              _ => {
+                // Lease is a Name.  `==` between Pars is total (structural
+                // equality: identical Names → true, all other pairs →
+                // false), so it never raises regardless of `presented`'s
+                // type.
+                match lease == presented {
+                  true => {
+                    @[*private, *metaP]!((ell, rho, cap, u, "none", lo, hi)) |
+                    return!([true])
+                  }
+                  false => {
+                    @[*private, *metaP]!(meta) |
+                    return!([false, "BUFERR_FILLING", "lease token mismatch"])
+                  }
+                }
               }
             }
           }
@@ -401,16 +449,66 @@ new Buffer, Allocator, metaP, chunkP, gatherChunks in {
 
     // -- Lifecycle ---------------------------------------------------
 
-    // close() — replace metadata with "REVOKED" tombstone.  For the
-    // MVP the chunks are NOT eagerly consumed (relies on the GC FIP
-    // to reclaim at deploy end).  A follow-up will drain chunks
-    // eagerly to refund storage in-deploy per §Buffers > Lifecycle.
+    // clear() — reset the buffer for reuse WITHOUT closing it.
+    // Advances lo to hi (NEVER REWIND — consensus-safety invariant),
+    // sets ell = rho = 0, releases any held lease.  Consumes stored
+    // chunks so their storage is refunded within the deploy.
+    //
+    // Deliberately NOT lease-gated: this is the non-destructive
+    // recovery path for a lease whose holder died or lost its token
+    // (spec §Buffers > Fill lease > Abandonment).  Shipping clear() in
+    // this phase (rather than deferring) gives the lease a
+    // non-destructive escape hatch — otherwise the only recovery from
+    // a stuck lease is close(), which revokes the buffer entirely.
+    method clear() {
+      for (@meta <- @[*private, *metaP]) {
+        match meta {
+          "REVOKED" => {
+            @[*private, *metaP]!("REVOKED") |
+            return!([false, "BUFERR_REVOKED", "buffer is closed"])
+          }
+          (_ell, _rho, cap, u, _lease, lo, hi) => {
+            new doneCh in {
+              drainChunks!(*private, *chunkP, lo, hi, *doneCh) |
+              for (_ <- doneCh) {
+                // NEVER REWIND lo — advance to hi.  This invariant is
+                // load-bearing for consensus safety (spec §Buffers >
+                // Implementation notes): a stale chunk-index observation
+                // from a prior epoch must never collide with a
+                // freshly-written chunk at the same index.
+                @[*private, *metaP]!((0, 0, cap, u, "none", hi, hi)) |
+                return!([true])
+              }
+            }
+          }
+          _ => {
+            @[*private, *metaP]!(meta) |
+            return!([false, "BUFERR_REVOKED", "buffer state unrecognized"])
+          }
+        }
+      }
+    } |
+
+    // close() — replace metadata with "REVOKED" tombstone and drain
+    // chunks (refunding storage within the deploy).  Deliberately not
+    // lease-gated: it is a recovery path for a stuck lease.  Does not
+    // remove the persistent dispatcher — the GC FIP reclaims that at
+    // deploy end.
     method close() {
       for (@meta <- @[*private, *metaP]) {
         match meta {
           "REVOKED" => {
             @[*private, *metaP]!("REVOKED") |
             return!([true])
+          }
+          (_ell, _rho, _cap, _u, _lease, lo, hi) => {
+            new doneCh in {
+              drainChunks!(*private, *chunkP, lo, hi, *doneCh) |
+              for (_ <- doneCh) {
+                @[*private, *metaP]!("REVOKED") |
+                return!([true])
+              }
+            }
           }
           _ => {
             @[*private, *metaP]!("REVOKED") |
@@ -442,66 +540,85 @@ new Buffer, Allocator, metaP, chunkP, gatherChunks in {
   agent Allocator {
     constructor() { Nil } |
 
+    // alloc(nUnits, unit) — type-guarded per spec §Buffers.  Without
+    // the Int guard, `nUnits <= 0` on a non-Int caller-supplied value
+    // would raise MethodNotDefined, aborting the reduction and leaving
+    // the caller's `!?` blocked forever (Mi-3 fix).
     method alloc(@nUnits, @unit) {
-      match nUnits <= 0 {
-        true  => return!([false, "BUFERR_INVALID_CAPACITY", "nUnits must be positive"])
-        false => {
-          match unit {
-            "bytes" => {
-              match nUnits > 1073741824 {
-                true  => return!([false, "BUFERR_INVALID_CAPACITY", "exceeds platform cap"])
-                false => {
-                  for (@bufHandle <- Buffer!?(nUnits, "bytes")) {
-                    return!([true, bufHandle])
+      match nUnits {
+        i /\ Int => {
+          match i <= 0 {
+            true  => return!([false, "BUFERR_INVALID_CAPACITY", "nUnits must be positive"])
+            false => {
+              match unit {
+                "bytes" => {
+                  match i > 1073741824 {
+                    true  => return!([false, "BUFERR_INVALID_CAPACITY", "exceeds platform cap"])
+                    false => {
+                      for (@bufHandle <- Buffer!?(i, "bytes")) {
+                        return!([true, bufHandle])
+                      }
+                    }
                   }
                 }
-              }
-            }
-            "utf8" => {
-              match nUnits > 268435456 {
-                true  => return!([false, "BUFERR_INVALID_CAPACITY", "exceeds platform cap"])
-                false => {
-                  for (@bufHandle <- Buffer!?(nUnits * 4, "utf8")) {
-                    return!([true, bufHandle])
+                "utf8" => {
+                  match i > 268435456 {
+                    true  => return!([false, "BUFERR_INVALID_CAPACITY", "exceeds platform cap"])
+                    false => {
+                      for (@bufHandle <- Buffer!?(i * 4, "utf8")) {
+                        return!([true, bufHandle])
+                      }
+                    }
                   }
                 }
+                _ => return!([false, "BUFERR_INVALID_UNIT", "unit must be bytes or utf8"])
               }
             }
-            _ => return!([false, "BUFERR_INVALID_UNIT", "unit must be bytes or utf8"])
           }
         }
+        _ => return!([false, "BUFERR_INVALID_ARGUMENT", "nUnits must be an integer"])
       }
     } |
 
     method allocBytes(@n) {
-      match n <= 0 {
-        true  => return!([false, "BUFERR_INVALID_CAPACITY", "n must be positive"])
-        false => {
-          match n > 1073741824 {
-            true  => return!([false, "BUFERR_INVALID_CAPACITY", "exceeds platform cap"])
+      match n {
+        i /\ Int => {
+          match i <= 0 {
+            true  => return!([false, "BUFERR_INVALID_CAPACITY", "n must be positive"])
             false => {
-              for (@bufHandle <- Buffer!?(n, "bytes")) {
-                return!([true, bufHandle])
+              match i > 1073741824 {
+                true  => return!([false, "BUFERR_INVALID_CAPACITY", "exceeds platform cap"])
+                false => {
+                  for (@bufHandle <- Buffer!?(i, "bytes")) {
+                    return!([true, bufHandle])
+                  }
+                }
               }
             }
           }
         }
+        _ => return!([false, "BUFERR_INVALID_ARGUMENT", "n must be an integer"])
       }
     } |
 
     method allocUtf8(@n) {
-      match n <= 0 {
-        true  => return!([false, "BUFERR_INVALID_CAPACITY", "n must be positive"])
-        false => {
-          match n > 268435456 {
-            true  => return!([false, "BUFERR_INVALID_CAPACITY", "exceeds platform cap"])
+      match n {
+        i /\ Int => {
+          match i <= 0 {
+            true  => return!([false, "BUFERR_INVALID_CAPACITY", "n must be positive"])
             false => {
-              for (@bufHandle <- Buffer!?(n * 4, "utf8")) {
-                return!([true, bufHandle])
+              match i > 268435456 {
+                true  => return!([false, "BUFERR_INVALID_CAPACITY", "exceeds platform cap"])
+                false => {
+                  for (@bufHandle <- Buffer!?(i * 4, "utf8")) {
+                    return!([true, bufHandle])
+                  }
+                }
               }
             }
           }
         }
+        _ => return!([false, "BUFERR_INVALID_ARGUMENT", "n must be an integer"])
       }
     } |
 
@@ -543,6 +660,34 @@ new Buffer, Allocator, metaP, chunkP, gatherChunks in {
                 }
               }
             }
+          }
+        }
+      }
+    }
+  } |
+
+  // ==================================================================
+  // Module-level helper: drain chunks [lo, hi) — consume each chunk
+  // WITHOUT re-parking, refunding its tuplespace storage.  Used by
+  // clear() and close().
+  //
+  // Awaits each removal before signalling completion (spec §Concurrency
+  // > Metadata-token mutex: "clear/close must await every chunk removal
+  // before re-parking the metadata token, on every exit path" —
+  // otherwise a concurrent read could observe a half-removed range).
+  //
+  // Signals completion by sending Nil on `done`.  The caller re-parks
+  // the metadata token only after receiving on `done`.
+  // ==================================================================
+  contract drainChunks(@privateName, @chunkPName, @lo, @hi, done) = {
+    match hi - lo {
+      0 => done!(Nil)
+      _ => {
+        // Consume chunk `lo` (no re-park).
+        for (@_seg <- @[privateName, chunkPName, lo]) {
+          match hi - lo == 1 {
+            true  => done!(Nil)
+            false => drainChunks!(privateName, chunkPName, lo + 1, hi, *done)
           }
         }
       }
