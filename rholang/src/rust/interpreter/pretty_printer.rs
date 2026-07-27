@@ -975,22 +975,49 @@ mod drive {
     //! The pre-conversion figures also agree with the audit document's
     //! independently obtained 41,840 / 4,242 B per level to within 0.4% / 0.6%.
     //!
-    //! # ★ The differential has teeth — measured, not assumed
+    //! # ★ The differential has teeth — EXECUTED, not remembered
     //!
-    //! `super::differential` was checked by deliberately breaking this module,
-    //! one mutation at a time, and confirming it goes red:
+    //! This table used to be a record: each row had been produced by editing
+    //! this file by hand, running the suite, writing down the outcome, and
+    //! reverting the edit. Nothing re-ran any of them, so "the differential has
+    //! teeth" was a claim about an afternoon.
     //!
-    //! | mutation | caught |
-    //! |---|---|
-    //! | `RecvBindStep`'s `previous_free` forced to 0 (un-sequences the bind fold) | ✔ 2 tests |
-    //! | `CaseStep` drops its interposed `Mutate(AddBoundShift)` | ✔ 2 tests |
-    //! | `EndCatch` caps the fallback too (drops the asymmetry) | ✔ `the_capping_call_sites_are_reproduced` |
-    //! | `Send` renders its channel BEFORE its data | ✔ 4 tests |
-    //! | `New` mutates `bound_shift` before `build_variables` | ✔ 11 tests |
-    //! | `Channel` resets `is_building_channel` after the sub-render | ✔ 2 tests |
-    //! | `Par` pushes its `exprs` un-reversed | ✔ 3 tests |
-    //! | `RecvBindJoin` takes patterns before source | ✔ 5 tests |
-    //! | `ParK`'s category-length array permuted | **not caught — an EQUIVALENT mutant**, see the note at `ParK` |
+    //! Every row is now a call. [`DriveMutation`] names the defect,
+    //! [`with_mutation`] performs it, and
+    //! `super::drive_mutations::the_recorded_mutation_table_is_executable`
+    //! asserts — for each one — that the UNMUTATED drive agrees with the
+    //! recursive twin on a witness (so the witness is a term the differential
+    //! passes today) and that the MUTATED drive disagrees (so the comparison
+    //! separates the defect). Both directions, or a comparator that rejected
+    //! everything would pass.
+    //!
+    //! | mutation | caught | decided by |
+    //! |---|---|---|
+    //! | `RecvBindStep`'s `previous_free` forced to 0 (un-sequences the bind fold) | ✔ | `two_binds_that_bind_different_counts` |
+    //! | `CaseStep` drops its interposed `Mutate(AddBoundShift)` | ✔ | `match_case_with_a_binding_pattern` |
+    //! | `EndCatch` caps the fallback too (drops the asymmetry) | ✔ at all 5 trims | `the_capping_call_sites_are_reproduced`'s sweep |
+    //! | `Send` renders its channel BEFORE its data | ✔ | `send_whose_data_bind` |
+    //! | `New` takes its interval AFTER the `bound_shift` mutation | ✔ | 3 witnesses |
+    //! | `Channel` resets `is_building_channel` after the sub-render | ✔ | `new_name_read_after_a_channel_render` |
+    //! | `Par` pushes its `exprs` un-reversed | ✔ | 2 witnesses |
+    //! | `RecvBindJoin` takes patterns before source | ✔ | 3 witnesses |
+    //! | `New` mutates `bound_shift` before `build_variables` | **EQUIVALENT since `a4c23a58`** | proven + executed at `the_equivalent_mutants_really_are_equivalent` |
+    //! | `ParK`'s category-length array permuted | **EQUIVALENT** | proven at [`render_par_categories`], executed over all 8! permutations |
+    //!
+    //! ## ⚠ Executing the table falsified one of its rows
+    //!
+    //! `New` mutating `bound_shift` before `build_variables` was recorded as
+    //! caught by **11 tests**, and when the row was written it was:
+    //! `build_variables` then read `self.bound_shift + i`. `a4c23a58` changed it
+    //! to `introduced.start + i` — deliberately, so that "the names printed" and
+    //! "the indices marked" have one authority — and in doing so made the two
+    //! orderings observationally identical. Nothing noticed, because nothing
+    //! re-ran the table, and a reader consulting it would have believed eleven
+    //! tests stood between that ordering and a regression when none did.
+    //!
+    //! The row is now classified EQUIVALENT with a proof, and the property it
+    //! was meant to protect is policed by the mutation that still has teeth:
+    //! [`DriveMutation::NewIntervalReadsPostMutationShift`].
     //!
     //! The `New` interval representation ([`super::NewBindRange`]) was measured
     //! the same way, one mutation at a time:
@@ -1092,6 +1119,161 @@ mod drive {
         Channel,
     }
 
+    // -----------------------------------------------------------------------
+    // ★ The recorded mutation table, made EXECUTABLE
+    // -----------------------------------------------------------------------
+
+    /// One deliberate defect in this drive, addressable by name.
+    ///
+    /// # Why this exists
+    ///
+    /// The module documentation above carries a table of nine mutations with a
+    /// "caught / not caught" column. Every one of them was performed BY HAND,
+    /// observed, and reverted. Nothing re-ran them, so the differential's teeth
+    /// were an assertion about an afternoon rather than a property of the code:
+    /// a refactor that quietly stopped the differential from separating one of
+    /// these would leave the table saying it still does.
+    ///
+    /// A guard's obligation is not to re-run history. It is to show that its
+    /// decision procedure rejects the class of behaviour it excludes, on data
+    /// actually in that class. The class here is *this drive, defective*, and
+    /// nothing but the drive can supply a member of it — so the drive supplies
+    /// them, under [`ACTIVE_MUTATION`].
+    ///
+    /// # Why it costs production nothing
+    ///
+    /// [`mutating`] is a `const fn` returning `false` outside `cfg(test)`, so
+    /// every site below is `if false { … }` in a production build and folds
+    /// away before optimisation. There is no runtime switch, no environment
+    /// variable, and no second code path in a shipped binary — the alternative
+    /// branches do not exist in one. What exists in production is exactly what
+    /// existed before, with an `if false` around the mutant half.
+    ///
+    /// `ParK`'s permuted category-length array is deliberately absent from this
+    /// enum. It is an EQUIVALENT mutant, and equivalence is a theorem rather
+    /// than a test outcome; see [`render_par_categories`].
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(super) enum DriveMutation {
+        /// `RecvBindStep`'s `previous_free` forced to 0 — un-sequences the bind
+        /// fold, so a later bind no longer sees the free variables an earlier
+        /// one introduced.
+        RecvBindPreviousFreeZero,
+        /// `CaseStep` drops its interposed `Mutate(AddBoundShift)`, so the
+        /// case's source renders at the pattern's `bound_shift` instead of the
+        /// shifted one.
+        CaseStepDropsInterposedShift,
+        /// `EndCatch` caps the fallback as well as the success value, dropping
+        /// the asymmetry `build_string_from_node` has always had.
+        EndCatchCapsFallback,
+        /// `Send` renders its channel BEFORE its data, so the data elements no
+        /// longer mutate printer state first.
+        SendChannelBeforeData,
+        /// ⚠ **EQUIVALENT since `a4c23a58` — see [`the_equivalent_mutants_really_are_equivalent`].**
+        /// `New` mutates `bound_shift` before `build_variables` reads it. The
+        /// table above recorded this as caught by 11 tests, and it was, until
+        /// `build_variables` stopped reading `bound_shift`.
+        NewMutatesBeforeVariables,
+        /// ★ The mutation that replaces it. The interval is taken AFTER the
+        /// `bound_shift` mutation, so the names printed and the indices marked
+        /// both shift by `bind_count`. This is the ordering the `New` handler's
+        /// "both of these read the PRE-mutation `bound_shift`" comment is about,
+        /// and it is the one that still has teeth.
+        NewIntervalReadsPostMutationShift,
+        /// `Channel` resets `is_building_channel` after its sub-render, instead
+        /// of leaving it set.
+        ChannelResetsFlag,
+        /// `Par` pushes its `exprs` un-reversed, so they pop in reverse order.
+        ParPushesExprsUnreversed,
+        /// `RecvBindJoin` takes its patterns off the value stack before its
+        /// source.
+        RecvBindJoinPatternsFirst,
+    }
+
+    #[cfg(test)]
+    thread_local! {
+        /// The mutation this thread's drives should perform, if any. Thread-local
+        /// so the harness cannot perturb a concurrently running test.
+        static ACTIVE_MUTATION: std::cell::Cell<Option<DriveMutation>> =
+            const { std::cell::Cell::new(None) };
+    }
+
+    /// Is `m` the mutation currently in force?
+    #[cfg(test)]
+    fn mutating(m: DriveMutation) -> bool { ACTIVE_MUTATION.with(|active| active.get() == Some(m)) }
+
+    /// Production: never. `const` so the mutant branches are eliminated rather
+    /// than merely untaken.
+    #[cfg(not(test))]
+    #[inline(always)]
+    const fn mutating(_m: DriveMutation) -> bool { false }
+
+    /// ⚠ TEST ONLY. Run `f` with `m` in force, restoring the previous setting
+    /// even if `f` panics.
+    #[cfg(test)]
+    pub(super) fn with_mutation<T>(m: DriveMutation, f: impl FnOnce() -> T) -> T {
+        struct Restore(Option<DriveMutation>);
+        impl Drop for Restore {
+            fn drop(&mut self) { ACTIVE_MUTATION.with(|active| active.set(self.0)); }
+        }
+        let _restore = ACTIVE_MUTATION.with(|active| Restore(active.replace(Some(m))));
+        f()
+    }
+
+    /// Every mutation, so the harness cannot silently cover fewer than it
+    /// claims. A new variant that is not added here is a compile error at the
+    /// exhaustive `match` below.
+    #[cfg(test)]
+    pub(super) fn mutations_the_differential_must_separate() -> Vec<DriveMutation> {
+        vec![
+            DriveMutation::RecvBindPreviousFreeZero,
+            DriveMutation::CaseStepDropsInterposedShift,
+            DriveMutation::SendChannelBeforeData,
+            DriveMutation::NewIntervalReadsPostMutationShift,
+            DriveMutation::ChannelResetsFlag,
+            DriveMutation::ParPushesExprsUnreversed,
+            DriveMutation::RecvBindJoinPatternsFirst,
+        ]
+    }
+
+    /// Mutations that produce byte-identical output, each with a proof. Asserted
+    /// EQUAL rather than merely unlisted, because "the suite cannot see this"
+    /// and "this is not a defect" have opposite consequences and look the same
+    /// from outside.
+    #[cfg(test)]
+    pub(super) fn mutations_that_are_equivalent() -> Vec<DriveMutation> {
+        vec![DriveMutation::NewMutatesBeforeVariables]
+    }
+
+    /// The one mutation whose witness needs a capping environment, so it is
+    /// decided inside `the_capping_call_sites_are_reproduced`'s child process
+    /// rather than here.
+    #[cfg(test)]
+    pub(super) fn capping_mutation() -> DriveMutation { DriveMutation::EndCatchCapsFallback }
+
+    /// Every mutation exactly once, across the three dispositions. A new variant
+    /// that is not classified is a compile error at the exhaustive `match`.
+    #[cfg(test)]
+    pub(super) fn every_mutation() -> Vec<DriveMutation> {
+        let mut all = mutations_the_differential_must_separate();
+        all.extend(mutations_that_are_equivalent());
+        all.push(capping_mutation());
+        for m in &all {
+            match m {
+                DriveMutation::RecvBindPreviousFreeZero
+                | DriveMutation::CaseStepDropsInterposedShift
+                | DriveMutation::EndCatchCapsFallback
+                | DriveMutation::SendChannelBeforeData
+                | DriveMutation::NewMutatesBeforeVariables
+                | DriveMutation::NewIntervalReadsPostMutationShift
+                | DriveMutation::ChannelResetsFlag
+                | DriveMutation::ParPushesExprsUnreversed
+                | DriveMutation::RecvBindJoinPatternsFirst => {}
+            }
+        }
+        all
+    }
+
     /// A pending unit of work. Every reference borrows the input term (`'a`).
     enum PpWork<'a> {
         /// `_build_string_from_message(node, indent)`
@@ -1186,6 +1368,85 @@ mod drive {
         /// shell that no `Par` can supply.
         #[cfg(test)]
         TestJoinThree,
+    }
+
+    /// Render a `Par`'s already-rendered children, grouped into eight
+    /// categories, separated by `separator`.
+    ///
+    /// # ★ The `lengths` array is PARTITION-INVARIANT, and that is a theorem
+    ///
+    /// The module's mutation table records `ParK`'s category-length array being
+    /// permuted and **not caught**, calling it "an EQUIVALENT mutant". That was
+    /// a claim about the mutant's semantics, asserted rather than established —
+    /// which is worse than an unchecked positive claim, because "the test suite
+    /// cannot see this defect" and "this is not a defect" look identical from
+    /// the outside and have opposite consequences.
+    ///
+    /// It is a theorem, and here is the proof.
+    ///
+    /// Let the non-zero entries of `lengths`, in array order, be
+    /// `l₁ … l_k`, and let `n = Σ lᵢ`. The loop below:
+    ///
+    /// * skips every zero-length group entirely, leaving `prev_non_empty`
+    ///   untouched, so zero entries contribute neither text nor separators;
+    /// * for the `j`-th non-zero group emits `children[next .. next+lⱼ]` in
+    ///   order, interleaved with `lⱼ − 1` separators (the `index != length − 1`
+    ///   guard suppresses the trailing one), and advances `next` by `lⱼ`;
+    /// * emits exactly one separator before every non-zero group after the
+    ///   first (`prev_non_empty`).
+    ///
+    /// So the emitted text is `children[0 .. n]` in index order, with
+    /// `Σⱼ (lⱼ − 1) + (k − 1) = n − k + k − 1 = n − 1` separators — one between
+    /// each adjacent pair and nowhere else. That is `children[0..n].join(sep)`,
+    /// and the expression depends on `lengths` **only through `n`**.
+    ///
+    /// A permutation preserves both the multiset of entries and their sum, so
+    /// it preserves `n`, so it preserves the output. Byte-identically, for every
+    /// input. ∎
+    ///
+    /// Two corollaries worth stating, because they bound the claim:
+    ///
+    /// 1. The equivalence is a property of *this separator discipline* — one
+    ///    string used both between categories and within one. Give any category
+    ///    its own separator and the permutation becomes observable immediately.
+    ///    The grouped form is kept for exactly that reason (it mirrors the
+    ///    recursive body line for line and stays correct under such a change),
+    ///    and this proof is what a future author must re-derive if they make it.
+    /// 2. Equivalence does NOT extend to arbitrary edits of `lengths`. Anything
+    ///    that changes `n` — reading a category twice, dropping one — changes
+    ///    `take(vals, …)` and is caught loudly. Only permutations are equivalent.
+    ///
+    /// `drive_mutations::the_category_partition_is_not_observable` executes the
+    /// theorem over **all 8! = 40,320 permutations** of a corpus of length
+    /// vectors, so "equivalent mutant" is now a checked statement rather than a
+    /// recorded one.
+    pub(super) fn render_par_categories(
+        children: &[String],
+        lengths: [usize; 8],
+        separator: &str,
+    ) -> String {
+        let mut prev_non_empty = false;
+        let mut result = String::new();
+        let mut next = 0usize;
+        for length in lengths {
+            if length != 0 {
+                if prev_non_empty {
+                    result.push_str(separator);
+                }
+                for index in 0..length {
+                    result.push_str(&children[next]);
+                    next += 1;
+                    if index != length - 1 {
+                        result.push_str(separator);
+                    }
+                }
+                // ⚠ The recursive form omits this assignment in the LAST
+                // (connectives) block only. Unobservable: nothing reads the flag
+                // afterwards.
+                prev_non_empty = true;
+            }
+        }
+        result
     }
 
     /// Push a catching sub-render: `EndCatch`, then the guarded work, then
@@ -1328,7 +1589,12 @@ mod drive {
                 indent,
             } => {
                 let bind = &recv.binds[index];
-                pp.free_shift = pp.bound_shift + previous_free;
+                // ⚠ `previous_free` is what SEQUENCES the bind fold: bind `i`
+                // renders at the free level bind `i-1` left behind.
+                pp.free_shift = match mutating(DriveMutation::RecvBindPreviousFreeZero) {
+                    true => pp.bound_shift,
+                    false => pp.bound_shift + previous_free,
+                };
                 pp.bound_shift = 0;
                 pp.free_id = pp.bound_id();
                 pp.base_id = pp.set_base_id();
@@ -1363,7 +1629,9 @@ mod drive {
                     render: OptRender::Message,
                     indent: indent + 1,
                 });
-                work.push(PpWork::Mutate(PpMutation::AddBoundShift(pattern_free)));
+                if !mutating(DriveMutation::CaseStepDropsInterposedShift) {
+                    work.push(PpWork::Mutate(PpMutation::AddBoundShift(pattern_free)));
+                }
                 work.push(PpWork::Node(
                     PpNode::Par(
                         case.pattern
@@ -1525,18 +1793,27 @@ mod drive {
                 work.push(PpWork::Combine(PpKont::SendK { send: s }));
                 // ⚠ `data_str` is bound BEFORE the channel is rendered, so the
                 // data elements mutate printer state first.
-                push_catch(
-                    work,
-                    CatchKind::Message,
-                    PpWork::OptPar {
-                        field: &s.chan,
-                        message: "channel field on Send was None, should be Some",
-                        render: OptRender::Message,
-                        indent: 0,
-                    },
-                );
+                let channel = |work: &mut Vec<PpWork<'a>>| {
+                    push_catch(
+                        work,
+                        CatchKind::Message,
+                        PpWork::OptPar {
+                            field: &s.chan,
+                            message: "channel field on Send was None, should be Some",
+                            render: OptRender::Message,
+                            indent: 0,
+                        },
+                    )
+                };
+                let channel_first = mutating(DriveMutation::SendChannelBeforeData);
+                if !channel_first {
+                    channel(work);
+                }
                 for p in s.data.iter().rev() {
                     push_catch(work, CatchKind::Message, PpWork::Node(PpNode::Par(p), 0));
+                }
+                if channel_first {
+                    channel(work);
                 }
             }
 
@@ -1611,11 +1888,21 @@ mod drive {
                 // produced. Explicit, not incidental;
                 // `a_new_with_a_negative_bind_count_binds_nothing` pins it, and
                 // the `bound_shift` mutation below still takes the RAW count.
+                if mutating(DriveMutation::NewIntervalReadsPostMutationShift) {
+                    pp.bound_shift += n.bind_count;
+                }
                 let introduced = pp.new_bind_range(n.bind_count);
+                if mutating(DriveMutation::NewMutatesBeforeVariables) {
+                    pp.bound_shift += n.bind_count;
+                }
                 let variables = pp.build_variables(introduced);
                 work.push(PpWork::Combine(PpKont::NewK { variables, indent }));
 
-                pp.bound_shift += n.bind_count;
+                if !mutating(DriveMutation::NewMutatesBeforeVariables)
+                    && !mutating(DriveMutation::NewIntervalReadsPostMutationShift)
+                {
+                    pp.bound_shift += n.bind_count;
+                }
                 pp.news_shift_indices.push(introduced);
 
                 work.push(PpWork::Node(
@@ -1711,8 +1998,17 @@ mod drive {
                     for m in p.matches.iter().rev() {
                         work.push(PpWork::Node(PpNode::Match(m), indent));
                     }
-                    for e in p.exprs.iter().rev() {
-                        work.push(PpWork::Node(PpNode::Expr(e), indent));
+                    match mutating(DriveMutation::ParPushesExprsUnreversed) {
+                        true => {
+                            for e in p.exprs.iter() {
+                                work.push(PpWork::Node(PpNode::Expr(e), indent));
+                            }
+                        }
+                        false => {
+                            for e in p.exprs.iter().rev() {
+                                work.push(PpWork::Node(PpNode::Expr(e), indent));
+                            }
+                        }
                     }
                     for n in p.news.iter().rev() {
                         work.push(PpWork::Node(PpNode::New(n), indent));
@@ -2218,7 +2514,7 @@ mod drive {
                     .expect("pretty-printer drive: `EndCatch` with no open catching scope");
                 // ⚠ The fallback is NOT capped. That asymmetry is pre-existing
                 // (`build_string_from_node`) and is reproduced exactly.
-                if !frame.failed {
+                if !frame.failed || mutating(DriveMutation::EndCatchCapsFallback) {
                     let value = one(vals);
                     vals.push(pp.cap(&value));
                 }
@@ -2236,8 +2532,17 @@ mod drive {
             }
 
             PpKont::RecvBindJoin { recv, index } => {
-                let source = one(vals);
-                let patterns = take(vals, recv.binds[index].patterns.len());
+                // ⚠ The source was pushed LAST, so it comes off FIRST.
+                let (source, patterns) = match mutating(DriveMutation::RecvBindJoinPatternsFirst) {
+                    true => {
+                        let patterns = take(vals, recv.binds[index].patterns.len());
+                        (one(vals), patterns)
+                    }
+                    false => {
+                        let source = one(vals);
+                        (source, take(vals, recv.binds[index].patterns.len()))
+                    }
+                };
                 let mut string = patterns.join(", ");
                 if recv.persistent {
                     string.push_str(" <= ");
@@ -2384,32 +2689,16 @@ mod drive {
                 ];
                 let children = take(vals, lengths.iter().sum());
                 let separator = format!(" |\n{}", pp.indent_string().repeat(indent));
-
-                let mut prev_non_empty = false;
-                let mut result = String::new();
-                let mut next = 0usize;
-                for length in lengths {
-                    if length != 0 {
-                        if prev_non_empty {
-                            result.push_str(&separator);
-                        }
-                        for index in 0..length {
-                            result.push_str(&children[next]);
-                            next += 1;
-                            if index != length - 1 {
-                                result.push_str(&separator);
-                            }
-                        }
-                        // ⚠ The recursive form omits this assignment in the
-                        // LAST (connectives) block only. Unobservable: nothing
-                        // reads the flag afterwards.
-                        prev_non_empty = true;
-                    }
-                }
-                vals.push(result);
+                vals.push(render_par_categories(&children, lengths, &separator));
             }
 
             PpKont::ChannelK { par } => {
+                // ⚠ `is_building_channel` is SET, NEVER RESET. See the module
+                // documentation: the recursive form leaves it set on the way
+                // out, and every nested render after this one sees it.
+                if mutating(DriveMutation::ChannelResetsFlag) {
+                    pp.is_building_channel = false;
+                }
                 let str = one(vals);
                 let quoted = if str.len() > 60 {
                     quote_if_not_new(par, str, &pp.news_shift_indices, pp.bound_shift)
@@ -4374,6 +4663,8 @@ mod differential {
             let mut total_ok = 0usize;
             let mut total_panics = 0usize;
             let mut total_fallback_intact = 0usize;
+            let mut mutant_differed_at = 0usize;
+            let mut mutant_agreed_at = 0usize;
             for trim in TRIMS {
                 let output = std::process::Command::new(&exe)
                     .args(["--exact", &test_name, "--nocapture"])
@@ -4401,7 +4692,49 @@ mod differential {
                 total_ok += ok;
                 total_panics += panics;
                 total_fallback_intact += field(&summary, "fallback_intact=");
+                match field(&summary, "mutant_differs=") {
+                    0 => mutant_agreed_at += 1,
+                    _ => mutant_differed_at += 1,
+                }
             }
+
+            // ★ THE EXECUTED REDDENING LEG for `drive`'s `EndCatch` row.
+            //
+            // Everything else in this test asserts the guard is GREEN. That
+            // says nothing about whether it CAN go red: the mutation that makes
+            // it — `EndCatch` capping the fallback as well as the success value
+            // — had only ever been performed by hand, observed, and reverted,
+            // and the row "`EndCatch` caps the fallback too | ✔" was a record of
+            // that afternoon rather than a property of the code.
+            //
+            // `DriveMutation::EndCatchCapsFallback` is the same defect as a
+            // call. It is decided at the SWEEP level because a single trim
+            // cannot speak for the sweep, and the child RECORDS rather than
+            // predicts — predicting which side of the fallback's length a trim
+            // lands on would be re-deriving `Printer::cap`'s policy here instead
+            // of observing it.
+            //
+            // ⚠ MEASURED, and not what a first reading of the boundary suggests.
+            // The mutant is caught at EVERY trim in the sweep, longer ones
+            // included, because `Printer::cap`'s operator arm is
+            // `format!("{}...", &rendered[..floor_boundary_in_range(rendered, n)])`
+            // — not a no-op above the string's length but a PANIC (`&str[..n]`
+            // out of range), and at exactly its length still an appended `...`.
+            // A capped fallback is damaged at any budget. The assertion below
+            // records that measurement rather than the prediction that preceded
+            // it.
+            assert_eq!(
+                mutant_differed_at,
+                TRIMS.len(),
+                "the `EndCatchCapsFallback` mutant survived {mutant_agreed_at} of the {} \
+                 trims in {TRIMS:?} intact. Measured 2026-07-27 it is caught at every one: \
+                 `Printer::cap`'s operator arm damages a fallback at any budget — truncating \
+                 below its {} bytes, panicking above them, appending `...` at exactly them. \
+                 If a trim now agrees, `cap` changed, and the `!frame.failed` guard is no \
+                 longer what keeps the fallback intact at that budget.",
+                TRIMS.len(),
+                FALLBACK.len()
+            );
             // ANTI-VACUITY: the probe set must actually straddle the cap, i.e.
             // some renders must survive and some must be truncated past their
             // own length. A probe set that only ever panicked (or only ever
@@ -4524,7 +4857,45 @@ mod differential {
              `EndCatch` truncated it. Rendered: {spliced}"
         );
 
-        println!("CAP-PROBE trim={trim} ok={ok} panics={panics} fallback_intact=1");
+        // ★ THE EXECUTED REDDENING LEG for the `EndCatch` row of `drive`'s
+        // mutation table. Everything above asserts the guard is GREEN; nothing
+        // asserted it could go red, because the mutation that makes it go red —
+        // capping the fallback too — had only ever been performed by hand.
+        //
+        // `DriveMutation::EndCatchCapsFallback` is that mutation as a call. It
+        // is decided here rather than in `drive_mutations` because it is the one
+        // row whose witness needs a capping ENVIRONMENT, which is exactly why
+        // this test runs in a child process at all.
+        //
+        // Under the mutation, `EndCatch` caps the fallback. For every `TRIM`
+        // shorter than the fallback that is a panic (`&str[..trim]` cannot split
+        // a multi-byte boundary and `Printer::cap` panics on an operator budget
+        // shorter than the string); for a `TRIM` longer than it, the fallback
+        // survives and the two agree. So the leg asserts the disposition
+        // DIFFERS at some trim in the sweep, and the sweep's own trims straddle
+        // the fallback length.
+        let mutated = quietly(|| {
+            let mut pp = PrettyPrinter::new();
+            super::drive::with_mutation(super::drive::capping_mutation(), || {
+                super::drive::drive_splice_probe(&mut pp, &long, &long_after)
+                    .expect("the splice probe's catch frames absorb the error")
+            })
+        });
+        //
+        // The child RECORDS the disposition; the sweep DECIDES. A single trim
+        // cannot decide a claim about a guard that only bites below the
+        // fallback's length, and predicting which side of the boundary a given
+        // trim lands on would be re-deriving `Printer::cap`'s policy here
+        // instead of observing it.
+        let mutant_differs = match &mutated {
+            Err(_) => 1usize,
+            Ok(rendered) => usize::from(!rendered.contains(FALLBACK)),
+        };
+
+        println!(
+            "CAP-PROBE trim={trim} ok={ok} panics={panics} fallback_intact=1 \
+             mutant_differs={mutant_differs}"
+        );
     }
 
     /// Read `name=<usize>` out of the child's summary line.
@@ -4961,5 +5332,505 @@ mod tests {
 
         let target = r#"{"a" : 1, "b" : 2, "c" : 3}"#;
         assert_eq!(result, target);
+    }
+}
+
+// ===========================================================================
+// ★ R3 — the recorded mutation tables, EXECUTED
+// ===========================================================================
+
+#[cfg(test)]
+mod drive_mutations {
+    //! # The differential's teeth, run rather than remembered
+    //!
+    //! [`super::drive`]'s module documentation carries a nine-row table of
+    //! deliberate defects with a "caught / not caught" column. Every row was
+    //! produced by editing this file by hand, running the suite, writing down
+    //! the outcome, and reverting the edit. Nothing re-ran any of them.
+    //!
+    //! That is the shape of an un-failable guard. The claim "the differential
+    //! has teeth" was a claim about an afternoon: a later refactor that stopped
+    //! the differential from separating one of these mutants would leave the
+    //! table asserting that it still does, and the table is what a reader
+    //! consults before deciding a change is safe.
+    //!
+    //! The class of behaviour the differential excludes is *this drive,
+    //! defective*, and nothing but the drive can supply a member of it — so the
+    //! drive supplies them, under [`super::drive::DriveMutation`]. Each row
+    //! below is now a call, not a memory.
+    //!
+    //! ## What each row asserts
+    //!
+    //! For a mutation `m` and a witness term `t`, two things together, because
+    //! either alone is satisfiable by an accident:
+    //!
+    //! * **the control** — the UNMUTATED drive agrees with the recursive twin
+    //!   on `t`, so `t` is a term the differential passes today, and
+    //! * **the leg** — the mutated drive DISAGREES with the recursive twin on
+    //!   `t`, so the comparison the differential performs is one that separates
+    //!   this defect.
+    //!
+    //! A comparator that rejected everything would fail the control; one that
+    //! accepted everything would fail the leg. Both directions, in the shape of
+    //! `rholang/tests/normalize_oracle_provenance.rs::the_provenance_check_can_go_red`.
+    //!
+    //! ## The ninth row is a theorem, not a test
+    //!
+    //! `ParK`'s permuted category-length array is recorded as "not caught — an
+    //! EQUIVALENT mutant". Equivalence is a claim about the mutant's semantics,
+    //! and it was itself unchecked — which is the more dangerous of the two
+    //! readings, because "the suite cannot see this defect" and "this is not a
+    //! defect" are indistinguishable from the outside and have opposite
+    //! consequences. It is proven at [`super::drive::render_par_categories`] and
+    //! executed at [`the_category_partition_is_not_observable`], over every one
+    //! of the 8! = 40,320 permutations.
+
+    use models::rhoapi::expr::ExprInstance;
+    use models::rhoapi::var::VarInstance;
+    use models::rhoapi::{EVar, Expr, Match, MatchCase, New, Par, Receive, ReceiveBind, Send, Var};
+
+    use super::drive::{
+        every_mutation, mutations_that_are_equivalent, mutations_the_differential_must_separate,
+        render_par_categories, with_mutation, DriveMutation,
+    };
+    use super::PrettyPrinter;
+
+    // -----------------------------------------------------------------------
+    // row 9 — the equivalent mutant, as a checked theorem
+    // -----------------------------------------------------------------------
+
+    /// Every permutation of every length vector renders byte-identically, and
+    /// identically to `children.join(separator)`.
+    ///
+    /// This is the executed form of the proof at
+    /// [`super::drive::render_par_categories`]. It is exhaustive in the
+    /// permutation (all 8! of them) and representative in the shape: the length
+    /// vectors below cover the empty partition, a single non-empty category,
+    /// several non-empty categories with zeroes interleaved (the case where
+    /// `prev_non_empty` matters), and every category non-empty.
+    #[test]
+    fn the_category_partition_is_not_observable() {
+        /// Heap's algorithm — every permutation of an 8-element array.
+        fn permutations(mut a: [usize; 8], k: usize, out: &mut Vec<[usize; 8]>) {
+            match k {
+                1 => out.push(a),
+                _ => {
+                    for i in 0..k {
+                        permutations(a, k - 1, out);
+                        match k % 2 {
+                            0 => a.swap(i, k - 1),
+                            _ => a.swap(0, k - 1),
+                        }
+                    }
+                }
+            }
+        }
+
+        let vectors: [[usize; 8]; 6] = [
+            [0, 0, 0, 0, 0, 0, 0, 0],
+            [3, 0, 0, 0, 0, 0, 0, 0],
+            [1, 0, 2, 0, 0, 1, 0, 0],
+            [0, 0, 0, 0, 0, 0, 0, 4],
+            [1, 1, 1, 1, 1, 1, 1, 1],
+            [2, 0, 1, 3, 0, 0, 2, 1],
+        ];
+        let separator = " |\n  ";
+
+        let mut checked = 0usize;
+        for lengths in vectors {
+            let total: usize = lengths.iter().sum();
+            let children: Vec<String> = (0..total).map(|i| format!("c{i}")).collect();
+            let expected = children.join(separator);
+
+            // The join identity itself — the proof's conclusion, not just its
+            // invariance. Without this the theorem could hold vacuously by the
+            // function returning a constant.
+            assert_eq!(
+                render_par_categories(&children, lengths, separator),
+                expected,
+                "the grouped render must equal `children.join(separator)` for {lengths:?}"
+            );
+
+            let mut perms = Vec::with_capacity(40_320);
+            permutations(lengths, 8, &mut perms);
+            assert_eq!(
+                perms.len(),
+                40_320,
+                "Heap's algorithm must emit 8! permutations"
+            );
+            for perm in perms {
+                assert_eq!(
+                    render_par_categories(&children, perm, separator),
+                    expected,
+                    "permuting the category lengths from {lengths:?} to {perm:?} CHANGED the \
+                     render. The mutation table calls this an equivalent mutant; if this \
+                     fires, it is not one, and it is an uncaught defect rather than a \
+                     harmless permutation."
+                );
+                checked += 1;
+            }
+        }
+
+        // N2: the exhaustion actually ran, and on non-degenerate data. A vector
+        // of all zeroes permutes to itself, so without a populated vector this
+        // test would be 40,320 comparisons of "" against "".
+        assert_eq!(checked, 6 * 40_320, "every vector must be exhausted");
+        let populated = vectors
+            .iter()
+            .filter(|v| v.iter().sum::<usize>() > 0)
+            .count();
+        assert!(populated >= 5, "the corpus must be mostly non-degenerate");
+    }
+
+    // -----------------------------------------------------------------------
+    // rows 1-8 — the mutants the differential must separate
+    // -----------------------------------------------------------------------
+
+    fn gint(n: i64) -> Par {
+        Par {
+            exprs: vec![Expr {
+                expr_instance: Some(ExprInstance::GInt(n)),
+            }],
+            ..Default::default()
+        }
+    }
+
+    fn gstring(s: &str) -> Par {
+        Par {
+            exprs: vec![Expr {
+                expr_instance: Some(ExprInstance::GString(s.to_string())),
+            }],
+            ..Default::default()
+        }
+    }
+
+    fn bound_var(level: i32) -> Par {
+        Par {
+            exprs: vec![Expr {
+                expr_instance: Some(ExprInstance::EVarBody(EVar {
+                    v: Some(Var {
+                        var_instance: Some(VarInstance::BoundVar(level)),
+                    }),
+                })),
+            }],
+            ..Default::default()
+        }
+    }
+
+    fn free_var(level: i32) -> Par {
+        Par {
+            exprs: vec![Expr {
+                expr_instance: Some(ExprInstance::EVarBody(EVar {
+                    v: Some(Var {
+                        var_instance: Some(VarInstance::FreeVar(level)),
+                    }),
+                })),
+            }],
+            ..Default::default()
+        }
+    }
+
+    fn bind(source: Par, patterns: Vec<Par>, free_count: i32) -> ReceiveBind {
+        ReceiveBind {
+            patterns,
+            source: Some(source),
+            remainder: None,
+            free_count,
+        }
+    }
+
+    /// The witness corpus. Every mutation must be separated by at least one of
+    /// these, and which one is reported, so a term that stops covering its site
+    /// shows up as a named gap rather than as silence.
+    fn witnesses() -> Vec<(&'static str, Par)> {
+        vec![
+            // Two binds, the first introducing free variables: the ONLY shape
+            // where a sequenced `bound_shift`/`free_shift` differs from a
+            // precomputed one.
+            ("two_binds_that_bind_different_counts", Par {
+                receives: vec![Receive {
+                    binds: vec![
+                        bind(gint(1), vec![free_var(0), free_var(1)], 2),
+                        bind(gint(2), vec![free_var(0)], 1),
+                    ],
+                    body: Some(gstring("body")),
+                    persistent: false,
+                    peek: false,
+                    bind_count: 3,
+                    locally_free: vec![],
+                    connective_used: false,
+                    condition: None,
+                }],
+                ..Default::default()
+            }),
+            // A case whose pattern binds, so the interposed `AddBoundShift`
+            // separates the pattern's level from the source's.
+            ("match_case_with_a_binding_pattern", Par {
+                matches: vec![Match {
+                    target: Some(gint(7)),
+                    cases: vec![MatchCase {
+                        pattern: Some(free_var(0)),
+                        source: Some(bound_var(0)),
+                        free_count: 2,
+                        guard: None,
+                    }],
+                    locally_free: vec![],
+                    connective_used: false,
+                }],
+                ..Default::default()
+            }),
+            // A send whose data move printer state before the channel is read.
+            ("send_whose_data_bind", Par {
+                sends: vec![Send {
+                    chan: Some(bound_var(0)),
+                    data: vec![
+                        Par {
+                            news: vec![New {
+                                bind_count: 2,
+                                p: Some(bound_var(0)),
+                                uri: vec![],
+                                injections: std::collections::BTreeMap::new(),
+                                locally_free: vec![],
+                            }],
+                            ..Default::default()
+                        },
+                        gint(9),
+                    ],
+                    persistent: false,
+                    locally_free: vec![],
+                    connective_used: false,
+                }],
+                ..Default::default()
+            }),
+            // A `New` whose body reads the variables it introduced.
+            ("new_binding_two_names", Par {
+                news: vec![New {
+                    bind_count: 2,
+                    p: Some(Par {
+                        exprs: vec![bound_var(0).exprs[0].clone(), bound_var(1).exprs[0].clone()],
+                        ..Default::default()
+                    }),
+                    uri: vec![],
+                    injections: std::collections::BTreeMap::new(),
+                    locally_free: vec![],
+                }],
+                ..Default::default()
+            }),
+            // Two distinguishable exprs in one category.
+            ("par_with_two_distinct_exprs", Par {
+                exprs: vec![
+                    Expr {
+                        expr_instance: Some(ExprInstance::GInt(1)),
+                    },
+                    Expr {
+                        expr_instance: Some(ExprInstance::GString("z".into())),
+                    },
+                ],
+                ..Default::default()
+            }),
+            // A `New`-bound name used INSIDE a receive whose source is rendered
+            // as a channel first: the `*` prefix is suppressed only while
+            // `is_building_channel` is still set.
+            ("new_name_read_after_a_channel_render", Par {
+                news: vec![New {
+                    bind_count: 1,
+                    p: Some(Par {
+                        receives: vec![Receive {
+                            binds: vec![bind(bound_var(0), vec![free_var(0)], 1)],
+                            body: Some(bound_var(0)),
+                            persistent: false,
+                            peek: false,
+                            bind_count: 1,
+                            locally_free: vec![],
+                            connective_used: false,
+                            condition: None,
+                        }],
+                        ..Default::default()
+                    }),
+                    uri: vec![],
+                    injections: std::collections::BTreeMap::new(),
+                    locally_free: vec![],
+                }],
+                ..Default::default()
+            }),
+            // A bind with two patterns and a source that is distinguishable
+            // from them, so swapping the pop order is observable.
+            ("bind_with_two_patterns_and_a_distinct_source", Par {
+                receives: vec![Receive {
+                    binds: vec![bind(
+                        gstring("SOURCE"),
+                        vec![gstring("P0"), gstring("P1")],
+                        0,
+                    )],
+                    body: Some(gstring("body")),
+                    persistent: false,
+                    peek: false,
+                    bind_count: 0,
+                    locally_free: vec![],
+                    connective_used: false,
+                    condition: None,
+                }],
+                ..Default::default()
+            }),
+        ]
+    }
+
+    /// Render `term` through both public traversing entry points, so a mutation
+    /// visible through only one of them still counts.
+    fn render(term: &Par) -> (String, String) {
+        (
+            PrettyPrinter::new().build_string_from_message(term),
+            PrettyPrinter::new().build_channel_string(term),
+        )
+    }
+
+    fn render_recursive(term: &Par) -> (String, String) {
+        (
+            PrettyPrinter::new().oracle_build_string_from_message(term),
+            PrettyPrinter::new().oracle_build_channel_string(term),
+        )
+    }
+
+    /// ★ The executed mutation table.
+    #[test]
+    fn the_recorded_mutation_table_is_executable() {
+        let corpus = witnesses();
+
+        // The control, first and separately: every witness is a term the
+        // differential passes TODAY. Without this, a "separation" below could be
+        // the drive and the twin having always disagreed on that term.
+        for (what, term) in &corpus {
+            assert_eq!(
+                render(term),
+                render_recursive(term),
+                "the witness `{what}` must be a term the UNMUTATED differential passes, or \
+                 the separations below are not attributable to any mutation"
+            );
+        }
+
+        // …and the mutations must be off by default, so `with_mutation` is what
+        // turns them on rather than the harness merely observing a broken drive.
+        let mut separated_by: Vec<(DriveMutation, Vec<&str>)> = Vec::new();
+        for mutation in mutations_the_differential_must_separate() {
+            let mut witnesses_that_separate: Vec<&str> = Vec::new();
+            for (what, term) in &corpus {
+                let mutated = with_mutation(mutation, || render(term));
+                if mutated != render_recursive(term) {
+                    witnesses_that_separate.push(what);
+                }
+            }
+            separated_by.push((mutation, witnesses_that_separate));
+        }
+
+        let unseparated: Vec<&DriveMutation> = separated_by
+            .iter()
+            .filter(|(_, ws)| ws.is_empty())
+            .map(|(m, _)| m)
+            .collect();
+        assert!(
+            unseparated.is_empty(),
+            "the differential does NOT separate {unseparated:?}. The mutation table in \
+             `drive`'s documentation records every one of these as caught; if a row is no \
+             longer caught, either the drive changed so the mutation is now equivalent — in \
+             which case it needs a proof like `render_par_categories`'s — or the witness \
+             corpus stopped reaching its site. Full report: {separated_by:?}"
+        );
+
+        for (mutation, witnesses) in &separated_by {
+            println!(
+                "  {mutation:?}: separated by {} witness(es) {witnesses:?}",
+                witnesses.len()
+            );
+        }
+
+        // Every mutation is classified exactly once. Without this the two lists
+        // could drift apart and a mutation could quietly belong to neither.
+        let mut classified = every_mutation();
+        let total = classified.len();
+        classified.sort_by_key(|m| format!("{m:?}"));
+        classified.dedup();
+        assert_eq!(
+            classified.len(),
+            total,
+            "a mutation is classified more than once: {classified:?}"
+        );
+    }
+
+    /// ★ **The equivalent mutants, asserted EQUAL rather than merely omitted.**
+    ///
+    /// # `NewMutatesBeforeVariables` — and how a recorded result went stale
+    ///
+    /// The table records this row as **"✔ 11 tests"**, and when it was written
+    /// that was true. `build_variables` then read
+    /// `self.bound_shift + i` (`a4c23a58^`), so moving the `bound_shift`
+    /// mutation ahead of it shifted every printed name by `bind_count`.
+    ///
+    /// `a4c23a58` changed the body to `introduced.start + i` — deliberately, so
+    /// that "the names printed" and "the indices marked" have a single
+    /// authority. That change is right, and it also **silently retired the
+    /// mutation**: `build_variables` now reads `introduced` (captured before
+    /// either ordering diverges) and `bound_id()` (a function of `base_id` and
+    /// `rotation`, not of `bound_shift`), so neither ordering is observable.
+    ///
+    /// Nothing noticed, because nothing re-ran the table. A reader consulting it
+    /// today would believe eleven tests stand between this ordering and a
+    /// regression; none do. That is the entire argument for executing a
+    /// mutation table rather than recording one, and it was found by executing
+    /// this one.
+    ///
+    /// **Proof of equivalence.** Between the two orderings the only difference
+    /// is the value of `pp.bound_shift` during the call to `build_variables`.
+    /// `build_variables(introduced)` evaluates
+    /// `(0..printed_bind_extent(introduced.count)).map(|i| bound_id() ++ (introduced.start + i))`;
+    /// `printed_bind_extent` reads `max_var_count` and its argument, `bound_id`
+    /// reads `base_id` and `rotation`, and `introduced` was computed before the
+    /// mutation in both orderings. None of the three reads `bound_shift`. Every
+    /// other reader of `bound_shift` — the body render, `news_shift_indices` —
+    /// runs after the point at which the two orderings have both applied the
+    /// same `+= bind_count`. So the two drives are observationally identical. ∎
+    ///
+    /// **What replaced it.** The property the row was *meant* to protect — that
+    /// the printed names come from the PRE-mutation interval — is still real,
+    /// and is now policed by [`DriveMutation::NewIntervalReadsPostMutationShift`],
+    /// which moves the mutation ahead of `new_bind_range` itself. That one is in
+    /// the must-separate list above and is caught.
+    #[test]
+    fn the_equivalent_mutants_really_are_equivalent() {
+        let corpus = witnesses();
+        // N2: the corpus reaches a `New` at all, or "identical output" would be
+        // the identity of two drives that never visited the site.
+        let news = corpus
+            .iter()
+            .filter(|(_, term)| reaches_a_new(term))
+            .count();
+        assert!(
+            news >= 3,
+            "the corpus must contain several `New`s for an equivalence claim about the `New` \
+             handler to mean anything; found {news}"
+        );
+
+        for mutation in mutations_that_are_equivalent() {
+            for (what, term) in &corpus {
+                assert_eq!(
+                    with_mutation(mutation, || render(term)),
+                    render(term),
+                    "{mutation:?} is classified EQUIVALENT but changed the render of \
+                     `{what}`. Either the proof in this test's documentation is wrong, or \
+                     the drive changed and this mutation now has teeth — in which case it \
+                     belongs in `mutations_the_differential_must_separate` and the \
+                     differential must be shown to catch it."
+                );
+            }
+            println!(
+                "  {mutation:?}: byte-identical over {} witnesses",
+                corpus.len()
+            );
+        }
+    }
+
+    /// Does this term contain a `New` anywhere the drive will visit?
+    fn reaches_a_new(term: &Par) -> bool {
+        use models::rust::rholang::par_children::reachable_pars;
+        reachable_pars(term).iter().any(|p| !p.news.is_empty())
     }
 }
