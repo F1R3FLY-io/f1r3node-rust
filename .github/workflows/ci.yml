@@ -171,6 +171,24 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # FULL history is REQUIRED, not merely convenient.
+          #
+          # `rholang/tests/normalize_oracle_provenance.rs` re-derives the
+          # recursive oracle twin (`compiler::normalize_recursive`) from git and
+          # compares it byte-for-byte against the sources it cites. The oracle is
+          # what the converted normalizer is differentiated against, so if it
+          # ever drifts TOWARD the machine the differential compares the machine
+          # with something adjusted to agree with it — and every green result it
+          # produces becomes worthless, silently.
+          #
+          # That test FAILS rather than skips when the cited commit is
+          # unreachable, deliberately: a check that quietly passes on a shallow
+          # clone is a check that cannot fail, which is the defect class the
+          # Θ(depth) campaign has now found eight times
+          # (docs/design/audits/theta-depth-traversals-2026-07-26.md §12.5).
+          # With the default depth-1 checkout it would fail on every run.
+          fetch-depth: 0
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@master

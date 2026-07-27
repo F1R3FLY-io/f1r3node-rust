@@ -90,7 +90,9 @@ use crate::rust::interpreter::util::{
 };
 
 // ==========================================================================
-// VERBATIM from `normalize.rs`, lines 83-475, at commit 6ccf71f2.
+// FROM `normalize.rs`, lines 83-475, at commit 6ccf71f2 — byte-identical under the
+// declared rename; re-derived and compared by
+// `rholang/tests/normalize_oracle_provenance.rs`.
 // ==========================================================================
 pub(crate) fn normalize_ann_proc_recursive<'ast>(
     proc: &AnnProc<'ast>,
@@ -467,7 +469,9 @@ pub(crate) fn normalize_ann_proc_recursive<'ast>(
 }
 
 // ==========================================================================
-// VERBATIM from `normalizer/name_normalize_matcher.rs`, lines 16-151, at commit 6ccf71f2.
+// FROM `normalizer/name_normalize_matcher.rs`, lines 16-151, at commit 6ccf71f2 — byte-identical under the
+// declared rename; re-derived and compared by
+// `rholang/tests/normalize_oracle_provenance.rs`.
 // ==========================================================================
 pub(crate) fn normalize_name_recursive<'ast>(
     name: &Name<'ast>,
@@ -607,8 +611,22 @@ pub(crate) fn normalize_name_recursive<'ast>(
 }
 
 // ==========================================================================
-// VERBATIM from `normalizer/collection_normalize_matcher.rs`, lines 23-265, at commit 6ccf71f2.
-// ==========================================================================
+// FROM `normalizer/collection_normalize_matcher.rs`, lines 23-265, at commit 6ccf71f2 — byte-identical under the
+// declared rename; re-derived and compared by
+// `rholang/tests/normalize_oracle_provenance.rs`.
+//
+// ⚠ ONE DECLARED DEVIATION beyond the rename, and the only one in this file:
+// `fold_match_map`'s `remainder` parameter is spelled
+// `Option<models::rhoapi::Var>` where the source spelled it `Option<Var>`.
+// Merging this block with `name_normalize_matcher.rs`'s made the bare name
+// `Var` AMBIGUOUS — `collection_normalize_matcher.rs` resolved it to
+// `models::rhoapi::Var` and `name_normalize_matcher.rs` to
+// `rholang_parser::ast::Var`. It is a type ANNOTATION; no expression, no
+// control flow and no value is touched, and the annotated type is the one the
+// source file's own imports resolved to. It is registered as data in
+// `normalize_oracle_provenance.rs::DECLARED_DEVIATIONS`, so it cannot be
+// widened, and no second deviation can be added, without the test saying so.
+// ===========================================================================
 fn normalize_collection_recursive<'ast>(
     proc: &'ast Collection<'ast>,
     input: CollectVisitInputs,
@@ -854,7 +872,9 @@ fn normalize_collection_recursive<'ast>(
 }
 
 // ==========================================================================
-// VERBATIM from `normalizer/processes/p_collect_normalizer.rs`, lines 13-39, at commit 6ccf71f2.
+// FROM `normalizer/processes/p_collect_normalizer.rs`, lines 13-39, at commit 6ccf71f2 — byte-identical under the
+// declared rename; re-derived and compared by
+// `rholang/tests/normalize_oracle_provenance.rs`.
 // ==========================================================================
 fn normalize_p_collect_recursive<'ast>(
     proc: &'ast Collection<'ast>,
@@ -885,7 +905,9 @@ fn normalize_p_collect_recursive<'ast>(
 }
 
 // ==========================================================================
-// VERBATIM from `normalizer/processes/p_par_normalizer.rs`, lines 10-61, at commit 6ccf71f2.
+// FROM `normalizer/processes/p_par_normalizer.rs`, lines 10-61, at commit 6ccf71f2 — byte-identical under the
+// declared rename; re-derived and compared by
+// `rholang/tests/normalize_oracle_provenance.rs`.
 // ==========================================================================
 fn flatten_par<'ast>(root: &'ast AnnProc<'ast>) -> Vec<&'ast AnnProc<'ast>> {
     let mut result = Vec::new();
@@ -941,7 +963,9 @@ fn normalize_p_par_recursive<'ast>(
 }
 
 // ==========================================================================
-// VERBATIM from `normalizer/processes/p_eval_normalizer.rs`, lines 12-34, at commit 6ccf71f2.
+// FROM `normalizer/processes/p_eval_normalizer.rs`, lines 12-34, at commit 6ccf71f2 — byte-identical under the
+// declared rename; re-derived and compared by
+// `rholang/tests/normalize_oracle_provenance.rs`.
 // ==========================================================================
 fn normalize_p_eval_recursive<'ast>(
     eval_name: &Name<'ast>,
@@ -968,7 +992,9 @@ fn normalize_p_eval_recursive<'ast>(
 }
 
 // ==========================================================================
-// VERBATIM from `normalizer/processes/p_negation_normalizer.rs`, lines 11-55, at commit 6ccf71f2.
+// FROM `normalizer/processes/p_negation_normalizer.rs`, lines 11-55, at commit 6ccf71f2 — byte-identical under the
+// declared rename; re-derived and compared by
+// `rholang/tests/normalize_oracle_provenance.rs`.
 // ==========================================================================
 fn normalize_p_negation_recursive<'ast>(
     arg: &'ast Proc<'ast>,
@@ -1017,7 +1043,9 @@ fn normalize_p_negation_recursive<'ast>(
 }
 
 // ==========================================================================
-// VERBATIM from `normalizer/processes/p_conjunction_normalizer.rs`, lines 13-80, at commit 6ccf71f2.
+// FROM `normalizer/processes/p_conjunction_normalizer.rs`, lines 13-80, at commit 6ccf71f2 — byte-identical under the
+// declared rename; re-derived and compared by
+// `rholang/tests/normalize_oracle_provenance.rs`.
 // ==========================================================================
 fn normalize_p_conjunction_recursive<'ast>(
     left: &'ast AnnProc<'ast>,
@@ -1089,7 +1117,9 @@ fn normalize_p_conjunction_recursive<'ast>(
 }
 
 // ==========================================================================
-// VERBATIM from `normalizer/processes/p_disjunction_normalizer.rs`, lines 13-80, at commit 6ccf71f2.
+// FROM `normalizer/processes/p_disjunction_normalizer.rs`, lines 13-80, at commit 6ccf71f2 — byte-identical under the
+// declared rename; re-derived and compared by
+// `rholang/tests/normalize_oracle_provenance.rs`.
 // ==========================================================================
 fn normalize_p_disjunction_recursive<'ast>(
     left: &'ast AnnProc<'ast>,
@@ -1161,7 +1191,9 @@ fn normalize_p_disjunction_recursive<'ast>(
 }
 
 // ==========================================================================
-// VERBATIM from `normalizer/processes/p_matches_normalizer.rs`, lines 11-53, at commit 6ccf71f2.
+// FROM `normalizer/processes/p_matches_normalizer.rs`, lines 11-53, at commit 6ccf71f2 — byte-identical under the
+// declared rename; re-derived and compared by
+// `rholang/tests/normalize_oracle_provenance.rs`.
 // ==========================================================================
 fn normalize_p_matches_recursive<'ast>(
     left: &'ast AnnProc<'ast>,
@@ -1208,7 +1240,9 @@ fn normalize_p_matches_recursive<'ast>(
 }
 
 // ==========================================================================
-// VERBATIM from `normalizer/processes/p_send_normalizer.rs`, lines 15-85, at commit 6ccf71f2.
+// FROM `normalizer/processes/p_send_normalizer.rs`, lines 15-85, at commit 6ccf71f2 — byte-identical under the
+// declared rename; re-derived and compared by
+// `rholang/tests/normalize_oracle_provenance.rs`.
 // ==========================================================================
 fn normalize_p_send_recursive<'ast>(
     channel: &'ast Name<'ast>,
@@ -1283,7 +1317,9 @@ fn normalize_p_send_recursive<'ast>(
 }
 
 // ==========================================================================
-// VERBATIM from `normalizer/processes/p_method_normalizer.rs`, lines 13-86, at commit 6ccf71f2.
+// FROM `normalizer/processes/p_method_normalizer.rs`, lines 13-86, at commit 6ccf71f2 — byte-identical under the
+// declared rename; re-derived and compared by
+// `rholang/tests/normalize_oracle_provenance.rs`.
 // ==========================================================================
 fn normalize_p_method_recursive<'ast>(
     receiver: &'ast AnnProc<'ast>,
@@ -1361,7 +1397,9 @@ fn normalize_p_method_recursive<'ast>(
 }
 
 // ==========================================================================
-// VERBATIM from `normalizer/processes/p_bundle_normalizer.rs`, lines 14-127, at commit 6ccf71f2.
+// FROM `normalizer/processes/p_bundle_normalizer.rs`, lines 14-127, at commit 6ccf71f2 — byte-identical under the
+// declared rename; re-derived and compared by
+// `rholang/tests/normalize_oracle_provenance.rs`.
 // ==========================================================================
 fn normalize_p_bundle_recursive<'ast>(
     bundle_type: &BundleType,
@@ -1479,7 +1517,9 @@ fn normalize_p_bundle_recursive<'ast>(
 }
 
 // ==========================================================================
-// VERBATIM from `normalizer/processes/p_if_normalizer.rs`, lines 11-88, at commit 6ccf71f2.
+// FROM `normalizer/processes/p_if_normalizer.rs`, lines 11-88, at commit 6ccf71f2 — byte-identical under the
+// declared rename; re-derived and compared by
+// `rholang/tests/normalize_oracle_provenance.rs`.
 // ==========================================================================
 fn normalize_p_if_recursive<'ast>(
     condition: &'ast AnnProc<'ast>,
@@ -1561,7 +1601,9 @@ fn normalize_p_if_recursive<'ast>(
 }
 
 // ==========================================================================
-// VERBATIM from `normalizer/processes/p_match_normalizer.rs`, lines 13-135, at commit 6ccf71f2.
+// FROM `normalizer/processes/p_match_normalizer.rs`, lines 13-135, at commit 6ccf71f2 — byte-identical under the
+// declared rename; re-derived and compared by
+// `rholang/tests/normalize_oracle_provenance.rs`.
 // ==========================================================================
 fn normalize_p_match_recursive<'ast>(
     expression: &'ast AnnProc<'ast>,
@@ -1688,7 +1730,9 @@ fn normalize_p_match_recursive<'ast>(
 }
 
 // ==========================================================================
-// VERBATIM from `normalizer/processes/p_new_normalizer.rs`, lines 14-92, at commit 6ccf71f2.
+// FROM `normalizer/processes/p_new_normalizer.rs`, lines 14-92, at commit 6ccf71f2 — byte-identical under the
+// declared rename; re-derived and compared by
+// `rholang/tests/normalize_oracle_provenance.rs`.
 // ==========================================================================
 fn normalize_p_new_recursive<'ast>(
     decls: &[NameDecl<'ast>],
@@ -1771,7 +1815,9 @@ fn normalize_p_new_recursive<'ast>(
 }
 
 // ==========================================================================
-// VERBATIM from `normalizer/processes/p_contr_normalizer.rs`, lines 19-118, at commit 6ccf71f2.
+// FROM `normalizer/processes/p_contr_normalizer.rs`, lines 19-118, at commit 6ccf71f2 — byte-identical under the
+// declared rename; re-derived and compared by
+// `rholang/tests/normalize_oracle_provenance.rs`.
 // ==========================================================================
 fn normalize_p_contr_recursive<'ast>(
     name: &'ast Name<'ast>,
@@ -1875,7 +1921,9 @@ fn normalize_p_contr_recursive<'ast>(
 }
 
 // ==========================================================================
-// VERBATIM from `normalizer/processes/p_send_sync_normalizer.rs`, lines 11-110, at commit 6ccf71f2.
+// FROM `normalizer/processes/p_send_sync_normalizer.rs`, lines 11-110, at commit 6ccf71f2 — byte-identical under the
+// declared rename; re-derived and compared by
+// `rholang/tests/normalize_oracle_provenance.rs`.
 // ==========================================================================
 fn normalize_p_send_sync_recursive<'ast>(
     channel: &'ast Name<'ast>,
@@ -1979,7 +2027,9 @@ fn normalize_p_send_sync_recursive<'ast>(
 }
 
 // ==========================================================================
-// VERBATIM from `normalizer/processes/p_let_normalizer.rs`, lines 17-366, at commit 6ccf71f2.
+// FROM `normalizer/processes/p_let_normalizer.rs`, lines 17-366, at commit 6ccf71f2 — byte-identical under the
+// declared rename; re-derived and compared by
+// `rholang/tests/normalize_oracle_provenance.rs`.
 // ==========================================================================
 fn normalize_p_let_recursive<'ast>(
     bindings: &'ast smallvec::SmallVec<[LetBinding<'ast>; 1]>,
@@ -2333,7 +2383,9 @@ fn normalize_p_let_recursive<'ast>(
 }
 
 // ==========================================================================
-// VERBATIM from `normalizer/processes/p_input_normalizer.rs`, lines 27-568, at commit 6ccf71f2.
+// FROM `normalizer/processes/p_input_normalizer.rs`, lines 27-568, at commit 6ccf71f2 — byte-identical under the
+// declared rename; re-derived and compared by
+// `rholang/tests/normalize_oracle_provenance.rs`.
 // ==========================================================================
 fn normalize_p_input_recursive<'ast>(
     receipts: &'ast Receipts<'ast>,
@@ -2879,7 +2931,9 @@ fn normalize_p_input_recursive<'ast>(
 }
 
 // ==========================================================================
-// VERBATIM from `normalizer/cost_accounting/recognize.rs`, lines 35-121, at commit 6ccf71f2.
+// FROM `normalizer/cost_accounting/recognize.rs`, lines 35-121, at commit 6ccf71f2 — byte-identical under the
+// declared rename; re-derived and compared by
+// `rholang/tests/normalize_oracle_provenance.rs`.
 // ==========================================================================
 fn recognize_signed_term_recursive<'ast>(
     inner: &'ast AnnProc<'ast>,
@@ -2970,7 +3024,9 @@ fn recognize_signed_join_recursive<'ast>(
 }
 
 // ==========================================================================
-// VERBATIM from `normalizer/cost_accounting/sig.rs`, lines 44-96, at commit 6ccf71f2.
+// FROM `normalizer/cost_accounting/sig.rs`, lines 44-96, at commit 6ccf71f2 — byte-identical under the
+// declared rename; re-derived and compared by
+// `rholang/tests/normalize_oracle_provenance.rs`.
 // ==========================================================================
 fn signature_to_ir_recursive<'ast>(
     sig: &Signature<'ast>,
@@ -3027,7 +3083,9 @@ fn signature_to_native_sig_recursive<'ast>(
 }
 
 // ==========================================================================
-// VERBATIM from `normalizer/cost_accounting/sig.rs`, lines 146-155, at commit 6ccf71f2.
+// FROM `normalizer/cost_accounting/sig.rs`, lines 146-155, at commit 6ccf71f2 — byte-identical under the
+// declared rename; re-derived and compared by
+// `rholang/tests/normalize_oracle_provenance.rs`.
 // ==========================================================================
 fn canon_quote_recursive<'ast>(
     proc: &AnnProc<'ast>,
