@@ -19,6 +19,12 @@ use super::errors::InterpreterError;
 
 /// The message text the `&dyn Any` dispatch produced for a value it did not
 /// recognise. Preserved **verbatim** — see [`PpNode::Unprintable`].
+///
+/// ⚠ No `Par` reaches this any more. The one production construction site was
+/// the `Match` target defect, fixed here; what remains is the explicit
+/// `build_string_from_node(PpNode::Unprintable(UNPRINTABLE_ANY))` escape for a
+/// caller that has something this printer has no rendering for, plus the
+/// `cfg(test)` seeds that exercise the unwind.
 pub const UNPRINTABLE_ANY: &str = "Attempt to print unknown prost::Message type: Any { .. }";
 
 /// The **closed** set of nodes the printer can render.
@@ -36,31 +42,59 @@ pub const UNPRINTABLE_ANY: &str = "Attempt to print unknown prost::Message type:
 /// error**. Adding a printable type to the family now fails to build here
 /// rather than degrading at runtime.
 ///
-/// ## ⚠ There was a live instance, and it is preserved rather than fixed
+/// ## ★ There was a live instance. It is now FIXED (see the byte delta below)
 ///
 /// `_build_string_from_message`'s `Match` arm called
 /// `self.build_string_from_message(&m.target)`, and `m.target` is an
-/// `Option<Par>`, **not** a `Par`. So every `match` term this printer renders
-/// shows its target as
+/// `Option<Par>`, **not** a `Par` — `RhoTypes.proto` declares
+/// `Par target = 1 [(scalapb.field).no_box = true]`, which prost generates as
+/// `Option<Par>`. `Option<Par>` implements no `AsPpNode`, matched no
+/// `downcast_ref` arm before that, and so **every** `match` term this printer
+/// rendered showed its target as
 ///
 /// ```text
 /// match <unprintable: Bug found: Attempt to print unknown prost::Message type: Any { .. }> {
 /// ```
 ///
-/// Making the dispatch closed turns that call site into a type error, which is
-/// exactly what it is for. But **correcting it is a separate, separately
-/// reviewed change**: `build_channel_string` reaches
+/// Making the dispatch closed turned that call site into a type error, which
+/// is exactly what it is for. The correction is now applied: the arm renders
+/// `m.target` through the *same* entry point the author wrote —
+/// `build_string_from_message`, i.e. catching, capping, indent 0 — with the
+/// `Option` projected by the same `.expect` discipline every other required
+/// `Option<Par>` field in this printer uses (`Send::chan`, `Receive::body`,
+/// `Bundle::body`, `New::p`, `MatchCase::pattern`, `MatchCase::source`,
+/// `EMethod::target`).
+///
+/// ### ★ The bytes that changed, and why that needed saying out loud
+///
+/// `build_channel_string` reaches
 /// `SystemDeployPlatformFailure::UnexpectedResult` -> `Display` -> `error_msg`
 /// -> `ProcessedSystemDeploy::Failed`, which is serialized into the block and
 /// compared byte-for-byte in replay validation
-/// (`casper/src/rust/rholang/replay_runtime.rs:745-758`). Changing what a
-/// `match` target prints changes block-resident bytes, and that must not ride
-/// inside a stack-depth conversion.
+/// (`casper/src/rust/rholang/replay_runtime.rs:745-758`), and it is reachable
+/// from untrusted input through `rho:io:stdout`. So this is a
+/// consensus-observable change, and the exact substitution is:
 ///
-/// So the site is spelled [`PpNode::Unprintable`] with the original message,
-/// making the defect **explicit and greppable** instead of accidental, and
-/// `a_match_target_renders_as_an_error_string_and_that_is_pinned` holds the
-/// bytes still.
+/// ```text
+/// -  match <unprintable: Bug found: Attempt to print unknown prost::Message type: Any { .. }> {
+/// +  match <the target, rendered as any other `Par` in a value position> {
+/// ```
+///
+/// Nothing else in a `match` rendering moves: the `{`, the per-case indent,
+/// the case bodies and the closing `}` are produced by the same code as
+/// before. `tests::a_match_target_renders_as_its_target` pins the new bytes,
+/// and `differential::a_match_nested_in_a_send` pins them mid-traversal.
+///
+/// ### ⚠ Consequence: no `Par` can make this printer return `Err` any more
+///
+/// [`PpNode::Unprintable`] was the printer's only error source, and the
+/// `Match` arm was the only thing that constructed one. After this fix nothing
+/// reachable from a `Par` does, so the three `<unprintable…>` fallbacks and
+/// every `EndCatch` unwind are exercised **only** through
+/// `build_string_from_node(PpNode::Unprintable(..))` — which is public and
+/// still supported — and through the `cfg(test)` seeds in [`drive`]. The catch
+/// frames remain the faithful model of the recursive form's `?` and are tested
+/// as such; they are simply no longer reachable from a term.
 pub enum PpNode<'a> {
     Var(&'a Var),
     Send(&'a models::rhoapi::Send),
@@ -338,8 +372,30 @@ impl PrettyPrinter {
             .collect()
     }
 
+    /// How many of a `New`'s `bind_count` names this printer will materialise.
+    ///
+    /// ★ The **single** spelling of the clamp. `bind_count` is an
+    /// attacker-controllable `i32` on a path reachable from untrusted input
+    /// (`rho:io:stdout` -> `build_channel_string`), so every per-name
+    /// allocation a `New` triggers must go through here. Two call sites use
+    /// it — [`PrettyPrinter::build_variables`], which renders the names, and
+    /// the `PpNode::New` descend handler (and its oracle twin), which records
+    /// their `news_shift_indices` — and they must agree, because the printer
+    /// marking a name it never printed is precisely the asymmetry that let an
+    /// 8 GiB `Vec` request hide behind a 128-name display cap.
+    ///
+    /// ⚠ The result may be **negative**, and that is deliberate: a negative
+    /// `bind_count` is representable in the `sint32` the proto declares, and
+    /// `0..negative` is the empty range, so a negative count binds nothing —
+    /// exactly what the unclamped `(0..bind_count)` did. Returning `0` instead
+    /// would be the same value by a longer route; returning `max_var_count`
+    /// would silently invent names.
+    fn new_bind_extent(&self, bind_count: i32) -> i32 {
+        std::cmp::min(self.max_var_count, bind_count)
+    }
+
     fn build_variables(&self, bind_count: i32) -> String {
-        (0..std::cmp::min(self.max_var_count, bind_count))
+        (0..self.new_bind_extent(bind_count))
             .map(|i| format!("{}{}", self.bound_id(), self.bound_shift + i))
             .collect::<Vec<String>>()
             .join(", ")
@@ -586,6 +642,15 @@ mod drive {
     //! mutation runs, then the single child is pushed.
     //! [`PpKont::NewK`] carries the pre-computed `variables` string.
     //!
+    //! ★ Both reads go through [`PrettyPrinter::new_bind_extent`], which
+    //! clamps `bind_count` to `max_var_count`. `introduced_news_shift_idx` used
+    //! to be `(0..n.bind_count).collect()` — unbounded, on a path reachable
+    //! from untrusted input — while `build_variables` was already clamped, so
+    //! a `New` could ask for an 8 GiB `Vec` behind a 128-name display cap.
+    //! Clamping both means the printer records `*`-prefixes for exactly the
+    //! names it renders; see `super::differential::a_new_binds_no_more_names_\
+    //! than_it_prints` for the pinned consequence at `bind_count > 128`.
+    //!
     //! ## 3. `build_match_case`
     //!
     //! [`PpWork::CaseStep`] applies its four mutations, then pushes
@@ -708,15 +773,32 @@ mod drive {
     //!
     //! ---
     //!
-    //! # ⚠ `PpNode::Unprintable` is a live defect, preserved
+    //! # ★ `PpNode::Unprintable` was a live defect. It is fixed, and that
+    //!   moved where the catch machinery is exercised
     //!
-    //! The `Match` arm renders its target as
+    //! The `Match` arm used to render its target as
     //! `build_string_from_node(PpNode::Unprintable(UNPRINTABLE_ANY))`, which
-    //! always errors and is always caught — so **every** `match` term exercises
-    //! the catch machinery, and the `<unprintable: …>` bytes are pinned by
-    //! `tests::a_match_target_renders_as_an_error_string_and_that_is_pinned`.
-    //! See [`super::PpNode`] for why correcting it is a separate,
-    //! separately-reviewed change.
+    //! always errors and is always caught — so **every** `match` term used to
+    //! exercise the catch machinery for free. It now renders `m.target`
+    //! properly (see [`super::PpNode`] for the byte delta), and the consequence
+    //! is structural: `PpNode::Unprintable` is this drive's ONLY `Err`
+    //! source — `descend_expr`'s single `Err` branch renders hex rather than
+    //! propagating, and `build_string_from_unforgeable` is total — so **no
+    //! `Par` can make this drive return `Err` any more**.
+    //!
+    //! What that costs, and how it is paid:
+    //!
+    //! | property | used to be witnessed by | now witnessed by |
+    //! |---|---|---|
+    //! | the drive returns `Err` with no enclosing frame | a bare `Match` | `build_string_from_node(PpNode::Unprintable(..))`, still public |
+    //! | a catch frame truncates its spawned work + values | [`drive_truncation_probe`] | unchanged |
+    //! | a fallback is **spliced** mid-render, not propagated | `differential::a_match_nested_in_a_send` | [`drive_splice_probe`] |
+    //! | `EndCatch` does NOT cap a fallback | the `match` probe in `the_capping_call_sites_are_reproduced` | [`drive_splice_probe`] under the same `TRIM` sweep |
+    //!
+    //! ⚠ The last two are the reason [`drive_splice_probe`] exists. Deleting a
+    //! defect that a test was standing on removes the test's subject; the
+    //! replacement has to be built in the same change or the check silently
+    //! becomes one that cannot fail.
 
     use models::rhoapi::EMethod;
 
@@ -821,6 +903,29 @@ mod drive {
         /// exercise a NON-TRIVIAL unwind.
         #[cfg(test)]
         TestSpawnThenFail(&'a Par),
+        /// ⚠ TEST ONLY. A failing catching region with a rendered sibling on
+        /// **each side**, joined by [`PpKont::TestJoinThree`].
+        ///
+        /// This is the shape `a_match_nested_in_a_send` used to get for free
+        /// from the `Match` target defect: a fallback spliced into the MIDDLE
+        /// of a larger value. Fixing the defect removed every `Par` that can
+        /// produce it, so the shape is constructed directly. See
+        /// [`drive_splice_probe`].
+        #[cfg(test)]
+        TestFailureBetweenSiblings { before: &'a Par, after: &'a Par },
+        /// ⚠ TEST ONLY. [`PpWork::TestFailureBetweenSiblings`] wrapped in ONE
+        /// MORE catching scope, so that **two frames are open simultaneously**
+        /// when the failure happens.
+        ///
+        /// ★ Without this, `catches.last_mut()` and `catches.first_mut()` are
+        /// indistinguishable: every other probe here opens its frames in
+        /// sequence, so there is only ever one on the stack and "unwind to the
+        /// innermost" is a claim about a one-element list. Measured: mutating
+        /// [`run`]'s `last_mut()` to `first_mut()` passed the entire suite
+        /// until this variant existed. See
+        /// `differential::the_unwind_stops_at_the_innermost_open_frame`.
+        #[cfg(test)]
+        TestNestedCatchingFailure { before: &'a Par, after: &'a Par },
     }
 
     /// Post-order continuation: the borrowed shell plus whatever was computed
@@ -842,6 +947,13 @@ mod drive {
         ParK { par: &'a Par, indent: usize },
         ChannelK { par: &'a Par },
         ExprK { expr: &'a Expr },
+
+        /// ⚠ TEST ONLY. Pops exactly three children and joins them with
+        /// `" | "`. Exists so [`PpWork::TestFailureBetweenSiblings`] can put a
+        /// fallback BETWEEN two rendered values without borrowing a production
+        /// shell that no `Par` can supply.
+        #[cfg(test)]
+        TestJoinThree,
     }
 
     /// Push a catching sub-render: `EndCatch`, then the guarded work, then
@@ -1045,6 +1157,31 @@ mod drive {
                 // Pops FIRST, and fails.
                 work.push(PpWork::Node(PpNode::Unprintable(UNPRINTABLE_ANY), 0));
             }
+
+            #[cfg(test)]
+            PpWork::TestFailureBetweenSiblings { before, after } => {
+                work.push(PpWork::Combine(PpKont::TestJoinThree));
+                // Pops THIRD. Guarded, so `EndCatch` caps it on success —
+                // which is what makes this probe decide the SUCCESS side of
+                // the capping asymmetry as well as the fallback side.
+                push_catch(work, CatchKind::Message, PpWork::Node(PpNode::Par(after), 0));
+                // Pops SECOND, and fails: its fallback must land in the MIDDLE
+                // of the three values, not replace them.
+                push_catch(work, CatchKind::Message, PpWork::TestSpawnThenFail(after));
+                // Pops FIRST.
+                push_catch(
+                    work,
+                    CatchKind::Message,
+                    PpWork::Node(PpNode::Par(before), 0),
+                );
+            }
+
+            #[cfg(test)]
+            PpWork::TestNestedCatchingFailure { before, after } => push_catch(
+                work,
+                CatchKind::Message,
+                PpWork::TestFailureBetweenSiblings { before, after },
+            ),
         }
         Ok(())
     }
@@ -1064,6 +1201,74 @@ mod drive {
         sibling: &Par,
     ) -> Result<String, InterpreterError> {
         run(pp, PpWork::TestCatchingFailure(sibling))
+    }
+
+    /// ⚠ TEST ONLY. Drive `before`, then a **failing** catching region, then
+    /// `after`, joined into one value.
+    ///
+    /// ## Why this exists
+    ///
+    /// Two properties were witnessed, before the `Match` target defect was
+    /// fixed, by an ordinary term (`differential::a_match_nested_in_a_send`):
+    ///
+    /// 1. a catch frame's fallback is **spliced in place** — the surrounding
+    ///    render survives and the unwind does not run to the top;
+    /// 2. `EndCatch` caps a **successful** sub-render and does **not** cap a
+    ///    fallback (`differential::the_capping_call_sites_are_reproduced`).
+    ///
+    /// No `Par` can produce a failing catch any more, so both would have become
+    /// checks that cannot fail. This seed reconstructs the shape directly, and
+    /// the two tests above now stand on it.
+    ///
+    /// ⚠ There is deliberately no oracle twin: the recursive form cannot
+    /// express this shape either (that is the same reason the defect was the
+    /// only witness). What the two tests assert against it is therefore
+    /// absolute — the exact spliced string, and the panic disposition under a
+    /// `TRIM` longer than the fallback — not a driver-versus-twin comparison.
+    #[cfg(test)]
+    pub(super) fn drive_splice_probe(
+        pp: &mut PrettyPrinter,
+        before: &Par,
+        after: &Par,
+    ) -> Result<String, InterpreterError> {
+        run(pp, PpWork::TestFailureBetweenSiblings { before, after })
+    }
+
+    /// ⚠ TEST ONLY. [`drive_splice_probe`]'s shape with **one more catching
+    /// scope around it**, so that two frames are open when the failure fires.
+    ///
+    /// ## ★ Why the suite needed this, stated as the measurement that found it
+    ///
+    /// [`run`] unwinds to `catches.last_mut()` — the INNERMOST open frame,
+    /// which is what the recursive form's `?` does. Mutating that to
+    /// `catches.first_mut()` passed all 29 tests: every other probe opens its
+    /// catching scopes in *sequence* (`push_catch` pushes `EndCatch`, the
+    /// guarded item, `BeginCatch`, and the frame is popped by its own
+    /// `EndCatch` before the next `BeginCatch` runs), so `catches` never held
+    /// more than one frame and `first` and `last` were the same element. The
+    /// claim "unwind to the innermost" was a claim about a one-element list.
+    ///
+    /// With two frames open the two spellings separate cleanly:
+    ///
+    /// * `last_mut()` — the inner frame absorbs, its siblings survive, the
+    ///   outer frame closes normally, `catches` empties.
+    /// * `first_mut()` — the OUTER frame absorbs. It truncates the inner
+    ///   frame's `EndCatch` off the work stack, so the inner frame is never
+    ///   closed; the surviving `EndCatch` pops the *wrong* frame, the siblings
+    ///   are lost, and [`run`]'s "catching scope(s) never closed" assertion
+    ///   fires.
+    ///
+    /// ⚠ Nesting also means the outer `EndCatch` sees a **successful** region
+    /// and caps it, so this probe cannot double as the capping decider — that
+    /// stays with the single-layer [`drive_splice_probe`]. One property per
+    /// probe.
+    #[cfg(test)]
+    pub(super) fn drive_nested_catch_probe(
+        pp: &mut PrettyPrinter,
+        before: &Par,
+        after: &Par,
+    ) -> Result<String, InterpreterError> {
+        run(pp, PpWork::TestNestedCatchingFailure { before, after })
     }
 
     // -----------------------------------------------------------------------
@@ -1151,8 +1356,26 @@ mod drive {
 
             PpNode::New(n) => {
                 // Both of these read the PRE-mutation `bound_shift`.
-                let introduced_news_shift_idx: Vec<i32> =
-                    (0..n.bind_count).map(|i| i + pp.bound_shift).collect();
+                //
+                // ★ BOUNDED. `bind_count` is an attacker-controllable `i32` in
+                // a hand-built `Par` and this collect used to be
+                // `(0..n.bind_count)` — a `Vec<i32>` of up to 2^31-1 elements,
+                // i.e. an 8 GiB request, on a path reachable from untrusted
+                // input via `rho:io:stdout`. It is now clamped by exactly the
+                // discipline `build_variables` has always used, so the printer
+                // tracks precisely the names it prints and no more.
+                // `PrettyPrinter::new_bind_extent` is the single spelling of
+                // that clamp, shared with `build_variables`.
+                //
+                // ⚠ NEGATIVE `bind_count` is representable and is NOT an
+                // error here: `min(128, negative)` is negative, `0..negative`
+                // is the EMPTY range, and the result is an empty `Vec` — the
+                // same value the unclamped form produced. Explicit, not
+                // incidental; `a_new_with_a_negative_bind_count_binds_nothing`
+                // pins it.
+                let introduced_news_shift_idx: Vec<i32> = (0..pp.new_bind_extent(n.bind_count))
+                    .map(|i| i + pp.bound_shift)
+                    .collect();
                 let variables = pp.build_variables(n.bind_count);
                 work.push(PpWork::Combine(PpKont::NewK { variables, indent }));
 
@@ -1183,12 +1406,27 @@ mod drive {
                         indent: indent + 1,
                     });
                 }
-                // ⚠ The preserved defect: the target is rendered from an
-                // `Unprintable` node, which always errors and is always caught.
+                // ★ FIXED (was the `Unprintable` defect): the target renders
+                // through the entry point the recursive form named —
+                // `build_string_from_message`, i.e. CATCHING, CAPPED, indent 0
+                // — which is what `push_catch(Message, …)` around a
+                // non-capping `OptPar` is.
+                //
+                // ⚠ `OptPar` and not an eager `.expect` at descend: the
+                // module's `.expect`-position rule. Here the two coincide (the
+                // target is the first thing a `Match` renders, and `OptPar`
+                // pops before every `CaseStep`), so the rule costs nothing and
+                // keeps the site uniform with the other six `Option<Par>`
+                // children.
                 push_catch(
                     work,
                     CatchKind::Message,
-                    PpWork::Node(PpNode::Unprintable(UNPRINTABLE_ANY), 0),
+                    PpWork::OptPar {
+                        field: &m.target,
+                        message: "target field on Match was None, should be Some",
+                        render: OptRender::Message,
+                        indent: 0,
+                    },
                 );
             }
 
@@ -1960,6 +2198,12 @@ mod drive {
             }
 
             PpKont::ExprK { expr } => combine_expr(pp, expr, vals),
+
+            #[cfg(test)]
+            PpKont::TestJoinThree => {
+                let three = take(vals, 3);
+                vals.push(three.join(" | "));
+            }
         }
         Ok(())
     }
@@ -2748,8 +2992,14 @@ impl PrettyPrinter {
             ))
         }
         PpNode::New(n) => {
-            let introduced_news_shift_idx: Vec<i32> =
-                (0..n.bind_count).map(|i| i + self.bound_shift).collect();
+            // ⚠ NOT verbatim, and deliberately so: the ONE edit this body has
+            // taken since it was copied. `(0..n.bind_count)` was an unbounded
+            // `Vec<i32>`; it is clamped by `new_bind_extent`, identically to
+            // `descend_node`'s `PpNode::New`. The twin has to move with the
+            // driver or the differential compares two different computations.
+            let introduced_news_shift_idx: Vec<i32> = (0..self.new_bind_extent(n.bind_count))
+                .map(|i| i + self.bound_shift)
+                .collect();
 
             let result = format!(
                 "new {} in {{\n{}{}",
@@ -2786,19 +3036,24 @@ impl PrettyPrinter {
         PpNode::Match(m) => {
             let result = format!(
                 "match {} {{\n{}{}",
-                // ⚠ FOUND DEFECT, PRESERVED BYTE-FOR-BYTE. This was
-                // `self.oracle_build_string_from_message(&m.target)` — and `m.target`
+                // ⚠ NOT verbatim, and deliberately so: the ONE other edit this
+                // body has taken. The copied line was
+                // `self.build_string_from_message(&m.target)`, and `m.target`
                 // is an `Option<Par>`, which matched no `downcast_ref` arm, so
                 // EVERY `match` term rendered its target as an error string.
-                // The closed `PpNode` dispatch turns that into a type error;
-                // spelling it `Unprintable` keeps the emitted bytes identical
-                // while making the defect explicit and greppable.
+                // The closed `PpNode` dispatch turned that into a type error;
+                // the repair keeps the SAME entry point the copied line named
+                // (`*_build_string_from_message`, catching + capped + indent 0)
+                // and projects the `Option` with the same `.expect` discipline
+                // every other required `Option<Par>` field in this file uses.
                 //
-                // ⚠ FIXING IT IS A SEPARATE, SEPARATELY REVIEWED CHANGE: these
-                // bytes are block-resident and replay-compared
-                // (`replay_runtime.rs:745-758`). See `PpNode`'s docs and
-                // `a_match_target_renders_as_an_error_string_and_that_is_pinned`.
-                self.oracle_build_string_from_node(PpNode::Unprintable(UNPRINTABLE_ANY)),
+                // Changed identically in `descend_node`'s `PpNode::Match`; see
+                // `super::PpNode` for the byte delta and why it needed saying.
+                self.oracle_build_string_from_message(
+                    m.target
+                        .as_ref()
+                        .expect("target field on Match was None, should be Some"),
+                ),
                 self.indent_string().repeat(indent + 1),
                 m.cases.iter().enumerate().fold(
                     Ok(String::new()),
@@ -3099,8 +3354,13 @@ mod differential {
     //! | [`every_node_kind`] | all ten [`PpNode`] variants, each reached through the entry point that actually reaches it |
     //! | [`every_expr_arm`] | all 36 `ExprInstance` arms, including the three re-entrant ones (`ESet`, `EMap`, `EZipper`) and both `wrap_with_braces` shapes |
     //! | [`two_binds_that_bind_different_counts`] | ★ the ONLY shape where a *sequenced* `bound_shift` differs from a precomputed one |
-    //! | [`a_match_nested_in_a_send`] | a catch frame firing MID-traversal, with the fallback spliced into the middle of a larger render |
-    //! | [`the_capping_asymmetry`] | `EndCatch` caps on success and does NOT cap the fallback — run in a child process, because the cap is an environment variable |
+    //! | [`a_match_nested_in_a_send`] | the `Match` target rendered MID-traversal, with siblings on both sides and printer state already moved |
+    //! | [`a_failing_region_is_spliced_not_propagated`] | a catch frame firing mid-render, with the fallback spliced into the middle of a larger value — driven through `drive::drive_splice_probe`, because no `Par` can produce a failing catch any more |
+    //! | [`the_capping_call_sites_are_reproduced`] | `EndCatch` caps on success and does NOT cap the fallback — run in a child process, because the cap is an environment variable |
+    //! | [`a_new_binds_no_more_names_than_it_prints`] | ★ `New::bind_count` is an attacker-controlled `i32`; the per-name allocation is bounded by the same `max_var_count` that bounds what is printed |
+    //! | [`the_clamp_changes_the_star_prefix_past_the_display_cap`] | the byte delta that bound introduces, pinned rather than discovered |
+    //! | [`a_new_with_a_negative_bind_count_binds_nothing`] | a negative `bind_count` is representable; the empty range is a decision |
+    //! | [`a_match_with_no_target_panics_like_every_other_absent_required_field`] | the second behaviour change the `Match` fix carries |
     //!
     //! ## ⚠ Anti-vacuity
     //!
@@ -3259,81 +3519,86 @@ mod differential {
         }
     }
 
-    /// Clamp `New::bind_count` ONLY — the one field whose magnitude the printer
-    /// turns into an allocation rather than into arithmetic.
-    ///
-    /// ⚠ `PpNode::New` computes `(0..n.bind_count).map(|i| i + bound_shift)
-    /// .collect()`, an unbounded `Vec<i32>`, in BOTH forms. `generate_par`
-    /// draws `bind_count` from `any::<i32>()`, so a single draw near
-    /// `i32::MAX` asks for an 8 GiB vector and the differential becomes an
-    /// out-of-memory test. (`build_variables` is capped at `max_var_count =
-    /// 128`; `introduced_news_shift_idx` is not. That asymmetry is
-    /// pre-existing and is NOT touched by this conversion — a normalized `New`
-    /// binds at most as many names as its source text mentions.)
-    ///
-    /// Every other numeric field is left RAW, which is the point of this
-    /// corpus: `free_count`, `MatchCase::free_count` and the var levels still
-    /// overflow, and the two forms must agree about that.
-    fn bound_new_bind_counts(par: &mut Par) {
-        for send in &mut par.sends {
-            if let Some(chan) = &mut send.chan {
-                bound_new_bind_counts(chan);
-            }
-            for d in &mut send.data {
-                bound_new_bind_counts(d);
-            }
-        }
-        for receive in &mut par.receives {
-            for bind in &mut receive.binds {
-                for p in &mut bind.patterns {
-                    bound_new_bind_counts(p);
-                }
-                if let Some(source) = &mut bind.source {
-                    bound_new_bind_counts(source);
-                }
-            }
-            if let Some(body) = &mut receive.body {
-                bound_new_bind_counts(body);
-            }
-        }
-        for new in &mut par.news {
-            new.bind_count = new.bind_count.rem_euclid(4);
-            if let Some(p) = &mut new.p {
-                bound_new_bind_counts(p);
-            }
-            for injected in new.injections.values_mut() {
-                bound_new_bind_counts(injected);
-            }
-        }
-        for e in &mut par.exprs {
-            if let Some(ExprInstance::ENotBody(ENot { p: Some(p) })) = &mut e.expr_instance {
-                bound_new_bind_counts(p);
-            }
-        }
-        for m in &mut par.matches {
-            if let Some(target) = &mut m.target {
-                bound_new_bind_counts(target);
-            }
-            for case in &mut m.cases {
-                if let Some(pattern) = &mut case.pattern {
-                    bound_new_bind_counts(pattern);
-                }
-                if let Some(source) = &mut case.source {
-                    bound_new_bind_counts(source);
-                }
-            }
-        }
-        for bundle in &mut par.bundles {
-            if let Some(body) = &mut bundle.body {
-                bound_new_bind_counts(body);
-            }
-        }
-        for c in &mut par.connectives {
-            if let Some(ConnectiveInstance::ConnNotBody(p)) = &mut c.connective_instance {
-                bound_new_bind_counts(p);
-            }
-        }
-    }
+    // ⚠ RETIRED, NOT DELETED — `bound_new_bind_counts`, below, is commented out
+    // rather than removed because it is the *measured evidence* for the defect
+    // it worked around, and that evidence should stay next to the fix.
+    //
+    // It clamped `New::bind_count` in the RAW corpus and nothing else. It
+    // existed because `PpNode::New` computed
+    // `(0..n.bind_count).map(|i| i + bound_shift).collect()` — an UNBOUNDED
+    // `Vec<i32>`, in both forms — while `build_variables` was already clamped
+    // to `max_var_count = 128`. `generate_par` draws `bind_count` from
+    // `any::<i32>()`, so one draw near `i32::MAX` asked for an 8 GiB vector and
+    // turned `the_two_forms_agree_even_where_the_arithmetic_overflows` into an
+    // out-of-memory test. That is the practical reachability argument for the
+    // defect: a property test found it by accident.
+    //
+    // Both forms now clamp through `PrettyPrinter::new_bind_extent`, so the raw
+    // corpus can carry a raw `bind_count` again — which is strictly MORE
+    // coverage than the helper allowed, since `bind_count` is now compared at
+    // the magnitudes that used to be unreachable. The helper has no remaining
+    // caller; keeping it live would re-hide exactly the shapes the fix opened.
+    //
+    // fn bound_new_bind_counts(par: &mut Par) {
+    //     for send in &mut par.sends {
+    //         if let Some(chan) = &mut send.chan {
+    //             bound_new_bind_counts(chan);
+    //         }
+    //         for d in &mut send.data {
+    //             bound_new_bind_counts(d);
+    //         }
+    //     }
+    //     for receive in &mut par.receives {
+    //         for bind in &mut receive.binds {
+    //             for p in &mut bind.patterns {
+    //                 bound_new_bind_counts(p);
+    //             }
+    //             if let Some(source) = &mut bind.source {
+    //                 bound_new_bind_counts(source);
+    //             }
+    //         }
+    //         if let Some(body) = &mut receive.body {
+    //             bound_new_bind_counts(body);
+    //         }
+    //     }
+    //     for new in &mut par.news {
+    //         new.bind_count = new.bind_count.rem_euclid(4);
+    //         if let Some(p) = &mut new.p {
+    //             bound_new_bind_counts(p);
+    //         }
+    //         for injected in new.injections.values_mut() {
+    //             bound_new_bind_counts(injected);
+    //         }
+    //     }
+    //     for e in &mut par.exprs {
+    //         if let Some(ExprInstance::ENotBody(ENot { p: Some(p) })) = &mut e.expr_instance {
+    //             bound_new_bind_counts(p);
+    //         }
+    //     }
+    //     for m in &mut par.matches {
+    //         if let Some(target) = &mut m.target {
+    //             bound_new_bind_counts(target);
+    //         }
+    //         for case in &mut m.cases {
+    //             if let Some(pattern) = &mut case.pattern {
+    //                 bound_new_bind_counts(pattern);
+    //             }
+    //             if let Some(source) = &mut case.source {
+    //                 bound_new_bind_counts(source);
+    //             }
+    //         }
+    //     }
+    //     for bundle in &mut par.bundles {
+    //         if let Some(body) = &mut bundle.body {
+    //             bound_new_bind_counts(body);
+    //         }
+    //     }
+    //     for c in &mut par.connectives {
+    //         if let Some(ConnectiveInstance::ConnNotBody(p)) = &mut c.connective_instance {
+    //             bound_new_bind_counts(p);
+    //         }
+    //     }
+    // }
 
     /// The generator the string-equality property runs over.
     fn tamed_par(depth: usize) -> BoxedStrategy<Par> {
@@ -3428,9 +3693,16 @@ mod differential {
         /// ⚠ This is the only place the differential can distinguish "both
         /// panicked" from "both returned", so it is also the only place that
         /// covers the shapes `tame` normalises away.
+        ///
+        /// ★ `bind_count` is now drawn RAW too. It used to be clamped by
+        /// `bound_new_bind_counts` (retired above), because the unbounded
+        /// `introduced_news_shift_idx` turned a draw near `i32::MAX` into an
+        /// 8 GiB allocation. Both forms clamp through `new_bind_extent` now, so
+        /// this property covers `bind_count` at magnitudes — including negative
+        /// ones — that the workaround had to exclude.
         #[test]
         fn the_two_forms_agree_even_where_the_arithmetic_overflows(
-            term in generate_par(4).prop_map(|mut p| { bound_new_bind_counts(&mut p); p })
+            term in generate_par(4)
         ) {
             let driven = quietly(|| PrettyPrinter::new().build_string_from_message(&term));
             let recursive = quietly(|| PrettyPrinter::new().oracle_build_string_from_message(&term));
@@ -4028,12 +4300,211 @@ mod differential {
     }
 
     // -----------------------------------------------------------------------
+    // ★ `New::bind_count` is attacker-controlled, and it used to be an
+    //   unbounded allocation
+    // -----------------------------------------------------------------------
+
+    /// `New::bind_count` is a `sint32` an attacker controls in a hand-built
+    /// `Par`, and the printer is reachable from untrusted input through
+    /// `rho:io:stdout` -> `build_channel_string`. `PpNode::New` used to compute
+    /// `(0..n.bind_count).map(|i| i + bound_shift).collect::<Vec<i32>>()`, so a
+    /// `bind_count` near `i32::MAX` requested ~8 GiB **before** any cap applied
+    /// — while `build_variables`, on the very next line, had been clamped to
+    /// `max_var_count = 128` all along.
+    ///
+    /// ## What is asserted, and why it is not a timing or an OOM test
+    ///
+    /// The allocation is not directly observable, but its **length** is:
+    /// `news_shift_indices` is exactly the vector that was allocated. So the
+    /// assertion is `news_shift_indices.len() <= max_var_count`, taken at a
+    /// `bind_count` small enough (1,000) that the unclamped form allocates
+    /// harmlessly and merely reports the wrong length. Reverting the fix fails
+    /// this in microseconds, with no memory pressure and no flakiness — an OOM
+    /// test would prove the same thing by destabilising the machine.
+    ///
+    /// `i32::MAX` is then exercised as well, because "bounded" has to mean
+    /// bounded at the boundary; under the fix it allocates 128 `i32`s.
+    #[test]
+    fn a_new_binds_no_more_names_than_it_prints() {
+        let printer_cap = PrettyPrinter::new().max_var_count;
+        assert_eq!(
+            printer_cap, 128,
+            "the display cap moved; this test's derivation of the byte delta below assumes 128"
+        );
+
+        for bind_count in [1_000i32, 100_000, i32::MAX] {
+            let term = new_par(bind_count, gint(0));
+
+            let mut driven = PrettyPrinter::new();
+            let driven_out = driven.build_string_from_message(&term);
+            let mut recursive = PrettyPrinter::new();
+            let recursive_out = recursive.oracle_build_string_from_message(&term);
+
+            assert_eq!(
+                driven_out, recursive_out,
+                "DIFFERENTIAL FAILED (bind_count = {bind_count}): the clamp was applied to \
+                 one form and not the other"
+            );
+            assert_eq!(
+                driven.news_shift_indices.len(),
+                printer_cap as usize,
+                "the driver recorded {} `news_shift_indices` for a `New` binding \
+                 {bind_count} names — the per-name allocation is NOT bounded by \
+                 `max_var_count`",
+                driven.news_shift_indices.len()
+            );
+            assert_eq!(
+                recursive.news_shift_indices.len(),
+                printer_cap as usize,
+                "the recursive twin recorded {} `news_shift_indices` for a `New` binding \
+                 {bind_count} names — the twin's clamp did not move with the driver's, so \
+                 the differential is comparing two different computations",
+                recursive.news_shift_indices.len()
+            );
+            // ANTI-VACUITY: the fixture really does ask for more names than the
+            // cap, so `len() == cap` is a clamp and not a coincidence.
+            assert!(
+                bind_count > printer_cap,
+                "a fixture at bind_count = {bind_count} cannot exhibit a clamp at \
+                 {printer_cap}"
+            );
+        }
+    }
+
+    /// ★ THE BYTE DELTA the clamp introduces, pinned rather than discovered.
+    ///
+    /// Clamping `introduced_news_shift_idx` is not free: `news_shift_indices`
+    /// is read back by `is_new_var`, which decides the `*` prefix on a bound
+    /// variable. For a single `New` with `bind_count > max_var_count`, a
+    /// variable occupying slot `>= bound_shift + 128` used to be marked as
+    /// new-bound and now is not.
+    ///
+    /// ## Why this is the right trade, stated so a reviewer can disagree
+    ///
+    /// `build_variables` renders only the first 128 names, so at
+    /// `bind_count = 200` the printed `new` already declares `a0 .. a127` and
+    /// the body already refers to `a199`, which no declaration in the rendered
+    /// text introduces. The `*` on such a variable asserted "this name came
+    /// from a `new`" about a name the same render had declined to print. The
+    /// clamp makes the two agree: the printer marks exactly the names it
+    /// prints. The alternative — keeping the marking exact by storing the
+    /// contiguous range `[bound_shift, bound_shift + bind_count)` instead of
+    /// materialising it — is byte-preserving and strictly better, but it
+    /// changes the type of the `pub news_shift_indices` field and is therefore
+    /// a separate, separately-reviewed change.
+    ///
+    /// ⚠ Reachable: `new x1, ..., x129 in { ... }` is legal Rholang, so this
+    /// delta is not confined to hand-built terms.
+    #[test]
+    fn the_clamp_changes_the_star_prefix_past_the_display_cap() {
+        let cap = PrettyPrinter::new().max_var_count; // 128
+
+        // Slot `cap` — i.e. de Bruijn level `bind_count - cap - 1` — is the
+        // FIRST slot the clamp stops marking.
+        let bind_count = cap + 1; // 129
+        let inside_cap = new_par(bind_count, bound_var(bind_count - 1)); // slot 0
+        let past_cap = new_par(bind_count, bound_var(0)); // slot 128
+
+        let inside = PrettyPrinter::new().build_string_from_message(&inside_cap);
+        let past = PrettyPrinter::new().build_string_from_message(&past_cap);
+
+        assert!(
+            inside.contains("*x0"),
+            "a variable INSIDE the display cap lost its `*` prefix — the clamp is cutting \
+             more than the names past `max_var_count`. Rendered: {inside}"
+        );
+        assert!(
+            past.contains("x128") && !past.contains("*x128"),
+            "a variable PAST the display cap still carries a `*` prefix, so the clamp did \
+             not take effect where this test says it does. Rendered: {past}"
+        );
+        // ANTI-VACUITY: the two fixtures differ ONLY in the referenced level,
+        // so the differing `*` really is attributable to the slot.
+        assert_ne!(
+            inside, past,
+            "the two fixtures render identically, so this test cannot locate the delta"
+        );
+        // And the twin agrees, at both slots.
+        assert_eq!(
+            inside,
+            PrettyPrinter::new().oracle_build_string_from_message(&inside_cap),
+            "DIFFERENTIAL FAILED (star prefix inside the cap)"
+        );
+        assert_eq!(
+            past,
+            PrettyPrinter::new().oracle_build_string_from_message(&past_cap),
+            "DIFFERENTIAL FAILED (star prefix past the cap)"
+        );
+    }
+
+    /// ⚠ A NEGATIVE `bind_count` is representable — the proto declares
+    /// `sint32 bindCount`, which prost generates as `i32` — and it is now
+    /// explicit rather than incidental.
+    ///
+    /// `new_bind_extent` returns `min(128, negative) = negative`, `0..negative`
+    /// is the EMPTY range, so a negative `bind_count` introduces no names and
+    /// no `news_shift_indices`. That is **the same value the unclamped form
+    /// produced**, so the clamp does not change this case; the point of pinning
+    /// it is that "empty range" is a decision, and a future `as usize` or
+    /// `.max(0)` on that expression would silently turn it into a 4 GiB
+    /// allocation or a panic instead.
+    ///
+    /// `bound_shift += bind_count` still runs with the raw value and still
+    /// moves `bound_shift` DOWNWARD — that is shared arithmetic, untouched by
+    /// this fix, and it is asserted here so the two behaviours are not
+    /// conflated.
+    #[test]
+    fn a_new_with_a_negative_bind_count_binds_nothing() {
+        for bind_count in [-1i32, -128, -1_000_000] {
+            let term = new_par(bind_count, gint(0));
+
+            let mut driven = PrettyPrinter::new();
+            let driven_out = driven.build_string_from_message(&term);
+            let mut recursive = PrettyPrinter::new();
+            let recursive_out = recursive.oracle_build_string_from_message(&term);
+
+            assert_eq!(
+                driven_out, recursive_out,
+                "DIFFERENTIAL FAILED (bind_count = {bind_count})"
+            );
+            // No names printed between `new` and `in`.
+            assert_eq!(
+                driven_out, "new  in {\n  0\n}",
+                "a negative `bind_count` did not render as binding zero names"
+            );
+            assert!(
+                driven.news_shift_indices.is_empty(),
+                "a negative `bind_count` introduced {} shift indices",
+                driven.news_shift_indices.len()
+            );
+            // The arithmetic is NOT clamped, and that is deliberate.
+            assert_eq!(
+                driven.bound_shift, bind_count,
+                "`bound_shift` did not take the raw (unclamped) `bind_count`; the clamp is \
+                 supposed to bound the ALLOCATION, not the arithmetic"
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
     // the error paths
     // -----------------------------------------------------------------------
 
-    /// A `Match` nested inside a `Send`'s data: the catch frame opens and fires
-    /// **mid-traversal**, and its fallback is spliced into the middle of a
-    /// larger render rather than replacing the whole thing.
+    /// A `Match` nested inside a `Send`'s data: the target is rendered
+    /// **mid-traversal**, with printer state already moved by the siblings
+    /// before it and with siblings still to come after it.
+    ///
+    /// ## ⚠ What this test used to be, and why it changed
+    ///
+    /// Until the `Match` target defect was fixed, this fixture's purpose was
+    /// the opposite: the `Match` target *always* failed, so this was the
+    /// witness that a catch frame fires mid-traversal and that its fallback is
+    /// spliced into the middle of a larger render rather than replacing it.
+    /// No `Par` can produce a failing catch any more, so that half moved to
+    /// [`a_failing_region_is_spliced_not_propagated`], which drives the shape
+    /// directly through `drive::drive_splice_probe`. What is left here is the
+    /// other half, now the positive claim: the target renders **correctly**
+    /// in that same mid-traversal position.
     #[test]
     fn a_match_nested_in_a_send() {
         let term = Par {
@@ -4075,19 +4546,119 @@ mod differential {
         agree("a_match_nested_in_a_send", &term);
 
         let printed = PrettyPrinter::new().build_string_from_message(&term);
-        // ★ THE CATCH ACTUALLY FIRED, and it fired in the MIDDLE.
+        // ★ THE TARGET IS RENDERED, in the middle, and the siblings survive.
         assert!(
-            printed.contains("<unprintable: Bug found: Attempt to print unknown prost::Message"),
-            "the `Match` target's catch did not fire; rendered: {printed}"
+            printed.contains("match 2 {"),
+            "the `Match` target did not render as its target (`2`) mid-traversal; \
+             rendered: {printed}"
         );
         assert!(
-            !printed.starts_with("<unprintable"),
-            "the fallback replaced the WHOLE render instead of one sub-render; the catch \
-             frame is unwinding too far. Rendered: {printed}"
+            !printed.contains("<unprintable"),
+            "a sub-render still fails inside an ordinary term — after the `Match` target \
+             fix no `Par` should be able to make this printer produce a fallback. \
+             Rendered: {printed}"
         );
         assert!(
             printed.contains("1, match") && printed.contains(", 5"),
-            "the siblings around the failing sub-render were lost; rendered: {printed}"
+            "the siblings around the `match` sub-render were lost; rendered: {printed}"
+        );
+        // ANTI-VACUITY: the target's rendering is decided by the TARGET, not by
+        // some constant. The same fixture with a different target must print a
+        // different `match` head — otherwise `contains("match 2 {")` above would
+        // pass for a printer that hard-coded it.
+        let mut other = term.clone();
+        other.sends[0].data[1].matches[0].target = Some(gstring("a different target"));
+        let other_printed = PrettyPrinter::new().build_string_from_message(&other);
+        assert!(
+            other_printed.contains("match \"a different target\" {"),
+            "the `match` head does not track its target; rendered: {other_printed}"
+        );
+    }
+
+    /// ⚠ A SECOND behaviour change the `Match` target fix carries, recorded so
+    /// it is a decision and not a surprise: a `Match` whose `target` is `None`
+    /// used to render an error string, and now **panics**.
+    ///
+    /// ## Why `.expect` and not a fallback
+    ///
+    /// `RhoTypes.proto` declares `Par target = 1 [(scalapb.field).no_box =
+    /// true]`, exactly as it declares `New::p`, `Send::chan`, `Bundle::body`
+    /// and `Receive::body` — all of which prost generates as `Option<Par>` and
+    /// all of which this printer has always projected with `.expect`. A
+    /// `Match::target` that took `unwrap_or_default()` would be the only
+    /// required field in the file that silently renders `Nil` for a malformed
+    /// term, which is the same class of silent fallback the closed `PpNode`
+    /// dispatch was introduced to eliminate.
+    ///
+    /// So the panic surface is not new — it is one arm wider on a printer that
+    /// already panics for every other absent required field. The message is the
+    /// file's standard `"<field> field on <message> was None, should be Some"`.
+    ///
+    /// ⚠ Reachability is worth stating plainly: a normalizer never emits
+    /// `target: None`, so no deploy source reaches this. A hand-built or
+    /// protobuf-decoded `Par` can. See the report accompanying this change.
+    #[test]
+    fn a_match_with_no_target_panics_like_every_other_absent_required_field() {
+        let no_target = Par {
+            matches: vec![Match {
+                target: None,
+                cases: vec![],
+                locally_free: vec![],
+                connective_used: false,
+            }],
+            ..Default::default()
+        };
+
+        let driven = quietly(|| PrettyPrinter::new().build_string_from_message(&no_target));
+        let recursive =
+            quietly(|| PrettyPrinter::new().oracle_build_string_from_message(&no_target));
+        assert_eq!(
+            driven, recursive,
+            "the driver and the recursive twin take different dispositions on an absent \
+             `Match::target`"
+        );
+        assert_eq!(
+            driven,
+            Err(String::from("target field on Match was None, should be Some")),
+            "an absent `Match::target` no longer panics with the file's standard message"
+        );
+
+        // ANTI-VACUITY: the SAME fixture with a target present must NOT panic,
+        // so the `Err` above is attributable to the absent field and not to
+        // something else in the fixture.
+        let with_target = Par {
+            matches: vec![Match {
+                target: Some(gint(1)),
+                cases: vec![],
+                locally_free: vec![],
+                connective_used: false,
+            }],
+            ..Default::default()
+        };
+        assert!(
+            quietly(|| PrettyPrinter::new().build_string_from_message(&with_target)).is_ok(),
+            "the fixture panics even with a target present, so the absent-target assertion \
+             above proves nothing"
+        );
+
+        // And this is the same discipline as its siblings — a `New` with no
+        // `p` panics too, which is what "like every other absent required
+        // field" means.
+        let no_p = Par {
+            news: vec![New {
+                bind_count: 1,
+                p: None,
+                uri: vec![],
+                injections: Default::default(),
+                locally_free: vec![],
+            }],
+            ..Default::default()
+        };
+        assert_eq!(
+            quietly(|| PrettyPrinter::new().build_string_from_message(&no_p)),
+            Err(String::from("p field on New was None, should be Some")),
+            "the printer's pre-existing `.expect` discipline for absent required fields \
+             moved, so `Match::target` is no longer consistent with it"
         );
     }
 
@@ -4122,6 +4693,122 @@ mod differential {
         );
     }
 
+    /// The fallback of a failed region is **spliced in place**: the values
+    /// rendered before and after it survive, and the unwind stops at the
+    /// innermost frame instead of running to the top.
+    ///
+    /// ## ⚠ Why this is a `cfg(test)` seed and not a term
+    ///
+    /// `a_match_nested_in_a_send` used to prove this with an ordinary `Send`,
+    /// because the `Match` target defect made every `match` fail. Fixing the
+    /// defect removed the last `Par`-expressible `Err`, so the property would
+    /// otherwise have become a check that cannot fail — it would have had no
+    /// subject at all. `drive::drive_splice_probe` reconstructs the shape:
+    /// `before`, a failing catching region, `after`, joined into one value.
+    ///
+    /// The claim is an exact string, not a `contains`: a fallback that
+    /// propagated one frame too far would still *contain* the fallback text.
+    #[test]
+    fn a_failing_region_is_spliced_not_propagated() {
+        let before = gstring("BEFORE");
+        let after = gstring("AFTER");
+        let mut printer = PrettyPrinter::new();
+        let rendered = super::drive::drive_splice_probe(&mut printer, &before, &after)
+            .expect("the probe's catch frames should have absorbed the error");
+
+        assert_eq!(
+            rendered,
+            concat!(
+                "\"BEFORE\" | ",
+                "<unprintable: Bug found: Attempt to print unknown prost::Message type: ",
+                "Any { .. }>",
+                " | \"AFTER\""
+            ),
+            "the fallback was not spliced in place — either a sibling was lost (the unwind \
+             ran past its own frame) or the fallback's own bytes moved"
+        );
+        // ANTI-VACUITY: all three positions are distinguishable, so an
+        // assertion about the MIDDLE one is really about the middle one.
+        assert!(
+            rendered.starts_with("\"BEFORE\"") && rendered.ends_with("\"AFTER\""),
+            "the probe's siblings are not at the ends, so 'spliced in the middle' is not \
+             what this fixture measures. Rendered: {rendered}"
+        );
+        assert!(
+            !rendered.contains("MUST NOT APPEAR") && !rendered.contains("must be truncated"),
+            "the failed region's spawned work or pending value survived: {rendered}"
+        );
+    }
+
+    /// The unwind must stop at the **innermost** open catching scope — the
+    /// recursive form's `?` returns to its nearest enclosing catching entry
+    /// point, not to the outermost one.
+    ///
+    /// ## ★ This test exists because the claim was previously unfalsifiable
+    ///
+    /// `run` unwinds to `catches.last_mut()`. Mutating that to
+    /// `catches.first_mut()` passed all 29 tests in this file, because every
+    /// other probe opens its catching scopes in sequence — `push_catch` puts
+    /// `EndCatch`, the guarded item and `BeginCatch` on the work stack together,
+    /// so a frame is always closed before the next is opened, and `catches`
+    /// never held more than one element. `first` and `last` of a one-element
+    /// list are the same element, so the assertion could not fail.
+    ///
+    /// `drive::drive_nested_catch_probe` opens two frames at once. The
+    /// distinguishing observations, both asserted below:
+    ///
+    /// * the siblings inside the outer region **survive** — unwinding to the
+    ///   outer frame truncates them away;
+    /// * the drive completes at all — unwinding to the outer frame leaves the
+    ///   inner frame open, and `run`'s "catching scope(s) never closed"
+    ///   assertion fires.
+    #[test]
+    fn the_unwind_stops_at_the_innermost_open_frame() {
+        const FALLBACK: &str =
+            "<unprintable: Bug found: Attempt to print unknown prost::Message type: Any { .. }>";
+
+        let before = gstring("BEFORE");
+        let after = gstring("AFTER");
+
+        let rendered = quietly(|| {
+            let mut printer = PrettyPrinter::new();
+            super::drive::drive_nested_catch_probe(&mut printer, &before, &after)
+                .expect("the probe's catch frames should have absorbed the error")
+        });
+        let rendered = rendered.unwrap_or_else(|payload| {
+            panic!(
+                "the nested-catch probe PANICKED ({payload}) instead of completing. The \
+                 unwind is not stopping at the innermost open frame: absorbing at an OUTER \
+                 frame truncates the inner frame's `EndCatch` off the work stack, so the \
+                 inner scope is never closed."
+            )
+        });
+
+        assert_eq!(
+            rendered,
+            format!("\"BEFORE\" | {FALLBACK} | \"AFTER\""),
+            "the unwind did not stop at the innermost open frame — the siblings inside the \
+             OUTER catching scope were truncated away with the inner failure"
+        );
+
+        // ANTI-VACUITY: two frames really are open when the failure fires.
+        // Without that, `first_mut()` and `last_mut()` are the same element and
+        // everything above passes for either. The single-layer probe is the
+        // control: it renders the same string with only ONE frame open, so a
+        // difference in disposition between the two is attributable to nesting.
+        let single = quietly(|| {
+            let mut printer = PrettyPrinter::new();
+            super::drive::drive_splice_probe(&mut printer, &before, &after)
+                .expect("the single-layer probe's catch frame absorbs the error")
+        });
+        assert_eq!(
+            single.as_deref(),
+            Ok(format!("\"BEFORE\" | {FALLBACK} | \"AFTER\"").as_str()),
+            "the single-layer control disagrees with the nested probe, so the nested probe's \
+             result is not attributable to the nesting"
+        );
+    }
+
     // -----------------------------------------------------------------------
     // the capping call sites
     // -----------------------------------------------------------------------
@@ -4150,6 +4837,25 @@ mod differential {
     /// length. The fallback is 81 bytes, so `n = 100` and `n = 200` decide the
     /// fallback's capping, and the shorter `n` decide the successful sub-renders'.
     ///
+    /// ## ⚠ The fallback decider had to move, or it would have stopped deciding
+    ///
+    /// It used to be an ordinary term — a `match` beside a long sibling, whose
+    /// target *always* failed because of the `Match` target defect. Fixing that
+    /// defect removed the last `Par` that can make a catch frame fail, so the
+    /// probe kept running and stopped proving anything: with no failed frame,
+    /// `EndCatch`'s `!frame.failed` guard is unreachable and a mutation
+    /// deleting it is an equivalent mutant. That is exactly the failure mode
+    /// this file has already hit twice (a prefix-truncation comparison that a
+    /// real mutation passed, and a child process that ran zero tests).
+    ///
+    /// So the fallback side is now decided by `drive::drive_splice_probe`,
+    /// which constructs a failing catching region between two rendered
+    /// siblings, and is swept over the same `TRIM` values. The claim is
+    /// twofold: it must not panic (a capped 81-byte fallback panics for every
+    /// `TRIM > 81`), and the fallback must survive **in full** inside the
+    /// spliced value (a capped fallback is truncated for every `TRIM < 81`).
+    /// Between them the two cover the whole sweep.
+    ///
     /// ## Why a child process
     ///
     /// `Printer::output_capped()` reads `PRETTY_PRINTER_OUTPUT_TRIM_AFTER` from
@@ -4169,6 +4875,11 @@ mod differential {
         // Spans the fallback's 81 bytes on both sides, so both the
         // successful-sub-render and the fallback call sites are decided.
         const TRIMS: [i32; 5] = [4, 8, 40, 100, 200];
+        /// The bytes `EndCatch` must NOT cap. Spelled out rather than
+        /// `format!`-ed from an error so that a change to the error's `Display`
+        /// shows up here as a failure instead of silently re-deriving.
+        const FALLBACK: &str =
+            "<unprintable: Bug found: Attempt to print unknown prost::Message type: Any { .. }>";
 
         let module = module_path!()
             .split_once("::")
@@ -4180,6 +4891,7 @@ mod differential {
             let exe = std::env::current_exe().expect("current_exe");
             let mut total_ok = 0usize;
             let mut total_panics = 0usize;
+            let mut total_fallback_intact = 0usize;
             for trim in TRIMS {
                 let output = std::process::Command::new(&exe)
                     .args(["--exact", &test_name, "--nocapture"])
@@ -4206,6 +4918,7 @@ mod differential {
                 let panics: usize = field(&summary, "panics=");
                 total_ok += ok;
                 total_panics += panics;
+                total_fallback_intact += field(&summary, "fallback_intact=");
             }
             // ANTI-VACUITY: the probe set must actually straddle the cap, i.e.
             // some renders must survive and some must be truncated past their
@@ -4216,6 +4929,25 @@ mod differential {
                 "the capping probe never straddled the cap: {total_ok} value(s) and \
                  {total_panics} panic(s) across {TRIMS:?}. It cannot decide where `cap` is \
                  called."
+            );
+            // ANTI-VACUITY for the FALLBACK side: the child reports one intact
+            // fallback per `TRIM`, so a child that skipped the splice probe is
+            // caught here rather than passing silently.
+            assert_eq!(
+                total_fallback_intact,
+                TRIMS.len(),
+                "the splice probe reported {total_fallback_intact} intact fallback(s) across \
+                 {} trims — the fallback side of the capping asymmetry was not decided",
+                TRIMS.len()
+            );
+            // ANTI-VACUITY for the SWEEP: at least one `TRIM` must exceed the
+            // fallback's own length, or "capping the fallback would panic" is
+            // vacuously true and the sweep cannot detect the mutation.
+            assert!(
+                TRIMS.iter().any(|t| *t as usize > FALLBACK.len()),
+                "no probed TRIM exceeds the fallback's {} bytes, so capping it would never \
+                 panic and this sweep cannot decide the `!frame.failed` guard: {TRIMS:?}",
+                FALLBACK.len()
             );
             return;
         }
@@ -4246,10 +4978,12 @@ mod differential {
                     ..Default::default()
                 },
             ),
-            // ★ The fallback decider: the `match` target's catch always fires,
-            // and the long sibling keeps the WHOLE render longer than every
-            // probed `trim` so that only the fallback's own length is in
-            // question.
+            // A `match` beside a long sibling. This was the FALLBACK decider
+            // while the `Match` target defect stood; now that the target
+            // renders, its short target render ("1") is a SUCCESS-side probe
+            // that panics for every `trim > 1` — which is why it still earns
+            // its place in the straddle. The fallback side moved to the splice
+            // probe below.
             (
                 "a match beside a long sibling",
                 Par {
@@ -4282,7 +5016,33 @@ mod differential {
                  documentation for why the disposition, not the string, is the observable."
             );
         }
-        println!("CAP-PROBE trim={trim} ok={ok} panics={panics}");
+
+        // ★ THE FALLBACK DECIDER. `EndCatch` caps a SUCCESSFUL sub-render and
+        // must NOT cap a fallback. No `Par` can make a catch frame fail any
+        // more, so the shape is driven directly. Both siblings are long, so the
+        // success-side caps cannot panic and the ONLY thing this probe's
+        // disposition can be reporting is the fallback's.
+        let long_after = gstring(&"z".repeat(400));
+        let spliced = quietly(|| {
+            let mut pp = PrettyPrinter::new();
+            super::drive::drive_splice_probe(&mut pp, &long, &long_after)
+                .expect("the splice probe's catch frames absorb the error")
+        });
+        let spliced = spliced.unwrap_or_else(|payload| {
+            panic!(
+                "at {TRIM}={trim} the spliced render PANICKED ({payload}) — `EndCatch` capped \
+                 the {}-byte fallback, which `&str[..{trim}]` cannot do. The `!frame.failed` \
+                 guard is gone.",
+                FALLBACK.len()
+            )
+        });
+        assert!(
+            spliced.contains(FALLBACK),
+            "at {TRIM}={trim} the fallback did not survive INTACT inside the spliced render — \
+             `EndCatch` truncated it. Rendered: {spliced}"
+        );
+
+        println!("CAP-PROBE trim={trim} ok={ok} panics={panics} fallback_intact=1");
     }
 
     /// Read `name=<usize>` out of the child's summary line.
@@ -4409,47 +5169,127 @@ mod tests {
     use crate::rust::interpreter::pretty_printer::PrettyPrinter;
     use crate::rust::interpreter::test_utils::utils::collection_proc_visit_inputs_and_env;
 
-    /// ★ A FOUND DEFECT, PINNED — DO NOT "FIX" IT HERE.
+    /// ★ THE REPLACEMENT PIN for a fixed defect.
     ///
-    /// `_build_string_from_message`'s `Match` arm calls
+    /// `_build_string_from_message`'s `Match` arm used to call
     /// `self.build_string_from_message(&m.target)`, and `m.target` is an
-    /// `Option<Par>`, **not** a `Par`. `Option<Par>` matches no `downcast_ref`
-    /// arm, so the dispatch falls to its final `else` and every `match` term
-    /// this printer renders shows its target as an error string.
+    /// `Option<Par>`, **not** a `Par` (`RhoTypes.proto` declares
+    /// `Par target = 1 [(scalapb.field).no_box = true]`, which prost generates
+    /// as `Option<Par>`). `Option<Par>` matched no `downcast_ref` arm, so the
+    /// dispatch fell to its final `else` and **every** `match` term this
+    /// printer rendered showed its target as
     ///
-    /// This test exists so the bytes are a *decision* rather than an accident,
-    /// and so the closed `PpNode` dispatch that replaces `&dyn Any` can be
-    /// proven byte-neutral against them.
+    /// ```text
+    /// match <unprintable: Bug found: Attempt to print unknown prost::Message type: Any { .. }> {
+    /// ```
     ///
-    /// ⚠ **Correcting the defect is a SEPARATE, separately-reviewed change.**
-    /// `build_channel_string` reaches
+    /// Its predecessor,
+    /// `a_match_target_renders_as_an_error_string_and_that_is_pinned`, held
+    /// those bytes so the closed-`PpNode` conversion could be proven
+    /// byte-neutral against them. That job is done; this test replaces it
+    /// rather than deleting it, so the behaviour is never unpinned.
+    ///
+    /// ⚠ These bytes are consensus-observable: `build_channel_string` reaches
     /// `SystemDeployPlatformFailure::UnexpectedResult` -> `Display` ->
     /// `error_msg` -> `ProcessedSystemDeploy::Failed`, which is serialized into
     /// the block and compared **byte-for-byte in replay validation**
-    /// (`casper/src/rust/rholang/replay_runtime.rs:745-758`). Changing what a
-    /// `match` target prints therefore changes block-resident bytes, and that
-    /// must not ride inside a stack-depth conversion.
+    /// (`casper/src/rust/rholang/replay_runtime.rs:745-758`), and the printer
+    /// is reachable from untrusted input through `rho:io:stdout`.
+    ///
+    /// ## The claim, in two parts
+    ///
+    /// 1. an ABSOLUTE pin, derived by hand: `match {target} {\n  \n}` with the
+    ///    target rendered in full;
+    /// 2. a COMPOSITIONAL identity — the target renders exactly as the same
+    ///    `Par` renders on its own, which is the precise sense in which it is
+    ///    now "a `Par` position like any other". A stub that special-cased the
+    ///    target would satisfy (1) for one fixture and fail (2).
     #[test]
-    fn a_match_target_renders_as_an_error_string_and_that_is_pinned() {
-        use models::rhoapi::{Match, Par};
-        // No cases: the pin is about the TARGET, and a case body would make it
-        // brittle against unrelated changes to case rendering.
-        let m = Match {
-            target: Some(Par::default()),
-            cases: vec![],
-            locally_free: vec![],
-            connective_used: false,
-        };
-        let mut printer = PrettyPrinter::new();
+    fn a_match_target_renders_as_its_target() {
+        use models::rhoapi::expr::ExprInstance;
+        use models::rhoapi::{Expr, Match, Par, Send};
+
+        fn gint(i: i64) -> Par {
+            Par {
+                exprs: vec![Expr {
+                    expr_instance: Some(ExprInstance::GInt(i)),
+                }],
+                ..Default::default()
+            }
+        }
+
+        fn no_cases(target: Par) -> Match {
+            // No cases: the pin is about the TARGET, and a case body would
+            // make it brittle against unrelated changes to case rendering.
+            Match {
+                target: Some(target),
+                cases: vec![],
+                locally_free: vec![],
+                connective_used: false,
+            }
+        }
+
+        // (1) THE ABSOLUTE PIN. Derived, not transcribed: the target is a
+        // one-expression `Par` holding `GInt(42)`, which renders "42"; `MatchK`
+        // emits `"match " + target + " {\n" + indent_string().repeat(0 + 1)`
+        // and then `"\n" + indent_string().repeat(0) + "}"`, and the empty case
+        // list contributes nothing between them.
         assert_eq!(
-            printer.build_string_from_message(&m),
-            concat!(
-                "match <unprintable: Bug found: Attempt to print unknown ",
-                "prost::Message type: Any { .. }> {\n  \n}"
-            ),
+            PrettyPrinter::new().build_string_from_message(&no_cases(gint(42))),
+            "match 42 {\n  \n}",
             "the `Match` target rendering moved. These bytes reach block-resident, \
              replay-compared error messages; see this test's documentation."
         );
+
+        // ANTI-VACUITY: the defect's bytes are gone, and the target is not
+        // being swallowed into the empty-`Par` rendering either.
+        let rendered = PrettyPrinter::new().build_string_from_message(&no_cases(gint(42)));
+        assert!(
+            !rendered.contains("<unprintable"),
+            "the `Match` target is still rendering as an error string: {rendered}"
+        );
+        assert!(
+            rendered.contains("42"),
+            "the `Match` target was not rendered at all: {rendered}"
+        );
+
+        // (2) THE COMPOSITIONAL IDENTITY, over targets of increasing shape —
+        // a ground, a structured `Send` (so the target is genuinely traversed
+        // rather than matched by some ground-only shortcut), and the empty
+        // `Par`, whose "Nil" is the one rendering that could be mistaken for a
+        // stub.
+        let targets = vec![
+            gint(42),
+            gint(-7),
+            Par {
+                sends: vec![Send {
+                    chan: Some(gint(1)),
+                    data: vec![gint(2), gint(3)],
+                    persistent: false,
+                    locally_free: vec![],
+                    connective_used: false,
+                }],
+                ..Default::default()
+            },
+            Par::default(),
+        ];
+        // ANTI-VACUITY: at least one target must render to something OTHER
+        // than a bare literal, or (2) is only re-testing (1).
+        assert!(
+            targets
+                .iter()
+                .any(|t| PrettyPrinter::new().build_string_from_message(t).len() > 4),
+            "every target in the compositional corpus is a short literal"
+        );
+        for target in targets {
+            let standalone = PrettyPrinter::new().build_string_from_message(&target);
+            assert_eq!(
+                PrettyPrinter::new().build_string_from_message(&no_cases(target)),
+                format!("match {standalone} {{\n  \n}}"),
+                "the `Match` target does not render the way the same `Par` renders on \
+                 its own — it is no longer 'a `Par` position like any other'"
+            );
+        }
     }
 
     //ground tests
