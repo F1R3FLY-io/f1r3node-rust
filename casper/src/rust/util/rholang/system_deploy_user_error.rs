@@ -26,11 +26,34 @@ pub enum SystemDeployPlatformFailure {
     ConsumeFailed,
 }
 
+/// Render a system deploy's unexpected result for
+/// [`SystemDeployUserError::error_message`].
+///
+/// ★ **This is a consensus render.** Its bytes become
+/// `ProcessedSystemDeploy::Failed { error_msg }` in the block, and
+/// `ReplayRuntimeOps::replay_system_deploy_internal` compares them for byte
+/// equality against the string the replaying validator computes. A difference
+/// is `ReplayFailure::system_deploy_error_mismatch` — a rejected block — so
+/// every input to this function must come from the block, and nothing here may
+/// read the process environment.
+///
+/// It used to build the printer with `PrettyPrinter::new()`, which trims every
+/// node of the render — the finished string *and* each sub-render inside a
+/// catching scope — to `PRETTY_PRINTER_OUTPUT_TRIM_AFTER`. Two validators with
+/// different settings of that operator-tunable variable therefore produced
+/// different `error_message` bytes for the same failing system deploy. It now
+/// builds the printer with `PrettyPrinter::for_consensus()`, whose budget is a
+/// compile-time constant.
+/// `casper/tests/system_deploy_error_message_determinism.rs` is the gate.
+///
+/// The other two arms were already environment-independent and are unchanged:
+/// `[]` is a literal, and the many-`Par` arm formats with `Debug`, which the
+/// printer's budget does not reach.
 fn show_seq_par(pars: &[Par]) -> String {
     match pars {
         [] => "Nil".to_string(),
         [single] => {
-            let mut pretty_printer = PrettyPrinter::new();
+            let mut pretty_printer = PrettyPrinter::for_consensus();
             pretty_printer.build_channel_string(single)
         }
         _ => format!(
