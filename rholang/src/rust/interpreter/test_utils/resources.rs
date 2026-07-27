@@ -10,6 +10,7 @@ use rspace_plus_plus::rspace::rspace::{RSpace, RSpaceStore};
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 use rspace_plus_plus::rspace::shared::lmdb_dir_store_manager::MB;
 use rspace_plus_plus::rspace::shared::rspace_store_manager::mk_rspace_store_manager;
+use shared::rust::test_scratch;
 use tempfile::Builder;
 
 use crate::rust::interpreter::external_services::ExternalServices;
@@ -22,14 +23,25 @@ use crate::rust::interpreter::system_processes::Definition;
 use crate::rust::interpreter::{ollama_service::OllamaConfig, openai_service::OpenAIConfig};
 use crate::RhoRuntimeImpl;
 
-pub fn mk_temp_dir(prefix: &str) -> PathBuf {
-    let temp_dir = Builder::new()
-        .prefix(prefix)
-        .tempdir()
-        .expect("Failed to create temp dir");
-    temp_dir.keep()
-}
+/// Creates a temporary directory that outlives this call.
+///
+/// The previous body built a `TempDir` and immediately called `TempDir::keep()`, which
+/// detaches the guard and leaks the directory **forever** — the identical defect that made
+/// casper's shared LMDB environment accumulate 285 directories / 824 MB of `tmpfs` in 145
+/// seconds of a single test run.
+///
+/// The caller genuinely wants a directory that outlives this scope, so the fix is not a
+/// different destructor but a different owner: [`shared::rust::test_scratch`] removes the
+/// directory with an `atexit` hook at normal process exit, and with a `flock`-proved reaper
+/// from the next process when this one is killed. See that module for the full argument.
+pub fn mk_temp_dir(prefix: &str) -> PathBuf { test_scratch::acquire(prefix).to_path_buf() }
 
+/// Runs `f` with a temporary directory that is removed when this call returns.
+///
+/// **Correct as written, and deliberately left alone**: the `TempDir` lives in a genuinely
+/// scoped local, so its `Drop` really does run here. It is the contrast that makes the point
+/// about [`mk_temp_dir`] above — a `TempDir` is the right tool exactly when the directory's
+/// lifetime is a *scope*, and the wrong tool the moment it is asked to outlive one.
 pub fn with_temp_dir<F, R>(prefix: &str, f: F) -> R
 where F: FnOnce(&Path) -> R {
     let temp_dir = Builder::new()
@@ -41,7 +53,6 @@ where F: FnOnce(&Path) -> R {
     let result = f(temp_dir.path());
 
     // TempDir will be dropped here and automatically cleaned up
-    // unless we've decided to manually persist it
     result
 }
 

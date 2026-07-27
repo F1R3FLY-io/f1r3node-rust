@@ -1022,8 +1022,18 @@ impl TestNode {
 
         // Use shared RSpace stores to ensure all nodes in the test can access the same RSpace history/roots
         // This is required for ReportingCasper to access the committed roots from block processing
-        let new_storage_dir =
-            crate::rust::test_utils::util::rholang::resources::copy_storage(storage_dir);
+        //
+        // `storage_dir` is `GenesisContext::storage_directory`, which genesis_builder sets to
+        // `resources::get_shared_lmdb_path()` — the shared environment itself. It is carried on
+        // `TestNode::data_dir` for logging and is never opened as a store: the manager built
+        // just below goes to the shared environment regardless of what is passed here.
+        //
+        // This used to be `resources::copy_storage(storage_dir)`, which made a **full
+        // recursive copy of the entire shared LMDB environment for every TestNode** — every
+        // other test's data included — into a directory that was then leaked and never read.
+        // The twin at casper/tests/helper/test_node.rs never copied; it just took the shared
+        // path. Reconciled to the twin's behaviour, which deletes both the copy and the leak.
+        let new_storage_dir = storage_dir;
         // Create a store manager with shared RSpace scope but isolated block/DAG stores for test isolation
         let mut kvm = crate::rust::test_utils::util::rholang::resources::mk_test_rnode_store_manager_with_dual_scope(
             crate::rust::test_utils::util::rholang::resources::generate_scope_id(),

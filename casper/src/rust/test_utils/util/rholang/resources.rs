@@ -13,7 +13,6 @@ use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresenta
 use block_storage::rust::dag::block_metadata_store::BlockMetadataStore;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use dashmap::DashSet;
-use lazy_static::lazy_static;
 use models::rhoapi::Par;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::BlockMessage;
@@ -23,10 +22,11 @@ use rholang::rust::interpreter::rho_runtime::RhoHistoryRepository;
 use rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 use rspace_plus_plus::rspace::shared::lmdb_dir_store_manager::{
-    Db, LmdbDirStoreManager, LmdbEnvConfig, MB,
+    Db, LmdbDirStoreManager, LmdbEnvConfig, GB, MB,
 };
 use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
-use tempfile::{Builder, TempDir};
+use shared::rust::test_scratch::{self, ProcessScratchDir};
+use tempfile::Builder;
 use uuid::Uuid;
 
 use crate::rust::casper::{CasperShardConf, CasperSnapshot, OnChainCasperState};
@@ -38,26 +38,44 @@ use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 
 static CACHED_GENESIS: OnceLock<Arc<Mutex<Option<GenesisContext>>>> = OnceLock::new();
 
-// Shared LMDB environment for all tests.
-//
-// This single environment is shared across all tests to avoid exhausting OS resources.
-// Test isolation is achieved through scoped database names (UUID prefixes) rather than
-// separate environments. This allows hundreds of tests to run efficiently without
-// hitting file descriptor or LMDB environment limits.
-//
-// Resource Management:
-// - Single LMDB environment instead of 300+ separate environments
-// - Automatic cleanup when TempDir is dropped (at program exit)
-// - Works efficiently with parallel test execution (test-threads=4-8 recommended)
-lazy_static! {
-    static ref SHARED_LMDB_ENV: (PathBuf, TempDir) = {
-        let temp_dir = Builder::new()
-            .prefix("casper-shared-lmdb-")
-            .tempdir()
-            .expect("Failed to create shared LMDB temp dir");
-        let path = temp_dir.path().to_path_buf();
-        (path, temp_dir)
-    };
+/// Prefix every scratch directory of this suite carries, and the prefix the reaper in
+/// [`shared::rust::test_scratch`] sweeps. Kept identical in both copies of this module so one
+/// process reaps the other's leftovers.
+const SHARED_LMDB_PREFIX: &str = "casper-shared-lmdb-";
+
+/// The one LMDB environment this test process uses.
+///
+/// # Why the environment is shared
+///
+/// The comment this replaced said the sharing exists "to avoid exhausting OS resources
+/// (file descriptors, LMDB environments)". **That rationale is wrong**, and being wrong is why
+/// the leak underneath it survived review. `ulimit -n` here is 524,288 and an LMDB environment
+/// costs at most about twenty descriptors, so even 300 separate environments would be under
+/// 6,000 — nowhere near a limit.
+///
+/// The real reason sharing is load-bearing is **genesis reuse**. Genesis is built once per
+/// process into this environment under a `rspace_scope_id` and then cached (see
+/// [`genesis_context`]); tests reach that state by opening the same environment with the same
+/// scope. Give each test its own environment and every one of them rebuilds genesis, which is
+/// the single most expensive operation in this suite. Isolation is bought separately and more
+/// cheaply, by scoping *database names* within the shared environment (see
+/// [`generate_scope_id`]).
+///
+/// # Why `OnceLock<ProcessScratchDir>` and not `lazy_static! { (PathBuf, TempDir) }`
+///
+/// **Rust runs no destructors for `static`s.** The previous form held a `TempDir` — a type
+/// whose entire contract is `Drop` — in a `lazy_static!`, where `Drop` can never run, under a
+/// comment promising "automatic cleanup when TempDir is dropped (at program exit)". It never
+/// was. Measured live: 285 directories / 824 MB of `tmpfs` in 145 seconds of one test run.
+///
+/// [`ProcessScratchDir`] deliberately has **no** `Drop`. Its cleanup is a property of the
+/// process — an `atexit` hook for normal exit, and a `flock`-proved reaper in the next process
+/// for everything else. See the [`shared::rust::test_scratch`] module documentation.
+static SHARED_LMDB_DIR: OnceLock<ProcessScratchDir> = OnceLock::new();
+
+/// Acquire (once per process) the scratch directory holding the shared LMDB environment.
+fn shared_lmdb_dir() -> &'static ProcessScratchDir {
+    SHARED_LMDB_DIR.get_or_init(|| test_scratch::acquire(SHARED_LMDB_PREFIX))
 }
 
 pub async fn genesis_context() -> Result<GenesisContext, CasperError> {
@@ -127,7 +145,18 @@ pub fn mk_test_rnode_store_manager_with_scope(
     dir_path: PathBuf,
     scope_id: Option<String>,
 ) -> impl KeyValueStoreManager {
-    let limit_size = 500 * MB;
+    // Cap on the shared LMDB env's map_size. heed 0.22's env cache locks the
+    // map_size at first open per path, so the entire casper test suite shares
+    // one env at this size — not 500 MB per test like legacy heed 0.11. Bumped
+    // to 4 GB to give the suite headroom (virtual address space; real disk
+    // usage matches data written).
+    //
+    // Reconciled with casper/tests/util/rholang/resources.rs, which had already
+    // been raised to 4 GB while this copy was left at 500 MB. Two live copies of
+    // the same shared environment disagreeing about its map_size is not a style
+    // difference: whichever opens the path first wins for the whole process, so
+    // the effective cap depended on test ordering.
+    let limit_size = 4 * GB;
 
     let db_mappings: Vec<(Db, LmdbEnvConfig)> = rnode_db_mapping(None)
         .into_iter()
@@ -165,14 +194,17 @@ pub fn mk_test_rnode_store_manager_with_scope(
 /// # Best Practices
 /// - Always use this function instead of `mk_test_rnode_store_manager()` for tests
 /// - Each test gets a unique scope_id via `generate_scope_id()`
-/// - The shared environment is automatically cleaned up when tests complete
 /// - Works efficiently with parallel test execution (test-threads=4-8 recommended)
+///
+/// # Cleanup
+/// The environment's directory is removed by an `atexit` hook when this process exits, and by
+/// the next process's `flock`-proved reaper if this one is killed. It is **not** removed by a
+/// destructor — see [`shared::rust::test_scratch`] for why a destructor could never work here.
 pub fn mk_test_rnode_store_manager_shared(scope_id: String) -> Box<dyn KeyValueStoreManager> {
-    let (shared_path, _temp_dir) = &*SHARED_LMDB_ENV;
     // Create the manager with scoped database names in the mapping
     // This ensures isolation at the LMDB level while keeping lookup by original name
     Box::new(mk_test_rnode_store_manager_with_scope(
-        shared_path.clone(),
+        shared_lmdb_dir().to_path_buf(),
         Some(scope_id),
     ))
 }
@@ -188,10 +220,7 @@ pub fn generate_scope_id() -> String { Uuid::new_v4().to_string() }
 ///
 /// This is useful for logging/debugging purposes when tests need a path
 /// to reference, but actual LMDB storage is in the shared environment.
-pub fn get_shared_lmdb_path() -> PathBuf {
-    let (shared_path, _temp_dir) = &*SHARED_LMDB_ENV;
-    shared_path.clone()
-}
+pub fn get_shared_lmdb_path() -> PathBuf { shared_lmdb_dir().to_path_buf() }
 
 /// Creates a test store manager with dual scoping for RSpace and other stores.
 ///
@@ -206,8 +235,12 @@ pub fn mk_test_rnode_store_manager_with_dual_scope(
     node_scope: String,
     rspace_scope: String,
 ) -> impl KeyValueStoreManager {
-    let (shared_path, _temp_dir) = &*SHARED_LMDB_ENV;
-    let limit_size = 100 * MB;
+    let shared_path = shared_lmdb_dir().to_path_buf();
+    // Dual-scope variant — same shared-env consideration as
+    // mk_test_rnode_store_manager_with_scope. Reconciled with
+    // casper/tests/util/rholang/resources.rs, which had already been raised from
+    // 100 MB to 1 GB while this copy was left behind.
+    let limit_size = 1 * GB;
 
     let db_mappings: Vec<(Db, LmdbEnvConfig)> = rnode_db_mapping(None)
         .into_iter()
@@ -235,7 +268,7 @@ pub fn mk_test_rnode_store_manager_with_dual_scope(
         })
         .collect();
 
-    LmdbDirStoreManager::new(shared_path.clone(), db_mappings.into_iter().collect())
+    LmdbDirStoreManager::new(shared_path, db_mappings.into_iter().collect())
 }
 
 /// Creates a test store manager with genesis data and shared RSpace scope.
@@ -517,6 +550,12 @@ pub async fn mk_runtime_manager_with_history_at(
 }
 
 /// Creates a managed temporary directory that will be automatically removed when the TempDir is dropped
+///
+/// This one is **correct as written, and deliberately left alone**: the `TempDir` lives in a
+/// genuinely scoped local, so its `Drop` really does run at the end of this function. It is
+/// the contrast that makes the point about [`create_persisted_temp_dir`] below — a `TempDir`
+/// is the right tool exactly when the directory's lifetime is a *scope*, and the wrong tool
+/// the moment it is asked to outlive one.
 #[cfg(feature = "test-utils")]
 pub fn with_temp_dir<F, R>(prefix: &str, f: F) -> R
 where F: FnOnce(&Path) -> R {
@@ -533,17 +572,19 @@ where F: FnOnce(&Path) -> R {
     result
 }
 
-/// Creates a temporary directory that will be persisted (not automatically cleaned up)
+/// Creates a temporary directory that outlives this call.
+///
+/// The previous body built a `TempDir` and immediately called `TempDir::keep()`, which
+/// detaches the guard and leaks the directory **forever** — a `TempDir` used precisely to
+/// throw away the only thing a `TempDir` provides.
+///
+/// The caller genuinely wants a directory that outlives this scope, so the answer is not a
+/// different destructor but a different owner: [`shared::rust::test_scratch`] removes the
+/// directory with an `atexit` hook at normal process exit, and with a `flock`-proved reaper
+/// from the next process when this one is killed.
 #[cfg(feature = "test-utils")]
 pub fn create_persisted_temp_dir(prefix: &str) -> PathBuf {
-    let temp_dir = Builder::new()
-        .prefix(prefix)
-        .tempdir()
-        .expect("Failed to create temp dir");
-
-    // Convert to PathBuf which will persist even after TempDir is dropped
-    let path = temp_dir.keep();
-    path
+    test_scratch::acquire(prefix).to_path_buf()
 }
 
 /// Copy a template storage directory to a new temporary directory that is persisted

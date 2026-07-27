@@ -28,7 +28,7 @@ use rspace_plus_plus::rspace::shared::lmdb_dir_store_manager::{
     Db, LmdbDirStoreManager, LmdbEnvConfig, GB,
 };
 use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
-use tempfile::{Builder, TempDir};
+use shared::rust::test_scratch::{self, ProcessScratchDir};
 use uuid::Uuid;
 
 use crate::init_logger;
@@ -36,33 +36,53 @@ use crate::util::genesis_builder::{GenesisBuilder, GenesisContext};
 
 static CACHED_GENESIS: OnceLock<Arc<Mutex<Option<GenesisContext>>>> = OnceLock::new();
 
-// Shared LMDB environment for all tests.
-//
-// This single environment is shared across all tests to avoid exhausting OS resources.
-// Test isolation is achieved through scoped database names (UUID prefixes) rather than
-// separate environments. This allows hundreds of tests to run efficiently without
-// hitting file descriptor or LMDB environment limits.
-//
-// Resource Management:
-// - Single LMDB environment instead of 300+ separate environments
-// - Automatic cleanup when TempDir is dropped (at program exit)
-// - Global lock ensures test isolation when using shared LMDB
-lazy_static! {
-    static ref SHARED_LMDB_ENV: (PathBuf, TempDir) = {
-        let temp_dir = Builder::new()
-            .prefix("casper-shared-lmdb-")
-            .tempdir()
-            .expect("Failed to create shared LMDB temp dir");
-        let path = temp_dir.path().to_path_buf();
-        (path, temp_dir)
-    };
+/// Prefix every scratch directory of this suite carries, and the prefix the reaper in
+/// [`shared::rust::test_scratch`] sweeps. Kept identical in both copies of this module so one
+/// process reaps the other's leftovers.
+const SHARED_LMDB_PREFIX: &str = "casper-shared-lmdb-";
 
+/// The one LMDB environment this test process uses.
+///
+/// # Why the environment is shared
+///
+/// The comment this replaced said the sharing exists "to avoid exhausting OS resources
+/// (file descriptors, LMDB environments)". **That rationale is wrong**, and being wrong is why
+/// the leak underneath it survived review. `ulimit -n` here is 524,288 and an LMDB environment
+/// costs at most about twenty descriptors, so even 300 separate environments would be under
+/// 6,000 — nowhere near a limit.
+///
+/// The real reason sharing is load-bearing is **genesis reuse**. Genesis is built once per
+/// process into this environment under a `rspace_scope_id` and then cached (see
+/// [`genesis_context`]); tests reach that state by opening the same environment with the same
+/// scope. Give each test its own environment and every one of them rebuilds genesis, which is
+/// the single most expensive operation in this suite. Isolation is bought separately and more
+/// cheaply, by scoping *database names* within the shared environment (see
+/// [`generate_scope_id`]).
+///
+/// # Why `OnceLock<ProcessScratchDir>` and not `lazy_static! { (PathBuf, TempDir) }`
+///
+/// **Rust runs no destructors for `static`s.** The previous form held a `TempDir` — a type
+/// whose entire contract is `Drop` — in a `lazy_static!`, where `Drop` can never run, under a
+/// comment promising "automatic cleanup when TempDir is dropped (at program exit)". It never
+/// was. Measured live: 285 directories / 824 MB of `tmpfs` in 145 seconds of one test run.
+///
+/// [`ProcessScratchDir`] deliberately has **no** `Drop`. Its cleanup is a property of the
+/// process — an `atexit` hook for normal exit, and a `flock`-proved reaper in the next process
+/// for everything else. See the [`shared::rust::test_scratch`] module documentation.
+static SHARED_LMDB_DIR: OnceLock<ProcessScratchDir> = OnceLock::new();
+
+/// Acquire (once per process) the scratch directory holding the shared LMDB environment.
+fn shared_lmdb_dir() -> &'static ProcessScratchDir {
+    SHARED_LMDB_DIR.get_or_init(|| test_scratch::acquire(SHARED_LMDB_PREFIX))
+}
+
+lazy_static! {
     /// Global lock to ensure test isolation when using shared LMDB.
     ///
     /// ## Why is this needed?
     ///
     /// Unlike Scala tests where each test creates its own LMDB database, Rust tests share
-    /// a single LMDB environment (SHARED_LMDB_ENV) for performance. This creates a race condition:
+    /// a single LMDB environment (SHARED_LMDB_DIR) for performance. This creates a race condition:
     ///
     /// 1. Each test creates its own BlockDagKeyValueStorage with its own global_lock
     /// 2. These per-test locks only serialize operations WITHIN a single test
@@ -79,7 +99,8 @@ lazy_static! {
     /// ## Trade-off:
     ///
     /// - Sequential execution is slower than parallel
-    /// - But still faster than creating 300+ separate LMDB databases (Scala approach)
+    /// - But still faster than rebuilding genesis once per test, which is what un-sharing
+    ///   the environment would cost
     /// - And guaranteed correctness is more important than speed
     pub static ref SHARED_LMDB_LOCK: Mutex<()> = Mutex::new(());
 }
@@ -156,23 +177,26 @@ pub fn mk_test_rnode_store_manager_with_scope(
     LmdbDirStoreManager::new(dir_path, db_mappings.into_iter().collect())
 }
 
-/// Creates a test store manager using a shared LMDB environment.
+/// Creates a test store manager over this process's shared LMDB environment.
 ///
-/// This is the recommended approach for tests to avoid exhausting OS resources
-/// (file descriptors, LMDB environments). All tests share a single LMDB environment,
-/// with test isolation achieved through scoped database names (UUID prefixes).
+/// All tests in a process share one environment so that genesis is built once and reused
+/// (see [`SHARED_LMDB_DIR`] for why that, and not descriptor pressure, is the reason).
+/// Isolation comes from scoped database names, not from separate environments.
 ///
 /// # Best Practices
 /// - Always use this function instead of `mk_test_rnode_store_manager()` for tests
 /// - Each test gets a unique scope_id via `generate_scope_id()`
-/// - The shared environment is automatically cleaned up when tests complete
 /// - Works efficiently with parallel test execution (test-threads=4-8 recommended)
+///
+/// # Cleanup
+/// The environment's directory is removed by an `atexit` hook when this process exits, and by
+/// the next process's `flock`-proved reaper if this one is killed. It is **not** removed by a
+/// destructor — see [`shared::rust::test_scratch`] for why a destructor could never work here.
 pub fn mk_test_rnode_store_manager_shared(scope_id: String) -> Box<dyn KeyValueStoreManager> {
-    let (shared_path, _temp_dir) = &*SHARED_LMDB_ENV;
     // Create the manager with scoped database names in the mapping
     // This ensures isolation at the LMDB level while keeping lookup by original name
     Box::new(mk_test_rnode_store_manager_with_scope(
-        shared_path.clone(),
+        shared_lmdb_dir().to_path_buf(),
         Some(scope_id),
     ))
 }
@@ -187,10 +211,7 @@ pub fn generate_scope_id() -> String { Uuid::new_v4().to_string() }
 ///
 /// This is useful for logging/debugging purposes when tests need a path
 /// to reference, but actual LMDB storage is in the shared environment.
-pub fn get_shared_lmdb_path() -> PathBuf {
-    let (shared_path, _temp_dir) = &*SHARED_LMDB_ENV;
-    shared_path.clone()
-}
+pub fn get_shared_lmdb_path() -> PathBuf { shared_lmdb_dir().to_path_buf() }
 
 /// Creates a test store manager with dual scoping for RSpace and other stores.
 ///
@@ -204,7 +225,7 @@ pub fn mk_test_rnode_store_manager_with_dual_scope(
     node_scope: String,
     rspace_scope: String,
 ) -> impl KeyValueStoreManager {
-    let (shared_path, _temp_dir) = &*SHARED_LMDB_ENV;
+    let shared_path = shared_lmdb_dir().to_path_buf();
     // Dual-scope variant — same shared-env consideration as
     // mk_test_rnode_store_manager_with_scope. Bumped from 100 MB to 1 GB.
     let limit_size = 1 * GB;
@@ -235,7 +256,7 @@ pub fn mk_test_rnode_store_manager_with_dual_scope(
         })
         .collect();
 
-    LmdbDirStoreManager::new(shared_path.clone(), db_mappings.into_iter().collect())
+    LmdbDirStoreManager::new(shared_path, db_mappings.into_iter().collect())
 }
 
 /// Creates a test store manager with genesis data and shared RSpace scope.

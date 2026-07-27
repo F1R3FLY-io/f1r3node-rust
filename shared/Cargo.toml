@@ -9,6 +9,10 @@ edition = "2021"
 [dependencies]
 bincode = "1"
 heed = "0.22.1"
+# `rust::test_scratch` registers its eager-cleanup hook with `atexit(3)`, which has no `std`
+# equivalent. Already linked transitively through `heed` (lmdb-master-sys) and `tokio`, so this
+# is a direct edge to a crate that is in the graph regardless, not a new dependency.
+libc = "0.2"
 hex = { workspace = true }
 proptest = "1.6.0"
 prost = { workspace = true }
@@ -30,3 +34,9 @@ rand = { workspace = true }
 thiserror = { workspace = true }
 indexmap = "2.8.0"
 metrics = { workspace = true }
+
+[dev-dependencies]
+# Behavioural guards for `rust::test_scratch` (shared/tests/scratch_dir_lifecycle.rs) give each
+# case a private base directory owned by a `TempDir` the *test* drops, so no case ever scans a
+# shared `/tmp`.
+tempfile = "3.24.0"
