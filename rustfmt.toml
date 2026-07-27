@@ -74,6 +74,29 @@ group_imports = "StdExternalCrate"
 # ⚠ These bytes are consensus-relevant: the printer's output reaches a block through
 # `build_channel_string` -> `cap` -> `error_message` and is compared by replay at
 # `casper/src/rust/rholang/replay_runtime.rs`.
+#
+# ── ⚠ WHAT A NON-EMPTY `ignore` COSTS, AND WHY THE ANSWER IS NOT TO EMPTY IT ──
+#
+# A non-empty `ignore` list makes rustfmt PANIC — "path is expected to be under the
+# root", in `IgnorePathSet::is_match` — for any target file outside the config root:
+#
+#     rustfmt --check --config-path <this dir> /tmp/x.rs     # exit 101, no output
+#
+# Measured as a 2x2: with `ignore = []` or the key absent, the same invocation exits
+# 0; with one entry — with or without a path separator — it exits 101. It also drops
+# a `rustc-ice-*.txt` into the working directory.
+#
+# ★ The hazard is that it exits with NO stdout, so `rustfmt --check <f> | grep -c
+# '^Diff in'` counts zero and reads the crash as CLEAN. That has already misled one
+# reader into reverting an unrelated reformat. The remedy is the checking discipline,
+# not this list: `scripts/check-fmt.sh` decides on the EXIT CODE (0 clean / 1 diffs /
+# 2 tool error), refuses an out-of-root path before invoking the formatter, reports a
+# file listed BELOW as EXEMPT rather than as clean, and `--self-test` constructs all
+# three states and fails unless it reports three different ones.
+#
+# Emptying this list would let the formatter silently falsify ~33 provenance claims,
+# and `#[rustfmt::skip]` is refused for the reason given above: it edits the very text
+# whose byte-identity is the point.
 ignore = [
     "rholang/src/rust/interpreter/compiler/normalize_recursive.rs",
     "rholang/src/rust/interpreter/pretty_printer_oracle.rs",

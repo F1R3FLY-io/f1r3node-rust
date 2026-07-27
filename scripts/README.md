@@ -6,6 +6,7 @@ Helper scripts intended to be run from the repository root.
 
 | Script | Purpose |
 | --- | --- |
+| `scripts/check-fmt.sh` | The formatting check, decided by EXIT CODE (0 clean / 1 diffs / 2 tool error). `--self-test` proves it separates all three — a grep for `^Diff in` cannot, because a crashing rustfmt prints no diffs and reads as clean |
 | `scripts/run_rust_tests.sh` | Runs the release test suite crate by crate |
 | `scripts/build_rust_libraries.sh` | Builds shared library artifacts under `rust_libraries/release/` |
 | `scripts/build_rust_libraries_docker.sh` | Cross-builds shared libraries for Linux Docker targets |

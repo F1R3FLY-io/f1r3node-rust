@@ -62,7 +62,7 @@ cargo install cargo-deny --locked   # one-time, required by the pre-commit deny 
 
 | Hook | When | Checks |
 | --- | --- | --- |
-| `pre-commit` | Every commit | `cargo fmt --check`, `cargo clippy -D warnings`, `cargo deny check` |
+| `pre-commit` | Every commit | `scripts/check-fmt.sh` (formatting, by EXIT CODE), `cargo clippy -D warnings`, `cargo deny check` |
 | `pre-push` | Every push | `cargo clippy` (re-check), `cargo test --release` (per-crate) |
 
 Both hooks auto-skip in CI environments (the same gates run server-side in `.github/workflows/ci.yml`).

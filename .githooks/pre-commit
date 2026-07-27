@@ -50,24 +50,60 @@ echo -e "${CYAN}Running pre-commit checks...${NC}"
 echo "================================"
 
 # --- cargo fmt ---
+#
+# ⚠ The check goes through scripts/check-fmt.sh, and its EXIT CODE is read
+# three ways, because a formatter has three outcomes and not two:
+#
+#   0 CLEAN | 1 DIFFS | 2 TOOL ERROR (rustfmt did not answer the question)
+#
+# Treating every non-zero as "unformatted" told the author to run
+# `cargo fmt --all` for a crash that command cannot fix, and — worse in the
+# other direction — the common shorthand
+#
+#     rustfmt --check <file> | grep -c '^Diff in'
+#
+# reads a crash as ZERO DIFFS, i.e. as CLEAN: rustfmt exits 101 with no stdout
+# when handed a file outside the config root while rustfmt.toml carries an
+# `ignore` list, which ours does and must. See scripts/check-fmt.sh, whose
+# --self-test constructs all three states and proves the check separates them.
 if [[ "$SKIP_FMT" == "1" ]]; then
     echo -e "  ${CYAN}[fmt]${NC}    ${YELLOW}SKIP${NC} (SKIP_FMT=1)"
 else
     fmt_out=$(mktemp)
-    if cargo fmt --all -- --check > "$fmt_out" 2>&1; then
-        echo -e "  ${CYAN}[fmt]${NC}    ${GREEN}PASS${NC}"
-    else
-        echo -e "  ${CYAN}[fmt]${NC}    ${RED}FAIL${NC}"
-        FAILED=1
-        if [[ "$VERBOSE" == "1" ]]; then
+    # ⚠ `|| fmt_status=$?` and not a bare call: this script runs under
+    # `set -e`, where a non-zero exit outside a condition would abort the hook
+    # before it could tell 1 from 2 — and an aborted hook reports nothing at
+    # all, which is the failure mode this whole change is about.
+    fmt_status=0
+    "$REPO_ROOT/scripts/check-fmt.sh" > "$fmt_out" 2>&1 || fmt_status=$?
+    case "$fmt_status" in
+        0)
+            echo -e "  ${CYAN}[fmt]${NC}    ${GREEN}PASS${NC}"
+            ;;
+        1)
+            echo -e "  ${CYAN}[fmt]${NC}    ${RED}FAIL${NC} (unformatted files)"
+            FAILED=1
+            if [[ "$VERBOSE" == "1" ]]; then
+                cat "$fmt_out"
+            else
+                echo ""
+                echo -e "  ${YELLOW}Unformatted files detected. Run:${NC}"
+                echo "    cargo fmt --all"
+                echo ""
+            fi
+            ;;
+        *)
+            # ⚠ NOT a formatting verdict. The tool failed, so this commit is
+            # blocked with the output shown in full whatever VERBOSE says —
+            # a silent "run cargo fmt" here would be advice for the wrong
+            # problem, and treating it as a pass would be worse.
+            echo -e "  ${CYAN}[fmt]${NC}    ${RED}TOOL ERROR${NC} (exit $fmt_status; formatting is UNKNOWN)"
+            FAILED=1
+            echo ""
             cat "$fmt_out"
-        else
             echo ""
-            echo -e "  ${YELLOW}Unformatted files detected. Run:${NC}"
-            echo "    cargo fmt --all"
-            echo ""
-        fi
-    fi
+            ;;
+    esac
     rm -f "$fmt_out"
 fi
 

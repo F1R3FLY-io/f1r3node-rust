@@ -75,7 +75,7 @@ This sets `core.hooksPath` to `.githooks/`, which provides:
 
 | Hook | Runs | Checks |
 |------|------|--------|
-| `pre-commit` | On every commit | `cargo fmt --check`, `cargo clippy -D warnings` |
+| `pre-commit` | On every commit | `scripts/check-fmt.sh` (formatting, by EXIT CODE), `cargo clippy -D warnings` |
 | `pre-push` | On every push | `cargo clippy`, `cargo test --release` |
 
 Both hooks skip automatically in CI environments.

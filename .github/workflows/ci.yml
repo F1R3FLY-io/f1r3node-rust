@@ -98,8 +98,26 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y $(cat .github/apt-dependencies.txt)
 
+      # ★ ANTI-VACUITY, and it runs BEFORE the check it qualifies.
+      #
+      # A formatter has three outcomes, not two: clean (0), diffs (1), and
+      # "the tool did not answer" (101 — rustfmt panics in
+      # `IgnorePathSet::is_match` on a file outside the config root whenever
+      # rustfmt.toml carries an `ignore` list, which ours does and must). The
+      # common shorthand `rustfmt --check <file> | grep -c '^Diff in'` prints 0
+      # for the first AND the third, so it reads a crash as CLEAN.
+      #
+      # This step constructs all three states and fails unless the check
+      # reports three different ones, so "the formatting gate works" is
+      # evidence produced on this runner rather than a property assumed of it.
+      - name: Prove the formatting check separates clean / diffs / crash
+        run: scripts/check-fmt.sh --self-test
+
+      # Exit code, not output: 0 clean, 1 diffs, 2 the tool failed. A crash
+      # fails the job with "TOOL ERROR" rather than being reported as
+      # unformatted code or, worse, as clean.
       - name: Check formatting
-        run: cargo fmt --all -- --check
+        run: scripts/check-fmt.sh
 
       - name: Run clippy
         env:

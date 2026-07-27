@@ -62,7 +62,7 @@ show_status() {
 
     echo ""
     echo "Hooks provide:"
-    echo "  pre-commit: cargo fmt --check, cargo clippy"
+    echo "  pre-commit: scripts/check-fmt.sh (formatting), cargo clippy"
     echo "  pre-push:   cargo test (full workspace)"
 }
 
@@ -78,7 +78,7 @@ install_via_hookspath() {
     echo -e "${GREEN}Done!${NC} Git will now use hooks from .githooks/"
     echo ""
     echo "Hooks installed:"
-    echo "  pre-commit: cargo fmt --check + cargo clippy"
+    echo "  pre-commit: scripts/check-fmt.sh (formatting) + cargo clippy"
     echo "  pre-push:   cargo test (full workspace)"
     echo ""
     echo "To verify: git config --local core.hooksPath"
