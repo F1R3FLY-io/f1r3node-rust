@@ -338,6 +338,7 @@ fn subject(name: &str) -> fn(usize) {
         "score_cmp_wide" => score_cmp_wide_body,
         "pretty_wide" => pretty_wide_body,
         "free_check" => free_check_body,
+        "eval_with_nots" => eval_with_nots_body,
         other => panic!("stack_depth_gate: unknown GATE_SUBJECT={:?}", other),
     }
 }
@@ -894,6 +895,24 @@ fn par_width(p: &Par) -> usize {
     }
 }
 
+/// Count `!(!(…))` nesting levels ITERATIVELY.
+fn enot_depth(p: &Par) -> usize {
+    let mut n = 0usize;
+    let mut cur = p;
+    loop {
+        match cur.exprs.first().and_then(|e| e.expr_instance.as_ref()) {
+            Some(ExprInstance::ENotBody(not)) => match not.p.as_ref() {
+                Some(inner) => {
+                    n += 1;
+                    cur = inner;
+                }
+                None => return n,
+            },
+            _ => return n,
+        }
+    }
+}
+
 /// Count `{{…{x}…}}` nesting levels (the `ESet` shape) ITERATIVELY.
 fn eset_depth(p: &Par) -> usize {
     let mut n = 0usize;
@@ -1055,6 +1074,48 @@ fn free_check_body(width: usize) {
     dismantle_all(trem);
 }
 
+/// ⚠ `rho-pure-eval::eval_with`'s OWN Θ(depth) SCC — a separate crate, and one
+/// the audit's enumeration reached only by measurement (§11.2).
+///
+/// The shape matters: a nested `EList` chain does NOT drive this recursion at
+/// all, because the `EListBody` arm returns `par_with_expr(expr.clone())`
+/// without descending. On that shape the probe measures `<Par as Clone>::clone`
+/// and nothing else. `!(!(…(!true)…))` is the shape that actually recurses;
+/// measured 21,584 B/level debug / 3,359 release before the conversion.
+fn eval_with_nots_body(depth: usize) {
+    use rho_pure_eval::{eval_with, NoSpatialMatch};
+    let mut p = Par {
+        exprs: vec![Expr {
+            expr_instance: Some(ExprInstance::GBool(true)),
+        }],
+        ..Default::default()
+    };
+    for _ in 0..depth {
+        p = Par {
+            exprs: vec![Expr {
+                expr_instance: Some(ExprInstance::ENotBody(models::rhoapi::ENot {
+                    p: Some(p),
+                })),
+            }],
+            ..Default::default()
+        };
+    }
+    assert_carries("the eval_with input's ENot nesting", enot_depth(&p), depth);
+    let env: Env<Par> = Env::new();
+    let out = eval_with(&p, &env, &NoSpatialMatch).expect("stack_depth_gate: eval_with failed");
+    // An even number of negations of `true` is `true`; an odd number `false`.
+    let expected = depth % 2 == 0;
+    assert_eq!(
+        out.exprs.first().and_then(|e| e.expr_instance.as_ref()),
+        Some(&ExprInstance::GBool(expected)),
+        "stack_depth_gate: {} negations of `true` should be {}",
+        depth,
+        expected
+    );
+    dismantle(p);
+    dismantle(out);
+}
+
 // ---------------------------------------------------------------------------
 // THE GATE
 // ---------------------------------------------------------------------------
@@ -1086,6 +1147,7 @@ fn converted_traversals_are_depth_independent() {
         "score_cmp",            // Stage C-1 — the score-tree comparator
         "tree_drop",            // Stage C-1 — Tree's hand-written Drop
         "tree_clone",           // Stage C-1 — Tree's hand-written Clone
+        "eval_with_nots",       // Stage E — rho-pure-eval's own SCC
         // "pretty",               // Stage D
     ];
     let converted_width: &[&str] = &[
