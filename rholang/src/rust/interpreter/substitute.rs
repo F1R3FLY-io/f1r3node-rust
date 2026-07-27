@@ -173,14 +173,19 @@ impl SubstituteTrait<Bundle> for Substitute {
         depth: i32,
         env: &Env<Par>,
     ) -> Result<Bundle, InterpreterError> {
-        let sub_bundle = self.substitute(unwrap_option_safe(term.clone().body)?, depth, env)?;
+        // LEG-1: `term.clone().body` + `term.clone()` were TWO Theta(depth) deep
+        // clones of the whole bundle per call. `body` is moved out with
+        // `Option::take`; `single_bundle`/`BundleOps::merge` only ever READ the
+        // shell (`write_flag`/`read_flag`), which `take` leaves intact.
+        let mut term = term;
+        let body = term.body.take();
+        let sub_bundle = self.substitute(unwrap_option_safe(body)?, depth, env)?;
 
         match single_bundle(&sub_bundle) {
             Some(b) => Ok(BundleOps::merge(&term, &b)),
             None => {
-                let mut term_mut = term.clone();
-                term_mut.body = Some(sub_bundle);
-                Ok(term_mut)
+                term.body = Some(sub_bundle);
+                Ok(term)
             }
         }
     }
@@ -191,15 +196,19 @@ impl SubstituteTrait<Bundle> for Substitute {
         depth: i32,
         env: &Env<Par>,
     ) -> Result<Bundle, InterpreterError> {
-        let sub_bundle =
-            self.substitute_no_sort(unwrap_option_safe(term.clone().body)?, depth, env)?;
+        // LEG-1: `term.clone().body` + `term.clone()` were TWO Theta(depth) deep
+        // clones of the whole bundle per call. `body` is moved out with
+        // `Option::take`; `single_bundle`/`BundleOps::merge` only ever READ the
+        // shell (`write_flag`/`read_flag`), which `take` leaves intact.
+        let mut term = term;
+        let body = term.body.take();
+        let sub_bundle = self.substitute_no_sort(unwrap_option_safe(body)?, depth, env)?;
 
         match single_bundle(&sub_bundle) {
             Some(b) => Ok(BundleOps::merge(&term, &b)),
             None => {
-                let mut term_mut = term.clone();
-                term_mut.body = Some(sub_bundle);
-                Ok(term_mut)
+                term.body = Some(sub_bundle);
+                Ok(term)
             }
         }
     }
@@ -213,21 +222,45 @@ impl Substitute {
         env: &Env<Par>,
     ) -> Result<Par, InterpreterError> {
         exprs.into_iter().try_fold(Par::default(), |par, expr| {
-            match unwrap_option_safe(expr.clone().expr_instance)? {
-                ExprInstance::EVarBody(e) => match self.maybe_substitute_evar(e, depth, env)? {
-                    Either::Left(_e) => {
-                        // println!("\npar in sub_expr: {:?}", par);
-                        Ok(prepend_expr(
-                            par,
-                            Expr {
-                                expr_instance: Some(ExprInstance::EVarBody(_e)),
-                            },
-                            depth,
-                        ))
+            // LEG-1: the old form was
+            //     match unwrap_option_safe(expr.clone().expr_instance)? { ... }
+            // which deep-CLONED the ENTIRE expression subtree — a Theta(depth)
+            // native-stack `<ExprInstance as Clone>::clone` — merely to read its
+            // discriminant, at EVERY level of a nested collection. Matching the
+            // owned `Option` directly reads the discriminant for free and moves
+            // the payload into whichever arm consumes it. `Expr` has exactly one
+            // field, so `Expr { expr_instance: Some(other) }` reconstructs the
+            // identical value the old `_` arm passed along.
+            match expr.expr_instance {
+                None => {
+                    // Preserves `unwrap_option_safe`'s
+                    // `UndefinedRequiredProtobufFieldError("\"…ExprInstance\"")`
+                    // payload byte-for-byte, raised at the same point.
+                    unwrap_option_safe::<ExprInstance>(None)?;
+                    unreachable!("unwrap_option_safe(None) always returns Err")
+                }
+                Some(ExprInstance::EVarBody(e)) => {
+                    match self.maybe_substitute_evar(e, depth, env)? {
+                        Either::Left(_e) => {
+                            // println!("\npar in sub_expr: {:?}", par);
+                            Ok(prepend_expr(
+                                par,
+                                Expr {
+                                    expr_instance: Some(ExprInstance::EVarBody(_e)),
+                                },
+                                depth,
+                            ))
+                        }
+                        Either::Right(_par) => Ok(concatenate_pars(_par, par)),
                     }
-                    Either::Right(_par) => Ok(concatenate_pars(_par, par)),
-                },
-                _ => match self.substitute_no_sort(expr, depth, env) {
+                }
+                Some(other) => match self.substitute_no_sort(
+                    Expr {
+                        expr_instance: Some(other),
+                    },
+                    depth,
+                    env,
+                ) {
                     Ok(e) => Ok(prepend_expr(par, e, depth)),
                     Err(e) => Err(e),
                 },
@@ -422,23 +455,30 @@ impl SubstituteTrait<Send> for Substitute {
         depth: i32,
         env: &Env<Par>,
     ) -> Result<Send, InterpreterError> {
-        let channels_sub =
-            self.substitute_no_sort(unwrap_option_safe(term.clone().chan)?, depth, env)?;
+        // LEG-1: `term.clone().chan` deep-cloned the WHOLE Send — channel AND
+        // every data Par — only to take `chan` out of it. Destructuring moves
+        // each field exactly once.
+        let Send {
+            chan,
+            data,
+            persistent,
+            locally_free,
+            connective_used,
+        } = term;
 
-        let pars_sub = term
-            .data
-            .iter()
-            .map(|p| self.substitute_no_sort(p.clone(), depth, env))
+        let channels_sub = self.substitute_no_sort(unwrap_option_safe(chan)?, depth, env)?;
+
+        let pars_sub = data
+            .into_iter()
+            .map(|p| self.substitute_no_sort(p, depth, env))
             .collect::<Result<Vec<Par>, InterpreterError>>()?;
-
-        // println!("\nterm in substitute_no_sort for Send {:?}", term);
 
         Ok(Send {
             chan: Some(channels_sub),
             data: pars_sub,
-            persistent: term.persistent,
-            locally_free: set_bits_until(term.locally_free, env.shift),
-            connective_used: term.connective_used,
+            persistent,
+            locally_free: set_bits_until(locally_free, env.shift),
+            connective_used,
         })
     }
 
@@ -469,8 +509,8 @@ impl SubstituteTrait<Receive> for Substitute {
                     let sub_channel =
                         self.substitute_no_sort(unwrap_option_safe(source)?, depth, env)?;
                     let sub_patterns = patterns
-                        .iter()
-                        .map(|p| self.substitute_no_sort(p.clone(), depth + 1, env))
+                        .into_iter()
+                        .map(|p| self.substitute_no_sort(p, depth + 1, env))
                         .collect::<Result<Vec<Par>, InterpreterError>>()?;
 
                     Ok(ReceiveBind {
@@ -648,7 +688,7 @@ impl SubstituteTrait<If> for Substitute {
 
 impl SubstituteTrait<Expr> for Substitute {
     fn substitute(&self, term: Expr, depth: i32, env: &Env<Par>) -> Result<Expr, InterpreterError> {
-        match unwrap_option_safe(term.expr_instance.clone())? {
+        match unwrap_option_safe(term.expr_instance)? {
             ExprInstance::ENotBody(ENot { p }) => self
                 .substitute(unwrap_option_safe(p)?, depth, env)
                 .map(|p| {
@@ -876,8 +916,8 @@ impl SubstituteTrait<Expr> for Substitute {
                 remainder,
             }) => {
                 let _ps = ps
-                    .iter()
-                    .map(|p| self.substitute(p.clone(), depth, env))
+                    .into_iter()
+                    .map(|p| self.substitute(p, depth, env))
                     .collect::<Result<Vec<Par>, InterpreterError>>()?;
 
                 let new_locally_free = set_bits_until(locally_free, env.shift);
@@ -898,8 +938,8 @@ impl SubstituteTrait<Expr> for Substitute {
                 connective_used,
             }) => {
                 let _ps = ps
-                    .iter()
-                    .map(|p| self.substitute(p.clone(), depth, env))
+                    .into_iter()
+                    .map(|p| self.substitute(p, depth, env))
                     .collect::<Result<Vec<Par>, InterpreterError>>()?;
 
                 let new_locally_free = set_bits_until(locally_free, env.shift);
@@ -918,8 +958,8 @@ impl SubstituteTrait<Expr> for Substitute {
                 let _ps = par_set
                     .ps
                     .sorted_pars
-                    .iter()
-                    .map(|p| self.substitute(p.clone(), depth, env))
+                    .into_iter()
+                    .map(|p| self.substitute(p, depth, env))
                     .collect::<Result<Vec<Par>, InterpreterError>>()?;
 
                 Ok(Expr {
@@ -968,8 +1008,8 @@ impl SubstituteTrait<Expr> for Substitute {
             }) => {
                 let sub_target = self.substitute(unwrap_option_safe(target)?, depth, env)?;
                 let sub_arguments = arguments
-                    .iter()
-                    .map(|p| self.substitute(p.clone(), depth, env))
+                    .into_iter()
+                    .map(|p| self.substitute(p, depth, env))
                     .collect::<Result<Vec<Par>, InterpreterError>>()?;
 
                 Ok(Expr {
@@ -983,7 +1023,10 @@ impl SubstituteTrait<Expr> for Substitute {
                 })
             }
 
-            _ => Ok(term),
+            // `Expr` has exactly one field, so this is byte-identical to the
+            // former `Ok(term)` — and lets the match ABOVE consume
+            // `term.expr_instance` instead of deep-cloning it (LEG-1).
+            other => Ok(Expr { expr_instance: Some(other) }),
         }
     }
 
@@ -993,7 +1036,7 @@ impl SubstituteTrait<Expr> for Substitute {
         depth: i32,
         env: &Env<Par>,
     ) -> Result<Expr, InterpreterError> {
-        match unwrap_option_safe(term.expr_instance.clone())? {
+        match unwrap_option_safe(term.expr_instance)? {
             ExprInstance::ENotBody(ENot { p }) => self
                 .substitute_no_sort(unwrap_option_safe(p)?, depth, env)
                 .map(|p| {
@@ -1221,8 +1264,8 @@ impl SubstituteTrait<Expr> for Substitute {
                 remainder,
             }) => {
                 let _ps = ps
-                    .iter()
-                    .map(|p| self.substitute_no_sort(p.clone(), depth, env))
+                    .into_iter()
+                    .map(|p| self.substitute_no_sort(p, depth, env))
                     .collect::<Result<Vec<Par>, InterpreterError>>()?;
 
                 let new_locally_free = set_bits_until(locally_free, env.shift);
@@ -1243,8 +1286,8 @@ impl SubstituteTrait<Expr> for Substitute {
                 connective_used,
             }) => {
                 let _ps = ps
-                    .iter()
-                    .map(|p| self.substitute_no_sort(p.clone(), depth, env))
+                    .into_iter()
+                    .map(|p| self.substitute_no_sort(p, depth, env))
                     .collect::<Result<Vec<Par>, InterpreterError>>()?;
 
                 let new_locally_free = set_bits_until(locally_free, env.shift);
@@ -1263,8 +1306,8 @@ impl SubstituteTrait<Expr> for Substitute {
                 let _ps = par_set
                     .ps
                     .sorted_pars
-                    .iter()
-                    .map(|p| self.substitute_no_sort(p.clone(), depth, env))
+                    .into_iter()
+                    .map(|p| self.substitute_no_sort(p, depth, env))
                     .collect::<Result<Vec<Par>, InterpreterError>>()?;
 
                 Ok(Expr {
@@ -1314,8 +1357,8 @@ impl SubstituteTrait<Expr> for Substitute {
                 let sub_target =
                     self.substitute_no_sort(unwrap_option_safe(target)?, depth, env)?;
                 let sub_arguments = arguments
-                    .iter()
-                    .map(|p| self.substitute_no_sort(p.clone(), depth, env))
+                    .into_iter()
+                    .map(|p| self.substitute_no_sort(p, depth, env))
                     .collect::<Result<Vec<Par>, InterpreterError>>()?;
 
                 Ok(Expr {
@@ -1329,7 +1372,10 @@ impl SubstituteTrait<Expr> for Substitute {
                 })
             }
 
-            _ => Ok(term),
+            // `Expr` has exactly one field, so this is byte-identical to the
+            // former `Ok(term)` — and lets the match ABOVE consume
+            // `term.expr_instance` instead of deep-cloning it (LEG-1).
+            other => Ok(Expr { expr_instance: Some(other) }),
         }
     }
 }

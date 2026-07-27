@@ -60,7 +60,6 @@ use super::accounting::RuntimeBudget;
 use super::dispatch::{DispatchType, RhoDispatch, RholangAndScalaDispatcher};
 use super::env::Env;
 use super::errors::InterpreterError;
-use super::matcher::has_locally_free::HasLocallyFree;
 use super::metering::MeteredMachine;
 use super::metrics_constants::{
     REDUCER_EVAL_MATCH_CALLS_METRIC, REDUCER_EVAL_MATCH_TIME_NS_METRIC,
@@ -393,92 +392,20 @@ fn ev_pop_n_par(vals: &mut Vec<EvVal>, n: usize) -> Vec<Par> {
     out
 }
 
-/// By-reference equivalent of `expr.locally_free(expr.clone(), 0)` (the
-/// `<Expr as HasLocallyFree<Expr>>::locally_free` reader, whose `&self` is unused
-/// and whose `e` param is only read for CACHED `locally_free` fields — never
-/// recursed into children). The by-value form deep-CLONES the whole subtree per
-/// element, an O(depth) recursive clone that reintroduces the stack overflow on
-/// nested collections AFTER the eval SCC is trampolined; this reads the cached
-/// bitset in O(1) per node. Byte-identical result (validated by the differential
-/// harness). `EVar` clones only the SHALLOW `Var`, matching the original.
+/// By-reference equivalent of `expr.locally_free(expr.clone(), 0)`.
+///
+/// The by-value trait form deep-CLONES the whole subtree per element — an
+/// O(depth) recursive clone (measured 15.50 KiB/level debug, 2.78 KiB/level
+/// release) that reintroduces the stack overflow on nested collections AFTER
+/// the eval SCC is trampolined. This reads the cached bitset in O(1) per node.
+///
+/// The implementation now lives in `matcher::has_locally_free` so there is ONE
+/// copy shared with `util::prepend_expr` (see
+/// `docs/design/audits/theta-depth-traversals-2026-07-26.md`). This wrapper pins the depth-0
+/// specialisation the eval SCC needs, and is what the eval-SCC differential
+/// harness validates.
 fn expr_locally_free_ref(expr: &Expr) -> Vec<u8> {
-    match &expr.expr_instance {
-        Some(ExprInstance::GBool(_)) => Vec::new(),
-        Some(ExprInstance::GInt(_)) => Vec::new(),
-        Some(ExprInstance::GDouble(_)) => Vec::new(),
-        Some(ExprInstance::GBigInt(_)) => Vec::new(),
-        Some(ExprInstance::GBigRat(_)) => Vec::new(),
-        Some(ExprInstance::GFixedPoint(_)) => Vec::new(),
-        Some(ExprInstance::GString(_)) => Vec::new(),
-        Some(ExprInstance::GUri(_)) => Vec::new(),
-        Some(ExprInstance::GByteArray(_)) => Vec::new(),
-
-        Some(ExprInstance::EListBody(e)) => e.locally_free.clone(),
-        Some(ExprInstance::ETupleBody(e)) => e.locally_free.clone(),
-        Some(ExprInstance::ESetBody(e)) => e.locally_free.clone(),
-        Some(ExprInstance::EMapBody(e)) => e.locally_free.clone(),
-        Some(ExprInstance::EPathmapBody(e)) => e.locally_free.clone(),
-        Some(ExprInstance::EZipperBody(e)) => e.locally_free.clone(),
-
-        Some(ExprInstance::EVarBody(EVar { v })) => v.clone().unwrap().locally_free(v.clone().unwrap(), 0),
-        Some(ExprInstance::ENotBody(enot)) => enot.p.as_ref().unwrap().locally_free.clone(),
-        Some(ExprInstance::ENegBody(eneg)) => eneg.p.as_ref().unwrap().locally_free.clone(),
-
-        Some(ExprInstance::EMultBody(EMult { p1, p2 })) => {
-            union(p1.as_ref().unwrap().locally_free.clone(), p2.as_ref().unwrap().locally_free.clone())
-        }
-        Some(ExprInstance::EDivBody(EDiv { p1, p2 })) => {
-            union(p1.as_ref().unwrap().locally_free.clone(), p2.as_ref().unwrap().locally_free.clone())
-        }
-        Some(ExprInstance::EModBody(EMod { p1, p2 })) => {
-            union(p1.as_ref().unwrap().locally_free.clone(), p2.as_ref().unwrap().locally_free.clone())
-        }
-        Some(ExprInstance::EPlusBody(EPlus { p1, p2 })) => {
-            union(p1.as_ref().unwrap().locally_free.clone(), p2.as_ref().unwrap().locally_free.clone())
-        }
-        Some(ExprInstance::EMinusBody(EMinus { p1, p2 })) => {
-            union(p1.as_ref().unwrap().locally_free.clone(), p2.as_ref().unwrap().locally_free.clone())
-        }
-        Some(ExprInstance::ELtBody(ELt { p1, p2 })) => {
-            union(p1.as_ref().unwrap().locally_free.clone(), p2.as_ref().unwrap().locally_free.clone())
-        }
-        Some(ExprInstance::ELteBody(ELte { p1, p2 })) => {
-            union(p1.as_ref().unwrap().locally_free.clone(), p2.as_ref().unwrap().locally_free.clone())
-        }
-        Some(ExprInstance::EGtBody(EGt { p1, p2 })) => {
-            union(p1.as_ref().unwrap().locally_free.clone(), p2.as_ref().unwrap().locally_free.clone())
-        }
-        Some(ExprInstance::EGteBody(EGte { p1, p2 })) => {
-            union(p1.as_ref().unwrap().locally_free.clone(), p2.as_ref().unwrap().locally_free.clone())
-        }
-        Some(ExprInstance::EEqBody(EEq { p1, p2 })) => {
-            union(p1.as_ref().unwrap().locally_free.clone(), p2.as_ref().unwrap().locally_free.clone())
-        }
-        Some(ExprInstance::ENeqBody(ENeq { p1, p2 })) => {
-            union(p1.as_ref().unwrap().locally_free.clone(), p2.as_ref().unwrap().locally_free.clone())
-        }
-        Some(ExprInstance::EAndBody(EAnd { p1, p2 })) => {
-            union(p1.as_ref().unwrap().locally_free.clone(), p2.as_ref().unwrap().locally_free.clone())
-        }
-        Some(ExprInstance::EOrBody(EOr { p1, p2 })) => {
-            union(p1.as_ref().unwrap().locally_free.clone(), p2.as_ref().unwrap().locally_free.clone())
-        }
-
-        Some(ExprInstance::EMethodBody(e)) => e.locally_free.clone(),
-        Some(ExprInstance::EMatchesBody(EMatches { target, .. })) => target.as_ref().unwrap().locally_free.clone(),
-
-        Some(ExprInstance::EPercentPercentBody(EPercentPercent { p1, p2 })) => {
-            union(p1.as_ref().unwrap().locally_free.clone(), p2.as_ref().unwrap().locally_free.clone())
-        }
-        Some(ExprInstance::EPlusPlusBody(EPlusPlus { p1, p2 })) => {
-            union(p1.as_ref().unwrap().locally_free.clone(), p2.as_ref().unwrap().locally_free.clone())
-        }
-        Some(ExprInstance::EMinusMinusBody(EMinusMinus { p1, p2 })) => {
-            union(p1.as_ref().unwrap().locally_free.clone(), p2.as_ref().unwrap().locally_free.clone())
-        }
-
-        None => Vec::new(),
-    }
+    crate::rust::interpreter::matcher::has_locally_free::expr_locally_free_ref(expr, 0)
 }
 
 

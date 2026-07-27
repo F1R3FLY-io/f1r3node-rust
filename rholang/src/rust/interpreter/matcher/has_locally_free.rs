@@ -587,3 +587,186 @@ impl HasLocallyFree<New> for New {
 
     fn locally_free(&self, n: New, _depth: i32) -> Vec<u8> { n.locally_free }
 }
+
+// ===========================================================================
+// BY-REFERENCE READERS — the Leg-1 shape for the `HasLocallyFree` family.
+//
+// Every method of `HasLocallyFree<T> for T` takes its subject BY VALUE, but
+// none of them recurses: each one reads a CACHED `locally_free` / `connective_
+// used` field off the node (or off its immediate children). The by-value
+// signature therefore forces callers to write `x.locally_free(x.clone(), d)` —
+// a full Theta(depth) recursive deep clone of the entire subtree to read one
+// cached bitset.
+//
+// That clone is not merely wasteful: `<Par as Clone>::clone` is itself a
+// Theta(depth) NATIVE-STACK traversal (measured: 15.50 KiB/level debug,
+// 2.78 KiB/level release — see `docs/design/audits/theta-depth-traversals-2026-07-26.md`),
+// so a reader used inside another traversal ADDS a second depth-linear stack
+// consumer on top of it.
+//
+// These free functions are the by-reference equivalents. They are O(1) per node
+// and allocate only the returned bitset. Results are byte-identical to the
+// by-value trait methods by construction: each arm reads exactly the same field.
+//
+// `expr_locally_free_ref` was first introduced (and validated against the
+// eval-SCC differential harness) as a private helper in `reduce.rs`; it is
+// hoisted here so there is ONE implementation shared by every caller.
+// ===========================================================================
+
+/// By-reference equivalent of `<Expr as HasLocallyFree<Expr>>::locally_free`.
+/// `EVar` clones only the SHALLOW `Var`, matching the original.
+///
+/// ⚠ `depth` is threaded into the `EVar` arm exactly as the by-value impl does.
+/// The original private copy in `reduce.rs` hardcoded `0` — sound there because
+/// its only caller (`update_locally_free_par`) is a depth-0 reader, but NOT sound
+/// for `prepend_expr`, which is called at pattern depth > 0 from `sub_exp`.
+/// Parameterising it is what makes one shared implementation exact everywhere.
+pub fn expr_locally_free_ref(expr: &Expr, depth: i32) -> Vec<u8> {
+    match &expr.expr_instance {
+        Some(GBool(_)) => Vec::new(),
+        Some(GInt(_)) => Vec::new(),
+        Some(GDouble(_)) => Vec::new(),
+        Some(GBigInt(_)) => Vec::new(),
+        Some(GBigRat(_)) => Vec::new(),
+        Some(GFixedPoint(_)) => Vec::new(),
+        Some(GString(_)) => Vec::new(),
+        Some(GUri(_)) => Vec::new(),
+        Some(GByteArray(_)) => Vec::new(),
+
+        Some(EListBody(e)) => e.locally_free.clone(),
+        Some(ETupleBody(e)) => e.locally_free.clone(),
+        Some(ESetBody(e)) => e.locally_free.clone(),
+        Some(EMapBody(e)) => e.locally_free.clone(),
+        Some(EPathmapBody(e)) => e.locally_free.clone(),
+        Some(EZipperBody(e)) => e.locally_free.clone(),
+
+        Some(EVarBody(EVar { v })) => {
+            let v = v.clone().expect("expr_locally_free_ref: EVar with no Var");
+            v.clone().locally_free(v, depth)
+        }
+        Some(ENotBody(ENot { p })) => p.as_ref().expect("ENot.p").locally_free.clone(),
+        Some(ENegBody(ENeg { p })) => p.as_ref().expect("ENeg.p").locally_free.clone(),
+
+        Some(EMultBody(EMult { p1, p2 })) => lf2(p1, p2),
+        Some(EDivBody(EDiv { p1, p2 })) => lf2(p1, p2),
+        Some(EModBody(EMod { p1, p2 })) => lf2(p1, p2),
+        Some(EPlusBody(EPlus { p1, p2 })) => lf2(p1, p2),
+        Some(EMinusBody(EMinus { p1, p2 })) => lf2(p1, p2),
+        Some(ELtBody(ELt { p1, p2 })) => lf2(p1, p2),
+        Some(ELteBody(ELte { p1, p2 })) => lf2(p1, p2),
+        Some(EGtBody(EGt { p1, p2 })) => lf2(p1, p2),
+        Some(EGteBody(EGte { p1, p2 })) => lf2(p1, p2),
+        Some(EEqBody(EEq { p1, p2 })) => lf2(p1, p2),
+        Some(ENeqBody(ENeq { p1, p2 })) => lf2(p1, p2),
+        Some(EAndBody(EAnd { p1, p2 })) => lf2(p1, p2),
+        Some(EOrBody(EOr { p1, p2 })) => lf2(p1, p2),
+
+        Some(EMethodBody(e)) => e.locally_free.clone(),
+        Some(EMatchesBody(EMatches { target, .. })) => {
+            target.as_ref().expect("EMatches.target").locally_free.clone()
+        }
+
+        Some(EPercentPercentBody(EPercentPercent { p1, p2 })) => lf2(p1, p2),
+        Some(EPlusPlusBody(EPlusPlus { p1, p2 })) => lf2(p1, p2),
+        Some(EMinusMinusBody(EMinusMinus { p1, p2 })) => lf2(p1, p2),
+
+        None => Vec::new(),
+    }
+}
+
+/// `union` of two operand Pars' cached `locally_free` bitsets, by reference.
+#[inline]
+fn lf2(p1: &Option<Par>, p2: &Option<Par>) -> Vec<u8> {
+    union(
+        p1.as_ref().expect("binary operand p1").locally_free.clone(),
+        p2.as_ref().expect("binary operand p2").locally_free.clone(),
+    )
+}
+
+/// By-reference equivalent of `<Expr as HasLocallyFree<Expr>>::connective_used`.
+/// Every arm reads the same cached field the by-value form reads.
+pub fn expr_connective_used_ref(expr: &Expr) -> bool {
+    match &expr.expr_instance {
+        Some(GBool(_)) | Some(GInt(_)) | Some(GDouble(_)) | Some(GBigInt(_))
+        | Some(GBigRat(_)) | Some(GFixedPoint(_)) | Some(GString(_)) | Some(GUri(_))
+        | Some(GByteArray(_)) => false,
+
+        Some(EListBody(e)) => e.connective_used,
+        Some(ETupleBody(e)) => e.connective_used,
+        Some(ESetBody(e)) => e.connective_used,
+        Some(EMapBody(e)) => e.connective_used,
+        Some(EPathmapBody(e)) => e.connective_used,
+        Some(EZipperBody(e)) => e.connective_used,
+
+        Some(EVarBody(EVar { v })) => {
+            let v = v.clone().expect("expr_connective_used_ref: EVar with no Var");
+            v.clone().connective_used(v)
+        }
+        Some(ENotBody(ENot { p })) => p.as_ref().expect("ENot.p").connective_used,
+        Some(ENegBody(ENeg { p })) => p.as_ref().expect("ENeg.p").connective_used,
+
+        Some(EMultBody(EMult { p1, p2 })) => cu2(p1, p2),
+        Some(EDivBody(EDiv { p1, p2 })) => cu2(p1, p2),
+        Some(EModBody(EMod { p1, p2 })) => cu2(p1, p2),
+        Some(EPlusBody(EPlus { p1, p2 })) => cu2(p1, p2),
+        Some(EMinusBody(EMinus { p1, p2 })) => cu2(p1, p2),
+        Some(ELtBody(ELt { p1, p2 })) => cu2(p1, p2),
+        Some(ELteBody(ELte { p1, p2 })) => cu2(p1, p2),
+        Some(EGtBody(EGt { p1, p2 })) => cu2(p1, p2),
+        Some(EGteBody(EGte { p1, p2 })) => cu2(p1, p2),
+        Some(EEqBody(EEq { p1, p2 })) => cu2(p1, p2),
+        Some(ENeqBody(ENeq { p1, p2 })) => cu2(p1, p2),
+        Some(EAndBody(EAnd { p1, p2 })) => cu2(p1, p2),
+        Some(EOrBody(EOr { p1, p2 })) => cu2(p1, p2),
+
+        Some(EMethodBody(e)) => e.connective_used,
+        Some(EMatchesBody(EMatches { target, .. })) => {
+            target.as_ref().expect("EMatches.target").connective_used
+        }
+
+        Some(EPercentPercentBody(EPercentPercent { p1, p2 })) => cu2(p1, p2),
+        Some(EPlusPlusBody(EPlusPlus { p1, p2 })) => cu2(p1, p2),
+        Some(EMinusMinusBody(EMinusMinus { p1, p2 })) => cu2(p1, p2),
+
+        None => false,
+    }
+}
+
+#[inline]
+fn cu2(p1: &Option<Par>, p2: &Option<Par>) -> bool {
+    p1.as_ref().expect("binary operand p1").connective_used
+        | p2.as_ref().expect("binary operand p2").connective_used
+}
+
+/// By-reference equivalent of `<Connective as HasLocallyFree<Connective>>::locally_free`.
+pub fn connective_locally_free_ref(conn: &Connective, depth: i32) -> Vec<u8> {
+    match &conn.connective_instance {
+        Some(VarRefBody(VarRef {
+            index: idx,
+            depth: var_depth,
+        })) => {
+            if depth == *var_depth {
+                create_bit_vector(&[*idx as usize])
+            } else {
+                Default::default()
+            }
+        }
+        _ => Default::default(),
+    }
+}
+
+/// By-reference equivalent of `<Connective as HasLocallyFree<Connective>>::connective_used`.
+pub fn connective_connective_used_ref(conn: &Connective) -> bool {
+    match &conn.connective_instance {
+        Some(ConnAndBody(_)) => true,
+        Some(ConnOrBody(_)) => true,
+        Some(ConnNotBody(_)) => true,
+        Some(VarRefBody(_)) => false,
+        Some(ConnBool(_)) => true,
+        Some(ConnInt(_)) => true,
+        Some(ConnString(_)) => true,
+        Some(ConnUri(_)) => true,
+        Some(ConnByteArray(_)) => true,
+        None => false,
+    }
+}

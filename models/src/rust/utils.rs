@@ -96,49 +96,85 @@ impl Par {
 
     // See models/src/main/scala/coop/rchain/models/rholang/implicits.scala - prepend
     pub fn prepend_send(&mut self, s: Send) -> Par {
-        let mut new_sends = vec![s.clone()];
+        // LEG-1: `s` is OWNED by this function, so it is MOVED into the vector
+        // rather than deep-cloned. `<Send as Clone>::clone` recurses through the
+        // whole `Par` subtree — a Theta(depth) NATIVE-STACK traversal (2.78
+        // KiB/level release) paid once per prepend. Its two cached fields are read
+        // BEFORE the move. See docs/design/audits/theta-depth-traversals-2026-07-26.md.
+        let locally_free = union(self.locally_free.clone(), s.locally_free.clone());
+        let connective_used = self.connective_used || s.connective_used;
+
+        let mut new_sends = Vec::with_capacity(self.sends.len() + 1);
+        new_sends.push(s);
         new_sends.append(&mut self.sends);
 
         Par {
             sends: new_sends,
-            locally_free: union(self.locally_free.clone(), s.locally_free),
-            connective_used: self.connective_used || s.connective_used,
+            locally_free,
+            connective_used,
             ..self.clone()
         }
     }
 
     pub fn prepend_receive(&mut self, r: Receive) -> Par {
-        let mut new_receives = vec![r.clone()];
+        // LEG-1: `r` is OWNED by this function, so it is MOVED into the vector
+        // rather than deep-cloned. `<Receive as Clone>::clone` recurses through the
+        // whole `Par` subtree — a Theta(depth) NATIVE-STACK traversal (2.78
+        // KiB/level release) paid once per prepend. Its two cached fields are read
+        // BEFORE the move. See docs/design/audits/theta-depth-traversals-2026-07-26.md.
+        let locally_free = union(self.locally_free.clone(), r.locally_free.clone());
+        let connective_used = self.connective_used || r.connective_used;
+
+        let mut new_receives = Vec::with_capacity(self.receives.len() + 1);
+        new_receives.push(r);
         new_receives.append(&mut self.receives);
 
         Par {
             receives: new_receives,
-            locally_free: union(self.locally_free.clone(), r.locally_free),
-            connective_used: self.connective_used || r.connective_used,
+            locally_free,
+            connective_used,
             ..self.clone()
         }
     }
 
     pub fn prepend_match(&mut self, m: Match) -> Par {
-        let mut new_matches = vec![m.clone()];
+        // LEG-1: `m` is OWNED by this function, so it is MOVED into the vector
+        // rather than deep-cloned. `<Match as Clone>::clone` recurses through the
+        // whole `Par` subtree — a Theta(depth) NATIVE-STACK traversal (2.78
+        // KiB/level release) paid once per prepend. Its two cached fields are read
+        // BEFORE the move. See docs/design/audits/theta-depth-traversals-2026-07-26.md.
+        let locally_free = union(self.locally_free.clone(), m.locally_free.clone());
+        let connective_used = self.connective_used || m.connective_used;
+
+        let mut new_matches = Vec::with_capacity(self.matches.len() + 1);
+        new_matches.push(m);
         new_matches.append(&mut self.matches);
 
         Par {
             matches: new_matches,
-            locally_free: union(self.locally_free.clone(), m.locally_free),
-            connective_used: self.connective_used || m.connective_used,
+            locally_free,
+            connective_used,
             ..self.clone()
         }
     }
 
     pub fn prepend_if(&mut self, i: If) -> Par {
-        let mut new_conditionals = vec![i.clone()];
+        // LEG-1: `i` is OWNED by this function, so it is MOVED into the vector
+        // rather than deep-cloned. `<If as Clone>::clone` recurses through the
+        // whole `Par` subtree — a Theta(depth) NATIVE-STACK traversal (2.78
+        // KiB/level release) paid once per prepend. Its two cached fields are read
+        // BEFORE the move. See docs/design/audits/theta-depth-traversals-2026-07-26.md.
+        let locally_free = union(self.locally_free.clone(), i.locally_free.clone());
+        let connective_used = self.connective_used || i.connective_used;
+
+        let mut new_conditionals = Vec::with_capacity(self.conditionals.len() + 1);
+        new_conditionals.push(i);
         new_conditionals.append(&mut self.conditionals);
 
         Par {
             conditionals: new_conditionals,
-            locally_free: union(self.locally_free.clone(), i.locally_free),
-            connective_used: self.connective_used || i.connective_used,
+            locally_free,
+            connective_used,
             ..self.clone()
         }
     }

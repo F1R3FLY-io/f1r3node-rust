@@ -74,6 +74,14 @@ The Cargo workspace contains 11 crates:
 | [Data Flows](./data-flows/) | Block lifecycle and deploy execution flows |
 | [Patterns & Conventions](./patterns/) | Concurrency, error handling, serialization, env vars |
 
+### Design Audits
+
+Code-grounded analyses with measured evidence and an explicit proof standard.
+
+| Document | Description |
+|----------|-------------|
+| [Θ(depth) Traversals over the `Par` Family](./design/audits/theta-depth-traversals-2026-07-26.md) | Why nesting depth controls native stack (and therefore node liveness); the complete enumeration of depth-linear traversals over the recursive `Par` type family, per-traversal and per-profile measured constants, the disposition of each, and the proof standard + regression gate for converting them |
+
 ### Consensus
 
 | Document | Description |
