@@ -12,7 +12,7 @@ use models::rhoapi::{
 use models::rust::bundle_ops::BundleOps;
 use models::rust::par_map_type_mapper::ParMapTypeMapper;
 use models::rust::par_set_type_mapper::ParSetTypeMapper;
-use shared::rust::shared::printer::Printer;
+use shared::rust::shared::printer::{Audience, Printer};
 use shared::rust::shared::string_ops::wrap_with_braces;
 
 use super::errors::InterpreterError;
@@ -244,10 +244,39 @@ pub struct PrettyPrinter {
     pub rotation: i32,
     pub max_var_count: i32,
     pub is_building_channel: bool,
+    /// Whose budget governs **every** trim this printer performs.
+    ///
+    /// ⚠ It has to be a property of the printer, not an argument to a final
+    /// trim, because [`Self::cap`] is called at INTERIOR nodes of a render as
+    /// well as at the end: the drive machine's `PpKont::EndCatch` frame caps
+    /// every successful sub-render inside a catching scope. Trimming only the
+    /// finished string would leave an operator's budget deciding the bytes of
+    /// every nested sub-render — and that is not hypothetical, it is what
+    /// `casper/tests/system_deploy_error_message_determinism.rs` caught when
+    /// this split was first written as a final trim: `@{"abc...}`, truncated
+    /// *inside* the channel braces, still varying with the environment.
+    pub audience: Audience,
 }
 
 impl PrettyPrinter {
+    /// A printer for **operator** output — logs, stdout, the REPL,
+    /// `rnode eval`. Trims to `PRETTY_PRINTER_OUTPUT_TRIM_AFTER`.
     pub fn new() -> Self { PrettyPrinter::create(0, 0) }
+
+    /// A printer whose bytes will reach a block and be compared by replay.
+    ///
+    /// Trims to the compile-time [`Printer::CONSENSUS_TRIM_AFTER`] and never
+    /// reads the process environment, at the outermost render or at any
+    /// interior node. See [`Audience`] for why that distinction is a type.
+    ///
+    /// The only production caller is `casper`'s `show_seq_par`, the render
+    /// behind `SystemDeployUserError::error_message`.
+    pub fn for_consensus() -> Self {
+        PrettyPrinter {
+            audience: Audience::Consensus,
+            ..PrettyPrinter::create(0, 0)
+        }
+    }
 
     fn create(free_shift: i32, bound_shift: i32) -> Self {
         PrettyPrinter {
@@ -259,16 +288,19 @@ impl PrettyPrinter {
             rotation: 23,
             max_var_count: 128,
             is_building_channel: false,
+            audience: Audience::Operator,
         }
     }
 
-    pub fn cap(&self, str: &str) -> String {
-        match Printer::output_capped() {
-            Some(n) => format!("{}...", &str[..n as usize]),
-
-            None => str.to_string(),
-        }
-    }
+    /// Trim a render — finished or intermediate — to [`Self::audience`]'s
+    /// budget.
+    ///
+    /// The policy lives in [`Printer::cap`], next to the environment variable it
+    /// reads: which budget applies, the panic when an *operator* budget exceeds
+    /// the string (which `the_capping_call_sites_are_reproduced` depends on to
+    /// locate this function's call sites), and the char-boundary flooring that
+    /// removed a deploy-triggerable panic.
+    pub fn cap(&self, str: &str) -> String { Printer::cap(self.audience, str) }
 
     fn indent_string(&self) -> String { String::from("  ") }
 
@@ -313,6 +345,29 @@ impl PrettyPrinter {
         }
     }
 
+    /// Render a channel, trimming every node to [`Self::audience`]'s budget.
+    ///
+    /// # ★ The consensus caller
+    ///
+    /// `SystemDeployPlatformFailure::UnexpectedResult` renders a `Par` through
+    /// `casper`'s `show_seq_par` into `SystemDeployUserError::error_message`;
+    /// that string is written into the block as
+    /// `ProcessedSystemDeploy::Failed { error_msg }` and compared, byte for
+    /// byte, by every validator that replays the block
+    /// (`ReplayRuntimeOps::replay_system_deploy_internal`). While that render
+    /// used a printer built by [`Self::new`], two validators with different
+    /// settings of an operator's `PRETTY_PRINTER_OUTPUT_TRIM_AFTER` computed
+    /// different bytes for the same failing system deploy, and replay reported
+    /// `ReplayFailure::system_deploy_error_mismatch` for a deploy that had
+    /// executed identically on both.
+    ///
+    /// That caller now builds its printer with [`Self::for_consensus`].
+    /// Splitting the renderer — rather than, say, clamping the variable's range
+    /// — is what removes the operator from the byte path instead of narrowing
+    /// the window in which the operator can move it.
+    ///
+    /// The error arm is not trimmed by either audience: that fallback was never
+    /// capped, so it was already environment-independent, and it is unchanged.
     pub fn build_channel_string(&mut self, m: &Par) -> String {
         // Instead of panicking on errors, return a fallback string
         // This matches Scala behavior where errors are handled gracefully
