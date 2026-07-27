@@ -42,12 +42,30 @@ jobs:
           # perf_report job. First deploy ships an empty history.
           mkdir -p site/data
           cp -r site/soak-dashboard/. site/
+          # Only a 404 proves nothing has been published yet. Every other
+          # outcome (outage, timeout, rate limit, 5xx) is transient, and
+          # treating it as "no data" would republish an empty dashboard
+          # over real soak history — so abort instead.
           for f in history.json latest-summary.json latest-verdict.json latest-report.md; do
-            curl -fsS --max-time 30 "${DASHBOARD_URL}data/${f}" \
-              -o "site/data/${f}" 2>/dev/null || rm -f "site/data/${f}"
+            code="$(curl -sS --max-time 30 -w '%{http_code}' \
+              -o "site/data/${f}" "${DASHBOARD_URL}data/${f}")" || code=000
+            case "$code" in
+              200) ;;
+              404) rm -f "site/data/${f}" ;;
+              *)
+                echo "::error::could not read published ${f} (HTTP ${code}); aborting so live dashboard data is not overwritten"
+                exit 1
+                ;;
+            esac
           done
-          jq -e 'type == "array"' site/data/history.json >/dev/null 2>&1 \
-            || echo '[]' > site/data/history.json
+          if [ -e site/data/history.json ]; then
+            jq -e 'type == "array"' site/data/history.json >/dev/null 2>&1 || {
+              echo "::error::published history.json is not a JSON array; refusing to replace it"
+              exit 1
+            }
+          else
+            echo '[]' > site/data/history.json
+          fi
           test -s site/data/latest-report.md \
             || echo 'No soak report yet — the first successful weekend soak publishes one.' \
               > site/data/latest-report.md
