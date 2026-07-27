@@ -13,3 +13,31 @@ where_single_line = true
 
 imports_granularity = "Module"
 group_imports = "StdExternalCrate"
+
+# ── Files whose TEXT is a checkable citation, and must therefore not be rewritten ──
+#
+# `normalize_recursive.rs` is the recursive oracle the converted normalizer is
+# differentially compared against. It is not merely "old code kept around": every
+# one of its ~20 sections carries a marker of the form
+#
+#     // VERBATIM from `normalizer/processes/p_par_normalizer.rs`, lines 10-61, at commit 6ccf71f2.
+#
+# Those markers are CLAIMS A READER CAN CHECK — `git show 6ccf71f2:<path>`, take the
+# cited range, diff. That checkability is the whole value of the oracle: without it,
+# nothing stops an author from quietly "fixing" the reference until it agrees with the
+# new driver, at which point the differential compares the new code against itself and
+# proves nothing.
+#
+# Formatting the file would silently falsify every one of those citations. A reader who
+# followed one and found a difference could not distinguish tampering from rustfmt.
+#
+# ★ Why this belongs HERE and not as `#[rustfmt::skip]` in the file: that attribute
+# would require EDITING the file, which destroys the byte-identity the exemption exists
+# to protect. A config-side exclusion is the only mechanism that preserves the property.
+#
+# This is not a blanket "oracles are exempt" carve-out. `sort_recursive.rs` and
+# `substitute_oracle.rs` are oracles by ROLE but cite no commit and no line ranges, so
+# formatting them falsifies nothing and they are formatted normally. The criterion is
+# narrow and stated: a file is listed here only while its own text asserts provenance
+# against an external source.
+ignore = ["rholang/src/rust/interpreter/compiler/normalize_recursive.rs"]
