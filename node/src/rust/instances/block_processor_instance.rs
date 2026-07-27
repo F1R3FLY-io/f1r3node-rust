@@ -309,7 +309,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorInstance<T> {
                             if trigger_propose_after_block_processing_enabled() {
                                 if let Some(trigger_propose) = trigger_propose_f {
                                     // Skip trigger if local validator is not currently bonded.
-                                    // This avoids repeated ReadOnlyMode propose attempts on
+                                    // This avoids repeated propose attempts on
                                     // non-bonded nodes.
                                     let is_bonded_validator =
                                         if let Some(validator) = casper.get_validator() {
