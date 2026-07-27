@@ -262,10 +262,21 @@ jobs:
           DURATION_SECONDS: ${{ needs.schedule_gate.outputs.duration_seconds }}
           DASHBOARD_URL: https://f1r3fly-io.github.io/f1r3node-rust/
         run: |
-          curl -fsS --max-time 30 "${DASHBOARD_URL}data/latest-summary.json" \
-            -o /tmp/soak-baseline.json 2>/dev/null \
-            && export BASELINE_JSON=/tmp/soak-baseline.json \
-            || echo "no published baseline yet (bootstrap run)"
+          # Cache-busted so the week-over-week deltas are not computed against
+          # a stale CDN copy. Unlike the history fetch this stays soft: a 60h
+          # soak's report is worth more than its baseline comparison, so a
+          # miss degrades to "no baseline" rather than discarding the run —
+          # but a non-404 miss is warned about, since a silently absent
+          # baseline makes the verdict look clean.
+          cb="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          base_code="$(curl -sS --max-time 30 -H 'Cache-Control: no-cache' -w '%{http_code}' \
+            -o /tmp/soak-baseline.json \
+            "${DASHBOARD_URL}data/latest-summary.json?cb=${cb}")" || base_code=000
+          case "$base_code" in
+            200) export BASELINE_JSON=/tmp/soak-baseline.json ;;
+            404) echo "no published baseline yet (bootstrap run)" ;;
+            *)   echo "::warning::baseline fetch failed (HTTP ${base_code}); verdict computed without week-over-week comparison" ;;
+          esac
           ci-control/scripts/bench/aggregate-perf-report.sh
           cat "$OUT_DIR/perf-report.md" >> "$GITHUB_STEP_SUMMARY"
 
@@ -280,6 +291,16 @@ jobs:
         run: |
           # Instance-principal auth: works only on the OCI runner, no secrets.
           # Notification failure must never mask the soak result.
+          #
+          # This overlaps with the notify_failure job by design — do not
+          # "deduplicate" them. This step sends the weekly verdict with its
+          # metrics and week-over-week deltas, but only ever runs ON the soak
+          # runner and only once a report exists, so it cannot report a runner
+          # that never launched or a soak that died before writing one.
+          # notify_failure covers exactly those cases from a GitHub-hosted
+          # runner. A weekend soak that completes and then fails its verdict
+          # gate therefore sends two mails: the verdict (with numbers) and the
+          # job-level alert. That is the accepted cost of never going silent.
           ci-control/scripts/oci/publish-soak-alert.sh || \
             echo "::warning::ONS alert publish failed (non-fatal)"
 
@@ -329,9 +350,29 @@ jobs:
             echo "::error::soak artifact has no weekly-summary.json"; exit 1; }
           mkdir -p site/data
           cp -r ci-control/site/soak-dashboard/. site/
-          curl -fsS --max-time 30 "${DASHBOARD_URL}data/history.json" \
-            -o /tmp/history.json 2>/dev/null || echo '[]' > /tmp/history.json
-          jq -e 'type == "array"' /tmp/history.json > /dev/null || echo '[]' > /tmp/history.json
+          # Pages is the only durable store for the history series — soak
+          # artifacts expire after 14 days — and this is the job that appends
+          # to it. Treating a transient fetch failure as "nothing published"
+          # would permanently reset the series to this run alone, so only a
+          # 404 may start an empty history and anything else aborts. The
+          # cache-busting query string stops the CDN serving a copy older
+          # than the last publish, which would drop intervening weeks.
+          cb="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          code="$(curl -sS --max-time 30 -H 'Cache-Control: no-cache' -w '%{http_code}' \
+            -o /tmp/history.json "${DASHBOARD_URL}data/history.json?cb=${cb}")" || code=000
+          case "$code" in
+            200)
+              jq -e 'type == "array"' /tmp/history.json >/dev/null 2>&1 || {
+                echo "::error::published history.json is not a JSON array; refusing to reset the series"
+                exit 1
+              }
+              ;;
+            404) echo '[]' > /tmp/history.json ;;
+            *)
+              echo "::error::could not read published history.json (HTTP ${code}); aborting so the series is not reset to this run alone"
+              exit 1
+              ;;
+          esac
           jq -s '.[0] + [.[1]] | sort_by(.run.date)' \
             /tmp/history.json soak-results/report/weekly-summary.json \
             > site/data/history.json
@@ -426,12 +467,14 @@ jobs:
             exit 1
           fi
           if [ "$DURATION_SECONDS" = "216000" ]; then kind="weekend-60h"; else kind="daily-24h"; fi
-          # Name what actually broke. A soak that never ran and a dashboard
-          # that failed to publish after a clean soak are different pages.
+          # Name what actually broke. A soak that never ran and a report stage
+          # that failed after a clean soak are different pages. perf_report
+          # covers both the Pages deploy and the regression verdict gate, so
+          # its failure is named for the stage rather than the deploy alone.
           case "$LAUNCH_RESULT/$SOAK_RESULT" in
             failure/*|cancelled/*) what="runner launch $LAUNCH_RESULT" ;;
             */failure|*/cancelled) what="soak $SOAK_RESULT" ;;
-            *)                     what="dashboard publish $DASHBOARD_RESULT" ;;
+            *)                     what="report/verdict stage $DASHBOARD_RESULT" ;;
           esac
           title="F1R3FLY soak alert ($kind): $what — $(date -u +%F)"
           body="Merge Recovery Soak did not complete cleanly: $what.
