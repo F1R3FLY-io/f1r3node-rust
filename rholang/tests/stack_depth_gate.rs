@@ -547,21 +547,25 @@ fn ceiling(debug: usize, release: usize) -> usize {
 
 fn substitute_body(depth: usize) {
     let term = nested_list(depth);
+    assert_carries("the substitute input's nesting", par_depth(&term), depth);
     let s = substitute_instance();
     let env: Env<Par> = Env::new();
     let out = s
         .substitute(term, 0, &env)
         .expect("stack_depth_gate: substitute failed");
+    assert_carries("the substitute OUTPUT's nesting", par_depth(&out), depth);
     dismantle(out);
 }
 
 fn substitute_no_sort_body(depth: usize) {
     let term = nested_list(depth);
+    assert_carries("the substitute_no_sort input's nesting", par_depth(&term), depth);
     let s = substitute_instance();
     let env: Env<Par> = Env::new();
     let out = s
         .substitute_no_sort(term, 0, &env)
         .expect("stack_depth_gate: substitute_no_sort failed");
+    assert_carries("the substitute_no_sort OUTPUT's nesting", par_depth(&out), depth);
     dismantle(out);
 }
 
@@ -580,10 +584,17 @@ fn substitute_binders_body(depth: usize) {
         base.put(nested_list(depth))
     });
     let term = nested_binders(depth);
+    assert_carries("the binder-scope nesting", binder_depth(&term), depth);
+    // The bound value must be deep too — that is the whole point of this
+    // subject against `substitute_binders_ground_env`.
+    for bound in env.env_map.values() {
+        assert_carries("the BOUND value's nesting", par_depth(bound), depth);
+    }
     let s = substitute_instance();
     let out = s
         .substitute_no_sort(term, 0, &env)
         .expect("stack_depth_gate: substitute_binders failed");
+    assert_carries("the substitute_binders OUTPUT's binder nesting", binder_depth(&out), depth);
     dismantle(out);
     // ⚠ The ENVIRONMENT has to be torn down iteratively too. It holds a
     // depth-`depth` bound value, and `Env`'s `HashMap<i32, Par>` drops through
@@ -628,37 +639,50 @@ fn substitute_deep_binding_body(depth: usize) {
     let out = s
         .substitute_no_sort(term, 0, &env)
         .expect("stack_depth_gate: substitute_deep_binding failed");
+    // ⚠ The strongest anti-vacuity check in this file: the subject measures the
+    // `Env::get` deep CLONE, so the spliced-in bound value must actually be
+    // there at full depth. If substitution had not substituted, the output
+    // would be the `EVar` and this reads 0.
+    assert_carries("the SPLICED bound value's nesting", par_depth(&out), depth);
     dismantle(out);
     dismantle_all(env.env_map.into_values());
 }
 
 fn substitute_wide_body(width: usize) {
     let term = wide_list(width);
+    assert_carries("the substitute_wide input's sibling count", par_width(&term), width);
     let s = substitute_instance();
     let env: Env<Par> = Env::new();
     let out = s
         .substitute(term, 0, &env)
         .expect("stack_depth_gate: substitute_wide failed");
+    assert_carries("the substitute_wide OUTPUT's sibling count", par_width(&out), width);
     dismantle(out);
 }
 
 fn sort_body(depth: usize) {
     let term = nested_list(depth);
+    assert_carries("the sort input's nesting", par_depth(&term), depth);
     let out = ParSortMatcher::sort_match(&term);
+    assert_carries("the sort OUTPUT's nesting", par_depth(&out.term), depth);
     dismantle(out.term);
     dismantle(term);
 }
 
 fn sort_nested_set_body(depth: usize) {
     let term = nested_sets(depth);
+    assert_carries("the nested-ESet input's nesting", eset_depth(&term), depth);
     let out = ParSortMatcher::sort_match(&term);
+    assert_carries("the nested-ESet OUTPUT's nesting", eset_depth(&out.term), depth);
     dismantle(out.term);
     dismantle(term);
 }
 
 fn sort_nested_map_body(depth: usize) {
     let term = nested_maps(depth);
+    assert_carries("the nested-EMap input's nesting", emap_depth(&term), depth);
     let out = ParSortMatcher::sort_match(&term);
+    assert_carries("the nested-EMap OUTPUT's nesting", emap_depth(&out.term), depth);
     dismantle(out.term);
     dismantle(term);
 }
@@ -668,7 +692,9 @@ fn sort_nested_map_body(depth: usize) {
 /// left in the set arm is the derived-traversal class and not the sorter.
 fn clone_nested_set_body(depth: usize) {
     let term = nested_sets(depth);
+    assert_carries("the clone_nested_set input's nesting", eset_depth(&term), depth);
     let c = term.clone();
+    assert_carries("the CLONE's nesting", eset_depth(&c), depth);
     dismantle(c);
     dismantle(term);
 }
@@ -680,7 +706,9 @@ fn sort_wide_body(width: usize) {
         exprs: vec![wide_list_expr(width), wide_list_expr(width)],
         ..Default::default()
     };
+    assert_carries("the sort_wide input's sibling count", par_width(&term), width);
     let out = ParSortMatcher::sort_match(&term);
+    assert_carries("the sort_wide OUTPUT's sibling count", par_width(&out.term), width);
     dismantle(out.term);
     dismantle(term);
 }
@@ -704,6 +732,9 @@ fn score_cmp_body(depth: usize) {
             score: deep_score(depth, 0),
         },
     ];
+    for s in &scored {
+        assert_carries("a compared score tree's nesting", tree_depth(&s.score), depth);
+    }
     ScoredTerm::sort_vec(&mut scored);
     assert_eq!(scored[0].term, 0, "the comparator did not order the pair");
 }
@@ -721,6 +752,9 @@ fn score_cmp_wide_body(width: usize) {
             score: wide_score(width),
         },
     ];
+    for s in &scored {
+        assert_carries("a compared score tree's sibling count", tree_width(&s.score), width);
+    }
     ScoredTerm::sort_vec(&mut scored);
     // Stable sort + `Equal` comparison must preserve the input order. That is
     // the property `sig.rs` depends on, asserted at every width the gate probes.
@@ -731,12 +765,15 @@ fn tree_drop_body(depth: usize) {
     // `Tree<ScoreAtom>` is a recursive RUST type, not a proto message, so the
     // audit's Tarjan-over-the-proto enumeration could not see it.
     let score = deep_score(depth, 0);
+    assert_carries("the dropped score tree's nesting", tree_depth(&score), depth);
     drop(score);
 }
 
 fn tree_clone_body(depth: usize) {
     let score = deep_score(depth, 0);
+    assert_carries("the cloned score tree's nesting", tree_depth(&score), depth);
     let c = score.clone();
+    assert_carries("the CLONE's nesting", tree_depth(&c), depth);
     assert!(c == score, "the iterative Clone did not reproduce its input");
     drop(c);
     drop(score);
@@ -744,23 +781,31 @@ fn tree_clone_body(depth: usize) {
 
 fn pretty_body(depth: usize) {
     let term = nested_list(depth);
+    assert_carries("the pretty input's nesting", par_depth(&term), depth);
     let mut pp = PrettyPrinter::new();
     let s = pp.build_string_from_message(&term);
-    assert!(!s.is_empty());
+    // ⚠ `!s.is_empty()` was the old check and it is far too weak: a printer
+    // that returned "Nil" — or the `<unprintable: …>` fallback — would pass it
+    // while doing no traversal at all. The RENDERED nesting is the real proof.
+    assert_carries("the PRINTED nesting", printed_bracket_depth(&s), depth);
     dismantle(term);
 }
 
 fn pretty_wide_body(width: usize) {
     let term = wide_list(width);
+    assert_carries("the pretty_wide input's sibling count", par_width(&term), width);
     let mut pp = PrettyPrinter::new();
     let s = pp.build_string_from_message(&term);
-    assert!(!s.is_empty());
+    // `[a, b, c]` — one comma fewer than there are elements.
+    assert_carries("the PRINTED sibling count", s.matches(", ").count() + 1, width);
     dismantle(term);
 }
 
 fn clone_body(depth: usize) {
     let term = nested_list(depth);
+    assert_carries("the clone input's nesting", par_depth(&term), depth);
     let c = term.clone();
+    assert_carries("the CLONE's nesting", par_depth(&c), depth);
     dismantle(c);
     dismantle(term);
 }
@@ -769,25 +814,62 @@ fn drop_body(depth: usize) {
     // The ONE subject that must be allowed to drop recursively — that is the
     // thing under test.
     let term = nested_list(depth);
+    assert_carries("the dropped term's nesting", par_depth(&term), depth);
     drop(term);
 }
 
 fn encode_body(depth: usize) {
     use prost::Message;
     let term = nested_list(depth);
+    assert_carries("the encode input's nesting", par_depth(&term), depth);
     let bytes = term.encode_to_vec();
-    assert!(!bytes.is_empty());
+    // Each `EList` level contributes at least its three length-delimited keys,
+    // so a collapsed fixture cannot produce a plausible byte count.
+    assert!(
+        bytes.len() >= 3 * depth,
+        "VACUOUS PROBE: encoding a depth-{} term produced only {} bytes",
+        depth,
+        bytes.len()
+    );
     dismantle(term);
 }
 
+// ---------------------------------------------------------------------------
+// ⚠ ANTI-VACUITY: every subject must PROVE its input carries the parameter it
+// claims, and — where the subject produces a structure — that its output does
+// too.
+//
+// This is the same failure mode as intercept-masking, approached from the other
+// side. A probe whose fixture silently collapsed would run in O(1) stack and
+// report a comfortable ZERO, and the gate would certify depth-independence for
+// a traversal that was never given any depth. That has already happened three
+// times in this work:
+//
+//   * the `prost` decode probe used a wrong field number, so the decoder SKIPPED
+//     the payload as an unknown field and reconstructed a shallow term (audit
+//     §4.3);
+//   * `generate_par` sized every collection with an exclusive `0..1`, so the
+//     sub-generators NEVER RAN and the corpus was two values (audit §11.3);
+//   * the score-tree subjects built their inputs on the gated thread and
+//     reported the SORTER's 78,573 B/level instead of the comparator's 1,329.
+//
+// So the discipline is applied UNIFORMLY, at every subject, rather than at the
+// one subject where somebody happened to think of it. Every walker below is
+// ITERATIVE: a recursive checker would measure itself.
+// ---------------------------------------------------------------------------
+
+/// The uniform anti-vacuity assertion.
+fn assert_carries(what: &str, actual: usize, claimed: usize) {
+    assert_eq!(
+        actual, claimed,
+        "VACUOUS PROBE: {} is {} but the subject was asked for {}. The reading would be \
+         meaningless — a fixture that collapses runs in O(1) stack and reports a \
+         comfortable zero for a traversal that was never given any depth or width.",
+        what, actual, claimed
+    );
+}
+
 /// Count `[[…[x]…]]` nesting levels ITERATIVELY.
-///
-/// ⚠ Used to prove a decoded term actually HAS the nesting the probe claims.
-/// Without it a codec that silently skipped the payload — a wrong field number,
-/// a length mismatch, an unknown-field skip — would decode to a shallow term in
-/// `O(1)` stack and the subject would report a comfortable 0 B/level for the
-/// wrong reason. That failure has already happened once in this work (the
-/// `prost` field-number bug, audit §4.3).
 fn par_depth(p: &Par) -> usize {
     let mut n = 0usize;
     let mut cur = p;
@@ -800,6 +882,105 @@ fn par_depth(p: &Par) -> usize {
             _ => return n,
         }
     }
+}
+
+/// Sibling count of the outermost `EList`.
+fn par_width(p: &Par) -> usize {
+    match p.exprs.first().and_then(|e| e.expr_instance.as_ref()) {
+        Some(ExprInstance::EListBody(l)) => l.ps.len(),
+        _ => 0,
+    }
+}
+
+/// Count `{{…{x}…}}` nesting levels (the `ESet` shape) ITERATIVELY.
+fn eset_depth(p: &Par) -> usize {
+    let mut n = 0usize;
+    let mut cur = p;
+    loop {
+        match cur.exprs.first().and_then(|e| e.expr_instance.as_ref()) {
+            Some(ExprInstance::ESetBody(set)) if !set.ps.is_empty() => {
+                n += 1;
+                cur = &set.ps[0];
+            }
+            _ => return n,
+        }
+    }
+}
+
+/// Count nested `EMap` levels ITERATIVELY, following the KEY.
+fn emap_depth(p: &Par) -> usize {
+    let mut n = 0usize;
+    let mut cur = p;
+    loop {
+        match cur.exprs.first().and_then(|e| e.expr_instance.as_ref()) {
+            Some(ExprInstance::EMapBody(map)) if !map.kvs.is_empty() => {
+                match map.kvs[0].key.as_ref() {
+                    Some(k) => {
+                        n += 1;
+                        cur = k;
+                    }
+                    None => return n,
+                }
+            }
+            _ => return n,
+        }
+    }
+}
+
+/// Count `new … in { for (…) { … } }` binder scopes ITERATIVELY.
+fn binder_depth(p: &Par) -> usize {
+    let mut n = 0usize;
+    let mut cur = p;
+    loop {
+        let Some(new) = cur.news.first() else {
+            return n;
+        };
+        let Some(inner) = new.p.as_ref() else {
+            return n;
+        };
+        let Some(recv) = inner.receives.first() else {
+            return n;
+        };
+        match recv.body.as_ref() {
+            Some(body) => {
+                n += 1;
+                cur = body;
+            }
+            None => return n,
+        }
+    }
+}
+
+/// Nesting depth of a score tree, following the LAST child (the shape
+/// [`deep_score`] builds), ITERATIVELY.
+fn tree_depth(t: &Tree<ScoreAtom>) -> usize {
+    let mut n = 0usize;
+    let mut cur = t;
+    loop {
+        match cur {
+            Tree::Node(children) => match children.last() {
+                Some(last) => {
+                    n += 1;
+                    cur = last;
+                }
+                None => return n,
+            },
+            Tree::Leaf(_) => return n,
+        }
+    }
+}
+
+/// Sibling count at the root of a score tree.
+fn tree_width(t: &Tree<ScoreAtom>) -> usize {
+    match t {
+        Tree::Node(children) => children.len(),
+        Tree::Leaf(_) => 0,
+    }
+}
+
+/// Leading `[` characters — the depth a printed `nested_list` must show.
+fn printed_bracket_depth(s: &str) -> usize {
+    s.chars().take_while(|c| *c == '[').count()
 }
 
 /// ⚠ THE FAMILY'S BINDING MEMBER, AND UNTIL NOW IT HAD NO GATE COVERAGE AT ALL.
@@ -821,8 +1002,14 @@ fn par_depth(p: &Par) -> usize {
 /// 28,362 / 12,894.
 fn bincode_ser_body(depth: usize) {
     let term = nested_list(depth);
+    assert_carries("the bincode_ser input's nesting", par_depth(&term), depth);
     let bytes = bincode::serialize(&term).expect("stack_depth_gate: bincode_ser failed");
-    assert!(!bytes.is_empty());
+    assert!(
+        bytes.len() >= depth,
+        "VACUOUS PROBE: bincode-encoding a depth-{} term produced only {} bytes",
+        depth,
+        bytes.len()
+    );
     dismantle(term);
 }
 
@@ -841,12 +1028,7 @@ fn bincode_de_body(depth: usize) {
     });
     let decoded: Par =
         bincode::deserialize(&bytes).expect("stack_depth_gate: bincode_de failed");
-    assert_eq!(
-        par_depth(&decoded),
-        depth,
-        "stack_depth_gate: bincode_de did not reconstruct the nesting — the reading \
-         would be meaningless"
-    );
+    assert_carries("the DECODED term's nesting", par_depth(&decoded), depth);
     dismantle(decoded);
 }
 
