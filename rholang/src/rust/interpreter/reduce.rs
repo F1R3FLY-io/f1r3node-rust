@@ -154,6 +154,180 @@ impl Drop for LiveGuard {
     }
 }
 
+// Split-id routing by parallel width. Term indices are 0-based, so a
+// width-N Par produces ids 0..=N-1:
+//   - width <= 128: every id (0..=127) is `i8`-representable —
+//     `split_byte` (ONE domain-separation path byte). Byte-identical
+//     to the historical behavior; consensus-relevant, do not change.
+//   - width in [129, 256]: ids reach 128..=255, which overflow `i8`.
+//     The old boundary (`> 256`) still sent these widths to
+//     `split_byte`, so `id.try_into().unwrap()` panicked with
+//     `PosOverflow` at id 128 — this range previously produced NO
+//     output (it always crashed). It now joins the `split_short`
+//     path (TWO little-endian path bytes) used by every larger width.
+//   - width > 256: ids fit `i16` (the Par is capped at
+//     `term_split_limit = i16::MAX` terms below) — `split_short`,
+//     unchanged.
+// The boundary sits at 128 because that is the largest width whose
+// maximum id (127) still fits `i8`. A `split_short` child appends two
+// path bytes where a `split_byte` child appends one, so the rerouted
+// range cannot collide with any defined `split_byte` output of the
+// same parent generator.
+// ⚠ Takes the WIDTH, not the term vector. Its body only ever read
+// `terms.len()`, and taking the count instead is what lets the caller
+// `into_iter()` the terms and MOVE each one into its branch future
+// rather than deep-cloning it. `eval_par_split_is_unchanged_by_the_move`
+// pins that this re-typing is behaviour-preserving across every width
+// boundary — the split id routing is consensus-relevant.
+pub(crate) fn eval_par_split(
+    id: i32,
+    term_count: usize,
+    rand: Blake2b512Random,
+) -> Blake2b512Random {
+    if term_count == 1 {
+        rand
+    } else if term_count > 128 {
+        rand.split_short(
+            id.try_into()
+                .expect("term index must fit i16: widths are capped at i16::MAX terms"),
+        )
+    } else {
+        rand.split_byte(
+            id.try_into()
+                .expect("term index must fit i8 for parallel widths <= 128"),
+        )
+    }
+}
+
+/// ★ THE REQUIRED DIFFERENTIAL FOR THE SPAWN-BOUNDARY DE-CLONE.
+///
+/// Deleting the per-branch `<Par as Clone>::clone` in `eval_par` required
+/// re-typing [`eval_par_split`] from `terms: &Vec<GeneratedMessage>` to
+/// `term_count: usize`, because `terms` has to be consumed by `into_iter()`
+/// for the terms to be MOVED into their branch futures.
+///
+/// That re-typing touches consensus. `eval_par_split` decides each parallel
+/// branch's `Blake2b512Random`, which determines every unforgeable name the
+/// branch mints and therefore the COMM events it can participate in. A change
+/// of one split id is a fork.
+///
+/// So this asserts the ORDERED sequence — not a final state, not a set — of
+/// splits the production function produces for a whole parallel width, against
+/// an oracle that is the **verbatim pre-change body**, at every width where the
+/// routing changes behaviour: the `== 1` short circuit, the `<= 128`
+/// `split_byte` domain, the `> 128` `split_short` domain, and both sides of
+/// each boundary.
+#[cfg(test)]
+mod differential_eval_par_split {
+    use super::*;
+    use models::rhoapi::Par;
+
+    /// The pre-change body, verbatim, still taking the term vector.
+    fn split_oracle(
+        id: i32,
+        terms: &Vec<GeneratedMessage>,
+        rand: Blake2b512Random,
+    ) -> Blake2b512Random {
+        if terms.len() == 1 {
+            rand
+        } else if terms.len() > 128 {
+            rand.split_short(
+                id.try_into()
+                    .expect("term index must fit i16: widths are capped at i16::MAX terms"),
+            )
+        } else {
+            rand.split_byte(
+                id.try_into()
+                    .expect("term index must fit i8 for parallel widths <= 128"),
+            )
+        }
+    }
+
+    /// Only `len()` is ever read, but the oracle takes the real type, so the
+    /// fixture builds real values.
+    fn terms_of_width(width: usize) -> Vec<GeneratedMessage> {
+        (0..width)
+            .map(|_| GeneratedMessage::Expr(models::rhoapi::Expr { expr_instance: None }))
+            .collect()
+    }
+
+    #[test]
+    fn eval_par_split_is_unchanged_by_the_move() {
+        let seed = Blake2b512Random::create_from_bytes(&[7u8; 32]);
+        // Every width where the routing can change: the `== 1` short circuit,
+        // the `split_byte` domain and its last member, the first `split_short`
+        // width, and widths past the old (crashing) `> 256` boundary.
+        for width in [1usize, 2, 3, 127, 128, 129, 200, 255, 256, 257, 400] {
+            let terms = terms_of_width(width);
+            // The ORDERED sequence, exactly as `eval_par` generates it.
+            let produced: Vec<Vec<i8>> = (0..width)
+                .map(|index| {
+                    eval_par_split(
+                        i32::try_from(index).expect("index fits i32"),
+                        width,
+                        seed.clone(),
+                    )
+                    .clone()
+                    .next()
+                    .to_vec()
+                })
+                .collect();
+            let expected: Vec<Vec<i8>> = (0..width)
+                .map(|index| {
+                    split_oracle(
+                        i32::try_from(index).expect("index fits i32"),
+                        &terms,
+                        seed.clone(),
+                    )
+                    .clone()
+                    .next()
+                    .to_vec()
+                })
+                .collect();
+            assert_eq!(
+                produced, expected,
+                "★ THE PARALLEL-BRANCH RAND TRACE MOVED at width {}. `eval_par_split` \
+                 decides each branch's Blake2b512Random, hence every unforgeable name it \
+                 mints and every COMM it can take part in. This is a consensus fork, not \
+                 a performance regression.",
+                width
+            );
+            // And the sequence must be pairwise DISTINCT wherever the routing
+            // splits at all — otherwise the comparison above could pass on a
+            // degenerate all-equal trace.
+            if width > 1 {
+                let mut sorted = produced.clone();
+                sorted.sort();
+                sorted.dedup();
+                assert_eq!(
+                    sorted.len(),
+                    produced.len(),
+                    "VACUOUS: width {} produced a degenerate rand trace with repeats, so \
+                     the equality above would prove nothing",
+                    width
+                );
+            }
+        }
+    }
+
+    /// The de-clone must not change what the branch is given, only how it gets
+    /// there: moving a term and cloning it produce the same value.
+    #[test]
+    fn moving_a_branch_term_is_the_same_value_as_cloning_it() {
+        let term = GeneratedMessage::Expr(models::rhoapi::Expr {
+            expr_instance: Some(models::rhoapi::expr::ExprInstance::GInt(42)),
+        });
+        let cloned = term.clone();
+        let terms = vec![term];
+        let moved = terms.into_iter().next().expect("one term");
+        match (&cloned, &moved) {
+            (GeneratedMessage::Expr(a), GeneratedMessage::Expr(b)) => assert_eq!(a, b),
+            _ => panic!("variant changed under the move"),
+        }
+        let _ = Par::default();
+    }
+}
+
 /// Spawn `fut` as a detached task counted by `drive`. INCREMENT-BEFORE-SPAWN + the RAII guard
 /// guarantee `live` never reaches 0 prematurely and never misses a decrement. `catch_unwind` is
 /// MANDATORY: a panicking deploy must still record an error, else `is_failed` would flip to success.
@@ -563,45 +737,6 @@ impl DebruijnInterpreter {
         .filter(|vec| !vec.is_empty())
         .flatten()
         .collect();
-        // Split-id routing by parallel width. Term indices are 0-based, so a
-        // width-N Par produces ids 0..=N-1:
-        //   - width <= 128: every id (0..=127) is `i8`-representable —
-        //     `split_byte` (ONE domain-separation path byte). Byte-identical
-        //     to the historical behavior; consensus-relevant, do not change.
-        //   - width in [129, 256]: ids reach 128..=255, which overflow `i8`.
-        //     The old boundary (`> 256`) still sent these widths to
-        //     `split_byte`, so `id.try_into().unwrap()` panicked with
-        //     `PosOverflow` at id 128 — this range previously produced NO
-        //     output (it always crashed). It now joins the `split_short`
-        //     path (TWO little-endian path bytes) used by every larger width.
-        //   - width > 256: ids fit `i16` (the Par is capped at
-        //     `term_split_limit = i16::MAX` terms below) — `split_short`,
-        //     unchanged.
-        // The boundary sits at 128 because that is the largest width whose
-        // maximum id (127) still fits `i8`. A `split_short` child appends two
-        // path bytes where a `split_byte` child appends one, so the rerouted
-        // range cannot collide with any defined `split_byte` output of the
-        // same parent generator.
-        fn split(
-            id: i32,
-            terms: &Vec<GeneratedMessage>,
-            rand: Blake2b512Random,
-        ) -> Blake2b512Random {
-            if terms.len() == 1 {
-                rand
-            } else if terms.len() > 128 {
-                rand.split_short(
-                    id.try_into()
-                        .expect("term index must fit i16: widths are capped at i16::MAX terms"),
-                )
-            } else {
-                rand.split_byte(
-                    id.try_into()
-                        .expect("term index must fit i8 for parallel widths <= 128"),
-                )
-            }
-        }
-
         let term_split_limit = i16::MAX;
         if terms.len() > term_split_limit.try_into().unwrap() {
             Err(InterpreterError::ReduceError(format!(
@@ -620,20 +755,39 @@ impl DebruijnInterpreter {
                             + 'static,
                     >,
                 >,
-            > = terms
-                .iter()
+            > = {
+                // ★ LEG-1 DE-CLONE AT THE TASK-SPAWN BOUNDARY.
+                //
+                // This was `terms.iter() … let term_clone = term.clone();`. The
+                // spawned future is `'static`, so the branch term must be
+                // OWNED — but it does not have to be COPIED: `terms` is not
+                // used after this map, and the only in-closure use of it was
+                // `split(index, &terms, …)`, whose body reads nothing but
+                // `terms.len()`. Hoisting the count therefore lets the terms be
+                // MOVED, which deletes a `<GeneratedMessage as Clone>::clone`
+                // per parallel branch — and that clone is a
+                // `<Par as Clone>::clone`, the derived Θ(depth) traversal
+                // measured at 15,914 B/level (debug) / 2,867 (release). At that
+                // constant it is `D_max ≈ 130` on the 2 MiB stack a tokio
+                // worker gets, which made it the binding WORKER-side member of
+                // the family — not a residual.
+                //
+                // This is the "move where not reused" case; no `Arc` is needed
+                // because nothing else holds the terms.
+                let term_count = terms.len();
+                terms
+                .into_iter()
                 .enumerate()
                 .map(|(index, term)| {
                     let self_clone = self.with_metering_child(index);
-                    let term_clone = term.clone();
                     let env_clone = env.clone();
-                    let rand_split = split(index.try_into().unwrap(), &terms, rand.clone());
+                    let rand_split = eval_par_split(index.try_into().unwrap(), term_count, rand.clone());
                     // Child coordinate for parallel term `index` (matches the rand split index).
                     let mut child = path.clone();
                     child.push(index as u32);
                     Box::pin(async move {
                         self_clone
-                            .generated_message_eval(&term_clone, &env_clone, rand_split, child)
+                            .generated_message_eval(&term, &env_clone, rand_split, child)
                             .await
                     })
                         as Pin<
@@ -644,7 +798,8 @@ impl DebruijnInterpreter {
                             >,
                         >
                 })
-                .collect();
+                .collect()
+            };
 
             metrics::counter!("reducer.eval_par.calls", "source" => "rholang").increment(1);
             metrics::counter!("reducer.eval_par.term_count", "source" => "rholang")
