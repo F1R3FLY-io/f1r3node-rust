@@ -51,10 +51,13 @@ fn lib_body(src: &str) -> String {
 fn with_libs(test_snippet: &str) -> String {
     format!(
         r#"
-        new File, fdP, stateP, Dir, rootP, openFileImpl,
+        new File, fdP, stateP, Dir, rootP,
+            openFileImpl, openDirImpl, parseRwxToBits, parseRwxLoop,
             fsRead, fsWrite, fsSeek, fsTell, fsSize, fsFlush, fsClose,
-            fsStat, fsExists, fsOpen,
-            mockFdCell
+            fsStat, fsExists, fsOpen, fsTruncate, fsChmod, fsChown,
+            fsRemoveFile, fsRemoveDir, fsRename, fsCopyFile,
+            mockFdCell, chmodLog, chownLog, truncLog,
+            rmFileLog, rmDirLog, renameLog, copyLog
         in {{
           // -- Mock in-memory file "syscalls" ------------------------
           //
@@ -198,6 +201,71 @@ fn with_libs(test_snippet: &str) -> String {
 
           contract fsExists(@_root, @_rel, ret) = {{
             ret!([true, true])
+          }} |
+
+          // fs_truncate — records n in truncLog for test verification.
+          truncLog!([]) |
+          contract fsTruncate(@_fd, @n, ret) = {{
+            for (@log <- truncLog) {{
+              truncLog!(log ++ [n]) |
+              ret!([true])
+            }}
+          }} |
+
+          // fs_chmod — records (root, rel, bits) in chmodLog.
+          chmodLog!([]) |
+          contract fsChmod(@root, @rel, @bits, ret) = {{
+            for (@log <- chmodLog) {{
+              chmodLog!(log ++ [(root, rel, bits)]) |
+              ret!([true])
+            }}
+          }} |
+
+          // fs_chown — records (root, rel, owner, group) in chownLog.
+          chownLog!([]) |
+          contract fsChown(@root, @rel, @owner, @group, ret) = {{
+            for (@log <- chownLog) {{
+              chownLog!(log ++ [(root, rel, owner, group)]) |
+              ret!([true])
+            }}
+          }} |
+
+          // fs_removeFile — records (root, rel) in rmFileLog.
+          rmFileLog!([]) |
+          contract fsRemoveFile(@root, @rel, ret) = {{
+            for (@log <- rmFileLog) {{
+              rmFileLog!(log ++ [(root, rel)]) |
+              ret!([true])
+            }}
+          }} |
+
+          // fs_removeDir — records (root, rel, recursive) in rmDirLog.
+          rmDirLog!([]) |
+          contract fsRemoveDir(@root, @rel, @recursive, ret) = {{
+            for (@log <- rmDirLog) {{
+              rmDirLog!(log ++ [(root, rel, recursive)]) |
+              ret!([true])
+            }}
+          }} |
+
+          // fs_rename — records (fromRoot, from, toRoot, to).
+          renameLog!([]) |
+          contract fsRename(@fromRoot, @from, @toRoot, @to, ret) = {{
+            for (@log <- renameLog) {{
+              renameLog!(log ++ [(fromRoot, from, toRoot, to)]) |
+              ret!([true])
+            }}
+          }} |
+
+          // fs_copyFile — records (fromRoot, from, toRoot, to).  Reply
+          // includes a fake nBytes = 42 to exercise the [true, nBytes]
+          // shape from spec §Dir.copyFile.
+          copyLog!([]) |
+          contract fsCopyFile(@fromRoot, @from, @toRoot, @to, ret) = {{
+            for (@log <- copyLog) {{
+              copyLog!(log ++ [(fromRoot, from, toRoot, to)]) |
+              ret!([true, 42])
+            }}
           }} |
 
           // -- Library bodies ---------------------------------------
@@ -612,8 +680,9 @@ async fn file_close_propagates_fs_close_error() {
             .await;
     let src = format!(
         r#"
-        new File, fdP, stateP,
-            fsRead, fsWrite, fsSeek, fsTell, fsSize, fsFlush, fsClose
+        new File, fdP, stateP, parseRwxToBits, parseRwxLoop,
+            fsRead, fsWrite, fsSeek, fsTell, fsSize, fsFlush, fsClose,
+            fsTruncate, fsChmod, fsChown
         in {{
           contract fsRead(@_fd, @_n, ret)  = {{ ret!([true, "".hexToBytes()]) }} |
           contract fsWrite(@_fd, @_xs, ret) = {{ ret!([true, 0]) }} |
@@ -622,6 +691,13 @@ async fn file_close_propagates_fs_close_error() {
           contract fsSize(@_fd, ret) = {{ ret!([true, 0]) }} |
           contract fsFlush(@_fd, ret) = {{ ret!([true]) }} |
           contract fsClose(@_fd, ret) = {{ ret!([false, "FSERR_IO", "simulated"]) }} |
+          contract fsTruncate(@_fd, @_n, ret) = {{ ret!([true]) }} |
+          contract fsChmod(@_r, @_p, @_b, ret) = {{ ret!([true]) }} |
+          contract fsChown(@_r, @_p, @_o, @_g, ret) = {{ ret!([true]) }} |
+          // parseRwxToBits stub — this test doesn't exercise it, but
+          // File.rho's chmod method captures it as a free var so it
+          // needs to be in scope.  A minimal identity stub suffices.
+          contract parseRwxToBits(@_s, ret) = {{ ret!([true, 0]) }} |
 
 {}
 
@@ -748,4 +824,514 @@ async fn dir_open_file_accepts_all_whitelisted_modes() {
         let (ok, _, _, _) = extract_reply(&reply);
         assert!(ok, "mode {:?} must be accepted on a rw Dir", mode);
     }
+}
+
+// ---------------------------------------------------------------------
+// Second-slice tests: File.truncate/chmod/chown + parseRwxToBits +
+// Dir.openDir + 6 Dir mutation methods.
+// ---------------------------------------------------------------------
+
+// -- File.truncate ----------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn file_truncate_rw_succeeds() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@f <- File!?(1, "/root", "rw")) {
+          for (@r <- @f!?("truncate", 100)) { @"out"!(r) }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, _, _, _) = extract_reply(&reply);
+    assert!(ok, "truncate must succeed on rw file");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn file_truncate_on_readonly_rejects() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@f <- File!?(1, "/root", "r")) {
+          for (@r <- @f!?("truncate", 100)) { @"out"!(r) }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, code, _, _) = extract_reply(&reply);
+    assert!(!ok);
+    assert_eq!(code, "FSERR_UNSUPPORTED");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn file_truncate_negative_rejects() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@f <- File!?(1, "/root", "rw")) {
+          for (@r <- @f!?("truncate", -1)) { @"out"!(r) }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, code, _, _) = extract_reply(&reply);
+    assert!(!ok);
+    assert_eq!(code, "FSERR_BAD_ARG");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn file_truncate_non_int_rejects() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@f <- File!?(1, "/root", "rw")) {
+          for (@r <- @f!?("truncate", "not int")) { @"out"!(r) }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, code, _, _) = extract_reply(&reply);
+    assert!(!ok);
+    assert_eq!(code, "FSERR_BAD_ARG");
+}
+
+// -- File.chmod -------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn file_chmod_valid_rwx_succeeds() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@f <- File!?(1, "/root", "rw")) {
+          for (@r <- @f!?("chmod", "rwxr-xr-x")) { @"out"!(r) }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, _, _, _) = extract_reply(&reply);
+    assert!(ok);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn file_chmod_octal_string_rejects() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@f <- File!?(1, "/root", "rw")) {
+          for (@r <- @f!?("chmod", "0755")) { @"out"!(r) }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, code, _, _) = extract_reply(&reply);
+    assert!(!ok);
+    assert_eq!(code, "FSERR_BAD_ARG");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn file_chmod_symbolic_delta_rejects() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@f <- File!?(1, "/root", "rw")) {
+          for (@r <- @f!?("chmod", "u+x")) { @"out"!(r) }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, code, _, _) = extract_reply(&reply);
+    assert!(!ok);
+    assert_eq!(code, "FSERR_BAD_ARG");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn file_chmod_wrong_char_at_position_rejects() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    // Position 0 must be 'r' or '-'; 'w' is invalid.
+    let src = with_libs(
+        r#"
+        for (@f <- File!?(1, "/root", "rw")) {
+          for (@r <- @f!?("chmod", "wwxr-xr-x")) { @"out"!(r) }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, code, _, _) = extract_reply(&reply);
+    assert!(!ok);
+    assert_eq!(code, "FSERR_BAD_ARG");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn file_chmod_all_dashes_yields_zero_bits() {
+    // ---------  → 0 bits.  Verifies parseRwxToBits handles the
+    // all-'-' case cleanly.
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@f <- File!?(1, "/root", "rw")) {
+          for (@r <- @f!?("chmod", "---------")) { @"out"!(r) }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, _, _, _) = extract_reply(&reply);
+    assert!(ok);
+}
+
+// -- File.chown -------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn file_chown_both_strings_succeeds() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@f <- File!?(1, "/root", "rw")) {
+          for (@r <- @f!?("chown", "alice", "wheel")) { @"out"!(r) }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, _, _, _) = extract_reply(&reply);
+    assert!(ok);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn file_chown_nil_group_succeeds() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@f <- File!?(1, "/root", "rw")) {
+          for (@r <- @f!?("chown", "alice", Nil)) { @"out"!(r) }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, _, _, _) = extract_reply(&reply);
+    assert!(ok);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn file_chown_empty_owner_rejects() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@f <- File!?(1, "/root", "rw")) {
+          for (@r <- @f!?("chown", "", Nil)) { @"out"!(r) }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, code, _, _) = extract_reply(&reply);
+    assert!(!ok);
+    assert_eq!(code, "FSERR_BAD_ARG");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn file_chown_non_string_non_nil_owner_rejects() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@f <- File!?(1, "/root", "rw")) {
+          for (@r <- @f!?("chown", 42, Nil)) { @"out"!(r) }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, code, _, _) = extract_reply(&reply);
+    assert!(!ok);
+    assert_eq!(code, "FSERR_BAD_ARG");
+}
+
+// -- Dir.openDir ------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn dir_open_dir_mints_nested_dir() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@d <- Dir!?("/root", "rw", *File)) {
+          for (@r <- @d!?("openDir", "subdir", "r")) {
+            match r {
+              [true, nested] => {
+                // Verify the nested Dir is usable — call stat on it.
+                for (@statReply <- @nested!?("stat", "child.txt")) {
+                  @"out"!([r, statReply])
+                }
+              }
+              _ => @"out"!([r, [false, "openDir failed"]])
+            }
+          }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let outer = match single_expr(&reply).unwrap().expr_instance {
+        Some(ExprInstance::EListBody(l)) => l,
+        _ => panic!(),
+    };
+    let (open_ok, _, _, _) = extract_reply(&outer.ps[0]);
+    assert!(open_ok, "openDir must succeed");
+    let (stat_ok, _, _, _) = extract_reply(&outer.ps[1]);
+    assert!(stat_ok, "nested Dir.stat must succeed");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn dir_open_dir_rejects_rw_from_readonly() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@d <- Dir!?("/root", "r", *File)) {
+          for (@r <- @d!?("openDir", "subdir", "rw")) { @"out"!(r) }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, code, _, _) = extract_reply(&reply);
+    assert!(!ok);
+    assert_eq!(code, "FSERR_UNSUPPORTED");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn dir_open_dir_rejects_invalid_mode() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@d <- Dir!?("/root", "rw", *File)) {
+          for (@r <- @d!?("openDir", "subdir", "w+")) { @"out"!(r) }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, code, _, _) = extract_reply(&reply);
+    assert!(!ok);
+    assert_eq!(code, "FSERR_BAD_ARG");
+}
+
+// -- Dir mutation methods (all rw-gated) ------------------------------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn dir_remove_file_rw_succeeds() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@d <- Dir!?("/root", "rw", *File)) {
+          for (@r <- @d!?("removeFile", "old.txt")) { @"out"!(r) }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, _, _, _) = extract_reply(&reply);
+    assert!(ok);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn dir_remove_file_on_readonly_rejects() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@d <- Dir!?("/root", "r", *File)) {
+          for (@r <- @d!?("removeFile", "old.txt")) { @"out"!(r) }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, code, _, _) = extract_reply(&reply);
+    assert!(!ok);
+    assert_eq!(code, "FSERR_UNSUPPORTED");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn dir_remove_dir_recursive_succeeds_on_rw() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@d <- Dir!?("/root", "rw", *File)) {
+          for (@r <- @d!?("removeDir", "olddir", true)) { @"out"!(r) }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, _, _, _) = extract_reply(&reply);
+    assert!(ok);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn dir_remove_dir_non_bool_recursive_rejects() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@d <- Dir!?("/root", "rw", *File)) {
+          for (@r <- @d!?("removeDir", "olddir", "yes")) { @"out"!(r) }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, code, _, _) = extract_reply(&reply);
+    assert!(!ok);
+    assert_eq!(code, "FSERR_BAD_ARG");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn dir_rename_rw_succeeds() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@d <- Dir!?("/root", "rw", *File)) {
+          for (@r <- @d!?("rename", "old.txt", "new.txt")) { @"out"!(r) }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, _, _, _) = extract_reply(&reply);
+    assert!(ok);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn dir_rename_on_readonly_rejects() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@d <- Dir!?("/root", "r", *File)) {
+          for (@r <- @d!?("rename", "old.txt", "new.txt")) { @"out"!(r) }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, code, _, _) = extract_reply(&reply);
+    assert!(!ok);
+    assert_eq!(code, "FSERR_UNSUPPORTED");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn dir_copy_file_returns_nbytes() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@d <- Dir!?("/root", "rw", *File)) {
+          for (@r <- @d!?("copyFile", "src.txt", "dst.txt")) { @"out"!(r) }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, _, n, _) = extract_reply(&reply);
+    assert!(ok);
+    // The mock returns [true, 42] per copyLog contract.
+    assert_eq!(n, Some(42));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn dir_chmod_valid_mode_succeeds() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@d <- Dir!?("/root", "rw", *File)) {
+          for (@r <- @d!?("chmod", "config.json", "rw-r--r--")) { @"out"!(r) }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, _, _, _) = extract_reply(&reply);
+    assert!(ok);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn dir_chmod_on_readonly_rejects() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@d <- Dir!?("/root", "r", *File)) {
+          for (@r <- @d!?("chmod", "config.json", "rw-r--r--")) { @"out"!(r) }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, code, _, _) = extract_reply(&reply);
+    assert!(!ok);
+    assert_eq!(code, "FSERR_UNSUPPORTED");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn dir_chown_rw_succeeds() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@d <- Dir!?("/root", "rw", *File)) {
+          for (@r <- @d!?("chown", "f.txt", "alice", "wheel")) { @"out"!(r) }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, _, _, _) = extract_reply(&reply);
+    assert!(ok);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn dir_chown_empty_string_rejects() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@d <- Dir!?("/root", "rw", *File)) {
+          for (@r <- @d!?("chown", "f.txt", "", Nil)) { @"out"!(r) }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, code, _, _) = extract_reply(&reply);
+    assert!(!ok);
+    assert_eq!(code, "FSERR_BAD_ARG");
 }

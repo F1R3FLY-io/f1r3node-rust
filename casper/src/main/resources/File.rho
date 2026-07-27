@@ -403,6 +403,206 @@ new File, fdP, stateP in {
       }
     } |
 
+    // -- truncate(n) ------------------------------------------------
+    //
+    // Spec §File.truncate: "requires a write-capable mode; returns
+    // FSERR_UNSUPPORTED otherwise."  Type-guard n as non-negative
+    // Int; forbid on "r" mode.
+    method truncate(@n) {
+      match n {
+        i /\ Int => {
+          match i < 0 {
+            true => return!([false, "FSERR_BAD_ARG", "n must be non-negative"])
+            false => {
+              for (@state <- @[*private, *stateP]) {
+                match state {
+                  "closed" => {
+                    @[*private, *stateP]!("closed") |
+                    return!([false, "FSERR_CLOSED", "file is closed"])
+                  }
+                  "open" => {
+                    for (@params <<- @[*private, *fdP]) {
+                      match params {
+                        (fd, _root, mode) => {
+                          match mode {
+                            "r" => {
+                              @[*private, *stateP]!("open") |
+                              return!([false, "FSERR_UNSUPPORTED",
+                                "truncate requires a write-capable mode"])
+                            }
+                            _ => {
+                              new retCh in {
+                                fsTruncate!(fd, i, *retCh) |
+                                for (@reply <- retCh) {
+                                  @[*private, *stateP]!("open") |
+                                  return!(reply)
+                                }
+                              }
+                            }
+                          }
+                        }
+                        _ => {
+                          @[*private, *stateP]!("open") |
+                          return!([false, "FSERR_IO", "fd params malformed"])
+                        }
+                      }
+                    }
+                  }
+                  _ => {
+                    @[*private, *stateP]!("closed") |
+                    return!([false, "FSERR_CLOSED", "file state unrecognized"])
+                  }
+                }
+              }
+            }
+          }
+        }
+        _ => return!([false, "FSERR_BAD_ARG", "n must be an integer"])
+      }
+    } |
+
+    // -- chmod(mode) ------------------------------------------------
+    //
+    // mode is the 9-character rwx string (spec §File.chmod).  Parsed
+    // via parseRwxToBits (captured from outer scope); malformed input
+    // returns FSERR_BAD_ARG from the parser.  Native fs_chmod handles
+    // the actual syscall.  Not gated on File mode — chmod at the OS
+    // level is owner-permission-based, not fd-mode-based.
+    method chmod(@mode) {
+      match mode {
+        m /\ String => {
+          for (@state <- @[*private, *stateP]) {
+            match state {
+              "closed" => {
+                @[*private, *stateP]!("closed") |
+                return!([false, "FSERR_CLOSED", "file is closed"])
+              }
+              "open" => {
+                for (@params <<- @[*private, *fdP]) {
+                  match params {
+                    (_fd, canonRoot, _mode) => {
+                      // fs_chmod takes (rootCanon, rel, bits, ack).
+                      // For a File we've already opened, the "rel"
+                      // has been consumed by fs_open — we need to
+                      // reconstruct the target.  For MVP, we store
+                      // the canonRoot as the FULL PATH (Fs agent
+                      // will set this appropriately at File
+                      // construction) and pass "" as rel.  A
+                      // follow-up commit refines the state layout
+                      // to carry (canonRoot, rel) separately.
+                      new parsedCh in {
+                        parseRwxToBits!(m, *parsedCh) |
+                        for (@parsed <- parsedCh) {
+                          match parsed {
+                            [true, bits] => {
+                              new retCh in {
+                                fsChmod!(canonRoot, "", bits, *retCh) |
+                                for (@reply <- retCh) {
+                                  @[*private, *stateP]!("open") |
+                                  return!(reply)
+                                }
+                              }
+                            }
+                            _ => {
+                              @[*private, *stateP]!("open") |
+                              return!(parsed)
+                            }
+                          }
+                        }
+                      }
+                    }
+                    _ => {
+                      @[*private, *stateP]!("open") |
+                      return!([false, "FSERR_IO", "fd params malformed"])
+                    }
+                  }
+                }
+              }
+              _ => {
+                @[*private, *stateP]!("closed") |
+                return!([false, "FSERR_CLOSED", "file state unrecognized"])
+              }
+            }
+          }
+        }
+        _ => return!([false, "FSERR_BAD_ARG", "mode must be a String"])
+      }
+    } |
+
+    // -- chown(owner, group) ---------------------------------------
+    //
+    // owner and group are String or Nil (spec §File.chown).  Empty
+    // String rejected; Nil means "don't change".  Native fs_chown
+    // returns FSERR_UNSUPPORTED in consensus mode.
+    method chown(@owner, @group) {
+      new ownerOk, groupOk in {
+        match owner {
+          s /\ String => {
+            match s {
+              "" => ownerOk!([false, "FSERR_BAD_ARG",
+                "owner must be non-empty or Nil"])
+              _  => ownerOk!([true, s])
+            }
+          }
+          Nil => ownerOk!([true, Nil])
+          _ => ownerOk!([false, "FSERR_BAD_ARG",
+            "owner must be String or Nil"])
+        } |
+        match group {
+          s /\ String => {
+            match s {
+              "" => groupOk!([false, "FSERR_BAD_ARG",
+                "group must be non-empty or Nil"])
+              _  => groupOk!([true, s])
+            }
+          }
+          Nil => groupOk!([true, Nil])
+          _ => groupOk!([false, "FSERR_BAD_ARG",
+            "group must be String or Nil"])
+        } |
+        for (@ov <- ownerOk; @gv <- groupOk) {
+          match [ov, gv] {
+            [[true, o], [true, g]] => {
+              for (@state <- @[*private, *stateP]) {
+                match state {
+                  "closed" => {
+                    @[*private, *stateP]!("closed") |
+                    return!([false, "FSERR_CLOSED", "file is closed"])
+                  }
+                  "open" => {
+                    for (@params <<- @[*private, *fdP]) {
+                      match params {
+                        (_fd, canonRoot, _mode) => {
+                          new retCh in {
+                            fsChown!(canonRoot, "", o, g, *retCh) |
+                            for (@reply <- retCh) {
+                              @[*private, *stateP]!("open") |
+                              return!(reply)
+                            }
+                          }
+                        }
+                        _ => {
+                          @[*private, *stateP]!("open") |
+                          return!([false, "FSERR_IO", "fd params malformed"])
+                        }
+                      }
+                    }
+                  }
+                  _ => {
+                    @[*private, *stateP]!("closed") |
+                    return!([false, "FSERR_CLOSED", "file state unrecognized"])
+                  }
+                }
+              }
+            }
+            [[false, _, _], _] => return!(ov)
+            [_, [false, _, _]] => return!(gv)
+            _ => return!([false, "FSERR_IO", "chown validation malformed"])
+          }
+        }
+      }
+    } |
+
     // -- Default arm -----------------------------------------------
 
     default(...@args) {
