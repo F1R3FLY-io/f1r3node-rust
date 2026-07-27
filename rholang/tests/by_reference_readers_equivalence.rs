@@ -254,6 +254,7 @@ fn every_expr_instance() -> Vec<Expr> {
             is_write_zipper: false,
             locally_free: vec![0b0110_0000],
             connective_used: false,
+            cursor_kind: 0,
         }),
         // method / matches
         ExprInstance::EMethodBody(EMethod {

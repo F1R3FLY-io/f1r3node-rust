@@ -183,5 +183,6 @@
   ],
   "is_write_zipper": false,
   "locally_free": [],
-  "connective_used": false
+  "connective_used": false,
+  "cursor_kind": 0
 }

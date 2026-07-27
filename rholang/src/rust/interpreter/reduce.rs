@@ -27,12 +27,12 @@ use models::rust::par_map_type_mapper::ParMapTypeMapper;
 use models::rust::par_set::ParSet;
 use models::rust::par_set_type_mapper::ParSetTypeMapper;
 use models::rust::pathmap_crate_type_mapper::PathMapCrateTypeMapper;
-use models::rust::pathmap_integration::segments_to_key;
+use models::rust::pathmap_integration::{cursor_entry_key, segments_to_key, CursorKind};
 use models::rust::pathmap_native_query::{
-    collect_child_segments, collect_subtrie_values, next_value_path, path_prefix_exists,
+    collect_child_segments, collect_subtrie_values, next_value_key, path_prefix_exists,
     subtrie_value_count,
 };
-use models::rust::pathmap_zipper::RholangReadZipper;
+use models::rust::pathmap_zipper::{decode_cursor, RholangReadZipper};
 use models::rust::rholang::implicits::{concatenate_pars, single_bundle, single_expr};
 use models::rust::sorted_par_hash_set::SortedParHashSet;
 use models::rust::sorted_par_map::SortedParMap;
@@ -416,6 +416,22 @@ fn expr_locally_free_ref(expr: &Expr) -> Vec<u8> {
  * @param data  The par objects holding the processes being sent.
  * @param persistent  True if the write should remain in the tuplespace indefinitely.
  */
+/// The cursor kind of `zipper`, or an error if the wire value names none.
+///
+/// Deliberately NOT coerced to a default: a cursor whose arm cannot be read
+/// addresses no entry, and quietly treating it as a split frame is exactly the
+/// guess `EZipper.cursor_kind` exists to remove. Free-standing rather than an
+/// inherent method because every zipper method body lives in its own nested
+/// `impl` block.
+pub(crate) fn cursor_kind_of(zipper: &EZipper) -> Result<CursorKind, InterpreterError> {
+    CursorKind::from_wire(zipper.cursor_kind).ok_or_else(|| {
+        InterpreterError::BugFoundError(format!(
+            "EZipper.cursor_kind = {} names no cursor kind (expected 0 SPLIT, 1 BARE, 2 PREFIX)",
+            zipper.cursor_kind
+        ))
+    })
+}
+
 impl DebruijnInterpreter {
     fn with_metering_child(&self, component: usize) -> Self {
         let metering = self.metering.child(component.min(u32::MAX as usize) as u32);
@@ -4849,6 +4865,36 @@ impl DebruijnInterpreter {
     }
 
     // ============ ZIPPER METHODS ============
+    //
+    // ## The CURSOR: `(current_path, cursor_kind)`
+    //
+    // `EZipper.current_path` (`RhoTypes.proto`) holds the focus as PER-ELEMENT
+    // codec segments, and `cursor_kind` holds WHICH ARM of the two-arm path
+    // codec the focused entry took. Together they are the cursor's trie key:
+    //
+    //     key(cursor) = concat(current_path) ++ (0x00 iff a split frame)
+    //
+    // The segments alone are LOSSY. The bare element `1` and the singleton
+    // list `[1]` produce the same segment vector while being different entries
+    // (`03 02` and `03 02 00`) that one map may hold at the same time, so a
+    // cursor without the arm names two positions at once. Before `cursor_kind`
+    // existed every reader appended the terminator unconditionally, which for
+    // a bare entry did not miss — it read back a DIFFERENT ELEMENT.
+    //
+    // Two vocabularies, and only one of them spends the arm:
+    //
+    //   ENTRY queries  getLeaf / setLeaf-shaped writes / removeLeaf / getPath /
+    //                  toNextLeaf / atPath — `cursor_entry_key`, which uses it.
+    //   BRANCH queries leafCount / childCount / getSubtrie / pathExists /
+    //                  descendFirst / prunePath / removeBranches / restriction
+    //                  — `segments_to_key(.., false)`, the element-prefix, the
+    //                  SAME bytes under every arm. These never move.
+    //
+    // A cursor that comes from a Par records that Par's arm (`CursorKind::of`);
+    // a cursor that comes from a child-SEGMENT move records `Prefix`, because
+    // such a move lands on an element boundary and learns nothing about the arm.
+
+
 
     fn read_zipper_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct ReadZipperMethod<'a> {
@@ -4866,6 +4912,10 @@ impl DebruijnInterpreter {
                             is_write_zipper: false,
                             locally_free: vec![],
                             connective_used: false,
+                            // The root cursor is the SPLIT frame of zero
+                            // elements — key `0x00`, the empty list — which is
+                            // what `getLeaf()` at the root has always read.
+                            cursor_kind: CursorKind::Split.to_wire(),
                         };
                         Ok(Expr {
                             expr_instance: Some(ExprInstance::EZipperBody(ezipper)),
@@ -4943,6 +4993,12 @@ impl DebruijnInterpreter {
                             is_write_zipper: false,
                             locally_free,
                             connective_used,
+                            // The ARGUMENT's own arm: `readZipperAt(["a","x"])`
+                            // is a split frame, `readZipperAt(1)` is a bare
+                            // element. This is the whole of the cursor's
+                            // losslessness — the caller named the entry, so the
+                            // cursor records which one.
+                            cursor_kind: CursorKind::of(path_par).to_wire(),
                         };
 
                         Ok(Expr {
@@ -5000,6 +5056,7 @@ impl DebruijnInterpreter {
                             is_write_zipper: true,
                             locally_free: vec![],
                             connective_used: false,
+                            cursor_kind: CursorKind::Split.to_wire(),
                         };
                         Ok(Expr {
                             expr_instance: Some(ExprInstance::EZipperBody(ezipper)),
@@ -5067,6 +5124,7 @@ impl DebruijnInterpreter {
                             is_write_zipper: true,
                             locally_free: pathmap.locally_free.clone(),
                             connective_used: pathmap.connective_used,
+                            cursor_kind: CursorKind::of(path_par).to_wire(),
                         };
 
                         Ok(Expr {
@@ -5129,6 +5187,10 @@ impl DebruijnInterpreter {
                         // Update the zipper's current_path to navigate to the new location
                         // Append the new path segments to the current path
                         zipper.current_path.extend(path_segments);
+                        // …and the composed cursor takes the ARGUMENT's arm, so
+                        // `m.readZipperAt(p)` and `m.readZipper().descendTo(p)`
+                        // name the same entry for every `p`.
+                        zipper.cursor_kind = CursorKind::of(path_par).to_wire();
 
                         Ok(Expr {
                             expr_instance: Some(ExprInstance::EZipperBody(zipper)),
@@ -5184,9 +5246,19 @@ impl DebruijnInterpreter {
                             PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap(pathmap);
                         let rholang_pathmap = pathmap_result.map;
 
-                        // Use the zipper's current_path to look up the value
-                        // Build the key from current_path segments (same encoding as create_pathmap_from_elements)
-                        let key: Vec<u8> = segments_to_key(&zipper.current_path, true);
+                        // The ENTRY key the cursor names. `current_path` says
+                        // WHERE (per-element segments); `cursor_kind` says WHICH
+                        // ARM of the two-arm codec, which is what tells the bare
+                        // element `1` (key `03 02`) apart from the singleton list
+                        // `[1]` (key `03 02 00`) — two entries one map may hold
+                        // at once. Before the cursor carried the arm this always
+                        // guessed "split", so a bare entry read back as a
+                        // DIFFERENT element rather than missing.
+                        let key: Vec<u8> = cursor_entry_key(
+                            &zipper.current_path,
+                            cursor_kind_of(&zipper)?,
+                            &rholang_pathmap,
+                        );
 
                         // Look up value at this path
                         if let Some(value) = rholang_pathmap.get(&key) {
@@ -5403,7 +5475,10 @@ impl DebruijnInterpreter {
                         ExprInstance::EZipperBody(zipper),
                         Some(ExprInstance::EPathmapBody(source)),
                     ) if zipper.is_write_zipper => {
-                        // Step 1: Extract base PathMap and build prefix
+                        // Step 1: Extract base PathMap and build prefix.
+                        // The cursor kind is read FIRST — `pathmap` is moved
+                        // out of `zipper` on the next line.
+                        let cursor_kind = cursor_kind_of(&zipper)?;
                         let pathmap = zipper.pathmap.expect("zipper pathmap was None");
                         let pathmap_result =
                             PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap(&pathmap);
@@ -5527,8 +5602,12 @@ impl DebruijnInterpreter {
 
                         // Step 3b: If source is empty, add current_path as entry
                         if source.ps.is_empty() && !zipper.current_path.is_empty() {
-                            // Encode current_path as key
-                            let key: Vec<u8> = segments_to_key(&zipper.current_path, true);
+                            // The ENTRY key the cursor names (see `getLeaf`).
+                            let key: Vec<u8> = cursor_entry_key(
+                                &zipper.current_path,
+                                cursor_kind,
+                                &rholang_pathmap,
+                            );
 
                             // Build the Par for current_path
                             let mut absolute_elements = Vec::new();
@@ -5592,7 +5671,7 @@ impl DebruijnInterpreter {
                             }
 
                             // Create the Par for current_path
-                            let current_path_par = Par::default().with_exprs(vec![Expr {
+                            let list_par = Par::default().with_exprs(vec![Expr {
                                 expr_instance: Some(ExprInstance::EListBody(
                                     models::rhoapi::EList {
                                         ps: absolute_elements,
@@ -5602,6 +5681,22 @@ impl DebruijnInterpreter {
                                     },
                                 )),
                             }]);
+
+                            // A PathMap entry is both its own key and its own
+                            // value — `create_pathmap_from_elements` inserts
+                            // `(encode_trie_path(par), par)` — so what is stored
+                            // here must be the Par that `key` ENCODES. For a
+                            // split cursor that is the list of elements built
+                            // above, byte for byte what this method has always
+                            // written. For a BARE cursor it is the ELEMENT
+                            // itself, which a list can never express.
+                            let current_path_par = match cursor_kind {
+                                CursorKind::Bare => {
+                                    use models::rust::canonical_path::decode_trie_path;
+                                    decode_trie_path(&key).unwrap_or(list_par)
+                                }
+                                _ => list_par,
+                            };
 
                             rholang_pathmap.insert(key, current_path_par);
                         }
@@ -5670,14 +5765,22 @@ impl DebruijnInterpreter {
             fn remove_leaf(&self, base_expr: &Expr) -> Result<Expr, InterpreterError> {
                 match base_expr.expr_instance.clone().unwrap() {
                     ExprInstance::EZipperBody(zipper) => {
-                        // Extract pathmap from zipper
+                        // Extract pathmap from zipper (the cursor kind is
+                        // read FIRST — `pathmap` is moved out on the next line).
+                        let cursor_kind = cursor_kind_of(&zipper)?;
                         let pathmap = zipper.pathmap.expect("zipper pathmap was None");
                         let pathmap_result =
                             PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap(&pathmap);
                         let mut rholang_pathmap = pathmap_result.map;
 
-                        // Build key from current_path
-                        let key: Vec<u8> = segments_to_key(&zipper.current_path, true);
+                        // The ENTRY key the cursor names (see `getLeaf`): a
+                        // bare cursor removes the bare entry, not the singleton
+                        // list that shares its segments.
+                        let key: Vec<u8> = cursor_entry_key(
+                            &zipper.current_path,
+                            cursor_kind,
+                            &rholang_pathmap,
+                        );
 
                         // Remove value at this path
                         rholang_pathmap.remove(&key);
@@ -5743,13 +5846,15 @@ impl DebruijnInterpreter {
             fn remove_branches(&self, base_expr: &Expr) -> Result<Expr, InterpreterError> {
                 match base_expr.expr_instance.clone().unwrap() {
                     ExprInstance::EZipperBody(zipper) => {
-                        // Extract pathmap from zipper
                         let pathmap = zipper.pathmap.expect("zipper pathmap was None");
                         let pathmap_result =
                             PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap(&pathmap);
                         let mut rholang_pathmap = pathmap_result.map;
 
-                        // Build prefix key from current_path
+                        // Build prefix key from current_path. `removeBranches`
+                        // is a BRANCH query — the element-prefix, the SAME bytes
+                        // under every cursor kind — so it does not spend the
+                        // split/bare discriminator and its bytes never move.
                         let prefix_key: Vec<u8> = segments_to_key(&zipper.current_path, false);
 
                         // Remove all branches with this prefix
@@ -6167,7 +6272,11 @@ impl DebruijnInterpreter {
                         // escape arm) instead of rebuilding it and guessing
                         // "split" — see `entry_key_at`'s doc for why the guess
                         // was a wrong ANSWER and not a miss.
-                        let key: Vec<u8> = entry_key_at(&zipper.current_path, path_par);
+                        let key: Vec<u8> = entry_key_at(
+                            &zipper.current_path,
+                            path_par,
+                            &rholang_pathmap,
+                        );
 
                         // Get value at this path
                         match rholang_pathmap.get(&key) {
@@ -6185,7 +6294,7 @@ impl DebruijnInterpreter {
 
                         // A raw map has no cursor, so this is always the
                         // root arm: `encode_trie_path(path_par)` exactly.
-                        let key: Vec<u8> = entry_key_at(&[], path_par);
+                        let key: Vec<u8> = entry_key_at(&[], path_par, &rholang_pathmap);
 
                         match rholang_pathmap.get(&key) {
                             Some(val) => Ok(val.clone()),
@@ -6467,6 +6576,7 @@ impl DebruijnInterpreter {
                     ExprInstance::EZipperBody(mut zipper) => {
                         // Reset to root by clearing current_path
                         zipper.current_path = vec![];
+                        zipper.cursor_kind = CursorKind::Split.to_wire();
 
                         Ok(Expr {
                             expr_instance: Some(ExprInstance::EZipperBody(zipper)),
@@ -6523,6 +6633,14 @@ impl DebruijnInterpreter {
 
                         // Remove last segment from current_path (ascend one level)
                         zipper.current_path.pop();
+                        // A child-SEGMENT move lands on an element BOUNDARY and
+                        // carries no information about which arm the entry there
+                        // took, so the cursor becomes PREFIX: entry queries
+                        // resolve it to the shortest key present (bare, else
+                        // split). On a map with no bare entries that is exactly
+                        // the split key this move used to imply.
+                        zipper.cursor_kind = CursorKind::Prefix.to_wire();
+
 
                         Ok(Par::default().with_exprs(vec![Expr {
                             expr_instance: Some(ExprInstance::EZipperBody(zipper)),
@@ -6600,6 +6718,14 @@ impl DebruijnInterpreter {
                         for _ in 0..actual_steps {
                             zipper.current_path.pop();
                         }
+                        // A child-SEGMENT move lands on an element BOUNDARY and
+                        // carries no information about which arm the entry there
+                        // took, so the cursor becomes PREFIX: entry queries
+                        // resolve it to the shortest key present (bare, else
+                        // split). On a map with no bare entries that is exactly
+                        // the split key this move used to imply.
+                        zipper.cursor_kind = CursorKind::Prefix.to_wire();
+
 
                         Ok(Par::default().with_exprs(vec![Expr {
                             expr_instance: Some(ExprInstance::EZipperBody(zipper)),
@@ -6741,6 +6867,14 @@ impl DebruijnInterpreter {
                         // Get first child
                         if let Some(first_child) = children.first() {
                             zipper.current_path.push(first_child.clone());
+                            // A child-SEGMENT move lands on an element BOUNDARY and
+                            // carries no information about which arm the entry there
+                            // took, so the cursor becomes PREFIX: entry queries
+                            // resolve it to the shortest key present (bare, else
+                            // split). On a map with no bare entries that is exactly
+                            // the split key this move used to imply.
+                            zipper.cursor_kind = CursorKind::Prefix.to_wire();
+
                             Ok(Par::default().with_exprs(vec![Expr {
                                 expr_instance: Some(ExprInstance::EZipperBody(zipper)),
                             }]))
@@ -6838,6 +6972,14 @@ impl DebruijnInterpreter {
                         // Get child at index
                         if let Some(child) = children.get(idx as usize) {
                             zipper.current_path.push(child.clone());
+                            // A child-SEGMENT move lands on an element BOUNDARY and
+                            // carries no information about which arm the entry there
+                            // took, so the cursor becomes PREFIX: entry queries
+                            // resolve it to the shortest key present (bare, else
+                            // split). On a map with no bare entries that is exactly
+                            // the split key this move used to imply.
+                            zipper.cursor_kind = CursorKind::Prefix.to_wire();
+
                             Ok(Par::default().with_exprs(vec![Expr {
                                 expr_instance: Some(ExprInstance::EZipperBody(zipper)),
                             }]))
@@ -6918,6 +7060,14 @@ impl DebruijnInterpreter {
                                 // Replace current segment with next sibling
                                 zipper.current_path.pop();
                                 zipper.current_path.push(siblings[current_idx + 1].clone());
+                                // A child-SEGMENT move lands on an element BOUNDARY and
+                                // carries no information about which arm the entry there
+                                // took, so the cursor becomes PREFIX: entry queries
+                                // resolve it to the shortest key present (bare, else
+                                // split). On a map with no bare entries that is exactly
+                                // the split key this move used to imply.
+                                zipper.cursor_kind = CursorKind::Prefix.to_wire();
+
                                 Ok(Par::default().with_exprs(vec![Expr {
                                     expr_instance: Some(ExprInstance::EZipperBody(zipper)),
                                 }]))
@@ -7001,6 +7151,14 @@ impl DebruijnInterpreter {
                                 // Replace current segment with previous sibling
                                 zipper.current_path.pop();
                                 zipper.current_path.push(siblings[current_idx - 1].clone());
+                                // A child-SEGMENT move lands on an element BOUNDARY and
+                                // carries no information about which arm the entry there
+                                // took, so the cursor becomes PREFIX: entry queries
+                                // resolve it to the shortest key present (bare, else
+                                // split). On a map with no bare entries that is exactly
+                                // the split key this move used to imply.
+                                zipper.cursor_kind = CursorKind::Prefix.to_wire();
+
                                 Ok(Par::default().with_exprs(vec![Expr {
                                     expr_instance: Some(ExprInstance::EZipperBody(zipper)),
                                 }]))
@@ -7118,7 +7276,14 @@ impl DebruijnInterpreter {
                         // same codec round-trip `setSubtrie` performs above.
                         use models::rust::canonical_path::decode_trie_path;
 
-                        let full_key = segments_to_key(&zipper.current_path, true);
+                        let full_key = cursor_entry_key(
+                            &zipper.current_path,
+                            cursor_kind_of(&zipper)?,
+                            &PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap(
+                                zipper.pathmap.as_ref().expect("zipper pathmap was None"),
+                            )
+                            .map,
+                        );
                         match decode_trie_path(&full_key) {
                             Ok(decoded) => Ok(decoded),
                             // A focus whose path does not decode names no
@@ -7251,12 +7416,23 @@ impl DebruijnInterpreter {
                         let rholang_pathmap =
                             PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap(pathmap).map;
 
-                        // The FULL key (terminated) is the walk's starting
-                        // point: the next value strictly after this position.
-                        let from_key: Vec<u8> = segments_to_key(&zipper.current_path, true);
-                        match next_value_path(&rholang_pathmap, &from_key) {
-                            Some(segments) => {
+                        // The cursor's own ENTRY key is the walk's starting
+                        // point: the next value STRICTLY after this position.
+                        let from_key: Vec<u8> = cursor_entry_key(
+                            &zipper.current_path,
+                            cursor_kind_of(&zipper)?,
+                            &rholang_pathmap,
+                        );
+                        // The step answers with a KEY, not just segments, so the
+                        // landing cursor's arm is READ OFF the key rather than
+                        // assumed — `decode_cursor` is the exact inverse of
+                        // `cursor_entry_key`. This is what makes `getPath()`
+                        // report the bare element `1` and not the list `[1]`.
+                        match next_value_key(&rholang_pathmap, &from_key) {
+                            Some(key) => {
+                                let (segments, kind) = decode_cursor(&key);
                                 zipper.current_path = segments;
+                                zipper.cursor_kind = kind.to_wire();
                                 Ok(Par::default().with_exprs(vec![Expr {
                                     expr_instance: Some(ExprInstance::EZipperBody(zipper)),
                                 }]))

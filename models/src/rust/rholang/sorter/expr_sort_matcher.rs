@@ -619,6 +619,10 @@ impl Sortable<Expr> for ExprSortMatcher {
                             is_write_zipper: zipper.is_write_zipper,
                             locally_free: zipper.locally_free.clone(),
                             connective_used: zipper.connective_used,
+                            // The cursor's split/bare discriminator travels
+                            // with `current_path`: sorting canonicalizes the
+                            // zipper's MAP, never its focus.
+                            cursor_kind: zipper.cursor_kind,
                         }),
                         Tree::Node(
                             vec![

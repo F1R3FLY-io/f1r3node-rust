@@ -496,18 +496,26 @@ fn witness_bare_elements_are_not_addressable_by_the_read_key() {
     assert_eq!(map.get(&bare_string_read_key), None);
 }
 
-/// ⚠ WITNESS OF A DEFECT — PREFIX CONFLATION. A bare entry's key is a strict
-/// byte-prefix of the split keys that start with the same element, so bare
-/// entries sit at INTERIOR trie positions and every `terminate = false` reader
-/// (`leafCount`, `childCount`, `getSubtrie`, `pathExists`, `descendFirst`,
-/// `restriction`) sees "the entry `a`" and "the prefix `["a", …]`" as one
-/// position.
+/// ★ PREFIX vs ENTRY — the SETTLED semantics, stated executably.
 ///
-/// This is a SEMANTIC question, not a coding error — it is settled and
-/// documented in the module header of `pathmap_native_query.rs`, and this test
-/// is the executable statement of the situation it settles.
+/// A bare entry's WHOLE key is a strict byte-prefix of the split keys that
+/// begin with the same element, so bare entries sit at INTERIOR trie
+/// positions: at one element-prefix a map may hold a bare entry, a split
+/// entry, and a whole branch of descendants.
+///
+/// The answer (module header of `pathmap_native_query.rs`, §BRANCH versus
+/// ENTRY) is that the two questions get two different keys, and the cursor's
+/// `CursorKind` is what lets an ENTRY query name which arm it means:
+///
+///   BRANCH  `segments_to_key(segments, false)` — the subtrie at the
+///           element-prefix, which INCLUDES the bare entry sitting there,
+///           because that entry's key literally is the prefix. Keeping it in
+///           is what makes `leafCount()` a usable walk bound: a
+///           `leafCount()`-bounded walk must visit exactly the entries the
+///           count promised, and `toNextLeaf` does visit the bare entry.
+///   ENTRY   `cursor_entry_key(segments, kind, map)` — exactly one entry.
 #[test]
-fn witness_a_bare_entry_key_is_a_prefix_of_the_split_keys_beside_it() {
+fn a_bare_entry_key_is_a_prefix_of_the_split_keys_beside_it() {
     let elements = mixed_elements();
     let map = create_pathmap_from_elements(&elements, None).map;
 
@@ -518,11 +526,50 @@ fn witness_a_bare_entry_key_is_a_prefix_of_the_split_keys_beside_it() {
         "the bare entry's WHOLE key is a strict prefix of the split key"
     );
 
-    // The prefix query cannot distinguish "the entry" from "the branch": the
-    // subtrie at `04 01 61` holds BOTH the bare entry and `["a","x"]`. This is
-    // the helper `leafCount()` at a cursor calls.
+    // The BRANCH at `04 01 61` holds BOTH the bare entry and `["a","x"]` —
+    // this is the helper `leafCount()` at a cursor calls, and 2 is the
+    // deliberate answer.
     let branch = models::rust::pathmap_native_query::subtrie_value_count(&map, &bare_a);
     assert_eq!(branch, 2, "the bare entry is counted inside its own branch");
+
+    // …and the ENTRY question is answered exactly, by the cursor's arm: the
+    // SAME segment vector names two different entries under two different
+    // kinds, and each reads back its own value.
+    use models::rust::pathmap_integration::{cursor_entry_key, par_to_path, CursorKind};
+    let segments = par_to_path(&elements[2]); // one segment: 04 01 61
+    assert_eq!(
+        map.get(cursor_entry_key(&segments, CursorKind::Bare, &map)),
+        Some(&elements[2]),
+        "Bare names the bare entry \"a\""
+    );
+    assert_eq!(
+        map.get(cursor_entry_key(&segments, CursorKind::Split, &map)),
+        None,
+        "Split names [\"a\"], which this map does not hold"
+    );
+    // PREFIX — what a child-segment navigation move produces — resolves to the
+    // SHORTEST key PRESENT, which here is the bare entry.
+    assert_eq!(
+        map.get(cursor_entry_key(&segments, CursorKind::Prefix, &map)),
+        Some(&elements[2])
+    );
+
+    // On a map with NO bare entry at that prefix, PREFIX is indistinguishable
+    // from SPLIT — which is exactly why every navigation move can be PREFIX
+    // without the ground-LIST corpus moving a byte.
+    let lists_only = create_pathmap_from_elements(
+        &[make_list_par(vec!["a"]), make_list_par(vec!["a", "x"])],
+        None,
+    )
+    .map;
+    assert_eq!(
+        cursor_entry_key(&segments, CursorKind::Prefix, &lists_only),
+        cursor_entry_key(&segments, CursorKind::Split, &lists_only)
+    );
+    assert_eq!(
+        lists_only.get(cursor_entry_key(&segments, CursorKind::Prefix, &lists_only)),
+        Some(&make_list_par(vec!["a"]))
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -539,7 +586,7 @@ fn every_element_is_addressable_from_its_own_par() {
     let map = create_pathmap_from_elements(&elements, None).map;
     for element in &elements {
         assert_eq!(
-            map.get(entry_key_at(&[], element)),
+            map.get(entry_key_at(&[], element, &map)),
             Some(element),
             "the root arm addresses every element by its own Par"
         );
@@ -556,6 +603,10 @@ fn every_element_is_addressable_from_its_own_par() {
 fn entry_key_at_the_root_moves_no_split_arm_bytes() {
     use models::rust::pathmap_integration::entry_key_at;
 
+    // The ROOT arm never consults the map — it asks the codec — so an empty
+    // one is the right witness that the answer depends on the Par alone.
+    let empty = RholangPathMap::new();
+
     for split in [
         make_list_of(vec![make_int_par(1)]),
         make_list_par(vec!["a", "x"]),
@@ -563,21 +614,21 @@ fn entry_key_at_the_root_moves_no_split_arm_bytes() {
         make_list_par(vec!["books", "fiction", "gatsby"]),
     ] {
         assert_eq!(
-            entry_key_at(&[], &split),
+            entry_key_at(&[], &split, &empty),
             segments_to_key(&par_to_path(&split), true),
             "split arm: byte-identical to the retired expression"
         );
-        assert_eq!(entry_key_at(&[], &split), encode_trie_path(&split));
+        assert_eq!(entry_key_at(&[], &split, &empty), encode_trie_path(&split));
     }
 
     for bare in [make_int_par(1), make_string_par("a"), make_int_par(-7)] {
         assert_eq!(
-            entry_key_at(&[], &bare),
+            entry_key_at(&[], &bare, &empty),
             encode_trie_path(&bare),
             "bare arm: the key the entry was inserted under"
         );
         assert_ne!(
-            entry_key_at(&[], &bare),
+            entry_key_at(&[], &bare, &empty),
             segments_to_key(&par_to_path(&bare), true),
             "…which is exactly where it differs from the retired expression"
         );
@@ -593,9 +644,10 @@ fn entry_key_below_the_root_still_rebuilds() {
     use models::rust::pathmap_integration::entry_key_at;
 
     let cursor = par_to_path(&make_string_par("a")); // one segment: 04 01 61
-    let relative = make_string_par("x");
+    let relative = make_list_of(vec![make_string_par("x")]);
+    let map = create_pathmap_from_elements(&mixed_elements(), None).map;
     assert_eq!(
-        entry_key_at(&cursor, &relative),
+        entry_key_at(&cursor, &relative, &map),
         vec![0x04, 0x01, 0x61, 0x04, 0x01, 0x78, 0x00],
         "the composed path is terminated — the split-frame guess"
     );

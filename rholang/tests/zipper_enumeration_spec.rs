@@ -447,59 +447,58 @@ async fn bare_at_path_reads_back_the_element() {
     .await;
 }
 
-/// ⚠ WITNESS OF A DEFECT THAT SURVIVES STAGE 3 — `getLeaf()` at a CURSOR still
-/// answers `Nil` for a bare entry.
+/// ★ `getLeaf()` at a CURSOR reads a bare entry back as itself — the positive
+/// twin of `witness_bare_get_leaf_at_a_cursor_still_reads_as_nil`.
 ///
-/// `atPath` above is fixed because it is handed the whole path Par.
-/// `getLeaf()` is handed only `EZipper.current_path` — per-element segments
-/// with no split/bare discriminator — so it must still reconstruct the key and
-/// still guesses "split". Stage 3 fixes every reader that HAS the Par; the
-/// readers that only have the cursor need the cursor itself to stop being
-/// lossy.
-///
-/// Positive twin: `bare_get_leaf_reads_back_the_element`.
+/// Stage 3 fixed every reader HANDED the whole path Par (`atPath`). `getLeaf`
+/// is handed only the cursor, so it needed the cursor itself to stop being
+/// lossy: `EZipper.cursor_kind` says which arm, and `cursor_entry_key` spends
+/// it. The mixed-map assertions are the sharpest form of the whole defect —
+/// before stage 4, `readZipperAt(5).getLeaf()` returned `[5]`: not a miss, a
+/// DIFFERENT ELEMENT, because `03 0A 00` is a real key in that map.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn witness_bare_get_leaf_at_a_cursor_still_reads_as_nil() {
+async fn bare_get_leaf_at_a_cursor_reads_back_the_element() {
     with_runtime("zipper-enum-bare-cursor-", |mut runtime| async move {
         let program = format!(
             r#"
-            @"getLeafIsNil"!( {m}.readZipperAt(1).getLeaf() == Nil ) |
-            @"mixedGetLeafIsTheWrongElement"!( {x}.readZipperAt(5).getLeaf() == [5] ) |
-            @"mixedGetLeafIsNotTheElement"!( ({x}.readZipperAt(5).getLeaf() == 5) == false ) |
-            @"splitGetLeafWorks"!( {x}.readZipperAt(["a", "x"]).getLeaf() == ["a", "x"] )
+            @"bareGetLeaf"!( {m}.readZipperAt(1).getLeaf() == 1 ) |
+            @"mixedBare"!( {x}.readZipperAt(5).getLeaf() == 5 ) |
+            @"mixedBareIsNotTheList"!( ({x}.readZipperAt(5).getLeaf() == [5]) == false ) |
+            @"mixedSplit"!( {x}.readZipperAt([5]).getLeaf() == [5] ) |
+            @"mixedString"!( {x}.readZipperAt("a").getLeaf() == "a" ) |
+            @"splitGetLeafWorks"!( {x}.readZipperAt(["a", "x"]).getLeaf() == ["a", "x"] ) |
+            @"descendToBare"!( {m}.readZipper().descendTo(2).getLeaf() == 2 )
             "#,
             m = BARE_MAP,
             x = MIXED_MAP
         );
         eval_ok(&mut runtime, &program).await;
-        // The cursor is at the bare entry `1`, whose key is `03 02`; the read
-        // rebuilds `03 02 00`, the key of the singleton list `[1]`. `[1]` is
-        // absent from THIS map, so the defect presents as Nil.
-        assert_bool(&runtime, "getLeafIsNil").await;
-        // ★★★ On the mixed map it presents as a WRONG ANSWER instead:
-        // `readZipperAt(5)` stores `par_to_path(5)`, `getLeaf` re-terminates it
-        // to `03 0A 00`, and that key IS in the map — it is `[5]`. So the read
-        // succeeds and hands back a DIFFERENT ELEMENT. This is the sharpest
-        // statement of why "append a terminator" is a collision and not a
-        // re-key, and why the cursor has to carry the discriminator.
-        assert_bool(&runtime, "mixedGetLeafIsTheWrongElement").await;
-        assert_bool(&runtime, "mixedGetLeafIsNotTheElement").await;
-        // The split-form cursor read is unaffected.
+        assert_bool(&runtime, "bareGetLeaf").await;
+        // ★★★ Both arms in one map, each read by its own cursor.
+        assert_bool(&runtime, "mixedBare").await;
+        assert_bool(&runtime, "mixedBareIsNotTheList").await;
+        assert_bool(&runtime, "mixedSplit").await;
+        assert_bool(&runtime, "mixedString").await;
+        // The split-form cursor read is unchanged — the containment evidence.
         assert_bool(&runtime, "splitGetLeafWorks").await;
+        // `readZipperAt(p)` and `readZipper().descendTo(p)` compose to the same
+        // cursor, so a bare descent addresses the bare entry too.
+        assert_bool(&runtime, "descendToBare").await;
         runtime
     })
     .await;
 }
 
-/// The walk ADVANCES through every bare entry, in order — the positive twin of
-/// the stage-1 witness `witness_bare_walk_never_advances`, which recorded
-/// `toNextLeaf` reporting `[1]` at every step.
+/// ★ The walk visits every bare entry, in order, AND reports each one as
+/// ITSELF — the fully-fixed form of the stage-1 witness
+/// `witness_bare_walk_never_advances`, which recorded `toNextLeaf` reporting
+/// `[1]` at every step.
 ///
-/// Stage 2 made `next_value_key` order-correct for a from_key that does not
-/// exist in the trie. The reducer still SEEDS each step with the wrong key —
-/// `segments_to_key(current_path, true)` appends a terminator the bare entry's
-/// key does not carry — but `03 02 00` sorts strictly between `03 02` and
-/// `03 04`, so an order-correct step lands on the right next entry anyway.
+/// Two independent defects had to go for this to hold. Stage 2 made the walk
+/// order-correct from a from_key that does not exist in the trie. Stage 4 made
+/// the CURSOR lossless: the enumeration step now answers with a KEY, the
+/// landing cursor's arm is read off that key by `decode_cursor`, and `getPath`
+/// decodes the cursor's own key rather than one it rebuilt by guessing.
 ///
 /// BOUNDED BY CONSTRUCTION: three explicit steps, not a termination condition.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -507,9 +506,12 @@ async fn bare_walk_visits_every_entry_in_order() {
     with_runtime("zipper-enum-bare-walk-", |mut runtime| async move {
         let program = format!(
             r#"
-            @"p1"!( {m}.readZipper().toNextLeaf().getPath() == [1] ) |
-            @"p2"!( {m}.readZipper().toNextLeaf().toNextLeaf().getPath() == [2] ) |
-            @"p3"!( {m}.readZipper().toNextLeaf().toNextLeaf().toNextLeaf().getPath() == [3] )
+            @"p1"!( {m}.readZipper().toNextLeaf().getPath() == 1 ) |
+            @"p2"!( {m}.readZipper().toNextLeaf().toNextLeaf().getPath() == 2 ) |
+            @"p3"!( {m}.readZipper().toNextLeaf().toNextLeaf().toNextLeaf().getPath() == 3 ) |
+            @"notASingleton"!( ({m}.readZipper().toNextLeaf().getPath() == [1]) == false ) |
+            @"v1"!( {m}.readZipper().toNextLeaf().getLeaf() == 1 ) |
+            @"v3"!( {m}.readZipper().toNextLeaf().toNextLeaf().toNextLeaf().getLeaf() == 3 )
             "#,
             m = BARE_MAP
         );
@@ -517,46 +519,111 @@ async fn bare_walk_visits_every_entry_in_order() {
         for channel in ["p1", "p2", "p3"] {
             assert_bool(&runtime, channel).await;
         }
+        // ★ The SHAPE is right too: the bare integer, not the singleton list
+        // that `current_path`'s segments alone could only ever produce.
+        assert_bool(&runtime, "notASingleton").await;
+        // …and the leaf the walk is parked on reads back as the element.
+        assert_bool(&runtime, "v1").await;
+        assert_bool(&runtime, "v3").await;
         runtime
     })
     .await;
 }
 
-/// ⚠ WITNESS OF A DEFECT THAT SURVIVES STAGE 2 — the walk now reaches every
-/// entry, but `getPath()` still reports the SINGLETON LIST `[1]` where the map
-/// holds the bare integer `1`: the right entry, the wrong shape.
+/// ★★★ THE ROUND-TRIP CLOSES ON BARE ENTRIES — the positive twin of
+/// `witness_bare_get_path_reports_the_singleton_not_the_element`, which
+/// recorded `getPath()` reporting the singleton `[1]` where the map holds the
+/// bare `1`, and the `readZipperAt(z.getPath())` round-trip failing as a
+/// consequence.
 ///
-/// This is the cursor's losslessness, not the walk's order.
-/// `EZipper.current_path` stores per-element segments and no split/bare
-/// discriminator, so `getPath` — which decodes
-/// `segments_to_key(current_path, true)` — can only ever produce a list. It is
-/// also why the documented `readZipperAt(z.getPath())` round-trip cannot
-/// close: re-addressing with `[1]` names an entry the map does not contain.
-///
-/// Positive twin: `bare_get_path_reports_the_element_itself`.
+/// This is the property that makes the cursor LOSSLESS, stated at the surface:
+/// the path a cursor reports re-addresses the very entry the cursor is on.
+/// `get_path_round_trips_through_the_map` asserts it for ground lists; this
+/// asserts it for the arm that could not express it at all.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn witness_bare_get_path_reports_the_singleton_not_the_element() {
+async fn bare_get_path_round_trips_through_the_map() {
     with_runtime("zipper-enum-bare-shape-", |mut runtime| async move {
         let program = format!(
             r#"
-            @"isSingleton"!( {m}.readZipper().toNextLeaf().getPath() == [1] ) |
-            @"isNotTheElement"!( ({m}.readZipper().toNextLeaf().getPath() == 1) == false ) |
-            @"roundTripFails"!(
-              {m}.readZipperAt( {m}.readZipper().toNextLeaf().getPath() ).getLeaf() == Nil
+            @"isTheElement"!( {m}.readZipper().toNextLeaf().getPath() == 1 ) |
+            @"isNotASingleton"!( ({m}.readZipper().toNextLeaf().getPath() == [1]) == false ) |
+            @"roundTrip"!(
+              {m}.readZipperAt( {m}.readZipper().toNextLeaf().getPath() ).getLeaf() == 1
             ) |
-            @"leafStillNil"!( {m}.readZipper().toNextLeaf().getLeaf() == Nil )
+            @"roundTripLast"!(
+              {m}.readZipperAt(
+                {m}.readZipper().toNextLeaf().toNextLeaf().toNextLeaf().getPath()
+              ).getLeaf() == 3
+            ) |
+            @"mixedRoundTripBare"!(
+              {x}.readZipperAt( {x}.readZipperAt(5).getPath() ).getLeaf() == 5
+            ) |
+            @"mixedRoundTripSplit"!(
+              {x}.readZipperAt( {x}.readZipperAt([5]).getPath() ).getLeaf() == [5]
+            )
             "#,
-            m = BARE_MAP
+            m = BARE_MAP,
+            x = MIXED_MAP
         );
         eval_ok(&mut runtime, &program).await;
-        assert_bool(&runtime, "isSingleton").await;
-        assert_bool(&runtime, "isNotTheElement").await;
-        // The round-trip `readZipperAt(z.getPath()).getLeaf()` closes for every
-        // list entry (`get_path_round_trips_through_the_map`) and cannot close
-        // here: it re-addresses `[1]`, which is not in this map.
-        assert_bool(&runtime, "roundTripFails").await;
-        // …and the leaf the walk is parked on still cannot be read.
-        assert_bool(&runtime, "leafStillNil").await;
+        assert_bool(&runtime, "isTheElement").await;
+        assert_bool(&runtime, "isNotASingleton").await;
+        assert_bool(&runtime, "roundTrip").await;
+        assert_bool(&runtime, "roundTripLast").await;
+        // ★ On a map holding BOTH `5` and `[5]`, each cursor round-trips to
+        // ITS OWN entry — neither shadows the other, which is exactly what a
+        // lossless cursor buys and what a shared segment vector cannot do.
+        assert_bool(&runtime, "mixedRoundTripBare").await;
+        assert_bool(&runtime, "mixedRoundTripSplit").await;
+        runtime
+    })
+    .await;
+}
+
+/// ★ CHILD-SEGMENT NAVIGATION reaches BARE entries — which it never could
+/// before, because a segment move could only ever produce a split-frame cursor.
+///
+/// `descendFirst`, `descendIndexedBranch`, `toNextSibling`, `toPrevSibling`,
+/// `ascendOne` and `ascend` all land on an element BOUNDARY and learn nothing
+/// about which arm the entry there took, so they yield the PREFIX cursor kind,
+/// which resolves to the SHORTEST key present — the bare entry when there is
+/// one, the split entry otherwise.
+///
+/// The second half is the containment evidence: on a map of ground lists the
+/// bare probe always misses and falls through to exactly the split key, so
+/// navigation over the existing corpus is byte-identical.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn navigation_reaches_both_arms() {
+    with_runtime("zipper-enum-bare-nav-", |mut runtime| async move {
+        let program = format!(
+            r#"
+            @"first"!( {m}.readZipper().descendFirst().getLeaf() == 1 ) |
+            @"idx1"!( {m}.readZipper().descendIndexedBranch(1).getLeaf() == 2 ) |
+            @"sibling"!( {m}.readZipper().descendFirst().toNextSibling().getLeaf() == 2 ) |
+            @"prevSibling"!(
+              {m}.readZipper().descendIndexedBranch(2).toPrevSibling().getLeaf() == 2
+            ) |
+            @"listFirst"!( {{| ["a"], ["b"] |}}.readZipper().descendFirst().getLeaf() == ["a"] ) |
+            @"listSibling"!(
+              {{| ["a"], ["b"] |}}.readZipper().descendFirst().toNextSibling().getLeaf() == ["b"]
+            ) |
+            @"mixedFirst"!( {x}.readZipper().descendFirst().getLeaf() == 5 )
+            "#,
+            m = BARE_MAP,
+            x = MIXED_MAP
+        );
+        eval_ok(&mut runtime, &program).await;
+        for channel in ["first", "idx1", "sibling", "prevSibling"] {
+            assert_bool(&runtime, channel).await;
+        }
+        // Ground-list navigation is unchanged — no bare entry, so the PREFIX
+        // probe misses and the split key is used, exactly as before.
+        assert_bool(&runtime, "listFirst").await;
+        assert_bool(&runtime, "listSibling").await;
+        // ★ On the MIXED map, `descendFirst` lands on the element `5`, where
+        // both `5` and `[5]` live; PREFIX resolves to the SHORTEST key present,
+        // which is the bare entry. `readZipperAt([5])` still names the other.
+        assert_bool(&runtime, "mixedFirst").await;
         runtime
     })
     .await;

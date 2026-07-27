@@ -130,7 +130,9 @@ use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::var::VarInstance;
 use models::rhoapi::{EMethod, EPathMap, EZipper, Expr, Par};
 use models::rust::pathmap_crate_type_mapper::{interned_epathmap, InternedEPathMap};
-use models::rust::pathmap_integration::{entry_key_at, par_to_path, segments_to_key};
+use models::rust::pathmap_integration::{
+    cursor_entry_key, entry_key_at, par_to_path, segments_to_key, CursorKind,
+};
 use models::rust::pathmap_native_query::{
     collect_child_segments, collect_subtrie_values, path_prefix_exists,
 };
@@ -474,8 +476,16 @@ enum ViewMode {
     /// as the initial state — every map-mode link either creates a zipper,
     /// produces a terminal value, or raises `MethodNotDefined`).
     Map,
-    /// A read/write zipper view: `focus` mirrors `EZipper.current_path`.
-    Zipper { focus: Vec<Vec<u8>>, meta: ZipperMeta },
+    /// A read/write zipper view: `focus` mirrors `EZipper.current_path` and
+    /// `kind` mirrors `EZipper.cursor_kind` — together the cursor's trie key
+    /// (`key = concat(focus) ++ 0x00 iff a split frame`). The twin in
+    /// `reduce.rs` sets them at exactly the same points; see the CURSOR block
+    /// at the head of its ZIPPER METHODS section.
+    Zipper {
+        focus: Vec<Vec<u8>>,
+        kind: CursorKind,
+        meta: ZipperMeta,
+    },
     /// A mid-chain Nil (`Par::default()`): any follow-on link raises the
     /// exact `eval_single_expr` error; a terminal Nil materializes as `Nil`.
     Nil,
@@ -590,6 +600,7 @@ impl DebruijnInterpreter {
             FusedBase::VarMap | FusedBase::LitMap => ViewMode::Map,
             FusedBase::VarZipper(zipper) | FusedBase::LitZipper(zipper) => ViewMode::Zipper {
                 focus: zipper.current_path.clone(),
+                kind: crate::rust::interpreter::reduce::cursor_kind_of(zipper)?,
                 meta: ZipperMeta {
                     is_write: zipper.is_write_zipper,
                     locally_free: zipper.locally_free.clone(),
@@ -664,6 +675,9 @@ impl DebruijnInterpreter {
                         // copied from the map).
                         mode = ViewMode::Zipper {
                             focus: Vec::new(),
+                            // The root cursor is the SPLIT frame of zero
+                            // elements — key `0x00`, the empty list.
+                            kind: CursorKind::Split,
                             meta: ZipperMeta {
                                 is_write: false,
                                 locally_free: Vec::new(),
@@ -689,6 +703,8 @@ impl DebruijnInterpreter {
                         // but copied for exactness).
                         mode = ViewMode::Zipper {
                             focus: par_to_path(path_par),
+                            // The ARGUMENT's own arm.
+                            kind: CursorKind::of(path_par),
                             meta: ZipperMeta {
                                 is_write: false,
                                 locally_free: chain.source_map.locally_free.clone(),
@@ -705,11 +721,13 @@ impl DebruijnInterpreter {
 
                 // ── descendTo (:3843-3892) ──────────────────────────────
                 LinkKind::DescendTo => match &mut mode {
-                    ViewMode::Zipper { focus, .. } => {
+                    ViewMode::Zipper { focus, kind, .. } => {
                         let path_par =
                             arg_b.as_ref().expect("arity-1 link must have a Position-B argument");
                         // :3853-3857 — append WITHOUT existence checking.
                         focus.extend(par_to_path(path_par));
+                        // …and the composed cursor takes the ARGUMENT's arm.
+                        *kind = CursorKind::of(path_par);
                     }
                     ViewMode::Map => {
                         // :3863-3866 — descendTo has NO EPathmapBody arm.
@@ -721,7 +739,7 @@ impl DebruijnInterpreter {
                 // ── descendFirst (:5502-5544) ───────────────────────────
                 LinkKind::DescendFirst => {
                     let transition = match &mut mode {
-                        ViewMode::Zipper { focus, .. } => {
+                        ViewMode::Zipper { focus, kind, .. } => {
                             // :5526 — first (byte-lex smallest) child.
                             let children = collect_child_segments(
                                 &chain.interned.map,
@@ -731,6 +749,10 @@ impl DebruijnInterpreter {
                             match children.into_iter().next() {
                                 Some(first) => {
                                     focus.push(first);
+                                    // A child-SEGMENT move lands on an element BOUNDARY and
+                                    // learns nothing about which arm the entry there took, so the
+                                    // cursor becomes PREFIX (see reduce.rs's twin).
+                                    *kind = CursorKind::Prefix;
                                     None
                                 }
                                 // :5534-5536 — no children ⇒ Nil.
@@ -771,7 +793,7 @@ impl DebruijnInterpreter {
                         mode = ViewMode::Nil;
                     } else {
                         let transition = match &mut mode {
-                            ViewMode::Zipper { focus, .. } => {
+                            ViewMode::Zipper { focus, kind, .. } => {
                                 // :5627-5631 — early-stop after idx+1
                                 // emissions (saturating: a saturated limit
                                 // enumerates all children and `.get` still
@@ -784,6 +806,10 @@ impl DebruijnInterpreter {
                                 match children.into_iter().nth(idx as usize) {
                                     Some(child) => {
                                         focus.push(child);
+                                        // A child-SEGMENT move lands on an element BOUNDARY and
+                                        // learns nothing about which arm the entry there took, so the
+                                        // cursor becomes PREFIX (see reduce.rs's twin).
+                                        *kind = CursorKind::Prefix;
                                         None
                                     }
                                     // :5639-5641 — out of bounds ⇒ Nil.
@@ -828,12 +854,16 @@ impl DebruijnInterpreter {
                         });
                     }
                     match &mut mode {
-                        ViewMode::Zipper { focus, .. } => {
+                        ViewMode::Zipper { focus, kind, .. } => {
                             // :5366-5373 — pop up to `steps`, capped at root.
                             let actual_steps = std::cmp::min(steps as usize, focus.len());
                             for _ in 0..actual_steps {
                                 focus.pop();
                             }
+                            // A child-SEGMENT move lands on an element BOUNDARY and
+                            // learns nothing about which arm the entry there took,
+                            // so the cursor becomes PREFIX (see reduce.rs's twin).
+                            *kind = CursorKind::Prefix;
                         }
                         ViewMode::Map => {
                             // :5379-5382.
@@ -846,13 +876,17 @@ impl DebruijnInterpreter {
                 // ── ascendOne (:5286-5307) ──────────────────────────────
                 LinkKind::AscendOne => {
                     let transition = match &mut mode {
-                        ViewMode::Zipper { focus, .. } => {
+                        ViewMode::Zipper { focus, kind, .. } => {
                             if focus.is_empty() {
                                 // :5290-5293 — at root ⇒ Nil.
                                 Some(ViewMode::Nil)
                             } else {
                                 // :5296.
                                 focus.pop();
+                                // A child-SEGMENT move lands on an element BOUNDARY and
+                                // learns nothing about which arm the entry there took,
+                                // so the cursor becomes PREFIX (see reduce.rs's twin).
+                                *kind = CursorKind::Prefix;
                                 None
                             }
                         }
@@ -870,7 +904,11 @@ impl DebruijnInterpreter {
                 // ── toNextSibling (:5684-5740) / toPrevSibling (:5774-5830)
                 LinkKind::ToNextSibling | LinkKind::ToPrevSibling => {
                     let transition = match &mut mode {
-                        ViewMode::Zipper { focus, .. } => {
+                        ViewMode::Zipper {
+                            focus,
+                            kind: cursor,
+                            ..
+                        } => {
                             if focus.is_empty() {
                                 // :5688-5690/:5778-5780 — no siblings at root.
                                 Some(ViewMode::Nil)
@@ -902,6 +940,12 @@ impl DebruijnInterpreter {
                                             Some(sibling_idx) => {
                                                 focus.pop();
                                                 focus.push(siblings[sibling_idx].clone());
+                                                // A child-SEGMENT move lands on
+                                                // an element BOUNDARY and learns
+                                                // nothing about which arm the
+                                                // entry there took, so the
+                                                // cursor becomes PREFIX.
+                                                *cursor = CursorKind::Prefix;
                                                 None
                                             }
                                             // No next/previous sibling ⇒ Nil.
@@ -927,9 +971,11 @@ impl DebruijnInterpreter {
 
                 // ── reset (:5236-5251) ──────────────────────────────────
                 LinkKind::Reset => match &mut mode {
-                    ViewMode::Zipper { focus, .. } => {
+                    ViewMode::Zipper { focus, kind, .. } => {
                         // :5240 — clear to root.
                         focus.clear();
+                        // The root cursor is the SPLIT frame of zero elements.
+                        *kind = CursorKind::Split;
                     }
                     ViewMode::Map => {
                         // :5246-5249.
@@ -965,9 +1011,15 @@ impl DebruijnInterpreter {
                 // ── getLeaf (:3904-3977) — TERMINAL ─────────────────────
                 LinkKind::GetLeaf => {
                     let value = match &mode {
-                        ViewMode::Zipper { focus, .. } => {
-                            // :3915-3930 — key from focus; absent ⇒ Nil.
-                            let key = segments_to_key(focus, true);
+                        ViewMode::Zipper { focus, kind, .. } => {
+                            // :3915-3930 — the ENTRY key the cursor names;
+                            // absent ⇒ Nil. `focus` says WHERE and `kind` says
+                            // WHICH ARM, which is what tells the bare element
+                            // `1` (key `03 02`) apart from the singleton list
+                            // `[1]` (key `03 02 00`). Byte-identical to the
+                            // retired `segments_to_key(focus, true)` for a
+                            // SPLIT cursor, which every ground-list chain has.
+                            let key = cursor_entry_key(focus, *kind, &chain.interned.map);
                             match chain.interned.map.get(&key) {
                                 Some(value) => value.clone(),
                                 None => Par::default(),
@@ -1057,8 +1109,10 @@ impl DebruijnInterpreter {
                     // expression on the split arm, so the twin in `reduce.rs`
                     // stays byte-for-byte the same function.
                     let key = match &mode {
-                        ViewMode::Zipper { focus, .. } => entry_key_at(focus, path_par),
-                        ViewMode::Map => entry_key_at(&[], path_par),
+                        ViewMode::Zipper { focus, .. } => {
+                            entry_key_at(focus, path_par, &chain.interned.map)
+                        }
+                        ViewMode::Map => entry_key_at(&[], path_par, &chain.interned.map),
                         ViewMode::Nil => unreachable!("Nil views return at step (c)"),
                     };
                     // :4922-4925/:4945-4948 — value or Nil, UNWRAPPED.
@@ -1078,13 +1132,14 @@ impl DebruijnInterpreter {
             // The exact EZipper Par today's per-link path produces — ONE map
             // embed cloned from the borrowed base message (parity, no win
             // claimed on this arm).
-            ViewMode::Zipper { focus, meta } => {
+            ViewMode::Zipper { focus, kind, meta } => {
                 Ok(single_expr_par(ExprInstance::EZipperBody(EZipper {
                     pathmap: Some(chain.source_map.clone()),
                     current_path: focus,
                     is_write_zipper: meta.is_write,
                     locally_free: meta.locally_free,
                     connective_used: meta.connective_used,
+                    cursor_kind: kind.to_wire(),
                 })))
             }
             ViewMode::Map => unreachable!(

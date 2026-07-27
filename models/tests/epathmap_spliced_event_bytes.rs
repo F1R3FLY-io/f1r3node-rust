@@ -173,6 +173,9 @@ fn spliced_equals_direct_for_every_container_position() {
                 is_write_zipper: false,
                 locally_free: vec![1],
                 connective_used: false,
+                // 0 = SPLIT, prost's default: the field is omitted from the
+                // wire entirely, so this event-hash pin does not move.
+                cursor_kind: 0,
             })),
         ),
         (

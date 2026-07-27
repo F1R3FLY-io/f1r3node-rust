@@ -568,12 +568,18 @@ fn emit_ematches(matches: &EMatches, out: &mut Vec<u8>) {
 
 fn emit_ezipper(zipper: &EZipper, out: &mut Vec<u8>) {
     // pathmap, current_path, is_write_zipper, locally_free (EMPTY),
-    // connective_used.
+    // connective_used, cursor_kind.
     emit_option(&zipper.pathmap, contains_epathmap, emit_epathmap, out);
     emit_black_box(&zipper.current_path, out);
     emit_bool(zipper.is_write_zipper, out);
     emit_locally_free_as_empty(out);
     emit_bool(zipper.connective_used, out);
+    // `cursor_kind` (RhoTypes.proto): WHICH ENTRY `current_path` addresses.
+    // serde emits every field regardless of value, so unlike prost — which
+    // omits a default-valued scalar and therefore does not move — this
+    // APPENDS four little-endian bytes to an EZipper's event-hash encoding.
+    // Declaration order puts it last, so nothing before it shifts.
+    emit_u32(zipper.cursor_kind, out);
 }
 
 /// Two-Par operator payload (`p1`, `p2`) — shared shape of the arithmetic /

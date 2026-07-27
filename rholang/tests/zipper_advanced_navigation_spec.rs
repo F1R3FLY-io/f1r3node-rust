@@ -66,6 +66,7 @@ mod zipper_advanced_navigation_tests {
             is_write_zipper: false,
             locally_free: vec![],
             connective_used: false,
+            cursor_kind: 0,
         };
 
         // Ascend one level
@@ -89,6 +90,7 @@ mod zipper_advanced_navigation_tests {
             is_write_zipper: false,
             locally_free: vec![],
             connective_used: false,
+            cursor_kind: 0,
         };
 
         // At root, ascend_one should indicate we can't ascend
@@ -106,6 +108,7 @@ mod zipper_advanced_navigation_tests {
             is_write_zipper: false,
             locally_free: vec![],
             connective_used: false,
+            cursor_kind: 0,
         };
 
         // Ascend 2 levels (to root)
@@ -133,6 +136,7 @@ mod zipper_advanced_navigation_tests {
             is_write_zipper: false,
             locally_free: vec![],
             connective_used: false,
+            cursor_kind: 0,
         };
 
         // Try to ascend 10 levels (more than depth)
@@ -205,6 +209,7 @@ mod zipper_advanced_navigation_tests {
             is_write_zipper: false,
             locally_free: vec![],
             connective_used: false,
+            cursor_kind: 0,
         };
 
         // This is a leaf, so count should be 0
@@ -269,6 +274,7 @@ mod zipper_advanced_navigation_tests {
             is_write_zipper: false,
             locally_free: vec![],
             connective_used: false,
+            cursor_kind: 0,
         };
 
         // Siblings would be found by looking at parent's children

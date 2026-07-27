@@ -203,6 +203,9 @@ pub fn ezipper_value() -> EZipper {
         is_write_zipper: false,
         locally_free: create_bit_vector(&[0]),
         connective_used: false,
+        // 0 = SPLIT — the cursor semantics that preceded `cursor_kind`, and
+        // prost's default, so the SERIALIZED bytes of this fixture do not move.
+        cursor_kind: 0,
     }
 }
 

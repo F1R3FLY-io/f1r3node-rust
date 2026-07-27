@@ -89,6 +89,7 @@ mod zipper_query_tests {
             is_write_zipper: false,
             locally_free: vec![],
             connective_used: false,
+            cursor_kind: 0,
         };
 
         // Test hasVal implementation logic
@@ -130,6 +131,7 @@ mod zipper_query_tests {
             is_write_zipper: false,
             locally_free: vec![],
             connective_used: false,
+            cursor_kind: 0,
         };
 
         let pathmap_result =
@@ -780,9 +782,11 @@ mod native_query_runtime_tests {
             @"subtrieCount"!( {m}.readZipperAt(["a"]).getSubtrie().childCount() ) |
             @"subtrieHasAX"!( {m}.readZipperAt(["a"]).getSubtrie().readZipperAt(["a", "x"]).pathExists() ) |
             @"subtrieDropsB"!( {m}.readZipperAt(["a"]).getSubtrie().readZipperAt(["b"]).pathExists() == false ) |
-            @"nextSibling"!( {m}.readZipperAt(["a"]).toNextSibling() == {m}.readZipperAt(["b"]) ) |
+            @"nextSiblingFocus"!( {m}.readZipperAt(["a"]).toNextSibling().getPath() == {m}.readZipperAt(["b"]).getPath() ) |
+            @"nextSiblingLeaf"!( {m}.readZipperAt(["a"]).toNextSibling().getLeaf() == {m}.readZipperAt(["b"]).getLeaf() ) |
+            @"nextSiblingCursorDiffers"!( ({m}.readZipperAt(["a"]).toNextSibling() == {m}.readZipperAt(["b"])) == false ) |
             @"nextSiblingLast"!( {m}.readZipperAt(["c"]).toNextSibling() == Nil ) |
-            @"prevSibling"!( {m}.readZipperAt(["b"]).toPrevSibling() == {m}.readZipperAt(["a"]) ) |
+            @"prevSiblingFocus"!( {m}.readZipperAt(["b"]).toPrevSibling().getPath() == {m}.readZipperAt(["a"]).getPath() ) |
             @"prevSiblingFirst"!( {m}.readZipperAt(["a"]).toPrevSibling() == Nil )
             "#,
             m = MAP
@@ -808,9 +812,37 @@ mod native_query_runtime_tests {
             assert_int(&runtime, "subtrieCount", 1).await;
             assert_bool(&runtime, "subtrieHasAX").await;
             assert_bool(&runtime, "subtrieDropsB").await;
-            assert_bool(&runtime, "nextSibling").await;
+            // ★ SIBLING NAVIGATION — what it means changed with the lossless
+            // cursor, and this is the precise statement of how.
+            //
+            // A sibling move lands on the same ELEMENT as `readZipperAt(["b"])`
+            // and reads the same ENTRY there: both `getPath()` and `getLeaf()`
+            // agree, which is the property this assertion has always been about.
+            assert_bool(&runtime, "nextSiblingFocus").await;
+            assert_bool(&runtime, "nextSiblingLeaf").await;
+            // …but the two CURSORS are no longer structurally equal, and that
+            // is a correction rather than a regression. `EZipper.cursor_kind`
+            // records WHICH ARM of the two-arm path codec a cursor names.
+            // `readZipperAt(["b"])` names the SPLIT frame `["b"]`, because that
+            // is what its argument says. A child-SEGMENT move lands on an
+            // element boundary and learns nothing about the arm, so it yields
+            // the PREFIX kind, which resolves to the shortest key present.
+            //
+            // On THIS map (every element a ground list) the two resolve to the
+            // same key — hence the two assertions above. On a map holding both
+            // `"b"` and `["b"]` they resolve to DIFFERENT entries, so equating
+            // the cursors would assert a falsehood in general. Two zippers that
+            // can read different values must not compare equal, and the earlier
+            // `==` held only because a cursor could not express the difference.
+            //
+            // What this bought: `descendFirst`/`descendIndexedBranch`/
+            // `toNextSibling` now reach BARE entries, which they never could
+            // before — see `zipper_enumeration_spec.rs`. Ground-list navigation
+            // is byte-identical, because a map with no bare entries makes the
+            // PREFIX probe miss and fall through to exactly the split key.
+            assert_bool(&runtime, "nextSiblingCursorDiffers").await;
             assert_bool(&runtime, "nextSiblingLast").await;
-            assert_bool(&runtime, "prevSibling").await;
+            assert_bool(&runtime, "prevSiblingFocus").await;
             assert_bool(&runtime, "prevSiblingFirst").await;
         })
         .await

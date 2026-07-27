@@ -346,19 +346,81 @@ message EPathMap {
 message EZipper {
   // The underlying PathMap being navigated
   EPathMap pathmap = 1;
-  
+
   // Current path position in the zipper (list of path segments as bytes)
   // Each segment is encoded as bytes representing a Par value
   repeated bytes current_path = 2;
-  
+
   // Whether this is a write zipper (true) or read zipper (false)
   bool is_write_zipper = 3;
-  
+
   // Metadata from the PathMap
   bytes locallyFree = 4
       [(scalapb.field).type =
            "coop.rchain.models.AlwaysEqual[scala.collection.immutable.BitSet]"];
   bool connective_used = 5;
+
+  // WHICH ENTRY `current_path` addresses. Together with `current_path` this is
+  // the cursor's trie key, losslessly: the segments say WHERE, this says WHICH
+  // ARM of the canonical path codec.
+  //
+  // ## Why the cursor needs it
+  //
+  // The canonical path codec (models/src/rust/canonical_path.rs, §1.3) has TWO
+  // top-level arms, and `current_path` alone cannot tell them apart:
+  //
+  //   split arm (a ground list [e1..ek])  key = enc(e1) || .. || enc(ek) || 0x00
+  //   bare arm  (anything else)           key = enc(par)             -- NO 0x00
+  //
+  // `current_path` holds the per-element segments of either arm, so the bare
+  // element `1` and the singleton list `[1]` produce the SAME segment vector.
+  // They are DIFFERENT entries, with keys `03 02` and `03 02 00`, and one map
+  // may hold BOTH — so a cursor storing only the segments names two positions
+  // and every reader has to guess. It guessed "split", which for a bare entry
+  // reads back a different element rather than missing. This field removes the
+  // guess:
+  //
+  //   key(cursor) = concat(current_path) ++ (0x00 iff the cursor is a split frame)
+  //
+  // ## Values (mirrored by models::rust::pathmap_integration::CursorKind)
+  //
+  //   0  SPLIT   key = concat(current_path) ++ 0x00. The root cursor (a frame
+  //              of zero elements, key 0x00 — the empty list) and the cursor
+  //              from readZipperAt / writeZipperAt / descendTo of a ground
+  //              LIST argument.
+  //   1  BARE    key = concat(current_path), no terminator. From readZipperAt
+  //              / writeZipperAt / descendTo of a non-list argument, and from
+  //              an enumeration step that landed on a bare entry.
+  //   2  PREFIX  the cursor is at an element boundary and has NOT chosen
+  //              between the bare entry at concat(current_path) and the split
+  //              entry at concat(current_path) ++ 0x00. Produced by every move
+  //              that advances by one CHILD SEGMENT (descendFirst,
+  //              descendIndexedBranch, toNextSibling, toPrevSibling,
+  //              ascendOne, ascend), which lands on an element boundary and
+  //              carries no information about which arm the entry took. Entry
+  //              queries resolve it to the SHORTEST key present: the bare key
+  //              if the map holds a value there, else the split key. On a map
+  //              with no bare entries the bare probe always misses, so PREFIX
+  //              is indistinguishable from SPLIT — which is why navigation
+  //              semantics do not move for ground-list maps.
+  //
+  //   Any other value is rejected as malformed rather than silently coerced.
+  //
+  // SPLIT is 0, so every EZipper serialized before this field existed decodes
+  // to exactly the behaviour that preceded it, and prost omits the field
+  // entirely at its default — the wire is byte-identical for split cursors.
+  //
+  // ⚠ DELIBERATELY a uint32 and not a proto `enum`. models/build.rs applies
+  // `.enum_attribute(".rhoapi", "#[derive(Eq, Ord, PartialOrd)]")` and
+  // `#[repr(C)]` to every enum in this package (they are load-bearing for the
+  // generated ONEOF types), and both collide with the `#[derive(.., Eq,
+  // PartialOrd, Ord, ::prost::Enumeration)]` + `#[repr(i32)]` that prost emits
+  // for a generated enum. Introducing this package's first proto enum would
+  // therefore require restructuring the post-processing pass that rewrites the
+  // derives of EVERY generated type — a consensus-critical codegen path — to
+  // gain nothing on the wire, since a proto3 enum field and a uint32 field are
+  // the same varint. The named semantics live in `CursorKind` instead.
+  uint32 cursor_kind = 6;
 }
 
 /**

@@ -29,6 +29,65 @@
 //! keys stream in ascending byte-lexicographic order with a node's value
 //! emitted before its descendants. The helpers preserve exactly the orders the
 //! scans produced (see each helper's proof sketch).
+//!
+//! # ★ BRANCH versus ENTRY — the settled semantics
+//!
+//! A bare (non-list) entry's WHOLE key is a strict byte-prefix of every split
+//! key that begins with the same element:
+//!
+//! ```text
+//! bare  "a"          04 01 61
+//! split ["a","x"]    04 01 61 04 01 78 00
+//! split ["a"]        04 01 61 00
+//! ```
+//!
+//! so bare entries sit at INTERIOR trie positions, and the whole-key
+//! prefix-freeness that the split arm enjoys does not hold across the arms.
+//! (The SEGMENT codec is still prefix-free — that is what keeps segment
+//! boundaries decodable; it is the top-level PATH that is not.) A map may
+//! therefore hold, at one and the same element-prefix, up to two entries and a
+//! whole branch of descendants. Every query has to say which of the three it
+//! means, and this module's split is that answer:
+//!
+//! | question                     | key                              | helpers |
+//! |------------------------------|----------------------------------|---------|
+//! | the BRANCH at a cursor       | `segments_to_key(segments, false)` | [`subtrie_value_count`], [`collect_subtrie_values`], [`collect_child_segments`], [`path_prefix_exists`] |
+//! | the ENTRY at a cursor        | `pathmap_integration::cursor_entry_key` | `getLeaf`/`setLeaf`-shaped writes/`removeLeaf`/`getPath`/`toNextLeaf`/`atPath` |
+//!
+//! BRANCH queries — `leafCount`, `childCount`, `getSubtrie`, `pathExists`,
+//! `descendFirst`, `descendIndexedBranch`, `prunePath`, `removeBranches`,
+//! `restriction` — ask about the SUBTRIE at an element-prefix. That subtrie
+//! INCLUDES the bare entry sitting at the prefix itself, because the bare
+//! entry's key literally is that prefix. This is a deliberate choice, not an
+//! accident of the encoding:
+//!
+//!   * `{| "a", ["a","x"] |}.readZipperAt("a").leafCount()` is **2** — the
+//!     branch under `04 01 61` holds the bare entry and `["a","x"]`. The
+//!     alternative (excluding the entry at the prefix) would make
+//!     `leafCount()` at the root disagree with the map's cardinality whenever
+//!     one entry prefixes another, and would break the walk bound that
+//!     `leafCount()` exists to provide: a `leafCount()`-bounded walk must
+//!     visit exactly the entries the count promised, and `toNextLeaf` visits
+//!     the bare entry.
+//!   * `pathExists` at an element-prefix is therefore "something lives at or
+//!     below here", NOT "an entry lives exactly here". The exact question is
+//!     `getLeaf() != Nil`, which spends the cursor's arm and answers it
+//!     precisely.
+//!
+//! ENTRY queries disambiguate through the cursor's `CursorKind`
+//! (`EZipper.cursor_kind`): `Split` reads `concat ++ 0x00`, `Bare` reads
+//! `concat`, and `Prefix` — the kind a child-SEGMENT navigation move produces,
+//! which learns nothing about the arm — resolves to the SHORTEST key present,
+//! bare before split. A caller that must name a specific arm names it with the
+//! argument it passes: `readZipperAt("a")` is the bare entry and
+//! `readZipperAt(["a"])` is the split one, and on a map holding both, each
+//! reads back its own.
+//!
+//! Pinned by `models/tests/pathmap_integration_tests.rs`
+//! (`a_bare_entry_key_is_a_prefix_of_the_split_keys_beside_it`) and
+//! `rholang/tests/zipper_enumeration_spec.rs`
+//! (`bare_get_leaf_at_a_cursor_reads_back_the_element`,
+//! `bare_get_path_round_trips_through_the_map`).
 
 use super::canonical_path::collect_child_segments_codec;
 use super::pathmap_integration::RholangPathMap;

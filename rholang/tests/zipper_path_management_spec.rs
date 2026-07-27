@@ -228,6 +228,7 @@ mod zipper_path_management_tests {
             is_write_zipper: false,
             locally_free: vec![],
             connective_used: false,
+            cursor_kind: 0,
         };
 
         // Reset to root
@@ -249,6 +250,7 @@ mod zipper_path_management_tests {
             is_write_zipper: false,
             locally_free: vec![],
             connective_used: false,
+            cursor_kind: 0,
         };
 
         zipper.current_path = vec![];
@@ -269,6 +271,7 @@ mod zipper_path_management_tests {
             is_write_zipper: true,
             locally_free: vec![],
             connective_used: false,
+            cursor_kind: 0,
         };
 
         zipper.current_path = vec![];

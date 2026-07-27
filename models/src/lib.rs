@@ -623,10 +623,16 @@ impl Hash for EMap {
 // Semantics unchanged: `ps`/`connective_used`/`remainder` compared,
 // `locally_free` ignored.
 
+// `cursor_kind` participates: `current_path` plus the kind IS the cursor's
+// trie key, so two zippers agreeing on the segments but differing on the arm
+// are focused on DIFFERENT entries (`1` at `03 02` versus `[1]` at
+// `03 02 00`, which one map may hold at once) and must not compare equal.
+// `locally_free` stays excluded — AlwaysEqual semantics, as everywhere else.
 impl PartialEq for EZipper {
     fn eq(&self, other: &Self) -> bool {
         self.pathmap == other.pathmap
             && self.current_path == other.current_path
+            && self.cursor_kind == other.cursor_kind
             && self.is_write_zipper == other.is_write_zipper
             && self.connective_used == other.connective_used
     }
@@ -636,6 +642,7 @@ impl Hash for EZipper {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.pathmap.hash(state);
         self.current_path.hash(state);
+        self.cursor_kind.hash(state);
         self.is_write_zipper.hash(state);
         self.connective_used.hash(state);
     }

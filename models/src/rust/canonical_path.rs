@@ -300,7 +300,18 @@ fn read_uv(bytes: &[u8], cursor: &mut usize, limit: usize) -> Result<u64, CodecE
 /// is deliberately NOT required — the trie grammar splits such carriers
 /// with per-element escape (R3F-2's «v»-survival requirement); on the wire
 /// grammar the enclosing `eval_stable_par` check makes the elements stable.
-fn split_carrier_list(par: &Par) -> Option<&EList> {
+/// Does `par` take the codec's SPLIT arm (§1.3)?
+///
+/// The one authority on which Pars split, so that the zipper cursor
+/// (`pathmap_integration::par_to_path` / `CursorKind::of`) and the key encoder
+/// can never disagree. Everything else takes the bare arm — including the
+/// `0x0F` escape arm, whose key is one segment.
+pub fn takes_split_arm(par: &Par) -> bool {
+    split_carrier_list(par).is_some()
+}
+
+/// The `EList` of a split-arm carrier, or `None`. See [`takes_split_arm`].
+pub(crate) fn split_carrier_list(par: &Par) -> Option<&EList> {
     if !par.sends.is_empty()
         || !par.receives.is_empty()
         || !par.news.is_empty()
@@ -2190,16 +2201,21 @@ mod tests {
         );
     }
 
-    /// `par_to_path` and the codec disagree about WHICH Pars split, on top of
-    /// the terminator itself: `split_carrier_list` (§1.3) additionally requires
-    /// the carrier to hold no sends/receives/news/matches/bundles/connectives/
-    /// conditionals/unforgeables and no par-level `locally_free`, while
-    /// `par_to_path` inspects only `exprs` and the `EList`'s own metadata. A
-    /// list carrier that also carries a send therefore SPLITS in the cursor and
-    /// takes the `0x0F` ESCAPE arm in the key.
+    /// `par_to_path` and the codec agree about WHICH Pars split — the positive
+    /// twin of the stage-1 witness
+    /// `par_to_path_and_the_codec_disagree_about_which_pars_split`.
+    ///
+    /// `split_carrier_list` (§1.3) additionally requires the carrier to hold no
+    /// sends/receives/news/matches/bundles/connectives/conditionals/
+    /// unforgeables and no par-level `locally_free`; `par_to_path` used to
+    /// inspect only `exprs` and the `EList`'s own metadata, so a list carrier
+    /// that ALSO carried a send split into per-element segments in the cursor
+    /// while taking the `0x0F` ESCAPE arm in the key — segments that do not
+    /// concatenate to the key under ANY cursor kind. `par_to_path` now asks
+    /// [`takes_split_arm`], so there is one authority and no second guess.
     #[test]
-    fn par_to_path_and_the_codec_disagree_about_which_pars_split() {
-        use crate::rust::pathmap_integration::par_to_path;
+    fn par_to_path_agrees_with_the_codec_about_which_pars_split() {
+        use crate::rust::pathmap_integration::{par_to_path, CursorKind};
 
         let mut carrier = glist(vec![gint(1)]);
         carrier.sends = vec![Send {
@@ -2211,7 +2227,7 @@ mod tests {
         }];
 
         assert!(
-            split_carrier_list(&carrier).is_none(),
+            !takes_split_arm(&carrier),
             "the codec does NOT treat this as a split carrier"
         );
         assert_eq!(
@@ -2219,44 +2235,90 @@ mod tests {
             tag::ESCAPE,
             "it is not eval_stable, so the key is the escape arm"
         );
-        // …yet the cursor splits it into one segment per list element.
+        // …and the cursor now takes the very same arm: ONE segment, which IS
+        // the key, under a BARE cursor kind.
         assert_eq!(par_to_path(&carrier).len(), 1);
-        assert_ne!(par_to_path(&carrier)[0], encode_trie_path(&carrier));
+        assert_eq!(par_to_path(&carrier)[0], encode_trie_path(&carrier));
+        assert_eq!(CursorKind::of(&carrier), CursorKind::Bare);
     }
 
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(64))]
 
-        /// ⚠ WITNESS OF A DEFECT — the cursor round-trip law, over arbitrary
-        /// Pars. It holds exactly on the split arm; on the bare arm the
-        /// rebuilt key is the key of the singleton list wrapping the entry.
+        /// ★★★ THE CURSOR ROUND-TRIP LAW, unconditional — the positive twin of
+        /// the stage-1 witness
+        /// `prop_witness_cursor_key_round_trip_holds_only_on_the_split_arm`,
+        /// with the case split DELETED.
         ///
-        /// Positive twin: `prop_cursor_key_round_trips_for_every_par`, which
-        /// drops the case split entirely once the cursor carries the
-        /// discriminator.
+        /// ```text
+        /// cursor_entry_key(par_to_path(p), CursorKind::of(p), map) == encode_trie_path(p)
+        /// ```
+        ///
+        /// for EVERY Par `p` and every map: the cursor a reader builds for `p`
+        /// addresses exactly the entry `create_pathmap_from_elements` inserted
+        /// for `p`. The segments say WHERE and the kind says WHICH ARM, and
+        /// together they are the key — which is what "lossless" means here.
         #[test]
-        fn prop_witness_cursor_key_round_trip_holds_only_on_the_split_arm(
-            par in any_par()
-        ) {
-            use crate::rust::pathmap_integration::{par_to_path, segments_to_key};
+        fn prop_cursor_key_round_trips_for_every_par(par in any_par()) {
+            use crate::rust::pathmap_integration::{
+                cursor_entry_key, par_to_path, CursorKind, RholangPathMap,
+            };
 
             let key = encode_trie_path(&par);
-            let rebuilt = segments_to_key(&par_to_path(&par), true);
-            match split_carrier_list(&par).is_some() {
-                // SPLIT: `par_to_path` yields the same per-element segments the
-                // encoder emits, and the terminator the reader appends is the
-                // one the key really carries.
-                true => prop_assert_eq!(rebuilt, key),
-                // BARE: off by exactly the terminator — the singleton's key —
-                // except where `par_to_path` ALSO disagrees about splitting
-                // (the carrier case pinned above), where it is off by more.
-                false => {
-                    prop_assert_ne!(&rebuilt, &key);
-                    if par_to_path(&par).len() == 1 && par_to_path(&par)[0] == key {
-                        let mut singleton_key = key.clone();
-                        singleton_key.push(tag::TERM);
-                        prop_assert_eq!(rebuilt, singleton_key);
-                    }
+            // Split/Bare never consult the map, so an empty one witnesses that
+            // the answer depends on the cursor alone.
+            let empty = RholangPathMap::new();
+            prop_assert_eq!(
+                cursor_entry_key(&par_to_path(&par), CursorKind::of(&par), &empty),
+                key.clone()
+            );
+
+            // …and it round-trips the other way: `decode_cursor` recovers the
+            // very cursor that names the key.
+            let (segments, kind) =
+                crate::rust::pathmap_zipper::decode_cursor(&key);
+            prop_assert_eq!(&segments, &par_to_path(&par));
+            prop_assert_eq!(kind, CursorKind::of(&par));
+            prop_assert_eq!(cursor_entry_key(&segments, kind, &empty), key);
+        }
+
+        /// The PREFIX kind resolves to the SHORTEST key present: the bare entry
+        /// when the map holds one there, the split entry otherwise. On a map
+        /// with no bare entries it is indistinguishable from `Split`, which is
+        /// why every child-segment navigation move can be `Prefix` without the
+        /// ground-list corpus moving.
+        #[test]
+        fn prop_prefix_kind_resolves_shortest_present(par in stable_par()) {
+            use crate::rust::pathmap_integration::{
+                create_pathmap_from_elements, cursor_entry_key, par_to_path, CursorKind,
+            };
+
+            let segments = par_to_path(&par);
+            let bare_key = crate::rust::pathmap_integration::segments_to_key(&segments, false);
+            let mut split_key = bare_key.clone();
+            split_key.push(tag::TERM);
+
+            // (a) a map WITHOUT a bare entry at the cursor: Prefix == Split.
+            let split_only = create_pathmap_from_elements(
+                &[decode_trie_path(&split_key).unwrap_or_else(|_| glist(vec![]))],
+                None,
+            )
+            .map;
+            if split_only.get(&bare_key).is_none() {
+                prop_assert_eq!(
+                    cursor_entry_key(&segments, CursorKind::Prefix, &split_only),
+                    split_key.clone()
+                );
+            }
+
+            // (b) a map WITH a bare entry at the cursor: Prefix picks it.
+            if let Ok(bare_par) = decode_trie_path(&bare_key) {
+                let with_bare = create_pathmap_from_elements(&[bare_par], None).map;
+                if with_bare.get(&bare_key).is_some() {
+                    prop_assert_eq!(
+                        cursor_entry_key(&segments, CursorKind::Prefix, &with_bare),
+                        bare_key
+                    );
                 }
             }
         }

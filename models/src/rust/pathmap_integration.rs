@@ -22,37 +22,170 @@
 
 use pathmap::PathMap;
 
-use crate::rhoapi::expr::ExprInstance;
 use crate::rhoapi::{Par, Var};
-use crate::rust::canonical_path::{encode_trie_path, encode_trie_segment, tag};
+use crate::rust::canonical_path::{
+    encode_trie_path, encode_trie_segment, split_carrier_list, tag, takes_split_arm,
+};
 
 /// Type alias for our standard use case: PathMap from bytes to Rholang Par.
 pub type RholangPathMap = PathMap<Par>;
 
+/// WHICH ENTRY an `EZipper` cursor addresses — the split/bare discriminator
+/// that `current_path` alone cannot carry.
+///
+/// The canonical path codec has TWO top-level arms (`canonical_path.rs` §1.3):
+/// a ground list splits into per-element segments plus a `0x00` terminator,
+/// and anything else is one bare segment with NO terminator. `current_path`
+/// stores the per-element segments of either arm, so the bare element `1` and
+/// the singleton list `[1]` give the SAME segment vector — while being
+/// DIFFERENT entries, under keys `03 02` and `03 02 00`, which one map may
+/// hold at the same time. The cursor is `(segments, kind)`, and
+/// [`cursor_entry_key`] is the key it names:
+///
+/// ```text
+/// key(cursor) = concat(segments) ++ (0x00 iff the cursor is a split frame)
+/// ```
+///
+/// This mirrors `EZipper.cursor_kind` (`RhoTypes.proto`), whose wire values are
+/// pinned by [`CursorKind::from_wire`] / [`CursorKind::to_wire`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
+pub enum CursorKind {
+    /// A SPLIT path frame of `segments.len()` elements: the key is
+    /// `concat(segments) ++ 0x00`.
+    ///
+    /// The root cursor is this with zero segments — key `0x00`, the empty
+    /// list — and so is the cursor of `readZipperAt`/`descendTo` given a
+    /// ground-LIST argument. It is the DEFAULT because it is proto value 0,
+    /// so an `EZipper` serialized before `cursor_kind` existed decodes to
+    /// exactly the behaviour that preceded it.
+    #[default]
+    Split,
+    /// A BARE element: the key is `concat(segments)`, with no terminator.
+    /// From `readZipperAt`/`descendTo` given a non-list argument, and from an
+    /// enumeration step that landed on a bare entry.
+    Bare,
+    /// An element-PREFIX at which the cursor has NOT chosen between the bare
+    /// entry (`concat(segments)`) and the split entry
+    /// (`concat(segments) ++ 0x00`).
+    ///
+    /// Produced by every move that advances by one CHILD SEGMENT
+    /// (`descendFirst`, `descendIndexedBranch`, `toNextSibling`,
+    /// `toPrevSibling`, `ascendOne`, `ascend`): a segment move lands on an
+    /// element boundary and carries no information about which arm the entry
+    /// there took. [`cursor_entry_key`] resolves it to the SHORTEST key
+    /// PRESENT in the map — bare first, split otherwise — which is
+    /// indistinguishable from [`CursorKind::Split`] on any map holding no bare
+    /// entries, and is why navigation does not move for the ground-list corpus.
+    Prefix,
+}
+
+impl CursorKind {
+    /// Decode the `EZipper.cursor_kind` wire value.
+    ///
+    /// Returns `None` for an unrecognized value rather than coercing it: a
+    /// cursor whose kind cannot be read names no entry, and silently treating
+    /// it as `Split` is precisely the guess this type exists to remove.
+    pub fn from_wire(value: u32) -> Option<CursorKind> {
+        match value {
+            0 => Some(CursorKind::Split),
+            1 => Some(CursorKind::Bare),
+            2 => Some(CursorKind::Prefix),
+            _ => None,
+        }
+    }
+
+    /// The `EZipper.cursor_kind` wire value.
+    pub fn to_wire(self) -> u32 {
+        match self {
+            CursorKind::Split => 0,
+            CursorKind::Bare => 1,
+            CursorKind::Prefix => 2,
+        }
+    }
+
+    /// The kind of a cursor built from the WHOLE path `par` — the arm the
+    /// codec itself takes for it, so that
+    /// `cursor_entry_key(par_to_path(par), CursorKind::of(par), map)` is
+    /// `encode_trie_path(par)` for EVERY Par (the cursor round-trip law).
+    pub fn of(par: &Par) -> CursorKind {
+        match takes_split_arm(par) {
+            true => CursorKind::Split,
+            false => CursorKind::Bare,
+        }
+    }
+}
+
 /// The per-element codec SEGMENTS of a path Par (W2b-1).
 ///
-/// - A ground `EList` entry yields one segment per element
-///   (`encode_trie_segment` of each), so a `current_path` of these segments
-///   keeps the segment-count == element-count invariant the zipper relies on
+/// - A split-arm entry (a ground `EList` carrier, [`takes_split_arm`]) yields
+///   one segment per element (`encode_trie_segment` of each), so a
+///   `current_path` of these segments keeps the segment-count ==
+///   element-count invariant the zipper relies on
 ///   (`existing_list.ps[..current_path.len()]` indexing, `starts_with`
 ///   prefix matching).
 /// - Any other Par yields a single segment (`encode_trie_segment(par)`).
 ///
-/// The FULL trie key of the entry is [`segments_to_key`] over these segments
-/// (with the terminator for the split-list form) — equivalently
-/// `canonical_path::encode_trie_path` applied to the whole entry.
+/// The FULL trie key of the entry is [`cursor_entry_key`] over these segments
+/// at [`CursorKind::of`] the Par — equivalently `encode_trie_path` of it.
+///
+/// ⚠ The split test is [`takes_split_arm`], i.e. the codec's OWN
+/// `split_carrier_list`, and not a local re-derivation. An earlier local test
+/// inspected only `exprs` and the `EList`'s own metadata, so a list carrier
+/// that ALSO carried (say) a send split here into per-element segments while
+/// the codec gave it the `0x0F` escape arm — under which the cursor's segments
+/// do not concatenate to the key under ANY kind, and the round-trip law cannot
+/// hold. Pinned by
+/// `canonical_path::tests::par_to_path_agrees_with_the_codec_about_which_pars_split`.
 pub fn par_to_path(par: &Par) -> Vec<Vec<u8>> {
-    if par.exprs.len() == 1 {
-        if let Some(ExprInstance::EListBody(list)) = &par.exprs[0].expr_instance {
-            // Only a ground list splits into per-element segments; a list
-            // carrying a remainder/free vars is not a ground path and falls
-            // through to the single-segment (escape-capable) arm.
-            if list.remainder.is_none() && list.locally_free.is_empty() && !list.connective_used {
-                return list.ps.iter().map(|p| encode_trie_segment(p)).collect();
-            }
-        }
+    match split_carrier_list(par) {
+        Some(list) => list.ps.iter().map(encode_trie_segment).collect(),
+        None => vec![encode_trie_segment(par)],
     }
-    vec![encode_trie_segment(par)]
+}
+
+/// The ENTRY key a cursor `(segments, kind)` addresses in `map`.
+///
+/// This is THE cursor→key rule, and the only place the split/bare
+/// discriminator is spent. `map` is consulted for [`CursorKind::Prefix`] only.
+///
+/// ```text
+/// Split   concat(segments) ++ 0x00
+/// Bare    concat(segments)
+/// Prefix  concat(segments)          if the map holds a value there
+///         concat(segments) ++ 0x00  otherwise
+/// ```
+///
+/// PREFIX queries — `leafCount`, `childCount`, `getSubtrie`, `pathExists`,
+/// `descendFirst`, `restriction`, `prunePath`, `removeBranches` — do NOT use
+/// this. They ask about the BRANCH at the cursor, which is
+/// `segments_to_key(segments, false)` under every kind, so they are unaffected
+/// by the discriminator and their bytes never move. See `pathmap_native_query`
+/// for the branch-vs-entry semantics that follow from this split.
+pub fn cursor_entry_key(
+    segments: &[Vec<u8>],
+    kind: CursorKind,
+    map: &RholangPathMap,
+) -> Vec<u8> {
+    let bare = segments_to_key(segments, false);
+    match kind {
+        CursorKind::Bare => bare,
+        CursorKind::Split => {
+            let mut split = bare;
+            split.push(tag::TERM);
+            split
+        }
+        // Shortest key PRESENT. A proper prefix sorts before what it prefixes,
+        // so "shortest present" is also "first in trie order" — the same tie
+        // -break the enumeration walk would make.
+        CursorKind::Prefix => match map.get(&bare) {
+            Some(_) => bare,
+            None => {
+                let mut split = bare;
+                split.push(tag::TERM);
+                split
+            }
+        },
+    }
 }
 
 /// Build a trie key from per-element codec segments (W2b-1): concatenation,
@@ -87,7 +220,7 @@ pub fn segments_to_key(segments: &[Vec<u8>], terminate: bool) -> Vec<u8> {
 /// answer. (Pinned by `canonical_path::tests::bare_and_singleton_list_are_distinct_entries`.)
 ///
 /// The information needed to avoid the guess is available whenever the caller
-/// holds the whole path Par, and this function is the ONE place that spends it:
+/// holds the whole path Par, and this function is the ONE place that spends it.
 ///
 /// * **At the root** (`cursor` empty) the argument IS the whole path, so the
 ///   key is [`crate::rust::canonical_path::encode_trie_path`] of it — bit for
@@ -96,12 +229,12 @@ pub fn segments_to_key(segments: &[Vec<u8>], terminate: bool) -> Vec<u8> {
 ///   split-form Par this is byte-identical to the old expression (the two
 ///   agree exactly on the split arm), so the ground-LIST corpus does not move.
 ///
-/// * **Below the root** the argument is a RELATIVE descent whose elements
-///   extend the cursor's, and neither `par_to_path` nor the cursor carries the
-///   split/bare discriminator — so this arm still reconstructs, and still
-///   guesses "split". That guess is what a lossless `EZipper` cursor removes;
-///   until then this arm is exactly as correct as it was, and no worse.
-pub fn entry_key_at(cursor: &[Vec<u8>], path_par: &Par) -> Vec<u8> {
+/// * **Below the root** the argument is a RELATIVE descent: its elements
+///   extend the cursor's, and the composed cursor's kind is the ARGUMENT's arm
+///   ([`CursorKind::of`]) — descending by `["x"]` lands on a split frame,
+///   descending by `1` lands on a bare element. That composition is what makes
+///   `readZipperAt(p)` and `readZipper().descendTo(p)` name the same entry.
+pub fn entry_key_at(cursor: &[Vec<u8>], path_par: &Par, map: &RholangPathMap) -> Vec<u8> {
     match cursor.is_empty() {
         // ZERO AMBIGUITY: the reader has the Par, so it can ask the codec.
         true => encode_trie_path(path_par),
@@ -110,7 +243,7 @@ pub fn entry_key_at(cursor: &[Vec<u8>], path_par: &Par) -> Vec<u8> {
             let mut segments = Vec::with_capacity(cursor.len() + relative.len());
             segments.extend_from_slice(cursor);
             segments.extend(relative);
-            segments_to_key(&segments, true)
+            cursor_entry_key(&segments, CursorKind::of(path_par), map)
         }
     }
 }
