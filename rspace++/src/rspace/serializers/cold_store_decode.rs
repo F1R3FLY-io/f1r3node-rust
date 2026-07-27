@@ -1,0 +1,302 @@
+//! # `ColdStoreDecode` — the cold-store DECODE boundary
+//!
+//! ## The hazard this trait exists to close
+//!
+//! bincode 1.3.3 has **no recursion limit**. Neither does bincode 2.0.1 nor
+//! bincode-next 3.1.1 — both offer only a *byte* limit, defaulting to
+//! `NoLimit`. The derived `Deserialize` for the `Par` family is therefore a
+//! recursive descent whose native stack is Θ(term depth), measured at 28,362
+//! B/level debug and 12,894 B/level release, i.e. a maximum survivable depth of
+//! 73 / 161 on a 2 MiB worker thread.
+//!
+//! That makes `Par` decode the **shallowest** member of the Θ(depth) family —
+//! 1.8× (debug) to 4.5× (release) below `<Par as Clone>::clone` — and the only
+//! one whose failure is **permanent and replicated**:
+//!
+//! ```text
+//!   peer ──▶ rspace_importer ──▶ LMDB cold store        (bytes written; never deep-decoded)
+//!                                    │
+//!                                    ▼
+//!                            history read-back ──▶ derived Deserialize ──▶ SIGSEGV
+//!                                    ▲                                        │
+//!                                    └──────── every restart, every peer ─────┘
+//! ```
+//!
+//! `rspace_importer` writes cold-store bytes to LMDB **without ever deep-decoding
+//! them**, so a too-deep datum enters storage through a path that structurally
+//! cannot observe its depth, and then aborts the node on *every* read-back, on
+//! *every* restart, on *every* peer that synced the same state. Every other
+//! Θ(depth) member is a transient, per-worker fault; this one is not.
+//!
+//! ## Why a trait rather than a free function
+//!
+//! `rspace++` cannot name `Par`. `models` depends on `rspace_plus_plus`
+//! (`models/Cargo.toml`), so the reverse edge would be a cycle. The
+//! cold-store decode sites live here, in `rspace++`; the decoder lives in
+//! `models` (`models/src/rust/rholang/par_codec.rs`). A trait declared on this
+//! side and implemented on the other is the only shape that respects that edge.
+//!
+//! ## ⚠ Why there is deliberately NO blanket impl
+//!
+//! The obvious convenience —
+//!
+//! ```ignore
+//! impl<T: serde::de::DeserializeOwned> ColdStoreDecode for T { … }   // ⚠ DO NOT
+//! ```
+//!
+//! — would be a **trap**, and the reason is a language limitation, not a style
+//! preference. Rust has no specialization on stable, so a blanket impl over
+//! `DeserializeOwned` makes `Par` **un-overridable**: `Par` implements
+//! `DeserializeOwned` (the derive is retained as a test oracle), so it would be
+//! caught by the blanket, the machine impl would be a coherence error, and the
+//! recursive path would silently remain in production while every call site
+//! *looked* converted.
+//!
+//! The cost of not having it is four one-line delegations for the rspace++ test
+//! doubles ([`legacy_prefix`] below) and four machine impls in `models`. The
+//! benefit is that "which types are decoded by the machine" is an explicit,
+//! greppable list rather than an inference outcome.
+//!
+//! ## The obligation: LANGUAGE IDENTITY, not byte identity
+//!
+//! The encoder is **not touched**. `Serialize` stays derived,
+//! `CandidateOrderingBytes` (replay-visible COMM selection) is encode-only and
+//! untouched. Byte identity of the *encoding* is therefore preserved by
+//! construction, and nothing about it is this trait's business.
+//!
+//! What the decoder owes is that it recognises **the same language**: for every
+//! byte string `b`,
+//!
+//! ```text
+//!     T::cold_decode(b)   and   bincode::deserialize::<T>(b)
+//! ```
+//!
+//! agree — the same `Ok` value, or both `Err`. The `Err` half is not a
+//! formality: the **rejection set is consensus-visible**. A node that accepts a
+//! byte string another node rejects forks. `models/tests/par_codec_malformed.rs`
+//! pins that half by truncating every corpus encoding at every byte offset,
+//! flipping bool bytes, pushing `Option` tags and variant indices out of range,
+//! and setting lengths to `usize::MAX`, asserting `Ok`/`Err` **agreement**
+//! (never message equality).
+//!
+//! ## Prefix semantics, and why the primitive is `cold_decode_prefix`
+//!
+//! `Datum<A>` is `{ a: A, persist: bool, source: Produce }` — `A` is a
+//! **prefix** of the datum encoding, and bincode's format is not
+//! self-delimiting from the outside: to read `persist` you must know where `a`
+//! ended, and the only way to know that is to have parsed `a`. The primitive is
+//! therefore prefix-shaped, and [`ColdStoreDecode::cold_decode`] is derived from
+//! it.
+//!
+//! Trailing bytes are **permitted** at the top level: `bincode::deserialize`
+//! uses `DefaultOptions::new().with_fixint_encoding().allow_trailing_bytes()`
+//! (bincode 1.3.3 `src/lib.rs:177-185`), so tightening this to "must consume
+//! the whole buffer" would *narrow* the accepted language and fork.
+
+use std::fmt;
+
+use serde::Deserialize;
+
+/// The decoder's error type.
+///
+/// Variants mirror the `bincode::ErrorKind` cases the derived path can produce
+/// for this schema, so that a reader can check the rejection sets against each
+/// other by inspection. Equality of *messages* is explicitly NOT part of the
+/// contract (bincode's are `Box<ErrorKind>` with `Display` text); equality of
+/// `Ok`/`Err` **disposition** is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ColdStoreDecodeError {
+    /// The stream ended inside a value. Mirrors bincode's
+    /// `ErrorKind::Io(UnexpectedEof)`, which `SliceReader` raises whenever a
+    /// read would pass the end of the slice.
+    UnexpectedEof {
+        /// What the decoder was trying to read.
+        wanted: &'static str,
+        /// How many more bytes it needed.
+        needed: usize,
+        /// How many were left.
+        available: usize,
+    },
+    /// A `bool` byte outside `{0, 1}`. Mirrors `ErrorKind::InvalidBoolEncoding`.
+    InvalidBoolEncoding(u8),
+    /// An `Option` tag byte outside `{0, 1}`. Mirrors
+    /// `ErrorKind::InvalidTagEncoding`.
+    InvalidTagEncoding(usize),
+    /// A oneof/enum variant index outside `0..count`. The derived path reaches
+    /// this through `serde::de::Error::invalid_value` on the
+    /// `U32Deserializer`, which bincode surfaces as `ErrorKind::Custom`.
+    InvalidVariantIndex {
+        /// The enum whose index was out of range.
+        type_name: &'static str,
+        /// The index read from the stream.
+        index: u32,
+        /// How many variants the enum has.
+        count: u32,
+    },
+    /// A `String` field whose bytes are not valid UTF-8. Mirrors
+    /// `ErrorKind::InvalidUtf8Encoding`.
+    InvalidUtf8Encoding,
+    /// A `u64` length that does not fit in a `usize`. Mirrors bincode's
+    /// `cast_u64_to_usize` `ErrorKind::Custom` (`src/config/int.rs:593`).
+    ///
+    /// ⚠ On a 64-bit target `usize::MAX == u64::MAX`, so this arm is
+    /// unreachable there and an oversized length instead surfaces as
+    /// [`ColdStoreDecodeError::UnexpectedEof`] — which is exactly what the
+    /// derived path does, because `size_hint::cautious` caps its
+    /// pre-allocation and the element loop then hits the end of the slice.
+    /// The arm exists so a 32-bit target agrees too.
+    LengthOverflow(u64),
+    /// The delegating (bincode-backed) decode of a bounded type failed. Carries
+    /// bincode's own message.
+    Legacy(String),
+    /// A machine invariant was violated — a value stack was empty where the
+    /// opcode program guarantees a value. **Unreachable by construction**; it
+    /// is an error rather than a panic so that a hypothetical defect degrades a
+    /// single read into a `Result` instead of aborting the node, which is the
+    /// entire point of this work.
+    MachineInvariant(&'static str),
+}
+
+impl fmt::Display for ColdStoreDecodeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ColdStoreDecodeError::UnexpectedEof {
+                wanted,
+                needed,
+                available,
+            } => write!(
+                f,
+                "unexpected end of input while reading {}: needed {} more byte(s), {} available",
+                wanted, needed, available
+            ),
+            ColdStoreDecodeError::InvalidBoolEncoding(b) => {
+                write!(f, "invalid bool encoding: {}", b)
+            }
+            ColdStoreDecodeError::InvalidTagEncoding(t) => {
+                write!(f, "invalid Option tag encoding: {}", t)
+            }
+            ColdStoreDecodeError::InvalidVariantIndex {
+                type_name,
+                index,
+                count,
+            } => write!(
+                f,
+                "invalid variant index {} for {}: expected 0 <= i < {}",
+                index, type_name, count
+            ),
+            ColdStoreDecodeError::InvalidUtf8Encoding => write!(f, "string is not valid utf8"),
+            ColdStoreDecodeError::LengthOverflow(n) => {
+                write!(f, "invalid size {}: sizes must fit in a usize", n)
+            }
+            ColdStoreDecodeError::Legacy(msg) => write!(f, "{}", msg),
+            ColdStoreDecodeError::MachineInvariant(what) => write!(
+                f,
+                "cold-store decoder machine invariant violated ({}) — this is a decoder defect",
+                what
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ColdStoreDecodeError {}
+
+/// Decode a value of `Self` from cold-store bytes with **`O(1)` native stack in
+/// term depth**.
+///
+/// See the module documentation for the hazard, the no-blanket-impl rule, and
+/// the language-identity obligation.
+pub trait ColdStoreDecode: Sized {
+    /// Decode a value from the **start** of `bytes`, returning it together with
+    /// the number of bytes consumed.
+    ///
+    /// This is the primitive because `Datum<A>` and `WaitingContinuation<P, K>`
+    /// embed their type parameters as *prefixes* of a longer encoding; see the
+    /// module documentation.
+    fn cold_decode_prefix(bytes: &[u8]) -> Result<(Self, usize), ColdStoreDecodeError>;
+
+    /// Decode a value from `bytes`, **permitting trailing bytes** — the
+    /// `allow_trailing_bytes()` half of `bincode::deserialize`'s configuration.
+    /// Tightening this would narrow the accepted language and fork.
+    fn cold_decode(bytes: &[u8]) -> Result<Self, ColdStoreDecodeError> {
+        Self::cold_decode_prefix(bytes).map(|(value, _consumed)| value)
+    }
+}
+
+/// The delegating prefix decode for **bounded-depth** types: run bincode over an
+/// `io::Cursor` and report the cursor's final position as the consumed count.
+///
+/// This is the body of every rspace++ test-double impl. It is sound *only* for
+/// types whose maximum nesting is fixed by their own definition — the rspace++
+/// instantiations are `String`, `Pattern`, `GuardedContinuation` and
+/// `StringsCaptor`, none of which contains `Par` or any other recursive
+/// type — so bincode's recursive descent is `O(1)` stack for them.
+///
+/// ⚠ Do NOT use this for a type that can nest arbitrarily. That is exactly the
+/// hazard the trait exists to close.
+///
+/// The configuration is `bincode::deserialize`'s
+/// (`DefaultOptions::new().with_fixint_encoding().allow_trailing_bytes()`,
+/// bincode 1.3.3 `src/lib.rs:177-185`) plus **one addition that is required for
+/// correctness, not for taste** — see below.
+///
+/// ## ⚠ Why `.with_limit(bytes.len())` is mandatory here
+///
+/// Consumption has to be *observable*, which forces `deserialize_from` over an
+/// `io::Cursor` (bincode's `SliceReader` keeps its remaining-length private, so
+/// the slice API cannot report a prefix length). But bincode's two readers do
+/// **not** agree on malformed input:
+///
+/// | reader | huge `Vec<u8>`/`String` length | behaviour |
+/// |--------|-------------------------------|-----------|
+/// | `SliceReader` (`bincode::deserialize`) | `get_byte_slice` checks `length > slice.len()` **first** | clean `Err(UnexpectedEof)` |
+/// | `IoReader` (`deserialize_from`) | `fill_buffer` does `temp_buffer.resize(length, 0)` **first** | allocates `length` bytes → abort |
+///
+/// A `String` payload prefixed with `[0xFF; 8]` would therefore be a clean
+/// rejection on the derived path and an out-of-memory abort here — precisely
+/// the class of divergence this whole change exists to remove.
+///
+/// The byte limit closes it: `Deserializer::read_vec` calls
+/// `self.options.limit().add(len)` **before** `reader.get_byte_buffer(len)`
+/// (bincode 1.3.3 `src/de/mod.rs:93-97`), so an oversized length trips
+/// `ErrorKind::SizeLimit` before any allocation. And it cannot reject anything
+/// the derived path accepts: every read that advances the cursor also charges
+/// the limit exactly its own width (`read_literal_type::<T>` charges
+/// `size_of::<T>()`; `read_bytes(n)` charges `n`), so the charge is at most the
+/// bytes consumed, and the budget starts at `bytes.len()`.
+pub fn legacy_prefix<T>(bytes: &[u8]) -> Result<(T, usize), ColdStoreDecodeError>
+where
+    T: for<'a> Deserialize<'a>,
+{
+    use bincode::Options;
+    use std::io::Cursor;
+
+    let mut cursor = Cursor::new(bytes);
+    let options = bincode::DefaultOptions::new()
+        .with_fixint_encoding()
+        .allow_trailing_bytes()
+        .with_limit(bytes.len() as u64);
+    let value: T = options
+        .deserialize_from(&mut cursor)
+        .map_err(|e| ColdStoreDecodeError::Legacy(e.to_string()))?;
+    Ok((value, cursor.position() as usize))
+}
+
+/// `String` is one of the rspace++ **test-double** instantiations
+/// (`RSpace<String, Pattern, String, StringsCaptor>` in
+/// `rspace++/tests/storage_actions_test.rs`), and it is a `std` type, so the
+/// orphan rule puts its impl here rather than in the test crate that uses it.
+///
+/// Bounded by definition: a `String` contains no `String`.
+impl ColdStoreDecode for String {
+    fn cold_decode_prefix(bytes: &[u8]) -> Result<(Self, usize), ColdStoreDecodeError> {
+        legacy_prefix(bytes)
+    }
+}
+
+/// `Vec<u8>` — the raw-channel test-double instantiation used by the history
+/// and exporter suites. Bounded by definition.
+impl ColdStoreDecode for Vec<u8> {
+    fn cold_decode_prefix(bytes: &[u8]) -> Result<(Self, usize), ColdStoreDecodeError> {
+        legacy_prefix(bytes)
+    }
+}

@@ -554,6 +554,88 @@ pub fn substitute_descends_into(e: &ExprInstance) -> bool {
     }
 }
 
+// ===========================================================================
+// SERDE VARIANT INDICES — the wire numbering of the two big oneofs
+// ===========================================================================
+
+/// The **serde variant index** of an `ExprInstance` arm.
+///
+/// `serde_derive` numbers enum variants by **declaration order**, and bincode
+/// writes that number as a `u32` (fixint, little-endian) immediately after the
+/// enclosing `Option`'s 1-byte tag. It is therefore a wire-visible, consensus-
+/// visible quantity, and any decoder that reconstructs an `ExprInstance` from a
+/// stream has to agree with it exactly.
+///
+/// ⚠ This is **not** proto tag order. `RhoTypes.proto` assigns
+/// `EPathmapBody = 32` and `EMatchesBody = 27`, but serde numbers them 25 and
+/// 27 respectively, because prost emits the oneof arms in `.proto` declaration
+/// order and serde counts from zero. Reading the proto tags as serde indices
+/// would silently mis-decode 12 of the 36 arms.
+///
+/// The match is exhaustive with no `_` arm — guard 1 of this module — so a
+/// variant added to `RhoTypes.proto` fails to compile here rather than being
+/// silently assigned an index by omission. The decoder in
+/// `models/src/rust/rholang/par_codec.rs` reconstructs arms from indices and is
+/// gated against THIS function by `par_codec_variant_indices_agree`, so the
+/// numbering exists in exactly one place.
+pub fn expr_instance_variant_index(e: &ExprInstance) -> u32 {
+    match e {
+        ExprInstance::GBool(_) => 0,
+        ExprInstance::GInt(_) => 1,
+        ExprInstance::GString(_) => 2,
+        ExprInstance::GUri(_) => 3,
+        ExprInstance::GByteArray(_) => 4,
+        ExprInstance::ENotBody(_) => 5,
+        ExprInstance::ENegBody(_) => 6,
+        ExprInstance::EMultBody(_) => 7,
+        ExprInstance::EDivBody(_) => 8,
+        ExprInstance::EPlusBody(_) => 9,
+        ExprInstance::EMinusBody(_) => 10,
+        ExprInstance::ELtBody(_) => 11,
+        ExprInstance::ELteBody(_) => 12,
+        ExprInstance::EGtBody(_) => 13,
+        ExprInstance::EGteBody(_) => 14,
+        ExprInstance::EEqBody(_) => 15,
+        ExprInstance::ENeqBody(_) => 16,
+        ExprInstance::EAndBody(_) => 17,
+        ExprInstance::EOrBody(_) => 18,
+        ExprInstance::EVarBody(_) => 19,
+        ExprInstance::EListBody(_) => 20,
+        ExprInstance::ETupleBody(_) => 21,
+        ExprInstance::ESetBody(_) => 22,
+        ExprInstance::EMapBody(_) => 23,
+        ExprInstance::EMethodBody(_) => 24,
+        ExprInstance::EPathmapBody(_) => 25,
+        ExprInstance::EZipperBody(_) => 26,
+        ExprInstance::EMatchesBody(_) => 27,
+        ExprInstance::EPercentPercentBody(_) => 28,
+        ExprInstance::EPlusPlusBody(_) => 29,
+        ExprInstance::EMinusMinusBody(_) => 30,
+        ExprInstance::EModBody(_) => 31,
+        ExprInstance::GDouble(_) => 32,
+        ExprInstance::GBigInt(_) => 33,
+        ExprInstance::GBigRat(_) => 34,
+        ExprInstance::GFixedPoint(_) => 35,
+    }
+}
+
+/// The **serde variant index** of a `ConnectiveInstance` arm. See
+/// [`expr_instance_variant_index`] for why this numbering is wire-visible and
+/// why it is not the proto tag. Exhaustive, no `_` arm.
+pub fn connective_instance_variant_index(c: &ConnectiveInstance) -> u32 {
+    match c {
+        ConnectiveInstance::ConnAndBody(_) => 0,
+        ConnectiveInstance::ConnOrBody(_) => 1,
+        ConnectiveInstance::ConnNotBody(_) => 2,
+        ConnectiveInstance::VarRefBody(_) => 3,
+        ConnectiveInstance::ConnBool(_) => 4,
+        ConnectiveInstance::ConnInt(_) => 5,
+        ConnectiveInstance::ConnString(_) => 6,
+        ConnectiveInstance::ConnUri(_) => 7,
+        ConnectiveInstance::ConnByteArray(_) => 8,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -937,6 +1019,75 @@ mod tests {
             };
         }
         dismantle(p);
+    }
+
+    /// The variant-index tables must be BIJECTIONS onto `0..COUNT`. Without
+    /// this, two arms could share an index (mis-decoding one as the other) or
+    /// an index could be skipped (making a wire value undecodable) and every
+    /// existing test would still pass.
+    #[test]
+    fn variant_index_tables_are_bijections_onto_their_ranges() {
+        let mut expr_seen: Vec<u32> = expr_instance_corpus()
+            .iter()
+            .map(|(instance, _)| expr_instance_variant_index(instance))
+            .collect();
+        expr_seen.sort_unstable();
+        assert_eq!(
+            expr_seen,
+            (0..EXPR_INSTANCE_VARIANT_COUNT as u32).collect::<Vec<u32>>(),
+            "`expr_instance_variant_index` is not a bijection onto 0..{}. serde numbers \
+             enum variants by DECLARATION ORDER and bincode writes that number to the \
+             wire, so a collision or a gap here is a consensus-visible mis-decode.",
+            EXPR_INSTANCE_VARIANT_COUNT
+        );
+
+        let mut conn_seen: Vec<u32> = connective_instance_corpus()
+            .iter()
+            .map(|(instance, _)| connective_instance_variant_index(instance))
+            .collect();
+        conn_seen.sort_unstable();
+        assert_eq!(
+            conn_seen,
+            (0..CONNECTIVE_INSTANCE_VARIANT_COUNT as u32).collect::<Vec<u32>>(),
+            "`connective_instance_variant_index` is not a bijection onto 0..{}",
+            CONNECTIVE_INSTANCE_VARIANT_COUNT
+        );
+    }
+
+    /// The variant index must equal the `u32` bincode actually writes. This is
+    /// the check that stops the table above from being a plausible-looking
+    /// hand-count: it reads the real bytes.
+    ///
+    /// Layout of a `Some(oneof)` in bincode legacy fixint-LE: one `Option` tag
+    /// byte (`0x01`), then the variant index as 4 bytes little-endian.
+    #[test]
+    fn variant_index_tables_match_the_bytes_bincode_writes() {
+        for (instance, _) in expr_instance_corpus() {
+            let expected = expr_instance_variant_index(&instance);
+            let bytes = bincode::serialize(&Expr {
+                expr_instance: Some(instance),
+            })
+            .expect("serialize Expr");
+            assert_eq!(bytes[0], 1, "Some(..) must be tag 1");
+            let on_wire = u32::from_le_bytes([bytes[1], bytes[2], bytes[3], bytes[4]]);
+            assert_eq!(
+                on_wire, expected,
+                "expr_instance_variant_index disagrees with the bytes bincode writes"
+            );
+        }
+        for (instance, _) in connective_instance_corpus() {
+            let expected = connective_instance_variant_index(&instance);
+            let bytes = bincode::serialize(&Connective {
+                connective_instance: Some(instance),
+            })
+            .expect("serialize Connective");
+            assert_eq!(bytes[0], 1, "Some(..) must be tag 1");
+            let on_wire = u32::from_le_bytes([bytes[1], bytes[2], bytes[3], bytes[4]]);
+            assert_eq!(
+                on_wire, expected,
+                "connective_instance_variant_index disagrees with the bytes bincode writes"
+            );
+        }
     }
 
     #[test]
