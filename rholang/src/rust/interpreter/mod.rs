@@ -23,6 +23,11 @@ pub mod metrics_constants;
 pub mod ollama_service;
 pub mod openai_service;
 pub mod pretty_printer;
+/// The printer's recursive oracle twin. `cfg(test)`: never built for production.
+/// Its own text cites `739368a4` block by block; `rholang/tests/normalize_oracle_provenance.rs`
+/// re-derives every block from git and compares it byte for byte.
+#[cfg(test)]
+pub mod pretty_printer_oracle;
 pub mod reduce;
 pub mod registry;
 pub mod rho_runtime;

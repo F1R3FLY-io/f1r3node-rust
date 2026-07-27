@@ -954,10 +954,7 @@ fn detector_flags_the_disarm_idiom() {
     // Reported in SOURCE order — `Disarm` sorts on `(file, line, method)`, and within one
     // file that is the line. A reader of a failure gets the hits in the order they would
     // read them in the file, not alphabetically by method.
-    let hits: Vec<(usize, &str)> = found
-        .iter()
-        .map(|d| (d.line, d.method.as_str()))
-        .collect();
+    let hits: Vec<(usize, &str)> = found.iter().map(|d| (d.line, d.method.as_str())).collect();
     assert_eq!(
         hits,
         [(5, "keep"), (10, "into_path")],

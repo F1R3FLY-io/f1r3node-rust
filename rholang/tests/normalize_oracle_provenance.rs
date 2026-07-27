@@ -299,8 +299,12 @@ fn citations() -> Vec<Citation> {
 }
 
 /// `git show <sha>:<path>` — **fails loudly** when history is unavailable.
-fn git_show(sha: &str, path: &str) -> String {
-    let spec = format!("{sha}:{SOURCE_ROOT}{path}");
+fn git_show(sha: &str, path: &str) -> String { git_show_path(sha, &format!("{SOURCE_ROOT}{path}")) }
+
+/// `git show <sha>:<full path>` — the repository-rooted form, for oracles whose
+/// citations name a full path rather than one relative to a `SOURCE_ROOT`.
+fn git_show_path(sha: &str, full_path: &str) -> String {
+    let spec = format!("{sha}:{full_path}");
     let out = Command::new("git")
         .args(["-c", "core.fsmonitor=false", "show", &spec])
         .current_dir(repo_root())
@@ -506,5 +510,552 @@ fn no_undeclared_deviations() {
     println!(
         "{} declared deviation(s), all still required",
         DECLARED_DEVIATIONS.len()
+    );
+}
+
+// ===========================================================================
+// ★ THE SECOND ORACLE — the pretty printer's recursive twin
+// ===========================================================================
+//
+// `rholang/src/rust/interpreter/pretty_printer_oracle.rs` is the recursive twin
+// of the printer's explicit pushdown driver. Its bytes are consensus-relevant:
+// the printer's output reaches a block through
+// `build_channel_string` -> `cap` -> `error_message` and is compared by replay
+// at `casper/src/rust/rholang/replay_runtime.rs`, so the differential that
+// twin backs is not a nicety.
+//
+// It made the SAME kind of unbacked claim `779bf881` found in the normalizer
+// oracle — "kept verbatim ... Nothing else is edited — not a format string, not
+// an argument order, not a comment" — with NO commit, NO path and NO line
+// range, so no reader could check it. Writing this section is what established
+// the truth, and the claim was wrong the same way: **4 of the 10 functions are
+// byte-identical under the declared rename; 6 carry deviations**, including
+// deleted comments in three of the four public wrappers.
+
+/// The printer oracle, relative to the repository root.
+const PP_ORACLE: &str = "rholang/src/rust/interpreter/pretty_printer_oracle.rs";
+
+/// The ten mutually-recursive entry points the extraction renamed. A name that
+/// starts with `_` takes the prefix INSIDE the underscore (`_build_x` ->
+/// `_oracle_build_x`), which is the convention the printer already used to mark
+/// its non-capping inner forms.
+const PP_NAMES: &[&str] = &[
+    "build_string_from_expr",
+    "build_string_from_message",
+    "build_string_from_node",
+    "build_channel_string",
+    "_build_string_from_expr",
+    "_build_channel_string",
+    "_build_string_from_message",
+    "build_vec",
+    "build_pattern",
+    "build_match_case",
+];
+
+/// ★ Every difference between a cited block and its source, beyond
+/// [`pp_rename`], as DATA.
+///
+/// Sixteen hunks across six functions. They fall into three groups, and keeping
+/// them in a table rather than as prose is what stops a seventh from appearing
+/// unannounced: [`no_undeclared_pretty_printer_deviations`] fails when an entry
+/// stops being needed, so the list cannot rot into a licence for drift either.
+const PP_DEVIATIONS: &[Deviation] = &[
+    // ── GROUP 1: comments the extraction DROPPED ──────────────────────────
+    // The banner promised "not a comment". These are the counterexamples, and
+    // they are why the promise had to be replaced with a measured claim. The
+    // dropped text still exists — on the PRODUCTION twin of each wrapper — so
+    // nothing was lost; what was wrong was saying it had not happened.
+    Deviation {
+        path: "rholang/src/rust/interpreter/pretty_printer.rs",
+        from: "        // Instead of panicking on errors, return a fallback string\n        \
+               // This matches Scala behavior where errors are handled gracefully\n",
+        to: "",
+        reason: "Dropped from `oracle_build_string_from_expr` and \
+                 `oracle_build_channel_string`. Prose about why the production \
+                 wrapper swallows errors; the oracle keeps the behaviour and not \
+                 the commentary.",
+    },
+    Deviation {
+        path: "rholang/src/rust/interpreter/pretty_printer.rs",
+        from: "        // Instead of panicking on unknown types, return a fallback string\n        \
+               // This matches Scala behavior where errors are handled gracefully\n",
+        to: "",
+        reason: "The same drop in `oracle_build_string_from_node`, whose wording \
+                 differs by two words from the pair above.",
+    },
+    Deviation {
+        path: "rholang/src/rust/interpreter/pretty_printer.rs",
+        from: "            // \u{26a0} The fallback is NOT capped. That asymmetry is the pre-existing\n            \
+               // behaviour and the driver's `Catch` frame reproduces it.\n",
+        to: "",
+        reason: "Dropped from `oracle_build_string_from_node`. The asymmetry it \
+                 describes is real and is asserted by \
+                 `the_capping_call_sites_are_reproduced`; only the note went.",
+    },
+    // ── GROUP 2: rustfmt, applied to the copy and not to the original ─────
+    Deviation {
+        path: "rholang/src/rust/interpreter/pretty_printer.rs",
+        from: "            Err(err) => {\n                \
+               // Return a fallback message instead of panicking\n                \
+               format!(\"<unprintable expr: {}>\", err)\n            }",
+        to: "            Err(err) => format!(\"<unprintable expr: {}>\", err),",
+        reason: "Block arm collapsed to an expression arm (and its comment lost \
+                 with the block) in `oracle_build_string_from_expr`. Same value, \
+                 same type; a formatting difference, declared because \"verbatim\" \
+                 must not quietly mean \"verbatim modulo formatting\".",
+    },
+    Deviation {
+        path: "rholang/src/rust/interpreter/pretty_printer.rs",
+        from: "            Err(err) => {\n                \
+               // Return a fallback message instead of panicking\n                \
+               format!(\"<unprintable channel: {}>\", err)\n            }",
+        to: "            Err(err) => format!(\"<unprintable channel: {}>\", err),",
+        reason: "The same collapse in `oracle_build_channel_string`.",
+    },
+    Deviation {
+        path: "rholang/src/rust/interpreter/pretty_printer.rs",
+        from: "    pub(crate) fn oracle_build_string_from_message<T: AsPpNode + ?Sized>(&mut self, m: &T) -> String {",
+        to: "    pub(crate) fn oracle_build_string_from_message<T: AsPpNode + ?Sized>(\n        \
+             &mut self,\n        m: &T,\n    ) -> String {",
+        reason: "Signature re-wrapped across four lines: `pub fn` -> \
+                 `pub(crate) fn` pushed it past the width limit. A consequence \
+                 of the declared visibility narrowing, not an independent edit.",
+    },
+    // ── GROUP 3: the SEMANTIC deviations, each marked at its own site ─────
+    Deviation {
+        path: "rholang/src/rust/interpreter/pretty_printer.rs",
+        from: "            let introduced_news_shift_idx: Vec<i32> =\n                \
+               (0..n.bind_count).map(|i| i + self.bound_shift).collect();",
+        to: "            // \u{26a0} NOT verbatim, and deliberately so: the ONE edit this body has\n            \
+             // taken since it was copied. `(0..n.bind_count).map(|i| i +\n            \
+             // self.bound_shift).collect()` was an unbounded `Vec<i32>`; the\n            \
+             // contiguous run it built is now held as the interval itself,\n            \
+             // identically to `descend_node`'s `PpNode::New`. The twin has to\n            \
+             // move with the driver or the differential compares two different\n            \
+             // computations.\n            \
+             let introduced = self.new_bind_range(n.bind_count);",
+        reason: "`New`'s introduced shift indices become an INTERVAL. The \
+                 materialised form was an ~8 GiB request from an \
+                 attacker-chosen `bind_count`; the interval closes that at the \
+                 root AND is byte-preserving, where clamping it was not. The twin \
+                 must move with the driver or the differential compares two \
+                 different computations.",
+    },
+    Deviation {
+        path: "rholang/src/rust/interpreter/pretty_printer.rs",
+        from: "                self.build_variables(n.bind_count),",
+        to: "                self.build_variables(introduced),",
+        reason: "The same change, at the render call: `build_variables` now takes \
+                 the interval so the names printed and the indices marked are one \
+                 authority rather than two reads that happen to agree.",
+    },
+    Deviation {
+        path: "rholang/src/rust/interpreter/pretty_printer.rs",
+        from: "                    self.news_shift_indices = self\n                        \
+               .news_shift_indices\n                        .clone()\n                        \
+               .into_iter()\n                        .chain(introduced_news_shift_idx)\n                        \
+               .collect();",
+        to: "                    self.news_shift_indices.push(introduced);",
+        reason: "The same change, at the record: one interval appended instead of \
+                 a whole vector rebuilt per `New`.",
+    },
+    Deviation {
+        path: "rholang/src/rust/interpreter/pretty_printer.rs",
+        from: "        let quote_if_not_new = |s: String, news_shift_indices: Vec<i32>, bound_shift: i32| {",
+        to: "        let quote_if_not_new = |s: String, news_shift_indices: &[NewBindRange], bound_shift: i32| {",
+        reason: "Consequence of the interval change: `is_new_var` takes a slice, \
+                 so the closure does too and the per-variable clone of the whole \
+                 vector disappears.",
+    },
+    Deviation {
+        path: "rholang/src/rust/interpreter/pretty_printer.rs",
+        from: "                self.news_shift_indices.clone(),",
+        to: "                &self.news_shift_indices,",
+        reason: "Both call sites of that closure, for the same reason. Nothing \
+                 mutates through it, so a borrow is sufficient.",
+    },
+    Deviation {
+        path: "rholang/src/rust/interpreter/pretty_printer.rs",
+        from: "                // \u{26a0} FOUND DEFECT, PRESERVED BYTE-FOR-BYTE. This was\n                \
+               // `self.oracle_build_string_from_message(&m.target)` \u{2014} and `m.target`",
+        to: "                // \u{26a0} NOT verbatim, and deliberately so: the ONE other edit this\n                \
+             // body has taken. The copied line was\n                \
+             // `self.build_string_from_message(&m.target)`, and `m.target`",
+        reason: "`bd7cb45f` fixed the `Match` target defect, so the note above it \
+                 changed from \"preserved\" to \"repaired\". Comment only.",
+    },
+    Deviation {
+        path: "rholang/src/rust/interpreter/pretty_printer.rs",
+        from: "                // The closed `PpNode` dispatch turns that into a type error;\n                \
+               // spelling it `Unprintable` keeps the emitted bytes identical\n                \
+               // while making the defect explicit and greppable.",
+        to: "                // The closed `PpNode` dispatch turned that into a type error;\n                \
+             // the repair keeps the SAME entry point the copied line named\n                \
+             // (`*_build_string_from_message`, catching + capped + indent 0)\n                \
+             // and projects the `Option` with the same `.expect` discipline\n                \
+             // every other required `Option<Par>` field in this file uses.",
+        reason: "The continuation of that note. Comment only.",
+    },
+    Deviation {
+        path: "rholang/src/rust/interpreter/pretty_printer.rs",
+        from: "                // \u{26a0} FIXING IT IS A SEPARATE, SEPARATELY REVIEWED CHANGE: these\n                \
+               // bytes are block-resident and replay-compared\n                \
+               // (`replay_runtime.rs:745-758`). See `PpNode`'s docs and\n                \
+               // `a_match_target_renders_as_an_error_string_and_that_is_pinned`.\n                \
+               self.oracle_build_string_from_node(PpNode::Unprintable(UNPRINTABLE_ANY)),",
+        to: "                // Changed identically in `descend_node`'s `PpNode::Match`; see\n                \
+             // `super::PpNode` for the byte delta and why it needed saying.\n                \
+             self.oracle_build_string_from_message(\n                    \
+             m.target\n                        .as_ref()\n                        \
+             .expect(\"target field on Match was None, should be Some\"),\n                ),",
+        reason: "THE `Match` target fix itself. Every `match` term used to render \
+                 its target as an 81-byte error string; it now renders the target \
+                 through the entry point the copied line named. The oracle takes \
+                 the identical edit or the differential compares a fixed driver \
+                 against an unfixed twin.",
+    },
+];
+
+/// The declared rename for the printer oracle: the `oracle_` prefixes, plus the
+/// visibility narrowing on the four wrappers.
+fn pp_rename(text: &str) -> String {
+    let mut names: Vec<&str> = PP_NAMES.to_vec();
+    names.sort_by_key(|n| std::cmp::Reverse(n.len()));
+    let mut out = text.to_string();
+    for n in names {
+        let renamed = if let Some(bare) = n.strip_prefix('_') {
+            format!("_oracle_{bare}")
+        } else {
+            format!("oracle_{n}")
+        };
+        out = replace_word(&out, n, &renamed);
+    }
+    out.replace("    pub fn ", "    pub(crate) fn ")
+}
+
+/// Replace every comment and string/char literal with spaces, preserving
+/// newlines, so brace counting cannot be fooled by a `{` inside a `format!`.
+///
+/// ⚠ A backslash-newline inside a string literal is a LINE CONTINUATION and its
+/// newline must survive, or every line number after it shifts. That was a real
+/// bug in the first draft of this function and it silently mis-located six of
+/// the ten blocks.
+fn blank_rust(src: &str) -> String {
+    let c: Vec<char> = src.chars().collect();
+    let mut out = String::with_capacity(src.len());
+    let mut i = 0usize;
+    let push = |out: &mut String, ch: char| out.push(if ch == '\n' { '\n' } else { ' ' });
+    while i < c.len() {
+        match c[i] {
+            '/' if c.get(i + 1) == Some(&'/') => {
+                while i < c.len() && c[i] != '\n' {
+                    out.push(' ');
+                    i += 1;
+                }
+            }
+            '/' if c.get(i + 1) == Some(&'*') => {
+                let mut depth = 0usize;
+                while i < c.len() {
+                    if c[i] == '/' && c.get(i + 1) == Some(&'*') {
+                        depth += 1;
+                        out.push_str("  ");
+                        i += 2;
+                    } else if c[i] == '*' && c.get(i + 1) == Some(&'/') {
+                        depth -= 1;
+                        out.push_str("  ");
+                        i += 2;
+                        if depth == 0 {
+                            break;
+                        }
+                    } else {
+                        push(&mut out, c[i]);
+                        i += 1;
+                    }
+                }
+            }
+            '"' => {
+                out.push(' ');
+                i += 1;
+                while i < c.len() {
+                    if c[i] == '\\' {
+                        out.push(' ');
+                        push(&mut out, *c.get(i + 1).unwrap_or(&' '));
+                        i += 2;
+                    } else if c[i] == '"' {
+                        out.push(' ');
+                        i += 1;
+                        break;
+                    } else {
+                        push(&mut out, c[i]);
+                        i += 1;
+                    }
+                }
+            }
+            '\'' if c.get(i + 2) == Some(&'\'') => {
+                out.push_str("   ");
+                i += 3;
+            }
+            ch => {
+                out.push(ch);
+                i += 1;
+            }
+        }
+    }
+    out
+}
+
+/// The lines of the function that starts at `start`, found by brace balance
+/// over [`blank_rust`]ed text.
+fn fn_block(raw: &[&str], blanked: &[&str], start: usize) -> String {
+    let (mut depth, mut opened) = (0i64, false);
+    for (offset, line) in blanked.iter().enumerate().skip(start) {
+        for ch in line.chars() {
+            match ch {
+                '{' => {
+                    depth += 1;
+                    opened = true;
+                }
+                '}' => depth -= 1,
+                _ => {}
+            }
+        }
+        if opened && depth == 0 {
+            return raw[start..=offset].join("\n");
+        }
+    }
+    panic!("unterminated function starting at line {}", start + 1)
+}
+
+/// Parse the printer oracle's citations. Each is
+/// `// VERBATIM from <path>, lines <a>-<b>, at commit <sha>`, and the block it
+/// introduces is the NEXT `fn` — located by brace balance rather than by a
+/// banner, so a doc comment between the citation and its function cannot move
+/// the boundary.
+fn pp_citations() -> Vec<Citation> {
+    let path = repo_root().join(PP_ORACLE);
+    let text = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("cannot read the printer oracle at {}: {e}", path.display()));
+    let raw: Vec<&str> = text.lines().collect();
+    let blanked_text = blank_rust(&text);
+    let blanked: Vec<&str> = blanked_text.lines().collect();
+    assert_eq!(
+        raw.len(),
+        blanked.len(),
+        "the literal-blanking pass changed the line count, so every block below \
+         would be mis-located"
+    );
+
+    let mut out = Vec::new();
+    for (i, line) in raw.iter().enumerate() {
+        let Some(rest) = line.trim_start().strip_prefix("// VERBATIM from ") else {
+            continue;
+        };
+        let Some((src, tail)) = rest.split_once(", lines ") else {
+            panic!("malformed citation at {PP_ORACLE}:{}: {line}", i + 1);
+        };
+        let Some((range, tail)) = tail.split_once(", at commit ") else {
+            panic!("malformed citation at {PP_ORACLE}:{}: {line}", i + 1);
+        };
+        let Some((lo, hi)) = range.split_once('-') else {
+            panic!("malformed line range at {PP_ORACLE}:{}: {line}", i + 1);
+        };
+        let sha: String = tail.chars().take_while(|c| c.is_ascii_hexdigit()).collect();
+        assert!(
+            sha.len() >= 7,
+            "citation at {PP_ORACLE}:{} names no commit: {line}",
+            i + 1
+        );
+        // The block is the next `fn`.
+        let start = (i + 1..raw.len())
+            .find(|&j| {
+                let t = raw[j].trim_start();
+                t.starts_with("fn ") || t.starts_with("pub fn ") || t.starts_with("pub(crate) fn ")
+            })
+            .unwrap_or_else(|| panic!("citation at {PP_ORACLE}:{} introduces no function", i + 1));
+        out.push(Citation {
+            path: src.to_string(),
+            first_line: lo.parse().expect("citation line range is numeric"),
+            last_line: hi.parse().expect("citation line range is numeric"),
+            sha,
+            marker_line: i + 1,
+            block: fn_block(&raw, &blanked, start),
+        });
+    }
+    out
+}
+
+/// Re-derive one cited printer block from history.
+fn pp_rederive(c: &Citation) -> String {
+    let source = git_show_path(&c.sha, &c.path);
+    let lines: Vec<&str> = source.lines().collect();
+    assert!(
+        c.last_line <= lines.len() && c.first_line >= 1 && c.first_line <= c.last_line,
+        "citation at {PP_ORACLE}:{} claims lines {}-{} of `{}`, which has {} lines at {}",
+        c.marker_line,
+        c.first_line,
+        c.last_line,
+        c.path,
+        lines.len(),
+        c.sha
+    );
+    let cited = lines[c.first_line - 1..c.last_line].join("\n");
+    let mut derived = pp_rename(&cited);
+    for d in PP_DEVIATIONS {
+        derived = derived.replace(d.from, d.to);
+    }
+    derived
+}
+
+/// ★ Every citation in the PRINTER oracle is re-derived from git and compared
+/// byte for byte.
+#[test]
+fn every_pretty_printer_oracle_citation_matches_its_source() {
+    let cites = pp_citations();
+    assert_eq!(
+        cites.len(),
+        PP_NAMES.len(),
+        "the printer oracle carries {} citations for {} renamed entry points — every \
+         function in that file must cite its source, or the file's claim is partial",
+        cites.len(),
+        PP_NAMES.len()
+    );
+
+    let mut identical = 0usize;
+    let mut rename_only_identical = 0usize;
+    let mut cited_lines = 0usize;
+    let mut failures = Vec::new();
+    for c in &cites {
+        cited_lines += c.last_line - c.first_line + 1;
+        // ⚠ TWO measures, and conflating them is how the original claim went
+        // wrong. `rename_only` is what "kept verbatim" asserted: the block with
+        // nothing but the mechanical rename applied. `derived` additionally
+        // applies PP_DEVIATIONS, and it is what must match — every difference
+        // has to be declared, but a difference is allowed to exist.
+        let source = git_show_path(&c.sha, &c.path);
+        let lines: Vec<&str> = source.lines().collect();
+        if pp_rename(&lines[c.first_line - 1..c.last_line].join("\n")) == c.block {
+            rename_only_identical += 1;
+        }
+        let derived = pp_rederive(c);
+        if derived == c.block {
+            identical += 1;
+            continue;
+        }
+        let (d, o): (Vec<&str>, Vec<&str>) = (derived.lines().collect(), c.block.lines().collect());
+        let first = (0..d.len().max(o.len()))
+            .find(|&i| d.get(i) != o.get(i))
+            .unwrap_or(0);
+        failures.push(format!(
+            "\n  {PP_ORACLE}:{} cites `{}` lines {}-{} at {}\n    first difference at block line {}:\n      \
+             from history: {:?}\n      in the oracle: {:?}",
+            c.marker_line,
+            c.path,
+            c.first_line,
+            c.last_line,
+            c.sha,
+            first + 1,
+            d.get(first),
+            o.get(first)
+        ));
+    }
+
+    assert!(
+        failures.is_empty(),
+        "\n\u{2605} THE PRINTER ORACLE HAS DRIFTED FROM ITS CITED SOURCE.\n\
+         \n\
+         The differential in `pretty_printer::differential` is only evidence while this \
+         twin is the pre-conversion code. If it drifts toward the driver, the differential \
+         compares the driver against something adjusted to agree with it and every green \
+         result is worthless.\n\
+         \n\
+         Either restore the block, or — if the change is intended — declare it in \
+         PP_DEVIATIONS with a reason.\n{}\n",
+        failures.join("\n")
+    );
+
+    assert_eq!(
+        identical,
+        cites.len(),
+        "internal: {} blocks matched but no failure was recorded",
+        identical
+    );
+
+    // ★ ANTI-VACUITY, and the MEASURED claim the oracle's own documentation
+    // states. This is the number the original "kept verbatim ... nothing else is
+    // edited" banner got wrong, so it is pinned rather than described: if a
+    // future edit makes more (or fewer) blocks survive the rename untouched, the
+    // file's documentation is stale and this says so.
+    //
+    // It is also what stops the check above from being vacuous in the worst way:
+    // a PP_DEVIATIONS table permissive enough to absorb everything would drive
+    // this to 0 and fail here.
+    assert_eq!(
+        rename_only_identical,
+        4,
+        "the printer oracle's documentation states that 4 of its {} functions are \
+         byte-identical under the declared rename ALONE and {} carry declared deviations. \
+         {rename_only_identical} survive the rename untouched now, so that documentation is \
+         stale.",
+        PP_NAMES.len(),
+        PP_NAMES.len() - 4
+    );
+    assert!(
+        cited_lines >= 900,
+        "only {cited_lines} pre-conversion lines are cited; the citations no longer cover \
+         the body of the twin"
+    );
+    println!(
+        "{} printer-oracle citations verified against git ({rename_only_identical} \
+         byte-identical under the rename alone, {} carrying declared deviations, \
+         {cited_lines} source lines)",
+        cites.len(),
+        cites.len() - rename_only_identical
+    );
+}
+
+/// Every entry in [`PP_DEVIATIONS`] must still be REQUIRED: it must appear in
+/// the cited history and be absent from the oracle. An entry that has stopped
+/// mattering is an exemption outliving its reason.
+#[test]
+fn no_undeclared_pretty_printer_deviations() {
+    let cites = pp_citations();
+    let history: String = cites
+        .iter()
+        .map(|c| {
+            let src = git_show_path(&c.sha, &c.path);
+            let lines: Vec<&str> = src.lines().collect();
+            pp_rename(&lines[c.first_line - 1..c.last_line].join("\n"))
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let oracle: String = cites
+        .iter()
+        .map(|c| c.block.clone())
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    for d in PP_DEVIATIONS {
+        assert!(
+            history.contains(d.from),
+            "PP_DEVIATIONS entry is STALE: the cited history no longer contains\n  {:?}\n\
+             reason on file: {}",
+            d.from,
+            d.reason
+        );
+        assert!(
+            d.to.is_empty() || oracle.contains(d.to),
+            "PP_DEVIATIONS claims the oracle spells it\n  {:?}\nbut it does not.\n\
+             reason on file: {}",
+            d.to,
+            d.reason
+        );
+        assert!(
+            !d.reason.trim().is_empty(),
+            "a deviation without a reason is an undeclared deviation with extra steps"
+        );
+    }
+    println!(
+        "{} printer-oracle deviation(s), all still required",
+        PP_DEVIATIONS.len()
     );
 }

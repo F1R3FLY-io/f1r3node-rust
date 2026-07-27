@@ -64,11 +64,6 @@ use models::rhoapi::Par;
 use models::rust::block::state_hash::StateHash;
 use models::rust::casper::protocol::casper_message::DeployData;
 use prost::bytes::Bytes;
-// Re-exported (NOT a private `use`) so settlement-debit consumers
-// (`CloseBlockDeploy.settlement_debits`) key the map by the same canonical
-// basis (`Sig::lane_hash`) without reaching into rholang internals.
-pub use rholang::rust::interpreter::accounting::delta_sigma::SigKey;
-use rholang::rust::interpreter::accounting::delta_sigma::{Decomposition, DemandEntry};
 // ⚠ The MODULE itself (`delta_sigma::sig_key`, `::demand`, `::is_funded`) is
 // reached only from the `#[cfg(test)]` module below, which pulls it in through
 // `use super::*`. Importing it unconditionally made `cargo clippy --workspace`
@@ -76,6 +71,11 @@ use rholang::rust::interpreter::accounting::delta_sigma::{Decomposition, DemandE
 // an unused import, and the CI gate runs with `-D warnings`.
 #[cfg(test)]
 use rholang::rust::interpreter::accounting::delta_sigma;
+// Re-exported (NOT a private `use`) so settlement-debit consumers
+// (`CloseBlockDeploy.settlement_debits`) key the map by the same canonical
+// basis (`Sig::lane_hash`) without reaching into rholang internals.
+pub use rholang::rust::interpreter::accounting::delta_sigma::SigKey;
+use rholang::rust::interpreter::accounting::delta_sigma::{Decomposition, DemandEntry};
 use rholang::rust::interpreter::accounting::resource_logic::{
     ApportionmentPolicy, DefaultApportionment, DefaultResourceLogic, FlatFeeApportionment,
     GroupShape, GsltPresentation, OslfResourceLogic, PoolDraw, PoolResidual, ResourceSignature,

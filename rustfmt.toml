@@ -40,4 +40,41 @@ group_imports = "StdExternalCrate"
 # formatting them falsifies nothing and they are formatted normally. The criterion is
 # narrow and stated: a file is listed here only while its own text asserts provenance
 # against an external source.
-ignore = ["rholang/src/rust/interpreter/compiler/normalize_recursive.rs"]
+#
+# ── `pretty_printer_oracle.rs` earns its listing the same way ──
+#
+# The printer's recursive twin used to sit inside `pretty_printer.rs` under a banner
+# claiming it was "kept verbatim ... Nothing else is edited — not a format string, not an
+# argument order, not a comment" — with NO commit, NO path and NO line range behind it.
+# An exclusion could not be granted for that: excluding the file would have FROZEN AN
+# UNVERIFIABLE CLAIM, protecting text nobody could check against drift nobody could
+# detect, and it would have frozen 4,000 lines of driver that make no such claim, because
+# `ignore` is file-level.
+#
+# Both objections are now answered, in this order:
+#
+#   1. the twin was EXTRACTED to its own file, so the exclusion covers exactly the text
+#      that carries the claim and nothing else;
+#   2. every one of its ten functions now cites its source —
+#
+#          // VERBATIM from rholang/src/rust/interpreter/pretty_printer.rs,
+#          // lines 224-670, at commit 739368a4
+#
+#      and `rholang/tests/normalize_oracle_provenance.rs` re-derives all ten from git and
+#      compares them byte for byte, with every intended difference declared as DATA in
+#      `PP_DEVIATIONS`.
+#
+# ★ Writing that checker is what established the claim was FALSE, exactly as `779bf881`
+# found for the normalizer: 4 of the 10 functions are byte-identical under the declared
+# rename, and 6 carry deviations — including deleted comments in three of the four public
+# wrappers, which is precisely the "not a comment" the banner promised. The file's
+# documentation now states the measured numbers, and the test asserts them, so the listing
+# below protects a claim that is true and checked rather than one that was neither.
+#
+# ⚠ These bytes are consensus-relevant: the printer's output reaches a block through
+# `build_channel_string` -> `cap` -> `error_message` and is compared by replay at
+# `casper/src/rust/rholang/replay_runtime.rs`.
+ignore = [
+    "rholang/src/rust/interpreter/compiler/normalize_recursive.rs",
+    "rholang/src/rust/interpreter/pretty_printer_oracle.rs",
+]

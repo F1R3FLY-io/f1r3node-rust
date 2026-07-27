@@ -65,9 +65,7 @@ const RCHAIN_SHARD_ID: &str = "root";
 /// so it is removed on normal exit and reaped by the next run after a
 /// `SIGKILL`. Dropping the returned handle is correct and expected: the handle
 /// has no destructor, and the cleanup is a property of the process.
-fn genesis_path() -> PathBuf {
-    test_scratch::acquire("casper-genesis").to_path_buf()
-}
+fn genesis_path() -> PathBuf { test_scratch::acquire("casper-genesis").to_path_buf() }
 
 async fn with_gen_resources<F, Fut, R>(body: F) -> R
 where
