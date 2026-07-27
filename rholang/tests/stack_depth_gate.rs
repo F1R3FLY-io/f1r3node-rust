@@ -75,6 +75,7 @@ use models::rust::utils::new_gint_par;
 use rholang::rust::interpreter::accounting::costs::Cost;
 use rholang::rust::interpreter::accounting::RuntimeBudget;
 use rholang::rust::interpreter::env::Env;
+use rholang::rust::interpreter::matcher::spatial_matcher::SpatialMatcherContext;
 use rholang::rust::interpreter::metering::MeteredMachine;
 use rholang::rust::interpreter::pretty_printer::PrettyPrinter;
 use rholang::rust::interpreter::substitute::{Substitute, SubstituteTrait};
@@ -336,6 +337,7 @@ fn subject(name: &str) -> fn(usize) {
         "sort_wide" => sort_wide_body,
         "score_cmp_wide" => score_cmp_wide_body,
         "pretty_wide" => pretty_wide_body,
+        "free_check" => free_check_body,
         other => panic!("stack_depth_gate: unknown GATE_SUBJECT={:?}", other),
     }
 }
@@ -1032,6 +1034,27 @@ fn bincode_de_body(depth: usize) {
     dismantle(decoded);
 }
 
+/// ⚠ THE SECOND WIDTH-AXIS MEMBER, and it is in the MATCHER rather than the
+/// sorter or the substitution SCC.
+///
+/// `FoldMatch::free_check` recursed on the slice TAIL, so its native stack grew
+/// with the surplus-target count — 483 B per sibling in debug. It is now a
+/// `for` loop (see `fold_match.rs` for why a loop and not a driver).
+fn free_check_body(width: usize) {
+    use rholang::rust::interpreter::matcher::fold_match::FoldMatch;
+    let mut trem = Vec::with_capacity(width);
+    for i in 0..width {
+        trem.push(new_gint_par(i as i64, vec![], false));
+    }
+    assert_carries("the free_check input's sibling count", trem.len(), width);
+    let ctx = SpatialMatcherContext::new();
+    let out = FoldMatch::<Par, Par>::free_check(&ctx, &trem, 0, Vec::new())
+        .expect("stack_depth_gate: free_check rejected a locally-free-empty list");
+    assert_carries("the free_check OUTPUT's element count", out.len(), width);
+    dismantle_all(out);
+    dismantle_all(trem);
+}
+
 // ---------------------------------------------------------------------------
 // THE GATE
 // ---------------------------------------------------------------------------
@@ -1069,6 +1092,7 @@ fn converted_traversals_are_depth_independent() {
         "substitute_wide", // Stage B
         "sort_wide",       // Stage C-2
         "score_cmp_wide",  // Stage C-1 — the sibling walk
+        "free_check",      // Stage E — the matcher's width-axis member, now a `for` loop
         // "pretty_wide",          // Stage D
     ];
 

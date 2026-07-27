@@ -72,23 +72,43 @@ impl FoldMatch<Par, Par> for SpatialMatcherContext {
         }
     }
 
-    fn free_check(&self, trem: &[Par], level: i32, mut acc: Vec<Par>) -> Option<Vec<Par>> {
-        match trem {
-            &[] => Some(acc),
-
-            [item, rem @ ..] => {
-                // P4.2: `HasLocallyFree<Par> for SpatialMatcherContext` is
-                // literally `p.locally_free` (has_locally_free.rs:49-53) —
-                // read the precomputed field instead of cloning the whole Par
-                // to feed the consuming signature. Byte-identical semantics.
-                if item.locally_free.is_empty() {
-                    acc.push(item.clone());
-                    self.free_check(rem, level, acc)
-                } else {
-                    None
-                }
+    /// ⚠ A `for` LOOP, NOT A DRIVER — and that is a deliberate choice.
+    ///
+    /// This used to recurse on the slice TAIL (`self.free_check(rem, …)`), so
+    /// its native stack grew with SIBLING COUNT: measured 483 B per sibling in
+    /// debug, 320 in release. Sibling count is program-controlled, so that is a
+    /// Θ(width) member of the family — an axis a Tarjan SCC over
+    /// `RhoTypes.proto` structurally cannot see, which is why it went unnoticed
+    /// until the audit's §11.2 measured it.
+    ///
+    /// But it is a **fold with early exit**, not a tree traversal: there is no
+    /// post-order reassembly, so there is nothing for a `Combine` to do. An
+    /// explicit worklist here would be ceremony — a `work` vector, a
+    /// continuation enum and an arity table, all to express `for … { … }`. The
+    /// loop is the honest form and it is `O(1)` in native stack by
+    /// construction.
+    ///
+    /// ⚠ It is gated in **debug as well as release**. At `-O2` LLVM already
+    /// turns the old tail call into a loop, so the release slope was 0 before
+    /// this change and a release-only gate would have been vacuous — it would
+    /// have certified a property that held by the optimiser's discretion rather
+    /// than by construction. `-O0` is where the defect was visible, so `-O0` is
+    /// where the gate has to bite.
+    fn free_check(&self, trem: &[Par], _level: i32, mut acc: Vec<Par>) -> Option<Vec<Par>> {
+        for item in trem {
+            // P4.2: `HasLocallyFree<Par> for SpatialMatcherContext` is
+            // literally `p.locally_free` (has_locally_free.rs:49-53) —
+            // read the precomputed field instead of cloning the whole Par
+            // to feed the consuming signature. Byte-identical semantics.
+            if item.locally_free.is_empty() {
+                acc.push(item.clone());
+            } else {
+                // The recursive form returned `None` from the first offending
+                // element without visiting the rest; so does this.
+                return None;
             }
         }
+        Some(acc)
     }
 }
 
