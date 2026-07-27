@@ -28,12 +28,22 @@
 //! behaviour by injecting [`NoSpatialMatch`], for which `EMatches`
 //! still yields `EvalError::UnsupportedExpression { kind: "EMatchesBody" }`.
 //! Every pre-existing caller is therefore byte-unchanged.
+//!
+//! ★ Because the scope is a subset, a caller that collapses every `Err` into
+//! a boolean verdict cannot tell *"the guard was decided against"* from
+//! *"the guard was never decided"*. [`undecidable_nodes`] is the predicate
+//! that lets a caller refuse the second case before it can masquerade as the
+//! first — see [`decidable`] for the two properties it satisfies and the
+//! exhaustive, catch-all-free classifier that keeps it from drifting away
+//! from `eval.rs`'s arms.
 
+mod decidable;
 mod env;
 mod error;
 mod eval;
 mod oracle;
 
+pub use decidable::{undecidable_nodes, SpatialSupport, UndecidableNode};
 pub use env::Env;
 pub use error::EvalError;
 pub use eval::{eval, eval_with};

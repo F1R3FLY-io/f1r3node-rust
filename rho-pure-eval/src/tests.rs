@@ -893,3 +893,493 @@ fn ematches_nested_under_an_operator_still_sees_the_oracle() {
         false,
     );
 }
+
+// =====================================================================
+// The DECIDABILITY GATE — `crate::decidable`.
+//
+// ★ The gate exists so a caller can refuse a guard it cannot decide,
+// instead of reporting `false` for one. It is only worth anything if it
+// agrees with the evaluator, so the tests below are DIFFERENTIALS: they
+// run both and compare, over a corpus carrying one representative of
+// every `ExprInstance` variant.
+// =====================================================================
+
+use crate::decidable::{undecidable_nodes, SpatialSupport, UndecidableNode};
+
+fn method(name: &str, target: Par) -> Par {
+    par_of(ExprInstance::EMethodBody(models::rhoapi::EMethod {
+        method_name: name.to_string(),
+        target: Some(target),
+        arguments: vec![gint(0)],
+        locally_free: Vec::new(),
+        connective_used: false,
+    }))
+}
+
+fn elist(items: Vec<Par>) -> Par {
+    par_of(ExprInstance::EListBody(models::rhoapi::EList {
+        ps: items,
+        locally_free: Vec::new(),
+        connective_used: false,
+        remainder: None,
+    }))
+}
+
+/// One representative of EVERY `ExprInstance` variant, paired with the
+/// `kind` the evaluator raises for it (or `None` when the evaluator has a
+/// real arm).
+///
+/// ★ The `SpatialSupport` here is `Available`, so `EMatchesBody` is
+/// expected to be decidable — this is the world both `rholang` guard
+/// sites are in. `NoSpatialMatch`'s world is covered separately by
+/// [`the_gate_tracks_the_oracle_for_ematches`].
+fn every_variant() -> Vec<(&'static str, Par, Option<&'static str>)> {
+    vec![
+        ("GBool", gbool(true), None),
+        ("GInt", gint(1), None),
+        ("GString", gstr("s"), None),
+        (
+            "GUri",
+            par_of(ExprInstance::GUri("rho:io:stdout".to_string())),
+            None,
+        ),
+        (
+            "GByteArray",
+            par_of(ExprInstance::GByteArray(vec![1, 2])),
+            None,
+        ),
+        ("GDouble", gdouble(1.0), None),
+        ("GBigInt", par_of(ExprInstance::GBigInt(vec![1])), None),
+        (
+            "GBigRat",
+            par_of(ExprInstance::GBigRat(models::rhoapi::GBigRational {
+                numerator: vec![1],
+                denominator: vec![2],
+            })),
+            None,
+        ),
+        (
+            "GFixedPoint",
+            par_of(ExprInstance::GFixedPoint(models::rhoapi::GFixedPoint {
+                unscaled: vec![1],
+                scale: 2,
+            })),
+            None,
+        ),
+        ("EList", elist(vec![gint(1)]), None),
+        (
+            "ETuple",
+            par_of(ExprInstance::ETupleBody(models::rhoapi::ETuple {
+                ps: vec![gint(1)],
+                locally_free: Vec::new(),
+                connective_used: false,
+            })),
+            None,
+        ),
+        (
+            "ESet",
+            par_of(ExprInstance::ESetBody(models::rhoapi::ESet {
+                ps: vec![gint(1)],
+                locally_free: Vec::new(),
+                connective_used: false,
+                remainder: None,
+            })),
+            None,
+        ),
+        (
+            "EMap",
+            par_of(ExprInstance::EMapBody(models::rhoapi::EMap {
+                kvs: Vec::new(),
+                locally_free: Vec::new(),
+                connective_used: false,
+                remainder: None,
+            })),
+            None,
+        ),
+        ("EVar", evar(0), None),
+        (
+            "ENot",
+            par_of(ExprInstance::ENotBody(ENot {
+                p: Some(gbool(true)),
+            })),
+            None,
+        ),
+        (
+            "ENeg",
+            par_of(ExprInstance::ENegBody(ENeg { p: Some(gint(1)) })),
+            None,
+        ),
+        (
+            "EAnd",
+            par_of(ExprInstance::EAndBody(EAnd {
+                p1: Some(gbool(true)),
+                p2: Some(gbool(true)),
+            })),
+            None,
+        ),
+        (
+            "EOr",
+            par_of(ExprInstance::EOrBody(EOr {
+                p1: Some(gbool(true)),
+                p2: Some(gbool(false)),
+            })),
+            None,
+        ),
+        (
+            "EEq",
+            par_of(ExprInstance::EEqBody(EEq {
+                p1: Some(gint(1)),
+                p2: Some(gint(1)),
+            })),
+            None,
+        ),
+        (
+            "ENeq",
+            par_of(ExprInstance::ENeqBody(ENeq {
+                p1: Some(gint(1)),
+                p2: Some(gint(2)),
+            })),
+            None,
+        ),
+        (
+            "ELt",
+            par_of(ExprInstance::ELtBody(ELt {
+                p1: Some(gint(1)),
+                p2: Some(gint(2)),
+            })),
+            None,
+        ),
+        (
+            "ELte",
+            par_of(ExprInstance::ELteBody(ELte {
+                p1: Some(gint(1)),
+                p2: Some(gint(2)),
+            })),
+            None,
+        ),
+        (
+            "EGt",
+            par_of(ExprInstance::EGtBody(EGt {
+                p1: Some(gint(2)),
+                p2: Some(gint(1)),
+            })),
+            None,
+        ),
+        (
+            "EGte",
+            par_of(ExprInstance::EGteBody(EGte {
+                p1: Some(gint(2)),
+                p2: Some(gint(1)),
+            })),
+            None,
+        ),
+        (
+            "EPlus",
+            par_of(ExprInstance::EPlusBody(EPlus {
+                p1: Some(gint(1)),
+                p2: Some(gint(1)),
+            })),
+            None,
+        ),
+        (
+            "EMinus",
+            par_of(ExprInstance::EMinusBody(EMinus {
+                p1: Some(gint(1)),
+                p2: Some(gint(1)),
+            })),
+            None,
+        ),
+        (
+            "EMult",
+            par_of(ExprInstance::EMultBody(EMult {
+                p1: Some(gint(2)),
+                p2: Some(gint(3)),
+            })),
+            None,
+        ),
+        (
+            "EDiv",
+            par_of(ExprInstance::EDivBody(EDiv {
+                p1: Some(gint(6)),
+                p2: Some(gint(3)),
+            })),
+            None,
+        ),
+        (
+            "EMod",
+            par_of(ExprInstance::EModBody(EMod {
+                p1: Some(gint(7)),
+                p2: Some(gint(3)),
+            })),
+            None,
+        ),
+        ("EMatches", ematches(gint(5), gint(5)), None),
+        (
+            "EMethod",
+            method("nth", elist(vec![gint(1)])),
+            Some("EMethodBody"),
+        ),
+        (
+            "EPercentPercent",
+            par_of(ExprInstance::EPercentPercentBody(
+                models::rhoapi::EPercentPercent {
+                    p1: Some(gstr("{}")),
+                    p2: Some(gint(1)),
+                },
+            )),
+            Some("EPercentPercentBody"),
+        ),
+        (
+            "EPlusPlus",
+            par_of(ExprInstance::EPlusPlusBody(models::rhoapi::EPlusPlus {
+                p1: Some(gstr("a")),
+                p2: Some(gstr("b")),
+            })),
+            Some("EPlusPlusBody"),
+        ),
+        (
+            "EMinusMinus",
+            par_of(ExprInstance::EMinusMinusBody(models::rhoapi::EMinusMinus {
+                p1: Some(elist(vec![gint(1)])),
+                p2: Some(elist(vec![gint(1)])),
+            })),
+            Some("EMinusMinusBody"),
+        ),
+        (
+            "EPathmap",
+            par_of(ExprInstance::EPathmapBody(
+                models::rhoapi::EPathMap::default(),
+            )),
+            Some("EPathmapBody"),
+        ),
+        (
+            "EZipper",
+            par_of(ExprInstance::EZipperBody(models::rhoapi::EZipper::default())),
+            Some("EZipperBody"),
+        ),
+    ]
+}
+
+#[test]
+fn the_corpus_covers_every_expr_instance_variant() {
+    // ⚠ ANTI-VACUITY. Every differential below is only as good as the
+    // corpus it ranges over, so the corpus size is pinned against the
+    // number of `ExprInstance` variants counted from RhoTypes.proto's
+    // `oneof expr_instance`: 9 grounds + 4 collections + EVar + 15
+    // operators + EMatches + 6 undecidable = 36. Adding a variant to the
+    // protobuf without adding a row here fails HERE, before it can fail
+    // silently in production.
+    assert_eq!(
+        every_variant().len(),
+        36,
+        "the differential corpus must carry one representative of every \
+         ExprInstance variant"
+    );
+}
+
+#[test]
+fn the_gate_and_the_evaluator_agree_on_every_variant() {
+    // ★ THE DIFFERENTIAL. For each variant: does the evaluator raise
+    // `UnsupportedExpression`, and does the gate say so? Both directions
+    // at once — a gate that under-reports restores the silence, and one
+    // that over-reports refuses guards that work.
+    let mut env = Env::<Par>::new();
+    let env = env.put(gint(1));
+    for (name, par, expected_kind) in every_variant() {
+        let evaluated = eval_with(&par, &env, &StructuralEqualityOracle);
+        let gated = undecidable_nodes(&par, SpatialSupport::Available);
+
+        let evaluator_kind = match &evaluated {
+            Err(EvalError::UnsupportedExpression { kind }) => Some(*kind),
+            _ => None,
+        };
+        assert_eq!(
+            evaluator_kind, expected_kind,
+            "{name}: the evaluator's verdict moved; got {evaluated:?}"
+        );
+        assert_eq!(
+            gated.iter().map(|n| n.kind).collect::<Vec<_>>(),
+            expected_kind.into_iter().collect::<Vec<_>>(),
+            "{name}: the gate disagrees with the evaluator"
+        );
+    }
+}
+
+#[test]
+fn a_gated_guard_never_evaluates_cleanly() {
+    // PRECISION, stated as the contrapositive that matters: if the gate
+    // objects, the evaluator would have failed anyway — so refusing costs
+    // no guard that used to work.
+    let mut env = Env::<Par>::new();
+    let env = env.put(elist(vec![gint(1)]));
+    for (name, par, expected_kind) in every_variant() {
+        if expected_kind.is_none() {
+            continue;
+        }
+        assert!(
+            undecidable_nodes(&par, SpatialSupport::Available).is_empty()
+                == eval_with(&par, &env, &StructuralEqualityOracle).is_ok(),
+            "{name}: gate-objects and evaluator-fails must coincide"
+        );
+    }
+}
+
+#[test]
+fn the_gate_tracks_the_oracle_for_ematches() {
+    // `EMatches` is decidable exactly when an oracle is injected, and the
+    // gate must say the same thing — otherwise `eval`'s callers get a
+    // gate that lies in one direction and `eval_with`'s in the other.
+    let expr = ematches(gint(5), gint(5));
+    let env = Env::<Par>::new();
+
+    assert!(undecidable_nodes(&expr, SpatialSupport::Available).is_empty());
+    assert!(eval_with(&expr, &env, &StructuralEqualityOracle).is_ok());
+
+    assert_eq!(undecidable_nodes(&expr, SpatialSupport::Absent), vec![
+        UndecidableNode {
+            kind: "EMatchesBody",
+            detail: None
+        }
+    ]);
+    assert_eq!(
+        eval(&expr, &env),
+        Err(EvalError::UnsupportedExpression {
+            kind: "EMatchesBody"
+        })
+    );
+}
+
+#[test]
+fn the_gate_finds_a_method_nested_under_operators() {
+    // ★ THE MEASURED WITNESS: `terms.nth(0) == terms.nth(0)`, a syntactic
+    // tautology whose guard admitted nothing. A gate that only looked at
+    // the top-level expr would miss it — the method sits two levels down,
+    // under `==`.
+    let nth = || method("nth", evar(0));
+    let guard = par_of(ExprInstance::EEqBody(EEq {
+        p1: Some(nth()),
+        p2: Some(nth()),
+    }));
+    assert_eq!(
+        undecidable_nodes(&guard, SpatialSupport::Available),
+        vec![
+            UndecidableNode {
+                kind: "EMethodBody",
+                detail: Some("`nth`".to_string())
+            },
+            UndecidableNode {
+                kind: "EMethodBody",
+                detail: Some("`nth`".to_string())
+            },
+        ],
+        "both occurrences must be reported, in source order"
+    );
+}
+
+#[test]
+fn the_gate_ignores_a_method_the_evaluator_never_reaches() {
+    // ⚠ PRECISION, the direction that is easy to get wrong. Collections
+    // are passed through UNCHANGED by `eval_drive` — their interiors are
+    // never evaluated — so a method inside a list literal is inert and
+    // gating it would refuse a guard that works today.
+    let inert = elist(vec![method("nth", elist(vec![gint(1)]))]);
+    let guard = par_of(ExprInstance::EEqBody(EEq {
+        p1: Some(inert.clone()),
+        p2: Some(inert),
+    }));
+    assert!(
+        undecidable_nodes(&guard, SpatialSupport::Available).is_empty(),
+        "a method inside a collection literal is never evaluated"
+    );
+    // And the evaluator confirms it: the guard decides, cleanly, as true.
+    let env = Env::<Par>::new();
+    assert_bool(
+        &eval_with(&guard, &env, &StructuralEqualityOracle)
+            .expect("an inert method must not stop the guard"),
+        true,
+    );
+}
+
+#[test]
+fn the_gate_ignores_a_method_inside_a_matches_pattern() {
+    // The same precision question for the OTHER unevaluated position. A
+    // `matches` pattern is handed to the oracle verbatim; the evaluator
+    // never walks it, so a method there is inert too.
+    let guard = ematches(gint(5), method("nth", elist(vec![gint(1)])));
+    assert!(
+        undecidable_nodes(&guard, SpatialSupport::Available).is_empty(),
+        "a `matches` pattern is never evaluated"
+    );
+    let env = Env::<Par>::new();
+    assert!(eval_with(&guard, &env, &StructuralEqualityOracle).is_ok());
+}
+
+#[test]
+fn the_gate_does_not_walk_process_level_fields() {
+    // A guard Par may carry sends/receives alongside its exprs; the
+    // evaluator carries them through inert. A method inside a receive
+    // BODY is a piece of the program, not a piece of the predicate.
+    let mut guard = par_of(ExprInstance::GBool(true));
+    guard.sends = vec![models::rhoapi::Send {
+        chan: Some(gstr("c")),
+        data: vec![method("nth", elist(vec![gint(1)]))],
+        persistent: false,
+        locally_free: Vec::new(),
+        connective_used: false,
+    }];
+    assert!(
+        undecidable_nodes(&guard, SpatialSupport::Available).is_empty(),
+        "process-level fields are not part of the decided expression"
+    );
+}
+
+#[test]
+fn the_gate_is_stack_safe_on_a_deeply_nested_guard() {
+    // The walk is an explicit worklist, never the native stack, so a guard
+    // nested far past any recursive walker's ceiling is classified without
+    // overflowing.
+    //
+    // ⚠ MEASURED CEILING, and it is NOT this walk's. At 32 000 the test
+    // aborts in `<Par as Drop>::drop` — prost's derived `Drop` is recursive,
+    // a pre-existing Θ(depth) SCC that has nothing to do with the gate. The
+    // depth below is the largest that can be BUILT AND DROPPED in a debug
+    // test thread; [`the_gate_walks_deeper_than_the_par_can_be_dropped`]
+    // takes the walk past that ceiling by never dropping the guard, which
+    // is what isolates the two.
+    const DEPTH: usize = 16_000;
+    let mut guard = method("nth", evar(0));
+    for _ in 0..DEPTH {
+        guard = par_of(ExprInstance::ENotBody(ENot { p: Some(guard) }));
+    }
+    assert_eq!(
+        undecidable_nodes(&guard, SpatialSupport::Available)
+            .iter()
+            .map(|n| n.kind)
+            .collect::<Vec<_>>(),
+        vec!["EMethodBody"]
+    );
+}
+
+#[test]
+fn the_gate_walks_deeper_than_the_par_can_be_dropped() {
+    // ★ The isolation. `Box::leak` removes `<Par as Drop>::drop` — the ONLY
+    // recursive step in the previous test — and the same walk then completes
+    // at 4× the depth that aborted with the drop in place. So the abort was
+    // the destructor's and the walk's own space is not depth-bounded.
+    //
+    // Deliberately leaks: reclaiming the memory is exactly the recursive
+    // teardown being excluded, and the process is about to exit.
+    const DEPTH: usize = 128_000;
+    let mut guard = method("nth", evar(0));
+    for _ in 0..DEPTH {
+        guard = par_of(ExprInstance::ENotBody(ENot { p: Some(guard) }));
+    }
+    let guard: &'static Par = Box::leak(Box::new(guard));
+    assert_eq!(
+        undecidable_nodes(guard, SpatialSupport::Available)
+            .iter()
+            .map(|n| n.kind)
+            .collect::<Vec<_>>(),
+        vec!["EMethodBody"]
+    );
+}
