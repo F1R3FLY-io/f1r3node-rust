@@ -6152,7 +6152,7 @@ impl DebruijnInterpreter {
             fn at_path(&self, base_expr: &Expr, path_par: &Par) -> Result<Par, InterpreterError> {
                 match base_expr.expr_instance.clone().unwrap() {
                     ExprInstance::EZipperBody(zipper) => {
-                        use models::rust::pathmap_integration::par_to_path;
+                        use models::rust::pathmap_integration::entry_key_at;
 
                         // Get PathMap from zipper
                         let pathmap = zipper.pathmap.expect("zipper pathmap was None");
@@ -6160,13 +6160,14 @@ impl DebruijnInterpreter {
                             PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap(&pathmap);
                         let rholang_pathmap = pathmap_result.map;
 
-                        // Combine current_path with requested path
-                        let path_segments = par_to_path(path_par);
-                        let mut full_path = zipper.current_path.clone();
-                        full_path.extend(path_segments);
-
-                        // Build key from full path
-                        let key: Vec<u8> = segments_to_key(&full_path, true);
+                        // The ENTRY key of the argument path, reached from this
+                        // cursor. At the root the argument IS the whole path,
+                        // so `entry_key_at` asks the codec for the key the
+                        // entry was inserted under (split arm, bare arm, or the
+                        // escape arm) instead of rebuilding it and guessing
+                        // "split" — see `entry_key_at`'s doc for why the guess
+                        // was a wrong ANSWER and not a miss.
+                        let key: Vec<u8> = entry_key_at(&zipper.current_path, path_par);
 
                         // Get value at this path
                         match rholang_pathmap.get(&key) {
@@ -6175,15 +6176,16 @@ impl DebruijnInterpreter {
                         }
                     }
                     ExprInstance::EPathmapBody(pathmap) => {
-                        use models::rust::pathmap_integration::par_to_path;
+                        use models::rust::pathmap_integration::entry_key_at;
 
                         // Get value at path from PathMap root
                         let pathmap_result =
                             PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap(&pathmap);
                         let rholang_pathmap = pathmap_result.map;
 
-                        let path_segments = par_to_path(path_par);
-                        let key: Vec<u8> = segments_to_key(&path_segments, true);
+                        // A raw map has no cursor, so this is always the
+                        // root arm: `encode_trie_path(path_par)` exactly.
+                        let key: Vec<u8> = entry_key_at(&[], path_par);
 
                         match rholang_pathmap.get(&key) {
                             Some(val) => Ok(val.clone()),

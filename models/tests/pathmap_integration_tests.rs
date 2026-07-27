@@ -525,6 +525,82 @@ fn witness_a_bare_entry_key_is_a_prefix_of_the_split_keys_beside_it() {
     assert_eq!(branch, 2, "the bare entry is counted inside its own branch");
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// `entry_key_at` — the ONE place a reader spends the whole-path Par it holds
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// At the ROOT the argument IS the whole path, so the key comes from the codec
+/// and every element — bare or split — is addressable by its own Par.
+#[test]
+fn every_element_is_addressable_from_its_own_par() {
+    use models::rust::pathmap_integration::entry_key_at;
+
+    let elements = mixed_elements();
+    let map = create_pathmap_from_elements(&elements, None).map;
+    for element in &elements {
+        assert_eq!(
+            map.get(entry_key_at(&[], element)),
+            Some(element),
+            "the root arm addresses every element by its own Par"
+        );
+    }
+}
+
+/// ★ THE BYTE-DIFF CLAIM for stage 3, stated as a test: at the root,
+/// `entry_key_at` is byte-identical to the expression it replaces on the SPLIT
+/// arm, and differs from it ONLY where that expression was wrong.
+///
+/// This is what makes the change containable — the ground-LIST corpus (every
+/// existing fixture) moves zero bytes.
+#[test]
+fn entry_key_at_the_root_moves_no_split_arm_bytes() {
+    use models::rust::pathmap_integration::entry_key_at;
+
+    for split in [
+        make_list_of(vec![make_int_par(1)]),
+        make_list_par(vec!["a", "x"]),
+        make_list_par(vec![]),
+        make_list_par(vec!["books", "fiction", "gatsby"]),
+    ] {
+        assert_eq!(
+            entry_key_at(&[], &split),
+            segments_to_key(&par_to_path(&split), true),
+            "split arm: byte-identical to the retired expression"
+        );
+        assert_eq!(entry_key_at(&[], &split), encode_trie_path(&split));
+    }
+
+    for bare in [make_int_par(1), make_string_par("a"), make_int_par(-7)] {
+        assert_eq!(
+            entry_key_at(&[], &bare),
+            encode_trie_path(&bare),
+            "bare arm: the key the entry was inserted under"
+        );
+        assert_ne!(
+            entry_key_at(&[], &bare),
+            segments_to_key(&par_to_path(&bare), true),
+            "…which is exactly where it differs from the retired expression"
+        );
+    }
+}
+
+/// Below the root the argument is a RELATIVE descent and neither the cursor
+/// nor `par_to_path` carries the discriminator, so this arm still rebuilds and
+/// still guesses "split" — unchanged from before stage 3, and pinned so the
+/// remaining gap is explicit rather than implied.
+#[test]
+fn entry_key_below_the_root_still_rebuilds() {
+    use models::rust::pathmap_integration::entry_key_at;
+
+    let cursor = par_to_path(&make_string_par("a")); // one segment: 04 01 61
+    let relative = make_string_par("x");
+    assert_eq!(
+        entry_key_at(&cursor, &relative),
+        vec![0x04, 0x01, 0x61, 0x04, 0x01, 0x78, 0x00],
+        "the composed path is terminated — the split-frame guess"
+    );
+}
+
 #[test]
 fn test_empty_list_par() {
     // Empty list should be handled gracefully

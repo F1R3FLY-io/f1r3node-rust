@@ -397,30 +397,95 @@ async fn bare_leaf_count_is_correct() {
     .await;
 }
 
-/// ⚠ WITNESS OF A DEFECT — every value read of a bare entry answers `Nil`.
+/// ★ `atPath` reads a BARE entry back as itself — the positive half of the
+/// stage-1 witness `witness_bare_leaf_reads_back_as_nil`.
 ///
-/// Positive twin: `bare_leaf_reads_back_the_element`, which asserts that each
-/// of the three reads below returns the element itself.
+/// `atPath` is handed the WHOLE path as a Par, so it need not reconstruct the
+/// key from segments and guess an arm: `entry_key_at` asks the codec for
+/// `encode_trie_path(path_par)`, which is bit for bit the key the entry was
+/// inserted under. That is the whole of stage 3 — zero ambiguity, because the
+/// reader has the Par.
+///
+/// It also DISTINGUISHES the two entries: `atPath(5)` and `atPath([5])` on a
+/// map holding both answer with the one that was asked for.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn witness_bare_leaf_reads_back_as_nil() {
+async fn bare_at_path_reads_back_the_element() {
     with_runtime("zipper-enum-bare-read-", |mut runtime| async move {
         let program = format!(
             r#"
-            @"getLeafIsNil"!( {m}.readZipperAt(1).getLeaf() == Nil ) |
-            @"atPathBareIsNil"!( {m}.atPath(1) == Nil ) |
-            @"atPathListIsNil"!( {m}.atPath([1]) == Nil )
+            @"bare1"!( {m}.atPath(1) == 1 ) |
+            @"bare3"!( {m}.atPath(3) == 3 ) |
+            @"listIsAbsent"!( {m}.atPath([1]) == Nil ) |
+            @"absent"!( {m}.atPath(4) == Nil ) |
+            @"mixedBare"!( {x}.atPath(5) == 5 ) |
+            @"mixedList"!( {x}.atPath([5]) == [5] ) |
+            @"mixedString"!( {x}.atPath("a") == "a" ) |
+            @"mixedSplit"!( {x}.atPath(["a", "x"]) == ["a", "x"] )
             "#,
-            m = BARE_MAP
+            m = BARE_MAP,
+            x = MIXED_MAP
+        );
+        eval_ok(&mut runtime, &program).await;
+        for channel in ["bare1", "bare3"] {
+            assert_bool(&runtime, channel).await;
+        }
+        // `[1]` is genuinely absent — the map holds `1` — so this stays Nil.
+        // It is the assertion that keeps the fix from being "terminate less":
+        // `1` and `[1]` are different questions with different answers.
+        assert_bool(&runtime, "listIsAbsent").await;
+        assert_bool(&runtime, "absent").await;
+        // ★ Both arms in one map, each addressable, neither shadowing the other.
+        for channel in ["mixedBare", "mixedList", "mixedString"] {
+            assert_bool(&runtime, channel).await;
+        }
+        // …and the split-form read is unchanged, which is the containment
+        // evidence: `entry_key_at` at the root is byte-identical to the
+        // retired expression on the split arm.
+        assert_bool(&runtime, "mixedSplit").await;
+        runtime
+    })
+    .await;
+}
+
+/// ⚠ WITNESS OF A DEFECT THAT SURVIVES STAGE 3 — `getLeaf()` at a CURSOR still
+/// answers `Nil` for a bare entry.
+///
+/// `atPath` above is fixed because it is handed the whole path Par.
+/// `getLeaf()` is handed only `EZipper.current_path` — per-element segments
+/// with no split/bare discriminator — so it must still reconstruct the key and
+/// still guesses "split". Stage 3 fixes every reader that HAS the Par; the
+/// readers that only have the cursor need the cursor itself to stop being
+/// lossy.
+///
+/// Positive twin: `bare_get_leaf_reads_back_the_element`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn witness_bare_get_leaf_at_a_cursor_still_reads_as_nil() {
+    with_runtime("zipper-enum-bare-cursor-", |mut runtime| async move {
+        let program = format!(
+            r#"
+            @"getLeafIsNil"!( {m}.readZipperAt(1).getLeaf() == Nil ) |
+            @"mixedGetLeafIsTheWrongElement"!( {x}.readZipperAt(5).getLeaf() == [5] ) |
+            @"mixedGetLeafIsNotTheElement"!( ({x}.readZipperAt(5).getLeaf() == 5) == false ) |
+            @"splitGetLeafWorks"!( {x}.readZipperAt(["a", "x"]).getLeaf() == ["a", "x"] )
+            "#,
+            m = BARE_MAP,
+            x = MIXED_MAP
         );
         eval_ok(&mut runtime, &program).await;
         // The cursor is at the bare entry `1`, whose key is `03 02`; the read
-        // rebuilds `03 02 00`, the key of the singleton list `[1]`.
+        // rebuilds `03 02 00`, the key of the singleton list `[1]`. `[1]` is
+        // absent from THIS map, so the defect presents as Nil.
         assert_bool(&runtime, "getLeafIsNil").await;
-        // `atPath(1)` asks for the bare entry by name and still misses…
-        assert_bool(&runtime, "atPathBareIsNil").await;
-        // …and `atPath([1])` misses too, because `[1]` really is absent: the
-        // map holds `1`. There is NO spelling that reads a bare entry today.
-        assert_bool(&runtime, "atPathListIsNil").await;
+        // ★★★ On the mixed map it presents as a WRONG ANSWER instead:
+        // `readZipperAt(5)` stores `par_to_path(5)`, `getLeaf` re-terminates it
+        // to `03 0A 00`, and that key IS in the map — it is `[5]`. So the read
+        // succeeds and hands back a DIFFERENT ELEMENT. This is the sharpest
+        // statement of why "append a terminator" is a collision and not a
+        // re-key, and why the cursor has to carry the discriminator.
+        assert_bool(&runtime, "mixedGetLeafIsTheWrongElement").await;
+        assert_bool(&runtime, "mixedGetLeafIsNotTheElement").await;
+        // The split-form cursor read is unaffected.
+        assert_bool(&runtime, "splitGetLeafWorks").await;
         runtime
     })
     .await;

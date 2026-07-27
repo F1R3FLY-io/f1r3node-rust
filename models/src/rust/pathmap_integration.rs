@@ -75,6 +75,46 @@ pub fn segments_to_key(segments: &[Vec<u8>], terminate: bool) -> Vec<u8> {
     key
 }
 
+/// The trie key of the ENTRY named by `path_par`, as reached from a cursor
+/// whose per-element segments are `cursor`.
+///
+/// # Why this exists (the bare-element key defect, read side)
+///
+/// `segments_to_key(par_to_path(p), true)` appends the split-list terminator
+/// UNCONDITIONALLY, so for a bare (non-list) `p` it produces
+/// `encode_trie_path([p])` — the key of the SINGLETON LIST, a valid canonical
+/// key naming a DIFFERENT element. The read is not a miss; it is a wrong
+/// answer. (Pinned by `canonical_path::tests::bare_and_singleton_list_are_distinct_entries`.)
+///
+/// The information needed to avoid the guess is available whenever the caller
+/// holds the whole path Par, and this function is the ONE place that spends it:
+///
+/// * **At the root** (`cursor` empty) the argument IS the whole path, so the
+///   key is [`crate::rust::canonical_path::encode_trie_path`] of it — bit for
+///   bit the key `create_pathmap_from_elements` inserted the entry under,
+///   split arm or bare arm or `0x0F` escape arm, with NO reconstruction. For a
+///   split-form Par this is byte-identical to the old expression (the two
+///   agree exactly on the split arm), so the ground-LIST corpus does not move.
+///
+/// * **Below the root** the argument is a RELATIVE descent whose elements
+///   extend the cursor's, and neither `par_to_path` nor the cursor carries the
+///   split/bare discriminator — so this arm still reconstructs, and still
+///   guesses "split". That guess is what a lossless `EZipper` cursor removes;
+///   until then this arm is exactly as correct as it was, and no worse.
+pub fn entry_key_at(cursor: &[Vec<u8>], path_par: &Par) -> Vec<u8> {
+    match cursor.is_empty() {
+        // ZERO AMBIGUITY: the reader has the Par, so it can ask the codec.
+        true => encode_trie_path(path_par),
+        false => {
+            let relative = par_to_path(path_par);
+            let mut segments = Vec::with_capacity(cursor.len() + relative.len());
+            segments.extend_from_slice(cursor);
+            segments.extend(relative);
+            segments_to_key(&segments, true)
+        }
+    }
+}
+
 /// Convenience return type—including the constructed map and related Rholang metadata.
 pub struct PathMapCreationResult {
     pub map: RholangPathMap,

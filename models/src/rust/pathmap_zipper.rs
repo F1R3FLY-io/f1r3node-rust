@@ -5,7 +5,7 @@
 
 use pathmap::zipper::{ReadZipperUntracked, WriteZipperUntracked, ZipperHead};
 
-use super::pathmap_integration::{par_to_path, segments_to_key, RholangPathMap};
+use super::pathmap_integration::{entry_key_at, par_to_path, segments_to_key, RholangPathMap};
 use crate::rhoapi::{EPathMap, Par};
 
 /// Wrapper for PathMap ReadZipper that maintains Rholang context
@@ -26,14 +26,20 @@ impl<'a, 'path> RholangReadZipper<'a, 'path> {
     }
 
     /// Create a new read zipper at a specific path
+    ///
+    /// `path` is the WHOLE path, so its key is the codec's own
+    /// [`entry_key_at`] at the root — bit for bit the key
+    /// `create_pathmap_from_elements` inserted the entry under, whichever arm
+    /// it took. Rebuilding it from `par_to_path` + [`flatten_segments`] would
+    /// append the split terminator unconditionally and, for a bare (non-list)
+    /// path, address the SINGLETON LIST instead.
     pub fn new_at_path(
         map: &'a RholangPathMap,
         path: &Par,
         connective_used: bool,
         locally_free: Vec<u8>,
     ) -> Result<RholangReadZipper<'a, 'static>, String> {
-        let segments = par_to_path(path);
-        let key = flatten_segments(&segments);
+        let key = entry_key_at(&[], path);
         // Use the owned version since we can't return a reference to local key
         Ok(RholangReadZipper {
             zipper: map.read_zipper_at_path(key),
@@ -116,6 +122,10 @@ impl<'a, 'path> RholangWriteZipper<'a, 'path> {
     }
 
     /// Create a new write zipper at a specific path
+    ///
+    /// As with [`RholangReadZipper::new_at_path`], `path` is the WHOLE path,
+    /// so the key comes from the codec rather than from a reconstruction that
+    /// would append the split terminator to a bare path.
     pub fn new_at_path(
         map: &'a mut RholangPathMap,
         path: &Par,
@@ -124,8 +134,7 @@ impl<'a, 'path> RholangWriteZipper<'a, 'path> {
     ) -> Result<Self, String> {
         use pathmap::zipper::ZipperMoving;
 
-        let segments = par_to_path(path);
-        let key = flatten_segments(&segments);
+        let key = entry_key_at(&[], path);
         // Create a write zipper at the constructed path
         let mut zipper = map.write_zipper();
         zipper.descend_to(&key);

@@ -130,7 +130,7 @@ use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::var::VarInstance;
 use models::rhoapi::{EMethod, EPathMap, EZipper, Expr, Par};
 use models::rust::pathmap_crate_type_mapper::{interned_epathmap, InternedEPathMap};
-use models::rust::pathmap_integration::{par_to_path, segments_to_key};
+use models::rust::pathmap_integration::{entry_key_at, par_to_path, segments_to_key};
 use models::rust::pathmap_native_query::{
     collect_child_segments, collect_subtrie_values, path_prefix_exists,
 };
@@ -1047,15 +1047,18 @@ impl DebruijnInterpreter {
                 LinkKind::AtPath => {
                     let path_par =
                         arg_b.as_ref().expect("arity-1 link must have a Position-B argument");
+                    // :4906-4919 / :4935-4943 — the ENTRY key of the argument
+                    // path reached from this view's cursor. Both arms go
+                    // through `entry_key_at`, the ONE place that spends the
+                    // whole-path Par it holds: at the root it asks the codec
+                    // for the key the entry was inserted under (split arm, bare
+                    // arm, or escape arm) rather than rebuilding it and
+                    // guessing "split". Byte-identical to the retired
+                    // expression on the split arm, so the twin in `reduce.rs`
+                    // stays byte-for-byte the same function.
                     let key = match &mode {
-                        ViewMode::Zipper { focus, .. } => {
-                            // :4906-4919 — focus ++ argument path.
-                            let mut full_path = focus.clone();
-                            full_path.extend(par_to_path(path_par));
-                            segments_to_key(&full_path, true)
-                        }
-                        // :4935-4943 — argument path from root.
-                        ViewMode::Map => segments_to_key(&par_to_path(path_par), true),
+                        ViewMode::Zipper { focus, .. } => entry_key_at(focus, path_par),
+                        ViewMode::Map => entry_key_at(&[], path_par),
                         ViewMode::Nil => unreachable!("Nil views return at step (c)"),
                     };
                     // :4922-4925/:4945-4948 — value or Nil, UNWRAPPED.
