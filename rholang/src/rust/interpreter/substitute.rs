@@ -30,6 +30,7 @@
 //! a *configuration* of the live one, and quietly promoted it.
 
 use models::rhoapi::{Bundle, Expr, If, Match, New, Par, Receive, Send, Var, VarRef};
+use models::rust::rholang::par_children::dismantle;
 use models::rust::rholang::sorter::if_sort_matcher::IfSortMatcher;
 use models::rust::rholang::sorter::match_sort_matcher::MatchSortMatcher;
 use models::rust::rholang::sorter::new_sort_matcher::NewSortMatcher;
@@ -168,7 +169,7 @@ impl Substitute {
 // ===========================================================================
 
 macro_rules! substitute_entry {
-    ($ty:ty, $work:ident, $val:ident, $sorter:ty, $name:literal) => {
+    ($ty:ty, $work:ident, $val:ident, $sorter:ty, $name:literal, $slot:ident) => {
         impl SubstituteTrait<$ty> for Substitute {
             fn substitute_no_sort(
                 &self,
@@ -185,15 +186,34 @@ macro_rules! substitute_entry {
                 }
             }
 
+            /// Substitute, then sort into canonical form.
+            ///
+            /// ⚠ The un-sorted intermediate is released **iteratively**.
+            /// `sort_match` reads it and builds a fresh term, so the
+            /// intermediate then falls out of scope through the DERIVED
+            /// recursive `drop_in_place` — measured 470 B/level (debug), and
+            /// measured as this entry point's whole remaining slope: 437
+            /// B/level debug / 140 release, i.e. `drop_in_place`'s constant to
+            /// within 7%. That was the last Θ(depth) member on the sorted
+            /// substitution path after Stage C-2 made the sorter flat. Handing
+            /// it to `par_children::dismantle` removes the *call site* rather
+            /// than the derived impl, which is exactly the Leg-1 disposition
+            /// for row 5/row 7 members.
             fn substitute(
                 &self,
                 term: $ty,
                 depth: i32,
                 env: &Env<Par>,
             ) -> Result<$ty, InterpreterError> {
-                self.substitute_no_sort(term, depth, env)
-                    .map(|t| <$sorter as Sortable<$ty>>::sort_match(&t))
-                    .map(|st| st.term)
+                let unsorted = self.substitute_no_sort(term, depth, env)?;
+                let sorted = <$sorter as Sortable<$ty>>::sort_match(&unsorted).term;
+                // `dismantle` walks the whole `Par` family, so wrapping the
+                // node in the `Par` slot it belongs to reaches every child.
+                dismantle(Par {
+                    $slot: vec![unsorted],
+                    ..Default::default()
+                });
+                Ok(sorted)
             }
         }
     };
@@ -215,18 +235,26 @@ impl SubstituteTrait<Par> for Substitute {
         }
     }
 
+    /// Substitute, then sort into canonical form.
+    ///
+    /// ⚠ See the macro above for why the un-sorted intermediate is released
+    /// iteratively. This is the instance the measurement came from: after
+    /// Stage C-2 the sorted entry point's slope was 437 B/level (debug) /
+    /// 140 (release), and `drop_in_place::<Par>` measures 470 / 219 — the
+    /// residual *was* the teardown of `unsorted`, nothing else.
     fn substitute(&self, term: Par, depth: i32, env: &Env<Par>) -> Result<Par, InterpreterError> {
-        self.substitute_no_sort(term, depth, env)
-            .map(|p| ParSortMatcher::sort_match(&p))
-            .map(|st| st.term)
+        let unsorted = self.substitute_no_sort(term, depth, env)?;
+        let sorted = ParSortMatcher::sort_match(&unsorted).term;
+        dismantle(unsorted);
+        Ok(sorted)
     }
 }
 
-substitute_entry!(Send, Send, Send, SendSortMatcher, "Send");
-substitute_entry!(Receive, Receive, Receive, ReceiveSortMatcher, "Receive");
-substitute_entry!(New, New, New, NewSortMatcher, "New");
-substitute_entry!(Match, Match, Match, MatchSortMatcher, "Match");
-substitute_entry!(If, If, If, IfSortMatcher, "If");
+substitute_entry!(Send, Send, Send, SendSortMatcher, "Send", sends);
+substitute_entry!(Receive, Receive, Receive, ReceiveSortMatcher, "Receive", receives);
+substitute_entry!(New, New, New, NewSortMatcher, "New", news);
+substitute_entry!(Match, Match, Match, MatchSortMatcher, "Match", matches);
+substitute_entry!(If, If, If, IfSortMatcher, "If", conditionals);
 
 impl SubstituteTrait<Bundle> for Substitute {
     fn substitute_no_sort(

@@ -1161,6 +1161,49 @@ mod tests {
     use crate::rust::interpreter::pretty_printer::PrettyPrinter;
     use crate::rust::interpreter::test_utils::utils::collection_proc_visit_inputs_and_env;
 
+    /// ★ A FOUND DEFECT, PINNED — DO NOT "FIX" IT HERE.
+    ///
+    /// `_build_string_from_message`'s `Match` arm calls
+    /// `self.build_string_from_message(&m.target)`, and `m.target` is an
+    /// `Option<Par>`, **not** a `Par`. `Option<Par>` matches no `downcast_ref`
+    /// arm, so the dispatch falls to its final `else` and every `match` term
+    /// this printer renders shows its target as an error string.
+    ///
+    /// This test exists so the bytes are a *decision* rather than an accident,
+    /// and so the closed `PpNode` dispatch that replaces `&dyn Any` can be
+    /// proven byte-neutral against them.
+    ///
+    /// ⚠ **Correcting the defect is a SEPARATE, separately-reviewed change.**
+    /// `build_channel_string` reaches
+    /// `SystemDeployPlatformFailure::UnexpectedResult` -> `Display` ->
+    /// `error_msg` -> `ProcessedSystemDeploy::Failed`, which is serialized into
+    /// the block and compared **byte-for-byte in replay validation**
+    /// (`casper/src/rust/rholang/replay_runtime.rs:745-758`). Changing what a
+    /// `match` target prints therefore changes block-resident bytes, and that
+    /// must not ride inside a stack-depth conversion.
+    #[test]
+    fn a_match_target_renders_as_an_error_string_and_that_is_pinned() {
+        use models::rhoapi::{Match, Par};
+        // No cases: the pin is about the TARGET, and a case body would make it
+        // brittle against unrelated changes to case rendering.
+        let m = Match {
+            target: Some(Par::default()),
+            cases: vec![],
+            locally_free: vec![],
+            connective_used: false,
+        };
+        let mut printer = PrettyPrinter::new();
+        assert_eq!(
+            printer.build_string_from_message(&m),
+            concat!(
+                "match <unprintable: Bug found: Attempt to print unknown ",
+                "prost::Message type: Any { .. }> {\n  \n}"
+            ),
+            "the `Match` target rendering moved. These bytes reach block-resident, \
+             replay-compared error messages; see this test's documentation."
+        );
+    }
+
     //ground tests
     #[test]
     fn bool_true_should_print_as_true() {

@@ -172,6 +172,64 @@ fn nested_binders(depth: usize) -> Par {
     p
 }
 
+/// `{{{…{0}…}}}` — `depth` nested `ESet`s.
+///
+/// ⚠ THE NAMED RESIDUAL OF STAGE C-2, and a TRIPWIRE rather than a conversion
+/// target. The `ESetBody` / `EMapBody` / `EPathmapBody` arms of the sorter
+/// re-enter `ParSortMatcher::sort_match` on OWNED intermediates (a deduplicated
+/// `HashSet`, a canonicalised trie order) rather than on sub-terms of the
+/// input, so they cannot be borrowed onto the worklist.
+///
+/// What bounds the residual is measured, not asserted: each of those arms sorts
+/// every element THREE times, so a chain of `n` nested sets costs `3^n` sorts.
+/// Depth 10 finishes; depth 20 (3.5e9 sorts) did NOT terminate in either
+/// profile. Deep set nesting is infeasible in *time* long before the stack
+/// residual could bite — hence a ceiling, not a conversion.
+///
+/// Underneath the sorter sits a floor no conversion of it can lift:
+/// `HashSet<Par>` invokes the DERIVED `Par: Clone + Hash + Eq`, each Θ(depth)
+/// in its own right. `clone_nested_set` is that control, and `sort_nested_set`
+/// now measures BELOW it.
+fn nested_sets(depth: usize) -> Par {
+    let mut p = new_gint_par(0, vec![], false);
+    for _ in 0..depth {
+        p = Par {
+            exprs: vec![Expr {
+                expr_instance: Some(ExprInstance::ESetBody(models::rhoapi::ESet {
+                    ps: vec![p],
+                    locally_free: vec![],
+                    connective_used: false,
+                    remainder: None,
+                })),
+            }],
+            ..Default::default()
+        };
+    }
+    p
+}
+
+/// The `EMap` counterpart of [`nested_sets`], for the same reason.
+fn nested_maps(depth: usize) -> Par {
+    let mut p = new_gint_par(0, vec![], false);
+    for _ in 0..depth {
+        p = Par {
+            exprs: vec![Expr {
+                expr_instance: Some(ExprInstance::EMapBody(models::rhoapi::EMap {
+                    kvs: vec![models::rhoapi::KeyValuePair {
+                        key: Some(p),
+                        value: Some(new_gint_par(1, vec![], false)),
+                    }],
+                    locally_free: vec![],
+                    connective_used: false,
+                    remainder: None,
+                })),
+            }],
+            ..Default::default()
+        };
+    }
+    p
+}
+
 fn substitute_instance() -> Substitute {
     Substitute {
         metering: MeteredMachine::new(RuntimeBudget::new(Cost::create(
@@ -261,6 +319,9 @@ fn subject(name: &str) -> fn(usize) {
         "substitute_binders" => substitute_binders_body,
         "substitute_deep_binding" => substitute_deep_binding_body,
         "sort" => sort_body,
+        "sort_nested_set" => sort_nested_set_body,
+        "sort_nested_map" => sort_nested_map_body,
+        "clone_nested_set" => clone_nested_set_body,
         "score_cmp" => score_cmp_body,
         "tree_drop" => tree_drop_body,
         "tree_clone" => tree_clone_body,
@@ -268,6 +329,8 @@ fn subject(name: &str) -> fn(usize) {
         "clone" => clone_body,
         "drop" => drop_body,
         "encode" => encode_body,
+        "bincode_ser" => bincode_ser_body,
+        "bincode_de" => bincode_de_body,
         // -------- width axis --------
         "substitute_wide" => substitute_wide_body,
         "sort_wide" => sort_wide_body,
@@ -586,6 +649,30 @@ fn sort_body(depth: usize) {
     dismantle(term);
 }
 
+fn sort_nested_set_body(depth: usize) {
+    let term = nested_sets(depth);
+    let out = ParSortMatcher::sort_match(&term);
+    dismantle(out.term);
+    dismantle(term);
+}
+
+fn sort_nested_map_body(depth: usize) {
+    let term = nested_maps(depth);
+    let out = ParSortMatcher::sort_match(&term);
+    dismantle(out.term);
+    dismantle(term);
+}
+
+/// The DERIVED control for [`sort_nested_set_body`]: `<Par as Clone>::clone`
+/// over the same shape. If the sorter subject sits at or below this, what is
+/// left in the set arm is the derived-traversal class and not the sorter.
+fn clone_nested_set_body(depth: usize) {
+    let term = nested_sets(depth);
+    let c = term.clone();
+    dismantle(c);
+    dismantle(term);
+}
+
 fn sort_wide_body(width: usize) {
     // TWO wide lists, so the sorter has siblings to order and its comparator
     // has `width` score-tree children to walk.
@@ -693,6 +780,76 @@ fn encode_body(depth: usize) {
     dismantle(term);
 }
 
+/// Count `[[…[x]…]]` nesting levels ITERATIVELY.
+///
+/// ⚠ Used to prove a decoded term actually HAS the nesting the probe claims.
+/// Without it a codec that silently skipped the payload — a wrong field number,
+/// a length mismatch, an unknown-field skip — would decode to a shallow term in
+/// `O(1)` stack and the subject would report a comfortable 0 B/level for the
+/// wrong reason. That failure has already happened once in this work (the
+/// `prost` field-number bug, audit §4.3).
+fn par_depth(p: &Par) -> usize {
+    let mut n = 0usize;
+    let mut cur = p;
+    loop {
+        match cur.exprs.first().and_then(|e| e.expr_instance.as_ref()) {
+            Some(ExprInstance::EListBody(l)) if !l.ps.is_empty() => {
+                n += 1;
+                cur = &l.ps[0];
+            }
+            _ => return n,
+        }
+    }
+}
+
+/// ⚠ THE FAMILY'S BINDING MEMBER, AND UNTIL NOW IT HAD NO GATE COVERAGE AT ALL.
+///
+/// `models/build.rs` attaches `serde::Serialize`/`Deserialize` to every
+/// `.rhoapi` message, and RSpace serialises datums and continuations with
+/// **bincode 1.3.3** (`rspace++/src/rspace/serializers/serializers.rs`), which
+/// — unlike `prost`, capped at 100 nested messages — has **no recursion limit
+/// at all**. Bisected directly: bincode round-trips at depths 33, 34, 40, 100,
+/// 200, 400 and 800, where `prost` returns `Err` from 34 onward.
+///
+/// The encode side is ~9x (debug) to ~39x (release) cheaper per level than the
+/// decode side, so a term can be *written* on a stack that cannot *read it
+/// back* — and the read-back failure is an `abort()`, not an `Err`. A datum
+/// written to LMDB above the decode ceiling therefore aborts the node on every
+/// restart, because the datum persists.
+///
+/// Measured 2026-07-26: encode 3,052 / 329 B/level (debug / release), decode
+/// 28,362 / 12,894.
+fn bincode_ser_body(depth: usize) {
+    let term = nested_list(depth);
+    let bytes = bincode::serialize(&term).expect("stack_depth_gate: bincode_ser failed");
+    assert!(!bytes.is_empty());
+    dismantle(term);
+}
+
+/// The DECODE side. See [`bincode_ser_body`] for why this member matters.
+fn bincode_de_body(depth: usize) {
+    // ⚠ Encode on a stack that never binds, so this subject isolates the
+    // DECODER. Encoding on the gated thread would make every reading
+    // `max(encode, decode)` — the same defect that once made the score-tree
+    // subjects report 78,573 B/level (the SORTER's constant) instead of the
+    // comparator's 1,329.
+    let bytes = on_a_big_stack(move || {
+        let term = nested_list(depth);
+        let b = bincode::serialize(&term).expect("stack_depth_gate: bincode encode failed");
+        dismantle(term);
+        b
+    });
+    let decoded: Par =
+        bincode::deserialize(&bytes).expect("stack_depth_gate: bincode_de failed");
+    assert_eq!(
+        par_depth(&decoded),
+        depth,
+        "stack_depth_gate: bincode_de did not reconstruct the nesting — the reading \
+         would be meaningless"
+    );
+    dismantle(decoded);
+}
+
 // ---------------------------------------------------------------------------
 // THE GATE
 // ---------------------------------------------------------------------------
@@ -716,18 +873,19 @@ fn encode_body(depth: usize) {
 #[test]
 fn converted_traversals_are_depth_independent() {
     let converted_depth: &[&str] = &[
-        "substitute_no_sort", // Stage B — the driver
-        "substitute_binders", // Stage B — the driver, under a deep environment
-        // "substitute",           // Stage C (it ends in `sort_match`)
-        // "sort",                 // Stage C
-        "score_cmp",          // Stage C-1 — the score-tree comparator
-        "tree_drop",          // Stage C-1 — Tree's hand-written Drop
-        "tree_clone",         // Stage C-1 — Tree's hand-written Clone
+        "substitute_no_sort",   // Stage B — the driver
+        "substitute_binders",   // Stage B — the driver, under a deep environment
+        "substitute",           // Stage C-2 (the sorter) + Stage E (the intermediate
+        //                         is dismantled instead of dropped recursively)
+        "sort",                 // Stage C-2 — ParSortMatcher
+        "score_cmp",            // Stage C-1 — the score-tree comparator
+        "tree_drop",            // Stage C-1 — Tree's hand-written Drop
+        "tree_clone",           // Stage C-1 — Tree's hand-written Clone
         // "pretty",               // Stage D
     ];
     let converted_width: &[&str] = &[
         "substitute_wide", // Stage B
-        // "sort_wide",            // Stage C
+        "sort_wide",       // Stage C-2
         "score_cmp_wide",  // Stage C-1 — the sibling walk
         // "pretty_wide",          // Stage D
     ];
@@ -770,7 +928,20 @@ fn theta_depth_tripwire() {
     // so what this tripwire measures is now the SORTER, and the figure moved
     // from 195,754 to 78,583 B/level, matching `sort` to within 0.01%. It
     // leaves this list when Stage C converts the sorter, not before.
-    assert_slope_below("substitute", ceiling(120_000, 11_000), 16, 64);
+    // ⚠ `substitute` and `sort` have LEFT this list — they are in
+    // `converted_traversals_are_depth_independent` and measure 0 B/level over
+    // 4 -> 4,096 in both profiles. A traversal only ever leaves by being
+    // converted, never by having its ceiling raised.
+    //
+    // ⚠⚠ AND THIS LIST TAUGHT ITS OWN LESSON. While `substitute` still had a
+    // 437 B/level residual (the recursive teardown of the un-sorted
+    // intermediate), the ladder above read it as **0 B/level** — because both
+    // probe points, depth 16 and depth 64, sat inside the subject's ~136 KiB
+    // INTERCEPT, where the bisection cannot resolve 48 levels x 437 B. A large
+    // intercept reads as a zero slope on a short ladder. Every ladder here must
+    // therefore span far enough that BOTH ends clear the subject's own
+    // intercept; that is also why the real bar is `assert_no_slope` over
+    // 4 -> 4,096 rather than a two-point slope.
     // The named residual: `Env::get`'s `<Par as Clone>::clone` of a deep bound
     // value. See `substitute_deep_binding_body`.
     //
@@ -782,11 +953,27 @@ fn theta_depth_tripwire() {
     // own. Same traversal, larger per-level frame. Ceilings are ~1.5× measured,
     // per profile, as everywhere else in this test.
     assert_slope_below("substitute_deep_binding", ceiling(25_000, 12_000), 16, 128);
-    assert_slope_below("sort", ceiling(120_000, 11_000), 16, 64);
     assert_slope_below("pretty", ceiling(65_000, 7_000), 16, 64);
     assert_slope_below("clone", ceiling(25_000, 5_000), 16, 128);
     assert_slope_below("drop", ceiling(1_500, 800), 256, 4096);
     assert_slope_below("encode", ceiling(4_000, 1_500), 64, 1024);
+    // ⚠ The RSpace codec — see `bincode_ser_body`. UNCAPPED, unlike `prost`.
+    // Probed SHALLOW: at 28,362 B/level (debug) depth 32 already needs ~900 KiB.
+    // Both probe points clear the subject's own intercept at both ends, so a
+    // large intercept cannot read as a zero slope on a short ladder.
+    assert_slope_below("bincode_ser", ceiling(5_000, 800), 64, 512);
+    assert_slope_below("bincode_de", ceiling(45_000, 20_000), 8, 32);
+    // ⚠ THE NAMED STAGE C-2 RESIDUAL. Ceilings are the MEASURED PRE-CONVERSION
+    // BASELINES (79,053 / 82,534 B/level, debug), so this list can only ever
+    // certify that the self-contained set/map arms did not get worse. Measured
+    // after the per-arm frame split: 14,336 / 17,818 — 5.5x and 4.6x BELOW
+    // those baselines, and below the derived `clone_nested_set` control
+    // (16,384) as well. Probed on a SHORT ladder because of the 3^n sort
+    // blow-up documented on `nested_sets`.
+    assert_slope_below("sort_nested_set", ceiling(79_053, 7_680), 2, 8);
+    assert_slope_below("sort_nested_map", ceiling(82_534, 10_394), 2, 8);
+    // The derived floor the two above are measured against.
+    assert_slope_below("clone_nested_set", ceiling(25_000, 9_000), 2, 8);
 }
 
 /// The WIDTH tripwire. `compare_score_nodes` recurses on the list tail, so its
