@@ -1,0 +1,62 @@
+name: Soak Dashboard Pages
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - site/soak-dashboard/**
+      - .github/workflows/soak-dashboard-pages.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Publish Soak Dashboard (bootstrap)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    concurrency:
+      group: soak-pages
+      cancel-in-progress: false
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Assemble dashboard site
+        shell: bash -euo pipefail {0}
+        env:
+          DASHBOARD_URL: https://f1r3fly-io.github.io/f1r3node-rust/
+        run: |
+          # Bootstrap/refresh deploy: publish the dashboard shell while
+          # preserving any data already published by the weekend soak's
+          # perf_report job. First deploy ships an empty history.
+          mkdir -p site/data
+          cp -r site/soak-dashboard/. site/
+          for f in history.json latest-summary.json latest-verdict.json latest-report.md; do
+            curl -fsS --max-time 30 "${DASHBOARD_URL}data/${f}" \
+              -o "site/data/${f}" 2>/dev/null || rm -f "site/data/${f}"
+          done
+          jq -e 'type == "array"' site/data/history.json >/dev/null 2>&1 \
+            || echo '[]' > site/data/history.json
+          test -s site/data/latest-report.md \
+            || echo 'No soak report yet — the first successful weekend soak publishes one.' \
+              > site/data/latest-report.md
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - name: Deploy to GitHub Pages
+        id: deploy
+        uses: actions/deploy-pages@v4

@@ -86,6 +86,15 @@ jobs:
           if [ "$duration_seconds" = "216000" ]; then
             run_benchmarks=true
           fi
+          if [ "$should_run" != "true" ]; then
+            echo "::notice::Schedule gate no-op: cron slot resolved outside the Pacific 22:00 launch window. No soak was attempted; this run's success is not a soak result."
+            {
+              echo "## Schedule gate: no-op"
+              echo ""
+              echo "This scheduled trigger resolved outside the Pacific 22:00 launch window."
+              echo "**No soak was attempted** — a green check on this run is not a soak result."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
           {
             echo "should_run=$should_run"
             echo "duration_seconds=$duration_seconds"
@@ -348,3 +357,92 @@ jobs:
             jq -r '.failures[] | "FAIL: " + .' soak-results/report/verdict.json
             exit 1
           fi
+
+  notify_failure:
+    name: Email Soak Failure Alert
+    needs: [schedule_gate, launch_runner, soak, perf_report]
+    # Runs on a GitHub-hosted runner with user-principal OCI auth so the
+    # alert still goes out when the OCI runner itself failed to launch —
+    # the in-soak ONS step (instance-principal) cannot cover that case.
+    if: >-
+      always() &&
+      needs.schedule_gate.outputs.should_run == 'true' &&
+      contains(needs.*.result, 'failure')
+    runs-on: ubuntu-latest
+    environment: ephemeral-launch-internal
+    timeout-minutes: 10
+    steps:
+      - name: Install OCI CLI (pinned, checksum-verified)
+        shell: bash -e {0}
+        run: |
+          curl -fsSL "$OCI_CLI_INSTALLER_URL" -o /tmp/oci-install.sh
+          echo "$OCI_CLI_INSTALLER_SHA256  /tmp/oci-install.sh" | sha256sum -c -
+          bash /tmp/oci-install.sh \
+            --accept-all-defaults --install-dir /opt/oci-cli --exec-dir /usr/local/bin
+          oci --version
+
+      - name: Configure OCI authentication
+        env:
+          OCI_TENANCY_OCID: ${{ secrets.OCI_TENANCY_OCID }}
+          OCI_USER_OCID: ${{ secrets.OCI_USER_OCID }}
+          OCI_REGION: ${{ secrets.OCI_REGION }}
+          OCI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
+          OCI_PRIVATE_KEY: ${{ secrets.OCI_PRIVATE_KEY }}
+        shell: bash -e {0}
+        run: |
+          install -d -m 700 ~/.oci
+          umask 077
+          printf '%s\n' "$OCI_PRIVATE_KEY" > ~/.oci/oci_api_key.pem
+          cat > ~/.oci/config <<EOF
+          [DEFAULT]
+          user=$OCI_USER_OCID
+          fingerprint=$OCI_FINGERPRINT
+          tenancy=$OCI_TENANCY_OCID
+          region=$OCI_REGION
+          key_file=$HOME/.oci/oci_api_key.pem
+          EOF
+          oci iam region list >/dev/null
+
+      - name: Publish failure alert
+        env:
+          ONS_TOPIC_OCID: ${{ vars.SOAK_ONS_TOPIC_OCID }}
+          LAUNCH_RESULT: ${{ needs.launch_runner.result }}
+          SOAK_RESULT: ${{ needs.soak.result }}
+          DASHBOARD_RESULT: ${{ needs.perf_report.result }}
+          TARGET_REF: ${{ needs.schedule_gate.outputs.target_ref }}
+          DURATION_SECONDS: ${{ needs.schedule_gate.outputs.duration_seconds }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          DASHBOARD_URL: https://f1r3fly-io.github.io/f1r3node-rust/
+        shell: bash -euo pipefail {0}
+        run: |
+          if [ -z "$ONS_TOPIC_OCID" ]; then
+            echo "::error::SOAK_ONS_TOPIC_OCID is not configured; failure alert NOT sent"
+            exit 1
+          fi
+          if [ "$DURATION_SECONDS" = "216000" ]; then kind="weekend-60h"; else kind="daily-24h"; fi
+          title="F1R3FLY soak FAILURE ($kind) $(date -u +%F)"
+          body="Merge Recovery Soak run failed.
+
+          Target:    $TARGET_REF
+          Duration:  $kind
+          Job results:
+            launch runner:  $LAUNCH_RESULT
+            soak:           $SOAK_RESULT
+            dashboard:      $DASHBOARD_RESULT
+
+          Run: $RUN_URL
+          Dashboard: $DASHBOARD_URL
+
+          Manage this subscription via the unsubscribe link in this email."
+          oci ons message publish \
+            --topic-id "$ONS_TOPIC_OCID" \
+            --title "$title" \
+            --body "$body"
+          echo "published ONS failure alert: $title"
+
+      - name: Remove OCI credentials
+        if: always()
+        shell: bash -e {0}
+        run: |
+          shred -fu ~/.oci/oci_api_key.pem 2>/dev/null || true
+          rm -rf ~/.oci
