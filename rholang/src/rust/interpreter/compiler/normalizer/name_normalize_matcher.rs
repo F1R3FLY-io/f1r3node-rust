@@ -7,18 +7,44 @@ use rholang_parser::ast::{Name, Names, Var};
 use crate::rust::interpreter::compiler::exports::{
     BoundContext, FreeContext, NameVisitInputs, NameVisitOutputs, ProcVisitInputs,
 };
-use crate::rust::interpreter::compiler::normalize::{normalize_ann_proc, VarSort};
+use crate::rust::interpreter::compiler::normalize::VarSort;
+use crate::rust::interpreter::compiler::normalize_drive::{
+    norm_drive_from, NormKont, NormVal, NormWork, Step,
+};
 use crate::rust::interpreter::compiler::normalizer::remainder_normalizer_matcher::normalize_match_name;
 use crate::rust::interpreter::compiler::span_utils::SpanContext;
 use crate::rust::interpreter::errors::InterpreterError;
 use crate::rust::interpreter::util::prepend_expr;
 
+/// Normalize one name, on a **fresh** drive.
+///
+/// `Name::NameVar` is a leaf; `Name::Quote(P)` re-enters the process
+/// normalizer, so this is a member of the Θ(depth) SCC and it is entered
+/// through the machine rather than through the native stack. Callers *inside*
+/// the SCC never use this function — they push a [`NormWork::Name`] onto the
+/// drive they are already on, so the whole traversal remains one loop. This
+/// entry point exists for [`normalize_names`] and for the unit tests, and it is
+/// `O(1)` in native stack exactly like the top-level entry.
 pub fn normalize_name<'ast>(
     name: &Name<'ast>,
     input: NameVisitInputs,
     env: &HashMap<String, Par>,
     parser: &'ast rholang_parser::RholangParser<'ast>,
 ) -> Result<NameVisitOutputs, InterpreterError> {
+    norm_drive_from(
+        Step::Tail(NormWork::Name { name: *name, input }),
+        env,
+        parser,
+    )
+    .map(NormVal::into_name)
+}
+
+/// The `Name` dispatch — every arm but `Quote` is a leaf.
+#[inline(never)]
+pub(crate) fn descend_name<'ast>(
+    name: Name<'ast>,
+    input: NameVisitInputs,
+) -> Result<Step<'ast>, InterpreterError> {
     match name {
         Name::NameVar(var) => {
             match var {
@@ -34,14 +60,14 @@ pub fn normalize_name<'ast>(
                         })),
                     };
 
-                    Ok(NameVisitOutputs {
+                    Ok(Step::Done(NormVal::Name(NameVisitOutputs {
                         par: prepend_expr(
                             Par::default(),
                             new_expr,
                             input.bound_map_chain.depth() as i32,
                         ),
                         free_map: wildcard_bind_result,
-                    })
+                    })))
                 }
 
                 Var::Id(id) => {
@@ -66,14 +92,14 @@ pub fn normalize_name<'ast>(
                                     })),
                                 };
 
-                                Ok(NameVisitOutputs {
+                                Ok(Step::Done(NormVal::Name(NameVisitOutputs {
                                     par: prepend_expr(
                                         Par::default(),
                                         new_expr,
                                         input.bound_map_chain.depth() as i32,
                                     ),
                                     free_map: input.free_map,
-                                })
+                                })))
                             }
 
                             BoundContext {
@@ -104,14 +130,14 @@ pub fn normalize_name<'ast>(
                                     })),
                                 };
 
-                                Ok(NameVisitOutputs {
+                                Ok(Step::Done(NormVal::Name(NameVisitOutputs {
                                     par: prepend_expr(
                                         Par::default(),
                                         new_expr,
                                         input.bound_map_chain.depth() as i32,
                                     ),
                                     free_map: updated_free_map,
-                                })
+                                })))
                             }
                             Some(FreeContext {
                                 source_span: first_span,
@@ -129,25 +155,32 @@ pub fn normalize_name<'ast>(
 
         Name::Quote(ann_proc) => {
             // Name::Quote now wraps an AnnProc directly, not a Proc
-            // Call normalize_ann_proc with proper span-based inputs
-            let proc_visit_result = normalize_ann_proc(
-                ann_proc,
-                ProcVisitInputs {
-                    par: Par::default(),
-                    bound_map_chain: input.bound_map_chain.clone(),
-                    free_map: input.free_map.clone(),
+            // Descend into the quoted process with span-based inputs; the
+            // continuation only retypes the result.
+            Ok(Step::Descend {
+                kont: NormKont::NameQuote,
+                work: NormWork::Proc {
+                    proc: ann_proc,
+                    input: ProcVisitInputs {
+                        par: Par::default(),
+                        bound_map_chain: input.bound_map_chain,
+                        free_map: input.free_map,
+                    },
                 },
-                env,
-                parser,
-            )?;
-
-            // Return the normalized result
-            Ok(NameVisitOutputs {
-                par: proc_visit_result.par,
-                free_map: proc_visit_result.free_map,
             })
         }
     }
+}
+
+/// `@P`, combine half — a pure retype of `ProcVisitOutputs` as
+/// `NameVisitOutputs`.
+#[inline(never)]
+pub(crate) fn combine_name_quote<'ast>(value: NormVal) -> Result<Step<'ast>, InterpreterError> {
+    let proc_visit_result = value.into_proc();
+    Ok(Step::Done(NormVal::Name(NameVisitOutputs {
+        par: proc_visit_result.par,
+        free_map: proc_visit_result.free_map,
+    })))
 }
 
 pub fn normalize_names<'ast>(
@@ -201,6 +234,7 @@ pub fn normalize_names<'ast>(
         free_map: current_input.free_map,
     })
 }
+
 
 //rholang/src/test/scala/coop/rchain/rholang/interpreter/compiler/normalizer/NameMatcherSpec.scala
 #[cfg(test)]

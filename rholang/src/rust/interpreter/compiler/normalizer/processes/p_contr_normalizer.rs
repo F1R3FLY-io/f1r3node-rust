@@ -1,121 +1,185 @@
-use std::collections::HashMap;
-
 use models::rhoapi::{Par, Receive, ReceiveBind};
 use models::rust::utils::union;
-use rholang_parser::ast::{AnnProc, Name};
+use rholang_parser::ast::{AnnProc, Name, Names};
 
 use crate::rust::interpreter::compiler::exports::{
     FreeMap, NameVisitInputs, ProcVisitInputs, ProcVisitOutputs,
 };
-use crate::rust::interpreter::compiler::normalize::{normalize_ann_proc, VarSort};
+use crate::rust::interpreter::compiler::normalize::VarSort;
+use crate::rust::interpreter::compiler::normalize_drive::{
+    ContrK, NormKont, NormVal, NormWork, Step,
+};
 use crate::rust::interpreter::compiler::normalizer::cost_accounting::pattern_guard::reject_cost_syntax_in_name_pattern;
-use crate::rust::interpreter::compiler::normalizer::name_normalize_matcher::normalize_name;
 use crate::rust::interpreter::compiler::normalizer::processes::utils::fail_on_invalid_connective;
 use crate::rust::interpreter::compiler::normalizer::remainder_normalizer_matcher::normalize_match_name;
 use crate::rust::interpreter::errors::InterpreterError;
-use crate::rust::interpreter::matcher::has_locally_free::HasLocallyFree;
 use crate::rust::interpreter::util::filter_and_adjust_bitset;
 
-pub fn normalize_p_contr<'ast>(
-    name: &'ast Name<'ast>,
-    formals: &'ast rholang_parser::ast::Names<'ast>,
-    body: &'ast AnnProc<'ast>,
+/// `contract c(x, y) = { P }`, descend half — the CONTRACT NAME first.
+///
+/// The child order is `name`, then every formal, then the body, and it carries
+/// **two independent free maps**: the contract name extends the *enclosing*
+/// free map, while the formals accumulate a *fresh* one whose bindings are then
+/// absorbed into the body's `bound_map_chain`. `ContrK::idx` indexes that
+/// sequence: `0` = the name, `1..=n` = formal `idx − 1`, `n + 1` = the body.
+#[inline(never)]
+pub(crate) fn descend_p_contr<'ast>(
+    name: Name<'ast>,
+    formals: &'ast Names<'ast>,
+    body: AnnProc<'ast>,
     input: ProcVisitInputs,
-    env: &HashMap<String, Par>,
-    parser: &'ast rholang_parser::RholangParser<'ast>,
-) -> Result<ProcVisitOutputs, InterpreterError> {
-    let name_match_result = normalize_name(
-        name,
-        NameVisitInputs {
-            bound_map_chain: input.bound_map_chain.clone(),
-            free_map: input.free_map.clone(),
-        },
-        env,
-        parser,
-    )?;
-
-    let mut init_acc = (vec![], FreeMap::<VarSort>::default(), Vec::new());
-
-    for name in formals.names.iter() {
-        // Reject cost syntax in contract-formal pattern position (W1 §1.5): a
-        // signed term / token stack inside a formal `@{...}` is a process form
-        // (recognized + metered), not a contract pattern.
-        reject_cost_syntax_in_name_pattern(name)?;
-
-        let res = normalize_name(
+) -> Step<'ast> {
+    let child_input = NameVisitInputs {
+        bound_map_chain: input.bound_map_chain.clone(),
+        free_map: input.free_map.clone(),
+    };
+    Step::Descend {
+        kont: NormKont::Contr(Box::new(ContrK {
+            formals,
+            idx: 0,
+            name_out: None,
+            acc_patterns: Vec::with_capacity(formals.names.len()),
+            acc_free: FreeMap::<VarSort>::default(),
+            acc_locally_free: Vec::new(),
+            remainder: None,
+            bound_count: 0,
+            body,
+            input,
+        })),
+        work: NormWork::Name {
             name,
-            NameVisitInputs {
-                bound_map_chain: input.clone().bound_map_chain.push(),
-                free_map: init_acc.1.clone(),
-            },
-            env,
-            parser,
-        )?;
+            input: child_input,
+        },
+    }
+}
 
-        let result = fail_on_invalid_connective(&input, &res)?;
+/// `contract c(x, y) = { P }`, combine half.
+#[inline(never)]
+pub(crate) fn combine_p_contr<'ast>(
+    mut k: Box<ContrK<'ast>>,
+    value: NormVal,
+) -> Result<Step<'ast>, InterpreterError> {
+    let n_formals = k.formals.names.len();
 
-        // Accumulate the result
-        init_acc.0.insert(0, result.par.clone());
-        init_acc.1 = result.free_map.clone();
-        init_acc.2 = union(
-            init_acc.clone().2,
-            result.par.locally_free(
-                result.par.clone(),
-                (input.bound_map_chain.depth() + 1) as i32,
+    if k.idx == 0 {
+        // The contract NAME has just finished.
+        k.name_out = Some(value.into_name());
+    } else if k.idx <= n_formals {
+        // Formal `idx - 1` has just finished.
+        let res = value.into_name();
+        let result = fail_on_invalid_connective(&k.input, &res)?;
+
+        // Accumulate the result.
+        // ★ Leg-1 at the reader AND the accumulator: `HasLocallyFree<Par>` is a
+        // by-value field read, so the recursive form paid TWO deep clones per
+        // formal to obtain one cached bitset.
+        let formal_locally_free = result.par.locally_free.clone();
+        k.acc_patterns.insert(0, result.par);
+        k.acc_free = result.free_map;
+        k.acc_locally_free =
+            union(std::mem::take(&mut k.acc_locally_free), formal_locally_free);
+    } else {
+        // The BODY has just finished.
+        let body_result = value.into_proc();
+        let ContrK {
+            name_out,
+            acc_patterns,
+            acc_locally_free,
+            remainder,
+            bound_count,
+            mut input,
+            ..
+        } = *k;
+        let name_match_result =
+            name_out.expect("combine_p_contr: the contract name is filled before the body");
+
+        // ★ Leg-1: shallow reads, then MOVE.
+        let name_locally_free = name_match_result.par.locally_free.clone();
+        let name_connective_used = name_match_result.par.connective_used;
+        let body_locally_free = body_result.par.locally_free.clone();
+        let body_connective_used = body_result.par.connective_used;
+        let receive = Receive {
+            binds: vec![ReceiveBind {
+                patterns: acc_patterns.into_iter().rev().collect(),
+                source: Some(name_match_result.par),
+                remainder,
+                free_count: bound_count as i32,
+            }],
+            body: Some(body_result.par),
+            persistent: true,
+            peek: false,
+            bind_count: bound_count as i32,
+            locally_free: union(
+                name_locally_free,
+                union(
+                    acc_locally_free,
+                    filter_and_adjust_bitset(body_locally_free, bound_count),
+                ),
             ),
-        );
+            connective_used: name_connective_used || body_connective_used,
+            condition: None,
+        };
+        //TODO: I should create new Expr for prepend_expr and provide it instead of receive.clone().into
+        let updated_par = input.par.prepend_receive(receive);
+        return Ok(Step::Done(NormVal::Proc(ProcVisitOutputs {
+            par: updated_par,
+            free_map: body_result.free_map,
+        })));
     }
 
-    let remainder_result = normalize_match_name(&formals.remainder, init_acc.1.clone())?;
+    // Schedule the next formal, or — once they are all in — the body.
+    if k.idx < n_formals {
+        // Copy the formal out of the arena-backed `Names` before `k` moves onto
+        // the work stack: `Name<'ast>` is `Copy`, so the copy outlives the borrow.
+        let formals: &'ast Names<'ast> = k.formals;
+        // Reject cost syntax in contract-formal pattern position (W1 §1.5): a
+        // signed term / token stack inside a formal `@{...}` is a process form
+        // (recognized + metered), not a contract pattern. The guard walks the
+        // arena, so it is handed the arena-backed reference; `Name<'ast>` is
+        // `Copy`, so the value the machine descends into is copied out of it.
+        reject_cost_syntax_in_name_pattern(&formals.names[k.idx])?;
+        let name: Name<'ast> = formals.names[k.idx];
+        let child_input = NameVisitInputs {
+            bound_map_chain: k.input.bound_map_chain.push(),
+            free_map: k.acc_free.clone(),
+        };
+        k.idx += 1;
+        return Ok(Step::Descend {
+            kont: NormKont::Contr(k),
+            work: NormWork::Name {
+                name,
+                input: child_input,
+            },
+        });
+    }
 
-    let new_enw = input.bound_map_chain.absorb_free_span(&remainder_result.1);
-    let bound_count = remainder_result.1.count_no_wildcards();
+    // All formals are in: absorb the remainder and open the body's scope.
+    let remainder_result = normalize_match_name(&k.formals.remainder, k.acc_free.clone())?;
+    let new_enw = k.input.bound_map_chain.absorb_free_span(&remainder_result.1);
+    k.remainder = remainder_result.0;
+    k.bound_count = remainder_result.1.count_no_wildcards();
 
-    let body_result = normalize_ann_proc(
-        body,
-        ProcVisitInputs {
-            par: Par::default(),
-            bound_map_chain: new_enw,
-            free_map: name_match_result.free_map.clone(),
+    let name_free_map = k
+        .name_out
+        .as_ref()
+        .expect("combine_p_contr: the contract name is filled before the body")
+        .free_map
+        .clone();
+    let body = k.body;
+    k.idx += 1;
+    Ok(Step::Descend {
+        kont: NormKont::Contr(k),
+        work: NormWork::Proc {
+            proc: body,
+            input: ProcVisitInputs {
+                par: Par::default(),
+                bound_map_chain: new_enw,
+                free_map: name_free_map,
+            },
         },
-        env,
-        parser,
-    )?;
-
-    let receive = Receive {
-        binds: vec![ReceiveBind {
-            patterns: init_acc.0.clone().into_iter().rev().collect(),
-            source: Some(name_match_result.par.clone()),
-            remainder: remainder_result.0.clone(),
-            free_count: bound_count as i32,
-        }],
-        body: Some(body_result.par.clone()),
-        persistent: true,
-        peek: false,
-        bind_count: bound_count as i32,
-        locally_free: union(
-            name_match_result.par.locally_free(
-                name_match_result.par.clone(),
-                input.bound_map_chain.depth() as i32,
-            ),
-            union(
-                init_acc.2,
-                filter_and_adjust_bitset(body_result.par.clone().locally_free, bound_count),
-            ),
-        ),
-        connective_used: name_match_result
-            .par
-            .connective_used(name_match_result.par.clone())
-            || body_result.par.connective_used(body_result.par.clone()),
-        condition: None,
-    };
-    //TODO: I should create new Expr for prepend_expr and provide it instead of receive.clone().into
-    let updated_par = input.clone().par.prepend_receive(receive);
-    Ok(ProcVisitOutputs {
-        par: updated_par,
-        free_map: body_result.free_map,
     })
 }
+
 
 // See rholang/src/test/scala/coop/rchain/rholang/interpreter/compiler/normalizer/ProcMatcherSpec.scala
 #[cfg(test)]

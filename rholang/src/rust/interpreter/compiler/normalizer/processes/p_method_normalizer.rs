@@ -1,89 +1,143 @@
-use std::collections::HashMap;
-
 use models::rhoapi::{expr, EMethod, Expr, Par};
 use models::rust::utils::union;
 use rholang_parser::ast::{AnnProc, Id};
 
 use crate::rust::interpreter::compiler::exports::{ProcVisitInputs, ProcVisitOutputs};
-use crate::rust::interpreter::compiler::normalize::normalize_ann_proc;
+use crate::rust::interpreter::compiler::normalize_drive::{
+    MethodK, NormKont, NormVal, NormWork, Step,
+};
 use crate::rust::interpreter::errors::InterpreterError;
-use crate::rust::interpreter::matcher::has_locally_free::HasLocallyFree;
 use crate::rust::interpreter::util::prepend_expr;
 
-pub fn normalize_p_method<'ast>(
-    receiver: &'ast AnnProc<'ast>,
+/// `P.m(a, b, …)`, descend half — the RECEIVER first.
+///
+/// ⚠ **The arguments are then visited right-to-left.** The recursive form was
+/// `args.iter().rev().try_fold(init, …)` with each result `insert(0, …)`-ed, so
+/// the emitted `arguments` vector is in source order while the *free map*
+/// threads from the last argument to the first. That is observable — it decides
+/// which occurrence of a repeated free name gets the lower de Bruijn level — so
+/// the machine reproduces both halves: [`arg_at`] indexes in reverse and
+/// [`MethodK::acc_args`] is still built with `insert(0, …)`.
+#[inline(never)]
+pub(crate) fn descend_p_method<'ast>(
+    receiver: AnnProc<'ast>,
     name_id: &'ast Id<'ast>,
     args: &'ast rholang_parser::ast::ProcList<'ast>,
     input: ProcVisitInputs,
-    env: &HashMap<String, Par>,
-    parser: &'ast rholang_parser::RholangParser<'ast>,
-) -> Result<ProcVisitOutputs, InterpreterError> {
-    let target_result = normalize_ann_proc(
-        receiver,
-        ProcVisitInputs {
-            par: Par::default(),
-            ..input.clone()
+) -> Step<'ast> {
+    let input_depth = input.bound_map_chain.depth() as i32;
+    let bound_map_chain = input.bound_map_chain.clone();
+    let free_map = input.free_map.clone();
+    Step::Descend {
+        kont: NormKont::Method(Box::new(MethodK {
+            args,
+            idx: 0,
+            method_name: name_id.name.to_string(),
+            target: None,
+            acc_args: Vec::with_capacity(args.len()),
+            acc_locally_free: Vec::new(),
+            acc_connective_used: false,
+            free_map,
+            bound_map_chain,
+            input_par: input.par.clone(),
+            input_depth,
+        })),
+        work: NormWork::Proc {
+            proc: receiver,
+            input: ProcVisitInputs {
+                par: Par::default(),
+                ..input
+            },
         },
-        env,
-        parser,
-    )?;
+    }
+}
 
-    let target = target_result.par;
+/// Argument `i` **in reverse source order** — the `i`-th one the recursive
+/// `args.iter().rev()` fold would have visited.
+#[inline]
+fn arg_at<'ast>(args: &'ast rholang_parser::ast::ProcList<'ast>, i: usize) -> Option<AnnProc<'ast>> {
+    if i >= args.len() {
+        return None;
+    }
+    Some(args[args.len() - 1 - i])
+}
 
-    let init_acc = (
-        Vec::new(),
-        ProcVisitInputs {
+/// `P.m(a, b, …)`, combine half.
+#[inline(never)]
+pub(crate) fn combine_p_method<'ast>(
+    mut k: Box<MethodK<'ast>>,
+    value: NormVal,
+) -> Result<Step<'ast>, InterpreterError> {
+    let result = value.into_proc();
+    if k.idx == 0 {
+        // The RECEIVER has just finished.
+        k.free_map = result.free_map;
+        k.target = Some(result.par);
+    } else {
+        // Argument `idx - 1` (in reverse source order) has just finished.
+        // ★ Leg-1: shallow fields first, then MOVE.
+        let child_locally_free = result.par.locally_free.clone();
+        let child_connective_used = result.par.connective_used;
+        k.acc_args.insert(0, result.par);
+        k.free_map = result.free_map;
+        k.acc_locally_free = union(std::mem::take(&mut k.acc_locally_free), child_locally_free);
+        k.acc_connective_used = k.acc_connective_used || child_connective_used;
+    }
+
+    if let Some(next) = arg_at(k.args, k.idx) {
+        let child_input = ProcVisitInputs {
             par: Par::default(),
-            bound_map_chain: input.bound_map_chain.clone(),
-            free_map: target_result.free_map.clone(),
-        },
-        Vec::new(),
-        false,
-    );
+            bound_map_chain: k.bound_map_chain.clone(),
+            free_map: k.free_map.clone(),
+        };
+        k.idx += 1;
+        return Ok(Step::Descend {
+            kont: NormKont::Method(k),
+            work: NormWork::Proc {
+                proc: next,
+                input: child_input,
+            },
+        });
+    }
 
-    let arg_results = args.iter().rev().try_fold(init_acc, |acc, arg| {
-        normalize_ann_proc(arg, acc.1.clone(), env, parser).map(|proc_match_result| {
-            (
-                {
-                    let mut acc_0 = acc.0.clone();
-                    acc_0.insert(0, proc_match_result.par.clone());
-                    acc_0
-                },
-                ProcVisitInputs {
-                    par: Par::default(),
-                    bound_map_chain: input.bound_map_chain.clone(),
-                    free_map: proc_match_result.free_map.clone(),
-                },
-                union(acc.2.clone(), proc_match_result.par.locally_free.clone()),
-                acc.3 || proc_match_result.par.connective_used,
-            )
-        })
-    })?;
+    let MethodK {
+        method_name,
+        target,
+        acc_args,
+        acc_locally_free,
+        acc_connective_used,
+        free_map,
+        input_par,
+        input_depth,
+        ..
+    } = *k;
+    let target = target.expect("combine_p_method: the receiver slot is filled before any argument");
 
+    // ★ Leg-1 at the reader — see `p_send_normalizer`.
+    let target_locally_free = target.locally_free.clone();
+    let target_connective_used = target.connective_used;
     let method = EMethod {
-        method_name: name_id.name.to_string(),
-        target: Some(target.clone()),
-        arguments: arg_results.0,
-        locally_free: union(
-            target.locally_free(target.clone(), input.bound_map_chain.depth() as i32),
-            arg_results.2,
-        ),
-        connective_used: target.connective_used(target.clone()) || arg_results.3,
+        method_name,
+        target: Some(target),
+        arguments: acc_args,
+        locally_free: union(target_locally_free, acc_locally_free),
+        connective_used: target_connective_used || acc_connective_used,
     };
 
     let updated_par = prepend_expr(
-        input.par,
+        input_par,
         Expr {
             expr_instance: Some(expr::ExprInstance::EMethodBody(method)),
         },
-        input.bound_map_chain.depth() as i32,
+        input_depth,
     );
 
-    Ok(ProcVisitOutputs {
+    Ok(Step::Done(NormVal::Proc(ProcVisitOutputs {
         par: updated_par,
-        free_map: arg_results.1.free_map,
-    })
+        free_map,
+    })))
 }
+
 
 // See rholang/src/test/scala/coop/rchain/rholang/interpreter/compiler/normalizer/ProcMatcherSpec.scala
 #[cfg(test)]

@@ -1,37 +1,54 @@
-use std::collections::HashMap;
-
 use models::rhoapi::Par;
 use rholang_parser::ast::Name;
 
 use crate::rust::interpreter::compiler::exports::{
     NameVisitInputs, ProcVisitInputs, ProcVisitOutputs,
 };
-use crate::rust::interpreter::compiler::normalizer::name_normalize_matcher::normalize_name;
+use crate::rust::interpreter::compiler::normalize_drive::{NormKont, NormVal, NormWork, Step};
 use crate::rust::interpreter::errors::InterpreterError;
 
+/// `*x`, descend half — one name child.
+#[inline(never)]
+pub(crate) fn descend_p_eval<'ast>(eval_name: &'ast Name<'ast>, input: ProcVisitInputs) -> Step<'ast> {
+    Step::Descend {
+        kont: NormKont::Eval {
+            input_par: input.par,
+        },
+        work: NormWork::Name {
+            name: *eval_name,
+            input: NameVisitInputs {
+                bound_map_chain: input.bound_map_chain,
+                free_map: input.free_map,
+            },
+        },
+    }
+}
+
+/// `*x` on a **fresh** drive. Only the unit tests enter here; the dispatch
+/// pushes [`descend_p_eval`]'s `Step` onto the drive it is already on.
 pub fn normalize_p_eval<'ast>(
-    eval_name: &Name<'ast>,
+    eval_name: &'ast Name<'ast>,
     input: ProcVisitInputs,
-    env: &HashMap<String, Par>,
+    env: &std::collections::HashMap<String, Par>,
     parser: &'ast rholang_parser::RholangParser<'ast>,
 ) -> Result<ProcVisitOutputs, InterpreterError> {
-    let name_match_result = normalize_name(
-        eval_name,
-        NameVisitInputs {
-            bound_map_chain: input.bound_map_chain.clone(),
-            free_map: input.free_map.clone(),
-        },
-        env,
-        parser,
-    )?;
-
-    let updated_par = input.par.append(name_match_result.par.clone());
-
-    Ok(ProcVisitOutputs {
-        par: updated_par,
-        free_map: name_match_result.free_map,
-    })
+    use crate::rust::interpreter::compiler::normalize_drive::norm_drive_from;
+    norm_drive_from(descend_p_eval(eval_name, input), env, parser).map(NormVal::into_proc)
 }
+
+/// `*x`, combine half.
+#[inline(never)]
+pub(crate) fn combine_p_eval<'ast>(
+    input_par: Par,
+    value: NormVal,
+) -> Result<Step<'ast>, InterpreterError> {
+    let name_match_result = value.into_name();
+    Ok(Step::Done(NormVal::Proc(ProcVisitOutputs {
+        par: input_par.append(name_match_result.par),
+        free_map: name_match_result.free_map,
+    })))
+}
+
 
 // See rholang/src/test/scala/coop/rchain/rholang/interpreter/compiler/normalizer/ProcMatcherSpec.scala
 #[cfg(test)]

@@ -11,18 +11,32 @@ use uuid::Uuid;
 
 use super::exports::InterpreterError;
 use crate::rust::interpreter::compiler::exports::{ProcVisitInputs, ProcVisitOutputs};
-use crate::rust::interpreter::compiler::normalize::normalize_ann_proc;
+use crate::rust::interpreter::compiler::normalize_drive::{
+    norm_drive_from, NormVal, NormWork, Step,
+};
 use crate::rust::interpreter::compiler::span_utils::SpanContext;
 
-pub fn normalize_p_let<'ast>(
+/// `let` — a pure **desugaring**, in three shapes, all of them tail calls.
+///
+/// | form | rewrites to |
+/// |---|---|
+/// | `let … <- … &  …` (concurrent) | `new v₁ … vₙ in { v₁!(rhs₁) \| … \| for (lhs₁ <- v₁; …) { body } }` |
+/// | `let x <- e; rest` (sequential) | `match [e] { [x] => let rest }` — one binding at a time |
+/// | `let` with no bindings | the body |
+///
+/// Every arm ends in [`Step::Tail`], so the rewrite costs no continuation and a
+/// sequential `let` with `n` bindings unrolls through `n` nested `match`
+/// rewrites on a **flat** work stack. Under the recursive form that same
+/// unrolling was `n` native frames on top of the term's own nesting.
+#[inline(never)]
+pub(crate) fn descend_p_let<'ast>(
     bindings: &'ast smallvec::SmallVec<[LetBinding<'ast>; 1]>,
-    body: &'ast AnnProc<'ast>,
+    body: AnnProc<'ast>,
     concurrent: bool,
     let_span: SourceSpan,
     input: ProcVisitInputs,
-    env: &HashMap<String, Par>,
     parser: &'ast rholang_parser::RholangParser<'ast>,
-) -> Result<ProcVisitOutputs, InterpreterError> {
+) -> Step<'ast> {
     if concurrent {
         // RHOLANG-RS IMPROVEMENT: Could use semantic naming based on actual variable names
         // e.g., "__let_x_0_L5C10" for variable 'x' at binding index 0, line 5, col 10
@@ -158,7 +172,7 @@ pub fn normalize_p_let<'ast>(
         // Create the for-comprehension (input process)
         // Use body span as this is the primary process being executed
         let for_comprehension = AnnProc {
-            proc: parser.ast_builder().alloc_for(input_binds, *body),
+            proc: parser.ast_builder().alloc_for(input_binds, body),
             span: body.span, // Use actual body span for accurate debugging
         };
 
@@ -215,15 +229,15 @@ pub fn normalize_p_let<'ast>(
             span: let_span, // Use the original let span for the entire construct
         };
 
-        // Normalize the constructed new process
-        normalize_ann_proc(&new_proc, input, env, parser)
+        // Hand the constructed `new` process back to the driver.
+        Step::Tail(NormWork::Proc { proc: new_proc, input })
     } else {
         // Sequential let declarations - similar to LinearDecls in original
         // Transform into match process
 
         if bindings.is_empty() {
             // Empty bindings - just normalize the body
-            return normalize_ann_proc(body, input, env, parser);
+            return Step::Tail(NormWork::Proc { proc: body, input });
         }
 
         // For sequential let, we process one binding at a time
@@ -259,12 +273,12 @@ pub fn normalize_p_let<'ast>(
                     AnnProc {
                         proc: parser
                             .ast_builder()
-                            .alloc_let(remaining_bindings, *body, false),
+                            .alloc_let(remaining_bindings, body, false),
                         span: nested_span, // Use merged span for nested let
                     }
                 } else {
                     // Last binding - use body directly
-                    *body
+                    body
                 },
             };
 
@@ -284,7 +298,7 @@ pub fn normalize_p_let<'ast>(
                 span: match_span, // Use derived match span
             };
 
-            normalize_ann_proc(&match_proc, input, env, parser)
+            Step::Tail(NormWork::Proc { proc: match_proc, input })
         } else {
             // Multiple binding: let x <- (rhs1, rhs2, ...) in body
             // becomes: match [rhs1, rhs2, ...] { [x, _, _, ...] => body }
@@ -336,12 +350,12 @@ pub fn normalize_p_let<'ast>(
                     AnnProc {
                         proc: parser
                             .ast_builder()
-                            .alloc_let(remaining_bindings, *body, false),
+                            .alloc_let(remaining_bindings, body, false),
                         span: nested_span,
                     }
                 } else {
                     // Last binding - use body directly
-                    *body
+                    body
                 },
             };
 
@@ -360,10 +374,25 @@ pub fn normalize_p_let<'ast>(
                 span: match_span, // Use span from rhs to body
             };
 
-            normalize_ann_proc(&match_proc, input, env, parser)
+            Step::Tail(NormWork::Proc { proc: match_proc, input })
         }
     }
 }
+
+/// `let` on a **fresh** drive. Only the unit tests enter here.
+pub fn normalize_p_let<'ast>(
+    bindings: &'ast smallvec::SmallVec<[LetBinding<'ast>; 1]>,
+    body: &'ast AnnProc<'ast>,
+    concurrent: bool,
+    let_span: SourceSpan,
+    input: ProcVisitInputs,
+    env: &HashMap<String, Par>,
+    parser: &'ast rholang_parser::RholangParser<'ast>,
+) -> Result<ProcVisitOutputs, InterpreterError> {
+    let step = descend_p_let(bindings, *body, concurrent, let_span, input, parser);
+    norm_drive_from(step, env, parser).map(NormVal::into_proc)
+}
+
 
 //rholang/src/test/scala/coop/rchain/rholang/interpreter/LetSpec.scala
 #[cfg(test)]

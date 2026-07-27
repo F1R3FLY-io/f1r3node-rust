@@ -7,17 +7,26 @@ use rholang_parser::SourcePos;
 use crate::rust::interpreter::compiler::exports::{
     BoundMapChain, IdContextPos, ProcVisitInputs, ProcVisitOutputs,
 };
-use crate::rust::interpreter::compiler::normalize::{normalize_ann_proc, VarSort};
+use crate::rust::interpreter::compiler::normalize::VarSort;
+use crate::rust::interpreter::compiler::normalize_drive::{NormKont, NormVal, NormWork, Step};
 use crate::rust::interpreter::errors::InterpreterError;
 use crate::rust::interpreter::util::{filter_and_adjust_bitset, prepend_new};
 
-pub fn normalize_p_new<'ast>(
+/// `new x, y in { P }`, descend half.
+///
+/// This is the machine's **binder-scoping** discipline in its simplest form:
+/// the declarations are sorted and pushed onto the `bound_map_chain`, the body
+/// descends under the extended chain, and the scope is left behind simply by
+/// *not* carrying it in the continuation — the enclosing frames still hold
+/// their own chains, so there is nothing to pop. Where the recursive form
+/// relied on stack unwinding to restore scope, the machine relies on each
+/// continuation owning the chain it will resume with.
+#[inline(never)]
+pub(crate) fn descend_p_new<'ast>(
     decls: &[NameDecl<'ast>],
-    proc: &'ast AnnProc<'ast>,
+    proc: AnnProc<'ast>,
     input: ProcVisitInputs,
-    env: &HashMap<String, Par>,
-    parser: &'ast rholang_parser::RholangParser<'ast>,
-) -> Result<ProcVisitOutputs, InterpreterError> {
+) -> Result<Step<'ast>, InterpreterError> {
     // TODO: bindings within a single new shouldn't have overlapping names. - OLD
     let new_tagged_bindings: Vec<(Option<String>, String, VarSort, usize, usize)> = decls
         .iter()
@@ -62,34 +71,54 @@ pub fn normalize_p_new<'ast>(
     let new_env: BoundMapChain<VarSort> = input.bound_map_chain.put_all_pos(new_bindings);
     let new_count: usize = new_env.get_count() - input.bound_map_chain.get_count();
 
-    let body_result = normalize_ann_proc(
-        proc,
-        ProcVisitInputs {
-            par: Par::default(),
-            bound_map_chain: new_env.clone(),
-            free_map: input.free_map.clone(),
+    Ok(Step::Descend {
+        kont: NormKont::New {
+            new_count,
+            uris,
+            input_par: input.par,
         },
-        env,
-        parser,
-    )?;
+        work: NormWork::Proc {
+            proc,
+            input: ProcVisitInputs {
+                par: Par::default(),
+                bound_map_chain: new_env,
+                free_map: input.free_map,
+            },
+        },
+    })
+}
+
+/// `new x, y in { P }`, combine half.
+#[inline(never)]
+pub(crate) fn combine_p_new<'ast>(
+    new_count: usize,
+    uris: Vec<String>,
+    input_par: Par,
+    value: NormVal,
+    env: &HashMap<String, Par>,
+) -> Result<Step<'ast>, InterpreterError> {
+    let body_result = value.into_proc();
 
     // TODO: we should build btree_map with real values, not a copied references from env: ref &HashMap
     let btree_map: BTreeMap<String, Par> =
         env.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
 
+    // ★ Leg-1: shallow read, then MOVE.
+    let body_locally_free = body_result.par.locally_free.clone();
     let result_new = New {
         bind_count: new_count as i32,
-        p: Some(body_result.par.clone()),
+        p: Some(body_result.par),
         uri: uris,
         injections: btree_map,
-        locally_free: filter_and_adjust_bitset(body_result.par.clone().locally_free, new_count),
+        locally_free: filter_and_adjust_bitset(body_locally_free, new_count),
     };
 
-    Ok(ProcVisitOutputs {
-        par: prepend_new(input.par.clone(), result_new),
-        free_map: body_result.free_map.clone(),
-    })
+    Ok(Step::Done(NormVal::Proc(ProcVisitOutputs {
+        par: prepend_new(input_par, result_new),
+        free_map: body_result.free_map,
+    })))
 }
+
 
 // See rholang/src/test/scala/coop/rchain/rholang/interpreter/compiler/normalizer/ProcMatcherSpec.scala
 #[cfg(test)]

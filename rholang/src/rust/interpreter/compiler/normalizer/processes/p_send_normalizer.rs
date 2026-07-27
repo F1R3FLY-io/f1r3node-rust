@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use models::rhoapi::{Par, Send};
 use models::rust::utils::union;
 use rholang_parser::ast::{Name, SendType};
@@ -7,82 +5,134 @@ use rholang_parser::ast::{Name, SendType};
 use crate::rust::interpreter::compiler::exports::{
     NameVisitInputs, ProcVisitInputs, ProcVisitOutputs,
 };
-use crate::rust::interpreter::compiler::normalize::normalize_ann_proc;
-use crate::rust::interpreter::compiler::normalizer::name_normalize_matcher::normalize_name;
+use crate::rust::interpreter::compiler::normalize_drive::{
+    NormKont, NormVal, NormWork, SendK, Step,
+};
 use crate::rust::interpreter::errors::InterpreterError;
-use crate::rust::interpreter::matcher::has_locally_free::HasLocallyFree;
 
-pub fn normalize_p_send<'ast>(
-    channel: &'ast Name<'ast>,
+/// `x!(P, Q, …)`, descend half — the CHANNEL first.
+///
+/// The channel's free map seeds the message sequence, and each message's free
+/// map seeds the next, so all `1 + |inputs|` children are strictly ordered.
+/// `idx == 0` in [`SendK`] means "the channel is still outstanding".
+#[inline(never)]
+pub(crate) fn descend_p_send<'ast>(
+    channel: Name<'ast>,
     send_type: &SendType,
     inputs: &'ast rholang_parser::ast::ProcList<'ast>,
     input: ProcVisitInputs,
-    env: &HashMap<String, Par>,
-    parser: &'ast rholang_parser::RholangParser<'ast>,
-) -> Result<ProcVisitOutputs, InterpreterError> {
-    let name_match_result = normalize_name(
-        channel,
-        NameVisitInputs {
-            bound_map_chain: input.bound_map_chain.clone(),
-            free_map: input.free_map.clone(),
-        },
-        env,
-        parser,
-    )?;
-
-    let mut acc = (
-        Vec::new(),
-        ProcVisitInputs {
-            par: Par::default(),
-            bound_map_chain: input.bound_map_chain.clone(),
-            free_map: name_match_result.free_map.clone(),
-        },
-        Vec::new(),
-        false,
-    );
-
-    for proc in inputs.iter() {
-        let proc_match_result = normalize_ann_proc(proc, acc.1.clone(), env, parser)?;
-
-        acc.0.push(proc_match_result.par.clone());
-        acc.1 = ProcVisitInputs {
-            par: Par::default(),
-            bound_map_chain: input.bound_map_chain.clone(),
-            free_map: proc_match_result.free_map.clone(),
-        };
-        acc.2 = union(acc.2.clone(), proc_match_result.par.locally_free.clone());
-        acc.3 = acc.3 || proc_match_result.par.connective_used;
-    }
-
+) -> Step<'ast> {
     let persistent = match send_type {
         rholang_parser::ast::SendType::Single => false,
         rholang_parser::ast::SendType::Multiple => true,
     };
+    let input_depth = input.bound_map_chain.depth() as i32;
+    Step::Descend {
+        kont: NormKont::Send(Box::new(SendK {
+            inputs,
+            idx: 0,
+            name_par: None,
+            acc_pars: Vec::with_capacity(inputs.len()),
+            acc_locally_free: Vec::new(),
+            acc_connective_used: false,
+            free_map: input.free_map.clone(),
+            bound_map_chain: input.bound_map_chain.clone(),
+            input_par: input.par,
+            input_depth,
+            persistent,
+        })),
+        work: NormWork::Name {
+            name: channel,
+            input: NameVisitInputs {
+                bound_map_chain: input.bound_map_chain,
+                free_map: input.free_map,
+            },
+        },
+    }
+}
 
-    let send = Send {
-        chan: Some(name_match_result.par.clone()),
-        data: acc.0,
+/// `x!(P, Q, …)`, combine half.
+#[inline(never)]
+pub(crate) fn combine_p_send<'ast>(
+    mut k: Box<SendK<'ast>>,
+    value: NormVal,
+) -> Result<Step<'ast>, InterpreterError> {
+    if k.idx == 0 {
+        // The CHANNEL has just finished.
+        let name_match_result = value.into_name();
+        k.free_map = name_match_result.free_map;
+        k.name_par = Some(name_match_result.par);
+    } else {
+        // Message `idx - 1` has just finished.
+        // ★ Leg-1: read the shallow fields, then MOVE. See
+        // `collection_normalize_matcher::combine_collect`.
+        let proc_match_result = value.into_proc();
+        let child_locally_free = proc_match_result.par.locally_free.clone();
+        let child_connective_used = proc_match_result.par.connective_used;
+        k.acc_pars.push(proc_match_result.par);
+        k.free_map = proc_match_result.free_map;
+        k.acc_locally_free = union(std::mem::take(&mut k.acc_locally_free), child_locally_free);
+        k.acc_connective_used = k.acc_connective_used || child_connective_used;
+    }
+
+    if let Some(next) = k.inputs.get(k.idx).copied() {
+        let child_input = ProcVisitInputs {
+            par: Par::default(),
+            bound_map_chain: k.bound_map_chain.clone(),
+            free_map: k.free_map.clone(),
+        };
+        k.idx += 1;
+        return Ok(Step::Descend {
+            kont: NormKont::Send(k),
+            work: NormWork::Proc {
+                proc: next,
+                input: child_input,
+            },
+        });
+    }
+
+    let SendK {
+        idx: _,
+        name_par,
+        acc_pars,
+        acc_locally_free,
+        acc_connective_used,
+        free_map,
+        bound_map_chain,
+        mut input_par,
+        // ⚠ Retained on the frame but INERT here: the depth argument of
+        // `<Par as HasLocallyFree<Par>>::locally_free` is `_depth` — the impl
+        // returns the cached field and never consults it — so removing the
+        // by-value reader removed the only consumer.
+        input_depth: _,
         persistent,
-        locally_free: union(
-            name_match_result.par.clone().locally_free(
-                name_match_result.par.clone(),
-                input.bound_map_chain.depth() as i32,
-            ),
-            acc.2,
-        ),
-        connective_used: name_match_result
-            .par
-            .connective_used(name_match_result.par.clone())
-            || acc.3,
+        ..
+    } = *k;
+    let name_par = name_par.expect("combine_p_send: the channel slot is filled before any message");
+    let _ = bound_map_chain;
+
+    // ★ Leg-1 at the reader. `<Par as HasLocallyFree<Par>>::locally_free` is
+    // `|_, p, _| p.locally_free` and `connective_used` is `|_, p| p.connective_used`
+    // — neither recurses, both take the subject BY VALUE, so the by-value
+    // signature forced `name_par.clone().locally_free(name_par.clone(), d)`:
+    // two full Θ(depth) deep clones to read one cached bitset. The fields are
+    // read directly instead, which is byte-identical by construction.
+    let name_locally_free = name_par.locally_free.clone();
+    let name_connective_used = name_par.connective_used;
+    let send = Send {
+        chan: Some(name_par),
+        data: acc_pars,
+        persistent,
+        locally_free: union(name_locally_free, acc_locally_free),
+        connective_used: name_connective_used || acc_connective_used,
     };
 
-    let updated_par = input.par.clone().prepend_send(send);
-
-    Ok(ProcVisitOutputs {
-        par: updated_par,
-        free_map: acc.1.free_map,
-    })
+    Ok(Step::Done(NormVal::Proc(ProcVisitOutputs {
+        par: input_par.prepend_send(send),
+        free_map,
+    })))
 }
+
 
 // See rholang/src/test/scala/coop/rchain/rholang/interpreter/compiler/normalizer/ProcMatcherSpec.scala
 #[cfg(test)]

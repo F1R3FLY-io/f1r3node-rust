@@ -1,58 +1,95 @@
-use std::collections::HashMap;
-
 use models::rhoapi::{connective, Connective, Par};
-use rholang_parser::ast::{AnnProc, Proc};
+use rholang_parser::ast::AnnProc;
 
 use crate::rust::interpreter::compiler::exports::{FreeMap, ProcVisitInputs, ProcVisitOutputs};
-use crate::rust::interpreter::compiler::normalize::normalize_ann_proc;
+use crate::rust::interpreter::compiler::normalize_drive::{NormKont, NormVal, NormWork, Step};
 use crate::rust::interpreter::errors::InterpreterError;
 use crate::rust::interpreter::util::prepend_connective;
 
-pub fn normalize_p_negation<'ast>(
-    arg: &'ast Proc<'ast>,
+/// `~P`, descend half.
+///
+/// The body is normalized in a **fresh** free map (`FreeMap::default()`) — a
+/// negation's bindings do not escape it — while the enclosing `free_map` is
+/// carried across in the continuation and gains the connective at the end.
+#[inline(never)]
+pub(crate) fn descend_p_negation<'ast>(
+    arg: AnnProc<'ast>,
     unary_expr_span: rholang_parser::SourceSpan,
     input: ProcVisitInputs,
-    env: &HashMap<String, Par>,
-    parser: &'ast rholang_parser::RholangParser<'ast>,
-) -> Result<ProcVisitOutputs, InterpreterError> {
+) -> Step<'ast> {
     // Use the actual span of the entire UnaryExp (~<expr>) for accurate source location
     let ann_proc = AnnProc {
-        proc: arg,
+        proc: arg.proc,
         span: unary_expr_span,
     };
-
-    let body_result = normalize_ann_proc(
-        &ann_proc,
-        ProcVisitInputs {
-            par: Par::default(),
-            bound_map_chain: input.bound_map_chain.clone(),
-            free_map: FreeMap::default(),
+    let bound_map_chain = input.bound_map_chain.clone();
+    Step::Descend {
+        kont: NormKont::Negation {
+            input,
+            span: unary_expr_span,
         },
-        env,
-        parser,
-    )?;
+        work: NormWork::Proc {
+            proc: ann_proc,
+            input: ProcVisitInputs {
+                par: Par::default(),
+                bound_map_chain,
+                free_map: FreeMap::default(),
+            },
+        },
+    }
+}
+
+/// `~P` on a **fresh** drive. Only the unit tests enter here.
+pub fn normalize_p_negation<'ast>(
+    arg: &'ast rholang_parser::ast::Proc<'ast>,
+    unary_expr_span: rholang_parser::SourceSpan,
+    input: ProcVisitInputs,
+    env: &std::collections::HashMap<String, Par>,
+    parser: &'ast rholang_parser::RholangParser<'ast>,
+) -> Result<ProcVisitOutputs, InterpreterError> {
+    use crate::rust::interpreter::compiler::normalize_drive::{norm_drive_from, NormVal};
+    let step = descend_p_negation(
+        AnnProc {
+            proc: arg,
+            span: unary_expr_span,
+        },
+        unary_expr_span,
+        input,
+    );
+    norm_drive_from(step, env, parser).map(NormVal::into_proc)
+}
+
+/// `~P`, combine half.
+#[inline(never)]
+pub(crate) fn combine_p_negation<'ast>(
+    input: ProcVisitInputs,
+    unary_expr_span: rholang_parser::SourceSpan,
+    value: NormVal,
+) -> Result<Step<'ast>, InterpreterError> {
+    let body_result = value.into_proc();
 
     // Create Connective with ConnNotBody
     let connective = Connective {
-        connective_instance: Some(connective::ConnectiveInstance::ConnNotBody(
-            body_result.par.clone(),
-        )),
+        connective_instance: Some(connective::ConnectiveInstance::ConnNotBody(body_result.par)),
     };
 
     let updated_par = prepend_connective(
         input.par,
         connective.clone(),
-        input.bound_map_chain.clone().depth() as i32,
+        input.bound_map_chain.depth() as i32,
     );
 
-    Ok(ProcVisitOutputs {
+    Ok(Step::Done(NormVal::Proc(ProcVisitOutputs {
         par: updated_par,
         free_map: input.free_map.add_connective(
-            connective.connective_instance.unwrap(),
+            connective
+                .connective_instance
+                .expect("combine_p_negation: the connective was just constructed as `Some`"),
             unary_expr_span, // Use the actual span of the entire negation operation
         ),
-    })
+    })))
 }
+
 
 //rholang/src/test/scala/coop/rchain/rholang/interpreter/compiler/normalizer/ProcMatcherSpec.scala
 #[cfg(test)]

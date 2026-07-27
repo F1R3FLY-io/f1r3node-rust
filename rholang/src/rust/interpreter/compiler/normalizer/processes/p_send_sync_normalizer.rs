@@ -5,18 +5,33 @@ use rholang_parser::ast::{AnnProc, Bind, Id, Name, SendType, SyncSendCont};
 use uuid::Uuid;
 
 use crate::rust::interpreter::compiler::exports::{ProcVisitInputs, ProcVisitOutputs};
-use crate::rust::interpreter::compiler::normalize::normalize_ann_proc;
+use crate::rust::interpreter::compiler::normalize_drive::{
+    norm_drive_from, NormVal, NormWork, Step,
+};
 use crate::rust::interpreter::errors::InterpreterError;
 
-pub fn normalize_p_send_sync<'ast>(
+/// `x!?(P)`, a pure **desugaring**: `new r in { x!(*r, P) | for (_ <- r) { K } }`.
+///
+/// There is no continuation and no combine half. The recursive form ended in an
+/// unconditional `normalize_ann_proc(&p_new, input, …)` — a proper tail call —
+/// so the machine simply *replaces* the current obligation with the rewritten
+/// node ([`Step::Tail`]). A chain of desugarings is therefore flat: `let`
+/// rewriting to `match` rewriting to `for` costs three work-stack pops and no
+/// frames at all.
+///
+/// ⚠ The rewritten node is built out of locals, and it survives on the work
+/// stack because `ast_builder().alloc_*` interns each `Proc` in the parser arena
+/// for `'ast`; only the two-word `AnnProc` wrapper is local, and `AnnProc` is
+/// `Copy`.
+#[inline(never)]
+pub(crate) fn descend_p_send_sync<'ast>(
     channel: &'ast Name<'ast>,
     messages: &'ast rholang_parser::ast::ProcList<'ast>,
     cont: &SyncSendCont<'ast>,
     span: &rholang_parser::SourceSpan,
     input: ProcVisitInputs,
-    env: &HashMap<String, Par>,
     parser: &'ast rholang_parser::RholangParser<'ast>,
-) -> Result<ProcVisitOutputs, InterpreterError> {
+) -> Step<'ast> {
     let identifier = Uuid::new_v4().to_string();
 
     // Allocate identifier string in the parser's string arena
@@ -105,9 +120,27 @@ pub fn normalize_p_send_sync<'ast>(
         proc: parser.ast_builder().alloc_new(p_par, vec![name_decl]),
         span: *span,
     };
-
-    normalize_ann_proc(&p_new, input, env, parser)
+    Step::Tail(NormWork::Proc {
+        proc: p_new,
+        input,
+    })
 }
+
+/// `x!?(P)` on a **fresh** drive. Only the unit tests enter here; the dispatch
+/// pushes [`descend_p_send_sync`]'s `Step` onto the drive it is already on.
+pub fn normalize_p_send_sync<'ast>(
+    channel: &'ast Name<'ast>,
+    messages: &'ast rholang_parser::ast::ProcList<'ast>,
+    cont: &SyncSendCont<'ast>,
+    span: &rholang_parser::SourceSpan,
+    input: ProcVisitInputs,
+    env: &HashMap<String, Par>,
+    parser: &'ast rholang_parser::RholangParser<'ast>,
+) -> Result<ProcVisitOutputs, InterpreterError> {
+    let step = descend_p_send_sync(channel, messages, cont, span, input, parser);
+    norm_drive_from(step, env, parser).map(NormVal::into_proc)
+}
+
 
 #[cfg(test)]
 mod tests {

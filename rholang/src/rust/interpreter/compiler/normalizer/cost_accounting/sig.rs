@@ -28,7 +28,10 @@ use rholang_parser::{RholangParser, SourceSpan};
 use super::ir::Sig;
 use crate::rust::interpreter::accounting::{Sig as NativeSig, SignatureChannel};
 use crate::rust::interpreter::compiler::bound_map_chain::BoundMapChain;
-use crate::rust::interpreter::compiler::normalize::{normalize_ann_proc, ProcVisitInputs, VarSort};
+use crate::rust::interpreter::compiler::normalize::{ProcVisitInputs, VarSort};
+use crate::rust::interpreter::compiler::normalize_drive::{
+    norm_drive_from, NormKont, NormVal, NormWork, SigInput, Step,
+};
 use crate::rust::interpreter::errors::InterpreterError;
 
 /// Lower a surface [`Signature`] to the [`Sig`] IR.
@@ -41,42 +44,154 @@ use crate::rust::interpreter::errors::InterpreterError;
 /// * `Transfer(s₁ ⊸ s₂)` — the lollipop is *term-level* sugar
 ///   ([`super::desugar`]); it must never reach a fundable position, so it is
 ///   rejected here (a lollipop is a transfer capability, not a fundable atom).
+/// Lower a surface [`Signature`] to the [`Sig`] IR, descend half.
+///
+/// * `Ground(g)` — `g` must be a bare identifier (v1); a wildcard `_` or a
+///   quoted-principal `@P` ground sig is rejected (the latter is the bounded
+///   future `@(P)` extension, symmetric with `#(P)`). A leaf.
+/// * `Hash(#P)` — the quote principal; `P` is canonicalized depth-independently,
+///   which re-enters the process normalizer, so it is a machine child.
+/// * `Compound(s₁ * s₂)` — two children, flattened + key-sorted via
+///   [`Sig::compound`] once both are in.
+/// * `Transfer(s₁ ⊸ s₂)` — the lollipop is *term-level* sugar
+///   ([`super::desugar`]); it must never reach a fundable position, so it is
+///   rejected here (a lollipop is a transfer capability, not a fundable atom).
+///
+/// ⚠ `SigInput` distinguishes a signature borrowed from the parser arena from
+/// one the caller already owns, so a `Compound` can be taken apart by **moving**
+/// out of its boxes in the owned case and by re-borrowing in the arena case.
+/// Cloning instead would introduce a Θ(depth) derived `Clone` over
+/// `Box<Signature>` — trading one recursive traversal for another.
+#[inline(never)]
+pub(crate) fn descend_sig<'ast>(
+    sig: SigInput<'ast>,
+    bound_map_chain: BoundMapChain<VarSort>,
+    _env: &HashMap<String, Par>,
+) -> Result<Step<'ast>, InterpreterError> {
+    macro_rules! ground {
+        ($name:expr) => {
+            match $name {
+                // Binding-sensitive `Σ⟦g⟧`: a ground sig that resolves to a
+                // `new`/`for`-binder is RING-FENCED (keyed on the binder's stable
+                // identity); a FREE sig is content-by-spelling (one global channel).
+                Name::NameVar(Var::Id(id)) => match bound_map_chain.get(id.name) {
+                    Some(ctx) => Ok(Step::Done(NormVal::Sig(Sig::Bound(canon_bound(
+                        &ctx.source_span,
+                    ))))),
+                    None => Ok(Step::Done(NormVal::Sig(Sig::Ground(canon_ground(id.name))))),
+                },
+                Name::NameVar(Var::Wildcard) => Err(InterpreterError::NormalizerError(
+                    "cost-accounting: a wildcard `_` is not a valid ground signature".to_string(),
+                )),
+                Name::Quote(_) => Err(InterpreterError::NormalizerError(
+                    "cost-accounting: a quoted-principal ground signature `@P` is not supported in \
+                     v1 (use a section signature `# P` for code-hash principals)"
+                        .to_string(),
+                )),
+            }
+        };
+    }
+    const TRANSFER_ERR: &str =
+        "cost-accounting: a lollipop `-o` (transfer) signature is term-level sugar and must be \
+         desugared before lowering; it cannot fund a term directly";
+
+    match sig {
+        SigInput::Ref(sig) => match sig {
+            Signature::Ground(name) => ground!(*name),
+            Signature::Hash(proc) => Ok(Step::Descend {
+                kont: NormKont::SigHash,
+                work: NormWork::CanonQuote { proc: *proc },
+            }),
+            Signature::Compound(left, right) => Ok(Step::Descend {
+                kont: NormKont::SigCompound {
+                    right: Some(SigInput::Ref(&**right)),
+                    bound_map_chain: bound_map_chain.clone(),
+                    left: None,
+                },
+                work: NormWork::Sig {
+                    sig: SigInput::Ref(&**left),
+                    bound_map_chain,
+                },
+            }),
+            Signature::Transfer(_, _) => Err(InterpreterError::NormalizerError(
+                TRANSFER_ERR.to_string(),
+            )),
+        },
+        SigInput::Own(sig) => match sig {
+            Signature::Ground(name) => ground!(name),
+            Signature::Hash(proc) => Ok(Step::Descend {
+                kont: NormKont::SigHash,
+                work: NormWork::CanonQuote { proc },
+            }),
+            Signature::Compound(left, right) => Ok(Step::Descend {
+                kont: NormKont::SigCompound {
+                    right: Some(SigInput::Own(*right)),
+                    bound_map_chain: bound_map_chain.clone(),
+                    left: None,
+                },
+                work: NormWork::Sig {
+                    sig: SigInput::Own(*left),
+                    bound_map_chain,
+                },
+            }),
+            Signature::Transfer(_, _) => Err(InterpreterError::NormalizerError(
+                TRANSFER_ERR.to_string(),
+            )),
+        },
+    }
+}
+
+/// `#P`, combine half — wrap the canonical bytes as a quote principal.
+#[inline(never)]
+pub(crate) fn combine_sig_hash<'ast>(value: NormVal) -> Result<Step<'ast>, InterpreterError> {
+    Ok(Step::Done(NormVal::Sig(Sig::Quote(value.into_bytes()))))
+}
+
+/// `s₁ * s₂`, combine half.
+#[inline(never)]
+pub(crate) fn combine_sig_compound<'ast>(
+    right: Option<SigInput<'ast>>,
+    bound_map_chain: BoundMapChain<VarSort>,
+    left: Option<Sig>,
+    value: NormVal,
+) -> Result<Step<'ast>, InterpreterError> {
+    match left {
+        None => Ok(Step::Descend {
+            kont: NormKont::SigCompound {
+                // The right operand has been scheduled; the slot is emptied so
+                // the machine cannot enter a state where it is scheduled twice.
+                right: None,
+                bound_map_chain: bound_map_chain.clone(),
+                left: Some(value.into_sig()),
+            },
+            work: NormWork::Sig {
+                sig: right.expect("combine_sig_compound: the right operand is scheduled once"),
+                bound_map_chain,
+            },
+        }),
+        Some(left_ir) => Ok(Step::Done(NormVal::Sig(Sig::compound(vec![
+            left_ir,
+            value.into_sig(),
+        ])))),
+    }
+}
+
+/// Lower a surface [`Signature`] to the [`Sig`] IR, on a **fresh** drive.
 pub fn signature_to_ir<'ast>(
-    sig: &Signature<'ast>,
+    sig: &'ast Signature<'ast>,
     bound_map_chain: &BoundMapChain<VarSort>,
     env: &HashMap<String, Par>,
     parser: &'ast RholangParser<'ast>,
 ) -> Result<Sig, InterpreterError> {
-    match sig {
-        Signature::Ground(name) => match name {
-            // Binding-sensitive `Σ⟦g⟧`: a ground sig that resolves to a
-            // `new`/`for`-binder is RING-FENCED (keyed on the binder's stable
-            // identity); a FREE sig is content-by-spelling (one global channel).
-            Name::NameVar(Var::Id(id)) => match bound_map_chain.get(id.name) {
-                Some(ctx) => Ok(Sig::Bound(canon_bound(&ctx.source_span))),
-                None => Ok(Sig::Ground(canon_ground(id.name))),
-            },
-            Name::NameVar(Var::Wildcard) => Err(InterpreterError::NormalizerError(
-                "cost-accounting: a wildcard `_` is not a valid ground signature".to_string(),
-            )),
-            Name::Quote(_) => Err(InterpreterError::NormalizerError(
-                "cost-accounting: a quoted-principal ground signature `@P` is not supported in v1 \
-                 (use a section signature `# P` for code-hash principals)"
-                    .to_string(),
-            )),
-        },
-        Signature::Hash(proc) => Ok(Sig::Quote(canon_quote(proc, env, parser)?)),
-        Signature::Compound(left, right) => {
-            let left_ir = signature_to_ir(left, bound_map_chain, env, parser)?;
-            let right_ir = signature_to_ir(right, bound_map_chain, env, parser)?;
-            Ok(Sig::compound(vec![left_ir, right_ir]))
-        }
-        Signature::Transfer(_, _) => Err(InterpreterError::NormalizerError(
-            "cost-accounting: a lollipop `-o` (transfer) signature is term-level sugar and must be \
-             desugared before lowering; it cannot fund a term directly"
-                .to_string(),
-        )),
-    }
+    norm_drive_from(
+        Step::Tail(NormWork::Sig {
+            sig: SigInput::Ref(sig),
+            bound_map_chain: bound_map_chain.clone(),
+        }),
+        env,
+        parser,
+    )
+    .map(NormVal::into_sig)
 }
 
 /// Resolve a surface [`Signature`] straight to the native funding
@@ -87,7 +202,7 @@ pub fn signature_to_ir<'ast>(
 /// [`Sig::to_native`]. The native `from_sig` of the result is the supply channel
 /// `Σ⟦s⟧`; W1 NEVER derives a separate channel (design §3.1).
 pub fn signature_to_native_sig<'ast>(
-    sig: &Signature<'ast>,
+    sig: &'ast Signature<'ast>,
     bound_map_chain: &BoundMapChain<VarSort>,
     env: &HashMap<String, Par>,
     parser: &'ast RholangParser<'ast>,
@@ -104,7 +219,7 @@ pub fn signature_to_native_sig<'ast>(
 /// and a `new`-bound `g` derive DISTINCT channels, while two free `g` (any deploy)
 /// derive the SAME channel — the §9 rendezvous.
 pub fn signature_to_channel<'ast>(
-    sig: &Signature<'ast>,
+    sig: &'ast Signature<'ast>,
     bound_map_chain: &BoundMapChain<VarSort>,
     env: &HashMap<String, Par>,
     parser: &'ast RholangParser<'ast>,
@@ -143,13 +258,49 @@ pub fn canon_ground(name: &str) -> Vec<u8> {
 /// α-invariant — a `#P` that references an outer bound name hashes the same
 /// wherever it appears. `FN_s(#P) = FN(P)`: free names are part of the principal's
 /// identity (paper §3), so they are not rejected.
+/// Canonical bytes for a quote principal `#P`: the wire encoding of `𝒫⟦P⟧`,
+/// normalized **standalone at de Bruijn depth 0** (a fresh [`ProcVisitInputs`]).
+/// Normalizing at a fixed depth makes the encoding binder-depth-independent and
+/// α-invariant — a `#P` that references an outer bound name hashes the same
+/// wherever it appears. `FN_s(#P) = FN(P)`: free names are part of the principal's
+/// identity (paper §3), so they are not rejected.
+///
+/// Descend half: the standalone normalization is a machine child, so a `#`
+/// signature nested inside a deep term costs no native stack.
+#[inline(never)]
+pub(crate) fn descend_canon_quote<'ast>(
+    proc: AnnProc<'ast>,
+) -> Result<Step<'ast>, InterpreterError> {
+    Ok(Step::Descend {
+        kont: NormKont::CanonQuote,
+        work: NormWork::Proc {
+            proc,
+            input: ProcVisitInputs::new(),
+        },
+    })
+}
+
+/// `canon_quote`, combine half — sort-canonicalise and encode.
+#[inline(never)]
+pub(crate) fn combine_canon_quote<'ast>(value: NormVal) -> Result<Step<'ast>, InterpreterError> {
+    let normalized = value.into_proc();
+    Ok(Step::Done(NormVal::Bytes(
+        ParSortMatcher::sort_match(&normalized.par)
+            .term
+            .encode_to_vec(),
+    )))
+}
+
+/// `canon_quote` on a **fresh** drive.
 pub fn canon_quote<'ast>(
     proc: &AnnProc<'ast>,
     env: &HashMap<String, Par>,
     parser: &'ast RholangParser<'ast>,
 ) -> Result<Vec<u8>, InterpreterError> {
-    let normalized = normalize_ann_proc(proc, ProcVisitInputs::new(), env, parser)?;
-    Ok(ParSortMatcher::sort_match(&normalized.par)
-        .term
-        .encode_to_vec())
+    norm_drive_from(
+        Step::Tail(NormWork::CanonQuote { proc: *proc }),
+        env,
+        parser,
+    )
+    .map(NormVal::into_bytes)
 }

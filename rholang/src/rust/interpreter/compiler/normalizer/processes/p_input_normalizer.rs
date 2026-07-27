@@ -3,34 +3,53 @@
 use std::collections::{HashMap, HashSet};
 
 use models::rhoapi::{Par, Receive, ReceiveBind};
+use models::rust::rholang::par_children::dismantle_all;
 use models::rust::utils::union;
-use rholang_parser::ast::{AnnProc, Bind, Name, Proc, Receipts, Source};
+use rholang_parser::ast::{AnnProc, Bind, Name, Proc, Receipts, Source, Var};
 use rholang_parser::{SourcePos, SourceSpan};
-use shared::rust::BitSet;
 use uuid::Uuid;
 
-use crate::rust::interpreter::compiler::exports::{
-    FreeMap, NameVisitInputs, NameVisitOutputs, ProcVisitInputs, ProcVisitOutputs,
+use crate::rust::interpreter::compiler::exports::{FreeMap, NameVisitInputs, ProcVisitInputs, ProcVisitOutputs};
+use crate::rust::interpreter::compiler::normalize::VarSort;
+use crate::rust::interpreter::compiler::normalize_drive::{
+    InputK, InputPhase, NormKont, NormVal, NormWork, Step,
 };
-use crate::rust::interpreter::compiler::normalize::{normalize_ann_proc, VarSort};
 use crate::rust::interpreter::compiler::normalizer::cost_accounting::pattern_guard::reject_cost_syntax_in_name_pattern;
-use crate::rust::interpreter::compiler::normalizer::name_normalize_matcher::normalize_name;
 use crate::rust::interpreter::compiler::normalizer::processes::utils::fail_on_invalid_connective;
 use crate::rust::interpreter::compiler::normalizer::remainder_normalizer_matcher::normalize_match_name;
 use crate::rust::interpreter::compiler::receive_binds_sort_matcher::pre_sort_binds;
 use crate::rust::interpreter::compiler::span_utils::SpanContext;
 use crate::rust::interpreter::errors::InterpreterError;
-use crate::rust::interpreter::matcher::has_locally_free::HasLocallyFree;
 use crate::rust::interpreter::unwrap_option_safe;
 use crate::rust::interpreter::util::filter_and_adjust_bitset;
 
-pub fn normalize_p_input<'ast>(
+/// `for (…) { P }`, descend half.
+///
+/// Three branches, exactly as before:
+///
+/// 1. **more than one `;`-separated receipt** → desugar to nested `for`s and
+///    [`Step::Tail`];
+/// 2. **a complex source** (`x <- c?()`, `x <- c!(…)`) → desugar to a `new` +
+///    `|` + plain `for` and [`Step::Tail`];
+/// 3. **the simple case** → the machine's longest child sequence:
+///
+/// ```text
+///    every formal of every bind ──▶ every channel ──▶ [ where-guard ] ──▶ body
+///    ├─ per GROUP: a FRESH free map,     ├─ threads the ENCLOSING free map
+///    │  chain.push(), remainder absorbed │
+///    └─ groups are independent           └─ channels are ordered
+///
+///    then, once every channel is in:  pre_sort_binds · duplicate-channel
+///    check · merge the per-bind free maps · absorb into `bound_map_chain`
+///    ⇒ body_env, which the guard AND the body share
+/// ```
+#[inline(never)]
+pub(crate) fn descend_p_input<'ast>(
     receipts: &'ast Receipts<'ast>,
-    body: &'ast AnnProc<'ast>,
+    body: AnnProc<'ast>,
     input: ProcVisitInputs,
-    env: &HashMap<String, Par>,
     parser: &'ast rholang_parser::RholangParser<'ast>,
-) -> Result<ProcVisitOutputs, InterpreterError> {
+) -> Result<Step<'ast>, InterpreterError> {
     fn create_ann_proc_with_span<'ast>(proc: &'ast Proc<'ast>, span: SourceSpan) -> AnnProc<'ast> {
         AnnProc { proc, span }
     }
@@ -52,14 +71,17 @@ pub fn normalize_p_input<'ast>(
         let desugared = receipts
             .iter()
             .rev()
-            .fold(*body, |acc_body, receipt_group| AnnProc {
+            .fold(body, |acc_body, receipt_group| AnnProc {
                 proc: parser.ast_builder().alloc_for_with_guards(
                     vec![(receipt_group.binds.to_vec(), receipt_group.guard)],
                     acc_body,
                 ),
                 span: body.span,
             });
-        return normalize_ann_proc(&desugared, input, env, parser);
+        return Ok(Step::Tail(NormWork::Proc {
+            proc: desugared,
+            input,
+        }));
     }
 
     let head_receipt = &receipts[0][0];
@@ -88,7 +110,7 @@ pub fn normalize_p_input<'ast>(
                         SpanContext::zero_span(), // Inherit from for-comprehension
                     ),
                     // Initial continuation (original body)
-                    *body,
+                    body,
                 ),
                 |(sends, continuation), bind| {
                     match bind {
@@ -226,8 +248,11 @@ pub fn normalize_p_input<'ast>(
             }
         };
 
-        // Recursively normalize the desugared process
-        normalize_ann_proc(&final_proc, input, env, parser)
+        // Hand the desugared process back to the driver (a tail call).
+        Ok(Step::Tail(NormWork::Proc {
+            proc: final_proc,
+            input,
+        }))
     } else {
         // Simple source handling - similar to original's else branch
 
@@ -242,11 +267,11 @@ pub fn normalize_p_input<'ast>(
             .iter()
             .map(|receipt| match receipt {
                 Bind::Linear { lhs, rhs } => {
-                    let names: Vec<_> = lhs.names.iter().collect();
-                    let remainder = &lhs.remainder;
+                    let names: &'ast [Name<'ast>] = lhs.names.as_slice();
+                    let remainder = lhs.remainder;
 
                     let source_name = match rhs {
-                        Source::Simple { name } => name,
+                        Source::Simple { name } => *name,
                         _ => {
                             return Err(InterpreterError::ParserError(
                                 "Only simple sources supported in current implementation"
@@ -258,14 +283,14 @@ pub fn normalize_p_input<'ast>(
                     Ok(((names, remainder), source_name))
                 }
                 Bind::Repeated { lhs, rhs } => {
-                    let names: Vec<_> = lhs.names.iter().collect();
-                    let remainder = &lhs.remainder;
-                    Ok(((names, remainder), rhs))
+                    let names: &'ast [Name<'ast>] = lhs.names.as_slice();
+                    let remainder = lhs.remainder;
+                    Ok(((names, remainder), *rhs))
                 }
                 Bind::Peek { lhs, rhs } => {
-                    let names: Vec<_> = lhs.names.iter().collect();
-                    let remainder = &lhs.remainder;
-                    Ok(((names, remainder), rhs))
+                    let names: &'ast [Name<'ast>] = lhs.names.as_slice();
+                    let remainder = lhs.remainder;
+                    Ok(((names, remainder), *rhs))
                 }
                 // Cost-accounted per-clause signed bind `{% y <- x %}[s]` (W1). The
                 // Phase-4 signed-JOIN dispatch (`normalize.rs` ForComprehension arm
@@ -283,11 +308,11 @@ pub fn normalize_p_input<'ast>(
                         "Bind::Signed must be stripped by recognize_signed_join before \
                          normalize_p_input (W1 Phase 4 dispatch)"
                     );
-                    let names: Vec<_> = lhs.names.iter().collect();
-                    let remainder = &lhs.remainder;
+                    let names: &'ast [Name<'ast>] = lhs.names.as_slice();
+                    let remainder = lhs.remainder;
 
                     let source_name = match rhs {
-                        Source::Simple { name } => name,
+                        Source::Simple { name } => *name,
                         _ => {
                             return Err(InterpreterError::ParserError(
                                 "Only simple sources supported in current implementation"
@@ -317,255 +342,362 @@ pub fn normalize_p_input<'ast>(
         // Extract patterns and sources
         let (patterns, sources): (Vec<_>, Vec<_>) = processed.into_iter().unzip();
 
-        // Process sources using new AST name normalizer
-        fn process_sources<'ast>(
-            sources: Vec<&'ast rholang_parser::ast::Name<'ast>>,
-            input: ProcVisitInputs,
-            env: &HashMap<String, Par>,
-            parser: &'ast rholang_parser::RholangParser<'ast>,
-        ) -> Result<(Vec<Par>, FreeMap<VarSort>, BitSet, bool), InterpreterError> {
-            let mut vector_par = Vec::new();
-            let mut current_known_free = input.free_map;
-            let mut locally_free = Vec::new();
-            let mut connective_used = false;
-
-            for name in sources {
-                let NameVisitOutputs {
-                    par,
-                    free_map: updated_known_free,
-                } = normalize_name(
-                    name,
-                    NameVisitInputs {
-                        bound_map_chain: input.bound_map_chain.clone(),
-                        free_map: current_known_free,
-                    },
-                    env,
-                    parser,
-                )?;
-
-                vector_par.push(par.clone());
-                current_known_free = updated_known_free;
-                locally_free = union(
-                    locally_free,
-                    par.locally_free(par.clone(), input.bound_map_chain.depth() as i32),
-                );
-                connective_used = connective_used || par.clone().connective_used(par);
-            }
-
-            Ok((
-                vector_par,
-                current_known_free,
-                locally_free,
-                connective_used,
-            ))
-        }
-
-        fn process_patterns<'ast>(
-            patterns: Vec<(
-                Vec<&'ast Name<'ast>>,
-                &Option<rholang_parser::ast::Var<'ast>>,
-            )>,
-            input: ProcVisitInputs,
-            env: &HashMap<String, Par>,
-            parser: &'ast rholang_parser::RholangParser<'ast>,
-        ) -> Result<
-            Vec<(
-                Vec<Par>,
-                Option<models::rhoapi::Var>,
-                FreeMap<VarSort>,
-                BitSet,
-            )>,
-            InterpreterError,
-        > {
-            patterns
-                .into_iter()
-                .map(|(names, name_remainder)| {
-                    let mut vector_par = Vec::new();
-                    let mut current_known_free = FreeMap::new();
-                    let mut locally_free = Vec::new();
-
-                    for name in names {
-                        // Reject cost syntax in receive-bind pattern position (W1
-                        // §1.5): a signed term / token stack inside a bound name
-                        // `@{...}` is a process form (recognized + metered), not a
-                        // receive pattern.
-                        reject_cost_syntax_in_name_pattern(name)?;
-
-                        let NameVisitOutputs {
-                            par,
-                            free_map: updated_known_free,
-                        } = normalize_name(
-                            name,
-                            NameVisitInputs {
-                                bound_map_chain: input.bound_map_chain.push(),
-                                free_map: current_known_free,
-                            },
-                            env,
-                            parser,
-                        )?;
-
-                        fail_on_invalid_connective(&input, &NameVisitOutputs {
-                            par: par.clone(),
-                            free_map: updated_known_free.clone(),
-                        })?;
-
-                        vector_par.push(par.clone());
-                        current_known_free = updated_known_free;
-                        locally_free = union(
-                            locally_free,
-                            par.locally_free(par.clone(), input.bound_map_chain.depth() as i32 + 1),
-                        );
-                    }
-
-                    let (optional_var, known_free) =
-                        normalize_match_name(name_remainder, current_known_free)?;
-
-                    Ok((vector_par, optional_var, known_free, locally_free))
-                })
-                .collect()
-        }
-
-        let processed_patterns = process_patterns(patterns, input.clone(), env, parser)?;
-        let processed_sources = process_sources(sources, input.clone(), env, parser)?;
-        let (sources_par, sources_free, sources_locally_free, sources_connective_used) =
-            processed_sources;
-
-        // Pre-sort binds using span-aware version
-        let receive_binds_and_free_maps = pre_sort_binds(
-            processed_patterns
-                .clone()
-                .into_iter()
-                .zip(sources_par)
-                .into_iter()
-                .map(|((a, b, c, _), e)| (a, b, e, c))
-                .collect(),
-        )?;
-
-        let (receive_binds, receive_bind_free_maps): (Vec<ReceiveBind>, Vec<FreeMap<VarSort>>) =
-            receive_binds_and_free_maps.into_iter().unzip();
-
-        // Channel duplicate check
-        let channels: Vec<Par> = receive_binds
-            .clone()
-            .into_iter()
-            .map(|rb| rb.source.unwrap())
-            .collect();
-
-        let channels_set: HashSet<Par> = channels.clone().into_iter().collect();
-        let has_same_channels = channels.len() > channels_set.len();
-
-        if has_same_channels {
-            // TODO: Review
-            return Err(InterpreterError::ReceiveOnSameChannelsError {
-                source_span: body.span,
-            });
-        }
-
-        // Merge receive bind free maps
-        let receive_binds_free_map = receive_bind_free_maps.into_iter().try_fold(
-            FreeMap::new(),
-            |known_free, receive_bind_free_map| {
-                let (updated_known_free, conflicts) = known_free.merge(receive_bind_free_map);
-
-                if conflicts.is_empty() {
-                    Ok(updated_known_free)
-                } else {
-                    let (shadowing_var, source_span) = &conflicts[0];
-                    let original_span =
-                        unwrap_option_safe(known_free.get(shadowing_var))?.source_span;
-                    Err(InterpreterError::UnexpectedReuseOfNameContextFree {
-                        var_name: shadowing_var.to_string(),
-                        first_use: original_span,
-                        second_use: *source_span,
-                    })
-                }
-            },
-        )?;
-
-        let body_env = input
-            .bound_map_chain
-            .absorb_free_span(&receive_binds_free_map);
-
-        // Optional `where`-clause guard. By the time we reach this branch
-        // there is a single receipt (multi-receipt is desugared into nested
-        // `for`s above), so its guard is the one we care about. Normalize
-        // the guard against the same scope as the body — the merged-bind
-        // free map has been absorbed into bound_map_chain, so guard and
-        // body see the same de Bruijn levels.
-        let guard_result = match receipts[0].guard.as_ref().map(|g| g) {
-            Some(guard) => Some(normalize_ann_proc(
-                guard,
-                ProcVisitInputs {
-                    par: Par::default(),
-                    bound_map_chain: body_env.clone(),
-                    free_map: sources_free.clone(),
-                },
-                env,
-                parser,
-            )?),
-            None => None,
-        };
-
-        // Process body
-        let proc_visit_outputs = normalize_ann_proc(
+        let source_free = input.free_map.clone();
+        advance_input(Box::new(InputK {
+            patterns,
+            sources,
+            guard: receipts[0].guard,
             body,
-            ProcVisitInputs {
-                par: Par::default(),
-                bound_map_chain: body_env,
-                free_map: guard_result
-                    .as_ref()
-                    .map(|gr| gr.free_map.clone())
-                    .unwrap_or(sources_free),
+            persistent,
+            peek,
+            input,
+            phase: InputPhase::Patterns {
+                group_idx: 0,
+                name_idx: 0,
             },
-            env,
-            parser,
-        )?;
-
-        let bind_count = receive_binds_free_map.count_no_wildcards();
-
-        let guard_par = guard_result.as_ref().map(|gr| gr.par.clone());
-        let guard_locally_free = guard_result
-            .as_ref()
-            .map(|gr| gr.par.locally_free.clone())
-            .unwrap_or_default();
-        let guard_connective_used = guard_result
-            .as_ref()
-            .map(|gr| gr.par.connective_used)
-            .unwrap_or(false);
-
-        Ok(ProcVisitOutputs {
-            par: input.par.clone().prepend_receive(Receive {
-                binds: receive_binds,
-                body: Some(proc_visit_outputs.clone().par),
-                persistent,
-                peek,
-                bind_count: bind_count as i32,
-                locally_free: {
-                    union(
-                        sources_locally_free,
-                        union(
-                            processed_patterns
-                                .into_iter()
-                                .map(|pattern| pattern.3)
-                                .fold(Vec::new(), |locally_free1, locally_free2| {
-                                    union(locally_free1, locally_free2)
-                                }),
-                            filter_and_adjust_bitset(
-                                union(proc_visit_outputs.par.locally_free, guard_locally_free),
-                                bind_count,
-                            ),
-                        ),
-                    )
-                },
-                connective_used: sources_connective_used
-                    || proc_visit_outputs.par.connective_used
-                    || guard_connective_used,
-                condition: guard_par,
-            }),
-            free_map: proc_visit_outputs.free_map,
-        })
+            group_pars: Vec::new(),
+            group_free: FreeMap::new(),
+            group_locally_free: Vec::new(),
+            done_patterns: Vec::new(),
+            source_pars: Vec::new(),
+            source_free,
+            source_locally_free: Vec::new(),
+            source_connective_used: false,
+            body_env: Default::default(),
+            receive_binds: Vec::new(),
+            bind_count: 0,
+            patterns_locally_free: Vec::new(),
+            guard_out: None,
+        }))
     }
 }
+
+/// Walk `InputK`'s phase sequence until a child can be scheduled, or the whole
+/// `for` can be assembled.
+///
+/// Phase transitions that consume **no** child value — end of a pattern group,
+/// patterns exhausted, sources exhausted — are folded into this loop rather than
+/// each costing a machine step, which is why it is a `loop` and not a single
+/// `match`. Every transition preserves `NormKont::filled`, so the driver's slot
+/// invariant holds across them.
+#[inline(never)]
+fn advance_input<'ast>(mut k: Box<InputK<'ast>>) -> Result<Step<'ast>, InterpreterError> {
+    loop {
+        match k.phase {
+            InputPhase::Patterns {
+                group_idx,
+                name_idx,
+            } => {
+                if group_idx >= k.patterns.len() {
+                    k.phase = InputPhase::Sources { idx: 0 };
+                    continue;
+                }
+                // `Name<'ast>` and `Var<'ast>` are `Copy`, so both are copied out
+                // of `k` here and every borrow of `k` ends before it moves onto
+                // the work stack below.
+                let names: &'ast [Name<'ast>] = k.patterns[group_idx].0;
+                let remainder: Option<Var<'ast>> = k.patterns[group_idx].1;
+                if let Some(name_ref) = names.get(name_idx) {
+                    // Reject cost syntax in receive-bind pattern position (W1
+                    // §1.5): a signed term / token stack inside a bound name
+                    // `@{...}` is a process form (recognized + metered), not a
+                    // receive pattern. The guard walks the arena, so it takes
+                    // the arena-backed reference.
+                    reject_cost_syntax_in_name_pattern(name_ref)?;
+                    let name: Name<'ast> = *name_ref;
+                    let child_input = NameVisitInputs {
+                        bound_map_chain: k.input.bound_map_chain.push(),
+                        free_map: k.group_free.clone(),
+                    };
+                    return Ok(Step::Descend {
+                        kont: NormKont::Input(k),
+                        work: NormWork::Name {
+                            name,
+                            input: child_input,
+                        },
+                    });
+                }
+                // The group is complete: absorb its remainder and bank it.
+                let (optional_var, known_free) =
+                    normalize_match_name(&remainder, k.group_free.clone())?;
+                let group_pars = std::mem::take(&mut k.group_pars);
+                let group_locally_free = std::mem::take(&mut k.group_locally_free);
+                k.done_patterns
+                    .push((group_pars, optional_var, known_free, group_locally_free));
+                k.group_free = FreeMap::new();
+                k.phase = InputPhase::Patterns {
+                    group_idx: group_idx + 1,
+                    name_idx: 0,
+                };
+            }
+
+            InputPhase::Sources { idx } => {
+                if let Some(name) = k.sources.get(idx).copied() {
+                    let child_input = NameVisitInputs {
+                        bound_map_chain: k.input.bound_map_chain.clone(),
+                        free_map: k.source_free.clone(),
+                    };
+                    return Ok(Step::Descend {
+                        kont: NormKont::Input(k),
+                        work: NormWork::Name {
+                            name,
+                            input: child_input,
+                        },
+                    });
+                }
+                // Every pattern and every channel is in. Sort the binds, reject
+                // duplicate channels, merge the per-bind free maps and open the
+                // body's scope — all of it verbatim from the recursive form.
+                let sources_par = std::mem::take(&mut k.source_pars);
+                let receive_binds_and_free_maps = pre_sort_binds(
+                    k.done_patterns
+                        .clone()
+                        .into_iter()
+                        .zip(sources_par)
+                        .map(|((a, b, c, _), e)| (a, b, e, c))
+                        .collect(),
+                )?;
+
+                let (receive_binds, receive_bind_free_maps): (
+                    Vec<ReceiveBind>,
+                    Vec<FreeMap<VarSort>>,
+                ) = receive_binds_and_free_maps.into_iter().unzip();
+
+                // Channel duplicate check
+                let channels: Vec<Par> = receive_binds
+                    .clone()
+                    .into_iter()
+                    .map(|rb| {
+                        rb.source
+                            .expect("pre_sort_binds always emits a source for every bind")
+                    })
+                    .collect();
+
+                let channels_set: HashSet<Par> = channels.clone().into_iter().collect();
+                let has_same_channels = channels.len() > channels_set.len();
+
+                if has_same_channels {
+                    // ⚠ Tear the already-normalized patterns and channels down
+                    // iteratively: `<Par as Drop>` is Θ(depth), and this is a
+                    // REJECTION path, i.e. exactly where a hostile deploy lands.
+                    let mut pars: Vec<Par> = channels;
+                    for b in receive_binds {
+                        pars.extend(b.patterns);
+                        pars.extend(b.source);
+                    }
+                    dismantle_all(pars);
+                    // TODO: Review
+                    return Err(InterpreterError::ReceiveOnSameChannelsError {
+                        source_span: k.body.span,
+                    });
+                }
+
+                // Merge receive bind free maps
+                let receive_binds_free_map = receive_bind_free_maps.into_iter().try_fold(
+                    FreeMap::new(),
+                    |known_free, receive_bind_free_map| {
+                        let (updated_known_free, conflicts) =
+                            known_free.merge(receive_bind_free_map);
+
+                        if conflicts.is_empty() {
+                            Ok(updated_known_free)
+                        } else {
+                            let (shadowing_var, source_span) = &conflicts[0];
+                            let original_span =
+                                unwrap_option_safe(known_free.get(shadowing_var))?.source_span;
+                            Err(InterpreterError::UnexpectedReuseOfNameContextFree {
+                                var_name: shadowing_var.to_string(),
+                                first_use: original_span,
+                                second_use: *source_span,
+                            })
+                        }
+                    },
+                )?;
+
+                k.bind_count = receive_binds_free_map.count_no_wildcards();
+                k.body_env = k
+                    .input
+                    .bound_map_chain
+                    .absorb_free_span(&receive_binds_free_map);
+                k.patterns_locally_free = std::mem::take(&mut k.done_patterns)
+                    .into_iter()
+                    .map(|pattern| pattern.3)
+                    .fold(Vec::new(), union);
+                k.receive_binds = receive_binds;
+
+                k.phase = if k.guard.is_some() {
+                    InputPhase::Guard
+                } else {
+                    InputPhase::Body
+                };
+            }
+
+            InputPhase::Guard => {
+                // Optional `where`-clause guard. By the time we reach this branch
+                // there is a single receipt (multi-receipt is desugared into nested
+                // `for`s above), so its guard is the one we care about. Normalize
+                // the guard against the same scope as the body — the merged-bind
+                // free map has been absorbed into bound_map_chain, so guard and
+                // body see the same de Bruijn levels.
+                let guard = k
+                    .guard
+                    .expect("advance_input: InputPhase::Guard is only entered when a guard exists");
+                let child_input = ProcVisitInputs {
+                    par: Par::default(),
+                    bound_map_chain: k.body_env.clone(),
+                    free_map: k.source_free.clone(),
+                };
+                return Ok(Step::Descend {
+                    kont: NormKont::Input(k),
+                    work: NormWork::Proc {
+                        proc: guard,
+                        input: child_input,
+                    },
+                });
+            }
+
+            InputPhase::Body => {
+                let free_map = match &k.guard_out {
+                    Some(gr) => gr.free_map.clone(),
+                    None => k.source_free.clone(),
+                };
+                let child_input = ProcVisitInputs {
+                    par: Par::default(),
+                    bound_map_chain: k.body_env.clone(),
+                    free_map,
+                };
+                let body = k.body;
+                return Ok(Step::Descend {
+                    kont: NormKont::Input(k),
+                    work: NormWork::Proc {
+                        proc: body,
+                        input: child_input,
+                    },
+                });
+            }
+        }
+    }
+}
+
+/// `for (…) { P }`, combine half.
+#[inline(never)]
+pub(crate) fn combine_p_input<'ast>(
+    mut k: Box<InputK<'ast>>,
+    value: NormVal,
+) -> Result<Step<'ast>, InterpreterError> {
+    match k.phase {
+        InputPhase::Patterns {
+            group_idx,
+            name_idx,
+        } => {
+            let res = value.into_name();
+            fail_on_invalid_connective(&k.input, &res)?;
+
+            // ★ Leg-1: shallow read, then MOVE. See
+            // `collection_normalize_matcher::combine_collect`.
+            let pattern_locally_free = res.par.locally_free.clone();
+            k.group_pars.push(res.par);
+            k.group_free = res.free_map;
+            k.group_locally_free =
+                union(std::mem::take(&mut k.group_locally_free), pattern_locally_free);
+            k.phase = InputPhase::Patterns {
+                group_idx,
+                name_idx: name_idx + 1,
+            };
+            advance_input(k)
+        }
+
+        InputPhase::Sources { idx } => {
+            let res = value.into_name();
+            // ★ Leg-1: shallow reads, then MOVE.
+            let source_locally_free = res.par.locally_free.clone();
+            let source_connective_used = res.par.connective_used;
+            k.source_pars.push(res.par);
+            k.source_free = res.free_map;
+            k.source_locally_free =
+                union(std::mem::take(&mut k.source_locally_free), source_locally_free);
+            k.source_connective_used = k.source_connective_used || source_connective_used;
+            k.phase = InputPhase::Sources { idx: idx + 1 };
+            advance_input(k)
+        }
+
+        InputPhase::Guard => {
+            k.guard_out = Some(value.into_proc());
+            k.phase = InputPhase::Body;
+            advance_input(k)
+        }
+
+        InputPhase::Body => {
+            let proc_visit_outputs = value.into_proc();
+            let InputK {
+                persistent,
+                peek,
+                mut input,
+                source_locally_free,
+                source_connective_used,
+                receive_binds,
+                bind_count,
+                patterns_locally_free,
+                guard_out,
+                ..
+            } = *k;
+
+            // ★ Leg-1: shallow reads, then MOVE both the guard and the body.
+            let guard_locally_free = guard_out
+                .as_ref()
+                .map(|gr| gr.par.locally_free.clone())
+                .unwrap_or_default();
+            let guard_connective_used = guard_out
+                .as_ref()
+                .map(|gr| gr.par.connective_used)
+                .unwrap_or(false);
+            let guard_par = guard_out.map(|gr| gr.par);
+            let body_locally_free = proc_visit_outputs.par.locally_free.clone();
+            let body_connective_used = proc_visit_outputs.par.connective_used;
+
+            Ok(Step::Done(NormVal::Proc(ProcVisitOutputs {
+                par: input.par.prepend_receive(Receive {
+                    binds: receive_binds,
+                    body: Some(proc_visit_outputs.par),
+                    persistent,
+                    peek,
+                    bind_count: bind_count as i32,
+                    locally_free: {
+                        union(
+                            source_locally_free,
+                            union(
+                                patterns_locally_free,
+                                filter_and_adjust_bitset(
+                                    union(body_locally_free, guard_locally_free),
+                                    bind_count,
+                                ),
+                            ),
+                        )
+                    },
+                    connective_used: source_connective_used
+                        || body_connective_used
+                        || guard_connective_used,
+                    condition: guard_par,
+                }),
+                free_map: proc_visit_outputs.free_map,
+            })))
+        }
+    }
+}
+
+/// A `for`-comprehension on a **fresh** drive. Only the unit tests enter here.
+pub fn normalize_p_input<'ast>(
+    receipts: &'ast Receipts<'ast>,
+    body: &'ast AnnProc<'ast>,
+    input: ProcVisitInputs,
+    env: &HashMap<String, Par>,
+    parser: &'ast rholang_parser::RholangParser<'ast>,
+) -> Result<ProcVisitOutputs, InterpreterError> {
+    use crate::rust::interpreter::compiler::normalize_drive::norm_drive_from;
+    let step = descend_p_input(receipts, *body, input, parser)?;
+    norm_drive_from(step, env, parser).map(NormVal::into_proc)
+}
+
 
 // See rholang/src/test/scala/coop/rchain/rholang/interpreter/compiler/normalizer/ProcMatcherSpec.scala
 #[cfg(test)]

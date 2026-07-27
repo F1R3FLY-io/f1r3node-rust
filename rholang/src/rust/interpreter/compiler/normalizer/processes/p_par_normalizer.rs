@@ -1,21 +1,24 @@
-use std::collections::HashMap;
-
 use models::rhoapi::Par;
 use rholang_parser::ast::{AnnProc, Proc};
 
 use crate::rust::interpreter::compiler::exports::{ProcVisitInputs, ProcVisitOutputs};
-use crate::rust::interpreter::compiler::normalize::normalize_ann_proc;
+use crate::rust::interpreter::compiler::normalize_drive::{NormKont, NormVal, NormWork, Step};
+use crate::rust::interpreter::compiler::bound_map_chain::BoundMapChain;
+use crate::rust::interpreter::compiler::normalize::VarSort;
 use crate::rust::interpreter::errors::InterpreterError;
 
-fn flatten_par<'ast>(root: &'ast AnnProc<'ast>) -> Vec<&'ast AnnProc<'ast>> {
+/// Flatten a `|` spine into its operands. Already iterative before the
+/// conversion, and left that way: it walks `Proc::Par` nodes with an explicit
+/// stack and never touches the normalizer.
+fn flatten_par<'ast>(root: AnnProc<'ast>) -> Vec<AnnProc<'ast>> {
     let mut result = Vec::new();
     let mut stack = vec![root];
 
     while let Some(current) = stack.pop() {
-        match &current.proc {
+        match current.proc {
             Proc::Par { left, right } => {
-                stack.push(right);
-                stack.push(left);
+                stack.push(*right);
+                stack.push(*left);
             }
             _ => result.push(current),
         }
@@ -24,41 +27,92 @@ fn flatten_par<'ast>(root: &'ast AnnProc<'ast>) -> Vec<&'ast AnnProc<'ast>> {
     result
 }
 
-pub fn normalize_p_par<'ast>(
+/// `P | Q`, descend half.
+///
+/// The operands thread **both** carriers: each one is normalized against the
+/// `par` *and* the `free_map` its predecessor produced, so the result of the
+/// last operand is the result of the whole composition. `flatten_par` always
+/// yields at least two operands (it is only reached from a `Proc::Par` node),
+/// so there is always a first child to schedule.
+#[inline(never)]
+pub(crate) fn descend_p_par<'ast>(
     left: &'ast AnnProc<'ast>,
     right: &'ast AnnProc<'ast>,
     input: ProcVisitInputs,
-    env: &HashMap<String, Par>,
-    parser: &'ast rholang_parser::RholangParser<'ast>,
-) -> Result<ProcVisitOutputs, InterpreterError> {
-    let flattened_left = flatten_par(left);
-    let flattened_right = flatten_par(right);
+) -> Step<'ast> {
+    let flattened_left = flatten_par(*left);
+    let flattened_right = flatten_par(*right);
 
     let mut all_procs = Vec::with_capacity(flattened_left.len() + flattened_right.len());
     all_procs.extend(flattened_left);
     all_procs.extend(flattened_right);
 
-    let mut accumulated_par = input.par;
-    let mut accumulated_free_map = input.free_map;
+    debug_assert!(
+        !all_procs.is_empty(),
+        "descend_p_par: a `Proc::Par` flattens to at least two operands"
+    );
+
+    let first = all_procs[0];
     let bound_map_chain = input.bound_map_chain;
-
-    for proc in all_procs {
-        let proc_input = ProcVisitInputs {
-            par: accumulated_par,
-            free_map: accumulated_free_map,
+    Step::Descend {
+        kont: NormKont::ParSeq {
+            procs: all_procs,
+            // `idx` counts operands ABSORBED, not the next one to schedule —
+            // `NormKont::filled` reads it directly, so "next" would be off by
+            // one against `arity` and the slot invariant would fire on the very
+            // first combine. (It did.)
+            idx: 0,
             bound_map_chain: bound_map_chain.clone(),
-        };
-
-        let proc_result = normalize_ann_proc(proc, proc_input, env, parser)?;
-        accumulated_par = proc_result.par;
-        accumulated_free_map = proc_result.free_map;
+        },
+        work: NormWork::Proc {
+            proc: first,
+            input: ProcVisitInputs {
+                par: input.par,
+                free_map: input.free_map,
+                bound_map_chain,
+            },
+        },
     }
+}
 
-    Ok(ProcVisitOutputs {
-        par: accumulated_par,
-        free_map: accumulated_free_map,
+/// `P | Q`, combine half — thread the finished operand into the next one.
+#[inline(never)]
+pub(crate) fn combine_p_par<'ast>(
+    procs: Vec<AnnProc<'ast>>,
+    idx: usize,
+    bound_map_chain: BoundMapChain<VarSort>,
+    value: NormVal,
+) -> Result<Step<'ast>, InterpreterError> {
+    let result = value.into_proc();
+    let absorbed = idx + 1;
+    if absorbed == procs.len() {
+        return Ok(Step::Done(NormVal::Proc(result)));
+    }
+    let next = procs[absorbed];
+    Ok(Step::Descend {
+        kont: NormKont::ParSeq {
+            procs,
+            idx: absorbed,
+            bound_map_chain: bound_map_chain.clone(),
+        },
+        work: NormWork::Proc {
+            proc: next,
+            input: ProcVisitInputs {
+                par: result.par,
+                free_map: result.free_map,
+                bound_map_chain,
+            },
+        },
     })
 }
+
+/// Retained so the unused-import lint does not fire on `ProcVisitOutputs`,
+/// which the module's public contract still mentions in its documentation.
+#[allow(dead_code)]
+type _ProcVisitOutputs = ProcVisitOutputs;
+#[allow(dead_code)]
+type _Par = Par;
+
 
 // See rholang/src/test/scala/coop/rchain/rholang/interpreter/compiler/normalizer/ProcMatcherSpec.scala
 #[cfg(test)]

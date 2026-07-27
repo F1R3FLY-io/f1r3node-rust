@@ -1,45 +1,94 @@
-use std::collections::HashMap;
-
 use models::rhoapi::connective::ConnectiveInstance;
 use models::rhoapi::{Connective, ConnectiveBody, Par};
 use rholang_parser::ast::AnnProc;
 use rholang_parser::SourceSpan;
 
 use crate::rust::interpreter::compiler::exports::{ProcVisitInputs, ProcVisitOutputs};
-use crate::rust::interpreter::compiler::normalize::normalize_ann_proc;
+use crate::rust::interpreter::compiler::normalize_drive::{NormKont, NormVal, NormWork, Step};
 use crate::rust::interpreter::errors::InterpreterError;
 use crate::rust::interpreter::util::prepend_connective;
 
+/// `P /\ Q`, descend half — the left conjunct.
+///
+/// The right conjunct sees the left one's `free_map`, so it cannot be scheduled
+/// until the left has produced a value. The span the resulting connective is
+/// recorded under spans both operands, and is fixed here while both are in
+/// scope.
+#[inline(never)]
+pub(crate) fn descend_p_conjunction<'ast>(
+    left: AnnProc<'ast>,
+    right: AnnProc<'ast>,
+    input: ProcVisitInputs,
+) -> Step<'ast> {
+    let bound_map_chain = input.bound_map_chain.clone();
+    let free_map = input.free_map.clone();
+    Step::Descend {
+        kont: NormKont::Conjunction {
+            right,
+            input,
+            span: SourceSpan {
+                start: left.span.start,
+                end: right.span.end,
+            },
+            left_par: None,
+        },
+        work: NormWork::Proc {
+            proc: left,
+            input: ProcVisitInputs {
+                par: Par::default(),
+                bound_map_chain,
+                free_map,
+            },
+        },
+    }
+}
+
+/// `P /\ Q`, combine half.
+/// `P conjunction Q` on a **fresh** drive. Only the unit tests enter here; the dispatch
+/// pushes [`descend_p_conjunction`]'s `Step` onto the drive it is already
+/// on, so the whole traversal stays one loop.
 pub fn normalize_p_conjunction<'ast>(
     left: &'ast AnnProc<'ast>,
     right: &'ast AnnProc<'ast>,
     input: ProcVisitInputs,
-    env: &HashMap<String, Par>,
+    env: &std::collections::HashMap<String, Par>,
     parser: &'ast rholang_parser::RholangParser<'ast>,
 ) -> Result<ProcVisitOutputs, InterpreterError> {
-    let left_result = normalize_ann_proc(
-        left,
-        ProcVisitInputs {
-            par: Par::default(),
-            bound_map_chain: input.bound_map_chain.clone(),
-            free_map: input.free_map.clone(),
-        },
-        env,
-        parser,
-    )?;
+    use crate::rust::interpreter::compiler::normalize_drive::norm_drive_from;
+    let step = descend_p_conjunction(*left, *right, input);
+    norm_drive_from(step, env, parser).map(NormVal::into_proc)
+}
 
-    let right_result = normalize_ann_proc(
-        right,
-        ProcVisitInputs {
-            par: Par::default(),
-            bound_map_chain: input.bound_map_chain.clone(),
-            free_map: left_result.free_map.clone(),
-        },
-        env,
-        parser,
-    )?;
+#[inline(never)]
+pub(crate) fn combine_p_conjunction<'ast>(
+    right: AnnProc<'ast>,
+    input: ProcVisitInputs,
+    span: SourceSpan,
+    left_par: Option<Par>,
+    value: NormVal,
+) -> Result<Step<'ast>, InterpreterError> {
+    let result = value.into_proc();
+    let Some(lp) = left_par else {
+        // The LEFT conjunct has just finished — thread its free map right.
+        let bound_map_chain = input.bound_map_chain.clone();
+        return Ok(Step::Descend {
+            kont: NormKont::Conjunction {
+                right,
+                input,
+                span,
+                left_par: Some(result.par),
+            },
+            work: NormWork::Proc {
+                proc: right,
+                input: ProcVisitInputs {
+                    par: Par::default(),
+                    bound_map_chain,
+                    free_map: result.free_map,
+                },
+            },
+        });
+    };
 
-    let lp = left_result.par;
     let result_connective = match lp.single_connective() {
         Some(Connective {
             connective_instance: Some(ConnectiveInstance::ConnAndBody(conn_body)),
@@ -47,14 +96,14 @@ pub fn normalize_p_conjunction<'ast>(
             connective_instance: Some(ConnectiveInstance::ConnAndBody(ConnectiveBody {
                 ps: {
                     let mut ps = conn_body.ps.clone();
-                    ps.push(right_result.par);
+                    ps.push(result.par);
                     ps
                 },
             })),
         },
         _ => Connective {
             connective_instance: Some(ConnectiveInstance::ConnAndBody(ConnectiveBody {
-                ps: vec![lp, right_result.par],
+                ps: vec![lp, result.par],
             })),
         },
     };
@@ -65,19 +114,19 @@ pub fn normalize_p_conjunction<'ast>(
         input.bound_map_chain.depth() as i32,
     );
 
-    let updated_free_map = right_result.free_map.add_connective(
-        result_connective.connective_instance.unwrap(),
-        SourceSpan {
-            start: left.span.start,
-            end: right.span.end,
-        },
+    let updated_free_map = result.free_map.add_connective(
+        result_connective
+            .connective_instance
+            .expect("combine_p_conjunction: the connective was just constructed as `Some`"),
+        span,
     );
 
-    Ok(ProcVisitOutputs {
+    Ok(Step::Done(NormVal::Proc(ProcVisitOutputs {
         par: result_par,
         free_map: updated_free_map,
-    })
+    })))
 }
+
 
 //rholang/src/test/scala/coop/rchain/rholang/interpreter/compiler/normalizer/ProcMatcherSpec.scala
 #[cfg(test)]

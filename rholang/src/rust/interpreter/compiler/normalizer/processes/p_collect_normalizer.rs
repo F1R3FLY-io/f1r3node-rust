@@ -1,39 +1,17 @@
-use std::collections::HashMap;
-
-use models::rhoapi::Par;
-use rholang_parser::ast::Collection;
-
-use crate::rust::interpreter::compiler::exports::{
-    CollectVisitInputs, ProcVisitInputs, ProcVisitOutputs,
-};
-use crate::rust::interpreter::compiler::normalizer::collection_normalize_matcher::normalize_collection;
-use crate::rust::interpreter::errors::InterpreterError;
-use crate::rust::interpreter::util::prepend_expr;
-
-pub fn normalize_p_collect<'ast>(
-    proc: &'ast Collection<'ast>,
-    input: ProcVisitInputs,
-    env: &HashMap<String, Par>,
-    parser: &'ast rholang_parser::RholangParser<'ast>,
-) -> Result<ProcVisitOutputs, InterpreterError> {
-    let collection_result = normalize_collection(
-        proc,
-        CollectVisitInputs {
-            bound_map_chain: input.bound_map_chain.clone(),
-            free_map: input.free_map.clone(),
-        },
-        env,
-        parser,
-    )?;
-
-    let updated_par = prepend_expr(
-        input.par,
-        collection_result.expr,
-        input.bound_map_chain.depth() as i32,
-    );
-
-    Ok(ProcVisitOutputs {
-        par: updated_par,
-        free_map: collection_result.free_map,
-    })
-}
+//! `normalize_p_collect` no longer exists as a function.
+//!
+//! It was three lines of glue — normalize the collection, then
+//! `prepend_expr(input.par, expr, depth)` — sitting in the middle of the
+//! four-frame cycle that a 577-byte program used to overflow a release node
+//! with. The glue is now **fused** into the single continuation that also
+//! carries `normalize_collection`'s constructor selection and `fold_match`'s
+//! accumulators, so one bracket level costs one heap `NormKont` and no native
+//! stack:
+//!
+//! * [`descend_collection`](crate::rust::interpreter::compiler::normalizer::collection_normalize_matcher::descend_collection)
+//! * [`combine_collect`](crate::rust::interpreter::compiler::normalizer::collection_normalize_matcher::combine_collect)
+//! * [`combine_collect_map`](crate::rust::interpreter::compiler::normalizer::collection_normalize_matcher::combine_collect_map)
+//!
+//! The verbatim pre-conversion `normalize_p_collect` is retained as
+//! `compiler::normalize_recursive::normalize_p_collect_recursive` (test-only)
+//! and is what the differential compares against.

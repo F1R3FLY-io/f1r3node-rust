@@ -1,6 +1,3 @@
-use std::collections::HashMap;
-use std::result::Result;
-
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::{EList, EPathMap, ETuple, Expr, Par, Var};
 use models::rust::par_map::ParMap;
@@ -12,257 +9,474 @@ use models::rust::sorted_par_map::SortedParMap;
 use models::rust::utils::union;
 use rholang_parser::ast::{AnnProc, Collection, KeyValuePair};
 
-use crate::rust::interpreter::compiler::exports::{
-    CollectVisitInputs, CollectVisitOutputs, FreeMap, ProcVisitInputs,
+use crate::rust::interpreter::compiler::bound_map_chain::BoundMapChain;
+use crate::rust::interpreter::compiler::exports::{FreeMap, ProcVisitInputs, ProcVisitOutputs};
+use crate::rust::interpreter::compiler::normalize::VarSort;
+use crate::rust::interpreter::compiler::normalize_drive::{
+    CollectKind, NormKont, NormVal, NormWork, Step,
 };
-use crate::rust::interpreter::compiler::normalize::{normalize_ann_proc, VarSort};
 use crate::rust::interpreter::compiler::normalizer::remainder_normalizer_matcher::normalize_remainder;
 use crate::rust::interpreter::errors::InterpreterError;
 use crate::rust::interpreter::matcher::has_locally_free::HasLocallyFree;
+use crate::rust::interpreter::util::prepend_expr;
 
-pub fn normalize_collection<'ast>(
-    proc: &'ast Collection<'ast>,
-    input: CollectVisitInputs,
-    env: &HashMap<String, Par>,
-    parser: &'ast rholang_parser::RholangParser<'ast>,
-) -> Result<CollectVisitOutputs, InterpreterError> {
-    pub fn fold_match<'ast, F>(
-        known_free: FreeMap<VarSort>,
-        elements: &[AnnProc<'ast>],
-        constructor: F,
-        input: CollectVisitInputs,
-        env: &HashMap<String, Par>,
-        parser: &'ast rholang_parser::RholangParser<'ast>,
-    ) -> Result<CollectVisitOutputs, InterpreterError>
-    where
-        F: Fn(Vec<Par>, Vec<u8>, bool) -> Expr,
-    {
-        let init = (vec![], known_free.clone(), Vec::new(), false);
-        let (mut acc_pars, mut result_known_free, mut locally_free, mut connective_used) = init;
+// ===========================================================================
+// ★ THE REPRODUCER'S OWN PATH
+// ===========================================================================
+//
+// `normalize_ann_proc → normalize_p_collect → normalize_collection → fold_match
+//  → normalize_ann_proc` is the four-frame cycle a `gdb` backtrace showed at the
+// SIGSEGV of `[`×288 `0` `]`×288, at a dead-constant 43,520 bytes per level
+// (audit §12.2). All four frames are now one `Step`: `normalize_p_collect`'s
+// `prepend_expr`, `normalize_collection`'s constructor selection and
+// `fold_match`'s accumulators are FUSED into a single continuation, so a
+// bracket level costs one heap `NormKont` and no native stack at all.
 
-        for element in elements {
-            let result = normalize_ann_proc(
-                element,
-                ProcVisitInputs {
-                    par: Par::default(),
-                    bound_map_chain: input.bound_map_chain.clone(),
-                    free_map: result_known_free.clone(),
-                },
-                env,
-                parser,
-            )?;
-
-            acc_pars.push(result.par.clone());
-            result_known_free = result.free_map.clone();
-            locally_free = union(locally_free, result.par.locally_free);
-            connective_used = connective_used || result.par.connective_used;
-        }
-
-        let constructed_expr: Expr = constructor(acc_pars, locally_free, connective_used);
-        let expr: Expr = constructed_expr.into();
-
-        Ok(CollectVisitOutputs {
-            expr,
-            free_map: result_known_free,
-        })
-    }
-
-    pub fn fold_match_map<'ast>(
-        known_free: FreeMap<VarSort>,
-        remainder: Option<Var>,
-        pairs: &[KeyValuePair<'ast>],
-        input: CollectVisitInputs,
-        env: &HashMap<String, Par>,
-        parser: &'ast rholang_parser::RholangParser<'ast>,
-    ) -> Result<CollectVisitOutputs, InterpreterError> {
-        let init = (vec![], known_free.clone(), Vec::new(), false);
-
-        let (mut acc_pairs, mut result_known_free, mut locally_free, mut connective_used) = init;
-
-        for key_value_pair in pairs {
-            let key_result = normalize_ann_proc(
-                &key_value_pair.0,
-                ProcVisitInputs {
-                    par: Par::default(),
-                    bound_map_chain: input.bound_map_chain.clone(),
-                    free_map: result_known_free.clone(),
-                },
-                env,
-                parser,
-            )?;
-
-            let value_result = normalize_ann_proc(
-                &key_value_pair.1,
-                ProcVisitInputs {
-                    par: Par::default(),
-                    bound_map_chain: input.bound_map_chain.clone(),
-                    free_map: key_result.free_map.clone(),
-                },
-                env,
-                parser,
-            )?;
-
-            acc_pairs.push((key_result.par.clone(), value_result.par.clone()));
-            result_known_free = value_result.free_map.clone();
-            locally_free = union(
+/// The four collection constructors, as a function of the data
+/// [`CollectKind`] carries.
+///
+/// The recursive form built these as closures capturing `optional_remainder`;
+/// a closure cannot travel on a work stack, so the capture became a field and
+/// the bodies moved here **unchanged**, including the `connective_used |=
+/// remainder.is_some()` fixups each one applies after construction.
+#[inline(never)]
+pub(crate) fn build_collection_expr(
+    kind: &CollectKind,
+    ps: Vec<Par>,
+    locally_free: Vec<u8>,
+    connective_used: bool,
+) -> Expr {
+    match kind {
+        CollectKind::List { remainder } => {
+            let mut tmp_e_list = EList {
+                ps,
                 locally_free,
-                union(key_result.par.locally_free, value_result.par.locally_free),
-            );
-            connective_used = connective_used
-                || key_result.par.connective_used
-                || value_result.par.connective_used;
+                connective_used,
+                remainder: remainder.clone(),
+            };
+
+            tmp_e_list.connective_used = tmp_e_list.connective_used || remainder.is_some();
+            Expr {
+                expr_instance: Some(ExprInstance::EListBody(tmp_e_list)),
+            }
         }
 
-        let remainder_connective_used = match remainder {
-            Some(ref var) => var.connective_used(var.clone()),
-            None => false,
-        };
+        CollectKind::Tuple => {
+            let tmp_tuple = ETuple {
+                ps,
+                locally_free,
+                connective_used,
+            };
 
-        let remainder_locally_free = match remainder {
-            Some(ref var) => var.locally_free(var.clone(), 0),
-            None => Vec::new(),
-        };
-
-        let expr = Expr {
-            expr_instance: Some(ExprInstance::EMapBody(ParMapTypeMapper::par_map_to_emap(
-                ParMap {
-                    ps: SortedParMap::create_from_vec(
-                        acc_pairs.clone().into_iter().rev().collect(),
-                    ),
-                    connective_used: connective_used || remainder_connective_used,
-                    locally_free: union(locally_free, remainder_locally_free),
-                    remainder: remainder.clone(),
-                },
-            ))),
-        };
-
-        Ok(CollectVisitOutputs {
-            expr,
-            free_map: result_known_free,
-        })
-    }
-
-    match proc {
-        Collection::List {
-            elements,
-            remainder,
-        } => {
-            let (optional_remainder, known_free) =
-                normalize_remainder(remainder, input.free_map.clone())?;
-
-            let constructor =
-                |ps: Vec<Par>, locally_free: Vec<u8>, connective_used: bool| -> Expr {
-                    let mut tmp_e_list = EList {
-                        ps,
-                        locally_free,
-                        connective_used,
-                        remainder: optional_remainder.clone(),
-                    };
-
-                    tmp_e_list.connective_used =
-                        tmp_e_list.connective_used || optional_remainder.is_some();
-                    Expr {
-                        expr_instance: Some(ExprInstance::EListBody(tmp_e_list)),
-                    }
-                };
-
-            fold_match(known_free, elements, constructor, input, env, parser)
+            Expr {
+                expr_instance: Some(ExprInstance::ETupleBody(tmp_tuple)),
+            }
         }
 
-        Collection::Tuple(elements) => {
-            let constructor =
-                |ps: Vec<Par>, locally_free: Vec<u8>, connective_used: bool| -> Expr {
-                    let tmp_tuple = ETuple {
-                        ps,
-                        locally_free,
-                        connective_used,
-                    };
+        CollectKind::Set { remainder } => {
+            let mut tmp_par_set = ParSet {
+                ps: SortedParHashSet::create_from_vec(ps),
+                locally_free,
+                connective_used,
+                remainder: remainder.clone(),
+            };
 
-                    Expr {
-                        expr_instance: Some(ExprInstance::ETupleBody(tmp_tuple)),
-                    }
-                };
+            tmp_par_set.connective_used = tmp_par_set.connective_used || remainder.is_some();
 
-            fold_match(
-                input.free_map.clone(),
-                elements,
-                constructor,
-                input,
-                env,
-                parser,
-            )
+            let eset = ParSetTypeMapper::par_set_to_eset(tmp_par_set);
+
+            Expr {
+                expr_instance: Some(ExprInstance::ESetBody(eset)),
+            }
         }
 
-        Collection::Set {
-            elements,
-            remainder,
-        } => {
-            let (optional_remainder, known_free) =
-                normalize_remainder(remainder, input.free_map.clone())?;
+        CollectKind::PathMap { remainder } => {
+            // EPathMap fix P3 (PM-2): constructor instead of a
+            // struct literal (private shadow cell). The value is
+            // FRESH (never interned), so the field write below stays
+            // sound under the shadow-cell invariant.
+            let mut tmp_e_pathmap = EPathMap::new(ps, locally_free, connective_used, remainder.clone());
 
-            let constructor =
-                |pars: Vec<Par>, locally_free: Vec<u8>, connective_used: bool| -> Expr {
-                    let mut tmp_par_set = ParSet {
-                        ps: SortedParHashSet::create_from_vec(pars),
-                        locally_free,
-                        connective_used,
-                        remainder: optional_remainder.clone(),
-                    };
-
-                    tmp_par_set.connective_used =
-                        tmp_par_set.connective_used || optional_remainder.is_some();
-
-                    let eset = ParSetTypeMapper::par_set_to_eset(tmp_par_set);
-
-                    Expr {
-                        expr_instance: Some(ExprInstance::ESetBody(eset)),
-                    }
-                };
-
-            fold_match(known_free, elements, constructor, input, env, parser)
-        }
-
-        Collection::Map {
-            elements,
-            remainder,
-        } => {
-            let (optional_remainder, known_free) =
-                normalize_remainder(remainder, input.free_map.clone())?;
-
-            fold_match_map(known_free, optional_remainder, elements, input, env, parser)
-        }
-
-        Collection::PathMap {
-            elements,
-            remainder,
-        } => {
-            let (optional_remainder, known_free) =
-                normalize_remainder(remainder, input.free_map.clone())?;
-
-            let constructor =
-                |ps: Vec<Par>, locally_free: Vec<u8>, connective_used: bool| -> Expr {
-                    // EPathMap fix P3 (PM-2): constructor instead of a
-                    // struct literal (private shadow cell). The value is
-                    // FRESH (never interned), so the field write below stays
-                    // sound under the shadow-cell invariant.
-                    let mut tmp_e_pathmap = EPathMap::new(
-                        ps,
-                        locally_free,
-                        connective_used,
-                        optional_remainder.clone(),
-                    );
-
-                    tmp_e_pathmap.connective_used =
-                        tmp_e_pathmap.connective_used || optional_remainder.is_some();
-                    Expr {
-                        expr_instance: Some(ExprInstance::EPathmapBody(tmp_e_pathmap)),
-                    }
-                };
-
-            fold_match(known_free, elements, constructor, input, env, parser)
+            tmp_e_pathmap.connective_used = tmp_e_pathmap.connective_used || remainder.is_some();
+            Expr {
+                expr_instance: Some(ExprInstance::EPathmapBody(tmp_e_pathmap)),
+            }
         }
     }
 }
+
+/// A collection literal, descend half.
+///
+/// Selects the constructor, normalizes the `...remainder` (which is a leaf — it
+/// only consults the free map), and schedules the **first** element. An empty
+/// collection has no children and finishes immediately.
+#[inline(never)]
+pub(crate) fn descend_collection<'ast>(
+    proc: &'ast Collection<'ast>,
+    input: ProcVisitInputs,
+) -> Result<Step<'ast>, InterpreterError> {
+    let (kind, known_free, elements): (CollectKind, FreeMap<VarSort>, &'ast [AnnProc<'ast>]) =
+        match proc {
+            Collection::List {
+                elements,
+                remainder,
+            } => {
+                let (optional_remainder, known_free) =
+                    normalize_remainder(remainder, input.free_map.clone())?;
+                (
+                    CollectKind::List {
+                        remainder: optional_remainder,
+                    },
+                    known_free,
+                    elements.as_slice(),
+                )
+            }
+
+            Collection::Tuple(elements) => (
+                CollectKind::Tuple,
+                input.free_map.clone(),
+                elements.as_slice(),
+            ),
+
+            Collection::Set {
+                elements,
+                remainder,
+            } => {
+                let (optional_remainder, known_free) =
+                    normalize_remainder(remainder, input.free_map.clone())?;
+                (
+                    CollectKind::Set {
+                        remainder: optional_remainder,
+                    },
+                    known_free,
+                    elements.as_slice(),
+                )
+            }
+
+            Collection::PathMap {
+                elements,
+                remainder,
+            } => {
+                let (optional_remainder, known_free) =
+                    normalize_remainder(remainder, input.free_map.clone())?;
+                (
+                    CollectKind::PathMap {
+                        remainder: optional_remainder,
+                    },
+                    known_free,
+                    elements.as_slice(),
+                )
+            }
+
+            Collection::Map {
+                elements,
+                remainder,
+            } => {
+                let (optional_remainder, known_free) =
+                    normalize_remainder(remainder, input.free_map.clone())?;
+                return Ok(descend_collect_map(
+                    optional_remainder,
+                    elements.as_slice(),
+                    known_free,
+                    input,
+                ));
+            }
+        };
+
+    let input_depth = input.bound_map_chain.depth() as i32;
+    let bound_map_chain = input.bound_map_chain;
+
+    let Some(first) = elements.first().copied() else {
+        // `fold_match` over an empty element list runs its constructor on empty
+        // accumulators and returns the entry free map untouched.
+        let expr = build_collection_expr(&kind, Vec::new(), Vec::new(), false);
+        return Ok(Step::Done(NormVal::Proc(ProcVisitOutputs {
+            par: prepend_expr(input.par, expr, input_depth),
+            free_map: known_free,
+        })));
+    };
+
+    Ok(Step::Descend {
+        kont: NormKont::Collect {
+            kind,
+            elements,
+            idx: 1,
+            acc_pars: Vec::with_capacity(elements.len()),
+            locally_free: Vec::new(),
+            connective_used: false,
+            known_free: known_free.clone(),
+            bound_map_chain: bound_map_chain.clone(),
+            input_par: input.par,
+            input_depth,
+        },
+        work: NormWork::Proc {
+            proc: first,
+            input: ProcVisitInputs {
+                par: Par::default(),
+                bound_map_chain,
+                free_map: known_free,
+            },
+        },
+    })
+}
+
+/// A collection literal, combine half — `fold_match`'s loop body.
+#[inline(never)]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn combine_collect<'ast>(
+    kind: CollectKind,
+    elements: &'ast [AnnProc<'ast>],
+    idx: usize,
+    mut acc_pars: Vec<Par>,
+    locally_free: Vec<u8>,
+    connective_used: bool,
+    known_free: FreeMap<VarSort>,
+    bound_map_chain: BoundMapChain<VarSort>,
+    input_par: Par,
+    input_depth: i32,
+    value: NormVal,
+) -> Result<Step<'ast>, InterpreterError> {
+    let result = value.into_proc();
+
+    // ★ Leg-1. `<Par as Clone>::clone` is itself a Θ(depth) NATIVE-STACK
+    // traversal (15,850 B/level debug, 2,852 release — audit §5 row 5), so a
+    // single deep clone anywhere in this traversal re-imposes the ceiling the
+    // conversion just removed. It did: with the recursion gone the probe read
+    // 15,850 B/level, which is that constant exactly. The recursive form cloned
+    // the child `Par` into the accumulator and then read `locally_free` /
+    // `connective_used` off the original; both are SHALLOW fields, so they are
+    // read first and the deep clone is deleted. Values are identical by
+    // construction — the clone and the original agree on every field.
+    let child_locally_free = result.par.locally_free.clone();
+    let child_connective_used = result.par.connective_used;
+    acc_pars.push(result.par);
+    let result_known_free = result.free_map;
+    let locally_free = union(locally_free, child_locally_free);
+    let connective_used = connective_used || child_connective_used;
+
+    match elements.get(idx).copied() {
+        Some(next) => Ok(Step::Descend {
+            kont: NormKont::Collect {
+                kind,
+                elements,
+                idx: idx + 1,
+                acc_pars,
+                locally_free,
+                connective_used,
+                known_free: result_known_free.clone(),
+                bound_map_chain: bound_map_chain.clone(),
+                input_par,
+                input_depth,
+            },
+            work: NormWork::Proc {
+                proc: next,
+                input: ProcVisitInputs {
+                    par: Par::default(),
+                    bound_map_chain,
+                    free_map: result_known_free,
+                },
+            },
+        }),
+        None => {
+            let _ = known_free;
+            let expr = build_collection_expr(&kind, acc_pars, locally_free, connective_used);
+            Ok(Step::Done(NormVal::Proc(ProcVisitOutputs {
+                par: prepend_expr(input_par, expr, input_depth),
+                free_map: result_known_free,
+            })))
+        }
+    }
+}
+
+/// A map literal, descend half — `fold_match_map`'s prologue.
+#[inline(never)]
+fn descend_collect_map<'ast>(
+    remainder: Option<Var>,
+    pairs: &'ast [KeyValuePair<'ast>],
+    known_free: FreeMap<VarSort>,
+    input: ProcVisitInputs,
+) -> Step<'ast> {
+    let input_depth = input.bound_map_chain.depth() as i32;
+    let bound_map_chain = input.bound_map_chain;
+
+    let Some(first) = pairs.first() else {
+        let expr = build_map_expr(&remainder, Vec::new(), Vec::new(), false);
+        return Step::Done(NormVal::Proc(ProcVisitOutputs {
+            par: prepend_expr(input.par, expr, input_depth),
+            free_map: known_free,
+        }));
+    };
+
+    Step::Descend {
+        kont: NormKont::CollectMap {
+            remainder,
+            pairs,
+            idx: 0,
+            on_value: false,
+            key_par: None,
+            acc_pairs: Vec::with_capacity(pairs.len()),
+            locally_free: Vec::new(),
+            connective_used: false,
+            known_free: known_free.clone(),
+            bound_map_chain: bound_map_chain.clone(),
+            input_par: input.par,
+            input_depth,
+        },
+        work: NormWork::Proc {
+            proc: first.0,
+            input: ProcVisitInputs {
+                par: Par::default(),
+                bound_map_chain,
+                free_map: known_free,
+            },
+        },
+    }
+}
+
+/// `fold_match_map`'s terminal expression, extracted so the empty-map case and
+/// the general case build it identically.
+#[inline(never)]
+fn build_map_expr(
+    remainder: &Option<Var>,
+    acc_pairs: Vec<(Par, Par)>,
+    locally_free: Vec<u8>,
+    connective_used: bool,
+) -> Expr {
+    let remainder_connective_used = match remainder {
+        Some(var) => var.connective_used(var.clone()),
+        None => false,
+    };
+
+    let remainder_locally_free = match remainder {
+        Some(var) => var.locally_free(var.clone(), 0),
+        None => Vec::new(),
+    };
+
+    Expr {
+        expr_instance: Some(ExprInstance::EMapBody(ParMapTypeMapper::par_map_to_emap(
+            ParMap {
+                ps: SortedParMap::create_from_vec(acc_pairs.into_iter().rev().collect()),
+                connective_used: connective_used || remainder_connective_used,
+                locally_free: union(locally_free, remainder_locally_free),
+                remainder: remainder.clone(),
+            },
+        ))),
+    }
+}
+
+/// A map literal, combine half — two children per pair, key **then** value, with
+/// the key's free map threaded into the value's input.
+#[inline(never)]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn combine_collect_map<'ast>(
+    remainder: Option<Var>,
+    pairs: &'ast [KeyValuePair<'ast>],
+    idx: usize,
+    on_value: bool,
+    key_par: Option<Par>,
+    mut acc_pairs: Vec<(Par, Par)>,
+    locally_free: Vec<u8>,
+    connective_used: bool,
+    known_free: FreeMap<VarSort>,
+    bound_map_chain: BoundMapChain<VarSort>,
+    input_par: Par,
+    input_depth: i32,
+    value: NormVal,
+) -> Result<Step<'ast>, InterpreterError> {
+    let result = value.into_proc();
+
+    if !on_value {
+        // The KEY has just finished: schedule this pair's value against the
+        // key's free map.
+        debug_assert!(
+            key_par.is_none(),
+            "combine_collect_map: a key slot was already occupied"
+        );
+        return Ok(Step::Descend {
+            kont: NormKont::CollectMap {
+                remainder,
+                pairs,
+                idx,
+                on_value: true,
+                key_par: Some(result.par),
+                acc_pairs,
+                locally_free,
+                connective_used,
+                known_free,
+                bound_map_chain: bound_map_chain.clone(),
+                input_par,
+                input_depth,
+            },
+            work: NormWork::Proc {
+                proc: pairs[idx].1,
+                input: ProcVisitInputs {
+                    par: Par::default(),
+                    bound_map_chain,
+                    free_map: result.free_map,
+                },
+            },
+        });
+    }
+
+    // The VALUE has just finished: close the pair.
+    let key = key_par.expect("combine_collect_map: a value arrived with no key");
+    // ★ Leg-1. `<Par as Clone>::clone` is itself a Θ(depth) NATIVE-STACK
+    // traversal (15,850 B/level debug, 2,852 release — audit §5 row 5), so a
+    // single deep clone anywhere in this traversal re-imposes the ceiling the
+    // conversion just removed. It did: with the recursion gone the probe read
+    // 15,850 B/level, which is that constant exactly. The recursive form cloned
+    // the child `Par` into the accumulator and then read `locally_free` /
+    // `connective_used` off the original; both are SHALLOW fields, so they are
+    // read first and the deep clone is deleted. Values are identical by
+    // construction — the clone and the original agree on every field.
+    let key_locally_free = key.locally_free.clone();
+    let key_connective_used = key.connective_used;
+    let value_locally_free = result.par.locally_free.clone();
+    let value_connective_used = result.par.connective_used;
+    acc_pairs.push((key, result.par));
+    let result_known_free = result.free_map;
+    let locally_free = union(
+        locally_free,
+        union(key_locally_free, value_locally_free),
+    );
+    let connective_used = connective_used || key_connective_used || value_connective_used;
+
+    match pairs.get(idx + 1) {
+        Some(next) => Ok(Step::Descend {
+            kont: NormKont::CollectMap {
+                remainder,
+                pairs,
+                idx: idx + 1,
+                on_value: false,
+                key_par: None,
+                acc_pairs,
+                locally_free,
+                connective_used,
+                known_free: result_known_free.clone(),
+                bound_map_chain: bound_map_chain.clone(),
+                input_par,
+                input_depth,
+            },
+            work: NormWork::Proc {
+                proc: next.0,
+                input: ProcVisitInputs {
+                    par: Par::default(),
+                    bound_map_chain,
+                    free_map: result_known_free,
+                },
+            },
+        }),
+        None => {
+            let _ = known_free;
+            let expr = build_map_expr(&remainder, acc_pairs, locally_free, connective_used);
+            Ok(Step::Done(NormVal::Proc(ProcVisitOutputs {
+                par: prepend_expr(input_par, expr, input_depth),
+                free_map: result_known_free,
+            })))
+        }
+    }
+}
+
 
 //rholang/src/test/scala/coop/rchain/rholang/interpreter/compiler/normalizer/CollectMatcherSpec.scala
 #[cfg(test)]

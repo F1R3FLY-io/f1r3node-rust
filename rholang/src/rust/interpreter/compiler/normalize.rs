@@ -6,6 +6,7 @@ use rholang_parser::RholangParser;
 
 use super::bound_map_chain::BoundMapChain;
 use super::free_map::FreeMap;
+use super::normalize_drive::{norm_drive, NormKont, NormVal, NormWork, Step};
 use crate::rust::interpreter::compiler::normalizer::processes::p_ground_normalizer::normalize_p_ground;
 use crate::rust::interpreter::compiler::normalizer::processes::p_simple_type_normalizer::normalize_simple_type;
 use crate::rust::interpreter::compiler::utils::{BinaryExpr, UnaryExpr};
@@ -78,69 +79,79 @@ pub struct CollectVisitOutputs {
 }
 
 /**
- * Rholang normalizer entry point
+ * Rholang normalizer entry point.
+ *
+ * ## ★ This is the driver of an explicit pushdown machine, not a recursion
+ *
+ * `normalize_ann_proc` and the 25 functions it is mutually recursive with used
+ * to descend the source AST on the **native stack**, at 43,542 bytes per
+ * nesting level in debug and 7,261 in release. A 577-byte program —
+ * `[`×288 · `0` · `]`×288 — therefore aborted a *release* node, in
+ * `inj_attempt`'s first phase, **before** metering exists and through an error
+ * arm that a `SIGSEGV` cannot reach. The recursion now lives on the heap, in
+ * [`super::normalize_drive::norm_drive`]; native stack is `O(1)` in source
+ * nesting and in sibling width, in both profiles.
+ *
+ * The dispatch itself is [`descend_proc`], which is this function's old `match`
+ * with every recursive call replaced by a [`Step`]. The verbatim recursive form
+ * is retained as `super::normalize_recursive::normalize_ann_proc_recursive`
+ * (test-only) and the two are differentiated in
+ * `super::normalize_differential`.
+ *
+ * Full analysis, measured constants and proof standard:
+ * `docs/design/audits/theta-depth-traversals-2026-07-26.md`.
  */
 pub fn normalize_ann_proc<'ast>(
     proc: &AnnProc<'ast>,
     input: ProcVisitInputs,
-    _env: &HashMap<String, Par>,
+    env: &HashMap<String, Par>,
     parser: &'ast RholangParser<'ast>,
 ) -> Result<ProcVisitOutputs, InterpreterError> {
-    fn unary_exp<'ast>(
-        sub_proc: &'ast AnnProc<'ast>,
-        input: ProcVisitInputs,
-        constructor: Box<dyn UnaryExpr>,
-        env: &HashMap<String, Par>,
-        parser: &'ast RholangParser<'ast>,
-    ) -> Result<ProcVisitOutputs, InterpreterError> {
-        let input_par = input.par.clone();
-        let input_depth = input.bound_map_chain.depth();
-        let sub_result = normalize_ann_proc(sub_proc, input, env, parser)?;
-        let expr = constructor.from_par(sub_result.par.clone());
+    norm_drive(
+        NormWork::Proc {
+            // `AnnProc` is `Copy` (a `&'ast Proc` plus a span), so the machine
+            // carries nodes by value. That is what lets a *synthesised* node —
+            // `p_let`'s desugared `match`, `p_send_sync`'s `new`, `p_if`'s
+            // implicit `Nil` — travel on the work stack: its `Proc` lives in the
+            // parser arena for `'ast`, only the two-word wrapper is local.
+            proc: *proc,
+            input,
+        },
+        env,
+        parser,
+    )
+    .map(NormVal::into_proc)
+}
 
-        Ok(ProcVisitOutputs {
-            par: prepend_expr(input_par, expr, input_depth as i32),
-            free_map: sub_result.free_map,
-        })
-    }
+/// The `Proc` dispatch — this file's original `match`, with every recursive call
+/// replaced by a [`Step`].
+///
+/// Arms fall into four shapes:
+///
+/// | shape | arms | step |
+/// |---|---|---|
+/// | leaf | `Nil`, ground literals, `SimpleType`, `ProcVar`, `VarRef`, `Select`, `Bad` | [`Step::Done`] |
+/// | one continuation, then children | everything structural | [`Step::Descend`] |
+/// | pure desugaring | `SendSync`, `Let` | [`Step::Tail`] |
+/// | validate, then desugar | `SignedTerm`, `TokenStack`, signed `for` | [`Step::Descend`] onto a signature, whose combine is a [`Step::Tail`] |
+pub(crate) fn descend_proc<'ast>(
+    proc: AnnProc<'ast>,
+    input: ProcVisitInputs,
+    _env: &HashMap<String, Par>,
+    parser: &'ast RholangParser<'ast>,
+) -> Result<Step<'ast>, InterpreterError> {
+    use crate::rust::interpreter::compiler::normalizer::processes as p;
 
-    fn binary_exp<'ast>(
-        left_proc: &'ast AnnProc<'ast>,
-        right_proc: &'ast AnnProc<'ast>,
-        input: ProcVisitInputs,
-        constructor: Box<dyn BinaryExpr>,
-        env: &HashMap<String, Par>,
-        parser: &'ast RholangParser<'ast>,
-    ) -> Result<ProcVisitOutputs, InterpreterError> {
-        let input_par = input.par.clone();
-        let input_depth = input.bound_map_chain.depth();
-        let input_bound_chain = input.bound_map_chain.clone();
+    // ⚠ The normalizer env reaches only two places: `normalize_p_new`'s
+    // injection map (built in its COMBINE half, where the driver hands it over)
+    // and `canon_quote`'s nested drive. No `descend` arm consults it, so it is
+    // not threaded through the dispatch.
 
-        let left_result = normalize_ann_proc(left_proc, input, env, parser)?;
-        let right_result = normalize_ann_proc(
-            right_proc,
-            ProcVisitInputs {
-                par: Par::default(),
-                bound_map_chain: input_bound_chain,
-                free_map: left_result.free_map.clone(),
-            },
-            env,
-            parser,
-        )?;
-
-        let expr: Expr = constructor.from_pars(left_result.par.clone(), right_result.par.clone());
-
-        Ok(ProcVisitOutputs {
-            par: prepend_expr(input_par, expr, input_depth as i32),
-            free_map: right_result.free_map,
-        })
-    }
-
-    match &proc.proc {
-        Proc::Nil => Ok(ProcVisitOutputs {
-            par: input.par.clone(),
-            free_map: input.free_map.clone(),
-        }),
+    match proc.proc {
+        Proc::Nil => Ok(Step::Done(NormVal::Proc(ProcVisitOutputs {
+            par: input.par,
+            free_map: input.free_map,
+        }))),
 
         // Ground literals
         Proc::Unit
@@ -153,38 +164,43 @@ pub fn normalize_ann_proc<'ast>(
         | Proc::FloatLiteral { .. }
         | Proc::FixedPointLiteral { .. }
         | Proc::StringLiteral(_)
-        | Proc::UriLiteral(_) => normalize_p_ground(proc.proc, input),
+        | Proc::UriLiteral(_) => Ok(Step::Done(NormVal::Proc(normalize_p_ground(
+            proc.proc, input,
+        )?))),
 
-        Proc::SimpleType(simple_type) => normalize_simple_type(simple_type, input),
+        Proc::SimpleType(simple_type) => Ok(Step::Done(NormVal::Proc(normalize_simple_type(
+            simple_type,
+            input,
+        )?))),
 
         Proc::ProcVar(var) => {
             use crate::rust::interpreter::compiler::normalizer::processes::p_var_normalizer::normalize_p_var;
-            normalize_p_var(var, input, proc.span)
+            Ok(Step::Done(NormVal::Proc(normalize_p_var(
+                var, input, proc.span,
+            )?)))
         }
 
-        Proc::Par { left, right } => {
-            use crate::rust::interpreter::compiler::normalizer::processes::p_par_normalizer::normalize_p_par;
-            normalize_p_par(left, right, input, _env, parser)
-        }
+        Proc::Par { left, right } => Ok(p::p_par_normalizer::descend_p_par(left, right, input)),
 
-        Proc::Eval { name } => {
-            use crate::rust::interpreter::compiler::normalizer::processes::p_eval_normalizer::normalize_p_eval;
-            normalize_p_eval(name, input, _env, parser)
-        }
+        Proc::Eval { name } => Ok(p::p_eval_normalizer::descend_p_eval(name, input)),
 
         // UnaryExp - handle all unary operators
         Proc::UnaryExp { op, arg } => match op {
-            rholang_parser::ast::UnaryExpOp::Negation => {
-                use crate::rust::interpreter::compiler::normalizer::processes::p_negation_normalizer::normalize_p_negation;
-                normalize_p_negation(arg.proc, arg.span, input, _env, parser)
-            }
+            rholang_parser::ast::UnaryExpOp::Negation => Ok(
+                // ⚠ `arg.span`, NOT `proc.span`. The recursive form passed the
+                // ARGUMENT's span, and that span is what the free map records
+                // for the connective; using the whole `~P` span instead is
+                // byte-visible in the error text a rejected pattern produces.
+                // The differential caught exactly this on `~7`.
+                p::p_negation_normalizer::descend_p_negation(*arg, arg.span, input),
+            ),
             rholang_parser::ast::UnaryExpOp::Not => {
                 use models::rhoapi::ENot;
-                unary_exp(arg, input, Box::new(ENot::default()), _env, parser)
+                Ok(descend_unary(*arg, input, Box::new(ENot::default())))
             }
             rholang_parser::ast::UnaryExpOp::Neg => {
                 use models::rhoapi::ENeg;
-                unary_exp(arg, input, Box::new(ENeg::default()), _env, parser)
+                Ok(descend_unary(*arg, input, Box::new(ENeg::default())))
             }
         },
 
@@ -192,187 +208,163 @@ pub fn normalize_ann_proc<'ast>(
         Proc::BinaryExp { op, left, right } => {
             match op {
                 // Logical connectives
-                rholang_parser::ast::BinaryExpOp::Conjunction => {
-                    use crate::rust::interpreter::compiler::normalizer::processes::p_conjunction_normalizer::normalize_p_conjunction;
-                    normalize_p_conjunction(left, right, input, _env, parser)
-                }
-                rholang_parser::ast::BinaryExpOp::Disjunction => {
-                    use crate::rust::interpreter::compiler::normalizer::processes::p_disjunction_normalizer::normalize_p_disjunction;
-                    normalize_p_disjunction(left, right, input, _env, parser)
-                }
-                rholang_parser::ast::BinaryExpOp::Matches => {
-                    use crate::rust::interpreter::compiler::normalizer::processes::p_matches_normalizer::normalize_p_matches;
-                    normalize_p_matches(left, right, input, _env, parser)
-                }
+                rholang_parser::ast::BinaryExpOp::Conjunction => Ok(
+                    p::p_conjunction_normalizer::descend_p_conjunction(*left, *right, input),
+                ),
+                rholang_parser::ast::BinaryExpOp::Disjunction => Ok(
+                    p::p_disjunction_normalizer::descend_p_disjunction(*left, *right, input),
+                ),
+                rholang_parser::ast::BinaryExpOp::Matches => Ok(
+                    p::p_matches_normalizer::descend_p_matches(*left, *right, input),
+                ),
 
                 // Arithmetic
                 rholang_parser::ast::BinaryExpOp::Add => {
-                    binary_exp(left, right, input, Box::new(EPlus::default()), _env, parser)
+                    Ok(descend_binary(*left, *right, input, Box::new(EPlus::default())))
                 }
-                rholang_parser::ast::BinaryExpOp::Sub => binary_exp(
-                    left,
-                    right,
+                rholang_parser::ast::BinaryExpOp::Sub => Ok(descend_binary(
+                    *left,
+                    *right,
                     input,
                     Box::new(EMinus::default()),
-                    _env,
-                    parser,
-                ),
+                )),
                 rholang_parser::ast::BinaryExpOp::Mult => {
                     use models::rhoapi::EMult;
-                    binary_exp(left, right, input, Box::new(EMult::default()), _env, parser)
+                    Ok(descend_binary(*left, *right, input, Box::new(EMult::default())))
                 }
                 rholang_parser::ast::BinaryExpOp::Div => {
                     use models::rhoapi::EDiv;
-                    binary_exp(left, right, input, Box::new(EDiv::default()), _env, parser)
+                    Ok(descend_binary(*left, *right, input, Box::new(EDiv::default())))
                 }
                 rholang_parser::ast::BinaryExpOp::Mod => {
                     use models::rhoapi::EMod;
-                    binary_exp(left, right, input, Box::new(EMod::default()), _env, parser)
+                    Ok(descend_binary(*left, *right, input, Box::new(EMod::default())))
                 }
 
                 // Comparison operators
                 rholang_parser::ast::BinaryExpOp::Eq => {
                     use models::rhoapi::EEq;
-                    binary_exp(left, right, input, Box::new(EEq::default()), _env, parser)
+                    Ok(descend_binary(*left, *right, input, Box::new(EEq::default())))
                 }
                 rholang_parser::ast::BinaryExpOp::Neq => {
                     use models::rhoapi::ENeq;
-                    binary_exp(left, right, input, Box::new(ENeq::default()), _env, parser)
+                    Ok(descend_binary(*left, *right, input, Box::new(ENeq::default())))
                 }
                 rholang_parser::ast::BinaryExpOp::Lt => {
                     use models::rhoapi::ELt;
-                    binary_exp(left, right, input, Box::new(ELt::default()), _env, parser)
+                    Ok(descend_binary(*left, *right, input, Box::new(ELt::default())))
                 }
                 rholang_parser::ast::BinaryExpOp::Lte => {
                     use models::rhoapi::ELte;
-                    binary_exp(left, right, input, Box::new(ELte::default()), _env, parser)
+                    Ok(descend_binary(*left, *right, input, Box::new(ELte::default())))
                 }
                 rholang_parser::ast::BinaryExpOp::Gt => {
                     use models::rhoapi::EGt;
-                    binary_exp(left, right, input, Box::new(EGt::default()), _env, parser)
+                    Ok(descend_binary(*left, *right, input, Box::new(EGt::default())))
                 }
                 rholang_parser::ast::BinaryExpOp::Gte => {
                     use models::rhoapi::EGte;
-                    binary_exp(left, right, input, Box::new(EGte::default()), _env, parser)
+                    Ok(descend_binary(*left, *right, input, Box::new(EGte::default())))
                 }
 
                 // Set/String operations
                 rholang_parser::ast::BinaryExpOp::Concat => {
                     use models::rhoapi::EPlusPlus;
-                    binary_exp(
-                        left,
-                        right,
+                    Ok(descend_binary(
+                        *left,
+                        *right,
                         input,
                         Box::new(EPlusPlus::default()),
-                        _env,
-                        parser,
-                    )
+                    ))
                 }
                 rholang_parser::ast::BinaryExpOp::Diff => {
                     use models::rhoapi::EMinusMinus;
-                    binary_exp(
-                        left,
-                        right,
+                    Ok(descend_binary(
+                        *left,
+                        *right,
                         input,
                         Box::new(EMinusMinus::default()),
-                        _env,
-                        parser,
-                    )
+                    ))
                 }
 
                 // Boolean operators
                 rholang_parser::ast::BinaryExpOp::Or => {
                     use models::rhoapi::EOr;
-                    binary_exp(left, right, input, Box::new(EOr::default()), _env, parser)
+                    Ok(descend_binary(*left, *right, input, Box::new(EOr::default())))
                 }
                 rholang_parser::ast::BinaryExpOp::And => {
                     use models::rhoapi::EAnd;
-                    binary_exp(left, right, input, Box::new(EAnd::default()), _env, parser)
+                    Ok(descend_binary(*left, *right, input, Box::new(EAnd::default())))
                 }
 
                 // String interpolation
                 rholang_parser::ast::BinaryExpOp::Interpolation => {
                     use models::rhoapi::EPercentPercent;
-                    binary_exp(
-                        left,
-                        right,
+                    Ok(descend_binary(
+                        *left,
+                        *right,
                         input,
                         Box::new(EPercentPercent::default()),
-                        _env,
-                        parser,
-                    )
+                    ))
                 }
             }
         }
 
         // IfThenElse - handle conditional statements
+        //
+        // The recursive form normalized against an EMPTY `par` and appended the
+        // original afterwards (`new_visits.par.append(input.par)`). The machine
+        // keeps that asymmetry by handing the original `par` to the continuation
+        // as `outer_par`; see `p_if_normalizer::descend_p_if`.
         Proc::IfThenElse {
             condition,
             if_true,
             if_false,
-        } => {
-            use crate::rust::interpreter::compiler::normalizer::processes::p_if_normalizer::normalize_p_if;
-
-            // Follow same pattern as original IfElse: use empty Par for normalization, then append original Par
-            let mut empty_par_input = input.clone();
-            empty_par_input.par = Par::default();
-
-            // Use the updated normalize_p_if that handles None case internally
-            normalize_p_if(
-                condition,
-                if_true,
-                if_false.as_ref(),
-                empty_par_input,
-                _env,
-                parser,
-            )
-            .map(|mut new_visits| {
-                let new_par = new_visits.par.append(input.par);
-                new_visits.par = new_par;
-                new_visits
-            })
-        }
+        } => Ok(p::p_if_normalizer::descend_p_if(
+            *condition,
+            *if_true,
+            *if_false,
+            input,
+        )),
 
         // Method - handle method calls
         Proc::Method {
             receiver,
             name,
             args,
-        } => {
-            use crate::rust::interpreter::compiler::normalizer::processes::p_method_normalizer::normalize_p_method;
-            normalize_p_method(receiver, name, args, input, _env, parser)
-        }
+        } => Ok(p::p_method_normalizer::descend_p_method(
+            *receiver, name, args, input,
+        )),
 
         // Bundle - handle bundle constructs
-        Proc::Bundle { bundle_type, proc } => {
-            use crate::rust::interpreter::compiler::normalizer::processes::p_bundle_normalizer::normalize_p_bundle;
-            normalize_p_bundle(bundle_type, proc, input, &proc.span, _env, parser)
-        }
+        Proc::Bundle { bundle_type, proc: body } => Ok(p::p_bundle_normalizer::descend_p_bundle(
+            *bundle_type,
+            *body,
+            input,
+            body.span,
+        )),
 
         // Send - handle send operations
         Proc::Send {
             channel,
             send_type,
             inputs,
-        } => {
-            use crate::rust::interpreter::compiler::normalizer::processes::p_send_normalizer::normalize_p_send;
-            normalize_p_send(channel, send_type, inputs, input, _env, parser)
-        }
+        } => Ok(p::p_send_normalizer::descend_p_send(
+            *channel, send_type, inputs, input,
+        )),
 
         // SendSync - handle synchronous send operations
         Proc::SendSync {
             channel,
             inputs,
             cont,
-        } => {
-            use crate::rust::interpreter::compiler::normalizer::processes::p_send_sync_normalizer::normalize_p_send_sync;
-            normalize_p_send_sync(channel, inputs, cont, &proc.span, input, _env, parser)
-        }
+        } => Ok(p::p_send_sync_normalizer::descend_p_send_sync(
+            channel, inputs, cont, &proc.span, input, parser,
+        )),
 
         // New - handle name declarations and scoping
-        Proc::New { decls, proc } => {
-            use crate::rust::interpreter::compiler::normalizer::processes::p_new_normalizer::normalize_p_new;
-            normalize_p_new(decls, proc, input, _env, parser)
+        Proc::New { decls, proc: body } => {
+            p::p_new_normalizer::descend_p_new(decls, *body, input)
         }
 
         // Contract - handle contract declarations
@@ -380,21 +372,21 @@ pub fn normalize_ann_proc<'ast>(
             name,
             formals,
             body,
-        } => {
-            use crate::rust::interpreter::compiler::normalizer::processes::p_contr_normalizer::normalize_p_contr;
-            normalize_p_contr(name, formals, body, input, _env, parser)
-        }
+        } => Ok(p::p_contr_normalizer::descend_p_contr(
+            *name, formals, *body, input,
+        )),
 
         // Match - handle pattern matching
-        Proc::Match { expression, cases } => {
-            use crate::rust::interpreter::compiler::normalizer::processes::p_match_normalizer::normalize_p_match;
-            normalize_p_match(expression, cases, input, _env, parser)
-        }
+        Proc::Match { expression, cases } => Ok(p::p_match_normalizer::descend_p_match(
+            *expression,
+            cases.as_slice(),
+            input,
+        )),
 
         // Collection - handle data structures (lists, tuples, sets, maps)
         Proc::Collection(collection) => {
-            use crate::rust::interpreter::compiler::normalizer::processes::p_collect_normalizer::normalize_p_collect;
-            normalize_p_collect(collection, input, _env, parser)
+            use crate::rust::interpreter::compiler::normalizer::collection_normalize_matcher::descend_collection;
+            descend_collection(collection, input)
         }
 
         // ForComprehension - handle for-comprehensions (was Input in old AST)
@@ -418,11 +410,16 @@ pub fn normalize_ann_proc<'ast>(
                     .any(|bind| matches!(bind, Bind::Signed { .. }))
             });
             if has_signed_bind {
-                use crate::rust::interpreter::compiler::normalizer::cost_accounting::recognize::recognize_signed_join;
-                recognize_signed_join(receipts, *continuation, proc.span, input, _env, parser)
+                use crate::rust::interpreter::compiler::normalizer::cost_accounting::recognize::descend_signed_join;
+                Ok(descend_signed_join(
+                    receipts,
+                    *continuation,
+                    proc.span,
+                    input,
+                    parser,
+                ))
             } else {
-                use crate::rust::interpreter::compiler::normalizer::processes::p_input_normalizer::normalize_p_input;
-                normalize_p_input(receipts, continuation, input, _env, parser)
+                p::p_input_normalizer::descend_p_input(receipts, *continuation, input, parser)
             }
         }
 
@@ -431,15 +428,16 @@ pub fn normalize_ann_proc<'ast>(
             bindings,
             body,
             concurrent,
-        } => {
-            use crate::rust::interpreter::compiler::normalizer::processes::p_let_normalizer::normalize_p_let;
-            normalize_p_let(bindings, body, *concurrent, proc.span, input, _env, parser)
-        }
+        } => Ok(p::p_let_normalizer::descend_p_let(
+            bindings, *body, *concurrent, proc.span, input, parser,
+        )),
 
         // VarRef - handle variable references
         Proc::VarRef { kind, var } => {
             use crate::rust::interpreter::compiler::normalizer::processes::p_var_ref_normalizer::normalize_p_var_ref;
-            normalize_p_var_ref(*kind, var, input, proc.span)
+            Ok(Step::Done(NormVal::Proc(normalize_p_var_ref(
+                *kind, var, input, proc.span,
+            )?)))
         }
 
         // Select - handle select expressions (choice constructs)
@@ -459,12 +457,12 @@ pub fn normalize_ann_proc<'ast>(
         // concern (Phase 3, at the reducer/gate where the `Cosigned` envelope is
         // installed — BLOCKER-1). See `normalizer::cost_accounting::recognize`.
         Proc::SignedTerm { proc: inner, sig } => {
-            use crate::rust::interpreter::compiler::normalizer::cost_accounting::recognize::recognize_signed_term;
-            recognize_signed_term(inner, sig, input, _env, parser)
+            use crate::rust::interpreter::compiler::normalizer::cost_accounting::recognize::descend_signed_term;
+            descend_signed_term(*inner, sig, input, parser)
         }
         Proc::TokenStack { stack } => {
-            use crate::rust::interpreter::compiler::normalizer::cost_accounting::recognize::recognize_token_stack;
-            recognize_token_stack(stack, input, _env, parser)
+            use crate::rust::interpreter::compiler::normalizer::cost_accounting::recognize::descend_token_stack;
+            Ok(descend_token_stack(stack, input))
         }
 
         // Bad - handle parsing errors
@@ -473,6 +471,128 @@ pub fn normalize_ann_proc<'ast>(
         )),
     }
 }
+
+/// `unary_exp`, descend half.
+///
+/// ⚠ The sub-process receives the **whole** `input`, `par` included — it is not
+/// re-based on an empty `Par`. `input_par` is snapshotted first because the
+/// result is `prepend_expr(input_par, …)`, i.e. the original `par` with the new
+/// expression in front.
+#[inline(never)]
+fn descend_unary<'ast>(
+    sub_proc: AnnProc<'ast>,
+    input: ProcVisitInputs,
+    ctor: Box<dyn UnaryExpr>,
+) -> Step<'ast> {
+    let input_par = input.par.clone();
+    let input_depth = input.bound_map_chain.depth() as i32;
+    Step::Descend {
+        kont: NormKont::Unary {
+            input_par,
+            input_depth,
+            ctor,
+        },
+        work: NormWork::Proc {
+            proc: sub_proc,
+            input,
+        },
+    }
+}
+
+/// `unary_exp`, combine half.
+#[inline(never)]
+pub(crate) fn combine_unary<'ast>(
+    input_par: Par,
+    input_depth: i32,
+    ctor: Box<dyn UnaryExpr>,
+    value: NormVal,
+) -> Result<Step<'ast>, InterpreterError> {
+    let sub_result = value.into_proc();
+    let expr = ctor.from_par(sub_result.par);
+    Ok(Step::Done(NormVal::Proc(ProcVisitOutputs {
+        par: prepend_expr(input_par, expr, input_depth),
+        free_map: sub_result.free_map,
+    })))
+}
+
+/// `binary_exp`, descend half — the LEFT operand.
+///
+/// ★ This is the archetype of the threading problem. The right operand is
+/// normalized against `left_result.free_map`, so it cannot be scheduled until
+/// the left one has produced a value; and it is re-based on `Par::default()`
+/// with the *entry* `bound_map_chain`, not with whatever the left operand left
+/// behind. Both are carried in the continuation.
+#[inline(never)]
+fn descend_binary<'ast>(
+    left_proc: AnnProc<'ast>,
+    right_proc: AnnProc<'ast>,
+    input: ProcVisitInputs,
+    ctor: Box<dyn BinaryExpr>,
+) -> Step<'ast> {
+    let input_par = input.par.clone();
+    let input_depth = input.bound_map_chain.depth() as i32;
+    let input_bound_chain = input.bound_map_chain.clone();
+    Step::Descend {
+        kont: NormKont::Binary {
+            right: right_proc,
+            input_par,
+            input_depth,
+            bound_map_chain: input_bound_chain,
+            ctor,
+            left_par: None,
+        },
+        work: NormWork::Proc {
+            proc: left_proc,
+            input,
+        },
+    }
+}
+
+/// `binary_exp`, combine half — schedules the RIGHT operand, then builds.
+#[inline(never)]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn combine_binary<'ast>(
+    right: AnnProc<'ast>,
+    input_par: Par,
+    input_depth: i32,
+    bound_map_chain: BoundMapChain<VarSort>,
+    ctor: Box<dyn BinaryExpr>,
+    left_par: Option<Par>,
+    value: NormVal,
+) -> Result<Step<'ast>, InterpreterError> {
+    let result = value.into_proc();
+    match left_par {
+        // The left operand has just finished: thread its free map into the
+        // right operand's input and schedule it.
+        None => Ok(Step::Descend {
+            kont: NormKont::Binary {
+                right,
+                input_par,
+                input_depth,
+                bound_map_chain: bound_map_chain.clone(),
+                ctor,
+                left_par: Some(result.par),
+            },
+            work: NormWork::Proc {
+                proc: right,
+                input: ProcVisitInputs {
+                    par: Par::default(),
+                    bound_map_chain,
+                    free_map: result.free_map,
+                },
+            },
+        }),
+        // The right operand has just finished.
+        Some(lp) => {
+            let expr: Expr = ctor.from_pars(lp, result.par);
+            Ok(Step::Done(NormVal::Proc(ProcVisitOutputs {
+                par: prepend_expr(input_par, expr, input_depth),
+                free_map: result.free_map,
+            })))
+        }
+    }
+}
+
 
 // See rholang/src/test/scala/coop/rchain/rholang/interpreter/compiler/normalizer/ProcMatcherSpec.scala
 // inside this source file we tested unary and binary operations, because we don't have separate normalizers for them.

@@ -1,91 +1,163 @@
-use std::collections::HashMap;
-
 use models::rhoapi::{If, Par};
 use models::rust::utils::union;
 use rholang_parser::ast::AnnProc;
 
+use crate::rust::interpreter::compiler::bound_map_chain::BoundMapChain;
 use crate::rust::interpreter::compiler::exports::{ProcVisitInputs, ProcVisitOutputs};
-use crate::rust::interpreter::compiler::normalize::normalize_ann_proc;
+use crate::rust::interpreter::compiler::normalize::VarSort;
+use crate::rust::interpreter::compiler::normalize_drive::{
+    IfPhase, NormKont, NormVal, NormWork, Step,
+};
 use crate::rust::interpreter::errors::InterpreterError;
 
-pub fn normalize_p_if<'ast>(
-    condition: &'ast AnnProc<'ast>,
-    if_true: &'ast AnnProc<'ast>,
-    if_false: Option<&'ast AnnProc<'ast>>,
-    mut input: ProcVisitInputs,
-    env: &HashMap<String, Par>,
-    parser: &'ast rholang_parser::RholangParser<'ast>,
-) -> Result<ProcVisitOutputs, InterpreterError> {
-    let target_result =
-        normalize_ann_proc(condition, ProcVisitInputs { ..input.clone() }, env, parser)?;
-
-    let true_case_body = normalize_ann_proc(
-        if_true,
-        ProcVisitInputs {
-            par: Par::default(),
-            bound_map_chain: input.bound_map_chain.clone(),
-            free_map: target_result.free_map.clone(),
+/// `if (C) T else F`, descend half — the CONDITION.
+///
+/// ★ Two asymmetries are fused in here, both from `normalize.rs`'s
+/// `IfThenElse` arm rather than from `normalize_p_if` itself:
+///
+/// 1. the whole conditional is normalized against an **empty** `par`, and the
+///    caller's `par` is `append`ed to the *result* — so the entry `par` travels
+///    in the continuation as `outer_par` and is not visible to any child;
+/// 2. a missing `else` is not skipped, it is normalized as a **synthesised
+///    `Nil`** at span `0:0-0:0`. That is a no-op on the term but it is *not* a
+///    no-op on the free map plumbing, so it is reproduced literally rather than
+///    short-circuited.
+#[inline(never)]
+pub(crate) fn descend_p_if<'ast>(
+    condition: AnnProc<'ast>,
+    if_true: AnnProc<'ast>,
+    if_false: Option<AnnProc<'ast>>,
+    input: ProcVisitInputs,
+) -> Step<'ast> {
+    // Follow same pattern as original IfElse: use empty Par for normalization,
+    // then append original Par
+    let outer_par = input.par;
+    let bound_map_chain = input.bound_map_chain;
+    Step::Descend {
+        kont: NormKont::If {
+            if_true,
+            if_false,
+            bound_map_chain: bound_map_chain.clone(),
+            outer_par,
+            phase: IfPhase::Condition,
+            condition: None,
+            true_case: None,
         },
-        env,
-        parser,
-    )?;
-
-    let false_case_body = match if_false {
-        Some(false_proc) => normalize_ann_proc(
-            false_proc,
-            ProcVisitInputs {
+        work: NormWork::Proc {
+            proc: condition,
+            input: ProcVisitInputs {
                 par: Par::default(),
-                bound_map_chain: input.bound_map_chain.clone(),
-                free_map: true_case_body.free_map.clone(),
+                bound_map_chain,
+                free_map: input.free_map,
             },
-            env,
-            parser,
-        )?,
-        None => {
-            let nil_proc_ref = parser.ast_builder().const_nil();
-            let nil_ann_proc = rholang_parser::ast::AnnProc {
-                proc: nil_proc_ref,
-                span: rholang_parser::SourceSpan {
-                    start: rholang_parser::SourcePos { line: 0, col: 0 },
-                    end: rholang_parser::SourcePos { line: 0, col: 0 },
-                },
-            };
-            normalize_ann_proc(
-                &nil_ann_proc,
-                ProcVisitInputs {
-                    par: Par::default(),
-                    bound_map_chain: input.bound_map_chain.clone(),
-                    free_map: true_case_body.free_map.clone(),
-                },
-                env,
-                parser,
-            )?
-        }
-    };
-
-    let desugared_if = If {
-        condition: Some(target_result.par.clone()),
-        if_true: Some(true_case_body.par.clone()),
-        if_false: Some(false_case_body.par.clone()),
-        locally_free: union(
-            union(
-                target_result.par.locally_free.clone(),
-                true_case_body.par.locally_free.clone(),
-            ),
-            false_case_body.par.locally_free.clone(),
-        ),
-        connective_used: target_result.par.connective_used
-            || true_case_body.par.connective_used
-            || false_case_body.par.connective_used,
-    };
-
-    let updated_par = input.par.prepend_if(desugared_if);
-
-    Ok(ProcVisitOutputs {
-        par: updated_par,
-        free_map: false_case_body.free_map,
-    })
+        },
+    }
 }
+
+/// `if (C) T else F`, combine half.
+#[inline(never)]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn combine_p_if<'ast>(
+    if_true: AnnProc<'ast>,
+    if_false: Option<AnnProc<'ast>>,
+    bound_map_chain: BoundMapChain<VarSort>,
+    outer_par: Par,
+    phase: IfPhase,
+    condition: Option<ProcVisitOutputs>,
+    true_case: Option<ProcVisitOutputs>,
+    value: NormVal,
+    parser: &'ast rholang_parser::RholangParser<'ast>,
+) -> Result<Step<'ast>, InterpreterError> {
+    let result = value.into_proc();
+    match phase {
+        IfPhase::Condition => Ok(Step::Descend {
+            kont: NormKont::If {
+                if_true,
+                if_false,
+                bound_map_chain: bound_map_chain.clone(),
+                outer_par,
+                phase: IfPhase::TrueCase,
+                condition: Some(result.clone()),
+                true_case: None,
+            },
+            work: NormWork::Proc {
+                proc: if_true,
+                input: ProcVisitInputs {
+                    par: Par::default(),
+                    bound_map_chain,
+                    free_map: result.free_map,
+                },
+            },
+        }),
+
+        IfPhase::TrueCase => {
+            let false_proc = match if_false {
+                Some(p) => p,
+                None => {
+                    let nil_proc_ref = parser.ast_builder().const_nil();
+                    rholang_parser::ast::AnnProc {
+                        proc: nil_proc_ref,
+                        span: rholang_parser::SourceSpan {
+                            start: rholang_parser::SourcePos { line: 0, col: 0 },
+                            end: rholang_parser::SourcePos { line: 0, col: 0 },
+                        },
+                    }
+                }
+            };
+            Ok(Step::Descend {
+                kont: NormKont::If {
+                    if_true,
+                    if_false,
+                    bound_map_chain: bound_map_chain.clone(),
+                    outer_par,
+                    phase: IfPhase::FalseCase,
+                    condition,
+                    true_case: Some(result.clone()),
+                },
+                work: NormWork::Proc {
+                    proc: false_proc,
+                    input: ProcVisitInputs {
+                        par: Par::default(),
+                        bound_map_chain,
+                        free_map: result.free_map,
+                    },
+                },
+            })
+        }
+
+        IfPhase::FalseCase => {
+            let target_result =
+                condition.expect("combine_p_if: the condition is filled before the true case");
+            let true_case_body =
+                true_case.expect("combine_p_if: the true case is filled before the false case");
+            let false_case_body = result;
+
+            // ★ Leg-1: three shallow reads, then three MOVES.
+            let cond_lf = target_result.par.locally_free.clone();
+            let true_lf = true_case_body.par.locally_free.clone();
+            let false_lf = false_case_body.par.locally_free.clone();
+            let connective_used = target_result.par.connective_used
+                || true_case_body.par.connective_used
+                || false_case_body.par.connective_used;
+            let desugared_if = If {
+                condition: Some(target_result.par),
+                if_true: Some(true_case_body.par),
+                if_false: Some(false_case_body.par),
+                locally_free: union(union(cond_lf, true_lf), false_lf),
+                connective_used,
+            };
+
+            // `normalize_p_if` prepends onto its own (empty) `par`; the
+            // `IfThenElse` arm then appends the caller's.
+            let updated_par = Par::default().prepend_if(desugared_if);
+            Ok(Step::Done(NormVal::Proc(ProcVisitOutputs {
+                par: updated_par.append(outer_par),
+                free_map: false_case_body.free_map,
+            })))
+        }
+    }
+}
+
 
 // See rholang/src/test/scala/coop/rchain/rholang/interpreter/compiler/normalizer/ProcMatcherSpec.scala
 #[cfg(test)]

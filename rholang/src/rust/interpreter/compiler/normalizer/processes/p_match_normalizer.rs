@@ -1,138 +1,259 @@
-use std::collections::HashMap;
-
 use models::rhoapi::{Match, MatchCase, Par};
 use models::rust::utils::union;
 use rholang_parser::ast::{AnnProc, Case};
 
 use crate::rust::interpreter::compiler::exports::{FreeMap, ProcVisitInputs, ProcVisitOutputs};
-use crate::rust::interpreter::compiler::normalize::normalize_ann_proc;
+use crate::rust::interpreter::compiler::normalize_drive::{
+    MatchK, MatchPhase, NormKont, NormVal, NormWork, Step,
+};
 use crate::rust::interpreter::compiler::normalizer::cost_accounting::pattern_guard::reject_cost_syntax_in_pattern;
 use crate::rust::interpreter::errors::InterpreterError;
 use crate::rust::interpreter::util::filter_and_adjust_bitset;
 
-pub fn normalize_p_match<'ast>(
-    expression: &'ast AnnProc<'ast>,
+/// `match E { p₁ => b₁ … }`, descend half — the SCRUTINEE first.
+///
+/// Each case then contributes two or three children, in this order:
+///
+/// ```text
+///    pattern  ──▶  [ where-guard ]  ──▶  body
+///       │                 │               │
+///       │  fresh free map,│ case_env,     │ case_env,
+///       │  chain.push()   │ acc free map  │ guard's free map
+///       ▼                 ▼               ▼
+///    absorb_free_span(pattern.free_map) = case_env, and
+///    bound_count = pattern.free_map.count_no_wildcards()
+/// ```
+///
+/// ★ The pattern's own free map is *not* threaded onward — it is **absorbed
+/// into the binding chain** for the guard and body, which is exactly the
+/// binder-scoping the machine has to reproduce as an explicit discipline. The
+/// scrutinee's free map, by contrast, threads through every case in order, so a
+/// case that binds a free name shifts the levels every later case sees.
+#[inline(never)]
+pub(crate) fn descend_p_match<'ast>(
+    expression: AnnProc<'ast>,
     cases: &'ast [Case<'ast>],
     input: ProcVisitInputs,
-    env: &HashMap<String, Par>,
-    parser: &'ast rholang_parser::RholangParser<'ast>,
-) -> Result<ProcVisitOutputs, InterpreterError> {
-    let target_result = normalize_ann_proc(
-        expression,
-        ProcVisitInputs {
-            par: Par::default(),
-            ..input.clone()
+) -> Step<'ast> {
+    let child_input = ProcVisitInputs {
+        par: Par::default(),
+        ..input.clone()
+    };
+    let case_env = input.bound_map_chain.clone();
+    Step::Descend {
+        kont: NormKont::Match(Box::new(MatchK {
+            cases,
+            case_idx: 0,
+            phase: MatchPhase::Target,
+            input,
+            target: None,
+            acc_cases: Vec::with_capacity(cases.len()),
+            known_free: FreeMap::default(),
+            acc_locally_free: Vec::new(),
+            acc_connective_used: false,
+            case_env,
+            bound_count: 0,
+            pattern_par: None,
+            pattern_locally_free: Vec::new(),
+            guard_out: None,
+        })),
+        work: NormWork::Proc {
+            proc: expression,
+            input: child_input,
         },
-        env,
-        parser,
-    )?;
+    }
+}
 
-    let mut init_acc = (vec![], target_result.free_map.clone(), Vec::new(), false);
+/// Schedule the next case's PATTERN, or finish the `match` if the cases are
+/// exhausted.
+fn next_case<'ast>(mut k: Box<MatchK<'ast>>) -> Result<Step<'ast>, InterpreterError> {
+    let Some(case) = k.cases.get(k.case_idx) else {
+        // Every case is in — assemble.
+        let MatchK {
+            mut input,
+            target,
+            acc_cases,
+            known_free,
+            acc_locally_free,
+            acc_connective_used,
+            ..
+        } = *k;
+        let target_result =
+            target.expect("combine_p_match: the scrutinee is filled before any case");
 
-    for case in cases {
-        let Case {
-            pattern,
-            guard,
-            proc: case_body,
-        } = case;
+        let cases: Vec<MatchCase> = acc_cases.into_iter().rev().collect();
+        // ★ Leg-1: shallow reads, then MOVE the scrutinee into the `Match`.
+        let target_locally_free = target_result.par.locally_free.clone();
+        let locally_free = union(acc_locally_free, target_locally_free);
+        let connective_used = acc_connective_used || target_result.par.connective_used;
 
-        // Cost syntax (`{% P %}[s]`, `s :: S`) is a process form (recognized +
-        // metered), not a match pattern — reject it in pattern position (W1
-        // §1.5). f1r3node's normalizer does not run rholang-lib's resolver, so
-        // the guard is applied here at the pattern entry point.
-        reject_cost_syntax_in_pattern(pattern)?;
-
-        let pattern_result = normalize_ann_proc(
-            pattern,
-            ProcVisitInputs {
-                par: Par::default(),
-                bound_map_chain: input.bound_map_chain.push(),
-                free_map: FreeMap::default(),
-            },
-            env,
-            parser,
-        )?;
-
-        let case_env = input
-            .bound_map_chain
-            .absorb_free_span(&pattern_result.free_map);
-        let bound_count = pattern_result.free_map.count_no_wildcards();
-
-        // Optional `where` guard: normalized in the same scope as the
-        // case body (pattern bindings absorbed into bound_map_chain).
-        // No syntactic check on the guard's content (see plan §3.8) —
-        // bool-ness is enforced at runtime by the matcher in Phase 6.
-        let guard_result = match guard {
-            Some(g) => Some(normalize_ann_proc(
-                g,
-                ProcVisitInputs {
-                    par: Par::default(),
-                    bound_map_chain: case_env.clone(),
-                    free_map: init_acc.1.clone(),
-                },
-                env,
-                parser,
-            )?),
-            None => None,
+        let result_match = Match {
+            target: Some(target_result.par),
+            cases,
+            locally_free,
+            connective_used,
         };
+        return Ok(Step::Done(NormVal::Proc(ProcVisitOutputs {
+            par: input.par.prepend_match(result_match),
+            free_map: known_free,
+        })));
+    };
 
-        let case_body_result = normalize_ann_proc(
-            case_body,
-            ProcVisitInputs {
+    // Cost syntax (`{% P %}[s]`, `s :: S`) is a process form (recognized +
+    // metered), not a match pattern — reject it in pattern position (W1
+    // §1.5). f1r3node's normalizer does not run rholang-lib's resolver, so
+    // the guard is applied here at the pattern entry point.
+    reject_cost_syntax_in_pattern(&case.pattern)?;
+
+    let pattern = case.pattern;
+    let child_input = ProcVisitInputs {
+        par: Par::default(),
+        bound_map_chain: k.input.bound_map_chain.push(),
+        free_map: FreeMap::default(),
+    };
+    k.phase = MatchPhase::Pattern;
+    k.pattern_par = None;
+    k.guard_out = None;
+    Ok(Step::Descend {
+        kont: NormKont::Match(k),
+        work: NormWork::Proc {
+            proc: pattern,
+            input: child_input,
+        },
+    })
+}
+
+/// `match E { p₁ => b₁ … }`, combine half.
+#[inline(never)]
+pub(crate) fn combine_p_match<'ast>(
+    mut k: Box<MatchK<'ast>>,
+    value: NormVal,
+) -> Result<Step<'ast>, InterpreterError> {
+    match k.phase {
+        MatchPhase::Target => {
+            let target_result = value.into_proc();
+            k.known_free = target_result.free_map.clone();
+            k.target = Some(target_result);
+            next_case(k)
+        }
+
+        MatchPhase::Pattern => {
+            let pattern_result = value.into_proc();
+
+            let case_env = k
+                .input
+                .bound_map_chain
+                .absorb_free_span(&pattern_result.free_map);
+            k.bound_count = pattern_result.free_map.count_no_wildcards();
+            k.case_env = case_env;
+            k.pattern_locally_free = pattern_result.par.locally_free.clone();
+            k.pattern_par = Some(pattern_result.par);
+
+            let case = &k.cases[k.case_idx];
+            // Optional `where` guard: normalized in the same scope as the
+            // case body (pattern bindings absorbed into bound_map_chain).
+            // No syntactic check on the guard's content (see plan §3.8) —
+            // bool-ness is enforced at runtime by the matcher in Phase 6.
+            if let Some(guard) = case.guard {
+                let child_input = ProcVisitInputs {
+                    par: Par::default(),
+                    bound_map_chain: k.case_env.clone(),
+                    free_map: k.known_free.clone(),
+                };
+                k.phase = MatchPhase::Guard;
+                return Ok(Step::Descend {
+                    kont: NormKont::Match(k),
+                    work: NormWork::Proc {
+                        proc: guard,
+                        input: child_input,
+                    },
+                });
+            }
+            let body = case.proc;
+            let child_input = ProcVisitInputs {
                 par: Par::default(),
-                bound_map_chain: case_env.clone(),
-                free_map: guard_result
-                    .as_ref()
-                    .map(|gr| gr.free_map.clone())
-                    .unwrap_or_else(|| init_acc.1.clone()),
-            },
-            env,
-            parser,
-        )?;
-
-        init_acc.0.insert(0, MatchCase {
-            pattern: Some(pattern_result.par.clone()),
-            source: Some(case_body_result.par.clone()),
-            free_count: bound_count as i32,
-            guard: guard_result.as_ref().map(|gr| gr.par.clone()),
-        });
-        init_acc.1 = case_body_result.free_map;
-        init_acc.2 = union(
-            union(init_acc.2.clone(), pattern_result.par.locally_free.clone()),
-            filter_and_adjust_bitset(
-                {
-                    let mut lf = case_body_result.par.locally_free.clone();
-                    if let Some(gr) = &guard_result {
-                        lf = union(lf, gr.par.locally_free.clone());
-                    }
-                    lf
+                bound_map_chain: k.case_env.clone(),
+                free_map: k.known_free.clone(),
+            };
+            k.phase = MatchPhase::Body;
+            Ok(Step::Descend {
+                kont: NormKont::Match(k),
+                work: NormWork::Proc {
+                    proc: body,
+                    input: child_input,
                 },
-                bound_count,
-            ),
-        );
-        init_acc.3 = init_acc.3
-            || case_body_result.par.connective_used
-            || guard_result
+            })
+        }
+
+        MatchPhase::Guard => {
+            let guard_result = value.into_proc();
+            let body = k.cases[k.case_idx].proc;
+            let child_input = ProcVisitInputs {
+                par: Par::default(),
+                bound_map_chain: k.case_env.clone(),
+                free_map: guard_result.free_map.clone(),
+            };
+            k.guard_out = Some(guard_result);
+            k.phase = MatchPhase::Body;
+            Ok(Step::Descend {
+                kont: NormKont::Match(k),
+                work: NormWork::Proc {
+                    proc: body,
+                    input: child_input,
+                },
+            })
+        }
+
+        MatchPhase::Body => {
+            let case_body_result = value.into_proc();
+            let bound_count = k.bound_count;
+            let pattern_par = k
+                .pattern_par
+                .take()
+                .expect("combine_p_match: a case body arrived with no pattern");
+            let pattern_locally_free = std::mem::take(&mut k.pattern_locally_free);
+            let guard_result = k.guard_out.take();
+
+            // ★ Leg-1: shallow reads, then MOVE both the case body and the
+            // guard into the `MatchCase`.
+            let body_locally_free = case_body_result.par.locally_free.clone();
+            let body_connective_used = case_body_result.par.connective_used;
+            let guard_locally_free = guard_result
+                .as_ref()
+                .map(|gr| gr.par.locally_free.clone());
+            let guard_connective_used = guard_result
                 .as_ref()
                 .map(|gr| gr.par.connective_used)
                 .unwrap_or(false);
+            k.acc_cases.insert(0, MatchCase {
+                pattern: Some(pattern_par),
+                source: Some(case_body_result.par),
+                free_count: bound_count as i32,
+                guard: guard_result.map(|gr| gr.par),
+            });
+            k.known_free = case_body_result.free_map;
+            k.acc_locally_free = union(
+                union(std::mem::take(&mut k.acc_locally_free), pattern_locally_free),
+                filter_and_adjust_bitset(
+                    {
+                        let mut lf = body_locally_free;
+                        if let Some(glf) = guard_locally_free {
+                            lf = union(lf, glf);
+                        }
+                        lf
+                    },
+                    bound_count,
+                ),
+            );
+            k.acc_connective_used =
+                k.acc_connective_used || body_connective_used || guard_connective_used;
+
+            k.case_idx += 1;
+            next_case(k)
+        }
     }
-
-    let cases: Vec<MatchCase> = init_acc.0.into_iter().rev().collect();
-    let locally_free = union(init_acc.2, target_result.par.locally_free.clone());
-    let connective_used = init_acc.3 || target_result.par.connective_used;
-
-    let result_match = Match {
-        target: Some(target_result.par.clone()),
-        cases,
-        locally_free,
-        connective_used,
-    };
-    Ok(ProcVisitOutputs {
-        par: input.par.clone().prepend_match(result_match.clone()),
-        free_map: init_acc.1,
-    })
 }
+
 
 // See rholang/src/test/scala/coop/rchain/rholang/interpreter/compiler/normalizer/ProcMatcherSpec.scala
 #[cfg(test)]
