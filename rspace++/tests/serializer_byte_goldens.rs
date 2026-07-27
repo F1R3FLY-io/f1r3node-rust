@@ -21,8 +21,16 @@ use rspace_plus_plus::rspace::serializers::serializers::{
 use rspace_plus_plus::rspace::trace::event::{Consume, Produce};
 
 /// Deterministic fixture datum (String payload — the rspace++ test-double
-/// instantiation; the models-typed path is pinned by the P0 event-hash
-/// goldens and the history checkpoint-root tests).
+/// instantiation).
+///
+/// ★ The models-typed path — `Datum<ListParWithRandom>` and
+/// `WaitingContinuation<BindPattern, TaggedContinuation>` — is now pinned
+/// directly by `models/tests/serializer_par_byte_goldens.rs`, blessed on the
+/// derived encoder before the cold-store decoder was written. It lives on the
+/// `models` side because `models` depends on `rspace_plus_plus`, so this crate
+/// cannot name `Par` without a dependency cycle. (It remains pinned
+/// transitively by the P0 event-hash goldens and the history checkpoint-root
+/// tests as well.)
 fn fixture_datum() -> Datum<String> {
     Datum {
         a: "data0".to_string().into(),

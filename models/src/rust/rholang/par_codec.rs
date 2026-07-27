@@ -1862,6 +1862,31 @@ impl<'a> Drop for Machine<'a> {
 }
 
 impl<'a> Machine<'a> {
+    /// `true` iff no value stack holds anything — the state a successful run
+    /// leaves behind once its root value has been taken.
+    fn is_fully_drained(&self) -> bool {
+        self.pars.is_empty()
+            && self.sends.is_empty()
+            && self.receives.is_empty()
+            && self.binds.is_empty()
+            && self.news.is_empty()
+            && self.matches.is_empty()
+            && self.cases.is_empty()
+            && self.ifs.is_empty()
+            && self.bundles.is_empty()
+            && self.exprs.is_empty()
+            && self.connectives.is_empty()
+            && self.kvs.is_empty()
+            && self.pathmaps.is_empty()
+            && self.bind_patterns.is_empty()
+            && self.list_bind_patterns.is_empty()
+            && self.par_with_randoms.is_empty()
+            && self.list_par_with_randoms.is_empty()
+            && self.tagged_continuations.is_empty()
+    }
+}
+
+impl<'a> Machine<'a> {
     /// Release every partially-decoded value **without recursion**.
     ///
     /// `<Par as Drop>` is Θ(depth) (470 B/level, debug). A decode that fails at
@@ -1880,6 +1905,16 @@ impl<'a> Machine<'a> {
     /// `MatchCase` under `Match`, `KeyValuePair` under `EMap`, `EPathMap` under
     /// `EPathmapBody`, and the three `Par`-holding leaf wrappers).
     fn dismantle(&mut self) {
+        // ⚠ `Drop` runs on the SUCCESS path too, where every stack is empty by
+        // the time the root value has been popped (`assert_drained` has just
+        // checked exactly that). Without this early-out the salvage below would
+        // allocate a `Par` shell and a worklist on every cold-store read — a
+        // per-datum cost paid to release nothing. Eighteen `is_empty` reads is
+        // strictly cheaper than two allocations.
+        if self.is_fully_drained() {
+            return;
+        }
+
         let mut loose: Vec<Par> = mem::take(&mut self.pars);
 
         let mut receives = mem::take(&mut self.receives);
