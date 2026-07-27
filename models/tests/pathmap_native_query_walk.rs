@@ -64,17 +64,32 @@
 //!     never reports exhaustion, so the counted-walk idiom cannot terminate
 //!     even by accident.
 //!
-//! ⚠ The tests marked `witness_` below assert the DEFECTIVE answers on
-//! purpose. They are the executable record of the measurement, and each names
-//! the positive twin that must replace it once `next_value_path` is made
-//! sound for dangling foci. This file is committed with them RED-in-meaning
-//! and green-in-CI so the flip is a visible diff.
+//! # ★ STATUS: FIXED (stage 2)
+//!
+//! `next_value_key` / `next_value_path` no longer ask the crate to iterate
+//! from a dangling focus; see their doc comments for the specification and
+//! the algorithm. The four `witness_`-prefixed tests this file was committed
+//! with have been replaced by the positive twins each of them named:
+//!
+//! | witness (the defect)                            | positive twin (the specification)                     |
+//! |-------------------------------------------------|-------------------------------------------------------|
+//! | `witness_dangling_from_key_rewinds_to_the_first_child` | `walk_from_a_dangling_from_key_advances_to_the_next_entry` |
+//! | `witness_walk_past_the_last_key_restarts_from_the_first` | `walk_from_past_the_last_key_is_exhausted`         |
+//! | `witness_bounded_walk_over_bare_elements_never_advances` | `bounded_walk_over_bare_elements_visits_every_entry_once` |
+//!
+//! ⚠ What stage 2 does NOT fix: the walk now VISITS every bare entry exactly
+//! once and terminates, but `EZipper.current_path` is still lossy, so
+//! `getPath()` still reports the singleton `[1]` for a bare `1` and
+//! `getLeaf()` still answers `Nil`. Stage 2 converts a LIVENESS failure into a
+//! WRONG-ANSWER failure — which is progress precisely because wrong answers
+//! are assertable.
 
 use models::rhoapi::Par;
 use models::rust::canonical_path::encode_trie_path;
 use models::rust::pathmap_integration::{create_pathmap_from_elements, RholangPathMap};
-use models::rust::pathmap_native_query::next_value_path;
+use models::rust::pathmap_native_query::{next_value_key, next_value_path};
 use models::rust::utils::{new_elist_par, new_gint_par, new_gstring_par};
+use proptest::prelude::*;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Fixtures
@@ -181,40 +196,70 @@ fn dangling_from_key_below_a_two_entry_node_advances_correctly() {
     );
 }
 
-/// ★★★ THE DISCRIMINATOR. `03 02 00` is the key a reader rebuilds for the
-/// bare entry `1`; it dangles below the existing value-leaf `03 02`.
+/// ★★★ THE DISCRIMINATOR, now its positive twin. `03 02 00` is the key a
+/// reader rebuilds for the bare entry `1`; it dangles below the existing
+/// value-leaf `03 02`.
 ///
-/// MEASURED: `Some([[03 02]])` — the walk answers with the entry it started
-/// from. `toNextLeaf` is therefore a fixed point *inside* `next_value_path`,
-/// independently of how the from_key was built.
+/// MEASURED BEFORE STAGE 2: `Some([[03 02]])` — the walk answered with the
+/// entry it started from, making `toNextLeaf` a fixed point *inside*
+/// `next_value_path`, independently of how the from_key was built.
 ///
-/// ⚠ WITNESS OF A DEFECT — to be replaced by its positive twin
-/// `walk_from_a_dangling_from_key_advances_to_the_next_entry`, which asserts
-/// `Some([[03 04]])`: the least value-key strictly greater than `03 02 00`.
+/// SPECIFICATION: the LEAST value-key strictly greater than `03 02 00` is
+/// `03 04` (`03 02` is smaller — a proper prefix sorts before what it
+/// prefixes).
 #[test]
-fn witness_dangling_from_key_rewinds_to_the_first_child() {
+fn walk_from_a_dangling_from_key_advances_to_the_next_entry() {
     let (_, map) = bare_ints();
     assert_eq!(
+        next_value_key(&map, &[0x03, 0x02, 0x00]),
+        Some(vec![0x03, 0x04]),
+        "the least key strictly above 03 02 00"
+    );
+    assert_eq!(
         next_value_path(&map, &[0x03, 0x02, 0x00]),
-        Some(vec![vec![0x03, 0x02]]),
-        "★ RESTART: answered with entry 1, whose key 03 02 is BELOW the from_key"
+        Some(vec![vec![0x03, 0x04]])
     );
 }
 
-/// ⚠ WITNESS OF A DEFECT — the liveness half. A from_key past the LAST entry
-/// must exhaust the walk; instead the dense node rewinds to its first child,
-/// so a counted walk can never terminate, not even by running off the end.
-///
-/// To be replaced by its positive twin
-/// `walk_from_past_the_last_key_is_exhausted`, which asserts `None`.
+/// The LIVENESS half, now its positive twin. A from_key past the LAST entry
+/// exhausts the walk; before stage 2 the dense node rewound to its first
+/// child, so a counted walk could not terminate even by running off the end.
 #[test]
-fn witness_walk_past_the_last_key_restarts_from_the_first() {
+fn walk_from_past_the_last_key_is_exhausted() {
     let (_, map) = bare_ints();
-    assert_eq!(
-        next_value_path(&map, &[0x03, 0x06, 0x00]),
-        Some(vec![vec![0x03, 0x02]]),
-        "★ RESTART: past-the-end answered with the FIRST entry"
-    );
+    assert_eq!(next_value_key(&map, &[0x03, 0x06, 0x00]), None);
+    assert_eq!(next_value_path(&map, &[0x03, 0x06, 0x00]), None);
+}
+
+/// Dangling foci at every depth and on both sides of every key — the general
+/// statement of what the two twins above pin at one point each.
+#[test]
+fn every_dangling_from_key_answers_by_byte_order() {
+    let (_, map) = bare_ints(); // keys 03 02, 03 04, 03 06
+    for (from_key, expected) in [
+        (vec![0x00u8], Some(vec![0x03u8, 0x02])),
+        (vec![0x02], Some(vec![0x03, 0x02])),
+        (vec![0x03], Some(vec![0x03, 0x02])),
+        (vec![0x03, 0x00], Some(vec![0x03, 0x02])),
+        (vec![0x03, 0x01], Some(vec![0x03, 0x02])),
+        (vec![0x03, 0x02, 0x00], Some(vec![0x03, 0x04])),
+        (vec![0x03, 0x02, 0xff], Some(vec![0x03, 0x04])),
+        (vec![0x03, 0x03], Some(vec![0x03, 0x04])),
+        (vec![0x03, 0x04, 0x00], Some(vec![0x03, 0x06])),
+        (vec![0x03, 0x05], Some(vec![0x03, 0x06])),
+        (vec![0x03, 0x06, 0x00], None),
+        (vec![0x03, 0x07], None),
+        (vec![0x03, 0xff, 0xff], None),
+        (vec![0x04], None),
+        (vec![0xff], None),
+    ] {
+        assert_eq!(
+            next_value_key(&map, &from_key),
+            expected,
+            "from {:02x?}",
+            from_key
+        );
+    }
 }
 
 /// The rewind is a property of the FOCUS NODE, not of the from_key's length:
@@ -236,15 +281,21 @@ fn one_byte_dangling_focus_at_the_root_is_handled() {
 /// true)`) and step. BOUNDED by construction — a regression FAILS rather than
 /// hangs.
 ///
-/// ⚠ WITNESS OF A DEFECT — to be replaced by its positive twin
-/// `bounded_walk_over_bare_elements_visits_every_entry_once`.
+/// Before stage 2 this collected entry 1 four times and never exhausted.
+///
+/// ⚠ Note WHY it works even though the reducer's from_key is still the wrong
+/// key: `03 02 00` is not the bare entry's key, but it does sort strictly
+/// between `03 02` and `03 04`, so an order-correct step lands on the right
+/// next entry anyway. The cursor remains lossy — `getPath()` still reports the
+/// singleton — which is stages 3 and 4, not this one.
 #[test]
-fn witness_bounded_walk_over_bare_elements_never_advances() {
+fn bounded_walk_over_bare_elements_visits_every_entry_once() {
     let (_, map) = bare_ints();
     let mut visited: Vec<Vec<Vec<u8>>> = Vec::with_capacity(4);
     // Start where the reducer starts a walk: the root zipper's empty path.
     let mut current: Vec<Vec<u8>> = Vec::new();
-    for _ in 0..4 {
+    let mut exhausted_at = None;
+    for step in 0..4 {
         // The reducer's from_key: `segments_to_key(current_path, true)`.
         let mut from_key: Vec<u8> = current.iter().flatten().copied().collect();
         from_key.push(0x00);
@@ -253,19 +304,25 @@ fn witness_bounded_walk_over_bare_elements_never_advances() {
                 current = segments.clone();
                 visited.push(segments);
             }
-            None => break,
+            None => {
+                exhausted_at = Some(step);
+                break;
+            }
         }
     }
     assert_eq!(
         visited,
         vec![
             vec![vec![0x03u8, 0x02]],
-            vec![vec![0x03u8, 0x02]],
-            vec![vec![0x03u8, 0x02]],
-            vec![vec![0x03u8, 0x02]],
+            vec![vec![0x03u8, 0x04]],
+            vec![vec![0x03u8, 0x06]],
         ],
-        "★ FIXED POINT: entry 1 forever; leafCount() is 3 but the walk never \
-         reaches entries 2 or 3 and never reports exhaustion"
+        "every entry exactly once, in order"
+    );
+    assert_eq!(
+        exhausted_at,
+        Some(3),
+        "step leafCount()+1 reports exhaustion"
     );
 }
 
@@ -294,4 +351,140 @@ fn bounded_walk_over_split_elements_visits_every_entry_once() {
         vec![vec![vec![0x04u8, 0x01, 0x61]], vec![vec![0x04u8, 0x01, 0x62]]],
         "two entries, each once, then exhausted"
     );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// The ORDER ORACLE — the specification, checked against a full scan
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// `next_value_key(map, k)` is specified as "the LEAST key in `map` strictly
+// greater than `k`". That is directly computable by scanning every key, which
+// makes the specification itself the test oracle — no reasoning about zipper
+// internals, node shapes, or which of `LineListNode` / `DenseByteNode` /
+// `BridgeNode` the trie happens to have built at any depth. Random RAW keys
+// are used deliberately: they reach node shapes the codec never produces, and
+// the dense-node rewind that motivated stage 2 is exactly a node-shape effect.
+
+/// The specification, evaluated by brute force. `Vec<u8>`'s `Ord` is
+/// byte-lexicographic with a proper prefix sorting FIRST, which is the trie's
+/// depth-first order.
+fn reference_next_value_key(map: &RholangPathMap, from_key: &[u8]) -> Option<Vec<u8>> {
+    map.iter()
+        .map(|(key, _)| key)
+        .filter(|key| key.as_slice() > from_key)
+        .min()
+}
+
+fn trie_of_raw_keys(keys: &[Vec<u8>]) -> RholangPathMap {
+    let mut map = RholangPathMap::new();
+    for (index, key) in keys.iter().enumerate() {
+        map.insert(key.clone(), new_gint_par(index as i64, Vec::new(), false));
+    }
+    map
+}
+
+/// Probe keys around a trie: every key, every proper prefix, every key
+/// extended by a low / high byte, and the empty key. These are precisely the
+/// shapes a lossy cursor produces — a key with a spurious `0x00`, a key
+/// truncated to an element boundary, a key that names a branch.
+fn probe_keys(keys: &[Vec<u8>]) -> Vec<Vec<u8>> {
+    let mut probes: Vec<Vec<u8>> = vec![Vec::new(), vec![0x00], vec![0xff]];
+    for key in keys {
+        probes.push(key.clone());
+        for cut in 0..key.len() {
+            probes.push(key[..cut].to_vec());
+        }
+        for suffix in [0x00u8, 0x01, 0x7f, 0xff] {
+            let mut extended = key.clone();
+            extended.push(suffix);
+            probes.push(extended);
+        }
+    }
+    probes.sort();
+    probes.dedup();
+    probes
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(96))]
+
+    /// ★ THE SOUNDNESS GATE. For arbitrary tries and arbitrary from_keys —
+    /// existing, dangling, truncated, or absent — the answer is the least key
+    /// strictly greater than the from_key.
+    #[test]
+    fn prop_next_value_key_matches_the_order_oracle(
+        keys in proptest::collection::vec(
+            proptest::collection::vec(0u8..6, 0..5), 1..12)
+    ) {
+        let map = trie_of_raw_keys(&keys);
+        for probe in probe_keys(&keys) {
+            prop_assert_eq!(
+                next_value_key(&map, &probe),
+                reference_next_value_key(&map, &probe),
+                "from {:02x?}", probe
+            );
+        }
+    }
+
+    /// The same gate over a WIDE byte alphabet, which builds dense nodes:
+    /// a `DenseByteNode` is what rewinds when asked to iterate from a
+    /// multi-byte dangling focus, so the fix has to be exercised there.
+    #[test]
+    fn prop_next_value_key_matches_the_oracle_on_dense_nodes(
+        keys in proptest::collection::vec(
+            proptest::collection::vec(any::<u8>(), 1..4), 8..40)
+    ) {
+        let map = trie_of_raw_keys(&keys);
+        for probe in probe_keys(&keys) {
+            prop_assert_eq!(
+                next_value_key(&map, &probe),
+                reference_next_value_key(&map, &probe),
+                "from {:02x?}", probe
+            );
+        }
+    }
+
+    /// ★ TERMINATION, as a BOUNDED property. A walk seeded at the root and
+    /// stepped by the key it last returned visits every entry exactly once, in
+    /// ascending key order, and step `val_count() + 1` is `None`.
+    ///
+    /// Bounded by construction: the loop runs `val_count() + 1` times and
+    /// asserts afterwards, so a regression FAILS rather than hangs.
+    #[test]
+    fn prop_bounded_walk_visits_every_entry_exactly_once(
+        keys in proptest::collection::vec(
+            proptest::collection::vec(0u8..4, 0..5), 1..14)
+    ) {
+        let map = trie_of_raw_keys(&keys);
+        let count = map.val_count();
+
+        let mut expected: Vec<Vec<u8>> = keys.clone();
+        expected.sort();
+        expected.dedup();
+        prop_assert_eq!(expected.len(), count);
+
+        let mut visited: Vec<Vec<u8>> = Vec::with_capacity(count);
+        // The walk's seed: strictly below every key, since a key cannot be
+        // shorter than the empty key and no key is empty-and-less.
+        let mut cursor: Option<Vec<u8>> = None;
+        let mut exhausted_at = None;
+        for step in 0..=count {
+            let from_key = cursor.clone().unwrap_or_default();
+            // Seed the FIRST step below the least key rather than at it: an
+            // empty from_key would skip an entry stored at the empty key.
+            let answer = match step {
+                0 => match map.get::<&[u8]>(&[]) {
+                    Some(_) => Some(Vec::new()),
+                    None => next_value_key(&map, &from_key),
+                },
+                _ => next_value_key(&map, &from_key),
+            };
+            match answer {
+                Some(key) => { visited.push(key.clone()); cursor = Some(key); }
+                None => { exhausted_at = Some(step); break; }
+            }
+        }
+        prop_assert_eq!(&visited, &expected, "every entry exactly once, in order");
+        prop_assert_eq!(exhausted_at, Some(count), "step count+1 is exhaustion");
+    }
 }

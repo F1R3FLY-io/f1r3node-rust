@@ -426,73 +426,117 @@ async fn witness_bare_leaf_reads_back_as_nil() {
     .await;
 }
 
-/// ⚠ WITNESS OF A DEFECT — `toNextLeaf` is a FIXED POINT on bare entries.
+/// The walk ADVANCES through every bare entry, in order — the positive twin of
+/// the stage-1 witness `witness_bare_walk_never_advances`, which recorded
+/// `toNextLeaf` reporting `[1]` at every step.
 ///
-/// `getPath()` reports `[1]` at every step: the wrong entry AND the wrong
-/// shape (a singleton list where the map holds a bare integer), which is why
-/// the `readZipperAt(z.getPath())` round-trip cannot close either.
+/// Stage 2 made `next_value_key` order-correct for a from_key that does not
+/// exist in the trie. The reducer still SEEDS each step with the wrong key —
+/// `segments_to_key(current_path, true)` appends a terminator the bare entry's
+/// key does not carry — but `03 02 00` sorts strictly between `03 02` and
+/// `03 04`, so an order-correct step lands on the right next entry anyway.
 ///
-/// BOUNDED BY CONSTRUCTION: four explicit steps, not a termination condition.
-///
-/// Positive twin: `bare_walk_visits_every_entry_in_order`, which asserts the
-/// steps report `1`, `2`, `3` and that the fourth is `Nil`.
+/// BOUNDED BY CONSTRUCTION: three explicit steps, not a termination condition.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn witness_bare_walk_never_advances() {
+async fn bare_walk_visits_every_entry_in_order() {
     with_runtime("zipper-enum-bare-walk-", |mut runtime| async move {
         let program = format!(
             r#"
             @"p1"!( {m}.readZipper().toNextLeaf().getPath() == [1] ) |
-            @"p2"!( {m}.readZipper().toNextLeaf().toNextLeaf().getPath() == [1] ) |
-            @"p3"!( {m}.readZipper().toNextLeaf().toNextLeaf().toNextLeaf().getPath() == [1] ) |
-            @"p4"!( {m}.readZipper().toNextLeaf().toNextLeaf().toNextLeaf().toNextLeaf().getPath() == [1] ) |
-            @"v1"!( {m}.readZipper().toNextLeaf().getLeaf() == Nil )
+            @"p2"!( {m}.readZipper().toNextLeaf().toNextLeaf().getPath() == [2] ) |
+            @"p3"!( {m}.readZipper().toNextLeaf().toNextLeaf().toNextLeaf().getPath() == [3] )
             "#,
             m = BARE_MAP
         );
         eval_ok(&mut runtime, &program).await;
-        for channel in ["p1", "p2", "p3", "p4"] {
+        for channel in ["p1", "p2", "p3"] {
             assert_bool(&runtime, channel).await;
         }
-        // …and the leaf the walk is parked on cannot be read either.
-        assert_bool(&runtime, "v1").await;
         runtime
     })
     .await;
 }
 
-/// ⚠ WITNESS OF A DEFECT — the LIVENESS half. The step past the last entry
-/// must be `Nil`; on a bare map no step ever is, so the `leafCount()`-bounded
-/// idiom that `counted_walk_collects_every_trace` proves for lists cannot
-/// terminate here on its own.
+/// ⚠ WITNESS OF A DEFECT THAT SURVIVES STAGE 2 — the walk now reaches every
+/// entry, but `getPath()` still reports the SINGLETON LIST `[1]` where the map
+/// holds the bare integer `1`: the right entry, the wrong shape.
 ///
-/// Positive twin: `bare_walk_returns_nil_when_exhausted`.
+/// This is the cursor's losslessness, not the walk's order.
+/// `EZipper.current_path` stores per-element segments and no split/bare
+/// discriminator, so `getPath` — which decodes
+/// `segments_to_key(current_path, true)` — can only ever produce a list. It is
+/// also why the documented `readZipperAt(z.getPath())` round-trip cannot
+/// close: re-addressing with `[1]` names an entry the map does not contain.
+///
+/// Positive twin: `bare_get_path_reports_the_element_itself`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn witness_bare_walk_never_exhausts() {
+async fn witness_bare_get_path_reports_the_singleton_not_the_element() {
+    with_runtime("zipper-enum-bare-shape-", |mut runtime| async move {
+        let program = format!(
+            r#"
+            @"isSingleton"!( {m}.readZipper().toNextLeaf().getPath() == [1] ) |
+            @"isNotTheElement"!( ({m}.readZipper().toNextLeaf().getPath() == 1) == false ) |
+            @"roundTripFails"!(
+              {m}.readZipperAt( {m}.readZipper().toNextLeaf().getPath() ).getLeaf() == Nil
+            ) |
+            @"leafStillNil"!( {m}.readZipper().toNextLeaf().getLeaf() == Nil )
+            "#,
+            m = BARE_MAP
+        );
+        eval_ok(&mut runtime, &program).await;
+        assert_bool(&runtime, "isSingleton").await;
+        assert_bool(&runtime, "isNotTheElement").await;
+        // The round-trip `readZipperAt(z.getPath()).getLeaf()` closes for every
+        // list entry (`get_path_round_trips_through_the_map`) and cannot close
+        // here: it re-addresses `[1]`, which is not in this map.
+        assert_bool(&runtime, "roundTripFails").await;
+        // …and the leaf the walk is parked on still cannot be read.
+        assert_bool(&runtime, "leafStillNil").await;
+        runtime
+    })
+    .await;
+}
+
+/// The step past the last entry is `Nil` — the positive twin of the stage-1
+/// witness `witness_bare_walk_never_exhausts`, which recorded a live zipper at
+/// the fourth step of a three-entry map because `to_next_val` rewound to the
+/// dense node's first child instead of reporting exhaustion.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn bare_walk_returns_nil_when_exhausted() {
     with_runtime("zipper-enum-bare-exhaust-", |mut runtime| async move {
         let program = format!(
             r#"
-            @"stillNotNil"!(
-              ({m}.readZipper().toNextLeaf().toNextLeaf().toNextLeaf().toNextLeaf() == Nil) == false
+            @"exhausted"!(
+              {m}.readZipper().toNextLeaf().toNextLeaf().toNextLeaf().toNextLeaf() == Nil
+            ) |
+            @"notExhaustedYet"!(
+              ({m}.readZipper().toNextLeaf().toNextLeaf().toNextLeaf() == Nil) == false
             )
             "#,
             m = BARE_MAP
         );
         eval_ok(&mut runtime, &program).await;
-        // The FOURTH step on a THREE-entry map is still a live zipper.
-        assert_bool(&runtime, "stillNotNil").await;
+        // The FOURTH step on a THREE-entry map is exhaustion…
+        assert_bool(&runtime, "exhausted").await;
+        // …and the third is still a live zipper, which is what makes the
+        // assertion above about exhaustion rather than about `toNextLeaf`
+        // returning Nil unconditionally on bare maps.
+        assert_bool(&runtime, "notExhaustedYet").await;
         runtime
     })
     .await;
 }
 
-/// ⚠ WITNESS OF A DEFECT — the `leafCount()`-bounded walk, run for real on
-/// bare entries. It TERMINATES (the bound is the loop's own counter) but
-/// collects the SAME trace three times, so the idiom the FIPS lookahead
-/// depends on silently returns duplicates instead of the map's contents.
+/// ★ The `leafCount()`-bounded FIPS walk over BARE entries collects three
+/// DISTINCT traces — the positive twin of the stage-1 witness
+/// `witness_bare_counted_walk_collects_one_entry_three_times`.
 ///
-/// Positive twin: `bare_counted_walk_collects_every_entry`.
+/// ⚠ Each trace is still the SINGLETON LIST of the element rather than the
+/// element (see `witness_bare_get_path_reports_the_singleton_not_the_element`);
+/// this test asserts the traces are pairwise distinct and in order, which is
+/// the property the walk owns.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn witness_bare_counted_walk_collects_one_entry_three_times() {
+async fn bare_counted_walk_collects_every_entry() {
     with_runtime("zipper-enum-bare-fips-", |mut runtime| async move {
         let program = format!(
             r#"
@@ -515,7 +559,7 @@ async fn witness_bare_counted_walk_collects_one_entry_three_times() {
             expr_instance: Some(ExprInstance::GString("bareTraces".to_string())),
         }]);
         let data = runtime.get_data(&channel).await;
-        assert_eq!(data.len(), 1, "the counted walk must still report once");
+        assert_eq!(data.len(), 1, "the counted walk must report once");
         let collected = &data[0].a.pars[0];
         match collected
             .exprs
@@ -524,14 +568,9 @@ async fn witness_bare_counted_walk_collects_one_entry_three_times() {
         {
             Some(ExprInstance::EListBody(list)) => {
                 assert_eq!(list.ps.len(), 3, "three steps, as leafCount() bounds");
-                assert_eq!(
-                    list.ps[0], list.ps[1],
-                    "★ steps 1 and 2 report the SAME trace"
-                );
-                assert_eq!(
-                    list.ps[1], list.ps[2],
-                    "★ steps 2 and 3 report the SAME trace"
-                );
+                assert_ne!(list.ps[0], list.ps[1], "steps 1 and 2 differ");
+                assert_ne!(list.ps[1], list.ps[2], "steps 2 and 3 differ");
+                assert_ne!(list.ps[0], list.ps[2], "steps 1 and 3 differ");
             }
             other => panic!("@\"bareTraces\" expected a list of traces, got {:?}", other),
         }
