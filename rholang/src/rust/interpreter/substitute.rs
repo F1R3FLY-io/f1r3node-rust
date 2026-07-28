@@ -79,6 +79,23 @@ impl Substitute {
     /// (`casper/.../runtime.rs` installs `Cost::unsafe_max()` for liveness), and
     /// therefore a consensus-liveness defect rather than a robustness nit.
     ///
+    /// ## What the repair bought, measured
+    ///
+    /// | measurement                          | before | after | factor |
+    /// |--------------------------------------|-------:|------:|-------:|
+    /// | `subst_and_charge` B/level, release   |  2,852 |   146 | 19.5×  |
+    /// | `subst_and_charge` B/level, debug     | 15,872 | 1,462 | 10.9×  |
+    /// | `plain_deploy` max depth, 2 MiB worker|    286 | 6,831 | 23.9×  |
+    /// | `env_get_deploy` max depth, same      |    283 |   283 | **1×** |
+    ///
+    /// ⚠⚠ **The last row is not a footnote.** A deploy that receives a deep value
+    /// over a channel is bounded by `Env::get`'s clone in `eval_var`
+    /// (`rho-pure-eval/src/env.rs`) and again in `EnvView::get`
+    /// (`substitute_drive.rs`), at 7,247 B/level — a copy documented in both
+    /// places as un-removable, because *the copy IS the meaning of
+    /// substitution*. Nothing in this change touches it. Reporting the 23.9×
+    /// without the 1× would be a false account of what a node can now accept.
+    ///
     /// # Why by-value is EXACTLY equivalent, charge for charge
     ///
     /// The two arms charge on different terms, and only one of them ever needed

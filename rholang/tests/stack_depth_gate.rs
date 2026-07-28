@@ -1060,8 +1060,24 @@ fn substitute_no_sort_body(depth: usize) {
 /// copy.
 ///
 /// The wrapper now takes its term **by value**, and this subject moves `t` into
-/// it. The subject stays, because a subject that is deleted when its defect is
-/// fixed cannot notice the defect coming back.
+/// it:
+///
+/// | profile | before          | after         | factor |
+/// |---------|-----------------|---------------|-------:|
+/// | release |  2,852 B/level  |   146 B/level | 19.5×  |
+/// | debug   | 15,872 B/level  | 1,462 B/level | 10.9×  |
+///
+/// End to end, on the 2 MiB production worker, `plain_deploy` went from a
+/// maximum nesting depth of **286 to 6,831** — 23.9×.
+///
+/// ⚠ `env_get_deploy` did NOT move: **283 before, 283 after.** A deploy that
+/// receives a deep value over a channel is bounded by `Env::get`'s clone, which
+/// is [`substitute_deep_binding_body`]'s subject and is documented there as
+/// un-removable — the copy IS the meaning of substitution. This subject's
+/// improvement is real and it is not that one.
+///
+/// The subject stays, because a subject that is deleted when its defect is fixed
+/// cannot notice the defect coming back.
 ///
 /// It is in [`TRIPWIRE_DEPTH`] and not in [`CONVERTED_DEPTH`] because it is
 /// composed of members whose audited disposition is Leg-1: `<Par as Clone>::clone`
@@ -1607,14 +1623,19 @@ fn normalize_wide_body(width: usize) {
 /// which is the cross-check that the composition's ceiling really was
 /// `<Par as Clone>::clone`'s and not something else in the phase.
 ///
-/// ⚠⚠ **This was never the deploy path's binding constraint, and removing it does
+/// ⚠⚠ **This was never the deploy path's binding constraint, and removing it did
 /// not lift the deploy path's ceiling.** Measured end to end through the real
 /// runtime on a 2 MiB tokio worker
-/// (`rholang/tests/deploy_depth_ceiling.rs`), a deploy still stops at depth
-/// **286** — because `Substitute::substitute_and_charge` takes its term by
-/// reference and opens with `term.clone()`, a second `<Par as Clone>::clone` that
-/// fires on the ORDINARY SEND path, needs no binder and no COMM, and measures
-/// **7,253 B/level**. See that file's own module documentation.
+/// (`rholang/tests/deploy_depth_ceiling.rs`), a deploy still stopped at depth
+/// **286** after this conversion — because `Substitute::substitute_and_charge`
+/// took its term by reference and opened with `term.clone()`, a second
+/// `<Par as Clone>::clone` that fires on the ORDINARY SEND path, needs no binder
+/// and no COMM, and measured **7,253 B/level**.
+///
+/// ★ That wrapper now takes its term by value (2026-07-28), and `plain_deploy`'s
+/// end-to-end ceiling moved 286 → **6,831**. `env_get_deploy` did not move: it
+/// is bounded by `Env::get`, not by either of these two clones. See
+/// `subst_and_charge_body` and that file's own module documentation.
 fn inj_attempt_clone_body(depth: usize) {
     let src = nested_list_source(depth);
     assert_carries(
@@ -2418,14 +2439,35 @@ fn theta_depth_tripwire() {
     // flat 49,152 / 12,288 at widths 4 through 65,536. As always, a traversal
     // leaves this list only by being converted, never by having its ceiling
     // raised.
-    // ★★ THE METERED WRAPPER — see `subst_and_charge_body`. Same ladder and the
-    // same ceiling as `substitute_deep_binding` below it, and deliberately so:
-    // the two subjects are the same traversal (`<Par as Clone>::clone` over a
-    // depth-`d` `Par`) reached through two different call sites, measured under
-    // one inlining regime, so a ceiling that fits one has to fit the other. The
-    // ceiling is not a target — it certifies "not worse", and Stage 3 of the
-    // repair lowers it to what the by-move wrapper actually costs.
-    assert_slope_below("subst_and_charge", ceiling(25_000, 12_000), 16, 128);
+    // ★★ THE METERED WRAPPER — see `subst_and_charge_body`.
+    //
+    // The ceiling was `ceiling(25_000, 12_000)`, matching `substitute_deep_binding`
+    // below it, because both subjects were then the SAME traversal:
+    // `<Par as Clone>::clone` over a depth-`d` `Par`, reached through two call
+    // sites. The wrapper's copy is gone (it takes its term by value), so they are
+    // no longer the same traversal and no longer share a ceiling:
+    //
+    //   subst_and_charge   15,872 -> 1,462 B/level debug   2,852 -> 146 release
+    //
+    // ⚠ It STAYS in `TRIPWIRE_DEPTH`, and lowering a ceiling is not a promotion.
+    // `CONVERTED_DEPTH`'s admission rule is stated where that list is defined: a
+    // traversal enters only by being CONVERTED, never by having a ceiling
+    // lowered. What is left here is `encoded_len` — audit row 7, 1,932 B/level
+    // debug / 302 release as the `encode` subject measures it — which the wrapper
+    // must still walk because its return value IS the charge. This subject is
+    // sloped and will stay sloped.
+    //
+    // The new ceiling is ~2x the measured value in each profile, the same margin
+    // every other member of this list carries.
+    //
+    // ★ **Shown RED at the value it exists to refuse.** With the subject body
+    // reverted to a copying call — `substitute_and_charge(t.clone(), …)`, which
+    // reproduces the defect at the call site rather than inside the wrapper —
+    // this line failed with `2852 B/level exceeds the 700 B/level ceiling
+    // (56 KiB @ depth 16 -> 368 KiB @ depth 128)`. 2,852 is precisely the
+    // pre-repair reading, so the lowered ceiling refuses the exact regression it
+    // was lowered to refuse, and not merely something.
+    assert_slope_below("subst_and_charge", ceiling(3_000, 700), 16, 128);
     assert_slope_below("substitute_deep_binding", ceiling(25_000, 12_000), 16, 128);
     assert_slope_below("clone", ceiling(25_000, 5_000), 16, 128);
     assert_slope_below("par_drop", ceiling(1_500, 800), 256, 4096);
