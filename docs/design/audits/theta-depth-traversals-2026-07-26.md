@@ -56,13 +56,14 @@ test that runs, and a test that runs is a name here.
      Checked by `the_audit_agrees_with_the_gate`; edit the gate's constants first. -->
 ```text
 converted-depth: substitute_no_sort, substitute_binders, substitute, sort, score_cmp,
-                 tree_drop, tree_clone, eval_with_nots, bincode_de, pretty, normalize
+                 tree_drop, tree_clone, eval_with_nots, bincode_de, pretty, normalize,
+                 inj_attempt_clone
 converted-width: substitute_wide, sort_wide, score_cmp_wide, free_check, pretty_wide,
                  normalize_wide
 tripwire-depth:  substitute_deep_binding, clone, par_drop, normalize_drop, encode,
                  bincode_ser, sort_nested_set, sort_nested_map, clone_nested_set
 tripwire-width:
-totals:          converted=17, tripwired=9
+totals:          converted=18, tripwired=9
 ```
 <!-- GATE-SUBJECTS:END -->
 
@@ -2792,6 +2793,20 @@ normalizer and does not transfer**, for two independent reasons.
   against the recorded 470, 1.3 %), so this is recorded as a discrepancy to be
   resolved rather than acted on — the ladder used for the original reading is not
   stated, and a two-point slope depends on it.
+
+  ★ **RESOLVED 2026-07-27 in favour of 144, and therefore of the 3.2 above.**
+  `par_drop` was re-bisected on a fresh release build over the same
+  256 → 4,096 ladder: 45,056 B → 598,016 B, i.e. **144.0 B/level** exactly,
+  reproducing the figure in this paragraph to the byte. The same run's debug
+  ladder gives **464 B/level** (196,608 B → 1,908,736 B), so the profile ratio is
+  $`464/144 = 3.22`$. Two independent corroborations landed with it: the gate's
+  own `the_deploy_composition_is_bounded_below_by_its_destructor` printed
+  `par_drop 144 B/level` in release and `par_drop 464 B/level` in debug on the
+  same tree, and depth bisection at a fixed 2 MiB stack put `par_drop` at
+  **14,525** levels — which is $`(2\,\text{MiB} - 45\,056)/144 = 14{,}209`$ to
+  within 2%, an arithmetic cross-check the 219 figure fails by a factor of 1.5.
+  **The 219 is withdrawn.** [E73]'s "2.1" was $`464/219`$ and is superseded; see
+  [E84].
 * More decisively, a construction bound **need not be derived from stack at
   all**. `prost`'s `RECURSION_LIMIT = 100` and `canonical_path`'s
   `COLLECTION_DEPTH_LIMIT = 32` are protocol constants, chosen for consensus
@@ -2871,7 +2886,26 @@ against the destructor's.
 | E71 | The two repositories' `par_drop` subjects measure different fixtures (464/219 here, 368/95 there) and agree on the class, not the constant | **Read** — both fixtures; **Measured** — both gates' recorded slopes |
 | E72 | ⚠ `inj_attempt` also `.cloned()`s the deploy term through `<Par as Clone>::clone` — 15,872 B/level debug, **2,852 release**, i.e. **735 levels** on a 2 MiB release worker, the deploy path's true depth ceiling | **Read** — `interpreter.rs` `set-initial-cost` phase, `SignedProcess::source_process`; **Measured** — direct bisection of subject `clone`, release, 16 → 128: 56 KiB → 368 KiB |
 | E74 | ⚠ The recorded **219** B/level release figure for `par_drop` does not reproduce; direct bisection gives **144** | **Measured** — release build of this tree, subject `drop` over 256 → 4,096: 44 KiB → 584 KiB. The debug figure DOES reproduce (464 vs recorded 470) |
-| E73 | E61's "no profile-independent depth constant" does not transfer to a construction bound: the profile ratio fell from 6.0 to 2.1, and a protocol constant is not derived from stack at all | **Derived** — from E61's own figures against this section's; corroborated by two existing protocol depth constants |
+| E73 | E61's "no profile-independent depth constant" does not transfer to a construction bound: the profile ratio fell from 6.0 to 2.1, and a protocol constant is not derived from stack at all | **Derived** — from E61's own figures against this section's; corroborated by two existing protocol depth constants. ⚠ **The "2.1" is SUPERSEDED** — it was $`464/219`$ and E74 already recorded that the 219 does not reproduce; the re-bisected ratio is $`464/144 = 3.22`$ ([E84]). The entry's *conclusion* is unaffected and strengthened: a wider spread makes the admissible window wider still |
+
+---
+
+#### 14.9 Evidence ledger — third amendment (2026-07-27, the metering handshake)
+
+Stratum: this session. Every row is release unless stated, bisected in a child
+process at an explicitly-sized stack, and reported with its bracketing evidence.
+
+| # | claim | provenance |
+|---|---|---|
+| E82 | ★★ E72's `inj_attempt` clone is REMOVED. `SignedProcess::into_source_process` — the by-move twin of `source_process`, in the `par_children::take_par_child_pars` / `par_child_pars` pattern — hands the normalized term to `reducer.inj` instead of copying it | **Read** — `reset_from_signed_process` consumes only `.token()`, and `token()` is `None` on the `Signed` arm, so the metering handshake never observes `process`; **Measured** — new gate subject `inj_attempt_clone`, release: **2,852 → 0 B/level**, max depth on a 2 MiB worker **729 → ≥ 1,048,576**. Flat in **both** profiles (32 KiB release / 196 KiB debug at depths 4 and 4,096 alike), which is what admitted it to `CONVERTED_DEPTH` |
+| E83 | ⚠ E72's **735** was arithmetic ($`2\,\text{MiB}/2{,}852`$) and is an UPPER bound; the bisected value is **729** | **Measured** — depth bisection at a fixed 2 MiB stack, release, of both the composition (`inj_attempt_clone` pre-fix) and the standalone `clone` subject: both give 729, 730 aborts. The 6-level gap is the subject's own ~57 KiB intercept |
+| E84 | ★ The `par_drop` profile ratio is **3.22** ($`464/144`$), not 2.1. §14.7's figure is confirmed; E73's is superseded and the 219 is withdrawn | **Measured** — release re-bisection over 256 → 4,096 (45,056 B → 598,016 B = 144.0 B/level) plus the debug ladder (196,608 B → 1,908,736 B = 464 B/level) on one tree; corroborated by the gate's own printed ladders in both profiles and by a fixed-stack depth bisection (14,525 levels, within 2% of the 144-derived prediction) |
+| E85 | The abort signature for the CLONE path is the same as E65 recorded for the drop path: `thread 'gate' has overflowed its stack` / `fatal runtime error: stack overflow, aborting`, shell status **134** = `128 + SIGABRT` | **Measured** — `inj_attempt_clone` pre-fix at depth 730 on a 2 MiB thread; status read both from `ExitStatus` and from `sh -c … ; echo $?` |
+| E86 | ★★ **`Env::get` does NOT outrank the clone, and neither does anything else the cluster had named.** An END-TO-END deploy on a 2 MiB tokio worker stops at source depth **286**; the *same* deploy shape with the deep term routed through a COMM binder stops at **283** — a marginal cost of **3 levels** for `Env::get`, not a new ceiling | **Measured** — `rholang/tests/deploy_depth_ceiling.rs`, real runtime, `thread_stack_size(2 MiB)` set explicitly on the tokio builder, deploy driven from SOURCE through `evaluate_with_term`; both shapes 7,253 B/level (identical growth 1,740,800 B over 16 → 256), differing only in a 20,480 B intercept |
+| E87 | ★★★ **A NEW, PREVIOUSLY UNRECORDED Θ(depth) member is the deploy path's binding constraint: `Substitute::substitute_and_charge` opens with `term.clone()`.** It takes `term: &A` and calls `self.substitute(term.clone(), …)`, so every substitution copies its input through `<Par as Clone>::clone`. It fires on the ORDINARY SEND path — no binder, no COMM, no environment — and is why E84's control reads 286 | **Read** — `substitute.rs`, `substitute_and_charge` and `substitute_no_sort_and_charge`; **Measured** — `gdb` backtrace at the overflow of a `@"out"!([[…[0]…]])` deploy: a clean 3-frame repetition `<Par as Clone>::clone → <ExprInstance as Clone>::clone → <Expr as ConvertVec>::to_vec` under frame #103 `substitute_and_charge::<Par>`, called from `eval_send`'s data-substitution `map`, on a `spawn_detached` tokio worker |
+| E88 | E85's 7,253 B/level and `substitute_deep_binding`'s 7,241 are the SAME traversal at two call sites inside `Substitute`, both ~2.5× the standalone `clone` subject's 2,852 | **Measured** — release ladders: `clone` 2,852.6 B/level (16 → 128), `substitute_deep_binding` 7,241.1 B/level (16 → 128), end-to-end deploy 7,253.3 B/level (16 → 256); the inlining explanation was already recorded on `substitute_deep_binding` and now has a second instance |
+| E89 | ⚠ The ingress ceiling depends on the **shape** of the discard, not only on the term: `mk_term(..).map(drop)` measures 135.5 B/level / 14,520 levels where the literal `match … Ok(_parsed_term) => …` measures **84.3 / 21,781**, on one build and one fixture | **Measured** — both forms bisected on a 2 MiB thread, release. The consequence is methodological: a probe for a destructor must reproduce the call shape literally rather than refactor it |
+| E90 | ⚠ `theta_depth_tripwire` FAILS in RELEASE at `291bc217`, before any change in this session, and passes in DEBUG | **Measured** — `synthetic_drop` release ladder 4 → 4,096: 12,288 B → 139,264 B, growth **126,976 B (124 KiB)** at 31.0 B/level, against the leg's own `growth() > 8 * ZERO_SLOPE_TOLERANCE` = 131,072 B — short by 3.1%; **Read** — the leg, both subjects, `drop_chain` and all three constants are byte-identical to `HEAD`. The margin was calibrated on the DEBUG glue (95 B/level ⇒ ~389 KiB, 23.7×); at `-O2` the glue keeps only the tail pointer (31 B/level ⇒ 7.75×) |
 
 ---
 

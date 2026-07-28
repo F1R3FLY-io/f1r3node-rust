@@ -74,7 +74,7 @@ use models::rust::rholang::sorter::sortable::Sortable;
 use models::rust::utils::new_gint_par;
 use rholang::rust::interpreter::accounting::costs::Cost;
 use rholang::rust::interpreter::compiler::compiler::Compiler;
-use rholang::rust::interpreter::accounting::RuntimeBudget;
+use rholang::rust::interpreter::accounting::{RuntimeBudget, SignedProcess};
 use rholang::rust::interpreter::env::Env;
 use rholang::rust::interpreter::matcher::spatial_matcher::SpatialMatcherContext;
 use rholang::rust::interpreter::metering::MeteredMachine;
@@ -523,6 +523,11 @@ fn subject(name: &str) -> fn(usize) {
         // It was measuring it. One name for one traversal, in both repos.
         "par_drop" => par_drop_body,
         "normalize_drop" => normalize_drop_body,
+        // ★ `inj_attempt`'s `set-initial-cost` phase. Named for the CLONE it used
+        // to perform, in the same spirit as `normalize_drop`: the name records the
+        // defect the subject guards against coming back, not the code that is
+        // there today.
+        "inj_attempt_clone" => inj_attempt_clone_body,
         "encode" => encode_body,
         "bincode_ser" => bincode_ser_body,
         "bincode_de" => bincode_de_body,
@@ -647,6 +652,13 @@ const CONVERTED_DEPTH: &[&str] = &[
     // 7,261 → 0 release; the ONLY member that runs before metering exists, so
     // nothing else could have bounded it.
     "normalize",
+    // ★ `inj_attempt`'s `set-initial-cost` phase. It entered this list by being
+    // CONVERTED, not by having a ceiling raised: the write-then-read-back
+    // `source_process().cloned()` became the by-move `into_source_process()`, and
+    // the composition went from 2,852 B/level release (max depth 729 on a 2 MiB
+    // worker) to a FLAT 32,768 B across 4 → 4,096. See `inj_attempt_clone_body`
+    // for the before/after table and the bisection evidence.
+    "inj_attempt_clone",
 ];
 
 /// Width-axis traversals converted to a heap-bounded form. Same rule.
@@ -1229,6 +1241,45 @@ fn source_sibling_count(src: &str) -> usize {
 ///   … the Par falls out of scope …    Θ(depth)            (derived `Drop`)
 /// ```
 ///
+/// ## ⚠ AND IT RUNS ON INGRESS TOO, WHERE THERE IS NO BUDGET AT ALL
+///
+/// This doc described only the EVALUATION path until 2026-07-27, which
+/// understated the exposure. The same composition — build a full `Par` from
+/// attacker-supplied source, then release it recursively — is what
+/// `casper/src/rust/engine/multi_parent_casper/block_admission.rs` runs on the
+/// **gRPC deploy-intake** path, in both `admit_deploy` and
+/// `admit_deploy_cosigned`:
+///
+/// ```text
+///   mk_term(&deploy.data.term, normalizer_env)      = Compiler::source_to_adt_with_normalizer_env
+///        │  Ok(_parsed_term)  ← BOUND AND DISCARDED; the match is a validity check
+///        ▼
+///   … the arm ends, the Par falls out of scope …    Θ(depth) (derived `Drop`)
+/// ```
+///
+/// and that is **worse** than the evaluation instance in three ways:
+///
+/// * it fires on a **2 MiB spawned worker** BEFORE the deploy is stored, BEFORE
+///   consensus, and before any replica has agreed to spend anything on it;
+/// * `admit_deploy_cosigned` never touches a `RuntimeBudget`, so — exactly as
+///   with `build-normalized-term` — cost accounting cannot bound it, not because
+///   the charge is too small but because no charge exists yet; and
+/// * the term is **discarded**. `_parsed_term` is bound with a leading underscore
+///   and never read — the `match` is a validity check, what admission stores is
+///   the deploy's SOURCE, and the block creator re-normalizes it later. The whole
+///   traversal is the destructor of a value nothing reads.
+///
+/// `normalizer_env` is depth-independent (a handful of shallow `GUnforgeable`
+/// `Par`s), so ingress and this subject measure the same composition — and the
+/// measurements agree: bisected on a 2 MiB thread in release,
+/// `casper/tests/deploy_ingress_depth_ceiling.rs` puts ingress at **135.5
+/// B/level** and a maximum source depth of **14,520**, against this subject's
+/// independently bisected **144 B/level** and `par_drop`'s **14,525**.
+///
+/// ⚠ **The ingress instance is NOT repaired**, and that is deliberate: deploy
+/// admission is pre-metering and pre-storage, and a change there warrants its own
+/// design. The cross-reference above is a measurement, not a guard.
+///
 /// ⚠ **The two facts are individually gated and jointly unguarded, and that is
 /// the whole finding.** `normalize` is in
 /// [`converted_traversals_are_depth_independent`] at 0 B/level, so the gate
@@ -1301,6 +1352,119 @@ fn normalize_wide_body(width: usize) {
     assert_carries("the NORMALIZED term's sibling count", par_width(&term), width);
     dismantle(term);
 }
+
+/// ★★ **`inj_attempt`'s `set-initial-cost` PHASE, verbatim — the write-then-
+/// read-back that used to cost TWO deep traversals where a move suffices.**
+///
+/// [`normalize_drop_body`] measures the composition
+/// `source_to_adt` ▸ `Drop`. This subject measures what actually sits between
+/// them in `InterpreterImpl::inj_attempt`: the metering handshake, which takes
+/// the freshly normalized `Par` by value and then has to give it back.
+///
+/// **What it used to be** (`interpreter.rs`, until 2026-07-27):
+///
+/// ```text
+///   Compiler::source_to_adt(source)             Θ(1) native stack (Stage G)
+///        │  a `Par` of the source's nesting depth
+///        ▼
+///   SignedProcess::metered(parsed, sig, phlo)   Θ(1)  — moves the Par IN
+///        ▼
+///   budget.reset_from_signed_process(&sp)       Θ(1)  — reads ONLY `.token()`
+///        ▼
+///   sp.source_process().cloned()                Θ(depth) ★ <Par as Clone>::clone
+///        ▼
+///   … `sp` falls out of scope …                 Θ(depth) ★ drop_in_place::<Par>
+/// ```
+///
+/// **Two deep traversals, not one**, eleven lines apart, on a term whose nesting
+/// depth is chosen by whoever wrote the deploy — and neither bought anything.
+/// `reset_from_signed_process` reads only `SignedProcess::token()`, and `token()`
+/// returns `None` on the `Signed` arm, so the metering handshake never observes
+/// `process` at all. The clone was a read-back of what the line above had
+/// written.
+///
+/// **What it is now:** `SignedProcess::into_source_process` — the by-move twin of
+/// `source_process`, in the pattern `par_children::take_par_child_pars` /
+/// `par_child_pars` establishes and `move_and_borrow_source_process_agree`
+/// enforces. The term is handed over instead of copied, so the clone is gone and
+/// there is no original left to drop.
+///
+/// ★ **Anti-vacuity is the whole subject here.** `par_depth` is asserted on the
+/// term going IN and on the term coming OUT. `into_source_process` returning the
+/// wrong arm — or a `SignedProcess::metered` that stopped retaining the process —
+/// yields a shallow or absent `Par`, and the reading would be a comfortable zero
+/// for a handshake that was never given any depth. That check is what makes this
+/// ladder mean anything, because unlike every other subject in this file the
+/// traversal under test is one the code no longer performs: what is measured is
+/// that it is *absent*.
+///
+/// ## Measured, RELEASE, by direct bisection of this subject (2026-07-27)
+///
+/// The BEFORE column was produced by running this exact body with
+/// `into_source_process()` replaced by `source_process().cloned()` + an explicit
+/// `drop(signed_process)` — i.e. the composition `interpreter.rs` performed until
+/// this date — and nothing else changed:
+///
+/// | | B / nesting level | min stack @ 16 | min stack @ 128 | max depth on a 2 MiB worker |
+/// |---|---:|---:|---:|---:|
+/// | before (`.cloned()` + `drop`) | **2,852** | 57,344 B | 376,832 B | **729** |
+/// | after (`into_source_process`) | **0** | 32,768 B @ 4 | 32,768 B @ 4,096 | **≥ 1,048,576** |
+///
+/// Depth 730 aborted with `thread 'gate' has overflowed its stack` /
+/// `fatal runtime error: stack overflow, aborting`, shell status **134**
+/// (`128 + SIGABRT`) — not a panic, not an `Err`, and therefore not something
+/// `inj_attempt`'s `Err(e) => handle_error(ParserError(..))` arm could ever see.
+///
+/// ⚠ 729, not 735. The figure that circulated before this bisection was
+/// arithmetic — `2 MiB / 2,852 B` — which ignores the subject's own ~57 KiB
+/// intercept and is therefore an UPPER bound. The bisected value agrees with the
+/// standalone `clone` subject's bisected maximum depth (**729**) to the level,
+/// which is the cross-check that the composition's ceiling really was
+/// `<Par as Clone>::clone`'s and not something else in the phase.
+///
+/// ⚠⚠ **This was never the deploy path's binding constraint, and removing it does
+/// not lift the deploy path's ceiling.** Measured end to end through the real
+/// runtime on a 2 MiB tokio worker
+/// (`rholang/tests/deploy_depth_ceiling.rs`), a deploy still stops at depth
+/// **286** — because `Substitute::substitute_and_charge` takes its term by
+/// reference and opens with `term.clone()`, a second `<Par as Clone>::clone` that
+/// fires on the ORDINARY SEND path, needs no binder and no COMM, and measures
+/// **7,253 B/level**. See that file's own module documentation.
+fn inj_attempt_clone_body(depth: usize) {
+    let src = nested_list_source(depth);
+    assert_carries(
+        "the inj_attempt_clone input's SOURCE nesting",
+        source_bracket_depth(&src),
+        depth,
+    );
+    let parsed = Compiler::source_to_adt(&src)
+        .expect("stack_depth_gate: inj_attempt_clone normalize failed");
+    assert_carries("the NORMALIZED term's nesting", par_depth(&parsed), depth);
+
+    // ── `inj_attempt`'s `set-initial-cost` block, line for line. ──
+    let budget = RuntimeBudget::new(Cost::create(
+        INJ_ATTEMPT_GATE_PHLO,
+        "stack_depth_gate: inj_attempt_clone",
+    ));
+    let signed_process = SignedProcess::metered(
+        parsed,
+        budget.signature(),
+        u64::try_from(INJ_ATTEMPT_GATE_PHLO).unwrap_or(0),
+    );
+    budget.reset_from_signed_process(&signed_process);
+    let out = signed_process
+        .into_source_process()
+        .expect("metered deploy must retain source process");
+
+    // ⚠ THE STRONGEST CHECK IN THIS SUBJECT — see the note above.
+    assert_carries("the term handed to `reducer.inj`", par_depth(&out), depth);
+    dismantle(out);
+}
+
+/// The budget this gate's `inj_attempt` subject is initialised with. Only its
+/// magnitude matters: `reset_from_signed_process` stores a token count and never
+/// walks the term.
+const INJ_ATTEMPT_GATE_PHLO: i64 = 1_000_000;
 
 fn clone_body(depth: usize) {
     let term = nested_list(depth);
@@ -2616,6 +2780,63 @@ fn the_577_byte_reproducer_is_a_deploy_and_not_a_node_abort() {
              metering existed, through an error arm a SIGSEGV cannot reach, on the \
              validator path.",
             2 * depth + 1,
+            DEFAULT_SPAWNED_THREAD_STACK / (1024 * 1024)
+        );
+    }
+}
+
+/// ★★ **The metering handshake no longer has a depth ceiling — stated as an
+/// ABSOLUTE depth on the stack a tokio worker actually gets.**
+///
+/// [`converted_traversals_are_depth_independent`] proves `inj_attempt_clone`'s
+/// minimum stack does not GROW across 4 → 4,096. That is the structural claim,
+/// and it is the right one, but it is measured by bisecting a stack the gate
+/// chooses. This test fixes the stack at the one value production runs on and
+/// asserts the depths directly, so the claim can be read without reconstructing
+/// a bisection: **288 / 1,152 / 100,000 all survive 2 MiB.**
+///
+/// ★ The explicit `stack_size` is what makes the number mean anything. This
+/// repository's `.cargo/config.toml` sets `RUST_MIN_STACK = 8388608`, so a test
+/// that merely spawned a thread would be asserting a **4× larger** stack than a
+/// node worker has, and would keep passing long after the property was lost.
+/// `runs_within` → `gate_child` sets it explicitly; that is why a 2 MiB assertion
+/// is meaningful inside a `cargo test` run.
+///
+/// **Why these three depths.** 288 is the first depth at which the 577-byte
+/// reproducer aborted a release node. 1,152 is 4× that. 100,000 is a 200 kB
+/// source, two orders of magnitude past every ceiling this composition ever had
+/// — and it is far past the **729** that the pre-2026-07-27 form managed on this
+/// exact stack (see [`inj_attempt_clone_body`] for the before/after bisection),
+/// so a regression to the `.cloned()` form fails here at the very first depth.
+///
+/// ★ **Shown RED.** With the subject body reverted to
+/// `source_process().cloned()` + `drop(signed_process)`, depth 288 still passed
+/// (729 > 288) but depth 1,152 aborted the child with
+/// `fatal runtime error: stack overflow` / status 134, and this test failed
+/// naming `1152`. The 288 rung is deliberately kept anyway: it is the reproducer's
+/// own depth, and a future regression cheaper than 7 KiB/level would be caught by
+/// the 100,000 rung regardless.
+///
+/// ⚠ It asserts the handshake is **entered and completed**, not merely that the
+/// process survives: `inj_attempt_clone_body` checks the source's bracket run,
+/// the normalized term's nesting, AND the nesting of the term
+/// `into_source_process` hands back. A handshake that returned the wrong arm
+/// would also "not abort", and would fail here rather than pass quietly.
+#[test]
+fn the_metering_handshake_carries_any_depth_on_a_default_worker_stack() {
+    const DEFAULT_SPAWNED_THREAD_STACK: usize = 2 * 1024 * 1024;
+    for depth in [288usize, 1_152, 100_000] {
+        assert!(
+            runs_within(DEFAULT_SPAWNED_THREAD_STACK, depth, "inj_attempt_clone"),
+            "★ REGRESSION — THE `set-initial-cost` HANDSHAKE HAS A DEPTH CEILING AGAIN. \
+             A deploy of nesting depth {depth} no longer survives the metering handshake on \
+             the {} MiB stack a tokio worker gets. The phase must hand the normalized term \
+             to `reducer.inj` BY MOVE (`SignedProcess::into_source_process`); the \
+             `source_process().cloned()` form it replaced cost a `<Par as Clone>::clone` \
+             AND a recursive `drop_in_place::<Par>` of the original, and stopped at depth \
+             729 on this very stack. A stack overflow is a SIGSEGV, so the call site's \
+             `Err(e) => handle_error(ParserError(..))` arm cannot see it: it takes the \
+             node, not the deploy.",
             DEFAULT_SPAWNED_THREAD_STACK / (1024 * 1024)
         );
     }

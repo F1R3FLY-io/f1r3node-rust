@@ -1953,6 +1953,94 @@ impl SignedProcess {
         }
     }
 
+    /// [`source_process`], **by move** — the same `Par`, handed over instead of
+    /// copied.
+    ///
+    /// [`source_process`]: SignedProcess::source_process
+    ///
+    /// ## Why this exists
+    ///
+    /// `InterpreterImpl::inj_attempt` builds a `SignedProcess` around the freshly
+    /// normalized deploy term, hands it to the metering handshake, and then needs
+    /// the term back to reduce it. Written with the by-reference accessor that is
+    /// a **write followed by a read-back eleven lines later**:
+    ///
+    /// ```ignore
+    /// let signed_process = SignedProcess::metered(parsed, …);  // moves the Par IN
+    /// self.c.reset_from_signed_process(&signed_process);       // reads only .token()
+    /// signed_process.source_process().cloned()                 // ★ Θ(depth) CLONE
+    ///     .expect("metered deploy must retain source process")
+    /// }                                                        // ★ Θ(depth) DROP
+    /// ```
+    ///
+    /// and that costs **two** deep traversals of the term, not one: the
+    /// `<Par as Clone>::clone` (2,852 B of native stack per nesting level in
+    /// release) *and* the derived recursive `drop_in_place::<Par>` of the original
+    /// (464 B/level) when `signed_process` falls out of scope. Both are Θ(nesting
+    /// depth) in **native stack**, both are driven by attacker-chosen source, and a
+    /// native-stack exhaustion is a `SIGSEGV` on the guard page — `abort()`, not an
+    /// `Err`, so the call site's error arm cannot see it and it takes the node
+    /// rather than the deploy. See
+    /// `docs/design/audits/theta-depth-traversals-2026-07-26.md`.
+    ///
+    /// Neither traversal buys anything. The handshake
+    /// ([`RuntimeBudget::reset_from_signed_process`]) reads **only** [`token`],
+    /// and [`token`] returns `None` on the [`Signed`] arm — so the metering path
+    /// never observes `process` at all. Moving the term out is therefore
+    /// behaviour-preserving by construction, and it is the by-move twin of the
+    /// by-reference accessor exactly as
+    /// `models::rust::rholang::par_children::take_par_child_pars` is the by-move
+    /// twin of `par_child_pars`.
+    ///
+    /// [`token`]: SignedProcess::token
+    /// [`Signed`]: SignedProcess::Signed
+    ///
+    /// ## The same answer, and O(1) native stack while giving it
+    ///
+    /// * **Same selection.** [`source_process`] is `left.or_else(right)`, i.e. a
+    ///   pre-order, left-biased search that yields the FIRST [`Signed`] arm in
+    ///   left-to-right leaf order. The worklist below pushes `right` *then*
+    ///   `left`, so `pop` visits left first and the two agree leaf for leaf. The
+    ///   test `move_and_borrow_source_process_agree` asserts that over a corpus of
+    ///   shapes, including several with more than one [`Signed`] arm.
+    ///
+    /// * **O(1) native stack.** The walk is an explicit worklist, so the
+    ///   `SignedProcess` spine costs heap rather than frames; and every *further*
+    ///   `Signed` arm's `Par` goes to `par_children::dismantle_all`, which tears a
+    ///   term down with its own worklist instead of through the derived recursive
+    ///   `Drop`. Returning the found `Par` by move means the caller decides that
+    ///   term's fate, and `inj_attempt`'s caller reduces it.
+    ///
+    /// ⚠ A `SignedProcess::Par(l, r)` node is fully consumed by the `match` — both
+    /// boxes are moved onto the worklist — so no node is ever dropped with a child
+    /// still attached, and the recursive `Drop` for the spine is never entered.
+    pub fn into_source_process(self) -> Option<Par> {
+        let mut found: Option<Par> = None;
+        // Every `Signed` arm after the first. `source_process` would have ignored
+        // these; they are torn down iteratively rather than recursively.
+        let mut discarded: Vec<Par> = Vec::new();
+        let mut work: Vec<SignedProcess> = vec![self];
+        while let Some(node) = work.pop() {
+            match node {
+                SignedProcess::Signed { process, .. } => match found {
+                    None => found = Some(process),
+                    Some(_) => discarded.push(process),
+                },
+                // Carries no `Par`; dropping it here neither traverses a term nor
+                // changes what `source_process` would have returned.
+                SignedProcess::Token(_) => {}
+                SignedProcess::Par(left, right) => {
+                    // ⚠ RIGHT first, so `pop` takes LEFT first. This is what makes
+                    // the worklist agree with `source_process`'s `.or_else` bias.
+                    work.push(*right);
+                    work.push(*left);
+                }
+            }
+        }
+        models::rust::rholang::par_children::dismantle_all(discarded);
+        found
+    }
+
     pub fn token(&self) -> Option<&Token> {
         match self {
             SignedProcess::Signed { .. } => None,
@@ -2642,5 +2730,235 @@ mod funding_sig_tests {
             ),
             "the installed funding signature is And(Ground(pkᵢ)) over the cosigners' keys"
         );
+    }
+}
+
+#[cfg(test)]
+mod signed_process_by_move_tests {
+    //! ★ The by-move / by-reference agreement for [`SignedProcess`]'s source-term
+    //! accessor, and the native-stack property that is the reason for having it.
+    //!
+    //! `models::rust::rholang::par_children` establishes the pattern this follows:
+    //! a by-move twin of a by-reference table, kept in step by an executed
+    //! agreement test (`move_and_borrow_tables_agree`) rather than by the two
+    //! being written next to each other. Two enumerations of one selection rule do
+    //! not stay equal on their own — `source_process`'s bias is `left.or_else(
+    //! right)` and `into_source_process`'s is a worklist push order, and those are
+    //! *different expressions of the same intent*, which is exactly the situation
+    //! that drifts.
+    //!
+    //! Reference: `docs/design/audits/theta-depth-traversals-2026-07-26.md` §14.8.
+    use super::*;
+
+    /// A `Par` distinguishable by tag and carrying no children — so a corpus
+    /// entry's identity is visible in a failure message.
+    fn tagged(tag: u8) -> Par {
+        Par {
+            locally_free: vec![tag],
+            ..Default::default()
+        }
+    }
+
+    fn signed(tag: u8) -> SignedProcess {
+        SignedProcess::Signed {
+            process: tagged(tag),
+            sig: Sig::Ground(vec![tag]),
+        }
+    }
+
+    fn tok() -> SignedProcess { SignedProcess::Token(Token::coalesced(Sig::Unit, 7)) }
+
+    fn par(l: SignedProcess, r: SignedProcess) -> SignedProcess {
+        SignedProcess::Par(Box::new(l), Box::new(r))
+    }
+
+    /// The corpus: `(name, shape, expected tag or None)`.
+    ///
+    /// ⚠ It deliberately contains shapes with **more than one** `Signed` arm, in
+    /// both orders and at both depths. A corpus of single-`Signed` shapes could
+    /// not distinguish a left-biased walk from a right-biased one, and
+    /// `SignedProcess::metered` — the only constructor in the tree today — builds
+    /// exactly one such shape. A corpus that only covered today's constructor
+    /// would certify nothing about the accessor.
+    fn corpus() -> Vec<(&'static str, SignedProcess, Option<u8>)> {
+        vec![
+            ("bare Signed", signed(1), Some(1)),
+            ("bare Token", tok(), None),
+            // What `SignedProcess::metered` actually builds.
+            (
+                "metered: Par(Signed, Token)",
+                par(signed(2), tok()),
+                Some(2),
+            ),
+            ("Par(Token, Signed)", par(tok(), signed(3)), Some(3)),
+            ("Par(Token, Token)", par(tok(), tok()), None),
+            // ★ THE BIAS CASES — two `Signed` arms, so left-vs-right is decidable.
+            ("Par(Signed, Signed)", par(signed(4), signed(5)), Some(4)),
+            (
+                "Par(Par(Token, Signed), Signed)",
+                par(par(tok(), signed(6)), signed(7)),
+                Some(6),
+            ),
+            (
+                "Par(Par(Signed, Signed), Par(Signed, Signed))",
+                par(par(signed(8), signed(9)), par(signed(10), signed(11))),
+                Some(8),
+            ),
+            // The first `Signed` is deeper on the left than the shallow one on the
+            // right: a breadth-first walk would return 13, a left-biased
+            // depth-first walk returns 12.
+            (
+                "Par(Par(Par(Signed, Token), Token), Signed)",
+                par(par(par(signed(12), tok()), tok()), signed(13)),
+                Some(12),
+            ),
+            (
+                "Par(Token, Par(Token, Par(Token, Signed)))",
+                par(tok(), par(tok(), par(tok(), signed(14)))),
+                Some(14),
+            ),
+        ]
+    }
+
+    fn tag_of(p: &Par) -> u8 { *p.locally_free.first().expect("corpus Par carries its tag") }
+
+    /// ★★ **The by-move accessor selects the SAME arm the by-reference one does.**
+    ///
+    /// Both are driven over the same corpus entry — the by-reference read first
+    /// (it borrows), then the by-move read (it consumes) — and the tags must
+    /// agree, `None` included.
+    #[test]
+    fn move_and_borrow_source_process_agree() {
+        let mut multi_signed_shapes = 0usize;
+        let mut none_shapes = 0usize;
+        for (name, shape, expected) in corpus() {
+            let borrowed: Option<u8> = shape.source_process().map(tag_of);
+            assert_eq!(
+                borrowed, expected,
+                "the by-REFERENCE accessor picked the wrong arm for `{name}`; the corpus's \
+                 own expectation is wrong or `source_process` changed"
+            );
+            if borrowed.is_none() {
+                none_shapes += 1;
+            }
+            if count_signed_arms(&shape) > 1 {
+                multi_signed_shapes += 1;
+            }
+
+            let moved: Option<u8> = shape.into_source_process().as_ref().map(tag_of);
+            assert_eq!(
+                moved, borrowed,
+                "★ THE BY-MOVE AND BY-REFERENCE SOURCE-PROCESS ACCESSORS DISAGREE for \
+                 `{name}`: `source_process()` selected {borrowed:?} but \
+                 `into_source_process()` selected {moved:?}. `source_process` is \
+                 `left.or_else(right)` — a left-biased pre-order search — so the worklist \
+                 must push RIGHT before LEFT. A disagreement here means `inj_attempt` \
+                 would reduce a different term than the one it used to."
+            );
+        }
+
+        // ── ANTI-VACUITY. A corpus that had drifted to single-`Signed` shapes
+        // would pass the loop above under either bias.
+        assert!(
+            multi_signed_shapes >= 4,
+            "VACUOUS CORPUS: only {multi_signed_shapes} shapes carry more than one `Signed` \
+             arm, so the loop above cannot distinguish a left-biased walk from a \
+             right-biased one — which is the ONLY thing the two implementations could \
+             disagree about."
+        );
+        assert!(
+            none_shapes >= 2,
+            "VACUOUS CORPUS: only {none_shapes} shapes have no `Signed` arm at all, so the \
+             `None` agreement is barely exercised. `inj_attempt` turns `None` into a panic \
+             (`expect`), so the two accessors must agree about absence as well as presence."
+        );
+    }
+
+    /// Count the `Signed` arms of a shape — ITERATIVELY, so the checker cannot be
+    /// the thing that overflows.
+    fn count_signed_arms(root: &SignedProcess) -> usize {
+        let mut n = 0usize;
+        let mut work: Vec<&SignedProcess> = vec![root];
+        while let Some(node) = work.pop() {
+            match node {
+                SignedProcess::Signed { .. } => n += 1,
+                SignedProcess::Token(_) => {}
+                SignedProcess::Par(l, r) => {
+                    work.push(l);
+                    work.push(r);
+                }
+            }
+        }
+        n
+    }
+
+    /// ★★ **The reason the twin exists: it is O(1) in NATIVE STACK.**
+    ///
+    /// `SignedProcess::Par(Box<_>, Box<_>)` is a recursive type, so both
+    /// `source_process` and the derived `Drop` are Θ(spine depth) in frames.
+    /// `into_source_process` walks with an explicit worklist and consumes every
+    /// node it visits, so neither recursion is entered.
+    ///
+    /// The subject runs on a thread with an **explicit 128 KiB `stack_size`**, so
+    /// neither `RUST_MIN_STACK` (this repo's `.cargo/config.toml` sets 8 MiB) nor
+    /// `ulimit -s` can mask a regression — the same discipline
+    /// `rholang/tests/stack_depth_gate.rs` uses.
+    ///
+    /// ★ **Shown RED.** Replacing the body's `into_source_process()` with
+    /// `source_process().cloned()` — which leaves the recursive accessor AND the
+    /// recursive `Drop` in the path — aborts the child thread with
+    /// `fatal runtime error: stack overflow` at this spine depth, and the harness
+    /// reports the join failure. The assertion that rejects is the `join()`
+    /// `expect` below.
+    #[test]
+    fn into_source_process_survives_a_deep_spine_on_a_small_stack() {
+        const SPINE: usize = 200_000;
+        const SMALL_STACK: usize = 128 * 1024;
+
+        std::thread::Builder::new()
+            .stack_size(SMALL_STACK)
+            .name("into_source_process-deep-spine".to_string())
+            .spawn(|| {
+                // Built ITERATIVELY — a recursive builder would be the constraint.
+                // Left-spine: Par(Par(…Par(Signed, Token)…, Token), Token).
+                let mut node = signed(42);
+                for _ in 0..SPINE {
+                    node = par(node, tok());
+                }
+                // ANTI-VACUITY: the shape really is that deep, counted iteratively.
+                assert_eq!(
+                    spine_depth(&node),
+                    SPINE,
+                    "VACUOUS PROBE: the spine collapsed, so the reading would be a \
+                     comfortable zero for a walk that was never given any depth"
+                );
+                let found = node
+                    .into_source_process()
+                    .expect("the deep spine's single Signed arm");
+                assert_eq!(
+                    tag_of(&found),
+                    42,
+                    "the wrong arm came back off the deep spine"
+                );
+            })
+            .expect("failed to spawn the small-stack probe")
+            .join()
+            .expect(
+                "★ `into_source_process` overflowed a 128 KiB stack on a deep `SignedProcess` \
+                 spine. It must walk with an explicit worklist and consume every node it \
+                 visits, so that neither the recursive accessor nor the derived recursive \
+                 `Drop` for `Par(Box<_>, Box<_>)` is entered.",
+            );
+    }
+
+    /// Spine depth, ITERATIVELY.
+    fn spine_depth(root: &SignedProcess) -> usize {
+        let mut n = 0usize;
+        let mut cur = root;
+        while let SignedProcess::Par(l, _) = cur {
+            n += 1;
+            cur = l;
+        }
+        n
     }
 }

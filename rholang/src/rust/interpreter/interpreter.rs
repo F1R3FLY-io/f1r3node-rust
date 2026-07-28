@@ -125,9 +125,18 @@ impl Interpreter for InterpreterImpl {
                     mark = "finished-set-initial-cost",
                     "inj_attempt"
                 );
+                // ★ BY MOVE, not by clone. This block used to `.source_process()`
+                // `.cloned()` the term it had handed to `SignedProcess::metered`
+                // eleven lines above, and then drop the original at the closing
+                // brace — TWO Θ(nesting-depth) native-stack traversals of an
+                // attacker-chosen term (`<Par as Clone>::clone`, 2,852 B/level
+                // release, plus the derived `drop_in_place::<Par>`, 464 B/level),
+                // where one move suffices. Neither bought anything: the metering
+                // handshake `reset_from_signed_process` reads only `.token()`, and
+                // `token()` is `None` on the `Signed` arm, so `process` is never
+                // observed by it. See `SignedProcess::into_source_process`.
                 signed_process
-                    .source_process()
-                    .cloned()
+                    .into_source_process()
                     .expect("metered deploy must retain source process")
             };
             // Reset mergeable-channel tracking before reducing the new term.
