@@ -4,7 +4,7 @@ on:
   push:
     branches: [master]
     paths:
-      - site/soak-dashboard/**
+      - .github/dashboard/**
       - .github/workflows/soak-dashboard-pages.yml
   workflow_dispatch:
 
@@ -40,8 +40,10 @@ jobs:
           # Bootstrap/refresh deploy: publish the dashboard shell while
           # preserving any data already published by the weekend soak's
           # perf_report job. First deploy ships an empty history.
+          # .github/dashboard/ is the source; site/ is the ephemeral tree the
+          # Pages artifact is assembled in (gitignored, CI-only).
           mkdir -p site/data
-          cp -r site/soak-dashboard/. site/
+          cp -r .github/dashboard/. site/
           # Pages is CDN-backed, so a plain GET can return a copy cached from
           # before the weekend soak's last publish — and we would then
           # republish that stale copy over the newer data. A per-run query

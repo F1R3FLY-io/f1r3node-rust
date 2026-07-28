@@ -407,7 +407,7 @@ jobs:
           test -s soak-results/report/weekly-summary.json || {
             echo "::error::soak artifact has no weekly-summary.json"; exit 1; }
           mkdir -p site/data
-          cp -r ci-control/site/soak-dashboard/. site/
+          cp -r ci-control/.github/dashboard/. site/
           # Pages is the only durable store for the history series — soak
           # artifacts expire after 14 days — and this is the job that appends
           # to it. Treating a transient fetch failure as "nothing published"

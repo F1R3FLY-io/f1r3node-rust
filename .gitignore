@@ -114,4 +114,9 @@ MC_TE.out
 
 .localtools
 
+# Ephemeral Pages assembly tree. The dashboard source lives in
+# .github/dashboard/; this is only ever built in CI (or by a local dry run)
+# and must never be committed.
+/site/
+
 *~
