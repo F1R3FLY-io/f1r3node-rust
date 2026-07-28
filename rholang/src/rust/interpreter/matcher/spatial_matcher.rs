@@ -661,6 +661,194 @@ impl SpatialMatcher<Expr, Expr> for SpatialMatcherContext {
                 .spatial_match(t1.unwrap(), p1.unwrap())
                 .and_then(|_| self.spatial_match(t2.unwrap(), p2.unwrap())),
 
+            // ---- the arms below were absent, and their absence was silent ----
+            //
+            // Every one of these variants carries child `Par`s, so a pattern
+            // built from one can carry a free variable — `connective_used` is
+            // `true` and `list_match::match_function` routes the pair HERE
+            // rather than to its `guard(t == p)` fast path. With no arm, the
+            // pair fell to `_ => None`: the pattern matched nothing, the COMM
+            // never fired, the receive rested forever, and nothing was
+            // reported. See `models::rust::rholang::par_children::
+            // spatial_match_descends_into` for the per-variant disposition and
+            // `rholang/tests/spatial_matcher_disposition.rs` for the gate that
+            // makes a future omission fail the suite instead of the network.
+            //
+            // ⚠ Adding them WIDENS the match relation: a program that rests
+            // today will fire. That is a protocol change and needs a
+            // coordinated version bump, which is F1r3node's decision to take —
+            // `Validate::version` is exact equality with no activation-height
+            // machinery.
+
+            // Subtraction. Its six arithmetic siblings (`*`, `/`, `%`, `+`,
+            // `++`, `--`) and `%%` were all present with identical bodies;
+            // `-` alone was not. No design produces that asymmetry.
+            (Some(EMinusBody(EMinus { p1: t1, p2: t2 })), Some(EMinusBody(EMinus { p1, p2 }))) => {
+                self.spatial_match(
+                    t1.expect("EMinus.p1 (target)"),
+                    p1.expect("EMinus.p1 (pattern)"),
+                )
+                .and_then(|_| {
+                    self.spatial_match(
+                        t2.expect("EMinus.p2 (target)"),
+                        p2.expect("EMinus.p2 (pattern)"),
+                    )
+                })
+            }
+
+            // The six comparisons. Same `p1`/`p2` shape, same role in the AST,
+            // same treatment.
+            (Some(ELtBody(ELt { p1: t1, p2: t2 })), Some(ELtBody(ELt { p1, p2 }))) => self
+                .spatial_match(t1.expect("ELt.p1 (target)"), p1.expect("ELt.p1 (pattern)"))
+                .and_then(|_| {
+                    self.spatial_match(t2.expect("ELt.p2 (target)"), p2.expect("ELt.p2 (pattern)"))
+                }),
+
+            (Some(ELteBody(ELte { p1: t1, p2: t2 })), Some(ELteBody(ELte { p1, p2 }))) => self
+                .spatial_match(
+                    t1.expect("ELte.p1 (target)"),
+                    p1.expect("ELte.p1 (pattern)"),
+                )
+                .and_then(|_| {
+                    self.spatial_match(
+                        t2.expect("ELte.p2 (target)"),
+                        p2.expect("ELte.p2 (pattern)"),
+                    )
+                }),
+
+            (Some(EGtBody(EGt { p1: t1, p2: t2 })), Some(EGtBody(EGt { p1, p2 }))) => self
+                .spatial_match(t1.expect("EGt.p1 (target)"), p1.expect("EGt.p1 (pattern)"))
+                .and_then(|_| {
+                    self.spatial_match(t2.expect("EGt.p2 (target)"), p2.expect("EGt.p2 (pattern)"))
+                }),
+
+            (Some(EGteBody(EGte { p1: t1, p2: t2 })), Some(EGteBody(EGte { p1, p2 }))) => self
+                .spatial_match(
+                    t1.expect("EGte.p1 (target)"),
+                    p1.expect("EGte.p1 (pattern)"),
+                )
+                .and_then(|_| {
+                    self.spatial_match(
+                        t2.expect("EGte.p2 (target)"),
+                        p2.expect("EGte.p2 (pattern)"),
+                    )
+                }),
+
+            (Some(EEqBody(EEq { p1: t1, p2: t2 })), Some(EEqBody(EEq { p1, p2 }))) => self
+                .spatial_match(t1.expect("EEq.p1 (target)"), p1.expect("EEq.p1 (pattern)"))
+                .and_then(|_| {
+                    self.spatial_match(t2.expect("EEq.p2 (target)"), p2.expect("EEq.p2 (pattern)"))
+                }),
+
+            (Some(ENeqBody(ENeq { p1: t1, p2: t2 })), Some(ENeqBody(ENeq { p1, p2 }))) => self
+                .spatial_match(
+                    t1.expect("ENeq.p1 (target)"),
+                    p1.expect("ENeq.p1 (pattern)"),
+                )
+                .and_then(|_| {
+                    self.spatial_match(
+                        t2.expect("ENeq.p2 (target)"),
+                        p2.expect("ENeq.p2 (pattern)"),
+                    )
+                }),
+
+            // The two boolean connectives of the EXPRESSION language. Note that
+            // these are `and`/`or` over evaluated processes — `ConnAndBody` /
+            // `ConnOrBody`, the pattern connectives `/\` and `\/`, are a
+            // different node handled by `SpatialMatcher<Par, Connective>`.
+            (Some(EAndBody(EAnd { p1: t1, p2: t2 })), Some(EAndBody(EAnd { p1, p2 }))) => self
+                .spatial_match(
+                    t1.expect("EAnd.p1 (target)"),
+                    p1.expect("EAnd.p1 (pattern)"),
+                )
+                .and_then(|_| {
+                    self.spatial_match(
+                        t2.expect("EAnd.p2 (target)"),
+                        p2.expect("EAnd.p2 (pattern)"),
+                    )
+                }),
+
+            (Some(EOrBody(EOr { p1: t1, p2: t2 })), Some(EOrBody(EOr { p1, p2 }))) => self
+                .spatial_match(t1.expect("EOr.p1 (target)"), p1.expect("EOr.p1 (pattern)"))
+                .and_then(|_| {
+                    self.spatial_match(t2.expect("EOr.p2 (target)"), p2.expect("EOr.p2 (pattern)"))
+                }),
+
+            // A method call. The NAME is compared by equality — `x.nth(0)` is
+            // not a candidate match for `x.length()` no matter what binds — and
+            // the ARGUMENTS go through `fold_match` with no remainder, which is
+            // positional and exact-arity: argument lists are ordered and a
+            // method of a different arity is a different call.
+            (
+                Some(EMethodBody(EMethod {
+                    method_name: t_name,
+                    target: t_target,
+                    arguments: t_arguments,
+                    locally_free: _,
+                    connective_used: _,
+                })),
+                Some(EMethodBody(EMethod {
+                    method_name: p_name,
+                    target: p_target,
+                    arguments: p_arguments,
+                    locally_free: _,
+                    connective_used: _,
+                })),
+            ) => guard(t_name == p_name)
+                .and_then(|_| {
+                    self.spatial_match(
+                        t_target.expect("EMethod.target (target)"),
+                        p_target.expect("EMethod.target (pattern)"),
+                    )
+                })
+                .and_then(|_| {
+                    self.fold_match(&t_arguments, &p_arguments, None)
+                        .map(|_| ())
+                }),
+
+            // `p matches q`. The `target` slot is descended into; the `pattern`
+            // slot is compared by EQUALITY.
+            //
+            // That asymmetry is not a shortcut, it is the binding structure.
+            // `EMatches`'s `pattern` is a nested pattern living at depth + 1, so
+            // its connectives are not "used" in the enclosing scope —
+            // `has_locally_free` computes this node's `connective_used` from the
+            // TARGET alone, precisely so that a `matches` right-hand side never
+            // introduces a binder here. Descending into it would also be
+            // actively wrong: for `@{x matches Int}` against `@{5 matches Int}`
+            // the right-hand sides are `ConnInt` CONNECTIVE `Par`s, and
+            // `SpatialMatcher<Par, Connective>`'s `ConnInt` arm demands a
+            // `GInt` EXPRESSION on the target side, so the obvious case would
+            // stop matching. Equality is the same treatment
+            // `SpatialMatcher<ReceiveBind, ReceiveBind>` gives `patterns` and
+            // `SpatialMatcher<MatchCase, MatchCase>` gives `pattern`, a few
+            // impls below.
+            (
+                Some(EMatchesBody(EMatches {
+                    target: t_target,
+                    pattern: t_pattern,
+                })),
+                Some(EMatchesBody(EMatches {
+                    target: p_target,
+                    pattern: p_pattern,
+                })),
+            ) => guard(t_pattern == p_pattern).and_then(|_| {
+                self.spatial_match(
+                    t_target.expect("EMatches.target (target)"),
+                    p_target.expect("EMatches.target (pattern)"),
+                )
+            }),
+
+            // ⚠ `EPathmapBody` and `EZipperBody` reach this arm DELIBERATELY,
+            // and `spatial_match_descends_into` says so in checkable form. The
+            // matcher's descent frontier may not outrun `Substitute`'s, and
+            // `Substitute` declines both: a `VarRef` or a shifted `BoundVar`
+            // inside a path map is still in its pre-substitution form when the
+            // matcher gets here, so binding out of it would bind out of stale
+            // bytes. For `EPathmapBody` that is a REAL gap — `{| a, ...rest |}`
+            // is ordinary surface syntax — and closing it additionally requires
+            // deciding a path map's entry-multiset semantics under matching,
+            // whose canonical form is the ground-map event-hash preimage.
             _ => None,
         }
     }
@@ -680,15 +868,44 @@ impl SpatialMatcher<Match, Match> for SpatialMatcherContext {
 }
 
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/SpatialMatcher.scala - unfSpatialMatcherInstance
-// Apparently this code is never reached according to Scala code comment
+//
+// ## "Never reached" — now a checked claim rather than a comment
+//
+// `list_match::match_function` consults `spatial_match` only when the pattern
+// reports `connective_used`, and `HasLocallyFree<GUnforgeable> for
+// SpatialMatcherContext` is a constant `false` (`has_locally_free.rs`). Every
+// unforgeable pattern therefore takes the `guard(t == p)` fast path and this
+// impl is unreachable from the `Par` walk. `no_unforgeable_pattern_reports_
+// connective_used` in `rholang/tests/spatial_matcher_disposition.rs` pins that
+// premise, so if `connective_used` ever stops being constant, the suite says so
+// rather than this comment quietly becoming false.
+//
+// ## Why the body no longer enumerates pairs
+//
+// It used to list two of the four `UnfInstance` arms — `GPrivateBody` and
+// `GDeployerIdBody` — and drop `GDeployIdBody` and `GSysAuthTokenBody` into a
+// `_ => None`, so a deploy id would not have matched ITSELF. That was undeclared
+// (`matcher/exports.rs` re-exported the same two, which is why a sweep over the
+// module found nothing missing). An unforgeable name is an opaque byte string:
+// no sub-`Par`, no binder, nothing to descend into, so the verdict for every
+// variant is the same — EQUALITY. The match below states that once per variant
+// and has **no `_` arm**, so a fifth `UnfInstance` added to `RhoTypes.proto`
+// fails to compile here instead of being silently assigned "matches nothing".
 impl SpatialMatcher<GUnforgeable, GUnforgeable> for SpatialMatcherContext {
     fn spatial_match(&mut self, target: GUnforgeable, pattern: GUnforgeable) -> Option<()> {
         // println!("\nHit GUnforgeable, GUnforgeable");
 
-        match (target.unf_instance, pattern.unf_instance) {
-            (Some(GPrivateBody(t)), Some(GPrivateBody(p))) => guard(t == p),
-            (Some(GDeployerIdBody(t)), Some(GDeployerIdBody(p))) => guard(t == p),
-            _ => None,
+        match &pattern.unf_instance {
+            Some(GPrivateBody(_))
+            | Some(GDeployIdBody(_))
+            | Some(GDeployerIdBody(_))
+            | Some(GSysAuthTokenBody(_)) => guard(target == pattern),
+
+            // `unf_instance` is a required oneof, so an absent payload is a
+            // malformed term rather than a wildcard, and it matches nothing —
+            // including another absent payload. That is what the old catch-all
+            // did for this case, preserved deliberately.
+            None => None,
         }
     }
 }

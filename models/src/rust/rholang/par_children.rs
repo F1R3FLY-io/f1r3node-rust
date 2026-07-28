@@ -560,6 +560,134 @@ pub fn substitute_descends_into(e: &ExprInstance) -> bool {
     }
 }
 
+/// Does `SpatialMatcher<Expr, Expr>::spatial_match` descend into this
+/// `ExprInstance`?
+///
+/// ## Why this has to be written down
+///
+/// `spatial_match` is a `match` over **pairs** of `ExprInstance` terminated by
+/// `_ => None`. In that position a catch-all is not a default, it is a silent
+/// decision: a pattern containing an unlisted variant matches nothing, so the
+/// `COMM` never fires, the receive rests forever, the node exits `0`, and no
+/// diagnostic is produced anywhere. Because `spatial_match` decides `COMM`
+/// firing, that decision is **consensus visible** — two implementations that
+/// disagree about it disagree about which blocks are valid.
+///
+/// This function turns the catch-all into an enumeration. Every variant is
+/// listed, there is no `_` arm, and
+/// `rholang/tests/spatial_matcher_disposition.rs` runs the matcher over one
+/// probe per **generated** variant and asserts that the measured behaviour and
+/// this declaration agree. A variant can therefore be *implemented* or
+/// *consciously excluded*, but not forgotten.
+///
+/// ## The two exclusions, and the invariant that forces them
+///
+/// `EPathmapBody` and `EZipperBody` carry child `Par`s and are **not**
+/// descended into. The reason is not that matching is dangerous in itself —
+/// matching does not rewrite anything — but that the matcher and
+/// [`substitute_descends_into`] run over *the same installed pattern*: a `for`
+/// bind is substituted before it is stored in RSpace and matched after. Neither
+/// of these two variants is descended into by `Substitute` (see that function),
+/// so a `VarRef` or a shifted `BoundVar` sitting inside a path map is still in
+/// its **pre-substitution** form when the matcher reaches it. Descending here
+/// would bind out of bytes substitution never rewrote.
+///
+/// Hence the invariant, checked by
+/// `spatial_match_never_descends_where_substitute_does_not`:
+///
+/// ```text
+///     spatial_match_descends_into(e)  ⟹  substitute_descends_into(e)
+/// ```
+///
+/// The matcher's frontier may not outrun substitution's. That makes the
+/// exclusion set **derived** rather than chosen: it is exactly the set of
+/// child-bearing variants substitution declines, and it will shrink the moment
+/// substitution's does — which is a separate, deliberate, protocol-visible
+/// decision, and F1r3node's to take.
+///
+/// ⚠ For `EPathmapBody` the exclusion is a **real gap**, not a formality. A
+/// path-map literal is ordinary surface syntax (`{| a, b, ...rest |}`, see the
+/// `pathmap` rule in the Rholang grammar) and the collection normalizer sets
+/// its `connective_used` from its elements and its remainder exactly as it does
+/// for a set, so a pattern like `for (@{| x, ...rest |} <- ch)` normalizes
+/// fine and then matches nothing. Closing it needs two things this function
+/// cannot supply on its own: substitution descent (above), and a decision about
+/// what a path map's *entry multiset* means under matching — whether
+/// `{| 1, 1 |}` and `{| 1 |}` are the same pattern, and in what canonical order
+/// a bound `...rest` is reassembled. That order is the ground-map canonical
+/// form whose bytes are the event-hash preimage, so it is a consensus decision,
+/// not an implementation detail.
+///
+/// `EZipperBody` is excluded on the same invariant, and is additionally
+/// unreachable as a pattern: no normalizer path constructs one. Every
+/// `EZipper` in the tree is produced at *runtime* by `readZipper`,
+/// `readZipperAt` and `writeZipper` (`reduce.rs`), by the decoder, or by the
+/// sorter. Its identity also includes `current_path: Vec<Vec<u8>>`,
+/// `cursor_kind` and `is_write_zipper` — encoded cursor state with no `Par`
+/// beneath it, for which "descend" has no meaning. Equality is its complete
+/// treatment, and `list_match::match_function` already applies equality to
+/// every pattern that does not report `connective_used`.
+///
+/// ## What `false` means for the childless arms
+///
+/// The grounds and `EVarBody` also answer `false`, for the same reason they do
+/// in [`substitute_descends_into`]: there is no child `Par` to descend into.
+/// `spatial_match` does have an `EVarBody` arm — `guard(vp == vt)` — but that is
+/// a comparison of the `Var` payload, not a descent, so the disposition tests
+/// quantify only over child-bearing variants.
+pub fn spatial_match_descends_into(e: &ExprInstance) -> bool {
+    match e {
+        // grounds and vars: nothing to descend into in the first place
+        ExprInstance::GBool(_)
+        | ExprInstance::GInt(_)
+        | ExprInstance::GString(_)
+        | ExprInstance::GUri(_)
+        | ExprInstance::GByteArray(_)
+        | ExprInstance::GDouble(_)
+        | ExprInstance::GBigInt(_)
+        | ExprInstance::GBigRat(_)
+        | ExprInstance::GFixedPoint(_)
+        | ExprInstance::EVarBody(_) => false,
+
+        // ⚠ NO DESCENT, and they DO have children — see the note above. This is
+        // forced by `substitute_descends_into`, which declines them too.
+        ExprInstance::EPathmapBody(_) | ExprInstance::EZipperBody(_) => false,
+
+        ExprInstance::ENotBody(_)
+        | ExprInstance::ENegBody(_)
+        | ExprInstance::EMultBody(_)
+        | ExprInstance::EDivBody(_)
+        | ExprInstance::EModBody(_)
+        | ExprInstance::EPlusBody(_)
+        | ExprInstance::EMinusBody(_)
+        | ExprInstance::EPlusPlusBody(_)
+        | ExprInstance::EMinusMinusBody(_)
+        | ExprInstance::EPercentPercentBody(_)
+        | ExprInstance::ELtBody(_)
+        | ExprInstance::ELteBody(_)
+        | ExprInstance::EGtBody(_)
+        | ExprInstance::EGteBody(_)
+        | ExprInstance::EEqBody(_)
+        | ExprInstance::ENeqBody(_)
+        | ExprInstance::EAndBody(_)
+        | ExprInstance::EOrBody(_)
+        // ⚠ `EMatchesBody` descends into its `target` slot ONLY. Its `pattern`
+        // slot is a nested pattern at a different binding depth — which is why
+        // `has_locally_free` reads `connective_used` from the target alone —
+        // and is compared by equality, exactly as `ReceiveBind::patterns` and
+        // `MatchCase::pattern` are. "Descends" is a per-variant verdict, as it
+        // is for `Substitute`; the per-slot treatment lives in the arm.
+        | ExprInstance::EMatchesBody(_)
+        | ExprInstance::EListBody(_)
+        | ExprInstance::ETupleBody(_)
+        | ExprInstance::ESetBody(_)
+        | ExprInstance::EMapBody(_)
+        // `EMethodBody` descends into its receiver and its arguments; the
+        // method NAME is compared by equality.
+        | ExprInstance::EMethodBody(_) => true,
+    }
+}
+
 // ===========================================================================
 // SERDE VARIANT INDICES — the wire numbering of the two big oneofs
 // ===========================================================================
@@ -1094,6 +1222,62 @@ mod tests {
                 "connective_instance_variant_index disagrees with the bytes bincode writes"
             );
         }
+    }
+
+    /// The twin of `substitute_disposition_excludes_exactly_the_two_pathmap_arms`
+    /// for the matcher. It pins the DECLARATION; the behaviour it declares is
+    /// measured against the running matcher by
+    /// `rholang/tests/spatial_matcher_disposition.rs`, which lives in the
+    /// `rholang` crate because that is where `spatial_match` lives.
+    #[test]
+    fn spatial_match_disposition_excludes_exactly_the_two_pathmap_arms() {
+        let not_descended: Vec<std::mem::Discriminant<ExprInstance>> = expr_instance_corpus()
+            .iter()
+            .filter(|(instance, expected_children)| {
+                !expected_children.is_empty() && !spatial_match_descends_into(instance)
+            })
+            .map(|(instance, _)| std::mem::discriminant(instance))
+            .collect();
+
+        let expected = vec![
+            std::mem::discriminant(&ExprInstance::EPathmapBody(pathmap_of(vec![]))),
+            std::mem::discriminant(&ExprInstance::EZipperBody(EZipper::default())),
+        ];
+
+        assert_eq!(
+            not_descended, expected,
+            "the set of child-bearing ExprInstance variants that `spatial_match` does NOT \
+             descend into has changed. That set is consensus-visible: it decides which \
+             patterns can fire a COMM, and a pattern the matcher declines is INERT — the \
+             receive rests forever with no diagnostic. See `spatial_match_descends_into`."
+        );
+    }
+
+    /// The matcher's descent frontier may not outrun substitution's.
+    ///
+    /// A `for` bind is substituted before it is stored in RSpace and matched
+    /// after, over the same bytes. If `spatial_match` descended into a sub-term
+    /// `Substitute` declines, it would bind out of a `VarRef` that was never
+    /// resolved or a `BoundVar` that was never shifted. This is the invariant
+    /// that makes the two exclusions above **derived** rather than chosen.
+    #[test]
+    fn spatial_match_never_descends_where_substitute_does_not() {
+        let outrunning: Vec<std::mem::Discriminant<ExprInstance>> = expr_instance_corpus()
+            .iter()
+            .filter(|(instance, _)| {
+                spatial_match_descends_into(instance) && !substitute_descends_into(instance)
+            })
+            .map(|(instance, _)| std::mem::discriminant(instance))
+            .collect();
+
+        assert!(
+            outrunning.is_empty(),
+            "`spatial_match_descends_into` claims descent into a variant \
+             `substitute_descends_into` declines. The matcher would then bind out of a \
+             sub-term substitution never rewrote. Fix substitution first, or withdraw the \
+             claim. Offending discriminants: {:?}",
+            outrunning
+        );
     }
 
     #[test]
