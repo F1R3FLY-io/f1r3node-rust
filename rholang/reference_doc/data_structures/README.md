@@ -119,4 +119,17 @@ Converts string to UTF-8 byte array. Returns an error when called with arguments
 ##### `nth(Int)`
 Retrieves the nth process from a byte array, list, or tuple; returns error if the given index is out of range.
 
+##### `last()`
+Retrieves the FINAL process from a byte array, list, or tuple; returns error if the receiver is
+empty. Takes no arguments.
+
+`last()` is exactly `nth()` at the index `nth` cannot be handed: a collection remainder is always
+trailing, so `[x, ..._]` binds the head and `[..._, x]` does not parse — the last element of a list
+is not reachable by pattern. `last()` is the method form of that missing projection.
+
+It is a native method rather than sugar for `l.nth(l.length() - 1)` because that rewrite names the
+receiver twice and therefore *evaluates* it twice; `last()` evaluates its receiver once. On an empty
+receiver it answers the identical out-of-range error `nth(0)` answers, because both go through the
+same bounds-checked projection.
+
 // TODO: add more methods

@@ -18,6 +18,7 @@ Ordered, indexed sequence. Allows duplicates.
 | Method | Args | Returns | Description |
 |--------|------|---------|-------------|
 | `nth(i)` | 1 (Int) | Par | Element at index (0-based). Error if out of bounds. |
+| `last()` | 0 | Par | Final element. Error if the list is empty — the same error `nth(0)` gives on `[]`. |
 | `length()` | 0 | Int | Number of elements |
 | `slice(from, until)` | 2 (Int, Int) | List | Sub-list, 0-based, exclusive end. Returns empty if bounds invalid. |
 | `take(n)` | 1 (Int) | List | First n elements |
@@ -56,6 +57,7 @@ Fixed-size, ordered collection. Immutable. Cannot be constructed dynamically.
 | Method | Args | Returns | Description |
 |--------|------|---------|-------------|
 | `nth(i)` | 1 (Int) | Par | Element at index (0-based) |
+| `last()` | 0 | Par | Final element |
 | `toList()` | 0 | List | Convert to list |
 | `toByteArray()` | 0 | ByteArray | Protobuf encoding |
 

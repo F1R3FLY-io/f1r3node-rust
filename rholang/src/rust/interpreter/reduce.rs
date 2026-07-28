@@ -4388,15 +4388,15 @@ impl DebruijnInterpreter {
         }
 
         impl<'a> NthMethod<'a> {
+            /// Thin delegate to the free [`local_nth`], which `last_method` shares.
+            ///
+            /// The body moved out verbatim and nothing here changed: `last` IS `nth` at a
+            /// computed index, so sharing the one bounds-checked projection makes the two
+            /// methods agree BY CONSTRUCTION instead of by parallel assertion. In particular
+            /// `[].last()` and `[].nth(0)` cannot answer different errors, because they are
+            /// the same call.
             fn local_nth(&self, ps: &[Par], nth: usize) -> Result<Par, InterpreterError> {
-                if ps.len() > nth {
-                    Ok(ps[nth].clone())
-                } else {
-                    Err(InterpreterError::ReduceError(format!(
-                        "Error: index out of bound: {}",
-                        nth
-                    )))
-                }
+                local_nth(ps, nth)
             }
         }
 
@@ -4444,6 +4444,91 @@ impl DebruijnInterpreter {
         }
 
         Box::new(NthMethod { outer: self })
+    }
+
+    /// `l.last()` — the final element of a sequence carrier.
+    ///
+    /// ★ **A NATIVE ROUTED METHOD, NOT A DESUGARING.** The rejected alternative was to rewrite
+    /// `l.last()` into `l.nth(l.length() - 1)`, which is expressible in methods that already
+    /// exist — but it names the receiver TWICE, so the receiver is EVALUATED twice, and
+    /// duplicated evaluation is duplicated gas. This method evaluates the receiver exactly once
+    /// (`eval_single_expr`, below) and then projects, so `last` costs what `nth` costs and no
+    /// more.
+    ///
+    /// ★ **MIRRORS `nth_method` ARM FOR ARM.** Same arity discipline, same receiver handling,
+    /// same accepted carriers (`EList`, `ETuple`, `GByteArray`), same recoverable-error
+    /// discipline — every out-of-domain access answers `ReduceError`, never a panic. The index
+    /// is `len - 1` computed with `saturating_sub`, so the empty carrier asks for index `0` and
+    /// receives exactly the error `nth(0)` would have produced, through the shared
+    /// [`local_nth`]. `[].last()` and `[].nth(0)` are therefore the same call, not two calls
+    /// that happen to agree.
+    ///
+    /// ⚠ **Gas: `nth`'s price, deliberately reused.** `last` performs exactly `nth`'s work, so
+    /// it reserves exactly `nth`'s cost. Minting a `last_method_call_cost` would be inventing a
+    /// price, and pricing is a consensus decision that is not this change's to make.
+    ///
+    /// **Why it exists at all**: upstream Rholang cannot reach a list's final element by
+    /// PATTERN — every collection remainder in the grammar is trailing, so `[x, ..._]` binds the
+    /// head and `[..._, x]` does not parse. `last` is the method form of that missing
+    /// projection.
+    fn last_method<'a>(&'a self) -> Box<dyn Method + 'a> {
+        struct LastMethod<'a> {
+            outer: &'a DebruijnInterpreter,
+        }
+
+        impl<'a> Method for LastMethod<'a> {
+            fn apply(
+                &self,
+                p: Par,
+                args: Vec<Par>,
+                env: &Env<Par>,
+            ) -> Result<Par, InterpreterError> {
+                if !args.is_empty() {
+                    return Err(InterpreterError::MethodArgumentNumberMismatch {
+                        method: "last".to_string(),
+                        expected: 0,
+                        actual: args.len(),
+                    });
+                }
+
+                self.outer
+                    .metering
+                    .reserve_primitive(nth_method_call_cost())?;
+                // ★ The receiver is evaluated ONCE. This is the entire reason `last` is routed
+                // natively rather than desugared through `nth(length() - 1)`.
+                let v = self.outer.eval_single_expr(&p, env)?;
+
+                match v.expr_instance.unwrap() {
+                    ExprInstance::EListBody(EList { ps, .. }) => {
+                        let nth = ps.len().saturating_sub(1);
+                        local_nth(&ps, nth)
+                    }
+                    ExprInstance::ETupleBody(ETuple { ps, .. }) => {
+                        let nth = ps.len().saturating_sub(1);
+                        local_nth(&ps, nth)
+                    }
+                    ExprInstance::GByteArray(bs) => {
+                        // Byte-for-byte `nth`'s arm with the index bound to `len - 1`.
+                        let nth = bs.len().saturating_sub(1);
+                        if nth < bs.len() {
+                            let b = bs[nth]; // Convert to unsigned;
+                            let p = new_gint_par(b as i64, Vec::new(), false);
+                            Ok(p)
+                        } else {
+                            Err(InterpreterError::ReduceError(format!(
+                                "Error: index out of bound: {}",
+                                nth
+                            )))
+                        }
+                    }
+                    _ => Err(InterpreterError::ReduceError(String::from(
+                        "Error: last applied to something that wasn't a list or tuple.",
+                    ))),
+                }
+            }
+        }
+
+        Box::new(LastMethod { outer: self })
     }
 
     fn to_byte_array_method<'a>(&'a self) -> Box<dyn Method + 'a> {
@@ -9023,6 +9108,13 @@ impl DebruijnInterpreter {
     fn method_table<'a>(&'a self) -> HashMap<String, Box<dyn Method + 'a>> {
         let mut table = HashMap::new();
         table.insert("nth".to_string(), self.nth_method());
+        // `last` sits beside `nth` because it IS `nth`, at the index `nth` cannot be handed:
+        // upstream's collection remainder is always trailing, so `[..._, x]` does not parse and
+        // a list's final element is not pattern-reachable. ADDITIVE: no program that does not
+        // call `last()` is affected, and before this entry existed `last()` did not execute at
+        // all, so no existing behaviour changes. See `last_method` for why it is a native
+        // routed method rather than a `nth(length() - 1)` desugaring.
+        table.insert("last".to_string(), self.last_method());
         table.insert("toByteArray".to_string(), self.to_byte_array_method());
         table.insert("hexToBytes".to_string(), self.hex_to_bytes_method());
         table.insert("bytesToHex".to_string(), self.bytes_to_hex_method());
@@ -9227,6 +9319,26 @@ impl DebruijnInterpreter {
 
         reducer_cell.set(Arc::downgrade(&reducer)).ok().unwrap();
         reducer
+    }
+}
+
+/// The ONE bounds-checked positional projection over an evaluated sequence carrier.
+///
+/// Shared verbatim by `nth_method` (which supplies the caller's index) and `last_method` (which
+/// supplies `len - 1`). Keeping a single body is what makes the two methods agree by
+/// construction: an out-of-range access answers the SAME recoverable `ReduceError` with the same
+/// message whichever method asked, so `[].last()` and `[].nth(0)` are literally one call and
+/// cannot drift apart under later edits.
+///
+/// ⚠ Recoverable error, never a panic — `ps[nth]` is guarded, not indexed blind.
+fn local_nth(ps: &[Par], nth: usize) -> Result<Par, InterpreterError> {
+    if ps.len() > nth {
+        Ok(ps[nth].clone())
+    } else {
+        Err(InterpreterError::ReduceError(format!(
+            "Error: index out of bound: {}",
+            nth
+        )))
     }
 }
 

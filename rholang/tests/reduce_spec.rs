@@ -1634,6 +1634,242 @@ async fn eval_of_nth_method_should_pick_out_the_nth_item_from_a_byte_array() {
     assert_eq!(new_gint_par(255, Vec::new(), false), direct_result);
 }
 
+// ════════════════════════════════════════════════════════════════════════════════════════════════
+// `last` — the projection upstream cannot reach by pattern
+//
+// Upstream's collection remainder is always TRAILING (`commaSep(…), optional(remainder)` in every
+// collection production), so `[x, ..._]` binds the HEAD and `[..._, x]` does not parse at all: a
+// list's final element is not pattern-reachable. `last` is the method form of that projection.
+//
+// ★ These fixtures exist to be ANTI-VACUOUS. Each was shown RED before `method_table` gained its
+// `last` key, and the RED was `ReduceError("Unimplemented method: last")` — the signature of a
+// name that was NEVER ROUTED, which is a different outcome from "the receiver failed to evaluate"
+// and different again from "it was routed and answered the wrong element". The discriminating
+// fixture below separates the third case from the first two.
+// ════════════════════════════════════════════════════════════════════════════════════════════════
+
+/// Build `<target>.<method>(<args>)` as an `EMethod` expression.
+fn method_call(method_name: &str, target: Par, arguments: Vec<Par>) -> Expr {
+    Expr {
+        expr_instance: Some(ExprInstance::EMethodBody(EMethod {
+            method_name: method_name.to_string(),
+            target: Some(target),
+            arguments,
+            locally_free: Vec::new(),
+            connective_used: false,
+        })),
+    }
+}
+
+fn gint_list(values: &[i64]) -> Par {
+    new_elist_par(
+        values
+            .iter()
+            .map(|v| new_gint_par(*v, Vec::new(), false))
+            .collect(),
+        Vec::new(),
+        false,
+        None,
+        Vec::new(),
+        false,
+    )
+}
+
+/// ★★ **THE DISCRIMINATOR: `last` is the LAST element, not the first.**
+///
+/// `[111, 222, 333].last()` is `333` while the **same list**'s `.nth(0)` is `111`. A singleton
+/// fixture (`[1].last() == 1`) would pass under BOTH readings and assert nothing; the two halves
+/// are asserted here in ONE test so they cannot drift into separate files and separate fates.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn eval_of_last_method_is_the_final_element_and_not_the_first() {
+    let (_, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let env = Env::new();
+
+    let last = reducer
+        .eval_expr_to_par(&method_call("last", gint_list(&[111, 222, 333]), vec![]), &env)
+        .expect("`last` must be routed: an unrouted name fails with `Unimplemented method: last`");
+    assert_eq!(
+        new_gint_par(333, Vec::new(), false),
+        last,
+        "`last` must answer the FINAL element"
+    );
+
+    // The control, on the SAME list: the head is a different element.
+    let head = reducer
+        .eval_expr_to_par(
+            &method_call(
+                "nth",
+                gint_list(&[111, 222, 333]),
+                vec![new_gint_par(0, Vec::new(), false)],
+            ),
+            &env,
+        )
+        .expect("`nth` is routed");
+    assert_eq!(new_gint_par(111, Vec::new(), false), head);
+    assert_ne!(
+        last, head,
+        "if these coincide the fixture is vacuous — `last` and `first` would be indistinguishable"
+    );
+}
+
+/// **`[].last()` answers EXACTLY what `[].nth(0)` answers — because it is the same call.**
+///
+/// `last_method` computes `len - 1` with `saturating_sub`, so the empty carrier asks the shared
+/// `local_nth` for index `0`. The two errors are compared for EQUALITY rather than each being
+/// matched against a pattern, which is what makes a future divergence loud.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn eval_of_last_method_on_the_empty_list_agrees_with_nth_zero_exactly() {
+    let (_, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let env = Env::new();
+
+    let last_error = reducer
+        .eval_expr_to_par(&method_call("last", gint_list(&[]), vec![]), &env)
+        .expect_err("the empty list has no last element");
+    let nth_error = reducer
+        .eval_expr_to_par(
+            &method_call("nth", gint_list(&[]), vec![new_gint_par(0, Vec::new(), false)]),
+            &env,
+        )
+        .expect_err("the empty list has no element 0 either");
+
+    assert_eq!(
+        last_error.to_string(),
+        nth_error.to_string(),
+        "`[].last()` and `[].nth(0)` must be indistinguishable; they share `local_nth`"
+    );
+    // …and the shared answer is the recoverable out-of-bounds error, never a panic.
+    assert!(
+        last_error.to_string().contains("index out of bound: 0"),
+        "expected the recoverable out-of-bounds error, got {last_error:?}"
+    );
+}
+
+/// `last` accepts every carrier `nth` accepts — tuple and byte array come for free.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn eval_of_last_method_covers_every_carrier_nth_covers() {
+    let (_, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let env = Env::new();
+
+    let tuple = new_etuple_par(vec![
+        new_gint_par(7, Vec::new(), false),
+        new_gint_par(8, Vec::new(), false),
+    ]);
+    assert_eq!(
+        new_gint_par(8, Vec::new(), false),
+        reducer
+            .eval_expr_to_par(&method_call("last", tuple, vec![]), &env)
+            .expect("`last` over an ETuple"),
+    );
+
+    let bytes = Par::default().with_exprs(vec![Expr {
+        expr_instance: Some(ExprInstance::GByteArray(vec![1, 2, 255])),
+    }]);
+    assert_eq!(
+        new_gint_par(255, Vec::new(), false),
+        reducer
+            .eval_expr_to_par(&method_call("last", bytes, vec![]), &env)
+            .expect("`last` over a GByteArray"),
+    );
+
+    // The empty byte array takes the same out-of-bounds answer the empty list takes.
+    let empty_bytes = Par::default().with_exprs(vec![Expr {
+        expr_instance: Some(ExprInstance::GByteArray(vec![])),
+    }]);
+    let error = reducer
+        .eval_expr_to_par(&method_call("last", empty_bytes, vec![]), &env)
+        .expect_err("the empty byte array has no last byte");
+    assert!(
+        error.to_string().contains("index out of bound: 0"),
+        "expected the recoverable out-of-bounds error, got {error:?}"
+    );
+}
+
+/// `last` is TOTAL in the same sense `nth` is: every out-of-domain call is a recoverable error.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn eval_of_last_method_refuses_arguments_and_non_sequence_receivers() {
+    let (_, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let env = Env::new();
+
+    // Arity: `last` takes none.
+    let arity = reducer
+        .eval_expr_to_par(
+            &method_call(
+                "last",
+                gint_list(&[1, 2]),
+                vec![new_gint_par(0, Vec::new(), false)],
+            ),
+            &env,
+        )
+        .expect_err("`last` takes no arguments");
+    assert!(
+        matches!(
+            arity,
+            InterpreterError::MethodArgumentNumberMismatch { ref method, expected: 0, actual: 1 }
+                if method == "last"
+        ),
+        "expected an arity mismatch naming `last`, got {arity:?}"
+    );
+
+    // A receiver that is not a sequence carrier.
+    let wrong_carrier = reducer
+        .eval_expr_to_par(
+            &method_call("last", new_gint_par(42, Vec::new(), false), vec![]),
+            &env,
+        )
+        .expect_err("an integer has no last element");
+    assert!(
+        wrong_carrier
+            .to_string()
+            .contains("last applied to something that wasn't a list or tuple"),
+        "the refusal must NAME `last`, got {wrong_carrier:?}"
+    );
+}
+
+/// ★ **The positive control for the RED signature used above.**
+///
+/// Every `last` fixture in this block was RED with `Unimplemented method: last` before the
+/// `method_table` key existed. This test pins that that string really is what an unrouted name
+/// produces — so "it was never routed" stays distinguishable from "the receiver failed to
+/// evaluate" and from "it answered the wrong value". Without it, the claim about what the RED
+/// looked like would be unfalsifiable.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_unrouted_method_name_is_reported_as_unimplemented() {
+    let (_, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let env = Env::new();
+
+    let error = reducer
+        .eval_expr_to_par(
+            &method_call("definitelyNotAMethod", gint_list(&[1, 2, 3]), vec![]),
+            &env,
+        )
+        .expect_err("a name with no `method_table` key cannot be dispatched");
+    assert!(
+        error
+            .to_string()
+            .contains("Unimplemented method: definitelyNotAMethod"),
+        "expected the unrouted-name signature, got {error:?}"
+    );
+
+    // …and `last` is NOT in that class any more. This is the assertion that would have failed
+    // before the `method_table` entry landed.
+    assert!(
+        reducer
+            .eval_expr_to_par(&method_call("last", gint_list(&[1, 2, 3]), vec![]), &env)
+            .is_ok(),
+        "`last` must be routed"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn eval_of_length_method_should_get_length_of_byte_array() {
     let (_, reducer) =
