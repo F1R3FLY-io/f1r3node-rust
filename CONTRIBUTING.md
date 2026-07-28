@@ -15,14 +15,27 @@ that conflicts defers to it.
 
 ## Branching and Commits
 
-- Branch from `staging` and open pull requests against `staging`. Maintainers promote
-  `staging` → `dev` → `master`.
-- Branch prefixes: `feature/`, `fix/`, `docs/`, `perf/`, `chore/`.
+- Branch from `dev` and open pull requests against `dev`. Maintainers promote
+  `dev` → `master`. Hotfixes are the one exception — see Hotfixes below.
+- Branch prefixes: `feature/`, `fix/`, `docs/`, `perf/`, `chore/`, `hotfix/`.
 - Use [Conventional Commits](https://www.conventionalcommits.org/): `feat:`, `fix:`, `docs:`,
   `perf:`, `refactor:`, `test:`, `chore:`.
 - Keep one concern per pull request.
 - Preserve commit history when picking up someone else's PR — don't squash unrelated commits
   without consent.
+
+### Hotfixes
+
+Urgent work that cannot wait for the next `dev` → `master` promotion — a broken release or CI
+pipeline, a security patch, a production incident — branches from `master` as
+`hotfix/<topic>` and opens its pull request against `master`.
+
+After the hotfix merges, merge `master` back into `dev` so the fix survives the next
+promotion. Skipping that step is how a hotfix silently disappears from the next release.
+
+Use this path sparingly. A hotfix reaches `master` without ever being integrated against the
+work already queued in `dev`, so it trades integration coverage for speed. Anything that can
+wait should go through `dev` like everything else.
 
 ## Local Checks
 
@@ -76,7 +89,7 @@ New or occasional contributors should open pull requests from personal forks. Ke
 
 Known recurring contributors may be invited to work from branches in the upstream `F1R3FLY-io/f1r3node-rust` repository. Maintainers grant upstream access based on project need, contributor identity, prior review history, and expected scope of work.
 
-Upstream access does not bypass review. Protected branches such as `master`, `dev`, and `staging` still require pull requests and required checks before merge.
+Upstream access does not bypass review. Protected branches such as `master` and `dev` still require pull requests and required checks before merge.
 
 ## CI Approval for Fork Pull Requests
 

@@ -86,6 +86,15 @@ jobs:
           if [ "$duration_seconds" = "216000" ]; then
             run_benchmarks=true
           fi
+          if [ "$should_run" != "true" ]; then
+            echo "::notice::Schedule gate no-op: cron slot resolved outside the Pacific 22:00 launch window. No soak was attempted; this run's success is not a soak result."
+            {
+              echo "## Schedule gate: no-op"
+              echo ""
+              echo "This scheduled trigger resolved outside the Pacific 22:00 launch window."
+              echo "**No soak was attempted** — a green check on this run is not a soak result."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
           {
             echo "should_run=$should_run"
             echo "duration_seconds=$duration_seconds"
@@ -253,10 +262,21 @@ jobs:
           DURATION_SECONDS: ${{ needs.schedule_gate.outputs.duration_seconds }}
           DASHBOARD_URL: https://f1r3fly-io.github.io/f1r3node-rust/
         run: |
-          curl -fsS --max-time 30 "${DASHBOARD_URL}data/latest-summary.json" \
-            -o /tmp/soak-baseline.json 2>/dev/null \
-            && export BASELINE_JSON=/tmp/soak-baseline.json \
-            || echo "no published baseline yet (bootstrap run)"
+          # Cache-busted so the week-over-week deltas are not computed against
+          # a stale CDN copy. Unlike the history fetch this stays soft: a 60h
+          # soak's report is worth more than its baseline comparison, so a
+          # miss degrades to "no baseline" rather than discarding the run —
+          # but a non-404 miss is warned about, since a silently absent
+          # baseline makes the verdict look clean.
+          cb="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          base_code="$(curl -sS --max-time 30 -H 'Cache-Control: no-cache' -w '%{http_code}' \
+            -o /tmp/soak-baseline.json \
+            "${DASHBOARD_URL}data/latest-summary.json?cb=${cb}")" || base_code=000
+          case "$base_code" in
+            200) export BASELINE_JSON=/tmp/soak-baseline.json ;;
+            404) echo "no published baseline yet (bootstrap run)" ;;
+            *)   echo "::warning::baseline fetch failed (HTTP ${base_code}); verdict computed without week-over-week comparison" ;;
+          esac
           ci-control/scripts/bench/aggregate-perf-report.sh
           cat "$OUT_DIR/perf-report.md" >> "$GITHUB_STEP_SUMMARY"
 
@@ -271,6 +291,16 @@ jobs:
         run: |
           # Instance-principal auth: works only on the OCI runner, no secrets.
           # Notification failure must never mask the soak result.
+          #
+          # This overlaps with the notify_failure job by design — do not
+          # "deduplicate" them. This step sends the weekly verdict with its
+          # metrics and week-over-week deltas, but only ever runs ON the soak
+          # runner and only once a report exists, so it cannot report a runner
+          # that never launched or a soak that died before writing one.
+          # notify_failure covers exactly those cases from a GitHub-hosted
+          # runner. A weekend soak that completes and then fails its verdict
+          # gate therefore sends two mails: the verdict (with numbers) and the
+          # job-level alert. That is the accepted cost of never going silent.
           ci-control/scripts/oci/publish-soak-alert.sh || \
             echo "::warning::ONS alert publish failed (non-fatal)"
 
@@ -320,9 +350,29 @@ jobs:
             echo "::error::soak artifact has no weekly-summary.json"; exit 1; }
           mkdir -p site/data
           cp -r ci-control/site/soak-dashboard/. site/
-          curl -fsS --max-time 30 "${DASHBOARD_URL}data/history.json" \
-            -o /tmp/history.json 2>/dev/null || echo '[]' > /tmp/history.json
-          jq -e 'type == "array"' /tmp/history.json > /dev/null || echo '[]' > /tmp/history.json
+          # Pages is the only durable store for the history series — soak
+          # artifacts expire after 14 days — and this is the job that appends
+          # to it. Treating a transient fetch failure as "nothing published"
+          # would permanently reset the series to this run alone, so only a
+          # 404 may start an empty history and anything else aborts. The
+          # cache-busting query string stops the CDN serving a copy older
+          # than the last publish, which would drop intervening weeks.
+          cb="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          code="$(curl -sS --max-time 30 -H 'Cache-Control: no-cache' -w '%{http_code}' \
+            -o /tmp/history.json "${DASHBOARD_URL}data/history.json?cb=${cb}")" || code=000
+          case "$code" in
+            200)
+              jq -e 'type == "array"' /tmp/history.json >/dev/null 2>&1 || {
+                echo "::error::published history.json is not a JSON array; refusing to reset the series"
+                exit 1
+              }
+              ;;
+            404) echo '[]' > /tmp/history.json ;;
+            *)
+              echo "::error::could not read published history.json (HTTP ${code}); aborting so the series is not reset to this run alone"
+              exit 1
+              ;;
+          esac
           jq -s '.[0] + [.[1]] | sort_by(.run.date)' \
             /tmp/history.json soak-results/report/weekly-summary.json \
             > site/data/history.json
@@ -348,3 +398,107 @@ jobs:
             jq -r '.failures[] | "FAIL: " + .' soak-results/report/verdict.json
             exit 1
           fi
+
+  notify_failure:
+    name: Email Soak Failure Alert
+    needs: [schedule_gate, launch_runner, soak, perf_report]
+    # Runs on a GitHub-hosted runner with user-principal OCI auth so the
+    # alert still goes out when the OCI runner itself failed to launch —
+    # the in-soak ONS step (instance-principal) cannot cover that case.
+    # `cancelled` counts too: a 60h soak that hits its timeout, is cancelled
+    # by hand, or loses its runner to preemption produced no result either,
+    # and silence there is indistinguishable from success.
+    if: >-
+      always() &&
+      needs.schedule_gate.outputs.should_run == 'true' &&
+      (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
+    runs-on: ubuntu-latest
+    environment: ephemeral-launch-internal
+    timeout-minutes: 10
+    # Alerting needs OCI credentials, never the GitHub API — this job has no
+    # checkout and no reason to hold a token scope.
+    permissions: {}
+    steps:
+      - name: Install OCI CLI (pinned, checksum-verified)
+        shell: bash -e {0}
+        run: |
+          curl -fsSL "$OCI_CLI_INSTALLER_URL" -o /tmp/oci-install.sh
+          echo "$OCI_CLI_INSTALLER_SHA256  /tmp/oci-install.sh" | sha256sum -c -
+          bash /tmp/oci-install.sh \
+            --accept-all-defaults --install-dir /opt/oci-cli --exec-dir /usr/local/bin
+          oci --version
+
+      - name: Configure OCI authentication
+        env:
+          OCI_TENANCY_OCID: ${{ secrets.OCI_TENANCY_OCID }}
+          OCI_USER_OCID: ${{ secrets.OCI_USER_OCID }}
+          OCI_REGION: ${{ secrets.OCI_REGION }}
+          OCI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
+          OCI_PRIVATE_KEY: ${{ secrets.OCI_PRIVATE_KEY }}
+        shell: bash -e {0}
+        run: |
+          install -d -m 700 ~/.oci
+          umask 077
+          printf '%s\n' "$OCI_PRIVATE_KEY" > ~/.oci/oci_api_key.pem
+          cat > ~/.oci/config <<EOF
+          [DEFAULT]
+          user=$OCI_USER_OCID
+          fingerprint=$OCI_FINGERPRINT
+          tenancy=$OCI_TENANCY_OCID
+          region=$OCI_REGION
+          key_file=$HOME/.oci/oci_api_key.pem
+          EOF
+          oci iam region list >/dev/null
+
+      - name: Publish soak alert
+        env:
+          ONS_TOPIC_OCID: ${{ vars.SOAK_ONS_TOPIC_OCID }}
+          LAUNCH_RESULT: ${{ needs.launch_runner.result }}
+          SOAK_RESULT: ${{ needs.soak.result }}
+          DASHBOARD_RESULT: ${{ needs.perf_report.result }}
+          TARGET_REF: ${{ needs.schedule_gate.outputs.target_ref }}
+          DURATION_SECONDS: ${{ needs.schedule_gate.outputs.duration_seconds }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          DASHBOARD_URL: https://f1r3fly-io.github.io/f1r3node-rust/
+        shell: bash -euo pipefail {0}
+        run: |
+          if [ -z "$ONS_TOPIC_OCID" ]; then
+            echo "::error::SOAK_ONS_TOPIC_OCID is not configured; failure alert NOT sent"
+            exit 1
+          fi
+          if [ "$DURATION_SECONDS" = "216000" ]; then kind="weekend-60h"; else kind="daily-24h"; fi
+          # Name what actually broke. A soak that never ran and a report stage
+          # that failed after a clean soak are different pages. perf_report
+          # covers both the Pages deploy and the regression verdict gate, so
+          # its failure is named for the stage rather than the deploy alone.
+          case "$LAUNCH_RESULT/$SOAK_RESULT" in
+            failure/*|cancelled/*) what="runner launch $LAUNCH_RESULT" ;;
+            */failure|*/cancelled) what="soak $SOAK_RESULT" ;;
+            *)                     what="report/verdict stage $DASHBOARD_RESULT" ;;
+          esac
+          title="F1R3FLY soak alert ($kind): $what — $(date -u +%F)"
+          body="Merge Recovery Soak did not complete cleanly: $what.
+
+          Target:    $TARGET_REF
+          Duration:  $kind
+          Job results:
+            launch runner:  $LAUNCH_RESULT
+            soak:           $SOAK_RESULT
+            dashboard:      $DASHBOARD_RESULT
+
+          Run: $RUN_URL
+          Dashboard: $DASHBOARD_URL
+
+          Manage this subscription via the unsubscribe link in this email."
+          oci ons message publish \
+            --topic-id "$ONS_TOPIC_OCID" \
+            --title "$title" \
+            --body "$body"
+          echo "published ONS failure alert: $title"
+
+      - name: Remove OCI credentials
+        if: always()
+        shell: bash -e {0}
+        run: |
+          shred -fu ~/.oci/oci_api_key.pem 2>/dev/null || true
+          rm -rf ~/.oci
