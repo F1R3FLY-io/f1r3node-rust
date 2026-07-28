@@ -564,31 +564,162 @@ proptest! {
     fn spliced_matches_direct_arbitrary(pars in proptest::collection::vec(par_strategy(), 0..4),
                                         random_state in proptest::collection::vec(any::<u8>(), 0..48),
                                         free_count in 0..4i32) {
-        let value = ListParWithRandom { pars: pars.clone(), random_state };
-        prop_assert_eq!(
-            event_hash_bytes_list_par_with_random(&value),
-            bincode::serialize(&value).expect("direct"),
-            "datum leg diverged"
-        );
-
-        let pattern = BindPattern { patterns: pars.clone(), remainder: None, free_count };
-        prop_assert_eq!(
-            event_hash_bytes_bind_pattern(&pattern),
-            bincode::serialize(&pattern).expect("direct"),
-            "pattern leg diverged"
-        );
-
-        let continuation = TaggedContinuation {
-            guard: pars.first().cloned(),
-            tagged_cont: Some(TaggedCont::ParBody(ParWithRandom {
-                body: pars.last().cloned(),
-                random_state: vec![3; 8],
-            })),
-        };
-        prop_assert_eq!(
-            event_hash_bytes_tagged_continuation(&continuation),
-            bincode::serialize(&continuation).expect("direct"),
-            "continuation leg diverged"
-        );
+        pm1_gate(&pars, random_state, free_count);
     }
+}
+
+/// THE PM-1 GATE, as a function of its three inputs.
+///
+/// Extracted from the `proptest!` body so the property AND the promoted counterexamples
+/// below run the SAME three legs. Duplicating the body would let them drift, and the
+/// direction of drift is the bad one: a promoted regression test that has quietly stopped
+/// checking a leg still passes.
+#[track_caller]
+fn pm1_gate(pars: &[Par], random_state: Vec<u8>, free_count: i32) {
+    let value = ListParWithRandom { pars: pars.to_vec(), random_state };
+    assert_eq!(
+        event_hash_bytes_list_par_with_random(&value),
+        bincode::serialize(&value).expect("direct"),
+        "datum leg diverged"
+    );
+
+    let pattern = BindPattern { patterns: pars.to_vec(), remainder: None, free_count };
+    assert_eq!(
+        event_hash_bytes_bind_pattern(&pattern),
+        bincode::serialize(&pattern).expect("direct"),
+        "pattern leg diverged"
+    );
+
+    let continuation = TaggedContinuation {
+        guard: pars.first().cloned(),
+        tagged_cont: Some(TaggedCont::ParBody(ParWithRandom {
+            body: pars.last().cloned(),
+            random_state: vec![3; 8],
+        })),
+    };
+    assert_eq!(
+        event_hash_bytes_tagged_continuation(&continuation),
+        bincode::serialize(&continuation).expect("direct"),
+        "continuation leg diverged"
+    );
+}
+
+// ── the recorded counterexamples, PROMOTED ───────────────────────────────────────────
+//
+// The two entries of `models/tests/epathmap_spliced_event_bytes.proptest-regressions`. Both
+// are a single `Par` holding one `EPathmapBody`, and they differ in exactly one way that is
+// the whole reason both are kept:
+//
+//   entry 0 — the map's `ps` holds `GBool(false)` TWICE;
+//   entry 1 — the map's `ps` holds it ONCE.
+//
+// An `EPathMap`'s `ps` is an `EntryTrie`, so the duplicate is the case where the trie's own
+// canonicalisation decides how many entries survive. The hand-emitted byte encoder and
+// `bincode::serialize` must agree on the result — and they must agree about the COLLAPSE,
+// not merely about a list. Entry 1 is the control that shows the encoders agree without a
+// duplicate present, which is what makes entry 0's agreement meaningful rather than
+// coincidental.
+
+/// A `Par` whose sole expression is `GBool(false)` — the leaf both recorded entries use.
+fn recorded_gbool_false_par() -> Par {
+    expr_par(ExprInstance::GBool(false))
+}
+
+/// The recorded `pars` of an entry whose map holds `GBool(false)` `multiplicity` times.
+fn recorded_epathmap_par(multiplicity: usize) -> Vec<Par> {
+    vec![expr_par(ExprInstance::EPathmapBody(EPathMap::new(
+        vec![recorded_gbool_false_par(); multiplicity],
+        Vec::new(),
+        false,
+        None,
+    )))]
+}
+
+/// ★ THE DISPOSITION: entry 0's recorded VALUE is no longer constructible, and the reason
+/// is a deliberate design change.
+///
+/// The corpus records entry 0's `EPathMap.ps` holding `GBool(false)` TWICE. No input to the
+/// current API produces that: `ps` is an `EntryTrie`, and `impl From<Vec<Par>> for EntryTrie`
+/// says so in its own words — *"duplicates in the input are absorbed by the insert — the
+/// trie is a function of the entry SET — so `EntryTrie::from(v).view()` is generally not
+/// `v`, and that is the point rather than a defect."* The seed was recorded when `ps` was a
+/// plain `Vec<Par>`.
+///
+/// So this is a Tier-2 FORMAT migration for a layout-A corpus, and unlike the `lex_weight`
+/// case it is NOT losslessly invertible: there the absent fields had a documented default
+/// that made the old rendering complete, while here the archived value is outside the
+/// current type's image altogether. Pretending otherwise would mean writing a test that
+/// asserts a `Debug` string the code cannot produce.
+///
+/// What is asserted instead is the migration itself, so it cannot drift unnoticed:
+/// the corpus still says two, the trie still collapses to one, and the offered multiplicity
+/// is what the promoted gate tests below feed in. If the trie ever stopped collapsing,
+/// entry 0 would become reconstructible again and this test says so.
+#[test]
+fn the_recorded_epathmap_entries_migrated_from_a_vec_to_a_deduplicating_trie() {
+    let corpus = include_str!("epathmap_spliced_event_bytes.proptest-regressions");
+    let recorded: Vec<(&str, &str)> = corpus
+        .lines()
+        .filter_map(|l| l.strip_prefix("cc ")?.split_once(" # shrinks to "))
+        .collect();
+    assert_eq!(recorded.len(), 2, "the corpus no longer holds exactly its two entries");
+    assert_eq!(
+        recorded[0].0, "11cdd43bc682c5868b68a4b70d85766bd99be3bfe9b19f8d90aa4b3215ef01fb",
+        "the corpus entries are no longer the promoted ones"
+    );
+    assert_eq!(
+        recorded[1].0, "9511857581c23949e5f8620affddb87bce7a8edba290c80d3f4a2647a73b0895",
+        "the corpus entries are no longer the promoted ones"
+    );
+
+    // The archive still describes a map holding the SAME leaf twice.
+    let leaf = format!("{:?}", recorded_gbool_false_par());
+    assert_eq!(
+        recorded[0].1.matches(&leaf).count(),
+        2,
+        "entry 0 no longer records the DUPLICATE that distinguishes it from entry 1"
+    );
+    assert_eq!(
+        recorded[1].1.matches(&leaf).count(),
+        1,
+        "entry 1 no longer records the single-entry control"
+    );
+
+    // The current type collapses it, which is why entry 0 cannot be rebuilt as recorded.
+    let two = EPathMap::new(vec![recorded_gbool_false_par(); 2], Vec::new(), false, None);
+    let one = EPathMap::new(vec![recorded_gbool_false_par()], Vec::new(), false, None);
+    assert_eq!(
+        two.ps().len(),
+        1,
+        "★ `EntryTrie` no longer absorbs the duplicate. Entry 0's recorded value has become \
+         constructible again, so it should be promoted as an exact reconstruction instead \
+         of through this migration record."
+    );
+    assert_eq!(one.ps().len(), 1, "the single-entry control must be unaffected");
+
+    // Entry 1, whose value IS inside the current type's image, reconstructs EXACTLY. This is
+    // the control that keeps the claim above honest: the mismatch on entry 0 is the
+    // deduplication and nothing else, since the identical machinery reproduces entry 1 to
+    // the character.
+    let pars = recorded_epathmap_par(1);
+    assert_eq!(
+        format!("pars = {pars:?}, random_state = [], free_count = 0"),
+        recorded[1].1,
+        "entry 1 must still reconstruct exactly — if it does not, the divergence is NOT \
+         just the trie's deduplication and this whole ruling needs re-deriving"
+    );
+}
+
+/// `cc 11cdd43bc682c5868b68a4b70d85766bd99be3bfe9b19f8d90aa4b3215ef01fb` — the DUPLICATE.
+#[test]
+fn the_recorded_duplicate_epathmap_entry_passes_the_pm1_gate() {
+    clear_intern_store_for_test();
+    pm1_gate(&recorded_epathmap_par(2), Vec::new(), 0);
+}
+
+/// `cc 9511857581c23949e5f8620affddb87bce7a8edba290c80d3f4a2647a73b0895` — the control.
+#[test]
+fn the_recorded_single_entry_epathmap_passes_the_pm1_gate() {
+    clear_intern_store_for_test();
+    pm1_gate(&recorded_epathmap_par(1), Vec::new(), 0);
 }
