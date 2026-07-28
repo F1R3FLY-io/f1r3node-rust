@@ -37,11 +37,13 @@ mod fixtures;
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use models::create_bit_vector;
 use models::rhoapi::{EPathMap, Par, Var};
-use models::rust::pathmap_crate_type_mapper::{intern_store_len_for_test, PathMapCrateTypeMapper};
+use models::rust::pathmap_crate_type_mapper::{
+    intern_store_touches_for_test, PathMapCrateTypeMapper,
+};
 use proptest::prelude::*;
 use prost::Message;
 
@@ -54,15 +56,47 @@ use fixtures::{
 // Helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Serializes the tests whose assertions cross the process-wide intern store
-/// (`Arc::ptr_eq` between DIFFERENT instances relies on the store bucket
-/// surviving between the two interns — concurrent eviction-heavy tests could
-/// otherwise race it). Instance-local (cell-only) assertions do not need it.
-static STORE_LOCK: Mutex<()> = Mutex::new(());
+/// Governs this binary's access to the PROCESS-WIDE intern store.
+///
+/// # ★ Why a reader/writer split, and why EVERY interning test must hold one
+///
+/// `cargo test` runs a binary's tests as threads in ONE process, so the intern
+/// store is shared by every test in this file. (`cargo nextest` forks a process
+/// per test and shares nothing — which is why a defect here reads green there
+/// and red under `cargo test`; that divergence was the whole bug.)
+///
+/// Two different assertions need two different amounts of exclusion:
+///
+/// * **EXCLUSIVE ([`store_guard`])** — a test that asserts something about the
+///   store *as a whole*: `Arc::ptr_eq` between DIFFERENT instances (which needs
+///   the bucket to survive between the two interns, so an eviction-heavy
+///   neighbour must not run), or a measurement of the store-touch counter
+///   (which is only attributable to the call under test if nothing else interns
+///   during the window).
+/// * **SHARED ([`interning_guard`])** — a test that merely *interns* and then
+///   asserts something instance-local (bytes, lengths, serde layout). It has no
+///   stake in the store's global state, so these may run concurrently with each
+///   other; they need only be excluded from the exclusive holders.
+///
+/// ⚠ The obligation is TOTAL: a store-touching test that holds neither guard
+/// silently invalidates every exclusive measurement in the file. That is the
+/// defect this file carried — six interning tests held nothing, so the
+/// "…must not touch the global store at all" assertion was reading a number
+/// its neighbours had written.
+static STORE_LOCK: RwLock<()> = RwLock::new(());
 
-fn store_guard() -> MutexGuard<'static, ()> {
+/// EXCLUSIVE access — see [`STORE_LOCK`].
+fn store_guard() -> RwLockWriteGuard<'static, ()> {
     STORE_LOCK
-        .lock()
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// SHARED access — see [`STORE_LOCK`]. Held by every test that interns without
+/// asserting anything about the store's global state.
+fn interning_guard() -> RwLockReadGuard<'static, ()> {
+    STORE_LOCK
+        .read()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
@@ -207,14 +241,39 @@ fn the_p1_shim_fills_the_callers_cell() {
     // folds the `EntryTrie` maintains as entries arrive, so there is nothing
     // left to amortize and reaching for the store would be pure cost. The
     // property to pin is therefore the ABSENCE: a conversion must not intern.
+    // ⚠ The store observation is a DELTA on the touch counter, taken inside the
+    // exclusive guard — NOT an absolute, and NOT a delta on the bucket count.
+    //
+    // `assert_eq!(intern_store_len_for_test(), 0)` — what this used to say —
+    // asserted that NOTHING IN THE PROCESS had ever interned. Under
+    // `cargo nextest` (a process per test) that happened to hold; under
+    // `cargo test` (threads in one process) the neighbours below had already
+    // filled the store, and the observed value moved run to run (5, 27, 35, 64)
+    // because it was reporting the schedule rather than this conversion.
+    //
+    // A delta on `intern_store_len_for_test` would not fix it: at
+    // INTERN_CAPACITY every insert evicts one bucket and adds one, so the
+    // length delta is ZERO for a call that did touch the store — and a full
+    // binary drives the store to capacity routinely (64 was one of the observed
+    // absolutes). The counter below is monotone and is bumped under the store
+    // mutex on every hit and every insert, so eviction cannot mask it.
+    let touches_before = intern_store_touches_for_test();
     let converted = PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap(&map);
+    let touches_after = intern_store_touches_for_test();
     assert!(
         map.shadow_cell_for_test().is_none(),
         "a trie conversion must not force an intern any more — the map already \
          holds the trie, so the rendezvous would be cost with no benefit"
     );
+    // ★ NOT redundant with the cell assertion above. An empty cell says only
+    // that `map.intern()` was not called on THIS instance; a conversion could
+    // still reach the store by interning the fixture's NESTED inner map, or a
+    // temporary clone, or by calling `intern_epathmap_via_store` directly —
+    // none of which fills `map`'s cell. This assertion is the one that covers
+    // those, and `nested_epathmap_value()` was chosen precisely because it
+    // carries a nested map for the first of them to be reachable.
     assert_eq!(
-        intern_store_len_for_test(),
+        touches_after - touches_before,
         0,
         "…and it must not touch the global store at all"
     );
@@ -223,6 +282,60 @@ fn the_p1_shim_fills_the_callers_cell() {
     let interned = map.intern();
     assert_eq!(converted.connective_used, interned.connective_used);
     assert_eq!(converted.locally_free, interned.locally_free);
+}
+
+/// ★ THE CONTROL for the assertion above: the observable it uses is LIVE.
+///
+/// An assertion that something did NOT happen is worthless unless the
+/// instrument would have noticed if it had. This test drives the store
+/// deliberately — a miss (insert) and a hit (the same content again, from a
+/// FRESH instance so the shadow cell cannot short-circuit it) — and requires
+/// the counter to move for each.
+///
+/// It is a permanent fixture, not scaffolding: it fails if anyone makes
+/// `intern_store_touches_for_test` constant, moves a `next_intern_tick` call
+/// out from under a store path, or adds a store path that forgets to tick — any
+/// of which would turn "must not touch the global store" into an assertion that
+/// cannot fail. It shares the EXCLUSIVE guard for the same reason the
+/// measurement does.
+#[test]
+fn the_store_touch_counter_moves_when_the_store_is_actually_touched() {
+    let _guard = store_guard();
+
+    let map = e6a_index_epathmap();
+
+    // MISS: never-before-seen content ⇒ build + insert ⇒ one tick.
+    let before_miss = intern_store_touches_for_test();
+    let interned = map.intern();
+    let after_miss = intern_store_touches_for_test();
+    assert!(
+        after_miss > before_miss,
+        "an intern that reaches the store must advance the touch counter \
+         (miss/insert path); the counter is the instrument the \
+         'must not touch the store' assertion reads, so a constant here would \
+         make that assertion vacuous"
+    );
+
+    // HIT: a structurally-equal FRESH instance has an EMPTY cell, so it cannot
+    // short-circuit and must rendezvous through the store ⇒ another tick.
+    let twin = fresh_twin(&map);
+    assert!(
+        twin.shadow_cell_for_test().is_none(),
+        "precondition: the twin's cell is empty, so it must reach the store"
+    );
+    let before_hit = intern_store_touches_for_test();
+    let via_store = twin.intern();
+    let after_hit = intern_store_touches_for_test();
+    assert!(
+        after_hit > before_hit,
+        "a store HIT must advance the touch counter too — otherwise a \
+         conversion that only ever hit the store would be invisible"
+    );
+    assert!(
+        Arc::ptr_eq(&via_store, &interned),
+        "precondition: the twin really did rendezvous with the same entry \
+         (so the tick above was a hit, not a second insert)"
+    );
 }
 
 #[test]
@@ -304,6 +417,7 @@ proptest! {
     /// carrier: same numbers whether or not the value was interned).
     #[test]
     fn cached_encoded_len_equals_computed(map in arb_epathmap()) {
+        let _guard = interning_guard();
         let computed_len = map.encoded_len(); // cell empty: field walk
         let _ = map.intern();                 // fill
         let cached_len = map.encoded_len();   // cell filled: O(1) read
@@ -319,6 +433,7 @@ proptest! {
     /// exactly the field-walk bytes.
     #[test]
     fn cached_encode_raw_equals_computed_bytes(map in arb_epathmap()) {
+        let _guard = interning_guard();
         let computed = map.encode_to_vec();  // cell empty: field walk
         let _ = map.intern();                // fill
         let cached = map.encode_to_vec();    // cell filled: memcpy
@@ -332,6 +447,7 @@ proptest! {
 /// an OUTER field walk must produce the same bytes as a fully-fresh tree.
 #[test]
 fn interned_inner_map_composes_byte_identically_in_an_outer_encode() {
+    let _guard = interning_guard();
     let inner = EPathMap::new(
         vec![ground_list(vec![gstring_par("inner"), gstring_par("leaf")])],
         Vec::new(),
@@ -409,6 +525,7 @@ proptest! {
     /// interning (the cell must be serialization-invisible).
     #[test]
     fn serde_layout_matches_the_derived_twin(map in arb_epathmap()) {
+        let _guard = interning_guard();
         let twin = derived_twin(&map);
         let twin_bincode = bincode::serialize(&twin).expect("twin bincode");
         let twin_json = serde_json::to_string(&twin).expect("twin json");
@@ -506,6 +623,7 @@ fn serde_locally_free_asymmetry_serialize_normalizes_deserialize_reads() {
 
 #[test]
 fn always_equal_vs_derived_ord_wart_survives_the_wrapper() {
+    let _guard = interning_guard();
     let plain = e6a_index_epathmap();
     let tagged = EPathMap::new(
         plain.ps().clone(),
@@ -540,6 +658,7 @@ fn always_equal_vs_derived_ord_wart_survives_the_wrapper() {
 /// Debug parity: the four proto fields in declaration order, no cell.
 #[test]
 fn debug_output_shows_the_four_proto_fields_and_no_cell() {
+    let _guard = interning_guard();
     let map = epathmap_remainder_connective();
     let _ = map.intern(); // even filled, the cell must not print
     let debug = format!("{map:?}");

@@ -672,12 +672,55 @@ pub fn eval_stable_par_for_test(par: &Par) -> bool {
 }
 
 /// TEST SEAM: number of digest buckets currently in the store.
+///
+/// ⚠ This is an ABSOLUTE reading of process-global state. A test may compare it
+/// against a constant only when it has just called [`clear_intern_store_for_test`]
+/// and holds exclusive access against every other store-touching test in its
+/// binary. To ask the weaker, far more common question *"did this call touch the
+/// store?"* use [`intern_store_touches_for_test`] instead — a bucket count
+/// cannot answer it (see that function's note on LRU eviction).
 #[doc(hidden)]
 pub fn intern_store_len_for_test() -> usize {
     intern_store()
         .lock()
         .expect("EPathMap intern store mutex poisoned")
         .len()
+}
+
+/// TEST SEAM: the monotone count of STORE TOUCHES this process has performed —
+/// the LRU tick, which is bumped exactly once per store hit and once per insert.
+///
+/// # Why this and not the bucket count
+///
+/// The question *"did this call reach the store?"* has three plausible
+/// observables and two of them are unsound:
+///
+/// * **`intern_store_len_for_test() == 0`** is an absolute over process-global
+///   state. It answers "has *anything in this process* ever interned", which is
+///   a property of the test binary's schedule, not of the call under test. It is
+///   the assertion this seam was introduced to replace.
+/// * **the DELTA of `intern_store_len_for_test()`** is unsound twice over. A
+///   concurrent thread may intern inside the measurement window; and — the
+///   sharper failure — once the store reaches [`INTERN_CAPACITY`] every insert
+///   LRU-evicts one bucket and adds one, so the length delta is **zero for a
+///   call that did touch the store**. A full test binary drives the store to
+///   capacity routinely, so that assertion would read green precisely where it
+///   was supposed to read red.
+/// * **this counter's delta** is immune to both. [`next_intern_tick`] is called
+///   on every hit (`*last_use = next_intern_tick()`) and unconditionally by
+///   [`store_insert`], always while the store mutex is held, and it is
+///   monotone — eviction cannot mask it. So *store touched ⟺ this value
+///   advanced*, and a zero delta over a window in which no other thread may
+///   intern is exactly "the call did not reach the store".
+///
+/// The window still has to be exclusive: this is a process-global too, and the
+/// delta is only attributable to the measured call if nothing else interns
+/// while it runs. Under `cargo test` that means every store-touching test in
+/// the same binary must be excluded for the duration (each `tests/*.rs` is its
+/// own process, so the obligation is file-local).
+#[doc(hidden)]
+pub fn intern_store_touches_for_test() -> u64 {
+    INTERN_TICK.load(Ordering::Relaxed)
 }
 
 /// TEST SEAM: drop every bucket (the LRU tick keeps advancing).
