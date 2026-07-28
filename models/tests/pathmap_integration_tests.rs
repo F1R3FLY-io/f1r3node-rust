@@ -165,13 +165,13 @@ fn test_pathmap_to_e_pathmap_conversion() {
     );
 
     assert_eq!(
-        &e_pathmap.ps[..],
+        &e_pathmap.ps()[..],
         &expected_entries_in_trie_order(&original_ps)[..],
         "the converter must return the ENTRIES, in trie order — not merely the \
          right number of them"
     );
     // …and no two of them are the same entry, which `ps.len()` cannot see.
-    let keys: Vec<Vec<u8>> = e_pathmap.ps.iter().map(encode_trie_path).collect();
+    let keys: Vec<Vec<u8>> = e_pathmap.ps().iter().map(encode_trie_path).collect();
     let mut distinct = keys.clone();
     distinct.sort();
     distinct.dedup();
@@ -234,7 +234,7 @@ fn test_e_pathmap_roundtrip() {
 
     // Leg 2 — the ENTRIES come back, in trie order.
     assert_eq!(
-        &e_pathmap2.ps[..],
+        &e_pathmap2.ps()[..],
         &expected_entries_in_trie_order(&original_ps)[..],
         "the round trip must preserve the entries themselves"
     );
@@ -247,7 +247,7 @@ fn test_e_pathmap_roundtrip() {
         None,
     );
     assert_eq!(
-        third.ps, e_pathmap2.ps,
+        third.ps(), e_pathmap2.ps(),
         "trie order is already canonical — a second round trip is the identity"
     );
 }
@@ -589,8 +589,9 @@ fn the_bulk_converter_is_the_key_walk_on_every_subset() {
     for subset in every_subset_of_the_alphabet() {
         let built = create_pathmap_from_elements(&subset, None);
 
-        let by_converter =
-            PathMapCrateTypeMapper::rholang_pathmap_to_e_pathmap(&built.map, false, &[], None).ps;
+        let converted =
+            PathMapCrateTypeMapper::rholang_pathmap_to_e_pathmap(&built.map, false, &[], None);
+        let by_converter = converted.ps();
 
         let mut by_key = Vec::new();
         let mut rz = built.map.read_zipper();
@@ -624,7 +625,7 @@ fn entry_count_survives_conversion_and_reinsertion_on_every_subset() {
         let converted =
             PathMapCrateTypeMapper::rholang_pathmap_to_e_pathmap(&built.map, false, &[], None);
         let rebuilt = PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap(&EPathMap::new(
-            converted.ps.clone(),
+            converted.ps().clone(),
             vec![],
             false,
             None,
@@ -638,7 +639,7 @@ fn entry_count_survives_conversion_and_reinsertion_on_every_subset() {
              cardinality assertion on `ps` proves nothing)",
             distinct_keys,
             rebuilt.map.val_count(),
-            converted.ps.len()
+            converted.ps().len()
         );
     }
 }

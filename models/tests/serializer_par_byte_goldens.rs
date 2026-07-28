@@ -588,13 +588,13 @@ fn fixture_carries_shape_3_both_epathmap_serialize_arms() {
     for e in &p.exprs {
         match e.expr_instance.as_ref() {
             Some(ExprInstance::EPathmapBody(m)) => {
-                assert!(!m.ps.is_empty() && !m.locally_free.is_empty() && m.connective_used);
+                assert!(!m.ps().is_empty() && !m.locally_free.is_empty() && m.connective_used);
                 assert!(m.remainder.is_some());
                 saw_nonground = true;
             }
             Some(ExprInstance::EZipperBody(z)) => {
                 let m = z.pathmap.as_ref().expect("EZipper must carry a pathmap");
-                assert!(!m.ps.is_empty() && m.locally_free.is_empty() && !m.connective_used);
+                assert!(!m.ps().is_empty() && m.locally_free.is_empty() && !m.connective_used);
                 assert!(m.remainder.is_none());
                 saw_ground = true;
             }

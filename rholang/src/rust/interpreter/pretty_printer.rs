@@ -2517,7 +2517,7 @@ mod drive {
             },
             ExprInstance::ETupleBody(ETuple { ps, .. }) => ExprPlan::Tuple { ps: ps.as_slice() },
             ExprInstance::EPathmapBody(pathmap) => ExprPlan::Bracketed {
-                ps: pathmap.ps.as_slice(),
+                ps: pathmap.ps().as_slice(),
                 remainder: &pathmap.remainder,
                 open: "{|",
                 close: "|}",
@@ -2663,7 +2663,7 @@ mod drive {
             ExprInstance::EZipperBody(zipper) => {
                 // Print zipper showing the underlying PathMap and current position
                 let pathmap = zipper.pathmap.as_ref().expect("zipper pathmap was None");
-                let elements = pp.build_vec(&pathmap.ps);
+                let elements = pp.build_vec(pathmap.ps());
                 let remainder_string = pp.build_remainder_string(&pathmap.remainder);
                 let zipper_type = if zipper.is_write_zipper {
                     "WriteZipper"

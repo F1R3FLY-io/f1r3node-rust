@@ -1716,23 +1716,22 @@ fn expr_from_expr_proto(expr: Expr) -> Option<RhoExpr> {
             RhoExpr::ExprMap { data }
         }
         ExprInstance::EPathmapBody(pm) => RhoExpr::ExprList {
-            // L2: by-value extraction from the shared payload (`into_vec`
-            // moves when unshared, clones when shared) — display-boundary
-            // conversion, same values either way.
+            // Display-boundary conversion over the map's canonical
+            // projection (memoized on the value, so this is a borrow).
             data: pm
-                .ps
-                .into_vec()
-                .into_iter()
+                .ps()
+                .iter()
+                .cloned()
                 .filter_map(expr_from_par_proto)
                 .collect(),
         },
         ExprInstance::EZipperBody(z) => {
             let pathmap = z.pathmap.map(|pm| RhoExpr::ExprList {
-                // L2: same by-value extraction as the EPathmapBody arm.
+                // Same projection read as the EPathmapBody arm.
                 data: pm
-                    .ps
-                    .into_vec()
-                    .into_iter()
+                    .ps()
+                    .iter()
+                    .cloned()
                     .filter_map(expr_from_par_proto)
                     .collect(),
             });

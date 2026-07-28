@@ -2801,8 +2801,8 @@ impl DebruijnInterpreter {
                 Ok(())
             }
             ExprInstance::EPathmapBody(e1) => {
-                work.push(EvWork::Combine(EvKont::EPathmapK { e1, n: e1.ps.len() }));
-                for p in e1.ps.iter().rev() {
+                work.push(EvWork::Combine(EvKont::EPathmapK { e1, n: e1.ps().len() }));
+                for p in e1.ps().iter().rev() {
                     work.push(EvWork::EEval(p));
                 }
                 Ok(())
@@ -3990,18 +3990,16 @@ impl DebruijnInterpreter {
             e1.connective_used,
             None,
         );
-        // EPathMap wire: a GROUND eval result canonicalizes to trie
-        // order (a PathMap zipper walk, NO sort) so runtime and
-        // normalization agree — the same map, however constructed,
-        // compares structurally-equal (COMM fires order-insensitively)
-        // and hashes to one canonical preimage. A non-ground result
-        // is returned unchanged.
+        // ★ The canonicalization call is GONE, because the constructor is
+        // the canonicalizer now. `EPathMap::new` files every entry into the
+        // map's trie, so `rebuilt` is ALREADY in trie order, deduplicated,
+        // and recursively canonical — runtime and normalization agree, the
+        // same map however constructed compares structurally-equal (COMM
+        // fires order-insensitively), and it hashes to one preimage.
+        // `canonicalize_ground_epathmap(&rebuilt)` would have been the
+        // identity, so it is deleted rather than kept as a no-op.
         Ok(Expr {
-            expr_instance: Some(ExprInstance::EPathmapBody(
-                models::rust::pathmap_crate_type_mapper::canonicalize_ground_epathmap(
-                    &rebuilt,
-                ),
-            )),
+            expr_instance: Some(ExprInstance::EPathmapBody(rebuilt)),
         })
     }
 
@@ -4312,7 +4310,7 @@ impl DebruijnInterpreter {
                 }
                 ExprInstance::EPathmapBody(e1) => {
                     let evaled_ps = e1
-                        .ps
+                        .ps()
                         .iter()
                         .map(|p| self.eval_expr_recursive(p, env))
                         .collect::<Result<Vec<_>, InterpreterError>>()?;
@@ -4851,7 +4849,7 @@ impl DebruijnInterpreter {
                         self.outer
                             .metering
                             .reserve_incremental_primitive(union_cost(
-                                other_pathmap.ps.len() as i64
+                                other_pathmap.ps().len() as i64
                             ))?;
                         let result_map = base_rmap.map.join(&other_rmap.map);
 
@@ -4977,7 +4975,7 @@ impl DebruijnInterpreter {
                         self.outer
                             .metering
                             .reserve_incremental_primitive(diff_cost(
-                                other_pathmap.ps.len() as i64
+                                other_pathmap.ps().len() as i64
                             ))?;
                         let result_map = base_rmap.map.subtract(&other_rmap.map);
 
@@ -5053,7 +5051,7 @@ impl DebruijnInterpreter {
                         self.outer
                             .metering
                             .reserve_incremental_primitive(union_cost(
-                                other_pathmap.ps.len() as i64
+                                other_pathmap.ps().len() as i64
                             ))?;
                         let result_map = base_rmap.map.meet(&other_rmap.map);
 
@@ -5137,7 +5135,7 @@ impl DebruijnInterpreter {
                         // (the result carries base's connective/locally_free).
                         let mut other_prefix_map =
                             models::rust::pathmap_integration::RholangPathMap::new();
-                        for entry in &other_pathmap.ps {
+                        for entry in other_pathmap.ps() {
                             other_prefix_map.insert(
                                 segments_to_key(
                                     &models::rust::pathmap_integration::par_to_path(entry),
@@ -5150,7 +5148,7 @@ impl DebruijnInterpreter {
                         self.outer
                             .metering
                             .reserve_incremental_primitive(union_cost(
-                                other_pathmap.ps.len() as i64
+                                other_pathmap.ps().len() as i64
                             ))?;
                         let result_map = base_rmap.map.restrict(&other_prefix_map);
 
@@ -5244,9 +5242,9 @@ impl DebruijnInterpreter {
                         // divergence that cost `setSubtrie` its bare source
                         // entries; there is now ONE classifier.
                         let n = n as usize;
-                        let mut result_elements = Vec::with_capacity(base_pathmap.ps.len());
+                        let mut result_elements = Vec::with_capacity(base_pathmap.ps().len());
 
-                        for par in &base_pathmap.ps {
+                        for par in base_pathmap.ps() {
                             let elements = path_elements(par);
                             match n {
                                 // Dropping NOTHING is the identity — on both
@@ -5945,9 +5943,13 @@ impl DebruijnInterpreter {
                     ExprInstance::EZipperBody(zipper) => {
                         // For a write zipper, set value at current position
                         let mut pathmap = zipper.pathmap.expect("zipper pathmap was None");
-                        // L2: sanctioned CoW mutation — resets any inherited
-                        // intern cell and detaches the shared payload.
-                        pathmap.ps_make_mut().push(value.clone());
+                        // ★ NAME an entry, do not push at a position. `push`
+                        // appended to a `Vec` whose order was a producer's
+                        // accident; `insert_entry` files the entry under its own
+                        // codec path, which also makes the write IDEMPOTENT —
+                        // setting a leaf that is already there is a no-op on the
+                        // set rather than a silent duplicate.
+                        pathmap.insert_entry(value.clone());
                         // Return the modified PathMap (not zipper)
                         Ok(Expr {
                             expr_instance: Some(ExprInstance::EPathmapBody(pathmap)),
@@ -5955,9 +5957,9 @@ impl DebruijnInterpreter {
                     }
                     ExprInstance::EPathmapBody(mut pathmap) => {
                         // For a write zipper, set value at current position
-                        // For now, add to the pathmap
-                        // L2: sanctioned CoW mutation (cell reset + detach).
-                        pathmap.ps_make_mut().push(value.clone());
+                        // For now, add to the pathmap. See the zipper arm above
+                        // for why this names an entry rather than pushing one.
+                        pathmap.insert_entry(value.clone());
                         Ok(Expr {
                             expr_instance: Some(ExprInstance::EPathmapBody(pathmap)),
                         })
@@ -6046,7 +6048,7 @@ impl DebruijnInterpreter {
                         }
 
                         // Step 3: Add source entries with prepended prefix
-                        for source_entry in source.ps.iter() {
+                        for source_entry in source.ps().iter() {
                             use models::rust::pathmap_integration::par_to_path;
                             let source_segments = par_to_path(source_entry);
 
@@ -6063,7 +6065,7 @@ impl DebruijnInterpreter {
 
                             // Find an existing entry that starts with current_path
                             let found_existing = if let Some(existing_entry) =
-                                pathmap.ps.iter().find(|entry| {
+                                pathmap.ps().iter().find(|entry| {
                                     if let Some(ExprInstance::EListBody(existing_list)) =
                                         &entry.exprs.first().and_then(|e| e.expr_instance.as_ref())
                                     {
@@ -6188,7 +6190,7 @@ impl DebruijnInterpreter {
                         }
 
                         // Step 3b: If source is empty, add current_path as entry
-                        if source.ps.is_empty() && !zipper.current_path.is_empty() {
+                        if source.ps().is_empty() && !zipper.current_path.is_empty() {
                             // The ENTRY key the cursor names (see `getLeaf`).
                             let key: Vec<u8> = cursor_entry_key(
                                 &zipper.current_path,
@@ -6201,7 +6203,7 @@ impl DebruijnInterpreter {
 
                             // Find an existing entry that starts with current_path
                             let found_existing = if let Some(existing_entry) =
-                                pathmap.ps.iter().find(|entry| {
+                                pathmap.ps().iter().find(|entry| {
                                     if let Some(ExprInstance::EListBody(existing_list)) =
                                         &entry.exprs.first().and_then(|e| e.expr_instance.as_ref())
                                     {
@@ -6385,9 +6387,15 @@ impl DebruijnInterpreter {
                         })
                     }
                     ExprInstance::EPathmapBody(mut pathmap) => {
-                        // Remove value at current position (root)
-                        // L2: sanctioned CoW mutation (cell reset + detach).
-                        pathmap.ps_make_mut().pop();
+                        // Remove value at current position (root).
+                        //
+                        // ⚠ This was `ps.pop()` — remove the LAST-WRITTEN entry.
+                        // An entry set has no last-written entry, so the removal
+                        // is re-derived from the only order that exists, the
+                        // trie's. That makes it deterministic where `pop` was
+                        // not: `{|a, b|}` and `{|b, a|}` are one map, and `pop`
+                        // used to remove a different entry from each.
+                        pathmap.remove_greatest_entry();
                         Ok(Expr {
                             expr_instance: Some(ExprInstance::EPathmapBody(pathmap)),
                         })
@@ -6547,15 +6555,12 @@ impl DebruijnInterpreter {
                             .pathmap
                             .expect("source zipper pathmap was None");
 
-                        // Graft: copy subtrie from source to destination
-                        // L2: sanctioned CoW mutation on the destination
-                        // (cell reset + detach); the source payload is
-                        // extracted by value (`into_vec` moves when unshared,
-                        // clones when shared — the copy every pre-L2 clone of
-                        // the source already paid up front).
-                        dest_pathmap
-                            .ps_make_mut()
-                            .extend(source_pathmap.ps.into_vec());
+                        // Graft: copy subtrie from source to destination.
+                        // ★ This is a SET UNION now, so it is idempotent and
+                        // cannot create duplicates: grafting a source twice, or
+                        // grafting overlapping sources, yields the same map.
+                        // `extend(source.ps.into_vec())` could do neither.
+                        dest_pathmap.extend_entries(&source_pathmap);
 
                         Ok(Expr {
                             expr_instance: Some(ExprInstance::EPathmapBody(dest_pathmap)),
@@ -6569,15 +6574,12 @@ impl DebruijnInterpreter {
                         let mut dest_pathmap =
                             dest_zipper.pathmap.expect("dest zipper pathmap was None");
 
-                        // Graft: copy subtrie from source to destination
-                        // L2: sanctioned CoW mutation on the destination
-                        // (cell reset + detach); the source payload is
-                        // extracted by value (`into_vec` moves when unshared,
-                        // clones when shared — the copy every pre-L2 clone of
-                        // the source already paid up front).
-                        dest_pathmap
-                            .ps_make_mut()
-                            .extend(source_pathmap.ps.into_vec());
+                        // Graft: copy subtrie from source to destination.
+                        // ★ This is a SET UNION now, so it is idempotent and
+                        // cannot create duplicates: grafting a source twice, or
+                        // grafting overlapping sources, yields the same map.
+                        // `extend(source.ps.into_vec())` could do neither.
+                        dest_pathmap.extend_entries(&source_pathmap);
 
                         Ok(Expr {
                             expr_instance: Some(ExprInstance::EPathmapBody(dest_pathmap)),
@@ -6592,15 +6594,12 @@ impl DebruijnInterpreter {
                             .pathmap
                             .expect("source zipper pathmap was None");
 
-                        // Graft: copy subtrie from source to destination
-                        // L2: sanctioned CoW mutation on the destination
-                        // (cell reset + detach); the source payload is
-                        // extracted by value (`into_vec` moves when unshared,
-                        // clones when shared — the copy every pre-L2 clone of
-                        // the source already paid up front).
-                        dest_pathmap
-                            .ps_make_mut()
-                            .extend(source_pathmap.ps.into_vec());
+                        // Graft: copy subtrie from source to destination.
+                        // ★ This is a SET UNION now, so it is idempotent and
+                        // cannot create duplicates: grafting a source twice, or
+                        // grafting overlapping sources, yields the same map.
+                        // `extend(source.ps.into_vec())` could do neither.
+                        dest_pathmap.extend_entries(&source_pathmap);
 
                         Ok(Expr {
                             expr_instance: Some(ExprInstance::EPathmapBody(dest_pathmap)),
@@ -6611,15 +6610,12 @@ impl DebruijnInterpreter {
                         ExprInstance::EPathmapBody(mut dest_pathmap),
                         ExprInstance::EPathmapBody(source_pathmap),
                     ) => {
-                        // Graft: copy subtrie from source to destination
-                        // L2: sanctioned CoW mutation on the destination
-                        // (cell reset + detach); the source payload is
-                        // extracted by value (`into_vec` moves when unshared,
-                        // clones when shared — the copy every pre-L2 clone of
-                        // the source already paid up front).
-                        dest_pathmap
-                            .ps_make_mut()
-                            .extend(source_pathmap.ps.into_vec());
+                        // Graft: copy subtrie from source to destination.
+                        // ★ This is a SET UNION now, so it is idempotent and
+                        // cannot create duplicates: grafting a source twice, or
+                        // grafting overlapping sources, yields the same map.
+                        // `extend(source.ps.into_vec())` could do neither.
+                        dest_pathmap.extend_entries(&source_pathmap);
                         Ok(Expr {
                             expr_instance: Some(ExprInstance::EPathmapBody(dest_pathmap)),
                         })
@@ -6693,7 +6689,7 @@ impl DebruijnInterpreter {
                         self.outer
                             .metering
                             .reserve_incremental_primitive(union_cost(
-                                source_pathmap.ps.len() as i64
+                                source_pathmap.ps().len() as i64
                             ))?;
                         let result_map = base_rmap.map.join(&source_rmap.map);
 
@@ -6724,7 +6720,7 @@ impl DebruijnInterpreter {
                         self.outer
                             .metering
                             .reserve_incremental_primitive(union_cost(
-                                source_pathmap.ps.len() as i64
+                                source_pathmap.ps().len() as i64
                             ))?;
                         let result_map = base_rmap.map.join(&source_rmap.map);
 
@@ -6756,7 +6752,7 @@ impl DebruijnInterpreter {
                         self.outer
                             .metering
                             .reserve_incremental_primitive(union_cost(
-                                source_pathmap.ps.len() as i64
+                                source_pathmap.ps().len() as i64
                             ))?;
                         let result_map = base_rmap.map.join(&source_rmap.map);
 
@@ -6785,7 +6781,7 @@ impl DebruijnInterpreter {
                         self.outer
                             .metering
                             .reserve_incremental_primitive(union_cost(
-                                source_pathmap.ps.len() as i64
+                                source_pathmap.ps().len() as i64
                             ))?;
                         let result_map = base_rmap.map.join(&source_rmap.map);
 
@@ -6943,7 +6939,7 @@ impl DebruijnInterpreter {
                         // Check if path exists (either has value or has children)
                         if key.is_empty() {
                             // Root always exists if PathMap is not empty
-                            Ok(!pathmap.ps.is_empty())
+                            Ok(!pathmap.ps().is_empty())
                         } else {
                             // Check if exact path or any path with this prefix exists —
                             // native trie-path lookup (O(path) instead of the previous
@@ -6954,7 +6950,7 @@ impl DebruijnInterpreter {
                     }
                     ExprInstance::EPathmapBody(pathmap) => {
                         // For PathMap at root, it exists if not empty
-                        Ok(!pathmap.ps.is_empty())
+                        Ok(!pathmap.ps().is_empty())
                     }
                     other => Err(InterpreterError::MethodNotDefined {
                         method: String::from("pathExists"),

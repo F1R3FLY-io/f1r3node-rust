@@ -103,7 +103,7 @@ fn byte_round_trip_is_stable_and_reconstructs_canonically() {
     // The decoded map re-encodes byte-identically (canonical fixed point) and
     // carries every entry (in trie order).
     assert_eq!(decoded.encode_to_vec(), bytes);
-    assert_eq!(decoded.ps.len(), 4);
+    assert_eq!(decoded.ps().len(), 4);
     // The decoded (trie-ordered) map is the canonical form: encoding it and the
     // permuted original agree.
     let permuted = ground(vec![gint(3), gstr("apple"), gint(-7), gstr("zebra")]);
@@ -134,7 +134,7 @@ fn large_map_round_trips() {
     let bytes = m.encode_to_vec();
     assert_eq!(bytes[0], FIELD8_KEY);
     let decoded = EPathMap::decode(&bytes[..]).expect("decode large map");
-    assert_eq!(decoded.ps.len(), 2000);
+    assert_eq!(decoded.ps().len(), 2000);
     assert_eq!(decoded.encode_to_vec(), bytes);
     // Reverse construction ⇒ identical wire (order-insensitive at scale).
     let reversed: Vec<Par> = (0..2000i64).rev().map(gint).collect();
@@ -166,5 +166,5 @@ fn empty_map_is_all_defaults_not_field8() {
     assert!(bytes.is_empty(), "the canonical empty map is the all-defaults message");
     assert!(m.intern().path_stream.is_empty());
     let decoded = EPathMap::decode(&bytes[..]).expect("decode empty");
-    assert!(decoded.ps.is_empty());
+    assert!(decoded.ps().is_empty());
 }

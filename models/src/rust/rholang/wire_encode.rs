@@ -90,17 +90,21 @@
 //!
 //! ## 4. ⚠ `EPathMap` — the one program the descriptor cannot express
 //!
-//! `EPathMap` is `extern_path`'d, and its hand-written `Serialize` re-orders
-//! `ps` into canonical trie order for GROUND maps, so that a ground map's
-//! event-hash preimage is a pure function of its entry *set* (two producers
-//! building the same map in different orders must not emit different bytes).
-//! [`crate::rust::rholang::wire::pathmap_ps`] makes that same choice by
-//! calling the same two functions.
+//! `EPathMap` is `extern_path`'d, so the descriptor-driven generator emits no
+//! program for it and [`crate::rust::rholang::wire::EPATHMAP_PROGRAM`] is
+//! hand-written. Its `ps` is the canonical projection of the map's entry trie
+//! (`EPathMap::ps()`), memoized on the value, which is the same choice its
+//! `Serialize` impl makes.
 //!
-//! Canonicalization *constructs* a vector, which no borrow-returning accessor
-//! can serve, so the machine owns it: [`Machine::park`] moves it into a small
-//! arena and `Op::DropOwned` releases it when the subtree completes. At most
-//! one parked vector per ancestor ground `EPathMap` is live.
+//! ⚠ ★ **This section used to describe an ARENA.** A ground map's canonical
+//! `ps` was *constructed* by re-reading a trie, and a constructed vector cannot
+//! be served by a borrow-returning accessor, so the machine leaked it into a
+//! `Vec<*mut Vec<Par>>` and released it with an `Op::DropOwned` pushed beneath
+//! the subtree that read it — a raw-pointer arena with a hand-written soundness
+//! argument, existing only because the canonical entries were not stored
+//! anywhere. They are stored now, so `Machine::park`, `Machine::owned`,
+//! `Machine::release_to`, `Op::DropOwned`, and the two `unsafe` blocks that
+//! made them work are **deleted**, and the encoder holds no raw pointers at all.
 //!
 //! ## 5. What byte identity rests on
 //!
@@ -160,9 +164,6 @@ enum Op<'a> {
         index: u32,
         len: u32,
     },
-    /// Release parked vectors down to `mark`. Pushed *beneath* the subtree
-    /// that reads them, so LIFO makes the release exact.
-    DropOwned { mark: usize },
     /// Emit the remaining entries of the `BTreeMap` iterator on top of
     /// `map_iters`: one key, then descend into its value.
     MapEntries,
@@ -255,9 +256,6 @@ fn give_ops(mut ops: Vec<Op<'_>>) {
 
 struct Machine<'a> {
     ops: Vec<Op<'a>>,
-    /// Canonical `ps` vectors for ground `EPathMap`s, owned for the duration
-    /// of their subtree. See [`Machine::park`] for the soundness argument.
-    owned: Vec<*mut Vec<Par>>,
     /// One live iterator per ancestor `New` (the `injections` map).
     map_iters: Vec<btree_map::Iter<'a, String, Par>>,
     /// Op-stack high-water mark, tracked only when `TRACK` is on.
@@ -265,14 +263,12 @@ struct Machine<'a> {
 }
 
 impl<'a> Drop for Machine<'a> {
-    /// Release anything still parked, and return the op-stack allocation.
+    /// Return the op-stack allocation to the thread-local pool.
     ///
-    /// The normal path drains `owned` through `Op::DropOwned`; this covers a
-    /// panic unwinding out of the loop. Unlike the decoder's teardown this is
-    /// O(number of parked vectors) and touches no term structure, because the
-    /// encoder owns nothing else — there is no deep `Par` here to dismantle.
+    /// This used to also drain the parked-vector arena on a panic unwinding out
+    /// of the loop. There is no arena any more, so teardown is one `mem::take`
+    /// and touches no term structure — there is no deep `Par` here to dismantle.
     fn drop(&mut self) {
-        self.release_to(0);
         give_ops(std::mem::take(&mut self.ops));
     }
 }
@@ -281,40 +277,9 @@ impl<'a> Machine<'a> {
     fn new() -> Self {
         Machine {
             ops: take_ops(),
-            owned: Vec::new(),
             map_iters: Vec::new(),
             high_water: 0,
         }
-    }
-
-    /// Drop parked vectors above `mark`.
-    fn release_to(&mut self, mark: usize) {
-        while self.owned.len() > mark {
-            let raw = self.owned.pop().expect("len > mark implies non-empty");
-            // SAFETY: `raw` came from `Box::into_raw` in `park` and is popped
-            // exactly once, here.
-            drop(unsafe { Box::from_raw(raw) });
-        }
-    }
-
-    /// Park a constructed vector and hand back a reference valid for the rest
-    /// of this run.
-    ///
-    /// # Soundness
-    ///
-    /// The `Box` is leaked into `self.owned` and freed only by `release_to`,
-    /// which is reached either through the `Op::DropOwned` pushed *beneath*
-    /// every op that reads the vector (LIFO, so strictly afterwards) or through
-    /// [`Drop`] when the machine itself goes away. The returned reference is
-    /// stored only in `self.ops`, which cannot outlive the machine, so its real
-    /// use window is a subset of the allocation's lifetime. The `'a`
-    /// annotation is an over-approximation used to satisfy the borrow checker;
-    /// no reference derived from it escapes [`Machine::run`].
-    fn park(&mut self, ps: Vec<Par>) -> (usize, &'a Vec<Par>) {
-        let mark = self.owned.len();
-        let raw = Box::into_raw(Box::new(ps));
-        self.owned.push(raw);
-        (mark, unsafe { &*raw })
     }
 
     /// Run to completion.
@@ -356,7 +321,6 @@ impl<'a> Machine<'a> {
                         });
                     }
                 }
-                Op::DropOwned { mark } => self.release_to(mark),
                 Op::MapEntries => {
                     let next = self
                         .map_iters
@@ -461,28 +425,19 @@ impl<'a> Machine<'a> {
         }
     }
 
-    /// Open an `EPathMap`: emit its `ps` count, park a canonical vector when
-    /// the map is ground, and arrange for fields 1..4 to follow.
+    /// Open an `EPathMap`: emit its `ps` count, then arrange for fields 1..4.
+    ///
+    /// ⚠ It is still opened HERE rather than at field 0 of the generated
+    /// walker, because `EPathMap`'s `ps` is a projection reached through
+    /// `pathmap_ps` rather than a plain field read, and emitting the wrong one
+    /// changes the event-hash preimage silently. `WireNode::wire_emit` refuses
+    /// field 0 for exactly that reason.
     fn open_pathmap(&mut self, out: &mut Vec<u8>, node: &'a dyn WireNode, map: &'a EPathMap) {
-        match pathmap_ps(map) {
-            PathmapPs::Stored(ps) => {
-                put_u64(out, ps.len() as u64);
-                self.suspend(node, 1);
-                if !ps.is_empty() {
-                    self.open_seq(ps, ps.len());
-                }
-            }
-            PathmapPs::Canonical(ps) => {
-                put_u64(out, ps.len() as u64);
-                let (mark, parked) = self.park(ps);
-                // ⚠ ORDER. `DropOwned` goes on FIRST so it pops LAST — after
-                // the whole subtree that reads the slot has been emitted.
-                self.ops.push(Op::DropOwned { mark });
-                self.suspend(node, 1);
-                if !parked.is_empty() {
-                    self.open_seq(parked, parked.len());
-                }
-            }
+        let PathmapPs::Stored(ps) = pathmap_ps(map);
+        put_u64(out, ps.len() as u64);
+        self.suspend(node, 1);
+        if !ps.is_empty() {
+            self.open_seq(ps, ps.len());
         }
     }
 }

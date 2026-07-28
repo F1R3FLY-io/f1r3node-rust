@@ -98,7 +98,7 @@ use crate::rust::par_map::ParMap;
 use crate::rust::par_map_type_mapper::ParMapTypeMapper;
 use crate::rust::par_set::ParSet;
 use crate::rust::par_set_type_mapper::ParSetTypeMapper;
-use crate::rust::pathmap_crate_type_mapper::{canonicalize_ground_epathmap, eval_stable_epathmap};
+use crate::rust::pathmap_crate_type_mapper::eval_stable_epathmap;
 use crate::rust::rholang::sorter::par_sort_matcher::ParSortMatcher;
 use crate::rust::rholang::sorter::sortable::Sortable;
 use crate::rust::sorted_par_hash_set::SortedParHashSet;
@@ -370,7 +370,7 @@ pub fn expr_child_pars<'t>(e: &'t Expr, out: &mut Vec<&'t Par>) {
             x.pathmap
                 .as_ref()
                 .expect("zipper pathmap was None")
-                .ps
+                .ps()
                 .iter(),
         ),
 
@@ -1524,21 +1524,32 @@ construct_expr(
 /// The `EPathmapBody` arm.
 #[inline(never)]
 fn combine_epathmap(pathmap: &EPathMap) -> ScoredTerm<Expr> {
-// EPathMap wire: a GROUND map's canonical order is TRIE
-// order — a PathMap zipper walk (NO sort), recursively
-// canonical (`canonicalize_ground_epathmap`). This makes
-// permuted / duplicated constructions of the same entry
-// multiset normalize IDENTICALLY, so the structural
-// `EPathMap` comparators (and hence COMM matching) fire
-// order-insensitively and runtime == normalization. A
-// non-ground / empty map keeps the pre-wire behavior:
-// recursively sort each entry, preserve entry order.
-let canonical = if eval_stable_epathmap(pathmap) && !pathmap.ps.is_empty() {
-    canonicalize_ground_epathmap(pathmap)
+// ★ ENTRY ORDER IS NO LONGER THIS FUNCTION'S BUSINESS.
+// An `EPathMap` stores its entries in a trie, so what
+// `pathmap.ps()` hands back is already trie order,
+// deduplicated, and recursively canonical. The GROUND arm
+// therefore has nothing left to do — `canonicalize_ground_epathmap`
+// was exactly this projection, and it is deleted.
+//
+// The NON-GROUND arm still has real work, and it is NOT
+// ordering: a non-ground entry can carry an AC collection
+// (`ESet`/`EMap`) that only `sort_match` can normalize, and
+// the codec's escape arm files such an entry by its raw prost
+// bytes, so the projection returns it un-normalized. Sorting
+// an entry CHANGES ITS KEY, which is why the sorted entries
+// are handed to `EPathMap::new` — re-filing them puts the
+// normalized set back in trie order and merges any two entries
+// that AC-normalized to the same term.
+//
+// ⚠ Consensus-visible: this arm used to PRESERVE ENTRY ORDER
+// (`401ed168` measured it). It no longer can — there is no
+// order to preserve.
+let canonical = if eval_stable_epathmap(pathmap) && !pathmap.ps().is_empty() {
+    pathmap.clone()
 } else {
     EPathMap::new(
         pathmap
-            .ps
+            .ps()
             .iter()
             .map(|p| ParSortMatcher::sort_match(p).term)
             .collect::<Vec<Par>>(),
@@ -1550,7 +1561,7 @@ let canonical = if eval_stable_epathmap(pathmap) && !pathmap.ps.is_empty() {
 // Score the (now-canonical) entries so the enclosing sort
 // agrees with the emitted term order.
 let pars: Vec<ScoredTerm<Par>> = canonical
-    .ps
+    .ps()
     .iter()
     .map(ParSortMatcher::sort_match)
     .collect();

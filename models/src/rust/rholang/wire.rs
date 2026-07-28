@@ -341,13 +341,11 @@ pub struct VariantProgram {
 /// `Serialize` writes (`models/src/rust/rhoapi_ext.rs`): the private `intern`
 /// shadow cell is `#[serde(skip)]` and never reaches the wire.
 ///
-/// ⚠ The `ps` field is **not** always `self.ps`. For a GROUND, non-empty map
-/// the `Serialize` impl emits `ground_canonical_ps(self)` — the entries in
-/// canonical trie order, deduped and recursively canonical — so that a ground
-/// map's event-hash preimage is a pure function of its entry SET, independent
-/// of the order and multiplicity a producer happened to use. [`ground_ps`]
-/// reproduces exactly that choice, and the encoder keeps the canonical vector
-/// alive in an owned slot for the duration of the subtree.
+/// The `ps` field is `self.ps()` — the canonical projection of the entry trie,
+/// in trie order, deduped and recursively canonical — so a map's event-hash
+/// preimage is a pure function of its entry SET, independent of the order and
+/// multiplicity a producer happened to use. [`pathmap_ps`] reproduces exactly
+/// the choice `Serialize` makes, which is now the only choice there is.
 pub static EPATHMAP_PROGRAM: &[FieldKind] = &[
     FieldKind::Seq,        // ps            (canonical order when ground)
     FieldKind::EmptyBytes, // locally_free  (always blanked on serialize)
@@ -357,13 +355,20 @@ pub static EPATHMAP_PROGRAM: &[FieldKind] = &[
 
 /// Which `ps` an `EPathMap` serializes.
 ///
-/// `Canonical` carries an owned vector because canonicalization *constructs* a
-/// new order; the encoder parks it in a slot rather than borrowing, which is
-/// why this returns the vector rather than a slice.
+/// # ★ There is only one answer now, and it is a BORROW
+///
+/// This enum used to have two variants because a GROUND map's `ps` had to be
+/// *constructed* in canonical order — the stored `Vec` was in the producer's
+/// order — and a constructed vector cannot be returned by borrow, which is why
+/// the encoder had to park it in an owned slot for the duration of the subtree.
+///
+/// An `EPathMap` stores a trie, so `EPathMap::ps()` **is** the canonical order,
+/// for every map, and it is memoized on the value. Nothing is constructed and
+/// nothing needs parking. The variant is kept as a named type (rather than the
+/// bare reference) so the encoder's `open_pathmap` keeps documenting *why* an
+/// `EPathMap` is opened here instead of at field 0.
 pub enum PathmapPs<'a> {
-    /// Ground and non-empty: canonical trie order.
-    Canonical(Vec<Par>),
-    /// Non-ground or empty: the stored order, borrowed.
+    /// The canonical projection, borrowed.
     ///
     /// A `&Vec<Par>` rather than a `&[Par]` because only a *sized* type can be
     /// coerced to `&dyn WireSeq`.
@@ -423,12 +428,7 @@ impl WireNode for EPathMap {
 /// `Serialize` impl calls (`models/src/rust/pathmap_crate_type_mapper.rs`), so
 /// this cannot drift into a second opinion about what "ground" means.
 pub fn pathmap_ps(map: &EPathMap) -> PathmapPs<'_> {
-    use crate::rust::pathmap_crate_type_mapper::{eval_stable_epathmap, ground_canonical_ps};
-    if eval_stable_epathmap(map) && !map.ps.is_empty() {
-        PathmapPs::Canonical(ground_canonical_ps(map))
-    } else {
-        PathmapPs::Stored(&map.ps)
-    }
+    PathmapPs::Stored(map.ps())
 }
 
 /// `Var` is reachable as `Option<Var>` (`remainder`) from several programs and

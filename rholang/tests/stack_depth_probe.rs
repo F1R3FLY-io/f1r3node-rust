@@ -773,13 +773,18 @@ fn run_probe(what: &str, depth: usize) {
             std::mem::forget(m);
         }
         "make_mut" => {
-            // `SharedPars::make_mut` is `Arc::make_mut`: a `Vec<Par>` deep
-            // clone whenever the payload is shared.
-            use models::rust::rhoapi_ext::SharedPars;
+            // ★ `SharedPars::make_mut` (an `Arc::make_mut` deep clone of a
+            // shared `Vec<Par>`) no longer exists — `EPathMap` stores an
+            // `EntryTrie` and there is no `&mut Vec<Par>` to hand out. The
+            // recursive work that probe measured has MOVED, not vanished: an
+            // entry is now filed under `encode_trie_path(entry)`, so the deep
+            // walk on the write path is the codec's, and that is what this
+            // probe measures instead.
+            use models::rust::rhoapi_ext::EntryTrie;
             let t = nested_list(depth);
-            let mut a = SharedPars::from(vec![t]);
+            let mut a = EntryTrie::from(vec![t]);
             let b = a.clone();
-            a.make_mut().push(new_gint_par(1, vec![], false));
+            a.insert_entry(new_gint_par(1, vec![], false));
             std::mem::forget(a);
             std::mem::forget(b);
         }

@@ -202,7 +202,7 @@ mod zipper_query_tests {
         let pathmap = create_test_pathmap();
 
         // Root exists if PathMap is not empty
-        let exists = !pathmap.ps.is_empty();
+        let exists = !pathmap.ps().is_empty();
         assert!(exists, "Root path should exist for non-empty PathMap");
     }
 
@@ -248,7 +248,7 @@ mod zipper_query_tests {
     fn test_path_exists_empty_pathmap() {
         let empty_pathmap = EPathMap::new(vec![], vec![], false, None);
 
-        let exists = !empty_pathmap.ps.is_empty();
+        let exists = !empty_pathmap.ps().is_empty();
         assert!(!exists, "Empty PathMap should not have existing paths");
     }
 }

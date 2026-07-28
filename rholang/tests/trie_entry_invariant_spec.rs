@@ -178,7 +178,7 @@ fn entries_by_key(entries: &[Par]) -> Vec<(Vec<u8>, Par)> {
 /// entries survive a re-insertion (i.e. no two of them are the same entry).
 #[track_caller]
 fn assert_entries(case: &str, actual: &EPathMap, expected: &[Par]) {
-    let actual_entries: Vec<Par> = actual.ps.iter().cloned().collect();
+    let actual_entries: Vec<Par> = actual.ps().iter().cloned().collect();
 
     assert_eq!(
         entries_by_key(&actual_entries),
@@ -410,7 +410,7 @@ async fn every_map_the_reducer_returns_upholds_the_invariant() {
         ),
     ] {
         let map = out_pathmap(prefix, program).await;
-        let entries: Vec<Par> = map.ps.iter().cloned().collect();
+        let entries: Vec<Par> = map.ps().iter().cloned().collect();
         let rebuilt = create_pathmap_from_elements(&entries, None);
         let divergences = trie_entry_divergences(&rebuilt.map);
         assert!(

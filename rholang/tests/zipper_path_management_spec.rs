@@ -294,6 +294,6 @@ mod zipper_path_management_tests {
 
         // The method should accept the PathMap and return it unchanged
         // This validates that the path format is correct
-        assert!(!pathmap.ps.is_empty(), "PathMap should not be empty");
+        assert!(!pathmap.ps().is_empty(), "PathMap should not be empty");
     }
 }

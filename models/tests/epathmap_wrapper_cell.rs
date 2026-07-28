@@ -41,7 +41,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use models::create_bit_vector;
 use models::rhoapi::{EPathMap, Par, Var};
-use models::rust::pathmap_crate_type_mapper::{canonicalize_ground_epathmap, PathMapCrateTypeMapper};
+use models::rust::pathmap_crate_type_mapper::{intern_store_len_for_test, PathMapCrateTypeMapper};
 use proptest::prelude::*;
 use prost::Message;
 
@@ -75,7 +75,7 @@ fn std_hash<T: Hash>(value: &T) -> u64 {
 /// A structurally-equal FRESH twin (empty cell) — field-walk encodes.
 fn fresh_twin(map: &EPathMap) -> EPathMap {
     EPathMap::new(
-        map.ps.clone(),
+        map.ps().clone(),
         map.locally_free.clone(),
         map.connective_used,
         map.remainder.clone(),
@@ -194,15 +194,35 @@ fn the_p1_shim_fills_the_callers_cell() {
     let map = nested_epathmap_value();
     assert!(map.shadow_cell_for_test().is_none());
 
-    // The 56-call-site shim (and P2's fused rendezvous behind it): the
-    // conversion's store rendezvous must fill the CALLER's cell so every
-    // later touch on this instance/family is O(1).
+    // ★ **THE SHIM NO LONGER INTERNS**, and this test is rewritten to pin that
+    // rather than deleted.
+    //
+    // It used to assert that `e_pathmap_to_rholang_pathmap` filled the caller's
+    // shadow cell, because the conversion's whole job was to BUILD A TRIE from
+    // `ps` and the store existed so the build happened once per content. The
+    // rendezvous cost a streamed Blake2b digest walk, a global mutex, and a K2
+    // full-prost byte verify — worth caching, hence the cell.
+    //
+    // The map holds the trie. The conversion is an O(1) handle clone plus two
+    // folds the `EntryTrie` maintains as entries arrive, so there is nothing
+    // left to amortize and reaching for the store would be pure cost. The
+    // property to pin is therefore the ABSENCE: a conversion must not intern.
     let converted = PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap(&map);
-    let cell = map
-        .shadow_cell_for_test()
-        .expect("e_pathmap_to_rholang_pathmap fills the caller's shadow cell");
-    assert_eq!(converted.connective_used, cell.connective_used);
-    assert_eq!(converted.locally_free, cell.locally_free);
+    assert!(
+        map.shadow_cell_for_test().is_none(),
+        "a trie conversion must not force an intern any more — the map already \
+         holds the trie, so the rendezvous would be cost with no benefit"
+    );
+    assert_eq!(
+        intern_store_len_for_test(),
+        0,
+        "…and it must not touch the global store at all"
+    );
+
+    // …and it still answers with the same metadata the store used to compute.
+    let interned = map.intern();
+    assert_eq!(converted.connective_used, interned.connective_used);
+    assert_eq!(converted.locally_free, interned.locally_free);
 }
 
 #[test]
@@ -232,8 +252,8 @@ fn merge_resets_the_cell_and_reencodes_from_fields() {
         "post-merge encoding must equal the field-walk encoding"
     );
     assert_eq!(
-        target.ps.len(),
-        e6a_index_epathmap().ps.len() + extra.ps.len(),
+        target.ps().len(),
+        e6a_index_epathmap().ps().len() + extra.ps().len(),
         "repeated ps must have EXTENDED under merge"
     );
 }
@@ -250,7 +270,7 @@ fn clear_resets_the_cell_and_the_fields() {
         map.shadow_cell_for_test().is_none(),
         "clear must RESET the shadow cell"
     );
-    assert!(map.ps.is_empty());
+    assert!(map.ps().is_empty());
     assert!(map.locally_free.is_empty());
     assert!(!map.connective_used);
     assert!(map.remainder.is_none());
@@ -343,13 +363,14 @@ fn interned_inner_map_composes_byte_identically_in_an_outer_encode() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// The CANONICAL serde-oracle twin: same struct name, field names and order,
-/// the same `serialize_with` on `locally_free`, no cell — but with the `ps`
-/// already in the wrapper's canonical form (trie order for a GROUND map, as-is
-/// otherwise, via [`canonicalize_ground_epathmap`]). The hand-written
-/// `EPathMap::serialize` canonicalizes ground `ps` at the serializer, so the
-/// wrapper must be serialization-indistinguishable from THIS twin (the pre-
-/// hardening twin used raw construction order and only matched non-ground /
-/// already-canonical maps).
+/// the same `serialize_with` on `locally_free`, no cell.
+///
+/// ★ The twin's `ps` is simply `map.ps()`. It used to be
+/// `canonicalize_ground_epathmap(map).ps` — a ground map's entries re-read off
+/// a trie, other maps' entries verbatim — because the wrapper's `Serialize`
+/// forked the same way. Neither forks now: the map STORES the trie, so its
+/// projection is the canonical order for every map and the oracle is the plain
+/// field read again.
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(rename = "EPathMap")]
 struct DerivedTwin {
@@ -361,14 +382,10 @@ struct DerivedTwin {
 }
 
 fn derived_twin(map: &EPathMap) -> DerivedTwin {
-    // Mirror the wrapper's hand-written Serialize: a GROUND map's `ps` is
-    // canonical trie order (`canonicalize_ground_epathmap` returns an equal
-    // map with canonical `ps`; non-ground/empty maps come back unchanged).
-    let canonical = canonicalize_ground_epathmap(map);
     DerivedTwin {
-        // L2: the twin keeps a plain `Vec<Par>` (it IS the layout oracle) —
-        // extract an owned copy from the shared (canonical) payload.
-        ps: canonical.ps.to_vec(),
+        // The twin keeps a plain `Vec<Par>` (it IS the layout oracle) — an
+        // owned copy of the map's canonical projection.
+        ps: map.ps().clone(),
         locally_free: map.locally_free.clone(),
         connective_used: map.connective_used,
         remainder: map.remainder.clone(),
@@ -411,15 +428,13 @@ proptest! {
             &serde_json::to_string(&map).expect("wrapper json interned"), &twin_json,
             "a FILLED cell must be JSON-invisible");
 
-        // Deserialize differential: the wrapper reads the twin's stream to
-        // the canonical field values (a GROUND map's stream carries `ps` in
-        // trie order — the serialize-only canonicalization; a round trip lands
-        // on `canonicalize_ground_epathmap(map)`, metadata defaults). Non-ground
-        // maps carry `ps` verbatim. `locally_free` is EMPTY on this stream (the
-        // twin serialized it as empty).
+        // Deserialize differential: the stream carries `ps` in canonical
+        // order (that is the only order the serializer can emit), and decode
+        // re-files it into a trie, which is idempotent on a canonical stream —
+        // so a round trip lands back on `map.ps()`. `locally_free` is EMPTY on
+        // this stream (the twin serialized it as empty).
         let de: EPathMap = bincode::deserialize(&twin_bincode).expect("wrapper de");
-        let canonical = canonicalize_ground_epathmap(&map);
-        prop_assert_eq!(&de.ps, &canonical.ps);
+        prop_assert_eq!(de.ps(), map.ps());
         prop_assert!(de.locally_free.is_empty());
         prop_assert_eq!(de.connective_used, map.connective_used);
         prop_assert_eq!(&de.remainder, &map.remainder);
@@ -459,7 +474,7 @@ fn serde_locally_free_asymmetry_serialize_normalizes_deserialize_reads() {
         round.locally_free.is_empty(),
         "serialize_as_empty_bytes must have normalized the map-level bitset"
     );
-    for entry in &round.ps {
+    for entry in round.ps() {
         assert!(
             entry.locally_free.is_empty(),
             "entry-level bitsets normalize too (every .rhoapi locally_free)"
@@ -493,7 +508,7 @@ fn serde_locally_free_asymmetry_serialize_normalizes_deserialize_reads() {
 fn always_equal_vs_derived_ord_wart_survives_the_wrapper() {
     let plain = e6a_index_epathmap();
     let tagged = EPathMap::new(
-        plain.ps.clone(),
+        plain.ps().clone(),
         create_bit_vector(&[0]), // [] vs [0x01]
         plain.connective_used,
         plain.remainder.clone(),
@@ -539,75 +554,143 @@ fn debug_output_shows_the_four_proto_fields_and_no_cell() {
 // 5. Stale-cell policing (debug builds)
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Mutating a filled-cell value while BYPASSING the cell reset violates the
-/// cell invariant; the next cached use must trip the debug_assert LOUDLY
-/// (this is the continuous police for the whole test fleet — release builds
-/// trust the audited invariant: every production `ps` write routes through
-/// `ps_make_mut`, which resets the cell).
+/// ★ **THE BYPASS DOES NOT EXIST** — this replaces the `should_panic` test that
+/// used to pin its detection.
 ///
-/// L2 makes the bypass NARROWER and LOUDER than the pre-L2 pub-field hazard:
-/// `mutated.ps.push(..)` no longer compiles (no `DerefMut` on `SharedPars`);
-/// the only remaining bypass is the raw `SharedPars::make_mut` below, which
-/// CoW-detaches the payload (the interned original is untouched) but leaves
-/// the stale cell in place — exactly what this test pins.
-#[cfg(debug_assertions)]
+/// The deleted test read: mutate a filled-cell value through the raw
+/// `SharedPars::make_mut` (which does not reset the cell), then touch a cached
+/// path and watch the `debug_assert` fire. It was the *continuous police* for
+/// the whole fleet, and it needed to be, because the stored `Vec<Par>` and the
+/// cached canonical bytes were two representations of one value and a write
+/// could reach the first without disturbing the second.
+///
+/// `ps` is the trie now, and the cached bytes are derived from it. There is no
+/// `&mut Vec<Par>` to obtain — not from the map, not from the trie — so the
+/// mutation that test performed cannot be written. What is checkable is the
+/// positive statement that replaced it: **every route that can change a map
+/// takes the cell**, so a stale one is never constructed in the first place.
+///
+/// This test enumerates ALL of them (the three entry mutators plus the two
+/// `Message` paths) and, for each, asserts the cell is empty afterwards and the
+/// bytes re-derive to those of a freshly built twin.
 #[test]
-#[should_panic(expected = "shadow cell is STALE")]
-fn stale_cell_mutation_is_policed_in_debug_builds() {
-    let map = e6a_index_epathmap();
-    let _ = map.intern();
-    let mut mutated = map.clone(); // carries the filled cell (and shares ps)
-    mutated
-        .ps
-        .make_mut() // RAW bypass: no cell reset (ps_make_mut is the sanctioned route)
-        .push(ground_list(vec![gstring_par("staleProbe")])); // invariant violation
-    let _ = mutated.encoded_len(); // cached path → debug_assert fires
+fn every_mutator_takes_the_shadow_cell_so_a_stale_one_is_unconstructible() {
+    let _guard = store_guard();
+
+    let probe = ground_list(vec![gstring_par("mutationProbe")]);
+
+    let mutators: Vec<(&str, Box<dyn Fn(&mut EPathMap)>)> = vec![
+        (
+            "insert_entry",
+            Box::new({
+                let probe = probe.clone();
+                move |map: &mut EPathMap| map.insert_entry(probe.clone())
+            }),
+        ),
+        (
+            "extend_entries",
+            Box::new({
+                let probe = probe.clone();
+                move |map: &mut EPathMap| {
+                    let other = EPathMap::new(vec![probe.clone()], Vec::new(), false, None);
+                    map.extend_entries(&other);
+                }
+            }),
+        ),
+        (
+            "remove_greatest_entry",
+            Box::new(|map: &mut EPathMap| {
+                map.remove_greatest_entry();
+            }),
+        ),
+        (
+            "Message::clear",
+            Box::new(|map: &mut EPathMap| prost::Message::clear(map)),
+        ),
+        (
+            "Message::merge (decode into)",
+            Box::new({
+                let probe = probe.clone();
+                move |map: &mut EPathMap| {
+                    let addendum = EPathMap::new(vec![probe.clone()], Vec::new(), false, None);
+                    let bytes = prost::Message::encode_to_vec(&addendum);
+                    prost::Message::merge(map, bytes.as_slice()).expect("merge");
+                }
+            }),
+        ),
+    ];
+
+    for (name, mutate) in mutators {
+        let mut map = e6a_index_epathmap();
+        let _ = map.intern();
+        assert!(
+            map.shadow_cell_for_test().is_some(),
+            "{name}: precondition — the cell is filled before the mutation"
+        );
+
+        mutate(&mut map);
+
+        assert!(
+            map.shadow_cell_for_test().is_none(),
+            "{name} must take the shadow cell"
+        );
+        let twin = fresh_twin(&map);
+        assert_eq!(
+            map.encoded_len(),
+            twin.encoded_len(),
+            "{name}: post-mutation encoded_len must re-derive from the entries"
+        );
+        assert_eq!(
+            prost::Message::encode_to_vec(&map),
+            prost::Message::encode_to_vec(&twin),
+            "{name}: post-mutation bytes must re-derive from the entries"
+        );
+    }
 }
 
-/// L2's sanctioned-mutation contract: `ps_make_mut` (a) TAKES the shadow
-/// cell (a mutated value re-derives bytes from its real fields — no stale
-/// cache can survive the sanctioned route), and (b) CoW-detaches the shared
-/// payload (clone siblings and the intern store never observe the write).
+/// ★ A mutation is invisible to every OTHER holder of the same entries —
+/// without any copy-on-write discipline to get right.
+///
+/// The predecessor of this test (`ps_make_mut_resets_the_cell_and_cow_detaches_the_shared_payload`)
+/// had to check that the sanctioned mutator CoW-detached an `Arc<Vec<Par>>`
+/// before writing, because a shared payload was writable through any holder.
+/// The trie is a persistent structure whose `insert` produces a new root, so
+/// isolation is a property of the data structure rather than of a discipline
+/// somebody has to remember at each write site.
 #[test]
-fn ps_make_mut_resets_the_cell_and_cow_detaches_the_shared_payload() {
+fn a_mutation_is_invisible_to_every_other_holder() {
     let _guard = store_guard();
 
     let map = e6a_index_epathmap();
     let interned = map.intern();
+    let before = map.ps().clone();
+
     let mut mutated = map.clone();
     assert!(
         mutated.shadow_cell_for_test().is_some(),
         "precondition: the clone carries the filled cell"
     );
     assert!(
-        mutated.ps.ptr_eq(&map.ps),
-        "precondition: the clone shares the ps payload (L2 O(1) clone)"
+        mutated.entry_trie().view_ptr_eq(map.entry_trie()),
+        "precondition: the clone shares the memoized projection (O(1) clone)"
     );
 
-    mutated.ps_make_mut().push(ground_list(vec![gstring_par("cowProbe")]));
+    mutated.insert_entry(ground_list(vec![gstring_par("isolationProbe")]));
 
-    // (a) The cell is gone — encoded_len/encode_raw take the field walk and
-    // agree with a fresh twin of the mutated fields (no stale-cache panic,
-    // no stale bytes).
-    assert!(
-        mutated.shadow_cell_for_test().is_none(),
-        "ps_make_mut must take the cell"
-    );
-    let twin = fresh_twin(&mutated);
-    assert_eq!(mutated.encoded_len(), twin.encoded_len());
     assert_eq!(
-        prost::Message::encode_to_vec(&mutated),
-        prost::Message::encode_to_vec(&twin),
-        "post-mutation bytes must re-derive from the REAL fields"
+        map.ps(),
+        &before,
+        "the original's entries are untouched by the sibling's insert"
     );
-
-    // (b) CoW isolation: the original and its interned entry still carry the
-    // pre-mutation payload and bytes.
+    assert_eq!(
+        map.ps().len() + 1,
+        mutated.ps().len(),
+        "…and the sibling gained exactly the one entry"
+    );
     assert!(
-        !mutated.ps.ptr_eq(&map.ps),
-        "ps_make_mut must detach the shared payload"
+        !mutated.entry_trie().view_ptr_eq(map.entry_trie()),
+        "the mutated value no longer shares the projection"
     );
-    assert_eq!(map.ps.len() + 1, mutated.ps.len());
     assert_eq!(
         prost::Message::encode_to_vec(&map).as_slice(),
         interned.canonical_prost.as_slice(),
@@ -615,17 +698,20 @@ fn ps_make_mut_resets_the_cell_and_cow_detaches_the_shared_payload() {
     );
 }
 
-/// L2's representation contract: `EPathMap::clone` shares the `ps` payload
-/// (one allocation, refcount bump — O(1) at the node) and the shared value
-/// is semantically indistinguishable from an owned deep copy (`==`, `Ord`,
-/// hash, prost bytes, serde bytes).
+/// The representation contract: `EPathMap::clone` is O(1) at the node — the
+/// trie clone is a refcount bump and the memoized projection is an `Arc` bump —
+/// and the shared value is semantically indistinguishable from an owned deep
+/// copy (`==`, `Ord`, hash, prost bytes, serde bytes).
 #[test]
-fn clone_shares_the_ps_payload_and_preserves_value_semantics() {
+fn clone_shares_the_entry_projection_and_preserves_value_semantics() {
     for (name, map) in all_fixture_maps() {
+        // Force the projection first: it is memoized lazily, so an unforced
+        // source has nothing to share yet.
+        let _ = map.ps();
         let clone = map.clone();
         assert!(
-            clone.ps.ptr_eq(&map.ps),
-            "{name}: clone must share the ps payload (Arc bump, not deep copy)"
+            clone.entry_trie().view_ptr_eq(map.entry_trie()),
+            "{name}: clone must share the memoized projection (Arc bump, not deep copy)"
         );
         assert_eq!(map, clone, "{name}: shared clone must stay ==");
         assert_eq!(

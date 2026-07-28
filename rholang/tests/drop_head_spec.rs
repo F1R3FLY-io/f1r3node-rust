@@ -118,14 +118,14 @@ async fn out_pathmap(prefix: &str, program: &str) -> EPathMap {
 #[track_caller]
 fn assert_entries(case: &str, actual: &EPathMap, expected: &[Par]) {
     let key_of = |par: &Par| encode_trie_path(par);
-    let mut actual_keys: Vec<Vec<u8>> = actual.ps.iter().map(key_of).collect();
+    let mut actual_keys: Vec<Vec<u8>> = actual.ps().iter().map(key_of).collect();
     let mut expected_keys: Vec<Vec<u8>> = expected.iter().map(key_of).collect();
     actual_keys.sort();
     expected_keys.sort();
     assert_eq!(
         actual_keys, expected_keys,
         "{case}: the map's ENTRIES are wrong\n  actual   = {:?}\n  expected = {expected:?}",
-        actual.ps
+        actual.ps()
     );
 }
 
@@ -241,9 +241,9 @@ async fn an_escape_arm_entry_survives_drop_head_zero_unchanged() {
     )
     .await;
 
-    assert_eq!(map.ps.len(), 2, "both entries survive dropHead(0)");
+    assert_eq!(map.ps().len(), 2, "both entries survive dropHead(0)");
     let escaped = map
-        .ps
+        .ps()
         .iter()
         .find(|par| !par.sends.is_empty())
         .expect("the escape-arm entry survives");

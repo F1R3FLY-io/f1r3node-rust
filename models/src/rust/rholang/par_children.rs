@@ -178,10 +178,10 @@ pub fn expr_instance_child_pars<'a>(e: &'a ExprInstance, out: &mut Vec<&'a Par>)
                 out.extend(kv.value.iter());
             }
         }
-        ExprInstance::EPathmapBody(x) => out.extend(x.ps.iter()),
+        ExprInstance::EPathmapBody(x) => out.extend(x.ps().iter()),
         ExprInstance::EZipperBody(x) => {
             for pm in x.pathmap.iter() {
-                out.extend(pm.ps.iter());
+                out.extend(pm.ps().iter());
             }
         }
 
@@ -392,10 +392,10 @@ fn take_expr_instance_child_pars(e: ExprInstance, out: &mut Vec<Par>) {
                 out.extend(kv.value);
             }
         }
-        ExprInstance::EPathmapBody(x) => out.extend(x.ps.into_vec()),
+        ExprInstance::EPathmapBody(x) => out.extend(x.ps().iter().cloned()),
         ExprInstance::EZipperBody(x) => {
             if let Some(pm) = x.pathmap {
-                out.extend(pm.ps.into_vec());
+                out.extend(pm.ps().iter().cloned());
             }
         }
 

@@ -252,14 +252,21 @@ fn serde_json_goldens_epathmap_fixtures() {
 /// own field and the entry Pars' fields — the fixture puts bits in exactly
 /// those two spots).
 fn clear_locally_free(map: &EPathMap) -> EPathMap {
-    let mut cleared = map.clone();
-    cleared.locally_free = Vec::new();
-    // L2: the sanctioned CoW mutator — detaches the shared payload AND
-    // takes any inherited shadow cell (the cleared value's bytes differ).
-    for entry in cleared.ps_make_mut() {
-        entry.locally_free = Vec::new();
-    }
-    cleared
+    // ★ There is no in-place entry mutator any more, and there cannot be: an
+    // entry's `locally_free` is part of its trie KEY (the codec's escape arm
+    // files a non-ground entry by its canonical prost bytes), so editing one
+    // MOVES the entry. The edit is therefore expressed as what it is — a
+    // different entry set — and re-filed by the constructor.
+    let entries: Vec<models::rhoapi::Par> = map
+        .ps()
+        .iter()
+        .map(|entry| {
+            let mut cleared = entry.clone();
+            cleared.locally_free = Vec::new();
+            cleared
+        })
+        .collect();
+    EPathMap::new(entries, Vec::new(), map.connective_used, map.remainder.clone())
 }
 
 /// THE serialize-only normalization (models/build.rs injects
@@ -300,7 +307,7 @@ fn serde_normalizes_locally_free_to_empty() {
         round.locally_free.is_empty(),
         "map-level locally_free must normalize to empty on serialize"
     );
-    for entry in &round.ps {
+    for entry in round.ps() {
         assert!(
             entry.locally_free.is_empty(),
             "entry-level locally_free must normalize to empty on serialize"

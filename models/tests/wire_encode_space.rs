@@ -279,9 +279,9 @@ fn the_steady_state_allocation_table() {
         );
     }
 
-    // The ground map: inherent canonicalization, cheaper here than on the
-    // derived path. Asserted as a RELATION, not as a magic number, so a change
-    // in the canonicalizer does not produce a spurious failure here.
+    // ★ The ground map: the canonicalization did not stop happening — it MOVED
+    // INTO THE VALUE, so the encoder does not perform it and does not allocate
+    // for it. Asserted as a RELATION, not as a magic number.
     let ground = pathmap_par(corpus::ground_pathmap());
     warm(&ground);
     let (_, allocations, bytes) = counting_alloc::measure(|| with_encoded(&ground, <[u8]>::len));
@@ -292,12 +292,45 @@ fn the_steady_state_allocation_table() {
          | derived {oracle_allocations:3} allocs {oracle_bytes:7} B",
         "ground_pathmap", ""
     );
-    assert!(
-        allocations > 0,
-        "a GROUND map must allocate — `ground_canonical_ps` constructs the canonical order. \
-         Zero here would mean the canonicalization stopped happening, which would change the \
-         bytes and fork consensus."
+    // ★ This assertion is INVERTED, deliberately.
+    //
+    // It read: *"a GROUND map must allocate — `ground_canonical_ps` constructs
+    // the canonical order. Zero here would mean the canonicalization stopped
+    // happening."* That inference was sound while the canonical order was
+    // CONSTRUCTED at serialize time out of a `Vec` in the producer's order: the
+    // construction was an allocation, so the allocation was evidence of the
+    // canonicalization, and the encoder had to park the constructed vector in a
+    // raw-pointer arena to hand it out by reference.
+    //
+    // The map stores the trie now, so the canonical order is a memoized
+    // projection ON THE VALUE. The encoder BORROWS it, the arena is deleted, and
+    // the ground map joins every other shape at zero. The canonicalization is
+    // still happening — the leg below is what checks that, by BYTES rather than
+    // by an allocation count standing in for them.
+    assert_eq!(
+        allocations, 0,
+        "a GROUND map must now allocate NOTHING in the steady state: its canonical \
+         order is memoized on the value and the encoder borrows it. A non-zero count \
+         means the encoder went back to constructing the order at serialize time."
     );
+    // The direct evidence the allocation count used to stand in for: a permuted
+    // construction of the same entry set writes the SAME bytes.
+    {
+        let mut permuted_entries = corpus::ground_pathmap().ps().clone();
+        permuted_entries.reverse();
+        let permuted = pathmap_par(models::rhoapi::EPathMap::new(
+            permuted_entries,
+            Vec::new(),
+            false,
+            None,
+        ));
+        assert_eq!(
+            with_encoded(&ground, <[u8]>::to_vec),
+            with_encoded(&permuted, <[u8]>::to_vec),
+            "the canonicalization must still be happening: a permuted construction \
+             of one entry set must write identical bytes"
+        );
+    }
     assert!(
         allocations < oracle_allocations,
         "the machine allocated {allocations} and the derived path {oracle_allocations}; the \

@@ -997,14 +997,14 @@ impl DebruijnInterpreter {
                                 // message is non-empty; the embedded message
                                 // is the source message (carried through
                                 // navigation unchanged).
-                                !chain.source_map.ps.is_empty()
+                                !chain.source_map.ps().is_empty()
                             } else {
                                 // :5019 — native trie-path lookup.
                                 path_prefix_exists(&chain.interned.map, &key)
                             }
                         }
                         // :5022-5024 — a raw map exists iff non-empty.
-                        ViewMode::Map => !chain.source_map.ps.is_empty(),
+                        ViewMode::Map => !chain.source_map.ps().is_empty(),
                         ViewMode::Nil => unreachable!("Nil views return at step (c)"),
                     };
                     // :5055-5057.

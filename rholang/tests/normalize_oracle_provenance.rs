@@ -528,9 +528,15 @@ fn no_undeclared_deviations() {
 // oracle — "kept verbatim ... Nothing else is edited — not a format string, not
 // an argument order, not a comment" — with NO commit, NO path and NO line
 // range, so no reader could check it. Writing this section is what established
-// the truth, and the claim was wrong the same way: **4 of the 10 functions are
-// byte-identical under the declared rename; 6 carry deviations**, including
+// the truth, and the claim was wrong the same way: **3 of the 10 functions are
+// byte-identical under the declared rename; 7 carry deviations**, including
 // deleted comments in three of the four public wrappers.
+//
+// ⚠ That count was 4/6 until `EPathMap.ps` became a private entry trie with a
+// `ps()` accessor. `oracle_build_string_from_expr` reads a pathmap's entries, so
+// the type change moved it out of the rename-only group and into GROUP 2b — by
+// exactly two characters, declared there with its reason. The count is pinned
+// rather than described precisely so a move like that cannot happen quietly.
 
 /// The printer oracle, relative to the repository root.
 const PP_ORACLE: &str = "rholang/src/rust/interpreter/pretty_printer_oracle.rs";
@@ -620,6 +626,33 @@ const PP_DEVIATIONS: &[Deviation] = &[
         reason: "Signature re-wrapped across four lines: `pub fn` -> \
                  `pub(crate) fn` pushed it past the width limit. A consequence \
                  of the declared visibility narrowing, not an independent edit.",
+    },
+    // ── GROUP 2b: a TYPE CHANGE in a dependency, which the compiler forced ─
+    //
+    // ★ This is the group the mechanism exists for, and it is worth being
+    // precise about why it is not drift. The oracle must stay the PRE-conversion
+    // code, or the differential compares the driver against something adjusted
+    // to agree with it. It must ALSO compile. When a type the copied body reads
+    // changes shape, those two obligations meet, and the honest resolution is to
+    // make the minimum edit that restores compilation and DECLARE it here —
+    // never to let it pass silently, and never to "improve" the copy while in
+    // there.
+    //
+    // `EPathMap.ps` stopped being a `pub` field and became a private entry trie
+    // with a `ps()` accessor, so the read is one token longer. The oracle's
+    // BEHAVIOUR is unchanged: it reads the same entries in the same place and
+    // hands them to the same `oracle_build_vec`.
+    Deviation {
+        path: "rholang/src/rust/interpreter/pretty_printer.rs",
+        from: "let elements = self.oracle_build_vec(&pathmap.ps);",
+        to: "let elements = self.oracle_build_vec(&pathmap.ps());",
+        reason: "COMPILER-FORCED, not drift. `EPathMap.ps` became a private \
+                 `EntryTrie` (the entries are stored as the trie they are indexed \
+                 by) with a `ps()` accessor returning the memoized canonical \
+                 projection, so the field read no longer compiles. The edit is \
+                 exactly the two characters that restore it; the oracle reads the \
+                 same entries and calls the same `oracle_build_vec`. Appears \
+                 twice — the `EPathmapBody` arm and the `EZipperBody` arm.",
     },
     // ── GROUP 3: the SEMANTIC deviations, each marked at its own site ─────
     Deviation {
@@ -991,13 +1024,13 @@ fn every_pretty_printer_oracle_citation_matches_its_source() {
     // this to 0 and fail here.
     assert_eq!(
         rename_only_identical,
-        4,
-        "the printer oracle's documentation states that 4 of its {} functions are \
+        3,
+        "the printer oracle's documentation states that 3 of its {} functions are \
          byte-identical under the declared rename ALONE and {} carry declared deviations. \
          {rename_only_identical} survive the rename untouched now, so that documentation is \
          stale.",
         PP_NAMES.len(),
-        PP_NAMES.len() - 4
+        PP_NAMES.len() - 3
     );
     assert!(
         cited_lines >= 900,

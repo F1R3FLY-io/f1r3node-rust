@@ -65,7 +65,7 @@ use crate::rhoapi::{
     EZipper, Expr, If, KeyValuePair, ListParWithRandom, Match, MatchCase, New, Par, ParWithRandom,
     Receive, ReceiveBind, Send, TaggedContinuation,
 };
-use crate::rust::pathmap_crate_type_mapper::{eval_stable_epathmap, ground_canonical_ps};
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Public entry points (the three event-hash legs)
@@ -217,7 +217,7 @@ fn emit_black_box_option<T: Serialize>(value: &Option<T>, out: &mut Vec<u8>) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 fn contains_epathmap(map: &EPathMap) -> bool {
-    map.interned_handle().is_some() || map.ps.iter().any(contains_par)
+    map.interned_handle().is_some() || map.ps().iter().any(contains_par)
 }
 
 fn contains_par(par: &Par) -> bool {
@@ -348,19 +348,13 @@ fn emit_epathmap(map: &EPathMap, out: &mut Vec<u8>) {
         return;
     }
     // Declaration order: ps, locally_free (EMPTY), connective_used, remainder.
-    // A GROUND map emits `ps` in CANONICAL trie order (producer-independent),
-    // mirroring the hand-written `EPathMap::serialize`; its metadata fields are
-    // already at ground defaults, so the tail is emitted uniformly. This keeps
-    // `emit == direct` for a ground map in ANY construction order: a filled
-    // cell caches `direct(map)` bytes, which are now these SAME canonical bytes
-    // (the entry is content-addressed by the order-insensitive `U(m)`), and the
-    // canonical `ps` entries are freshly decoded (no filled cells), so `emit_vec`
-    // black-boxes each via `direct` == the enclosing seq element bincode.
-    if eval_stable_epathmap(map) && !map.ps.is_empty() {
-        emit_vec(&ground_canonical_ps(map), contains_par, emit_par, out);
-    } else {
-        emit_vec(&map.ps, contains_par, emit_par, out);
-    }
+    //
+    // ★ The ground/non-ground fork is GONE. It emitted `ground_canonical_ps(map)`
+    // for a ground map and the stored `Vec` otherwise, because only the ground
+    // arm had a trie to read a canonical order off. `map.ps()` IS that trie
+    // read, for every map, so `emit == direct` holds in ANY construction order
+    // without a branch to keep the two arms in agreement.
+    emit_vec(map.ps(), contains_par, emit_par, out);
     emit_locally_free_as_empty(out);
     emit_bool(map.connective_used, out);
     emit_black_box_option(&map.remainder, out);

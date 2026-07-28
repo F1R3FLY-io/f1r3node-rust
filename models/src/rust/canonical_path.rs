@@ -653,7 +653,7 @@ impl<'p> EncMachine<'p> {
                         self.emit_byte(tag::EPATHMAP)?;
                         self.detours.push(EncCtx::Region(Vec::new()));
                         self.ops.push(EncOp::CloseNestedRegion);
-                        for entry in map.ps.iter().rev() {
+                        for entry in map.ps().iter().rev() {
                             self.ops.push(EncOp::EntryPath { par: entry });
                         }
                         Ok(())

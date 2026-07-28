@@ -323,8 +323,24 @@ message EPathMap {
   // (`.rhoapi.EPathMap` is an extern prost type; the hand-maintained Rust
   // impl in models/src/rust/rhoapi_ext.rs is authoritative — this message is
   // documentation-of-record.)
+  //
+  // The entries are written in the ENTRY TRIE's own order: a read-zipper walk
+  // over `encode_trie_path(entry)` keys, which is byte-lexicographic by
+  // construction (children are indexed by byte), deduplicated (a trie holds one
+  // slot per key), and NEVER sorted. The order is the structure's, not a
+  // producer's — the same order `serialized_paths` below frames into U(m).
+  //
+  // ⚠ The canonicality this buys is SYNTACTIC, not semantic. Two non-ground
+  // entries can be different terms that match the same things; no representation
+  // collapses those, because pattern equivalence is undecidable in general.
   repeated Par ps = 1;
-  reserved 2, 6, 7; // 6,7 were a retired value_form/value_entries experiment
+  // ⚠ 6 and 7 held `value_form` / `value_entries`, a retired experiment in
+  // carrying the KEY STREAM under its own tags — `value_entries` was the stream
+  // of entry keys, NOT a per-key VALUE. (The earlier one-line note here read
+  // "a retired value_form/value_entries experiment", wording that has already
+  // been misread once as evidence that per-key values were tried and rejected.
+  // They were not tried.) 2 is likewise retired. None may be reused.
+  reserved 2, 6, 7;
   bytes locallyFree = 3
       [(scalapb.field).type =
            "coop.rchain.models.AlwaysEqual[scala.collection.immutable.BitSet]"];

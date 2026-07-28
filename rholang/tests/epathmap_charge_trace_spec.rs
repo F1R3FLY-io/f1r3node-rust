@@ -43,7 +43,7 @@ use std::collections::HashMap;
 
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use models::rhoapi::expr::ExprInstance;
-use models::rhoapi::{EPathMap, ETuple, Expr, Par};
+use models::rhoapi::{ETuple, Expr, Par};
 use models::rust::utils::{new_elist_par, new_gstring_par};
 use rholang::rust::interpreter::accounting::costs::Cost;
 use rholang::rust::interpreter::accounting::BillableKind;
@@ -405,7 +405,10 @@ async fn discovery_chain_trace_and_result() {
             gstring_par("site0"),
         ]);
         match subtrie.exprs.first().and_then(|e| e.expr_instance.as_ref()) {
-            Some(ExprInstance::EPathmapBody(EPathMap { ps, .. })) => {
+            // `EPathMap`'s entries live in a private trie now, so the struct
+            // pattern is replaced by the projection accessor.
+            Some(ExprInstance::EPathmapBody(map)) => {
+                let ps = map.ps();
                 assert_eq!(ps.len(), 1, "op subtrie must hold exactly the root «s» entry");
                 assert_eq!(ps[0], expected_entry, "subtrie value must be the original entry Par");
             }

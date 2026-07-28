@@ -233,22 +233,40 @@ fn the_awkward_wire_shapes_write_identically() {
     assert_writes_identically("all_par_fields", &corpus::all_par_fields());
     assert_writes_identically("nonground_pathmap", &corpus::nonground_pathmap());
     assert_writes_identically("ground_pathmap", &corpus::ground_pathmap());
-    // ★ The ground map is the one program the descriptor cannot express: its
-    // `ps` is RE-ORDERED on serialize. Assert the re-ordering actually happens,
-    // so this case cannot silently degrade into the non-ground one.
+    // ★ **THERE IS NO LONGER A SECOND ARM TO DEGRADE INTO**, and this leg is
+    // rewritten to say so rather than deleted.
+    //
+    // It used to assert that a ground map and an otherwise-identical NON-ground
+    // twin (one `locally_free` bit, which defeats the ground predicate) write
+    // DIFFERENT bytes — because the ground arm re-ordered `ps` into canonical
+    // trie order on serialize while the non-ground arm wrote the stored order.
+    // The `assert_ne!` was the guard that the ground fixture really was taking
+    // the canonical path.
+    //
+    // An `EPathMap` stores a trie, so the stored order IS the canonical order
+    // and both twins now emit the same entry sequence. The property worth
+    // pinning is therefore the opposite one: the canonicalization is not
+    // conditional on being ground, so the two agree ENTRY-FOR-ENTRY and differ
+    // only where the metadata genuinely differs.
     let ground = corpus::ground_pathmap();
-    let stored_order_bytes = {
+    let non_ground_twin = {
         let mut plain = ground.clone();
-        // A map with a non-empty `locally_free` is NOT ground, so this twin
-        // takes the stored-order arm and must therefore differ.
         plain.locally_free = vec![7];
-        bincode::serialize(&plain).expect("twin")
+        plain
     };
+    assert_eq!(
+        ground.ps(),
+        non_ground_twin.ps(),
+        "the entry order must not depend on the ground predicate any more — both \
+         arms read the same trie"
+    );
+    // …and the bytes still differ, because `locally_free` reaches the prost
+    // wire (it is blanked only on the serde one), so this remains a live case
+    // rather than a tautology.
     assert_ne!(
-        bincode::serialize(&ground).expect("ground"),
-        stored_order_bytes,
-        "the ground fixture must actually take the CANONICAL arm, or this test is \
-         exercising the stored-order path twice"
+        prost::Message::encode_to_vec(&ground),
+        prost::Message::encode_to_vec(&non_ground_twin),
+        "prost RETAINS locally_free, so the two twins must still differ on the wire"
     );
     for depth in [1usize, 2, 8, 48] {
         assert_writes_identically(&format!("deep_par({depth})"), &corpus::deep_par(depth));

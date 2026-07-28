@@ -46,6 +46,30 @@
 //! canonical form. Regenerate it only when the canonical form is *intended* to
 //! change, and say so in the commit message.
 //!
+//! ### ★ Blessing log — `EPathMap` entries move into the trie (2 lines)
+//!
+//! `expr/EZipperBody` and `par-of-expr/EZipperBody` moved, and the shape of the
+//! move is worth recording because it is the opposite of alarming:
+//!
+//! ```text
+//! - (i14 (i999 (i2 i9) i0) (i999 (i2 i3) i0) i0)     score: 9 then 3
+//! + (i14 (i999 (i2 i3) i0) (i999 (i2 i9) i0) i0)     score: 3 then 9
+//! ```
+//!
+//! **The hex column — `sort_match(&par).term.encode_to_vec()`, the byte string
+//! `cost_accounting/sig.rs` signs — is BYTE-IDENTICAL on both sides**
+//! (`…420c020000000306020000000312`). Only the SCORE tree moved.
+//!
+//! And it moved into agreement with those bytes. `42 0c` is proto field 8, and
+//! its two length-framed keys are `03 06` then `03 12` — zigzag 6 and 18, i.e.
+//! **3 then 9**: the emitted term has been in trie order all along. The score
+//! tree read the zipper's `ps` in the order a producer wrote it, so the sorter
+//! was scoring one order while signing another. Making the entries live in the
+//! trie removed the producer's order, and the two now read the same sequence.
+//!
+//! So this bless does not move a signature; it removes a disagreement between a
+//! signature and the score that was supposed to explain it.
+//!
 //! ## What the corpus must reach, and why
 //!
 //! * **Every `ExprInstance` variant** (all 36) — an arm that is never exercised

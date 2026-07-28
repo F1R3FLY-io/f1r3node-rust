@@ -10,7 +10,6 @@
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::var::VarInstance;
 use models::rhoapi::{EPathMap, Expr, Par, Var};
-use models::rust::pathmap_crate_type_mapper::canonicalize_ground_epathmap;
 use models::rust::rholang::sorter::par_sort_matcher::ParSortMatcher;
 use models::rust::rholang::sorter::sortable::Sortable;
 
@@ -107,22 +106,55 @@ fn permuted_ground_maps_have_identical_event_hash_preimage() {
     );
 }
 
+/// ★ **THE CONSTRUCTOR IS THE CANONICALIZER**, and it is idempotent.
+///
+/// `canonicalize_ground_epathmap` is deleted. It took a map, built a trie from
+/// its `ps`, and read the entries back out in trie order — which is precisely
+/// what `EPathMap::new` does now, because the map it builds STORES that trie.
+/// A separate canonicalizer could only have been the identity, so keeping it as
+/// a no-op would have been keeping a second route to the same answer, which is
+/// the shape of defect this campaign has been removing.
 #[test]
-fn canonicalize_is_idempotent() {
+fn the_constructor_canonicalizes_and_is_idempotent() {
     let m = EPathMap::new(vec![gstr("z"), gint(3), gstr("a")], Vec::new(), false, None);
-    let once = canonicalize_ground_epathmap(&m);
-    let twice = canonicalize_ground_epathmap(&once);
-    assert_eq!(once.ps.as_slice(), twice.ps.as_slice(), "canonicalization is idempotent");
-    // And a canonicalized map equals a permuted-then-canonicalized one.
+    let round_tripped = EPathMap::new(m.ps().clone(), Vec::new(), false, None);
+    assert_eq!(
+        m.ps(),
+        round_tripped.ps(),
+        "re-filing a canonical projection reproduces it"
+    );
+
     let permuted = EPathMap::new(vec![gint(3), gstr("a"), gstr("z")], Vec::new(), false, None);
-    assert_eq!(once.ps.as_slice(), canonicalize_ground_epathmap(&permuted).ps.as_slice());
+    assert_eq!(
+        m.ps(),
+        permuted.ps(),
+        "…and a permuted construction of the same entry set lands on it too"
+    );
 }
 
+/// ★ **A NON-GROUND MAP IS CANONICALIZED TOO** — this test used to assert the
+/// opposite, and it is rewritten rather than deleted because the reversal IS
+/// the change.
+///
+/// It read *"a non-ground map is returned unchanged (order preserved)"*, which
+/// was true while only ground maps had a trie to be read back off. Every map
+/// stores its entries in a trie now — `encode_trie_path` is total over every
+/// `Par` via the `0x0F` escape arm — so a pattern map's entries come back in
+/// trie order like anyone else's.
+///
+/// ⚠ **This moves consensus bytes.** A non-ground map's only prost encoding is
+/// tag 1, `repeated Par`, written in `ps` order, so re-ordering `ps` re-orders
+/// the wire. That is stated in the commit; the network version constant is not
+/// touched here, because bumping it is a network-coordination act.
+///
+/// ⚠ And a limit, so it is not over-claimed: this is a canonical **SYNTACTIC**
+/// identity — byte-lex over the entries' escape-arm encodings — and **not a
+/// semantic one**. Two non-ground entries can be different terms that match the
+/// same things, and no representation collapses those, because pattern
+/// equivalence is undecidable in general. What is gained is order-insensitivity
+/// and deduplication, which is real.
 #[test]
-fn non_ground_map_is_not_canonicalized() {
-    // A pattern map (a free-var entry, connective_used) is NOT eval_stable, so
-    // it is returned UNCHANGED — its entry order is preserved (pre-wire
-    // behavior; binder patterns still match structurally with remainder bind).
+fn a_non_ground_map_is_canonicalized_as_well() {
     let free = Par {
         exprs: vec![Expr {
             expr_instance: Some(ExprInstance::EVarBody(models::rhoapi::EVar {
@@ -134,12 +166,27 @@ fn non_ground_map_is_not_canonicalized() {
         connective_used: true,
         ..Default::default()
     };
-    let m = EPathMap::new(vec![gstr("z"), free, gstr("a")], Vec::new(), true, None);
-    let canonical = canonicalize_ground_epathmap(&m);
+    let forward = EPathMap::new(
+        vec![gstr("z"), free.clone(), gstr("a")],
+        Vec::new(),
+        true,
+        None,
+    );
+    let permuted = EPathMap::new(vec![free, gstr("a"), gstr("z")], Vec::new(), true, None);
+
     assert_eq!(
-        canonical.ps.as_slice(),
-        m.ps.as_slice(),
-        "a non-ground map is returned unchanged (order preserved)"
+        forward.ps(),
+        permuted.ps(),
+        "two orders of one non-ground entry set are one value"
+    );
+    assert_eq!(
+        forward, permuted,
+        "…and the comparators agree, as they must with the wire"
+    );
+    assert_eq!(
+        prost::Message::encode_to_vec(&forward),
+        prost::Message::encode_to_vec(&permuted),
+        "…and so does the wire itself"
     );
 }
 

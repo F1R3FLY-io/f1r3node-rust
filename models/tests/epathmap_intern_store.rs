@@ -167,16 +167,53 @@ fn always_equal_equality_is_unusable_for_keying_but_k2_is_not() {
 
     let mut map_level = base.clone();
     map_level.locally_free = create_bit_vector(&[0]);
-    let mut entry_level = base.clone();
-    // L2: CoW index-write through the sanctioned mutator (the raw
-    // `SharedPars` has no `DerefMut`, so `ps[0] = ..` is deliberately loud).
-    entry_level.ps_make_mut()[0].locally_free = create_bit_vector(&[1]);
+    // ★ An entry's `locally_free` is part of its trie KEY (the escape arm files
+    // a non-ground entry by its canonical prost bytes), so "edit entry 0 in
+    // place" is not a thing that can be said any more — the edit is a different
+    // entry set, and it is written as one.
+    let entry_level = {
+        let mut entries = base.ps().clone();
+        entries[0].locally_free = create_bit_vector(&[1]);
+        EPathMap::new(
+            entries,
+            base.locally_free.clone(),
+            base.connective_used,
+            base.remainder.clone(),
+        )
+    };
+
+    // ★ The two variants no longer answer the `==` question the same way, and
+    // the split is the point of this test rather than a wrinkle in it.
+    //
+    //   MAP-LEVEL   `EPathMap::eq` still ignores the map's own `locally_free`
+    //               (scalapb `AlwaysEqual[BitSet]` parity, unchanged), so the
+    //               variant is still `==` to `base` while prost separates them.
+    //               AlwaysEqual remains UNUSABLE for keying — the K2 point.
+    //
+    //   ENTRY-LEVEL an entry is filed under `encode_trie_path(entry)`, whose
+    //               escape arm is the entry's canonical prost bytes, which
+    //               INCLUDE `locally_free`. So an entry-level bit is part of the
+    //               KEY, the two maps hold different entry sets, and `==` now
+    //               separates them too.
+    //
+    // ⚠ That is a real widening of `==`, and it is not optional: the key must be
+    // injective on entries or entries are LOST. Two entries differing only in
+    // `locally_free` would share a key and COLLAPSE on insertion — the silent
+    // loss `pathmap_integration::trie_entry_divergences` documents. In a
+    // well-formed term `locally_free` is a function of the structure, so the
+    // two cannot differ; the note is here because "cannot" should be written
+    // down.
+    assert_eq!(
+        base, map_level,
+        "the MAP-level bitset is still AlwaysEqual-invisible"
+    );
+    assert_ne!(
+        base, entry_level,
+        "an ENTRY-level bitset is part of the entry's trie key, so it is visible \
+         to `==` — see the note above for why it must be"
+    );
 
     for (name, variant) in [("map-level", map_level), ("entry-level", entry_level)] {
-        assert_eq!(
-            base, variant,
-            "precondition: AlwaysEqual == ignores {name} locally_free"
-        );
         let base_bytes = prost::Message::encode_to_vec(&base);
         let variant_bytes = prost::Message::encode_to_vec(&variant);
         assert_ne!(
@@ -258,19 +295,27 @@ fn mutate(base: &EPathMap, which: u8) -> EPathMap {
                 Vec::new()
             };
         }
-        // L2: every `ps` write below goes through the sanctioned CoW
-        // mutator `ps_make_mut` (detaches the payload shared with `base`
-        // and takes any inherited cell — `base` itself is never touched).
-        2 => match variant.ps_make_mut().first_mut() {
-            Some(first) => {
-                first.locally_free = if first.locally_free.is_empty() {
-                    create_bit_vector(&[1])
-                } else {
-                    Vec::new()
-                };
+        // Entry edits are entry-SET edits: the entries are projected, changed,
+        // and re-filed by `EPathMap::new` at the bottom of this function.
+        2 => {
+            let mut entries = variant.ps().clone();
+            match entries.first_mut() {
+                Some(first) => {
+                    first.locally_free = if first.locally_free.is_empty() {
+                        create_bit_vector(&[1])
+                    } else {
+                        Vec::new()
+                    };
+                    variant = EPathMap::new(
+                        entries,
+                        variant.locally_free.clone(),
+                        variant.connective_used,
+                        variant.remainder.clone(),
+                    );
+                }
+                None => variant.connective_used = !variant.connective_used,
             }
-            None => variant.connective_used = !variant.connective_used,
-        },
+        }
         3 => variant.connective_used = !variant.connective_used,
         4 => {
             variant.remainder = match variant.remainder {
@@ -278,13 +323,10 @@ fn mutate(base: &EPathMap, which: u8) -> EPathMap {
                 None => Some(free_var(0)),
             };
         }
-        5 => variant
-            .ps_make_mut()
-            .push(ground_list(vec![gstring_par("mutationProbe")])),
+        5 => variant.insert_entry(ground_list(vec![gstring_par("mutationProbe")])),
         _ => {
-            let entries = variant.ps_make_mut();
-            if entries.pop().is_none() {
-                entries.push(ground_list(vec![gstring_par("refill")]));
+            if variant.remove_greatest_entry().is_none() {
+                variant.insert_entry(ground_list(vec![gstring_par("refill")]));
             }
         }
     }
@@ -295,7 +337,7 @@ fn mutate(base: &EPathMap, which: u8) -> EPathMap {
     // the current call order no base is interned before mutation, but the
     // rebuild makes the helper order-independent insurance.)
     EPathMap::new(
-        variant.ps,
+        variant.ps().clone(),
         variant.locally_free,
         variant.connective_used,
         variant.remainder,
@@ -373,7 +415,7 @@ fn interned_entry_pins_canonical_bytes_len_digest_count_and_lazy_serde() {
         );
         assert_eq!(
             interned.entry_count,
-            fixture.ps.len(),
+            fixture.ps().len(),
             "entry_count must be ps.len() ({name})"
         );
         assert!(

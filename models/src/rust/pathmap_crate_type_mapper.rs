@@ -44,13 +44,13 @@ use prost::bytes::buf::UninitSlice;
 use prost::bytes::BufMut;
 use prost::Message;
 
+#[cfg(test)]
 use super::canonical_path::decode_trie_path;
-use super::pathmap_integration::{
-    create_pathmap_from_elements, PathMapCreationResult, RholangPathMap,
-};
+use super::pathmap_integration::{PathMapCreationResult, RholangPathMap};
 use crate::rhoapi::expr::ExprInstance;
 use crate::rhoapi::g_unforgeable::UnfInstance;
 use crate::rhoapi::{EPathMap, Expr, Par, Var};
+use super::rhoapi_ext::EntryTrie;
 
 /// Bound on the number of digest buckets retained at once (the landed
 /// 84a0fbe4 capacity, unchanged — one mechanism, one capacity).
@@ -284,23 +284,6 @@ pub fn matches_canonical_prost(e_pathmap: &EPathMap, canonical: &[u8]) -> bool {
     !mismatch && position == canonical.len()
 }
 
-/// The stale-cell invariant check behind the wrapper's cached-path
-/// `debug_assert`s (P3): like [`matches_canonical_prost`] but streaming the
-/// UNCACHED field walk (`EPathMap::encode_raw_fields`), so a filled cell is
-/// verified against the CURRENT fields rather than against itself.
-pub(crate) fn fields_match_canonical_prost(e_pathmap: &EPathMap, canonical: &[u8]) -> bool {
-    let mut stream = EncodeStream::new(CompareSink {
-        expected: canonical,
-        position: 0,
-        mismatch: false,
-    });
-    e_pathmap.encode_raw_fields(&mut stream);
-    let CompareSink {
-        position, mismatch, ..
-    } = stream.sink;
-    !mismatch && position == canonical.len()
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // The `eval_stable` classifier (amendment PM-4(c), consumed by P2)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -347,46 +330,24 @@ pub(crate) fn fields_match_canonical_prost(e_pathmap: &EPathMap, canonical: &[u8
 ///     (sends/receives/news/matches/bundles/conditionals; also
 ///     `update_locally_free_par` unwrap-panics on a bundle with a `None`
 ///     body, reduce.rs:7199).
+/// ★ Reads the entry half — *"is every entry in the codec's ground domain?"* —
+/// off the [`EntryTrie`]'s O(1) fold rather than by walking the entries.
+///
+/// That matters here specifically: this predicate is on the ENCODE path (it
+/// selects proto field 8 versus the tag-1 field walk), and a ground map's
+/// encoding needs only the trie's key stream — never the decoded entries. Asking
+/// the projection would force a full `decode_trie_path` walk to answer a question
+/// the trie already folded as the entries arrived.
+///
+/// ⚠ The fold is EXACT, not conservative. A conservative `false` would move a
+/// ground map off field 8 and onto the field walk, which is a consensus-visible
+/// byte change; see `EntryTrie::remove_greatest_entry`, which recomputes rather
+/// than weakening it.
 pub fn eval_stable_epathmap(e_pathmap: &EPathMap) -> bool {
     e_pathmap.remainder.is_none()
         && e_pathmap.locally_free.is_empty()
         && !e_pathmap.connective_used
-        && e_pathmap.ps.iter().all(eval_stable_par)
-}
-
-/// [`eval_stable_epathmap`] restricted to the ENTRIES: `true` iff `ps` is
-/// non-empty and every entry is in the codec's ground domain. The metadata
-/// fields — `locally_free`, `connective_used`, `remainder` — are deliberately
-/// NOT consulted.
-///
-/// # ★ Why the metadata must be left out, and why it is not a shortcut
-///
-/// This predicate selects which identity a map's entries have: entries in the
-/// ground domain are identified by `U(m)` — the trie's own byte-lexicographic
-/// key order — and entries outside it are identified positionally, as before.
-/// Selecting that arm with [`eval_stable_epathmap`] instead would read
-/// `locally_free`, and `EPathMap`'s `==` deliberately IGNORES `locally_free`
-/// (scalapb `AlwaysEqual[BitSet]` parity). The combination is not merely untidy
-/// — **it destroys transitivity**:
-///
-/// ```text
-/// a = {| x, y |}                     ground        U(a) = U(b)   ⇒  a == b
-/// b = {| y, x |}                     ground
-/// c = {| y, x |} with locally_free   NOT ground    ps(b) = ps(c) ⇒  b == c
-///                                                  ps(a) ≠ ps(c) ⇒  a ≠ c
-/// ```
-///
-/// `a == b` and `b == c` while `a ≠ c` — an `Eq` impl that is not an
-/// equivalence relation, which is instant undefined behaviour in every hash and
-/// sorted container in the tree.
-///
-/// Reading only `ps` removes the hazard at its source rather than patching the
-/// symptom: the predicate is a function of exactly the field the comparison
-/// uses, so positionally equal `ps` always land in the SAME arm, the two arms
-/// never declare a cross-arm equality, and the relation is the disjoint union of
-/// two equivalences — an equivalence.
-pub(crate) fn entries_in_ground_domain(ps: &[Par]) -> bool {
-    !ps.is_empty() && ps.iter().all(eval_stable_par)
+        && e_pathmap.entry_trie().entries_stable()
 }
 
 /// A Par in ground normal form: either a single-expr carrier over the stable
@@ -495,14 +456,13 @@ pub fn interned_epathmap(e_pathmap: &EPathMap) -> Arc<InternedEPathMap> {
 /// discipline, upgraded to REUSE: the re-lock re-scan returns a racing
 /// winner's `Arc`, keeping every collision list pairwise byte-distinct).
 pub(crate) fn intern_epathmap_via_store(e_pathmap: &EPathMap) -> Arc<InternedEPathMap> {
-    // GROUND fast-path (non-empty eval_stable map): build the trie ONCE
-    // (idempotent insertion = dedup) and content-address by U(m). A permuted
-    // or duplicated construction yields the SAME trie ⇒ the SAME U(m) ⇒ the
-    // SAME digest ⇒ ONE interned entry. `built` is reused for the entry — no
-    // ~3× rebuild, no encode_raw round-trip through a temp trie.
-    if eval_stable_epathmap(e_pathmap) && !e_pathmap.ps.is_empty() {
-        let built = create_pathmap_from_elements(&e_pathmap.ps, None);
-        let path_stream = path_stream_of(&built.map);
+    // GROUND fast-path (non-empty eval_stable map): content-address by U(m).
+    // ★ The trie is no longer BUILT here — `e_pathmap` is holding it. What the
+    // store still provides is the canonical BYTES (and, on a hit, one shared
+    // `Arc` for every equal map in the process), which is a genuinely different
+    // artifact and still costs a walk to produce.
+    if eval_stable_epathmap(e_pathmap) && !e_pathmap.ps().is_empty() {
+        let path_stream = e_pathmap.path_stream();
         let canonical_prost = ground_canonical_prost(&path_stream);
         let digest = blake2b_256(&canonical_prost);
         {
@@ -521,14 +481,14 @@ pub(crate) fn intern_epathmap_via_store(e_pathmap: &EPathMap) -> Arc<InternedEPa
         }
         let encoded_len = canonical_prost.len();
         return store_insert(Arc::new(InternedEPathMap {
-            map: built.map,
-            connective_used: built.connective_used,
-            locally_free: built.locally_free,
+            map: e_pathmap.entry_trie().trie().clone(),
+            connective_used: e_pathmap.entry_trie().any_connective_used(),
+            locally_free: e_pathmap.entry_trie().union_locally_free().to_vec(),
             path_stream,
             canonical_prost,
             encoded_len,
             digest,
-            entry_count: e_pathmap.ps.len(),
+            entry_count: e_pathmap.entry_trie().len(),
             eval_stable: true,
             serde_bytes: OnceLock::new(),
         }));
@@ -566,16 +526,16 @@ pub(crate) fn intern_epathmap_via_store(e_pathmap: &EPathMap) -> Arc<InternedEPa
         encoded_len,
         "prost encode_raw must write exactly encoded_len bytes"
     );
-    let built = create_pathmap_from_elements(&e_pathmap.ps, e_pathmap.remainder.clone());
     let entry = Arc::new(InternedEPathMap {
-        map: built.map,
-        connective_used: built.connective_used,
-        locally_free: built.locally_free,
+        map: e_pathmap.entry_trie().trie().clone(),
+        connective_used: e_pathmap.entry_trie().any_connective_used()
+            || e_pathmap.remainder.is_some(),
+        locally_free: e_pathmap.entry_trie().union_locally_free().to_vec(),
         path_stream: Vec::new(),
         canonical_prost,
         encoded_len,
         digest,
-        entry_count: e_pathmap.ps.len(),
+        entry_count: e_pathmap.entry_trie().len(),
         eval_stable: eval_stable_epathmap(e_pathmap),
         serde_bytes: OnceLock::new(),
     });
@@ -610,13 +570,6 @@ pub(crate) fn path_stream_of(map: &RholangPathMap) -> Vec<u8> {
     stream
 }
 
-/// U(m) for a ground map's entries: build the trie (idempotent insertion =
-/// dedup) then [`path_stream_of`]. Used by the extern `encode_raw`/`encoded_len`
-/// on the rare pre-intern serialization of a not-yet-interned ground map.
-pub(crate) fn ground_path_stream(ps: &[Par]) -> Vec<u8> {
-    path_stream_of(&create_pathmap_from_elements(ps, None).map)
-}
-
 /// Emit proto field 8 (`serialized_paths`, length-delimited bytes) = U(m).
 pub(crate) fn encode_ground_field8(path_stream: &[u8], buf: &mut impl BufMut) {
     prost::encoding::encode_key(8u32, prost::encoding::WireType::LengthDelimited, buf);
@@ -640,17 +593,27 @@ pub(crate) fn ground_canonical_prost(path_stream: &[u8]) -> Vec<u8> {
     buf
 }
 
-/// The canonical entries of a GROUND map, in trie order (a read-zipper walk,
-/// NO sort), each RECURSIVELY canonical: every entry is `decode_trie_path` of
-/// its trie key, so a nested map's own entries are canonicalized too
-/// (`decode∘encode` is the codec's canonical fixed point). This is the order
-/// that makes the structural `EPathMap::eq`/`Hash`/`Ord` insensitive to
-/// construction order.
+/// The KEY-side reading of a trie's contents: every key decoded through
+/// `decode_trie_path`, in trie order.
 ///
-/// `pub(crate)` since the serde/event-hash surface ([`ground_canonical_ps`],
-/// consumed by the hand-written `EPathMap::serialize` and the spliced
-/// `emit_epathmap`) reads a GROUND map's canonical `ps` directly off the
-/// (interned or throwaway) trie.
+/// # ⚠ This is a CHECK, not an answer
+///
+/// `EntryTrie::view` — the projection every consumer reads — walks the VALUE
+/// side, and the reason is measured rather than stylistic: **this function is
+/// PARTIAL on the codec's own image.** The escape arm files a non-ground entry
+/// as its canonical prost bytes, prost's decoder caps recursion at 100 levels
+/// and prost's encoder caps nothing, so a sufficiently deep entry produces a key
+/// that this function cannot decode (`RecursionLimitReached`) even though the
+/// trie is perfectly well-formed. The `par_codec_differential` corpus contains
+/// such a term; it is not a hypothetical.
+///
+/// What the key side is still good for is stating the trie ENTRY INVARIANT
+/// (`∀(k,v). encode_trie_path(v) = k`) from the other direction. Note that
+/// `pathmap_integration::trie_entry_divergences` and `EntryTrie::adopt_trie`
+/// both check it in the ENCODE direction instead, precisely so that the check
+/// stays total; this function is retained for the root-key divergence pin below,
+/// which needs the decoding reading specifically.
+#[cfg(test)]
 pub(crate) fn canonical_ps_from_trie(map: &RholangPathMap) -> Vec<Par> {
     use pathmap::zipper::{ZipperIteration, ZipperMoving};
     let mut rz = map.read_zipper();
@@ -660,58 +623,6 @@ pub(crate) fn canonical_ps_from_trie(map: &RholangPathMap) -> Vec<Par> {
         ps.push(decode_trie_path(key).expect("an intern trie key is always a valid codec path"));
     }
     ps
-}
-
-/// The canonical (producer-independent) `ps` of a GROUND map, for the
-/// serde/event-hash preimage: trie order, recursively canonical, deduped —
-/// [`canonical_ps_from_trie`] over the map's trie.
-///
-/// Reuses the interned trie when the shadow cell is ALREADY filled (a
-/// read-only [`EPathMap::interned_handle`] peek — NO trie rebuild, NO intern,
-/// NO global-store mutation: hashing must never mutate intern-store state).
-/// Otherwise it builds a PURE LOCAL THROWAWAY trie via
-/// [`create_pathmap_from_elements`] (which allocates a fresh `RholangPathMap`
-/// and never touches the global store). Either way the result is a function of
-/// the entry SET alone (idempotent insertion = dedup; trie order = canonical),
-/// so a permuted or duplicated construction yields the SAME `ps`.
-///
-/// Byte-equivalence of the two branches: the interned trie is built at
-/// [`intern_epathmap_via_store`]'s ground fast-path by the SAME
-/// `create_pathmap_from_elements(&ps, None)` call the else-branch makes, so
-/// `canonical_ps_from_trie` reads an identical trie either way.
-///
-/// Callers gate on `eval_stable_epathmap(map) && !map.ps.is_empty()` (the
-/// GROUND predicate) — a non-ground or empty map has no canonical reordering
-/// and takes the as-is arm.
-pub(crate) fn ground_canonical_ps(e_pathmap: &EPathMap) -> Vec<Par> {
-    match e_pathmap.interned_handle() {
-        Some(interned) => canonical_ps_from_trie(&interned.map),
-        None => canonical_ps_from_trie(&create_pathmap_from_elements(&e_pathmap.ps, None).map),
-    }
-}
-
-/// Canonicalize a GROUND EPathMap: return an equal-valued map whose `ps` is in
-/// trie order and recursively canonical (so any permuted/duplicated
-/// construction of the same entry multiset yields the SAME `ps`, and the
-/// structural comparators fire). Non-ground or empty maps are returned
-/// unchanged (their term-arm order is already canonical / irrelevant). The
-/// order is produced by a PathMap zipper walk over a trie built once —
-/// never a `Vec::sort`.
-///
-/// Idempotent: canonicalizing a canonical map reproduces it. The result shares
-/// no shadow cell with the input (a fresh value; it interns to the same entry
-/// on first touch).
-pub fn canonicalize_ground_epathmap(e_pathmap: &EPathMap) -> EPathMap {
-    if !eval_stable_epathmap(e_pathmap) || e_pathmap.ps.is_empty() {
-        return e_pathmap.clone();
-    }
-    let built = create_pathmap_from_elements(&e_pathmap.ps, None);
-    EPathMap::new(
-        canonical_ps_from_trie(&built.map),
-        e_pathmap.locally_free.clone(),
-        e_pathmap.connective_used,
-        e_pathmap.remainder.clone(),
-    )
 }
 
 /// The shared store rendezvous: re-scan the digest bucket (a racing thread may
@@ -751,6 +662,14 @@ fn store_insert(entry: Arc<InternedEPathMap>) -> Arc<InternedEPathMap> {
 // ─────────────────────────────────────────────────────────────────────────────
 // Test seams (hidden pub: integration tests cannot see `cfg(test)` items)
 // ─────────────────────────────────────────────────────────────────────────────
+
+/// TEST SEAM: the ground-domain predicate on ONE entry — the per-element half
+/// of `eval_stable_epathmap`, exposed so an integration test can re-derive the
+/// `EntryTrie`'s O(1) fold from the projection and check the two agree.
+#[doc(hidden)]
+pub fn eval_stable_par_for_test(par: &Par) -> bool {
+    eval_stable_par(par)
+}
 
 /// TEST SEAM: number of digest buckets currently in the store.
 #[doc(hidden)]
@@ -810,26 +729,37 @@ pub struct PathMapCrateTypeMapper;
 impl PathMapCrateTypeMapper {
     /// Convert from protobuf EPathMap to PathMap-based structure.
     ///
-    /// A shim over [`interned_epathmap`] (P1): `create_pathmap_from_elements`
-    /// is a PURE function of the EPathMap's `ps` and `remainder`
-    /// (byte-identical inputs produce the same trie), so the conversion is
-    /// interned process-wide behind the content-addressed store. A hit
-    /// returns an O(1) clone of the interned trie instead of re-running the
-    /// O(|ps| × element-size) rebuild that previously executed on EVERY
-    /// EPathMap method dispatch. All 56 call sites (33 in reduce.rs, 23
-    /// elsewhere) are unchanged.
+    /// # ★ There is no conversion left to do
     ///
-    /// Replay determinism and cost accounting are unaffected: results are
-    /// identical whether a call hits, misses, was evicted, or collided (the
-    /// store is invisible in the value domain), and no `reserve_*` cost
-    /// charge lives in this layer — the store removes UNCHARGED host work
-    /// only.
+    /// This used to be *"build a trie from `ps`"*, and because that rebuild ran
+    /// on EVERY EPathMap method dispatch it was worth an entire content-addressed
+    /// intern store to avoid — a streamed Blake2b digest walk, a global mutex, a
+    /// K2 full-prost byte verify, an LRU, and a shadow cell to skip all of it.
+    ///
+    /// The map is holding the trie. So the conversion is three field reads: an
+    /// O(1) `clone()` of the trie handle (a refcount bump on the root
+    /// `TrieNodeODRc`) and the two entry folds the [`EntryTrie`] maintains as
+    /// entries arrive. **No digest, no lock, no verify, no cell** — not as an
+    /// optimization but because there is nothing here that could go wrong to be
+    /// protected against.
+    ///
+    /// The store survives for the artifact it still genuinely produces: the
+    /// canonical BYTES (`canonical_prost`, `encoded_len`, the lazy
+    /// `serde_bytes`), which cost a walk no matter who holds the trie, and the
+    /// shared `Arc` that lets every equal map in the process quote them once.
+    ///
+    /// `remainder` folds into `connective_used` here rather than in the trie
+    /// because it is the map's metadata, not one of its entries — the same
+    /// division `create_pathmap_from_elements` made.
+    ///
+    /// Replay determinism and cost accounting are unaffected: no `reserve_*`
+    /// charge lives in this layer, and the result is a pure function of the map.
     pub fn e_pathmap_to_rholang_pathmap(e_pathmap: &EPathMap) -> PathMapCreationResult {
-        let interned = interned_epathmap(e_pathmap);
+        let entries = e_pathmap.entry_trie();
         PathMapCreationResult {
-            map: interned.map.clone(),
-            connective_used: interned.connective_used,
-            locally_free: interned.locally_free.clone(),
+            map: entries.trie().clone(),
+            connective_used: entries.any_connective_used() || e_pathmap.remainder.is_some(),
+            locally_free: entries.union_locally_free().to_vec(),
         }
     }
 
@@ -923,11 +853,19 @@ impl PathMapCrateTypeMapper {
             );
         }
 
-        // P3 (PM-2): construction goes through the constructor — the result
-        // is a NEW value with an EMPTY shadow cell (it was just built from a
-        // trie; its canonical bytes are not those of any interned source).
+        // ★ The trie is ADOPTED, not re-filed. `EPathMap::new(canonical_ps_from_trie(map))`
+        // would decode every key to a `Par` and then immediately re-encode every
+        // `Par` back to the key it came from — two walks to arrive at the trie
+        // that was passed in. `EntryTrie::adopt_trie` keeps the trie, memoizes
+        // the decode as the projection, and verifies the keys are canonical
+        // (re-filing if they are not) IN RELEASE BUILDS, where the guard above
+        // is compiled out.
+        //
+        // The result is a NEW value with an EMPTY shadow cell: it was just built
+        // from a trie, and its canonical bytes are not those of any interned
+        // source.
         EPathMap::new(
-            canonical_ps_from_trie(map),
+            EntryTrie::adopt_trie(map),
             locally_free.to_vec(),
             connective_used,
             remainder,
@@ -964,7 +902,7 @@ mod root_key_divergence {
     use super::*;
     use crate::rhoapi::EList;
     use crate::rust::canonical_path::encode_trie_path;
-    use crate::rust::pathmap_integration::trie_entry_divergences;
+    use crate::rust::pathmap_integration::{create_pathmap_from_elements, trie_entry_divergences};
 
     fn gint(i: i64) -> Par {
         Par::default().with_exprs(vec![Expr {

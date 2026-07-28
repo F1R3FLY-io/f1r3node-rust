@@ -307,39 +307,45 @@ fn identity_hash_and_both_encodings_are_functions_of_the_path_stream() {
 // ★ THE NON-GROUND ARM — measured, and it is STILL A LIST
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// ★ **The wire is still a list for non-ground maps, and this pins the fact.**
+/// ★★ **THE `401ed168` WITNESS, UPDATED DELIBERATELY.**
 ///
-/// A ground map encodes as proto field 8 — `U(m)`, the trie's key stream — and
-/// the `Vec` never reaches the wire. A NON-ground map has no such arm: tag 1,
-/// `repeated Par`, is its only encoding, and prost writes those entries **in
-/// `ps` order**. So for non-ground maps the protobuf model genuinely still
-/// stores a **list**, and this test measures that rather than asserting it: the
-/// two constructions below differ only in the order two entries were written in,
-/// and their prost bytes differ.
+/// The commit that added it left an instruction on the assertion: *"if this now
+/// passes with EQUAL bytes, the non-ground arm has been routed through the trie
+/// — that is the intended end state, and it MOVES CONSENSUS BYTES. Rewrite this
+/// test."* This is that rewrite, and it is written by the change that earned it.
 ///
-/// # Why this is pinned as a passing test rather than fixed here
+/// # What it measured, and what it measures now
 ///
-/// Fixing it means routing non-ground entries through the trie too, which makes
-/// them order-insensitive and deduplicated — a real improvement and the direct
-/// answer to *"does the pathmap protobuf model still store it as a list?"*. It
-/// is also **consensus-visible**: `sort_combine::combine_epathmap`'s non-ground
-/// arm recursively sorts each entry and **preserves entry order**, so today two
-/// non-ground maps built in different orders are different terms all the way
-/// through normalisation. Changing that moves bytes, and moving bytes requires a
-/// coordinated protocol version bump, which is F1r3node's decision and not this
-/// campaign's to make.
+/// It measured that two constructions of one non-ground entry set, differing
+/// only in the order the entries were written in, produced **different** prost
+/// bytes — because tag 1, `repeated Par`, was the arm's only encoding and prost
+/// wrote those entries in `ps` order. **The wire really was still a list.**
 ///
-/// Pinning it means the day it changes is a deliberate act: this test must be
-/// rewritten, and rewriting it is the moment the bump gets discussed.
+/// `EPathMap` stores an entry trie now, so `ps()` is the trie's own order for
+/// every map. The wire is STILL tag 1 `repeated Par` in this arm — that part of
+/// the finding was and remains true, and this test still checks it — but the
+/// sequence written into it is no longer a producer's. Same arm, canonical
+/// contents.
 ///
-/// ⚠ And a limit worth stating so it is not over-claimed later: routing
-/// non-ground entries through the trie would give them a canonical **SYNTACTIC**
-/// identity — byte-lex over their escape-arm encodings — and **not a semantic
-/// one**. Two non-ground entries can be different terms that match the same
-/// things, and no representation can collapse those, because pattern
-/// equivalence is undecidable in general.
+/// # ⚠ The consequence, stated rather than buried
+///
+/// This MOVES CONSENSUS BYTES for non-ground maps: prost bytes, serde bytes,
+/// event-hash preimages, and sorted-container order all follow `ps()`.
+/// `Validate::version` is exact equality (`casper/src/rust/validate.rs`) with no
+/// activation-height machinery, so there is no gradual rollout for it. **The
+/// version constant is deliberately NOT touched by this change**: bumping it is
+/// a network-coordination act that belongs to F1r3node, not a code act, and
+/// writing the code does not perform it.
+///
+/// # ⚠ And the limit, so it is not over-claimed
+///
+/// This is a canonical **SYNTACTIC** identity — byte-lex over the entries'
+/// escape-arm encodings — and **not a semantic one**. Two non-ground entries can
+/// be different terms that match the same things, and no representation
+/// collapses those, because pattern equivalence is undecidable in general. The
+/// gain is order-insensitivity and deduplication, which is real.
 #[test]
-fn a_non_ground_map_still_encodes_as_an_ORDER_SENSITIVE_LIST() {
+fn a_non_ground_map_now_encodes_as_an_ORDER_INSENSITIVE_LIST() {
     // An `EVar` is non-`eval_stable` by content, so a map holding one takes the
     // tag-1 field walk rather than the field-8 value arm.
     let var_entry = models::rust::utils::new_boundvar_par(1, Vec::new(), false);
@@ -348,9 +354,11 @@ fn a_non_ground_map_still_encodes_as_an_ORDER_SENSITIVE_LIST() {
     let forward = ground_map(vec![var_entry.clone(), ground_entry.clone()]);
     let backward = ground_map(vec![ground_entry, var_entry]);
 
-    // The premise: these are genuinely non-ground, so neither took the field-8
-    // arm. A ground map's encoding starts with the field-8 key (tag 8,
-    // length-delimited = 0x42); a non-ground one starts with tag 1 (0x0a).
+    // The premise, unchanged: these are genuinely non-ground, so neither took
+    // the field-8 arm. A ground map's encoding starts with the field-8 key
+    // (tag 8, length-delimited = 0x42); a non-ground one starts with tag 1
+    // (0x0a). Without this the measurement could pass vacuously by drifting
+    // onto the ground path.
     let forward_bytes = prost_bytes(&forward);
     let backward_bytes = prost_bytes(&backward);
     assert_eq!(
@@ -359,142 +367,231 @@ fn a_non_ground_map_still_encodes_as_an_ORDER_SENSITIVE_LIST() {
         "the fixture must exercise the TAG-1 arm, not the field-8 value arm"
     );
 
-    // ★ THE MEASUREMENT: one entry set, two orders, two different encodings.
-    assert_ne!(
-        forward_bytes, backward_bytes,
-        "★ if this now passes with EQUAL bytes, the non-ground arm has been \
-         routed through the trie — that is the intended end state, and it MOVES \
-         CONSENSUS BYTES. Rewrite this test, and do not land the change without \
-         the coordinated protocol version bump it requires."
-    );
-
-    // …and the comparators agree with the wire about that, which is the whole
-    // point of the identity family: they read the entries positionally in
-    // exactly the arm where the wire does too.
-    assert_ne!(
-        forward, backward,
-        "the comparators must not disagree with the wire in the non-ground arm \
-         either — a map the wire distinguishes must not compare equal"
-    );
-}
-
-/// ★ **THE #83 WITNESS**, minimal: two entries, one permutation, no duplicates
-/// and no metadata in play. Stated on its own because the exhaustive property
-/// above reaches a duplicate construction first, and *"duplicates are equal"* is
-/// a weaker and more arguable claim than *"the order two entries were written in
-/// is not part of the value"*.
-///
-/// The map is `{| 1, "a" |}` against `{| "a", 1 |}`. They have one entry set, one
-/// trie, one path stream, and — already, today — one prost encoding and one serde
-/// encoding. The only thing that can tell them apart is the `Vec`'s insertion
-/// order, and nothing in the semantics of a pathmap says a program can observe
-/// it.
-#[test]
-fn a_permutation_of_two_entries_is_the_same_map() {
-    let one = make_int_par(1);
-    let letter = make_string_par("a");
-
-    let forward = ground_map(vec![one.clone(), letter.clone()]);
-    let backward = ground_map(vec![letter, one]);
-
-    // The wire already agrees — this is not a change being proposed, it is the
-    // state of the tree.
+    // ★ THE MEASUREMENT, INVERTED: one entry set, two orders, ONE encoding.
     assert_eq!(
-        prost_bytes(&forward),
-        prost_bytes(&backward),
-        "the consensus encoding already treats the two as one map"
+        forward_bytes, backward_bytes,
+        "the non-ground arm is routed through the trie now — two orders of one \
+         entry set are one value on the wire"
     );
+
+    // …and the comparators agree with the wire, which is the whole point of the
+    // identity family: they read the same projection the encoder writes.
+    assert_eq!(
+        forward, backward,
+        "the comparators must not disagree with the wire in the non-ground arm"
+    );
+    assert_eq!(hash_of(&forward), hash_of(&backward), "…nor must the hash");
     assert_eq!(
         serde_bytes(&forward),
         serde_bytes(&backward),
-        "the event-hash preimage already treats the two as one map"
+        "…nor the event-hash preimage"
     );
 
-    // …and the comparators must not be the one place that disagrees.
+    // ★ THE POSITIVE CONTROL. Equality above must not come from the encoder
+    // having stopped distinguishing non-ground maps at all: a genuinely
+    // DIFFERENT non-ground entry set must still differ, in the same arm.
+    let different = ground_map(vec![
+        models::rust::utils::new_boundvar_par(2, Vec::new(), false),
+        make_list_of(vec![make_string_par("a")]),
+    ]);
+    let different_bytes = prost_bytes(&different);
     assert_eq!(
-        forward, backward,
-        "★ `{{| 1, \"a\" |}}` and `{{| \"a\", 1 |}}` are not `==`, although they \
-         encode to the same consensus bytes: the `Vec`'s insertion order is a \
-         second, competing order shadowing the trie's"
+        different_bytes.first(),
+        Some(&0x0au8),
+        "the control must exercise the same TAG-1 arm"
     );
-    assert_eq!(
-        hash_of(&forward),
-        hash_of(&backward),
-        "★ …and they hash into different buckets"
-    );
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// ⚠ ANTI-VACUITY — the property above must SEPARATE things, not merely agree
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// ⚠ Without this, "all four agree" could hold because all four collapse
-/// everything to one value. Distinct entry sets have distinct `U(m)`, and all
-/// four artifacts must see the difference.
-#[test]
-fn distinct_entry_sets_are_distinguished_by_all_four() {
-    let subsets = every_subset_of_the_alphabet();
-
-    // Every subset against its immediate successor in the enumeration — 511
-    // distinct pairs, each differing in at least one element.
-    for window in subsets.windows(2) {
-        let (left, right) = (&window[0], &window[1]);
-        let left_map = ground_map(left.clone());
-        let right_map = ground_map(right.clone());
-
-        assert_ne!(
-            path_stream(left),
-            path_stream(right),
-            "two DIFFERENT entry sets share a path stream — U(m) is not \
-             injective on entry sets, and every leg below is vacuous"
-        );
-        assert_ne!(left_map, right_map, "two different entry sets compare `==`");
-        assert_ne!(
-            serde_bytes(&left_map),
-            serde_bytes(&right_map),
-            "two different entry sets share serde bytes"
-        );
-        assert_ne!(
-            prost_bytes(&left_map),
-            prost_bytes(&right_map),
-            "two different entry sets share prost bytes"
-        );
-    }
-}
-
-/// ⚠ The leg that catches a canonical key naming the WRONG entry.
-///
-/// Membership in the codec's image is not enough: `1` and `[1]` are BOTH
-/// canonical keys — `03 02` and `03 02 00`, differing by exactly the split-list
-/// terminator — and a reader that confuses them gets a valid key for the wrong
-/// element. `a1feb437` found exactly this shape. So the identity family must
-/// separate the bare element from the singleton list containing it, at every
-/// one of the four legs.
-#[test]
-fn a_bare_element_and_its_singleton_list_are_different_maps() {
-    let bare = make_int_par(1);
-    let singleton = make_list_of(vec![make_int_par(1)]);
-
-    let bare_map = ground_map(vec![bare.clone()]);
-    let singleton_map = ground_map(vec![singleton.clone()]);
-
     assert_ne!(
-        path_stream(&[bare.clone()]),
-        path_stream(&[singleton.clone()]),
-        "the bare element and the singleton list share a path stream — the \
-         terminator that separates `03 02` from `03 02 00` was lost"
+        forward_bytes, different_bytes,
+        "positive control: a different non-ground entry set must still encode differently"
     );
-    assert_ne!(bare_map, singleton_map, "`{{| 1 |}}` == `{{| [1] |}}`");
-    assert_ne!(hash_of(&bare_map), hash_of(&singleton_map));
-    assert_ne!(serde_bytes(&bare_map), serde_bytes(&singleton_map));
-    assert_ne!(prost_bytes(&bare_map), prost_bytes(&singleton_map));
+}
 
-    // …and a map holding BOTH holds two entries, not one.
-    let both = ground_map(vec![bare, singleton]);
+// ─────────────────────────────────────────────────────────────────────────────
+// ★★ MULTIPLICITY — the question the `epathmap_spliced_event_bytes` proptest
+//    counterexamples ask, answered by measurement and with a positive control
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// ★★ **`{| false, false |}` and `{| false |}` are the same GROUND map, and they
+/// were before this change too.**
+///
+/// `models/tests/epathmap_spliced_event_bytes.proptest-regressions` holds
+/// exactly this pair as two shrunk counterexamples. They look like a question
+/// this change has to answer — *"does making the trie the field collapse
+/// duplicate entries, and does that move the event-hash preimage?"* — and for
+/// GROUND maps the answer is that the collapse was already there, in the
+/// encoder, before the entries moved.
+///
+/// # The documentary half
+///
+/// At `ab1908e0` (the commit this change is built on), a ground map's prost
+/// encoding was
+///
+/// ```text
+/// encode_raw            → encode_ground_field8(&ground_path_stream(&self.ps), buf)
+/// ground_path_stream(ps) = path_stream_of(&create_pathmap_from_elements(ps, None).map)
+/// ```
+///
+/// — a trie insertion per entry, and `PathMap::insert` is idempotent — and its
+/// serde / event-hash preimage was `ground_canonical_ps`, which is
+/// `canonical_ps_from_trie` over the same trie. **Both were already deduplicated.**
+///
+/// # The measured half (this test)
+///
+/// The reproduction below calls `create_pathmap_from_elements` and the zipper
+/// walk directly — the two functions that composed `ground_path_stream`, neither
+/// touched by this change — so it measures the pre-change encoder rather than
+/// quoting it, and then checks the current encoder agrees.
+///
+/// # ⚠ WHAT IS ACTUALLY NEW, AND IT IS NOT THIS
+///
+/// The change extends deduplication to **NON-ground** maps, which genuinely did
+/// preserve duplicates (their only encoding was tag 1 `repeated Par` in `ps`
+/// order). That is consensus-visible and is the same motion as the
+/// order-insensitivity: see
+/// `a_non_ground_map_now_encodes_as_an_ORDER_INSENSITIVE_LIST`.
+///
+/// ★ **For the matcher lane (task #125), the answer to *"is `{| 1, 1 |}` the
+/// same pattern as `{| 1 |}`?"* is YES, uniformly, and it is a property of the
+/// representation rather than of either lane's code** — a trie has one slot per
+/// key, so no consumer has to remember to dedup and none can disagree about it.
+#[test]
+fn a_ground_map_has_never_distinguished_multiplicity() {
+    let gbool_false = Par {
+        exprs: vec![Expr {
+            expr_instance: Some(ExprInstance::GBool(false)),
+        }],
+        ..Default::default()
+    };
+
+    // ── the pre-change encoder, reproduced from its own parts ────────────────
+    let once_stream = path_stream(std::slice::from_ref(&gbool_false));
+    let twice_stream = path_stream(&[gbool_false.clone(), gbool_false.clone()]);
     assert_eq!(
-        create_pathmap_from_elements(&both.ps, None).map.val_count(),
-        2,
-        "a map holding the bare element and its singleton list holds two \
-         distinct entries"
+        once_stream, twice_stream,
+        "the PRE-change ground encoder already deduplicated: `ground_path_stream` \
+         was `path_stream_of(create_pathmap_from_elements(ps))`, and a trie \
+         insertion is idempotent"
+    );
+
+    // ── the current encoder agrees, on every surface ─────────────────────────
+    let once = ground_map(vec![gbool_false.clone()]);
+    let twice = ground_map(vec![gbool_false.clone(), gbool_false.clone()]);
+
+    // The premise: this really is the field-8 arm (tag 8, length-delimited =
+    // 0x42), not the tag-1 list — otherwise the case is not the one the
+    // counterexamples name.
+    let once_bytes = prost_bytes(&once);
+    assert_eq!(
+        once_bytes.first(),
+        Some(&0x42u8),
+        "the fixture must exercise the FIELD-8 ground arm"
+    );
+
+    assert_eq!(once_bytes, prost_bytes(&twice), "prost bytes");
+    assert_eq!(serde_bytes(&once), serde_bytes(&twice), "event-hash preimage");
+    assert_eq!(hash_of(&once), hash_of(&twice), "hash");
+    assert_eq!(once, twice, "==");
+    assert_eq!(
+        once.ps().len(),
+        1,
+        "the duplicate is absorbed, not carried"
+    );
+
+    // ★ THE POSITIVE CONTROL. None of the above may come from the encoder
+    // having stopped separating ground maps: a map with a genuinely different
+    // entry set must still differ on every one of those surfaces.
+    let gbool_true = Par {
+        exprs: vec![Expr {
+            expr_instance: Some(ExprInstance::GBool(true)),
+        }],
+        ..Default::default()
+    };
+    let different = ground_map(vec![gbool_false, gbool_true]);
+    assert_ne!(once_bytes, prost_bytes(&different), "control: prost bytes");
+    assert_ne!(
+        serde_bytes(&once),
+        serde_bytes(&different),
+        "control: event-hash preimage"
+    );
+    assert_ne!(once, different, "control: ==");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ★ The O(1) ground fold is EXACT — it selects the wire arm
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// ★ `EntryTrie::entries_stable` is folded forward as entries arrive rather than
+/// derived from the projection, and this pins that the shortcut is EXACT.
+///
+/// It has to be. The fold is the entry half of `eval_stable_epathmap`, which is
+/// what `encode_raw` consults to choose between proto field 8 (`U(m)`) and the
+/// tag-1 field walk. A fold that erred conservatively — `false` where the truth
+/// is `true` — would move a ground map onto the wrong arm, which is a
+/// consensus-visible byte change dressed as caution.
+///
+/// The reason it is folded at all is that the alternative is not free: deriving
+/// it would force the entry projection on the *encode* path, and a ground map's
+/// encoding needs only the trie's key stream, never the decoded entries.
+///
+/// Exhaustive over all `2^9 = 512` subsets of the alphabet, in three
+/// constructions each, plus a deliberately non-ground control so the agreement
+/// cannot be vacuous.
+#[test]
+fn the_o1_ground_fold_agrees_with_the_projection_on_every_subset() {
+    let mut saw_ground = 0usize;
+    let mut saw_non_ground = 0usize;
+
+    for subset in every_subset_of_the_alphabet() {
+        let mut duplicated = subset.clone();
+        duplicated.extend(subset.iter().cloned());
+        let mut reversed = subset.clone();
+        reversed.reverse();
+
+        for entries in [subset.clone(), reversed, duplicated] {
+            let map = ground_map(entries);
+            let folded = map.entry_trie().entries_stable();
+            let derived = map
+                .ps()
+                .iter()
+                .all(models::rust::pathmap_crate_type_mapper::eval_stable_par_for_test);
+            assert_eq!(
+                folded, derived,
+                "the O(1) fold must equal the projection walk, exactly"
+            );
+            assert_eq!(
+                map.entry_trie().len(),
+                map.ps().len(),
+                "the O(1) length must equal the projection's"
+            );
+            assert_eq!(
+                map.entry_trie().is_empty(),
+                map.ps().is_empty(),
+                "the O(1) emptiness must equal the projection's"
+            );
+            if folded {
+                saw_ground += 1;
+            } else {
+                saw_non_ground += 1;
+            }
+        }
+    }
+
+    // Positive control on the `true` side: the alphabet is entirely ground, so
+    // every subset folds `true` and the loop above would agree vacuously if the
+    // fold were hard-wired. Feed it something that is NOT ground.
+    let non_ground = ground_map(vec![
+        models::rust::utils::new_boundvar_par(1, Vec::new(), false),
+        make_int_par(1),
+    ]);
+    assert!(
+        !non_ground.entry_trie().entries_stable(),
+        "positive control: the fold must be able to answer `false`"
+    );
+    saw_non_ground += 1;
+
+    assert!(saw_ground > 0, "the corpus must reach the ground arm");
+    assert!(
+        saw_non_ground > 0,
+        "…and the non-ground arm, or the agreement is one-sided"
     );
 }
