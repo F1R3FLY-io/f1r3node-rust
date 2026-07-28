@@ -183,7 +183,13 @@ jobs:
     needs: [schedule_gate, launch_runner]
     if: needs.schedule_gate.outputs.should_run == 'true'
     runs-on: [self-hosted, linux, x64, f1r3fly-rust-ci-ephemeral, oracle-cloud]
-    timeout-minutes: 3840
+    # Backstop only — the soak script stops itself at SOAK_DURATION_SECONDS.
+    # Scaled to the kind of run so a stuck daily cannot burn a 64h runner:
+    # daily 86400s (24h) + ~2h, weekend 216000s (60h) + ~4h. The margin is not
+    # slack: this budget also covers the image build, poetry install and the
+    # post-soak aggregate/alert/upload steps, so a ceiling equal to the soak
+    # duration would kill the job while it uploads its own results.
+    timeout-minutes: ${{ needs.schedule_gate.outputs.duration_seconds == '216000' && 3840 || 1560 }}
     concurrency:
       group: merge-recovery-soak-${{ needs.schedule_gate.outputs.duration_seconds }}
       cancel-in-progress: true
