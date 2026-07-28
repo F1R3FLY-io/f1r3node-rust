@@ -64,6 +64,13 @@ name = "wire_encode_bench"
 path = "benches/wire_encode_bench.rs"
 harness = false
 
+# The heap-profile subject. One arm per run (`MASSIF_ARM`), so `massif`'s
+# snapshots describe ONE mechanism instead of superimposing three.
+[[bench]]
+name = "wire_encode_massif"
+path = "benches/wire_encode_massif.rs"
+harness = false
+
 [build-dependencies]
 tonic-prost-build = { workspace = true }
 # The wire-schema generator (models/build/wire_schema.rs) reads the protobuf
