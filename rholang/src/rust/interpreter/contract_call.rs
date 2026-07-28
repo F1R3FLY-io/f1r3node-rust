@@ -1,9 +1,8 @@
 use std::pin::Pin;
 
 use models::rhoapi::{ListParWithRandom, Par};
-use prost::Message;
 
-use super::dispatch::{DispatchType, RhoDispatch};
+use super::dispatch::{decode_non_deterministic_output, DispatchType, RhoDispatch};
 use super::errors::InterpreterError;
 use super::rho_runtime::RhoISpace;
 
@@ -83,42 +82,16 @@ impl ContractCall {
                                     cont.continuation,
                                     channels.iter().map(|c| c.matched_datum.clone()).collect(),
                                     is_replay,
-                                    // ★★ THE SAME CONSENSUS-CLASS `Par::decode` AS
+                                    // ★★ THE SAME CONSENSUS-CLASS `Par` READ as
                                     // `reduce.rs`'s `continue_produce_process` — the
-                                    // system-contract path's copy of it, and the full
-                                    // derivation lives at that call site.
-                                    //
-                                    // `prost` enforces `RECURSION_LIMIT = 100`
-                                    // nested-message levels, `Par → Expr → EList → Par`
-                                    // costs 3 per bracket, so this accepts term depth 33
-                                    // and returns `Err` at 34 — while `encode` has no
-                                    // matching limit, so those bytes were writable.
-                                    //
-                                    // ⚠ The asymmetry is in the SUPPLY, not here.
-                                    // `Produce::create` sets `output_value: vec![]` and
-                                    // `RSpace::locked_produce` returns exactly that, so
-                                    // on the PROPOSER this iterator is empty;
-                                    // `ReplayRSpace::locked_produce` returns the trace's
-                                    // `Produce`, so on the VALIDATOR it decodes bytes
-                                    // that came from the block. `ProduceEventProto
-                                    // .outputValue` is `repeated bytes`, so the block
-                                    // itself decodes fine and only replay does not.
-                                    //
-                                    // Executable:
-                                    // `rholang/tests/replay_output_value_depth_ceiling.rs`,
-                                    // `models/tests/par_prost_depth_ceiling.rs`.
-                                    // Analysis:
-                                    // `docs/design/audits/theta-depth-traversals-2026-07-26.md`
-                                    // §7.3.
-                                    produce
-                                        .output_value
-                                        .iter()
-                                        .map(|p| {
-                                            Par::decode(&p[..]).map_err(|e| {
-                                                InterpreterError::DecodeError(e.to_string())
-                                            })
-                                        })
-                                        .collect::<Result<Vec<_>, _>>()?,
+                                    // system-contract path's copy of it. It is now the
+                                    // same FUNCTION, not merely the same rule written
+                                    // out again: the ceiling, its arithmetic, the
+                                    // replay-failure path and the reachability finding
+                                    // all live at `dispatch::decode_non_deterministic_output`,
+                                    // next to the `dispatch_type` encoder that produced
+                                    // these bytes.
+                                    decode_non_deterministic_output(&produce.output_value)?,
                                     // System-contract producer: outside the deploy's parallel tree, so
                                     // its continuation eval starts at the empty coordinate.
                                     smallvec::SmallVec::new(),
@@ -131,34 +104,30 @@ impl ContractCall {
 
                     match dispatch_result {
                         Ok(dispatch_type) => match dispatch_type {
-                            // ★ The RETURN leg of the same ceiling: the bytes a
-                            // non-deterministic op produced, read back as `Par`s.
-                            // Same limit (33 accepts, 34 `Err`s), same missing
-                            // counterpart on `encode`.
+                            // ★ The RETURN leg of the same ceiling, and the one
+                            // place it runs on the PLAY path: these bytes were
+                            // produced by `dispatch_type`'s `encode_to_vec` a
+                            // few frames below, so this is an encode→decode
+                            // round trip with no wire between its ends.
                             //
-                            // ⚠ **This is where a NINTH non-deterministic operation
-                            // would make the ceiling live.** The eight that exist
-                            // today construct returns of depth ≤ 3 (the deepest
-                            // behind a non-default feature), so the limit is never
-                            // approached — but the guard is those eight functions'
-                            // RETURN SHAPES, not a check. An op that echoes a
-                            // caller-supplied `Par` back through here writes it into
-                            // `output_value`, into the block, and into the
-                            // validator's replay decode at `reduce.rs`, with no
-                            // other change anywhere.
+                            // ⚠ It is reached only when producing the operation's
+                            // result onto its `ack` channel fires a continuation
+                            // that is ITSELF a non-deterministic system process
+                            // (`ack` bound to a system channel of matching
+                            // arity). For the ordinary `ParBody` ack the arm is
+                            // `DeterministicCall` and nothing is decoded — which
+                            // is why the read ceiling's first encounter with real
+                            // bytes is on the validator, not here.
                             //
-                            // Executable:
-                            // `rholang/tests/replay_output_value_depth_ceiling.rs`.
-                            // Analysis:
-                            // `docs/design/audits/theta-depth-traversals-2026-07-26.md`
-                            // §7.3.
-                            DispatchType::NonDeterministicCall(items) => items
-                                .iter()
-                                .map(|p| {
-                                    Par::decode(&p[..])
-                                        .map_err(|e| InterpreterError::DecodeError(e.to_string()))
-                                })
-                                .collect::<Result<Vec<_>, _>>(),
+                            // Same function as every other member of the class;
+                            // see `dispatch::decode_non_deterministic_output` for
+                            // the ceiling and the write-side reachability finding
+                            // (`rho:ollama:models` at depth 1 is the deepest any
+                            // registered operation returns, so this decode has
+                            // thirty-two levels of headroom).
+                            DispatchType::NonDeterministicCall(items) => {
+                                decode_non_deterministic_output(&items)
+                            }
                             DispatchType::FailedNonDeterministicCall(e) => Err(e),
                             DispatchType::DeterministicCall => Ok(Vec::new()),
                             DispatchType::Skip => Ok(Vec::new()),

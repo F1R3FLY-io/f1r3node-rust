@@ -59,7 +59,9 @@ use super::accounting::costs::{
     var_eval_cost,
 };
 use super::accounting::RuntimeBudget;
-use super::dispatch::{DispatchType, RhoDispatch, RholangAndScalaDispatcher};
+use super::dispatch::{
+    decode_non_deterministic_output, DispatchType, RhoDispatch, RholangAndScalaDispatcher,
+};
 use super::env::Env;
 use super::errors::InterpreterError;
 use super::metering::MeteredMachine;
@@ -1059,48 +1061,19 @@ impl DebruijnInterpreter {
             return Err(InterpreterError::CanNotReplayFailedNonDeterministicProcess);
         }
 
-        // ★★ THE CONSENSUS-CLASS `Par::decode` — a depth ceiling lives here.
+        // ★★ THE CONSENSUS-CLASS `Par` READ. On the proposer this slice is
+        // EMPTY (`Produce::create` sets `output_value: vec![]` and
+        // `RSpace::locked_produce` returns exactly that); on the validator it
+        // carries the trace's bytes, which came from the block. That asymmetry
+        // — not this expression — is what makes the read ceiling
+        // consensus-class.
         //
-        // `prost` enforces `RECURSION_LIMIT = 100` nested-message levels
-        // (`prost-0.14.3/src/lib.rs:30`; private, and its only knob REMOVES the
-        // limit and is set nowhere). `Par → Expr → EList → Par` costs three
-        // levels per bracket, so this decode **accepts term depth 33 and returns
-        // `Err` at 34** — measured, both profiles. `encode` has no matching
-        // limit, so those bytes were writable.
-        //
-        // ⚠ **The play/replay asymmetry is what makes this consensus-class, and
-        // it is in the SUPPLY, not in this expression.** `Produce::create` sets
-        // `output_value: vec![]`, and `RSpace::locked_produce` returns exactly
-        // that — so on the proposer this iterator is EMPTY and nothing is
-        // decoded, and then the bytes are written into the block.
-        // `ReplayRSpace::locked_produce` returns the `Produce` from the TRACE,
-        // whose `output_value` came from the block, so on the validator this
-        // decode runs on real bytes. An `Err` here lands in
-        // `EvaluateResult::errors` ⇒ `eval_successful = false`
-        // (`casper/src/rust/rholang/replay_runtime.rs:427`) ⇒ the
-        // `is_failed != !eval_successful` check at `:443` ⇒
-        // `CasperError::ReplayFailure`. **The proposer builds a block no
-        // validator can replay.**
-        //
-        // ⚠ NOT REACHABLE TODAY, and the guard is a SHAPE not a check:
-        // `output_value` is written from one site gated on
-        // `non_deterministic_ops()`, and all eight of those operations' return
-        // constructions max out at depth 3. A ninth op that echoes a
-        // caller-supplied `Par` makes this live with no other change.
-        //
-        // Executable: `rholang/tests/replay_output_value_depth_ceiling.rs`
-        // (red on replay, green on play, one bool apart) and
-        // `models/tests/par_prost_depth_ceiling.rs` (the boundary, per
-        // envelope). Analysis: `docs/design/audits/theta-depth-traversals-2026-07-26.md`
-        // §7.3. ⚠ The sibling ceiling `COLLECTION_DEPTH_LIMIT = 32`
-        // (`models/src/rust/canonical_path.rs`) is explicitly anchored to this
-        // one: they move together or not at all.
-        let previous_output_as_par = previous_output
-            .into_iter()
-            .map(|bytes| {
-                Par::decode(&bytes[..]).map_err(|e| InterpreterError::DecodeError(e.to_string()))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+        // ★ The ceiling, its arithmetic, the failure path it lands on, and the
+        // reachability finding all live at ONE site, next to the encoder that
+        // is its inverse: `dispatch::decode_non_deterministic_output`. This used to be
+        // spelled out here, in `continue_consume_process`, and again in
+        // `contract_call.rs` — three implementations of one rule.
+        let previous_output_as_par = decode_non_deterministic_output(&previous_output)?;
 
         match res {
             Some((continuation, data_list, peek)) => {
@@ -1225,24 +1198,19 @@ impl DebruijnInterpreter {
         guard: Option<Par>,
         path: SmallVec<[u32; 8]>,
     ) -> Result<DispatchType, InterpreterError> {
-        // The SAME prost read ceiling as `continue_produce_process`: term depth
-        // 33 accepts, 34 returns `Err` (`RECURSION_LIMIT = 100` message levels ÷
-        // 3 per bracket). See that call site for the full derivation.
+        // The SAME read as `continue_produce_process` — literally, now: both go
+        // through `dispatch::decode_non_deterministic_output`, which is where the
+        // ceiling and its derivation live.
         //
         // ★ This one is NOT consensus-class today, and the reason is worth
         // stating rather than leaving to be rediscovered: it has exactly ONE
         // caller — `consume_inner` — and that caller passes a literal
-        // `Vec::new()`, so this iterator never runs. It is the consume-side twin,
-        // kept in step with the produce side so that a future caller supplying
-        // trace bytes inherits the same behaviour rather than a divergent one.
-        // The moment such a caller exists, this becomes a second member of the
-        // class documented at `continue_produce_process`.
-        let previous_output_as_par = previous_output
-            .into_iter()
-            .map(|bytes| {
-                Par::decode(&bytes[..]).map_err(|e| InterpreterError::DecodeError(e.to_string()))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+        // `Vec::new()`, so nothing is ever decoded here. It is the consume-side
+        // twin, kept in step with the produce side so that a future caller
+        // supplying trace bytes inherits the same behaviour rather than a
+        // divergent one — and sharing the function is what makes "in step"
+        // structural instead of a promise.
+        let previous_output_as_par = decode_non_deterministic_output(&previous_output)?;
 
         match res {
             Some((continuation, data_list, _peek)) => {
