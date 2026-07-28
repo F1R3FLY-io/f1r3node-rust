@@ -385,6 +385,71 @@ fn synthetic_sloped_body(param: usize) {
 // reject a recursive one and accept an iterative one over the same data.
 // ---------------------------------------------------------------------------
 
+/// Deep end of the DESTRUCTOR control's ladder. The shallow end is 4, as
+/// everywhere else in this file.
+///
+/// ## Why it is not the function control's 4,096
+///
+/// [`the_depth_checkers_reject_a_recursive_destructor`] must show its control
+/// clearing [`ZERO_SLOPE_TOLERANCE`] eight-fold
+/// ([`clears_tolerance_by_an_order_of_magnitude`]), and what a ladder *produces*
+/// is `slope × span`. The two controls do not have the same slope — bisected on
+/// this tree over 4 → 4,096, 2026-07-27:
+///
+/// | control                             | debug       | release         |
+/// |-------------------------------------|-------------|-----------------|
+/// | [`synthetic_recurse`] (a function)  | 159 B/level | **111 B/level** |
+/// | [`DropChain`]'s glue (a destructor) |  95 B/level | **32 B/level**  |
+///
+/// The gap is not a defect and cannot be closed by enlarging
+/// [`SYNTHETIC_FRAME_BYTES`]. A function observes its ballast with `black_box`
+/// *after* the recursive call, so the array is live across it and must occupy a
+/// frame slot; `drop_in_place::<DropChain>` never reads the ballast at all
+/// (`[u8; N]` has no destructor), so at `-O2` the frame holds the tail pointer
+/// and the saved registers and nothing else — 32 B whatever `N` is. That is
+/// spelled out on the `RETURN_ADDRESS_BYTES` floor in the leg itself.
+///
+/// So the destructor's ladder must span further, in inverse proportion, to carry
+/// the same weight of evidence. Release is the binding profile; bisected on this
+/// tree, 2026-07-27:
+///
+/// | span (4 → hi) | release growth | vs. `8 × ZERO_SLOPE_TOLERANCE` (131,072 B) |
+/// |---------------|----------------|--------------------------------------------|
+/// | 4,096         |        126,976 | **0.97× — RED, short by one 4 KiB bucket** |
+/// | 8,192         |        258,048 | 1.97×                                      |
+/// | **16,384**    |    **520,192** | **3.97×**                                  |
+/// | 32,768        |      1,044,480 | 7.97×                                      |
+///
+/// Debug never saw it: at 95 B/level the same 4 → 4,096 ladder grows 389,120 B,
+/// i.e. 2.97× the bar, which is why the leg was calibrated there and shipped
+/// green. This is the drop-glue counterpart of the general fact recorded in this
+/// module's header — release inlining shrinks frames, and a margin that was only
+/// ever checked at `-O0` is a margin that was never checked.
+///
+/// 16,384 is chosen because it restores *parity of evidence*: over its own
+/// 4 → 4,096 ladder the function control grows 454,656 B in release, i.e. 3.47×
+/// the same bar. The destructor control now stands at 3.97× — the same order,
+/// derived from the same arithmetic, rather than a number tuned until a test
+/// went green.
+///
+/// ★ **Lengthening a ladder can only make a control easier to accept, so it is
+/// exactly the change that must be shown not to have gone vacuous.** The leg
+/// therefore runs [`clears_tolerance_by_an_order_of_magnitude`] on the ITERATIVE
+/// twin over this same 16,384-rung ladder and requires `false`: at 12,288 B from
+/// end to end its growth is 0, so the bar still rejects a genuinely flat subject
+/// after the change.
+///
+/// ⚠ It is bounded ABOVE, too. `slope_below_verdict`'s flat ceiling is
+/// `ZERO_SLOPE_TOLERANCE / span` in integer arithmetic, so a span past 16,384
+/// drives that ceiling to a literal 0 — the one zero-margin comparison this file
+/// warns against, in
+/// [`the_depth_checkers_reject_a_known_theta_depth_subject`]'s `flat_ceiling`
+/// note. At 16,380 steps it is 1 B/level, which admits a 7-bucket disagreement
+/// between the flat twin's two bisections; `zero_slope_verdict` binds first at
+/// 4 buckets, so the tripwire half stays the looser of the two and no new flake
+/// is introduced.
+const DESTRUCTOR_CONTROL_HI: usize = 16_384;
+
 /// A linked list whose derived `Drop` is recursive: dropping the head drops the
 /// `Box`, which drops the next `DropChain`, from inside the head's frame.
 ///
@@ -733,6 +798,24 @@ fn min_stack_for(name: &str, depth: usize) -> usize {
 /// ladder is under 4 bytes per step — far below any real per-level frame (the
 /// cheapest measured member of this family is `Tree`'s `Drop` at 370 B/level).
 const ZERO_SLOPE_TOLERANCE: usize = 4 * RESOLUTION;
+
+/// **The evidence-margin VERDICT.** `true` iff a control's measured growth
+/// clears [`ZERO_SLOPE_TOLERANCE`] by an order of magnitude.
+///
+/// Every reddening leg asserts this of the sloped subject it drives, for one
+/// reason: [`Ladder::growth`] is a difference of two bisections each quantised
+/// to [`RESOLUTION`], so it carries `±2 * RESOLUTION` of quantisation
+/// uncertainty. A control whose growth merely *exceeds* the tolerance could be
+/// clearing it on rounding; one that exceeds it eight-fold cannot.
+///
+/// ★ It is a named function rather than three copies of one expression because
+/// the three legs must not drift, and because a leg that must demonstrate this
+/// clause can then REJECT with the very same expression it asserts — see
+/// [`the_depth_checkers_reject_a_recursive_destructor`], which runs it on its
+/// flat twin and requires a `false`.
+fn clears_tolerance_by_an_order_of_magnitude(l: Ladder) -> bool {
+    l.growth() > 8 * ZERO_SLOPE_TOLERANCE
+}
 
 /// **The real bar, depth axis.**
 ///
@@ -1931,7 +2014,7 @@ fn the_depth_checkers_reject_a_known_theta_depth_subject() {
     // …and it rejects with room to spare, so the verdict is not riding on the
     // bisection's 4 KiB resolution.
     assert!(
-        sloped.growth() > 8 * ZERO_SLOPE_TOLERANCE,
+        clears_tolerance_by_an_order_of_magnitude(sloped),
         "the control's growth ({} KiB) must clear ZERO_SLOPE_TOLERANCE ({} KiB) by an \
          order of magnitude, or this leg is a coin-flip on bisection noise",
         sloped.growth() / 1024,
@@ -2002,9 +2085,16 @@ fn the_depth_checkers_reject_a_known_theta_depth_subject() {
 /// Without it, `assert_slope_below("par_drop", …)` would be a ceiling that had
 /// only ever been compared against subjects that cleared it — the thirteenth
 /// check that cannot fail.
+///
+/// ## ⚠ Why this leg does NOT share the function control's ladder
+///
+/// It did, until 2026-07-27, and in RELEASE that made it RED — not because the
+/// destructor stopped being Θ(depth), but because a ladder calibrated for a
+/// 96 B function frame does not produce enough *evidence* from a 32 B one. See
+/// [`DESTRUCTOR_CONTROL_HI`] for the measured derivation.
 fn the_depth_checkers_reject_a_recursive_destructor() {
-    let recursive = measure_ladder("synthetic_drop", 4, 4096);
-    let iterative = measure_ladder("synthetic_drop_flat", 4, 4096);
+    let recursive = measure_ladder("synthetic_drop", 4, DESTRUCTOR_CONTROL_HI);
+    let iterative = measure_ladder("synthetic_drop_flat", 4, DESTRUCTOR_CONTROL_HI);
 
     // ── N2: the reading came from the real destructor. ──
     //
@@ -2030,12 +2120,14 @@ fn the_depth_checkers_reject_a_recursive_destructor() {
     assert!(
         recursive.per_step() >= RETURN_ADDRESS_BYTES,
         "the synthetic DESTRUCTOR must cost at least one return address \
-         ({RETURN_ADDRESS_BYTES} B) per level: measured {} B/level ({} KiB at 4, {} KiB at \
-         4,096). Below that means `drop_in_place::<DropChain>` was not recursive in this \
+         ({RETURN_ADDRESS_BYTES} B) per level: measured {} B/level ({} KiB at {}, {} KiB at \
+         {}). Below that means `drop_in_place::<DropChain>` was not recursive in this \
          build — the glue was flattened — and this leg would certify nothing.",
         recursive.per_step(),
         recursive.lo_stack / 1024,
-        recursive.hi_stack / 1024
+        recursive.lo_param,
+        recursive.hi_stack / 1024,
+        recursive.hi_param
     );
     assert!(
         recursive.per_step() <= 16 * SYNTHETIC_FRAME_BYTES,
@@ -2046,14 +2138,20 @@ fn the_depth_checkers_reject_a_recursive_destructor() {
     );
 
     // The sharpest statement, needing no checker: on the stack that suffices to
-    // tear the chain down ITERATIVELY at 4,096 links, tearing the SAME chain down
-    // recursively does not survive. The two subjects differ in nothing else.
+    // tear the chain down ITERATIVELY at the ladder's deep end, tearing the SAME
+    // chain down recursively does not survive. The two subjects differ in nothing
+    // else.
+    //
+    // ⚠ The link count comes from the ladder rather than from a literal, so that
+    // moving [`DESTRUCTOR_CONTROL_HI`] cannot leave this comparison probing a
+    // depth neither subject was measured at.
     assert!(
-        !runs_within(iterative.hi_stack, 4096, "synthetic_drop"),
+        !runs_within(iterative.hi_stack, iterative.hi_param, "synthetic_drop"),
         "the two destructors must be separable at all: `synthetic_drop_flat` needs {} KiB \
-         at 4,096 links and the recursive destructor survived the same stack, so the \
+         at {} links and the recursive destructor survived the same stack, so the \
          control has no slope and every rejection below is vacuous",
-        iterative.hi_stack / 1024
+        iterative.hi_stack / 1024,
+        iterative.hi_param
     );
 
     // ── Checker 1: the zero-slope half rejects the recursive destructor. ──
@@ -2064,11 +2162,45 @@ fn the_depth_checkers_reject_a_recursive_destructor() {
         "the rejection must come from the zero-slope clause; got: {why}"
     );
     assert!(
-        recursive.growth() > 8 * ZERO_SLOPE_TOLERANCE,
-        "the destructor control's growth ({} KiB) must clear ZERO_SLOPE_TOLERANCE ({} KiB) \
-         by an order of magnitude, or this leg is a coin-flip on bisection noise",
+        clears_tolerance_by_an_order_of_magnitude(recursive),
+        "the destructor control's growth ({} KiB over {} -> {}) must clear \
+         ZERO_SLOPE_TOLERANCE ({} KiB) by an order of magnitude, or this leg is a \
+         coin-flip on bisection noise. See DESTRUCTOR_CONTROL_HI: at 32 B/level in \
+         release this needs a longer ladder than the 96 B function control does, and \
+         the answer is a longer ladder — never a smaller multiple.",
         recursive.growth() / 1024,
+        recursive.lo_param,
+        recursive.hi_param,
         ZERO_SLOPE_TOLERANCE / 1024
+    );
+    // ★★ **The executed reddening for the clause immediately above** — the one
+    // 2026-07-27 changed, by moving this leg's ladder from 4 → 4,096 to
+    // 4 → [`DESTRUCTOR_CONTROL_HI`].
+    //
+    // Lengthening a ladder raises every growth reading, so the hazard that change
+    // introduces is precisely that the clause becomes satisfiable by ANY subject.
+    // Handing it the ITERATIVE twin — same structure, same link count, same
+    // ladder, no slope — and requiring a `false` is the direct refutation. The
+    // flat destructor's minimum stack is 12,288 B at both ends, so its growth is
+    // 0 and the bar rejects it by the whole 128 KiB.
+    //
+    // ⚠ Yes, this is IMPLIED by `zero_slope_verdict` accepting `iterative` below
+    // (accepting means growth <= 16,384, and 16,384 < 131,072). Implication is
+    // exactly what this file does not accept as evidence: `assert_depth_
+    // independent`'s zero-slope claim was sound arithmetic on recorded numbers
+    // for months and still described a checker nobody had watched refuse
+    // anything. The clause is run, on data in the class it must exclude.
+    assert!(
+        !clears_tolerance_by_an_order_of_magnitude(iterative),
+        "the evidence-margin clause must still REJECT a genuinely flat subject: the \
+         ITERATIVE destructor grew {} KiB over {} -> {} and cleared the {} KiB bar \
+         anyway. That means the ladder is now long enough to manufacture the margin \
+         from nothing, and the recursive control's clearance above certifies the \
+         ladder rather than the slope.",
+        iterative.growth() / 1024,
+        iterative.lo_param,
+        iterative.hi_param,
+        (8 * ZERO_SLOPE_TOLERANCE) / 1024
     );
 
     // ── Checker 2: the tripwire — the checker `par_drop` and `normalize_drop`
@@ -2094,11 +2226,13 @@ fn the_depth_checkers_reject_a_recursive_destructor() {
     );
 
     println!(
-        "  synthetic DESTRUCTOR (depth): recursive {} B/level ({} KiB -> {} KiB over 4 -> \
-         4,096), iterative {} B/level — checkers separate them",
+        "  synthetic DESTRUCTOR (depth): recursive {} B/level ({} KiB -> {} KiB over {} -> \
+         {}), iterative {} B/level — checkers separate them",
         recursive.per_step(),
         recursive.lo_stack / 1024,
         recursive.hi_stack / 1024,
+        recursive.lo_param,
+        recursive.hi_param,
         iterative.per_step()
     );
 }
@@ -2437,7 +2571,7 @@ fn theta_width_tripwire() {
          pass every other assertion here; got: {why}"
     );
     assert!(
-        sloped.growth() > 8 * ZERO_SLOPE_TOLERANCE,
+        clears_tolerance_by_an_order_of_magnitude(sloped),
         "the control's growth ({} KiB) must clear ZERO_SLOPE_TOLERANCE ({} KiB) by an \
          order of magnitude",
         sloped.growth() / 1024,
