@@ -583,11 +583,47 @@ mod differential_substitute_worklist {
         }
     }
 
-    /// The metered wrapper — the one that does charge — must produce the same
+    /// The metered wrappers — the ones that do charge — must produce the same
     /// ordered trace and the same total through both paths.
+    ///
+    /// ## ★ Both wrappers, and BOTH ARMS
+    ///
+    /// Until 2026-07-28 this test drove [`Substitute::substitute_and_charge`]
+    /// over the SUCCESS corpus and nothing else, and both omissions were found
+    /// the same way: by mutating the wrapper and watching the test stay green.
+    ///
+    /// * The **error arm** was uncovered. Every term in `substitution_corpus`
+    ///   substitutes successfully, so `Err` never happened, so the arm that
+    ///   charges on the INPUT's `encoded_len` was never observed. Charging
+    ///   `input_len + 1000` there left this test passing.
+    /// * `substitute_no_sort_and_charge` was uncovered outright, despite the
+    ///   plural in this test's name. It is the wrapper `eval_receive` uses for
+    ///   the continuation BODY — the largest term a receive touches.
+    ///
+    /// Both gaps sat exactly on the lines the by-value conversion changed: the
+    /// hoisted `input_len` is *only* read by the error arm. A proof that cannot
+    /// reject the mutation it exists to reject is not a proof, so the coverage
+    /// is here rather than in a follow-up.
+    ///
+    /// The mutations this now rejects, each applied to the wrapper and watched
+    /// RED before the coverage was trusted (2026-07-28):
+    ///
+    /// | # | wrapper   | mutation                          | before | after   |
+    /// |---|-----------|-----------------------------------|--------|---------|
+    /// | A | sorted    | success arm charges `input_len`    | RED    | rejects |
+    /// | B | sorted    | error arm charges `input_len+1000` | green  | rejects |
+    /// | C | no-sort   | error arm charges `input_len+1000` | green  | rejects |
+    /// | D | sorted    | error arm's charge omitted         | green  | rejects |
+    /// | E | no-sort   | success arm charges `input_len`     | green  | rejects |
+    ///
+    /// The "before" column is the point: only A was caught by the test as it
+    /// stood, and A is the one mutation the by-value conversion could not
+    /// plausibly have made.
     #[test]
     fn metered_wrappers_agree() {
         let env = populated_env();
+
+        // ── The SUCCESS arm: the charge is `encoded_len` of the RESULT. ──
         for case in substitution_corpus() {
             // Oracle side: recompute the result recursively, then levy the
             // wrapper's charge by hand in the same order the wrapper does.
@@ -604,13 +640,102 @@ mod differential_substitute_worklist {
             let trace_rec = trace_of(&oracle, rec);
 
             let production = subject();
-            let tr = production.substitute_and_charge(&case.term, case.depth, &env);
+            // ⚠ The wrapper takes its term BY VALUE (2026-07-28). The oracle
+            // side above measured `case.term` before this point, so the clone
+            // here feeds the production call without disturbing what the oracle
+            // was computed from — it is the harness owning a second copy, not
+            // the wrapper copying its input.
+            let tr = production.substitute_and_charge(case.term.clone(), case.depth, &env);
             let trace_tr = trace_of(&production, tr);
 
             assert_eq!(
                 trace_rec, trace_tr,
                 "metered-wrapper divergence on case `{}`",
                 case.name
+            );
+
+            // …and the no-sort twin, whose charge is levied on the UNSORTED
+            // result. `par_recursive` is itself the un-sorted form, so the
+            // oracle's number is the same one computed above.
+            let oracle_ns = subject();
+            let rec_ns =
+                par_recursive(case.term.clone(), SubCtx::root(case.depth), EnvView::new(&env));
+            let rec_ns_bytes = match &rec_ns {
+                Ok(p) => (p.encoded_len() as i64).max(1),
+                Err(_) => (case.term.encoded_len() as i64).max(1),
+            };
+            oracle_ns
+                .metering
+                .reserve_substitution(Cost::create(rec_ns_bytes, "substitution"))
+                .expect("differential: the oracle budget must not run out");
+            let trace_rec_ns = trace_of(&oracle_ns, rec_ns);
+
+            let production_ns = subject();
+            let tr_ns =
+                production_ns.substitute_no_sort_and_charge(case.term.clone(), case.depth, &env);
+            let trace_tr_ns = trace_of(&production_ns, tr_ns);
+
+            assert_eq!(
+                trace_rec_ns, trace_tr_ns,
+                "metered NO-SORT wrapper divergence on case `{}`",
+                case.name
+            );
+        }
+
+        // ── ★ The ERROR arm: the charge is `encoded_len` of the INPUT. ──
+        //
+        // This is the arm the by-value conversion touches. In the `&A` form the
+        // wrapper read the original through the borrow it still held; in the
+        // by-value form it reads the same original before the move. The number
+        // must be identical, and `encoded_len` being a pure read is why — but
+        // "is why" is an argument, and this is the execution.
+        for (name, term, depth) in error_corpus() {
+            let oracle = subject();
+            let rec = par_recursive(term.clone(), SubCtx::root(depth), EnvView::new(&env));
+            // Anti-vacuity: an "error case" that succeeds would exercise the
+            // success arm again and quietly re-open the hole this loop closes.
+            assert!(
+                rec.is_err(),
+                "the `{}` error case did not actually produce an error — the metered \
+                 wrappers' ERROR arm is not being exercised by it",
+                name
+            );
+            oracle
+                .metering
+                .reserve_substitution(Cost::create(
+                    (term.encoded_len() as i64).max(1),
+                    "substitution",
+                ))
+                .expect("differential: the oracle budget must not run out");
+            let trace_rec = trace_of(&oracle, rec);
+
+            let production = subject();
+            let tr = production.substitute_and_charge(term.clone(), depth, &env);
+            let trace_tr = trace_of(&production, tr);
+            assert_eq!(
+                trace_rec, trace_tr,
+                "metered-wrapper divergence on ERROR case `{}`",
+                name
+            );
+
+            let oracle_ns = subject();
+            let rec_ns = par_recursive(term.clone(), SubCtx::root(depth), EnvView::new(&env));
+            oracle_ns
+                .metering
+                .reserve_substitution(Cost::create(
+                    (term.encoded_len() as i64).max(1),
+                    "substitution",
+                ))
+                .expect("differential: the oracle budget must not run out");
+            let trace_rec_ns = trace_of(&oracle_ns, rec_ns);
+
+            let production_ns = subject();
+            let tr_ns = production_ns.substitute_no_sort_and_charge(term.clone(), depth, &env);
+            let trace_tr_ns = trace_of(&production_ns, tr_ns);
+            assert_eq!(
+                trace_rec_ns, trace_tr_ns,
+                "metered NO-SORT wrapper divergence on ERROR case `{}`",
+                name
             );
         }
     }
@@ -673,15 +798,18 @@ mod differential_substitute_worklist {
         handle.join().expect("differential: the deep/wide thread panicked");
     }
 
-    /// Error PARITY, including error POSITION: a term whose first faulty slot
-    /// is reached only after several successful descents must produce the same
-    /// `Err`, not merely some `Err`.
-    #[test]
-    fn error_paths_agree() {
+    /// Terms whose substitution FAILS, with the depth to substitute them at.
+    ///
+    /// ★ Hoisted out of [`error_paths_agree`] on 2026-07-28 so that
+    /// [`metered_wrappers_agree`] can drive the metered wrappers' ERROR arm with
+    /// the same list. Two copies of one corpus do not stay equal, and the two
+    /// tests ask different questions of it: `error_paths_agree` checks the error
+    /// VALUE and its POSITION, `metered_wrappers_agree` checks the CHARGE levied
+    /// on the way out.
+    fn error_corpus() -> Vec<(&'static str, Par, i32)> {
         use models::rhoapi::{EPlus, Send};
 
-        let env = populated_env();
-        let cases: Vec<(&str, Par, i32)> = vec![
+        vec![
             (
                 "expr with no instance",
                 Par {
@@ -781,9 +909,17 @@ mod differential_substitute_worklist {
                 },
                 0,
             ),
-        ];
+        ]
+    }
 
-        for (name, term, depth) in cases {
+    /// Error PARITY, including error POSITION: a term whose first faulty slot
+    /// is reached only after several successful descents must produce the same
+    /// `Err`, not merely some `Err`.
+    #[test]
+    fn error_paths_agree() {
+        let env = populated_env();
+
+        for (name, term, depth) in error_corpus() {
             let expected = par_recursive(term.clone(), SubCtx::root(depth), EnvView::new(&env))
                 .map(|p| p.encode_to_vec())
                 .map_err(|e| format!("{:?}", e));

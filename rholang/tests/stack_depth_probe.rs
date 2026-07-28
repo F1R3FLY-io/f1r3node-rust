@@ -337,14 +337,18 @@ fn run_probe(what: &str, depth: usize) {
                 .expect("stack_depth_probe: substitute_no_sort failed");
             std::mem::forget(out);
         }
+        // ⚠ The wrapper takes its term BY VALUE as of 2026-07-28 — that change
+        // IS the repair this subject measures, so there is no `&` and no second
+        // `mem::forget`: `t` is moved into the call. Kept byte-for-byte in step
+        // with `stack_depth_gate.rs`'s `subst_and_charge_body`, because one
+        // subject with one name must not report two numbers.
         "subst_and_charge" => {
             let t = nested_list(depth);
             let s = substitute_instance();
             let out = s
-                .substitute_and_charge(&t, 0, &env)
+                .substitute_and_charge(t, 0, &env)
                 .expect("stack_depth_probe: substitute_and_charge failed");
             std::mem::forget(out);
-            std::mem::forget(t);
         }
 
         // ---- the sorter family ----

@@ -62,18 +62,90 @@ pub struct Substitute {
 }
 
 impl Substitute {
+    /// Substitute, sort, and levy the substitution charge.
+    ///
+    /// # ⚠ It takes its term BY VALUE, and that is the whole point
+    ///
+    /// Until 2026-07-28 this took `term: &A` and opened with `term.clone()`, so
+    /// **every substitution deep-copied its input** — on the ordinary send path,
+    /// with no binder and no COMM. `<Par as Clone>::clone` is Θ(depth) (2,852
+    /// B/level release, 15,872 debug, measured by `stack_depth_gate`'s `clone`
+    /// and `subst_and_charge` subjects, which agree to the byte), and end to end
+    /// through the runtime on a 2 MiB tokio worker that copy measured 7,253
+    /// B/level and capped a deploy at ~286 levels of nesting
+    /// (`rholang/tests/deploy_depth_ceiling.rs`). A deeper deploy did not fail:
+    /// it aborted the node with `fatal runtime error: stack overflow`, which is
+    /// a `SIGSEGV` turned into `abort()` — uncatchable, unmeterable
+    /// (`casper/.../runtime.rs` installs `Cost::unsafe_max()` for liveness), and
+    /// therefore a consensus-liveness defect rather than a robustness nit.
+    ///
+    /// # Why by-value is EXACTLY equivalent, charge for charge
+    ///
+    /// The two arms charge on different terms, and only one of them ever needed
+    /// the copy:
+    ///
+    /// * **success** charges `encoded_len` of the **result**, which the wrapper
+    ///   owns. The input is irrelevant on this path — it was consumed.
+    /// * **error** charges `encoded_len` of the **input**. Note that even in the
+    ///   `&A` form this was the ORIGINAL, not the clone: the clone went into
+    ///   `substitute`. So the clone existed solely to keep the original
+    ///   *readable* after the call, for a number the error arm might want.
+    ///
+    /// Hoisting that read above the `match` buys the same number without the
+    /// copy, and it is the same number rather than merely a similar one:
+    /// [`prost::Message::encoded_len`] takes `&self`, and the one hand-written
+    /// override in the family — `EPathMap::encoded_len`
+    /// (`models/src/rust/rhoapi_ext.rs`) — only *reads* `self.intern.get()` and
+    /// never fills it, falling back to a pure field walk when the cell is empty.
+    /// It is a pure function of the value, so it is bit-identical before or
+    /// after the move.
+    ///
+    /// `.max(1)` is retained for the same reason it was there: `reserve_cost`
+    /// rejects a non-positive charge with `BugFoundError` (`metering.rs`), so a
+    /// zero-length term must still charge 1. **Charge count, charge order and
+    /// charge value are unchanged.** The proof is executed, not asserted —
+    /// `substitute_oracle::metered_wrappers_agree` compares the full ordered
+    /// charge trace of this wrapper against a hand-levied oracle for every
+    /// corpus case.
+    ///
+    /// # ⚠ The honest cost: `encoded_len` is now walked TWICE on success
+    ///
+    /// The hoisted read runs unconditionally, and on the success path its result
+    /// is discarded. That is real CPU on the reduction path — one extra
+    /// `encoded_len` traversal per substitution — and it is not free just
+    /// because it is cheap. It cannot be avoided while the error arm charges on
+    /// the input: after the move the input is gone, so the number has to be
+    /// taken while it still exists.
+    ///
+    /// It is not extra *stack*, though: the two walks are sequential, so the
+    /// peak is $`\max`$ of the two and not their sum — the same argument
+    /// `stack_depth_gate` makes for the `normalize_drop` composition.
+    ///
+    /// # ⚠⚠ Calling `encoded_len` earlier is safe. CHANGING it is not
+    ///
+    /// The audit's §8.2 names `encoded_len` as the one exception in the
+    /// Θ(depth) family that must NOT be converted: its return value **is** the
+    /// charge, so an off-by-one in it is not a performance regression but a
+    /// consensus fork — two nodes would disagree about what a deploy cost. This
+    /// commit moves a CALL, not the callee. The distinction is the difference
+    /// between a scheduling change and a protocol change.
     pub fn substitute_and_charge<A>(
         &self,
-        term: &A,
+        term: A,
         depth: i32,
         env: &Env<Par>,
     ) -> Result<A, InterpreterError>
     where
         Self: SubstituteTrait<A>,
-        A: Clone + prost::Message,
+        A: prost::Message,
     {
         // scala 'charge' function built in here
-        match self.substitute(term.clone(), depth, env) {
+        //
+        // ⚠ BEFORE the move — see this method's documentation. The error arm
+        // charges on the input, and after `substitute` takes it there is no
+        // input left to measure.
+        let input_len = (term.encoded_len() as i64).max(1);
+        match self.substitute(term, depth, env) {
             Ok(subst_term) => {
                 self.metering.reserve_substitution(Cost::create(
                     (subst_term.encoded_len() as i64).max(1),
@@ -82,27 +154,34 @@ impl Substitute {
                 Ok(subst_term)
             }
             Err(th) => {
-                self.metering.reserve_substitution(Cost::create(
-                    (term.encoded_len() as i64).max(1),
-                    "substitution",
-                ))?;
+                self.metering
+                    .reserve_substitution(Cost::create(input_len, "substitution"))?;
                 Err(th)
             }
         }
     }
 
+    /// Substitute WITHOUT sorting, and levy the substitution charge.
+    ///
+    /// The by-value twin of [`Substitute::substitute_and_charge`], for the same
+    /// reasons and with the same equivalence argument — see that method's
+    /// documentation, which is not repeated here. This wrapper had the identical
+    /// defect (`term: &A`, opening with `term.clone()`) and it is on the receive
+    /// path: `eval_receive` substitutes the continuation BODY through it, which
+    /// is the largest term a receive touches.
     pub fn substitute_no_sort_and_charge<A>(
         &self,
-        term: &A,
+        term: A,
         depth: i32,
         env: &Env<Par>,
     ) -> Result<A, InterpreterError>
     where
         Self: SubstituteTrait<A>,
-        A: Clone + prost::Message,
+        A: prost::Message,
     {
         // scala 'charge' function built in here
-        match self.substitute_no_sort(term.clone(), depth, env) {
+        let input_len = (term.encoded_len() as i64).max(1);
+        match self.substitute_no_sort(term, depth, env) {
             Ok(subst_term) => {
                 self.metering.reserve_substitution(Cost::create(
                     (subst_term.encoded_len() as i64).max(1),
@@ -111,10 +190,8 @@ impl Substitute {
                 Ok(subst_term)
             }
             Err(th) => {
-                self.metering.reserve_substitution(Cost::create(
-                    (term.encoded_len() as i64).max(1),
-                    "substitution",
-                ))?;
+                self.metering
+                    .reserve_substitution(Cost::create(input_len, "substitution"))?;
                 Err(th)
             }
         }

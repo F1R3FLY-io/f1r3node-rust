@@ -1043,83 +1043,93 @@ fn substitute_no_sort_body(depth: usize) {
 /// NAMED RESIDUAL rather than a converted traversal.**
 ///
 /// `Substitute::substitute_and_charge` is what the reducer actually calls; the
-/// bare `substitute` this file already gates is reached only through it. The
-/// wrapper takes `term: &A` and opens with `term.clone()`, so **every
-/// substitution deep-copies its input** — on the ordinary send path, with no
-/// binder and no COMM, which is what distinguishes it from
+/// bare `substitute` this file already gates is reached only through it.
+///
+/// ## What it measured before 2026-07-28, and what it measures now
+///
+/// The wrapper took `term: &A` and opened with `term.clone()`, so **every
+/// substitution deep-copied its input** — on the ordinary send path, with no
+/// binder and no COMM, which is what distinguished it from
 /// [`substitute_deep_binding_body`]'s `Env::get` clone. Measured end to end
 /// through the real runtime on a 2 MiB tokio worker
-/// (`rholang/tests/deploy_depth_ceiling.rs`), that copy is **7,253 B/level** and
-/// it is the reason a deploy stops at depth ~286 even though `substitute`,
-/// `sort`, `normalize` and `pretty` are all converted and flat.
+/// (`rholang/tests/deploy_depth_ceiling.rs`), that copy was **7,253 B/level** and
+/// it was the reason a deploy stopped at depth ~286 even though `substitute`,
+/// `sort`, `normalize` and `pretty` are all converted and flat. Measured HERE,
+/// pre-repair: **2,852 B/level release / 15,872 debug**, which is the standalone
+/// `clone` subject's constant to the byte — the wrapper's entire slope was the
+/// copy.
+///
+/// The wrapper now takes its term **by value**, and this subject moves `t` into
+/// it. The subject stays, because a subject that is deleted when its defect is
+/// fixed cannot notice the defect coming back.
 ///
 /// It is in [`TRIPWIRE_DEPTH`] and not in [`CONVERTED_DEPTH`] because it is
-/// composed of two members whose disposition is Leg-1: `<Par as Clone>::clone`
-/// (row 5) and `EPathMap::encoded_len` (row 7). Removing the clone removes a
-/// CALL SITE; neither derived traversal goes away, so the subject stays sloped
-/// and stays here. A traversal enters `CONVERTED_DEPTH` only by being converted.
+/// composed of members whose audited disposition is Leg-1: `<Par as Clone>::clone`
+/// (row 5) and `EPathMap::encoded_len` (row 7). Removing the clone removed a
+/// CALL SITE; neither derived traversal goes away, and `encoded_len` — which the
+/// wrapper still walks, and must — keeps the subject sloped. A traversal enters
+/// `CONVERTED_DEPTH` only by being converted, never by having a ceiling lowered.
 ///
 /// ## ★★ Why this body is written EXACTLY like this
 ///
-/// It is `stack_depth_probe.rs`'s `subst_and_charge` probe, ported verbatim,
-/// and the two details that look like clutter are the measurement:
+/// It is `stack_depth_probe.rs`'s `subst_and_charge` probe, and the two files
+/// are kept byte-for-byte in step: one subject with one name must not report two
+/// numbers.
 ///
-/// * **`&t` on a fresh local IS the defect.** The wrapper's signature is
-///   `&A`, so a caller that owns its term must hand out a borrow and let the
-///   wrapper copy it. Writing the call any other way measures a different
-///   program.
-/// * **`std::mem::forget` on BOTH values, never `drop` and never `dismantle`.**
-///   This subject holds TWO deep `Par`s when the wrapper returns — the input and
-///   the result — and `Par`'s derived `drop_in_place` is itself Θ(depth) (it is
-///   the `par_drop` subject, 144 B/level release / 470 debug). Forgetting both
-///   keeps teardown out of the reading STRUCTURALLY, so the number is the
-///   wrapper and nothing else. It is also the shape `stack_depth_probe.rs`
-///   uses, and one subject that carries one name across the measurement harness
-///   and the gate must not carry two numbers.
+/// * **The term is passed the way production passes it** — by value, from a
+///   local the caller owns. That is the repair; writing it any other way
+///   measures a different program. Before the repair this read `&t`, and the
+///   `&` on a fresh local WAS the defect.
+/// * **`std::mem::forget` on the result, never `drop` and never `dismantle`.**
+///   `Par`'s derived `drop_in_place` is itself Θ(depth) (it is the `par_drop`
+///   subject, 144 B/level release / 470 debug), so forgetting keeps teardown out
+///   of the reading STRUCTURALLY — the number is the wrapper and nothing else.
+///   Pre-repair this subject held TWO deep `Par`s at the end, the input and the
+///   result, and forgot both; the input is now moved into the call, so there is
+///   one.
 ///
 /// ## ⚠ The shape was checked, and it does NOT move the number
 ///
 /// The brief for this port warned that a semantically equivalent rewrite can
 /// shift a reading by 60%, so before this subject was committed all four
-/// plausible spellings were measured against each other — `mem::forget` on both
-/// (this body), `dismantle` on both, `drop` on both, and the fresh-temporary
-/// `s.substitute_and_charge(&nested_list(depth), 0, &env).map(drop)`. Bisected
-/// 2026-07-28, at depths 16 and 128:
+/// plausible spellings of the PRE-REPAIR body were measured against each other —
+/// `mem::forget` on both values, `dismantle` on both, `drop` on both, and the
+/// fresh-temporary `s.substitute_and_charge(&nested_list(depth), 0, &env)
+/// .map(drop)`. Bisected 2026-07-28, at depths 16 and 128:
 ///
-/// | spelling             | release             | debug                  |
-/// |----------------------|---------------------|------------------------|
-/// | `mem::forget` (this) | 57,344 → 376,832 B  | 278,528 → 2,056,192 B  |
-/// | `dismantle`          | 57,344 → 376,832 B  | 278,528 → 2,056,192 B  |
-/// | `drop`               | 57,344 → 376,832 B  | 278,528 → 2,056,192 B  |
-/// | temporary + `map(drop)` | 57,344 → 376,832 B | 278,528 → 2,056,192 B |
+/// | spelling                | release            | debug                  |
+/// |-------------------------|--------------------|------------------------|
+/// | `mem::forget`           | 57,344 → 376,832 B | 278,528 → 2,056,192 B  |
+/// | `dismantle`             | 57,344 → 376,832 B | 278,528 → 2,056,192 B  |
+/// | `drop`                  | 57,344 → 376,832 B | 278,528 → 2,056,192 B  |
+/// | temporary + `map(drop)` | 57,344 → 376,832 B | 278,528 → 2,056,192 B  |
 ///
-/// Identical to the byte, in both profiles: **2,852 B/level release, 15,872
-/// debug**. That is not luck, and the reason is the one this file already
-/// records for `normalize_drop`: the teardowns run AFTER the wrapper returns, so
-/// they do not nest inside its frames and the composition costs
+/// Identical to the byte, in both profiles: 2,852 B/level release, 15,872 debug.
+/// That is not luck, and the reason is the one this file already records for
+/// `normalize_drop`: the teardowns run AFTER the wrapper returns, so they do not
+/// nest inside its frames and the composition costs
 /// $`\max(S_{\text{wrapper}}, S_{\text{teardown}})`$ rather than the sum. At
 /// 2,852 against 144 the max cannot move. A spelling could only matter here by
 /// making a destructor run *while* the wrapper is still on the stack, and none
 /// of the four does.
 ///
-/// So the verbatim port is kept because it is structurally the right
-/// measurement and because it agrees with the probe harness — not because the
-/// alternatives were assumed to differ. They were measured, and they do not.
+/// So the shape is chosen because it is structurally the right measurement and
+/// because it agrees with the probe harness — not because the alternatives were
+/// assumed to differ. They were measured, and they do not.
 ///
-/// The anti-vacuity check is on the INPUT's depth, because the input is what the
-/// wrapper clones. The output is not walked: doing so would be another Θ(depth)
-/// traversal in the same frame region, for no evidence the input check does not
-/// already give.
+/// The anti-vacuity check is on the INPUT's depth: it is what the wrapper is
+/// handed, and — pre-repair — what it copied. The output is not walked: doing so
+/// would be another Θ(depth) traversal in the same frame region, for no evidence
+/// the input check does not already give.
 fn subst_and_charge_body(depth: usize) {
     let t = nested_list(depth);
     assert_carries("the substitute_and_charge input's nesting", par_depth(&t), depth);
     let s = substitute_instance();
     let env: Env<Par> = Env::new();
     let out = s
-        .substitute_and_charge(&t, 0, &env)
+        .substitute_and_charge(t, 0, &env)
         .expect("stack_depth_gate: substitute_and_charge failed");
     std::mem::forget(out);
-    std::mem::forget(t);
 }
 
 fn substitute_binders_body(depth: usize) {

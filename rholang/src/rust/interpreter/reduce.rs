@@ -1607,7 +1607,7 @@ impl DebruijnInterpreter {
         // weight; only the COMM count gates consensus.
         self.metering.reserve_comm(send_eval_cost())?;
         let eval_chan = self.eval_expr(&unwrap_option_safe(send.chan.clone())?, env)?;
-        let sub_chan = self.substitute.substitute_and_charge(&eval_chan, 0, env)?;
+        let sub_chan = self.substitute.substitute_and_charge(eval_chan, 0, env)?;
         let unbundled = match single_bundle(&sub_chan) {
             Some(value) => {
                 if !value.write_flag {
@@ -1632,7 +1632,7 @@ impl DebruijnInterpreter {
             .iter()
             .map(|expr| {
                 let evaluated = self.eval_expr(expr, env)?;
-                self.substitute.substitute_and_charge(&evaluated, 0, env)
+                self.substitute.substitute_and_charge(evaluated, 0, env)
             })
             .collect::<Result<Vec<_>, InterpreterError>>()?;
 
@@ -1667,9 +1667,15 @@ impl DebruijnInterpreter {
         // stay as free vars for the matcher to fill in. Stored once on
         // the TaggedContinuation so it sees every bound variable across
         // every bind. Plan §7.12.
+        // ★ A VISIBLE, ATTRIBUTABLE COPY. `receive` is borrowed, so the guard
+        // has to be copied to be substituted. The wrapper no longer hides that:
+        // it takes its term by value, and the one call site that genuinely needs
+        // a copy writes the copy down. Stage 2 removes this one by taking
+        // `receive` by value from `generated_message_eval`, which already owns
+        // it.
         let subst_guard = match receive.condition.as_ref() {
             Some(c) if c != &Par::default() => {
-                Some(self.substitute.substitute_and_charge(c, 1, env)?)
+                Some(self.substitute.substitute_and_charge(c.clone(), 1, env)?)
             }
             _ => None,
         };
@@ -1705,7 +1711,7 @@ impl DebruijnInterpreter {
                 let subst_patterns = rb
                     .patterns
                     .into_iter()
-                    .map(|pattern| self.substitute.substitute_and_charge(&pattern, 1, env))
+                    .map(|pattern| self.substitute.substitute_and_charge(pattern, 1, env))
                     .collect::<Result<Vec<_>, InterpreterError>>()?;
 
                 Ok((
@@ -1729,8 +1735,18 @@ impl DebruijnInterpreter {
         }
 
         // TODO: Allow for the environment to be stored with the body in the Tuplespace - OLD
+        //
+        // ★ A VISIBLE, ATTRIBUTABLE COPY, and the most expensive of the three:
+        // the continuation BODY is the largest term a receive touches. It exists
+        // because `receive` is borrowed here, not because substitution needs it
+        // — Stage 2 takes `receive` by value from `generated_message_eval` and
+        // this `clone` goes away with it.
         let subst_body = self.substitute.substitute_no_sort_and_charge(
-            receive.body.as_ref().unwrap(),
+            receive
+                .body
+                .as_ref()
+                .expect("Receive.body: normalizer post-condition")
+                .clone(),
             0,
             &env.shift(receive.bind_count),
         )?;
@@ -1808,8 +1824,14 @@ impl DebruijnInterpreter {
                         [] => return Ok(()),
 
                         [single_case, case_rem @ ..] => {
+                            // ⚠ This site used to deep-copy the pattern TWICE:
+                            // once explicitly (`single_case.pattern.clone()`,
+                            // needed because `single_case` is borrowed out of
+                            // `_cases`) and once more inside the wrapper, which
+                            // took `&A`. The wrapper now takes its term by
+                            // value, so the explicit clone is the only copy.
                             let pattern = self.substitute.substitute_and_charge(
-                                &unwrap_option_safe(single_case.pattern.clone())?,
+                                unwrap_option_safe(single_case.pattern.clone())?,
                                 1,
                                 env,
                             )?;
@@ -1909,7 +1931,7 @@ impl DebruijnInterpreter {
         )?;
         let subst_target = self
             .substitute
-            .substitute_and_charge(&evaled_target, 0, env)?;
+            .substitute_and_charge(evaled_target, 0, env)?;
 
         first_match(subst_target, mat.cases.clone(), rand).await
     }
@@ -1933,7 +1955,7 @@ impl DebruijnInterpreter {
         )?;
         let subst_cond = self
             .substitute
-            .substitute_and_charge(&evaled_cond, 0, env)?;
+            .substitute_and_charge(evaled_cond, 0, env)?;
 
         match extract_bool(&subst_cond) {
             Some(true) => {
@@ -2073,7 +2095,7 @@ impl DebruijnInterpreter {
 
     fn unbundle_receive(&self, rb: &ReceiveBind, env: &Env<Par>) -> Result<Par, InterpreterError> {
         let eval_src = self.eval_expr(&unwrap_option_safe(rb.source.clone())?, env)?;
-        let subst = self.substitute.substitute_and_charge(&eval_src, 0, env)?;
+        let subst = self.substitute.substitute_and_charge(eval_src, 0, env)?;
         // Check if we try to read from bundled channel
         let unbndl = match single_bundle(&subst) {
             Some(value) => {
@@ -3453,8 +3475,8 @@ impl DebruijnInterpreter {
     // EEq. v1,v2 already `eval_expr`'d (substitution + NaN-aware compare; substitute is NOT SCC).
     fn combine_eq(&self, v1: Par, v2: Par, env: &Env<Par>) -> Result<Expr, InterpreterError> {
         // TODO: build an equality operator that takes in an environment. - OLD
-        let sv1 = self.substitute.substitute_and_charge(&v1, 0, env)?;
-        let sv2 = self.substitute.substitute_and_charge(&v2, 0, env)?;
+        let sv1 = self.substitute.substitute_and_charge(v1, 0, env)?;
+        let sv2 = self.substitute.substitute_and_charge(v2, 0, env)?;
         self.metering
             .reserve_primitive(equality_check_cost(&sv1, &sv2))?;
 
@@ -3470,8 +3492,8 @@ impl DebruijnInterpreter {
 
     // ENeq.
     fn combine_neq(&self, v1: Par, v2: Par, env: &Env<Par>) -> Result<Expr, InterpreterError> {
-        let sv1 = self.substitute.substitute_and_charge(&v1, 0, env)?;
-        let sv2 = self.substitute.substitute_and_charge(&v2, 0, env)?;
+        let sv1 = self.substitute.substitute_and_charge(v1, 0, env)?;
+        let sv2 = self.substitute.substitute_and_charge(v2, 0, env)?;
         self.metering
             .reserve_primitive(equality_check_cost(&sv1, &sv2))?;
 
@@ -3489,10 +3511,13 @@ impl DebruijnInterpreter {
     fn combine_matches(&self, evaled_target: Par, pattern: &Par, env: &Env<Par>) -> Result<Expr, InterpreterError> {
         let subst_target =
             self.substitute
-                .substitute_and_charge(&evaled_target, 0, env)?;
+                .substitute_and_charge(evaled_target, 0, env)?;
+        // ★ A VISIBLE, ATTRIBUTABLE COPY. `pattern` is a borrowed `&Par` — see
+        // this function's own signature comment — so substituting it requires a
+        // copy. It is written here rather than hidden inside the wrapper.
         let subst_pattern =
             self.substitute
-                .substitute_and_charge(pattern, 1, env)?;
+                .substitute_and_charge(pattern.clone(), 1, env)?;
 
         let mut spatial_matcher = SpatialMatcherContext::new();
         let match_result =
@@ -4350,7 +4375,7 @@ impl DebruijnInterpreter {
                 let expr_subst =
                     self.outer
                         .substitute
-                        .substitute_and_charge(&expr_evaled, 0, env)?;
+                        .substitute_and_charge(expr_evaled, 0, env)?;
 
                 self.outer
                     .metering
