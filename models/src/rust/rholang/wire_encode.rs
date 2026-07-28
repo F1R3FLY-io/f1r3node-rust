@@ -117,60 +117,21 @@ use std::collections::btree_map;
 use crate::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
 use crate::rust::rhoapi_ext::EPathMap;
 use crate::rust::rholang::wire::{
-    pathmap_ps, FieldVal, LeafVal, PathmapPs, Payload, WireNode, WireSeq, EPATHMAP_PROGRAM,
+    pathmap_ps, put_bytes, put_u64, Descent, PathmapPs, WireNode, WireSeq, NO_RESUME,
 };
 
 // ===========================================================================
-// §A  Byte emission — the whole of bincode's legacy layout, in one place
+// §A  Byte emission
 // ===========================================================================
-
-/// `u64` little-endian. Every length, count and `usize` on the wire is this.
-#[inline(always)]
-fn put_u64(out: &mut Vec<u8>, v: u64) {
-    out.extend_from_slice(&v.to_le_bytes());
-}
-
-/// A length-prefixed byte payload: `u64` LE length ++ raw bytes.
-///
-/// Both `serialize_bytes` and `Vec<u8>`-as-a-seq produce exactly this, because
-/// each `u8` element of a seq is one byte — the two spellings coincide, so the
-/// encoder needs only one.
-#[inline(always)]
-fn put_bytes(out: &mut Vec<u8>, b: &[u8]) {
-    put_u64(out, b.len() as u64);
-    out.extend_from_slice(b);
-}
-
-/// Emit one bounded field. Never descends, never allocates.
-#[inline]
-fn put_leaf(out: &mut Vec<u8>, v: LeafVal<'_>) {
-    match v {
-        LeafVal::Bool(b) => out.push(b as u8),
-        LeafVal::I32(n) => out.extend_from_slice(&n.to_le_bytes()),
-        LeafVal::U32(n) => out.extend_from_slice(&n.to_le_bytes()),
-        LeafVal::I64(n) => out.extend_from_slice(&n.to_le_bytes()),
-        LeafVal::U64(n) => out.extend_from_slice(&n.to_le_bytes()),
-        LeafVal::Bytes(b) => put_bytes(out, b),
-        // ⚠ The serialize-only `locally_free` normalization: EIGHT ZERO BYTES,
-        // whatever is stored. `models/build.rs` injects the equivalent
-        // `serialize_with` on the derived path; the DECODER reads the stream's
-        // real length. See `wire::FieldKind`.
-        LeafVal::EmptyBytes => put_u64(out, 0),
-        LeafVal::Str(s) => put_bytes(out, s.as_bytes()),
-        LeafVal::StrSeq(ss) => {
-            put_u64(out, ss.len() as u64);
-            for s in ss {
-                put_bytes(out, s.as_bytes());
-            }
-        }
-        LeafVal::BytesSeq(bs) => {
-            put_u64(out, bs.len() as u64);
-            for b in bs {
-                put_bytes(out, b);
-            }
-        }
-    }
-}
+//
+// ⚠ There is none here. Every layout primitive lives in
+// [`crate::rust::rholang::wire`] (§A2) and is called from the GENERATED
+// `wire_emit` bodies, so bincode's layout is written in exactly one place and
+// the emission of a node's bounded fields is monomorphic — which is what makes
+// it competitive with serde's derive. This module owns the TRAMPOLINE: the op
+// stack, the counted repeat, the suspension discipline, the map iterator and
+// the `EPathMap` interception. See `wire.rs` §A2 for the profile that forced
+// the split.
 
 // ===========================================================================
 // §B  The opcode alphabet
@@ -186,8 +147,19 @@ enum Op<'a> {
     /// Emit fields `[field..]` of `node`.
     Node { node: &'a dyn WireNode, field: u16 },
     /// Emit elements `[index..]` of `seq`. The count was written when the
-    /// field was opened.
-    Seq { seq: &'a dyn WireSeq, index: usize },
+    /// field was opened, and `len` is carried so the driver never makes a
+    /// virtual call to re-ask — those calls were ~8.6% of the first profile.
+    Seq {
+        seq: &'a dyn WireSeq,
+        /// ⚠ `u32`, not `usize`, so `Op` stays four words. A sequence with more
+        /// than 4,294,967,295 elements cannot exist in memory (each `Par` is
+        /// far more than one byte), and [`Machine::open_seq`] refuses one
+        /// rather than truncating the cursor — a truncated cursor would emit
+        /// fewer elements than the count prefix promises, which is a corrupt
+        /// encoding rather than a slow one.
+        index: u32,
+        len: u32,
+    },
     /// Release parked vectors down to `mark`. Pushed *beneath* the subtree
     /// that reads them, so LIFO makes the release exact.
     DropOwned { mark: usize },
@@ -359,8 +331,7 @@ impl<'a> Machine<'a> {
             let Some(op) = self.ops.pop() else { break };
             match op {
                 Op::Node { node, field } => self.run_node(out, node, field as usize),
-                Op::Seq { seq, index } => {
-                    let len = seq.wire_len();
+                Op::Seq { seq, index, len } => {
                     if index < len {
                         // ★ Re-push SELF, not `n` children: the op stack stays
                         // Θ(depth) however WIDE the sequence is (measured flat
@@ -376,10 +347,11 @@ impl<'a> Machine<'a> {
                             self.ops.push(Op::Seq {
                                 seq,
                                 index: index + 1,
+                                len,
                             });
                         }
                         self.ops.push(Op::Node {
-                            node: seq.wire_get(index),
+                            node: seq.wire_get(index as usize),
                             field: 0,
                         });
                     }
@@ -412,97 +384,79 @@ impl<'a> Machine<'a> {
     }
 
     /// Emit fields `[field..]` of `node`, suspending at the first descent.
+    ///
+    /// ★ ONE virtual call — `wire_emit` — however many bounded fields it runs
+    /// through. The first design asked the node for each field in turn and cost
+    /// 21 indirect calls per `Par`; see `wire.rs` §A2.
+    #[inline]
     fn run_node(&mut self, out: &mut Vec<u8>, node: &'a dyn WireNode, field: usize) {
-        // ⚠ `EPathMap` cannot enter the generic loop at field 0: its `ps` may
-        // have to be CONSTRUCTED in canonical order (§4), which no
-        // borrow-returning accessor can serve. Intercept, park, rejoin at 1.
+        // ⚠ `EPathMap` cannot be entered at field 0: its `ps` may have to be
+        // CONSTRUCTED in canonical order (§4), which no borrow-returning
+        // emission can serve. Intercept, park, and rejoin at field 1.
         if field == 0 {
             if let Some(map) = node.wire_as_pathmap() {
                 self.open_pathmap(out, node, map);
                 return;
             }
         }
-
-        let program = node.wire_program();
-        let mut i = field;
-        while i < program.len() {
-            match node.wire_field(i) {
-                FieldVal::Leaf(v) => {
-                    put_leaf(out, v);
-                    i += 1;
-                }
-                FieldVal::Opt(child) => {
-                    out.push(u8::from(child.is_some()));
-                    match child {
-                        Some(child) => {
-                            self.suspend(node, i + 1, program.len());
-                            self.ops.push(Op::Node {
-                                node: child,
-                                field: 0,
-                            });
-                            return;
-                        }
-                        None => i += 1,
-                    }
-                }
-                FieldVal::Seq(seq) => {
-                    let n = seq.wire_len();
-                    put_u64(out, n as u64);
-                    if n == 0 {
-                        i += 1;
-                    } else {
-                        self.suspend(node, i + 1, program.len());
-                        self.ops.push(Op::Seq { seq, index: 0 });
-                        return;
-                    }
-                }
-                FieldVal::Map(map) => {
-                    put_u64(out, map.len() as u64);
-                    if map.is_empty() {
-                        i += 1;
-                    } else {
-                        self.suspend(node, i + 1, program.len());
-                        self.map_iters.push(map.iter());
-                        self.ops.push(Op::MapEntries);
-                        return;
-                    }
-                }
-                FieldVal::Oneof(variant) => {
-                    out.push(u8::from(variant.is_some()));
-                    match variant {
-                        Some((index, payload)) => {
-                            // An enum is a `u32` LE DECLARATION-ORDER index —
-                            // never the proto tag — then the payload.
-                            out.extend_from_slice(&index.to_le_bytes());
-                            match payload {
-                                Payload::Leaf(v) => {
-                                    put_leaf(out, v);
-                                    i += 1;
-                                }
-                                Payload::Node(child) => {
-                                    self.suspend(node, i + 1, program.len());
-                                    self.ops.push(Op::Node {
-                                        node: child,
-                                        field: 0,
-                                    });
-                                    return;
-                                }
-                            }
-                        }
-                        None => i += 1,
-                    }
-                }
+        match node.wire_emit(field, out) {
+            Descent::Done => {}
+            Descent::Node { resume, node: child } => {
+                self.suspend(node, resume);
+                self.ops.push(Op::Node {
+                    node: child,
+                    field: 0,
+                });
+            }
+            Descent::Seq { resume, len, seq } => {
+                self.suspend(node, resume);
+                self.open_seq(seq, len);
+            }
+            Descent::Map { resume, map } => {
+                self.suspend(node, resume);
+                self.map_iters.push(map.iter());
+                self.ops.push(Op::MapEntries);
             }
         }
     }
 
-    /// Push a resume point for `node` at `field`, unless the program is spent.
+    /// Begin a counted repeat over `seq`.
+    ///
+    /// The length check is the price of a four-word `Op` (see [`Op::Seq`]); it
+    /// is one compare against a constant, perfectly predicted, and it refuses
+    /// rather than silently truncating a cursor.
     #[inline]
-    fn suspend(&mut self, node: &'a dyn WireNode, field: usize, len: usize) {
-        if field < len {
+    fn open_seq(&mut self, seq: &'a dyn WireSeq, len: usize) {
+        assert!(
+            len <= u32::MAX as usize,
+            "wire_encode: a sequence of {len} elements exceeds the u32 cursor. The count \
+             prefix has already been written, so truncating here would emit fewer elements \
+             than the stream promises — a corrupt encoding, not a slow one."
+        );
+        self.ops.push(Op::Seq {
+            seq,
+            index: 0,
+            len: len as u32,
+        });
+    }
+
+    /// Push a resume point for `node` at `resume`, unless the program is spent.
+    ///
+    /// ★ A pure comparison against [`NO_RESUME`] — no virtual call. The
+    /// generator knows each program's length, so "is this the last field?" is
+    /// answered at build time. Asking the node instead (`wire_program().len()`)
+    /// cost one indirect call per DESCENT, which is what a deep term is made
+    /// of: it was the whole of the residual 2.75% regression.
+    ///
+    /// Omitting the push is the encoder's TAIL CALL. Together with its sibling
+    /// in `Op::Seq` (the last element of a sequence) it halves the per-level op
+    /// cost of the deep-nesting shape, 4.000 → 2.000 entries.
+    #[inline(always)]
+    fn suspend(&mut self, node: &'a dyn WireNode, resume: u16) {
+        if resume != NO_RESUME {
             self.ops.push(Op::Node {
                 node,
-                field: field as u16,
+                field: resume,
             });
         }
     }
@@ -513,9 +467,9 @@ impl<'a> Machine<'a> {
         match pathmap_ps(map) {
             PathmapPs::Stored(ps) => {
                 put_u64(out, ps.len() as u64);
-                self.suspend(node, 1, EPATHMAP_PROGRAM.len());
+                self.suspend(node, 1);
                 if !ps.is_empty() {
-                    self.ops.push(Op::Seq { seq: ps, index: 0 });
+                    self.open_seq(ps, ps.len());
                 }
             }
             PathmapPs::Canonical(ps) => {
@@ -524,12 +478,9 @@ impl<'a> Machine<'a> {
                 // ⚠ ORDER. `DropOwned` goes on FIRST so it pops LAST — after
                 // the whole subtree that reads the slot has been emitted.
                 self.ops.push(Op::DropOwned { mark });
-                self.suspend(node, 1, EPATHMAP_PROGRAM.len());
+                self.suspend(node, 1);
                 if !parked.is_empty() {
-                    self.ops.push(Op::Seq {
-                        seq: parked,
-                        index: 0,
-                    });
+                    self.open_seq(parked, parked.len());
                 }
             }
         }

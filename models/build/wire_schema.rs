@@ -94,8 +94,10 @@ struct Field {
     rust_name: String,
     /// The `FieldKind` variant name, as Rust source.
     kind: &'static str,
-    /// The `FieldVal` expression, as Rust source (`self` is in scope).
-    access: String,
+    /// The BODY of this field's `match` arm in the generated `wire_emit`, as
+    /// Rust source. `self`, `out` and `i` are in scope; a descending arm
+    /// `return`s a [`Descent`].
+    emit: String,
 }
 
 /// One resolved oneof.
@@ -113,7 +115,9 @@ struct Oneof {
 struct Variant {
     index: u32,
     rust_ident: String,
-    /// The `Payload` expression, as Rust source (`v` binds the payload).
+    /// The BODY of this arm in the generated `WireOneof::wire_emit`, as Rust
+    /// source. `v` binds the payload and `out` is in scope; the arm evaluates
+    /// to `Option<&dyn WireNode>`.
     payload_expr: String,
     /// The `&'static [FieldKind]` expression naming this arm's program.
     program_expr: String,
@@ -362,7 +366,9 @@ fn header(src: &mut String) {
          use crate::rhoapi::var::VarInstance;\n\
          use crate::rust::rhoapi_ext::EPathMap;\n\
          use crate::rust::rholang::wire::{\n\
-         \x20   FieldKind, FieldVal, LeafVal, Payload, VariantProgram, WireNode, WireOneof,\n\
+         \x20   put_bool, put_bytes, put_bytes_seq, put_empty_bytes, put_i32, put_i64, put_str,\n\
+         \x20   put_str_seq, put_u32, put_u64, Descent, FieldKind, VariantProgram, WireNode,\n\
+         \x20   WireOneof, NO_RESUME,\n\
          };\n\
          \n",
     );
@@ -411,14 +417,15 @@ fn resolve_message(
         if field.oneof_index.is_some() {
             continue; // emitted below, after every plain field
         }
-        let (kind, access, is_empty_bytes) = classify(&msg_name, field, known, extern_set);
+        let index = fields.len();
+        let (kind, emit, is_empty_bytes) = classify(&msg_name, field, known, extern_set, index);
         if is_empty_bytes {
             empty_bytes += 1;
         }
         fields.push(Field {
             rust_name: rust_field_name(&field.name.clone().unwrap_or_default()),
             kind,
-            access,
+            emit,
         });
     }
 
@@ -427,11 +434,21 @@ fn resolve_message(
         let rust_ident = rust_type_name(&proto_name);
         let module = message.oneof_module();
         let rust_name = rust_field_name(&proto_name);
+        let resume = fields.len() + 1;
         fields.push(Field {
             rust_name: rust_name.clone(),
             kind: "Oneof",
-            access: format!(
-                "FieldVal::Oneof(self.{rust_name}.as_ref().map(WireOneof::wire_variant))"
+            // An `Option<oneof>` is a 1-byte tag, then (when present) the
+            // oneof's own u32 declaration-order index and payload. The index
+            // and any bounded payload are written by the generated
+            // `WireOneof::wire_emit`, which is monomorphic and inlines; only a
+            // MESSAGE payload suspends.
+            emit: format!(
+                "match &self.{rust_name} {{ \
+                 Some(v) => {{ put_bool(out, true); \
+                 if let Some(node) = WireOneof::wire_emit(v, out) {{ \
+                 return Descent::Node {{ resume: {resume}, node }}; }} }} \
+                 None => put_bool(out, false) }}"
             ),
         });
         let variants = resolve_oneof_variants(msg, idx, &rust_ident, known, extern_set, programs);
@@ -448,19 +465,45 @@ fn resolve_message(
         });
     }
 
+    // ★ THE TAIL-CALL PATCH. A descending field that is the program's LAST
+    // needs no resume point, and the generator is the only place that knows
+    // which one that is. `resume: {n}` — where `n` is the field count — can
+    // only have been produced by the final field, so the rewrite is exact.
+    //
+    // Doing this at build time removes a virtual `wire_program().len()` call
+    // from EVERY descent in the driver, which was the entire residual gap
+    // against the derived encoder (see `wire.rs`'s `NO_RESUME`).
+    assert!(
+        fields.len() < u16::MAX as usize,
+        "wire_schema: `{msg_name}` has {} fields; `Descent::resume` is a u16 and \
+         `NO_RESUME` is its maximum.",
+        fields.len()
+    );
+    let spent = format!("resume: {}", fields.len());
+    for field in &mut fields {
+        field.emit = field.emit.replace(&spent, "resume: NO_RESUME");
+    }
+
     (fields, oneofs, empty_bytes)
 }
 
-/// Classify a non-oneof field into `(FieldKind, FieldVal expression, is_empty_bytes)`.
+/// Classify a non-oneof field into `(FieldKind, emission source, is_empty_bytes)`.
+///
+/// The emission source is the body of one `match` arm in the generated
+/// `wire_emit`. Bounded fields call an emission primitive from
+/// `crate::rust::rholang::wire` — the single place the layout is written — and
+/// descending fields `return` a [`Descent`] naming the field to resume at.
 fn classify(
     msg_name: &str,
     field: &FieldDescriptorProto,
     known: &BTreeSet<String>,
     extern_set: &BTreeSet<&str>,
+    index: usize,
 ) -> (&'static str, String, bool) {
     let proto_name = field.name.clone().unwrap_or_default();
     let name = rust_field_name(&proto_name);
     let repeated = field.label == Some(Label::Repeated as i32);
+    let resume = index + 1;
     let ty = Type::try_from(field.r#type.unwrap_or(0)).unwrap_or_else(|_| {
         panic!("wire_schema: `{msg_name}.{proto_name}` has an unrecognised protobuf type")
     });
@@ -469,21 +512,25 @@ fn classify(
     if repeated && ty == Type::Message {
         let leaf = type_leaf(field.type_name.as_deref().unwrap_or(""));
         if leaf.ends_with("Entry") && !known.contains(leaf) {
-            // Synthetic map entry. `build.rs` sets `.btree_map(".")`, so prost
-            // renders it `BTreeMap<K, V>`; serde emits a map (u64 count, then
-            // key/value PAIRS), not a seq. The only such field in the schema
-            // is `New.injections: BTreeMap<String, Par>`.
+            // `build.rs` sets `.btree_map(".")`, so prost renders it
+            // `BTreeMap<K, V>`; serde emits a MAP (u64 count, then key/value
+            // PAIRS), not a seq. The only such field is `New.injections`.
             assert_eq!(
                 leaf, "InjectionsEntry",
                 "wire_schema: `{msg_name}.{proto_name}` is a map whose entry type is `{leaf}`. \
-                 The driver's `FieldVal::Map` is typed `BTreeMap<String, Par>`; a second map \
+                 The driver's `Descent::Map` is typed `BTreeMap<String, Par>`; a second map \
                  shape needs a deliberate widening, not a silent reinterpretation."
             );
-            return ("Map", format!("FieldVal::Map(&self.{name})"), false);
+            return (
+                "Map",
+                format!(
+                    "{{ let m = &self.{name}; put_u64(out, m.len() as u64); \
+                     if !m.is_empty() {{ return Descent::Map {{ resume: {resume}, map: m }}; }} }}"
+                ),
+                false,
+            );
         }
     }
-
-    let leaf_val = |v: &str| format!("FieldVal::Leaf({v})");
 
     match (repeated, ty) {
         (true, Type::Message) => {
@@ -493,14 +540,17 @@ fn classify(
                 "wire_schema: `{msg_name}.{proto_name}` is a repeated `{leaf}`, which is not a \
                  `{PACKAGE}` message. Cross-package descent is not modelled."
             );
-            ("Seq", format!("FieldVal::Seq(&self.{name})"), false)
+            (
+                "Seq",
+                format!(
+                    "{{ let s = &self.{name}; let n = s.len(); put_u64(out, n as u64); \
+                     if n != 0 {{ return Descent::Seq {{ resume: {resume}, len: n, seq: s }}; }} }}"
+                ),
+                false,
+            )
         }
-        (true, Type::String) => ("StrSeq", leaf_val(&format!("LeafVal::StrSeq(&self.{name})")), false),
-        (true, Type::Bytes) => (
-            "BytesSeq",
-            leaf_val(&format!("LeafVal::BytesSeq(&self.{name})")),
-            false,
-        ),
+        (true, Type::String) => ("StrSeq", format!("put_str_seq(out, &self.{name})"), false),
+        (true, Type::Bytes) => ("BytesSeq", format!("put_bytes_seq(out, &self.{name})"), false),
         (true, other) => panic!(
             "wire_schema: `{msg_name}.{proto_name}` is a repeated {other:?}. Only repeated \
              message / string / bytes appear in this schema; a new one needs a `FieldKind`."
@@ -514,34 +564,39 @@ fn classify(
             );
             (
                 "Opt",
-                format!("FieldVal::Opt(self.{name}.as_ref().map(|v| v as &dyn WireNode))"),
+                format!(
+                    "match &self.{name} {{ \
+                     Some(v) => {{ put_bool(out, true); \
+                     return Descent::Node {{ resume: {resume}, node: v }}; }} \
+                     None => put_bool(out, false) }}"
+                ),
                 false,
             )
         }
-        (false, Type::Bool) => ("Bool", leaf_val(&format!("LeafVal::Bool(self.{name})")), false),
-        (false, Type::String) => ("Str", leaf_val(&format!("LeafVal::Str(&self.{name})")), false),
+        (false, Type::Bool) => ("Bool", format!("put_bool(out, self.{name})"), false),
+        (false, Type::String) => ("Str", format!("put_str(out, &self.{name})"), false),
         (false, Type::Bytes) => {
             // ⚠ THE SERIALIZE-ONLY ASYMMETRY. `models/build.rs` injects
             // `serialize_with = serialize_as_empty_bytes` on exactly the
             // `locally_free` bytes fields: written as eight zero bytes, read
             // back at the stream's REAL length. Same rule, same place.
             if proto_name.to_snake_case() == "locally_free" {
-                ("EmptyBytes", leaf_val("LeafVal::EmptyBytes"), true)
+                ("EmptyBytes", "put_empty_bytes(out)".to_string(), true)
             } else {
-                ("Bytes", leaf_val(&format!("LeafVal::Bytes(&self.{name})")), false)
+                ("Bytes", format!("put_bytes(out, &self.{name})"), false)
             }
         }
         (false, Type::Int32 | Type::Sint32 | Type::Sfixed32) => {
-            ("I32", leaf_val(&format!("LeafVal::I32(self.{name})")), false)
+            ("I32", format!("put_i32(out, self.{name})"), false)
         }
         (false, Type::Uint32 | Type::Fixed32) => {
-            ("U32", leaf_val(&format!("LeafVal::U32(self.{name})")), false)
+            ("U32", format!("put_u32(out, self.{name})"), false)
         }
         (false, Type::Int64 | Type::Sint64 | Type::Sfixed64) => {
-            ("I64", leaf_val(&format!("LeafVal::I64(self.{name})")), false)
+            ("I64", format!("put_i64(out, self.{name})"), false)
         }
         (false, Type::Uint64 | Type::Fixed64) => {
-            ("U64", leaf_val(&format!("LeafVal::U64(self.{name})")), false)
+            ("U64", format!("put_u64(out, self.{name})"), false)
         }
         (false, other) => panic!(
             "wire_schema: `{msg_name}.{proto_name}` has type {other:?}, which has no `FieldKind`. \
@@ -591,31 +646,34 @@ fn resolve_oneof_variants(
                      not a `{PACKAGE}` message."
                 );
                 let program = program_ident_of(leaf, extern_set, programs);
-                ("Payload::Node(v)".to_string(), program)
+                (format!("{{ put_u32(out, {index}); Some(v) }}"), program)
             }
-            Type::Bool => ("Payload::Leaf(LeafVal::Bool(*v))".to_string(), "&[FieldKind::Bool]".to_string()),
+            Type::Bool => (
+                format!("{{ put_u32(out, {index}); put_bool(out, *v); None }}"),
+                "&[FieldKind::Bool]".to_string(),
+            ),
             Type::String => (
-                "Payload::Leaf(LeafVal::Str(v))".to_string(),
+                format!("{{ put_u32(out, {index}); put_str(out, v); None }}"),
                 "&[FieldKind::Str]".to_string(),
             ),
             Type::Bytes => (
-                "Payload::Leaf(LeafVal::Bytes(v))".to_string(),
+                format!("{{ put_u32(out, {index}); put_bytes(out, v); None }}"),
                 "&[FieldKind::Bytes]".to_string(),
             ),
             Type::Int32 | Type::Sint32 | Type::Sfixed32 => (
-                "Payload::Leaf(LeafVal::I32(*v))".to_string(),
+                format!("{{ put_u32(out, {index}); put_i32(out, *v); None }}"),
                 "&[FieldKind::I32]".to_string(),
             ),
             Type::Uint32 | Type::Fixed32 => (
-                "Payload::Leaf(LeafVal::U32(*v))".to_string(),
+                format!("{{ put_u32(out, {index}); put_u32(out, *v); None }}"),
                 "&[FieldKind::U32]".to_string(),
             ),
             Type::Int64 | Type::Sint64 | Type::Sfixed64 => (
-                "Payload::Leaf(LeafVal::I64(*v))".to_string(),
+                format!("{{ put_u32(out, {index}); put_i64(out, *v); None }}"),
                 "&[FieldKind::I64]".to_string(),
             ),
             Type::Uint64 | Type::Fixed64 => (
-                "Payload::Leaf(LeafVal::U64(*v))".to_string(),
+                format!("{{ put_u32(out, {index}); put_u64(out, *v); None }}"),
                 "&[FieldKind::U64]".to_string(),
             ),
             other => panic!(
@@ -698,17 +756,34 @@ fn emit_message(src: &mut String, rust_ty: &str, program_ident: &str, fields: &[
         "    #[inline]\n    fn wire_program(&self) -> &'static [FieldKind] {{ {program_ident} }}"
     )
     .expect("write");
-    writeln!(src, "    #[inline]\n    fn wire_field(&self, i: usize) -> FieldVal<'_> {{").expect("write");
+    // ★ ONE virtual call per node per suspension, not one per field. The body
+    // is monomorphic, so every bounded field inlines exactly as serde's derive
+    // does — see `wire.rs` §A2 for the measurement that forced this shape.
+    src.push_str("    fn wire_emit(&self, from: usize, out: &mut Vec<u8>) -> Descent<'_> {\n");
     if fields.is_empty() {
-        // An empty protobuf message (`WildcardMsg`, `GSysAuthToken`) serializes
-        // as `serialize_struct(name, 0)` — ZERO bytes. No field is reachable.
-        src.push_str("        let _ = i;\n        unreachable!(\"empty message has no fields\")\n");
+        // An empty protobuf message (`WildcardMsg`, `GSysAuthToken`)
+        // serializes as `serialize_struct(name, 0)` — ZERO bytes.
+        src.push_str("        let _ = (from, out);\n        Descent::Done\n");
     } else {
-        src.push_str("        match i {\n");
+        // ★ A FALLTHROUGH CHAIN, not `loop { match i { … } i += 1 }`.
+        //
+        // The `match` form re-enters a jump table for every field, so a `Par`
+        // paid eleven indirect jumps per node. `if from < k` is a compare
+        // against a value that does not change inside the body: the branches
+        // are perfectly predicted, the `from == 0` entry — which every node
+        // takes once — runs straight-line, and LLVM can fold the chain.
+        // Descending arms `return`, so the chain exits naturally.
         for (i, f) in fields.iter().enumerate() {
-            writeln!(src, "            {i} => {},", f.access).expect("write");
+            writeln!(
+                src,
+                "        if from < {} {{ {} }} // {}",
+                i + 1,
+                f.emit,
+                f.rust_name
+            )
+            .expect("write");
         }
-        src.push_str("            _ => unreachable!(\"field index out of program range\"),\n        }\n");
+        src.push_str("        Descent::Done\n");
     }
     src.push_str("    }\n}\n\n");
 }
@@ -774,16 +849,20 @@ fn emit_oneof(src: &mut String, oneof: &Oneof) {
         "impl WireOneof for {rust_ident} {{\n\
          \x20   /// ★ EXHAUSTIVE — no wildcard arm. A variant added to the `.proto` cannot\n\
          \x20   /// reach production untested: the table regenerates and this match with it.\n\
+         \x20   ///\n\
+         \x20   /// Writes the `u32` DECLARATION-ORDER index (never the proto tag) and any\n\
+         \x20   /// bounded payload; returns `Some(node)` only for a message payload, which\n\
+         \x20   /// is the one case the driver has to suspend at.\n\
          \x20   #[inline]\n\
-         \x20   fn wire_variant(&self) -> (u32, Payload<'_>) {{\n\
+         \x20   fn wire_emit(&self, out: &mut Vec<u8>) -> Option<&dyn WireNode> {{\n\
          \x20       match self {{"
     )
     .expect("write");
     for v in variants {
         writeln!(
             src,
-            "            {rust_ident}::{}(v) => ({}, {}),",
-            v.rust_ident, v.index, v.payload_expr
+            "            {rust_ident}::{}(v) => {},",
+            v.rust_ident, v.payload_expr
         )
         .expect("write");
     }

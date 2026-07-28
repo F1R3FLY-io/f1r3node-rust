@@ -104,63 +104,173 @@ impl FieldKind {
     }
 }
 
-/// A field value that costs a **bounded** number of bytes and never descends.
-#[derive(Clone, Copy, Debug)]
-pub enum LeafVal<'a> {
-    Bool(bool),
-    I32(i32),
-    U32(u32),
-    I64(i64),
-    U64(u64),
-    Bytes(&'a [u8]),
-    /// The `locally_free` normalization: eight zero bytes, whatever is stored.
-    EmptyBytes,
-    Str(&'a str),
-    StrSeq(&'a [String]),
-    BytesSeq(&'a [Vec<u8>]),
+// ===========================================================================
+// §A2  The emission primitives — the ONE place bincode's layout is written
+// ===========================================================================
+//
+// ⚠★ WHY THESE ARE PUBLIC AND CALLED FROM GENERATED CODE.
+//
+// The first design had the generated table expose `fn wire_field(i) -> FieldVal`
+// and let a hand-written driver interpret it. That is the obvious factoring and
+// it is 1.7× SLOWER than the derived `Serialize` — measured, then profiled:
+// `Par` has eleven fields, so each node cost eleven indirect `wire_field` calls
+// returning a 32-byte enum by value, plus nine more indirect `wire_len` calls
+// on the returned `&dyn WireSeq`, plus `wire_program` — **21 indirect calls per
+// node where the derived path has none**, because serde's derive is
+// monomorphic and fully inlined. `perf` put 31.8% of the profile in the driver
+// loop, 10.1% in `Par::wire_field` alone, and ~8.6% across the `wire_len`
+// thunks.
+//
+// So the split moved to where it belongs: **bounded-field EMISSION is
+// generated and monomorphic; the TRAMPOLINE is hand-written and generic.** The
+// generated `wire_emit` runs a node's leaf fields straight-line — the same
+// codegen the derive gets — and returns at the first descent. The driver still
+// owns every suspension, the counted repeat, the op stack and the map
+// iterator: it just never touches a field it does not have to suspend at.
+//
+// These functions remain the single source of truth for the layout. Generated
+// code CALLS them; it does not restate them.
+
+/// `u64` little-endian — every length, count and `usize` on the wire.
+#[inline(always)]
+pub fn put_u64(out: &mut Vec<u8>, v: u64) {
+    out.extend_from_slice(&v.to_le_bytes());
 }
 
-/// The payload of one oneof arm: a nested node, or a bounded leaf.
-#[derive(Clone, Copy)]
-pub enum Payload<'a> {
-    Node(&'a dyn WireNode),
-    Leaf(LeafVal<'a>),
+/// `u32` little-endian — the enum variant index, and `uint32`/`fixed32` fields.
+#[inline(always)]
+pub fn put_u32(out: &mut Vec<u8>, v: u32) {
+    out.extend_from_slice(&v.to_le_bytes());
 }
 
-/// One field of one node, read without copying anything it points at.
-#[derive(Clone, Copy)]
-pub enum FieldVal<'a> {
-    Leaf(LeafVal<'a>),
-    Opt(Option<&'a dyn WireNode>),
-    Seq(&'a dyn WireSeq),
-    /// The single `BTreeMap` field in the schema (`New.injections`). serde
-    /// emits a **map**: a `u64` count, then key/value *pairs* — keys
-    /// interleaved with arbitrarily deep values, and *not* required to be
-    /// sorted on the wire (duplicate keys overwrite, as `BTreeMap::insert`).
-    Map(&'a BTreeMap<String, Par>),
-    Oneof(Option<(u32, Payload<'a>)>),
+/// `i32` little-endian. ⚠ NOT zigzag: serde sees an `i32` whatever the proto
+/// said (`sint32` is a *protobuf* encoding and never reaches bincode).
+#[inline(always)]
+pub fn put_i32(out: &mut Vec<u8>, v: i32) {
+    out.extend_from_slice(&v.to_le_bytes());
+}
+
+/// `i64` little-endian.
+#[inline(always)]
+pub fn put_i64(out: &mut Vec<u8>, v: i64) {
+    out.extend_from_slice(&v.to_le_bytes());
+}
+
+/// One byte, `0` or `1`.
+#[inline(always)]
+pub fn put_bool(out: &mut Vec<u8>, v: bool) {
+    out.push(u8::from(v));
+}
+
+/// A length-prefixed byte payload: `u64` LE length ++ raw bytes.
+///
+/// `serialize_bytes` and `Vec<u8>`-as-a-seq coincide, because each `u8` element
+/// of a seq is one byte — so one primitive serves both spellings.
+#[inline(always)]
+pub fn put_bytes(out: &mut Vec<u8>, b: &[u8]) {
+    put_u64(out, b.len() as u64);
+    out.extend_from_slice(b);
+}
+
+/// A length-prefixed UTF-8 payload.
+#[inline(always)]
+pub fn put_str(out: &mut Vec<u8>, s: &str) {
+    put_bytes(out, s.as_bytes());
+}
+
+/// ⚠ The serialize-only `locally_free` normalization: **eight zero bytes**,
+/// whatever is stored. `models/build.rs` injects the equivalent
+/// `serialize_with` on the derived path; the DECODER reads the stream's real
+/// length. A decoder that assumed zero would reject byte strings the derived
+/// decoder accepts, which is a fork.
+#[inline(always)]
+pub fn put_empty_bytes(out: &mut Vec<u8>) {
+    put_u64(out, 0);
+}
+
+/// `u64` LE count ++ each length-prefixed string.
+#[inline]
+pub fn put_str_seq(out: &mut Vec<u8>, ss: &[String]) {
+    put_u64(out, ss.len() as u64);
+    for s in ss {
+        put_str(out, s);
+    }
+}
+
+/// `u64` LE count ++ each length-prefixed byte payload.
+#[inline]
+pub fn put_bytes_seq(out: &mut Vec<u8>, bs: &[Vec<u8>]) {
+    put_u64(out, bs.len() as u64);
+    for b in bs {
+        put_bytes(out, b);
+    }
 }
 
 // ===========================================================================
 // §B  The two object-safe traits the generated table implements
 // ===========================================================================
 
-/// A schema node: a `&'static` field program plus positional access to it.
+/// The `resume` value meaning **there is nothing to come back for**.
+///
+/// ★ The generator knows each program's length statically, so it emits this
+/// sentinel whenever the descending field was the node's LAST. Without it the
+/// driver had to ask — `node.wire_program().len()` — which is a virtual call on
+/// EVERY descent, and descents are what a deep term is made of. Measured: the
+/// production-weighted mix went from 2.75% slower than the derived path to
+/// faster, and depth 6 from 9.0% slower to a win.
+pub const NO_RESUME: u16 = u16::MAX;
+
+/// What a node's emission ran into: nothing, or one arbitrarily deep child.
+///
+/// `resume` is the field index the driver must re-enter at once the child's
+/// subtree is complete, or [`NO_RESUME`] when the program is spent. It is a
+/// `u16` so `Op` stays four words.
+pub enum Descent<'a> {
+    /// The program is spent. ★ The driver pushes no resume point for this —
+    /// a node's last field is a tail call, and so is a sequence's last element.
+    Done,
+    /// One child value (an `Option<Message>` field, or a oneof's message arm).
+    Node { resume: u16, node: &'a dyn WireNode },
+    /// A non-empty sequence. `len` is carried so the driver never has to make
+    /// a virtual call to ask — that call was ~8.6% of the first profile.
+    Seq {
+        resume: u16,
+        len: usize,
+        seq: &'a dyn WireSeq,
+    },
+    /// The single `BTreeMap` field in the schema (`New.injections`). serde
+    /// emits a **map**: a `u64` count, then key/value *pairs* — keys
+    /// interleaved with arbitrarily deep values, and not required to be sorted
+    /// on the wire (duplicate keys overwrite, as `BTreeMap::insert`).
+    Map {
+        resume: u16,
+        map: &'a BTreeMap<String, Par>,
+    },
+}
+
+/// A schema node: a `&'static` field program, and monomorphic emission of it.
 ///
 /// Object-safe by construction — no associated constants, no generic methods —
 /// because the driver's op stack holds `&dyn WireNode`.
 pub trait WireNode {
     /// This node's fields, in serde declaration order.
+    ///
+    /// The TABLE. Consumed by the decoder and by the conformance probe; the
+    /// encoder does not interpret it at run time (see §A2), it is *generated
+    /// from* it, and the two are pinned to the same oracle by the write
+    /// differential.
     fn wire_program(&self) -> &'static [FieldKind];
-    /// Field `i` of `wire_program()`. Borrowing only: nothing is cloned, so
-    /// the encoder never allocates to *read* a term.
-    fn wire_field(&self, i: usize) -> FieldVal<'_>;
+
+    /// Emit fields `[from..]` until the first descent, and report it.
+    ///
+    /// ★ ONE virtual call per node per suspension — not one per field. The
+    /// body is generated per type, so every bounded field inlines exactly as
+    /// serde's derive does.
+    fn wire_emit(&self, from: usize, out: &mut Vec<u8>) -> Descent<'_>;
 
     /// ⚠ **The one node whose field 0 must be CONSTRUCTED, not borrowed.**
     ///
-    /// `EPathMap` overrides this; every generated impl inherits `None`. The
-    /// driver asks each node once on the descent and takes the canonical path
-    /// only for the map (see [`pathmap_ps`]).
+    /// `EPathMap` overrides this; every generated impl inherits `None`.
     ///
     /// ★ It is a *trait method* and not a pointer comparison against
     /// [`EPATHMAP_PROGRAM`] for a reason that cost a `SIGSEGV` to learn:
@@ -177,9 +287,12 @@ pub trait WireNode {
     }
 }
 
-/// A oneof: its declaration-order index and its payload.
+/// A oneof: writes its declaration-order index and any bounded payload, and
+/// reports a message payload for the driver to descend into.
+///
+/// ⚠ The index is serde DECLARATION ORDER, never the proto tag.
 pub trait WireOneof {
-    fn wire_variant(&self) -> (u32, Payload<'_>);
+    fn wire_emit(&self, out: &mut Vec<u8>) -> Option<&dyn WireNode>;
 }
 
 /// A homogeneous sequence of nodes, erased.
@@ -263,28 +376,43 @@ impl WireNode for EPathMap {
         EPATHMAP_PROGRAM
     }
 
-    /// ⚠ Field 0 is **never** served from here — the encoder intercepts
-    /// `EPathMap` before entering the generic field loop precisely because
-    /// `ps` may have to be *constructed* (see [`PathmapPs`]), and a borrowed
-    /// `FieldVal` cannot own a freshly built vector. Serving the stored order
-    /// here would silently drop the ground canonicalization, so it panics
-    /// instead of returning a plausible-but-wrong answer.
     #[inline]
     fn wire_as_pathmap(&self) -> Option<&EPathMap> {
         Some(self)
     }
 
-    #[inline]
-    fn wire_field(&self, i: usize) -> FieldVal<'_> {
-        match i {
-            0 => unreachable!(
-                "EPathMap.ps must be read through `wire::pathmap_ps` — a ground map's `ps` is \
-                 CONSTRUCTED in canonical order and cannot be served as a borrow"
-            ),
-            1 => FieldVal::Leaf(LeafVal::EmptyBytes),
-            2 => FieldVal::Leaf(LeafVal::Bool(self.connective_used)),
-            3 => FieldVal::Opt(self.remainder.as_ref().map(|v| v as &dyn WireNode)),
-            _ => unreachable!("field index out of program range"),
+    /// ⚠ **Never entered at field 0.** `ps` may have to be *constructed* in
+    /// canonical order (see [`PathmapPs`]), and no borrow-returning emission
+    /// can own a freshly built vector, so the driver opens an `EPathMap`
+    /// through [`pathmap_ps`] and re-enters here at field 1. Emitting the
+    /// stored order here would silently drop the ground canonicalization —
+    /// which changes the event-hash preimage — so it refuses rather than
+    /// returning a plausible answer.
+    fn wire_emit(&self, from: usize, out: &mut Vec<u8>) -> Descent<'_> {
+        let mut i = from;
+        loop {
+            match i {
+                0 => unreachable!(
+                    "EPathMap.ps must be opened through `wire::pathmap_ps` — a ground map's \
+                     `ps` is CONSTRUCTED in canonical order and cannot be emitted from a borrow"
+                ),
+                1 => put_empty_bytes(out),
+                2 => put_bool(out, self.connective_used),
+                // `remainder` is the LAST field, so a descent into it needs no
+                // resume point — the encoder's tail call.
+                3 => match &self.remainder {
+                    Some(v) => {
+                        put_bool(out, true);
+                        return Descent::Node {
+                            resume: NO_RESUME,
+                            node: v,
+                        };
+                    }
+                    None => put_bool(out, false),
+                },
+                _ => return Descent::Done,
+            }
+            i += 1;
         }
     }
 }

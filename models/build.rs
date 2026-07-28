@@ -46,6 +46,18 @@ fn main() {
         "cargo:rerun-if-changed={}",
         scala_proto_base_dir.join("scalapb/scalapb.proto").display()
     );
+    // ⚠ AND the generator's own source. Emitting ANY `cargo:rerun-if-changed`
+    // switches cargo from "rerun when anything in the package changed" to
+    // "rerun only for these paths" — so without this line, editing
+    // `build/wire_schema.rs` leaves a STALE generated table in `OUT_DIR` while
+    // the build reports success. That is a silent, byte-visible divergence
+    // between the generator in the tree and the table in the binary; it was
+    // observed once, during this module's development, and cost a confusing
+    // benchmark result.
+    println!(
+        "cargo:rerun-if-changed={}",
+        manifest_dir.join("build/wire_schema.rs").display()
+    );
 
     // The descriptor set is what the wire-schema generator reads. It carries
     // FIELD DECLARATION ORDER, which is the bincode/serde layout — a fact the

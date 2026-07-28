@@ -55,6 +55,15 @@ name = "models"
 path = "src/lib.rs"
 doctest = false
 
+# ⚠ A Rust benchmark must be declared here before it can be run at all.
+# `harness = false` because the statistic this benchmark owes is a Welch
+# t-test over a PRODUCTION-WEIGHTED workload, which the default harness does
+# not produce; the weighting is the experiment, not a detail of it.
+[[bench]]
+name = "wire_encode_bench"
+path = "benches/wire_encode_bench.rs"
+harness = false
+
 [build-dependencies]
 tonic-prost-build = { workspace = true }
 # The wire-schema generator (models/build/wire_schema.rs) reads the protobuf
