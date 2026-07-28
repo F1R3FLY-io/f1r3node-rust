@@ -3209,3 +3209,467 @@ fn reported_reproducer_depth_survives_a_default_worker_stack() {
         DEFAULT_SPAWNED_THREAD_STACK / (1024 * 1024)
     );
 }
+
+// ---------------------------------------------------------------------------
+// ★★ THE READ CEILING — pinned PER ENVELOPE, and set against the build side
+// ---------------------------------------------------------------------------
+//
+// Every other subject in this file measures how much NATIVE STACK a traversal
+// needs. The three tests below measure something categorically different and
+// they are here because it is the same question asked of the other side of the
+// wire:
+//
+//   > **How deep a term can this node READ?**
+//
+// A traversal that is converted to a heap-bounded form has no stack ceiling at
+// all, and the audit's `encode` row already carries the note "capped by
+// RECURSION_LIMIT on decode". That note is the whole of what follows, made
+// executable: `prost`'s `DecodeContext` enforces `RECURSION_LIMIT = 100`
+// nested-message levels (`prost-0.14.3/src/lib.rs:30` — **private**, and the
+// only knob is the `no-recursion-limit` feature, which REMOVES the limit and is
+// set nowhere), so the read side stops long before any stack does.
+//
+// ⚠ **Nothing here bounds the write side, and nothing here moves a ceiling.**
+// Widening what a node accepts changes the set of byte strings it will take
+// from a peer; that is consensus-visible and belongs to F1r3node's protocol
+// surface. Capping the encoder would be a *new* protocol-level nesting cap,
+// which the audit's §7.3 standing decision forbids. These are `#[test]`s.
+
+/// `prost`'s nested-message recursion budget. Private in the crate, so it is
+/// restated; every use of it below is checked against a measurement, which is
+/// what keeps the restatement from being a transcription.
+const PROST_RECURSION_LIMIT: usize = 100;
+
+/// Nested-message levels one bracket of `[[…]]` costs:
+/// `Par.exprs → Expr.e_list_body → EList.ps` (`RhoTypes.proto` fields 5, 20, 1).
+const LEVELS_PER_BRACKET: usize = 3;
+
+/// The one further level the innermost `Par` spends on the leaf `Expr` holding
+/// the ground value.
+const LEAF_EXPR_LEVELS: usize = 1;
+
+/// ★ **The read ceiling is a TABLE, not a number.**
+///
+/// Each row is `(envelope, W)`, where `W` counts the nested-message levels the
+/// envelope interposes before the outermost `Par` is entered. The ceiling
+/// itself is **derived** by [`read_ceiling`] and then **executed** by
+/// [`the_prost_read_ceiling_is_pinned_per_envelope`] — it is never transcribed
+/// here, so this register cannot drift from the arithmetic, and the arithmetic
+/// cannot drift from `prost`.
+///
+/// The rows below produce **three** distinct ceilings — 33, 32 and 31 — so a
+/// single-number statement of this limit is wrong for at least two real gRPC
+/// endpoints. `models/tests/par_prost_depth_ceiling.rs` carries the same
+/// inventory with the depths written out explicitly, and is the RED fixture for
+/// the bare case; this register is the derived twin, and the two agreeing is a
+/// cross-check rather than a duplicate.
+const READ_CEILING_ENVELOPES: &[(&str, usize)] = &[
+    // ★★ The consensus-class member. `ProduceEventProto.outputValue` is
+    // `repeated bytes` (CasperMessage.proto:393), so the block body carries
+    // these Pars OPAQUELY and the eventual `Par::decode` at `reduce.rs:1065`
+    // is a fresh top-level decode with the full budget.
+    ("Par (bare) — replay decode of ProduceEventProto.outputValue", 0),
+    ("DataAtNameByBlockQuery.par — getDataAtName ingress", 1),
+    ("DataWithBlockInfo.postBlockData[0]", 1),
+    ("RhoDataPayload.par[0]", 1),
+    ("WaitingContinuationInfo.postBlockContinuation", 1),
+    ("RhoDataResponse > Payload > par[0] — getDataAtName egress", 2),
+    ("ContinuationsWithBlockInfo > WCI > postBlockContinuation", 2),
+    ("ContinuationAtNamePayload > CWBI > WCI > postBlockContinuation", 3),
+    // ★ The LOWEST ceiling in the inventory, and the reason this is a table.
+    (
+        "ContinuationAtNameResponse > .. > postBlockContinuation — listenForContinuationAtName egress",
+        4,
+    ),
+];
+
+/// $`D_{\max}(W) = \lfloor (L - 1 - W)/3 \rfloor`$ with $`L = 100`$.
+fn read_ceiling(w: usize) -> usize {
+    (PROST_RECURSION_LIMIT - LEAF_EXPR_LEVELS - w) / LEVELS_PER_BRACKET
+}
+
+/// Wrap `term` in envelope row `index` and report whether the envelope decodes.
+/// `Err(true)` means it refused on the recursion limit specifically; the KIND
+/// matters, because a bare `is_err()` also fires on a truncated buffer.
+fn envelope_decodes(index: usize, term: Par) -> Result<(), bool> {
+    use models::casper::v1::{
+        continuation_at_name_response, rho_data_response, ContinuationAtNamePayload,
+        ContinuationAtNameResponse, RhoDataPayload, RhoDataResponse,
+    };
+    use models::casper::{
+        ContinuationsWithBlockInfo, DataAtNameByBlockQuery, DataWithBlockInfo,
+        WaitingContinuationInfo,
+    };
+    use prost::Message;
+
+    fn wci(t: Par) -> WaitingContinuationInfo {
+        WaitingContinuationInfo {
+            post_block_patterns: vec![],
+            post_block_continuation: Some(t),
+        }
+    }
+    fn cwbi(t: Par) -> ContinuationsWithBlockInfo {
+        ContinuationsWithBlockInfo {
+            post_block_continuations: vec![wci(t)],
+            block: None,
+        }
+    }
+    fn canp(t: Par) -> ContinuationAtNamePayload {
+        ContinuationAtNamePayload {
+            block_results: vec![cwbi(t)],
+            length: 0,
+        }
+    }
+    fn verdict<M: Message + Default>(bytes: Vec<u8>) -> Result<(), bool> {
+        match M::decode(&bytes[..]) {
+            Ok(_) => Ok(()),
+            Err(e) => Err(format!("{e:?}").contains("description: RecursionLimitReached")),
+        }
+    }
+
+    match index {
+        0 => verdict::<Par>(term.encode_to_vec()),
+        1 => verdict::<DataAtNameByBlockQuery>(
+            DataAtNameByBlockQuery {
+                par: Some(term),
+                block_hash: String::new(),
+                use_pre_state_hash: false,
+            }
+            .encode_to_vec(),
+        ),
+        2 => verdict::<DataWithBlockInfo>(
+            DataWithBlockInfo {
+                post_block_data: vec![term],
+                block: None,
+            }
+            .encode_to_vec(),
+        ),
+        3 => verdict::<RhoDataPayload>(
+            RhoDataPayload {
+                par: vec![term],
+                block: None,
+            }
+            .encode_to_vec(),
+        ),
+        4 => verdict::<WaitingContinuationInfo>(wci(term).encode_to_vec()),
+        5 => verdict::<RhoDataResponse>(
+            RhoDataResponse {
+                message: Some(rho_data_response::Message::Payload(RhoDataPayload {
+                    par: vec![term],
+                    block: None,
+                })),
+            }
+            .encode_to_vec(),
+        ),
+        6 => verdict::<ContinuationsWithBlockInfo>(cwbi(term).encode_to_vec()),
+        7 => verdict::<ContinuationAtNamePayload>(canp(term).encode_to_vec()),
+        8 => verdict::<ContinuationAtNameResponse>(
+            ContinuationAtNameResponse {
+                message: Some(continuation_at_name_response::Message::Payload(canp(term))),
+            }
+            .encode_to_vec(),
+        ),
+        other => panic!(
+            "stack_depth_gate: envelope row {other} has no driver — every row of \
+             READ_CEILING_ENVELOPES must be executable, or the register is prose"
+        ),
+    }
+}
+
+/// ★★ **The boundary, per envelope, adjacent, executed.**
+///
+/// For every row the derived ceiling decodes and one deeper does not, failing
+/// on the recursion limit specifically. Both directions are named in the
+/// failure text because they are different events with different owners: a
+/// ceiling that moved **up** widens the set of byte strings this node accepts
+/// (a consensus-visible change needing a coordinated version bump); one that
+/// moved **down** narrows it.
+#[test]
+fn the_prost_read_ceiling_is_pinned_per_envelope() {
+    assert!(
+        !READ_CEILING_ENVELOPES.is_empty(),
+        "the envelope register is empty; this test would be vacuously green"
+    );
+
+    let mut ceilings = std::collections::BTreeSet::new();
+    for (index, (name, w)) in READ_CEILING_ENVELOPES.iter().enumerate() {
+        let d_max = read_ceiling(*w);
+        ceilings.insert(d_max);
+
+        let ok = nested_list(d_max);
+        assert_carries(&format!("`{name}` at its ceiling"), par_depth(&ok), d_max);
+        envelope_decodes(index, ok).unwrap_or_else(|kind| {
+            panic!(
+                "`{name}` (W={w}) no longer decodes at depth {d_max} \
+                 (recursion-limit kind: {kind}). The read ceiling moved DOWN — this \
+                 node now rejects byte strings it used to accept."
+            )
+        });
+
+        let over = nested_list(d_max + 1);
+        assert_carries(
+            &format!("`{name}` one past its ceiling"),
+            par_depth(&over),
+            d_max + 1,
+        );
+        match envelope_decodes(index, over) {
+            Ok(()) => panic!(
+                "`{name}` (W={w}) DECODED at depth {}, one past the derived ceiling \
+                 of {d_max}. The read ceiling moved UP: this node now accepts byte \
+                 strings it used to reject. That widens the accepted set and needs a \
+                 coordinated version bump — see the audit, §7.3.",
+                d_max + 1
+            ),
+            Err(true) => {}
+            Err(false) => panic!(
+                "`{name}` (W={w}) rejected depth {}, but NOT on the recursion limit. \
+                 The fixture is emitting malformed bytes for this envelope and is \
+                 measuring nothing.",
+                d_max + 1
+            ),
+        }
+    }
+
+    assert!(
+        ceilings.len() >= 3,
+        "the register yields only {} distinct ceiling(s) ({ceilings:?}). This test \
+         exists to refute 'the read ceiling is one number'; below three distinct \
+         values over the enumerated envelopes, it no longer does.",
+        ceilings.len()
+    );
+
+    // The bare row must exhaust the budget exactly — that is what fixes the
+    // per-bracket cost at three levels plus one for the leaf.
+    let bare = read_ceiling(0);
+    assert_eq!(
+        LEVELS_PER_BRACKET * bare + LEAF_EXPR_LEVELS,
+        PROST_RECURSION_LIMIT,
+        "the bare ceiling of {bare} does not exhaust the {PROST_RECURSION_LIMIT}-level \
+         budget exactly, so {LEVELS_PER_BRACKET} levels per bracket no longer \
+         describes `Par → Expr → EList → Par`"
+    );
+
+    println!(
+        "  read ceiling: {} envelopes, {} distinct ceilings {:?} (bare {})",
+        READ_CEILING_ENVELOPES.len(),
+        ceilings.len(),
+        ceilings,
+        bare
+    );
+}
+
+// ---------------------------------------------------------------------------
+// ★ THE INVENTORY — acknowledged, not a threshold
+// ---------------------------------------------------------------------------
+
+/// How deep a term a BUILD-side path can carry, as measured elsewhere.
+#[derive(Clone, Copy, Debug)]
+enum BuildCeiling {
+    /// Bisected to a single depth: this one runs, one deeper aborts.
+    Bisected(usize),
+    /// Measured to at least this depth and not bisected further, because the
+    /// traversal is CONVERTED and has no stack slope to bisect against.
+    AtLeast(usize),
+}
+
+impl BuildCeiling {
+    fn depth(self) -> usize {
+        match self {
+            BuildCeiling::Bisected(d) | BuildCeiling::AtLeast(d) => d,
+        }
+    }
+}
+
+/// ★★ **The acknowledged inventory of build-side depth ceilings.**
+///
+/// **Why this is an inventory and not a threshold.** Every row already clears
+/// the read ceiling — by 8.6× at the tightest and by four orders of magnitude
+/// at the loosest. A test that asserted "no build path exceeds what the wire can
+/// carry" would be RED on arrival for every row, and a gate that is red on
+/// arrival gets muted. So the claim asserted is the one that is actually true
+/// and actually worth defending:
+///
+/// > **The wire is the binding constraint, and every build-side path clears it
+/// > with headroom.**
+///
+/// That claim fails in exactly the two ways that matter — a NEW build path
+/// joins without being classified (caught by
+/// [`the_build_side_inventory_is_complete`]), or an existing path's headroom
+/// ratio degrades (caught by [`the_read_ceiling_binds_and_the_build_side_clears_it`]).
+///
+/// Rows are `(path, ceiling, where it was measured)`. None is re-measured here:
+/// re-bisecting an end-to-end deploy ceiling is
+/// `rholang/tests/deploy_depth_ceiling.rs`'s whole job, and a second copy of
+/// that measurement would be a second number to drift.
+const BUILD_DEPTH_INVENTORY: &[(&str, BuildCeiling, &str)] = &[
+    // ★ THE BINDING ONE. A deploy that receives a deep value over a channel is
+    // bounded by `Env::get`'s clone (`substitute_deep_binding_body`), which is
+    // documented there as un-removable: the copy IS the meaning of
+    // substitution.
+    (
+        "env_get_deploy",
+        BuildCeiling::Bisected(283),
+        "rholang/tests/deploy_depth_ceiling.rs",
+    ),
+    (
+        "plain_deploy",
+        BuildCeiling::Bisected(6_831),
+        "rholang/tests/deploy_depth_ceiling.rs",
+    ),
+    // `inj_attempt`'s `set-initial-cost` phase, after `into_source_process`
+    // removed the `<Par as Clone>` copy: 0 B/level, flat 32,768 B from depth 4
+    // to 4,096.
+    (
+        "inj_attempt set-initial-cost",
+        BuildCeiling::AtLeast(1_048_576),
+        "this file, `inj_attempt_clone_body`",
+    ),
+    // Source-text ingress. `normalize` is CONVERTED (43,542 → 0 B/level debug,
+    // 7,261 → 0 release), so it has no stack slope; the figure is the deepest
+    // source a 2 MiB worker was observed to normalize, not a bisected wall.
+    (
+        "normalize (source-text ingress, pre-metering)",
+        BuildCeiling::AtLeast(39_960),
+        "rholang/tests/stack_depth_probe.rs; audit evidence row E63",
+    ),
+];
+
+/// The acknowledged headroom floor: the tightest build-side ceiling divided by
+/// the loosest read ceiling, rounded down. Recorded at
+/// $`283 / 33 = 8.57`$, so the floor is **8**.
+///
+/// ⚠ This is a **tripwire, not a pass** — the same standing this file gives
+/// [`assert_slope_below`]. It certifies only that the relationship has not got
+/// *worse*; it does not certify that 283 is a comfortable number.
+const ACKNOWLEDGED_HEADROOM: usize = 8;
+
+/// ★★ **The wire binds; the build side clears it — and by how much is pinned.**
+#[test]
+fn the_read_ceiling_binds_and_the_build_side_clears_it() {
+    assert!(
+        !BUILD_DEPTH_INVENTORY.is_empty(),
+        "the build-side inventory is empty; this test would be vacuously green"
+    );
+
+    let widest_read = READ_CEILING_ENVELOPES
+        .iter()
+        .map(|(_, w)| read_ceiling(*w))
+        .max()
+        .expect("the envelope register is non-empty");
+
+    let mut tightest = usize::MAX;
+    let mut tightest_name = "";
+    for (path, ceiling, provenance) in BUILD_DEPTH_INVENTORY {
+        let d = ceiling.depth();
+        assert!(
+            d > widest_read,
+            "`{path}` carries only depth {d} ({ceiling:?}, measured in \
+             {provenance}), which does NOT clear the widest read ceiling of \
+             {widest_read}. The wire has stopped being the binding constraint for \
+             this path: terms it can build are terms no reader will take, and the \
+             audit's §7.3 analysis rests on the opposite."
+        );
+        if d < tightest {
+            tightest = d;
+            tightest_name = path;
+        }
+    }
+
+    let headroom = tightest / widest_read;
+    assert!(
+        headroom >= ACKNOWLEDGED_HEADROOM,
+        "the tightest build-side ceiling is `{tightest_name}` at depth {tightest}, \
+         giving {headroom}× headroom over the widest read ceiling of {widest_read} \
+         — below the acknowledged floor of {ACKNOWLEDGED_HEADROOM}×. Either a build \
+         path regressed or a read ceiling rose. This is a tripwire: it says the \
+         relationship got worse, not that {ACKNOWLEDGED_HEADROOM}× is enough."
+    );
+
+    println!(
+        "  build side clears the wire: tightest `{tightest_name}` at {tightest} vs \
+         widest read ceiling {widest_read} — {headroom}× (floor {ACKNOWLEDGED_HEADROOM}×)"
+    );
+}
+
+/// Path of the end-to-end deploy-ceiling probe, relative to this crate's
+/// manifest directory. It is the file that ENUMERATES build-side deploy paths,
+/// so it is the file this gate's inventory must stay complete against.
+const DEPLOY_CEILING_PATH: &str = "tests/deploy_depth_ceiling.rs";
+
+/// Every `DEPLOY_SUBJECT` name `deploy_depth_ceiling.rs` knows how to drive,
+/// read from its `subject_source` dispatch.
+///
+/// ⚠ A parse that silently returns nothing would make the completeness check
+/// vacuous — the failure mode this campaign hit eight times. The caller
+/// therefore asserts the result is non-empty before using it.
+fn deploy_subjects_declared() -> Vec<String> {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(DEPLOY_CEILING_PATH);
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+        panic!(
+            "cannot read the deploy-ceiling probe at {}: {e}. It is the enumerating \
+             source for the build-side inventory, so the check cannot be skipped \
+             when the file moves — update DEPLOY_CEILING_PATH.",
+            path.display()
+        )
+    });
+    let start = text.find("fn subject_source(").unwrap_or_else(|| {
+        panic!(
+            "{} no longer defines `subject_source`, which is where it enumerates the \
+             build-side deploy paths this gate's inventory is checked against",
+            path.display()
+        )
+    });
+    let body = &text[start..];
+    let end = body
+        .find("\n}\n")
+        .unwrap_or_else(|| panic!("`subject_source` in {} is unterminated", path.display()));
+    body[..end]
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            line.strip_prefix('"')
+                .and_then(|rest| rest.split_once("\" =>"))
+                .map(|(name, _)| name.to_string())
+        })
+        .collect()
+}
+
+/// ★★ **It fails when a NEW build path joins.**
+///
+/// `deploy_depth_ceiling.rs` enumerates the end-to-end build paths it can
+/// drive. Adding one there without classifying it here leaves an unclassified
+/// path whose relationship to the read ceiling nobody has stated — which is
+/// exactly how an inventory becomes prose. This test makes that commit fail
+/// rather than the next inspection.
+#[test]
+fn the_build_side_inventory_is_complete() {
+    let declared = deploy_subjects_declared();
+    assert!(
+        !declared.is_empty(),
+        "parsed ZERO subjects out of {DEPLOY_CEILING_PATH}'s `subject_source`. That \
+         is a parse failure, not an empty enumeration — the file is known to \
+         declare at least `plain_deploy` and `env_get_deploy` — and it would make \
+         this whole test vacuous."
+    );
+
+    let inventoried: std::collections::BTreeSet<&str> =
+        BUILD_DEPTH_INVENTORY.iter().map(|(name, _, _)| *name).collect();
+    let missing: Vec<&String> = declared
+        .iter()
+        .filter(|name| !inventoried.contains(name.as_str()))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "{DEPLOY_CEILING_PATH} drives build path(s) {missing:?} that BUILD_DEPTH_INVENTORY \
+         does not classify. Measure the new path's ceiling there, then add a row \
+         here with its provenance, so the claim 'the wire is the binding \
+         constraint' keeps covering every path instead of quietly covering fewer."
+    );
+
+    println!(
+        "  build-side inventory: {} rows cover all {} enumerated deploy subject(s) {:?}",
+        BUILD_DEPTH_INVENTORY.len(),
+        declared.len(),
+        declared
+    );
+}
