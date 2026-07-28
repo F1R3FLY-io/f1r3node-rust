@@ -609,6 +609,217 @@ Consequences, both of which matter for anyone converting the rest of the family:
   *new* protocol-level nesting cap", and this is not one, but it must be
   surfaced before it is discovered by a validator.
 
+> ★★ **EXTENDED 2026-07-28 — the obligation in the paragraph above is now
+> discharged.** The ceiling is *surfaced*: it has an executable boundary per
+> envelope, a staged RED fixture, and an executable consensus leg. Nothing below
+> moves a ceiling, bounds the write side, or changes production code — the
+> read-side repair widens the set of byte strings a node accepts and therefore
+> needs a coordinated version bump, which is F1r3node's decision and not this
+> audit's. §7.3.1–§7.3.6 record what was measured and what remains open.
+
+#### 7.3.1 Where the ceiling now lives as an executable claim
+
+| artefact | what it holds | tests |
+|---|---|---|
+| `models/tests/par_prost_depth_ceiling.rs` | the staged RED fixture (build / write / read) with its **adjacent** depth-33 control; the per-envelope register with the depths written out; the anchoring to `COLLECTION_DEPTH_LIMIT` | 4 |
+| `rholang/tests/replay_output_value_depth_ceiling.rs` | ★★ the consensus leg — **red on replay, green on play**, same binary, same term, one bool apart | 1 |
+| `rholang/tests/stack_depth_gate.rs` (new section) | the per-envelope boundary with the depths **derived** rather than transcribed; the acknowledged build-side inventory and its headroom tripwire; the completeness check that fails when a new build path joins | 3 |
+
+The three-stage shape of the fixture is the point of it. Each stage names a
+different failure:
+
+| stage | assertion | a failure there means |
+|---|---|---|
+| **build** | `par_depth(&term) == 34`, asserted first | *the term could not be built* — a fixture bug, not a finding |
+| **write** | `encode_to_vec()`, then `bytes.len() >= 34` | *the write failed* — the defect **inverted**; something capped the encoder |
+| **read** | the error **kind** is `RecursionLimitReached` | ✅ *the read failed* — the defect, and only this |
+
+⚠ The error-kind match is load-bearing, and it was shown red: truncating the
+buffer by three bytes makes the decode fail with `BufferUnderflow`, which a bare
+`is_err()` would have accepted as this finding.
+
+#### 7.3.2 ★★ The ceiling is PER ENVELOPE — it is a table, not a number
+
+One bracket costs three nested-message levels
+(`Par.exprs → Expr.e_list_body → EList.ps`), and the innermost `Par` spends one
+more on the leaf `Expr` that carries the ground value. An envelope that
+transports the `Par` inside other messages spends its own levels first. Writing
+$`W(E)`$ for the nested-message levels envelope $`E`$ interposes before the
+outermost `Par` is entered:
+
+```math
+D_{\max}(E) \;=\; \left\lfloor \frac{L - 1 - W(E)}{3} \right\rfloor,
+\qquad L = \mathtt{RECURSION\_LIMIT} = 100 .
+```
+
+Measured at `ab1908e0`, **identically in debug and release** — the limit is a
+protocol constant, not a stack measurement, so it does not carry the
+per-profile variation everything else in this audit does:
+
+| envelope | $`W`$ | last depth that decodes | first that does not |
+|---|---:|---:|---:|
+| ★★ `Par` (bare) — the replay decode of `ProduceEventProto.outputValue` | 0 | **33** | **34** |
+| `DataAtNameByBlockQuery.par` — `getDataAtName` ingress | 1 | 32 | 33 |
+| `DataWithBlockInfo.postBlockData[0]` | 1 | 32 | 33 |
+| `RhoDataPayload.par[0]` | 1 | 32 | 33 |
+| `WaitingContinuationInfo.postBlockContinuation` | 1 | 32 | 33 |
+| `RhoDataResponse > Payload > par[0]` — `getDataAtName` egress | 2 | 32 | 33 |
+| `ContinuationsWithBlockInfo > WCI > postBlockContinuation` | 2 | 32 | 33 |
+| `ContinuationAtNamePayload > CWBI > WCI > postBlockContinuation` | 3 | 32 | 33 |
+| ★ `ContinuationAtNameResponse > … > postBlockContinuation` — `listenForContinuationAtName` egress | 4 | **31** | **32** |
+
+⚠ **Three distinct ceilings, not one, and not "bare minus one".** The
+`listenForContinuationAtName` response envelope accepts **31** — two levels below
+the bare `Par`. Stating this limit as a single number over-states that
+endpoint's capacity by two nesting levels. Every row above is *executed* at both
+$`D_{\max}`$ and $`D_{\max}+1`$, in both files, and the closed form is
+asserted against the measurement so that a wrong $`W`$ and a wrong depth
+cannot survive together.
+
+#### 7.3.3 ★★ The exposure, enumerated, with verdicts
+
+| round trip | verdict |
+|---|---|
+| cold store / history / LMDB | **not exposed** — bincode wire; `rspace++/src/` contains no `prost` usage |
+| block body / deploy log | **not exposed** — `CasperMessage.proto` references exactly one `rhoapi` type (`PCost`, line 293) and `DeployDataProto.term` is a `string` (line 161) |
+| ★★ `ProduceEventProto.outputValue` → **replay** | ★★ **exposed, consensus-class** — §7.3.4 |
+| gRPC egress (`getDataAtName`, `listenForContinuationAtName`, …) | **exposed, client-class** — ceilings 32 and 31 per §7.3.2 |
+| gRPC ingress | **fails safe** — an over-deep request is an `Err`, never a `SIGSEGV`; correct as is |
+| ★ `EPathMap` field-8 trie keys | **exposed — a second ceiling**, `COLLECTION_DEPTH_LIMIT = 32`; §7.3.5 |
+
+#### 7.3.4 ★★ The consensus-class member: the replay decode
+
+**Why these bytes reach a decoder at all.** `ProduceEventProto.outputValue` is
+`repeated bytes` (`models/src/main/protobuf/CasperMessage.proto:393`), **not** a
+nested message. Decoding a block body therefore does not descend into those
+bytes and cannot reject them; and because the eventual `Par::decode` is a fresh
+*top-level* decode, it receives the full 100-level budget and sits at the
+**bare** ceiling of $`W = 0`$. The block is well-formed. Only replay is not.
+
+**The asymmetry, traced.**
+
+```text
+  ┌──────────────────────── PROPOSER (play) ────────────────────────┐
+  │  Produce::create ──────────▶ output_value: vec![]               │
+  │        │                            │                           │
+  │        │  RSpace::locked_produce returns THAT Produce           │
+  │        ▼                            ▼                           │
+  │  produce_inner ────────▶ continue_produce_process(is_replay=❰false❱)
+  │                                     │                           │
+  │                          reduce.rs:1065 iterates ∅ ⇒ NO DECODE  │
+  │                                     │                           │
+  │                          reduce.rs writes the bytes ──▶ BLOCK   │
+  └─────────────────────────────────────┼───────────────────────────┘
+                                        │  the block travels
+  ┌─────────────────────────────────────▼───────────────────────────┐
+  │                       VALIDATOR (replay)                         │
+  │  ReplayRSpace::locked_produce returns the Produce FROM THE TRACE │
+  │        │        (comm.produces.find(hash == produce_ref.hash))   │
+  │        ▼                                                         │
+  │  produce_inner ────────▶ continue_produce_process(is_replay=❰true❱)
+  │                                     │                            │
+  │                          reduce.rs:1065 DECODES real bytes       │
+  │                                     │                            │
+  │                          depth ≥ 34 ⇒ Err(DecodeError)          │
+  │                                     ▼                            │
+  │  EvaluateResult::errors ≠ ∅ ⇒ eval_successful = false            │
+  │      (casper/src/rust/rholang/replay_runtime.rs:427)             │
+  │                                     ▼                            │
+  │  processed_deploy.is_failed != !eval_successful  ⇒  :443         │
+  │                                     ▼                            │
+  │              ✗ CasperError::ReplayFailure                        │
+  └──────────────────────────────────────────────────────────────────┘
+```
+
+**The proposer builds a block no validator can replay.** `Produce`'s
+`PartialEq`/`Hash`/`Ord` are hash-only by design (`rspace++/src/rspace/trace/event.rs`
+— *"metadata fields like `is_deterministic`, `output_value`, and `failed` … must
+NOT affect identity"*), so the payload rides in the trace without perturbing
+event identity: the rig matches, the COMM fires, and the decode is reached.
+
+**Executed.** `rholang/tests/replay_output_value_depth_ceiling.rs` plays a
+program, splices `nested_list(d).encode_to_vec()` into the recorded log's
+`output_value`s exactly as a block from a node with a ninth non-deterministic
+operation would carry it, rigs the mutated log, and replays. The `is_replay`
+bool is read from the two spaces themselves rather than assumed:
+
+| | depth 33 | depth 34 |
+|---|---|---|
+| play (`is_replay = false`) | green | **green** |
+| replay (`is_replay = true`) | green | **RED — `DecodeError(… recursion limit reached)`** |
+
+The run also asserts, as the executable form of *"the proposer never decodes"*,
+that all five `Produce`s the play pass recorded carried `output_value == []`
+before the splice. Confirmed identical over 25 consecutive runs.
+
+⚠ **Not reachable today, and the guard is a shape rather than a check.**
+`output_value` is written from one site gated on `non_deterministic_ops()`,
+which at `ab1908e0` contains exactly **eight** entries — `GPT4`, `DALLE3`,
+`TEXT_TO_AUDIO`, `OLLAMA_CHAT`, `OLLAMA_GENERATE`, `OLLAMA_MODELS`, `GRPC_TELL`,
+`CHROMA_QUERY` (`rholang/src/rust/interpreter/system_processes.rs:192-203`).
+None of their return constructions exceeds depth 3, and the deepest sits behind
+the non-default `chromadb` feature. **But nothing checks the depth.** The
+property that keeps this dormant is those eight functions' return *shapes*. A
+ninth operation that echoes a caller-supplied `Par` back through
+`contract_call.rs`'s `NonDeterministicCall` arm makes it live with no other
+change anywhere.
+
+#### 7.3.5 ★ `COLLECTION_DEPTH_LIMIT = 32` is anchored to this envelope
+
+`models/src/rust/canonical_path.rs:72-83` states the anchoring in prose: the
+EPathMap trie-key decoder's limit is *"today's effective prost envelope (prost
+`RECURSION_LIMIT` = 100 message levels ≈ 25-33 collection levels)"*. On the
+nested-list shape both readers accept, the two boundaries **coincide**:
+
+| wrappers $`n`$ in `[[…[0]…]]` | `Par::decode` (prost) | `decode_trie_path` (trie) |
+|---:|---|---|
+| 33 | ✅ accepts | ✅ accepts — 32 counted levels, the outer list being the split form at level 0 |
+| 34 | ❌ `RecursionLimitReached` | ❌ `DepthLimitExceeded` |
+
+The off-by-one in the second column is the trie codec's own split-form
+convention, stated by its own `depth_limit_decode_rejects_beyond_32`. Net of it
+the boundaries are the same boundary — which is the anchoring working, not a
+coincidence.
+
+⚠ **The consequence, and the reason the two are named together wherever either
+is named.** Raise the prost ceiling alone and the trie decoder becomes the
+binding constraint one level lower; raise `COLLECTION_DEPTH_LIMIT` alone and
+prost becomes it. Either move buys nothing. **They move together or not at
+all.** Held by execution in
+`models/tests/par_prost_depth_ceiling.rs::the_two_read_ceilings_are_anchored_together`.
+
+#### 7.3.6 The build side clears the wire — an inventory, not a threshold
+
+Every build-side path already carries terms far deeper than any reader accepts,
+so a test asserting *"nothing builds deeper than the wire can carry"* would be
+red on arrival for every row, and a gate that is red on arrival gets muted. The
+claim actually asserted is the true one — **the wire is the binding constraint,
+and every build path clears it with headroom** — recorded as an acknowledged
+inventory:
+
+| build path | ceiling | measured in |
+|---|---:|---|
+| ★ `env_get_deploy` — **the binding one** | 283 | `rholang/tests/deploy_depth_ceiling.rs` |
+| `plain_deploy` | 6,831 | `rholang/tests/deploy_depth_ceiling.rs` |
+| `inj_attempt` `set-initial-cost` | ≥ 1,048,576 | `stack_depth_gate.rs`, `inj_attempt_clone_body` |
+| `normalize` (source-text ingress, pre-metering) | ≥ 39,960 | `stack_depth_probe.rs`; evidence row [E63] |
+
+The tripwire is the *ratio*: $`283 / 33 = 8.57`$, floored at **8×**. It fires
+when a build path regresses or a read ceiling rises — the same standing this
+audit gives `assert_slope_below`, namely *"not a pass; it detects getting
+worse"*. Completeness is mechanical: the gate parses
+`deploy_depth_ceiling.rs`'s `subject_source` dispatch and fails if it drives a
+path this inventory does not classify, so **a new build path cannot join
+silently**.
+
+**What was not done, and whose decision it is.** The read-side repair — raising
+or removing the ceiling — changes which byte strings a node accepts and is
+therefore consensus-visible: it needs a coordinated version bump and belongs to
+F1r3node's protocol surface. Capping the write side would be a *new*
+protocol-level nesting cap, which the standing decision recorded at the head of
+this section forbids. Neither was taken here. What was taken is the
+surfacing.
+
 ### 7.4 Not landed — and precisely why
 
 > ⚠ **SUPERSEDED (2026-07-27).** All three rows below have landed.
