@@ -835,28 +835,69 @@ impl PathMapCrateTypeMapper {
 
     /// Convert from PathMap back to protobuf EPathMap.
     ///
-    /// # ★ Precondition: the trie entry invariant
+    /// # ★ There is ONE reader, and it reads the KEYS
     ///
-    /// This reads the trie's **values** and discards its keys. That is correct
-    /// — and ONLY correct — while
-    /// [`trie_entry_divergences`](crate::rust::pathmap_integration::trie_entry_divergences)
-    /// is empty for `map`, i.e. while every entry's value encodes back to the
-    /// key it is filed under. [`canonical_ps_from_trie`], the serde/event-hash
-    /// reader, takes the opposite route (it decodes the KEYS), so the two agree
-    /// exactly when the invariant holds and can disagree in no other way.
+    /// This converter used to walk the trie's **values** and discard its keys,
+    /// while [`canonical_ps_from_trie`] — the serde / event-hash reader — walked
+    /// the **keys** and decoded them. Two readers, opposite directions, agreeing
+    /// only while every value encoded back to the key it was filed under. The
+    /// tree therefore carried an invariant, a `debug_assert` at this line, a
+    /// divergence type and a renderer, purely to police that agreement — and it
+    /// was policed because it had **already failed twice**: #89 (two readers
+    /// reporting different contents for one map) and #108 (a reader building a
+    /// key in the image of no `Par`).
     ///
-    /// The invariant is CHECKED here under `debug_assertions` — this is the
-    /// single point every trie in the system passes through on its way back to
-    /// a value, so it is the one place a producer that filed a value under a
-    /// key it does not encode to can be caught at all. Release builds
-    /// (consensus nodes) compile the check out and pay nothing; the entire test
-    /// corpus runs with it on.
+    /// Both routes are now [`canonical_ps_from_trie`], so the agreement is no
+    /// longer checked here. There is nothing left to check: **a single reader
+    /// cannot disagree with itself.** #89 and #91 are not fixed at this line,
+    /// they are unrepresentable — the second reader does not exist to be wrong.
     ///
-    /// Why an assertion and not a repair: a divergent entry has already lost
-    /// information (two keys may share one value, and the count of distinct
-    /// keys is gone), so there is nothing to repair at this point — the producer
-    /// must not have created it. The check names the producer's bug at the
-    /// first moment it is visible.
+    /// # Why the KEY side is the one that survives
+    ///
+    /// A `RholangPathMap` is a *set of `Par` entries indexed by their own codec
+    /// path*, so the key IS the entry and the value is a redundant mirror of it.
+    /// Of the two mirrors, the key is the one the rest of the system already
+    /// trusts:
+    ///
+    /// * the trie's order is its keys' byte-lexicographic order, so this walk is
+    ///   the SAME walk that produces `U(m)`, the consensus field-8 path stream.
+    ///   The reducer's answer and the event-hash preimage are now one traversal
+    ///   rather than two that must be kept in agreement;
+    /// * `PathMap::iter()` YIELDS a value stored at the empty (root) key while
+    ///   `ZipperIteration::to_next_val()` SKIPS it, so the value side could
+    ///   report an entry that the codec can name no `Par` for — `[]` is in the
+    ///   image of no `Par`;
+    /// * `decode ∘ encode` is the codec's canonical fixed point, so an entry
+    ///   read through its key comes back recursively canonical — a nested map
+    ///   included. The value side reproduced whatever order its producer used,
+    ///   which is the order this campaign has just finished removing from the
+    ///   comparators.
+    ///
+    /// The `connective_used` / `locally_free` / `remainder` arguments are
+    /// unchanged: they are the map's metadata, not its entries, and no trie
+    /// carries them.
+    ///
+    /// # ⚠ The entry-invariant guard STAYS, and its subject has narrowed
+    ///
+    /// It would be tidy to delete the `debug_assert` below along with the value
+    /// walk it used to protect. That would be wrong, and the reason is worth
+    /// stating because it is easy to miss: **the value side is still read** —
+    /// just not in bulk. `getLeaf` (`reduce.rs`), the fused chain's `get`
+    /// (`fused_pathmap_chain.rs`) and `values_with_prefix`
+    /// (`pathmap_native_query.rs`) all answer with `map.get(key)`, and that
+    /// answer equals `decode_trie_path(key)` — what this converter now returns —
+    /// only while `∀(k,v). encode_trie_path(v) = k`.
+    ///
+    /// So the invariant is not vacuous; its subject moved from *"the two bulk
+    /// readers agree"* to *"a point lookup agrees with the enumeration"*. This
+    /// converter remains the single point every trie in the system passes
+    /// through on its way back to a value, which is what makes it the one place
+    /// the check can be made at all, so the check stays here. Release builds
+    /// (consensus nodes) compile it out; the whole test corpus runs with it on.
+    ///
+    /// It becomes genuinely vacuous only when the value slot stops mirroring the
+    /// key — that is, when per-key values land — and it should be deleted THEN,
+    /// with the redundancy it polices, and not before.
     pub fn rholang_pathmap_to_e_pathmap(
         map: &RholangPathMap,
         connective_used: bool,
@@ -871,42 +912,45 @@ impl PathMapCrateTypeMapper {
             let divergences = trie_entry_divergences(map);
             assert!(
                 divergences.is_empty(),
-                "trie entry invariant violated in {} of {} entries — this converter \
-                 reads VALUES and `canonical_ps_from_trie` reads KEYS, so these \
-                 entries make the reducer's answer and the event-hash preimage \
-                 disagree, and distinct keys sharing one value COLLAPSE on the next \
-                 re-insertion (entries are lost):{}",
+                "trie entry invariant violated in {} of {} entries — a point \
+                 lookup (`getLeaf`, the fused chain's `get`, `values_with_prefix`) \
+                 answers with the VALUE while this converter answers with the KEY, \
+                 so these entries make the two disagree, and distinct keys sharing \
+                 one value COLLAPSE on the next re-insertion (entries are lost):{}",
                 divergences.len(),
                 map.iter().count(),
                 render_trie_entry_divergences(&divergences),
             );
         }
 
-        // Extract all values (flattened) from the trie as elements for proto EPathMap
-        let mut ps = Vec::new();
-        for (_, par) in map.iter() {
-            ps.push(par.clone());
-        }
-
         // P3 (PM-2): construction goes through the constructor — the result
         // is a NEW value with an EMPTY shadow cell (it was just built from a
         // trie; its canonical bytes are not those of any interned source).
-        EPathMap::new(ps, locally_free.to_vec(), connective_used, remainder)
+        EPathMap::new(
+            canonical_ps_from_trie(map),
+            locally_free.to_vec(),
+            connective_used,
+            remainder,
+        )
     }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ★ THE ROOT-KEY DIVERGENCE — pinned, because it is UNREACHABLE rather than
-//   impossible, and the two readers do NOT agree about it
+//   impossible, and the two trie WALKS do NOT agree about it
 // ─────────────────────────────────────────────────────────────────────────────
 //
-// The value-side reader ([`PathMapCrateTypeMapper::rholang_pathmap_to_e_pathmap`])
-// walks `PathMap::iter()`, which YIELDS a value stored at the empty (root) key.
-// The key-side reader ([`canonical_ps_from_trie`]) walks
-// `ZipperIteration::to_next_val()`, which SKIPS it. A root value is therefore
-// kept by one reader and silently dropped by the other — the two would report
-// different contents for the same map, and the second would drop an entry the
-// first counted.
+// `PathMap::iter()` YIELDS a value stored at the empty (root) key;
+// `ZipperIteration::to_next_val()` SKIPS it. A root value is therefore visible
+// to one walk and invisible to the other.
+//
+// ⚠ This used to be a divergence between two READERS —
+// [`PathMapCrateTypeMapper::rholang_pathmap_to_e_pathmap`] walked `iter()` and
+// [`canonical_ps_from_trie`] walked `to_next_val()`, so a root value was kept by
+// one and dropped by the other. Both converters now take the key side, so the
+// two walks are no longer two answers about a map's contents. The pin remains,
+// because the ASYMMETRY between the two walks remains and every future consumer
+// of `iter()` inherits it.
 //
 // It is unreachable TODAY because `encode_trie_path` is total and emits at
 // least one byte for every Par (the bare arm emits a tag; the split arm emits
@@ -967,12 +1011,12 @@ mod root_key_divergence {
         }
     }
 
-    /// ★ The two readers DISAGREE about a root value — demonstrated on a trie
+    /// ★ The two WALKS disagree about a root value — demonstrated on a trie
     /// that only a direct `insert` can build. This is why the empty key must
     /// stay outside the codec's image, and why a value found there is treated
     /// as a divergence rather than as an entry.
     #[test]
-    fn a_root_value_is_kept_by_the_value_reader_and_dropped_by_the_key_reader() {
+    fn a_root_value_is_kept_by_the_value_walk_and_dropped_by_the_key_walk() {
         let ordinary = gint(1);
         let mut map = RholangPathMap::new();
         map.insert(Vec::<u8>::new(), gstring("only reachable by hand"));
@@ -1022,10 +1066,18 @@ mod root_key_divergence {
     }
 
     /// `canonical_ps_from_trie` on a well-formed trie agrees ENTRY FOR ENTRY
-    /// with the value-side reader — the positive half of the same statement,
-    /// so the pin above is a witness of divergence and not of a broken walk.
+    /// with the value walk — the positive half of the same statement, so the pin
+    /// above is a witness of divergence and not of a broken walk.
+    ///
+    /// ★ This is what keeps the entry invariant load-bearing after the bulk
+    /// converters moved to the key side. The reducer still reads VALUES at every
+    /// point lookup — `getLeaf` and the fused chain's `get` return
+    /// `map.get(key)` — and those answers equal `decode_trie_path(key)` only
+    /// while `∀(k,v). encode_trie_path(v) = k`. The invariant no longer
+    /// reconciles two bulk readers; it reconciles the point lookups with the
+    /// bulk one.
     #[test]
-    fn the_two_readers_agree_entry_for_entry_when_the_invariant_holds() {
+    fn the_point_lookup_value_agrees_with_the_key_when_the_invariant_holds() {
         let elements = vec![
             gint(1),
             list(vec![gint(1)]),

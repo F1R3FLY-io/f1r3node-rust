@@ -570,18 +570,26 @@ fn the_composition_law_takes_the_argument_arm_only_at_the_root() {
     }
 }
 
-/// The FIRST consequence: the value-side reader
-/// (`rholang_pathmap_to_e_pathmap`) and the key-side reader (a `to_next_val`
-/// walk that decodes keys — `canonical_ps_from_trie`) report the same entries.
-/// They can only disagree by way of the invariant.
+/// The FIRST consequence: the bulk converter (`rholang_pathmap_to_e_pathmap`)
+/// and a hand-rolled `to_next_val` walk that decodes keys report the same
+/// entries, in the same order, on every one of the 512 maps.
+///
+/// ⚠ This test predates the converter's move to the key side, when it was a
+/// statement about two INDEPENDENT readers agreeing. It is now a statement that
+/// the converter IS the key walk — weaker as a differential, and still the leg
+/// that catches the converter being re-pointed at the values or acquiring its
+/// own traversal. The independent statement it used to make is now made by
+/// construction, which is the point; the residual value-side reader is the point
+/// LOOKUP, covered by `the_point_lookup_value_agrees_with_the_key_when_the_invariant_holds`
+/// in `models/src/rust/pathmap_crate_type_mapper.rs`.
 #[test]
-fn the_two_trie_readers_agree_on_every_subset() {
+fn the_bulk_converter_is_the_key_walk_on_every_subset() {
     use pathmap::zipper::{ZipperIteration, ZipperMoving};
 
     for subset in every_subset_of_the_alphabet() {
         let built = create_pathmap_from_elements(&subset, None);
 
-        let by_value =
+        let by_converter =
             PathMapCrateTypeMapper::rholang_pathmap_to_e_pathmap(&built.map, false, &[], None).ps;
 
         let mut by_key = Vec::new();
@@ -594,9 +602,9 @@ fn the_two_trie_readers_agree_on_every_subset() {
         }
 
         assert_eq!(
-            &by_value[..],
+            &by_converter[..],
             &by_key[..],
-            "the VALUE-side and KEY-side readers disagree on a {}-element map",
+            "the bulk converter is no longer the key walk on a {}-element map",
             subset.len()
         );
     }

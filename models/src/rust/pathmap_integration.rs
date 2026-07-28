@@ -439,28 +439,36 @@ pub struct TrieEntryDivergence {
 /// by their own codec path*. [`create_pathmap_from_elements`] — the sole
 /// construction site for a map that came from a program — writes
 /// `map.insert(encode_trie_path(par), par.clone())`, so **the value is a
-/// redundant mirror of the key**. Everything downstream is built on that
-/// redundancy, and the tree contains TWO INDEPENDENT READERS that exploit it in
-/// OPPOSITE directions:
+/// redundant mirror of the key**, and everything downstream is built on that
+/// redundancy.
+///
+/// # ⚠ What this invariant guards TODAY, which is not what it guarded before
+///
+/// It used to reconcile two BULK readers pulling the redundancy in opposite
+/// directions: `rholang_pathmap_to_e_pathmap` walked the **values** and
+/// `canonical_ps_from_trie` walked the **keys**, so every `EPathMap` the reducer
+/// handed back and every event-hash preimage agreed *only* while this held.
+/// **Both bulk readers now walk the keys**, so that particular disagreement is
+/// not fixed but **unrepresentable** — there is no second bulk reader to differ.
+///
+/// What keeps it load-bearing is the **point lookups**, which still read values:
 ///
 /// | reader | reads | used by |
 /// |---|---|---|
-/// | [`crate::rust::pathmap_crate_type_mapper::PathMapCrateTypeMapper::rholang_pathmap_to_e_pathmap`] | the **values** (`iter()`) | every `EPathMap`-returning method in the reducer |
-/// | `pathmap_crate_type_mapper::canonical_ps_from_trie` | the **keys**, via `decode_trie_path` (`to_next_val()`) | the serde / event-hash preimage, `canonicalize_ground_epathmap` |
+/// | `PathMap::get` | the **value** at one key | `getLeaf` (`reduce.rs`), the fused chain's `get` (`fused_pathmap_chain.rs`), `values_with_prefix` (`pathmap_native_query.rs`) |
+/// | `pathmap_crate_type_mapper::canonical_ps_from_trie` | the **keys**, via `decode_trie_path` (`to_next_val()`) | every `EPathMap`-returning method in the reducer, the serde / event-hash preimage, `canonicalize_ground_epathmap` |
 ///
-/// The two agree on every map **exactly when this invariant holds**, and
-/// nothing else makes them agree. So a producer that writes a value which does
-/// not encode to its key does not merely store an odd pair — it makes the
-/// reducer's answer and the consensus event hash disagree about what the map
-/// contains.
+/// `map.get(k)` answers `decode_trie_path(k)` **exactly when this invariant
+/// holds**, and nothing else makes them agree. So a producer that writes a value
+/// which does not encode to its key makes a program's `getLeaf` disagree with
+/// the same program's enumeration of the same map.
 ///
-/// The failure is worse than a mismatch, because the value-side reader is
-/// *lossy under re-insertion*. Distinct keys `k₁ ≠ k₂` carrying the SAME value
-/// `v` survive `rholang_pathmap_to_e_pathmap` as two identical `ps` entries;
-/// the next `e_pathmap_to_rholang_pathmap` re-keys both to
-/// `encode_trie_path(v)` and the trie collapses them into one. **Entries are
-/// silently lost.** (Witnessed by `zz`-free fixtures in
-/// `models/tests/pathmap_integration_tests.rs`.)
+/// The failure is worse than a mismatch, because a value read is *lossy under
+/// re-insertion*. Distinct keys `k₁ ≠ k₂` carrying the SAME value `v` yield two
+/// identical entries — the cardinality still looks right — and the next
+/// `e_pathmap_to_rholang_pathmap` re-keys both to `encode_trie_path(v)`, so the
+/// trie collapses them into one. **Entries are silently lost.** (Witnessed by
+/// `zz`-free fixtures in `models/tests/pathmap_integration_tests.rs`.)
 ///
 /// # The root-key corollary (why an empty key is always a divergence)
 ///

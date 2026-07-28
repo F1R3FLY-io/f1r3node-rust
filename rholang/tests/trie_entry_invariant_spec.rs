@@ -19,26 +19,42 @@
 //!                          ┌────────────────────────────────┐
 //!                          │   RholangPathMap  (k ↦ v)      │
 //!                          └───────────┬────────────────────┘
-//!            reads the VALUES          │          reads the KEYS
-//!         (PathMap::iter, drops k)     │      (to_next_val + decode_trie_path)
-//!                    ▼                 │                 ▼
-//!   rholang_pathmap_to_e_pathmap       │       canonical_ps_from_trie
-//!   → every EPathMap the reducer       │       → the serde / EVENT-HASH
-//!     hands back to a program          │         preimage, canonicalization
+//!            reads the VALUE           │          reads the KEYS
+//!            AT ONE KEY                │      (to_next_val + decode_trie_path)
+//!         (PathMap::get)               │                 ▼
+//!                    ▼                 │       canonical_ps_from_trie
+//!   getLeaf (reduce.rs), the fused     │       → EVERY EPathMap the reducer
+//!   chain's get, values_with_prefix    │         hands back to a program, AND
+//!   (pathmap_native_query.rs)          │         the serde / EVENT-HASH preimage
 //! ```
 //!
 //! The two agree on a map **exactly when this invariant holds**, and there is
 //! no other reason for them to agree. A producer that files a value under a key
-//! the value does not encode to therefore makes the reducer's answer and the
-//! consensus event hash disagree about the map's contents.
+//! the value does not encode to therefore makes a program's `getLeaf` disagree
+//! with the same program's enumeration of the same map.
+//!
+//! # ⚠ What changed, and why this file is still load-bearing
+//!
+//! The left-hand side of that diagram used to be
+//! `rholang_pathmap_to_e_pathmap`, the BULK converter behind every
+//! `EPathMap`-returning method in the reducer. It walked `PathMap::iter()` and
+//! dropped the keys. It now walks the keys, so the two BULK readers have become
+//! one and **cannot disagree — there is no second bulk reader to be wrong**
+//! (defects #89 and #91 are unrepresentable, not fixed).
+//!
+//! What survives on the value side is the **point lookup**: `getLeaf`, the fused
+//! chain's `get`, and `values_with_prefix` all return `map.get(key)`. Those
+//! answers equal `decode_trie_path(key)` only while this invariant holds, so the
+//! invariant is not vacuous and this file is not obsolete — its subject has
+//! narrowed from "two bulk traversals" to "the point lookups versus the bulk
+//! one".
 //!
 //! # Why the failure is entry LOSS, not merely disagreement
 //!
-//! The value-side reader is lossy under re-insertion. Two DISTINCT keys
-//! carrying the SAME value survive `rholang_pathmap_to_e_pathmap` as two
-//! identical `ps` entries — the cardinality still looks right — and the very
-//! next `e_pathmap_to_rholang_pathmap` re-keys both to `encode_trie_path(v)`
-//! and merges them:
+//! A value read is lossy under re-insertion. Two DISTINCT keys carrying the SAME
+//! value yield two identical entries — the cardinality still looks right — and
+//! the very next `e_pathmap_to_rholang_pathmap` re-keys both to
+//! `encode_trie_path(v)` and merges them:
 //!
 //! ```text
 //!   k₁ ↦ v          ps = [v, v]        encode_trie_path(v) ↦ v
@@ -59,7 +75,9 @@
 //!    consensus nodes — compile it out). Every test in the workspace therefore
 //!    exercises the invariant on every map it touches, and a producer bug is
 //!    named at the first moment it is visible rather than at the distant point
-//!    where entries go missing.
+//!    where entries go missing. The guard SURVIVED the converter's move to the
+//!    key side — deleting it would have been tidy and wrong, because the point
+//!    lookups it now protects still read values.
 //! 2. **The matrix below.** The guard proves nothing about a case no test
 //!    drives, and until this file existed *no test drove a `setSubtrie` whose
 //!    source held a non-list entry* — `rholang/tests/setsubtrie_spec.rs` has
