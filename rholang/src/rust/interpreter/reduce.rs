@@ -5948,7 +5948,7 @@ impl DebruijnInterpreter {
                             }
 
                             // Create the absolute path Par
-                            let absolute_path_par = Par::default().with_exprs(vec![Expr {
+                            let composed_list_par = Par::default().with_exprs(vec![Expr {
                                 expr_instance: Some(ExprInstance::EListBody(
                                     models::rhoapi::EList {
                                         ps: absolute_elements,
@@ -5958,6 +5958,50 @@ impl DebruijnInterpreter {
                                     },
                                 )),
                             }]);
+
+                            // ★ A PathMap entry is both its own key and its
+                            // own value — `create_pathmap_from_elements`
+                            // inserts `(encode_trie_path(par), par)` — so what
+                            // is stored here must be the Par that `key`
+                            // ENCODES. This is the SAME doctrine step 3b
+                            // applies below; step 3 had been building the key
+                            // and the value by two independent routes:
+                            //
+                            //   key   `par_to_path(source_entry)`, the codec's
+                            //         OWN split/bare classifier — one segment
+                            //         per element for a ground-list carrier,
+                            //         ONE segment for anything else.
+                            //   value an `exprs.first()` EListBody guard that
+                            //         SILENTLY CONTRIBUTES NOTHING when it
+                            //         fails.
+                            //
+                            // For a BARE source entry (`{| 5 |}` — `GInt` is
+                            // not a split carrier) the key gained `enc(5)`
+                            // while the guard failed, so the value lost the
+                            // element. Two or more bare source entries then
+                            // received DISTINCT keys carrying the SAME value,
+                            // and since the converter reads VALUES the pair
+                            // re-encodes to one entry: entries were LOST.
+                            //
+                            // Deriving the value FROM the key is what makes
+                            // the two routes ONE route, so they cannot drift
+                            // apart again. The composed key is always
+                            // terminated, so it always decodes to the ground
+                            // list of the cursor's elements followed by the
+                            // source entry's — with a bare source entry
+                            // contributing itself as one element, which is
+                            // exactly what `par_to_path` charged the key for.
+                            //
+                            // The fallback is `composed_list_par`, reached
+                            // only when the composed key is not a valid codec
+                            // path — which requires an `EZipper.current_path`
+                            // that is not one either, since the source
+                            // segments come from `encode_trie_segment`. That
+                            // is step 3b's treatment verbatim.
+                            let absolute_path_par = {
+                                use models::rust::canonical_path::decode_trie_path;
+                                decode_trie_path(&key).unwrap_or(composed_list_par)
+                            };
 
                             rholang_pathmap.insert(key, absolute_path_par);
                         }

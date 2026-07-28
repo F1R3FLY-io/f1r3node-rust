@@ -798,13 +798,55 @@ impl PathMapCrateTypeMapper {
         }
     }
 
-    /// Convert from PathMap back to protobuf EPathMap
+    /// Convert from PathMap back to protobuf EPathMap.
+    ///
+    /// # ★ Precondition: the trie entry invariant
+    ///
+    /// This reads the trie's **values** and discards its keys. That is correct
+    /// — and ONLY correct — while
+    /// [`trie_entry_divergences`](crate::rust::pathmap_integration::trie_entry_divergences)
+    /// is empty for `map`, i.e. while every entry's value encodes back to the
+    /// key it is filed under. [`canonical_ps_from_trie`], the serde/event-hash
+    /// reader, takes the opposite route (it decodes the KEYS), so the two agree
+    /// exactly when the invariant holds and can disagree in no other way.
+    ///
+    /// The invariant is CHECKED here under `debug_assertions` — this is the
+    /// single point every trie in the system passes through on its way back to
+    /// a value, so it is the one place a producer that filed a value under a
+    /// key it does not encode to can be caught at all. Release builds
+    /// (consensus nodes) compile the check out and pay nothing; the entire test
+    /// corpus runs with it on.
+    ///
+    /// Why an assertion and not a repair: a divergent entry has already lost
+    /// information (two keys may share one value, and the count of distinct
+    /// keys is gone), so there is nothing to repair at this point — the producer
+    /// must not have created it. The check names the producer's bug at the
+    /// first moment it is visible.
     pub fn rholang_pathmap_to_e_pathmap(
         map: &RholangPathMap,
         connective_used: bool,
         locally_free: &[u8],
         remainder: Option<Var>,
     ) -> EPathMap {
+        #[cfg(debug_assertions)]
+        {
+            use crate::rust::pathmap_integration::{
+                render_trie_entry_divergences, trie_entry_divergences,
+            };
+            let divergences = trie_entry_divergences(map);
+            assert!(
+                divergences.is_empty(),
+                "trie entry invariant violated in {} of {} entries — this converter \
+                 reads VALUES and `canonical_ps_from_trie` reads KEYS, so these \
+                 entries make the reducer's answer and the event-hash preimage \
+                 disagree, and distinct keys sharing one value COLLAPSE on the next \
+                 re-insertion (entries are lost):{}",
+                divergences.len(),
+                map.iter().count(),
+                render_trie_entry_divergences(&divergences),
+            );
+        }
+
         // Extract all values (flattened) from the trie as elements for proto EPathMap
         let mut ps = Vec::new();
         for (_, par) in map.iter() {
@@ -815,5 +857,158 @@ impl PathMapCrateTypeMapper {
         // is a NEW value with an EMPTY shadow cell (it was just built from a
         // trie; its canonical bytes are not those of any interned source).
         EPathMap::new(ps, locally_free.to_vec(), connective_used, remainder)
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ★ THE ROOT-KEY DIVERGENCE — pinned, because it is UNREACHABLE rather than
+//   impossible, and the two readers do NOT agree about it
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// The value-side reader ([`PathMapCrateTypeMapper::rholang_pathmap_to_e_pathmap`])
+// walks `PathMap::iter()`, which YIELDS a value stored at the empty (root) key.
+// The key-side reader ([`canonical_ps_from_trie`]) walks
+// `ZipperIteration::to_next_val()`, which SKIPS it. A root value is therefore
+// kept by one reader and silently dropped by the other — the two would report
+// different contents for the same map, and the second would drop an entry the
+// first counted.
+//
+// It is unreachable TODAY because `encode_trie_path` is total and emits at
+// least one byte for every Par (the bare arm emits a tag; the split arm emits
+// the `0x00` terminator), so no producer keying through the codec can file a
+// value at `[]`. That is a property of the codec, not of the callers — which is
+// exactly why it is asserted here rather than assumed. Note the consequence
+// recorded below: `trie_entry_divergences` classifies a root value as a
+// divergence FOR FREE, since `[]` is in the image of no Par.
+#[cfg(test)]
+mod root_key_divergence {
+    use super::*;
+    use crate::rhoapi::EList;
+    use crate::rust::canonical_path::encode_trie_path;
+    use crate::rust::pathmap_integration::trie_entry_divergences;
+
+    fn gint(i: i64) -> Par {
+        Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::GInt(i)),
+        }])
+    }
+
+    fn gstring(s: &str) -> Par {
+        Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::GString(s.to_string())),
+        }])
+    }
+
+    fn list(ps: Vec<Par>) -> Par {
+        Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::EListBody(EList {
+                ps,
+                locally_free: Vec::new(),
+                connective_used: false,
+                remainder: None,
+            })),
+        }])
+    }
+
+    /// WHY the root key is unreachable: the codec never produces it. This is
+    /// the premise the whole pin rests on, so it is checked, not asserted in
+    /// prose — over both arms and the nested/empty edges.
+    #[test]
+    fn encode_trie_path_never_yields_the_empty_key() {
+        for par in [
+            Par::default(),
+            gint(0),
+            gint(-1),
+            gstring(""),
+            list(Vec::new()),
+            list(vec![gint(1)]),
+            list(vec![gstring("a"), list(vec![gint(2)])]),
+        ] {
+            assert!(
+                !encode_trie_path(&par).is_empty(),
+                "the codec emitted an EMPTY key for {par:?} — the root key would \
+                 become reachable, and the two trie readers disagree about it"
+            );
+        }
+    }
+
+    /// ★ The two readers DISAGREE about a root value — demonstrated on a trie
+    /// that only a direct `insert` can build. This is why the empty key must
+    /// stay outside the codec's image, and why a value found there is treated
+    /// as a divergence rather than as an entry.
+    #[test]
+    fn a_root_value_is_kept_by_the_value_reader_and_dropped_by_the_key_reader() {
+        let ordinary = gint(1);
+        let mut map = RholangPathMap::new();
+        map.insert(Vec::<u8>::new(), gstring("only reachable by hand"));
+        map.insert(encode_trie_path(&ordinary), ordinary.clone());
+
+        // VALUE-side reader: `iter()` yields the root value, so it is kept.
+        let by_value: Vec<Par> = map.iter().map(|(_, par)| par.clone()).collect();
+        assert_eq!(
+            by_value.len(),
+            2,
+            "`iter()` yields the root value — the value-side reader keeps it"
+        );
+
+        // KEY-side reader: `to_next_val()` skips it, so it is dropped. This is
+        // `canonical_ps_from_trie` itself, not a re-implementation — it would
+        // panic on the root key's `decode_trie_path`, which is the second half
+        // of the same divergence, so the walk is exercised through the guard
+        // below instead of by calling it on this map.
+        {
+            use pathmap::zipper::{ZipperIteration, ZipperMoving};
+            let mut rz = map.read_zipper();
+            let mut keys = Vec::new();
+            while rz.to_next_val() {
+                keys.push(rz.path().to_vec());
+            }
+            assert_eq!(
+                keys,
+                vec![encode_trie_path(&ordinary)],
+                "`to_next_val()` skips the root value — the key-side reader \
+                 (`canonical_ps_from_trie`) drops it"
+            );
+        }
+
+        // …and the invariant checker names it, WITHOUT a special case: `[]` is
+        // in the image of no Par, so a root value is a divergence by the same
+        // rule that catches every other mis-filed entry.
+        let divergences = trie_entry_divergences(&map);
+        assert_eq!(divergences.len(), 1, "exactly the root entry diverges");
+        assert!(
+            divergences[0].key.is_empty(),
+            "the divergence named is the ROOT key"
+        );
+        assert!(
+            !divergences[0].value_key.is_empty(),
+            "…whose value claims a NON-empty key, which is the whole point"
+        );
+    }
+
+    /// `canonical_ps_from_trie` on a well-formed trie agrees ENTRY FOR ENTRY
+    /// with the value-side reader — the positive half of the same statement,
+    /// so the pin above is a witness of divergence and not of a broken walk.
+    #[test]
+    fn the_two_readers_agree_entry_for_entry_when_the_invariant_holds() {
+        let elements = vec![
+            gint(1),
+            list(vec![gint(1)]),
+            gstring("a"),
+            list(vec![gstring("a"), gstring("x")]),
+        ];
+        let built = create_pathmap_from_elements(&elements, None);
+        assert!(
+            trie_entry_divergences(&built.map).is_empty(),
+            "the sole program-facing constructor upholds the invariant"
+        );
+
+        let by_key = canonical_ps_from_trie(&built.map);
+        let by_value: Vec<Par> = built.map.iter().map(|(_, par)| par.clone()).collect();
+        assert_eq!(
+            by_key, by_value,
+            "KEY-side and VALUE-side readers must return the same entries in \
+             the same order when the invariant holds"
+        );
     }
 }
