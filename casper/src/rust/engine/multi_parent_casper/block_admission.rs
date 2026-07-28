@@ -64,8 +64,17 @@ pub(crate) fn admit_deploy<T: TransportLayer + Send + Sync>(
     let normalizer_env = normalizer_env_from_deploy(&deploy);
     let parse_started_at = std::time::Instant::now();
 
-    // Try to parse the deploy term
-    match interpreter_util::mk_term(&deploy.data.term, normalizer_env) {
+    // Try to parse the deploy term.
+    //
+    // ★ `validate_deploy_term` rather than `mk_term`: the normalized term is
+    // surplus here — admission stores the deploy's SOURCE and the proposer
+    // re-normalizes it later — and releasing a surplus `Par` through `prost`'s
+    // DERIVED destructor costs Θ(depth) native stack, on a 2 MiB tokio worker,
+    // on source that arrived from the network, before this deploy is stored and
+    // before consensus. The validator hands the term to an explicit worklist
+    // instead. See `interpreter_util::validate_deploy_term` for the full
+    // derivation and for why no observable byte moves.
+    match interpreter_util::validate_deploy_term(&deploy.data.term, normalizer_env) {
         Err(interpreter_error) => {
             tracing::debug!(
                 target: "f1r3fly.deploy.latency",
@@ -77,7 +86,7 @@ pub(crate) fn admit_deploy<T: TransportLayer + Send + Sync>(
                 interpreter_error
             ))))
         }
-        Ok(_parsed_term) => {
+        Ok(()) => {
             let parse_elapsed_ms = parse_started_at.elapsed().as_millis();
             let add_started_at = std::time::Instant::now();
             let deploy_id = add_deploy(this, deploy)?;
@@ -109,7 +118,11 @@ pub(crate) fn admit_deploy_cosigned<T: TransportLayer + Send + Sync>(
     use models::rust::normalizer_env::normalizer_env_from_cosigned_deploy;
     let normalizer_env = normalizer_env_from_cosigned_deploy(&cosigned);
     let parse_started_at = std::time::Instant::now();
-    match interpreter_util::mk_term(&cosigned.data.term, normalizer_env) {
+    // ★ `validate_deploy_term` rather than `mk_term` — the same reasoning as
+    // `admit_deploy`'s, and this is the site a gRPC `doDeploy` actually reaches:
+    // `deploy_grpc_service_v1::do_deploy` → `block_api::deploy_cosigned`
+    // (synchronous, inline on the worker) → `dispatch` → here.
+    match interpreter_util::validate_deploy_term(&cosigned.data.term, normalizer_env) {
         Err(interpreter_error) => {
             tracing::debug!(
                 target: "f1r3fly.deploy.latency",
@@ -121,7 +134,7 @@ pub(crate) fn admit_deploy_cosigned<T: TransportLayer + Send + Sync>(
                 interpreter_error
             ))))
         }
-        Ok(_parsed_term) => {
+        Ok(()) => {
             let max_cosigners = this.casper_shard_conf.max_cosigners_per_deploy as usize;
             if cosigned.signers().len() > max_cosigners {
                 return Ok(Either::Left(DeployError::parsing_error(format!(
