@@ -60,10 +60,11 @@ converted-depth: substitute_no_sort, substitute_binders, substitute, sort, score
                  inj_attempt_clone
 converted-width: substitute_wide, sort_wide, score_cmp_wide, free_check, pretty_wide,
                  normalize_wide
-tripwire-depth:  substitute_deep_binding, clone, par_drop, normalize_drop, encode,
-                 bincode_ser, sort_nested_set, sort_nested_map, clone_nested_set
+tripwire-depth:  subst_and_charge, substitute_deep_binding, clone, par_drop,
+                 normalize_drop, encode, bincode_ser, sort_nested_set, sort_nested_map,
+                 clone_nested_set
 tripwire-width:
-totals:          converted=18, tripwired=9
+totals:          converted=18, tripwired=10
 ```
 <!-- GATE-SUBJECTS:END -->
 

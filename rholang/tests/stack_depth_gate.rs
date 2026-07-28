@@ -568,6 +568,10 @@ fn subject(name: &str) -> fn(usize) {
         // -------- depth axis --------
         "substitute" => substitute_body,
         "substitute_no_sort" => substitute_no_sort_body,
+        // ★ The METERED wrapper — what the reducer calls. See
+        // `subst_and_charge_body`; the name is `stack_depth_probe.rs`'s, so one
+        // subject has one name across the measurement harness and the gate.
+        "subst_and_charge" => subst_and_charge_body,
         "substitute_binders" => substitute_binders_body,
         "substitute_deep_binding" => substitute_deep_binding_body,
         "sort" => sort_body,
@@ -741,6 +745,11 @@ const CONVERTED_WIDTH: &[&str] = &[
 /// call in [`theta_depth_tripwire`]; this list exists so the audit can be
 /// checked against it, and the tripwire asserts it drove exactly these.
 const TRIPWIRE_DEPTH: &[&str] = &[
+    // ★★ The METERED WRAPPER, and the deploy path's binding constraint:
+    // `substitute_and_charge` takes `&A` and opens with `term.clone()`, on the
+    // ordinary send path, with no binder and no COMM. See
+    // `subst_and_charge_body`.
+    "subst_and_charge",
     "substitute_deep_binding", // `Env::get` clones a deep bound value
     "clone",                   // derived `<Par as Clone>`
     "par_drop",                // derived `drop_in_place::<Par>`
@@ -1028,6 +1037,89 @@ fn substitute_no_sort_body(depth: usize) {
         .expect("stack_depth_gate: substitute_no_sort failed");
     assert_carries("the substitute_no_sort OUTPUT's nesting", par_depth(&out), depth);
     dismantle(out);
+}
+
+/// ★★ **THE METERED WRAPPER — the deploy path's binding constraint, and a
+/// NAMED RESIDUAL rather than a converted traversal.**
+///
+/// `Substitute::substitute_and_charge` is what the reducer actually calls; the
+/// bare `substitute` this file already gates is reached only through it. The
+/// wrapper takes `term: &A` and opens with `term.clone()`, so **every
+/// substitution deep-copies its input** — on the ordinary send path, with no
+/// binder and no COMM, which is what distinguishes it from
+/// [`substitute_deep_binding_body`]'s `Env::get` clone. Measured end to end
+/// through the real runtime on a 2 MiB tokio worker
+/// (`rholang/tests/deploy_depth_ceiling.rs`), that copy is **7,253 B/level** and
+/// it is the reason a deploy stops at depth ~286 even though `substitute`,
+/// `sort`, `normalize` and `pretty` are all converted and flat.
+///
+/// It is in [`TRIPWIRE_DEPTH`] and not in [`CONVERTED_DEPTH`] because it is
+/// composed of two members whose disposition is Leg-1: `<Par as Clone>::clone`
+/// (row 5) and `EPathMap::encoded_len` (row 7). Removing the clone removes a
+/// CALL SITE; neither derived traversal goes away, so the subject stays sloped
+/// and stays here. A traversal enters `CONVERTED_DEPTH` only by being converted.
+///
+/// ## ★★ Why this body is written EXACTLY like this
+///
+/// It is `stack_depth_probe.rs`'s `subst_and_charge` probe, ported verbatim,
+/// and the two details that look like clutter are the measurement:
+///
+/// * **`&t` on a fresh local IS the defect.** The wrapper's signature is
+///   `&A`, so a caller that owns its term must hand out a borrow and let the
+///   wrapper copy it. Writing the call any other way measures a different
+///   program.
+/// * **`std::mem::forget` on BOTH values, never `drop` and never `dismantle`.**
+///   This subject holds TWO deep `Par`s when the wrapper returns — the input and
+///   the result — and `Par`'s derived `drop_in_place` is itself Θ(depth) (it is
+///   the `par_drop` subject, 144 B/level release / 470 debug). Forgetting both
+///   keeps teardown out of the reading STRUCTURALLY, so the number is the
+///   wrapper and nothing else. It is also the shape `stack_depth_probe.rs`
+///   uses, and one subject that carries one name across the measurement harness
+///   and the gate must not carry two numbers.
+///
+/// ## ⚠ The shape was checked, and it does NOT move the number
+///
+/// The brief for this port warned that a semantically equivalent rewrite can
+/// shift a reading by 60%, so before this subject was committed all four
+/// plausible spellings were measured against each other — `mem::forget` on both
+/// (this body), `dismantle` on both, `drop` on both, and the fresh-temporary
+/// `s.substitute_and_charge(&nested_list(depth), 0, &env).map(drop)`. Bisected
+/// 2026-07-28, at depths 16 and 128:
+///
+/// | spelling             | release             | debug                  |
+/// |----------------------|---------------------|------------------------|
+/// | `mem::forget` (this) | 57,344 → 376,832 B  | 278,528 → 2,056,192 B  |
+/// | `dismantle`          | 57,344 → 376,832 B  | 278,528 → 2,056,192 B  |
+/// | `drop`               | 57,344 → 376,832 B  | 278,528 → 2,056,192 B  |
+/// | temporary + `map(drop)` | 57,344 → 376,832 B | 278,528 → 2,056,192 B |
+///
+/// Identical to the byte, in both profiles: **2,852 B/level release, 15,872
+/// debug**. That is not luck, and the reason is the one this file already
+/// records for `normalize_drop`: the teardowns run AFTER the wrapper returns, so
+/// they do not nest inside its frames and the composition costs
+/// $`\max(S_{\text{wrapper}}, S_{\text{teardown}})`$ rather than the sum. At
+/// 2,852 against 144 the max cannot move. A spelling could only matter here by
+/// making a destructor run *while* the wrapper is still on the stack, and none
+/// of the four does.
+///
+/// So the verbatim port is kept because it is structurally the right
+/// measurement and because it agrees with the probe harness — not because the
+/// alternatives were assumed to differ. They were measured, and they do not.
+///
+/// The anti-vacuity check is on the INPUT's depth, because the input is what the
+/// wrapper clones. The output is not walked: doing so would be another Θ(depth)
+/// traversal in the same frame region, for no evidence the input check does not
+/// already give.
+fn subst_and_charge_body(depth: usize) {
+    let t = nested_list(depth);
+    assert_carries("the substitute_and_charge input's nesting", par_depth(&t), depth);
+    let s = substitute_instance();
+    let env: Env<Par> = Env::new();
+    let out = s
+        .substitute_and_charge(&t, 0, &env)
+        .expect("stack_depth_gate: substitute_and_charge failed");
+    std::mem::forget(out);
+    std::mem::forget(t);
 }
 
 fn substitute_binders_body(depth: usize) {
@@ -2316,6 +2408,14 @@ fn theta_depth_tripwire() {
     // flat 49,152 / 12,288 at widths 4 through 65,536. As always, a traversal
     // leaves this list only by being converted, never by having its ceiling
     // raised.
+    // ★★ THE METERED WRAPPER — see `subst_and_charge_body`. Same ladder and the
+    // same ceiling as `substitute_deep_binding` below it, and deliberately so:
+    // the two subjects are the same traversal (`<Par as Clone>::clone` over a
+    // depth-`d` `Par`) reached through two different call sites, measured under
+    // one inlining regime, so a ceiling that fits one has to fit the other. The
+    // ceiling is not a target — it certifies "not worse", and Stage 3 of the
+    // repair lowers it to what the by-move wrapper actually costs.
+    assert_slope_below("subst_and_charge", ceiling(25_000, 12_000), 16, 128);
     assert_slope_below("substitute_deep_binding", ceiling(25_000, 12_000), 16, 128);
     assert_slope_below("clone", ceiling(25_000, 5_000), 16, 128);
     assert_slope_below("par_drop", ceiling(1_500, 800), 256, 4096);
