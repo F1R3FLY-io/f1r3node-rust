@@ -122,8 +122,9 @@ use prost::DecodeError;
 
 use super::canonical_path::decode_trie_path;
 use super::pathmap_crate_type_mapper::{
-    encode_ground_field8, eval_stable_epathmap, fields_match_canonical_prost, ground_canonical_ps,
-    ground_field8_len, ground_path_stream, intern_epathmap_via_store, InternedEPathMap,
+    encode_ground_field8, entries_in_ground_domain, eval_stable_epathmap,
+    fields_match_canonical_prost, ground_canonical_ps, ground_field8_len, ground_path_stream,
+    intern_epathmap_via_store, InternedEPathMap,
 };
 use crate::rhoapi::{Par, Var};
 
@@ -511,6 +512,59 @@ impl EPathMap {
                 .map_or(0, |msg| encoding::message::encoded_len(5u32, msg))
     }
 
+    /// ★ **`U(m)` — the identity artifact of this map's entries**, or `None`
+    /// when the entries are outside the codec's ground domain
+    /// ([`entries_in_ground_domain`]).
+    ///
+    /// ```math
+    /// U(m) \;=\; \big\Vert_{k \in \mathrm{keys}(m)}
+    ///            \big(\mathrm{u32\text{-}LE}(|k|) \,\Vert\, k\big)
+    /// ```
+    ///
+    /// # The order is not chosen here — the trie already has one
+    ///
+    /// A trie's children are indexed BY BYTE, so a read-zipper walk is
+    /// byte-lexicographic **by construction**. Nothing selects that order and
+    /// nothing could select a different one, which is why
+    /// [`ground_path_stream`] performs **no sort**: the structure supplies the
+    /// order, and a sort would be a second opinion about something that is not
+    /// in question.
+    ///
+    /// This is the SAME artifact proto field 8 (`serialized_paths`) has carried
+    /// since the wire re-pin, described there as *"the canonical identity + hash
+    /// preimage of a ground map"*. Reading it here does not invent an encoding;
+    /// it makes the in-memory comparators read the order the wire has used all
+    /// along.
+    ///
+    /// # Why the arm exists rather than the artifact being total
+    ///
+    /// `encode_trie_path` is total over every `Par` (the `0x0F` escape arm), so
+    /// `U` could be computed for a non-ground map too. Doing that would make
+    /// non-ground maps order-insensitive and deduplicated — a genuine
+    /// improvement, and a **consensus-visible** one, because
+    /// `sort_combine::combine_epathmap`'s non-ground arm preserves entry order
+    /// today. It is therefore a separate, separately-ruled change; this arm
+    /// keeps the present one byte-preserving.
+    ///
+    /// Cost: `None` costs one walk of `ps` with no allocation. `Some` costs the
+    /// same walk the encoder already performs for a ground map, and is free
+    /// when the intern rendezvous has already pinned `U(m)` on this value.
+    fn entry_path_stream(&self) -> Option<std::borrow::Cow<'_, [u8]>> {
+        if !entries_in_ground_domain(&self.ps) {
+            return None;
+        }
+        // A filled shadow cell already holds this map's U(m) — but only when it
+        // interned through the GROUND arm (a map whose entries are ground while
+        // its metadata is not takes the field-walk arm and leaves the stream
+        // empty), so emptiness is the test, not the cell's presence.
+        if let Some(interned) = self.intern.get() {
+            if !interned.path_stream.is_empty() {
+                return Some(std::borrow::Cow::Borrowed(&interned.path_stream));
+            }
+        }
+        Some(std::borrow::Cow::Owned(ground_path_stream(&self.ps)))
+    }
+
     /// The stale-cell invariant check backing the cached-path
     /// `debug_assert`s: with the cell filled, the CURRENT fields must still
     /// stream-encode to the cached canonical bytes. Runs the FIELD walk
@@ -750,10 +804,45 @@ impl PartialEq for EPathMap {
     /// AlwaysEqual semantics: `locally_free` is a transient analysis field
     /// and does NOT participate (scalapb `AlwaysEqual[BitSet]` parity). The
     /// shadow cell does not participate either (it is derived state).
+    ///
+    /// # ★ The entries are compared by `U(m)`, not by position
+    ///
+    /// A pathmap is a SET of entries. The `Vec<Par>` that holds them carries a
+    /// second piece of information the set does not have — the order a producer
+    /// happened to write them in — and comparing it positionally makes that
+    /// order part of the value. It is not: `encode_raw` emits a ground map as
+    /// proto field 8, the trie's own key stream, so
+    /// `{| 1, "a" |}` and `{| "a", 1 |}` **already** encode to the same
+    /// consensus bytes and hash to the same event hash. Only `==` disagreed.
+    ///
+    /// So the `Vec`'s insertion order is a second, competing order shadowing the
+    /// trie's, and [`EPathMap::entry_path_stream`] reads the trie's. Two
+    /// constructions of one entry set — permuted, duplicated, or both — are one
+    /// value, which is what the wire has said all along. (Defect #83.)
+    ///
+    /// The positional test is kept as a fast path, not as a meaning: identical
+    /// order implies an identical entry set, so it can only ever short-circuit a
+    /// `true`. It also carries the `Arc::ptr_eq` shortcut through `SharedPars`,
+    /// which is the common case for clone families.
     fn eq(&self, other: &Self) -> bool {
-        self.ps == other.ps
-            && self.connective_used == other.connective_used
-            && self.remainder == other.remainder
+        if self.connective_used != other.connective_used || self.remainder != other.remainder {
+            return false;
+        }
+        if self.ps == other.ps {
+            return true;
+        }
+        match (self.entry_path_stream(), other.entry_path_stream()) {
+            (Some(left), Some(right)) => left == right,
+            // Neither side's entries are in the codec's ground domain: the
+            // pre-existing positional comparison, already performed above.
+            (None, None) => false,
+            // One side is in the ground domain and the other is not. Because
+            // `entries_in_ground_domain` reads `ps` alone, positionally equal
+            // entries always land in the same arm — so this pair's entries
+            // differ, and the arms never declare a cross-arm equality. That is
+            // what keeps `==` transitive; see `entries_in_ground_domain`.
+            _ => false,
+        }
     }
 }
 
@@ -761,9 +850,19 @@ impl Eq for EPathMap {}
 
 impl Hash for EPathMap {
     /// AlwaysEqual semantics: consistent with `==` (`locally_free` and the
-    /// cell excluded).
+    /// cell excluded) — and, since `==` now identifies a ground map's entries by
+    /// `U(m)`, so does this. A hash that kept reading `ps` positionally would
+    /// put two `==` maps in different buckets and quietly break every hash
+    /// container holding a `Par`.
+    ///
+    /// There is no fast path here, and there cannot be: `Hash` has to agree with
+    /// `==` on pairs it never sees, so it must read the canonical artifact
+    /// unconditionally.
     fn hash<H: Hasher>(&self, state: &mut H) {
-        self.ps.hash(state);
+        match self.entry_path_stream() {
+            Some(stream) => stream.hash(state),
+            None => self.ps.hash(state),
+        }
         self.connective_used.hash(state);
         self.remainder.hash(state);
     }

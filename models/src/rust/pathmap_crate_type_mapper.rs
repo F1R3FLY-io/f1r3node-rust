@@ -354,6 +354,41 @@ pub fn eval_stable_epathmap(e_pathmap: &EPathMap) -> bool {
         && e_pathmap.ps.iter().all(eval_stable_par)
 }
 
+/// [`eval_stable_epathmap`] restricted to the ENTRIES: `true` iff `ps` is
+/// non-empty and every entry is in the codec's ground domain. The metadata
+/// fields — `locally_free`, `connective_used`, `remainder` — are deliberately
+/// NOT consulted.
+///
+/// # ★ Why the metadata must be left out, and why it is not a shortcut
+///
+/// This predicate selects which identity a map's entries have: entries in the
+/// ground domain are identified by `U(m)` — the trie's own byte-lexicographic
+/// key order — and entries outside it are identified positionally, as before.
+/// Selecting that arm with [`eval_stable_epathmap`] instead would read
+/// `locally_free`, and `EPathMap`'s `==` deliberately IGNORES `locally_free`
+/// (scalapb `AlwaysEqual[BitSet]` parity). The combination is not merely untidy
+/// — **it destroys transitivity**:
+///
+/// ```text
+/// a = {| x, y |}                     ground        U(a) = U(b)   ⇒  a == b
+/// b = {| y, x |}                     ground
+/// c = {| y, x |} with locally_free   NOT ground    ps(b) = ps(c) ⇒  b == c
+///                                                  ps(a) ≠ ps(c) ⇒  a ≠ c
+/// ```
+///
+/// `a == b` and `b == c` while `a ≠ c` — an `Eq` impl that is not an
+/// equivalence relation, which is instant undefined behaviour in every hash and
+/// sorted container in the tree.
+///
+/// Reading only `ps` removes the hazard at its source rather than patching the
+/// symptom: the predicate is a function of exactly the field the comparison
+/// uses, so positionally equal `ps` always land in the SAME arm, the two arms
+/// never declare a cross-arm equality, and the relation is the disjoint union of
+/// two equivalences — an equivalence.
+pub(crate) fn entries_in_ground_domain(ps: &[Par]) -> bool {
+    !ps.is_empty() && ps.iter().all(eval_stable_par)
+}
+
 /// A Par in ground normal form: either a single-expr carrier over the stable
 /// expr alphabet, or the reflect GPrivate leaf. Every other Par field must
 /// be empty and `locally_free`/`connective_used` at their ground defaults.
