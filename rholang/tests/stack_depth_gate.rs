@@ -1442,12 +1442,12 @@ fn source_sibling_count(src: &str) -> usize {
 ///   … the Par falls out of scope …    Θ(depth)            (derived `Drop`)
 /// ```
 ///
-/// ## ⚠ AND IT RUNS ON INGRESS TOO, WHERE THERE IS NO BUDGET AT ALL
+/// ## ⚠ IT RAN ON INGRESS TOO, WHERE THERE IS NO BUDGET AT ALL — ★ NOW CONVERTED
 ///
 /// This doc described only the EVALUATION path until 2026-07-27, which
 /// understated the exposure. The same composition — build a full `Par` from
-/// attacker-supplied source, then release it recursively — is what
-/// `casper/src/rust/engine/multi_parent_casper/block_admission.rs` runs on the
+/// attacker-supplied source, then release it recursively — was what
+/// `casper/src/rust/engine/multi_parent_casper/block_admission.rs` ran on the
 /// **gRPC deploy-intake** path, in both `admit_deploy` and
 /// `admit_deploy_cosigned`:
 ///
@@ -1458,28 +1458,53 @@ fn source_sibling_count(src: &str) -> usize {
 ///   … the arm ends, the Par falls out of scope …    Θ(depth) (derived `Drop`)
 /// ```
 ///
-/// and that is **worse** than the evaluation instance in three ways:
+/// and that was **worse** than the evaluation instance in three ways:
 ///
-/// * it fires on a **2 MiB spawned worker** BEFORE the deploy is stored, BEFORE
-///   consensus, and before any replica has agreed to spend anything on it;
+/// * it fired on a **2 MiB spawned worker** BEFORE the deploy was stored, BEFORE
+///   consensus, and before any replica had agreed to spend anything on it;
 /// * `admit_deploy_cosigned` never touches a `RuntimeBudget`, so — exactly as
-///   with `build-normalized-term` — cost accounting cannot bound it, not because
-///   the charge is too small but because no charge exists yet; and
-/// * the term is **discarded**. `_parsed_term` is bound with a leading underscore
-///   and never read — the `match` is a validity check, what admission stores is
-///   the deploy's SOURCE, and the block creator re-normalizes it later. The whole
-///   traversal is the destructor of a value nothing reads.
+///   with `build-normalized-term` — cost accounting could not bound it, not
+///   because the charge would be too small but because no charge exists yet; and
+/// * the term was **discarded**. `_parsed_term` was bound with a leading
+///   underscore and never read — the `match` is a validity check, what admission
+///   stores is the deploy's SOURCE, and the block creator re-normalizes it later.
+///   The whole traversal was the destructor of a value nothing reads.
 ///
 /// `normalizer_env` is depth-independent (a handful of shallow `GUnforgeable`
 /// `Par`s), so ingress and this subject measure the same composition — and the
-/// measurements agree: bisected on a 2 MiB thread in release,
-/// `casper/tests/deploy_ingress_depth_ceiling.rs` puts ingress at **135.5
-/// B/level** and a maximum source depth of **14,520**, against this subject's
-/// independently bisected **144 B/level** and `par_drop`'s **14,525**.
+/// measurements agree on the class. Bisected on a 2 MiB thread in release,
+/// `casper/tests/deploy_ingress_depth_ceiling.rs` put ingress at a maximum source
+/// depth of **21,781**, against this subject's independently bisected **144
+/// B/level** and `par_drop`'s **14,525**.
 ///
-/// ⚠ **The ingress instance is NOT repaired**, and that is deliberate: deploy
-/// admission is pre-metering and pre-storage, and a change there warrants its own
-/// design. The cross-reference above is a measurement, not a guard.
+/// ⚠ The two files' *slopes* differ — 96 B/level there against 144 here — and
+/// that is CODEGEN, not composition. The identical function
+/// `drop_in_place::<models::rhoapi::Par>` is emitted with 5 pushes and no
+/// `sub rsp` (48 B) in that binary and 7 pushes (64 B) in this one; the
+/// mutually-recursive cycle it forms with `drop_in_place::<ExprInstance>` is
+/// therefore 96 B per level there and 144 here. Both are Θ(depth); only the
+/// constant is a property of the build.
+///
+/// ## ★ THE INGRESS INSTANCE IS NOW CONVERTED — this subject is the one that is not
+///
+/// `casper::rust::util::rholang::interpreter_util::validate_deploy_term` owns the
+/// deploy-admission discard as of 2026-07-28: it parses and hands the term to
+/// `par_children::dismantle`, and both `admit_deploy` and `admit_deploy_cosigned`
+/// call it. Measured on the same 2 MiB worker: **0.0 B/level** over
+/// `256 → 4,096` in both profiles, and no ceiling below a search cap of 262,144,
+/// against the derived control's 21,782 (release) / 4,503 (debug) on the identical
+/// fixture. The claim is executed by
+/// `casper/tests/deploy_ingress_depth_ceiling.rs`'s
+/// `ingress_validation_is_depth_independent`.
+///
+/// ⚠ **That does NOT promote this subject, and the distinction is the whole
+/// point of [`TRIPWIRE_DEPTH`]'s admission rule.** What was converted is the
+/// *deploy-admission instance* of the composition. This subject stands for the
+/// **evaluation** instance — `Compiler::source_to_adt` handing a term to
+/// `InterpreterImpl::inj_attempt`, which still releases it through the derived
+/// destructor when reduction finishes — and that traversal is unchanged, still
+/// reachable, and still Θ(depth). A name leaves this list when the traversal it
+/// stands for is gone, never because a sibling call site was fixed.
 ///
 /// ⚠ **The two facts are individually gated and jointly unguarded, and that is
 /// the whole finding.** `normalize` is in
@@ -1508,8 +1533,11 @@ fn normalize_drop_body(depth: usize) {
     );
     let term = Compiler::source_to_adt(&src).expect("stack_depth_gate: normalize_drop failed");
     assert_carries("the NORMALIZED term's nesting", par_depth(&term), depth);
-    // ⚠ NOT `dismantle`. This is the line under test: every production caller of
-    // `Compiler::source_to_adt` releases the term exactly like this.
+    // ⚠ NOT `dismantle`. This is the line under test: the EVALUATION path's
+    // caller of `Compiler::source_to_adt` releases the term exactly like this.
+    //
+    // ★ "every production caller" until 2026-07-28, when deploy admission stopped
+    // being one — see this function's docs. `inj_attempt` still does.
     drop(term);
 }
 
@@ -2478,6 +2506,15 @@ fn theta_depth_tripwire() {
     // own, because the normalizer contributes nothing: this subject is here to
     // keep the composition measured, and to fail if the teardown gets worse or
     // if the normalizer stops being flat.
+    //
+    // ⚠ **It stays here even though one of its two production instances was
+    // converted on 2026-07-28.** Deploy ADMISSION now routes through
+    // `interpreter_util::validate_deploy_term` (parse ▸ `dismantle`, 0 B/level,
+    // no ceiling below 262,144 — gated in `casper/tests/`). The EVALUATION
+    // instance, `inj_attempt` releasing the reduced term through the derived
+    // destructor, is untouched, and that is what this subject stands for. A name
+    // leaves this list when its traversal is gone, never when a sibling call site
+    // is fixed.
     assert_slope_below("normalize_drop", ceiling(1_500, 800), 256, 4096);
     assert_slope_below("encode", ceiling(4_000, 1_500), 64, 1024);
     // ⚠ The RSpace codec — see `bincode_ser_body`. UNCAPPED, unlike `prost`.
@@ -3036,13 +3073,20 @@ fn the_audit_agrees_with_the_gate() {
 /// parameter 4,096 with a flat minimum stack.
 ///
 /// ⚠⚠ **AND ITS SCOPE IS NARROWER THAN ITS NAME.** It drives `normalize`, whose
-/// body ends in `par_children::dismantle`. **No production caller does that** —
-/// `Compiler::source_to_adt` returns the sorted `Par` by value and every caller,
-/// `InterpreterImpl::inj_attempt` included, lets it fall out of scope through
-/// the derived recursive `Drop`. Measured 2026-07-27 on this very fixture with
-/// `dismantle` replaced by `drop` (subject `normalize_drop`): the same 2 MiB
-/// worker carries depth **4,414**, not 100,000, and depth 4,415 aborts with
-/// `fatal runtime error: stack overflow`.
+/// body ends in `par_children::dismantle`. When this was written **no production
+/// caller did that** — `Compiler::source_to_adt` returns the sorted `Par` by
+/// value and every caller, `InterpreterImpl::inj_attempt` included, let it fall
+/// out of scope through the derived recursive `Drop`. Measured 2026-07-27 on this
+/// very fixture with `dismantle` replaced by `drop` (subject `normalize_drop`):
+/// the same 2 MiB worker carries depth **4,414**, not 100,000, and depth 4,415
+/// aborts with `fatal runtime error: stack overflow`.
+///
+/// ★ **One production caller does it now.** Deploy admission's
+/// `interpreter_util::validate_deploy_term` (2026-07-28) is `source_to_adt` ▸
+/// `dismantle` — this fixture's exact shape, on the gRPC intake path — so for
+/// that caller the 100,000 above is no longer an artefact of the fixture. It
+/// remains one for `inj_attempt`, which is why `normalize_drop` is still
+/// tripwired and why the paragraph below still stands.
 ///
 /// So this test certifies "the *normalizer* no longer aborts the node", which is
 /// exactly what Stage G set out to do and exactly what it achieved. It does not

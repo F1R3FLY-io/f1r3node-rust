@@ -2907,13 +2907,352 @@ process at an explicitly-sized stack, and reported with its bracketing evidence.
 | E86 | ★★ **`Env::get` does NOT outrank the clone, and neither does anything else the cluster had named.** ⚠ **The ORDERING is SUPERSEDED by [E95]** — with the send-path clone removed, `Env::get` became the sole ceiling of its own shape rather than a 3-level surcharge. The measurement below stands; its ranking conclusion was true only of the pre-repair tree. An END-TO-END deploy on a 2 MiB tokio worker stops at source depth **286**; the *same* deploy shape with the deep term routed through a COMM binder stops at **283** — a marginal cost of **3 levels** for `Env::get`, not a new ceiling | **Measured** — `rholang/tests/deploy_depth_ceiling.rs`, real runtime, `thread_stack_size(2 MiB)` set explicitly on the tokio builder, deploy driven from SOURCE through `evaluate_with_term`; both shapes 7,253 B/level (identical growth 1,740,800 B over 16 → 256), differing only in a 20,480 B intercept |
 | E87 | ★★★ **A NEW, PREVIOUSLY UNRECORDED Θ(depth) member is the deploy path's binding constraint: `Substitute::substitute_and_charge` opens with `term.clone()`.** ★ **REPAIRED 2026-07-28** — both wrappers take their term by value; see [E92], [E94], [E95]. It takes `term: &A` and calls `self.substitute(term.clone(), …)`, so every substitution copies its input through `<Par as Clone>::clone`. It fires on the ORDINARY SEND path — no binder, no COMM, no environment — and is why E84's control reads 286 | **Read** — `substitute.rs`, `substitute_and_charge` and `substitute_no_sort_and_charge`; **Measured** — `gdb` backtrace at the overflow of a `@"out"!([[…[0]…]])` deploy: a clean 3-frame repetition `<Par as Clone>::clone → <ExprInstance as Clone>::clone → <Expr as ConvertVec>::to_vec` under frame #103 `substitute_and_charge::<Par>`, called from `eval_send`'s data-substitution `map`, on a `spawn_detached` tokio worker |
 | E88 | E85's 7,253 B/level and `substitute_deep_binding`'s 7,241 are the SAME traversal at two call sites inside `Substitute`, both ~2.5× the standalone `clone` subject's 2,852 | **Measured** — release ladders: `clone` 2,852.6 B/level (16 → 128), `substitute_deep_binding` 7,241.1 B/level (16 → 128), end-to-end deploy 7,253.3 B/level (16 → 256); the inlining explanation was already recorded on `substitute_deep_binding` and now has a second instance |
-| E89 | ⚠ The ingress ceiling depends on the **shape** of the discard, not only on the term: `mk_term(..).map(drop)` measures 135.5 B/level / 14,520 levels where the literal `match … Ok(_parsed_term) => …` measures **84.3 / 21,781**, on one build and one fixture | **Measured** — both forms bisected on a 2 MiB thread, release. The consequence is methodological: a probe for a destructor must reproduce the call shape literally rather than refactor it |
+| E89 | ⚠ The ingress ceiling depends on the **shape** of the discard, not only on the term: `mk_term(..).map(drop)` measures 135.5 B/level / 14,520 levels where the literal `match … Ok(_parsed_term) => …` measures **84.3 / 21,781**, on one build and one fixture | **Measured** — both forms bisected on a 2 MiB thread, release. The consequence is methodological: a probe for a destructor must reproduce the call shape literally rather than refactor it. ⚠⚠ **BOTH FIGURES AND THE CONCLUSION ARE SUPERSEDED** — the 84.3 is a min-stack-ladder artefact ([E97](#1411-evidence-ledger--fourth-amendment)) and the true slope is **96.0**; the 1.6× spread is ordinary per-build codegen variance for this glue, not a property of the spelling ([E98](#1411-evidence-ledger--fourth-amendment)). See [§14.10](#1410--the-ingress-instance-converted-2026-07-28) |
 | E90 | ⚠ `theta_depth_tripwire` FAILS in RELEASE at `291bc217`, before any change in this session, and passes in DEBUG | **Measured** — `synthetic_drop` release ladder 4 → 4,096: 12,288 B → 139,264 B, growth **126,976 B (124 KiB)** at 31.0 B/level, against the leg's own `growth() > 8 * ZERO_SLOPE_TOLERANCE` = 131,072 B — short by 3.1%; **Read** — the leg, both subjects, `drop_chain` and all three constants are byte-identical to `HEAD`. The margin was calibrated on the DEBUG glue (95 B/level ⇒ ~389 KiB, 23.7×); at `-O2` the glue keeps only the tail pointer (31 B/level ⇒ 7.75×) |
 | E91 | ★ E90 is a CALIBRATION defect, and the repair is a longer ladder rather than a smaller multiple. `DESTRUCTOR_CONTROL_HI = 16,384` gives the destructor control the same weight of evidence the function control carries, because what a ladder produces is $`\text{slope} \times \text{span}`$ and the two controls differ 3.5× in slope | **Measured** — release `synthetic_drop` growth by span: 4,096 → 126,976 B (0.97× the bar); 8,192 → 258,048 (1.97×); **16,384 → 520,192 (3.97×)**; 32,768 → 1,044,480 (7.97×). The function control over its own 4 → 4,096 ladder grows 454,656 B = 3.47× the same bar, so 16,384 restores parity. Bounded ABOVE by `slope_below_verdict`'s flat ceiling $`\lfloor \texttt{ZERO\_SLOPE\_TOLERANCE} / \text{span} \rfloor`$, which reaches a literal 0 past 16,384 |
 | E92 | The metered wrapper's ENTIRE depth slope was `term.clone()` | **Measured** — gate subject `subst_and_charge`, pre-repair: **2,852 B/level release / 15,872 debug**, equal to the standalone `clone` subject's own bisected constants **to the byte** in both profiles |
 | E93 | ⚠ **E89's shape-sensitivity does NOT transfer to this subject**, and the difference is structural rather than a contradiction | **Measured** — all four spellings of the pre-repair `subst_and_charge` body (`mem::forget` on both values, `dismantle` on both, `drop` on both, and the fresh-temporary `…(&nested_list(depth), 0, &env).map(drop)`) bisect to **57,344 → 376,832 B** release and **278,528 → 2,056,192 B** debug — identical to the byte. Every teardown here runs AFTER the wrapper returns, so the composition costs $`\max(S_{\text{wrapper}}, S_{\text{teardown}})`$, and at 2,852 against `par_drop`'s 144 the max cannot move. E89's subject is a destructor with nothing else in the frame; this one is dominated by a traversal an order of magnitude larger |
 | E94 | ⚠ `metered_wrappers_agree` — the charge-equality proof for this wrapper — could not reject two of the five mutations it exists to reject, and both sat on the lines the repair changes | **Measured** — mutations applied to `substitute.rs` and run: success-arm-charges-`input_len` **rejected**; error-arm-charges-`input_len + 1000` **PASSED**; no-sort-wrapper-error-arm **PASSED**; error-charge-omitted **PASSED**; no-sort-success-arm **PASSED**. Cause: every term in `substitution_corpus` substitutes successfully, so the error arm — the only reader of the hoisted input length — was never exercised, and `substitute_no_sort_and_charge` had no coverage at all despite the plural in the test's name. After hoisting `error_paths_agree`'s 7-case list into a shared `error_corpus()` and driving both wrappers over both arms, all five mutations reject |
 | E95 | ★★ The by-value wrappers, measured end to end — **and the improvement is shape-specific** | **Measured** — gate subject `subst_and_charge`: 2,852 → **146 B/level** release (19.5×), 15,872 → **1,462** debug (10.9×). `rholang/tests/deploy_depth_ceiling.rs` on a 2 MiB tokio worker: `plain_deploy` 286 → **6,831** (23.9×, depth 6,832 exits 134); `env_get_deploy` 283 → **283 — UNCHANGED**. E86's marginal-3-levels reading is thereby superseded in its *ordering* consequence: with the send-path clone gone, `Env::get` is no longer a 3-level surcharge on a 286-level ceiling but the SOLE ceiling of its shape, 24× below the other. Any deploy that receives a deep value over a channel is unimproved by this repair |
+
+---
+
+### 14.10 ★★ The ingress instance, CONVERTED (2026-07-28)
+
+**Stratum.** 2026-07-28. [§14.7](#147-disposition--re-derived-not-inherited)
+enumerated four repairs for `drop_in_place::<Par>` and recommended (3), a
+construction-time depth bound, while noting it is consensus-visible and therefore
+not ours to take. This section takes repair **(1)** — call-site interception — at
+the two call sites where the traversal is reachable from the network, and reports
+the measurement that justifies calling that a *conversion* rather than a
+mitigation.
+
+#### 14.10.1 What was reachable, and from where
+
+Every hop was read, not inferred:
+
+```text
+  DeployService/doDeploy                node/src/rust/api/deploy_grpc_service_v1.rs:256
+       │                                (also HTTP, web_api.rs:421)
+       ▼
+  block_api::deploy_cosigned            casper/src/rust/api/block_api.rs:477
+       │                                ★ SYNCHRONOUS — inline on the tokio
+       │                                  worker, no `spawn_blocking`
+       ▼
+  multi_parent_casper::dispatch         engine/multi_parent_casper/dispatch.rs:66
+       ▼
+  admit_deploy_cosigned                 block_admission.rs:105
+       ▼
+  interpreter_util::mk_term(…)          block_admission.rs:112
+       │
+       │   Ok(_parsed_term) ────────────  block_admission.rs:124
+       ▼                                  bound with a leading underscore,
+  … the arm ends …                        NEVER READ, released when the arm ends
+       ▼
+  ★ Θ(depth) drop_in_place::<Par>       96 B of native stack per nesting level
+```
+
+The sibling site `admit_deploy` (`:68`/`:80`, the non-cosigned path, reachable via
+the trait-default fallback) was identical. A third site, `acceptance.rs:321`, also
+builds a `Par` from source but **consumes** it (`canonicalize_for_funding`) and is
+not an instance of this defect.
+
+**Measured before the repair:** a depth-21,782 deploy — **43,565 bytes** of
+source — aborts the node with `SIGABRT`, shell status **134**, on a 2 MiB worker.
+Depth 21,781 exits 0.
+
+#### 14.10.2 ⚠ The severity was POSITION, not depth
+
+This is the correction that matters most for prioritisation. Ingress was the
+**highest** of the deploy path's three measured ceilings, not the binding one:
+
+| path | ceiling (2 MiB worker, release) | measured by |
+|---|---:|---|
+| `env_get_deploy` (reduction) | **283** ← still the binding depth constraint | `rholang/tests/deploy_depth_ceiling.rs` |
+| `plain_deploy` (reduction) | 6,831 | same |
+| ingress `admit_deploy_cosigned` | **21,781** | `casper/tests/deploy_ingress_depth_ceiling.rs` |
+
+What distinguished it is the four properties [§14.3](#143-reachability--measured-and-the-verdict-is-yes)
+and [E53] use to rank this family, all of which it held alone:
+
+1. it fired on **unauthenticated network input** — one gRPC `doDeploy` on port
+   40401, with a signature any fresh keypair produces;
+2. on the **receiving** node, so no proposer cooperation was needed;
+3. **pre-storage and pre-consensus**, so nothing had agreed to spend anything; and
+4. **pre-metering** — `admit_deploy_cosigned` never touches a `RuntimeBudget`, so
+   cost accounting could not bound it, not because the charge would be too small
+   but because no charge exists yet.
+
+The inbound message cap is 16 MiB (`defaults.conf:182`), i.e. **385×** more
+headroom than the 43,565-byte attack needed. And the failure is not a rejected
+deploy: a guard-page `SIGSEGV` becomes `fatal runtime error: stack overflow` +
+`abort()`, which the `Err(..) => …parsing_error(..)` arm three lines away cannot
+observe and no `catch_unwind` can contain.
+
+#### 14.10.3 ★ The slope is 96.0 B/level — and 84.3 is withdrawn
+
+Depth bisected at four stack sizes, release, one binary:
+
+| worker stack | max surviving source depth |
+|---:|---:|
+| 256 KiB | 2,667 |
+| 512 KiB | 5,398 |
+| 1 MiB | 10,859 |
+| 2 MiB | 21,782 |
+
+Pairwise slopes **95.988 / 96.006 / 95.997**. Least squares over
+$`S = m\,D + b`$ gives
+
+```math
+m = 95.999\ \text{B/level}, \qquad b = 6{,}106\ \text{B}\ (5.96\ \text{KiB}), \qquad r^2 = 1.0000
+```
+
+with a largest residual of 21 B — a fifth of one level.
+
+**The disassembly gives the same number from the instruction stream**, which is
+what makes this a derivation rather than a fit. In the test binary's release
+codegen both halves of the recursive cycle are five callee-saved pushes with no
+`sub rsp`:
+
+```text
+  drop_in_place::<models::rhoapi::Par>            push r15,r14,r13,r12,rbx     ⇒ 40 B
+       │  2 call sites ─────────────┐             + 8 B return address         = 48 B
+       ▼                            │
+  drop_in_place::<expr::ExprInstance>             push r15,r14,r13,r12,rbx     ⇒ 40 B
+       └─ 46 call sites back ───────┘             + 8 B return address         = 48 B
+
+                       one nesting level, across `EList.ps: Vec<Par>` = 96 B
+```
+
+⚠ **This corrects the 84.3 B/level [E89] recorded.** That figure came from a
+two-point *minimum-stack* ladder at depths 256 and 4,096. Writing the measurement
+as $`S(D) = mD + b`$, a min-stack ladder reports
+
+```math
+\hat{m} \;=\; \frac{S(D_{\text{hi}}) - S(D_{\text{lo}})}{D_{\text{hi}} - D_{\text{lo}}}
+```
+
+which is unbiased only if $`S`$ is affine over the whole span. It is not: below
+the composition's parse/normalize floor the bisection returns that floor
+(77,824 B here) regardless of depth, so $`S(256)`$ is **clamped**, the numerator
+is too small, and $`\hat{m}`$ understates. Four fixed-stack depth bisections have
+no such floor in the numerator, and they agree with the instruction bytes.
+**84.3 is withdrawn in favour of 96.0.**
+
+#### 14.10.4 ★★ The call-shape question, settled
+
+[E89]'s methodological conclusion — *"a probe for a destructor must reproduce the
+call shape literally rather than refactor it"* — rested on a 1.6× spread between
+two spellings of one discard (`mk_term(..).map(drop)` at 135.5 B/level against
+`match … Ok(_parsed_term) => …` at 84.3).
+
+The mechanism is now identified, and it is not the spelling. The **identical**
+function `drop_in_place::<models::rhoapi::Par>` — same crate, same type, same
+source, same `-O2` — is emitted with **5 pushes and no `sub rsp`** (48 B frame) in
+`casper`'s ingress test binary and with **7 pushes** (64 B frame) in `rholang`'s
+gate binary, and the cycles they form bisect to **96** and **144** B/level
+respectively. A 1.5× spread across two builds of one function, from register
+allocation alone, is therefore the ordinary variance of this glue; 1.6× between
+two spellings is inside it. [E93] had already found the same sensitivity *absent*
+in a subject where the destructor is not the whole frame, which is consistent with
+this explanation and not with a law about spellings.
+
+★ And it is **moot for the repair**: the worklist removes the recursive cycle, so
+no per-level slope remains for any spelling to modulate. The gate's subject now
+*calls* production instead of reproducing it, which is strictly better regardless
+of who was right — the measurement cannot drift from the thing measured.
+
+#### 14.10.5 The repair — three stages, green at each
+
+`Par` is `prost`-generated, so its derived `Drop` cannot be replaced, only
+**bypassed at the owning call site** ([§14.7](#147-disposition--re-derived-not-inherited)'s
+premise: E0509 forbids moving fields out of a `Drop` type, so a hand-written
+`impl Drop for Par` would break `dismantle` itself).
+
+**Stage 1 — one owner for the discard.**
+`casper/src/rust/util/rholang/interpreter_util.rs`:
+
+```rust
+pub fn validate_deploy_term(
+    rho: &str,
+    normalizer_env: HashMap<String, Par>,
+) -> Result<(), InterpreterError> {
+    let term = mk_term(rho, normalizer_env)?;
+    par_children::dismantle(term);
+    Ok(())
+}
+```
+
+The `Err` is `mk_term`'s own, unchanged, so every rejection message is
+byte-identical to what it was.
+
+**Stage 2 — both call sites.** `admit_deploy` and `admit_deploy_cosigned` call it.
+The `O(1)` arm work — the cosigner-cap check, `add_deploy{,_cosigned}`, the
+latency `tracing` — is untouched and handles no `Par`.
+
+**Stage 3 — the gate.** `casper/tests/deploy_ingress_depth_ceiling.rs`'s subject
+calls `validate_deploy_term`, so production and its measurement are one function.
+
+★ Centralising the discard is the answer to the weakness
+[§14.7](#147-disposition--re-derived-not-inherited) records against repair (1):
+*"completeness here is unbounded and unenforceable"*, evidenced by
+`Compiler::normalize_term` dismantling its intermediate and returning the sorted
+term to a caller that does not. Three copies of one discard is three chances to
+drift back to an implicit drop; one function is one.
+
+#### 14.10.6 Why no observable byte moves
+
+The term is genuinely surplus, so reordering its frees is invisible to the
+protocol. Three independent reads, each sufficient on its own:
+
+1. **The signature is over the SOURCE, not the term.** `Signed::create` and
+   `Cosigned::from_signed_data` (`crypto/src/rust/signatures/signed.rs:369`,
+   `:175`) sign `data.to_message().encode_to_vec()`; `DeployData::to_message`
+   (`models/…/casper_message.rs:1031`) is `_to_proto`, whose `term` field is the
+   **source string**. The normalized `Par` is never in the signed payload.
+2. **Storage is the source.** `add_deploy_cosigned` persists
+   `Signed<DeployData>` plus the cosigner sidecar. No `Par` is written.
+3. **The term is rebuilt later anyway.** The proposer re-normalizes from source at
+   `acceptance.rs:321`.
+
+⇒ `dismantle` changes only the **order in which one discarded value's allocations
+are released**. No signature, hash, block, replay or stored byte reads it.
+
+#### 14.10.7 The gate — a converted claim, with a control
+
+`ingress_validation_is_depth_independent` drives four legs, and each closes a way
+the other three could pass without the repair:
+
+| leg | asserts | refuses |
+|---|---|---|
+| 1 | subject's min stack flat over `256 → 4,096` | the recursion returning |
+| 2 | the CONTROL's grows by ≥ 8× the tolerance | a collapsed fixture reading flat |
+| 3 | subject has NO ceiling below 262,144 on 2 MiB | a merely *raised* ceiling |
+| 4 | the CONTROL still has one, same search | a probe that cannot go red |
+
+The control is the pre-repair shape — `mk_term` with the term bound to
+`_parsed_term` and released by the arm ending — over the **same signed deploy, in
+the same binary, on the same thread stack**, differing in the teardown and nothing
+else. That is what replaces the output-end anti-vacuity check the repair removed:
+production no longer hands the term back, so its depth cannot be asserted
+directly, but any explanation that would make the subject vacuously flat makes the
+control vacuously flat too, and leg 2 fails.
+
+Measured (2026-07-28), both profiles:
+
+| | ladder `256 → 4,096` | slope | ceiling, 2 MiB worker |
+|---|---|---:|---:|
+| **release, worklist** (production) | 77,824 → **77,824** B | **0.0** | **none below 262,144** |
+| release, derived (control) | 77,824 → 401,408 B | 84.3 | 21,782 |
+| **debug, worklist** (production) | 258,048 → **258,048** B | **0.0** | **none below 262,144** |
+| debug, derived (control) | 258,048 → 1,908,736 B | 429.9 | 4,503 |
+
+The subject's minimum stack is identical at both ends in both profiles — not
+merely within tolerance — because after the conversion the only thing setting it
+is the depth-independent parse/normalize floor.
+
+⚠ The control's ceilings read 21,782 / 4,503 against production's pre-repair
+21,781 / 4,504. The one-level disagreements are the control's ~6.1 KiB intercept
+moving by tens of bytes now that it is reached through a `match` on the teardown
+rather than being the probe's whole body — one level is 96 B, and the shift is in
+that range in both directions.
+
+#### 14.10.8 ★ The `CONVERTED_DEPTH` ruling — what moved, and what did not
+
+`CONVERTED_DEPTH`'s admission rule is that *a traversal enters only by being
+converted, never by having a ceiling raised*. Applying it here needs one
+distinction held firmly:
+
+* **The deploy-ADMISSION instance** of the composition `source_to_adt` ▸ `Drop` is
+  converted, and its converted claim is executed in `casper/tests/`, where the
+  production function lives. It is a flatness assertion with a sloped control —
+  the shape `converted_traversals_are_depth_independent` uses — and **not** a
+  raised floor.
+* **The gate subject `normalize_drop` stays in `TRIPWIRE_DEPTH`.** It stands for
+  the **evaluation** instance — `InterpreterImpl::inj_attempt` releasing the term
+  through the derived destructor when reduction finishes — which is untouched,
+  still reachable, and still Θ(depth). Moving it would have required changing
+  `normalize_drop_body`'s `drop(term)` to `dismantle(term)`, i.e. deleting the
+  only executed measurement of a live defect in order to record a success
+  elsewhere. That is precisely the failure mode the one-sided-floor convention
+  exists to prevent.
+
+⇒ A name leaves the tripwire when **its** traversal is gone, never because a
+sibling call site was fixed. The gate's sets are therefore unchanged by this
+repair, and `the_audit_agrees_with_the_gate` needs no amendment.
+
+`rholang/tests/deploy_depth_ceiling.rs` is likewise unchanged: `env_get_deploy`'s
+**283** remains the deploy path's binding depth constraint, and this repair does
+not touch it.
+
+#### 14.10.9 The one-sided floor, kept
+
+`ingress_depth_ceiling_has_not_got_worse` — the tripwire written so that it would
+survive its own repair — did survive it, taking the `None` arm and printing the
+historical floor. It is retained, with its limitation now stated on it: its `None`
+arm asserts nothing, so a ceiling that merely rose to 261,000 would satisfy it
+too. It is the record of what the defect cost; the claim that the traversal is
+*converted* and not merely *cheaper* is leg 3's.
+
+### 14.10.10 ⚠ Found in passing — a deploy rejection message is NONDETERMINISTIC
+
+Not this defect, not repaired here, and recorded so it is not re-discovered.
+
+The equivalence test written for [§14.10.5](#14105-the-repair--three-stages-green-at-each)'s
+Stage 1 — *"`validate_deploy_term` renders the same error as `mk_term`"* — went
+red on its first run, and the cause was neither the validator nor the test:
+
+```text
+  mk_term("for (@x <- y) { z }")  called 64 times, one process, one source
+       ▼
+  2 DISTINCT renderings:
+     "… not allowed: y at SourceSpan { … col: 12 … }, z at SourceSpan { … col: 17 … }"
+     "… not allowed: z at SourceSpan { … col: 17 … }, y at SourceSpan { … col: 12 … }"
+```
+
+**Mechanism.** `Compiler::top_level_error`
+(`rholang/src/rust/interpreter/compiler/compiler.rs`) builds the payload of
+`InterpreterError::TopLevelFreeVariablesNotAllowedError` by iterating
+`FreeMap::level_bindings`, which is a `std::collections::HashMap<String,
+FreeContext<T>>`. Iteration order is unspecified, and `RandomState` seeds each
+*instance* differently, so the order varies from one call to the next within a
+single process. The same construction pattern is used for the `wildcards` and
+`connectives` arms immediately above it.
+
+**Why it is worth a row rather than a shrug.**
+
+* It is **client-visible today**: `admit_deploy{,_cosigned}` render this into the
+  `DeployError::parsing_error` returned over gRPC, so two submissions of one bad
+  deploy can receive different text.
+* ⚠ **The consensus question is OPEN and was not settled here.**
+  `ProcessedDeploy` carries `system_deploy_error: Option<String>`
+  (`models/…/casper_message.rs:573`) — a **persisted, block-carried** string.
+  Whether this constructor can reach that field was **not** established. If it
+  can, a nondeterministic string is inside a hashed block body, which is a
+  different and much more serious class of defect than a wobbly client message.
+  That determination belongs with the owner of the replay/validation surface.
+
+**Disposition.** Logged, not fixed — out of this change's scope, and the fix
+(a deterministic order, e.g. by source position then name) touches an error
+surface several existing tests assert against. The equivalence test is written to
+compare renderings *modulo word order* precisely so that it neither flakes on this
+nor silently accepts a real divergence; its doc comment states the trade.
+
+### 14.11 Evidence ledger — fourth amendment
+
+Stratum: 2026-07-28. Every row is release unless stated, bisected in a child
+process at an explicitly-sized stack under `ulimit -c 0`, and reported with its
+bracketing evidence.
+
+| # | claim | provenance |
+|---|---|---|
+| E96 | ★★ A **depth-21,782 deploy (43,565 bytes of source)** sent to `doDeploy` aborts the node with `SIGABRT`, exit **134** — pre-storage, pre-consensus, pre-metering, on unauthenticated network input | **Measured** — depth bisection at a fixed 2 MiB worker stack: 21,781 exits 0, 21,782 exits 134; **Read** — every hop from `deploy_grpc_service_v1.rs:256` through `block_api.rs:477` (synchronous, no `spawn_blocking`) to `block_admission.rs:124` |
+| E97 | ★ The ingress slope is **96.0 B/level**, not [E89]'s 84.3, and the intercept is **6,106 B** | **Measured** — four fixed-stack depth bisections (256 KiB → 2,667; 512 KiB → 5,398; 1 MiB → 10,859; 2 MiB → 21,782); pairwise 95.988 / 96.006 / 95.997, least squares $`m = 95.999`$ at $`r^2 = 1.0000`$, largest residual 21 B. **Derived** — the 84.3 came from a min-stack ladder whose low point is clamped at the 77,824 B parse/normalize floor, which biases $`\hat{m}`$ downward; **Read** — the disassembly gives 48 B + 48 B = 96 B for the `Par` ⇄ `ExprInstance` cycle |
+| E98 | ★★ [E89]'s shape-sensitivity conclusion is **superseded**: the 1.6× is per-build codegen variance, not a property of the spelling | **Read** — the *identical* `drop_in_place::<models::rhoapi::Par>` is emitted with 5 pushes and no `sub rsp` (48 B) in `casper`'s ingress binary and 7 pushes (64 B) in `rholang`'s gate binary, with no source difference; **Measured** — the cycles those two builds form bisect to 96 and 144 B/level, a 1.5× spread that brackets E89's 1.6×. Corroborated by [E93], which found the sensitivity absent where the destructor is not the whole frame |
+| E99 | ★★ **CONVERTED.** Deploy admission's term check is depth-independent in both profiles, with **no ceiling** below a 262,144 search cap on a 2 MiB worker | **Measured** — `ingress_validation_is_depth_independent`: worklist 77,824 → 77,824 B release and 258,048 → 258,048 B debug over depths 256 → 4,096 (**0.0 B/level**, identical to the byte at both ends), `max_surviving_depth` = `None`; the derived control on the identical fixture reads 84.3 / 429.9 B/level and 21,782 / 4,503 |
+| E100 | The repair is invisible to consensus: `dismantle` reorders the frees of a value nothing reads | **Read** — three independent sufficient reasons: the signature covers `DeployData::to_message`'s `term` field, which is the SOURCE string (`signed.rs:369`, `:175`; `casper_message.rs:1031`); admission stores `Signed<DeployData>` and no `Par`; the proposer re-normalizes from source at `acceptance.rs:321`. The `Err` value is `mk_term`'s own, so rejection messages are byte-identical |
+| E101 | ⚠ **The ingress instance was the most exposed, not the deepest.** With it converted, `env_get_deploy`'s **283** is unchanged as the deploy path's binding depth constraint | **Measured** — `rholang/tests/deploy_depth_ceiling.rs`, unchanged by this repair; the ranking 283 ≪ 6,831 ≪ 21,781 held before it and holds after, with the third entry now unbounded. This repair removes an *availability* exposure reachable pre-consensus, and moves no reduction-path ceiling |
+| E102 | ⚠ **Found in passing, NOT repaired**: the `TopLevelFreeVariablesNotAllowedError` rejection message is nondeterministic in the order of the variables it lists | **Measured** — `mk_term("for (@x <- y) { z }")` called 64 times in one process produced **2 distinct renderings**, differing only in whether `y` or `z` is listed first; **Read** — `Compiler::top_level_error` joins an iteration of `FreeMap::level_bindings`, a `std::collections::HashMap` whose `RandomState` is seeded per instance. Client-visible via `DeployError::parsing_error`. ⚠ **OPEN**: whether it can reach `ProcessedDeploy::system_deploy_error` — a persisted, block-carried `Option<String>` — was NOT established. See [§14.10.10](#141010--found-in-passing--a-deploy-rejection-message-is-nondeterministic) |
 
 ---
 
