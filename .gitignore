@@ -48,9 +48,40 @@ docker/data.*/
 # LMDB files
 rholang/**/*.mdb
 
-# proptest regression artifacts (created by proptest on test failures, used to
-# replay shrunken counterexamples; safe to regenerate, not worth tracking)
-**/*.proptest-regressions
+# ── proptest counterexample corpora — TRACKED DELIBERATELY, both layouts ──
+#
+# The rule this replaces asserted these files were "safe to regenerate, not worth
+# tracking". ⚠ THAT CLAIM WAS FALSE, and it is the reason it is spelled out here rather
+# than simply deleted. A proptest corpus records seeds for inputs that ONCE FALSIFIED A
+# PROPERTY, together with the shrunk counterexample. Regenerating one means re-running the
+# random search that originally found it — an unbounded number of cases, with no guarantee
+# the same input is ever drawn again, and no guarantee at all once the surrounding types
+# drift. Deleting the file discards a witness; it does not schedule its recreation.
+#
+# proptest says so itself, in the header it writes into every one of these files verbatim:
+#
+#     "It is recommended to check this file in to source control so that
+#      everyone who runs the test benefits from these saved cases."
+#
+# Two DISTINCT on-disk layouts exist, and a rule for one does not cover the other. The old
+# rule matched only layout B, so layout A was never ignored — which is why
+# `rspace++/proptest-regressions/hot_store_spec.txt` is tracked while
+# `models/tests/epathmap_spliced_event_bytes.proptest-regressions` was not. Both layouts
+# are un-ignored here, by name:
+#
+#   LAYOUT B — `<dir>/<name>.proptest-regressions`
+#     proptest's `FileFailurePersistence::Direct` form, with the corpus path pinned
+#     explicitly by the test's `ProptestConfig`.
+#
+#   LAYOUT A — `<crate>/proptest-regressions/<module path>.txt`
+#     proptest's DEFAULT `FileFailurePersistence::SourceParallel` form, derived from
+#     `file!()`.
+#
+# ⚠ `.gitignore` has no effect on files git already tracks: un-ignoring changes the
+# behaviour only for files that are currently UNTRACKED.
+!**/*.proptest-regressions
+!**/proptest-regressions/
+!**/proptest-regressions/**
 
 # Rust JNI/JNA libraries (legacy hybrid build)
 rust_libraries/**
