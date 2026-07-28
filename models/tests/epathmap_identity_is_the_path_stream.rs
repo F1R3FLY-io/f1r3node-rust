@@ -303,6 +303,81 @@ fn identity_hash_and_both_encodings_are_functions_of_the_path_stream() {
     }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// ★ THE NON-GROUND ARM — measured, and it is STILL A LIST
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// ★ **The wire is still a list for non-ground maps, and this pins the fact.**
+///
+/// A ground map encodes as proto field 8 — `U(m)`, the trie's key stream — and
+/// the `Vec` never reaches the wire. A NON-ground map has no such arm: tag 1,
+/// `repeated Par`, is its only encoding, and prost writes those entries **in
+/// `ps` order**. So for non-ground maps the protobuf model genuinely still
+/// stores a **list**, and this test measures that rather than asserting it: the
+/// two constructions below differ only in the order two entries were written in,
+/// and their prost bytes differ.
+///
+/// # Why this is pinned as a passing test rather than fixed here
+///
+/// Fixing it means routing non-ground entries through the trie too, which makes
+/// them order-insensitive and deduplicated — a real improvement and the direct
+/// answer to *"does the pathmap protobuf model still store it as a list?"*. It
+/// is also **consensus-visible**: `sort_combine::combine_epathmap`'s non-ground
+/// arm recursively sorts each entry and **preserves entry order**, so today two
+/// non-ground maps built in different orders are different terms all the way
+/// through normalisation. Changing that moves bytes, and moving bytes requires a
+/// coordinated protocol version bump, which is F1r3node's decision and not this
+/// campaign's to make.
+///
+/// Pinning it means the day it changes is a deliberate act: this test must be
+/// rewritten, and rewriting it is the moment the bump gets discussed.
+///
+/// ⚠ And a limit worth stating so it is not over-claimed later: routing
+/// non-ground entries through the trie would give them a canonical **SYNTACTIC**
+/// identity — byte-lex over their escape-arm encodings — and **not a semantic
+/// one**. Two non-ground entries can be different terms that match the same
+/// things, and no representation can collapse those, because pattern
+/// equivalence is undecidable in general.
+#[test]
+fn a_non_ground_map_still_encodes_as_an_ORDER_SENSITIVE_LIST() {
+    // An `EVar` is non-`eval_stable` by content, so a map holding one takes the
+    // tag-1 field walk rather than the field-8 value arm.
+    let var_entry = models::rust::utils::new_boundvar_par(1, Vec::new(), false);
+    let ground_entry = make_list_of(vec![make_string_par("a")]);
+
+    let forward = ground_map(vec![var_entry.clone(), ground_entry.clone()]);
+    let backward = ground_map(vec![ground_entry, var_entry]);
+
+    // The premise: these are genuinely non-ground, so neither took the field-8
+    // arm. A ground map's encoding starts with the field-8 key (tag 8,
+    // length-delimited = 0x42); a non-ground one starts with tag 1 (0x0a).
+    let forward_bytes = prost_bytes(&forward);
+    let backward_bytes = prost_bytes(&backward);
+    assert_eq!(
+        forward_bytes.first(),
+        Some(&0x0au8),
+        "the fixture must exercise the TAG-1 arm, not the field-8 value arm"
+    );
+
+    // ★ THE MEASUREMENT: one entry set, two orders, two different encodings.
+    assert_ne!(
+        forward_bytes, backward_bytes,
+        "★ if this now passes with EQUAL bytes, the non-ground arm has been \
+         routed through the trie — that is the intended end state, and it MOVES \
+         CONSENSUS BYTES. Rewrite this test, and do not land the change without \
+         the coordinated protocol version bump it requires."
+    );
+
+    // …and the comparators agree with the wire about that, which is the whole
+    // point of the identity family: they read the entries positionally in
+    // exactly the arm where the wire does too.
+    assert_ne!(
+        forward, backward,
+        "the comparators must not disagree with the wire in the non-ground arm \
+         either — a map the wire distinguishes must not compare equal"
+    );
+}
+
 /// ★ **THE #83 WITNESS**, minimal: two entries, one permutation, no duplicates
 /// and no metadata in play. Stated on its own because the exhaustive property
 /// above reaches a duplicate construction first, and *"duplicates are equal"* is
