@@ -83,6 +83,33 @@ impl ContractCall {
                                     cont.continuation,
                                     channels.iter().map(|c| c.matched_datum.clone()).collect(),
                                     is_replay,
+                                    // ★★ THE SAME CONSENSUS-CLASS `Par::decode` AS
+                                    // `reduce.rs`'s `continue_produce_process` — the
+                                    // system-contract path's copy of it, and the full
+                                    // derivation lives at that call site.
+                                    //
+                                    // `prost` enforces `RECURSION_LIMIT = 100`
+                                    // nested-message levels, `Par → Expr → EList → Par`
+                                    // costs 3 per bracket, so this accepts term depth 33
+                                    // and returns `Err` at 34 — while `encode` has no
+                                    // matching limit, so those bytes were writable.
+                                    //
+                                    // ⚠ The asymmetry is in the SUPPLY, not here.
+                                    // `Produce::create` sets `output_value: vec![]` and
+                                    // `RSpace::locked_produce` returns exactly that, so
+                                    // on the PROPOSER this iterator is empty;
+                                    // `ReplayRSpace::locked_produce` returns the trace's
+                                    // `Produce`, so on the VALIDATOR it decodes bytes
+                                    // that came from the block. `ProduceEventProto
+                                    // .outputValue` is `repeated bytes`, so the block
+                                    // itself decodes fine and only replay does not.
+                                    //
+                                    // Executable:
+                                    // `rholang/tests/replay_output_value_depth_ceiling.rs`,
+                                    // `models/tests/par_prost_depth_ceiling.rs`.
+                                    // Analysis:
+                                    // `docs/design/audits/theta-depth-traversals-2026-07-26.md`
+                                    // §7.3.
                                     produce
                                         .output_value
                                         .iter()
@@ -104,6 +131,27 @@ impl ContractCall {
 
                     match dispatch_result {
                         Ok(dispatch_type) => match dispatch_type {
+                            // ★ The RETURN leg of the same ceiling: the bytes a
+                            // non-deterministic op produced, read back as `Par`s.
+                            // Same limit (33 accepts, 34 `Err`s), same missing
+                            // counterpart on `encode`.
+                            //
+                            // ⚠ **This is where a NINTH non-deterministic operation
+                            // would make the ceiling live.** The eight that exist
+                            // today construct returns of depth ≤ 3 (the deepest
+                            // behind a non-default feature), so the limit is never
+                            // approached — but the guard is those eight functions'
+                            // RETURN SHAPES, not a check. An op that echoes a
+                            // caller-supplied `Par` back through here writes it into
+                            // `output_value`, into the block, and into the
+                            // validator's replay decode at `reduce.rs`, with no
+                            // other change anywhere.
+                            //
+                            // Executable:
+                            // `rholang/tests/replay_output_value_depth_ceiling.rs`.
+                            // Analysis:
+                            // `docs/design/audits/theta-depth-traversals-2026-07-26.md`
+                            // §7.3.
                             DispatchType::NonDeterministicCall(items) => items
                                 .iter()
                                 .map(|p| {
