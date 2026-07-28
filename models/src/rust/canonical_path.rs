@@ -2027,6 +2027,130 @@ mod tests {
 
     // ── the escape arm (0x0F — trie-only, total on ¬eval_stable) ──────────────
 
+    // ─────────────────────────────────────────────────────────────────────────
+    // ★★ THE CODEC IS TOTAL IN ONE DIRECTION ONLY
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// A Par whose only expr is an `ESet` wrapping `depth` nested lists.
+    ///
+    /// `ESet` is conservatively unstable (`eval_stable_expr`'s `_` arm), so the
+    /// WHOLE Par takes the `0x0F` escape arm rather than the split arm — which
+    /// is what puts its prost bytes, and therefore prost's decoder, in the
+    /// picture. A deep chain of plain `EList`s would be `eval_stable` and take
+    /// the split arm instead, where no prost decode happens at all.
+    fn escaped_nest(depth: usize) -> Par {
+        let mut inner = gint(1);
+        for _ in 0..depth {
+            inner = glist(vec![inner]);
+        }
+        expr_carrier(ExprInstance::ESetBody(ESet {
+            ps: vec![inner],
+            locally_free: Vec::new(),
+            connective_used: false,
+            remainder: None,
+        }))
+    }
+
+    /// ★★ **`encode_trie_path` is TOTAL; `decode_trie_path` is NOT total on
+    /// `encode_trie_path`'s own image.** Measured, with both controls.
+    ///
+    /// The escape arm stores a ¬`eval_stable` Par as its canonical prost bytes.
+    /// prost's **decoder** caps recursion (`DecodeContext`, 100 levels) and
+    /// prost's **encoder** caps nothing, so past that depth a Par encodes to a
+    /// key that will not decode — while the trie holding it is perfectly
+    /// well-formed and its keys are perfectly canonical.
+    ///
+    /// # ★ Why this is pinned here rather than merely fixed elsewhere
+    ///
+    /// It is a standing constraint on anything that reads a pathmap, and it has
+    /// already decided one design:
+    ///
+    /// * `EntryTrie::view` — the projection every consumer of an `EPathMap`
+    ///   reads — walks the trie's **VALUES** rather than decoding its keys. The
+    ///   key-decoding version panicked on the `par_codec_differential` corpus.
+    /// * `EntryTrie::adopt_trie` and `pathmap_integration::trie_entry_divergences`
+    ///   state the trie entry invariant in the **ENCODE** direction
+    ///   (`encode_trie_path(value) == key`) for the same reason: a check written
+    ///   the other way would fail on depth, which has nothing to do with the
+    ///   property being checked.
+    ///
+    /// ⚠ **Consequence for any future per-key-value work.** The trie's value
+    /// slot looks redundant — the entry invariant says it mirrors its own key —
+    /// and it is tempting to free it for user values and recover the entry by
+    /// decoding the key. **That is exactly what this test forbids.** Freeing the
+    /// slot requires the value to carry BOTH the entry and the user value, or
+    /// the projection stops being total. The redundancy is load-bearing.
+    #[test]
+    fn decode_is_partial_on_the_image_of_encode_and_the_projection_must_not_depend_on_it() {
+        // ── NEGATIVE CONTROL: shallow escapes round-trip, so the failure below
+        //    is about DEPTH and not about the escape arm being broken. ────────
+        let shallow = escaped_nest(2);
+        let shallow_key = encode_trie_path(&shallow);
+        assert_eq!(
+            shallow_key.first(),
+            Some(&tag::ESCAPE),
+            "control: the fixture must take the ESCAPE arm, or it measures the split arm"
+        );
+        assert_eq!(
+            decode_trie_path(&shallow_key).expect("a shallow escape round-trips"),
+            shallow,
+            "control: the escape arm round-trips when prost's decoder can reach the bottom"
+        );
+
+        // ── THE MEASUREMENT: encode succeeds, decode does not. ───────────────
+        let deep = escaped_nest(200);
+        let deep_key = encode_trie_path(&deep);
+        assert_eq!(
+            deep_key.first(),
+            Some(&tag::ESCAPE),
+            "the deep fixture must take the same ESCAPE arm as the control"
+        );
+        assert!(
+            !deep_key.is_empty(),
+            "encode_trie_path is TOTAL — it produced a key"
+        );
+        assert_eq!(
+            decode_trie_path(&deep_key),
+            Err(CodecError::EscapePayloadInvalid),
+            "★ decode_trie_path is PARTIAL on encode_trie_path's image: prost's \
+             decoder caps recursion at 100 levels and its encoder caps nothing, \
+             so this key cannot be decoded even though it is canonical"
+        );
+
+        // …and the reason it is `EscapePayloadInvalid` rather than a codec-grammar
+        // rejection: the payload is a well-formed prost encoding that prost
+        // itself declines to decode.
+        let prost_error = format!(
+            "{:?}",
+            Par::decode(deep.encode_to_vec().as_slice())
+                .expect_err("prost must decline its own output at this depth")
+        );
+        assert!(
+            prost_error.contains("RecursionLimitReached"),
+            "the mechanism is prost's decode recursion limit, not the codec \
+             grammar — got {prost_error}"
+        );
+
+        // ── AND THE PROPERTY THAT MATTERS: a map holding it still WORKS. ─────
+        // This is the whole point of the projection reading values. Before that
+        // change, this line panicked.
+        let map = crate::rhoapi::EPathMap::new(vec![deep.clone()], Vec::new(), false, None);
+        assert_eq!(
+            map.ps().as_slice(),
+            std::slice::from_ref(&deep),
+            "the entry projection must be total: it reads the stored value, never \
+             the undecodable key"
+        );
+        // …and the map still encodes, because the tag-1 field walk writes the
+        // projection and the ground predicate reads an O(1) fold, neither of
+        // which decodes anything.
+        let encoded = <crate::rhoapi::EPathMap as Message>::encode_to_vec(&map);
+        assert!(
+            !encoded.is_empty(),
+            "a map holding an undecodable-key entry must still encode"
+        );
+    }
+
     #[test]
     fn escape_arm_roundtrip_ordering_and_rejections() {
         for par in unstable_corpus() {
