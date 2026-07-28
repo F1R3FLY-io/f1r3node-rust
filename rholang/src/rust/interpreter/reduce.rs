@@ -787,8 +787,14 @@ impl DebruijnInterpreter {
                     let mut child = path.clone();
                     child.push(index as u32);
                     Box::pin(async move {
+                        // ★ The term is MOVED, not lent. This closure already
+                        // owns it — that is what the de-clone above achieved —
+                        // and `generated_message_eval` now takes it by value, so
+                        // the ownership runs all the way down to the metered
+                        // substitution wrappers instead of stopping here and
+                        // being re-copied per arm.
                         self_clone
-                            .generated_message_eval(&term, &env_clone, rand_split, child)
+                            .generated_message_eval(term, &env_clone, rand_split, child)
                             .await
                     })
                         as Pin<
@@ -1505,9 +1511,27 @@ impl DebruijnInterpreter {
         }
     }
 
+    /// Dispatch one generated message to its evaluator.
+    ///
+    /// # ★ The term arrives BY VALUE, and every arm keeps it that way
+    ///
+    /// This took `&GeneratedMessage` until 2026-07-28, and the borrow was pure
+    /// loss: its only caller (`eval_par_split`'s task-spawn boundary) had
+    /// already been given ownership deliberately — see the LEG-1 DE-CLONE note
+    /// there — and each arm then had to copy back out of the borrow whatever it
+    /// needed. Those copies are `<Par as Clone>::clone`, the derived Θ(depth)
+    /// traversal, on the reduction path.
+    ///
+    /// Taking the term by value lets the ownership run all the way down to the
+    /// metered substitution wrappers, which take their term by value too. Seven
+    /// deep copies go away with it: the `where`-guard and the continuation body
+    /// in [`Self::eval_receive`], and the five sibling `Option<Par>` /
+    /// `Vec<_>` clones in `eval_send` (`chan`), `eval_receive` (`binds`),
+    /// `eval_match` (`cases` and each case's `pattern`) and `unbundle_receive`
+    /// (`source`).
     async fn generated_message_eval(
         &self,
-        term: &GeneratedMessage,
+        term: GeneratedMessage,
         env: &Env<Par>,
         rand: Blake2b512Random,
         path: SmallVec<[u32; 8]>,
@@ -1551,10 +1575,13 @@ impl DebruijnInterpreter {
             }
             GeneratedMessage::If(term) => self.eval_if(term, env, rand, path).await,
             GeneratedMessage::Bundle(term) => self.eval_bundle(term, env, rand, path).await,
-            GeneratedMessage::Expr(term) => match &term.expr_instance {
+            GeneratedMessage::Expr(term) => match term.expr_instance {
                 Some(expr_instance) => match expr_instance {
                     ExprInstance::EVarBody(e) => {
-                        let res = self.eval_var(&e.clone().v.unwrap(), env)?;
+                        let res = self.eval_var(
+                            &e.v.expect("EVar.v: normalizer post-condition"),
+                            env,
+                        )?;
                         // Reactive per-reduction seam: dereference `*N` — `res` is the resolved quoted
                         // process about to be evaluated. Two `is_none` checks, no alloc in production.
                         self.observe_and_pause(&res, ReductionKind::Deref).await?;
@@ -1563,7 +1590,7 @@ impl DebruijnInterpreter {
                     ExprInstance::EMethodBody(e) => {
                         let res = self.eval_expr_to_par(
                             &Expr {
-                                expr_instance: Some(ExprInstance::EMethodBody(e.clone())),
+                                expr_instance: Some(ExprInstance::EMethodBody(e)),
                             },
                             env,
                         )?;
@@ -1597,16 +1624,26 @@ impl DebruijnInterpreter {
      */
     async fn eval_send(
         &self,
-        send: &Send,
+        send: Send,
         env: &Env<Par>,
         rand: Blake2b512Random,
         path: SmallVec<[u32; 8]>,
     ) -> Result<(), InterpreterError> {
+        // Destructured ONCE, by move. `chan` was `send.chan.clone()` — a
+        // `<Par as Clone>::clone` of the whole channel term on every send —
+        // purely because `send` was borrowed.
+        let Send {
+            chan,
+            data,
+            persistent,
+            ..
+        } = send;
+
         // D3 (DR-9, OD-3): a send is a token-consuming COMM — the consensus
         // cost unit (one token per COMM). `send_eval_cost` is the diagnostic
         // weight; only the COMM count gates consensus.
         self.metering.reserve_comm(send_eval_cost())?;
-        let eval_chan = self.eval_expr(&unwrap_option_safe(send.chan.clone())?, env)?;
+        let eval_chan = self.eval_expr(&unwrap_option_safe(chan)?, env)?;
         let sub_chan = self.substitute.substitute_and_charge(eval_chan, 0, env)?;
         let unbundled = match single_bundle(&sub_chan) {
             Some(value) => {
@@ -1627,8 +1664,7 @@ impl DebruijnInterpreter {
         // single-signer fast path (gated by `any_signed_regions`).
         self.metering.note_channel_lane(&unbundled);
 
-        let subst_data = send
-            .data
+        let subst_data = data
             .iter()
             .map(|expr| {
                 let evaluated = self.eval_expr(expr, env)?;
@@ -1642,7 +1678,7 @@ impl DebruijnInterpreter {
                 pars: subst_data,
                 random_state: rand.to_bytes(),
             },
-            send.persistent,
+            persistent,
             path,
         )
         .await?;
@@ -1651,11 +1687,34 @@ impl DebruijnInterpreter {
 
     async fn eval_receive(
         &self,
-        receive: &Receive,
+        receive: Receive,
         env: &Env<Par>,
         rand: Blake2b512Random,
         path: SmallVec<[u32; 8]>,
     ) -> Result<(), InterpreterError> {
+        // ★ DESTRUCTURED ONCE, BY MOVE — and once is the point.
+        //
+        // Every field this function needs is taken out here, so no later line
+        // has to reach back through a borrow and copy. That deletes three deep
+        // copies from the receive path: the `where`-guard, the `binds` vector,
+        // and the continuation BODY (the largest term a receive touches). Each
+        // was a `<Par as Clone>::clone` — the derived Θ(depth) traversal — and
+        // none of them was ever needed by substitution; they were needed by the
+        // BORROW.
+        //
+        // `bind_count`, `persistent` and `peek` are `Copy`, so naming them here
+        // costs nothing and keeps the whole shape of the term visible in one
+        // place.
+        let Receive {
+            binds,
+            body,
+            persistent,
+            peek,
+            bind_count,
+            condition,
+            ..
+        } = receive;
+
         // D3 (DR-9, OD-3): a receive is a token-consuming COMM — the consensus
         // cost unit (one token per COMM). `receive_eval_cost` is the diagnostic
         // weight; only the COMM count gates consensus.
@@ -1667,15 +1726,13 @@ impl DebruijnInterpreter {
         // stay as free vars for the matcher to fill in. Stored once on
         // the TaggedContinuation so it sees every bound variable across
         // every bind. Plan §7.12.
-        // ★ A VISIBLE, ATTRIBUTABLE COPY. `receive` is borrowed, so the guard
-        // has to be copied to be substituted. The wrapper no longer hides that:
-        // it takes its term by value, and the one call site that genuinely needs
-        // a copy writes the copy down. Stage 2 removes this one by taking
-        // `receive` by value from `generated_message_eval`, which already owns
-        // it.
-        let subst_guard = match receive.condition.as_ref() {
-            Some(c) if c != &Par::default() => {
-                Some(self.substitute.substitute_and_charge(c.clone(), 1, env)?)
+        //
+        // ⚠ `Some(empty Par)` is treated as "no guard", exactly as before — the
+        // comparison is against a fresh `Par::default()` either way, only now on
+        // an owned value instead of through a reference.
+        let subst_guard = match condition {
+            Some(c) if c != Par::default() => {
+                Some(self.substitute.substitute_and_charge(c, 1, env)?)
             }
             _ => None,
         };
@@ -1702,14 +1759,26 @@ impl DebruijnInterpreter {
             crate::rust::interpreter::guard::RECEIVE_WHERE,
         )?;
 
-        let binds = receive
-            .binds
-            .clone()
+        let binds = binds
             .into_iter()
             .map(|rb| {
-                let q = self.unbundle_receive(&rb, env)?;
-                let subst_patterns = rb
-                    .patterns
+                // Destructured by move for the same reason the `Receive` was:
+                // `unbundle_receive` used to take `&ReceiveBind` and open with
+                // `rb.source.clone()`.
+                //
+                // ⚠ ORDER IS LOAD-BEARING. `unbundle_receive` charges (it
+                // evaluates and substitutes the source), and it charged BEFORE
+                // the patterns did. Destructuring moves no evaluation, and the
+                // source is still resolved first.
+                let ReceiveBind {
+                    patterns,
+                    source,
+                    remainder,
+                    free_count,
+                    ..
+                } = rb;
+                let q = self.unbundle_receive(source, env)?;
+                let subst_patterns = patterns
                     .into_iter()
                     .map(|pattern| self.substitute.substitute_and_charge(pattern, 1, env))
                     .collect::<Result<Vec<_>, InterpreterError>>()?;
@@ -1717,8 +1786,8 @@ impl DebruijnInterpreter {
                 Ok((
                     BindPattern {
                         patterns: subst_patterns,
-                        remainder: rb.remainder,
-                        free_count: rb.free_count,
+                        remainder,
+                        free_count,
                     },
                     q,
                 ))
@@ -1736,19 +1805,14 @@ impl DebruijnInterpreter {
 
         // TODO: Allow for the environment to be stored with the body in the Tuplespace - OLD
         //
-        // ★ A VISIBLE, ATTRIBUTABLE COPY, and the most expensive of the three:
-        // the continuation BODY is the largest term a receive touches. It exists
-        // because `receive` is borrowed here, not because substitution needs it
-        // — Stage 2 takes `receive` by value from `generated_message_eval` and
-        // this `clone` goes away with it.
+        // ★ The continuation BODY is MOVED into the substitution. This was the
+        // most expensive copy on the receive path — the body is the largest term
+        // a receive touches — and it existed only because `receive` was
+        // borrowed.
         let subst_body = self.substitute.substitute_no_sort_and_charge(
-            receive
-                .body
-                .as_ref()
-                .expect("Receive.body: normalizer post-condition")
-                .clone(),
+            body.expect("Receive.body: normalizer post-condition"),
             0,
-            &env.shift(receive.bind_count),
+            &env.shift(bind_count),
         )?;
 
         self.consume(
@@ -1757,8 +1821,8 @@ impl DebruijnInterpreter {
                 body: Some(subst_body),
                 random_state: rand.to_bytes(),
             },
-            receive.persistent,
-            receive.peek,
+            persistent,
+            peek,
             subst_guard,
             path,
         )
@@ -1801,7 +1865,7 @@ impl DebruijnInterpreter {
     // TODO: review 'loop' matches 'tailRecM'
     async fn eval_match(
         &self,
-        mat: &Match,
+        mat: Match,
         env: &Env<Par>,
         rand: Blake2b512Random,
         path: SmallVec<[u32; 8]>,
@@ -1813,41 +1877,60 @@ impl DebruijnInterpreter {
             })
         }
 
+        // ★ THE CASES ARE CONSUMED, NOT SCANNED.
+        //
+        // This loop used to hold `(Par, Vec<MatchCase>)` as state and, on every
+        // failed case, rebuild the tail with `case_rem.to_vec()` — a deep copy
+        // of every remaining case, once per case tried, i.e. Θ(n²) `Par` clones
+        // over an n-case `match`. It also copied the case's pattern
+        // (`single_case.pattern.clone()`) because the slice pattern
+        // `[single_case, case_rem @ ..]` only ever borrowed.
+        //
+        // Draining an owning iterator does both jobs for free: the tail is never
+        // rebuilt, and each `MatchCase` is destructured by move so its pattern,
+        // guard and source are already owned when they are needed.
+        //
+        // ⚠ Semantics are unchanged, case for case: the cases are still tried in
+        // order, a non-match still falls through, a failing guard still falls
+        // through, an undecidable guard is still raised, and an exhausted list
+        // still returns `Ok(())`.
         let first_match = Box::new(
             |target: Par, cases: Vec<MatchCase>, rand: Blake2b512Random| async {
-                let mut state = (target, cases);
+                let target = target;
 
-                loop {
-                    let (_target, _cases) = state;
+                for single_case in cases {
+                    let MatchCase {
+                        pattern,
+                        source,
+                        guard,
+                        free_count,
+                        ..
+                    } = single_case;
 
-                    match _cases.as_slice() {
-                        [] => return Ok(()),
+                    let pattern = self.substitute.substitute_and_charge(
+                        unwrap_option_safe(pattern)?,
+                        1,
+                        env,
+                    )?;
 
-                        [single_case, case_rem @ ..] => {
-                            // ⚠ This site used to deep-copy the pattern TWICE:
-                            // once explicitly (`single_case.pattern.clone()`,
-                            // needed because `single_case` is borrowed out of
-                            // `_cases`) and once more inside the wrapper, which
-                            // took `&A`. The wrapper now takes its term by
-                            // value, so the explicit clone is the only copy.
-                            let pattern = self.substitute.substitute_and_charge(
-                                unwrap_option_safe(single_case.pattern.clone())?,
-                                1,
-                                env,
-                            )?;
+                    let mut spatial_matcher = SpatialMatcherContext::new();
+                    // ⚠ The target IS still copied per case attempted:
+                    // `spatial_match_result` consumes it and the next case needs
+                    // it again. That copy is inherent to trying n patterns
+                    // against one target, and is out of this change's scope.
+                    let match_result =
+                        spatial_matcher.spatial_match_result(target.clone(), pattern);
 
-                            let mut spatial_matcher = SpatialMatcherContext::new();
-                            let match_result =
-                                spatial_matcher.spatial_match_result(_target.clone(), pattern);
+                    match match_result {
+                        None => {
+                            continue;
+                        }
 
-                            match match_result {
-                                None => {
-                                    state = (_target, case_rem.to_vec());
-                                }
-
-                                Some(free_map) => {
-                                    let case_env =
-                                        add_to_env(env, free_map.clone(), single_case.free_count);
+                        Some(free_map) => {
+                            // ⚠ `free_map` is BORROWED out of the matcher's
+                            // context, so this `clone` is not removable the way
+                            // the others in this function were. Left as is.
+                            let case_env = add_to_env(env, free_map.clone(), free_count);
 
                                     // Optional `where` guard. Fire the case
                                     // body iff the guard evaluates to
@@ -1866,112 +1949,103 @@ impl DebruijnInterpreter {
                                     // shared rather than reimplemented — the
                                     // two guard languages cannot drift.
                                     //
-                                    // ★ A guard the decider has no arm for is
-                                    // NOT a fall-through. Fall-through means
-                                    // "this case did not apply"; an
-                                    // undecidable guard means the case was
-                                    // never tested. Reporting the second as
-                                    // the first silently selects a later case
-                                    // (or `Nil`) on the strength of a decision
-                                    // that was never made, so it is raised
-                                    // instead. Raising is in-band here — a
-                                    // `match` mutates no space, so there is
-                                    // nothing to unwind — and it covers the
-                                    // `Par`s that never met the normalizer's
-                                    // gate.
-                                    let guard_passes = match &single_case.guard {
-                                        Some(g) if g != &Par::default() => {
-                                            match guard_disposition_in_env(g, &case_env) {
-                                                GuardDisposition::Undecidable { kind } => {
-                                                    return Err(
-                                                        InterpreterError::UndecidableGuard {
-                                                            clause: MATCH_CASE_WHERE,
-                                                            obstructions: vec![kind.to_string()],
-                                                        },
-                                                    );
-                                                }
-                                                other => other.commits(),
-                                            }
+                            // ★ A guard the decider has no arm for is NOT a
+                            // fall-through. Fall-through means "this case did
+                            // not apply"; an undecidable guard means the case
+                            // was never tested. Reporting the second as the
+                            // first silently selects a later case (or `Nil`) on
+                            // the strength of a decision that was never made, so
+                            // it is raised instead. Raising is in-band here — a
+                            // `match` mutates no space, so there is nothing to
+                            // unwind — and it covers the `Par`s that never met
+                            // the normalizer's gate.
+                            let guard_passes = match &guard {
+                                Some(g) if g != &Par::default() => {
+                                    match guard_disposition_in_env(g, &case_env) {
+                                        GuardDisposition::Undecidable { kind } => {
+                                            return Err(InterpreterError::UndecidableGuard {
+                                                clause: MATCH_CASE_WHERE,
+                                                obstructions: vec![kind.to_string()],
+                                            });
                                         }
-                                        _ => true,
-                                    };
-
-                                    if !guard_passes {
-                                        state = (_target, case_rem.to_vec());
-                                        continue;
+                                        other => other.commits(),
                                     }
-
-                                    let case_body = single_case
-                                        .source
-                                        .clone()
-                                        .expect("MatchCase.source: protobuf no_box invariant");
-                                    // Reactive per-reduction seam: a `match` case body firing.
-                                    // None-op in production.
-                                    self.observe_and_pause(&case_body, ReductionKind::Match).await?;
-                                    self.eval_with_path(case_body, &case_env, rand, path.clone()).await?;
-
-                                    return Ok(());
                                 }
+                                _ => true,
+                            };
+
+                            if !guard_passes {
+                                continue;
                             }
+
+                            let case_body = source
+                                .expect("MatchCase.source: protobuf no_box invariant");
+                            // Reactive per-reduction seam: a `match` case body firing.
+                            // None-op in production.
+                            self.observe_and_pause(&case_body, ReductionKind::Match).await?;
+                            self.eval_with_path(case_body, &case_env, rand, path.clone()).await?;
+
+                            return Ok(());
                         }
                     }
                 }
+
+                Ok(())
             },
         );
+
+        // Destructured by move: `mat.cases.clone()` was a deep copy of every
+        // case, and `mat.target` was only ever borrowed to be evaluated.
+        let Match { target, cases, .. } = mat;
 
         // D3 (DR-9, OD-3): `match` is a non-COMM structural reduction —
         // DIAGNOSTIC only (it is metered for fidelity but contributes 0 to the
         // consensus consumed cost).
         self.metering.reserve_reduction(match_eval_cost())?;
-        let evaled_target = self.eval_expr(
-            mat.target
-                .as_ref()
-                .expect("Match.target: normalizer post-condition"),
-            env,
-        )?;
+        let target = target.expect("Match.target: normalizer post-condition");
+        let evaled_target = self.eval_expr(&target, env)?;
         let subst_target = self
             .substitute
             .substitute_and_charge(evaled_target, 0, env)?;
 
-        first_match(subst_target, mat.cases.clone(), rand).await
+        first_match(subst_target, cases, rand).await
     }
 
     async fn eval_if(
         &self,
-        conditional: &If,
+        conditional: If,
         env: &Env<Par>,
         rand: Blake2b512Random,
         path: SmallVec<[u32; 8]>,
     ) -> Result<(), InterpreterError> {
+        // Destructured by move. Both branch clones were deep copies of a whole
+        // process term, and exactly one branch is ever taken — so the taken one
+        // is moved and the other is simply dropped.
+        let If {
+            condition,
+            if_true,
+            if_false,
+            ..
+        } = conditional;
+
         // D3 (DR-9, OD-3): `if` is a non-COMM structural reduction —
         // DIAGNOSTIC only (metered for fidelity, 0 toward consensus cost).
         self.metering.reserve_reduction(match_eval_cost())?;
-        let evaled_cond = self.eval_expr(
-            conditional
-                .condition
-                .as_ref()
-                .expect("If.condition: normalizer post-condition"),
-            env,
-        )?;
+        let condition = condition.expect("If.condition: normalizer post-condition");
+        let evaled_cond = self.eval_expr(&condition, env)?;
         let subst_cond = self
             .substitute
             .substitute_and_charge(evaled_cond, 0, env)?;
 
         match extract_bool(&subst_cond) {
             Some(true) => {
-                let branch = conditional
-                    .if_true
-                    .clone()
-                    .expect("If.if_true: normalizer post-condition");
+                let branch = if_true.expect("If.if_true: normalizer post-condition");
                 // Reactive per-reduction seam: an `if` true-branch firing. None-op in production.
                 self.observe_and_pause(&branch, ReductionKind::If).await?;
                 self.eval_with_path(branch, env, rand, path).await
             }
             Some(false) => {
-                let branch = conditional
-                    .if_false
-                    .clone()
-                    .expect("If.if_false: normalizer post-condition");
+                let branch = if_false.expect("If.if_false: normalizer post-condition");
                 // Reactive per-reduction seam: an `if` false-branch firing. None-op in production.
                 self.observe_and_pause(&branch, ReductionKind::If).await?;
                 self.eval_with_path(branch, env, rand, path).await
@@ -1989,11 +2063,22 @@ impl DebruijnInterpreter {
     // TODO: Eliminate variable shadowing - OLD
     async fn eval_new(
         &self,
-        new: &New,
+        new: New,
         env: Env<Par>,
         mut rand: Blake2b512Random,
         path: SmallVec<[u32; 8]>,
     ) -> Result<(), InterpreterError> {
+        // Destructured by move: `new.uri.clone()` copied the URI list on every
+        // `new`, and `new.p.clone()` deep-copied the entire scope BODY. Only
+        // `injections` is read through a borrow, by the `add_urn` closure.
+        let New {
+            bind_count,
+            p,
+            uri,
+            injections,
+            ..
+        } = new;
+
         let mut alloc = |count: usize, urns: Vec<String>| {
             let simple_news =
                 (0..(count - urns.len()))
@@ -2011,7 +2096,7 @@ impl DebruijnInterpreter {
                 if !self.urn_map.contains_key(&urn) {
                     // TODO: Injections (from normalizer) are not used currently, see [[NormalizerEnv]].
                     // If `urn` can't be found in `urnMap`, it must be referencing an injection - OLD
-                    match new.injections.get(&urn) {
+                    match injections.get(&urn) {
                         Some(p) => {
                             if let Some(gunf) = RhoUnforgeable::unapply(p) {
                                 if let Some(instance) = gunf.unf_instance {
@@ -2080,10 +2165,10 @@ impl DebruijnInterpreter {
         // consensus consumed cost). §7.4 re-pins 9→8 precisely because the
         // `new` no longer counts toward the per-COMM consensus cost.
         self.metering
-            .reserve_reduction(new_bindings_cost(new.bind_count as i64))?;
-        match alloc(new.bind_count as usize, new.uri.clone()) {
+            .reserve_reduction(new_bindings_cost(bind_count as i64))?;
+        match alloc(bind_count as usize, uri) {
             Ok(env) => {
-                let body = unwrap_option_safe(new.p.clone())?;
+                let body = unwrap_option_safe(p)?;
                 // Reactive per-reduction seam: a `new` scope body, after fresh-name allocation.
                 // None-op in production.
                 self.observe_and_pause(&body, ReductionKind::New).await?;
@@ -2093,8 +2178,20 @@ impl DebruijnInterpreter {
         }
     }
 
-    fn unbundle_receive(&self, rb: &ReceiveBind, env: &Env<Par>) -> Result<Par, InterpreterError> {
-        let eval_src = self.eval_expr(&unwrap_option_safe(rb.source.clone())?, env)?;
+    /// Resolve a bind's source channel: evaluate it, substitute it, and strip a
+    /// readable `bundle`.
+    ///
+    /// Takes the source `Option<Par>` BY VALUE rather than a `&ReceiveBind`.
+    /// The old signature forced `rb.source.clone()` — a `<Par as Clone>::clone`
+    /// of the whole channel term, once per bind — and nothing else in the
+    /// `ReceiveBind` was ever read here. `unwrap_option_safe` is kept inside so
+    /// a missing source raises the same error it always did.
+    fn unbundle_receive(
+        &self,
+        source: Option<Par>,
+        env: &Env<Par>,
+    ) -> Result<Par, InterpreterError> {
+        let eval_src = self.eval_expr(&unwrap_option_safe(source)?, env)?;
         let subst = self.substitute.substitute_and_charge(eval_src, 0, env)?;
         // Check if we try to read from bundled channel
         let unbndl = match single_bundle(&subst) {
@@ -2115,12 +2212,14 @@ impl DebruijnInterpreter {
 
     async fn eval_bundle(
         &self,
-        bundle: &Bundle,
+        bundle: Bundle,
         env: &Env<Par>,
         rand: Blake2b512Random,
         path: SmallVec<[u32; 8]>,
     ) -> Result<(), InterpreterError> {
-        let body = unwrap_option_safe(bundle.body.clone())?;
+        // `bundle.body.clone()` deep-copied the bundled process; `bundle` is
+        // owned now, so the body is moved out.
+        let body = unwrap_option_safe(bundle.body)?;
         // Reactive per-reduction seam: a `bundle` body, after unwrapping. None-op in production.
         self.observe_and_pause(&body, ReductionKind::Bundle).await?;
         self.eval_with_path(body, env, rand, path).await
