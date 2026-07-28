@@ -5,7 +5,6 @@ use std::hash::{Hash, Hasher};
 
 use dashmap::DashMap;
 use rayon::prelude::*;
-use serde::Serialize;
 
 use super::channel_change::ChannelChange;
 use super::event_log_index::EventLogIndex;

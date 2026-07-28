@@ -7,7 +7,6 @@ use std::sync::Arc;
 use counter::Counter;
 use dashmap::DashMap;
 use proptest_derive::Arbitrary;
-use serde::Serialize;
 
 use super::hashing::stable_hash_provider::StableHashSerialize;
 

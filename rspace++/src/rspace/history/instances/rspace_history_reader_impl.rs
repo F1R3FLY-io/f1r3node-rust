@@ -1,7 +1,6 @@
 use std::marker::PhantomData;
 use std::sync::Arc;
 
-use serde::Serialize;
 use shared::rust::store::key_value_store::KeyValueStore;
 
 use crate::rspace::errors::HistoryError;
