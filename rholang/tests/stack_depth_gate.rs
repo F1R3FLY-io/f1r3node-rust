@@ -599,6 +599,7 @@ fn subject(name: &str) -> fn(usize) {
         "inj_attempt_clone" => inj_attempt_clone_body,
         "encode" => encode_body,
         "bincode_ser" => bincode_ser_body,
+        "bincode_ser_derived" => bincode_ser_derived_body,
         "bincode_de" => bincode_de_body,
         "normalize" => normalize_body,
         // -------- width axis --------
@@ -714,6 +715,12 @@ const CONVERTED_DEPTH: &[&str] = &[
     "eval_with_nots",
     // Stage F — the cold-store DECODER (par_codec)
     "bincode_de",
+    // Stage H — the cold-store ENCODER (wire_encode). It LEFT the tripwire
+    // list below by being CONVERTED, never by having its ceiling raised: the
+    // derived `Serialize` is Θ(depth) at 3,052 / 329 B per level (debug /
+    // release, measured 2026-07-26) and the single-walk machine holds its
+    // native stack flat from depth 4 to 4,096 on both profiles.
+    "bincode_ser",
     // Stage D — PrettyPrinter's explicit pushdown driver
     "pretty",
     // Stage G — `normalize_ann_proc`'s 26-function SCC becomes
@@ -755,7 +762,6 @@ const TRIPWIRE_DEPTH: &[&str] = &[
     "par_drop",                // derived `drop_in_place::<Par>`
     "normalize_drop",          // ★ the DEPLOY composition: flat build, sloped release
     "encode",                  // prost encoder (capped by RECURSION_LIMIT on decode)
-    "bincode_ser",             // RSpace cold-store ENCODER — uncapped
     "sort_nested_set",         // Stage C-2 residual, self-contained set arm
     "sort_nested_map",         // Stage C-2 residual, self-contained map arm
     "clone_nested_set",        // the derived floor the two above are measured against
@@ -1921,15 +1927,31 @@ fn printed_bracket_depth(s: &str) -> usize {
 /// Measured 2026-07-26: encode 3,052 / 329 B/level (debug / release), decode
 /// 28,362 / 12,894.
 fn bincode_ser_body(depth: usize) {
+    use models::rust::rholang::wire_encode::ColdStoreEncode;
     let term = nested_list(depth);
     assert_carries("the bincode_ser input's nesting", par_depth(&term), depth);
-    let bytes = bincode::serialize(&term).expect("stack_depth_gate: bincode_ser failed");
+    let bytes = term.cold_encode();
     assert!(
         bytes.len() >= depth,
-        "VACUOUS PROBE: bincode-encoding a depth-{} term produced only {} bytes",
+        "VACUOUS PROBE: encoding a depth-{} term produced only {} bytes",
         depth,
         bytes.len()
     );
+    dismantle(term);
+}
+
+/// The PRE-CONVERSION control: the derived `Serialize`, still compiled.
+///
+/// Retained for exactly the reason `bincode_de_derived` is — so the
+/// before/after comparison is available in ONE run instead of requiring a
+/// checkout of an older commit — and because the derive is the ENCODE ORACLE
+/// the differential is measured against (`models/tests/
+/// wire_encode_differential.rs`). It is no longer what the node runs.
+fn bincode_ser_derived_body(depth: usize) {
+    let term = nested_list(depth);
+    assert_carries("the control's nesting", par_depth(&term), depth);
+    let bytes = bincode::serialize(&term).expect("stack_depth_gate: the derived control failed");
+    assert!(bytes.len() >= depth, "VACUOUS CONTROL");
     dismantle(term);
 }
 
@@ -1943,18 +1965,20 @@ fn bincode_ser_body(depth: usize) {
 /// corpus encoding (`models/tests/par_codec_malformed.rs`) — but it is no
 /// longer what the node runs, so it is no longer what this gate measures.
 ///
-/// ⚠ `bincode_ser` stays in the tripwire. The ENCODER is deliberately
-/// untouched: leaving `Serialize` derived is what preserves byte identity of
-/// the cold-store leaves by construction, so its Θ(depth) residual (3,052 / 329
-/// B per level) is a separate, still-open item.
+/// ★ `bincode_ser` has since been converted too (Stage H,
+/// `models/src/rust/rholang/wire_encode.rs`), so BOTH halves of the RSpace
+/// codec are now depth-independent and the isolation below is belt-and-braces
+/// rather than load-bearing. It is kept because the point of isolating the
+/// decoder is to measure the DECODER: a probe that silently became
+/// `max(encode, decode)` would still be wrong even when both are flat.
 fn bincode_de_body(depth: usize) {
     // ⚠ Encode on a stack that never binds, so this subject isolates the
     // DECODER. Encoding on the gated thread would make every reading
     // `max(encode, decode)` — the same defect that once made the score-tree
     // subjects report 78,573 B/level (the SORTER's constant) instead of the
-    // comparator's 1,329. It matters twice as much now: the encoder is STILL
-    // Θ(depth), so an un-isolated probe would report the encoder's slope and
-    // this conversion would look like it had not happened.
+    // comparator's 1,329. The DERIVED encoder is used here deliberately: it is
+    // the oracle whose bytes the decoder must read, and it is Θ(depth), which
+    // is precisely why it must not run on the gated thread.
     let bytes = on_a_big_stack(move || {
         let term = nested_list(depth);
         let b = bincode::serialize(&term).expect("stack_depth_gate: bincode encode failed");
@@ -2517,27 +2541,25 @@ fn theta_depth_tripwire() {
     // is fixed.
     assert_slope_below("normalize_drop", ceiling(1_500, 800), 256, 4096);
     assert_slope_below("encode", ceiling(4_000, 1_500), 64, 1024);
-    // ⚠ The RSpace codec — see `bincode_ser_body`. UNCAPPED, unlike `prost`.
-    // Probed SHALLOW: at 3,052 B/level (debug) the ENCODER is the cheap half,
-    // but both probe points still clear its own intercept at both ends, so a
-    // large intercept cannot read as a zero slope on a short ladder.
+    // ⚠ THE RSpace CODEC HAS LEFT THIS LIST ENTIRELY — both halves.
     //
-    // ⚠ Only the ENCODER is left here. `bincode_de` has LEFT this list — it is
-    // in `converted_traversals_are_depth_independent` (Stage F: the cold-store
-    // decoder became `models/src/rust/rholang/par_codec.rs`, an explicit
-    // obligation-stack machine). Measured immediately before the conversion by
-    // direct bisection of this very subject: 28,331 B/level debug (262,144 B at
-    // depth 8, 942,080 B at depth 32) and 12,971 B/level release (122,880 and
-    // 434,176) — i.e. D_max 73 / 161 on a 2 MiB worker, the SHALLOWEST member
-    // of this family. As always, a traversal leaves this list only by being
-    // converted, never by having its ceiling raised.
+    // `bincode_de` left first (Stage F: `models/src/rust/rholang/par_codec.rs`,
+    // an explicit obligation-stack decoder). `bincode_ser` has now followed
+    // (Stage H: `models/src/rust/rholang/wire_encode.rs`, the single-walk
+    // trampolined encoder driven by the same generated table). Both are in
+    // `converted_traversals_are_depth_independent`.
     //
-    // The ENCODER stays Θ(depth) on purpose: leaving `Serialize` derived is
-    // what makes the cold-store leaf bytes byte-identical by construction, and
-    // an encode is only ever performed on a term the node itself built, so it
-    // is a transient worker fault rather than the permanent, replicated one the
-    // decoder was.
-    assert_slope_below("bincode_ser", ceiling(5_000, 800), 64, 512);
+    // The old note here said the encoder stays Θ(depth) "on purpose", because
+    // leaving `Serialize` derived was what made the cold-store leaf bytes
+    // byte-identical by construction. That trade no longer has to be made: byte
+    // identity is now established by DIFFERENTIAL against the derive — which
+    // stays compiled as the oracle, and as the `bincode_ser_derived` control in
+    // this very gate — over an exhaustive structural corpus plus proptest, with
+    // an executed mutation proof that the differential can go RED.
+    //
+    // Pre-conversion baselines, by direct bisection of this subject:
+    // ENCODE 3,052 B/level debug and 329 B/level release; DECODE 28,331 and
+    // 12,971. As always, a traversal leaves this list only by being converted.
     // ⚠ THE NAMED STAGE C-2 RESIDUAL. Ceilings are the MEASURED PRE-CONVERSION
     // BASELINES (79,053 / 82,534 B/level, debug), so this list can only ever
     // certify that the self-contained set/map arms did not get worse. Measured

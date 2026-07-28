@@ -639,9 +639,24 @@ fn run_probe(what: &str, depth: usize) {
         // `models/build.rs` attaches `serde::Serialize`/`Deserialize` to every
         // `.rhoapi` message, and RSpace serialises datums/continuations with
         // bincode 1.3.3 — which, unlike `prost`, has NO recursion limit.
-        "bincode_ser" => {
+        // ★ CONVERTED (Stage H). `bincode_ser` now measures what the node
+        // actually runs on the cold-store WRITE path:
+        // `models/src/rust/rholang/wire_encode.rs`, the single-walk trampolined
+        // encoder driven by the same generated table as the decoder. Leaving
+        // this arm on `bincode::serialize` would have been a quiet trap — a
+        // later re-measurement would report the PRE-conversion 3,052 B/level
+        // and read as "nothing changed".
+        //
+        // `bincode_ser_derived` retains the old body as the CONTROL, so the
+        // before/after comparison stays available in one run.
+        "bincode_ser" | "bincode_ser_derived" => {
+            use models::rust::rholang::wire_encode::ColdStoreEncode;
             let t = nested_list(depth);
-            let bytes = bincode::serialize(&t).expect("stack_depth_probe: bincode_ser failed");
+            let bytes = if what == "bincode_ser_derived" {
+                bincode::serialize(&t).expect("stack_depth_probe: the derived control failed")
+            } else {
+                t.cold_encode()
+            };
             assert!(!bytes.is_empty());
             std::mem::forget(bytes);
             std::mem::forget(t);

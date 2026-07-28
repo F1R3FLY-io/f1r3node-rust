@@ -56,15 +56,15 @@ test that runs, and a test that runs is a name here.
      Checked by `the_audit_agrees_with_the_gate`; edit the gate's constants first. -->
 ```text
 converted-depth: substitute_no_sort, substitute_binders, substitute, sort, score_cmp,
-                 tree_drop, tree_clone, eval_with_nots, bincode_de, pretty, normalize,
-                 inj_attempt_clone
+                 tree_drop, tree_clone, eval_with_nots, bincode_de, bincode_ser, pretty,
+                 normalize, inj_attempt_clone
 converted-width: substitute_wide, sort_wide, score_cmp_wide, free_check, pretty_wide,
                  normalize_wide
 tripwire-depth:  subst_and_charge, substitute_deep_binding, clone, par_drop,
-                 normalize_drop, encode, bincode_ser, sort_nested_set, sort_nested_map,
+                 normalize_drop, encode, sort_nested_set, sort_nested_map,
                  clone_nested_set
 tripwire-width:
-totals:          converted=18, tripwired=10
+totals:          converted=19, tripwired=9
 ```
 <!-- GATE-SUBJECTS:END -->
 
@@ -1888,11 +1888,13 @@ Three dispositions, and every member of the family is in exactly one of them.
    │ HAND-WRITTEN, convertible                                             │
    │   pretty ······················ the NEXT conversion (prereq landed)   │
    │ DERIVED / GENERATED — Leg-1 disposition: delete call sites, not impls │
-   │   clone · drop · encode · bincode_ser · clone_nested_set              │
+   │   clone · drop · encode · clone_nested_set                            │
    │ NAMED RESIDUALS — bounded by something other than the term's depth    │
    │   substitute_deep_binding (the BOUND value)                           │
    │   sort_nested_set · sort_nested_map (3ⁿ sorts bound them in TIME)     │
    └───────────────────────────────────────────────────────────────────────┘
+
+   ⚠ `bincode_ser` LEFT box (B) in Stage H. See §12.9.
 
    (C) OPEN — enumerated, measured, no disposition yet           1 member
    ┌───────────────────────────────────────────────────────────────────────┐
@@ -1937,7 +1939,6 @@ $`(S_{hi} - S_{lo}) / (\text{hi} - \text{lo})`$, integer-divided exactly as
 | `clone` | 16 → 128 | 15,872 | 25,000 | 2,852 | 5,000 | derived — [§7.2](#72-derived-traversals--leg-1-only-by-construction) |
 | `drop` | 256 → 4,096 | 464 | 1,500 | 144 | 800 | synthesised — the irreducible member |
 | `encode` | 64 → 1,024 | 1,932 | 4,000 | 302 | 1,500 | generated; and [§8.2](#82-why-each-conversion-is-neutral-by-construction--per-traversal) forbids converting it on the general argument, because its **return value is the charge** |
-| `bincode_ser` | 64 → 512 | 3,044 | 5,000 | 246 | 800 | derived `Serialize`, kept derived **on purpose**: it is what makes the cold-store leaf bytes byte-identical by construction, and an encode is only ever performed on a term the node itself built |
 | `sort_nested_set` | 2 → 8 | 14,336 | 79,053 | **7,509** | **7,680** | Stage C-2 residual — see [§12.7](#127--sort_nested_set-sits-22--under-its-own-ceiling) |
 | `sort_nested_map` | 2 → 8 | 17,749 | 82,534 | 7,509 | 10,394 | " |
 | `clone_nested_set` | 2 → 8 | 16,384 | 25,000 | 3,413 | 9,000 | the derived control the two above are measured against |
@@ -2137,9 +2138,9 @@ converted_traversals_are_depth_independent   THE BAR
       as well as achievement.
 
 theta_depth_tripwire                          NOT A PASS — A TRIPWIRE
-    pretty · substitute_deep_binding · clone · drop · encode · bincode_ser
+    pretty · substitute_deep_binding · clone · drop · encode
     sort_nested_set · sort_nested_map · clone_nested_set
-    ⇒ 9 subjects under per-profile ceilings; certifies only "not worse".
+    ⇒ 8 subjects under per-profile ceilings; certifies only "not worse".
 
 theta_width_tripwire                          EMPTY, AND WIRED
     ⇒ every width-axis member found so far is converted.  Retained, named and
@@ -3407,3 +3408,72 @@ been arguments.
 | E79 | No finite wall budget is safe | **Derived** — $`B \ge T_{\text{idle}}C`$ with $`C`$ set by other processes and unbounded |
 | E80 | ★ After the fix, the load that previously failed both tests passes both: 96.0 / 93.4 s CPU against 180 s, wall inflated 3.3× | **Measured** — identical 96-spinner configuration |
 | E81 | The in-process instrument agrees with `/usr/bin/time` to 0.02 % (189.4 s vs 189.43 s) | **Measured** — same run; validates field indices, tick constant, and single-thread attribution |
+
+---
+
+## 12.9 Stage H — the cold-store ENCODER is converted
+
+`bincode_ser` was the last member of box (B) whose disposition was an argument
+rather than a limitation. §12.6 recorded it as *"derived `Serialize`, kept
+derived **on purpose**: it is what makes the cold-store leaf bytes
+byte-identical by construction"*. That trade has been dissolved, not accepted:
+byte identity is now established by **differential against the derive**, which
+stays compiled as the oracle, instead of by *being* the derive.
+
+### The subject
+
+`models/src/rust/rholang/wire_encode.rs` — a single-walk, O(1)-native-stack
+emitter driven by the same generated table as the decoder
+(`models/build/wire_schema.rs`, emitted from the protobuf
+`FileDescriptorSet`). One obligation stack of `(&'a dyn WireNode, field)`; no
+value stacks, no clones, no `Drop` obligation, and therefore no teardown
+problem — the asymmetry with `par_codec`, which must reassemble bottom-up.
+
+### The measurement
+
+Direct bisection of the minimum surviving thread stack, release profile, with
+the **pre-conversion body retained in the same binary** as
+`bincode_ser_derived` so the comparison needs no checkout:
+
+| subject | depth 4 | depth 4,096 | slope |
+|---|---|---|---|
+| `bincode_ser` (converted) | 8,191 B | 8,191 B | **0 B/level** |
+| `bincode_ser_derived` (control) | 8,191 B | **925,688 B** | ≈ 224 B/level |
+| `bincode_de` (converted, Stage F) | 8,191 B | 8,191 B | 0 B/level |
+
+`assert_no_slope` over 4 → 4,096 passes in **both** profiles: 44 KiB at both
+ends in debug, 12 KiB at both ends in release.
+
+### Why it is neutral by construction
+
+§8.2 forbids converting `encoded_len` on the general argument, because *its
+return value is the charge* — an off-by-one there is a consensus fork with no
+oracle to catch it. **`bincode_ser` is a different risk class and this
+conversion does not touch `encoded_len`.** Its output is a byte string with a
+total, cheap, undriftable oracle: the compiler-generated `Serialize`. The
+differential asserts four properties over an exhaustive structural corpus plus
+proptest —
+
+```text
+∀t. new_encode(t)             == old_encode(t)              byte-identical WRITE
+∀t. new_decode(old_encode(t)) == old_decode(old_encode(t))  agreeing READ
+∀t. new_decode(new_encode(t)) == t                          necessary, INSUFFICIENT
+∀b. new_decode(b).is_err()    == old_decode(b).is_err()     agreeing REJECTION
+```
+
+— and round-trip is deliberately listed **third**, because a codec that encodes
+differently but decodes its own output round-trips perfectly and forks on the
+first block. `the_encode_differential_can_go_red` executes two byte-visible
+mutations (two field emissions swapped; one variant index changed) and requires
+the verdict to reject each, naming its clause, with a control passing before and
+after.
+
+### Cost
+
+Not a cost: the converted encoder is **faster** on a *measured* production
+depth distribution (95.43% of 1,773 instrumented produces are at depth 2;
+nothing deeper than 6). Production-weighted, release, Welch-tested at α = 0.01:
+**1.190×** returning an owned `Vec`, **1.245×** into a reused buffer, with no
+shape regressing — the derived path traverses the term twice
+(`serialized_size`, then `serialize_into`) and allocates a fresh vector every
+call, while the machine walks once and, warm, allocates nothing at all.
