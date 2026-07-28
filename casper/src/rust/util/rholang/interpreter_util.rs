@@ -12,6 +12,7 @@ use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{
     BlockMessage, Bond, DeployData, ProcessedDeploy, ProcessedSystemDeploy,
 };
+use models::rust::rholang::par_children;
 use models::rust::validator::Validator;
 use prost::bytes::Bytes;
 use rholang::rust::interpreter::compiler::compiler::Compiler;
@@ -34,6 +35,86 @@ use crate::rust::BlockProcessing;
 
 pub fn mk_term(rho: &str, normalizer_env: HashMap<String, Par>) -> Result<Par, InterpreterError> {
     Compiler::source_to_adt_with_normalizer_env(rho, normalizer_env)
+}
+
+/// ★★ **Deploy admission's term check — parse for VALIDITY, keep nothing.**
+///
+/// `Ok(())` iff `rho` normalizes; the `Err` is [`mk_term`]'s own, unchanged, so a
+/// caller's rejection message is byte-identical to what it was when it called
+/// [`mk_term`] and discarded the term itself.
+///
+/// ## Why this function exists rather than a discarded binding
+///
+/// [`models::rhoapi::Par`] is `prost`-generated, and its `Drop` is *derived*:
+/// `drop_in_place::<Par>` and `drop_in_place::<expr::ExprInstance>` call each
+/// other once per nesting level across the `EList.ps: Vec<Par>` edge. That cycle
+/// is **96 bytes of native stack per level** in this crate's release codegen
+/// (measured, and confirmed against the disassembly: 5 pushes and no `sub rsp` in
+/// each of the two frames), so a caller that lets a deep term fall out of scope
+/// pays Θ(depth) *stack* for a value it never reads.
+///
+/// On the deploy-admission path that caller was reached from the network:
+///
+/// ```text
+///   gRPC DeployService/doDeploy          ← unauthenticated, 16 MiB inbound cap
+///        ▼
+///   block_api::deploy_cosigned           ← SYNCHRONOUS, inline on a tokio worker
+///        ▼
+///   block_admission::admit_deploy{,_cosigned}
+///        ▼
+///   mk_term(&deploy.data.term, env)      ← Θ(1) native stack (the normalizer is
+///        │                                  worklist-driven)
+///        │  Ok(term)  ── nothing downstream reads it ──┐
+///        ▼                                             ▼
+///   …O(1) admission work…                    ★ Θ(depth) derived Drop
+/// ```
+///
+/// and the failure mode is not a rejected deploy. A native-stack overflow is a
+/// `SIGSEGV` on the guard page, which Rust's handler turns into
+/// `fatal runtime error: stack overflow` + `abort()` — signal 6, shell status
+/// 134. The `Err(..) => …parsing_error(..)` arm three lines away cannot see it and
+/// no `catch_unwind` can contain it. It takes the node, before the deploy is
+/// stored, before consensus, and with no `RuntimeBudget` in scope.
+///
+/// [`par_children::dismantle`] replaces that recursion with an explicit
+/// `Vec<Par>` worklist — each node is stripped of its children before the
+/// (now child-free) shell is released — so the native stack is `O(1)` in both
+/// nesting depth and sibling width, and the heap carries the frontier instead.
+///
+/// ## Why the discard is centralised here rather than written at each call site
+///
+/// There are two admission call sites (`admit_deploy` and
+/// `admit_deploy_cosigned`) and a measurement probe
+/// (`casper/tests/deploy_ingress_depth_ceiling.rs`) that must stay the same shape
+/// as production or its numbers describe something else. Three copies of one
+/// discard is three chances for one of them to drift back to an implicit drop.
+/// With the discard owned here, the probe measures production by *calling* it.
+///
+/// ## What a caller can rely on not changing
+///
+/// The term is genuinely surplus, so ordering its frees differently is not
+/// observable anywhere in the protocol:
+///
+/// * **the signature is over the SOURCE, not the term** — `Signed::create` /
+///   `Cosigned::from_signed_data` sign `data.to_message().encode_to_vec()`, and
+///   `DeployData::to_message`'s `term` field is the source string;
+/// * **storage is the source** — admission persists `Signed<DeployData>` (plus the
+///   cosigner sidecar); no `Par` is written; and
+/// * **the term is rebuilt later anyway** — the proposer re-normalizes from source
+///   when it builds a block.
+///
+/// So this changes the *order in which one discarded value's allocations are
+/// released* and nothing else: no signature, hash, block, replay or stored byte
+/// reads it.
+pub fn validate_deploy_term(
+    rho: &str,
+    normalizer_env: HashMap<String, Par>,
+) -> Result<(), InterpreterError> {
+    let term = mk_term(rho, normalizer_env)?;
+    // ★ THE LINE THIS FUNCTION EXISTS FOR. `drop(term)` here — or, identically,
+    // letting `term` fall out of scope — is the defect; see the doc comment.
+    par_children::dismantle(term);
+    Ok(())
 }
 
 /// Pre-compute admit decisions for a batch of rejected-deploy sigs in a

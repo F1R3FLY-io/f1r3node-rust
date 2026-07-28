@@ -1880,3 +1880,206 @@ async fn replay_should_match_in_case_of_user_execution_error() {
         "User execution errors should report consumed tokens without exhausting the full budget"
     );
 }
+
+// ===========================================================================
+// `validate_deploy_term` — deploy admission's term check
+// ===========================================================================
+
+/// Sources spanning both verdicts, so the equivalence below is exercised on both
+/// arms rather than only on the one a happy-path corpus reaches.
+///
+/// ⚠ The `Err` cases are the load-bearing ones. `admit_deploy{,_cosigned}` render
+/// the error into a `DeployError::parsing_error` that the submitting client sees,
+/// so a validator that changed the error would change an observable response even
+/// though it changes nothing about the term.
+fn validate_deploy_term_corpus() -> Vec<&'static str> {
+    vec![
+        // ── accepted ────────────────────────────────────────────────────────
+        "Nil",
+        "0",
+        "[[[[0]]]]",
+        r#"@"chan"!(42)"#,
+        r#"for (@x <- @"chan") { @"out"!(x) }"#,
+        "new x in { x!(1) | x!(2) }",
+        "{1: 2, 3: 4}",
+        "match 1 { 0 => Nil _ => Nil }",
+        // ── rejected ────────────────────────────────────────────────────────
+        "(",                               // unbalanced
+        "for (@x <- y) { z }",             // free variables
+        "new x in { y!(1) }",              // unbound name
+        "@\"c\"!(",                        // truncated send
+        "1 +",                             // truncated arithmetic
+        "|",                               // bare parallel
+        "",                                // empty source
+        "match 1 { 0 => Nil ; _ => Nil }", // `;` is not a case separator
+    ]
+}
+
+/// A rendered error as a **sorted multiset of whitespace-separated words** — the
+/// canonical form the equivalence below compares. See its docs for why exact
+/// string equality is not available here.
+fn rendered_words(e: &rholang::rust::interpreter::errors::InterpreterError) -> Vec<String> {
+    let mut words: Vec<String> = format!("{}", e)
+        .split_whitespace()
+        .map(str::to_string)
+        .collect();
+    words.sort();
+    words
+}
+
+/// ★★ **`validate_deploy_term` agrees with `mk_term` on every verdict, and on
+/// every error message.**
+///
+/// The repair that made deploy admission depth-independent replaced
+/// `match mk_term(..) { Ok(_parsed_term) => .. }` with
+/// `validate_deploy_term(..)`, which parses the same way and hands the term to
+/// `par_children::dismantle` instead of letting it fall out of scope through
+/// `prost`'s derived, recursive `Drop`.
+///
+/// The claim that this is unobservable rests on the term being surplus — the
+/// signature covers the deploy's SOURCE, admission stores the source, and the
+/// proposer re-normalizes it later — but it *also* rests on the `Err` being
+/// unchanged, because that one **is** observable: it reaches the client. This
+/// test executes that half.
+///
+/// ⚠ It compares the rendered `Display`, not merely that both are `Err`. The call
+/// sites format with `format!("Error in parsing term: \n{}", e)`, so `Display` is
+/// the surface that matters.
+///
+/// ⚠⚠ **The comparison is modulo WORD ORDER, and that is forced by a
+/// pre-existing defect this test found — not a weakening chosen for convenience.**
+/// `Compiler::top_level_error` (`rholang/…/compiler/compiler.rs`) builds
+/// `TopLevelFreeVariablesNotAllowedError`'s payload by iterating
+/// `FreeMap::level_bindings`, which is a `std::collections::HashMap`. Iteration
+/// order is unspecified and `RandomState` seeds each *instance* differently, so
+/// the listed variables come out in a different order from one call to the next
+/// **inside a single process**. Measured: `mk_term` alone, 64 calls on
+/// `"for (@x <- y) { z }"`, produced **2 distinct renderings** that differ only in
+/// whether `y` or `z` is listed first. That is a defect in the normalizer's error
+/// surface, it predates this test, and repairing it is out of this change's scope
+/// — but an exact-string assertion here would flake on it roughly half the time.
+///
+/// Splitting on whitespace and comparing multisets is invariant to permuting the
+/// listed variables (the fixed prefix contributes the same words either way) while
+/// still rejecting every difference that matters: a different error variant, a
+/// different variable name, a different line or column, a different count.
+#[test]
+fn validate_deploy_term_agrees_with_mk_term_on_both_arms() {
+    let mut accepted = 0usize;
+    let mut rejected = 0usize;
+    let mut verdicts: Vec<(&str, &str)> = Vec::with_capacity(validate_deploy_term_corpus().len());
+
+    for source in validate_deploy_term_corpus() {
+        let via_mk_term = interpreter_util::mk_term(source, HashMap::new());
+        let via_validate = interpreter_util::validate_deploy_term(source, HashMap::new());
+
+        match (&via_mk_term, &via_validate) {
+            (Ok(_), Ok(())) => {
+                verdicts.push((source, "accepted"));
+                accepted += 1
+            }
+            (Err(expected), Err(actual)) => {
+                assert_eq!(
+                    rendered_words(actual),
+                    rendered_words(expected),
+                    "`validate_deploy_term` rendered a DIFFERENT error than `mk_term` for \
+                     {source:?}:\n  validate: {actual}\n  mk_term : {expected}\n\
+                     Deploy admission formats this into the `DeployError::parsing_error` the \
+                     submitting client receives, so a divergence here is an observable \
+                     change — unlike the teardown the validator exists to fix, which no \
+                     caller can see. (The comparison is already modulo word order, so this \
+                     is NOT the known `level_bindings` iteration-order nondeterminism; see \
+                     this test's docs.)"
+                );
+                verdicts.push((source, "rejected"));
+                rejected += 1;
+            }
+            (Ok(_), Err(actual)) => panic!(
+                "`mk_term` ACCEPTED {source:?} but `validate_deploy_term` rejected it \
+                 ({actual}). The validator must not change which deploys are admitted."
+            ),
+            (Err(expected), Ok(())) => panic!(
+                "`mk_term` REJECTED {source:?} ({expected}) but `validate_deploy_term` \
+                 accepted it. The validator must not change which deploys are admitted."
+            ),
+        }
+    }
+
+    for (source, verdict) in &verdicts {
+        println!("  {verdict:>8}  {source:?}");
+    }
+
+    // ⚠ ANTI-VACUITY: a corpus that had drifted to all-accepted (or all-rejected)
+    // would satisfy every assertion above while exercising one arm. Both arms must
+    // be reached, or the equivalence is only claimed for half of the function.
+    assert!(
+        accepted >= 5 && rejected >= 5,
+        "VACUOUS CORPUS: {accepted} accepted and {rejected} rejected. The equivalence is \
+         asserted on both arms of `validate_deploy_term`, so the corpus must exercise both; \
+         a corpus that quietly became all-accepted would leave the error path — the only \
+         CLIENT-OBSERVABLE half — untested."
+    );
+}
+
+/// The validator releases a term deep enough that the derived destructor would
+/// have needed more native stack than this thread has.
+///
+/// ⚠ This is a **correctness** check, not the depth gate: it certifies that
+/// `dismantle` actually traverses a deep normalized term and returns, on a stack
+/// sized so that the pre-repair path could not. The measured claim — flat over a
+/// ladder, with a sloped control and no ceiling below 262,144 — is
+/// `casper/tests/deploy_ingress_depth_ceiling.rs`'s
+/// `ingress_validation_is_depth_independent`, which needs a child process per
+/// probe point because the pre-repair path aborts rather than fails.
+///
+/// ★ The depth and stack are chosen from that file's measured constants so the
+/// margins hold in **both** profiles, since this test runs in both:
+///
+/// | | needs | against a 1 MiB stack |
+/// |---|---:|---:|
+/// | worklist (this path), release | 77,824 B | 13.5× headroom |
+/// | worklist (this path), debug | 258,048 B | **4.1× headroom** |
+/// | derived destructor, release | 32,768 × 96 + 6,106 = 3,151,834 B | **3.0× short** |
+/// | derived destructor, debug | 32,768 × 429.9 ≈ 14.1 MB | 13.4× short |
+///
+/// The tightest margin is 3×, so this cannot flake on ordinary codegen drift —
+/// the property it asserts is a change of complexity class, not a constant.
+#[test]
+fn validate_deploy_term_releases_a_term_the_derived_destructor_could_not() {
+    const DEPTH: usize = 32_768;
+    const STACK: usize = 1024 * 1024;
+
+    let mut source = String::with_capacity(2 * DEPTH + 1);
+    for _ in 0..DEPTH {
+        source.push('[');
+    }
+    source.push('0');
+    for _ in 0..DEPTH {
+        source.push(']');
+    }
+
+    // ⚠ ANTI-VACUITY: assert the source really carries the nesting before relying
+    // on it. A collapsed fixture would pass in O(1) stack and prove nothing.
+    assert_eq!(
+        source.bytes().take_while(|b| *b == b'[').count(),
+        DEPTH,
+        "the fixture stopped carrying its nesting depth"
+    );
+
+    std::thread::Builder::new()
+        .stack_size(STACK)
+        .name("validate_deploy_term".to_string())
+        .spawn(move || {
+            interpreter_util::validate_deploy_term(&source, HashMap::new())
+                .expect("a nested-list literal of any depth is a valid Rholang term")
+        })
+        .expect("failed to spawn")
+        .join()
+        .expect(
+            "`validate_deploy_term` must release a depth-32,768 term on a 1 MiB stack. \
+             Releasing it through `prost`'s derived recursive `Drop` needs ~3.0 MiB in \
+             release and ~14 MiB in debug at the measured 96 / 429.9 B per level, so a \
+             failure here means the worklist is no longer reached and the traversal is \
+             Θ(depth) again.",
+        );
+}
