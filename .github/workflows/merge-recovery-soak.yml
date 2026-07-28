@@ -54,13 +54,15 @@ jobs:
           EVENT_SCHEDULE: ${{ github.event.schedule }}
           INPUT_DURATION: ${{ inputs.duration }}
           INPUT_TARGET_REF: ${{ inputs.target_ref }}
+          # Read-only, for the "did anything land since the last window?" check.
+          GH_TOKEN: ${{ github.token }}
         shell: bash -euo pipefail {0}
         run: |
           if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
             if [ "$INPUT_DURATION" = "weekend-60h" ]; then
               duration_seconds=216000
             else
-              duration_seconds=86400
+              duration_seconds=79200
             fi
             target_ref="$INPUT_TARGET_REF"
             should_run=true
@@ -82,9 +84,34 @@ jobs:
             echo "cron=$EVENT_SCHEDULE slot=$(date -u -d "@${slot_epoch}" +%FT%TZ) pacific_hm=$pacific_hm pacific_weekday=$pacific_weekday"
             target_ref=dev
             should_run=false
-            duration_seconds=86400
+            idle_skip=false
+            duration_seconds=79200
             if [ "$pacific_hm" = "1930" ] && [ "$pacific_weekday" -ge 1 ] && [ "$pacific_weekday" -le 4 ]; then
+              # 22h, not 24h. The soak job shares a concurrency group with
+              # cancel-in-progress, so a 24h soak on a 24h cadence is cancelled
+              # by the next night's launch ~10min before it finishes — losing
+              # its final iteration and its entire artifact upload. 22h leaves
+              # the run time to report before the next one starts.
               should_run=true
+              duration_seconds=79200
+              # Don't re-soak code that has already been soaked. If nothing
+              # landed on the branch since the previous window there is nothing
+              # new to learn, and an OCI runner is not worth spending on it.
+              #
+              # Fails OPEN: any API error, empty response or unparseable count
+              # runs the soak. A silently skipped soak is the exact failure this
+              # workflow exists to avoid, so "unsure" must mean "soak".
+              since="$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ)"
+              new_commits="$(gh api \
+                "repos/${GITHUB_REPOSITORY}/commits?sha=${target_ref}&since=${since}" \
+                --jq 'length' 2>/dev/null || echo "")"
+              if [ "$new_commits" = "0" ]; then
+                should_run=false
+                idle_skip=true
+                echo "no commits on $target_ref since $since; skipping tonight's soak"
+              else
+                echo "commits on $target_ref since $since: ${new_commits:-unknown (check failed; soaking anyway)}"
+              fi
             elif [ "$pacific_hm" = "1930" ] && [ "$pacific_weekday" -eq 5 ]; then
               # Friday 19:30 + 60h = Monday 07:30 Pacific.
               should_run=true
@@ -95,7 +122,16 @@ jobs:
           if [ "$duration_seconds" = "216000" ]; then
             run_benchmarks=true
           fi
-          if [ "$should_run" != "true" ]; then
+          if [ "$should_run" != "true" ] && [ "${idle_skip:-false}" = "true" ]; then
+            echo "::notice::Schedule gate skip: nothing landed on $target_ref since the previous window, so tonight's soak would re-test already-soaked code. No soak was attempted; this run's success is not a soak result."
+            {
+              echo "## Schedule gate: skipped (no new commits)"
+              echo ""
+              echo "Nothing landed on \`$target_ref\` since the previous window, so this"
+              echo "soak would have re-tested code that was already soaked."
+              echo "**No soak was attempted** — a green check on this run is not a soak result."
+            } >> "$GITHUB_STEP_SUMMARY"
+          elif [ "$should_run" != "true" ]; then
             echo "::notice::Schedule gate no-op: cron slot resolved outside the Pacific 19:30 launch window. No soak was attempted; this run's success is not a soak result."
             {
               echo "## Schedule gate: no-op"
@@ -185,11 +221,12 @@ jobs:
     runs-on: [self-hosted, linux, x64, f1r3fly-rust-ci-ephemeral, oracle-cloud]
     # Backstop only — the soak script stops itself at SOAK_DURATION_SECONDS.
     # Scaled to the kind of run so a stuck daily cannot burn a 64h runner:
-    # daily 86400s (24h) + ~2h, weekend 216000s (60h) + ~4h. The margin is not
+    # daily 79200s (22h) + 2h, weekend 216000s (60h) + 4h. The margin is not
     # slack: this budget also covers the image build, poetry install and the
     # post-soak aggregate/alert/upload steps, so a ceiling equal to the soak
-    # duration would kill the job while it uploads its own results.
-    timeout-minutes: ${{ needs.schedule_gate.outputs.duration_seconds == '216000' && 3840 || 1560 }}
+    # duration would kill the job while it uploads its own results. With the
+    # daily soak at 22h the ceiling is a true 24h.
+    timeout-minutes: ${{ needs.schedule_gate.outputs.duration_seconds == '216000' && 3840 || 1440 }}
     concurrency:
       group: merge-recovery-soak-${{ needs.schedule_gate.outputs.duration_seconds }}
       cancel-in-progress: true
@@ -262,6 +299,12 @@ jobs:
           SOAK_TARGET_REF: ${{ needs.schedule_gate.outputs.target_ref }}
           SOAK_TARGET_SHA: ${{ steps.target.outputs.sha }}
           SOAK_RUN_BENCHMARKS: ${{ needs.schedule_gate.outputs.run_benchmarks }}
+          # Daily: after 8h, stop once the branch under test advances — the run
+          # is pinned to one image, so past that point it is testing history.
+          # The 8h floor keeps an early merge from reducing a night to a token
+          # soak. Weekend: 0 (disabled) — a 60h benchmark baseline must run to
+          # completion for its numbers to be comparable week over week.
+          SOAK_MERGE_EXIT_MIN_SECONDS: ${{ needs.schedule_gate.outputs.duration_seconds == '216000' && '0' || '28800' }}
           SOAK_NODE_REPO_DIR: ${{ github.workspace }}/node-under-test
           SYSTEM_INTEGRATION_DIR: ${{ github.workspace }}/system-integration
         shell: bash -e {0}

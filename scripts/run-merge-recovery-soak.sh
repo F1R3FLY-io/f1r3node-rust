@@ -24,6 +24,10 @@ BENCH_RATE="${SOAK_BENCH_RATE:-2}"
 NODE_REPO_DIR="${SOAK_NODE_REPO_DIR:-}"
 BENCH_SEGMENTS=0
 BENCH_FAILURES=0
+# Minimum seconds before a move of the branch under test may end the soak.
+# 0 disables merge-triggered exit entirely (the weekend soak sets this).
+MERGE_EXIT_MIN_SECONDS="${SOAK_MERGE_EXIT_MIN_SECONDS:-0}"
+EARLY_EXIT_REASON=""
 
 if [ "$RUN_BENCHMARKS" = "true" ] && [ -z "$NODE_REPO_DIR" ]; then
   printf 'SOAK_NODE_REPO_DIR is required when SOAK_RUN_BENCHMARKS=true\n' >&2
@@ -104,6 +108,27 @@ emit_iteration_metrics() {
       ok: ($exit_code == 0)}' > "$iteration_dir/metrics.json" 2>/dev/null || true
 }
 
+# True once the branch under test has advanced past the SHA this soak pinned
+# at checkout. The soak builds one image and tests it for the whole run, so
+# after a merge the results describe code that is no longer the branch head,
+# and the runner is better spent starting fresh against the new tip.
+#
+# Gated behind MERGE_EXIT_MIN_SECONDS so a merge landing shortly after launch
+# cannot reduce a night to a token soak. Fail-soft in every direction: an
+# unreachable remote, an unreadable ref or a missing SHA all mean "keep
+# soaking", never "stop" — a network hiccup must not end a 22-hour run.
+target_ref_moved() {
+  [ "$MERGE_EXIT_MIN_SECONDS" -gt 0 ] || return 1
+  [ -n "$NODE_REPO_DIR" ] && [ -d "$NODE_REPO_DIR" ] || return 1
+  [ "$TARGET_SHA" != "unknown" ] && [ "$TARGET_REF" != "unknown" ] || return 1
+  [ "$(( $(date +%s) - STARTED_AT ))" -ge "$MERGE_EXIT_MIN_SECONDS" ] || return 1
+  local remote_sha
+  remote_sha="$(git -C "$NODE_REPO_DIR" ls-remote origin "$TARGET_REF" 2>/dev/null \
+    | awk 'NR == 1 {print $1}')"
+  [ -n "$remote_sha" ] || return 1
+  [ "$remote_sha" != "$TARGET_SHA" ]
+}
+
 run_bench_segment() {
   # Benchmark segments are fail-soft for the soak itself: a broken segment is
   # recorded and counted, and the perf-report job decides pass/fail from the
@@ -180,6 +205,14 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
     sleep 30
   fi
 
+  if target_ref_moved; then
+    EARLY_EXIT_REASON="target_advanced"
+    printf '%s advanced past %s; ending soak after iteration %s\n' \
+      "$TARGET_REF" "$TARGET_SHA" "$ITERATIONS" \
+      | tee "$OUTPUT_DIR/early-exit.txt"
+    break
+  fi
+
   if [ "$RUN_BENCHMARKS" = "true" ] && [ "$((ITERATIONS % BENCH_EVERY))" -eq 0 ]; then
     run_bench_segment
   fi
@@ -198,6 +231,7 @@ FINISHED_AT="$(date +%s)"
   printf 'failures=%s\n' "$FAILURES"
   printf 'bench_segments=%s\n' "$BENCH_SEGMENTS"
   printf 'bench_failures=%s\n' "$BENCH_FAILURES"
+  printf 'early_exit_reason=%s\n' "${EARLY_EXIT_REASON:-none}"
 } | tee "$OUTPUT_DIR/summary.txt"
 
 if command -v jq >/dev/null; then
