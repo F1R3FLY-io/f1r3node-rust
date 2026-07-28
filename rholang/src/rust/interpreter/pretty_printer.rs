@@ -3547,6 +3547,194 @@ mod differential {
         }
     }
 
+    // -----------------------------------------------------------------------
+    // the corpus, PROMOTED
+    // -----------------------------------------------------------------------
+
+    // Each `#[test]` below is one entry of
+    // `rholang/proptest-regressions/rust/interpreter/pretty_printer.txt` written out as
+    // Rust. They are the terms that once made the two printer forms disagree.
+    //
+    // # Why they are here as well as in the corpus
+    //
+    // proptest replays the corpus, but only as an anonymous seed: a failure reports the
+    // property's name and a blob of Debug, and nobody can cite it in a bug report or run it
+    // alone. A named test gives each counterexample an identity and a place in the ordinary
+    // run. It also survives a corpus file being moved, renamed or regenerated — this file
+    // is one of the three in the repository whose corpus was untracked until 2026-07-27, so
+    // that is not a hypothetical.
+    //
+    // # ★ The negative `bind_count` is NOT a defect — and the evidence is in this file
+    //
+    // Entry 2 carries `bind_count: -389915091`. A bind count that counts names bound by a
+    // `new` cannot meaningfully be negative, so it deserves an explicit disposition rather
+    // than a shrug. It is intended, on three independent grounds:
+    //
+    // 1. **The wire type admits it.** `New::bind_count` is protobuf `int32` — see
+    //    `models/src/lib.rs` and the `self.r.i32()?` reads in
+    //    `models/src/rust/rholang/par_codec.rs`. A peer can put any `i32` on the wire, so
+    //    the printer's domain is `i32`, not `0..`. Totality over the wire type is a
+    //    consensus obligation, not a nicety.
+    // 2. **The generator draws it deliberately.** `generate_new` in
+    //    `models/src/rust/test_utils/test_utils.rs` uses `any::<i32>()` for `bind_count`,
+    //    and this module's own header says so in as many words: the RAW corpus has
+    //    "`free_count` / `bind_count` / var levels drawn from `any::<i32>()`, compared by
+    //    *disposition* — the two forms must agree even where the shared arithmetic
+    //    overflows".
+    // 3. **The semantics are already pinned by name.**
+    //    [`a_new_with_a_negative_bind_count_binds_nothing`] asserts exactly what a negative
+    //    count means: zero names printed, `new  in { .. }` rendered, and one recorded
+    //    interval carrying the RAW count and reporting `is_empty()`.
+    //
+    // The sibling `models/tests/par_codec_corpus/mod.rs` pins `bind_count: i32::MIN` on
+    // purpose for the same reason. So this entry is not a bug report; it is the historical
+    // record of the input that drove the handling, and promoting it keeps that record
+    // executable. **No defect is filed.**
+    //
+    // # The two assertions
+    //
+    // 1. ★ the term's `Debug` equals the corpus text, character for character. Without it a
+    //    promoted test could quietly assert the differential over a term nobody recorded,
+    //    and pass forever. Nothing is normalised here — unlike the MeTTaIL corpora these
+    //    terms contain no `UniqueId` and no hash-ordered container, so the comparison is
+    //    literal.
+    // 2. the differential the corpus exists to protect: both printer entry points, both
+    //    forms, byte-identical.
+
+    /// Entry 0 — `cc c8930bdff03532829e702037cb79d414440a203926038d21b137ae60cf253995`.
+    ///
+    /// A `New` binding three names around an empty `Par`. The minimal shape that reaches the
+    /// `build_variables`-then-mutate site at all.
+    #[test]
+    fn corpus_0_a_new_binding_three_names_around_an_empty_par() {
+        let term = Par {
+            news: vec![New {
+                bind_count: 3,
+                p: Some(Par::default()),
+                uri: vec![],
+                injections: Default::default(),
+                locally_free: vec![],
+            }],
+            ..Default::default()
+        };
+
+        assert_eq!(
+            format!("{term:?}"),
+            "Par { sends: [], receives: [], news: [New { bind_count: 3, p: Some(Par { sends: \
+             [], receives: [], news: [], exprs: [], matches: [], unforgeables: [], bundles: \
+             [], connectives: [], conditionals: [], locally_free: [], connective_used: false \
+             }), uri: [], injections: {}, locally_free: [] }], exprs: [], matches: [], \
+             unforgeables: [], bundles: [], connectives: [], conditionals: [], locally_free: \
+             [], connective_used: false }",
+            "the reconstructed term is not the one the corpus recorded"
+        );
+
+        agree("corpus entry 0", &term);
+    }
+
+    /// Entry 1 — `cc fbfd3af8dad13c7fa0a1e3b9b89f5558d2251c881da404422fbc05048382708f`.
+    ///
+    /// The same `New` shape, but reached THROUGH a `Bundle`. The bundle matters: it is a
+    /// separate descent path in both printers, and a `New` nested under one exercises the
+    /// interaction between bundle framing and the name-shift bookkeeping.
+    #[test]
+    fn corpus_1_a_new_reached_through_a_bundle() {
+        let term = Par {
+            bundles: vec![Bundle {
+                body: Some(Par {
+                    news: vec![New {
+                        bind_count: 1,
+                        p: Some(Par::default()),
+                        uri: vec![],
+                        injections: Default::default(),
+                        locally_free: vec![],
+                    }],
+                    ..Default::default()
+                }),
+                write_flag: false,
+                read_flag: false,
+            }],
+            ..Default::default()
+        };
+
+        assert_eq!(
+            format!("{term:?}"),
+            "Par { sends: [], receives: [], news: [], exprs: [], matches: [], unforgeables: \
+             [], bundles: [Bundle { body: Some(Par { sends: [], receives: [], news: [New { \
+             bind_count: 1, p: Some(Par { sends: [], receives: [], news: [], exprs: [], \
+             matches: [], unforgeables: [], bundles: [], connectives: [], conditionals: [], \
+             locally_free: [], connective_used: false }), uri: [], injections: {}, \
+             locally_free: [] }], exprs: [], matches: [], unforgeables: [], bundles: [], \
+             connectives: [], conditionals: [], locally_free: [], connective_used: false }), \
+             write_flag: false, read_flag: false }], connectives: [], conditionals: [], \
+             locally_free: [], connective_used: false }",
+            "the reconstructed term is not the one the corpus recorded"
+        );
+
+        agree("corpus entry 1", &term);
+    }
+
+    /// Entry 2 — `cc 6fd0823e04a91afde8ce0daeaab0d97644eb8f3ced4a2d785289954b1a1203e0`.
+    ///
+    /// ★ The `bind_count: -389915091` entry. See this section's header: the value is
+    /// intended, the printer's domain is the whole of `i32`, and
+    /// [`a_new_with_a_negative_bind_count_binds_nothing`] pins what it means. What makes
+    /// THIS term worth its own test is the NESTING — a negative outer count wrapped around a
+    /// well-formed inner `New`, so the outer's empty interval has to not disturb the inner's
+    /// shift bookkeeping.
+    #[test]
+    fn corpus_2_a_negative_bind_count_wrapped_around_a_well_formed_new() {
+        let term = Par {
+            news: vec![New {
+                bind_count: -389_915_091,
+                p: Some(Par {
+                    news: vec![New {
+                        bind_count: 1,
+                        p: Some(Par::default()),
+                        uri: vec![],
+                        injections: Default::default(),
+                        locally_free: vec![],
+                    }],
+                    ..Default::default()
+                }),
+                uri: vec![],
+                injections: Default::default(),
+                locally_free: vec![],
+            }],
+            ..Default::default()
+        };
+
+        assert_eq!(
+            format!("{term:?}"),
+            "Par { sends: [], receives: [], news: [New { bind_count: -389915091, p: Some(Par \
+             { sends: [], receives: [], news: [New { bind_count: 1, p: Some(Par { sends: [], \
+             receives: [], news: [], exprs: [], matches: [], unforgeables: [], bundles: [], \
+             connectives: [], conditionals: [], locally_free: [], connective_used: false }), \
+             uri: [], injections: {}, locally_free: [] }], exprs: [], matches: [], \
+             unforgeables: [], bundles: [], connectives: [], conditionals: [], locally_free: \
+             [], connective_used: false }), uri: [], injections: {}, locally_free: [] }], \
+             exprs: [], matches: [], unforgeables: [], bundles: [], connectives: [], \
+             conditionals: [], locally_free: [], connective_used: false }",
+            "the reconstructed term is not the one the corpus recorded"
+        );
+
+        agree("corpus entry 2", &term);
+
+        // And the documented semantics, asserted HERE so this test states what the value
+        // means rather than merely surviving it: the outer `New` binds nothing.
+        let mut printer = PrettyPrinter::new();
+        let printed = printer.build_string_from_message(&term);
+        assert!(
+            printed.starts_with("new  in {"),
+            "a negative outer `bind_count` printed names between `new` and `in`: {printed:?}"
+        );
+        assert!(
+            printer.news_shift_indices[0].is_empty(),
+            "the outer `New`'s interval is not empty: {:?}",
+            printer.news_shift_indices[0]
+        );
+    }
+
     /// Run `body`, returning `Ok(value)` or `Err(panic payload)`, with the
     /// panic hook silenced for the duration so that an expected overflow does
     /// not fill the test log with backtraces.
