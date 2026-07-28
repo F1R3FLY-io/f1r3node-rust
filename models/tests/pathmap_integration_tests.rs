@@ -3,7 +3,8 @@ use models::rhoapi::{EList, EPathMap, Expr, Par};
 use models::rust::canonical_path::encode_trie_path;
 use models::rust::pathmap_crate_type_mapper::PathMapCrateTypeMapper;
 use models::rust::pathmap_integration::{
-    create_pathmap_from_elements, par_to_path, segments_to_key, RholangPathMap,
+    create_pathmap_from_elements, par_to_path, render_trie_entry_divergences, segments_to_key,
+    trie_entry_divergences, RholangPathMap,
 };
 
 fn make_string_par(s: &str) -> Par {
@@ -129,12 +130,31 @@ fn test_pathmap_restriction() {
     assert_eq!(restricted.val_count(), 2);
 }
 
+/// The entries of `elements` in TRIE ORDER (ascending codec key) and deduped —
+/// the order and multiplicity every trie reader reports, and therefore the
+/// expected `ps` of any `EPathMap` read back out of a trie built from them.
+///
+/// Computed from the codec, not from the readers under test, so it is an
+/// INDEPENDENT expectation rather than a restatement of the implementation.
+fn expected_entries_in_trie_order(elements: &[Par]) -> Vec<Par> {
+    let mut keyed: Vec<(Vec<u8>, Par)> = elements
+        .iter()
+        .map(|par| (encode_trie_path(par), par.clone()))
+        .collect();
+    keyed.sort_by(|(left, _), (right, _)| left.cmp(right));
+    keyed.dedup_by(|(left, _), (right, _)| left == right);
+    keyed.into_iter().map(|(_, par)| par).collect()
+}
+
+/// The conversion is asserted by CONTENT, over a fixture holding both codec
+/// arms. The retired `assert_eq!(ps.len(), 2)` would have passed with every
+/// entry replaced by a different Par, and — the case that matters — with two
+/// distinct keys carrying ONE shared value, which is precisely how entries get
+/// lost (see [`trie_entry_divergences`] and the `setSubtrie` regression in
+/// `rholang/tests/trie_entry_invariant_spec.rs`).
 #[test]
 fn test_pathmap_to_e_pathmap_conversion() {
-    let par1 = make_list_par(vec!["a", "b"]);
-    let par2 = make_list_par(vec!["c", "d"]);
-
-    let original_ps = vec![par1.clone(), par2.clone()];
+    let original_ps = mixed_elements();
     let map = create_pathmap_from_elements(&original_ps, None);
 
     let e_pathmap = PathMapCrateTypeMapper::rholang_pathmap_to_e_pathmap(
@@ -144,20 +164,66 @@ fn test_pathmap_to_e_pathmap_conversion() {
         None,
     );
 
-    assert_eq!(e_pathmap.ps.len(), 2);
+    assert_eq!(
+        &e_pathmap.ps[..],
+        &expected_entries_in_trie_order(&original_ps)[..],
+        "the converter must return the ENTRIES, in trie order — not merely the \
+         right number of them"
+    );
+    // …and no two of them are the same entry, which `ps.len()` cannot see.
+    let keys: Vec<Vec<u8>> = e_pathmap.ps.iter().map(encode_trie_path).collect();
+    let mut distinct = keys.clone();
+    distinct.sort();
+    distinct.dedup();
+    assert_eq!(
+        keys.len(),
+        distinct.len(),
+        "every returned entry must be a DISTINCT entry; duplicates here mean \
+         distinct trie keys shared one value and the map has already lost \
+         entries (they collapse on the next re-insertion)"
+    );
 }
 
+/// ★ A test named "roundtrip" must compare CONTENTS. This one previously
+/// asserted `e_pathmap2.ps.len() == e_pathmap1.ps.len()`, which is true of any
+/// two maps of equal size — including one whose entries are all the same Par.
+///
+/// The round trip asserted here is the real one, on a fixture holding BOTH
+/// codec arms (bare `1`, its singleton list `[1]`, bare `"a"`, and
+/// `["a","x"]` — see `mixed_elements`):
+///
+/// ```text
+///   EPathMap ──e_pathmap_to_rholang_pathmap──▶ trie ──rholang_pathmap_to_e_pathmap──▶ EPathMap
+/// ```
+///
+/// is the identity on the ENTRY SET, and normalizes only the ORDER (to trie
+/// order). Both legs are checked, and the trie in the middle is checked to
+/// uphold the entry invariant.
 #[test]
 fn test_e_pathmap_roundtrip() {
-    let par1 = make_list_par(vec!["x", "y"]);
-    let par2 = make_list_par(vec!["z", "w"]);
+    let original_ps = mixed_elements();
 
     // EPathMap fix P3 (PM-2): constructor instead of a struct literal
     // (the wrapper's shadow cell is private).
-    let e_pathmap1 = EPathMap::new(vec![par1, par2], vec![], false, None);
+    let e_pathmap1 = EPathMap::new(original_ps.clone(), vec![], false, None);
 
     let result = PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap(&e_pathmap1);
-    assert_eq!(result.map.val_count(), 2);
+    assert_eq!(result.map.val_count(), original_ps.len());
+
+    // Leg 1 — every entry went in under its OWN key, and no other.
+    assert!(
+        trie_entry_divergences(&result.map).is_empty(),
+        "the trie in the middle of the round trip must uphold the entry \
+         invariant: {}",
+        render_trie_entry_divergences(&trie_entry_divergences(&result.map))
+    );
+    for element in &original_ps {
+        assert_eq!(
+            result.map.get(encode_trie_path(element)),
+            Some(element),
+            "each entry is readable at its own key inside the trie"
+        );
+    }
 
     let e_pathmap2 = PathMapCrateTypeMapper::rholang_pathmap_to_e_pathmap(
         &result.map,
@@ -166,7 +232,221 @@ fn test_e_pathmap_roundtrip() {
         None,
     );
 
-    assert_eq!(e_pathmap2.ps.len(), e_pathmap1.ps.len());
+    // Leg 2 — the ENTRIES come back, in trie order.
+    assert_eq!(
+        &e_pathmap2.ps[..],
+        &expected_entries_in_trie_order(&original_ps)[..],
+        "the round trip must preserve the entries themselves"
+    );
+
+    // …and it is a FIXED POINT: a second lap moves nothing.
+    let third = PathMapCrateTypeMapper::rholang_pathmap_to_e_pathmap(
+        &PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap(&e_pathmap2).map,
+        false,
+        &[],
+        None,
+    );
+    assert_eq!(
+        third.ps, e_pathmap2.ps,
+        "trie order is already canonical — a second round trip is the identity"
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ★ THE ENTRY INVARIANT AS A PROPERTY — over every trie this crate can build
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// `RholangPathMap` is not a general map: a value is a redundant mirror of its
+// own key (`create_pathmap_from_elements` inserts
+// `(encode_trie_path(par), par)`), and the whole read side depends on that.
+// This section enumerates the element alphabet EXHAUSTIVELY — deterministic,
+// so there is no regressions file and no seed to lose — and asserts the
+// invariant, plus the two consequences that make it matter: the KEY-side and
+// VALUE-side readers agree, and the entry count survives re-insertion.
+//
+// The interpreter-level twin, which is the one that goes red on a producer
+// that files a value under a key it does not encode to, is
+// `rholang/tests/trie_entry_invariant_spec.rs`.
+
+/// The element alphabet: both codec arms, at both arities that can collide,
+/// plus the nesting and sign edges. `1` and `[1]` differ by exactly the
+/// terminator; `"a"` is a strict byte-prefix of `["a","x"]`.
+fn alphabet() -> Vec<Par> {
+    vec![
+        make_int_par(1),
+        make_int_par(-7),
+        make_string_par("a"),
+        make_string_par(""),
+        make_list_of(vec![]),
+        make_list_of(vec![make_int_par(1)]),
+        make_list_of(vec![make_string_par("a")]),
+        make_list_par(vec!["a", "x"]),
+        make_list_of(vec![
+            make_list_of(vec![make_int_par(2)]),
+            make_string_par("q"),
+        ]),
+    ]
+}
+
+/// Every subset of the alphabet — `2^9 = 512` element sets, each built into a
+/// trie and checked. Exhaustive over the alphabet, so no case is left to a
+/// generator's luck.
+fn every_subset_of_the_alphabet() -> Vec<Vec<Par>> {
+    let alphabet = alphabet();
+    let mut subsets = Vec::with_capacity(1 << alphabet.len());
+    for mask in 0u32..(1u32 << alphabet.len()) {
+        let mut subset = Vec::with_capacity(alphabet.len());
+        for (index, element) in alphabet.iter().enumerate() {
+            if mask & (1 << index) != 0 {
+                subset.push(element.clone());
+            }
+        }
+        subsets.push(subset);
+    }
+    subsets
+}
+
+/// ★ THE ONE DELIBERATE EXCEPTION, pinned — `restriction`'s prefix map.
+///
+/// `reduce.rs`'s `restriction` method builds a second map whose keys are
+/// NON-terminated prefixes (`segments_to_key(.., false)`) paired with whole
+/// entry values, because `PathMap::restrict` is a prefix/subtrie operation and
+/// terminated keys would degenerate it to exact match. Those pairs violate the
+/// entry invariant by construction.
+///
+/// That is safe for exactly ONE reason: `restrict` takes its result's VALUES
+/// from the BASE map and uses the restricting map only for its PATHS, so the
+/// prefix map's values never reach
+/// [`PathMapCrateTypeMapper::rholang_pathmap_to_e_pathmap`]. Nothing in the
+/// tree stated that dependency, so a change in `restrict`'s value provenance
+/// would have turned a documented exception into a live divergence silently.
+///
+/// The `SENTINEL` below is a value that could not possibly belong at that key.
+/// If it ever appears in a restriction result, this test names the reason.
+#[test]
+fn restrict_takes_its_values_from_the_base_so_the_prefix_map_never_escapes() {
+    let kept = make_list_par(vec!["books", "fiction"]);
+    let dropped = make_list_par(vec!["movies", "action"]);
+    let base = create_pathmap_from_elements(&[kept.clone(), dropped], None);
+
+    let prefix = make_list_par(vec!["books"]);
+    let sentinel = make_string_par("SENTINEL — a value the base never held");
+    let mut prefix_map = RholangPathMap::new();
+    prefix_map.insert(
+        segments_to_key(&par_to_path(&prefix), false),
+        sentinel.clone(),
+    );
+
+    // The prefix map is a KNOWN divergence — stated, so the exception is
+    // visible rather than merely absent from the checker's inputs.
+    assert_eq!(
+        trie_entry_divergences(&prefix_map).len(),
+        1,
+        "the prefix map is deliberately NOT an entry map"
+    );
+
+    let restricted = base.map.restrict(&prefix_map);
+
+    assert_eq!(restricted.val_count(), 1, "one book under the prefix");
+    for (_, value) in restricted.iter() {
+        assert_ne!(
+            value, &sentinel,
+            "★ `restrict` took a value from the RESTRICTING map — the prefix \
+             map's deliberate divergence now escapes into `restriction`'s \
+             result and reaches the value-side converter"
+        );
+    }
+    assert!(
+        trie_entry_divergences(&restricted).is_empty(),
+        "a restriction result is an ENTRY map and must uphold the invariant: {}",
+        render_trie_entry_divergences(&trie_entry_divergences(&restricted))
+    );
+    assert_eq!(
+        restricted.get(encode_trie_path(&kept)),
+        Some(&kept),
+        "the surviving entry is the base's own, at the base's own key"
+    );
+}
+
+/// ★ THE PROPERTY: for every `(k, v)` in every trie built from program
+/// elements, `encode_trie_path(v) == k`.
+#[test]
+fn every_trie_this_crate_builds_upholds_the_entry_invariant() {
+    for subset in every_subset_of_the_alphabet() {
+        let built = create_pathmap_from_elements(&subset, None);
+        let divergences = trie_entry_divergences(&built.map);
+        assert!(
+            divergences.is_empty(),
+            "entry invariant violated for {} elements:{}",
+            subset.len(),
+            render_trie_entry_divergences(&divergences)
+        );
+    }
+}
+
+/// The FIRST consequence: the value-side reader
+/// (`rholang_pathmap_to_e_pathmap`) and the key-side reader (a `to_next_val`
+/// walk that decodes keys — `canonical_ps_from_trie`) report the same entries.
+/// They can only disagree by way of the invariant.
+#[test]
+fn the_two_trie_readers_agree_on_every_subset() {
+    use pathmap::zipper::{ZipperIteration, ZipperMoving};
+
+    for subset in every_subset_of_the_alphabet() {
+        let built = create_pathmap_from_elements(&subset, None);
+
+        let by_value =
+            PathMapCrateTypeMapper::rholang_pathmap_to_e_pathmap(&built.map, false, &[], None).ps;
+
+        let mut by_key = Vec::new();
+        let mut rz = built.map.read_zipper();
+        while rz.to_next_val() {
+            by_key.push(
+                models::rust::canonical_path::decode_trie_path(rz.path())
+                    .expect("a trie key built by the codec decodes"),
+            );
+        }
+
+        assert_eq!(
+            &by_value[..],
+            &by_key[..],
+            "the VALUE-side and KEY-side readers disagree on a {}-element map",
+            subset.len()
+        );
+    }
+}
+
+/// The SECOND consequence, and the one that costs entries: the number of
+/// DISTINCT entries survives a conversion + re-insertion. A trie in which two
+/// distinct keys share one value converts to a `ps` of the right LENGTH whose
+/// entries collapse on the way back in — which is why a `ps.len()` assertion
+/// cannot see the defect at all.
+#[test]
+fn entry_count_survives_conversion_and_reinsertion_on_every_subset() {
+    for subset in every_subset_of_the_alphabet() {
+        let built = create_pathmap_from_elements(&subset, None);
+        let distinct_keys = built.map.val_count();
+
+        let converted =
+            PathMapCrateTypeMapper::rholang_pathmap_to_e_pathmap(&built.map, false, &[], None);
+        let rebuilt = PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap(&EPathMap::new(
+            converted.ps.clone(),
+            vec![],
+            false,
+            None,
+        ));
+
+        assert_eq!(
+            rebuilt.map.val_count(),
+            distinct_keys,
+            "a conversion followed by a re-insertion lost entries: {} distinct \
+             keys went in, {} came back (ps.len() was {}, which is why a \
+             cardinality assertion on `ps` proves nothing)",
+            distinct_keys,
+            rebuilt.map.val_count(),
+            converted.ps.len()
+        );
+    }
 }
 
 #[test]

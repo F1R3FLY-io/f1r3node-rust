@@ -248,6 +248,106 @@ pub fn entry_key_at(cursor: &[Vec<u8>], path_par: &Par, map: &RholangPathMap) ->
     }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// ★ THE TRIE ENTRY INVARIANT
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// One trie entry whose VALUE does not encode to the KEY it is stored under —
+/// a violation of the entry invariant. See [`trie_entry_divergences`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrieEntryDivergence {
+    /// The key the entry is stored under — what every KEY-side reader sees.
+    pub key: Vec<u8>,
+    /// `encode_trie_path(value)` — the key the entry's VALUE claims, i.e. the
+    /// key a VALUE-side reader's answer would be re-inserted under.
+    pub value_key: Vec<u8>,
+    /// The stored value, for diagnosis.
+    pub value: Par,
+}
+
+/// ★ **THE TRIE ENTRY INVARIANT**, stated executably:
+///
+/// ```math
+/// \forall (k, v) \in m .\quad \mathrm{encode\_trie\_path}(v) = k
+/// ```
+///
+/// The returned vector is EMPTY iff the invariant holds. Each element names one
+/// violating entry.
+///
+/// # Why this invariant is load-bearing
+///
+/// A `RholangPathMap` is not a general map: it is a *set of Par entries indexed
+/// by their own codec path*. [`create_pathmap_from_elements`] — the sole
+/// construction site for a map that came from a program — writes
+/// `map.insert(encode_trie_path(par), par.clone())`, so **the value is a
+/// redundant mirror of the key**. Everything downstream is built on that
+/// redundancy, and the tree contains TWO INDEPENDENT READERS that exploit it in
+/// OPPOSITE directions:
+///
+/// | reader | reads | used by |
+/// |---|---|---|
+/// | [`crate::rust::pathmap_crate_type_mapper::PathMapCrateTypeMapper::rholang_pathmap_to_e_pathmap`] | the **values** (`iter()`) | every `EPathMap`-returning method in the reducer |
+/// | `pathmap_crate_type_mapper::canonical_ps_from_trie` | the **keys**, via `decode_trie_path` (`to_next_val()`) | the serde / event-hash preimage, `canonicalize_ground_epathmap` |
+///
+/// The two agree on every map **exactly when this invariant holds**, and
+/// nothing else makes them agree. So a producer that writes a value which does
+/// not encode to its key does not merely store an odd pair — it makes the
+/// reducer's answer and the consensus event hash disagree about what the map
+/// contains.
+///
+/// The failure is worse than a mismatch, because the value-side reader is
+/// *lossy under re-insertion*. Distinct keys `k₁ ≠ k₂` carrying the SAME value
+/// `v` survive `rholang_pathmap_to_e_pathmap` as two identical `ps` entries;
+/// the next `e_pathmap_to_rholang_pathmap` re-keys both to
+/// `encode_trie_path(v)` and the trie collapses them into one. **Entries are
+/// silently lost.** (Witnessed by `zz`-free fixtures in
+/// `models/tests/pathmap_integration_tests.rs`.)
+///
+/// # The root-key corollary (why an empty key is always a divergence)
+///
+/// `encode_trie_path` emits at least one byte for every Par — the bare arm
+/// emits a tag, the split arm emits the `0x00` terminator — so `[]` is in the
+/// image of no Par and a value stored at the EMPTY (root) key is *necessarily*
+/// a divergence. That is not a technicality: `PathMap::iter()` YIELDS the root
+/// value while `ZipperIteration::to_next_val()` SKIPS it, so a root value is
+/// kept by the value-side reader and dropped by the key-side reader. Today
+/// nothing can create one (every producer keys through the codec); this
+/// function is what makes that a checked fact rather than an assumption.
+///
+/// # Cost
+///
+/// One `encode_trie_path` per entry — the same order as the `value.clone()` the
+/// converter already performs per entry. It is called from production code only
+/// under `#[cfg(debug_assertions)]`; release builds (consensus nodes) do not
+/// pay for it.
+pub fn trie_entry_divergences(map: &RholangPathMap) -> Vec<TrieEntryDivergence> {
+    let mut divergences = Vec::new();
+    for (key, value) in map.iter() {
+        let value_key = encode_trie_path(value);
+        if value_key != key {
+            divergences.push(TrieEntryDivergence {
+                key: key.to_vec(),
+                value_key,
+                value: value.clone(),
+            });
+        }
+    }
+    divergences
+}
+
+/// A one-line-per-entry rendering of [`trie_entry_divergences`], for assertion
+/// messages: the key the entry is filed under, and the key its value claims.
+pub fn render_trie_entry_divergences(divergences: &[TrieEntryDivergence]) -> String {
+    let mut out = String::new();
+    for divergence in divergences {
+        out.push_str(&format!(
+            "\n  stored under {:02x?}\n  value encodes to {:02x?}\n  value = {:?}\n",
+            divergence.key, divergence.value_key, divergence.value
+        ));
+    }
+    out
+}
+
 /// Convenience return type—including the constructed map and related Rholang metadata.
 pub struct PathMapCreationResult {
     pub map: RholangPathMap,
