@@ -58,10 +58,16 @@ use crate::rhoapi::{Connective, Expr, Par};
 ///
 /// Bumping this without extending every corpus that asserts against it is the
 /// mistake this constant exists to prevent.
-pub const EXPR_INSTANCE_VARIANT_COUNT: usize = 36;
+/// ★ GENERATED, never a literal. Re-exported from the wire-schema table
+/// (`models/build/wire_schema.rs`) so the count IS
+/// `EXPR_INSTANCE_VARIANTS.len()`. It used to read `= 36`, which meant a 37th
+/// arm would leave every assertion measured against it passing while the new
+/// arm went untested — the exact failure mode generation exists to remove.
+pub use crate::rust::rholang::wire_schema::EXPR_INSTANCE_VARIANT_COUNT;
 
 /// The number of variants `connective.ConnectiveInstance` has.
-pub const CONNECTIVE_INSTANCE_VARIANT_COUNT: usize = 9;
+/// ★ GENERATED, never a literal. See [`EXPR_INSTANCE_VARIANT_COUNT`].
+pub use crate::rust::rholang::wire_schema::CONNECTIVE_INSTANCE_VARIANT_COUNT;
 
 // ===========================================================================
 // STRUCTURAL children, by reference

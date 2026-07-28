@@ -57,3 +57,12 @@ doctest = false
 
 [build-dependencies]
 tonic-prost-build = { workspace = true }
+# The wire-schema generator (models/build/wire_schema.rs) reads the protobuf
+# FileDescriptorSet that the prost pass dumps. `prost`/`prost-types` decode it;
+# `heck` applies the SAME identifier transforms prost-build itself applies, so
+# the generated `impl WireOneof` arms cannot drift from prost's variant names.
+# All three are already in the lockfile as transitive build dependencies of
+# tonic-prost-build — this adds no new crate.
+prost = { workspace = true }
+prost-types = "0.14"
+heck = "0.5"

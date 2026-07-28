@@ -1,0 +1,478 @@
+//! # The SPACE gate — the encoder's heap, measured rather than intended
+//!
+//! Space is a co-equal acceptance criterion, not a footnote to throughput, and
+//! every claim below is about a *mechanism* that no correctness test can see:
+//!
+//! | claim | why a correctness test cannot see it |
+//! |---|---|
+//! | the op stack is Θ(term **depth**), not Θ(term **size**) | a driver that pushed all `n` children eagerly emits byte-identical output |
+//! | the op-stack entry is four words | an `Op` that silently grew multiplies the only per-call heap there is |
+//! | the reused buffer converges and does not pin | a leak of capacity is invisible to every assertion about bytes |
+//! | program addresses do **not** identify a type | the unsound downcast *worked* on every fixture until an `EList` met it |
+//!
+//! ⚠ The last row is not hypothetical. `EPATHMAP_PROGRAM` is
+//! `[Seq, EmptyBytes, Bool, Opt]` — byte-for-byte identical to `ELIST_PROGRAM`,
+//! `ESET_PROGRAM` and `EMAP_PROGRAM` — and the linker **merges** identical
+//! read-only statics. A downcast keyed on the program's address therefore
+//! reinterpreted an `EList` as an `EPathMap` and produced a `SIGSEGV` on the
+//! differential's first run. [`program_addresses_do_not_identify_a_type`] keeps
+//! that fact executable so the trick cannot return as an "optimization".
+
+use models::rhoapi::expr::ExprInstance;
+use models::rhoapi::{EList, Expr, Par, Send};
+use models::rust::rholang::wire::WireNode;
+use models::rust::rholang::wire_encode::{
+    encode, encode_into, op_size, op_stack_high_water, program_address, with_encoded,
+};
+
+mod par_codec_corpus;
+use par_codec_corpus as corpus;
+
+// ---------------------------------------------------------------------------
+// term shapes, built ITERATIVELY so construction is never the constraint
+// ---------------------------------------------------------------------------
+
+/// A left-spine of `depth` nested `EList`s: DEEP and narrow.
+fn deep(depth: usize) -> Par {
+    let mut par = Par::default();
+    for _ in 0..depth {
+        par = Par {
+            exprs: vec![Expr {
+                expr_instance: Some(ExprInstance::EListBody(EList {
+                    ps: vec![par],
+                    ..Default::default()
+                })),
+            }],
+            ..Default::default()
+        };
+    }
+    par
+}
+
+/// One node with `width` children: SHALLOW and wide. Same node COUNT as
+/// `deep(width)`, so the two shapes isolate depth from size exactly.
+fn wide(width: usize) -> Par {
+    Par {
+        exprs: vec![Expr {
+            expr_instance: Some(ExprInstance::EListBody(EList {
+                ps: (0..width).map(|i| corpus::gint(i as i64)).collect(),
+                ..Default::default()
+            })),
+        }],
+        ..Default::default()
+    }
+}
+
+// ===========================================================================
+// §1  ★ The op stack is Θ(DEPTH), not Θ(SIZE)
+// ===========================================================================
+
+/// **The verdict**, pure in its observations, so it can be shown a synthetic
+/// Θ(size) ladder and required to reject it.
+fn no_size_slope_verdict(
+    label: &str,
+    lo_width: usize,
+    lo_high_water: usize,
+    hi_width: usize,
+    hi_high_water: usize,
+) -> Result<(), String> {
+    let growth = hi_high_water.saturating_sub(lo_high_water);
+    // A width ladder spanning 1,000× may cost a small constant more (the count
+    // prefix opens one `Seq` op), but nothing proportional.
+    if growth <= 4 {
+        return Ok(());
+    }
+    Err(format!(
+        "Θ(SIZE) OP STACK for `{label}`: the high-water mark grew from {lo_high_water} at \
+         width {lo_width} to {hi_high_water} at width {hi_width} — {:.4} entries per sibling. \
+         `Op::Seq` must RE-PUSH ITSELF with `index + 1`, not push one op per child; a term \
+         with a million siblings would otherwise cost a million-entry stack while emitting \
+         byte-identical output.",
+        growth as f64 / (hi_width - lo_width) as f64
+    ))
+}
+
+#[test]
+fn the_op_stack_is_flat_in_term_size() {
+    let lo = op_stack_high_water(&wide(4));
+    let hi = op_stack_high_water(&wide(65_536));
+    if let Err(why) = no_size_slope_verdict("wide", 4, lo, 65_536, hi) {
+        panic!("{why}");
+    }
+    println!("  op stack (width): {lo} entries at 4, {hi} at 65,536");
+
+    // ★★ ANTI-VACUITY: the verdict must REJECT a Θ(size) ladder. Without this,
+    // a checker that accepted everything would look identical to a pass.
+    let synthetic = no_size_slope_verdict("synthetic-Θ(size)", 4, 4, 65_536, 65_536);
+    let why = synthetic.expect_err("a Θ(size) ladder must be REJECTED");
+    assert!(
+        why.contains("entries per sibling"),
+        "the rejection must name the per-sibling growth; got: {why}"
+    );
+}
+
+#[test]
+fn the_op_stack_grows_only_with_depth_and_only_by_a_bounded_amount() {
+    // Depth IS allowed to cost entries — that is the whole point of an explicit
+    // stack — but the cost per level must be a small constant, not a
+    // multiplier. A `Par → Expr → EList → Par` level is four nodes.
+    let lo_depth = 16usize;
+    let hi_depth = 4_096usize;
+    let lo = op_stack_high_water(&deep(lo_depth));
+    let hi = op_stack_high_water(&deep(hi_depth));
+    let per_level = (hi - lo) as f64 / (hi_depth - lo_depth) as f64;
+    println!("  op stack (depth): {lo} at {lo_depth}, {hi} at {hi_depth} ({per_level:.3}/level)");
+    assert!(
+        per_level <= 2.0,
+        "the op stack costs {per_level:.3} entries per nesting level, and the measured value \
+         is 2.000. Each level is four schema nodes (Par → Expr → EList → Par), of which TWO \
+         need a resume point: `Par` has trailing fields after `exprs`, and `EList` has \
+         trailing fields after `ps`. The other two are tail calls — a spent program \
+         (`Machine::suspend`) and the LAST element of a sequence (`Op::Seq`). A regression \
+         here means one of the two tail calls stopped being taken; it doubles the encoder\'s \
+         only per-call heap on the adversarial shape."
+    );
+
+    // And the heap that costs, stated in bytes, so the number is comparable to
+    // the decoder's value stacks rather than to an entry count.
+    let bytes = hi * op_size();
+    assert!(
+        bytes <= 320 * 1024,
+        "a 4,096-deep term costs {bytes} B of op stack ({} entries × {} B); the encoder's \
+         only per-call heap must stay small enough that it is never the reason a node runs \
+         out of memory",
+        hi,
+        op_size()
+    );
+    println!("  op stack (depth {hi_depth}): {bytes} B = {hi} × {} B", op_size());
+}
+
+#[test]
+fn the_op_stack_entry_stays_small() {
+    // `&dyn` is two words; the widest arm is a `&dyn` plus a `usize` plus the
+    // discriminant, which packs into four words on a 64-bit target.
+    assert!(
+        op_size() <= 4 * std::mem::size_of::<usize>(),
+        "`Op` grew to {} B ({} words). Every entry is multiplied by the term's DEPTH, so an \
+         arm that started carrying a large payload should move to a side stack — the \
+         discipline `par_codec`'s `ParFrame`/`ReceiveTail`/`NewFrame` already follow.",
+        op_size(),
+        op_size() / std::mem::size_of::<usize>()
+    );
+    println!("  size_of::<Op>() = {} B", op_size());
+}
+
+// ===========================================================================
+// §2  ★ Zero per-encode allocation in the steady state
+// ===========================================================================
+
+/// A counting allocator, installed globally for this test binary.
+///
+/// ⚠ It is the only honest way to assert "allocates nothing": a massif profile
+/// shows aggregate behaviour, whereas the acceptance criterion is a statement
+/// about *one call*.
+mod counting_alloc {
+    use std::alloc::{GlobalAlloc, Layout, System};
+    use std::cell::Cell;
+
+    // ⚠ PER-THREAD, not global. `cargo test` runs test functions on separate
+    // threads by default, so an `AtomicUsize` would have every measurement
+    // counting its neighbours' allocations — a number that changes with
+    // `--test-threads` is not a measurement of this encoder at all. (Observed:
+    // the same assertion passed at `--test-threads=1` and failed in the full
+    // suite.)
+    //
+    // `const`-initialised `Cell<usize>` has no destructor, so it registers no
+    // TLS teardown hook and cannot re-enter the allocator it lives inside.
+    thread_local! {
+        static ALLOCATIONS: Cell<usize> = const { Cell::new(0) };
+        static BYTES: Cell<usize> = const { Cell::new(0) };
+    }
+
+    fn bump(bytes: usize) {
+        // `try_with` because a thread in TLS teardown must not panic here.
+        let _ = ALLOCATIONS.try_with(|c| c.set(c.get() + 1));
+        let _ = BYTES.try_with(|c| c.set(c.get() + bytes));
+    }
+
+    fn read() -> (usize, usize) {
+        (
+            ALLOCATIONS.try_with(Cell::get).unwrap_or(0),
+            BYTES.try_with(Cell::get).unwrap_or(0),
+        )
+    }
+
+    pub struct Counting;
+
+    unsafe impl GlobalAlloc for Counting {
+        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+            bump(layout.size());
+            unsafe { System.alloc(layout) }
+        }
+        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+            unsafe { System.dealloc(ptr, layout) }
+        }
+        unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+            bump(new_size);
+            unsafe { System.realloc(ptr, layout, new_size) }
+        }
+    }
+
+    /// Allocations and bytes attributable to `f`, **on this thread**.
+    pub fn measure<R>(f: impl FnOnce() -> R) -> (R, usize, usize) {
+        let (a0, b0) = read();
+        let r = f();
+        let (a1, b1) = read();
+        (r, a1 - a0, b1 - b0)
+    }
+}
+
+#[global_allocator]
+static ALLOC: counting_alloc::Counting = counting_alloc::Counting;
+
+/// ★★ **The steady-state allocation table** — the acceptance criterion, measured
+/// per shape and against the derived path in the same run.
+///
+/// | shape | machine | derived |
+/// |---|---|---|
+/// | ordinary terms (`gint`, wide, deep, non-ground `EPathMap`) | **0** | 1 every call, forever |
+/// | ground `EPathMap` | 40 | 77 |
+///
+/// The zero is not an approximation: the output buffer is `clear()`ed and
+/// reused, the op-stack *allocation* is pooled per thread, and every `FieldVal`
+/// borrows. The derived path allocates a fresh exactly-sized `Vec` on every
+/// call and can never converge, because it must hand out ownership.
+///
+/// ⚠ The ground-`EPathMap` row is **not** the encoder allocating: it is
+/// `ground_canonical_ps`, which constructs the canonical entry order (deduped
+/// and recursively canonical) so a ground map's event-hash preimage is a pure
+/// function of its entry set. That cost is inherent to the normalization and
+/// the derived `Serialize` pays it too — nearly twice over, which is why the
+/// machine's number is the smaller one.
+#[test]
+fn the_steady_state_allocation_table() {
+    let ordinary: Vec<(&str, Par)> = vec![
+        ("gint", corpus::gint(1)),
+        ("wide(64)", wide(64)),
+        ("deep(16)", deep(16)),
+        ("nonground_pathmap", pathmap_par(corpus::nonground_pathmap())),
+    ];
+    for (name, par) in &ordinary {
+        warm(par);
+        let (len, allocations, bytes) = counting_alloc::measure(|| with_encoded(par, <[u8]>::len));
+        let (_, oracle_allocations, oracle_bytes) =
+            counting_alloc::measure(|| bincode::serialize(par).expect("oracle").len());
+        println!(
+            "  {name:20} {len:8} B | machine {allocations:3} allocs {bytes:7} B \
+             | derived {oracle_allocations:3} allocs {oracle_bytes:7} B"
+        );
+        assert_eq!(
+            allocations, 0,
+            "`{name}`: a warm encode made {allocations} allocations ({bytes} B). The steady \
+             state must be ZERO — the output buffer is reused, the op-stack allocation is \
+             pooled, and every `FieldVal` borrows. A non-zero count means one of those three \
+             stopped holding."
+        );
+        assert!(
+            oracle_allocations > 0,
+            "`{name}`: the derived path must allocate, or the comparison is measuring nothing"
+        );
+    }
+
+    // The ground map: inherent canonicalization, cheaper here than on the
+    // derived path. Asserted as a RELATION, not as a magic number, so a change
+    // in the canonicalizer does not produce a spurious failure here.
+    let ground = pathmap_par(corpus::ground_pathmap());
+    warm(&ground);
+    let (_, allocations, bytes) = counting_alloc::measure(|| with_encoded(&ground, <[u8]>::len));
+    let (_, oracle_allocations, oracle_bytes) =
+        counting_alloc::measure(|| bincode::serialize(&ground).expect("oracle").len());
+    println!(
+        "  {:20} {:8} | machine {allocations:3} allocs {bytes:7} B \
+         | derived {oracle_allocations:3} allocs {oracle_bytes:7} B",
+        "ground_pathmap", ""
+    );
+    assert!(
+        allocations > 0,
+        "a GROUND map must allocate — `ground_canonical_ps` constructs the canonical order. \
+         Zero here would mean the canonicalization stopped happening, which would change the \
+         bytes and fork consensus."
+    );
+    assert!(
+        allocations < oracle_allocations,
+        "the machine allocated {allocations} and the derived path {oracle_allocations}; the \
+         single-walk emitter must not cost MORE than the two-walk one on the shape where \
+         both must canonicalize"
+    );
+}
+
+/// One node holding one `EPathMap`.
+fn pathmap_par(map: models::rust::rhoapi_ext::EPathMap) -> Par {
+    Par {
+        exprs: vec![Expr {
+            expr_instance: Some(ExprInstance::EPathmapBody(map)),
+        }],
+        ..Default::default()
+    }
+}
+
+/// Drive the thread-local buffer and op-stack pool to their steady state.
+fn warm(par: &Par) {
+    for _ in 0..64 {
+        with_encoded(par, <[u8]>::len);
+    }
+}
+
+#[test]
+fn encode_into_an_existing_buffer_reuses_its_capacity() {
+    let par = corpus::all_par_fields();
+    let size = encode(&par).len();
+
+    let mut out = Vec::with_capacity(size * 4);
+    for _ in 0..8 {
+        out.clear();
+        encode_into(&par, &mut out);
+    }
+    let before = out.capacity();
+    let (_, _allocations, _) = counting_alloc::measure(|| {
+        out.clear();
+        encode_into(&par, &mut out);
+    });
+    assert_eq!(out.len(), size, "the encoding must be stable across reuse");
+    assert_eq!(
+        out.capacity(),
+        before,
+        "`encode_into` must not re-grow a buffer that already fits — appending into a \
+         caller-owned buffer is what lets an intern-aware emitter splice without a copy"
+    );
+}
+
+#[test]
+fn the_reused_buffer_does_not_pin_a_pathological_high_water() {
+    // One pathological term inflates the thread-local; the shrink policy must
+    // return the capacity rather than hold it for the life of the thread.
+    let huge = wide(200_000);
+    let huge_len = with_encoded(&huge, <[u8]>::len);
+    assert!(
+        huge_len > 1 << 20,
+        "the pathological fixture must exceed the shrink threshold, or this test proves \
+         nothing (it encoded to {huge_len} B)"
+    );
+
+    // A small encode afterwards must not be paying for the huge one.
+    let small = corpus::gint(1);
+    for _ in 0..4 {
+        with_encoded(&small, <[u8]>::len);
+    }
+    let (_, _, bytes) = counting_alloc::measure(|| {
+        for _ in 0..16 {
+            with_encoded(&small, <[u8]>::len);
+        }
+    });
+    assert!(
+        bytes < huge_len / 4,
+        "after a {huge_len} B encode, sixteen small encodes allocated {bytes} B — the shrink \
+         policy is not returning the pathological capacity"
+    );
+    println!("  after a {huge_len} B encode, 16 small encodes cost {bytes} B");
+}
+
+/// The op-stack POOL must not pin a deep term's high-water mark either.
+#[test]
+fn the_op_stack_pool_does_not_pin_a_deep_terms_high_water() {
+    let deep_term = deep(8_192);
+    let bytes = std::thread::Builder::new()
+        .stack_size(2 * 1024 * 1024)
+        .spawn(move || {
+            let n = with_encoded(&deep_term, <[u8]>::len);
+            std::mem::forget(deep_term);
+            n
+        })
+        .expect("spawn")
+        .join()
+        .expect("a deep encode must survive a 2 MiB stack");
+    assert!(bytes > 0);
+
+    // ⚠ The deep encode ran on its OWN thread, so this thread's pool and buffer
+    // were never touched by it — which is itself the point: the pool is
+    // per-thread, so one thread's pathological term cannot inflate another's.
+    // On the encoding thread the 8,192-deep stack (16,385 entries) exceeds
+    // `MAX_POOLED_OPS` and is dropped rather than parked.
+    let small = corpus::gint(1);
+    warm(&small);
+    let (_, allocations, _) = counting_alloc::measure(|| with_encoded(&small, <[u8]>::len));
+    assert_eq!(
+        allocations, 0,
+        "a small encode after a deep one must still be allocation-free"
+    );
+}
+
+// ===========================================================================
+// §3  ⚠ Program addresses do NOT identify a type
+// ===========================================================================
+
+/// The measured fact behind [`models::rust::rholang::wire::WireNode::wire_as_pathmap`].
+///
+/// If this test ever *fails* — i.e. the addresses become distinct — that is not
+/// permission to reintroduce the pointer trick. Constant merging is a linker
+/// and codegen-unit decision that varies with profile, LTO and target; a
+/// downcast that is sound in one build and a type confusion in the next is
+/// strictly worse than one that is always sound.
+#[test]
+fn program_addresses_do_not_identify_a_type() {
+    let pathmap = corpus::ground_pathmap();
+    let elist = EList::default();
+
+    let same = program_address(&pathmap as &dyn WireNode) == program_address(&elist as &dyn WireNode);
+    println!(
+        "  EPATHMAP_PROGRAM @ {:#x}, ELIST_PROGRAM @ {:#x} — merged: {same}",
+        program_address(&pathmap as &dyn WireNode),
+        program_address(&elist as &dyn WireNode),
+    );
+
+    // Whatever the addresses are, the TYPE question must be answered by the
+    // trait, and it must answer correctly.
+    assert!(
+        (&pathmap as &dyn WireNode).wire_as_pathmap().is_some(),
+        "an EPathMap must identify itself"
+    );
+    assert!(
+        (&elist as &dyn WireNode).wire_as_pathmap().is_none(),
+        "an EList must NOT identify as an EPathMap — this is the type confusion that \
+         SIGSEGV'd the differential on its first run"
+    );
+    for node in [
+        &Par::default() as &dyn WireNode,
+        &Send::default(),
+        &Expr::default(),
+        &models::rhoapi::ESet::default(),
+        &models::rhoapi::EMap::default(),
+    ] {
+        assert!(
+            node.wire_as_pathmap().is_none(),
+            "only EPathMap may answer to `wire_as_pathmap`"
+        );
+    }
+
+    // And the encoder survives the exact shape that used to crash: an `EList`
+    // whose program is (content-)identical to `EPathMap`'s, nested under one.
+    let mixed = Par {
+        exprs: vec![
+            Expr {
+                expr_instance: Some(ExprInstance::EListBody(EList {
+                    ps: vec![corpus::gint(1)],
+                    ..Default::default()
+                })),
+            },
+            Expr {
+                expr_instance: Some(ExprInstance::EPathmapBody(corpus::ground_pathmap())),
+            },
+        ],
+        ..Default::default()
+    };
+    assert_eq!(
+        encode(&mixed),
+        bincode::serialize(&mixed).expect("oracle"),
+        "an EList beside an EPathMap must still encode identically"
+    );
+}

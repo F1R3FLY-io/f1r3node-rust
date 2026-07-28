@@ -6,6 +6,15 @@ extern crate tonic_prost_build;
 use std::path::Path;
 use std::{env, fs};
 
+use prost::Message as _;
+
+/// The wire-schema generator: ONE table, emitted from the protobuf descriptor,
+/// consumed by BOTH the serializer (`wire_encode`) and the deserializer
+/// (`par_codec`). See its module docs for why this is a build-script pass and
+/// not a proc-macro.
+#[path = "build/wire_schema.rs"]
+mod wire_schema;
+
 fn main() {
     let manifest_dir = Path::new(&env::var("CARGO_MANIFEST_DIR").unwrap()).to_path_buf();
     let proto_src_dir = manifest_dir.join("src/main/protobuf");
@@ -38,7 +47,15 @@ fn main() {
         scala_proto_base_dir.join("scalapb/scalapb.proto").display()
     );
 
+    // The descriptor set is what the wire-schema generator reads. It carries
+    // FIELD DECLARATION ORDER, which is the bincode/serde layout — a fact the
+    // `#[prost(...)]` attributes (which describe the *protobuf* wire) and
+    // serde's derive (which exposes nothing at run time) both fail to provide.
+    let out_dir_path = Path::new(&env::var("OUT_DIR").expect("OUT_DIR")).to_path_buf();
+    let descriptor_path = out_dir_path.join("rhoapi_descriptor.bin");
+
     tonic_prost_build::configure()
+        .file_descriptor_set_path(&descriptor_path)
         .build_client(true)
         .build_server(true)
         .btree_map(".")
@@ -106,10 +123,53 @@ fn main() {
     // Normalize locally_free in serde serialization — always serialize as empty vec.
     // This matches Scala's AlwaysEqual semantics where locally_free is a transient
     // analysis field that must not affect Blake2b256 channel hashes in RSpace.
+    const LOCALLY_FREE_DECL: &str = "pub locally_free: ::prost::alloc::vec::Vec<u8>,";
+    let locally_free_sites = modified_content.matches(LOCALLY_FREE_DECL).count();
     let modified_content = modified_content.replace(
-        "pub locally_free: ::prost::alloc::vec::Vec<u8>,",
+        LOCALLY_FREE_DECL,
         "#[serde(serialize_with = \"crate::rust::serde_helpers::serialize_as_empty_bytes\")]\n    pub locally_free: ::prost::alloc::vec::Vec<u8>,",
     );
 
     fs::write(file_path, modified_content).expect("Unable to write file");
+
+    // -----------------------------------------------------------------------
+    // Stage 2: the wire-schema table (ONE table, both directions)
+    // -----------------------------------------------------------------------
+    //
+    // This extends an existing two-stage pipeline: the textual pass above
+    // already post-processes prost's output, and this pass reads the same
+    // compilation's descriptor set.
+    let descriptor_bytes = fs::read(&descriptor_path).expect("read the protobuf descriptor set");
+    let descriptor_set = prost_types::FileDescriptorSet::decode(&descriptor_bytes[..])
+        .expect("decode the protobuf descriptor set");
+    let generated = wire_schema::generate(&descriptor_set);
+
+    // ★ THE ANTI-DRIFT CROSS-CHECK. The textual pass above and the generator
+    // must be applying the SAME rule to the SAME fields. The textual pass
+    // counts the `locally_free` declarations it rewrote; the generator counts
+    // the fields it classified `FieldKind::EmptyBytes`. If they ever disagree,
+    // one of the two has silently stopped covering a field — and since the
+    // rewrite is what makes `locally_free` serialize as eight zero bytes, a
+    // divergence is a byte-level consensus hazard, not a cosmetic one.
+    assert_eq!(
+        locally_free_sites, generated.empty_bytes_fields,
+        "models/build.rs: the serialize_as_empty_bytes TEXTUAL pass rewrote {} \
+         `locally_free` declarations, but the wire-schema generator classified {} fields as \
+         EmptyBytes. The two rules have drifted apart; one of them no longer covers every \
+         `locally_free` field, and the serialize-only blanking is a consensus-visible \
+         normalization.",
+        locally_free_sites, generated.empty_bytes_fields
+    );
+
+    fs::write(out_dir_path.join("rhoapi_wire.rs"), &generated.source)
+        .expect("write the generated wire schema");
+
+    // Recorded in the build script's captured stdout (`target/*/build/models-*/output`)
+    // rather than as a `cargo:warning`, so the evidence is retained without
+    // decorating every build of every dependent crate.
+    println!(
+        "wire_schema: {} messages, {} oneofs, {} serialize-only `locally_free` fields \
+         (cross-checked against the textual pass)",
+        generated.message_count, generated.oneof_count, generated.empty_bytes_fields
+    );
 }

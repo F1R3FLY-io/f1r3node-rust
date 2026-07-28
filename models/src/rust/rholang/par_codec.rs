@@ -230,59 +230,37 @@ type Res<T> = Result<T, ColdStoreDecodeError>;
 // `par_children::expr_instance_variant_index`, the canonical table this module
 // is gated against.
 
-const EX_G_BOOL: u32 = 0;
-const EX_G_INT: u32 = 1;
-const EX_G_STRING: u32 = 2;
-const EX_G_URI: u32 = 3;
-const EX_G_BYTE_ARRAY: u32 = 4;
-const EX_ENOT: u32 = 5;
-const EX_ENEG: u32 = 6;
-const EX_EMULT: u32 = 7;
-const EX_EDIV: u32 = 8;
-const EX_EPLUS: u32 = 9;
-const EX_EMINUS: u32 = 10;
-const EX_ELT: u32 = 11;
-const EX_ELTE: u32 = 12;
-const EX_EGT: u32 = 13;
-const EX_EGTE: u32 = 14;
-const EX_EEQ: u32 = 15;
-const EX_ENEQ: u32 = 16;
-const EX_EAND: u32 = 17;
-const EX_EOR: u32 = 18;
-const EX_EVAR: u32 = 19;
-const EX_ELIST: u32 = 20;
-const EX_ETUPLE: u32 = 21;
-const EX_ESET: u32 = 22;
-const EX_EMAP: u32 = 23;
-const EX_EMETHOD: u32 = 24;
-const EX_EPATHMAP: u32 = 25;
-const EX_EZIPPER: u32 = 26;
-const EX_EMATCHES: u32 = 27;
-const EX_EPERCENT: u32 = 28;
-const EX_EPLUSPLUS: u32 = 29;
-const EX_EMINUSMINUS: u32 = 30;
-const EX_EMOD: u32 = 31;
-const EX_G_DOUBLE: u32 = 32;
-const EX_G_BIG_INT: u32 = 33;
-const EX_G_BIG_RAT: u32 = 34;
-const EX_G_FIXED_POINT: u32 = 35;
+// ★ ONE TABLE, BOTH DIRECTIONS. These indices are no longer transcribed here:
+// they are `pub const`s emitted by `models/build/wire_schema.rs` from the same
+// protobuf `FileDescriptorSet` that drives the serializer
+// (`crate::rust::rholang::wire_encode`). Thirty-six hand-written `EX_*`
+// literals and nine `CN_*` literals used to live in this block; a 37th oneof
+// arm would have left every one of them correct and every assertion about them
+// passing, while the new arm went untested. Generation removes that failure
+// mode by construction.
+//
+// ⚠ The indices are serde DECLARATION ORDER, never the proto tag —
+// `EX_E_PATHMAP_BODY` is 25 and its proto tag is 32.
+use crate::rust::rholang::wire_schema::{
+    CN_CONN_AND_BODY, CN_CONN_BOOL, CN_CONN_BYTE_ARRAY, CN_CONN_INT, CN_CONN_NOT_BODY,
+    CN_CONN_OR_BODY, CN_CONN_STRING, CN_CONN_URI, CN_VAR_REF_BODY, EX_E_AND_BODY, EX_E_DIV_BODY,
+    EX_E_EQ_BODY, EX_E_GTE_BODY, EX_E_GT_BODY, EX_E_LIST_BODY, EX_E_LTE_BODY, EX_E_LT_BODY,
+    EX_E_MAP_BODY, EX_E_MATCHES_BODY, EX_E_METHOD_BODY, EX_E_MINUS_BODY, EX_E_MINUS_MINUS_BODY,
+    EX_E_MOD_BODY, EX_E_MULT_BODY, EX_E_NEG_BODY, EX_E_NEQ_BODY, EX_E_NOT_BODY, EX_E_OR_BODY,
+    EX_E_PATHMAP_BODY, EX_E_PERCENT_PERCENT_BODY, EX_E_PLUS_BODY, EX_E_PLUS_PLUS_BODY,
+    EX_E_SET_BODY, EX_E_TUPLE_BODY, EX_E_VAR_BODY, EX_E_ZIPPER_BODY, EX_G_BIG_INT, EX_G_BIG_RAT,
+    EX_G_BOOL, EX_G_BYTE_ARRAY, EX_G_DOUBLE, EX_G_FIXED_POINT, EX_G_INT, EX_G_STRING, EX_G_URI,
+    TAGGED_CONT_VARIANT_COUNT as TAGGED_CONT_VARIANTS_LEN,
+    UNF_INSTANCE_VARIANT_COUNT as UNF_INSTANCE_VARIANTS_LEN,
+    VAR_INSTANCE_VARIANT_COUNT as VAR_INSTANCE_VARIANTS_LEN,
+};
 
-const CN_AND: u32 = 0;
-const CN_OR: u32 = 1;
-const CN_NOT: u32 = 2;
-const CN_VAR_REF: u32 = 3;
-const CN_BOOL: u32 = 4;
-const CN_INT: u32 = 5;
-const CN_STRING: u32 = 6;
-const CN_URI: u32 = 7;
-const CN_BYTE_ARRAY: u32 = 8;
-
-/// `var::VarInstance`: `BoundVar`, `FreeVar`, `Wildcard`.
-const VAR_INSTANCE_VARIANT_COUNT: u32 = 3;
-/// `g_unforgeable::UnfInstance`: the four unforgeable bodies.
-const UNF_INSTANCE_VARIANT_COUNT: u32 = 4;
-/// `tagged_continuation::TaggedCont`: `ParBody`, `ScalaBodyRef`.
-const TAGGED_CONT_VARIANT_COUNT: u32 = 2;
+/// `var::VarInstance`: `BoundVar`, `FreeVar`, `Wildcard` — ★ generated.
+const VAR_INSTANCE_VARIANT_COUNT: u32 = VAR_INSTANCE_VARIANTS_LEN as u32;
+/// `g_unforgeable::UnfInstance`: the four unforgeable bodies — ★ generated.
+const UNF_INSTANCE_VARIANT_COUNT: u32 = UNF_INSTANCE_VARIANTS_LEN as u32;
+/// `tagged_continuation::TaggedCont`: `ParBody`, `ScalaBodyRef` — ★ generated.
+const TAGGED_CONT_VARIANT_COUNT: u32 = TAGGED_CONT_VARIANTS_LEN as u32;
 
 /// The `ExprInstance` arms whose wire shape is `(Option<Par>, Option<Par>)`.
 ///
@@ -291,23 +269,23 @@ const TAGGED_CONT_VARIANT_COUNT: u32 = 2;
 /// the same three-step field walk seventeen times and get one of them wrong.
 /// [`binary_expr_instance`] is the only place the arm identity re-enters.
 const BINARY_EXPR_VARIANTS: [u32; 17] = [
-    EX_EMULT,
-    EX_EDIV,
-    EX_EPLUS,
-    EX_EMINUS,
-    EX_ELT,
-    EX_ELTE,
-    EX_EGT,
-    EX_EGTE,
-    EX_EEQ,
-    EX_ENEQ,
-    EX_EAND,
-    EX_EOR,
-    EX_EMATCHES,
-    EX_EPERCENT,
-    EX_EPLUSPLUS,
-    EX_EMINUSMINUS,
-    EX_EMOD,
+    EX_E_MULT_BODY,
+    EX_E_DIV_BODY,
+    EX_E_PLUS_BODY,
+    EX_E_MINUS_BODY,
+    EX_E_LT_BODY,
+    EX_E_LTE_BODY,
+    EX_E_GT_BODY,
+    EX_E_GTE_BODY,
+    EX_E_EQ_BODY,
+    EX_E_NEQ_BODY,
+    EX_E_AND_BODY,
+    EX_E_OR_BODY,
+    EX_E_MATCHES_BODY,
+    EX_E_PERCENT_PERCENT_BODY,
+    EX_E_PLUS_PLUS_BODY,
+    EX_E_MINUS_MINUS_BODY,
+    EX_E_MOD_BODY,
 ];
 
 /// Rebuild a binary `ExprInstance` arm from its variant index and two operands.
@@ -317,26 +295,26 @@ const BINARY_EXPR_VARIANTS: [u32; 17] = [
 /// belongs to this family.
 fn binary_expr_instance(variant: u32, p1: Option<Par>, p2: Option<Par>) -> Res<ExprInstance> {
     Ok(match variant {
-        EX_EMULT => ExprInstance::EMultBody(EMult { p1, p2 }),
-        EX_EDIV => ExprInstance::EDivBody(EDiv { p1, p2 }),
-        EX_EPLUS => ExprInstance::EPlusBody(EPlus { p1, p2 }),
-        EX_EMINUS => ExprInstance::EMinusBody(EMinus { p1, p2 }),
-        EX_ELT => ExprInstance::ELtBody(ELt { p1, p2 }),
-        EX_ELTE => ExprInstance::ELteBody(ELte { p1, p2 }),
-        EX_EGT => ExprInstance::EGtBody(EGt { p1, p2 }),
-        EX_EGTE => ExprInstance::EGteBody(EGte { p1, p2 }),
-        EX_EEQ => ExprInstance::EEqBody(EEq { p1, p2 }),
-        EX_ENEQ => ExprInstance::ENeqBody(ENeq { p1, p2 }),
-        EX_EAND => ExprInstance::EAndBody(EAnd { p1, p2 }),
-        EX_EOR => ExprInstance::EOrBody(EOr { p1, p2 }),
-        EX_EMATCHES => ExprInstance::EMatchesBody(EMatches {
+        EX_E_MULT_BODY => ExprInstance::EMultBody(EMult { p1, p2 }),
+        EX_E_DIV_BODY => ExprInstance::EDivBody(EDiv { p1, p2 }),
+        EX_E_PLUS_BODY => ExprInstance::EPlusBody(EPlus { p1, p2 }),
+        EX_E_MINUS_BODY => ExprInstance::EMinusBody(EMinus { p1, p2 }),
+        EX_E_LT_BODY => ExprInstance::ELtBody(ELt { p1, p2 }),
+        EX_E_LTE_BODY => ExprInstance::ELteBody(ELte { p1, p2 }),
+        EX_E_GT_BODY => ExprInstance::EGtBody(EGt { p1, p2 }),
+        EX_E_GTE_BODY => ExprInstance::EGteBody(EGte { p1, p2 }),
+        EX_E_EQ_BODY => ExprInstance::EEqBody(EEq { p1, p2 }),
+        EX_E_NEQ_BODY => ExprInstance::ENeqBody(ENeq { p1, p2 }),
+        EX_E_AND_BODY => ExprInstance::EAndBody(EAnd { p1, p2 }),
+        EX_E_OR_BODY => ExprInstance::EOrBody(EOr { p1, p2 }),
+        EX_E_MATCHES_BODY => ExprInstance::EMatchesBody(EMatches {
             target: p1,
             pattern: p2,
         }),
-        EX_EPERCENT => ExprInstance::EPercentPercentBody(EPercentPercent { p1, p2 }),
-        EX_EPLUSPLUS => ExprInstance::EPlusPlusBody(EPlusPlus { p1, p2 }),
-        EX_EMINUSMINUS => ExprInstance::EMinusMinusBody(EMinusMinus { p1, p2 }),
-        EX_EMOD => ExprInstance::EModBody(EMod { p1, p2 }),
+        EX_E_PERCENT_PERCENT_BODY => ExprInstance::EPercentPercentBody(EPercentPercent { p1, p2 }),
+        EX_E_PLUS_PLUS_BODY => ExprInstance::EPlusPlusBody(EPlusPlus { p1, p2 }),
+        EX_E_MINUS_MINUS_BODY => ExprInstance::EMinusMinusBody(EMinusMinus { p1, p2 }),
+        EX_E_MOD_BODY => ExprInstance::EModBody(EMod { p1, p2 }),
         _ => {
             return Err(ColdStoreDecodeError::MachineInvariant(
                 "binary ExprInstance arm",
@@ -1428,30 +1406,30 @@ impl<'a> Machine<'a> {
                         let scale = self.r.u32()?;
                         self.push_expr(ExprInstance::GFixedPoint(GFixedPoint { unscaled, scale }));
                     }
-                    EX_EVAR => {
+                    EX_E_VAR_BODY => {
                         let v = self.r.opt_var()?;
                         self.push_expr(ExprInstance::EVarBody(EVar { v }));
                     }
 
                     // ---- unary
-                    EX_ENOT | EX_ENEG => {
+                    EX_E_NOT_BODY | EX_E_NEG_BODY => {
                         let has_p = self.r.option_tag()?;
                         self.ops.push(Op::ExprUnaryBuild { variant, has_p });
                         self.opt_par_child(has_p);
                     }
 
                     // ---- collections
-                    EX_ELIST | EX_ESET => {
+                    EX_E_LIST_BODY | EX_E_SET_BODY => {
                         let n = self.r.len()?;
                         self.ops.push(Op::ExprSeqBuild { variant, n });
                         self.repeat(Kind::Par, n);
                     }
-                    EX_ETUPLE => {
+                    EX_E_TUPLE_BODY => {
                         let n = self.r.len()?;
                         self.ops.push(Op::ExprTupleBuild { n });
                         self.repeat(Kind::Par, n);
                     }
-                    EX_EMAP => {
+                    EX_E_MAP_BODY => {
                         let n = self.r.len()?;
                         self.ops.push(Op::ExprMapBuild { n });
                         self.repeat(Kind::Kv, n);
@@ -1459,7 +1437,7 @@ impl<'a> Machine<'a> {
 
                     // ---- method: the name is read FIRST and must survive two
                     //      descents, so it goes on a side stack.
-                    EX_EMETHOD => {
+                    EX_E_METHOD_BODY => {
                         let name = self.r.string()?;
                         self.method_names.push(name);
                         let has_target = self.r.option_tag()?;
@@ -1468,11 +1446,11 @@ impl<'a> Machine<'a> {
                     }
 
                     // ---- the two path-map arms (wire shape 3)
-                    EX_EPATHMAP => {
+                    EX_E_PATHMAP_BODY => {
                         self.ops.push(Op::ExprFromPathmap);
                         self.ops.push(Op::PathmapStart);
                     }
-                    EX_EZIPPER => {
+                    EX_E_ZIPPER_BODY => {
                         let has_pathmap = self.r.option_tag()?;
                         self.ops.push(Op::ExprZipperBuild { has_pathmap });
                         if has_pathmap {
@@ -1496,8 +1474,8 @@ impl<'a> Machine<'a> {
             Op::ExprUnaryBuild { variant, has_p } => {
                 let p = take_opt_par(&mut self.pars, has_p, "unary ExprInstance operand")?;
                 let instance = match variant {
-                    EX_ENOT => ExprInstance::ENotBody(ENot { p }),
-                    EX_ENEG => ExprInstance::ENegBody(ENeg { p }),
+                    EX_E_NOT_BODY => ExprInstance::ENotBody(ENot { p }),
+                    EX_E_NEG_BODY => ExprInstance::ENegBody(ENeg { p }),
                     _ => {
                         return Err(ColdStoreDecodeError::MachineInvariant(
                             "unary ExprInstance arm",
@@ -1523,13 +1501,13 @@ impl<'a> Machine<'a> {
                 let connective_used = self.r.bool()?;
                 let remainder = self.r.opt_var()?;
                 let instance = match variant {
-                    EX_ELIST => ExprInstance::EListBody(EList {
+                    EX_E_LIST_BODY => ExprInstance::EListBody(EList {
                         ps,
                         locally_free,
                         connective_used,
                         remainder,
                     }),
-                    EX_ESET => ExprInstance::ESetBody(ESet {
+                    EX_E_SET_BODY => ExprInstance::ESetBody(ESet {
                         ps,
                         locally_free,
                         connective_used,
@@ -1672,18 +1650,18 @@ impl<'a> Machine<'a> {
                     CONNECTIVE_INSTANCE_VARIANT_COUNT as u32,
                 )?;
                 match variant {
-                    CN_AND | CN_OR => {
+                    CN_CONN_AND_BODY | CN_CONN_OR_BODY => {
                         let n = self.r.len()?;
                         self.ops.push(Op::ConnBodyBuild { variant, n });
                         self.repeat(Kind::Par, n);
                     }
                     // ⚠ `ConnNotBody` carries a bare `Par`, NOT an
                     // `Option<Par>`: there is no tag byte before it.
-                    CN_NOT => {
+                    CN_CONN_NOT_BODY => {
                         self.ops.push(Op::ConnNotBuild);
                         self.ops.push(Op::ParStart);
                     }
-                    CN_VAR_REF => {
+                    CN_VAR_REF_BODY => {
                         let index = self.r.i32()?;
                         let depth = self.r.i32()?;
                         self.connectives.push(Connective {
@@ -1696,11 +1674,11 @@ impl<'a> Machine<'a> {
                     _ => {
                         let flag = self.r.bool()?;
                         let instance = match variant {
-                            CN_BOOL => ConnectiveInstance::ConnBool(flag),
-                            CN_INT => ConnectiveInstance::ConnInt(flag),
-                            CN_STRING => ConnectiveInstance::ConnString(flag),
-                            CN_URI => ConnectiveInstance::ConnUri(flag),
-                            CN_BYTE_ARRAY => ConnectiveInstance::ConnByteArray(flag),
+                            CN_CONN_BOOL => ConnectiveInstance::ConnBool(flag),
+                            CN_CONN_INT => ConnectiveInstance::ConnInt(flag),
+                            CN_CONN_STRING => ConnectiveInstance::ConnString(flag),
+                            CN_CONN_URI => ConnectiveInstance::ConnUri(flag),
+                            CN_CONN_BYTE_ARRAY => ConnectiveInstance::ConnByteArray(flag),
                             _ => {
                                 return Err(ColdStoreDecodeError::MachineInvariant(
                                     "ConnectiveInstance arm not covered by the decoder",
@@ -1717,8 +1695,8 @@ impl<'a> Machine<'a> {
                 let ps = take_n(&mut self.pars, n, "ConnectiveBody.ps")?;
                 let body = ConnectiveBody { ps };
                 let instance = match variant {
-                    CN_AND => ConnectiveInstance::ConnAndBody(body),
-                    CN_OR => ConnectiveInstance::ConnOrBody(body),
+                    CN_CONN_AND_BODY => ConnectiveInstance::ConnAndBody(body),
+                    CN_CONN_OR_BODY => ConnectiveInstance::ConnOrBody(body),
                     _ => {
                         return Err(ColdStoreDecodeError::MachineInvariant(
                             "ConnectiveBody arm",
