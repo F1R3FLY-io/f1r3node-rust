@@ -384,6 +384,192 @@ fn every_trie_this_crate_builds_upholds_the_entry_invariant() {
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// ★ THE READ-SIDE IMAGE INVARIANT — the dual, over every reader key
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// The property above checks PRODUCERS: every value is filed under the key it
+// encodes to. It cannot see a defect in which the trie is perfect and the
+// READER asks for a key no Par could ever be filed under — which is exactly
+// what defect #108 was. The dual property is
+//
+//     ∀ entry keys k a reader constructs .  decode_trie_path(k) ∈ Ok
+//
+// and it is decidable, exhaustively, because a reader's key is a function of
+// (cursor Par, relative Par) alone.
+//
+// The stronger statement proved below is not merely membership of the image
+// but WHICH element of the image: the key a reader builds below the root is
+// the key the codec gives the COMPOSED path. That is the read-side dual of the
+// repair that made `setSubtrie`'s key and value one route — here the reader's
+// key and the writer's key become one route, so they cannot drift apart.
+
+/// The elements of a Par READ AS A PATH: a split-arm carrier contributes its
+/// own elements, and every other Par contributes ITSELF as a single element.
+///
+/// Built from `takes_split_arm` — the codec's own classifier, the one authority
+/// — but independently of `par_to_path`/`segments_to_key`, so the expectation
+/// below is not the implementation restated.
+fn path_elements(par: &Par) -> Vec<Par> {
+    use models::rust::canonical_path::takes_split_arm;
+    match takes_split_arm(par) {
+        true => match par.exprs.first().and_then(|e| e.expr_instance.as_ref()) {
+            Some(ExprInstance::EListBody(list)) => list.ps.clone(),
+            _ => unreachable!("a split-arm carrier is an EList carrier"),
+        },
+        false => vec![par.clone()],
+    }
+}
+
+/// ★ THE READ-SIDE PROPERTY, exhaustively: over all `2^9 = 512` maps and all
+/// `9 × 9 = 81` (cursor, relative) pairs from the alphabet — 41 472 reads —
+/// every key `entry_key_at` builds is in the codec image, IS the codec's key
+/// for the path it names, and reads back exactly the entry that path names.
+///
+/// The three legs are separately load-bearing:
+///
+/// 1. **In the image.** A key outside it can never hit, on any map. This is the
+///    leg that goes red on #108 and on every future member of its family.
+/// 2. **The codec's own key.** Membership alone would admit a key that is in
+///    the image but names the WRONG entry — which is precisely the shape of the
+///    bare/singleton-list defect on the root arm (`03 0a` versus `03 0a 00`,
+///    both canonical, different entries). Naming the composed path pins which.
+/// 3. **Reads back.** The end-to-end statement a program experiences.
+#[test]
+fn every_reader_key_is_in_the_codec_image() {
+    use models::rust::pathmap_integration::{entry_key_at, entry_key_is_in_codec_image};
+
+    for subset in every_subset_of_the_alphabet() {
+        let map = create_pathmap_from_elements(&subset, None).map;
+
+        for cursor_par in alphabet() {
+            let cursor = par_to_path(&cursor_par);
+
+            for relative in alphabet() {
+                let key = entry_key_at(&cursor, &relative, &map);
+
+                // LEG 1 — in the image of `encode_trie_path`.
+                assert!(
+                    entry_key_is_in_codec_image(&key),
+                    "★ a reader built a key in the image of no Par, so it can \
+                     never hit: cursor = {cursor_par:?}, relative = \
+                     {relative:?}, key = {key:02x?}"
+                );
+
+                // LEG 2 — WHICH element of the image: at the root the argument
+                // IS the whole path; below it the composed path is the LIST of
+                // the cursor's elements followed by the relative's.
+                let named = match cursor.is_empty() {
+                    true => relative.clone(),
+                    false => {
+                        let mut elements = path_elements(&cursor_par);
+                        elements.extend(path_elements(&relative));
+                        make_list_of(elements)
+                    }
+                };
+                assert_eq!(
+                    key,
+                    encode_trie_path(&named),
+                    "the reader's key must be the codec's key for the path it \
+                     names: cursor = {cursor_par:?}, relative = {relative:?}"
+                );
+
+                // LEG 3 — and it reads back that entry, exactly when the map
+                // holds it.
+                let expected = subset.iter().find(|element| **element == named);
+                assert_eq!(
+                    map.get(&key),
+                    expected,
+                    "the reader's key must read back the entry it names: \
+                     cursor = {cursor_par:?}, relative = {relative:?}"
+                );
+            }
+        }
+    }
+}
+
+/// ⚠ ANTI-VACUITY for leg 1 — the invariant REJECTS something. A `Bare` cursor
+/// is inhabited at exactly one depth, because a bare entry's key is exactly one
+/// segment: at depth 0 the key is empty and at depth ≥ 2 it is an unterminated
+/// multi-segment concatenation, and `decode_trie_path` rejects both.
+///
+/// Without this, "every reader key is in the image" could hold because every
+/// key is in the image, and the guard inside `cursor_entry_key` would be
+/// checking a tautology.
+#[test]
+fn the_image_invariant_rejects_a_bare_cursor_at_any_other_depth() {
+    use models::rust::canonical_path::CodecError;
+    use models::rust::pathmap_integration::{entry_key_is_in_codec_image, segments_to_key};
+
+    let one = par_to_path(&make_string_par("a")); // 04 01 61
+    let two = {
+        let mut segments = one.clone();
+        segments.extend(par_to_path(&make_int_par(1))); // 03 02
+        segments
+    };
+
+    // Depth 1 — INHABITED: this is the key of the bare entry `"a"`, and the
+    // reason `cursor_entry_key` must keep taking a `CursorKind`.
+    let depth_one = segments_to_key(&one, false);
+    assert_eq!(depth_one, vec![0x04, 0x01, 0x61]);
+    assert!(entry_key_is_in_codec_image(&depth_one));
+    assert_eq!(
+        models::rust::canonical_path::decode_trie_path(&depth_one),
+        Ok(make_string_par("a"))
+    );
+
+    // Depth 2 — UNINHABITED: `04 01 61 03 02` is in the image of no Par.
+    let depth_two = segments_to_key(&two, false);
+    assert_eq!(depth_two, vec![0x04, 0x01, 0x61, 0x03, 0x02]);
+    assert!(
+        !entry_key_is_in_codec_image(&depth_two),
+        "★ an unterminated multi-segment key must be rejected"
+    );
+    assert_eq!(
+        models::rust::canonical_path::decode_trie_path(&depth_two),
+        Err(CodecError::UnterminatedMultiSegment)
+    );
+    // …and the terminated key at the same segments IS inhabited, so the two
+    // differ by exactly the terminator the composition law appends.
+    let terminated = segments_to_key(&two, true);
+    assert!(entry_key_is_in_codec_image(&terminated));
+
+    // Depth 0 — UNINHABITED: the empty key. (The root-key corollary of the
+    // write-side invariant, reached from the read side.)
+    assert!(
+        !entry_key_is_in_codec_image(&[]),
+        "the empty key names no entry"
+    );
+}
+
+/// The composition law itself, stated on its own: the arm is the ARGUMENT's at
+/// the root and `Split` everywhere below, for every Par in the alphabet.
+#[test]
+fn the_composition_law_takes_the_argument_arm_only_at_the_root() {
+    use models::rust::pathmap_integration::{composed_cursor_kind, CursorKind};
+
+    for relative in alphabet() {
+        assert_eq!(
+            composed_cursor_kind(&[], &relative),
+            CursorKind::of(&relative),
+            "at the root the composed path IS the argument"
+        );
+
+        for cursor_par in alphabet() {
+            let cursor = par_to_path(&cursor_par);
+            if cursor.is_empty() {
+                continue; // `[]` — the cursor contributes nothing, so it IS the root
+            }
+            assert_eq!(
+                composed_cursor_kind(&cursor, &relative),
+                CursorKind::Split,
+                "below the root every composed path is a list: cursor = \
+                 {cursor_par:?}, relative = {relative:?}"
+            );
+        }
+    }
+}
+
 /// The FIRST consequence: the value-side reader
 /// (`rholang_pathmap_to_e_pathmap`) and the key-side reader (a `to_next_val`
 /// walk that decodes keys — `canonical_ps_from_trie`) report the same entries.
@@ -915,21 +1101,54 @@ fn entry_key_at_the_root_moves_no_split_arm_bytes() {
     }
 }
 
-/// Below the root the argument is a RELATIVE descent and neither the cursor
-/// nor `par_to_path` carries the discriminator, so this arm still rebuilds and
-/// still guesses "split" — unchanged from before stage 3, and pinned so the
-/// remaining gap is explicit rather than implied.
+/// ★ Below the root, BOTH arms of the relative argument compose onto the
+/// cursor and the composed path is a LIST — the three rows of the matrix, on
+/// ONE map.
+///
+/// ⚠ This test previously asserted only the FIRST row (a LIST relative
+/// argument), under the name `entry_key_below_the_root_still_rebuilds` and the
+/// claim that the arm "still guesses split". That claim was true and harmless
+/// for a list argument — whose arm IS split — and it was a wrong answer for a
+/// bare one, which the row did not drive. A guard for `entry_key_at` that
+/// exercised only `entry_key_at`'s working arm could not reject what it was
+/// written to reject; defect #108 lived underneath it. Every row is here now,
+/// and the second one is the one that used to be a miss on every map.
 #[test]
-fn entry_key_below_the_root_still_rebuilds() {
+fn entry_key_below_the_root_composes_both_arms_onto_the_cursor() {
     use models::rust::pathmap_integration::entry_key_at;
 
-    let cursor = par_to_path(&make_string_par("a")); // one segment: 04 01 61
-    let relative = make_list_of(vec![make_string_par("x")]);
     let map = create_pathmap_from_elements(&mixed_elements(), None).map;
+    let cursor = par_to_path(&make_string_par("a")); // one segment: 04 01 61
+
+    // ROW 1 — a LIST relative argument. Terminated, as it always was.
     assert_eq!(
-        entry_key_at(&cursor, &relative, &map),
+        entry_key_at(&cursor, &make_list_of(vec![make_string_par("x")]), &map),
         vec![0x04, 0x01, 0x61, 0x04, 0x01, 0x78, 0x00],
-        "the composed path is terminated — the split-frame guess"
+        "a list relative argument composes to the terminated key of [\"a\",\"x\"]"
+    );
+
+    // ★ ROW 2 — a BARE relative argument. The composed path is `["a", 1]`,
+    // which is a LIST, so the key is TERMINATED. Before the composition law
+    // existed this returned `04 01 61 03 02` — an unterminated multi-segment
+    // key, in the image of no Par, which `map.get` could not match on any map.
+    assert_eq!(
+        entry_key_at(&cursor, &make_int_par(1), &map),
+        vec![0x04, 0x01, 0x61, 0x03, 0x02, 0x00],
+        "★ a bare relative argument composes to the terminated key of [\"a\",1]"
+    );
+    assert_eq!(
+        entry_key_at(&cursor, &make_int_par(1), &map),
+        encode_trie_path(&make_list_of(vec![make_string_par("a"), make_int_par(1)])),
+        "…which is exactly the key the codec gives the composed path"
+    );
+
+    // ROW 3 — the EMPTY list contributes no segments, so the composed path is
+    // the cursor's own elements as a list. This is the one composition where
+    // the argument's own arm was already the composed arm.
+    assert_eq!(
+        entry_key_at(&cursor, &make_list_of(vec![]), &map),
+        vec![0x04, 0x01, 0x61, 0x00],
+        "an empty relative path names the cursor's path as a list"
     );
 }
 
@@ -1054,41 +1273,32 @@ fn test_zipper_deep_path() {
 
 // ============ ACTUAL DROP HEAD TESTS ============
 
+/// `dropHead`'s RULE — "remove the first `n` elements from every entry's path"
+/// — over the codec's notion of a path.
+///
+/// ⚠ This used to be a hand-copied duplicate of the reducer's loop, `if let
+/// Some(EListBody(list)) = par.exprs.first()` and all, so these eight tests
+/// asserted the behaviour of a COPY and could not have gone red on any change
+/// to the reducer. It is now the rule expressed over the same public classifier
+/// the reducer calls (`path_elements`), and the reducer's own behaviour is
+/// pinned end-to-end, through the interpreter, in
+/// `rholang/tests/drop_head_spec.rs` — including the two arms these fixtures
+/// never build (a bare entry, and an entry the codec escapes).
 fn perform_drophead(elements: Vec<Par>, n: usize) -> Vec<Par> {
-    // Simulate what the interpreter does in dropHead
-    let mut result_elements = Vec::new();
+    use models::rust::pathmap_integration::path_elements;
 
+    let mut result_elements = Vec::with_capacity(elements.len());
     for par in &elements {
-        // Check if this Par is a list
-        if let Some(ExprInstance::EListBody(list)) =
-            par.exprs.first().and_then(|e| e.expr_instance.as_ref())
-        {
-            // It's a list - drop n elements from the beginning
-            if list.ps.len() > n {
-                let remaining = list.ps[n..].to_vec();
-                let new_list = EList {
-                    ps: remaining,
-                    locally_free: list.locally_free.clone(),
-                    connective_used: list.connective_used,
-                    remainder: list.remainder.clone(),
-                };
-                let new_par = Par {
-                    exprs: vec![Expr {
-                        expr_instance: Some(ExprInstance::EListBody(new_list)),
-                    }],
-                    ..par.clone()
-                };
-                result_elements.push(new_par);
-            }
-            // If not enough elements, skip this entry
-        } else {
-            // Not a list - keep as-is if n == 0
-            if n == 0 {
-                result_elements.push(par.clone());
-            }
+        let path = path_elements(par);
+        match n {
+            // Dropping nothing is the identity, at every path length.
+            0 => result_elements.push(par.clone()),
+            // A path of `n` or fewer elements is exhausted by the drop.
+            _ if path.len() <= n => continue,
+            // …otherwise the entry becomes the ground list of its path's tail.
+            _ => result_elements.push(make_list_of(path[n..].to_vec())),
         }
     }
-
     result_elements
 }
 

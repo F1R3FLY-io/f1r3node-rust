@@ -27,7 +27,9 @@ use models::rust::par_map_type_mapper::ParMapTypeMapper;
 use models::rust::par_set::ParSet;
 use models::rust::par_set_type_mapper::ParSetTypeMapper;
 use models::rust::pathmap_crate_type_mapper::PathMapCrateTypeMapper;
-use models::rust::pathmap_integration::{cursor_entry_key, segments_to_key, CursorKind};
+use models::rust::pathmap_integration::{
+    cursor_entry_key, path_elements, segments_to_key, CursorKind,
+};
 use models::rust::pathmap_native_query::{
     collect_child_segments, collect_subtrie_values, next_value_key, path_prefix_exists,
     subtrie_value_count,
@@ -5086,43 +5088,78 @@ impl DebruijnInterpreter {
                             .metering
                             .reserve_incremental_primitive(union_cost(n))?;
 
-                        // For dropHead, we need to return a new EPathMap with modified path elements
-                        // Instead of using PathMap, directly construct the result elements
-                        let mut result_elements = Vec::new();
+                        // `dropHead(n)` removes the first `n` elements from
+                        // EVERY entry's path (docs/rholang/07-pathmaps-and-
+                        // zippers.md), so it needs one thing about each entry:
+                        // HOW LONG ITS PATH IS. That is the codec's question,
+                        // and `path_elements` is the codec's answer — a
+                        // split-arm carrier contributes one path element per
+                        // list element, and EVERY other entry is a path of
+                        // length ONE (the bare arm, or the `0x0F` escape arm).
+                        //
+                        // ⚠ This loop used to ask `par.exprs.first()` for an
+                        // `EListBody` instead, which is strictly more permissive
+                        // than the codec's `split_carrier_list`: an entry
+                        // carrying BOTH a list and a send — `[1,2] | @"d"!(3)`,
+                        // which a program can put in a map by sending it over a
+                        // channel — was called a 2-element path by this loop and
+                        // a 1-element (escaped) path by the trie. `dropHead(1)`
+                        // then rewrote it to `[2] | @"d"!(3)`: it dropped an
+                        // element from the entry's INTERIOR rather than from its
+                        // PATH, which is a wrong answer about an entry the trie
+                        // says has no head to drop. It is the same classifier
+                        // divergence that cost `setSubtrie` its bare source
+                        // entries; there is now ONE classifier.
+                        let n = n as usize;
+                        let mut result_elements = Vec::with_capacity(base_pathmap.ps.len());
 
                         for par in &base_pathmap.ps {
-                            // Check if this Par is a list
-                            if let Some(models::rhoapi::expr::ExprInstance::EListBody(list)) =
-                                par.exprs.first().and_then(|e| e.expr_instance.as_ref())
-                            {
-                                // It's a list - drop n elements from the beginning
-                                if list.ps.len() > n as usize {
-                                    let remaining = list.ps[(n as usize)..].to_vec();
-                                    let new_list = models::rhoapi::EList {
-                                        ps: remaining,
-                                        locally_free: list.locally_free.clone(),
-                                        connective_used: list.connective_used,
-                                        remainder: list.remainder.clone(),
-                                    };
-                                    let new_par = Par {
-                                        exprs: vec![models::rhoapi::Expr {
-                                            expr_instance: Some(
-                                                models::rhoapi::expr::ExprInstance::EListBody(
-                                                    new_list,
-                                                ),
+                            let elements = path_elements(par);
+                            match n {
+                                // Dropping NOTHING is the identity — on both
+                                // arms and at every path length, including the
+                                // empty path `[]`. Two things ride on this arm
+                                // coming first. Rebuilding the entry here would
+                                // turn the bare `5` into the singleton list
+                                // `[5]`, a different entry under a different
+                                // key; and testing exhaustion first would delete
+                                // the ROOT entry `[]`, whose path has zero
+                                // elements — which is what `0 > 0` did, so
+                                // `{| [] |}.dropHead(0)` returned the EMPTY map
+                                // while the method's own meaning, and the test
+                                // named "dropHead(0) should preserve all
+                                // elements", say the identity. No fixture held
+                                // `[]`, so the contradiction was never reached.
+                                0 => result_elements.push(par.clone()),
+                                // A path with `n` or fewer elements is exhausted
+                                // by the drop and the entry goes — the pinned
+                                // rule for ground lists (`dropHead(k)` on a
+                                // k-element path removes it), now applied by ONE
+                                // rule to both arms. The bare entry `5` is a
+                                // path of length 1, so it survives `dropHead(0)`
+                                // and no other.
+                                _ if elements.len() <= n => continue,
+                                // Only a split-arm entry can reach here (a
+                                // one-element path was taken by the arm above),
+                                // so the tail is a ground list: the carrier's
+                                // own metadata is at ground defaults by
+                                // `split_carrier_list`'s definition, which is
+                                // why the rebuilt entry carries none of it.
+                                _ => result_elements.push(Par {
+                                    exprs: vec![models::rhoapi::Expr {
+                                        expr_instance: Some(
+                                            models::rhoapi::expr::ExprInstance::EListBody(
+                                                models::rhoapi::EList {
+                                                    ps: elements[n..].to_vec(),
+                                                    locally_free: Vec::new(),
+                                                    connective_used: false,
+                                                    remainder: None,
+                                                },
                                             ),
-                                        }],
-                                        ..par.clone()
-                                    };
-                                    result_elements.push(new_par);
-                                }
-                                // If not enough elements, skip this entry
-                            } else {
-                                // Not a list - can't drop head, skip or keep as-is based on n
-                                if n == 0 {
-                                    result_elements.push(par.clone());
-                                }
-                                // If n > 0, we skip non-list entries
+                                        ),
+                                    }],
+                                    ..Default::default()
+                                }),
                             }
                         }
                         Ok(Expr {
@@ -5541,18 +5578,29 @@ impl DebruijnInterpreter {
             ) -> Result<Expr, InterpreterError> {
                 match base_expr.expr_instance.clone().unwrap() {
                     ExprInstance::EZipperBody(mut zipper) => {
-                        use models::rust::pathmap_integration::par_to_path;
+                        use models::rust::pathmap_integration::{
+                            composed_cursor_kind, par_to_path,
+                        };
 
                         // Convert the path argument to byte segments
                         let path_segments = par_to_path(path_par);
 
+                        // ★ The composed cursor's arm, by the ONE composition
+                        // law (`composed_cursor_kind`): the ARGUMENT's arm at
+                        // the root, and `Split` below it, because a composed
+                        // path of two or more elements is a LIST and has no
+                        // bare form. Read BEFORE the extend — the law is about
+                        // the cursor this descent starts from. That is what
+                        // makes `m.readZipperAt(p)` and
+                        // `m.readZipper().descendTo(p)` name the same entry for
+                        // every `p`, and what stops a bare argument below the
+                        // root from building a key in the image of no Par
+                        // (#108).
+                        zipper.cursor_kind =
+                            composed_cursor_kind(&zipper.current_path, path_par).to_wire();
                         // Update the zipper's current_path to navigate to the new location
                         // Append the new path segments to the current path
                         zipper.current_path.extend(path_segments);
-                        // …and the composed cursor takes the ARGUMENT's arm, so
-                        // `m.readZipperAt(p)` and `m.readZipper().descendTo(p)`
-                        // name the same entry for every `p`.
-                        zipper.cursor_kind = CursorKind::of(path_par).to_wire();
 
                         Ok(Expr {
                             expr_instance: Some(ExprInstance::EZipperBody(zipper)),

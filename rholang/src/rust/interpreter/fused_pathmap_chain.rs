@@ -131,7 +131,7 @@ use models::rhoapi::var::VarInstance;
 use models::rhoapi::{EMethod, EPathMap, EZipper, Expr, Par};
 use models::rust::pathmap_crate_type_mapper::{interned_epathmap, InternedEPathMap};
 use models::rust::pathmap_integration::{
-    cursor_entry_key, entry_key_at, par_to_path, segments_to_key, CursorKind,
+    composed_cursor_kind, cursor_entry_key, entry_key_at, par_to_path, segments_to_key, CursorKind,
 };
 use models::rust::pathmap_native_query::{
     collect_child_segments, collect_subtrie_values, path_prefix_exists,
@@ -724,10 +724,13 @@ impl DebruijnInterpreter {
                     ViewMode::Zipper { focus, kind, .. } => {
                         let path_par =
                             arg_b.as_ref().expect("arity-1 link must have a Position-B argument");
+                        // ★ The composed cursor's arm, by the ONE composition
+                        // law — the ARGUMENT's arm at the root, `Split` below
+                        // it (#108). Read BEFORE the extend, exactly as the
+                        // twin in `reduce.rs` does.
+                        *kind = composed_cursor_kind(focus, path_par);
                         // :3853-3857 — append WITHOUT existence checking.
                         focus.extend(par_to_path(path_par));
-                        // …and the composed cursor takes the ARGUMENT's arm.
-                        *kind = CursorKind::of(path_par);
                     }
                     ViewMode::Map => {
                         // :3863-3866 — descendTo has NO EPathmapBody arm.

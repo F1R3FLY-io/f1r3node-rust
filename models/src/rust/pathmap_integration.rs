@@ -24,7 +24,8 @@ use pathmap::PathMap;
 
 use crate::rhoapi::{Par, Var};
 use crate::rust::canonical_path::{
-    encode_trie_path, encode_trie_segment, split_carrier_list, tag, takes_split_arm,
+    decode_trie_path, encode_trie_path, encode_trie_segment, split_carrier_list, tag,
+    takes_split_arm,
 };
 
 /// Type alias for our standard use case: PathMap from bytes to Rholang Par.
@@ -137,9 +138,40 @@ impl CursorKind {
 /// hold. Pinned by
 /// `canonical_path::tests::par_to_path_agrees_with_the_codec_about_which_pars_split`.
 pub fn par_to_path(par: &Par) -> Vec<Vec<u8>> {
+    path_elements(par).iter().map(encode_trie_segment).collect()
+}
+
+/// The ELEMENTS of the path `par` names, as the codec splits it — the element
+/// view of which [`par_to_path`] is the segment view. By construction
+///
+/// ```text
+/// par_to_path(p) == path_elements(p).map(encode_trie_segment)
+/// path_elements(p).len() == par_to_path(p).len()   ==  the path's LENGTH
+/// ```
+///
+/// so anything that needs to know *how many elements a path has*, or *what its
+/// tail is*, asks here instead of re-deriving the split. A split-arm carrier
+/// ([`takes_split_arm`]) contributes its own list elements; **every other Par
+/// contributes ITSELF, as a path of length one** — the bare arm and the `0x0F`
+/// escape arm are both one segment.
+///
+/// # ⚠ Why re-deriving the split is a defect and not a style question
+///
+/// The tempting local test is `par.exprs.first()` matching an `EListBody`. That
+/// is STRICTLY MORE PERMISSIVE than the codec's `split_carrier_list`, which
+/// also requires the carrier to hold no sends/receives/news/matches/bundles/
+/// connectives/conditionals/unforgeables, no par-level `locally_free`, and a
+/// list whose own metadata is at ground defaults. A Par carrying BOTH a list
+/// and a send — `[1,2] | @"d"!(3)`, which a program can put in a map by sending
+/// it over a channel — passes the local test and fails the codec's, so the two
+/// disagree about how long its path is: the local test says 2, the trie says 1
+/// (it is one escaped segment). Every such disagreement is a wrong answer about
+/// a path. This is the same divergence that cost `setSubtrie` its bare source
+/// entries and `dropHead` its non-list entries.
+pub fn path_elements(par: &Par) -> &[Par] {
     match split_carrier_list(par) {
-        Some(list) => list.ps.iter().map(encode_trie_segment).collect(),
-        None => vec![encode_trie_segment(par)],
+        Some(list) => &list.ps,
+        None => std::slice::from_ref(par),
     }
 }
 
@@ -161,13 +193,21 @@ pub fn par_to_path(par: &Par) -> Vec<Vec<u8>> {
 /// `segments_to_key(segments, false)` under every kind, so they are unaffected
 /// by the discriminator and their bytes never move. See `pathmap_native_query`
 /// for the branch-vs-entry semantics that follow from this split.
+///
+/// # ★ The read-side image invariant, checked here
+///
+/// This is the single point every ENTRY key passes through, so it is where the
+/// dual of the write-side entry invariant ([`trie_entry_divergences`]) is
+/// enforced: the key it returns is in the image of `encode_trie_path`
+/// ([`entry_key_is_in_codec_image`]). See that function for why a key outside
+/// the image is a defect and not merely a miss.
 pub fn cursor_entry_key(
     segments: &[Vec<u8>],
     kind: CursorKind,
     map: &RholangPathMap,
 ) -> Vec<u8> {
     let bare = segments_to_key(segments, false);
-    match kind {
+    let key = match kind {
         CursorKind::Bare => bare,
         CursorKind::Split => {
             let mut split = bare;
@@ -185,6 +225,113 @@ pub fn cursor_entry_key(
                 split
             }
         },
+    };
+    debug_assert!(
+        entry_key_is_in_codec_image(&key),
+        "cursor_entry_key built an entry key that is in the image of no Par, \
+         so it can never hit on any map: kind = {kind:?}, {} segment(s), \
+         key = {key:02x?}, decode = {:?}",
+        segments.len(),
+        decode_trie_path(&key).err()
+    );
+    key
+}
+
+/// ★ **THE READ-SIDE IMAGE INVARIANT**, stated executably:
+///
+/// ```math
+/// \forall\ \text{entry keys } k \text{ a reader constructs} .\quad
+///   \mathrm{decode\_trie\_path}(k) \in \mathrm{Ok}
+/// ```
+///
+/// # Why a key outside the image is a defect and not a miss
+///
+/// Every value in a `RholangPathMap` is filed under `encode_trie_path` of
+/// itself ([`create_pathmap_from_elements`]), and `decode_trie_path` accepts
+/// EXACTLY the encoder's image (`canonical_path.rs`: "decode-accepts ≡
+/// encoder-image"). So a key the decoder rejects is a key no entry can ever be
+/// stored under, and `map.get` with it **misses on every map, whatever the map
+/// holds** — the lookup is not answering "absent", it is asking an
+/// unanswerable question. Such a key is therefore never a fact about the data;
+/// it is always a defect in the reader.
+///
+/// The two shapes that are rejected, and what produces them:
+///
+/// | rejected key | `CodecError` | what builds it |
+/// |---|---|---|
+/// | `concat(segments)`, `segments.len() ≥ 2` | `UnterminatedMultiSegment` | a `Bare` cursor below depth 1 — **defect #108** |
+/// | `[]` (the empty key) | `EmptyPath` | a `Bare` cursor with no segments |
+///
+/// A bare entry's key is exactly ONE segment (`encode_trie_path`'s bare arm
+/// emits one segment and no terminator), so [`CursorKind::Bare`] is inhabited
+/// at exactly one cursor depth — 1 — and is nonsense at every other. That is
+/// the whole content of the invariant, and it is what
+/// [`composed_cursor_kind`] exists to respect.
+///
+/// # Relationship to the write-side invariant
+///
+/// [`trie_entry_divergences`] checks PRODUCERS (`∀ (k,v) ∈ m . enc(v) = k`);
+/// this checks CONSUMERS. Neither implies the other, and #108 is the proof: the
+/// trie was perfect and every write-side check passed, while the reader asked
+/// for a key in the image of no Par.
+///
+/// # Cost
+///
+/// One `decode_trie_path` per entry-key construction. It is called from
+/// production code only inside a `debug_assert!` in [`cursor_entry_key`], so
+/// release builds (consensus nodes) do not pay for it, while the whole test
+/// corpus runs with it live.
+pub fn entry_key_is_in_codec_image(key: &[u8]) -> bool { decode_trie_path(key).is_ok() }
+
+/// ★ **THE COMPOSITION LAW** — the arm the cursor `cursor ⌢ path_par` takes,
+/// in the ONE place every composer spends it.
+///
+/// ```math
+/// \mathrm{kind}(\mathrm{cursor} \frown p) \;=\;
+///   \begin{cases}
+///     \mathrm{CursorKind::of}(p) & \text{if } \mathrm{cursor} = \varepsilon,\\
+///     \mathrm{Split}             & \text{otherwise.}
+///   \end{cases}
+/// ```
+///
+/// # Why the second arm is forced
+///
+/// `encode_trie_path` emits exactly two shapes (`canonical_path.rs`
+/// `push_path_ops`): the split arm is `concat(per-element segments) ++ 0x00`,
+/// and the bare arm is ONE segment with no terminator. **A bare entry's key is
+/// therefore exactly one segment long**, so a cursor of `n` segments can name a
+/// bare entry only when `n = 1`; at `n ≥ 2` the unterminated concatenation is
+/// in the image of no Par ([`entry_key_is_in_codec_image`]) and names nothing
+/// at all.
+///
+/// Below the root the cursor contributes `n ≥ 1` segments. If the relative path
+/// contributes at least one more, the composed path has `n ≥ 2` and the
+/// terminated key is the only key it can have. If it contributes none — which
+/// happens for exactly one Par, the empty list `[]`, since [`par_to_path`]
+/// returns one segment for every non-split Par and `list.ps.len()` for a split
+/// one — then `CursorKind::of([])` is `Split` already, and the two arms agree.
+/// So below the root the composed arm is `Split` unconditionally.
+///
+/// # Why the FIRST arm is not the same rule
+///
+/// At the root the cursor contributes nothing, so the composed path IS the
+/// argument and takes the argument's own arm — which is how
+/// `map.atPath(5)` names the bare entry `5` while `map.atPath([5])` names the
+/// singleton list, two entries one map may hold at once.
+///
+/// # ⚠ The defect this replaced (#108)
+///
+/// All three composers — `entry_key_at` (`atPath`), `descendTo` in `reduce.rs`,
+/// and `descendTo` in `fused_pathmap_chain.rs` — each carried their own copy of
+/// the law, and all three copies said *"the composed cursor takes the
+/// ARGUMENT's arm"*. That is true only at the root. Below it,
+/// `readZipperAt(["a"]).atPath(5)` built `enc("a") ‖ enc(5)` with no
+/// terminator and could not hit `["a",5]` — or anything else. The law now
+/// exists once; a fourth composer inherits it rather than re-deriving it.
+pub fn composed_cursor_kind(cursor: &[Vec<u8>], path_par: &Par) -> CursorKind {
+    match cursor.is_empty() {
+        true => CursorKind::of(path_par),
+        false => CursorKind::Split,
     }
 }
 
@@ -229,11 +376,23 @@ pub fn segments_to_key(segments: &[Vec<u8>], terminate: bool) -> Vec<u8> {
 ///   split-form Par this is byte-identical to the old expression (the two
 ///   agree exactly on the split arm), so the ground-LIST corpus does not move.
 ///
-/// * **Below the root** the argument is a RELATIVE descent: its elements
-///   extend the cursor's, and the composed cursor's kind is the ARGUMENT's arm
-///   ([`CursorKind::of`]) — descending by `["x"]` lands on a split frame,
-///   descending by `1` lands on a bare element. That composition is what makes
-///   `readZipperAt(p)` and `readZipper().descendTo(p)` name the same entry.
+/// * **Below the root** the argument is a RELATIVE descent: its elements extend
+///   the cursor's, and the composed cursor's arm is [`composed_cursor_kind`] —
+///   `Split`, because a composed path of two or more elements is a LIST and has
+///   no bare form. `readZipperAt(["a"]).atPath(5)` therefore names `["a",5]`,
+///   the same entry `readZipper().atPath(["a",5])` names from the root, and
+///   that agreement is what makes a cursor a position rather than a mode.
+///
+/// # ⚠ The bare-element key defect, read side, BELOW the root (#108)
+///
+/// This arm used to pass the ARGUMENT's own arm as the composed cursor's arm.
+/// For a bare argument below the root that produced an UNTERMINATED
+/// multi-segment key — `enc("a") ‖ enc(5)` — which `decode_trie_path` rejects
+/// as `UnterminatedMultiSegment` and which is therefore in the image of no Par:
+/// the lookup could not hit on ANY map. The three rows that separate the arms
+/// are pinned together in
+/// `rholang/tests/relative_path_composition_spec.rs`, and the key's membership
+/// of the codec image is checked inside [`cursor_entry_key`].
 pub fn entry_key_at(cursor: &[Vec<u8>], path_par: &Par, map: &RholangPathMap) -> Vec<u8> {
     match cursor.is_empty() {
         // ZERO AMBIGUITY: the reader has the Par, so it can ask the codec.
@@ -243,7 +402,7 @@ pub fn entry_key_at(cursor: &[Vec<u8>], path_par: &Par, map: &RholangPathMap) ->
             let mut segments = Vec::with_capacity(cursor.len() + relative.len());
             segments.extend_from_slice(cursor);
             segments.extend(relative);
-            cursor_entry_key(&segments, CursorKind::of(path_par), map)
+            cursor_entry_key(&segments, composed_cursor_kind(cursor, path_par), map)
         }
     }
 }
