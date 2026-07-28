@@ -13,6 +13,7 @@ use super::merging_logic::{consumes_affected, produces_affected};
 use crate::rspace::errors::HistoryError;
 use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use crate::rspace::hashing::stable_hash_provider;
+use crate::rspace::hashing::stable_hash_provider::StableHashSerialize;
 use crate::rspace::history::history_reader::HistoryReader;
 use crate::rspace::history::instances::rspace_history_reader_impl::RSpaceHistoryReaderImpl;
 use crate::rspace::serializers::cold_store_decode::ColdStoreDecode;
@@ -274,7 +275,7 @@ impl StateChange {
         event_log_index: &EventLogIndex,
     ) -> Result<Self, HistoryError>
     where
-        C: Clone + ColdStoreDecode + Serialize + 'static + Sync + Send,
+        C: Clone + ColdStoreDecode + StableHashSerialize + 'static + Sync + Send,
         P: Clone + ColdStoreDecode + 'static + Sync + Send,
         A: Clone + ColdStoreDecode + 'static + Sync + Send,
         K: Clone + ColdStoreDecode + 'static + Sync + Send,

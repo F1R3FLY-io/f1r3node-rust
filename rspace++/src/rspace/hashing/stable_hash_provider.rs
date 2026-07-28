@@ -44,26 +44,34 @@ impl StableHashSerialize for i32 {}
 impl StableHashSerialize for u64 {}
 impl StableHashSerialize for bool {}
 impl StableHashSerialize for Vec<u8> {}
+// The state-root key type, hashed as a channel by the exporter/importer paths.
+impl StableHashSerialize for Blake2b256Hash {}
 
 // See rspace/src/main/scala/coop/rchain/rspace/hashing/StableHashProvider.scala
-pub fn hash<C: Serialize>(channel: &C) -> Blake2b256Hash {
-    let bytes = bincode::serialize(channel).unwrap();
+//
+// The CHANNEL leg of every event hash. Routed through [`StableHashSerialize`]
+// for the same reason the datum and pattern legs already are: the default body
+// IS `bincode::serialize`, so every implementor is byte-identical by
+// definition unless it overrides, and an override may ONLY be a byte-identical
+// faster construction. `models` overrides `Par` with the single-walk
+// trampolined encoder (`models::rust::rholang::wire_encode`), which is gated
+// byte-identical against the derived `Serialize` over an exhaustive structural
+// corpus plus proptest, with an executed mutation proof.
+pub fn hash<C: StableHashSerialize>(channel: &C) -> Blake2b256Hash {
+    let bytes = channel.stable_hash_bytes();
     Blake2b256Hash::new(&bytes)
 }
 
-pub fn hash_vec<C: Serialize>(channels: &Vec<C>) -> Vec<Blake2b256Hash> {
+pub fn hash_vec<C: StableHashSerialize>(channels: &Vec<C>) -> Vec<Blake2b256Hash> {
     let mut hashes: Vec<Blake2b256Hash> = channels
         .iter()
-        .map(|channel| {
-            let bytes = bincode::serialize(&channel).unwrap();
-            Blake2b256Hash::new(&bytes)
-        })
+        .map(|channel| Blake2b256Hash::new(&channel.stable_hash_bytes()))
         .collect();
     hashes.sort();
     hashes
 }
 
-pub fn hash_from_vec<C: Serialize>(channels: &Vec<C>) -> Blake2b256Hash {
+pub fn hash_from_vec<C: StableHashSerialize>(channels: &Vec<C>) -> Blake2b256Hash {
     let hashes = hash_vec(channels);
     hash_from_hashes(&hashes)
 }

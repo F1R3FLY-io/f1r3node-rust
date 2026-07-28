@@ -13,7 +13,7 @@ use super::history_repository::{PREFIX_DATUM, PREFIX_JOINS, PREFIX_KONT};
 use super::instances::rspace_history_reader_impl::RSpaceHistoryReaderImpl;
 use crate::rspace::errors::HistoryError;
 use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
-use crate::rspace::hashing::stable_hash_provider::{hash, hash_from_vec};
+use crate::rspace::hashing::stable_hash_provider::{hash, hash_from_vec, StableHashSerialize};
 use crate::rspace::history::cold_store::PersistedData;
 use crate::rspace::history::history::History;
 use crate::rspace::history::history_repository::HistoryRepository;
@@ -46,7 +46,7 @@ const CHECKPOINT_PARALLEL_ACTIONS_THRESHOLD: usize = 256;
 
 impl<C, P, A, K> HistoryRepositoryImpl<C, P, A, K>
 where
-    C: Clone + Send + Sync + Serialize,
+    C: Clone + Send + Sync + StableHashSerialize,
     P: Clone + Send + Sync + Serialize,
     A: Clone + Send + Sync + Serialize,
     K: Clone + Send + Sync + Serialize,
@@ -309,7 +309,7 @@ where
 
 impl<C, P, A, K> HistoryRepository<C, P, A, K> for HistoryRepositoryImpl<C, P, A, K>
 where
-    C: Clone + Send + Sync + Serialize + ColdStoreDecode + 'static,
+    C: Clone + Send + Sync + StableHashSerialize + ColdStoreDecode + 'static,
     P: Clone + Send + Sync + Serialize + ColdStoreDecode + 'static,
     A: Clone + Send + Sync + Serialize + ColdStoreDecode + 'static,
     K: Clone + Send + Sync + Serialize + ColdStoreDecode + 'static,

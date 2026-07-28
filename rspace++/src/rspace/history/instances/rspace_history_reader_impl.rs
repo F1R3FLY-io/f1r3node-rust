@@ -6,7 +6,7 @@ use shared::rust::store::key_value_store::KeyValueStore;
 
 use crate::rspace::errors::HistoryError;
 use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
-use crate::rspace::hashing::stable_hash_provider::{hash, hash_from_vec};
+use crate::rspace::hashing::stable_hash_provider::{hash, hash_from_vec, StableHashSerialize};
 use crate::rspace::history::cold_store::PersistedData;
 use crate::rspace::history::history::History;
 use crate::rspace::history::history_reader::{HistoryReader, HistoryReaderBase};
@@ -105,7 +105,7 @@ impl<C, P, A, K> RSpaceHistoryReaderImpl<C, P, A, K> {
 
 impl<C, P, A, K> HistoryReader<Blake2b256Hash, C, P, A, K> for RSpaceHistoryReaderImpl<C, P, A, K>
 where
-    C: Clone + ColdStoreDecode + Serialize + 'static + Sync + Send,
+    C: Clone + ColdStoreDecode + StableHashSerialize + 'static + Sync + Send,
     P: Clone + ColdStoreDecode + 'static + Sync + Send,
     A: Clone + ColdStoreDecode + 'static + Sync + Send,
     K: Clone + ColdStoreDecode + 'static + Sync + Send,
@@ -213,7 +213,7 @@ where
 
         impl<C, P, A, K> HistoryReaderBase<C, P, A, K> for HistoryReaderBaseImpl<C, P, A, K>
         where
-            C: Clone + ColdStoreDecode + Serialize + 'static + Sync + Send,
+            C: Clone + ColdStoreDecode + StableHashSerialize + 'static + Sync + Send,
             P: Clone + ColdStoreDecode + 'static + Sync + Send,
             A: Clone + ColdStoreDecode + 'static + Sync + Send,
             K: Clone + ColdStoreDecode + 'static + Sync + Send,

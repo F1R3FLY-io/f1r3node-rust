@@ -5,6 +5,7 @@ use serde::Serialize;
 use shared::rust::store::key_value_store::KeyValueStore;
 
 use super::instances::rspace_history_reader_impl::RSpaceHistoryReaderImpl;
+use crate::rspace::hashing::stable_hash_provider::StableHashSerialize;
 use crate::rspace::errors::{HistoryError, HistoryRepositoryError};
 use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use crate::rspace::history::history::{History, HistoryInstances};
@@ -76,7 +77,7 @@ pub const PREFIX_JOINS: u8 = 0x02;
 
 impl<C, P, A, K> HistoryRepositoryInstances<C, P, A, K>
 where
-    C: Clone + Send + Sync + Serialize + ColdStoreDecode + 'static,
+    C: Clone + Send + Sync + StableHashSerialize + ColdStoreDecode + 'static,
     P: Clone + Send + Sync + Serialize + ColdStoreDecode + 'static,
     A: Clone + Send + Sync + Serialize + ColdStoreDecode + 'static,
     K: Clone + Send + Sync + Serialize + ColdStoreDecode + 'static,

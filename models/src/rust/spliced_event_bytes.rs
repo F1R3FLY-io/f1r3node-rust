@@ -773,7 +773,34 @@ impl StableHashSerialize for TaggedContinuation {
     fn stable_hash_bytes(&self) -> Vec<u8> { event_hash_bytes_tagged_continuation(self) }
 }
 
+/// ★ PRODUCTION WIRING — the CHANNEL leg of every event hash.
+///
+/// `Par` is the channel type `C` of `RSpace<Par, BindPattern,
+/// ListParWithRandom, TaggedContinuation>`, so this override puts the
+/// single-walk trampolined encoder on `stable_hash_provider::hash` /
+/// `hash_vec` / `hash_from_vec` — reached once per produce and once per
+/// channel per consume.
+///
+/// ⚠ The trait's contract is exact and is quoted here because it is the whole
+/// safety argument: *"An override may ONLY be a byte-identical faster
+/// construction."* That obligation is discharged by
+/// `models/tests/wire_encode_differential.rs`, which asserts BYTE IDENTITY
+/// against the derived `Serialize` over every `ExprInstance` arm, every
+/// `ConnectiveInstance` arm, the full variant × arity × awkward-combination
+/// cross product, every awkward ground literal, both `EPathMap` serialize
+/// arms, deep terms past every old ceiling, and proptest-generated terms — and
+/// which carries an executed proof that it can go RED.
+///
+/// ⚠ This is the CHANNEL leg only. The datum, pattern and continuation legs
+/// above keep the intern-aware spliced emitter, which reuses cached bytes at
+/// filled-cell `EPathMap` nodes: a different and complementary optimization,
+/// deliberately untouched.
+impl StableHashSerialize for Par {
+    fn stable_hash_bytes(&self) -> Vec<u8> {
+        crate::rust::rholang::wire_encode::encode(self)
+    }
+}
+
 // Default-body impls (direct bincode) for rhoapi types used as space type
 // parameters in tests/tools without an EPathMap-bearing hot path.
-impl StableHashSerialize for Par {}
 impl StableHashSerialize for ParWithRandom {}

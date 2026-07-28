@@ -128,7 +128,7 @@ impl PartialOrd for Produce {
 }
 
 impl Produce {
-    pub fn create<C: Serialize, A: StableHashSerialize>(
+    pub fn create<C: StableHashSerialize, A: StableHashSerialize>(
         channel: &C,
         datum: &A,
         persistent: bool,
@@ -198,7 +198,7 @@ pub struct Consume {
 }
 
 impl Consume {
-    pub fn create<C: Serialize, P: StableHashSerialize, K: StableHashSerialize>(
+    pub fn create<C: StableHashSerialize, P: StableHashSerialize, K: StableHashSerialize>(
         channels: &Vec<C>,
         patterns: &Vec<P>,
         continuation: &K,

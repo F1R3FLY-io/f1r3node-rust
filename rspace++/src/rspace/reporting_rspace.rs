@@ -89,7 +89,7 @@ where
 #[derive(Clone)]
 pub struct ReportingRspace<C, P, A, K>
 where
-    C: Clone + Debug + Default + Serialize + Hash + Ord + Eq + 'static + Sync + Send,
+    C: Clone + Debug + Default + StableHashSerialize + Hash + Ord + Eq + 'static + Sync + Send,
     P: Clone + Debug + Default + Serialize + StableHashSerialize + 'static + Sync + Send,
     A: Clone + Debug + Default + Serialize + StableHashSerialize + 'static + Sync + Send,
     K: Clone + Debug + Default + Serialize + StableHashSerialize + 'static + Sync + Send,
@@ -110,7 +110,7 @@ where
         + Default
         + Send
         + Sync
-        + Serialize
+        + StableHashSerialize
         + Ord
         + Hash
         + Eq
@@ -261,7 +261,7 @@ where
         + Default
         + Send
         + Sync
-        + Serialize
+        + StableHashSerialize
         + Ord
         + Hash
         + Eq

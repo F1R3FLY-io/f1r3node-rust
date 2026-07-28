@@ -49,7 +49,7 @@ pub struct Datum<A: Clone> {
 impl<A> Datum<A>
 where A: Clone + StableHashSerialize
 {
-    pub fn create<C: Serialize>(channel: &C, a: A, persist: bool) -> Datum<A> {
+    pub fn create<C: StableHashSerialize>(channel: &C, a: A, persist: bool) -> Datum<A> {
         let source = Produce::create(channel, &a, persist);
         Datum {
             a: Arc::new(a),
@@ -81,7 +81,7 @@ where
     P: Clone + StableHashSerialize,
     K: Clone + StableHashSerialize,
 {
-    pub fn create<C: Clone + Serialize>(
+    pub fn create<C: Clone + StableHashSerialize>(
         channels: &Vec<C>,
         patterns: &Vec<P>,
         continuation: &K,

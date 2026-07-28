@@ -46,7 +46,11 @@ impl DeployChainIndex {
     ) -> Result<Self, HistoryError>
     where
         C: std::clone::Clone
-            + serde::Serialize
+            // ★ The CHANNEL leg's encoder. `StableHashSerialize`'s default body
+            // IS `bincode::serialize`, so this is not a behaviour change for any
+            // type that does not override; `models` overrides `Par` with the
+            // single-walk trampolined encoder, gated byte-identical.
+            + rspace_plus_plus::rspace::hashing::stable_hash_provider::StableHashSerialize
             + rspace_plus_plus::rspace::serializers::cold_store_decode::ColdStoreDecode
             + Send
             + Sync
