@@ -1,5 +1,35 @@
 # Tracing in Tests
 
+## Target-Naming Convention
+
+Every tracing macro on an operationally significant path — consensus, merging,
+recovery, deploy admission, finalization, proposing, replay — carries an
+explicit dotted target:
+
+```rust
+tracing::debug!(target: "f1r3fly.casper.recovery", "RejectedDeployBuffer populate: ...");
+```
+
+Naming: `f1r3fly.<domain>[.<feature>]` (e.g. `f1r3fly.merge.step`,
+`f1r3fly.casper.recovery`, `f1r3fly.finalizer`). Reuse an existing namespace
+before minting a new one — the full live list is `docs/tracing-targets.txt`.
+Module-path default targets (no `target:` field) are acceptable only for
+dev-loop noise with no operational consumer.
+
+Why explicit targets: a default target is the Rust module path, so file moves
+silently rename it and break every EnvFilter that referenced it; and related
+events scattered across modules cannot be enabled as one switch. Dotted
+targets are stable, semantic knobs (`f1r3fly.casper.recovery=debug` turns on
+the whole recovery story regardless of code layout).
+
+Enforcement (`scripts/ci/check-tracing-targets.sh`, run in CI):
+- `--check` — `docs/tracing-targets.txt` must match the source (regenerate
+  with `--write` after adding/renaming targets).
+- `--ratchet` — designated hot-path files must contain no untargeted macros;
+  the file list only grows.
+- `--validate-filter <conf>` — an EnvFilter expression (e.g. the integration
+  harness's `conf/rust.conf`) may only reference targets that exist.
+
 ## Casper, comm, and block-storage Tests
 
 All test suites in these crates initialize tracing via `init_logger()`, which delegates to `shared::rust::tracing_init::init_for_tests()`. The default filter is **`warn`** — `tracing::info!` and `tracing::debug!` calls are silent unless overridden.

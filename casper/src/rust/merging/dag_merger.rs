@@ -642,6 +642,7 @@ pub fn merge(
 
     // Log the block sets for debugging
     tracing::info!(
+        target: "f1r3fly.merge.step",
         "DagMerger.merge: LFB={}, scope={}, actualBlocks (above LFB)={}, lateBlocks={}",
         hex::encode(&lfb[..std::cmp::min(8, lfb.len())]),
         scope
@@ -829,6 +830,7 @@ pub fn merge(
 
         if post_dedup_count < pre_dedup_count {
             tracing::info!(
+                target: "f1r3fly.merge.step",
                 "DagMerger dedup: dropped {} stale chain(s) ({} -> {}), collateral deploys={}",
                 pre_dedup_count - post_dedup_count,
                 pre_dedup_count,
@@ -1548,6 +1550,7 @@ pub fn merge(
     rejected_slashes.sort();
 
     tracing::debug!(
+        target: "f1r3fly.merge.step",
         "DagMerger.merge: LFB={}, scope={}, actual={}, late={}, rejected_user={}, rejected_slash={}",
         hex::encode(&lfb[..std::cmp::min(8, lfb.len())]),
         scope
@@ -1565,6 +1568,7 @@ pub fn merge(
             .map(|(sig, _)| hex::encode(&sig[..std::cmp::min(8, sig.len())]))
             .collect();
         tracing::info!(
+            target: "f1r3fly.merge.step",
             "DagMerger rejected {} user deploys: {}",
             rejected_user_deploys.len(),
             rejected_str.join(", ")
@@ -1576,6 +1580,7 @@ pub fn merge(
             .map(|(sig, _)| hex::encode(&sig[..std::cmp::min(8, sig.len())]))
             .collect();
         tracing::info!(
+            target: "f1r3fly.merge.step",
             "DagMerger rejected {} slashes: {}",
             rejected_slashes.len(),
             rejected_str.join(", ")

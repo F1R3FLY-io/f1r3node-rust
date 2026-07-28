@@ -198,6 +198,7 @@ async fn run_validation_steps<T: TransportLayer + Send + Sync>(
     tracing::debug!(target: "f1r3fly.casper", "phlogiston-price-validated");
     if let Either::Left(_) = phlo_price_result {
         tracing::warn!(
+            target: "f1r3fly.casper.block_validation",
             "One or more deploys has phloPrice lower than {}",
             this.casper_shard_conf.min_phlo_price
         );
@@ -267,6 +268,7 @@ async fn update_mergeable_cache_after_validation<T: TransportLayer + Send + Sync
                 &mergeable_chs,
             ) {
                 tracing::warn!(
+                    target: "f1r3fly.casper.block_validation",
                     "Skipping block index cache update for {} {}: {}",
                     log_label,
                     PrettyPrinter::build_string_bytes(&block.block_hash),
@@ -276,6 +278,7 @@ async fn update_mergeable_cache_after_validation<T: TransportLayer + Send + Sync
         }
         Err(err) => {
             tracing::warn!(
+                target: "f1r3fly.casper.block_validation",
                 "Skipping mergeable/index cache update for {} {}: {}",
                 log_label,
                 PrettyPrinter::build_string_bytes(&block.block_hash),
@@ -291,6 +294,7 @@ pub(crate) async fn dispatch_validate<T: TransportLayer + Send + Sync>(
     snapshot: &mut CasperSnapshot,
 ) -> Result<Either<BlockError, ValidBlock>, CasperError> {
     tracing::info!(
+        target: "f1r3fly.casper.block_validation",
         "Validating block {}",
         PrettyPrinter::build_string_block_message(block, true)
     );
@@ -306,6 +310,7 @@ pub(crate) async fn dispatch_validate<T: TransportLayer + Send + Sync>(
         let block_info = PrettyPrinter::build_string_block_message(block, true);
         let deploy_count = block.body.deploys.len();
         tracing::info!(
+            target: "f1r3fly.casper.block_validation",
             "Block replayed: {} ({}d) ({:?}) [{:?}]",
             block_info,
             deploy_count,
@@ -326,6 +331,7 @@ pub(crate) async fn dispatch_validate_self_created<T: TransportLayer + Send + Sy
     post_state_hash: Bytes,
 ) -> Result<Either<BlockError, ValidBlock>, CasperError> {
     tracing::info!(
+        target: "f1r3fly.casper.block_validation",
         "Validating self-created block {}",
         PrettyPrinter::build_string_block_message(block, true)
     );
@@ -339,6 +345,7 @@ pub(crate) async fn dispatch_validate_self_created<T: TransportLayer + Send + Sy
             PrettyPrinter::build_string_bytes(&block.block_hash),
         );
         tracing::error!(
+            target: "f1r3fly.casper.block_validation",
             block_hash = %PrettyPrinter::build_string_bytes(&block.block_hash),
             expected = %PrettyPrinter::build_string_no_limit(&pre_state_hash),
             actual = %PrettyPrinter::build_string_no_limit(&block.body.state.pre_state_hash),
@@ -356,6 +363,7 @@ pub(crate) async fn dispatch_validate_self_created<T: TransportLayer + Send + Sy
             PrettyPrinter::build_string_bytes(&block.block_hash),
         );
         tracing::error!(
+            target: "f1r3fly.casper.block_validation",
             block_hash = %PrettyPrinter::build_string_bytes(&block.block_hash),
             expected = %PrettyPrinter::build_string_no_limit(&post_state_hash),
             actual = %PrettyPrinter::build_string_no_limit(&block.body.state.post_state_hash),
@@ -388,6 +396,7 @@ pub(crate) async fn dispatch_validate_self_created<T: TransportLayer + Send + Sy
         let block_info = PrettyPrinter::build_string_block_message(block, true);
         let deploy_count = block.body.deploys.len();
         tracing::info!(
+            target: "f1r3fly.casper.block_validation",
             "Self-created block validated: {} ({}d) ({:?}) [{:?}]",
             block_info,
             deploy_count,
@@ -412,6 +421,7 @@ pub(crate) fn dispatch_handle_invalid_block<T: TransportLayer + Send + Sync>(
                                        block: &BlockMessage|
      -> Result<KeyValueDagRepresentation, CasperError> {
         tracing::warn!(
+            target: "f1r3fly.casper.block_validation",
             "Recording invalid block {} for {:?}.",
             PrettyPrinter::build_string_bytes(&block.block_hash),
             status
@@ -515,6 +525,7 @@ pub(crate) fn dispatch_handle_invalid_block<T: TransportLayer + Send + Sync>(
             let block_hash_serde = BlockHashSerde(block.block_hash.clone());
             this.casper_buffer_storage.remove(block_hash_serde)?;
             tracing::warn!(
+                target: "f1r3fly.casper.block_validation",
                 "Recording invalid block {} for {:?}.",
                 PrettyPrinter::build_string_bytes(&block.block_hash),
                 status

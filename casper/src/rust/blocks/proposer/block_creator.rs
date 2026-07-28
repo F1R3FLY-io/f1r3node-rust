@@ -779,6 +779,7 @@ async fn prepare_user_deploys_with_policy(
     let cap_hit = retry_capped || ordinary_capped || in_scope_recovery_capped;
     if ordinary_capped {
         tracing::info!(
+            target: "f1r3fly.casper.recovery",
             "Ordinary deploy selection capped for block #{}: selected={}, deferred={}, cap={}, strategy={}, selected_bytes={}, deferred_bytes={}, remaining_byte_budget={}",
             block_number,
             selected_ordinary_count,
@@ -878,6 +879,7 @@ async fn prepare_user_deploys_with_policy(
     // Log deploy selection details when there are any deploys in the pool
     if !unfinalized.is_empty() || !casper_snapshot.deploys_in_scope.is_empty() {
         tracing::info!(
+            target: "f1r3fly.casper.recovery",
             "Deploy selection for block #{}: pool={}, future={} (validAfterBlockNumber >= {}), \
              blockExpired={} (validAfterBlockNumber <= {}), timeExpired={} (expirationTimestamp <= {}), \
              valid={}, alreadyInScope={}, selected={}",
@@ -898,6 +900,7 @@ async fn prepare_user_deploys_with_policy(
     // Log details for filtered-out deploys (to help debug why deploys aren't included)
     for d in &future_deploys {
         tracing::warn!(
+            target: "f1r3fly.casper.recovery",
             "Deploy {}... FILTERED (future): validAfterBlockNumber={} >= currentBlock={}",
             deploy_sig_prefix(&d.sig),
             d.data.valid_after_block_number,
@@ -906,6 +909,7 @@ async fn prepare_user_deploys_with_policy(
     }
     for d in &block_expired_deploys {
         tracing::warn!(
+            target: "f1r3fly.casper.recovery",
             "Deploy {}... FILTERED (block-expired): validAfterBlockNumber={} <= earliestBlock={}",
             deploy_sig_prefix(&d.sig),
             d.data.valid_after_block_number,
@@ -914,6 +918,7 @@ async fn prepare_user_deploys_with_policy(
     }
     for d in &time_expired_deploys {
         tracing::warn!(
+            target: "f1r3fly.casper.recovery",
             "Deploy {}... FILTERED (time-expired): expirationTimestamp={:?} <= currentTime={}",
             deploy_sig_prefix(&d.sig),
             d.data.expiration_timestamp,
@@ -925,6 +930,7 @@ async fn prepare_user_deploys_with_policy(
         .filter(|d| !selected_in_scope_recovery_sigs.contains(&d.sig))
     {
         tracing::warn!(
+            target: "f1r3fly.casper.recovery",
             "Deploy {}... FILTERED (already in scope): deploy already exists in DAG within lifespan window",
             deploy_sig_prefix(&d.sig)
         );
@@ -939,6 +945,7 @@ async fn prepare_user_deploys_with_policy(
         .collect();
     if !all_expired.is_empty() {
         tracing::info!(
+            target: "f1r3fly.casper.recovery",
             "Removing {} expired deploy(s) from storage and rejected-deploy buffer",
             all_expired.len()
         );
@@ -1500,6 +1507,7 @@ async fn prepare_slashing_deploys(
         );
 
         tracing::info!(
+            target: "f1r3fly.casper.proposer",
             "Issuing slashing deploy justified by block {}",
             pretty_printer::PrettyPrinter::build_string_bytes(&slash_candidate.invalid_block_hash)
         );
@@ -2465,6 +2473,7 @@ pub async fn create(
     if let Some(max_parent_ts) = parents.iter().map(|p| p.header.timestamp).max() {
         if now_millis < max_parent_ts {
             tracing::debug!(
+                target: "f1r3fly.casper.proposer",
                 "Adjusting block timestamp from {} to parent timestamp {} to avoid clock-skew regressions",
                 now_millis,
                 max_parent_ts
@@ -2474,6 +2483,7 @@ pub async fn create(
     }
 
     tracing::info!(
+        target: "f1r3fly.casper.proposer",
         "Creating block #{} (seqNum {})",
         next_block_num,
         next_seq_num
@@ -2688,6 +2698,7 @@ pub async fn create(
             let skipped = before.saturating_sub(v.len());
             if skipped > 0 {
                 tracing::info!(
+                    target: "f1r3fly.casper.recovery",
                     "Filtered {} deploy(s) already present in self latest-message chain",
                     skipped
                 );
@@ -2876,6 +2887,7 @@ pub async fn create(
         }
         if !allow_empty_blocks {
             tracing::info!(
+                target: "f1r3fly.casper.proposer",
                 "Skipping empty block creation: no new user deploys, no slashing deploys, no merge-rejected slashes to recover"
             );
             return Ok(BlockCreatorResult::NoNewDeploys);
@@ -2905,6 +2917,7 @@ pub async fn create(
                 next_seq_num,
             );
             tracing::info!(
+                target: "f1r3fly.casper.recovery",
                 "Recovering merge-rejected slash: invalid_block={}, original_issuer={}, target_activation_epoch={}",
                 pretty_printer::PrettyPrinter::build_string_bytes(&rs.invalid_block_hash),
                 hex::encode(&rs.issuer_public_key.bytes),
@@ -2976,6 +2989,7 @@ pub async fn create(
             Ok(data) => {
                 if attempted_user_deploys < original_user_deploys {
                     tracing::warn!(
+                        target: "f1r3fly.casper.recovery",
                         "Checkpoint merge recovered by reducing selected user deploys for block #{}: original_user_deploys={}, included_user_deploys={}, dummy_deploys={}, retries={}",
                         next_block_num,
                         original_user_deploys,
@@ -2997,6 +3011,7 @@ pub async fn create(
                 {
                     retry_count += 1;
                     tracing::warn!(
+                        target: "f1r3fly.casper.recovery",
                         "Checkpoint payment accounting failed for selected deploy batch in block #{}; retrying with fewer user deploys: attempted_user_deploys={}, attempted_total_deploys={}, next_user_deploys={}, error={}",
                         next_block_num,
                         attempted_user_deploys,
@@ -3014,6 +3029,7 @@ pub async fn create(
                         &msg,
                     )?;
                 tracing::warn!(
+                    target: "f1r3fly.casper.recovery",
                     "Gas payment accounting failure during checkpoint; quarantined_toxic_deploy_storage={} quarantined_toxic_rejected_buffer={} error={}",
                     removed_from_deploy_storage,
                     removed_from_rejected_buffer,
@@ -3027,6 +3043,7 @@ pub async fn create(
                 };
                 retry_count += 1;
                 tracing::warn!(
+                    target: "f1r3fly.casper.recovery",
                     "Checkpoint merge rejected selected deploy batch for block #{}; retrying with fewer user deploys: attempted_user_deploys={}, attempted_total_deploys={}, next_user_deploys={}, error={}",
                     next_block_num,
                     attempted_user_deploys,
@@ -3169,7 +3186,7 @@ pub async fn create(
 
     let block_info = pretty_printer::PrettyPrinter::build_string_block_message(&signed_block, true);
     let deploy_count = signed_block.body.deploys.len();
-    tracing::debug!("Block created: {} ({}d)", block_info, deploy_count);
+    tracing::debug!(target: "f1r3fly.casper.proposer", "Block created: {} ({}d)", block_info, deploy_count);
     let total_create_block_ms = create_started.elapsed().as_millis();
 
     tracing::debug!(

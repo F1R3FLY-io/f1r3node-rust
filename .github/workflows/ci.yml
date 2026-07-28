@@ -155,6 +155,11 @@ jobs:
           RUSTFLAGS: "-C target-feature=+aes,+sse2 -D warnings"
         run: cargo clippy --workspace --all-targets
 
+      - name: Check tracing-target inventory and ratchet
+        run: |
+          scripts/ci/check-tracing-targets.sh --check
+          scripts/ci/check-tracing-targets.sh --ratchet
+
   deny:
     name: cargo-deny
     needs: build_base

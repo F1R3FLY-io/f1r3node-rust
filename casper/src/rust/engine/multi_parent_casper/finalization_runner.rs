@@ -143,10 +143,11 @@ pub(crate) async fn run_queued_finalizer(
         {
             Ok(Ok(_)) => {}
             Ok(Err(err)) => {
-                tracing::warn!("finalizer-run failed: {:?}", err);
+                tracing::warn!(target: "f1r3fly.finalizer", "finalizer-run failed: {:?}", err);
             }
             Err(_) => {
                 tracing::warn!(
+                    target: "f1r3fly.finalizer",
                     "finalizer-run timed out after {:?}; skipping this cycle to avoid blocking propose",
                     finalizer_blocking_timeout
                 );
@@ -154,7 +155,7 @@ pub(crate) async fn run_queued_finalizer(
         }
 
         if finalizer_task_queued.swap(false, Ordering::SeqCst) {
-            tracing::debug!("finalizer-run-queued; continuing finalizer loop");
+            tracing::debug!(target: "f1r3fly.finalizer", "finalizer-run-queued; continuing finalizer loop");
             continue;
         }
 
@@ -216,7 +217,7 @@ pub(crate) async fn compute_last_finalized_block(
                         // Use RAII guard to ensure flag is reset even if we return early or panic
                         finalization_in_progress.store(true, Ordering::SeqCst);
                         let _guard = FinalizationGuard(finalization_in_progress.as_ref());
-                        tracing::debug!("Finalization started for {} blocks", finalized_set.len());
+                        tracing::debug!(target: "f1r3fly.finalizer", "Finalization started for {} blocks", finalized_set.len());
 
                         // process_finalized
                         for block_hash in &finalized_set {
@@ -247,7 +248,7 @@ pub(crate) async fn compute_last_finalized_block(
                                 "Removed {} deploys from deploy history as we finalized block {}.",
                                 deploys_count, finalized_set_str
                             );
-                            tracing::info!("{}", removed_deploy_msg);
+                            tracing::info!(target: "f1r3fly.finalizer", "{}", removed_deploy_msg);
 
                             // Remove block index from cache
                             runtime_manager.remove_block_index_cache(block_hash);
@@ -257,6 +258,7 @@ pub(crate) async fn compute_last_finalized_block(
                             // reachability-based background GC when enabled.
                             if !enable_mergeable_channel_gc {
                                 tracing::debug!(
+                                    target: "f1r3fly.finalizer",
                                     "Mergeable channel GC disabled; retaining mergeable data for finalized block {} (sender={}, seq={})",
                                     PrettyPrinter::build_string_bytes(&block.block_hash),
                                     PrettyPrinter::build_string_bytes(&block.sender),
@@ -354,7 +356,7 @@ pub(crate) async fn update_last_finalized_block<T: TransportLayer + Send + Sync>
             .is_err()
         {
             if !this.finalizer_task_queued.swap(true, Ordering::SeqCst) {
-                tracing::debug!("Finalizer already running; queued follow-up finalization run");
+                tracing::debug!(target: "f1r3fly.finalizer", "Finalizer already running; queued follow-up finalization run");
             }
             return Ok(());
         }
@@ -373,7 +375,7 @@ pub(crate) async fn update_last_finalized_block<T: TransportLayer + Send + Sync>
         });
         tokio::spawn(async move {
             if let Err(join_err) = handle.await {
-                tracing::error!("Finalization task terminated abnormally: {}", join_err);
+                tracing::error!(target: "f1r3fly.finalizer", "Finalization task terminated abnormally: {}", join_err);
             }
         });
     }

@@ -129,6 +129,7 @@ pub(crate) async fn admit_handle_valid_block<T: TransportLayer + Send + Sync>(
         if block.sender != validator_id.public_key.bytes {
             if let Some(signal) = this.heartbeat_signal_ref.get() {
                 tracing::debug!(
+                    target: "f1r3fly.casper.admission",
                     "Triggering heartbeat wake for accepted peer block {}",
                     PrettyPrinter::build_string_bytes(&block.block_hash)
                 );
@@ -149,7 +150,7 @@ pub(crate) fn add_deploy<T: TransportLayer + Send + Sync>(
 
     // Log the received deploy
     let deploy_info = PrettyPrinter::build_string_signed_deploy_data(&deploy);
-    tracing::info!("Received {}", deploy_info);
+    tracing::info!(target: "f1r3fly.casper.admission", "Received {}", deploy_info);
 
     // Wake the heartbeat immediately so it picks up the new deploy without
     // waiting for the next timer tick (up to check_interval seconds).
@@ -157,10 +158,10 @@ pub(crate) fn add_deploy<T: TransportLayer + Send + Sync>(
     // hardcoded predicate.
     if this.casper_shard_conf.deploy_heartbeat_wake_enabled {
         if let Some(signal) = this.heartbeat_signal_ref.get() {
-            tracing::debug!("Triggering heartbeat wake for immediate block proposal");
+            tracing::debug!(target: "f1r3fly.casper.admission", "Triggering heartbeat wake for immediate block proposal");
             signal.trigger_wake();
         } else {
-            tracing::debug!("No heartbeat signal available (heartbeat may be disabled)");
+            tracing::debug!(target: "f1r3fly.casper.admission", "No heartbeat signal available (heartbeat may be disabled)");
         }
     }
 

@@ -281,6 +281,7 @@ where
                                     )
                                     .increment(1);
                                     tracing::info!(
+                                        target: "f1r3fly.casper.proposer",
                                         "Block validation failed with {:?} - \
                                          proposal conditions no longer met, skipping propose",
                                         invalid_reason
@@ -373,7 +374,7 @@ where
         let snapshot_ms = snapshot_start.elapsed().as_millis();
 
         let elapsed = start_time.elapsed();
-        tracing::info!("getCasperSnapshot [{}ms]", elapsed.as_millis());
+        tracing::info!(target: "f1r3fly.casper.proposer", "getCasperSnapshot [{}ms]", elapsed.as_millis());
 
         let self_seq = casper_snapshot
             .max_seq_nums
@@ -405,6 +406,7 @@ where
         let allow_empty_for_recovery = finality_lag > 20;
         if allow_empty_for_recovery && !is_async {
             tracing::info!(
+                target: "f1r3fly.casper.proposer",
                 "Enabling empty-block propose in sync recovery mode due to finality lag (lag={}, block_lag={}, seq_lag={}, self_seq={}, observed_max_seq={})",
                 finality_lag,
                 block_lag,
@@ -746,6 +748,7 @@ impl<T: TransportLayer + Send + Sync + 'static> ProposeEffectHandler
                 .await
             {
                 tracing::warn!(
+                    target: "f1r3fly.casper.proposer",
                     "Failed to broadcast block hash {} to some peers: {}",
                     PrettyPrinter::build_string_bytes(&block_hash),
                     err

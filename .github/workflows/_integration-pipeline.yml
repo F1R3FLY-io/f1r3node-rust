@@ -365,6 +365,10 @@ jobs:
           /tmp/rnode --version 2>/dev/null || true
           ldd /tmp/rnode
 
+      - name: Validate harness log-filter targets against node source
+        shell: bash -ex {0}
+        run: scripts/ci/check-tracing-targets.sh --validate-filter system-integration/conf/rust.conf
+
       - name: Install system-integration dependencies
         shell: bash -ex {0}
         run: |

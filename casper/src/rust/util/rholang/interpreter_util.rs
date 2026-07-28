@@ -295,6 +295,7 @@ pub async fn validate_block_checkpoint(
     .record(parents_post_state_start.elapsed().as_secs_f64());
 
     tracing::info!(
+        target: "f1r3fly.casper.compute_parents_post_state",
         "Computed parents post state for {}.",
         PrettyPrinter::build_string_block_message(block, false)
     );
@@ -323,6 +324,7 @@ pub async fn validate_block_checkpoint(
                 tracing::debug!(target: "f1r3fly.casper.block_validation", block = %hex::encode(&block.block_hash[..8.min(block.block_hash.len())]), computed = %hex::encode(&computed_pre_state_hash[..8.min(computed_pre_state_hash.len())]), incoming = %hex::encode(&incoming_pre_state_hash[..8.min(incoming_pre_state_hash.len())]), "validate.block_checkpoint: PRE-STATE MISMATCH (recomputed merge != block's recorded pre-state) -> reject, NO replay");
                 // TODO: at this point we may just as well terminate the replay, there's no way it will succeed.
                 tracing::warn!(
+                    target: "f1r3fly.casper.block_validation",
                     "Computed pre-state hash {} does not equal block's pre-state hash {}.",
                     PrettyPrinter::build_string_bytes(&computed_pre_state_hash),
                     PrettyPrinter::build_string_bytes(&incoming_pre_state_hash)
@@ -351,6 +353,7 @@ pub async fn validate_block_checkpoint(
                 let duplicate_count = sig_counts.values().filter(|&&c| c > 1).count();
 
                 tracing::error!(
+                    target: "f1r3fly.casper.block_validation",
                     block_num = block.body.state.block_number,
                     block_hash = %PrettyPrinter::build_string_bytes(&block.block_hash),
                     sender = %PrettyPrinter::build_string_bytes(&block.sender),
@@ -422,6 +425,7 @@ async fn replay_block(
             .join("\n");
 
         tracing::warn!(
+            target: "f1r3fly.casper.block_validation",
             "\n=== Duplicate Deploys Detected in Block ===\n\
             Block #{} ({})\n\
             Found {} duplicate deploy signatures:\n{}\n\
@@ -437,6 +441,7 @@ async fn replay_block(
         );
     } else {
         tracing::debug!(
+            target: "f1r3fly.casper.block_validation",
             "Block #{}: replaying {} deploys, {} rejected",
             block.body.state.block_number,
             internal_deploys.len(),
@@ -497,6 +502,7 @@ async fn replay_block(
                 } else if attempts >= MAX_RETRIES {
                     // Give up after max retries
                     tracing::error!(
+                        target: "f1r3fly.casper.block_validation",
                         block_hash = %PrettyPrinter::build_string_no_limit(&block.block_hash),
                         expected = %PrettyPrinter::build_string_no_limit(&block.body.state.post_state_hash),
                         computed = %PrettyPrinter::build_string_no_limit(&computed_state_hash),
@@ -507,6 +513,7 @@ async fn replay_block(
                 } else {
                     // Retry - log error and continue
                     tracing::error!(
+                        target: "f1r3fly.casper.block_validation",
                         block_hash = %PrettyPrinter::build_string_no_limit(&block.block_hash),
                         expected = %PrettyPrinter::build_string_no_limit(&block.body.state.post_state_hash),
                         computed = %PrettyPrinter::build_string_no_limit(&computed_state_hash),
@@ -519,6 +526,7 @@ async fn replay_block(
             Err(replay_error) => {
                 if attempts >= MAX_RETRIES {
                     tracing::error!(
+                        target: "f1r3fly.casper.block_validation",
                         block_hash = %PrettyPrinter::build_string_no_limit(&block.block_hash),
                         error = ?replay_error,
                         attempts,
@@ -531,6 +539,7 @@ async fn replay_block(
                 } else {
                     // Retry - log error and continue
                     tracing::error!(
+                        target: "f1r3fly.casper.block_validation",
                         block_hash = %PrettyPrinter::build_string_no_limit(&block.block_hash),
                         error = ?replay_error,
                         attempt = attempts + 1,
@@ -562,6 +571,7 @@ fn handle_errors(
                 replay_failed,
             } => {
                 tracing::warn!(
+                    target: "f1r3fly.casper.block_validation",
                     "Found replay status mismatch; replay failure is {} and orig failure is {}",
                     replay_failed,
                     initial_failed
@@ -570,7 +580,7 @@ fn handle_errors(
             }
 
             ReplayFailure::UnusedCOMMEvent { msg } => {
-                tracing::warn!("Found replay exception: {}", msg);
+                tracing::warn!(target: "f1r3fly.casper.block_validation", "Found replay exception: {}", msg);
                 Ok(Either::Right(None))
             }
 
@@ -579,6 +589,7 @@ fn handle_errors(
                 replay_cost,
             } => {
                 tracing::warn!(
+                    target: "f1r3fly.casper.block_validation",
                     "Found replay cost mismatch: initial deploy cost = {}, replay deploy cost = {}",
                     initial_cost,
                     replay_cost
@@ -591,9 +602,10 @@ fn handle_errors(
                 replay_error,
             } => {
                 tracing::warn!(
-                        "Found system deploy error mismatch: initial deploy error message = {}, replay deploy error message = {}",
-                        play_error, replay_error
-                    );
+                    target: "f1r3fly.casper.block_validation",
+                    "Found system deploy error mismatch: initial deploy error message = {}, replay deploy error message = {}",
+                    play_error, replay_error
+                );
                 Ok(Either::Right(None))
             }
         },
@@ -606,6 +618,7 @@ fn handle_errors(
                 // State hash in block does not match computed hash -- invalid!
                 // return no state hash, do not update the state hash set
                 tracing::warn!(
+                    target: "f1r3fly.casper.block_validation",
                     "Tuplespace hash {} does not match computed hash {}.",
                     PrettyPrinter::build_string_bytes(&ts_hash),
                     PrettyPrinter::build_string_bytes(&computed_state_hash)
@@ -624,7 +637,7 @@ pub fn print_deploy_errors(deploy_sig: &Bytes, errors: &[InterpreterError]) {
         .collect::<Vec<_>>()
         .join(", ");
 
-    tracing::warn!("Deploy ({}) errors: {}", deploy_info, error_messages);
+    tracing::warn!(target: "f1r3fly.casper.block_validation", "Deploy ({}) errors: {}", deploy_info, error_messages);
 }
 
 pub async fn compute_deploys_checkpoint(
@@ -1128,6 +1141,7 @@ pub async fn compute_parents_post_state(
                     .map(|h| hex::encode(&h[..std::cmp::min(10, h.len())]))
                     .collect();
                 tracing::debug!(
+                    target: "f1r3fly.casper.compute_parents_post_state",
                     "computeParentsPostState: parents=[{}], floor={} (block {}), visibleBlocks={}",
                     parent_hash_str.join(", "),
                     hex::encode(&floor_hash[..std::cmp::min(10, floor_hash.len())]),
@@ -1317,12 +1331,14 @@ pub async fn compute_parents_post_state(
                             }
                             Ok(None) => {
                                 tracing::warn!(
+                                    target: "f1r3fly.casper.recovery",
                                     "RejectedDeployBuffer populate: source block {} not in store",
                                     PrettyPrinter::build_string_bytes(&src_block)
                                 );
                             }
                             Err(err) => {
                                 tracing::warn!(
+                                    target: "f1r3fly.casper.recovery",
                                     "RejectedDeployBuffer populate: failed to load {}: {}",
                                     PrettyPrinter::build_string_bytes(&src_block),
                                     err
@@ -1346,6 +1362,7 @@ pub async fn compute_parents_post_state(
                         Ok(_) => {}
                         Err(err) => {
                             tracing::warn!(
+                                target: "f1r3fly.casper.recovery",
                                 "RejectedDeployBuffer populate: finalization-status filter failed; skipping populate: {}",
                                 err
                             );
@@ -1356,11 +1373,12 @@ pub async fn compute_parents_post_state(
                         match buffer.lock() {
                             Ok(mut guard) => {
                                 if let Err(err) = guard.add(deploys_to_buffer) {
-                                    tracing::warn!("RejectedDeployBuffer add failed: {}", err);
+                                    tracing::warn!(target: "f1r3fly.casper.recovery", "RejectedDeployBuffer add failed: {}", err);
                                 }
                             }
                             Err(_) => {
                                 tracing::warn!(
+                                    target: "f1r3fly.casper.recovery",
                                     "RejectedDeployBuffer lock poisoned; skipping populate"
                                 );
                             }
@@ -1411,12 +1429,14 @@ pub async fn compute_parents_post_state(
                             }
                             Ok(None) => {
                                 tracing::warn!(
+                                    target: "f1r3fly.casper.recovery",
                                     "RejectedSlash extract: source block {} not in store",
                                     PrettyPrinter::build_string_bytes(&src_block)
                                 );
                             }
                             Err(err) => {
                                 tracing::warn!(
+                                    target: "f1r3fly.casper.recovery",
                                     "RejectedSlash extract: failed to load {}: {}",
                                     PrettyPrinter::build_string_bytes(&src_block),
                                     err
