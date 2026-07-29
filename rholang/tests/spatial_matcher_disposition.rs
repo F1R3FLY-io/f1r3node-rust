@@ -53,7 +53,7 @@ use models::rust::rholang::par_children::{
     expr_instance_child_pars, expr_instance_variant_index, spatial_match_descends_into,
     EXPR_INSTANCE_VARIANT_COUNT,
 };
-use models::rust::rholang::wire::{Descent, FieldKind, WireNode, WireOneof};
+use models::rust::rholang::wire::{Descent, FieldKind, WireOneof};
 use models::rust::rholang::wire_schema::{
     EXPR_INSTANCE_VARIANTS, UNF_INSTANCE_VARIANTS, UNF_INSTANCE_VARIANT_COUNT,
 };

@@ -2034,7 +2034,6 @@ mod tests {
     use crypto::rust::signatures::secp256k1::Secp256k1;
     use crypto::rust::signatures::signatures_alg::SignaturesAlg;
     use crypto::rust::signatures::signed::Signed;
-    use proptest::prelude::*;
 
     use super::*;
 
