@@ -27,10 +27,19 @@ permissions:
   contents: read
   actions: read
 
-# One group across ALL fork PRs: fork heavy runs (real OCI VMs) never run in
+# One group across all FORK PRs: fork heavy runs (real OCI VMs) never run in
 # parallel — a second fork run queues rather than cancelling the in-flight one.
+#
+# Internal PRs must not share that group. pull_request_target also fires for
+# same-repo PRs (their jobs skip via the `fork == true` guards below), but the
+# run itself still joins whatever group is named here. GitHub keeps only ONE
+# pending run per concurrency group, so each new arrival cancels the previously
+# pending one: a burst of internal pushes evicts a fork run that is queued
+# behind an in-flight or awaiting-approval fork run, and that fork PR silently
+# loses its heavy pipeline with no failed check to show for it. Internal PRs
+# therefore get their own per-PR groups, where their skipped jobs are harmless.
 concurrency:
-  group: ci-fork-pr
+  group: ${{ github.event.pull_request.head.repo.fork == true && 'ci-fork-pr' || format('ci-fork-pr-internal-{0}', github.event.pull_request.number) }}
   cancel-in-progress: false
 
 jobs:
