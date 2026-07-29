@@ -526,10 +526,20 @@ jobs:
           done
 
           # Append this run to its own series, leaving the other untouched.
+          # Replace rather than append when an entry for this run already
+          # exists: a re-run reuses github.run_id, so a plain append would add
+          # a second entry for the same night, double-counting it on the chart
+          # and burning a slot of the daily retention cap. Runs whose id is
+          # missing or "unknown" are always appended — they cannot be told
+          # apart, so collapsing them would merge genuinely distinct runs.
           hist="site/data/history${SERIES_SUFFIX}.json"
           [ -e "$hist" ] || echo '[]' > "$hist"
           jq -s --argjson max "$MAX_HISTORY" \
-            '(.[0] + [.[1]] | sort_by(.run.date)) as $all
+            '.[0] as $hist | .[1] as $new
+             | ($new.run.run_id // "") as $rid
+             | (if $rid == "" or $rid == "unknown" then $hist
+                else ($hist | map(select((.run.run_id // "") != $rid))) end) as $kept
+             | ($kept + [$new] | sort_by(.run.date)) as $all
              | if $max > 0 and ($all | length) > $max then $all[-$max:] else $all end' \
             "$hist" soak-results/report/weekly-summary.json > /tmp/history-merged.json
           mv /tmp/history-merged.json "$hist"

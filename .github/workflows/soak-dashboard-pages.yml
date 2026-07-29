@@ -69,11 +69,15 @@ jobs:
           done
           # HTTP 200 is not proof of valid content — a CDN or proxy error page
           # is served with 200 too. Republishing one would corrupt the data.
-          for f in history.json latest-summary.json latest-verdict.json \
-                   history-daily.json latest-summary-daily.json latest-verdict-daily.json; do
+          # Shapes, not just parseability — kept identical to the soak
+          # publisher. `jq -e .` accepts a bare string or number, so an error
+          # body that happens to be valid JSON would pass here and be rejected
+          # there, which is how the two drift apart.
+          for f in latest-summary.json latest-verdict.json \
+                   latest-summary-daily.json latest-verdict-daily.json; do
             [ -e "site/data/${f}" ] || continue
-            jq -e . "site/data/${f}" >/dev/null 2>&1 || {
-              echo "::error::published ${f} is not valid JSON; refusing to republish it"
+            jq -e 'type == "object"' "site/data/${f}" >/dev/null 2>&1 || {
+              echo "::error::published ${f} is not a JSON object; refusing to republish it"
               exit 1
             }
           done
