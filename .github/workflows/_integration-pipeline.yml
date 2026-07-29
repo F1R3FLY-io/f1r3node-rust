@@ -67,8 +67,22 @@ env:
 
 jobs:
   # Build Docker image natively on each arch using Oracle Cloud self-hosted runners.
+  #
+  # Gated on await_approval so that NOTHING in this pipeline runs for an
+  # unapproved fork PR. This job compiles fork-authored code on the permanent
+  # self-hosted runners, and the smoke_* jobs that depend on it burn
+  # GitHub-hosted minutes; without the gate an untrusted contributor could spend
+  # both simply by pushing, which is the abuse the ephemeral-launch approval
+  # exists to prevent. Approval — not the concurrency group — is what holds
+  # untrusted work back, so this must stay even if the grouping changes again.
+  #
+  # Internal runs are unaffected in substance: ephemeral-launch-internal has no
+  # protection rules, so the gate resolves in seconds. The build still overlaps
+  # the ~1-minute runner launch, since build and launch gate on the same node
+  # rather than on each other.
   build_docker_image:
     name: Build Docker Image (${{ matrix.arch }})
+    needs: await_approval
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     permissions:
