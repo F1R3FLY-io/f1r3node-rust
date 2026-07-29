@@ -88,6 +88,17 @@ impl SpatialMatcherContext {
     }
 }
 
+/// The matcher's search state is exactly one free map, so the isolation law
+/// (`models::rust::utils::isolate_free_map`) applies to it whole.
+///
+/// One line, on purpose: the law itself lives at ONE address, in `models`,
+/// beside the `FreeMap` it is about. A second copy of the snapshot/restore here
+/// would be the same defect `a1feb437` cost — a law with copies is a law that
+/// drifts.
+impl IsolatableState for SpatialMatcherContext {
+    fn free_map_mut(&mut self) -> &mut FreeMap { &mut self.free_map }
+}
+
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/SpatialMatcher.scala - forTuple
 impl SpatialMatcher<(Par, Par), (Par, Par)> for SpatialMatcherContext {
     fn spatial_match(&mut self, target: (Par, Par), pattern: (Par, Par)) -> Option<()> {
@@ -104,19 +115,40 @@ impl SpatialMatcher<Par, Connective> for SpatialMatcherContext {
         // println!("\npattern in Par, Connective: {:?}\n", pattern);
 
         match pattern.connective_instance {
+            // ★ A REFUSED CONJUNCTION UN-BINDS **ALL** OF ITS CONJUNCTS.
+            //
+            // A conjunction is a sequential fold and the right conjunct sees the
+            // left one's bindings on purpose (`p_conjunction_normalizer.rs:12-14`
+            // — the conjuncts share one free map, unlike `~` and `\/`, whose
+            // bodies get a fresh one). So `free_var(0) /\ 8` against the target
+            // `7` binds level 0 from the target and only THEN demands `8`: it
+            // writes before it refuses.
+            //
+            // The isolation therefore goes around the WHOLE fold, not around each
+            // conjunct. A per-conjunct restore would revert only the conjunct that
+            // refused and leave its predecessors' bindings behind — which is the
+            // whole point of `try_fold`: the conjuncts stand or fall together.
+            //
+            // `_keeping_bindings`, because a conjunction that SUCCEEDS binds the
+            // union of its conjuncts and that union is the pattern's real answer.
+            // The disjunction below is the opposite disposition, at the same site,
+            // for a stated reason — the two are not variations on a theme.
             Some(ConnAndBody(connective_body)) => {
                 // println!("\nhit ConnAndBody");
                 // println!("\ntarget in ConnAndBody: {:?}", target);
                 // println!("\nps in ConnAndBody: {:?}", connective_body.ps);
 
-                connective_body.ps.into_iter().try_fold((), |_, p| {
-                    // println!("\ncalling spatial match in ConnAndBody");
-                    let match_result = self.spatial_match(target.clone(), p);
-                    if match_result.is_some() {
-                        // println!("\nfinished calling spatialMatch in ConnAndBody");
-                    }
-                    match_result.map(|_| ())
+                attempt_opt_keeping_bindings(self, |s| {
+                    connective_body.ps.into_iter().try_fold((), |_, p| {
+                        // println!("\ncalling spatial match in ConnAndBody");
+                        let match_result = s.spatial_match(target.clone(), p);
+                        if match_result.is_some() {
+                            // println!("\nfinished calling spatialMatch in ConnAndBody");
+                        }
+                        match_result.map(|_| ())
+                    })
                 })
+                .into_option()
             }
 
             // ★ A DISJUNCTION BRANCH OWNS ITS OWN STATE, ON BOTH PATHS.
@@ -139,37 +171,48 @@ impl SpatialMatcher<Par, Connective> for SpatialMatcherContext {
             //
             // Verdict-invariant by construction — no branch's decision reads
             // `free_map`, so which branch `find_map` selects cannot change.
+            //
+            // ★ RE-EXPRESSED THROUGH THE COMBINATOR, BEHAVIOUR UNCHANGED. The
+            // hand-written clone/run/restore above was byte-for-byte what
+            // `attempt_opt` does, so this branch is the CONTROL for the three
+            // sites below it: if the combinator did anything other than what the
+            // fix for `eaa905fe` did, this arm would move, and
+            // `matcher_disjunction_isolation.rs` — untouched since that fix —
+            // would say so.
             Some(ConnOrBody(connective_body)) => connective_body.ps.into_iter().find_map(|p| {
-                let matches = self.free_map.clone();
-                let branch = self.spatial_match(target.clone(), p);
-                self.free_map = matches;
-                branch
+                attempt_opt(self, |s| s.spatial_match(target.clone(), p)).into_option()
             }),
 
-            Some(ConnNotBody(p)) => {
-                // Check if there is a ConnOrBody inside the ConnNotBody
-                let has_or_body = match &p {
-                    Par { connectives, .. } => connectives
-                        .iter()
-                        .any(|c| matches!(c.connective_instance, Some(ConnOrBody(_)))),
-                };
-
-                if has_or_body {
-                    // If there is a ConnOrBody inside, we need to handle it specially
-                    let match_option = self.spatial_match(target, p);
-                    match match_option {
-                        Some(_) => None,  // If inner pattern matches, the negation fails
-                        None => Some(()), // If inner pattern doesn't match, the negation succeeds
-                    }
-                } else {
-                    // Regular negation handling
-                    let match_option = self.spatial_match(target, p);
-                    match match_option {
-                        Some(_) => None,
-                        None => Some(()),
-                    }
-                }
-            }
+            // ★ A NEGATION THAT SUCCEEDS BOUND NOTHING — AND NEITHER DID ONE THAT
+            //   REFUSED.
+            //
+            // This arm INVERTS the disposition, and inverting it through a bare
+            // `Option` is what hid the leak: "the inner attempt refused" and "the
+            // negation succeeded" are both `Some(())`, "the inner attempt
+            // succeeded" and "the negation refused" are both `None`. Two distinct
+            // facts per cell, one of which is about state and was silently
+            // dropped. `Attempt` separates them, so both arms below are written —
+            // and both are reached with `free_map` already restored, because
+            // `attempt_opt` restores unconditionally, inside.
+            //
+            // `attempt_opt` and not `_keeping_bindings`: a negation binds NOTHING,
+            // ever. `~P`'s body is normalized against a fresh `FreeMap` which
+            // `combine_p_negation` then discards
+            // (`p_negation_normalizer.rs:10-13, 65-89`), so a free variable under
+            // `~` is `FreeVar(0)` in a numbering nobody kept — and level 0 is very
+            // probably somebody ELSE's level in the shared map it would leak into.
+            // The enclosing `MatchCase.free_count` counts none of it.
+            //
+            // ⚠ The two branches this replaces were BYTE-IDENTICAL: `has_or_body`
+            // was computed, matched on, and then both arms did exactly the same
+            // thing. Deleting it is behaviour-free — `control_a_negation_over_a_
+            // disjunction_is_not_a_special_case` pins that rather than trusting it
+            // — and it is deleted rather than kept because two copies of a law
+            // that has just become non-trivial is how the next drift starts.
+            Some(ConnNotBody(p)) => match attempt_opt(self, |s| s.spatial_match(target, p)) {
+                Attempt::Bound(_) => None, // the inner pattern matched → the negation refuses
+                Attempt::Refused => Some(()), // the inner pattern refused → the negation succeeds
+            },
 
             Some(VarRefBody(_)) => None,
 
@@ -315,6 +358,29 @@ impl SpatialMatcher<Par, Par> for SpatialMatcherContext {
 
             // println!("\nconnectives_with_bounds length: {:?}", connectives_with_bounds.len());
 
+            /// ★ THE RETRY LOOP — NOT AN ARM, AND THAT IS WHY IT NEEDS ITS OWN
+            ///   APPLICATION OF THE LAW.
+            ///
+            /// This is the loop that *drives* the connective arms: it offers the
+            /// connective one split of the target after another and keeps the
+            /// first split the connective accepts. Every rejected split is an
+            /// attempt, and a rejected attempt must not ride into the accepted
+            /// one. No snapshot taken *inside* an arm can see this — the loop is
+            /// above all of them — and no snapshot at the enclosing
+            /// `spatial_match(Par, Par)` boundary can either, because the whole
+            /// walk is interior to one such call.
+            ///
+            /// `_keeping_bindings`, because the accepted split's bindings are the
+            /// answer: they are what `return Some(sp.1)` is carrying home.
+            ///
+            /// ⚠ The fan-out here is the widest in the matcher — `ConnNotBody`'s
+            /// `min_max_con` is `(_new(), _max())` (`par_count.rs`), i.e. the full
+            /// subset lattice of the target — so this is the one site where the
+            /// entry clone can be paid many times per match. Two things bound it:
+            /// the elision below, and the fact that TODAY (before this fix)
+            /// `free_map` grows monotonically across candidates, so under the
+            /// restore each clone is `O(entry)` rather than `O(entry + everything
+            /// every rejected candidate leaked)`.
             fn match_connective_with_bounds(
                 s: &mut SpatialMatcherContext,
                 target: Par,
@@ -323,16 +389,53 @@ impl SpatialMatcher<Par, Par> for SpatialMatcherContext {
                 // println!("\nhit match_connective_with_bounds");
                 let (con, bounds, remainders) = labeled_connective;
 
+                // ★ A PROVED ELISION, NOT A HEURISTIC — the same move task #144
+                // made at `match_function`'s non-connective arm.
+                //
+                // The whitelist is of the arms that PROVABLY cannot reach
+                // `free_map`: `ConnBool`/`ConnInt`/`ConnString`/`ConnUri`/
+                // `ConnByteArray` are each a pure `match single_expr(&target)`,
+                // `VarRefBody` and `None` are each a bare `None`. Read the
+                // `SpatialMatcher<Par, Connective>` impl above: those seven arms
+                // contain no call at all, so there is nothing to isolate and the
+                // clone would be pure cost.
+                //
+                // It is stated as "elide on exactly these" rather than "isolate on
+                // exactly those" so that a NEW connective variant lands in the
+                // isolated branch by default. A safe default is worth the double
+                // negative.
+                let free_map_is_unreachable = matches!(
+                    con.connective_instance,
+                    Some(ConnBool(_))
+                        | Some(ConnInt(_))
+                        | Some(ConnString(_))
+                        | Some(ConnUri(_))
+                        | Some(ConnByteArray(_))
+                        | Some(VarRefBody(_))
+                        | None
+                );
+
                 for sp in sub_pars(&target, &bounds.0, &bounds.1, &remainders.0, &remainders.1) {
                     // println!("\ntarget in match_connective_with_bounds: {:?}", target);
                     // println!("\nsp_0 in match_connective_with_bounds: {:?}", sp.clone().0);
                     // println!("\nsp_1 in match_connective_with_bounds: {:?}", sp.clone().1);
                     // println!("\ncalling spatialMatch in match_connective_with_bounds");
 
-                    if s.spatial_match(sp.0, con.clone()).is_some() {
+                    let (candidate, remainder) = sp;
+                    let accepted = if free_map_is_unreachable {
+                        s.spatial_match(candidate, con.clone()).is_some()
+                    } else {
+                        matches!(
+                            attempt_opt_keeping_bindings(s, |s| s
+                                .spatial_match(candidate, con.clone())),
+                            Attempt::Bound(_)
+                        )
+                    };
+
+                    if accepted {
                         // println!("\nfinished calling spatialMatch in match_connective_with_bounds");
                         // println!("\nreturning sp.1: {:?}", sp.1);
-                        return Some(sp.1);
+                        return Some(remainder);
                     }
                 }
                 None

@@ -257,9 +257,175 @@ pub fn new_free_map() -> FreeMap { BTreeMap::new() }
 // STUBBED OUT
 pub fn run_first<A>() -> Option<(FreeMap, A)> { None }
 
+/// Anything that carries a [`FreeMap`] an attempt can write to, and therefore
+/// anything that can be *isolated*.
+///
+/// One method, because one method is all the law needs: the isolation
+/// combinators below take the map away for the duration of an attempt and put
+/// it back afterwards, and they never look at anything else the state holds.
+/// `rholang`'s `SpatialMatcherContext` is the only implementor today; the trait
+/// exists so that the law lives at ONE address — a `rholang`-local copy of the
+/// snapshot/restore beside this one is exactly the three-copies defect that
+/// `a1feb437` cost.
+pub trait IsolatableState {
+    fn free_map_mut(&mut self) -> &mut FreeMap;
+}
+
+/// What an isolated attempt did.
+///
+/// **Total**: [`attempt_opt`] always runs its thunk, so there is no "never
+/// ran" case (contrast `GuardDisposition::Undecidable`, which exists because a
+/// guard genuinely may not be decidable). Exactly two things can happen, and
+/// both are values.
+///
+/// ★ **This is the opposite of collapsing a disposition.** `Attempt<T>` carries
+/// strictly MORE than the `Option<T>` it is built from — the same verdict, plus
+/// the promise about what happened to the caller's bindings — and the
+/// projection back down is explicit and total ([`Attempt::into_option`]). The
+/// caller that needs it most is the negation, which *inverts* the disposition:
+/// with a bare `Option`, "the inner attempt refused" and "the negation
+/// succeeded" are both `Some(())`, and that conflation is what hid a leak for
+/// as long as it hid.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Attempt<T> {
+    /// The attempt succeeded, with this value.
+    ///
+    /// Whether its bindings survived is the combinator's contract, not this
+    /// variant's: [`attempt_opt`] discards them, [`attempt_opt_keeping_bindings`]
+    /// keeps them.
+    Bound(T),
+    /// The attempt refused — and its bindings **have been reverted**. The
+    /// caller's free map is byte-identical to what it was at entry, under
+    /// *both* combinators. That is the whole invariant, stated once.
+    Refused,
+}
+
+impl<T> Attempt<T> {
+    /// Project back onto the `Option` the matcher's traits answer in.
+    ///
+    /// Total and explicit: `Bound(v) ↦ Some(v)`, `Refused ↦ None`. Nothing is
+    /// lost that the caller had not already decided to stop caring about.
+    pub fn into_option(self) -> Option<T> {
+        match self {
+            Attempt::Bound(value) => Some(value),
+            Attempt::Refused => None,
+        }
+    }
+}
+
+/// **The isolation law, written once.**
+///
+/// Runs `f` against `s` exactly as it stands, then *restores* `s`'s free map to
+/// its entry value and hands the map `f` produced back as a value. Nothing is
+/// lost and nothing is silently committed — the caller decides, and the two
+/// wrappers below are the only two decisions the matcher makes.
+///
+/// ```text
+///        entry                     during f                    return
+///     ┌───────────┐             ┌───────────┐             ┌───────────┐
+///  s: │ init      │──clone──┐   │ init + δ  │             │ init      │  ← restored
+///     └───────────┘         │   └───────────┘             └───────────┘
+///                           └────────────────────move────▶( init + δ ) ← returned
+/// ```
+///
+/// The restore is a `std::mem::replace` — a **move**, not a clone — so the
+/// entry snapshot is the only thing this costs. That is the same shape as
+/// `list_match::match_function`'s per-attempt isolation, which is why the two
+/// read alike.
+///
+/// # Why the produced map comes back as a value
+///
+/// Because "an attempt owns its own state" and "an attempt's bindings are
+/// worthless" are different claims. A conjunction that succeeds has bound
+/// something the pattern really does bind; a negation that succeeds has bound
+/// nothing, because its body was numbered in a free map the normalizer already
+/// discarded. Returning the map rather than committing it lets each caller say
+/// which it is, in one word, at its own site.
+pub fn isolate_free_map<S: IsolatableState, T>(
+    s: &mut S,
+    f: impl FnOnce(&mut S) -> Option<T>,
+) -> (Option<T>, FreeMap) {
+    // `initState <- get` — the ONLY clone isolation introduces.
+    let init_state = s.free_map_mut().clone();
+
+    let effect = f(s);
+
+    // `resultState <- get; set(initState); yield resultState`, as ONE move.
+    let result_state = std::mem::replace(s.free_map_mut(), init_state);
+
+    (effect, result_state)
+}
+
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/package.scala - attemptOpt
-// NOT FULLY IMPLEMENTED
-pub fn attempt_opt(operation: Option<()>) -> Option<()> { operation.map(|_| ()) }
+/// An attempt whose bindings **never** survive it, whichever way it goes.
+///
+/// This is the disposition of the two connectives that bind nothing by
+/// construction:
+///
+/// * a **negation** — `~P`'s body is normalized against a fresh `FreeMap` that
+///   is then discarded, so a free variable under `~` is `FreeVar(0)` in a
+///   numbering nobody kept; and
+/// * a **disjunction** — `P \/ Q`'s branches disagree about which variables
+///   they would bind, so the disjunction binds none of them.
+///
+/// Both *probe*: they ask whether an attempt succeeds and keep only the answer.
+///
+/// ```rust
+/// # use models::rust::utils::{Attempt, FreeMap, IsolatableState, attempt_opt, new_free_map};
+/// # use models::rhoapi::Par;
+/// # struct Ctx { free_map: FreeMap }
+/// # impl IsolatableState for Ctx { fn free_map_mut(&mut self) -> &mut FreeMap { &mut self.free_map } }
+/// # let mut ctx = Ctx { free_map: new_free_map() };
+/// // A negation inverts the disposition — and both arms are reached with the
+/// // caller's map already restored, because the restore is unconditional here.
+/// let negation = match attempt_opt(&mut ctx, |s| {
+///     s.free_map_mut().insert(0, Par::default()); // the body binds …
+///     None::<()>                                  // … and then refuses
+/// }) {
+///     Attempt::Bound(_) => None,      // inner matched  → negation refuses
+///     Attempt::Refused => Some(()),   // inner refused  → negation succeeds
+/// };
+/// assert_eq!(negation, Some(()));
+/// assert_eq!(ctx.free_map, new_free_map()); // ★ and it bound nothing
+/// ```
+pub fn attempt_opt<S: IsolatableState, T>(
+    s: &mut S,
+    f: impl FnOnce(&mut S) -> Option<T>,
+) -> Attempt<T> {
+    match isolate_free_map(s, f) {
+        (Some(value), _discarded) => Attempt::Bound(value),
+        (None, _discarded) => Attempt::Refused,
+    }
+}
+
+/// An attempt whose bindings survive **exactly when it succeeds**.
+///
+/// The keep-on-success wrapper over [`isolate_free_map`]. This is the
+/// disposition of the sites that legitimately bind and then may be asked to
+/// take it back:
+///
+/// * a **conjunction** — the right conjunct sees the left one's bindings, and a
+///   successful conjunction binds their union; a refused one must un-bind *all*
+///   of its conjuncts, not merely the one that refused, which is why the
+///   isolation goes around the whole fold rather than around each conjunct; and
+/// * a **`sub_pars` candidate** — the retry loop that offers a connective one
+///   split of the target after another. A rejected split must not ride into the
+///   accepted one.
+///
+/// The success path re-installs by moving the produced map back, so it costs
+/// two pointer-sized moves on top of the entry clone and no second traversal.
+pub fn attempt_opt_keeping_bindings<S: IsolatableState, T>(
+    s: &mut S,
+    f: impl FnOnce(&mut S) -> Option<T>,
+) -> Attempt<T> {
+    match isolate_free_map(s, f) {
+        (Some(value), produced) => {
+            *s.free_map_mut() = produced;
+            Attempt::Bound(value)
+        }
+        (None, _reverted) => Attempt::Refused,
+    }
+}
 
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/storage/package.scala - toSeq
 pub fn to_vec(fm: FreeMap, max: i32) -> Vec<Par> {
@@ -1028,5 +1194,165 @@ pub fn new_gsys_auth_token_par(locally_free: Vec<u8>, connective_used: bool) -> 
         locally_free,
         connective_used,
         ..Default::default()
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The isolation law, pinned at its own address
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// `IsolatableState` is one method wide and the two combinators are generic over
+// it, so the law can be exercised here — with a two-field stand-in state and no
+// matcher at all — rather than only through `rholang`'s connective arms. What
+// `rholang/tests/matcher_connective_isolation.rs` then tests is that the arms
+// USE it; what these tests fix is what "it" means.
+#[cfg(test)]
+mod isolation_tests {
+    use super::{
+        attempt_opt, attempt_opt_keeping_bindings, isolate_free_map, new_free_map, Attempt,
+        FreeMap, IsolatableState, Par,
+    };
+
+    /// The smallest thing that can be isolated: a free map and nothing else.
+    struct Probe {
+        free_map: FreeMap,
+    }
+
+    impl Probe {
+        fn empty() -> Self {
+            Probe {
+                free_map: new_free_map(),
+            }
+        }
+    }
+
+    impl IsolatableState for Probe {
+        fn free_map_mut(&mut self) -> &mut FreeMap { &mut self.free_map }
+    }
+
+    /// A distinguishable `Par` per level, so an assertion can name *which*
+    /// binding survived rather than only how many did.
+    fn marker(level: i32) -> Par {
+        crate::rust::utils::new_gint_par(level as i64, Vec::new(), false)
+    }
+
+    #[test]
+    fn isolate_free_map_restores_the_entry_map_and_returns_the_produced_one() {
+        let mut probe = Probe::empty();
+        probe.free_map.insert(0, marker(0));
+
+        let (effect, produced) = isolate_free_map(&mut probe, |s| {
+            s.free_map_mut().insert(1, marker(1));
+            Some(())
+        });
+
+        assert_eq!(effect, Some(()), "the thunk ran and answered");
+        assert_eq!(produced.get(&1), Some(&marker(1)), "δ came back as a value");
+        assert_eq!(
+            probe.free_map.get(&1),
+            None,
+            "★ and the caller's map is the one it had at entry"
+        );
+        assert_eq!(probe.free_map.get(&0), Some(&marker(0)), "entry map intact");
+    }
+
+    #[test]
+    fn attempt_opt_discards_the_bindings_of_a_success() {
+        let mut probe = Probe::empty();
+
+        let attempt = attempt_opt(&mut probe, |s| {
+            s.free_map_mut().insert(0, marker(0));
+            Some(7)
+        });
+
+        assert_eq!(attempt, Attempt::Bound(7), "the verdict is carried out");
+        assert_eq!(
+            probe.free_map,
+            new_free_map(),
+            "★ a probing attempt keeps the answer and none of the bindings"
+        );
+    }
+
+    #[test]
+    fn attempt_opt_discards_the_bindings_of_a_refusal() {
+        let mut probe = Probe::empty();
+
+        let attempt = attempt_opt(&mut probe, |s| {
+            s.free_map_mut().insert(0, marker(0));
+            None::<()>
+        });
+
+        assert_eq!(attempt, Attempt::Refused);
+        assert_eq!(probe.free_map, new_free_map(), "the refusal reverted");
+    }
+
+    #[test]
+    fn attempt_opt_keeping_bindings_keeps_a_success_and_reverts_a_refusal() {
+        let mut probe = Probe::empty();
+        probe.free_map.insert(9, marker(9));
+
+        let kept = attempt_opt_keeping_bindings(&mut probe, |s| {
+            s.free_map_mut().insert(0, marker(0));
+            Some(())
+        });
+        assert_eq!(kept, Attempt::Bound(()));
+        assert_eq!(
+            probe.free_map.get(&0),
+            Some(&marker(0)),
+            "★ a committing attempt that succeeded really did bind"
+        );
+
+        let refused = attempt_opt_keeping_bindings(&mut probe, |s| {
+            s.free_map_mut().insert(1, marker(1));
+            None::<()>
+        });
+        assert_eq!(refused, Attempt::Refused);
+        assert_eq!(
+            probe.free_map.get(&1),
+            None,
+            "★ and one that refused bound nothing"
+        );
+        assert_eq!(
+            probe.free_map.get(&0),
+            Some(&marker(0)),
+            "without disturbing what was already there"
+        );
+        assert_eq!(probe.free_map.get(&9), Some(&marker(9)), "or the entry map");
+    }
+
+    /// ★ The difference between the two combinators is the whole reason there
+    /// are two, so it is asserted directly rather than left to the two tests
+    /// above to imply.
+    #[test]
+    fn the_two_combinators_differ_on_exactly_one_cell() {
+        let bind = |s: &mut Probe| {
+            s.free_map_mut().insert(0, marker(0));
+            Some(())
+        };
+        let bind_then_refuse = |s: &mut Probe| {
+            s.free_map_mut().insert(0, marker(0));
+            None::<()>
+        };
+
+        let mut a = Probe::empty();
+        attempt_opt(&mut a, bind);
+        let mut b = Probe::empty();
+        attempt_opt_keeping_bindings(&mut b, bind);
+        assert_ne!(a.free_map, b.free_map, "★ they differ on SUCCESS");
+
+        let mut c = Probe::empty();
+        attempt_opt(&mut c, bind_then_refuse);
+        let mut d = Probe::empty();
+        attempt_opt_keeping_bindings(&mut d, bind_then_refuse);
+        assert_eq!(c.free_map, d.free_map, "and agree on REFUSAL");
+        assert_eq!(c.free_map, new_free_map(), "both having reverted it");
+    }
+
+    /// `into_option` is total: it is the projection back onto the `Option` the
+    /// matcher's traits answer in, and it loses only the state promise.
+    #[test]
+    fn into_option_is_the_total_projection() {
+        assert_eq!(Attempt::Bound(3).into_option(), Some(3));
+        assert_eq!(Attempt::<i32>::Refused.into_option(), None);
     }
 }
