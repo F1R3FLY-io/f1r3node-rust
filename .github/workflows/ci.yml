@@ -149,6 +149,16 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # Deliberately the first step and deliberately in this job. `Lint` is a
+      # required status check on devProtect and masterProtect, so a violation
+      # blocks the merge; a guard living in a job that is merely a `needs:`
+      # ancestor can surface as `skipped`, which required-check evaluation may
+      # treat as satisfied. Placed ahead of the toolchain install so a breach of
+      # the credential model fails in seconds rather than after a Rust build.
+      - name: Verify workflow security invariants
+        shell: bash -euo pipefail {0}
+        run: bash .github/scripts/check-workflow-invariants.sh
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@master
         with:
