@@ -330,6 +330,7 @@ jobs:
     uses: ./.github/workflows/_integration-pipeline.yml
     with:
       gated: false
+    secrets: inherit
 
   # Per-arch aggregators. The branch ruleset requires status checks named
   # exactly `Integration Tests (amd64)` / `(arm64)`. These collapse the reusable

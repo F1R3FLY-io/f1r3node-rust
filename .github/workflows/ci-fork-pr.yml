@@ -74,6 +74,7 @@ jobs:
       checkout_repository: ${{ github.event.pull_request.head.repo.full_name }}
       checkout_ref: ${{ github.event.pull_request.head.sha }}
       gated: true
+    secrets: inherit
 
   # Per-arch aggregators. The branch ruleset requires status checks named
   # exactly `Integration Tests (amd64)` / `(arm64)`. These collapse the reusable
