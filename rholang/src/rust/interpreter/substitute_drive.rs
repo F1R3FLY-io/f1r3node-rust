@@ -84,6 +84,8 @@
 //! separately (`substitute_deep_binding`) so that it is visible rather than
 //! folded into a claim of full depth-independence.
 
+use std::collections::BTreeMap;
+
 use models::rhoapi::connective::ConnectiveInstance;
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::var::VarInstance;
@@ -92,13 +94,12 @@ use models::rhoapi::{
     Receive, ReceiveBind, Send, Var, VarRef,
 };
 use rspace_plus_plus::rspace::history::Either;
-use std::collections::BTreeMap;
 
 use super::env::Env;
 use super::errors::InterpreterError;
 use super::substitute::Substitute;
 use super::substitute_combine::{
-    fold_concatenate_par, fold_prepend_connective, fold_prepend_expr,
+    expr_arm_pattern_slots, fold_concatenate_par, fold_prepend_connective, fold_prepend_expr,
     missing_required_field, rebuild_bundle, rebuild_connective, rebuild_expr_instance, rebuild_if,
     rebuild_match, rebuild_match_case, rebuild_new, rebuild_par, rebuild_receive,
     rebuild_receive_bind, rebuild_send, split_expr_instance, ConnArm, ExprArm,
@@ -150,14 +151,10 @@ pub(crate) struct EnvView<'e> {
 }
 
 impl<'e> EnvView<'e> {
-    pub fn new(root: &'e Env<Par>) -> Self {
-        EnvView { root }
-    }
+    pub fn new(root: &'e Env<Par>) -> Self { EnvView { root } }
 
     /// `env.shift(Σj).shift` — the field the `locally_free` truncation reads.
-    pub fn shift(&self, ctx: SubCtx) -> i32 {
-        self.root.shift + ctx.shift_delta
-    }
+    pub fn shift(&self, ctx: SubCtx) -> i32 { self.root.shift + ctx.shift_delta }
 
     /// `env.shift(Σj).get(k)`.
     ///
@@ -556,12 +553,23 @@ fn descend_expr(
     // operands as `None` in position and `SubWork::Par` raises the error when
     // it pops one, so the interleaving is preserved exactly.
     let n = children.len();
+    // Pattern slots are visited at `depth + 1` (`EMatches::pattern` today).
+    // Read before `arm` is moved into the continuation.
+    let pattern_slots = expr_arm_pattern_slots(&arm);
     work.push(SubWork::Combine(SubKont::ExprArmK {
         arm,
         n,
         shift: view.shift(ctx),
     }));
-    push_reversed(work, children, |c| SubWork::Par(c, ctx));
+    // Reversed, so the slots pop in `split_expr_instance` order; the index is
+    // the slot's ORIGINAL position, which is what `pattern_slots` names.
+    for (slot, child) in children.into_iter().enumerate().rev() {
+        let slot_ctx = match pattern_slots.contains(&slot) {
+            true => ctx.deeper(),
+            false => ctx,
+        };
+        work.push(SubWork::Par(child, slot_ctx));
+    }
     Ok(())
 }
 
@@ -1079,14 +1087,8 @@ mod representation_guard {
 
     /// The SCC's source files, read at test time.
     const SCC_SOURCES: [(&str, &str); 3] = [
-        (
-            "substitute.rs",
-            include_str!("substitute.rs"),
-        ),
-        (
-            "substitute_drive.rs",
-            include_str!("substitute_drive.rs"),
-        ),
+        ("substitute.rs", include_str!("substitute.rs")),
+        ("substitute_drive.rs", include_str!("substitute_drive.rs")),
         (
             "substitute_combine.rs",
             include_str!("substitute_combine.rs"),
@@ -1133,10 +1135,11 @@ mod representation_guard {
     /// would have built.
     #[test]
     fn the_view_agrees_with_a_chain_of_owned_shifts() {
+        use models::rhoapi::Par;
+
         use super::{EnvView, SubCtx};
         use crate::rust::interpreter::env::Env;
         use crate::rust::interpreter::test_utils::substitution_corpus::{gint, nested_list};
-        use models::rhoapi::Par;
 
         let mut root: Env<Par> = Env::new();
         let mut root = root.put(gint(1));
@@ -1145,13 +1148,9 @@ mod representation_guard {
 
         let view = EnvView::new(&root);
 
-        for chain in [
-            vec![],
-            vec![1],
-            vec![2, 3],
-            vec![0, 1, 0, 5],
-            vec![7, 11, 13],
-        ] {
+        for chain in [vec![], vec![1], vec![2, 3], vec![0, 1, 0, 5], vec![
+            7, 11, 13,
+        ]] {
             // The recursive form's owned environment after this chain.
             let mut owned = root.clone();
             let mut ctx = SubCtx::root(0);

@@ -7,8 +7,8 @@ use models::rhoapi::connective::ConnectiveInstance;
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::var::VarInstance;
 use models::rhoapi::{
-    Bundle, Connective, ConnectiveBody, EMinusMinus, EPercentPercent, EPlusPlus, Expr, Match,
-    MatchCase, New, Par, Send, Var, VarRef,
+    Bundle, Connective, ConnectiveBody, EMatches, EMinusMinus, EPercentPercent, EPlusPlus, Expr,
+    Match, MatchCase, New, Par, Send, Var, VarRef,
 };
 use models::rust::rholang::implicits::GPrivateBuilder;
 use models::rust::utils::{new_boundvar_par, new_freevar_var, new_gstring_par};
@@ -640,6 +640,136 @@ fn var_ref_should_be_replaced_at_a_higher_depth_inside_a_pattern() {
             connective_used: false,
         }])
     )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// `EMatches`'s `pattern` is a nested pattern at `depth + 1`
+//
+// `p_matches_normalizer::combine_p_matches` normalizes the right-hand side of
+// `P matches Q` under `input.bound_map_chain.push()` — one binding level
+// deeper — in a FRESH `FreeMap`, and keeps the TARGET's free map. Two
+// consequences, and they pull in opposite directions:
+//
+//   * a plain `x` inside the pattern resolves through `BoundMapChain::get`,
+//     which reads the CURRENT scope only, so it is a fresh binding occurrence
+//     and never a `BoundVar` pointing outside. That is why `has_locally_free`
+//     computes this node's `locally_free`/`connective_used` from the TARGET
+//     alone, and why doing so is correct rather than a shortcut.
+//   * `=x` resolves through `BoundMapChain::find`, which walks the whole
+//     chain, and is emitted as `VarRef { depth }` with the chain distance. So
+//     the ONE construct that can name an outer binder from inside a `matches`
+//     pattern is exactly the one `maybe_substitute_var_ref` gates on depth.
+//
+// Substitution must therefore descend into `pattern` at `depth + 1`, as it
+// already does for `MatchCase::pattern` (the test above) and for
+// `ReceiveBind::patterns`.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// The `(target, pattern)` slots of the single `EMatches` a substituted `Par`
+/// carries. Reading the slots rather than the whole `Par` keeps the assertions
+/// pinned to the values under test instead of to the sorter's cached-field
+/// bookkeeping.
+fn ematches_slots(par: &Par) -> (Par, Par) {
+    let expr = par
+        .exprs
+        .first()
+        .expect("the substituted Par must carry exactly one Expr");
+    match expr
+        .expr_instance
+        .as_ref()
+        .expect("Expr.expr_instance must be populated")
+    {
+        ExprInstance::EMatchesBody(EMatches { target, pattern }) => (
+            target.clone().expect("EMatches.target"),
+            pattern.clone().expect("EMatches.pattern"),
+        ),
+        other => panic!("expected an EMatchesBody, got {other:?}"),
+    }
+}
+
+/// `target matches pattern`, with `target` a bound var that must survive
+/// untouched (substitution at depth != 0 leaves `BoundVar`s alone).
+fn matches_par(pattern: Par) -> Par {
+    Par::default().with_exprs(vec![Expr {
+        expr_instance: Some(ExprInstance::EMatchesBody(EMatches {
+            target: Some(new_boundvar_par(0, Vec::new(), false)),
+            pattern: Some(pattern),
+        })),
+    }])
+}
+
+fn var_ref_par(index: i32, depth: i32) -> Par {
+    Par::default().with_connectives(vec![Connective {
+        connective_instance: Some(ConnectiveInstance::VarRefBody(VarRef { index, depth })),
+    }])
+}
+
+/// RED: the pattern carries a `VarRef` at the depth the normalizer emits for
+/// it (one deeper than the enclosing term). It must be substituted.
+#[test]
+fn var_ref_should_be_replaced_at_a_higher_depth_inside_a_matches_pattern() {
+    let source = GPrivateBuilder::new_par();
+    let mut env = Env::new();
+    env = env.put(source.clone());
+    env = env.shift(1);
+
+    let substitution = substitute_instance()
+        .substitute(matches_par(var_ref_par(1, 2)), 1, &env)
+        .expect("substituting an EMatches must succeed");
+
+    let (target, pattern) = ematches_slots(&substitution);
+    assert_eq!(
+        pattern, source,
+        "the `matches` pattern lives at depth + 1, so a VarRef of depth 2 \
+         inside a term substituted at depth 1 must be replaced by the env's \
+         binding — exactly as MatchCase::pattern is"
+    );
+    assert_eq!(
+        target,
+        new_boundvar_par(0, Vec::new(), false),
+        "the target slot is at the enclosing depth and must be untouched"
+    );
+}
+
+/// CONTROL — must NOT discriminate. A ground pattern names nothing, so the
+/// depth it is visited at cannot change the result.
+#[test]
+fn a_ground_matches_pattern_is_unchanged_by_substitution() {
+    let source = GPrivateBuilder::new_par();
+    let mut env = Env::new();
+    env = env.put(source);
+    env = env.shift(1);
+
+    let ground = new_gstring_par("ground".to_string(), Vec::new(), false);
+    let substitution = substitute_instance()
+        .substitute(matches_par(ground.clone()), 1, &env)
+        .expect("substituting an EMatches must succeed");
+
+    let (target, pattern) = ematches_slots(&substitution);
+    assert_eq!(pattern, ground, "a ground pattern is a fixed point");
+    assert_eq!(target, new_boundvar_par(0, Vec::new(), false));
+}
+
+/// CONTROL — pins the bump to EXACTLY one level. A `VarRef` whose depth does
+/// not match the pattern's depth must still be left alone, so the fix cannot
+/// degenerate into "substitute every VarRef in a pattern".
+#[test]
+fn a_matches_pattern_var_ref_at_a_non_matching_depth_is_left_alone() {
+    let source = GPrivateBuilder::new_par();
+    let mut env = Env::new();
+    env = env.put(source);
+    env = env.shift(1);
+
+    let stranger = var_ref_par(1, 3);
+    let substitution = substitute_instance()
+        .substitute(matches_par(stranger.clone()), 1, &env)
+        .expect("substituting an EMatches must succeed");
+
+    let (_, pattern) = ematches_slots(&substitution);
+    assert_eq!(
+        pattern, stranger,
+        "depth 3 is neither the enclosing depth (1) nor the pattern's (2)"
+    );
 }
 
 #[test]

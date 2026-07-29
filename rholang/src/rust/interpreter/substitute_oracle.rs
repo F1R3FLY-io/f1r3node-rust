@@ -58,10 +58,10 @@ use super::env::Env;
 use super::errors::InterpreterError;
 use super::substitute::Substitute;
 use super::substitute_combine::{
-    fold_concatenate_par, fold_prepend_connective, fold_prepend_expr, missing_required_field,
-    rebuild_bundle, rebuild_connective, rebuild_expr_instance, rebuild_if, rebuild_match,
-    rebuild_match_case, rebuild_new, rebuild_par, rebuild_receive, rebuild_receive_bind,
-    rebuild_send, split_expr_instance, ConnArm,
+    expr_arm_pattern_slots, fold_concatenate_par, fold_prepend_connective, fold_prepend_expr,
+    missing_required_field, rebuild_bundle, rebuild_connective, rebuild_expr_instance, rebuild_if,
+    rebuild_match, rebuild_match_case, rebuild_new, rebuild_par, rebuild_receive,
+    rebuild_receive_bind, rebuild_send, split_expr_instance, ConnArm,
 };
 use super::substitute_drive::{
     maybe_substitute_evar_view, maybe_substitute_var_ref_view, EnvView, SubCtx,
@@ -72,7 +72,11 @@ use super::unwrap_option_safe;
 // the recursive twin
 // ===========================================================================
 
-pub(crate) fn par_recursive(term: Par, ctx: SubCtx, env: EnvView<'_>) -> Result<Par, InterpreterError> {
+pub(crate) fn par_recursive(
+    term: Par,
+    ctx: SubCtx,
+    env: EnvView<'_>,
+) -> Result<Par, InterpreterError> {
     let Par {
         sends,
         receives,
@@ -136,8 +140,9 @@ fn sub_exp_recursive(
     ctx: SubCtx,
     env: EnvView<'_>,
 ) -> Result<Par, InterpreterError> {
-    exprs.into_iter().try_fold(Par::default(), |acc, expr| {
-        match expr.expr_instance {
+    exprs
+        .into_iter()
+        .try_fold(Par::default(), |acc, expr| match expr.expr_instance {
             None => Err(missing_required_field::<ExprInstance>()),
             Some(ExprInstance::EVarBody(e)) => match maybe_substitute_evar_view(e, ctx, env)? {
                 Either::Left(e) => Ok(fold_prepend_expr(
@@ -157,8 +162,7 @@ fn sub_exp_recursive(
                 env,
             )
             .map(|e| fold_prepend_expr(acc, e, ctx.depth)),
-        }
-    })
+        })
 }
 
 fn sub_conn_recursive(
@@ -237,15 +241,26 @@ fn required_par_recursive(
     par_recursive(unwrap_option_safe(slot)?, ctx, env)
 }
 
-pub(crate) fn expr_recursive(term: Expr, ctx: SubCtx, env: EnvView<'_>) -> Result<Expr, InterpreterError> {
+pub(crate) fn expr_recursive(
+    term: Expr,
+    ctx: SubCtx,
+    env: EnvView<'_>,
+) -> Result<Expr, InterpreterError> {
     let instance = unwrap_option_safe(term.expr_instance)?;
     let (arm, children) = split_expr_instance(instance);
+    // Same per-slot depth table the driver reads, so the two cannot disagree
+    // about which slots are pattern positions.
+    let pattern_slots = expr_arm_pattern_slots(&arm);
 
     // Check-then-descend, operand by operand, in slot order — the interleaving
     // that decides which error a partly-malformed arm reports.
     let mut subbed = Vec::with_capacity(children.len());
-    for slot in children {
-        subbed.push(required_par_recursive(slot, ctx, env)?);
+    for (slot, child) in children.into_iter().enumerate() {
+        let slot_ctx = match pattern_slots.contains(&slot) {
+            true => ctx.deeper(),
+            false => ctx,
+        };
+        subbed.push(required_par_recursive(child, slot_ctx, env)?);
     }
 
     Ok(Expr {
@@ -253,7 +268,11 @@ pub(crate) fn expr_recursive(term: Expr, ctx: SubCtx, env: EnvView<'_>) -> Resul
     })
 }
 
-pub(crate) fn send_recursive(term: Send, ctx: SubCtx, env: EnvView<'_>) -> Result<Send, InterpreterError> {
+pub(crate) fn send_recursive(
+    term: Send,
+    ctx: SubCtx,
+    env: EnvView<'_>,
+) -> Result<Send, InterpreterError> {
     let Send {
         chan,
         data,
@@ -332,7 +351,11 @@ pub(crate) fn receive_recursive(
     ))
 }
 
-pub(crate) fn new_recursive(term: New, ctx: SubCtx, env: EnvView<'_>) -> Result<New, InterpreterError> {
+pub(crate) fn new_recursive(
+    term: New,
+    ctx: SubCtx,
+    env: EnvView<'_>,
+) -> Result<New, InterpreterError> {
     let New {
         bind_count,
         p,
@@ -403,7 +426,11 @@ pub(crate) fn match_recursive(
     ))
 }
 
-pub(crate) fn if_recursive(term: If, ctx: SubCtx, env: EnvView<'_>) -> Result<If, InterpreterError> {
+pub(crate) fn if_recursive(
+    term: If,
+    ctx: SubCtx,
+    env: EnvView<'_>,
+) -> Result<If, InterpreterError> {
     let If {
         condition,
         if_true,
@@ -440,6 +467,9 @@ pub(crate) fn bundle_recursive(
 
 #[cfg(test)]
 mod differential_substitute_worklist {
+    use models::rust::rholang::par_children::dismantle;
+    use prost::Message;
+
     use super::*;
     use crate::rust::interpreter::accounting::costs::Cost;
     use crate::rust::interpreter::accounting::{BillableKind, RuntimeBudget};
@@ -448,8 +478,6 @@ mod differential_substitute_worklist {
     use crate::rust::interpreter::test_utils::substitution_corpus::{
         empty_env, gint, nested_list, populated_env, substitution_corpus, SubstitutionCase,
     };
-    use models::rust::rholang::par_children::dismantle;
-    use prost::Message;
 
     fn subject() -> Substitute {
         Substitute {
@@ -628,7 +656,11 @@ mod differential_substitute_worklist {
             // Oracle side: recompute the result recursively, then levy the
             // wrapper's charge by hand in the same order the wrapper does.
             let oracle = subject();
-            let rec = par_recursive(case.term.clone(), SubCtx::root(case.depth), EnvView::new(&env));
+            let rec = par_recursive(
+                case.term.clone(),
+                SubCtx::root(case.depth),
+                EnvView::new(&env),
+            );
             let rec_bytes = match &rec {
                 Ok(p) => (p.encoded_len() as i64).max(1),
                 Err(_) => (case.term.encoded_len() as i64).max(1),
@@ -658,8 +690,11 @@ mod differential_substitute_worklist {
             // result. `par_recursive` is itself the un-sorted form, so the
             // oracle's number is the same one computed above.
             let oracle_ns = subject();
-            let rec_ns =
-                par_recursive(case.term.clone(), SubCtx::root(case.depth), EnvView::new(&env));
+            let rec_ns = par_recursive(
+                case.term.clone(),
+                SubCtx::root(case.depth),
+                EnvView::new(&env),
+            );
             let rec_ns_bytes = match &rec_ns {
                 Ok(p) => (p.encoded_len() as i64).max(1),
                 Err(_) => (case.term.encoded_len() as i64).max(1),
@@ -795,7 +830,9 @@ mod differential_substitute_worklist {
                 }
             })
             .expect("differential: failed to spawn");
-        handle.join().expect("differential: the deep/wide thread panicked");
+        handle
+            .join()
+            .expect("differential: the deep/wide thread panicked");
     }
 
     /// Terms whose substitution FAILS, with the depth to substitute them at.
@@ -946,16 +983,13 @@ mod differential_substitute_worklist {
     fn the_two_pathmap_arms_are_still_not_descended_into() {
         use models::rust::rhoapi_ext::EPathMap;
         use models::rust::rholang::par_children::substitute_descends_into;
+
         use crate::rust::interpreter::test_utils::substitution_corpus::bound_var;
 
         let env = populated_env();
         let inner = bound_var(0);
-        let instance = ExprInstance::EPathmapBody(EPathMap::new(
-            vec![inner.clone()],
-            Vec::new(),
-            false,
-            None,
-        ));
+        let instance =
+            ExprInstance::EPathmapBody(EPathMap::new(vec![inner.clone()], Vec::new(), false, None));
         assert!(!substitute_descends_into(&instance));
 
         let term = Par {

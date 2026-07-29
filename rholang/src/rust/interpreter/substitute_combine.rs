@@ -112,6 +112,74 @@ pub(crate) enum BinaryArm {
     EMatches,
 }
 
+/// The child slots of an arm that are **pattern positions**: substituted at
+/// `depth + 1` rather than at the enclosing depth, exactly as
+/// `ReceiveBind::patterns` and `MatchCase::pattern` are in
+/// `substitute_drive`'s `descend_bind` / `descend_case`.
+///
+/// ★ Single-sourced for the same reason `split_expr_instance` and
+/// `rebuild_expr_instance` are: the worklist driver and the recursive oracle
+/// both consult this, so a slot's depth cannot diverge between them.
+///
+/// The match on [`BinaryArm`] is written out rather than wildcarded, so adding
+/// a two-slot arm does not silently inherit "no pattern slots" — the author
+/// has to say which of the two positions binds.
+pub(crate) fn expr_arm_pattern_slots(arm: &ExprArm) -> &'static [usize] {
+    /// `EMatches`'s second slot, `pattern`.
+    const SLOT_1: &[usize] = &[1];
+    const NONE: &[usize] = &[];
+
+    match arm {
+        ExprArm::Binary(binary) => match binary {
+            // `target matches pattern`. `p_matches_normalizer`'s
+            // `combine_p_matches` normalizes the pattern under
+            // `bound_map_chain.push()` and in a fresh `FreeMap`, so it is a
+            // NESTED PATTERN one binding level deeper. The only construct that
+            // can name an outer binder from inside it is `=x`, which
+            // `BoundMapChain::find` emits as `VarRef { depth }` carrying the
+            // chain distance — and `maybe_substitute_var_ref` fires only when
+            // that `depth` equals the traversal's. Visiting the pattern at the
+            // enclosing depth therefore strands exactly those `VarRef`s.
+            //
+            // The asymmetry with `has_locally_free`, which reads this node's
+            // `locally_free`/`connective_used` from the TARGET alone, is not a
+            // disagreement: a plain `x` in the pattern goes through
+            // `BoundMapChain::get` (current scope only), so it is a fresh
+            // binding occurrence and contributes nothing to the enclosing
+            // scope's free variables. See `matcher::spatial_matcher`'s
+            // `EMatchesBody` arm and `par_children::substitute_descends_into`.
+            BinaryArm::EMatches => SLOT_1,
+
+            BinaryArm::EMult
+            | BinaryArm::EDiv
+            | BinaryArm::EMod
+            | BinaryArm::EPercentPercent
+            | BinaryArm::EPlus
+            | BinaryArm::EMinus
+            | BinaryArm::EPlusPlus
+            | BinaryArm::EMinusMinus
+            | BinaryArm::ELt
+            | BinaryArm::ELte
+            | BinaryArm::EGt
+            | BinaryArm::EGte
+            | BinaryArm::EEq
+            | BinaryArm::ENeq
+            | BinaryArm::EAnd
+            | BinaryArm::EOr => NONE,
+        },
+
+        // Operands, elements, entries, receivers and arguments — all ordinary
+        // term positions at the enclosing depth.
+        ExprArm::Unary(_)
+        | ExprArm::EList { .. }
+        | ExprArm::ETuple { .. }
+        | ExprArm::ESet { .. }
+        | ExprArm::EMap { .. }
+        | ExprArm::EMethod { .. }
+        | ExprArm::NoDescent(_) => NONE,
+    }
+}
+
 /// An `ExprInstance` with its child `Par`s removed.
 pub(crate) enum ExprArm {
     Unary(UnaryArm),
@@ -161,13 +229,9 @@ pub(crate) enum ExprArm {
 /// driver and the oracle raise it exactly where the recursive form did.
 pub(crate) fn split_expr_instance(instance: ExprInstance) -> (ExprArm, Vec<Option<Par>>) {
     /// Both operands of a binary arm, in `(p1, p2)` order, positions preserved.
-    fn two(p1: Option<Par>, p2: Option<Par>) -> Vec<Option<Par>> {
-        vec![p1, p2]
-    }
+    fn two(p1: Option<Par>, p2: Option<Par>) -> Vec<Option<Par>> { vec![p1, p2] }
     /// A list slot: every element is present by construction.
-    fn present(ps: Vec<Par>) -> Vec<Option<Par>> {
-        ps.into_iter().map(Some).collect()
-    }
+    fn present(ps: Vec<Par>) -> Vec<Option<Par>> { ps.into_iter().map(Some).collect() }
 
     match instance {
         ExprInstance::ENotBody(ENot { p }) => (ExprArm::Unary(UnaryArm::ENot), vec![p]),
@@ -619,22 +683,19 @@ pub(crate) fn rebuild_par(
 ) -> Par {
     concatenate_pars(
         exprs_par,
-        concatenate_pars(
-            connectives_par,
-            Par {
-                sends,
-                receives,
-                news,
-                exprs: Vec::new(),
-                matches,
-                unforgeables,
-                bundles,
-                connectives: Vec::new(),
-                conditionals,
-                locally_free: set_bits_until(locally_free, shift),
-                connective_used,
-            },
-        ),
+        concatenate_pars(connectives_par, Par {
+            sends,
+            receives,
+            news,
+            exprs: Vec::new(),
+            matches,
+            unforgeables,
+            bundles,
+            connectives: Vec::new(),
+            conditionals,
+            locally_free: set_bits_until(locally_free, shift),
+            connective_used,
+        }),
     )
 }
 
@@ -664,14 +725,14 @@ pub(crate) fn fold_prepend_connective(acc: Par, c: Connective, depth: i32) -> Pa
 /// `unwrap_option_safe`'s error, raised without a value to unwrap. Used where
 /// the driver has already established that a required field was `None`.
 pub(crate) fn missing_required_field<A: Clone + std::fmt::Debug>() -> InterpreterError {
-    super::unwrap_option_safe::<A>(None)
-        .expect_err("unwrap_option_safe(None) always returns Err")
+    super::unwrap_option_safe::<A>(None).expect_err("unwrap_option_safe(None) always returns Err")
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use models::rhoapi::KeyValuePair;
+
+    use super::*;
     use crate::rust::interpreter::test_utils::substitution_corpus::{
         every_expr_instance, EXPR_INSTANCE_VARIANT_COUNT,
     };
@@ -772,7 +833,10 @@ mod tests {
         }));
         assert!(matches!(arm, ExprArm::Binary(BinaryArm::EPlus)));
         assert_eq!(children.len(), 2, "a binary arm must report two slots");
-        assert!(children[0].is_none(), "an absent p1 must stay in position 0");
+        assert!(
+            children[0].is_none(),
+            "an absent p1 must stay in position 0"
+        );
         assert!(children[1].is_some());
     }
 }
