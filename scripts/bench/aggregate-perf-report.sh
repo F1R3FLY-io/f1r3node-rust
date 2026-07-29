@@ -40,45 +40,66 @@ THRESHOLDS_JSON="${THRESHOLDS_JSON:-$SCRIPT_DIR/soak-gate-thresholds.json}"
 BASELINE_JSON="${BASELINE_JSON:-}"
 SOAK_STATUS="${SOAK_STATUS:-complete}"
 case "$SOAK_STATUS" in
-  complete|in_progress) ;;
-  *) echo "SOAK_STATUS must be 'complete' or 'in_progress'" >&2; exit 2 ;;
+complete | in_progress) ;;
+*)
+	echo "SOAK_STATUS must be 'complete' or 'in_progress'" >&2
+	exit 2
+	;;
 esac
 # Belt and braces: the verdict is overridden for a checkpoint anyway, but
 # dropping the baseline here means none of the comparison branches can fire
 # even if that override is later changed.
 [ "$SOAK_STATUS" = "in_progress" ] && BASELINE_JSON=""
 RUN_ID="${RUN_ID:-unknown}"
+RUN_ATTEMPT="${RUN_ATTEMPT:-1}"
+SOAK_KIND="${SOAK_KIND:-unknown}"
+if ! [[ "$RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]; then
+	echo "RUN_ATTEMPT must be a positive integer" >&2
+	exit 2
+fi
+case "$SOAK_KIND" in
+daily | weekend | unknown) ;;
+*)
+	echo "SOAK_KIND must be 'daily', 'weekend', or 'unknown'" >&2
+	exit 2
+	;;
+esac
 DURATION_SECONDS="${DURATION_SECONDS:-0}"
 DASHBOARD_URL="${DASHBOARD_URL:-https://f1r3fly-io.github.io/f1r3node-rust/}"
 
-command -v jq >/dev/null || { echo "jq not found" >&2; exit 2; }
+command -v jq >/dev/null || {
+	echo "jq not found" >&2
+	exit 2
+}
 mkdir -p "$OUT_DIR"
 
 SEGMENTS_JSON="$OUT_DIR/.segments.json"
-find "$SOAK_DIR" -path '*bench-segment-*/metrics.json' -print0 \
-  | sort -z \
-  | xargs -0 --no-run-if-empty cat \
-  | jq -s 'sort_by(.segment_index)' > "$SEGMENTS_JSON"
-[ -s "$SEGMENTS_JSON" ] || echo '[]' > "$SEGMENTS_JSON"
+find "$SOAK_DIR" -path '*bench-segment-*/metrics.json' -print0 |
+	sort -z |
+	xargs -0 --no-run-if-empty cat |
+	jq -s 'sort_by(.segment_index)' >"$SEGMENTS_JSON"
+[ -s "$SEGMENTS_JSON" ] || echo '[]' >"$SEGMENTS_JSON"
 
 PASSIVE_ARG='null'
 if [ -s "$SOAK_DIR/summary.json" ]; then
-  PASSIVE_ARG="$(cat "$SOAK_DIR/summary.json")"
+	PASSIVE_ARG="$(cat "$SOAK_DIR/summary.json")"
 fi
 
 BASELINE_ARG='null'
 if [ -n "$BASELINE_JSON" ] && [ -s "$BASELINE_JSON" ]; then
-  BASELINE_ARG="$(cat "$BASELINE_JSON")"
+	BASELINE_ARG="$(cat "$BASELINE_JSON")"
 fi
 
 jq -n \
-  --slurpfile segments "$SEGMENTS_JSON" \
-  --argjson passive "$PASSIVE_ARG" \
-  --arg run_id "$RUN_ID" \
-  --argjson duration "$DURATION_SECONDS" \
-  --arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-  --arg status "$SOAK_STATUS" \
-'
+	--slurpfile segments "$SEGMENTS_JSON" \
+	--argjson passive "$PASSIVE_ARG" \
+	--arg run_id "$RUN_ID" \
+	--argjson run_attempt "$RUN_ATTEMPT" \
+	--arg kind "$SOAK_KIND" \
+	--argjson duration "$DURATION_SECONDS" \
+	--arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+	--arg status "$SOAK_STATUS" \
+	'
   def median: sort | if length == 0 then null else .[(length - 1) / 2 | floor] end;
   ($segments[0]) as $segs
   | ($segs | map(select(.ok == true))) as $ok
@@ -86,8 +107,12 @@ jq -n \
       run: {
         date: $date,
         run_id: $run_id,
+        run_attempt: $run_attempt,
+        kind: $kind,
         target_ref: ($passive.target_ref // "unknown"),
         target_sha: ($passive.target_sha // "unknown"),
+        started_at: ($passive.started_at // null),
+        finished_at: ($passive.finished_at // null),
         duration_seconds: $duration,
         status: $status,
         # Seconds actually soaked so far, against the run
@@ -114,14 +139,14 @@ jq -n \
         segments: $segs
       }
     }
-' > "$OUT_DIR/weekly-summary.json"
+' >"$OUT_DIR/weekly-summary.json"
 
 jq -n \
-  --argjson current "$(cat "$OUT_DIR/weekly-summary.json")" \
-  --argjson baseline "$BASELINE_ARG" \
-  --argjson thresholds "$(cat "$THRESHOLDS_JSON")" \
-  --arg status "$SOAK_STATUS" \
-'
+	--argjson current "$(cat "$OUT_DIR/weekly-summary.json")" \
+	--argjson baseline "$BASELINE_ARG" \
+	--argjson thresholds "$(cat "$THRESHOLDS_JSON")" \
+	--arg status "$SOAK_STATUS" \
+	'
   def pct_over(cur; base; pct):
     (cur != null and base != null and base > 0 and cur > (base * (1 + pct)));
   def pct_under(cur; base; pct):
@@ -169,13 +194,13 @@ jq -n \
       run: $current.run,
       baseline_run: ($baseline.run // null)
     }
-' > "$OUT_DIR/verdict.json"
+' >"$OUT_DIR/verdict.json"
 
 jq -r \
-  --argjson verdict "$(cat "$OUT_DIR/verdict.json")" \
-  --argjson baseline "$BASELINE_ARG" \
-  --arg dashboard "$DASHBOARD_URL" \
-'
+	--argjson verdict "$(cat "$OUT_DIR/verdict.json")" \
+	--argjson baseline "$BASELINE_ARG" \
+	--arg dashboard "$DASHBOARD_URL" \
+	'
   def fmt: if . == null then "-" else tostring end;
   ($baseline.passive // {}) as $bp
   | ($baseline.active // {}) as $ba
@@ -219,9 +244,9 @@ jq -r \
   "|---|---|---|---|---|---|---|---|",
   (.active.segments[] |
     "| \(.segment_index) | \((.offset_seconds / 3600 * 10 | floor) / 10) | \(.latency.p50_ms // null | fmt) | \(.latency.p95_ms // null | fmt) | \(.observed_throughput // null | fmt) | \(.finalized // 0)/\(.submitted // 0) | \(.rss_peak_mb | fmt) | \(.ok) |")
-' "$OUT_DIR/weekly-summary.json" > "$OUT_DIR/perf-report.md"
+' "$OUT_DIR/weekly-summary.json" >"$OUT_DIR/perf-report.md"
 
 rm -f "$SEGMENTS_JSON"
 echo "wrote weekly-summary.json, verdict.json, perf-report.md to $OUT_DIR" >&2
 jq -r '"verdict: \(.verdict)" + (if .failures | length > 0 then " — " + (.failures | join("; ")) else "" end)' \
-  "$OUT_DIR/verdict.json" >&2
+	"$OUT_DIR/verdict.json" >&2

@@ -552,6 +552,8 @@ jobs:
           SOAK_DIR: /tmp/merge-recovery-soak
           OUT_DIR: /tmp/merge-recovery-soak/report
           RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          SOAK_KIND: ${{ needs.schedule_gate.outputs.kind }}
           DURATION_SECONDS: ${{ needs.schedule_gate.outputs.duration_seconds }}
           DASHBOARD_URL: https://f1r3fly-io.github.io/f1r3node-rust/
           # Non-empty value must be the truthy branch: GitHub treats '' as
@@ -570,10 +572,25 @@ jobs:
           # 60h weekend baseline would flag a regression purely because the
           # spans differ.
           base_code="$(curl -sS --max-time 30 -H 'Cache-Control: no-cache' -w '%{http_code}' \
-            -o /tmp/soak-baseline.json \
-            "${DASHBOARD_URL}data/latest-summary${SERIES_SUFFIX}.json?cb=${cb}")" || base_code=000
+            -o /tmp/soak-history.json \
+            "${DASHBOARD_URL}data/history${SERIES_SUFFIX}.json?cb=${cb}")" || base_code=000
           case "$base_code" in
-            200) export BASELINE_JSON=/tmp/soak-baseline.json ;;
+            200)
+              if jq -e 'type == "array"' /tmp/soak-history.json >/dev/null 2>&1; then
+                jq --arg run_id "$RUN_ID" \
+                  '[.[] | select((.run.status // "complete") != "in_progress")
+                        | select((.run.run_id // "" | tostring) != $run_id)]
+                   | sort_by(.run.date // "") | last // empty' \
+                  /tmp/soak-history.json > /tmp/soak-baseline.json
+                if [ -s /tmp/soak-baseline.json ]; then
+                  export BASELINE_JSON=/tmp/soak-baseline.json
+                else
+                  echo "no completed baseline yet (bootstrap run)"
+                fi
+              else
+                echo "::warning::published history is not a JSON array; verdict computed without week-over-week comparison"
+              fi
+              ;;
             404) echo "no published baseline yet (bootstrap run)" ;;
             *)   echo "::warning::baseline fetch failed (HTTP ${base_code}); verdict computed without week-over-week comparison" ;;
           esac

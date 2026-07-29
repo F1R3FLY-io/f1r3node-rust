@@ -86,7 +86,9 @@ runs:
         SOAK_DIR: /tmp/merge-recovery-soak
         OUT_DIR: /tmp/merge-recovery-soak/checkpoint
         SOAK_STATUS: in_progress
+        SOAK_KIND: ${{ inputs.kind }}
         RUN_ID: ${{ github.run_id }}
+        RUN_ATTEMPT: ${{ github.run_attempt }}
         DURATION_SECONDS: ${{ inputs.duration_seconds }}
       shell: bash -euo pipefail {0}
       run: |
@@ -122,6 +124,7 @@ runs:
         # here is a warning and the next segment starts anyway.
         if gh workflow run soak-checkpoint-publish.yml \
              --field run_id="${GITHUB_RUN_ID}" \
+             --field run_attempt="${GITHUB_RUN_ATTEMPT}" \
              --field artifact="${ARTIFACT}" \
              --field kind="${KIND}"; then
           echo "checkpoint publish dispatched for ${ARTIFACT}"
