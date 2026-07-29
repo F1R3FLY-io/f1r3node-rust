@@ -55,6 +55,7 @@
 //! in memory and requires the comparison to reject it — in both directions, so
 //! a comparator that rejected *everything* would also fail.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -149,9 +150,7 @@ struct Citation {
 /// `true` for the characters that may appear inside a Rust identifier, which is
 /// what makes the replacement below a *word-boundary* replacement rather than a
 /// substring one.
-fn is_ident_char(c: char) -> bool {
-    c.is_alphanumeric() || c == '_'
-}
+fn is_ident_char(c: char) -> bool { c.is_alphanumeric() || c == '_' }
 
 /// Replace every whole-word occurrence of `needle` with `replacement`.
 ///
@@ -165,7 +164,12 @@ fn replace_word(haystack: &str, needle: &str, replacement: &str) -> String {
     while let Some(rel) = haystack[i..].find(needle) {
         let at = i + rel;
         let before_ok = at == 0
-            || !is_ident_char(haystack[..at].chars().next_back().expect("non-empty prefix"));
+            || !is_ident_char(
+                haystack[..at]
+                    .chars()
+                    .next_back()
+                    .expect("non-empty prefix"),
+            );
         let after = at + needle.len();
         let after_ok = after >= bytes.len()
             || !is_ident_char(haystack[after..].chars().next().expect("non-empty suffix"));
@@ -201,8 +205,7 @@ fn rename_scc(text: &str) -> String {
         "fn normalize_name_recursive",
         "pub(crate) fn normalize_name_recursive",
     );
-    out
-        .lines()
+    out.lines()
         .filter(|l| {
             let t = l.trim();
             !(t.starts_with("use ") && t.ends_with("_recursive;") && t.contains("::"))
@@ -258,17 +261,14 @@ fn citations() -> Vec<Citation> {
             "citation at {ORACLE}:{} names no commit: {l}",
             i + 1
         );
-        marker_idx.push((
-            i,
-            Citation {
-                path: path.to_string(),
-                first_line: lo.parse().expect("citation line range is numeric"),
-                last_line: hi.parse().expect("citation line range is numeric"),
-                sha,
-                marker_line: i + 1,
-                block: String::new(),
-            },
-        ));
+        marker_idx.push((i, Citation {
+            path: path.to_string(),
+            first_line: lo.parse().expect("citation line range is numeric"),
+            last_line: hi.parse().expect("citation line range is numeric"),
+            sha,
+            marker_line: i + 1,
+            block: String::new(),
+        }));
     }
 
     let starts: Vec<usize> = marker_idx.iter().map(|(i, _)| *i).collect();
@@ -480,10 +480,12 @@ fn the_provenance_check_can_go_red() {
 fn no_undeclared_deviations() {
     let cites = citations();
     for d in DECLARED_DEVIATIONS {
-        let c = cites
-            .iter()
-            .find(|c| c.path == d.path)
-            .unwrap_or_else(|| panic!("DECLARED_DEVIATIONS names `{}`, which the oracle does not cite", d.path));
+        let c = cites.iter().find(|c| c.path == d.path).unwrap_or_else(|| {
+            panic!(
+                "DECLARED_DEVIATIONS names `{}`, which the oracle does not cite",
+                d.path
+            )
+        });
         let cited = {
             let source = git_show(&c.sha, &c.path);
             let lines: Vec<&str> = source.lines().collect();
@@ -1114,16 +1116,79 @@ fn no_undeclared_pretty_printer_deviations() {
 // inside a `combine_*` helper, because both sides would compute the same wrong
 // answer. That bound is a property a reader must be told, and the way it gets
 // silently lost is exactly what happened — a comment calling the twin a "copy".
-// So the numbers are pinned: if someone makes the twin a real copy, or removes
-// the sharing, this test fails and the prose describing the differential's
-// reach has to be rewritten with it.
+// So the RELATIONSHIP is checked: if someone makes the twin a real copy, or
+// removes the sharing, this test fails and the prose describing the
+// differential's reach has to be rewritten with it.
+//
+// ===========================================================================
+// ★ WHY THIS SECTION NO LONGER COUNTS LINES — the defect, and the repair
+// ===========================================================================
+//
+// It used to. `TRAMPOLINE_TWIN_SHAPE` carried `(name, pre lines, twin lines)`
+// and the test read the PRE column out of git and the TWIN column out of the
+// WORKING TREE. That asymmetry is the whole bug. A frozen blob cannot move, so
+// the pre column never went stale in eight months; the live file moves whenever
+// anyone edits it, so the twin column went stale the first time somebody
+// touched `reduce.rs` for an unrelated reason — a 1,057-line change (682+/375-)
+// turned `11, 44, 167, 20, 28, 28` into `17, 47, 226, 24, 32, 32` and this test
+// went red having found nothing wrong with the twin at all.
+//
+// The repair is NOT to update the numbers. A count is a PROXY: it is not the
+// property "is a rewrite, not a copy", it merely correlated with it once, and a
+// proxy any unrelated refactor invalidates was never testing the claim its name
+// makes. Updating it would buy one more refactor's worth of silence and cost
+// the next reader the same afternoon.
+//
+// So the section is split along the line the banner in `reduce.rs` already drew
+// between "measured" and "is":
+//
+//   ▸ THE CITATION — the banner's table is a MEASUREMENT, stated in the past
+//     tense ("measured, with a `_recursive` rename applied"). A measurement is
+//     of a specific text, so BOTH columns are now re-derived from git: the pre
+//     column at TRAMPOLINE_COMMIT and the twin column at
+//     TWIN_MEASUREMENT_COMMIT, the commit that authored the table. That makes
+//     the banner's own sentence — "re-derives the table above FROM GIT and
+//     fails if any entry moves" — literally true, which it was not before, and
+//     it can now only break if history is rewritten.
+//
+//   ▸ THE LIVE CLAIM — what is asserted about the twin AS IT STANDS is checked
+//     structurally, three ways, none of which a reformat can move:
+//
+//       1. TOKEN-for-token non-identity, per function. Strictly stronger than
+//          the byte-identity it replaces: a twin re-copied from the original
+//          and then reformatted, or re-commented, is byte-different and token-
+//          IDENTICAL, so the old check would have called it a rewrite.
+//       2. THE SHARING, positively. The pre-trampoline `reduce.rs` contains the
+//          token `combine_` ZERO times; the twin calls the helpers, and every
+//          helper it calls is also called from OUTSIDE the twin family — which
+//          is what "shares code with the machine it checks" means and what
+//          bounds the differential's reach.
+//       3. THE LIFTING, as an inequality on TOKENS, not lines: the arm table
+//          that `eval_expr_to_expr` carried inline is gone, so the twin is a
+//          multiple smaller than the original. Reformatting does not change a
+//          token count; re-inlining 1,213 lines of arm logic changes it by
+//          nearly 4×.
+//
+// Each of the three goes RED if the twin is re-copied and GREEN under a pure
+// reformat, and `the_rewrite_check_can_go_red` demonstrates both directions
+// rather than asserting them.
+// ===========================================================================
 
 /// The trampoline conversion. Its parent holds the evaluator this twin replaced.
 const TRAMPOLINE_COMMIT: &str = "a929a2d6^";
 
-/// `(pre-trampoline name, its line count at TRAMPOLINE_COMMIT, twin line count)`.
+/// The commit that authored `reduce.rs`'s RECURSIVE TWIN banner, and therefore
+/// the text its TWIN column measured.
 ///
-/// Re-derived from git and from the live file; every number is checked.
+/// ⚠ A measurement needs a subject. Naming one is what stops this table from
+/// being a claim about a file that keeps changing underneath it.
+const TWIN_MEASUREMENT_COMMIT: &str = "29263381";
+
+/// `(pre-trampoline name, its line count at TRAMPOLINE_COMMIT, twin line count
+/// at TWIN_MEASUREMENT_COMMIT)` — the banner's table, as data.
+///
+/// Both columns are re-derived from git. Nothing here is read from the working
+/// tree; see the section banner for why that asymmetry was the defect.
 const TRAMPOLINE_TWIN_SHAPE: &[(&str, usize, usize)] = &[
     ("eval_expr", 20, 11),
     ("eval_expr_to_par", 59, 44),
@@ -1132,6 +1197,22 @@ const TRAMPOLINE_TWIN_SHAPE: &[(&str, usize, usize)] = &[
     ("eval_to_i64", 48, 28),
     ("eval_to_bool", 48, 28),
 ];
+
+/// How many times smaller, in TOKENS, `eval_expr_to_expr`'s twin must be than
+/// the body it replaced.
+///
+/// The measured ratio is 8,268 → 2,215 tokens (3.73×) with the arm table lifted
+/// into the `combine_*` helpers. The floor is 3, which leaves the twin room to
+/// grow by a quarter for ordinary reasons and still trips long before 1,213
+/// lines of arm logic could come back inline. It is a floor and not an equality
+/// on purpose: the claim is "the table was lifted out", which is an ordering
+/// fact, and an ordering fact is what a refactor cannot invalidate.
+const ARM_TABLE_COLLAPSE_FLOOR: usize = 3;
+
+/// The one function whose body carried the arm table, and so the only one the
+/// collapse claim is about — the other five were small before the conversion
+/// and are within a few tokens of their originals.
+const ARM_TABLE_FN: &str = "eval_expr_to_expr";
 
 const REDUCE: &str = "rholang/src/rust/interpreter/reduce.rs";
 
@@ -1171,88 +1252,542 @@ fn impl_fn_lines(text: &str, name: &str) -> Option<(usize, usize)> {
     None
 }
 
-/// ★ The evaluator twin is a REWRITE over shared combiners, not a copy — and the
-/// numbers that say so are checked rather than asserted.
+/// The body of the `impl`-level function `name`, verbatim, or `None`.
+fn impl_fn_body(text: &str, name: &str) -> Option<String> {
+    let (a, b) = impl_fn_lines(text, name)?;
+    Some(text.lines().collect::<Vec<_>>()[a - 1..b].join("\n"))
+}
+
+/// Rust tokens, over [`blank_rust`]ed text, so that comments, whitespace, line
+/// breaks and string CONTENTS contribute nothing.
+///
+/// Multi-character operators are emitted as their component punctuation. That is
+/// sufficient here and deliberately so: the sequence is used only for EQUALITY
+/// and for COUNTING, and any consistent tokenisation answers both. What matters
+/// is that the answer is invariant under `rustfmt` and under re-commenting,
+/// which is exactly what byte comparison was not.
+fn tokens(text: &str) -> Vec<String> {
+    let blanked = blank_rust(text);
+    let c: Vec<char> = blanked.chars().collect();
+    let mut out = Vec::with_capacity(c.len() / 3);
+    let mut i = 0usize;
+    while i < c.len() {
+        let ch = c[i];
+        if ch.is_whitespace() {
+            i += 1;
+        } else if ch.is_alphanumeric() || ch == '_' {
+            let start = i;
+            while i < c.len() && (c[i].is_alphanumeric() || c[i] == '_') {
+                i += 1;
+            }
+            out.push(c[start..i].iter().collect());
+        } else {
+            out.push(ch.to_string());
+            i += 1;
+        }
+    }
+    out
+}
+
+/// The declared rename the twin's names took, plus the visibility normalisation,
+/// applied symmetrically so neither shows up as a difference.
+fn twin_rename(text: &str) -> String {
+    let mut names: Vec<&str> = TRAMPOLINE_TWIN_SHAPE.iter().map(|(n, _, _)| *n).collect();
+    names.sort_by_key(|n| std::cmp::Reverse(n.len()));
+    let mut out = text.to_string();
+    for n in names {
+        out = replace_word(&out, n, &format!("{n}_recursive"));
+    }
+    out.replace("pub(crate) fn ", "pub fn ")
+}
+
+/// Every `combine_*` identifier OCCURRING in `blanked`, excluding the `fn`
+/// declaration sites, restricted to the lines `keep` accepts.
+fn combine_identifiers(blanked: &str, keep: impl Fn(usize) -> bool) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    for (idx, line) in blanked.lines().enumerate() {
+        if !keep(idx) {
+            continue;
+        }
+        let b = line.as_bytes();
+        let mut from = 0usize;
+        while let Some(rel) = line[from..].find("combine_") {
+            let at = from + rel;
+            let is_word_start = at == 0 || !is_ident_char(line[..at].chars().next_back().unwrap());
+            let mut end = at;
+            while end < b.len() && is_ident_char(line[end..].chars().next().unwrap_or(' ')) {
+                end += 1;
+            }
+            // `fn combine_x` is the DEFINITION, not a use of the shared helper.
+            let declared = line[..at].trim_end().ends_with("fn");
+            if is_word_start && !declared {
+                out.insert(line[at..end].to_string());
+            }
+            from = at + "combine_".len();
+        }
+    }
+    out
+}
+
+/// Everything the live twin is claimed to be, measured in one pass so the main
+/// test and its anti-vacuity twin evaluate the SAME predicate over different
+/// texts.
+struct TwinAssessment {
+    /// Functions that could not be located at all.
+    missing: Vec<String>,
+    /// Twins that are a TOKEN-for-token copy of their pre-trampoline original.
+    token_identical: Vec<String>,
+    /// `combine_*` helpers the twin family calls.
+    twin_calls: BTreeSet<String>,
+    /// `combine_*` helpers called from outside the twin family — the machine.
+    machine_calls: BTreeSet<String>,
+    /// Occurrences of the token `combine_` in the PRE-trampoline file. The
+    /// helpers did not exist then, so this anchors the sharing claim at 0.
+    pre_combine_occurrences: usize,
+    /// Tokens in `ARM_TABLE_FN` before the conversion, and in its twin now.
+    arm_table_tokens: (usize, usize),
+}
+
+/// Assess `now` (a `reduce.rs` text) against `before` (the pre-trampoline one).
+fn assess_twin(before: &str, now: &str) -> TwinAssessment {
+    let blanked_now = blank_rust(now);
+    let mut missing = Vec::new();
+    let mut token_identical = Vec::new();
+    let mut twin_lines: Vec<(usize, usize)> = Vec::with_capacity(TRAMPOLINE_TWIN_SHAPE.len());
+    let mut arm_table_tokens = (0usize, 0usize);
+
+    for &(name, _, _) in TRAMPOLINE_TWIN_SHAPE {
+        let twin_name = format!("{name}_recursive");
+        let (Some(pre_body), Some(span)) =
+            (impl_fn_body(before, name), impl_fn_lines(now, &twin_name))
+        else {
+            if impl_fn_body(before, name).is_none() {
+                missing.push(format!(
+                    "  `{name}` is not an impl-level fn at {TRAMPOLINE_COMMIT}; the cited \
+                     pre-trampoline evaluator has moved"
+                ));
+            } else {
+                missing.push(format!("  `{twin_name}` no longer exists in {REDUCE}"));
+            }
+            continue;
+        };
+        twin_lines.push(span);
+        let twin_body = now.lines().collect::<Vec<_>>()[span.0 - 1..span.1].join("\n");
+        let pre_tokens = tokens(&twin_rename(&pre_body));
+        let twin_tokens = tokens(&twin_rename(&twin_body));
+        if pre_tokens == twin_tokens {
+            token_identical.push(name.to_string());
+        }
+        if name == ARM_TABLE_FN {
+            arm_table_tokens = (pre_tokens.len(), twin_tokens.len());
+        }
+    }
+
+    // `impl_fn_lines` answers in 1-based inclusive line numbers; the scan below
+    // enumerates 0-based, so the spans are converted ONCE here rather than at
+    // every comparison.
+    let twin_spans: Vec<std::ops::RangeInclusive<usize>> =
+        twin_lines.iter().map(|&(a, b)| (a - 1)..=(b - 1)).collect();
+    let in_twin = |idx: usize| twin_spans.iter().any(|s| s.contains(&idx));
+    let twin_calls = combine_identifiers(&blanked_now, in_twin);
+    let machine_calls = combine_identifiers(&blanked_now, |i| !in_twin(i));
+    let pre_combine_occurrences = combine_identifiers(&blank_rust(before), |_| true).len();
+
+    TwinAssessment {
+        missing,
+        token_identical,
+        twin_calls,
+        machine_calls,
+        pre_combine_occurrences,
+        arm_table_tokens,
+    }
+}
+
+impl TwinAssessment {
+    /// The three structural claims, as one verdict. `Ok(())` means the twin is a
+    /// rewrite over shared combiners; `Err` lists every claim that failed, so a
+    /// red result says which of the three moved.
+    fn verdict(&self) -> Result<(), Vec<String>> {
+        let mut bad = Vec::new();
+        bad.extend(self.missing.iter().cloned());
+
+        // (1) NOT A COPY.
+        if !self.token_identical.is_empty() {
+            bad.push(format!(
+                "  TOKEN-IDENTICAL: {} of {} twins are a token-for-token copy of the \
+                 pre-trampoline evaluator ({}). That is a CHANGE OF KIND, not a bug in itself: \
+                 the banner in {REDUCE} says the twin is a rewrite sharing the `combine_*` \
+                 helpers, and derives the differential's exact reach from that. If the twin has \
+                 become a copy, the stated limitation is gone and the prose is wrong in the SAFE \
+                 direction — which is still wrong. Rewrite the banner, then change this \
+                 expectation.",
+                self.token_identical.len(),
+                TRAMPOLINE_TWIN_SHAPE.len(),
+                self.token_identical.join(", ")
+            ));
+        }
+
+        // (2) THE SHARING.
+        if self.pre_combine_occurrences != 0 {
+            bad.push(format!(
+                "  ANCHOR LOST: the pre-trampoline `reduce.rs` at {TRAMPOLINE_COMMIT} mentions \
+                 {} `combine_*` helper(s). It mentioned none when this check was written, which \
+                 is what makes 'the twin calls helpers the original did not have' a statement \
+                 about the conversion rather than a coincidence.",
+                self.pre_combine_occurrences
+            ));
+        }
+        if self.twin_calls.is_empty() {
+            bad.push(
+                "  NO SHARING: the twin family calls NO `combine_*` helper. The banner says the \
+                 per-arm arithmetic, comparison and collection logic was lifted into those \
+                 helpers and that the twin calls them — the same ones the trampoline calls. \
+                 Either the lifting was undone (the twin is becoming a copy) or the helpers were \
+                 renamed and this check now sees nothing."
+                    .to_string(),
+            );
+        }
+        let unshared: Vec<&String> = self.twin_calls.difference(&self.machine_calls).collect();
+        if !unshared.is_empty() {
+            bad.push(format!(
+                "  NOT SHARED: the twin calls {:?}, which nothing OUTSIDE the twin family calls. \
+                 The differential's reach is described in terms of the oracle SHARING code with \
+                 the machine it checks — it proves the descend/combine wiring and cannot see \
+                 inside a shared combiner. A helper only the oracle calls is not shared, and the \
+                 description no longer holds.",
+                unshared
+            ));
+        }
+
+        // (3) THE LIFTING.
+        let (pre, twin) = self.arm_table_tokens;
+        if twin == 0 || pre < twin * ARM_TABLE_COLLAPSE_FLOOR {
+            bad.push(format!(
+                "  NO COLLAPSE: `{ARM_TABLE_FN}` was {pre} tokens before the conversion and its \
+                 twin is {twin} now, a ratio below the {ARM_TABLE_COLLAPSE_FLOOR}× floor. The \
+                 arm table is supposed to live in the `combine_*` helpers, not inline in the \
+                 twin; a twin this size is carrying it again."
+            ));
+        }
+
+        match bad.is_empty() {
+            true => Ok(()),
+            false => Err(bad),
+        }
+    }
+}
+
+/// One row of the RECURSIVE TWIN banner's markdown table, as it stands in
+/// `reduce.rs` right now.
+#[derive(Debug, PartialEq, Eq)]
+struct BannerRow {
+    name: String,
+    pre_lines: usize,
+    twin_lines: usize,
+    /// The `byte-identical` column, verbatim.
+    byte_identical: String,
+}
+
+/// Parse the banner's table out of a `reduce.rs` text.
+///
+/// ⚠ The banner is read from the LIVE file, not from a constant, and that is the
+/// point: a citation nobody re-reads is prose. If someone edits a number in the
+/// banner, or deletes the table, this parse disagrees with
+/// [`TRAMPOLINE_TWIN_SHAPE`] and the check below is red — which is the property
+/// the banner's own closing sentence claims for it.
+fn banner_rows(reduce_src: &str) -> Vec<BannerRow> {
+    let mut out = Vec::with_capacity(TRAMPOLINE_TWIN_SHAPE.len());
+    for line in reduce_src.lines() {
+        let t = line.trim_start();
+        let Some(rest) = t.strip_prefix("//") else {
+            continue;
+        };
+        let rest = rest.trim();
+        if !rest.starts_with('|') {
+            continue;
+        }
+        let cells: Vec<&str> = rest.trim_matches('|').split('|').map(str::trim).collect();
+        if cells.len() != 4 || cells[0].starts_with("pre-trampoline") || cells[0].starts_with("--")
+        {
+            continue;
+        }
+        // ⚠ The banner writes `1,213`; the separator is presentation, not data.
+        let num = |s: &str| s.replace(',', "").parse::<usize>().ok();
+        let (Some(pre), Some(twin)) = (num(cells[1]), num(cells[2])) else {
+            continue;
+        };
+        out.push(BannerRow {
+            name: cells[0].to_string(),
+            pre_lines: pre,
+            twin_lines: twin,
+            byte_identical: cells[3].to_string(),
+        });
+    }
+    out
+}
+
+/// The banner's table, as [`TRAMPOLINE_TWIN_SHAPE`] says it should read.
+fn expected_banner_rows() -> Vec<BannerRow> {
+    TRAMPOLINE_TWIN_SHAPE
+        .iter()
+        .map(|&(name, pre, twin)| BannerRow {
+            name: name.to_string(),
+            pre_lines: pre,
+            twin_lines: twin,
+            byte_identical: "no".to_string(),
+        })
+        .collect()
+}
+
+/// ★ The banner's table is a CITATION: it is parsed out of the LIVE `reduce.rs`
+/// and both of its columns are re-derived from git.
+///
+/// This is what the line-count check should always have been. It used to read
+/// its second column out of the working tree — so an unrelated 1,057-line edit
+/// to `reduce.rs` turned it red having found nothing wrong with the twin — while
+/// never reading the banner it claimed to be checking. Now the *banner* is the
+/// live text (edit a number there and this is red) and the *numbers* are
+/// measurements of two named commits (refactor all you like and this is green).
+/// The claim about the twin AS IT STANDS lives in
+/// [`the_trampoline_twin_is_a_rewrite_not_a_copy`], where a line has no business
+/// being counted at all.
+#[test]
+fn the_trampoline_banner_table_is_a_checkable_citation() {
+    let before = git_show_path(TRAMPOLINE_COMMIT, REDUCE);
+    let measured = git_show_path(TWIN_MEASUREMENT_COMMIT, REDUCE);
+    let now = std::fs::read_to_string(repo_root().join(REDUCE))
+        .unwrap_or_else(|e| panic!("cannot read {REDUCE}: {e}"));
+
+    // (i) THE BANNER SAYS WHAT THIS TEST THINKS IT SAYS.
+    let rows = banner_rows(&now);
+    assert_eq!(
+        rows,
+        expected_banner_rows(),
+        "\n\u{2605} THE RECURSIVE TWIN BANNER IN {REDUCE} NO LONGER MATCHES ITS TABLE.\n\
+         \n\
+         The banner closes by claiming this test 're-derives the table above from git and fails \
+         if any entry moves'. It can only claim that while the two agree. Either the banner was \
+         edited (put the measurement back, or move TWIN_MEASUREMENT_COMMIT and both numbers \
+         together) or the table was deleted and the claim with it.\n"
+    );
+
+    // (ii) …AND HISTORY AGREES WITH IT, IN BOTH COLUMNS.
+    let mut problems = Vec::new();
+    for row in &rows {
+        let twin_name = format!("{}_recursive", row.name);
+        let Some((p1, p2)) = impl_fn_lines(&before, &row.name) else {
+            problems.push(format!(
+                "  `{}` is not an impl-level fn at {TRAMPOLINE_COMMIT}",
+                row.name
+            ));
+            continue;
+        };
+        let Some((c1, c2)) = impl_fn_lines(&measured, &twin_name) else {
+            problems.push(format!(
+                "  `{twin_name}` is not an impl-level fn at {TWIN_MEASUREMENT_COMMIT}"
+            ));
+            continue;
+        };
+        let (pre_len, twin_len) = (p2 - p1 + 1, c2 - c1 + 1);
+        if (pre_len, twin_len) != (row.pre_lines, row.twin_lines) {
+            problems.push(format!(
+                "  `{}`: the banner records {} pre-trampoline lines and {} twin lines; git says \
+                 {pre_len} and {twin_len}",
+                row.name, row.pre_lines, row.twin_lines
+            ));
+        }
+    }
+    assert!(
+        problems.is_empty(),
+        "\n\u{2605} THE BANNER'S MEASUREMENT DOES NOT MATCH HISTORY.\n\
+         \n\
+         Both columns come from `git show`: the pre column at {TRAMPOLINE_COMMIT}, the twin \
+         column at {TWIN_MEASUREMENT_COMMIT}. Neither is read from the working tree, so this \
+         cannot go stale under a refactor — if it is red, either the banner's numbers were never \
+         right or history has been rewritten.\n{}\n",
+        problems.join("\n")
+    );
+
+    // (iii) ANTI-VACUITY — the parse must be able to disagree. A one-digit edit
+    //       to the banner is rejected, and the unedited banner is accepted
+    //       (asserted at (i)), so a parser that returned an empty table, or one
+    //       that matched anything, fails here.
+    let perturbed = now.replacen("|        167 | no", "|        168 | no", 1);
+    assert_ne!(
+        perturbed, now,
+        "the banner perturbation must change the text"
+    );
+    assert_ne!(
+        banner_rows(&perturbed),
+        expected_banner_rows(),
+        "\u{2605} THE BANNER PARSE CANNOT DISAGREE: a digit was changed in the table and the \
+         parse still matched, so (i) is certifying nothing"
+    );
+    assert_eq!(
+        banner_rows(&perturbed).len(),
+        TRAMPOLINE_TWIN_SHAPE.len(),
+        "the perturbation must change a VALUE, not the number of rows parsed, or the red above \
+         would be about parsing rather than about content"
+    );
+
+    // ANTI-VACUITY: the citation really did run against a real, large body.
+    let (p1, p2) = impl_fn_lines(&before, ARM_TABLE_FN)
+        .unwrap_or_else(|| panic!("{ARM_TABLE_FN} exists at the cited commit"));
+    assert!(
+        p2 - p1 + 1 > 1000,
+        "the cited `{ARM_TABLE_FN}` is only {} lines; this test is comparing against the wrong \
+         thing",
+        p2 - p1 + 1
+    );
+    println!(
+        "trampoline banner: {} rows parsed from the live {REDUCE} and re-derived from git at \
+         {TRAMPOLINE_COMMIT} and {TWIN_MEASUREMENT_COMMIT}",
+        rows.len()
+    );
+}
+
+/// ★ The evaluator twin, AS IT STANDS, is a REWRITE over shared combiners — not
+/// a copy. Checked structurally: token non-identity, the sharing, the collapse.
+///
+/// None of the three reads a line number, so the 1,057-line refactor that broke
+/// the old line-count proxy leaves all three untouched; each of them goes red if
+/// the twin is re-copied from the original. `the_rewrite_check_can_go_red`
+/// demonstrates both halves of that sentence.
 #[test]
 fn the_trampoline_twin_is_a_rewrite_not_a_copy() {
     let before = git_show_path(TRAMPOLINE_COMMIT, REDUCE);
     let now = std::fs::read_to_string(repo_root().join(REDUCE))
         .unwrap_or_else(|e| panic!("cannot read {REDUCE}: {e}"));
 
-    let mut identical = 0usize;
-    let mut problems = Vec::new();
-    for &(name, want_pre, want_twin) in TRAMPOLINE_TWIN_SHAPE {
-        let twin_name = format!("{name}_recursive");
-        let Some((p1, p2)) = impl_fn_lines(&before, name) else {
-            problems.push(format!(
-                "  `{name}` is not an impl-level fn at {TRAMPOLINE_COMMIT}; the cited \
-                 pre-trampoline evaluator has moved"
-            ));
-            continue;
-        };
-        let Some((c1, c2)) = impl_fn_lines(&now, &twin_name) else {
-            problems.push(format!("  `{twin_name}` no longer exists in {REDUCE}"));
-            continue;
-        };
-        let (pre_len, twin_len) = (p2 - p1 + 1, c2 - c1 + 1);
-        if (pre_len, twin_len) != (want_pre, want_twin) {
-            problems.push(format!(
-                "  `{name}`: the banner in {REDUCE} records {want_pre} pre-trampoline lines \
-                 and {want_twin} twin lines; they are now {pre_len} and {twin_len}"
-            ));
-        }
-
-        // Byte-identity, under the same `_recursive` rename the twin's names took.
-        let pre_body: String = before.lines().collect::<Vec<_>>()[p1 - 1..p2].join("\n");
-        let twin_body: String = now.lines().collect::<Vec<_>>()[c1 - 1..c2].join("\n");
-        let mut renamed = pre_body;
-        let mut names: Vec<&str> = TRAMPOLINE_TWIN_SHAPE.iter().map(|(n, _, _)| *n).collect();
-        names.sort_by_key(|n| std::cmp::Reverse(n.len()));
-        for n in names {
-            renamed = replace_word(&renamed, n, &format!("{n}_recursive"));
-        }
-        if renamed.replace("    pub fn ", "    pub(crate) fn ") == twin_body {
-            identical += 1;
-        }
+    let a = assess_twin(&before, &now);
+    if let Err(bad) = a.verdict() {
+        panic!(
+            "\n\u{2605} THE TRAMPOLINE TWIN IS NO LONGER A REWRITE OVER SHARED COMBINERS.\n\
+             \n\
+             {REDUCE}'s RECURSIVE TWIN banner states this relationship and the differential's \
+             reach is described in terms of it, so the two move together.\n\
+             \n\
+             ⚠ Note what is NOT asserted here: nothing about line counts. If you arrived because \
+             `reduce.rs` was refactored, that is not this test — read the failures below.\n\
+             \n{}\n",
+            bad.join("\n\n")
+        );
     }
 
+    // ANTI-VACUITY: the sharing set is substantial, not one incidental call.
     assert!(
-        problems.is_empty(),
-        "\n\u{2605} THE TRAMPOLINE TWIN'S SHAPE HAS MOVED.\n\
-         \n\
-         {REDUCE}'s RECURSIVE TWIN banner states this table, and the differential's reach \
-         is described in terms of it. Update both together.\n{}\n",
-        problems.join("\n")
-    );
-
-    assert_eq!(
-        identical,
-        0,
-        "\n\u{2605} {identical} of the {} twin functions ARE now byte-identical copies of the \
-         pre-trampoline evaluator.\n\
-         \n\
-         That is not a failure in itself — it is a CHANGE OF KIND. The banner in {REDUCE} \
-         says the twin is a rewrite that shares the `combine_*` helpers, and derives from \
-         that the differential's exact reach: it proves the descend/combine WIRING and \
-         cannot see inside a shared combiner. If the twin has become a real copy, that \
-         limitation is gone and the prose describing it is now wrong in the SAFE direction \
-         — which is still wrong. Rewrite the banner, then change this expectation.\n",
-        TRAMPOLINE_TWIN_SHAPE.len()
-    );
-
-    // ANTI-VACUITY: the comparison really did run against a real, large body.
-    let (p1, p2) = impl_fn_lines(&before, "eval_expr_to_expr")
-        .expect("eval_expr_to_expr exists at the cited commit");
-    assert!(
-        p2 - p1 + 1 > 1000,
-        "the cited `eval_expr_to_expr` is only {} lines; this test is comparing against the \
-         wrong thing",
-        p2 - p1 + 1
+        a.twin_calls.len() >= 15,
+        "the twin calls only {} `combine_*` helper(s); the lifting produced 18, so either the \
+         helpers are being re-inlined or this check has stopped seeing most of them",
+        a.twin_calls.len()
     );
     println!(
-        "trampoline twin: {}/{} byte-identical (expected 0 — it is a rewrite over shared \
-         `combine_*` helpers, not a copy)",
-        identical,
-        TRAMPOLINE_TWIN_SHAPE.len()
+        "trampoline twin: 0/{} token-identical; {} shared `combine_*` helpers (pre-trampoline \
+         file had {}); `{ARM_TABLE_FN}` {} tokens \u{2192} {} ({:.2}\u{d7} collapse, floor \
+         {ARM_TABLE_COLLAPSE_FLOOR}\u{d7})",
+        TRAMPOLINE_TWIN_SHAPE.len(),
+        a.twin_calls.len(),
+        a.pre_combine_occurrences,
+        a.arm_table_tokens.0,
+        a.arm_table_tokens.1,
+        a.arm_table_tokens.0 as f64 / a.arm_table_tokens.1.max(1) as f64
+    );
+}
+
+/// ★ **Both directions**, which is what a line count never had.
+///
+/// The count this replaced could only go red — and it went red for a refactor
+/// that changed nothing about the twin's kind. A check that discriminates has to
+/// be shown doing both things:
+///
+/// * (a) the CONTROL: an irrelevant change — reformatting the twin's whitespace
+///   and adding a comment — must leave the verdict GREEN. This is precisely the
+///   case the line count failed.
+/// * (b) the MUTATION: re-copying the pre-trampoline body over the twin must
+///   turn the verdict RED, and red on ALL THREE claims, so no single check is
+///   carrying the result alone.
+#[test]
+fn the_rewrite_check_can_go_red() {
+    let before = git_show_path(TRAMPOLINE_COMMIT, REDUCE);
+    let now = std::fs::read_to_string(repo_root().join(REDUCE))
+        .unwrap_or_else(|e| panic!("cannot read {REDUCE}: {e}"));
+
+    // The baseline, so both cells below are measured against a known-green state.
+    assert!(
+        assess_twin(&before, &now).verdict().is_ok(),
+        "the anti-vacuity cells need a green baseline; the live twin is already failing"
+    );
+
+    // ── (a) THE CONTROL — a pure reformat must NOT discriminate ──────────────
+    let twin_span = impl_fn_lines(&now, &format!("{ARM_TABLE_FN}_recursive"))
+        .unwrap_or_else(|| panic!("`{ARM_TABLE_FN}_recursive` exists in {REDUCE}"));
+    let lines: Vec<&str> = now.lines().collect();
+    let reformatted_twin: String = lines[twin_span.0 - 1..twin_span.1]
+        .iter()
+        .map(|l| format!("{l}   // an irrelevant comment\n\n"))
+        .collect();
+    let reformatted = format!(
+        "{}\n{}\n{}",
+        lines[..twin_span.0 - 1].join("\n"),
+        reformatted_twin,
+        lines[twin_span.1..].join("\n")
+    );
+    assert_ne!(
+        reformatted, now,
+        "the reformat must actually change the text"
+    );
+    let control = assess_twin(&before, &reformatted);
+    assert!(
+        control.verdict().is_ok(),
+        "\u{2605} A PURE REFORMAT TURNED THE CHECK RED. That is the defect this replaced — a \
+         proxy any unrelated edit invalidates. Failures were:\n{:?}",
+        control.verdict().err()
+    );
+
+    // ── (b) THE MUTATION — the twin re-copied from the original ──────────────
+    let pre_body = impl_fn_body(&before, ARM_TABLE_FN)
+        .unwrap_or_else(|| panic!("`{ARM_TABLE_FN}` exists at {TRAMPOLINE_COMMIT}"));
+    let recopied_body = twin_rename(&pre_body).replace("pub fn ", "pub(crate) fn ");
+    let recopied = format!(
+        "{}\n{}\n{}",
+        lines[..twin_span.0 - 1].join("\n"),
+        recopied_body,
+        lines[twin_span.1..].join("\n")
+    );
+    assert_ne!(recopied, now, "the mutation must actually change the text");
+
+    let m = assess_twin(&before, &recopied);
+    let Err(bad) = m.verdict() else {
+        panic!(
+            "\u{2605} THE REWRITE CHECK CANNOT GO RED. The twin was replaced by a renamed copy \
+             of the pre-trampoline `{ARM_TABLE_FN}` and the verdict was still green, so \
+             `the_trampoline_twin_is_a_rewrite_not_a_copy` is certifying nothing."
+        )
+    };
+    // …and red for the RIGHT reasons: all three claims, not one doing the work.
+    assert!(
+        bad.iter().any(|b| b.contains("TOKEN-IDENTICAL")),
+        "the re-copied twin was not detected as a token-for-token copy: {bad:?}"
+    );
+    assert!(
+        bad.iter().any(|b| b.contains("NO SHARING")),
+        "the re-copied twin still appears to call the shared `combine_*` helpers, which the \
+         pre-trampoline body does not: {bad:?}"
+    );
+    assert!(
+        bad.iter().any(|b| b.contains("NO COLLAPSE")),
+        "the re-copied twin still appears collapsed relative to the original: {bad:?}"
+    );
+    println!(
+        "rewrite check: GREEN under reformat, RED on re-copy — {} structural claim(s) rejected \
+         it:\n{}",
+        bad.len(),
+        bad.iter()
+            .map(|b| format!(
+                "    - {}",
+                b.trim_start().split('.').next().unwrap_or(b).trim()
+            ))
+            .collect::<Vec<_>>()
+            .join("\n")
     );
 }
