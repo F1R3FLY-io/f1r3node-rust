@@ -4,6 +4,26 @@ version = "0.1.0"
 edition = "2021"
 publish = false
 
+# ★ EVERY INTEGRATION TEST TARGET IS DECLARED BELOW, AND NONE IS COMPILED TWICE.
+#
+# `tests/mod.rs` `mod`-includes seven files, and Cargo's auto-discovery ALSO
+# made each of those seven a target of its own. Six of them (the seventh is
+# feature-gated off by default) were therefore compiled twice and RUN twice:
+# measured at 31 binaries / 406 test cases, of which 54 cases were the same test
+# functions executed a second time inside `models_tests`.
+#
+# `autotests = false` is what stops the second compilation — but on its own it
+# would have DELETED 24 targets, because only 7 of the 31 test files are reached
+# through `tests/mod.rs`. A build-hygiene change that silently stops a gate from
+# running is worse than the waste it removes, so every remaining file is
+# declared explicitly below.
+#
+# ⚠ The cost of `autotests = false` is that a NEW file in `tests/` runs nowhere
+# until it is registered. That failure is silent, so it is made loud:
+# `tests/test_target_registry_gate.rs` fails when any `tests/*.rs` is neither
+# declared here nor `mod`-included from `tests/mod.rs`.
+autotests = false
+
 [features]
 default = []
 schnorr_secp256k1_experimental = ["crypto/schnorr_secp256k1_experimental"]
@@ -45,10 +65,121 @@ tracing = { workspace = true }
 # harness already pinned the same encoding in tests).
 bincode = { workspace = true }
 
+# ── The aggregate target: the seven files `tests/mod.rs` includes ──────────
+#
+# ⚠ Its NAME is load-bearing: `tests/sorter_canonical_golden.rs` prints
+# `SORTER_GOLDEN_BLESS=1 cargo test -p models --test models_tests -- sorter_canonical`
+# in a failure message, so renaming it falsifies an instruction a maintainer is
+# told to run.
 [[test]]
 name = "models_tests"
 path = "tests/mod.rs"
 harness = true
+
+# ── The standalone targets ─────────────────────────────────────────────────
+#
+# One per file in `tests/` that `tests/mod.rs` does NOT include. Kept in
+# alphabetical order, and kept COMPLETE by `test_target_registry_gate`.
+[[test]]
+name = "cold_store_records"
+path = "tests/cold_store_records.rs"
+
+[[test]]
+name = "epathmap_canonical_fixtures"
+path = "tests/epathmap_canonical_fixtures.rs"
+
+[[test]]
+name = "epathmap_canonicalization"
+path = "tests/epathmap_canonicalization.rs"
+
+[[test]]
+name = "epathmap_identity_is_the_path_stream"
+path = "tests/epathmap_identity_is_the_path_stream.rs"
+
+[[test]]
+name = "epathmap_intern_store"
+path = "tests/epathmap_intern_store.rs"
+
+[[test]]
+name = "epathmap_spliced_event_bytes"
+path = "tests/epathmap_spliced_event_bytes.rs"
+
+[[test]]
+name = "epathmap_wire_serialized_paths"
+path = "tests/epathmap_wire_serialized_paths.rs"
+
+[[test]]
+name = "epathmap_wrapper_cell"
+path = "tests/epathmap_wrapper_cell.rs"
+
+[[test]]
+name = "intern_store_guard_discipline"
+path = "tests/intern_store_guard_discipline.rs"
+
+[[test]]
+name = "json_encoder_test"
+path = "tests/json_encoder_test.rs"
+
+[[test]]
+name = "mixed_algorithm_cosigned_test"
+path = "tests/mixed_algorithm_cosigned_test.rs"
+
+[[test]]
+name = "par_codec_differential"
+path = "tests/par_codec_differential.rs"
+
+[[test]]
+name = "par_codec_malformed"
+path = "tests/par_codec_malformed.rs"
+
+[[test]]
+name = "par_codec_wire_shapes"
+path = "tests/par_codec_wire_shapes.rs"
+
+[[test]]
+name = "par_prost_depth_ceiling"
+path = "tests/par_prost_depth_ceiling.rs"
+
+[[test]]
+name = "pathmap_integration_tests"
+path = "tests/pathmap_integration_tests.rs"
+
+[[test]]
+name = "pathmap_native_query_walk"
+path = "tests/pathmap_native_query_walk.rs"
+
+[[test]]
+name = "prost_encode_differential"
+path = "tests/prost_encode_differential.rs"
+
+[[test]]
+name = "schema_meta_conformance"
+path = "tests/schema_meta_conformance.rs"
+
+[[test]]
+name = "serializer_par_byte_goldens"
+path = "tests/serializer_par_byte_goldens.rs"
+
+[[test]]
+name = "variant_exhaustiveness_gate"
+path = "tests/variant_exhaustiveness_gate.rs"
+
+[[test]]
+name = "wire_encode_differential"
+path = "tests/wire_encode_differential.rs"
+
+[[test]]
+name = "wire_encode_space"
+path = "tests/wire_encode_space.rs"
+
+[[test]]
+name = "wire_schema_conformance"
+path = "tests/wire_schema_conformance.rs"
+
+# The registry gate itself, which is what makes the list above self-checking.
+[[test]]
+name = "test_target_registry_gate"
+path = "tests/test_target_registry_gate.rs"
 
 [lib]
 name = "models"
