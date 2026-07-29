@@ -1,19 +1,63 @@
-# Weekend Soak Benchmarks (EPIC-010)
+# Soak Benchmarks (EPIC-010)
 
-The 60-hour merge-recovery soak (Friday 22:00 Pacific → Monday morning) produces
-week-over-week benchmark metrics instead of pass/fail only. Design history and
-decisions: [work log](work-logs/task-EPIC-010-2026-07-15T20-57Z.md), story
-US-004 in [UserStories.md](UserStories.md).
+The 60-hour weekend merge-recovery soak (Friday 19:30 Pacific → Monday 07:30
+Pacific) produces week-over-week benchmark metrics instead of pass/fail only.
+The Mon–Thu 22h soaks run the same suite against `dev` but are not benchmark
+runs — see [Weekend vs daily](#weekend-vs-daily). Design history and decisions:
+[work log](work-logs/task-EPIC-010-2026-07-15T20-57Z.md), story US-004 in
+[UserStories.md](UserStories.md).
 
 ## Where to look
 
 - **Trend dashboard** (charts, per-provider split, run links):
-  <https://f1r3fly-io.github.io/f1r3node-rust/>
+  <https://f1r3fly-io.github.io/f1r3node-rust/> — two tabs, Weekend and Daily,
+  each showing its own verdict on the tab button so both series are readable
+  without clicking through.
 - **Weekly email alert**: plain-text summary with the verdict and dashboard
   links, sent via OCI Notifications when the soak concludes.
 - **Per-run detail**: the `merge-recovery-soak-*` artifact on the workflow run
   (iteration metrics, benchmark segments, logs, `report/` with
   `weekly-summary.json`, `verdict.json`, `perf-report.md`).
+
+> **The Daily tab has no data source yet.** Only the weekend soak reaches the
+> `perf_report` job that publishes to Pages, so the Daily tab reads "no runs
+> yet" and daily results live only in the run artifact, which expires after 14
+> days. Wiring the daily publish path is tracked separately.
+
+## Weekend vs daily
+
+| | Weekend | Daily |
+|---|---|---|
+| Window | Fri 19:30 → Mon 07:30 Pacific | Mon–Thu 19:30 Pacific |
+| Duration | 60h, fixed | up to 22h, variable |
+| Target | `master` | `dev` |
+| Launches | always | only if commits landed since the last window |
+| Early exit | never | when the target branch advances, after an 8h floor |
+| Benchmark segments | yes | no |
+| Gates releases | yes | no |
+
+The weekend soak is exempt from the skip and the early exit because its numbers
+are the week-over-week baseline, and those are only comparable if every run
+covers an identical span. The dailies trade that comparability for catching
+regressions sooner.
+
+## Previewing the dashboard locally
+
+The page loads its data with `fetch()`, which browsers refuse over `file://`,
+so opening `index.html` directly shows a permanently empty page. Use:
+
+```bash
+scripts/preview-soak-dashboard.sh            # synthetic sample data, port 8770
+scripts/preview-soak-dashboard.sh --live     # data from the published site
+scripts/preview-soak-dashboard.sh --empty    # the bootstrap (no data) state
+```
+
+Source is `.github/dashboard/`; the server and sample-data generator are one
+std-only Rust program built with plain `rustc` (no crates, no `Cargo.toml`,
+nothing added to the workspace). The sample fixtures are deterministic and
+deliberately include a regressed run, so the failure styling is exercised
+without hand-editing anything. Everything generated lands in the gitignored
+`site/`, rebuilt on start and removed on exit.
 
 ## What is measured
 
@@ -74,9 +118,11 @@ oci ons subscription delete --subscription-id <subscription-ocid>
 ## Operational notes
 
 - Benchmarks run **only** in the 60h weekend soak (`duration_seconds ==
-  216000`); the Mon–Thu 24h soaks are unchanged.
+  216000`); see [Weekend vs daily](#weekend-vs-daily) for the full split.
 - The dashboard site deploys from the soak workflow via GitHub Pages
-  (Settings → Pages → source "GitHub Actions" must be enabled once).
+  (Settings → Pages → source "GitHub Actions" must be enabled once). A separate
+  workflow, `soak-dashboard-pages.yml`, redeploys the page shell when
+  `.github/dashboard/` changes, preserving any already-published data.
 - Metric emission is fail-soft end-to-end: a broken segment or missing
   sample never fails the soak; only the verdict comparison can.
 - First run bootstraps: no baseline → verdict passes and seeds the history.
