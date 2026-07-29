@@ -125,6 +125,24 @@ async fn eval_expr_should_handle_simple_addition() {
     assert_eq!(result.unwrap().exprs, expected);
 }
 
+/// ★★ REWRITTEN 2026-07-29 — this cell used to SPECIFY the wrapping defect.
+///
+/// It read:
+///
+/// ```text
+///     let add_expr = new_eplus_par_gint(i64::MAX, i64::MAX, Vec::new(), false);
+///     let expected = vec![new_gint_expr(i64::MAX.wrapping_mul(2))];   // == -2
+///     assert!(result.is_ok());
+///     assert_eq!(result.unwrap().exprs, expected);
+/// ```
+///
+/// i.e. it asserted that `i64::MAX + i64::MAX` **succeeds** and answers `-2`. Named "long
+/// addition", it was in fact the specification of `wrapping_add` — the disposition the 2026-07-29
+/// ruling reverses. A test that encodes a defect keeps the defect alive, so it is rewritten to
+/// assert the ruled behaviour rather than deleted: the input is preserved verbatim, only the
+/// expectation moves from "wraps to −2" to "refuses, naming the operands".
+///
+/// ⚠ This is the first measured item of the change's blast radius, and it is inside this repo.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn eval_expr_should_handle_long_addition() {
     let (_, reducer) =
@@ -133,10 +151,23 @@ async fn eval_expr_should_handle_long_addition() {
     let add_expr = new_eplus_par_gint(i64::MAX, i64::MAX, Vec::new(), false);
     let env: Env<Par> = Env::new();
     let result = reducer.eval_expr(&add_expr, &env);
-    let expected = vec![new_gint_expr(i64::MAX.wrapping_mul(2))];
 
-    assert!(result.is_ok());
-    assert_eq!(result.unwrap().exprs, expected);
+    assert!(
+        result.is_err(),
+        "`i64::MAX + i64::MAX` has no Int value. Answering `{}` — which is what `wrapping_add` \
+         produced here until 2026-07-29 — is a DIFFERENT number presented as the sum, and in a \
+         consensus interpreter every validator agrees on it. Got: {:?}",
+        i64::MAX.wrapping_mul(2),
+        result.map(|par| par.exprs),
+    );
+    assert_eq!(
+        result.unwrap_err(),
+        InterpreterError::ReduceError(
+            "Arithmetic overflow in addition: 9223372036854775807 + 9223372036854775807 is not \
+             representable as an Int (64-bit signed)"
+                .to_string()
+        ),
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -314,6 +345,196 @@ async fn eval_expr_should_return_error_for_negation_overflow() {
         result.unwrap_err(),
         InterpreterError::ReduceError("Arithmetic overflow in negation".to_string())
     );
+}
+
+/// ★★ `Int` ADDITION IS CHECKED — it no longer wraps.
+///
+/// Until 2026-07-29 `combine_plus`'s `GInt` arm used `wrapping_add`, so `i64::MAX + 1` silently
+/// answered `i64::MIN` while `i64::MAX * 2` (checked, in `combine_mult`) refused. The reducer
+/// disagreed with itself about the same partiality, and with f1r3node's own guard evaluator
+/// (`rho-pure-eval`'s `int_binop_checked`), which is checked on every operator.
+///
+/// ⚠ This is a CONSENSUS-VISIBLE change of computed behaviour, not a diagnostic one: a program
+/// whose `Int` addition overflows now raises instead of producing a wrapped value.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn eval_expr_should_return_error_for_addition_overflow() {
+    let (_, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let plus_expr = Par::default().with_exprs(vec![Expr {
+        expr_instance: Some(ExprInstance::EPlusBody(EPlus {
+            p1: Some(new_gint_par(i64::MAX, Vec::new(), false)),
+            p2: Some(new_gint_par(1, Vec::new(), false)),
+        })),
+    }]);
+    let env: Env<Par> = Env::new();
+    let result = reducer.eval_expr(&plus_expr, &env);
+
+    assert!(
+        result.is_err(),
+        "`i64::MAX + 1` must REFUSE, not wrap to i64::MIN. Got: {:?}",
+        result.map(|par| par.exprs),
+    );
+    assert_eq!(
+        result.unwrap_err(),
+        InterpreterError::ReduceError(
+            "Arithmetic overflow in addition: 9223372036854775807 + 1 is not representable as an \
+             Int (64-bit signed)"
+                .to_string()
+        ),
+        "★ the message must name the operation AND both operands — the pre-existing overflow \
+         messages name only the operation, and a deployer reading a log needs the values",
+    );
+}
+
+/// ★ THE CONTROL for the addition change: a TOTAL addition still computes, and still computes the
+/// same value. If this moves, the fix broke addition rather than its overflow disposition.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn eval_expr_should_still_handle_simple_addition_after_the_overflow_fix() {
+    let (_, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    for (lhs, rhs, sum) in [
+        (7_i64, 8_i64, 15_i64),
+        // The boundaries themselves are TOTAL and must keep computing.
+        (i64::MAX, 0, i64::MAX),
+        (i64::MIN, 0, i64::MIN),
+        (i64::MAX - 1, 1, i64::MAX),
+        (-5, 5, 0),
+    ] {
+        let plus_expr = Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::EPlusBody(EPlus {
+                p1: Some(new_gint_par(lhs, Vec::new(), false)),
+                p2: Some(new_gint_par(rhs, Vec::new(), false)),
+            })),
+        }]);
+        let env: Env<Par> = Env::new();
+        let result = reducer.eval_expr(&plus_expr, &env);
+        assert!(result.is_ok(), "{lhs} + {rhs} must still compute: {result:?}");
+        assert_eq!(result.unwrap().exprs, vec![new_gint_expr(sum)], "{lhs} + {rhs}");
+    }
+}
+
+/// ★★ `Int` SUBTRACTION IS CHECKED — it no longer wraps. Sibling of the addition cell above;
+/// `combine_minus` used `wrapping_sub`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn eval_expr_should_return_error_for_subtraction_overflow() {
+    let (_, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let minus_expr = Par::default().with_exprs(vec![Expr {
+        expr_instance: Some(ExprInstance::EMinusBody(EMinus {
+            p1: Some(new_gint_par(i64::MIN, Vec::new(), false)),
+            p2: Some(new_gint_par(1, Vec::new(), false)),
+        })),
+    }]);
+    let env: Env<Par> = Env::new();
+    let result = reducer.eval_expr(&minus_expr, &env);
+
+    assert!(
+        result.is_err(),
+        "`i64::MIN - 1` must REFUSE, not wrap to i64::MAX. Got: {:?}",
+        result.map(|par| par.exprs),
+    );
+    assert_eq!(
+        result.unwrap_err(),
+        InterpreterError::ReduceError(
+            "Arithmetic overflow in subtraction: -9223372036854775808 - 1 is not representable \
+             as an Int (64-bit signed)"
+                .to_string()
+        ),
+    );
+}
+
+/// ★ THE CONTROL for the subtraction change.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn eval_expr_should_still_handle_simple_subtraction_after_the_overflow_fix() {
+    let (_, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    for (lhs, rhs, difference) in [
+        (10_i64, 3_i64, 7_i64),
+        (i64::MIN, 0, i64::MIN),
+        (i64::MAX, 0, i64::MAX),
+        (i64::MIN + 1, 1, i64::MIN),
+        (0, i64::MAX, -i64::MAX),
+    ] {
+        let minus_expr = Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::EMinusBody(EMinus {
+                p1: Some(new_gint_par(lhs, Vec::new(), false)),
+                p2: Some(new_gint_par(rhs, Vec::new(), false)),
+            })),
+        }]);
+        let env: Env<Par> = Env::new();
+        let result = reducer.eval_expr(&minus_expr, &env);
+        assert!(result.is_ok(), "{lhs} - {rhs} must still compute: {result:?}");
+        assert_eq!(result.unwrap().exprs, vec![new_gint_expr(difference)], "{lhs} - {rhs}");
+    }
+}
+
+/// ★ THE CROSS-OPERATOR CONSISTENCY CELL — the property the fix restores.
+///
+/// Every `Int` arithmetic operator now answers the SAME WAY when its result is not representable.
+/// Before the fix `*`, unary `-`, `/` and `%` refused while `+` and `-` wrapped, so the deployer's
+/// exposure to silent wrong values depended on which operator they wrote. This cell fails if any
+/// future change re-introduces a wrapping operator.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn every_int_operator_refuses_a_result_it_cannot_represent() {
+    let (_, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let env: Env<Par> = Env::new();
+
+    let overflowing: Vec<(&str, ExprInstance)> = vec![
+        (
+            "+",
+            ExprInstance::EPlusBody(EPlus {
+                p1: Some(new_gint_par(i64::MAX, Vec::new(), false)),
+                p2: Some(new_gint_par(1, Vec::new(), false)),
+            }),
+        ),
+        (
+            "-",
+            ExprInstance::EMinusBody(EMinus {
+                p1: Some(new_gint_par(i64::MIN, Vec::new(), false)),
+                p2: Some(new_gint_par(1, Vec::new(), false)),
+            }),
+        ),
+        (
+            "*",
+            ExprInstance::EMultBody(EMult {
+                p1: Some(new_gint_par(i64::MAX, Vec::new(), false)),
+                p2: Some(new_gint_par(2, Vec::new(), false)),
+            }),
+        ),
+        (
+            "/",
+            ExprInstance::EDivBody(EDiv {
+                p1: Some(new_gint_par(i64::MIN, Vec::new(), false)),
+                p2: Some(new_gint_par(-1, Vec::new(), false)),
+            }),
+        ),
+        (
+            "unary -",
+            ExprInstance::ENegBody(ENeg {
+                p: Some(new_gint_par(i64::MIN, Vec::new(), false)),
+            }),
+        ),
+    ];
+
+    for (operator, instance) in overflowing {
+        let expr = Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(instance),
+        }]);
+        let result = reducer.eval_expr(&expr, &env);
+        assert!(
+            result.is_err(),
+            "★ `{operator}` produced a VALUE for an unrepresentable result. Every Int operator \
+             must refuse; a wrapping one is a silent wrong answer that every validator agrees on. \
+             Got: {:?}",
+            result.map(|par| par.exprs),
+        );
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

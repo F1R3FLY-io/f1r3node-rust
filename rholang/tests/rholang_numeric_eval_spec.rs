@@ -494,3 +494,123 @@ async fn pattern_match_on_numeric_values() {
     })
     .await
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+// ★★ Int overflow is CHECKED end-to-end — and what that costs the wrap-detect idiom
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+
+/// ★★ `Int` `+` and `-` REFUSE an unrepresentable result, from Rholang source.
+///
+/// The reducer-level cells live in `reduce_spec.rs`; this one measures the same ruling through the
+/// whole pipeline — parse, normalize, reduce — because that is the surface a deployer writes
+/// against. Ruled 2026-07-29: *"fix it — checked, with a clear error."*
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn int_addition_and_subtraction_refuse_an_unrepresentable_result() {
+    with_runtime("int-overflow-checked-", |mut runtime| async move {
+        // Both directions refuse.
+        eval_err(&mut runtime, r#"@0!(9223372036854775807 + 1)"#).await;
+        eval_err(&mut runtime, r#"@1!(-9223372036854775808 - 1)"#).await;
+
+        // ── THE CONTROL: totals still compute, and compute the same values. ─────────────
+        eval_ok(&mut runtime, r#"@2!(7 + 8) | @3!(10 - 3) | @4!(9223372036854775807 - 1)"#).await;
+        assert!(channel_data(&runtime, int_channel(2))
+            .await
+            .iter()
+            .any(|p| p.exprs.iter().any(|e| e.expr_instance
+                == Some(ExprInstance::GInt(15)))));
+        assert!(channel_data(&runtime, int_channel(3))
+            .await
+            .iter()
+            .any(|p| p.exprs.iter().any(|e| e.expr_instance
+                == Some(ExprInstance::GInt(7)))));
+        assert!(channel_data(&runtime, int_channel(4))
+            .await
+            .iter()
+            .any(|p| p.exprs.iter().any(|e| e.expr_instance
+                == Some(ExprInstance::GInt(9223372036854775806)))));
+    })
+    .await
+}
+
+/// ★★ THE MEASURED BLAST RADIUS — the "detect overflow by observing the wrap" idiom no longer
+/// answers `false`; it RAISES.
+///
+/// `casper/src/main/resources/NonNegativeNumber.rho`'s `add` contract is written
+///
+/// ```text
+///     if (v + x >= v) { …store v + x…; success!(true) }
+///     else            { //overflow
+///                       …store v…;     success!(false) }
+/// ```
+///
+/// which only reaches its `else` branch **because `v + x` wrapped to a smaller number**. Under
+/// checked addition the condition itself refuses, so the deploy aborts and `success` never
+/// receives. `MakeMint.rho`'s `deposit` calls that same `add`, and both idioms are exercised by
+/// `casper/tests/genesis/contracts/{non_negative_number_spec,make_mint_spec}.rs`
+/// (`test_fail_on_overflow`, `test_overflow_deposit`).
+///
+/// ⚠ **The remedy is to test BEFORE adding, not after**: `if (x <= 9223372036854775807 - v)`,
+/// which is total for every non-negative `v`, `x`. Changing those files edits GENESIS contracts
+/// and therefore moves their registry URIs and the genesis block hash, so it is a protocol-level
+/// decision and is deliberately not made here. This cell exists so the consequence is measured
+/// and named rather than discovered by a failing genesis suite.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_wrap_detect_overflow_idiom_now_raises_and_its_total_replacement_does_not() {
+    with_runtime("wrap-detect-idiom-", |mut runtime| async move {
+        // The idiom as the standard contracts write it, with `v = x = i64::MAX - 50`.
+        eval_err(
+            &mut runtime,
+            r#"
+            new v, x in {
+                v!(9223372036854775757) | x!(9223372036854775757) |
+                for (@vv <- v; @xx <- x) {
+                    if (vv + xx >= vv) { @0!(true) } else { @0!(false) }
+                }
+            }
+            "#,
+        )
+        .await;
+
+        // ★ THE REPLACEMENT: guard BEFORE adding. Total for every non-negative pair, so it
+        // answers `false` exactly where the wrap-detect idiom used to, and never raises.
+        eval_ok(
+            &mut runtime,
+            r#"
+            new v, x in {
+                v!(9223372036854775757) | x!(9223372036854775757) |
+                for (@vv <- v; @xx <- x) {
+                    if (xx <= 9223372036854775807 - vv) { @1!(true) } else { @1!(false) }
+                }
+            }
+            "#,
+        )
+        .await;
+        assert!(
+            has_par_with_bool(&channel_data(&runtime, int_channel(1)).await, false),
+            "★ the total guard must answer `false` for the overflowing pair — same verdict the \
+             wrap-detect idiom used to reach, without evaluating the overflowing sum",
+        );
+
+        // …and it still admits a pair that does NOT overflow.
+        eval_ok(
+            &mut runtime,
+            r#"
+            new v, x in {
+                v!(10) | x!(32) |
+                for (@vv <- v; @xx <- x) {
+                    if (xx <= 9223372036854775807 - vv) { @2!(vv + xx) } else { @2!(-1) }
+                }
+            }
+            "#,
+        )
+        .await;
+        assert!(
+            channel_data(&runtime, int_channel(2))
+                .await
+                .iter()
+                .any(|p| p.exprs.iter().any(|e| e.expr_instance == Some(ExprInstance::GInt(42)))),
+            "★ THE CONTROL: the total guard must not reject a sum that fits",
+        );
+    })
+    .await
+}

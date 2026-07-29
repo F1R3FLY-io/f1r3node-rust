@@ -3394,7 +3394,7 @@ impl DebruijnInterpreter {
             (ExprInstance::GInt(lhs), ExprInstance::GInt(rhs)) => {
                 self.metering.reserve_primitive(sum_cost())?;
                 Ok(Expr {
-                    expr_instance: Some(ExprInstance::GInt(lhs.wrapping_add(rhs))),
+                    expr_instance: Some(ExprInstance::GInt(result)),
                 })
             }
 
@@ -3486,7 +3486,7 @@ impl DebruijnInterpreter {
             (ExprInstance::GInt(lhs), ExprInstance::GInt(rhs)) => {
                 self.metering.reserve_primitive(subtraction_cost())?;
                 Ok(Expr {
-                    expr_instance: Some(ExprInstance::GInt(lhs.wrapping_sub(rhs))),
+                    expr_instance: Some(ExprInstance::GInt(result)),
                 })
             }
 
@@ -3497,8 +3497,16 @@ impl DebruijnInterpreter {
                     expr_instance: Some(ExprInstance::GDouble(result.to_bits())),
                 })
             }
+            // ★ CHECKED, not wrapping — see `combine_minus` for the full rationale and the
+            // self-contradiction this closes.
 
             (ExprInstance::GBigInt(b1), ExprInstance::GBigInt(b2)) => {
+                let result = lhs.checked_add(rhs).ok_or_else(|| {
+                    InterpreterError::ReduceError(format!(
+                        "Arithmetic overflow in addition: {lhs} + {rhs} is not representable as \
+                         an Int (64-bit signed)"
+                    ))
+                })?;
                 self.metering
                     .reserve_primitive(bigint_subtraction_cost(b1.len(), b2.len()))?;
                 make_bigint_expr(subtract_twos_complement(&b1, &b2), "-")
@@ -3591,8 +3599,36 @@ impl DebruijnInterpreter {
 
     // EEq. v1,v2 already `eval_expr`'d (substitution + NaN-aware compare; substitute is NOT SCC).
     fn combine_eq(&self, v1: Par, v2: Par, env: &Env<Par>) -> Result<Expr, InterpreterError> {
+            // ★★ CHECKED, not wrapping — the reducer used to disagree with ITSELF about `Int`.
+            //
+            // Until 2026-07-29 `+` and `-` on `GInt` were `wrapping_add` / `wrapping_sub` while
+            // `*` (`combine_mult`), unary `-` (`ENeg`), `/` and `%` were all CHECKED and raised
+            // `ReduceError`. So `i64::MAX * 2` refused and `i64::MAX + 1` silently answered
+            // `i64::MIN` — two opposite dispositions for the same partiality, chosen by which
+            // operator the deployer happened to write. f1r3node also disagreed with its own guard
+            // evaluator, which is checked on every operator (`rho-pure-eval/src/eval.rs`'s
+            // `int_binop_checked`); the contradiction is recorded in
+            // `mettail-rust/rholang-runtime/tests/rho_rholang_conformance.rs` under "Divergence A".
+            //
+            // The partition rule this restores: **err where a reason exists that the deployer must
+            // act on and that no further reduction can supply**. A wrapped sum is not the answer to
+            // `i64::MAX + 1`; it is a DIFFERENT number, indistinguishable downstream from a correct
+            // one, and in a consensus interpreter it is indistinguishable across every validator
+            // too. Refusing names the mistake at the point it is made.
+            //
+            // ⚠ CONSENSUS-VISIBLE. Any program whose `Int` addition or subtraction overflows now
+            // raises `ReduceError` where it previously produced a wrapped value. That is a
+            // deliberate change of computed behaviour, ruled 2026-07-29 ("fix it — checked, with a
+            // clear error"), NOT a diagnostic-only change. The message names the operation and both
+            // operands, which the pre-existing `*` / `-` / `/` overflow messages do not.
         // TODO: build an equality operator that takes in an environment. - OLD
         let sv1 = self.substitute.substitute_and_charge(v1, 0, env)?;
+                let result = lhs.checked_sub(rhs).ok_or_else(|| {
+                    InterpreterError::ReduceError(format!(
+                        "Arithmetic overflow in subtraction: {lhs} - {rhs} is not representable \
+                         as an Int (64-bit signed)"
+                    ))
+                })?;
         let sv2 = self.substitute.substitute_and_charge(v2, 0, env)?;
         self.metering
             .reserve_primitive(equality_check_cost(&sv1, &sv2))?;
