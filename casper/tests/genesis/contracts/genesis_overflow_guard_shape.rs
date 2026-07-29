@@ -327,3 +327,74 @@ fn makemint_deposit_delegates_its_overflow_check_and_adds_in_no_condition() {
          belongs to NonNegativeNumber's `add`, which answers `false` without evaluating the sum",
     );
 }
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════
+// The consensus-visible drift detector — and the instrument that ISN'T one
+// ════════════════════════════════════════════════════════════════════════════════════════════════
+
+/// ★★ **`NonNegativeNumber.rho`'s NORMALIZED TERM, pinned.** Editing a blessed contract's body
+/// changes the genesis post-state, which is the strongest consensus signal there is. This cell
+/// makes that change ANNOUNCE ITSELF instead of being noticed later.
+///
+/// ⚠⚠ **Why the normalized `Par` and not the genesis block's hashes — MEASURED, and it retracts a
+/// claim.** `e3a4494b`'s commit message carried a before/after table of `block_hash` and
+/// `post_state_hash` taken from `GenesisBuilder::build_genesis_with_parameters(None)`. **That table
+/// is not evidence and is hereby retracted.** Those hashes are RUN-VARYING at byte-identical
+/// source with fixed parameters (`genesis_builder.rs:215` pins `timestamp: 0` and the validator
+/// keys are the static `DEFAULT_VALIDATOR_KEY_PAIRS`): five consecutive builds produced five
+/// different `post_state_hash` values — `42e2c0cb…`, `7b65f154…`, `eb464221…`, `207e6cf4…`,
+/// `84e9a576…`, `833a41ef…` — three of them at *identical* contract source. Any before/after
+/// difference read off that instrument is indistinguishable from its own noise.
+///
+/// The same two runs that disagreed on `post_state_hash` agreed EXACTLY on the value below, which
+/// is why this is the instrument: the normalized `Par` is deterministic, and it is the term that
+/// actually enters the tuplespace.
+///
+/// ⚠ The genesis non-determinism is a SEPARATE finding and is reported, not fixed here: a
+/// consensus network whose genesis post-state depends on the run cannot agree on genesis. A
+/// leading hypothesis worth exactly the weight of a hypothesis: `GenesisParameters` carries
+/// `bonds: HashMap<PublicKey, i64>` (`genesis_builder.rs:175-177`), and Rust's `HashMap` iteration
+/// order is seeded per process, so any genesis term built by iterating it varies per run.
+///
+/// ★ MEASURED for this edit, reproducibly:
+///
+/// | | normalized `Par` | length |
+/// |---|---|---|
+/// | before `e3a4494b` (`if (v + x >= v)`) | `d9ce2e4db81db24237c01ed3ffb6d02de4fc4b6fbf4f2710e55bb6c0cfbcd9a0` | 2653 |
+/// | after  `e3a4494b` (the total guard)   | `a537547892a0006becf965d755dacce71eccae56c49ff2e05b40df0b648751a2` | 2652 |
+///
+/// The term got one byte SMALLER while the file got 972 bytes larger, which is the check that the
+/// twelve added comment lines are NOT consensus-visible: comments do not survive normalization, so
+/// only the guard expression moved.
+///
+/// ⚠ **This pin is EXPECTED to go red on any future body edit — that is its job.** When it does,
+/// the failure prints the new hash: update the constant in the same commit that changes the
+/// contract, and file the consensus-change-register entry that such a change owes.
+#[test]
+fn nonnegativenumber_normalized_term_is_pinned_because_it_is_consensus_visible() {
+    use crypto::rust::hash::blake2b256::Blake2b256;
+    use prost::Message;
+
+    /// blake2b256 of the protobuf encoding of the normalized `Par`, as of `e3a4494b`.
+    const EXPECTED: &str = "a537547892a0006becf965d755dacce71eccae56c49ff2e05b40df0b648751a2";
+    const EXPECTED_LEN: usize = 2652;
+
+    let par = rholang::rust::interpreter::compiler::compiler::Compiler::source_to_adt(
+        embedded_rho::NON_NEGATIVE_NUMBER,
+    )
+    .expect("★ NonNegativeNumber.rho must normalize — a blessed contract that does not is a \
+             genesis failure, not a hash change");
+    let bytes = par.encode_to_vec();
+    let actual = hex::encode(Blake2b256::hash(bytes.clone()));
+
+    assert_eq!(
+        (actual.as_str(), bytes.len()),
+        (EXPECTED, EXPECTED_LEN),
+        "★★ NonNegativeNumber.rho's NORMALIZED TERM changed, so the genesis post-state changed.\n\
+         That is a consensus-visible change and it owes a `docs/consensus/consensus-change-register.md` \
+         entry.\n\
+         If the change is intended, set EXPECTED = {actual:?} and EXPECTED_LEN = {} in the same \
+         commit that edits the contract.",
+        bytes.len(),
+    );
+}
