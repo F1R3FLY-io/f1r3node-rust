@@ -44,9 +44,23 @@ permissions:
 # _integration-pipeline.yml's launch job, held only for the ~1 minute of actual
 # launching rather than across an unbounded approval wait. See that file for the
 # residual-contention note and its manual-re-run recovery.
+#
+# cancel-in-progress: true, matching ci.yml's PR path. Without it, a re-push
+# leaves the previous run parked in await_approval, and a maintainer clicking
+# Approve then spends real OCI VMs validating a commit that is no longer the PR
+# head — while the current head still needs its own approval and run. Approving
+# stale work is worse than losing it, because the resulting green checks are
+# commit-scoped and cannot satisfy the new head anyway.
+#
+# BEHAVIOUR TO EXPECT: superseding a run that is already waiting also withdraws
+# its pending environment approval request. A maintainer part-way through
+# reviewing a fork diff will see the approval prompt disappear when the
+# contributor pushes again. That is correct — the diff they were approving is no
+# longer what would run — but it is surprising the first time. The replacement
+# run raises a fresh approval request for the new head.
 concurrency:
   group: ci-fork-pr-${{ github.event.pull_request.number }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   # Run the shared heavy pipeline against the FORK's head commit, gated behind
