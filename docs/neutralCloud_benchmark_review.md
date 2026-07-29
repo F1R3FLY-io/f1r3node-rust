@@ -1,12 +1,12 @@
-# Neutral Cloud Benchmark Review Guide — F1R3FLY Rust Node Staging
+# Neutral Cloud Benchmark Review Guide — F1R3FLY Rust Node
 
 _Date prepared: 2026-07-06_
 
 ## Purpose
 
-This document gives a partner engineering team a review and benchmark plan for the F1R3FLY Rust node `staging` branch of `F1R3FLY-io/f1r3node-rust`, using the cloud / integration-test patterns already documented in:
+This document gives a partner engineering team a review and benchmark plan for the F1R3FLY Rust node `dev` branch of `F1R3FLY-io/f1r3node-rust`, using the cloud / integration-test patterns already documented in:
 
-- `F1R3FLY-io/f1r3node-rust`, branch `staging`
+- `F1R3FLY-io/f1r3node-rust`, branch `dev`
 - `F1R3FLY-io/system-integration`, branch `main`
 - `f1r3node-rust/docs/vps-cloud-testing.md`
 - `system-integration/integration-tests/README.md`
@@ -15,9 +15,9 @@ The intended audience is a partner engineering team that wants to reproduce a di
 
 ---
 
-## 1. Current staging baseline
+## 1. Current dev baseline
 
-The `staging` branch currently exposes the Rust node workspace as a standalone Cargo/Docker setup. The repository README describes the Rust node as a pure Rust implementation of the F1R3FLY blockchain node with:
+The `dev` branch currently exposes the Rust node workspace as a standalone Cargo/Docker setup. The repository README describes the Rust node as a pure Rust implementation of the F1R3FLY blockchain node with:
 
 - Concurrent smart contract execution using Rholang and RSpace
 - Proof-of-stake consensus and finalization through the `casper` crate
@@ -50,9 +50,9 @@ Security note: the upstream README states that the codebase has not completed a 
 
 ---
 
-## 2. Benchmark baseline: the `staging` branch
+## 2. Benchmark baseline: the `dev` branch
 
-The `staging` branch is the benchmark baseline. All in-flight development work targeting `staging` is merged before handoff, so the branch represents a single consolidated baseline rather than a set of optional feature candidates — no per-change selection or separate benchmark branch is required. What matters for reproducibility is recording exactly what was benchmarked: capture the exact commit hash of `staging` and the Docker image digest for every run (see section 5.9), and record the consolidated feature set in `docs/benchmark/BRANCH_CONTENTS.md` (see section 7).
+The `dev` branch is the benchmark baseline. All in-flight development work targeting `dev` is merged before handoff, so the branch represents a single consolidated baseline rather than a set of optional feature candidates — no per-change selection or separate benchmark branch is required. What matters for reproducibility is recording exactly what was benchmarked: capture the exact commit hash of `dev` and the Docker image digest for every run (see section 5.9), and record the consolidated feature set in `docs/benchmark/BRANCH_CONTENTS.md` (see section 7).
 
 ---
 
@@ -349,7 +349,7 @@ These are placeholders until F1R3FLY and the partner team agree on targets.
 
 ## 7. Recommended repository deliverables
 
-For the benchmark effort, add only Markdown artifacts to `staging` at first:
+For the benchmark effort, add only Markdown artifacts to `dev` at first:
 
 ```text
 docs/benchmark/README.md
@@ -390,7 +390,7 @@ Suggested split:
 
 Reviewed public repository material on 2026-07-06:
 
-- `https://github.com/F1R3FLY-io/f1r3node-rust/tree/staging`
+- `https://github.com/F1R3FLY-io/f1r3node-rust/tree/dev`
 - `https://github.com/F1R3FLY-io/system-integration`
 - `https://raw.githubusercontent.com/F1R3FLY-io/system-integration/main/integration-tests/README.md`
-- `https://raw.githubusercontent.com/F1R3FLY-io/f1r3node-rust/staging/docs/vps-cloud-testing.md`
+- `https://raw.githubusercontent.com/F1R3FLY-io/f1r3node-rust/dev/docs/vps-cloud-testing.md`

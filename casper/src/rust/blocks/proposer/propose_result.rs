@@ -34,6 +34,7 @@ pub struct ProposeSuccess {
 #[derive(Debug, Clone)]
 pub enum ProposeFailure {
     NoNewDeploys,
+    RecoveryDeferred,
     InternalDeployError,
     BugError,
     CheckConstraintsFailure(CheckProposeConstraintsFailure),
@@ -58,6 +59,7 @@ pub enum CheckProposeConstraintsFailure {
 #[derive(Debug, Clone)]
 pub enum BlockCreatorResult {
     NoNewDeploys,
+    RecoveryDeferred,
     /// The created block together with the pre- and post-state hashes that were computed
     /// during `compute_deploys_checkpoint`. Carrying these hashes avoids re-running the
     /// expensive checkpoint replay during self-validation.
@@ -137,10 +139,19 @@ impl ProposeResult {
             ProposeStatus::Failure(ProposeFailure::NoNewDeploys)
         )
     }
+
+    pub fn is_recovery_deferred(&self) -> bool {
+        matches!(
+            self.propose_status,
+            ProposeStatus::Failure(ProposeFailure::RecoveryDeferred)
+        )
+    }
 }
 
 impl BlockCreatorResult {
     pub fn no_new_deploys() -> Self { BlockCreatorResult::NoNewDeploys }
+
+    pub fn recovery_deferred() -> Self { BlockCreatorResult::RecoveryDeferred }
 
     pub fn created(b: BlockMessage, pre_state_hash: Bytes, post_state_hash: Bytes) -> Self {
         BlockCreatorResult::Created(b, pre_state_hash, post_state_hash)
@@ -153,13 +164,14 @@ impl fmt::Display for ProposeStatus {
             ProposeStatus::Success(r) => write!(f, "Propose succeed: {:?}", r.result),
             ProposeStatus::Failure(failure) => match failure {
                 ProposeFailure::NoNewDeploys => write!(f, "Proposal failed: NoNewDeploys. No unprocessed deploys in pool. If you just deployed, the deploy may have already been included by the auto-proposer."),
+                ProposeFailure::RecoveryDeferred => write!(f, "Proposal deferred: rejected deploy recovery is waiting for the selected leader"),
                 ProposeFailure::InternalDeployError => {
                     write!(f, "Proposal failed: internal deploy error")
                 }
                 ProposeFailure::BugError => write!(f, "Proposal failed: BugError"),
                 ProposeFailure::CheckConstraintsFailure(check_failure) => match check_failure {
                     CheckProposeConstraintsFailure::NotBonded => {
-                        write!(f, "Proposal failed: ReadOnlyMode")
+                        write!(f, "Proposal failed: validator is not bonded")
                     }
                     CheckProposeConstraintsFailure::NotEnoughNewBlocks => {
                         write!(
