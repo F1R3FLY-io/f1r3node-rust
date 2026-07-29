@@ -1,0 +1,73 @@
+@startuml consensus-axes
+' The six consensus surfaces a change can move, and the fork each one produces.
+' Colour key:  observation = blue · derivation = amber · commitment = red · admission = green
+
+skinparam backgroundColor #FFFFFF
+skinparam shadowing false
+skinparam defaultFontName "DejaVu Sans"
+skinparam defaultFontSize 12
+skinparam ArrowColor #37474F
+skinparam ArrowThickness 1.4
+
+skinparam rectangle {
+  BorderThickness 1.6
+  FontColor #102027
+}
+
+title <b>The six consensus surfaces</b>\n<size:11>A change may move one and not the others. The register classifies every entry against all six.</size>
+
+rectangle "**A DEPLOY**\n<size:10>signed source, admitted by a node</size>" as DEPLOY #line:1565C0;back:E3F2FD
+
+package "What a node COMPUTES" #FAFAFA {
+  rectangle "**Axis 1 — COMPUTED VALUE**\n<size:10>the term a redex reduces to</size>\n<size:10><latex>e \longrightarrow_\beta v</latex></size>" as A1 #line:0D47A1;back:BBDEFB
+  rectangle "**Axis 2 — VERDICT**\n<size:10>which COMM fires; which //match// branch reduces;</size>\n<size:10>whether a guard admits</size>\n<size:10><latex>\mathrm{fire} : S \times P \to \{\top,\bot\}</latex></size>" as A2 #line:1B5E20;back:C8E6C9
+  rectangle "**Axis 6 — METERING**\n<size:10>phlogiston charged: count, order, amount</size>\n<size:10><latex>\mathrm{cost} : \mathrm{Op} \to \mathbb{N}</latex></size>" as A6 #line:E65100;back:FFE0B2
+}
+
+package "What a node COMMITS" #FAFAFA {
+  rectangle "**Axis 3 — SERIALIZED BYTES**\n<size:10>two distinct formats — see //wire-formats//</size>\n<size:10>bincode 1.3.3 · prost/protobuf</size>" as A3 #line:B71C1C;back:FFCDD2
+  rectangle "**Axis 4 — POST-STATE HASH**\n<size:10>the Merkle root committed in the block header</size>\n<size:10><latex>h_{\mathrm{post}} = \mathrm{root}(\mathcal{S}')</latex></size>" as A4 #line:B71C1C;back:EF9A9A
+}
+
+package "What a node ADMITS" #FAFAFA {
+  rectangle "**Axis 5 — ACCEPTED PROGRAMS**\n<size:10>a parse / normalize / decode refusal,</size>\n<size:10>or a liveness ceiling that aborts the process</size>\n<size:10><latex>L_{\mathrm{old}} </size>\n<size:10>eq L_{\mathrm{new}}</latex></size>" as A5 #line:33691E;back:C5E1A5
+}
+
+rectangle "**REPLAY**\n<size:10>a validator re-executes the deploy and compares</size>" as REPLAY #line:455A64;back:ECEFF1
+rectangle "**FORK**\n<size:10>honest nodes disagree about the chain</size>" as FORK #line:B71C1C;back:FFCDD2
+rectangle "**SLASHING**\n<size:10>InvalidBlock::InvalidTransaction —</size>\n<size:10>//is_slashable() == true//</size>" as SLASH #line:880E4F;back:F8BBD0
+rectangle "**LIVENESS SPLIT**\n<size:10>one node aborts where another completes</size>" as LIVE #line:F57F17;back:FFF9C4
+
+DEPLOY --> A1
+DEPLOY --> A2
+DEPLOY --> A5
+DEPLOY --> A6
+
+A1 --> A3 : <size:10>the value is serialised</size>
+A2 --> A4 : <size:10>a different COMM leaves</size>\n<size:10>a different tuplespace</size>
+A6 --> A2 : <size:10>out-of-phlogiston</size>\n<size:10>aborts the deploy</size>
+A3 --> A4 : <size:10>the bytes are the</size>\n<size:10>hash preimage</size>
+A4 --> REPLAY
+A3 --> REPLAY
+A2 --> REPLAY
+
+REPLAY --> FORK : <size:10>post-state hashes differ</size>
+REPLAY --> SLASH : <size:10>//is_failed// mismatch</size>
+A5 --> LIVE : <size:10>refusal or abort is</size>\n<size:10>not uniform across nodes</size>
+LIVE --> FORK
+
+note right of A5 #FFFDE7
+  <b>Acceptance has two sub-modes, and they are not equivalent:</b>
+  <b>(a) a DECIDABLE refusal</b> — every node refuses the same input.
+      Deterministic ⇒ a failed deploy, not an invalid block.
+  <b>(b) a PROCESS ABORT</b> — a stack overflow is <i>SIGSEGV</i>, not an
+      <i>Err</i>. The node dies; a node with a larger stack does not.
+      Non-uniform ⇒ liveness split.
+end note
+
+note bottom of A6 #FFF3E0
+  Budgets belong to F1r3node (<i>wallet.txt</i>).
+  A metering entry here records that a
+  <b>charge moved</b>, never that a budget was set.
+end note
+@enduml

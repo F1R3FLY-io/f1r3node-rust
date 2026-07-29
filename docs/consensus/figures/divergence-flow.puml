@@ -1,0 +1,60 @@
+@startuml divergence-flow
+' How a per-axis change becomes (or fails to become) an observed fork.
+' Colour key: play = blue · replay = green · disagreement = red · benign = grey
+
+skinparam backgroundColor #FFFFFF
+skinparam shadowing false
+skinparam defaultFontName "DejaVu Sans"
+skinparam defaultFontSize 12
+skinparam ActivityBorderThickness 1.5
+skinparam ActivityDiamondBackgroundColor #FFF9C4
+skinparam ActivityDiamondBorderColor #F57F17
+skinparam ArrowColor #37474F
+
+title <b>From an axis change to a fork — the propagation a reviewer must trace</b>\n<size:11>Every register entry states where on this path its change lands, and where it stops.</size>
+
+start
+:**A node upgrades.**\nOne of the six axes moves for some class of program;
+note right #E3F2FD
+  <b>Mixed-version network is the premise.</b>
+  <i>Validate::version</i> (<i>casper/src/rust/validate.rs:273</i>)
+  compares block versions for <b>EXACT equality</b> against a
+  genesis-anchored constant. There is <b>no activation height</b>
+  and no per-feature gate, so a consensus change ships as a
+  <b>coordinated version bump</b>, which is a network act.
+end note
+
+if (Does any deployed program\nreach the changed code?) then (no)
+  :**LATENT.**\nMechanism proven, no witness.\nRecord as //potential//, do not upgrade\nto "does break".;<<#ECEFF1>>
+  stop
+else (yes)
+endif
+
+partition "PLAY — the proposer" #E3F2FD {
+  :Normalize the deploy source\n<size:10>Axis 5 can refuse here</size>;
+  :Reduce; charge phlogiston\n<size:10>Axes 1, 2, 6</size>;
+  :Serialise events and state\n<size:10>Axis 3 — bincode lane</size>;
+  :Commit the post-state root\n<size:10>Axis 4</size>;
+  :Encode the block\n<size:10>Axis 3 — prost lane</size>;
+}
+
+partition "REPLAY — every other validator" #E8F5E9 {
+  :Decode the block;
+  :Re-execute the deploy against\nthe recorded COMM trace;
+  :Recompute events, state root,\nand //error_message//;
+}
+
+if (Do play and replay agree?) then (yes)
+  :**Block accepted.**;<<#C8E6C9>>
+  stop
+else (no)
+  if (Which comparison failed?) then (post-state root)
+    :**SAFETY FORK.**\nHonest nodes hold\ndifferent chains.;<<#FFCDD2>>
+  elseif (//is_failed// / //error_message//) then ( )
+    :**SLASHABLE FAULT.**\n<size:11>ReplayFailure ⇒ InvalidBlock::InvalidTransaction</size>\n<size:10>//is_slashable() == true// (block_status.rs:203)</size>\n<size:10>Deterministic across validators, so this is</size>\n<size:10>liveness + slashing — not a silent safety fork.</size>;<<#F8BBD0>>
+  else (the process died)
+    :**LIVENESS SPLIT.**\nA stack overflow is a SIGSEGV,\nnot an //Err//: uncatchable,\nunreachable by metering.;<<#FFF9C4>>
+  endif
+  stop
+endif
+@enduml

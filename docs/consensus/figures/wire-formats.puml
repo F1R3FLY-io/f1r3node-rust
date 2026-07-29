@@ -1,0 +1,72 @@
+@startuml wire-formats
+' A Par is serialised by TWO independent codecs with DIFFERENT field orders.
+' Colour key: bincode lane = purple · prost lane = teal · shared term = grey
+
+skinparam backgroundColor #FFFFFF
+skinparam shadowing false
+skinparam defaultFontName "DejaVu Sans"
+skinparam defaultFontSize 12
+skinparam ArrowThickness 1.4
+skinparam rectangle {
+  BorderThickness 1.6
+}
+
+title <b>A <latex>\mathrm{Par}</latex> crosses TWO wires, in TWO different orders</b>\n<size:11>A change that is byte-neutral on one lane can move the other. The register answers both, separately.</size>
+
+rectangle "**THE TERM**\n<latex>p : \mathrm{Par}</latex>\n<size:10>models/src/main/protobuf/RhoTypes.proto</size>" as TERM #line:37474F;back:ECEFF1
+
+package "LANE B — bincode 1.3.3, legacy fixint little-endian" #F3E5F5 {
+  rectangle "**serde DECLARATION order**\n<size:10>the order fields appear in the generated struct;</size>\n<size:10>exposed nowhere at run time except the</size>\n<size:10>FileDescriptorSet prost already dumps</size>" as BORDER #line:4A148C;back:E1BEE7
+  rectangle "**wire_encode**\n<size:10>models/src/rust/rholang/wire_encode.rs</size>\n<size:10>single-walk trampolined encoder</size>" as WENC #line:4A148C;back:CE93D8
+  rectangle "**COLD STORE**\n<size:10>rspace++/src/rspace/serializers/</size>\n<size:10>Datum · WaitingContinuation · Join → LMDB</size>" as COLD #line:4A148C;back:E1BEE7
+  rectangle "**EVENT HASH**\n<size:10>rspace++/.../stable_hash_provider.rs</size>\n<size:10><latex>\mathrm{hash\_produce},\ \mathrm{hash\_consume}</latex></size>" as EH #line:4A148C;back:CE93D8
+  rectangle "**COMM event identity**\n<size:10>→ the deploy log → the block</size>" as COMM #line:4A148C;back:E1BEE7
+}
+
+package "LANE P — prost / protobuf 3" #E0F2F1 {
+  rectangle "**ascending minimum TAG order**\n<size:10>prost emits every plain field first,</size>\n<size:10>then every oneof — NOT declaration order</size>" as PORDER #line:004D40;back:B2DFDB
+  rectangle "**prost derive** (production)\n<size:10>OUT_DIR/rhoapi.rs — recursive</size>\n<size:10>**prost_encode.rs** — trampolined, DORMANT</size>" as PENC #line:004D40;back:80CBC4
+  rectangle "**BLOCK BODY**\n<size:10>models/src/main/protobuf/CasperMessage.proto</size>\n<size:10>ProcessedDeploy · ProduceEventProto</size>" as BLOCK #line:004D40;back:B2DFDB
+  rectangle "**NETWORK**\n<size:10>peer-to-peer block transfer</size>" as NET #line:004D40;back:80CBC4
+  rectangle "**SIGNED PREIMAGE**\n<size:10><latex>\mathrm{sort\_match}(p).\mathrm{term}.\mathrm{encode\_to\_vec}()</latex></size>\n<size:10>rholang/.../cost_accounting/sig.rs</size>" as SIG #line:004D40;back:B2DFDB
+}
+
+TERM --> BORDER
+TERM --> PORDER
+BORDER --> WENC
+WENC --> COLD
+WENC --> EH
+EH --> COMM
+PORDER --> PENC
+PENC --> BLOCK
+PENC --> SIG
+BLOCK --> NET
+
+rectangle "**POST-STATE HASH**\n<size:10>the block header's committed root</size>" as PSH #line:B71C1C;back:FFCDD2
+COMM --> PSH
+COLD --> PSH
+BLOCK --> PSH
+
+note bottom of PORDER #E0F7FA
+  ⚠ <b>The two orders are not a detail.</b> <i>TaggedContinuation</i> declares its
+  oneof BEFORE <i>guard</i>. Reusing one table for both drivers produced
+  <b>a 95-byte encoding with its halves exchanged</b> — same length,
+  same byte multiset, invisible to a length check and to a round trip.
+  For protobuf the correct order is <b>the opposite</b> of the serde fix.
+  (<i>c28f4cf6</i>, finding 1; <i>7c74260d</i>; <i>56fb1fd0</i> mutation M2.)
+end note
+
+note bottom of BORDER #F3E5F5
+  <b><latex>\mathrm{locally\_free}</latex> is blanked to eight zero bytes on the bincode lane ONLY.</b>
+  It is real <i>bytes</i> on the protobuf wire
+  (12 fields, asserted <i>ProstKind::Bytes</i>). A shared table would
+  have erased the asymmetry. (<i>7c74260d</i>.)
+end note
+
+note right of PENC #FFEBEE
+  <b>Asymmetry, unrepaired:</b> prost's DECODER caps recursion at 100
+  levels (<i>DecodeContext</i>); prost's ENCODER caps nothing.
+  A term can therefore be built, reduced, serialised and committed
+  — and NOT read back. See register entry <b>CBR-28</b>.
+end note
+@enduml
