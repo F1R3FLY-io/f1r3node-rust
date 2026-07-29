@@ -59,11 +59,22 @@
 //!    grows a `try_…` entry point returning `Result`/`Option`, the panicking form
 //!    becomes a thin wrapper over it, and the test asserts the `Err`/`None`.
 //!    `FlumeLimitedBuffer::try_drop_new` is one.
+//!
+//!    ★ Where the function ALREADY returns `Result`, there is no `try_…` form to
+//!    grow — the error channel exists and is merely unused, and the repair is to
+//!    use it. `RSpace::consume`, `RSpace::locked_install_internal` and
+//!    `ReplayRSpace::consume` are that case: an arity mismatch between `channels`
+//!    and `patterns` is a decidable negative expressible in the caller's own
+//!    arguments (two independent repeated proto fields), and it now returns
+//!    `Err(RSpaceError::BugFoundError(..))`. `storage_actions_test.rs` moved from
+//!    pattern 3 to this one when the guard was converted; the argument, the sibling
+//!    table and the play/replay agreement cell are in
+//!    `rspace++/tests/consume_arity_refusal.rs`.
 //! 3. **The abort is observable only out of process** ⇒ run the subject in a **child
 //!    process** and decide on its exit status and stderr.
-//!    `ffi_absent_required_child.rs` established the shape here; `storage_actions_test.rs`,
-//!    `absent_required_child_reachability.rs` and `spatial_matcher_disposition.rs`
-//!    now use it.
+//!    `ffi_absent_required_child.rs` established the shape here;
+//!    `ffi_consume_arity_reachability.rs`, `absent_required_child_reachability.rs`
+//!    and `spatial_matcher_disposition.rs` now use it.
 //!
 //! ## Scope
 //!

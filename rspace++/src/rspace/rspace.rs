@@ -337,10 +337,40 @@ where
         persist: bool,
         peeks: BTreeSet<i32>,
     ) -> Result<MaybeConsumeResult<C, P, A, K>, RSpaceError> {
+        // ★ A MALFORMED CONSUME IS A DECIDABLE NEGATIVE, NOT AN INVARIANT
+        // VIOLATION — so it is REFUSED, through the `Result` this signature has
+        // always carried, rather than aborting the process.
+        //
+        // The distinction that decides the disposition is whether the CALLER'S
+        // OWN INPUTS can express the fault. Here they can: the two lengths are
+        // right there in the arguments, and `ConsumeParams` puts `channels` and
+        // `patterns` in two INDEPENDENT repeated protobuf fields
+        // (`models/src/main/protobuf/RSpacePlusPlusTypes.proto`), so any wire
+        // encoding at all can carry `channels.len() != patterns.len()`. That is
+        // the opposite classification from an absent required child in a `Par`
+        // (#127/#136), which no honest producer can emit and which therefore
+        // stays an invariant.
+        //
+        // ⚠ CONSENSUS-VISIBLE. This turns "every node aborts" into "this call
+        // fails". A validator that today dies would instead reject. It requires
+        // a coordinated `Validate::version` bump, which is F1r3node's act, not
+        // this file's — `casper/src/rust/validate.rs` compares versions for
+        // EXACT equality with no activation-height machinery.
+        //
+        // ⚠ THE MESSAGES AND THE VARIANT ARE DELIBERATELY UNCHANGED from
+        // `ReplayRSpace::locked_install_internal`, which already refused this
+        // exact condition this exact way. Four sites now agree; before this
+        // change three panicked and one returned `Err`, which was itself a
+        // play/replay asymmetry (see the sibling table in
+        // `rspace++/tests/consume_arity_refusal.rs`).
         if channels.is_empty() {
-            panic!("RUST ERROR: channels can't be empty");
+            Err(RSpaceError::BugFoundError(
+                "RUST ERROR: channels can't be empty".to_string(),
+            ))
         } else if channels.len() != patterns.len() {
-            panic!("RUST ERROR: channels.length must equal patterns.length");
+            Err(RSpaceError::BugFoundError(
+                "RUST ERROR: channels.length must equal patterns.length".to_string(),
+            ))
         } else {
             let consume_ref = Consume::create(&channels, &patterns, &continuation, persist);
 
@@ -1157,8 +1187,18 @@ where
         }
 
         for (channels, install) in installs {
+            // ⚠ The arity refusal `locked_install_internal` grew below CANNOT
+            // fire here: every entry in `installs` was put there BY that same
+            // function, after its own check passed, so `channels.len() ==
+            // patterns.len()` holds by construction on this path. Any `Err`
+            // reaching this line is therefore a store fault, not a malformed
+            // request, and `restore_installs` has no channel to carry it —
+            // hence a named `expect` rather than a bare `unwrap`.
             self.locked_install_internal(channels, install.patterns, install.continuation, true)
-                .unwrap();
+                .expect(
+                    "restore_installs: re-installing an entry this space itself recorded (its \
+                     arity was already checked at install time)",
+                );
         }
     }
 
@@ -1169,8 +1209,22 @@ where
         continuation: K,
         record_install: bool,
     ) -> Result<Option<(K, Vec<A>)>, RSpaceError> {
+        // ★ Same decidable negative as `consume`, same refusal. `InstallParams`
+        // is the second wire message that puts `channels` and `patterns` in two
+        // independent repeated fields, so the fault is caller-expressible here
+        // for exactly the same reason.
+        //
+        // ⚠ THIS SITE IS WHY THE FOUR MOVE TOGETHER. Its ReplaySpace twin,
+        // `ReplayRSpace::locked_install_internal`, ALREADY returned this exact
+        // `Err` with this exact message, so before this change `RSpace::install`
+        // aborted the process where `ReplayRSpace::install` refused — a
+        // play/replay asymmetry sitting in the tree, masked only because both of
+        // this function's in-tree callers turn the `Err` back into a panic.
+        // Converting play here makes the two agree.
         if channels.len() != patterns.len() {
-            panic!("RUST ERROR: channels.length must equal patterns.length");
+            Err(RSpaceError::BugFoundError(
+                "RUST ERROR: channels.length must equal patterns.length".to_string(),
+            ))
         } else {
             let consume_ref = Consume::create(&channels, &patterns, &continuation, true);
             let mut channel_to_indexed_data = self.fetch_channel_to_index_data(&channels);

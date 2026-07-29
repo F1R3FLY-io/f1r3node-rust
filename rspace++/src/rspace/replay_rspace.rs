@@ -310,10 +310,28 @@ where
         persist: bool,
         peeks: BTreeSet<i32>,
     ) -> Result<MaybeConsumeResult<C, P, A, K>, RSpaceError> {
+        // ★★ THE SHARPER HALF OF THE PAIR. `RSpace::consume` and this function
+        // must classify a malformed request IDENTICALLY, because a refusal that
+        // happens during replay but not during play — or the reverse — is the
+        // divergence class itself, not a mere inconsistency: replay would report
+        // a mismatch against a play run that never saw one.
+        //
+        // Both now refuse, with the same variant and the same text, so the pair
+        // is symmetric by construction. Before this change both panicked, which
+        // was also symmetric — but symmetric in the mode where the node dies,
+        // and a dead node cannot report a rejection.
+        //
+        // The classification argument is `RSpace::consume`'s, verbatim: the two
+        // lengths are in the caller's own arguments, and `ConsumeParams` carries
+        // them in independent repeated fields.
         if channels.is_empty() {
-            panic!("RUST ERROR: channels can't be empty");
+            Err(RSpaceError::BugFoundError(
+                "RUST ERROR: channels can't be empty".to_string(),
+            ))
         } else if channels.len() != patterns.len() {
-            panic!("RUST ERROR: channels.length must equal patterns.length");
+            Err(RSpaceError::BugFoundError(
+                "RUST ERROR: channels.length must equal patterns.length".to_string(),
+            ))
         } else {
             let consume_ref = Consume::create(&channels, &patterns, &continuation, persist);
             let channel_hashes: Vec<u64> =
