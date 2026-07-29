@@ -28,7 +28,10 @@ impl ParMapTypeMapper {
     }
 
     fn unzip(kvp: &KeyValuePair) -> (Par, Par) {
-        (kvp.key.clone().unwrap(), kvp.value.clone().unwrap())
+        (
+            kvp.key.clone().expect("KeyValuePair.key"),
+            kvp.value.clone().expect("KeyValuePair.value"),
+        )
     }
 
     fn zip(k: Par, v: Par) -> KeyValuePair {

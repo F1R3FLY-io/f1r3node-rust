@@ -53,10 +53,12 @@ use models::rust::rholang::par_children::{
     expr_instance_child_pars, expr_instance_variant_index, spatial_match_descends_into,
     EXPR_INSTANCE_VARIANT_COUNT,
 };
+use models::rust::rholang::wire::{Descent, FieldKind, WireNode, WireOneof};
 use models::rust::rholang::wire_schema::{
     EXPR_INSTANCE_VARIANTS, UNF_INSTANCE_VARIANTS, UNF_INSTANCE_VARIANT_COUNT,
 };
 use models::rust::utils::{new_freevar_par, new_gint_par};
+use prost::Message;
 use rholang::rust::interpreter::matcher::has_locally_free::HasLocallyFree;
 use rholang::rust::interpreter::matcher::spatial_matcher::{SpatialMatcher, SpatialMatcherContext};
 use rholang::rust::interpreter::util::prepend_expr;
@@ -1127,4 +1129,506 @@ fn no_unforgeable_pattern_reports_connective_used() {
              unreachable, and its disposition needs re-deciding."
         );
     }
+}
+
+// ===========================================================================
+// ★★ #127/#136 — the SHAPE axis: an absent required child
+// ===========================================================================
+//
+// Everything above asks whether the matcher DESCENDS into a variant. This
+// section asks what it does when the child it descends to **is not there**.
+//
+// `EMinus { Par p1 = 1; }` is proto3: the field is optional ON THE WIRE, and
+// `prost` returns `None` for it without error. So an absent required child is
+// not something `Par::decode` refuses — it is something `Par::decode`
+// **returns**, and every consumer downstream of a decode can meet one.
+//
+// ★ THE DISPOSITION, and it settles #127 and #136 with one rule:
+//
+//   An absent required child is an INTERNAL INVARIANT VIOLATION, not a
+//   decidable negative.
+//
+// Three independent reasons, none of them a preference:
+//
+//   1. The codebase already named it. `unwrap_option_safe`
+//      (`interpreter/mod.rs`) raises
+//      `InterpreterError::UndefinedRequiredProtobufFieldError` and is used at
+//      41 sites. The field is *required*; an absent one is an *error*.
+//   2. No Rholang source denotes it. The grammar has no production for a
+//      subtraction with one operand, so "does this pattern match it?" has no
+//      negative answer — the object is not a term.
+//   3. `spatial_match` RETURNS `Option<()>`, whose two inhabitants are
+//      *matched* and *did not match*. Answering `None` would make a malformed
+//      term indistinguishable from a well-formed non-matching one — silently
+//      answering `false` to a question that cannot be decided, which is
+//      exactly what #73 ("undecidable guards now refuse loudly") refused.
+//
+// ⇒ The panic is an ASSERTION, and the fix belongs at the boundary that admits
+// foreign bytes rather than at 149 call sites. `.expect(...)` is the right
+// spelling for an assertion and satisfies the standing `unwrap`→`expect` rule;
+// it is the FLOOR here, and this section is what keeps it from being mistaken
+// for the ceiling.
+//
+// ⚠ Turning these arms into a `None` return would WIDEN nothing and NARROW
+// nothing for well-formed terms — but it would change what the node does with
+// malformed ones, from "stop" to "silently answer no-match". That is the
+// #73-forbidden direction, so it is not taken here.
+//
+// Reachability — which decides severity — is measured in
+// `rholang/tests/absent_required_child_reachability.rs` (consensus path:
+// delivered but not matched, with a positive control) and
+// `rspace++/libs/rspace_rhotypes/tests/ffi_absent_required_child.rs` (FFI:
+// SIGABRT on ten bytes).
+
+/// `par_of` WITHOUT the normalizer pass.
+///
+/// ⚠ `prepend_expr` recomputes `locally_free`/`connective_used` and therefore
+/// READS the child slots — it panics on an absent one (measured as `m0` in
+/// `absent_required_child_reachability.rs`). The absent form must be built
+/// without it, which is also what the wire does: both fields are proto fields,
+/// decoded verbatim, and nothing recomputes them on the read path.
+fn par_of_raw(instance: ExprInstance) -> Par {
+    Par {
+        exprs: vec![Expr {
+            expr_instance: Some(instance),
+        }],
+        ..Default::default()
+    }
+}
+
+/// Read a protobuf varint at `at`, returning `(value, byte_length)`.
+fn varint_at(bytes: &[u8], at: usize) -> (usize, usize) {
+    let mut value = 0usize;
+    let mut shift = 0u32;
+    let mut i = at;
+    loop {
+        let byte = bytes[i];
+        value |= ((byte & 0x7f) as usize) << shift;
+        i += 1;
+        if byte & 0x80 == 0 {
+            return (value, i - at);
+        }
+        shift += 7;
+    }
+}
+
+/// Rewrite the varint at `at` (`width` bytes) to `value`, which must still fit
+/// in `width` bytes — true here because the new value is strictly smaller.
+fn put_varint(bytes: &mut Vec<u8>, at: usize, width: usize, value: usize) {
+    let mut encoded = Vec::with_capacity(width);
+    let mut v = value;
+    loop {
+        let byte = (v & 0x7f) as u8;
+        v >>= 7;
+        if v == 0 {
+            encoded.push(byte);
+            break;
+        }
+        encoded.push(byte | 0x80);
+    }
+    assert!(
+        encoded.len() <= width,
+        "the repaired length needs {} varint bytes but only {width} are available",
+        encoded.len()
+    );
+    while encoded.len() < width {
+        // Pad with a redundant continuation so the framing width is unchanged.
+        let last = encoded.len() - 1;
+        encoded[last] |= 0x80;
+        encoded.push(0);
+    }
+    bytes[at..at + width].copy_from_slice(&encoded);
+}
+
+/// Decrement every length prefix that ENCLOSES `hole` by `removed`.
+///
+/// Walks the message tree from the top, and at each level finds the single
+/// length-delimited field whose content span contains `hole`, repairs it, and
+/// descends. Stops when no enclosing field remains — i.e. when `hole` is at the
+/// current level. Non-length-delimited fields are skipped by wire type, so the
+/// walk does not assume the schema's field order.
+fn repair_enclosing_lengths(bytes: &mut Vec<u8>, hole: usize, removed: usize) {
+    let mut start = 0usize;
+    let mut end = bytes.len();
+    let mut repaired = 0usize;
+    loop {
+        let mut cursor = start;
+        let mut descended = false;
+        while cursor < end {
+            let (tag, tag_w) = varint_at(bytes, cursor);
+            let field_start = cursor;
+            cursor += tag_w;
+            match tag & 0x7 {
+                // length-delimited
+                2 => {
+                    let (len, len_w) = varint_at(bytes, cursor);
+                    let content = cursor + len_w;
+                    if hole >= field_start && hole < content + len {
+                        if hole == field_start {
+                            // `hole` IS this field — nothing encloses it here.
+                            return;
+                        }
+                        put_varint(bytes, cursor, len_w, len - removed);
+                        repaired += 1;
+                        start = content;
+                        end = content + len - removed;
+                        descended = true;
+                        break;
+                    }
+                    cursor = content + len;
+                }
+                0 => {
+                    let (_, w) = varint_at(bytes, cursor);
+                    cursor += w;
+                }
+                5 => cursor += 4,
+                1 => cursor += 8,
+                other => panic!("★ unsupported protobuf wire type {other} while repairing"),
+            }
+        }
+        if !descended {
+            assert!(
+                repaired > 0,
+                "★ no enclosing length prefix was repaired — the excision left the framing \
+                 inconsistent and the decode below would fail for the wrong reason"
+            );
+            return;
+        }
+    }
+}
+
+/// ★★ Remove child slot 0 from `instance` **on the wire bytes**, and hand back
+/// what `Par::decode` makes of the result.
+///
+/// ### Why byte surgery, and not a hand-written "absent" twin per variant
+///
+/// A third form written out for each of the thirty-six variants would be
+/// exactly the hand-maintained denominator this file exists to remove — the
+/// `EXPR_INSTANCE_VARIANT_COUNT = 36` mistake in a new costume. `par_children`'s
+/// by-move stripper is private, so the remaining general construction is the
+/// wire itself, which is also the construction the finding is *about*.
+///
+/// ### Why it is unambiguous
+///
+/// Slot 0 carries [`bound()`]; every other slot carries [`filler()`]; `BOUND !=
+/// FILLER`. So slot 0's sub-encoding occurs **exactly once** in the target's
+/// protobuf, and it can be excised without naming the variant. The framing is
+/// `Par.exprs` ++ `Expr.<arm>` ++ payload — two nested length prefixes, both
+/// repaired by varint arithmetic rather than assumed to be one byte wide.
+///
+/// ### Why it is not trusted
+///
+/// The result is checked against the GENERATED child table: it must decode, the
+/// bytes must actually have changed (a mutation that does not apply is a false
+/// zero — #129's harness lost a whole cell to exactly that), and
+/// `expr_instance_child_pars` must report exactly one child fewer.
+fn strip_first_optional_child(instance: ExprInstance) -> Option<ExprInstance> {
+    let mut children_before: Vec<&Par> = Vec::new();
+    expr_instance_child_pars(&instance, &mut children_before);
+    let expected = children_before.len() - 1;
+
+    let whole = par_of_raw(instance.clone()).encode_to_vec();
+    let slot0 = bound().encode_to_vec();
+
+    let occurrences = whole
+        .windows(slot0.len())
+        .filter(|w| *w == slot0.as_slice())
+        .count();
+    if occurrences == 0 {
+        // ★ The variant's children are NOT nested prost sub-messages. `EPathMap`
+        // is `extern_path`'d (`models/build.rs`) and encodes its entries to
+        // proto field 8 `serialized_paths` — a stream of `encode_trie_path`
+        // keys — so there is no `Par` sub-message to excise and no "absent
+        // required child" to construct. Its read side is bounded and
+        // `Err`-returning rather than `Option`-returning, which is the #130 /
+        // #135 axis, not this one.
+        return None;
+    }
+    assert_eq!(
+        occurrences, 1,
+        "★ slot 0's encoding occurs {occurrences} times, not once, so the excision below \
+         would remove the wrong field. BOUND and FILLER must stay distinct and BOUND must \
+         not appear in any other slot."
+    );
+    let payload_at = whole
+        .windows(slot0.len())
+        .position(|w| w == slot0.as_slice())
+        .expect("the occurrence just counted is findable");
+
+    // `<tag><len>` immediately precede the payload. Both are varints; find the
+    // length varint by walking back until its decoded value is the payload's.
+    let mut len_at = payload_at;
+    let len_width = loop {
+        assert!(
+            len_at > 0,
+            "★ no length prefix found before slot 0's payload"
+        );
+        len_at -= 1;
+        let (value, width) = varint_at(&whole, len_at);
+        if value == slot0.len() && len_at + width == payload_at {
+            break width;
+        }
+    };
+    // The field tag is the varint ending where the length begins.
+    let mut tag_at = len_at;
+    let tag_width = loop {
+        assert!(tag_at > 0, "★ no field tag found before slot 0's length");
+        tag_at -= 1;
+        let (_, width) = varint_at(&whole, tag_at);
+        if tag_at + width == len_at {
+            break width;
+        }
+    };
+    let removed = tag_width + len_width + slot0.len();
+
+    let mut cut = Vec::with_capacity(whole.len() - removed);
+    cut.extend_from_slice(&whole[..tag_at]);
+    cut.extend_from_slice(&whole[payload_at + slot0.len()..]);
+
+    // ★ Repair EVERY enclosing length prefix, however deep. `EMap` nests three
+    // (`Par.exprs` ++ `Expr.<arm>` ++ `EMap.kvs` ++ `KeyValuePair.key`) where the
+    // scalar pairs nest two, so the chain is WALKED rather than counted — a
+    // fixed count silently corrupts the deeper variants, which is how this was
+    // caught.
+    repair_enclosing_lengths(&mut cut, tag_at, removed);
+
+    assert_ne!(
+        cut, whole,
+        "★ the strip did not change the encoding — THE MUTATION DID NOT APPLY, and any \
+         green result below would be a false zero"
+    );
+
+    let decoded = Par::decode(&cut[..]).unwrap_or_else(|e| {
+        panic!(
+            "★ the absent-child encoding did not decode: {e}. The premise of this whole \
+             section is that `prost` ACCEPTS an absent required child; if it now refuses, \
+             the shape axis is closed at the decoder and these dispositions are stale."
+        )
+    });
+    let stripped = decoded.exprs[0]
+        .expr_instance
+        .clone()
+        .expect("the stripped Par keeps its expr_instance");
+    let mut children_after: Vec<&Par> = Vec::new();
+    expr_instance_child_pars(&stripped, &mut children_after);
+    assert_eq!(
+        children_after.len(),
+        expected,
+        "★ stripping slot 0 left {} children, not {expected}. The generated child table \
+         says the surgery removed the wrong thing.",
+        children_after.len()
+    );
+    Some(stripped)
+}
+
+/// How many elements this variant's payload carries in its `Seq`/`Map` fields,
+/// at its own level.
+///
+/// ★ Driven by the generated emission table: `WireNode::wire_emit` reports a
+/// `Descent::Seq { len, .. }` for every repeated field, so this is the schema's
+/// own answer rather than a per-variant match written here.
+///
+/// It is what separates "child slot 0 is an `Option` field" from "child slot 0
+/// is a sequence ELEMENT". Removing an element from `EList.ps` yields a
+/// SHORTER LIST, which is a perfectly good term and must not match — removing
+/// `EMinus.p1` yields something that is not a term at all. Both reduce the
+/// child count by one, so the child count cannot tell them apart and this can.
+fn top_level_sequence_elements(instance: &ExprInstance) -> usize {
+    let mut sink: Vec<u8> = Vec::new();
+    let Some(node) = instance.wire_emit(&mut sink) else {
+        return 0;
+    };
+    let mut total = 0usize;
+    let mut from = 0usize;
+    loop {
+        match node.wire_emit(from, &mut sink) {
+            Descent::Done => return total,
+            Descent::Node { resume, .. } => from = resume as usize,
+            Descent::Seq { resume, len, .. } => {
+                total += len;
+                from = resume as usize;
+            }
+            Descent::Map { resume, map } => {
+                total += map.len();
+                from = resume as usize;
+            }
+        }
+    }
+}
+
+/// How many `Option<Message>` slots this variant's payload declares.
+///
+/// ★ Read from the GENERATED wire-schema program, not from a list here:
+/// `WireOneof::wire_emit` hands back the payload as a `&dyn WireNode` and
+/// `WireNode::wire_program()` is the descriptor-derived field table. A 37th
+/// variant is therefore counted correctly the moment the generator runs, and
+/// `FieldKind::Opt` is what distinguishes a *required child* from a `Seq`
+/// (an empty `EList` is a perfectly good term; an absent `EMinus.p1` is not).
+fn declared_optional_child_slots(instance: &ExprInstance) -> usize {
+    let mut sink: Vec<u8> = Vec::new();
+    match instance.wire_emit(&mut sink) {
+        Some(node) => node
+            .wire_program()
+            .iter()
+            .filter(|kind| **kind == FieldKind::Opt)
+            .count(),
+        None => 0,
+    }
+}
+
+/// What the matcher does when child slot 0 of the TARGET is absent.
+#[derive(Debug, PartialEq, Eq)]
+enum AbsentChildOutcome {
+    /// The arm asserted its invariant and stopped. ★ The declared disposition
+    /// for every variant that descends into an `Option<Par>` slot.
+    Asserted,
+    /// The pair reached no arm that reads the absent slot.
+    NoMatch,
+    /// It matched anyway — the absent slot was never read.
+    Matched,
+}
+
+/// Replace child slot 0 of a probe's target with **nothing**, the way the wire
+/// delivers it, and report what the production matcher does.
+///
+/// ⚠ The target is round-tripped through `prost` first, so what the matcher
+/// receives is a value that CAME OFF THE WIRE rather than one built in Rust.
+/// A hand-constructed `None` would prove the panic exists without proving
+/// anything about what a decoder can hand over.
+fn absent_child_outcome(probe: &Probe) -> (AbsentChildOutcome, String) {
+    let target_instance = strip_first_optional_child(probe.target.clone())
+        .expect("the caller checked that slot 0 is a nested prost sub-message");
+    let bytes = par_of_raw(target_instance).encode_to_vec();
+    let target = Par::decode(&bytes[..]).unwrap_or_else(|e| {
+        panic!(
+            "★ `Par::decode` REFUSED the absent-child encoding of {}: {e}. The premise of \
+             this whole section is that prost accepts it; if that has changed, the shape \
+             axis is closed at the decoder and these dispositions are stale.",
+            probe.name()
+        )
+    });
+    let pattern = par_of(probe.pattern.clone());
+
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let mut context = SpatialMatcherContext::new();
+        context.spatial_match(target, pattern)
+    }));
+    match outcome {
+        Err(payload) => {
+            let message = payload
+                .downcast_ref::<String>()
+                .cloned()
+                .or_else(|| payload.downcast_ref::<&str>().map(|s| s.to_string()))
+                .unwrap_or_else(|| "<non-string panic>".to_string());
+            (AbsentChildOutcome::Asserted, message)
+        }
+        Ok(None) => (AbsentChildOutcome::NoMatch, String::new()),
+        Ok(Some(())) => (AbsentChildOutcome::Matched, String::new()),
+    }
+}
+
+/// ★★★ THE SHAPE GATE.
+///
+/// Iterates the GENERATED variant table, so a 37th `ExprInstance` arm fails
+/// here until somebody has decided what happens when its child is absent.
+///
+/// It is not satisfiable vacuously: the assertion below names the variants it
+/// exercised and requires the set to be non-empty *and* to contain every
+/// variant the generated program says has an `Option<Message>` slot.
+#[test]
+fn every_variant_with_an_optional_child_slot_asserts_rather_than_answers_no_match() {
+    let mut with_optional_slots: Vec<&'static str> = Vec::new();
+    let mut asserted: Vec<(&'static str, String)> = Vec::new();
+    let mut silent: Vec<(&'static str, AbsentChildOutcome)> = Vec::new();
+    // Variants where child slot 0 is a sequence element rather than an
+    // `Option` field. Recorded, not skipped silently — an empty set here would
+    // mean the discriminator stopped working.
+    let mut sequence_shortening: Vec<&'static str> = Vec::new();
+    // Variants whose children are not nested prost sub-messages at all —
+    // `EPathMap`'s trie-key stream. Recorded rather than skipped.
+    let mut not_prost_nested: Vec<&'static str> = Vec::new();
+
+    for probe in child_bearing_probes() {
+        if declared_optional_child_slots(&probe.target) == 0 {
+            // No `Option<Message>` field anywhere in the payload — there is no
+            // absent required child to construct.
+            continue;
+        }
+        let Some(stripped) = strip_first_optional_child(probe.target.clone()) else {
+            not_prost_nested.push(probe.name());
+            continue;
+        };
+        if top_level_sequence_elements(&stripped) != top_level_sequence_elements(&probe.target) {
+            // ★ Slot 0 was a sequence ELEMENT, not an `Option` field. Removing
+            // it yields a SHORTER COLLECTION — a well-formed term — so "does
+            // not match" is the correct and decidable answer, and this variant
+            // is not a member of the class.
+            sequence_shortening.push(probe.name());
+            continue;
+        }
+        with_optional_slots.push(probe.name());
+        if !spatial_match_descends_into(&probe.pattern) {
+            // Declared not to descend above; it cannot read the absent slot.
+            continue;
+        }
+        match absent_child_outcome(&probe) {
+            (AbsentChildOutcome::Asserted, message) => asserted.push((probe.name(), message)),
+            (other, _) => silent.push((probe.name(), other)),
+        }
+    }
+
+    assert!(
+        !with_optional_slots.is_empty(),
+        "★ no variant in the generated table declares an `Option<Message>` child slot. \
+         `EMinus`, `ENot` and fourteen others do, so this is a table or a probe-set \
+         failure — and it would make every assertion below vacuous."
+    );
+
+    assert!(
+        silent.is_empty(),
+        "★★ variant(s) whose absent child produced a SILENT answer instead of an \
+         assertion:\n  {:?}\n\n\
+         A `None` return here means the matcher answered \"does not match\" to a value \
+         that is not a term. That is the #73-forbidden direction — a guard that cannot \
+         decide must refuse loudly, not answer `false`. If this is now deliberate, it \
+         is a change to what the node does with malformed input and belongs in the \
+         registry's disposition, not in a silent arm.",
+        silent
+    );
+
+    // ★ Name what was exercised, so the gate reports an enumeration rather than
+    // a tally and a probe that quietly stopped running is visible.
+    assert!(
+        !sequence_shortening.is_empty(),
+        "★ no variant was classified as sequence-shortening. `EList`, `ESet` and `ETuple` \
+         all carry their child slot 0 inside a repeated field, so an empty set means \
+         `top_level_sequence_elements` stopped discriminating and collection variants are \
+         now being held to the wrong disposition."
+    );
+    println!(
+        "  {} variants encode their children OUTSIDE the prost sub-message tree (trie-key \
+         streams; the #130/#135 axis, not this one): {not_prost_nested:?}",
+        not_prost_nested.len()
+    );
+    println!(
+        "  {} variants carry child slot 0 in a repeated field (shortening is a TERM, so \
+         no-match is correct): {sequence_shortening:?}",
+        sequence_shortening.len()
+    );
+    println!(
+        "  {} variants carry child slot 0 in an Option<Message> field; {} of them descend \
+         and ASSERT on an absent one:",
+        with_optional_slots.len(),
+        asserted.len()
+    );
+    for (name, message) in &asserted {
+        println!("    ★ {name:24} -> {message}");
+    }
+    assert!(
+        asserted.len() >= 16,
+        "★ only {} variants were shown to assert. The pre-existing binary arms alone are \
+         seven, #118 added nine more; a number below that means probes stopped reaching \
+         the arms and this gate has gone quiet.",
+        asserted.len()
+    );
 }

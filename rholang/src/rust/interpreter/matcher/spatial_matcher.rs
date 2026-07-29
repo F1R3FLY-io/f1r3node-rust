@@ -273,7 +273,9 @@ impl SpatialMatcher<Par, Par> for SpatialMatcherContext {
 
             let mut remainder_bounds: Vec<(ParCount, ParCount)> = vec![(min_rem, max_rem)];
             for bounds in individual_bounds.iter().rev() {
-                let last = remainder_bounds.last().unwrap();
+                let last = remainder_bounds
+                    .last()
+                    .expect("remainder_bounds is seeded with one element before this loop");
                 remainder_bounds.push((bounds.0.add(&last.0), bounds.1.add(&last.1)));
             }
             remainder_bounds.pop();
@@ -418,7 +420,10 @@ impl SpatialMatcher<Send, Send> for SpatialMatcherContext {
         let result = guard(target.persistent == pattern.persistent)
             .and_then(|_| {
                 // println!("\ncalling spatial_match in Send, Send");
-                self.spatial_match(target.chan.unwrap(), pattern.chan.unwrap())
+                self.spatial_match(
+                    target.chan.expect("Send.chan (target)"),
+                    pattern.chan.expect("Send.chan (pattern)"),
+                )
             })
             .and_then(|_| {
                 // println!("\npassed calling spatial_match in Send, Send");
@@ -435,7 +440,12 @@ impl SpatialMatcher<Receive, Receive> for SpatialMatcherContext {
         // println!("\nHit Receive, Receive");
         guard(target.persistent == pattern.persistent)
             .and_then(|_| self.list_match_single(target.binds, pattern.binds))
-            .and_then(|_| self.spatial_match(target.body.unwrap(), pattern.body.unwrap()))
+            .and_then(|_| {
+                self.spatial_match(
+                    target.body.expect("Receive.body (target)"),
+                    pattern.body.expect("Receive.body (pattern)"),
+                )
+            })
     }
 }
 
@@ -443,8 +453,12 @@ impl SpatialMatcher<Receive, Receive> for SpatialMatcherContext {
 impl SpatialMatcher<New, New> for SpatialMatcherContext {
     fn spatial_match(&mut self, target: New, pattern: New) -> Option<()> {
         // println!("\nHit New, New");
-        guard(target.bind_count == pattern.bind_count)
-            .and_then(|_| self.spatial_match(target.p.unwrap(), pattern.p.unwrap()))
+        guard(target.bind_count == pattern.bind_count).and_then(|_| {
+            self.spatial_match(
+                target.p.expect("New.p (target)"),
+                pattern.p.expect("New.p (pattern)"),
+            )
+        })
     }
 }
 
@@ -617,49 +631,105 @@ impl SpatialMatcher<Expr, Expr> for SpatialMatcherContext {
             (Some(EVarBody(EVar { v: vp })), Some(EVarBody(EVar { v: vt }))) => guard(vp == vt),
 
             (Some(ENotBody(ENot { p: t })), Some(ENotBody(ENot { p }))) => {
-                self.spatial_match(t.unwrap(), p.unwrap())
+                self.spatial_match(t.expect("ENot.p (target)"), p.expect("ENot.p (pattern)"))
             }
 
             (Some(ENegBody(ENeg { p: t })), Some(ENegBody(ENeg { p }))) => {
-                self.spatial_match(t.unwrap(), p.unwrap())
+                self.spatial_match(t.expect("ENeg.p (target)"), p.expect("ENeg.p (pattern)"))
             }
 
             (Some(EMultBody(EMult { p1: t1, p2: t2 })), Some(EMultBody(EMult { p1, p2 }))) => self
-                .spatial_match(t1.unwrap(), p1.unwrap())
-                .and_then(|_| self.spatial_match(t2.unwrap(), p2.unwrap())),
+                .spatial_match(
+                    t1.expect("EMult.p1 (target)"),
+                    p1.expect("EMult.p1 (pattern)"),
+                )
+                .and_then(|_| {
+                    self.spatial_match(
+                        t2.expect("EMult.p2 (target)"),
+                        p2.expect("EMult.p2 (pattern)"),
+                    )
+                }),
 
             (Some(EDivBody(EDiv { p1: t1, p2: t2 })), Some(EDivBody(EDiv { p1, p2 }))) => self
-                .spatial_match(t1.unwrap(), p1.unwrap())
-                .and_then(|_| self.spatial_match(t2.unwrap(), p2.unwrap())),
+                .spatial_match(
+                    t1.expect("EDiv.p1 (target)"),
+                    p1.expect("EDiv.p1 (pattern)"),
+                )
+                .and_then(|_| {
+                    self.spatial_match(
+                        t2.expect("EDiv.p2 (target)"),
+                        p2.expect("EDiv.p2 (pattern)"),
+                    )
+                }),
 
             (Some(EModBody(EMod { p1: t1, p2: t2 })), Some(EModBody(EMod { p1, p2 }))) => self
-                .spatial_match(t1.unwrap(), p1.unwrap())
-                .and_then(|_| self.spatial_match(t2.unwrap(), p2.unwrap())),
+                .spatial_match(
+                    t1.expect("EMod.p1 (target)"),
+                    p1.expect("EMod.p1 (pattern)"),
+                )
+                .and_then(|_| {
+                    self.spatial_match(
+                        t2.expect("EMod.p2 (target)"),
+                        p2.expect("EMod.p2 (pattern)"),
+                    )
+                }),
 
             (
                 Some(EPercentPercentBody(EPercentPercent { p1: t1, p2: t2 })),
                 Some(EPercentPercentBody(EPercentPercent { p1, p2 })),
             ) => self
-                .spatial_match(t1.unwrap(), p1.unwrap())
-                .and_then(|_| self.spatial_match(t2.unwrap(), p2.unwrap())),
+                .spatial_match(
+                    t1.expect("EPercentPercent.p1 (target)"),
+                    p1.expect("EPercentPercent.p1 (pattern)"),
+                )
+                .and_then(|_| {
+                    self.spatial_match(
+                        t2.expect("EPercentPercent.p2 (target)"),
+                        p2.expect("EPercentPercent.p2 (pattern)"),
+                    )
+                }),
 
             (Some(EPlusBody(EPlus { p1: t1, p2: t2 })), Some(EPlusBody(EPlus { p1, p2 }))) => self
-                .spatial_match(t1.unwrap(), p1.unwrap())
-                .and_then(|_| self.spatial_match(t2.unwrap(), p2.unwrap())),
+                .spatial_match(
+                    t1.expect("EPlus.p1 (target)"),
+                    p1.expect("EPlus.p1 (pattern)"),
+                )
+                .and_then(|_| {
+                    self.spatial_match(
+                        t2.expect("EPlus.p2 (target)"),
+                        p2.expect("EPlus.p2 (pattern)"),
+                    )
+                }),
 
             (
                 Some(EPlusPlusBody(EPlusPlus { p1: t1, p2: t2 })),
                 Some(EPlusPlusBody(EPlusPlus { p1, p2 })),
             ) => self
-                .spatial_match(t1.unwrap(), p1.unwrap())
-                .and_then(|_| self.spatial_match(t2.unwrap(), p2.unwrap())),
+                .spatial_match(
+                    t1.expect("EPlusPlus.p1 (target)"),
+                    p1.expect("EPlusPlus.p1 (pattern)"),
+                )
+                .and_then(|_| {
+                    self.spatial_match(
+                        t2.expect("EPlusPlus.p2 (target)"),
+                        p2.expect("EPlusPlus.p2 (pattern)"),
+                    )
+                }),
 
             (
                 Some(EMinusMinusBody(EMinusMinus { p1: t1, p2: t2 })),
                 Some(EMinusMinusBody(EMinusMinus { p1, p2 })),
             ) => self
-                .spatial_match(t1.unwrap(), p1.unwrap())
-                .and_then(|_| self.spatial_match(t2.unwrap(), p2.unwrap())),
+                .spatial_match(
+                    t1.expect("EMinusMinus.p1 (target)"),
+                    p1.expect("EMinusMinus.p1 (pattern)"),
+                )
+                .and_then(|_| {
+                    self.spatial_match(
+                        t2.expect("EMinusMinus.p2 (target)"),
+                        p2.expect("EMinusMinus.p2 (pattern)"),
+                    )
+                }),
 
             // ---- the arms below were absent, and their absence was silent ----
             //
@@ -860,7 +930,10 @@ impl SpatialMatcher<Match, Match> for SpatialMatcherContext {
         // println!("\nHit Match, Match");
 
         let result = self
-            .spatial_match(target.target.unwrap(), pattern.target.unwrap())
+            .spatial_match(
+                target.target.expect("Match.target (target)"),
+                pattern.target.expect("Match.target (pattern)"),
+            )
             .and_then(|_| self.fold_match(&target.cases, &pattern.cases, None));
 
         result.map(|_| ())
@@ -914,8 +987,12 @@ impl SpatialMatcher<GUnforgeable, GUnforgeable> for SpatialMatcherContext {
 impl SpatialMatcher<ReceiveBind, ReceiveBind> for SpatialMatcherContext {
     fn spatial_match(&mut self, target: ReceiveBind, pattern: ReceiveBind) -> Option<()> {
         // println!("\nHit ReceiveBind, ReceiveBind");
-        guard(target.patterns == pattern.patterns)
-            .and_then(|_| self.spatial_match(target.source.unwrap(), pattern.source.unwrap()))
+        guard(target.patterns == pattern.patterns).and_then(|_| {
+            self.spatial_match(
+                target.source.expect("ReceiveBind.source (target)"),
+                pattern.source.expect("ReceiveBind.source (pattern)"),
+            )
+        })
     }
 }
 
@@ -923,8 +1000,12 @@ impl SpatialMatcher<ReceiveBind, ReceiveBind> for SpatialMatcherContext {
 impl SpatialMatcher<MatchCase, MatchCase> for SpatialMatcherContext {
     fn spatial_match(&mut self, target: MatchCase, pattern: MatchCase) -> Option<()> {
         // println!("\nHit MatchCase, MatchCase");
-        guard(target.pattern == pattern.pattern)
-            .and_then(|_| self.spatial_match(target.source.unwrap(), pattern.source.unwrap()))
+        guard(target.pattern == pattern.pattern).and_then(|_| {
+            self.spatial_match(
+                target.source.expect("MatchCase.source (target)"),
+                pattern.source.expect("MatchCase.source (pattern)"),
+            )
+        })
     }
 }
 

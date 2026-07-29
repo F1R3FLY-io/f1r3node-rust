@@ -46,6 +46,38 @@
 //! must exclude *something*, and it must still find the sites a
 //! known-over-reaching rule loses.
 //!
+//! ## ★★ THE SECOND AXIS — shape, not depth (#127 / #136)
+//!
+//! Everything above is about **depth**: an unbounded writer, a bounded reader,
+//! and a ceiling in between. The same boundary has a second failure mode that
+//! no ceiling touches:
+//!
+//! > `EMinus { Par p1 = 1; }` is proto3, where every message field is optional
+//! > **on the wire**. `prost` returns `None` for an absent one — *without
+//! > error*. An absent required child is therefore not something `Par::decode`
+//! > REFUSES; it is something `Par::decode` **RETURNS**.
+//!
+//! So the depth rows below say what happens past the ceiling, and say nothing
+//! at all about a byte string that is comfortably inside it and still not a
+//! term. Measured (`rholang/tests/absent_required_child_reachability.rs`):
+//! **ten bytes**, accepted by `Par::decode`, and four independent consumers
+//! fault on it — `has_locally_free.rs` (94 sites), `spatial_matcher.rs` (55),
+//! `par_map_type_mapper.rs` (1), and the FFI rows below.
+//!
+//! ★ The disposition is settled once, for both surfaces, in
+//! `rholang/tests/spatial_matcher_disposition.rs`: an absent required child is
+//! an INTERNAL INVARIANT VIOLATION, not a decidable negative, so the sites
+//! assert (`.expect`) and the fix belongs at the boundary that admits foreign
+//! bytes. The per-variant gate there iterates the generated table, so a 37th
+//! variant fails until its absent-child behaviour is decided.
+//!
+//! ⚠ Reachability, which is what decides severity, came out **split**:
+//!
+//! | path | verdict |
+//! |---|---|
+//! | consensus `output_value` | bytes ARE delivered and decoded; the matcher never descends into them, because replay is TRACE-DRIVEN and the play-time target was constructed in-process — **latent**, with a positive control proving the harness live |
+//! | the FFI entry points | `SIGABRT`, non-unwinding, on ten bytes — **but no in-tree caller exists** |
+//!
 //! ## What a failure here means
 //!
 //! * **An undeclared site.** Somebody added a bounded read of a `Par`. Decide
@@ -276,7 +308,14 @@ const REGISTRY: &[Site] = &[
              but the refusal is a PANIC across an FFI boundary rather than an `Err` — \
              strictly worse than #129's failure mode. The caller supplies the channel \
              bytes, and nothing bounds what it encodes. Both are annotated \
-             \"FFI not used\" in situ; the row exists so that stops being a comment.",
+             \"FFI not used\" in situ; the row exists so that stops being a comment. \
+             ★ #136, MEASURED: the panic is NOT undefined behaviour on this toolchain — \
+             `extern \"C\"` runs the implicit non-unwinding shim, so it is a guaranteed \
+             SIGABRT that `catch_unwind` cannot intercept. Worse than a thread panic \
+             (the whole process dies, not one worker) and better-defined than UB. \
+             ⚠ NEITHER SIGNATURE CAN CARRY THE FAILURE: both return `*const u8` and \
+             already spend the null pointer on a legitimate outcome. Making them refuse \
+             is an ABI change, which is F1r3node's act, not this file's.",
     },
     Site {
         path: "rspace++/libs/rspace_rhotypes/src/lib.rs",
@@ -286,7 +325,28 @@ const REGISTRY: &[Site] = &[
         disposition: "The rspace FFI surface (`produce`/`consume`/`install`/`get_data` channel \
              and pattern arguments), every one `.unwrap()`. Same disposition as \
              `rholang/src/lib.rs`: a PANIC, not an `Err`, on bytes a caller encoded \
-             with no matching bound.",
+             with no matching bound. \
+             ★★ ONE OF THESE FIVE IS BOTH #136 AND #127 IN ONE FUNCTION: \
+             `spatial_match_result` (lib.rs:144-148) decodes TWO `Par`s and hands them \
+             straight to `SpatialMatcherContext::spatial_match_result`. It is the only \
+             production path in the workspace that gives the spatial matcher a \
+             wire-decoded target AND a wire-decoded pattern — every other route meets a \
+             pattern fixed by an earlier, honest match. MEASURED in \
+             `rspace++/libs/rspace_rhotypes/tests/ffi_absent_required_child.rs`: a \
+             10-byte `Par` that `Par::decode` ACCEPTS (an absent `EMinus.p1`) aborts the \
+             process with SIGABRT, with a well-formed control returning in the same run. \
+             ⚠ ITS SIGNATURE CANNOT CARRY THE FAILURE EITHER — `-> *const u8` already \
+             spends null on 'no match', so refusing through null would make a malformed \
+             term indistinguishable from a non-matching one, which is the #73-forbidden \
+             direction at the ABI level. \
+             ★ SEVERITY BOUND: no in-tree caller exists. Zero `.scala` files remain, \
+             nothing in the workspace dlopens these libraries, and the Rust node links \
+             `rholang` as an rlib and calls methods rather than these symbols. The \
+             header of that file still names 'the Scala JNA caller surface' and points \
+             at a `docs/sync-todo.md` that no longer exists. The symbols ARE still \
+             exported and still shipped by `scripts/build_rust_libraries*.sh`, so this \
+             is a live public ABI with no live consumer — which is a REMOVAL decision, \
+             and F1r3node's to take.",
     },
     Site {
         path: "rspace++/libs/rspace_rhotypes/src/lib.rs",
