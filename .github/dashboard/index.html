@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>F1R3FLY weekend soak benchmarks</title>
+<title>F1R3FLY soak benchmarks</title>
 <style>
   :root { color-scheme: light dark; }
   body {
@@ -13,27 +13,75 @@
     --surface-1: #fcfcfb; --surface-2: #f1f0ee;
     --text-primary: #0b0b0b; --text-secondary: #52514e; --text-muted: #8a887f;
     --grid: #e4e2dd; --series-1: #2a78d6; --series-2: #008300; --series-3: #e87ba4;
-    --good: #008300; --serious: #c81e1e;
+    --good: #008300; --serious: #c81e1e; --serious-bg: #fdeaea;
   }
   @media (prefers-color-scheme: dark) {
     :root:where(:not([data-theme="light"])) body {
       --surface-1: #1a1a19; --surface-2: #242423;
       --text-primary: #ffffff; --text-secondary: #c3c2b7; --text-muted: #8a887f;
       --grid: #33322f; --series-1: #3987e5; --series-2: #008300; --series-3: #d55181;
-      --good: #33a133; --serious: #f05252;
+      --good: #33a133; --serious: #f05252; --serious-bg: #3a1f1f;
     }
   }
   :root[data-theme="dark"] body {
     --surface-1: #1a1a19; --surface-2: #242423;
     --text-primary: #ffffff; --text-secondary: #c3c2b7; --text-muted: #8a887f;
     --grid: #33322f; --series-1: #3987e5; --series-2: #008300; --series-3: #d55181;
-    --good: #33a133; --serious: #f05252;
+    --good: #33a133; --serious: #f05252; --serious-bg: #3a1f1f;
   }
   h1 { font-size: 1.25rem; margin: 0 0 .25rem; }
   .sub { color: var(--text-secondary); margin: 0 0 1.25rem; }
-  .verdict { display: inline-flex; align-items: center; gap: .4rem; font-weight: 600;
-             padding: .2rem .6rem; border-radius: 999px; background: var(--surface-2); }
-  .verdict.pass { color: var(--good); } .verdict.regress { color: var(--serious); }
+
+  /* Tabs are a radio group, so switching needs no JS and the bar keeps working
+     even when a data fetch fails. The inputs live at body level rather than
+     inside the bar so the panels stay siblings of them — that is what lets the
+     buttons be positioned anywhere on the page. */
+  .tabs { position: absolute; opacity: 0; pointer-events: none; }
+  .tabbar { display: flex; flex-wrap: wrap; gap: .75rem; margin: 0 0 1.5rem; }
+  .tabbar label {
+    display: flex; flex-direction: column; gap: .15rem; min-width: 11rem;
+    padding: .8rem 1.1rem; cursor: pointer; user-select: none;
+    background: var(--surface-2); color: var(--text-secondary);
+    border: 1px solid var(--grid); border-radius: 10px;
+    box-shadow: 0 1px 2px rgba(0,0,0,.10), 0 3px 10px rgba(0,0,0,.07);
+    transition: transform .12s ease, box-shadow .12s ease, border-color .12s ease;
+  }
+  .tabbar label:hover {
+    color: var(--text-primary); transform: translateY(-2px);
+    box-shadow: 0 3px 6px rgba(0,0,0,.14), 0 8px 20px rgba(0,0,0,.11);
+  }
+  .tabbar label:active { transform: translateY(0); }
+  .tab-title { font-weight: 700; font-size: 1.02rem; color: var(--text-primary); }
+  .tab-hint { font-size: .82rem; color: var(--text-muted); }
+  .tab-status { font-size: .82rem; font-weight: 600; margin-top: .2rem; color: var(--text-muted); }
+  .tab-status.pass { color: var(--good); }
+  .tab-status.regress { color: var(--serious); }
+  /* The selected tab is raised and accented; without this the group reads as
+     four equal cards rather than a choice with one active member. */
+  #tab-weekend:checked ~ .tabbar label[for="tab-weekend"],
+  #tab-daily:checked ~ .tabbar label[for="tab-daily"] {
+    border-color: var(--series-1); background: var(--surface-1);
+    box-shadow: 0 0 0 1px var(--series-1), 0 4px 8px rgba(0,0,0,.16), 0 10px 24px rgba(0,0,0,.12);
+  }
+  #tab-weekend:focus-visible ~ .tabbar label[for="tab-weekend"],
+  #tab-daily:focus-visible ~ .tabbar label[for="tab-daily"] {
+    outline: 3px solid var(--series-1); outline-offset: 2px;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .tabbar label { transition: none; }
+    .tabbar label:hover { transform: none; }
+  }
+  .panel { display: none; }
+  #tab-weekend:checked ~ #panel-weekend,
+  #tab-daily:checked ~ #panel-daily { display: block; }
+
+  .panel-head { display: flex; flex-wrap: wrap; align-items: center; gap: .75rem; margin-bottom: 1rem; }
+  .panel-head .meta { color: var(--text-secondary); }
+  .failures { background: var(--serious-bg); border-left: 3px solid var(--serious);
+              border-radius: 4px; padding: .6rem .9rem; margin-bottom: 1.25rem; }
+  .failures strong { color: var(--serious); }
+  .failures ul { margin: .35rem 0 0; padding-left: 1.1rem; }
+
   .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 1.25rem; }
   figure { margin: 0; background: var(--surface-2); border-radius: 8px; padding: 1rem; }
   figcaption { font-weight: 600; margin-bottom: .25rem; }
@@ -44,13 +92,13 @@
   svg { display: block; width: 100%; height: auto; }
   .gridline { stroke: var(--grid); stroke-width: 1; }
   .axis-label { fill: var(--text-muted); font-size: 11px; }
-  .series-label { font-size: 11px; font-weight: 600; }
   .tooltip { position: fixed; pointer-events: none; background: var(--surface-1);
              border: 1px solid var(--grid); border-radius: 6px; padding: .4rem .6rem;
              font-size: 12px; box-shadow: 0 2px 8px rgba(0,0,0,.15); display: none; z-index: 10; }
   .tooltip b { display: block; }
+  .table-wrap { overflow-x: auto; }
   table { border-collapse: collapse; width: 100%; margin-top: 1.5rem; }
-  th, td { text-align: left; padding: .4rem .6rem; border-bottom: 1px solid var(--grid); }
+  th, td { text-align: left; padding: .4rem .6rem; border-bottom: 1px solid var(--grid); white-space: nowrap; }
   th { color: var(--text-secondary); font-weight: 600; }
   td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
   a { color: var(--series-1); }
@@ -58,38 +106,64 @@
 </style>
 </head>
 <body>
-<h1>Weekend soak benchmarks</h1>
-<p class="sub">60-hour merge-recovery soak, weekly (concludes Monday mornings) —
-  <span id="verdict-slot"></span>
-  <a href="data/latest-report.md">latest report</a> ·
-  <a href="data/history.json">raw data</a></p>
-<div class="grid" id="charts"></div>
-<div id="table-slot"></div>
+<input class="tabs" type="radio" name="soak-tab" id="tab-weekend" checked>
+<input class="tabs" type="radio" name="soak-tab" id="tab-daily">
+
+<div class="tabbar" role="group" aria-label="Soak series">
+  <label for="tab-weekend">
+    <span class="tab-title">Weekend</span>
+    <span class="tab-hint">60h · master</span>
+    <span class="tab-status" id="status-weekend">loading…</span>
+  </label>
+  <label for="tab-daily">
+    <span class="tab-title">Daily</span>
+    <span class="tab-hint">22h · dev</span>
+    <span class="tab-status" id="status-daily">loading…</span>
+  </label>
+</div>
+
+<h1>Merge-recovery soak benchmarks</h1>
+<p class="sub">Continuous soak of the merge-recovery suite against a live shard.</p>
+
+<div class="panel" id="panel-weekend">
+  <div class="panel-head">
+    <span class="meta">Friday 19:30 → Monday 07:30 Pacific. Fixed span every week, so the
+      numbers are the week-over-week baseline and gate releases.</span>
+  </div>
+  <div id="failures-weekend"></div>
+  <div class="grid" id="charts-weekend"></div>
+  <div class="table-wrap" id="table-weekend"></div>
+  <p class="sub" id="links-weekend"></p>
+</div>
+
+<div class="panel" id="panel-daily">
+  <div class="panel-head">
+    <span class="meta">Mon–Thu 19:30 Pacific, up to 22h. Skipped when nothing new landed,
+      and stops early once <code>dev</code> advances — so spans vary and these
+      numbers are signal, not a release gate.</span>
+  </div>
+  <div id="failures-daily"></div>
+  <div class="grid" id="charts-daily"></div>
+  <div class="table-wrap" id="table-daily"></div>
+  <p class="sub" id="links-daily"></p>
+</div>
+
 <div class="tooltip" id="tooltip"></div>
 <script>
 (async function () {
   const RUNS_URL = "https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/";
-  let history = [];
-  try { history = await (await fetch("data/history.json")).json(); } catch (e) {}
-  if (!Array.isArray(history)) history = [];
-  try {
-    const v = await (await fetch("data/latest-verdict.json")).json();
-    const el = document.getElementById("verdict-slot");
-    const pass = v.verdict === "pass";
-    el.innerHTML = '<span class="verdict ' + (pass ? "pass" : "regress") + '">' +
-      (pass ? "✓ pass" : "✕ regress") + "</span> ";
-  } catch (e) {}
-  if (history.length === 0) {
-    document.getElementById("charts").innerHTML =
-      '<p class="empty">No soak runs recorded yet — the first weekend run populates this page.</p>';
-    return;
-  }
+  const tooltip = document.getElementById("tooltip");
+
+  const SERIES = [
+    { key: "weekend", history: "data/history.json", verdict: "data/latest-verdict.json",
+      report: "data/latest-report.md",
+      empty: "No weekend soak runs recorded yet — the first 60h run populates this tab." },
+    { key: "daily", history: "data/history-daily.json", verdict: "data/latest-verdict-daily.json",
+      report: "data/latest-report-daily.md",
+      empty: "No daily soak runs recorded yet — the first nightly run populates this tab." },
+  ];
 
   const S = ["var(--series-1)", "var(--series-2)", "var(--series-3)"];
-  const dates = history.map(h => (h.run.date || "").slice(0, 10));
-  const g = (h, path) => path.reduce((o, k) => (o == null ? null : o[k]), h);
-
-  // Chart definitions: title, unit, series (fixed color by entity)
   const CHARTS = [
     { title: "Failure rate", unit: "failures / iteration", fmt: v => (v * 100).toFixed(1) + "%",
       series: [
@@ -113,99 +187,157 @@
       ] },
   ];
 
-  const W = 360, H = 180, PX = 44, PY = 18;
-  const chartsEl = document.getElementById("charts");
-  const tooltip = document.getElementById("tooltip");
+  const g = (h, path) => path.reduce((o, k) => (o == null ? null : o[k]), h);
 
-  for (const def of CHARTS) {
-    const seriesData = def.series.map(s => ({
-      name: s.name, c: s.c,
-      values: history.map(h => {
-        const v = s.deriv ? s.deriv(g(h, s.path)) : g(h, s.path);
-        return typeof v === "number" && isFinite(v) ? v : null;
-      }),
-    })).filter(s => s.values.some(v => v !== null));
-    const all = seriesData.flatMap(s => s.values).filter(v => v !== null);
-    if (all.length === 0) continue;
-    const max = Math.max(...all) * 1.1 || 1;
-
-    const x = i => history.length === 1 ? W / 2 : PX + (i * (W - PX - 8)) / (history.length - 1);
-    const y = v => H - PY - (v / max) * (H - 2 * PY);
-
-    let svg = "";
-    for (let t = 0; t <= 2; t++) {
-      const v = (max * t) / 2, yy = y(v);
-      svg += `<line class="gridline" x1="${PX}" y1="${yy}" x2="${W - 8}" y2="${yy}"/>` +
-             `<text class="axis-label" x="${PX - 5}" y="${yy + 3}" text-anchor="end">${def.fmt(v)}</text>`;
-    }
-    for (const s of seriesData) {
-      const pts = s.values.map((v, i) => v === null ? null : [x(i), y(v)]).filter(Boolean);
-      if (pts.length > 1) {
-        svg += `<polyline fill="none" stroke="${S[s.c]}" stroke-width="2" stroke-linejoin="round" ` +
-               `points="${pts.map(p => p.map(n => n.toFixed(1)).join(",")).join(" ")}"/>`;
-      }
-      for (const [px, py] of pts) {
-        svg += `<circle cx="${px.toFixed(1)}" cy="${py.toFixed(1)}" r="3.5" fill="${S[s.c]}" ` +
-               `stroke="var(--surface-2)" stroke-width="2"/>`;
-      }
-      const last = pts[pts.length - 1];
-      if (last && seriesData.length > 1) {
-        svg += `<text class="series-label" fill="${S[s.c]}" x="${Math.min(last[0] + 6, W - 4)}" ` +
-               `y="${last[1] - 6}" text-anchor="end">${s.name}</text>`;
-      }
-    }
-    dates.forEach((d, i) => {
-      if (history.length <= 6 || i % Math.ceil(history.length / 6) === 0 || i === history.length - 1) {
-        svg += `<text class="axis-label" x="${x(i)}" y="${H - 4}" text-anchor="middle">${d.slice(5)}</text>`;
-      }
-    });
-
-    const fig = document.createElement("figure");
-    const legend = seriesData.length > 1
-      ? '<div class="legend">' + seriesData.map(s =>
-          `<span><i class="swatch" style="background:${S[s.c]}"></i>${s.name}</span>`).join("") + "</div>"
-      : "";
-    fig.innerHTML = `<figcaption>${def.title} <span class="unit">${def.unit}</span></figcaption>` +
-      legend + `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${def.title} by week"></svg>`;
-    fig.querySelector("svg").innerHTML = svg;
-
-    const svgEl = fig.querySelector("svg");
-    svgEl.addEventListener("mousemove", ev => {
-      const rect = svgEl.getBoundingClientRect();
-      const mx = ((ev.clientX - rect.left) / rect.width) * W;
-      let best = 0, bestD = Infinity;
-      for (let i = 0; i < history.length; i++) {
-        const d = Math.abs(x(i) - mx);
-        if (d < bestD) { bestD = d; best = i; }
-      }
-      const rows = seriesData.map(s => s.values[best] === null ? "" :
-        `<span style="color:${S[s.c]}">●</span> ${s.name}: ${def.fmt(s.values[best])}<br>`).join("");
-      tooltip.innerHTML = `<b>${dates[best]}</b>${rows}`;
-      tooltip.style.display = "block";
-      tooltip.style.left = (ev.clientX + 14) + "px";
-      tooltip.style.top = (ev.clientY + 14) + "px";
-    });
-    svgEl.addEventListener("mouseleave", () => { tooltip.style.display = "none"; });
-    chartsEl.appendChild(fig);
+  async function loadJSON(url) {
+    try {
+      const r = await fetch(url);
+      if (!r.ok) return null;
+      return await r.json();
+    } catch (e) { return null; }
   }
 
-  // Table view (accessibility relief + per-run artifact links)
-  const rows = history.slice().reverse().map(h => {
-    const p = h.passive || {}, a = h.active || {};
-    const runLink = h.run.run_id && h.run.run_id !== "unknown"
-      ? `<a href="${RUNS_URL}${h.run.run_id}">${h.run.run_id}</a>` : "-";
-    const n = v => v == null ? "-" : (typeof v === "number" ? +v.toFixed(3) : v);
-    return `<tr><td>${(h.run.date || "").slice(0, 10)}</td><td><code>${(h.run.target_sha || "").slice(0, 8)}</code></td>` +
-      `<td class="num">${n(p.iterations)}</td><td class="num">${n(p.failure_rate)}</td>` +
-      `<td class="num">${n(p.iterations_per_hour)}</td><td class="num">${n(p.rss_peak_mb)}</td>` +
-      `<td class="num">${n(p.finalization_p95_ms)}</td><td class="num">${n(a.p95_ms)}</td>` +
-      `<td>${runLink}</td></tr>`;
-  }).join("");
-  document.getElementById("table-slot").innerHTML =
-    `<table><thead><tr><th>week</th><th>sha</th><th class="num">iters</th>` +
-    `<th class="num">fail rate</th><th class="num">iters/h</th><th class="num">RSS MB</th>` +
-    `<th class="num">final p95 ms</th><th class="num">bench p95 ms</th><th>run</th></tr></thead>` +
-    `<tbody>${rows}</tbody></table>`;
+  // The status lives on the tab button, not inside the panel, so both series'
+  // health is legible without clicking through — the whole point of the split.
+  function renderStatus(el, verdict, runs) {
+    let cls = "", text;
+    if (runs === 0) {
+      text = "no runs yet";
+    } else if (!verdict || typeof verdict.verdict !== "string") {
+      text = "no verdict yet";
+    } else if (verdict.verdict === "pass") {
+      cls = "pass"; text = "✓ pass";
+    } else {
+      cls = "regress";
+      const n = Array.isArray(verdict.failures) ? verdict.failures.length : 0;
+      text = "✕ regress" + (n ? ` · ${n} issue${n > 1 ? "s" : ""}` : "");
+    }
+    el.className = "tab-status" + (cls ? " " + cls : "");
+    el.textContent = text;
+  }
+
+  // Rendered only when non-empty, so the strip's presence is itself the signal.
+  function renderFailures(el, verdict) {
+    const f = (verdict && Array.isArray(verdict.failures)) ? verdict.failures : [];
+    if (f.length === 0) { el.innerHTML = ""; return; }
+    el.innerHTML = '<div class="failures"><strong>Latest run regressed</strong><ul>' +
+      f.map(s => "<li>" + String(s).replace(/[<&]/g, c => c === "<" ? "&lt;" : "&amp;") + "</li>").join("") +
+      "</ul></div>";
+  }
+
+  function renderCharts(container, history) {
+    const dates = history.map(h => (h.run.date || "").slice(0, 10));
+    const W = 360, H = 180, PX = 44, PY = 18;
+
+    for (const def of CHARTS) {
+      const seriesData = def.series.map(s => ({
+        name: s.name, c: s.c,
+        values: history.map(h => {
+          const v = s.deriv ? s.deriv(g(h, s.path)) : g(h, s.path);
+          return typeof v === "number" && isFinite(v) ? v : null;
+        }),
+      })).filter(s => s.values.some(v => v !== null));
+      const all = seriesData.flatMap(s => s.values).filter(v => v !== null);
+      if (all.length === 0) continue;
+      const max = Math.max(...all) * 1.1 || 1;
+
+      const x = i => history.length === 1 ? W / 2 : PX + (i * (W - PX - 8)) / (history.length - 1);
+      const y = v => H - PY - (v / max) * (H - 2 * PY);
+
+      let svg = "";
+      for (let t = 0; t <= 2; t++) {
+        const v = (max * t) / 2, yy = y(v);
+        svg += `<line class="gridline" x1="${PX}" y1="${yy}" x2="${W - 8}" y2="${yy}"/>` +
+               `<text class="axis-label" x="${PX - 5}" y="${yy + 3}" text-anchor="end">${def.fmt(v)}</text>`;
+      }
+      for (const s of seriesData) {
+        const pts = s.values.map((v, i) => v === null ? null : [x(i), y(v)]).filter(Boolean);
+        if (pts.length > 1) {
+          svg += `<polyline fill="none" stroke="${S[s.c]}" stroke-width="2" stroke-linejoin="round" ` +
+                 `points="${pts.map(p => p.map(n => n.toFixed(1)).join(",")).join(" ")}"/>`;
+        }
+        for (const [px, py] of pts) {
+          svg += `<circle cx="${px.toFixed(1)}" cy="${py.toFixed(1)}" r="3.5" fill="${S[s.c]}" ` +
+                 `stroke="var(--surface-2)" stroke-width="2"/>`;
+        }
+      }
+      // Tick labels are centred on their point, so the first and last would
+      // overflow the viewBox and render clipped. Anchor the edges inward.
+      dates.forEach((d, i) => {
+        if (history.length <= 6 || i % Math.ceil(history.length / 6) === 0 || i === history.length - 1) {
+          const anchor = i === 0 ? "start" : (i === history.length - 1 ? "end" : "middle");
+          svg += `<text class="axis-label" x="${x(i)}" y="${H - 4}" text-anchor="${anchor}">${d.slice(5)}</text>`;
+        }
+      });
+
+      const fig = document.createElement("figure");
+      const legend = seriesData.length > 1
+        ? '<div class="legend">' + seriesData.map(s =>
+            `<span><i class="swatch" style="background:${S[s.c]}"></i>${s.name}</span>`).join("") + "</div>"
+        : "";
+      fig.innerHTML = `<figcaption>${def.title} <span class="unit">${def.unit}</span></figcaption>` +
+        legend + `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${def.title} over time"></svg>`;
+      fig.querySelector("svg").innerHTML = svg;
+
+      const svgEl = fig.querySelector("svg");
+      svgEl.addEventListener("mousemove", ev => {
+        const rect = svgEl.getBoundingClientRect();
+        const mx = ((ev.clientX - rect.left) / rect.width) * W;
+        let best = 0, bestD = Infinity;
+        for (let i = 0; i < history.length; i++) {
+          const d = Math.abs(x(i) - mx);
+          if (d < bestD) { bestD = d; best = i; }
+        }
+        const rows = seriesData.map(s => s.values[best] === null ? "" :
+          `<span style="color:${S[s.c]}">●</span> ${s.name}: ${def.fmt(s.values[best])}<br>`).join("");
+        tooltip.innerHTML = `<b>${dates[best]}</b>${rows}`;
+        tooltip.style.display = "block";
+        tooltip.style.left = (ev.clientX + 14) + "px";
+        tooltip.style.top = (ev.clientY + 14) + "px";
+      });
+      svgEl.addEventListener("mouseleave", () => { tooltip.style.display = "none"; });
+      container.appendChild(fig);
+    }
+  }
+
+  function renderTable(el, history) {
+    const rows = history.slice().reverse().map(h => {
+      const p = h.passive || {}, a = h.active || {};
+      const runLink = h.run.run_id && h.run.run_id !== "unknown"
+        ? `<a href="${RUNS_URL}${h.run.run_id}">log</a>` : "-";
+      const n = v => v == null ? "-" : (typeof v === "number" ? +v.toFixed(3) : v);
+      return `<tr><td>${(h.run.date || "").slice(0, 10)}</td><td><code>${(h.run.target_sha || "").slice(0, 8)}</code></td>` +
+        `<td class="num">${n(p.iterations)}</td><td class="num">${n(p.failure_rate)}</td>` +
+        `<td class="num">${n(p.iterations_per_hour)}</td><td class="num">${n(p.rss_peak_mb)}</td>` +
+        `<td class="num">${n(p.finalization_p95_ms)}</td><td class="num">${n(a && a.p95_ms)}</td>` +
+        `<td>${runLink}</td></tr>`;
+    }).join("");
+    el.innerHTML =
+      `<table><thead><tr><th>date</th><th>sha</th><th class="num">iters</th>` +
+      `<th class="num">fail rate</th><th class="num">iters/h</th><th class="num">RSS MB</th>` +
+      `<th class="num">final p95 ms</th><th class="num">bench p95 ms</th><th>run</th></tr></thead>` +
+      `<tbody>${rows}</tbody></table>`;
+  }
+
+  for (const def of SERIES) {
+    const [historyRaw, verdict] = await Promise.all([
+      loadJSON(def.history), loadJSON(def.verdict),
+    ]);
+    const history = Array.isArray(historyRaw) ? historyRaw : [];
+
+    renderStatus(document.getElementById("status-" + def.key), verdict, history.length);
+    renderFailures(document.getElementById("failures-" + def.key), verdict);
+    document.getElementById("links-" + def.key).innerHTML =
+      `<a href="${def.report}">latest report</a> · <a href="${def.history}">raw data</a>`;
+
+    if (history.length === 0) {
+      document.getElementById("charts-" + def.key).innerHTML =
+        `<p class="empty">${def.empty}</p>`;
+      continue;
+    }
+    renderCharts(document.getElementById("charts-" + def.key), history);
+    renderTable(document.getElementById("table-" + def.key), history);
+  }
 })();
 </script>
 </body>
