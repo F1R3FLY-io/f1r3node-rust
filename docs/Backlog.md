@@ -41,7 +41,7 @@ title: "Abstract provisioning layer so testbed can run on AWS or GCP, not just O
 category: feature_idea
 priority: p3
 added_at: 2026-04-13
-related_epoch: EPOCH-009
+related_epic: EPIC-009
 ---
 ```
 
@@ -56,7 +56,7 @@ related_epoch: EPOCH-009
 
 **When Unblocked:** After a second concrete deployment target is requested (e.g. user explicitly wants AWS for a production benchmark). Premature to abstract against one known provider only.
 
-**Related work:** EPOCH-009 establishes the OCI implementation that this would generalize. `vps-*` Justfile prefix is already chosen to outlive OCI-only.
+**Related work:** EPIC-009 establishes the OCI implementation that this would generalize. `vps-*` Justfile prefix is already chosen to outlive OCI-only.
 
 ---
 
@@ -69,7 +69,7 @@ title: "Inter-shard consensus (cross-shard bridge between two independent shards
 category: feature_idea
 priority: p3
 added_at: 2026-04-13
-related_epoch: EPOCH-009
+related_epic: EPIC-009
 ---
 ```
 
@@ -92,9 +92,9 @@ related_epoch: EPOCH-009
 5. Multi-shard genesis ceremony + configuration schema (~50 lines)
 6. Integration tests for multi-shard deployments (~400 lines)
 
-**When Unblocked:** Requires design doc + architectural review. Not ready for promotion to active epoch until the hierarchical-shard model is fully specified and the bridge protocol has a reviewed spec.
+**When Unblocked:** Requires design doc + architectural review. Not ready for promotion to active epic until the hierarchical-shard model is fully specified and the bridge protocol has a reviewed spec.
 
-**Related work:** EPOCH-009 stands up a **single-shard** distributed testbed on OCI. If BACKLOG-FI-001 is promoted, the testbed from EPOCH-009 would extend naturally to a 4-VPS multi-shard topology.
+**Related work:** EPIC-009 stands up a **single-shard** distributed testbed on OCI. If BACKLOG-FI-001 is promoted, the testbed from EPIC-009 would extend naturally to a 4-VPS multi-shard topology.
 
 ---
 
@@ -130,7 +130,7 @@ expected_resolution: "When system-integration updates services.yml to point to f
 
 When a backlog item is ready for active development:
 
-1. Create an epoch in `docs/ToDos.md` based on the backlog item
+1. Create an epic in `docs/ToDos.md` based on the backlog item
 2. Create or link a user story in `docs/UserStories.md` if needed
 3. Remove the item from this backlog (or mark as `promoted: true`)
 4. Add a note referencing the original backlog ID

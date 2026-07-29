@@ -374,6 +374,14 @@ impl ConfigMapper<Options> for NodeConf {
                 &mut self.casper.heartbeat_conf.advanced.deploy_recovery_max_lag,
                 run.heartbeat_advanced_deploy_recovery_max_lag,
             );
+            Self::try_override_value(
+                &mut self
+                    .casper
+                    .heartbeat_conf
+                    .advanced
+                    .empty_frontier_max_unfinalized_blocks,
+                run.heartbeat_advanced_empty_frontier_max_unfinalized_blocks,
+            );
         }
     }
 
@@ -498,6 +506,7 @@ mod tests {
         "--heartbeat-advanced-frontier-chase-max-lag=111",
         "--heartbeat-advanced-pending-deploy-max-lag=222",
         "--heartbeat-advanced-deploy-recovery-max-lag=333",
+        "--heartbeat-advanced-empty-frontier-max-unfinalized-blocks=444",
         "--synchrony-finalized-baseline-enabled=false",
         "--synchrony-finalized-baseline-max-distance=666666"
         ];
@@ -543,13 +552,14 @@ mod tests {
 
     #[test]
     fn test_parse_args_negative_advanced_lag_rejected() {
-        // The three advanced lag-cap flags use a value_parser that
+        // The advanced lag-cap flags use a value_parser that
         // rejects negative integers; a negative cap would silently
         // disable the corresponding code path in the proposer.
         for flag in &[
             "--heartbeat-advanced-frontier-chase-max-lag",
             "--heartbeat-advanced-pending-deploy-max-lag",
             "--heartbeat-advanced-deploy-recovery-max-lag",
+            "--heartbeat-advanced-empty-frontier-max-unfinalized-blocks",
         ] {
             let arg = format!("{flag}=-1");
             let argv = vec!["rnode", "run", &arg];
@@ -676,6 +686,7 @@ mod tests {
                 heartbeat_advanced_frontier_chase_max_lag: Some(111),
                 heartbeat_advanced_pending_deploy_max_lag: Some(222),
                 heartbeat_advanced_deploy_recovery_max_lag: Some(333),
+                heartbeat_advanced_empty_frontier_max_unfinalized_blocks: Some(444),
                 synchrony_finalized_baseline_enabled: Some(false),
                 synchrony_finalized_baseline_max_distance: Some(666666),
             })),
@@ -1056,6 +1067,14 @@ mod tests {
                 .advanced
                 .deploy_recovery_max_lag,
             333
+        );
+        assert_eq!(
+            default_config
+                .casper
+                .heartbeat_conf
+                .advanced
+                .empty_frontier_max_unfinalized_blocks,
+            444
         );
 
         // Round robin dispatcher fields

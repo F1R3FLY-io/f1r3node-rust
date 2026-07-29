@@ -97,6 +97,33 @@ Three crates have `build.rs` for protobuf code generation:
 - `rust-toolchain.toml` — nightly channel pin
 - `Cross.toml` — cross-compilation for amd64/arm64
 
+### Recommended Claude Code local settings
+Add to `.claude/settings.local.json` (personal, not committed) when working
+in this repo with Claude Code:
+
+```json
+{
+  "fileCheckpointingEnabled": false,
+  "env": {
+    "BASH_DEFAULT_TIMEOUT_MS": "1200000",
+    "BASH_MAX_TIMEOUT_MS": "1800000"
+  }
+}
+```
+
+- `fileCheckpointingEnabled: false` — Claude Code's checkpointing/rewind
+  feature runs `git stash` + `git reset --hard` against the workspace repo
+  around tool events, taking real `.git/index.lock` locks that collide with
+  concurrent git commands ("Unable to create index.lock"; see
+  anthropics/claude-code#68315). Disabling it trades away `/rewind` file
+  restore in this repo.
+- Bash timeouts raised to 20/30 min — the pre-push hook runs the full
+  release test suite for all 11 crates (~9 min, longer on cold caches),
+  which exceeds the default 10-minute window and gets a `git push` killed
+  mid-gate when run through Claude Code.
+
+Both settings take effect at the next session start.
+
 ## Network Ports
 | Port | Service |
 |------|---------|
@@ -153,9 +180,11 @@ Three crates have `build.rs` for protobuf code generation:
 - Keep commit messages clean and professional
 
 ### Branch Strategy
-- `main` — stable releases
-- `master` — current working branch
-- Feature branches for development
+- `master` — default branch and release line; maintainers promote `dev` → `master`
+- `dev` — integration branch; feature and fix PRs target this
+- Feature branches (`feature/`, `fix/`, `docs/`, `perf/`, `chore/`) branch from and target `dev`
+- `hotfix/` branches from and target `master`, then `master` is merged back into `dev`
+- There is no `main` branch, and `staging` is deprecated (fully contained in `dev`)
 
 ## Relationship to f1r3node
 This repo was extracted from `F1R3FLY-io/f1r3fly` (`rust/dev` branch). Key differences:
@@ -175,7 +204,7 @@ This repo was extracted from `F1R3FLY-io/f1r3fly` (`rust/dev` branch). Key diffe
 | Document | Purpose | Location |
 |----------|---------|----------|
 | User Stories | Business needs and acceptance criteria | `docs/UserStories.md` |
-| Tasks/Epochs | Implementation tracking | `docs/ToDos.md` |
+| Tasks/Epics | Implementation tracking | `docs/ToDos.md` |
 | Completed Work | Historical reference | `docs/CompletedTasks.md` |
 | Backlog | Deferred items | `docs/Backlog.md` |
 | Work Logs | Session progress | `docs/work-logs/*.md` |
@@ -262,8 +291,8 @@ This applies to all slash commands and scripts that create configuration files.
 #### Task Management
 - `/nextTask` - Find and select next task to work on
 - `/implement` - Begin implementation of a task
-- `/epoch-review` - Preview and summarize epochs
-- `/epoch-hygiene` - Archive completed epochs
+- `/epic-review` - Preview and summarize epics
+- `/epic-hygiene` - Archive completed epics
 
 #### Workspace Sync
 - `/harmonize` - Sync workspace policies into this repo

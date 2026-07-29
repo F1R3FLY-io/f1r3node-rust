@@ -7,9 +7,9 @@ mr_status:
   target_branch: master
 ---
 
-# Tasks and Epochs
+# Tasks and Epics
 
-This document tracks implementation work through **epochs** (logical groupings of related tasks).
+This document tracks implementation work through **epics** (logical groupings of related tasks).
 
 **Document Structure**
 - Active work: This file (`docs/ToDos.md`)
@@ -43,17 +43,17 @@ mr_status:
 
 ---
 
-## Active Epochs
+## Active Epics
 
-<!-- Epochs ordered by priority. EPOCH-001/002 are system-integration alignment (US-001). EPOCH-003-008 are migration (US-002). -->
+<!-- Epics ordered by priority. EPIC-001/002 are system-integration alignment (US-001). EPIC-003-008 are migration (US-002). -->
 
 ---
 
-### EPOCH-001: System-Integration Alignment
+### EPIC-001: System-Integration Alignment
 
 ```yaml
 ---
-epoch_id: EPOCH-001
+epic_id: EPIC-001
 title: "System-Integration Alignment"
 status: in_progress
 priority: p1
@@ -88,7 +88,7 @@ tasks:
   - id: TASK-001-4
     title: "Verify shard starts with updated genesis and network config"
     status: complete
-    claimed_by: claude-session-epoch009
+    claimed_by: claude-session-epic009
     completed_at: 2026-04-13T20:55:00Z
     blocked_by: []
     acceptance:
@@ -116,11 +116,11 @@ tasks:
 
 ---
 
-### EPOCH-002: Separate Monitoring from Shard Compose
+### EPIC-002: Separate Monitoring from Shard Compose
 
 ```yaml
 ---
-epoch_id: EPOCH-002
+epic_id: EPIC-002
 title: "Separate Monitoring from Shard Compose"
 status: pending
 priority: p2
@@ -133,7 +133,7 @@ tasks:
   - id: TASK-002-1
     title: "Extract Prometheus and Grafana into docker/monitoring.yml"
     status: complete
-    claimed_by: claude-session-epoch009
+    claimed_by: claude-session-epic009
     completed_at: 2026-04-13T21:35:00Z
     acceptance:
       - "docker/monitoring.yml contains prometheus and grafana services"
@@ -155,11 +155,11 @@ tasks:
 
 ---
 
-### EPOCH-003: Merge Critical PRs into f1r3node
+### EPIC-003: Merge Critical PRs into f1r3node
 
 ```yaml
 ---
-epoch_id: EPOCH-003
+epic_id: EPIC-003
 title: "Merge Critical PRs into f1r3node"
 status: pending
 priority: p0
@@ -170,7 +170,7 @@ claimed_by: null
 claimed_at: null
 external: true
 external_repo: F1R3FLY-io/f1r3node
-coordination_note: "This epoch is executed by the agent in f1r3node. Track progress via /tmp/migrationPlan.md phase_1_critical_prs status."
+coordination_note: "This epic is executed by the agent in f1r3node. Track progress via /tmp/migrationPlan.md phase_1_critical_prs status."
 tasks:
   - id: TASK-003-1
     title: "Verify new_parser branch status"
@@ -210,27 +210,27 @@ tasks:
 
 **Scope:**
 - Included: Merging blocking and ready PRs into f1r3node rust/dev
-- Excluded: Any work in f1r3node-rust (that starts in EPOCH-004)
+- Excluded: Any work in f1r3node-rust (that starts in EPIC-004)
 
 **Notes:**
 - The 11-PR Reified RSpaces chain has a sequential dependency — each PR targets the previous one
 - Chain base (#328) depends on `new_parser` branch which depends on `rholang-rs#83`
-- Monitor `/tmp/migrationPlan.md` for `phase_1_critical_prs.status` to know when to start EPOCH-004
+- Monitor `/tmp/migrationPlan.md` for `phase_1_critical_prs.status` to know when to start EPIC-004
 
 ---
 
-### EPOCH-004: Code Sync to f1r3node-rust
+### EPIC-004: Code Sync to f1r3node-rust
 
 ```yaml
 ---
-epoch_id: EPOCH-004
+epic_id: EPIC-004
 title: "Code Sync to f1r3node-rust"
 status: in_progress
 priority: p0
 user_story: US-002
-blocked_by: [EPOCH-003]
+blocked_by: [EPIC-003]
 created_at: 2026-04-09
-claimed_by: claude-session-epoch004
+claimed_by: claude-session-epic004
 claimed_at: 2026-04-17T19:19:55Z
 source_branch: rust/staging
 source_head: fb59611fbf2be202a6d6450850de1435c9dec7a4
@@ -238,7 +238,7 @@ tasks:
   - id: TASK-004-1
     title: "Sync Rust workspace crates from f1r3node rust/staging"
     status: review
-    claimed_by: claude-session-epoch004
+    claimed_by: claude-session-epic004
     claimed_at: 2026-04-17T19:19:55Z
     completed_at: 2026-04-29T18:50:45Z
     notes:
@@ -307,26 +307,26 @@ tasks:
 
 **Scope:**
 - Included: All Rust crates, CI/CD, Docker, scripts, local dev config, version tagging
-- Excluded: Issue migration (EPOCH-005), external repo updates (EPOCH-006)
+- Excluded: Issue migration (EPIC-005), external repo updates (EPIC-006)
 
 **Notes:**
-- The code delta is ~4 releases (v0.4.9-v0.4.11) plus the critical PRs from EPOCH-003
+- The code delta is ~4 releases (v0.4.9-v0.4.11) plus the critical PRs from EPIC-003
 - Docker image renamed from `f1r3fly-rust-node` to `f1r3fly-rust`
 - Version drops the `rust-` tag prefix (no longer needed in a Rust-only repo)
 - Run tests per-crate to avoid LMDB lock contention (see commit f2b4b5f)
 
 ---
 
-### EPOCH-005: Issue Migration
+### EPIC-005: Issue Migration
 
 ```yaml
 ---
-epoch_id: EPOCH-005
+epic_id: EPIC-005
 title: "Issue Migration"
 status: complete
 priority: p1
 user_story: US-002
-blocked_by: [EPOCH-004]
+blocked_by: [EPIC-004]
 created_at: 2026-04-09
 claimed_by: claude-session-migrate
 claimed_at: 2026-04-17T19:35:00Z
@@ -369,16 +369,16 @@ tasks:
 
 ---
 
-### EPOCH-006: External Repo Updates
+### EPIC-006: External Repo Updates
 
 ```yaml
 ---
-epoch_id: EPOCH-006
+epic_id: EPIC-006
 title: "External Repo Updates"
 status: pending
 priority: p1
 user_story: US-002
-blocked_by: [EPOCH-004]
+blocked_by: [EPIC-004]
 created_at: 2026-04-09
 claimed_by: null
 claimed_at: null
@@ -416,16 +416,16 @@ tasks:
 
 ---
 
-### EPOCH-007: PR Cleanup & Redirect
+### EPIC-007: PR Cleanup & Redirect
 
 ```yaml
 ---
-epoch_id: EPOCH-007
+epic_id: EPIC-007
 title: "PR Cleanup & Redirect"
 status: pending
 priority: p1
 user_story: US-002
-blocked_by: [EPOCH-004]
+blocked_by: [EPIC-004]
 created_at: 2026-04-09
 claimed_by: null
 claimed_at: null
@@ -452,20 +452,20 @@ tasks:
 
 **Scope:**
 - Included: Commenting and closing PRs on f1r3node
-- Excluded: Tier 1/2 PRs (handled in EPOCH-003)
+- Excluded: Tier 1/2 PRs (handled in EPIC-003)
 
 ---
 
-### EPOCH-008: Deprecation & Archive
+### EPIC-008: Deprecation & Archive
 
 ```yaml
 ---
-epoch_id: EPOCH-008
+epic_id: EPIC-008
 title: "Deprecation & Archive"
 status: pending
 priority: p2
 user_story: US-002
-blocked_by: [EPOCH-005, EPOCH-006, EPOCH-007]
+blocked_by: [EPIC-005, EPIC-006, EPIC-007]
 created_at: 2026-04-09
 claimed_by: null
 claimed_at: null
@@ -515,24 +515,24 @@ tasks:
 
 ---
 
-### EPOCH-009: Distributed OCI Testbed for Latency Benchmarking
+### EPIC-009: Distributed OCI Testbed for Latency Benchmarking
 
 ```yaml
 ---
-epoch_id: EPOCH-009
+epic_id: EPIC-009
 title: "Distributed OCI Testbed for Latency Benchmarking"
 status: in_progress
 priority: p2
 user_story: US-003
 blocked_by: []
 created_at: 2026-04-13
-claimed_by: claude-session-epoch009
+claimed_by: claude-session-epic009
 claimed_at: 2026-04-13T19:00:00Z
 tasks:
   - id: TASK-009-1
     title: "OCI VPS provisioning scripts"
     status: review
-    claimed_by: claude-session-epoch009
+    claimed_by: claude-session-epic009
     completed_at: 2026-04-13T19:05:00Z
     acceptance:
       - "scripts/remote/oci-provision.sh creates a dedicated f1r3node-rust-testbed-vcn in us-sanjose-1"
@@ -548,7 +548,7 @@ tasks:
   - id: TASK-009-2
     title: "Image distribution via docker save + scp + load"
     status: review
-    claimed_by: claude-session-epoch009
+    claimed_by: claude-session-epic009
     blocked_by: [TASK-009-1]
     completed_at: 2026-04-13T19:10:00Z
     acceptance:
@@ -563,7 +563,7 @@ tasks:
   - id: TASK-009-3
     title: "Distributed compose file split"
     status: review
-    claimed_by: claude-session-epoch009
+    claimed_by: claude-session-epic009
     claimed_at: 2026-04-13T19:15:00Z
     completed_at: 2026-04-13T19:30:00Z
     blocked_by: [TASK-009-1]
@@ -581,7 +581,7 @@ tasks:
   - id: TASK-009-4
     title: "Justfile recipes for end-to-end orchestration"
     status: review
-    claimed_by: claude-session-epoch009
+    claimed_by: claude-session-epic009
     claimed_at: 2026-04-13T19:40:00Z
     completed_at: 2026-04-13T19:58:00Z
     blocked_by: [TASK-009-1, TASK-009-2, TASK-009-3]
@@ -601,7 +601,7 @@ tasks:
   - id: TASK-009-5
     title: "Port latency benchmark (Scala -> native grpcurl/curl)"
     status: review
-    claimed_by: claude-session-epoch009
+    claimed_by: claude-session-epic009
     claimed_at: 2026-04-13T21:19:00Z
     completed_at: 2026-04-13T21:25:00Z
     blocked_by: [TASK-009-4]
@@ -628,21 +628,21 @@ tasks:
 - Included: OCI provisioning, image distribution, distributed compose, deploy/teardown automation, latency benchmark port
 - Excluded: Inter-shard consensus (Option B, ~1,500+ LOC of consensus work — see BACKLOG-FI-001)
 - Excluded: Non-OCI providers (Tata cloud, etc.)
-- Excluded: Throughput, chaos, or whiteblock-plan benchmarks (future epochs)
+- Excluded: Throughput, chaos, or whiteblock-plan benchmarks (future epics)
 - Excluded: Production-grade secrets management (using `scp` for TLS keys for now)
 
 **Notes:**
 - Uses arm64 (VM.Standard.A1.Flex) for free-tier eligibility and production representativeness
-- Image distribution intentionally uses `docker save/load` rather than registry pull, to keep this epoch self-contained until the OCIR CI switch lands
+- Image distribution intentionally uses `docker save/load` rather than registry pull, to keep this epic self-contained until the OCIR CI switch lands
 - TLS keys for bootstrap are shipped via `scp` (acceptable for a throwaway testbed)
 
 ---
 
-### EPOCH-010: Soak Benchmark Metrics & Reporting
+### EPIC-010: Soak Benchmark Metrics & Reporting
 
 ```yaml
 ---
-epoch_id: EPOCH-010
+epic_id: EPIC-010
 title: "Soak Benchmark Metrics & Reporting"
 status: in_progress
 priority: p2
@@ -699,7 +699,7 @@ tasks:
 ---
 ```
 
-**Context:** Implements US-004 plus the delivery/reporting design agreed 2026-07-15: the 72h soak concludes Mondays (weekly cadence); metrics are published to a GitHub Pages trend dashboard (pull) and a plain-text ONS email (push); regressions gate releases. Full design rationale, alternatives considered (email-only, Discussions, bot-committed reports), and open questions are in `docs/work-logs/task-EPOCH-010-2026-07-15T20-57Z.md`.
+**Context:** Implements US-004 plus the delivery/reporting design agreed 2026-07-15: the 72h soak concludes Mondays (weekly cadence); metrics are published to a GitHub Pages trend dashboard (pull) and a plain-text ONS email (push); regressions gate releases. Full design rationale, alternatives considered (email-only, Discussions, bot-committed reports), and open questions are in `docs/work-logs/task-EPIC-010-2026-07-15T20-57Z.md`.
 
 **Scope:**
 - Included: metrics emission, resource sampling, compare+gate, Pages dashboard, ONS email
@@ -708,13 +708,13 @@ tasks:
 
 ---
 
-## Epoch Dependency Graph
+## Epic Dependency Graph
 
 ```
-EPOCH-001 (system-integration alignment)    EPOCH-003 (f1r3node: merge critical PRs)
-EPOCH-002 (monitoring separation)               |
+EPIC-001 (system-integration alignment)    EPIC-003 (f1r3node: merge critical PRs)
+EPIC-002 (monitoring separation)               |
                                                  v
-                                            EPOCH-004 (f1r3node-rust: code sync)
+                                            EPIC-004 (f1r3node-rust: code sync)
                                                  |
                                             +----+----+----+
                                             |    |    |    |
@@ -725,7 +725,7 @@ EPOCH-002 (monitoring separation)               |
                                             +----+----+
                                                  |
                                                  v
-                                            EPOCH-008
+                                            EPIC-008
                                          (deprecation/archive)
 ```
 
@@ -750,7 +750,7 @@ EPOCH-002 (monitoring separation)               |
 3. **Implement**: Use `/implement` to execute with full context
 4. **Complete**: Mark `status: complete` when acceptance criteria met
 5. **Signal**: Update completion signals in `/tmp/migrationPlan.md`
-6. **Move epoch**: When all tasks complete, move epoch to `docs/CompletedTasks.md`
+6. **Move epic**: When all tasks complete, move epic to `docs/CompletedTasks.md`
 
 ---
 
