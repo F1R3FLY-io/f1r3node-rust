@@ -65,6 +65,8 @@
 //! above measured so that ordinary codegen drift does not flake while a real
 //! (order-of-magnitude) regression still trips.
 
+use std::collections::BTreeMap;
+
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::{EList, Expr, New, Par, Receive, ReceiveBind};
 use models::rust::rholang::par_children::{dismantle, dismantle_all};
@@ -73,15 +75,14 @@ use models::rust::rholang::sorter::score_tree::{ScoreAtom, ScoredTerm, Tree};
 use models::rust::rholang::sorter::sortable::Sortable;
 use models::rust::utils::new_gint_par;
 use rholang::rust::interpreter::accounting::costs::Cost;
-use rholang::rust::interpreter::compiler::compiler::Compiler;
 use rholang::rust::interpreter::accounting::{RuntimeBudget, SignedProcess};
+use rholang::rust::interpreter::compiler::compiler::Compiler;
 use rholang::rust::interpreter::env::Env;
 use rholang::rust::interpreter::matcher::spatial_matcher::SpatialMatcherContext;
 use rholang::rust::interpreter::metering::MeteredMachine;
 use rholang::rust::interpreter::pretty_printer::PrettyPrinter;
 use rholang::rust::interpreter::substitute::{Substitute, SubstituteTrait};
 use rspace_plus_plus::rspace::serializers::cold_store_decode::ColdStoreDecode;
-use std::collections::BTreeMap;
 
 // ---------------------------------------------------------------------------
 // term construction — ITERATIVE, so the builder itself is never the constraint
@@ -103,7 +104,21 @@ fn elist(ps: Vec<Par>) -> Par {
 
 /// `[[[…[0]…]]]` with `depth` bracket levels — the reported shape.
 fn nested_list(depth: usize) -> Par {
-    let mut p = new_gint_par(0, vec![], false);
+    nested_list_leaf(depth, 0)
+}
+
+/// [`nested_list`] with the LEAF integer chosen.
+///
+/// ★ Exists for the comparison subjects (`eq`, `ord`, `hash`). Two terms that
+/// differ only at the deepest level cannot let a short-circuiting comparator
+/// stop early: `<Par as PartialEq>::eq` returns `false` at the FIRST unequal
+/// field, so a probe built from two terms that differ at level 0 would measure
+/// one frame and report a comfortable zero for a Θ(depth) traversal. Differing
+/// only at the leaf forces the full descent, and the subject bodies assert the
+/// verdict (`Equal` / `Less` / "hashes differ") that only a full descent can
+/// produce.
+fn nested_list_leaf(depth: usize, leaf: i64) -> Par {
+    let mut p = new_gint_par(leaf, vec![], false);
     for _ in 0..depth {
         p = elist(vec![p]);
     }
@@ -358,9 +373,7 @@ fn synthetic_recurse(level: usize) -> u64 {
 
 /// Θ(parameter) native stack, by construction. The subject the checkers must
 /// REJECT.
-fn synthetic_sloped_body(param: usize) {
-    std::hint::black_box(synthetic_recurse(param));
-}
+fn synthetic_sloped_body(param: usize) { std::hint::black_box(synthetic_recurse(param)); }
 
 // ---------------------------------------------------------------------------
 // ★ THE SYNTHETIC **DESTRUCTOR** CONTROL — a recursive `Drop`, by construction
@@ -598,6 +611,25 @@ fn subject(name: &str) -> fn(usize) {
         // there today.
         "inj_attempt_clone" => inj_attempt_clone_body,
         "encode" => encode_body,
+        // ── ★ The four-quadrant S0 baseline subjects. ──
+        //
+        // Five traversals over the `Par` family that this gate had NEVER
+        // measured. `eq`, `hash`, `ord` and `debug` appear nowhere in
+        // `CONVERTED_DEPTH`, nowhere in `TRIPWIRE_DEPTH`, and in no
+        // `assert_slope_below` call — and absence in this file means UNMEASURED,
+        // never FLAT. `prost_de` is the read half of the `encode` subject, whose
+        // ceiling `models/tests/par_prost_depth_ceiling.rs` pins at depth 33.
+        //
+        // They are deliberately in NEITHER register list: `four_quadrant_s0_
+        // baseline` measures them and records the numbers, it does not yet claim
+        // a ceiling for any of them. A claim is a later stage's deliverable, and
+        // adding a name to `TRIPWIRE_DEPTH` without an `assert_slope_below` fails
+        // `theta_depth_tripwire`'s register loop by construction.
+        "eq" => eq_body,
+        "hash" => hash_body,
+        "ord" => ord_body,
+        "debug" => debug_body,
+        "prost_de" => prost_de_body,
         "bincode_ser" => bincode_ser_body,
         "bincode_ser_derived" => bincode_ser_derived_body,
         "bincode_de" => bincode_de_body,
@@ -917,14 +949,10 @@ fn measure_ladder(name: &str, lo_param: usize, hi_param: usize) -> Ladder {
 
 impl Ladder {
     /// Growth in minimum stack across the ladder, in bytes.
-    fn growth(&self) -> usize {
-        self.hi_stack.saturating_sub(self.lo_stack)
-    }
+    fn growth(&self) -> usize { self.hi_stack.saturating_sub(self.lo_stack) }
 
     /// Derived cost per parameter step, in bytes.
-    fn per_step(&self) -> usize {
-        self.growth() / (self.hi_param - self.lo_param)
-    }
+    fn per_step(&self) -> usize { self.growth() / (self.hi_param - self.lo_param) }
 }
 
 /// **The zero-slope VERDICT.** A pure function of one [`Ladder`]: `Ok` iff the
@@ -954,7 +982,11 @@ fn zero_slope_verdict(name: &str, axis: &str, l: Ladder) -> Result<(), String> {
 }
 
 /// **The tripwire VERDICT.** A pure function of one [`Ladder`] and a ceiling.
-fn slope_below_verdict(name: &str, ceiling_bytes_per_level: usize, l: Ladder) -> Result<(), String> {
+fn slope_below_verdict(
+    name: &str,
+    ceiling_bytes_per_level: usize,
+    l: Ladder,
+) -> Result<(), String> {
     if l.per_step() <= ceiling_bytes_per_level {
         return Ok(());
     }
@@ -1004,7 +1036,10 @@ fn assert_slope_below(name: &str, ceiling_bytes_per_level: usize, lo: usize, hi_
     if let Err(why) = slope_below_verdict(name, ceiling_bytes_per_level, l) {
         panic!("{why}");
     }
-    println!("  {name}: {} B/level (ceiling {ceiling_bytes_per_level})", l.per_step());
+    println!(
+        "  {name}: {} B/level (ceiling {ceiling_bytes_per_level})",
+        l.per_step()
+    );
 }
 
 /// Per-profile ceiling. Debug frames are ~2–12× release because `-O0` does not
@@ -1035,13 +1070,21 @@ fn substitute_body(depth: usize) {
 
 fn substitute_no_sort_body(depth: usize) {
     let term = nested_list(depth);
-    assert_carries("the substitute_no_sort input's nesting", par_depth(&term), depth);
+    assert_carries(
+        "the substitute_no_sort input's nesting",
+        par_depth(&term),
+        depth,
+    );
     let s = substitute_instance();
     let env: Env<Par> = Env::new();
     let out = s
         .substitute_no_sort(term, 0, &env)
         .expect("stack_depth_gate: substitute_no_sort failed");
-    assert_carries("the substitute_no_sort OUTPUT's nesting", par_depth(&out), depth);
+    assert_carries(
+        "the substitute_no_sort OUTPUT's nesting",
+        par_depth(&out),
+        depth,
+    );
     dismantle(out);
 }
 
@@ -1145,7 +1188,11 @@ fn substitute_no_sort_body(depth: usize) {
 /// the input check does not already give.
 fn subst_and_charge_body(depth: usize) {
     let t = nested_list(depth);
-    assert_carries("the substitute_and_charge input's nesting", par_depth(&t), depth);
+    assert_carries(
+        "the substitute_and_charge input's nesting",
+        par_depth(&t),
+        depth,
+    );
     let s = substitute_instance();
     let env: Env<Par> = Env::new();
     let out = s
@@ -1179,7 +1226,11 @@ fn substitute_binders_body(depth: usize) {
     let out = s
         .substitute_no_sort(term, 0, &env)
         .expect("stack_depth_gate: substitute_binders failed");
-    assert_carries("the substitute_binders OUTPUT's binder nesting", binder_depth(&out), depth);
+    assert_carries(
+        "the substitute_binders OUTPUT's binder nesting",
+        binder_depth(&out),
+        depth,
+    );
     dismantle(out);
     // ⚠ The ENVIRONMENT has to be torn down iteratively too. It holds a
     // depth-`depth` bound value, and `Env`'s `HashMap<i32, Par>` drops through
@@ -1235,13 +1286,21 @@ fn substitute_deep_binding_body(depth: usize) {
 
 fn substitute_wide_body(width: usize) {
     let term = wide_list(width);
-    assert_carries("the substitute_wide input's sibling count", par_width(&term), width);
+    assert_carries(
+        "the substitute_wide input's sibling count",
+        par_width(&term),
+        width,
+    );
     let s = substitute_instance();
     let env: Env<Par> = Env::new();
     let out = s
         .substitute(term, 0, &env)
         .expect("stack_depth_gate: substitute_wide failed");
-    assert_carries("the substitute_wide OUTPUT's sibling count", par_width(&out), width);
+    assert_carries(
+        "the substitute_wide OUTPUT's sibling count",
+        par_width(&out),
+        width,
+    );
     dismantle(out);
 }
 
@@ -1258,7 +1317,11 @@ fn sort_nested_set_body(depth: usize) {
     let term = nested_sets(depth);
     assert_carries("the nested-ESet input's nesting", eset_depth(&term), depth);
     let out = ParSortMatcher::sort_match(&term);
-    assert_carries("the nested-ESet OUTPUT's nesting", eset_depth(&out.term), depth);
+    assert_carries(
+        "the nested-ESet OUTPUT's nesting",
+        eset_depth(&out.term),
+        depth,
+    );
     dismantle(out.term);
     dismantle(term);
 }
@@ -1267,7 +1330,11 @@ fn sort_nested_map_body(depth: usize) {
     let term = nested_maps(depth);
     assert_carries("the nested-EMap input's nesting", emap_depth(&term), depth);
     let out = ParSortMatcher::sort_match(&term);
-    assert_carries("the nested-EMap OUTPUT's nesting", emap_depth(&out.term), depth);
+    assert_carries(
+        "the nested-EMap OUTPUT's nesting",
+        emap_depth(&out.term),
+        depth,
+    );
     dismantle(out.term);
     dismantle(term);
 }
@@ -1277,7 +1344,11 @@ fn sort_nested_map_body(depth: usize) {
 /// left in the set arm is the derived-traversal class and not the sorter.
 fn clone_nested_set_body(depth: usize) {
     let term = nested_sets(depth);
-    assert_carries("the clone_nested_set input's nesting", eset_depth(&term), depth);
+    assert_carries(
+        "the clone_nested_set input's nesting",
+        eset_depth(&term),
+        depth,
+    );
     let c = term.clone();
     assert_carries("the CLONE's nesting", eset_depth(&c), depth);
     dismantle(c);
@@ -1291,9 +1362,17 @@ fn sort_wide_body(width: usize) {
         exprs: vec![wide_list_expr(width), wide_list_expr(width)],
         ..Default::default()
     };
-    assert_carries("the sort_wide input's sibling count", par_width(&term), width);
+    assert_carries(
+        "the sort_wide input's sibling count",
+        par_width(&term),
+        width,
+    );
     let out = ParSortMatcher::sort_match(&term);
-    assert_carries("the sort_wide OUTPUT's sibling count", par_width(&out.term), width);
+    assert_carries(
+        "the sort_wide OUTPUT's sibling count",
+        par_width(&out.term),
+        width,
+    );
     dismantle(out.term);
     dismantle(term);
 }
@@ -1318,7 +1397,11 @@ fn score_cmp_body(depth: usize) {
         },
     ];
     for s in &scored {
-        assert_carries("a compared score tree's nesting", tree_depth(&s.score), depth);
+        assert_carries(
+            "a compared score tree's nesting",
+            tree_depth(&s.score),
+            depth,
+        );
     }
     ScoredTerm::sort_vec(&mut scored);
     assert_eq!(scored[0].term, 0, "the comparator did not order the pair");
@@ -1338,19 +1421,30 @@ fn score_cmp_wide_body(width: usize) {
         },
     ];
     for s in &scored {
-        assert_carries("a compared score tree's sibling count", tree_width(&s.score), width);
+        assert_carries(
+            "a compared score tree's sibling count",
+            tree_width(&s.score),
+            width,
+        );
     }
     ScoredTerm::sort_vec(&mut scored);
     // Stable sort + `Equal` comparison must preserve the input order. That is
     // the property `sig.rs` depends on, asserted at every width the gate probes.
-    assert_eq!(scored[0].term, 0, "a stable sort reordered two equal scores");
+    assert_eq!(
+        scored[0].term, 0,
+        "a stable sort reordered two equal scores"
+    );
 }
 
 fn tree_drop_body(depth: usize) {
     // `Tree<ScoreAtom>` is a recursive RUST type, not a proto message, so the
     // audit's Tarjan-over-the-proto enumeration could not see it.
     let score = deep_score(depth, 0);
-    assert_carries("the dropped score tree's nesting", tree_depth(&score), depth);
+    assert_carries(
+        "the dropped score tree's nesting",
+        tree_depth(&score),
+        depth,
+    );
     drop(score);
 }
 
@@ -1359,7 +1453,10 @@ fn tree_clone_body(depth: usize) {
     assert_carries("the cloned score tree's nesting", tree_depth(&score), depth);
     let c = score.clone();
     assert_carries("the CLONE's nesting", tree_depth(&c), depth);
-    assert!(c == score, "the iterative Clone did not reproduce its input");
+    assert!(
+        c == score,
+        "the iterative Clone did not reproduce its input"
+    );
     drop(c);
     drop(score);
 }
@@ -1378,11 +1475,19 @@ fn pretty_body(depth: usize) {
 
 fn pretty_wide_body(width: usize) {
     let term = wide_list(width);
-    assert_carries("the pretty_wide input's sibling count", par_width(&term), width);
+    assert_carries(
+        "the pretty_wide input's sibling count",
+        par_width(&term),
+        width,
+    );
     let mut pp = PrettyPrinter::new();
     let s = pp.build_string_from_message(&term);
     // `[a, b, c]` — one comma fewer than there are elements.
-    assert_carries("the PRINTED sibling count", s.matches(", ").count() + 1, width);
+    assert_carries(
+        "the PRINTED sibling count",
+        s.matches(", ").count() + 1,
+        width,
+    );
     dismantle(term);
 }
 
@@ -1417,15 +1522,11 @@ fn wide_list_source(width: usize) -> String {
 
 /// Count the leading `[` run of a source string — the SOURCE nesting the
 /// normalizer's recursion actually follows. Iterative by construction.
-fn source_bracket_depth(src: &str) -> usize {
-    src.bytes().take_while(|b| *b == b'[').count()
-}
+fn source_bracket_depth(src: &str) -> usize { src.bytes().take_while(|b| *b == b'[').count() }
 
 /// Count a flat source list's elements — `[a, b, c]` has one comma fewer than
 /// it has elements. Iterative by construction.
-fn source_sibling_count(src: &str) -> usize {
-    src.matches(", ").count() + 1
-}
+fn source_sibling_count(src: &str) -> usize { src.matches(", ").count() + 1 }
 
 /// ★★ **THE DEPLOY PATH, WITH THE TEARDOWN THE DEPLOY PATH ACTUALLY HAS.**
 ///
@@ -1584,7 +1685,11 @@ fn normalize_wide_body(width: usize) {
         width,
     );
     let term = Compiler::source_to_adt(&src).expect("stack_depth_gate: normalize_wide failed");
-    assert_carries("the NORMALIZED term's sibling count", par_width(&term), width);
+    assert_carries(
+        "the NORMALIZED term's sibling count",
+        par_width(&term),
+        width,
+    );
     dismantle(term);
 }
 
@@ -1740,6 +1845,157 @@ fn encode_body(depth: usize) {
         bytes.len()
     );
     dismantle(term);
+}
+
+// ---------------------------------------------------------------------------
+// ★ THE FOUR-QUADRANT S0 SUBJECTS — five traversals this gate never measured
+//
+// ⚠ Their absence from `CONVERTED_DEPTH`, `TRIPWIRE_DEPTH` and every
+// `assert_slope_below` call meant they were UNMEASURED, not FLAT. That
+// distinction is the whole reason these exist: a hand-picked list of "the
+// traversals that matter" had missed `Hash` entirely, and nobody had named
+// `Ord`/`PartialOrd` at all.
+//
+// Each one differs from its neighbours in exactly the way its anti-vacuity
+// assertion has to account for:
+//
+//   eq     short-circuits at the FIRST unequal field  → the twins must be EQUAL
+//   ord    short-circuits at the first UNEQUAL field  → they must differ at the
+//                                                        LEAF and nowhere else
+//   hash   never short-circuits, but is invisible     → two leaves, two digests
+//   debug  produces a string, so length is the guard
+//   prost_de is CAPPED by prost's own RECURSION_LIMIT → depth ≤ 33
+// ---------------------------------------------------------------------------
+
+/// `<Par as PartialEq>::eq` — the **hand-written** structural comparison
+/// (`models/src/lib.rs`), not a derive.
+///
+/// ⚠ The twins are built ITERATIVELY, twice — never `a.clone()`. `<Par as
+/// Clone>::clone` is itself Θ(depth) at 2,852 B/level release, so a cloning
+/// fixture would report `max(clone, eq)` and attribute the clone's frame to the
+/// comparator. That is the exact defect that once made the score-tree subjects
+/// report the SORTER's 78,573 B/level instead of the comparator's 1,329.
+fn eq_body(depth: usize) {
+    let a = nested_list(depth);
+    let b = nested_list(depth);
+    assert_carries("the eq input's nesting", par_depth(&a), depth);
+    assert_carries("the eq TWIN's nesting", par_depth(&b), depth);
+    // ★ EQUAL, so the comparison cannot stop before the leaf. An `assert_ne`
+    // here would be satisfied by one frame.
+    assert!(
+        a == b,
+        "VACUOUS PROBE: two independently built depth-{depth} `nested_list` terms compared \
+         UNEQUAL, so `eq` returned before descending. The reading would be one frame's."
+    );
+    dismantle(a);
+    dismantle(b);
+}
+
+/// `<Par as Hash>::hash` — also **hand-written** (`models/src/lib.rs`), and the
+/// surface a hand-picked driver list had missed entirely.
+///
+/// `Hash` cannot short-circuit, so the risk is not truncation but INVISIBILITY:
+/// a digest is produced whatever the walk did. Two terms differing only at the
+/// leaf must therefore hash differently, which is only possible if both walks
+/// reached the leaf.
+fn hash_body(depth: usize) {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    let zero = nested_list_leaf(depth, 0);
+    let one = nested_list_leaf(depth, 1);
+    assert_carries("the hash input's nesting", par_depth(&zero), depth);
+    assert_carries("the hash TWIN's nesting", par_depth(&one), depth);
+
+    let digest = |p: &Par| {
+        let mut h = DefaultHasher::new();
+        p.hash(&mut h);
+        h.finish()
+    };
+    assert_ne!(
+        digest(&zero),
+        digest(&one),
+        "VACUOUS PROBE: two depth-{depth} terms differing ONLY at the leaf hashed \
+         identically, so the walk did not reach the leaf and the reading is not about \
+         depth {depth}.",
+    );
+    dismantle(zero);
+    dismantle(one);
+}
+
+/// `<Par as Ord>::cmp` — **derived** (`models/build.rs` injects
+/// `#[derive(Eq, Ord, PartialOrd)]` on every `.rhoapi` message), and a surface
+/// nobody had named before the derive enumeration found it.
+///
+/// ⚠ Derived `cmp` returns at the first field that differs, so the twins differ
+/// at the LEAF and only there — every level above must compare `Equal` for the
+/// descent to continue. `Less` is therefore a verdict only a full descent can
+/// reach.
+fn ord_body(depth: usize) {
+    let smaller = nested_list_leaf(depth, 0);
+    let larger = nested_list_leaf(depth, 1);
+    assert_carries("the ord input's nesting", par_depth(&smaller), depth);
+    assert_carries("the ord TWIN's nesting", par_depth(&larger), depth);
+    assert_eq!(
+        smaller.cmp(&larger),
+        std::cmp::Ordering::Less,
+        "VACUOUS PROBE: the depth-{depth} twins did not compare `Less`. They differ only at \
+         the leaf, so any other verdict means `cmp` decided before descending."
+    );
+    dismantle(smaller);
+    dismantle(larger);
+}
+
+/// `<Par as Debug>::fmt` — emitted by the `::prost::Message` derive, built from
+/// prost-derive's UNSORTED field list (`prost-derive-0.14.3/src/lib.rs:85,214`)
+/// rather than the tag-sorted one its encoder uses. Two orders inside one
+/// derive; this subject measures the walk, not the order.
+fn debug_body(depth: usize) {
+    let term = nested_list(depth);
+    assert_carries("the debug input's nesting", par_depth(&term), depth);
+    let rendered = format!("{:?}", term);
+    // Every `EList` level contributes at least its `EListBody(EList { ps: [` —
+    // far more than one byte — so a collapsed fixture cannot reach this bound.
+    assert!(
+        rendered.len() >= depth,
+        "VACUOUS PROBE: `Debug` of a depth-{} term rendered only {} characters",
+        depth,
+        rendered.len()
+    );
+    dismantle(term);
+}
+
+/// `<Par as prost::Message>::merge` — the protobuf DECODER.
+///
+/// ⚠ **This subject cannot be laddered past depth 33.** `prost` caps decode
+/// recursion, and `models/tests/par_prost_depth_ceiling.rs` exhibits the
+/// boundary: a depth-34 `nested_list` builds, writes, and fails to read with a
+/// recursion-limit `Err`. A probe that accepted that `Err` would "survive" any
+/// stack at all and report a flat, meaningless zero — so this body REQUIRES a
+/// successful decode and the S0 ladder stops at 32.
+fn prost_de_body(depth: usize) {
+    use prost::Message;
+    assert!(
+        depth <= 33,
+        "the `prost_de` subject was asked for depth {depth}, but `prost` refuses to decode \
+         past 33 (`models/tests/par_prost_depth_ceiling.rs`). A deeper probe would measure \
+         the error path, not the decoder."
+    );
+    // ⚠ Encode on a stack that never binds, so this subject isolates the
+    // DECODER — the same discipline as `bincode_de_body`. `encode_to_vec` is
+    // itself Θ(depth) (the `encode` subject measures it), so encoding on the
+    // gated thread would make every reading `max(encode, decode)`.
+    let bytes = on_a_big_stack(move || {
+        let term = nested_list(depth);
+        let b = term.encode_to_vec();
+        dismantle(term);
+        b
+    });
+    let decoded = Par::decode(&bytes[..]).expect(
+        "stack_depth_gate: prost_de failed to decode a term inside its own recursion limit",
+    );
+    assert_carries("the prost-DECODED term's nesting", par_depth(&decoded), depth);
+    dismantle(decoded);
 }
 
 // ---------------------------------------------------------------------------
@@ -1905,9 +2161,7 @@ fn tree_width(t: &Tree<ScoreAtom>) -> usize {
 }
 
 /// Leading `[` characters — the depth a printed `nested_list` must show.
-fn printed_bracket_depth(s: &str) -> usize {
-    s.chars().take_while(|c| *c == '[').count()
-}
+fn printed_bracket_depth(s: &str) -> usize { s.chars().take_while(|c| *c == '[').count() }
 
 /// ⚠ THE FAMILY'S BINDING MEMBER, AND UNTIL NOW IT HAD NO GATE COVERAGE AT ALL.
 ///
@@ -1985,8 +2239,7 @@ fn bincode_de_body(depth: usize) {
         dismantle(term);
         b
     });
-    let decoded: Par =
-        Par::cold_decode(&bytes).expect("stack_depth_gate: bincode_de failed");
+    let decoded: Par = Par::cold_decode(&bytes).expect("stack_depth_gate: bincode_de failed");
     assert_carries("the DECODED term's nesting", par_depth(&decoded), depth);
     dismantle(decoded);
 }
@@ -2031,9 +2284,7 @@ fn eval_with_nots_body(depth: usize) {
     for _ in 0..depth {
         p = Par {
             exprs: vec![Expr {
-                expr_instance: Some(ExprInstance::ENotBody(models::rhoapi::ENot {
-                    p: Some(p),
-                })),
+                expr_instance: Some(ExprInstance::ENotBody(models::rhoapi::ENot { p: Some(p) })),
             }],
             ..Default::default()
         };
@@ -2591,6 +2842,217 @@ fn theta_depth_tripwire() {
          same commit as the assertion.",
         driven, TRIPWIRE_DEPTH
     );
+}
+
+// ---------------------------------------------------------------------------
+// ★ THE FOUR-QUADRANT S0 BASELINE
+// ---------------------------------------------------------------------------
+
+/// One S0 row: a subject, the label the four-quadrant design knows it by, and
+/// the ladder to measure it on.
+///
+/// `hi_max` is what makes the ladder **self-selecting** rather than hand-picked;
+/// see [`S0_MIN_GROWTH`].
+struct S0Ladder {
+    /// The [`subject`] name — the traversal's ONE name in this gate.
+    subject: &'static str,
+    /// The four-quadrant design's label for the same traversal. Equal to
+    /// `subject` except where the design and this gate inherited different
+    /// vocabularies for one thing.
+    label: &'static str,
+    lo: usize,
+    /// Where the deep end STARTS. It is widened until the ladder binds.
+    hi: usize,
+    /// The deepest the deep end may be widened to. Reaching it without binding
+    /// is a loud failure, never a shrug.
+    hi_max: usize,
+}
+
+/// The growth a ladder must produce before its derived slope is evidence.
+///
+/// ★★ **The release run of the first version of this test failed here, and the
+/// failure was correct.** `par_drop` was given the common `16 → 128` ladder; in
+/// release it costs ~470 B/level, so BOTH ends bisected into
+/// [`min_stack_for`]'s initial 16 KiB probe window and the derived slope was
+/// `(16384 - 12288) / 112 = 36 B/level` — quantisation, not measurement. The
+/// gate's own [`assert_slope_below`] states the requirement in prose ("the CHEAP
+/// traversals must clear the minimum viable thread stack at the deeper point —
+/// otherwise both probes bottom out on the same floor and the derived slope is a
+/// meaningless 0"); this constant makes it executable.
+///
+/// Eight [`RESOLUTION`] buckets. [`Ladder::growth`] is a difference of two
+/// bisections each quantised to `RESOLUTION`, so it carries `±2 * RESOLUTION` of
+/// uncertainty; requiring eight buckets bounds that at ±25%. Hand-picking a
+/// per-subject, per-profile ladder instead would put the analyst in the
+/// measurement loop, which is how the inherited constants this stage exists to
+/// replace got there.
+const S0_MIN_GROWTH: usize = 8 * RESOLUTION;
+
+/// The eight subjects of the four-quadrant S0 baseline.
+///
+/// ★ **`hash` and `ord` had never been measured**, and neither had `eq` or
+/// `debug`. None of the four appears in [`CONVERTED_DEPTH`], in
+/// [`TRIPWIRE_DEPTH`], or in any [`assert_slope_below`] call. Their absence from
+/// this file meant UNMEASURED, not FLAT — the two are indistinguishable from
+/// outside, and reading absence as flatness is how a hand-picked driver list came
+/// to miss `Hash` entirely.
+///
+/// ⚠ Two rows carry a FIXED ladder (`hi == hi_max`), and deliberately:
+/// `par_drop@gate` and `prost_ser@gate` re-run the exact ladders
+/// [`theta_depth_tripwire`] already drives those subjects on, so the S0 table can
+/// be reconciled with numbers this gate already publishes. A harness that
+/// disagreed with itself would produce a baseline nobody could check.
+///
+/// ⚠ `prost_de`'s `hi_max` is **32**, and it is not a choice: `prost` caps decode
+/// recursion and `models/tests/par_prost_depth_ceiling.rs` exhibits a depth-34
+/// term that builds, writes, and fails to read. Widening past 33 would measure
+/// the error path.
+const S0_LADDERS: &[S0Ladder] = &[
+    S0Ladder { subject: "clone",    label: "clone",          lo: 16,  hi: 128,  hi_max: 4096 },
+    S0Ladder { subject: "par_drop", label: "par_drop",       lo: 16,  hi: 128,  hi_max: 4096 },
+    S0Ladder { subject: "eq",       label: "eq",             lo: 16,  hi: 128,  hi_max: 4096 },
+    S0Ladder { subject: "hash",     label: "hash",           lo: 16,  hi: 128,  hi_max: 4096 },
+    S0Ladder { subject: "ord",      label: "ord",            lo: 16,  hi: 128,  hi_max: 4096 },
+    S0Ladder { subject: "debug",    label: "debug",          lo: 16,  hi: 128,  hi_max: 4096 },
+    // ★ `prost_ser` IS the `encode` subject. It is not given a second name:
+    // "one name for one traversal" is this file's rule, and the rename note in
+    // [`subject`] records what a second name cost the last time there was one.
+    S0Ladder { subject: "encode",   label: "prost_ser",      lo: 16,  hi: 128,  hi_max: 4096 },
+    S0Ladder { subject: "prost_de", label: "prost_de",       lo: 4,   hi: 32,   hi_max: 32   },
+    // ── the two cross-checks against ladders this gate already publishes ──
+    S0Ladder { subject: "par_drop", label: "par_drop@gate",  lo: 256, hi: 4096, hi_max: 4096 },
+    S0Ladder { subject: "encode",   label: "prost_ser@gate", lo: 64,  hi: 1024, hi_max: 1024 },
+];
+
+/// Measure `rung`, widening its deep end until the ladder BINDS.
+///
+/// "Binds" means [`Ladder::growth`] clears [`S0_MIN_GROWTH`] — i.e. the reading
+/// is a measurement rather than the difference of two numbers sitting in
+/// [`min_stack_for`]'s initial probe window.
+///
+/// ⚠ It **fails loudly** at `hi_max` rather than returning the unbound ladder,
+/// and the message distinguishes the two things that can produce it, because
+/// they call for opposite responses:
+///
+/// * the traversal is genuinely **depth-independent**, in which case it does not
+///   belong in a slope row at all — [`assert_no_slope`] is its checker;
+/// * the ladder is **too short**, in which case `hi_max` is what needs raising.
+///
+/// Returning a `0 B/level` row for either would put a claim in the baseline that
+/// no measurement supports, which is the whole failure mode S0 exists to end.
+fn s0_binding_ladder(rung: &S0Ladder) -> Ladder {
+    let mut hi = rung.hi;
+    loop {
+        let l = measure_ladder(rung.subject, rung.lo, hi);
+        if l.growth() >= S0_MIN_GROWTH {
+            return l;
+        }
+        assert!(
+            hi < rung.hi_max,
+            "S0 LADDER DID NOT BIND for `{}` ({}): at depth {} → {} the minimum stack grew \
+             only {} B, below the {} B this harness requires before a derived slope is \
+             evidence rather than bisection quantisation (±{} B). The deep end is already \
+             at its maximum {}.\n\
+             \n\
+             Two things produce this, and they need opposite responses:\n\
+             \x20 (a) the traversal is DEPTH-INDEPENDENT — then it belongs in \
+             `converted_traversals_are_depth_independent`, checked by `assert_no_slope`, \
+             not in an S0 slope row;\n\
+             \x20 (b) the ladder is too SHORT — then raise `hi_max` for this row.\n\
+             \n\
+             Reporting `{} B/level` instead would put a number in the baseline that no \
+             measurement supports.",
+            rung.subject,
+            rung.label,
+            rung.lo,
+            hi,
+            l.growth(),
+            S0_MIN_GROWTH,
+            2 * RESOLUTION,
+            rung.hi_max,
+            l.per_step()
+        );
+        // Double, but never past the cap — `prost_de`'s cap is a hard property
+        // of `prost`, not a budget.
+        hi = (hi * 2).min(rung.hi_max);
+    }
+}
+
+/// ★★ **The S0 baseline: measure first, claim nothing.**
+///
+/// This test asserts **no ceiling**. It bisects each subject's minimum stack at
+/// both ends of its ladder and prints the derived bytes-per-level, and that is
+/// the whole deliverable — the baseline every later stage's win is measured
+/// against. A ceiling is a claim; S0 exists precisely because the claims that
+/// were in circulation had been inherited rather than measured.
+///
+/// ⚠ **The audit's §12.6 constants (2,852 / 144 / 310 / 1,244) are NOT
+/// inherited here.** `9082d12c` removed a *call* to `<Par as Clone>::clone` at
+/// `inj_attempt`'s set-initial-cost phase and entered the COMPOSITION in
+/// [`CONVERTED_DEPTH`] as `inj_attempt_clone`; `<Par as Clone>::clone` itself is
+/// untouched and still in [`TRIPWIRE_DEPTH`]. And `tree_clone` / `tree_drop` are
+/// `score_tree::Tree<T>`, not `Par`. Every number this test prints is re-measured
+/// at HEAD.
+///
+/// ## Running it
+///
+/// It is `#[ignore]`d because a full run is ~40 bisections, each an exponential
+/// probe plus ~15 child processes, and CI runs the whole `models`/`rholang`
+/// suites on every push. Drive it explicitly, per profile:
+///
+/// ```text
+///   cargo test -p rholang --test stack_depth_gate -- --ignored --exact \
+///       four_quadrant_s0_baseline --nocapture
+///   cargo test --release -p rholang --test stack_depth_gate -- --ignored --exact \
+///       four_quadrant_s0_baseline --nocapture
+/// ```
+///
+/// The recorded results live in
+/// `docs/design/audits/four-quadrant-s0-baseline-2026-07-28.md`. They are
+/// recorded THERE and not restated here, for the reason
+/// [`the_audit_agrees_with_the_gate`] exists: two copies of one truth do not
+/// stay equal.
+///
+/// ## Why it prints CSV
+///
+/// So the record is transcribed by `tee`, not by hand. Every recorded number in
+/// this campaign that was typed into prose has drifted from the code that
+/// produced it.
+#[test]
+#[ignore = "S0 baseline measurement: ~40 bisections; drive explicitly, see the doc comment"]
+fn four_quadrant_s0_baseline() {
+    let profile = if cfg!(debug_assertions) {
+        "debug"
+    } else {
+        "release"
+    };
+    println!("S0-BEGIN profile={profile}");
+    println!("subject,label,profile,lo_depth,lo_stack_b,hi_depth,hi_stack_b,growth_b,b_per_level");
+
+    let mut measured = 0usize;
+    for rung in S0_LADDERS {
+        let l = s0_binding_ladder(rung);
+        println!(
+            "{},{},{profile},{},{},{},{},{},{}",
+            rung.subject,
+            rung.label,
+            l.lo_param,
+            l.lo_stack,
+            l.hi_param,
+            l.hi_stack,
+            l.growth(),
+            l.per_step()
+        );
+        measured += 1;
+    }
+
+    assert_eq!(
+        measured,
+        S0_LADDERS.len(),
+        "the S0 table must carry one row per ladder; a short table is a baseline with a \
+         silent hole in it"
+    );
+    println!("S0-END profile={profile} rows={measured}");
 }
 
 /// ★★ **The deploy path's stack requirement is bounded BELOW by its
@@ -3652,8 +4114,10 @@ fn the_build_side_inventory_is_complete() {
          this whole test vacuous."
     );
 
-    let inventoried: std::collections::BTreeSet<&str> =
-        BUILD_DEPTH_INVENTORY.iter().map(|(name, _, _)| *name).collect();
+    let inventoried: std::collections::BTreeSet<&str> = BUILD_DEPTH_INVENTORY
+        .iter()
+        .map(|(name, _, _)| *name)
+        .collect();
     let missing: Vec<&String> = declared
         .iter()
         .filter(|name| !inventoried.contains(name.as_str()))
