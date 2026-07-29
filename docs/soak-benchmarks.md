@@ -50,6 +50,43 @@ are the week-over-week baseline, and those are only comparable if every run
 covers an identical span. The dailies trade that comparability for catching
 regressions sooner.
 
+## Mid-run checkpoints
+
+A soak publishes when it finishes, which for a 22h nightly means no visibility
+until the following afternoon, and for a 60h weekend means two and a half days
+of silence. Both series therefore publish **checkpoints** at **07:30 and 13:00
+Pacific** for every such instant inside the run:
+
+| Run | Checkpoints | Segments |
+|---|---|---|
+| Daily (Mon 19:30 + 22h) | Tue 07:30, Tue 13:00 | 3 |
+| Weekend (Fri 19:30 + 60h) | Sat and Sun, 07:30 and 13:00 | 5 |
+| Weekend crossing spring-forward | the above plus Mon 07:30 | 6 |
+
+The extra weekend checkpoint is not a rounding artefact: 60h from Friday 19:30
+lands at Monday 08:30 rather than 07:30 once the clocks jump, which brings the
+Monday-morning instant inside the run.
+
+Mechanically, the soak runs as consecutive **segments** sharing one output
+directory. The script resumes from a state file each time, so counters, the
+original start time and iteration numbering all continue and the run behaves as
+one continuous soak. Each segment except the last publishes what has happened so
+far.
+
+**A checkpoint carries no verdict.** It reports `status: in_progress`, and the
+dashboard shows `running · Nh of Mh` on the tab. A partial run has fewer
+iterations, a lower peak RSS and a throughput figure over a shorter window than
+the baseline it would be compared against, so a regression verdict at that point
+would measure the clock rather than the code.
+
+**A checkpoint does not append to history.** The charts and table show completed
+runs only; a partial entry would double-count the night once the run finishes
+and publishes for real. Only the `latest-*` files for that series are replaced,
+and the dashboard says so while a run is in progress.
+
+Checkpoint publishing is fail-soft throughout. The dispatch is a warning if it
+fails, and the soak continues — the run's real result still publishes at the end.
+
 ## Previewing the dashboard locally
 
 The page loads its data with `fetch()`, which browsers refuse over `file://`,
