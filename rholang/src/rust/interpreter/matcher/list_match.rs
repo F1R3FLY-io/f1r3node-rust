@@ -378,6 +378,35 @@ pub fn first_duplicate_added_var(current_free_map: &FreeMap, free_maps: &[FreeMa
 /// is *implementable* precisely because isolation makes the disjointness hold.
 /// The refusals counter reading non-zero means a non-linear `BindPattern`
 /// reached the matcher: a normalizer defect, or hostile tuplespace state.
+///
+/// ⚠ **THE LINEARITY PREMISE IS NOT SELF-EVIDENT, AND IT DID NOT HOLD WHEN THAT
+/// PARAGRAPH WAS WRITTEN.** "Each level occupies at most one pattern position"
+/// is a property of **one free map**, and the matcher has *several* in flight:
+/// `~P` and `P \/ Q` bodies are each normalized against a **fresh** `FreeMap`
+/// which `combine_p_negation` then **discards**
+/// (`normalizer/processes/p_negation_normalizer.rs:10-13, 65-89`), so a free
+/// variable under `~` is `FreeVar(0)` in a numbering nobody kept — and level 0
+/// is somebody *else's* level in the shared map. Two sibling sub-patterns each
+/// containing a binding negation therefore both added level 0, and this
+/// backstop fired:
+///
+/// ```text
+///   match { @0!(7) | @1!(6) } { @0!(~{x /\ 8}) | @1!(~{y /\ 9}) => A  _ => B }
+///
+///   before:  δ₁ = {0 ↦ 7}, δ₂ = {0 ↦ 6}   ⇒ duplicate ⇒ REFUSE ⇒ B runs  ✗
+///   after:   δ₁ = {},      δ₂ = {}        ⇒ disjoint  ⇒ commit ⇒ A runs  ✓
+/// ```
+///
+/// The `δᵢ` above were *the negations' own* leaks, not other attempts' — which
+/// is why `match_function`'s isolation, working exactly as specified, could not
+/// see them. `b219e199` (task #148) isolated the four connective sites inside
+/// `spatial_matcher.rs`, which is what makes a negation's `δ` empty and the
+/// premise finally true. **Nothing about this function changed**; what changed
+/// is that its precondition is now met. The mechanism — including that the
+/// normalizer really does emit level 0 in *every* negation body — is pinned by
+/// `rholang/tests/matcher_negation_isolation.rs`, and
+/// `rholang/tests/matcher_negation_reduction_witness.rs` carries it out to the
+/// reduction above.
 pub fn aggregate_updates(current_free_map: FreeMap, free_maps: Vec<FreeMap>) -> Option<FreeMap> {
     if let Some(level) = first_duplicate_added_var(&current_free_map, &free_maps) {
         // Observability, not consensus — there is no cost accounting anywhere in

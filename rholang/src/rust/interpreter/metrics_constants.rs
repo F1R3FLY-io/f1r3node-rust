@@ -57,6 +57,20 @@ pub const RHOLANG_MATCHER_FOLD_MATCH_TAIL_CLONE_NS_METRIC: &str =
 // A non-zero reading means a non-linear `BindPattern` reached the matcher —
 // either a normalizer defect or hostile tuplespace state served by a peer —
 // and is worth an alert.
+//
+// ⚠ THAT "ZERO FOREVER" WAS FALSE WHEN IT WAS WRITTEN, AND IS TRUE NOW.
+// `b219e199` (task #148) found the gap: linearity is a property of ONE free
+// map, and `~P` / `P \/ Q` bodies are each normalized against a FRESH one that
+// is then discarded. Two sibling sub-patterns each containing a binding
+// negation therefore both claimed level 0, this counter fired from a PRODUCTION
+// path, and a `match` case that should have fired did not. Measured over the
+// whole `-p rholang` suite at `b219e199`^: EIGHT firings, six of them from
+// production paths. The connective sites are isolated now, so the premise the
+// paragraph above needs finally holds — see `aggregate_updates`' own doc
+// comment in `matcher/list_match.rs` for the full statement of it. TWO firings
+// remain, both from the deliberate direct-call fixtures in
+// `rholang/tests/matcher_state_isolation.rs`, which exist to prove the backstop
+// can fire at all.
 pub const RHOLANG_MATCHER_AGGREGATE_UPDATES_REFUSALS_METRIC: &str =
     "rholang.matcher.aggregate_updates.refusals";
 
