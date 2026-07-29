@@ -1,3 +1,4 @@
+pub mod drive;
 pub mod grpc_client;
 pub mod implicits;
 pub mod par_children;

@@ -4,6 +4,7 @@ use models::rhoapi::{
     EAnd, EEq, EGt, EGte, ELt, ELte, EMatches, EMinus, EMult, ENeg, ENeq, ENot, EOr, EPlus, Expr,
     Par, Var,
 };
+use models::rust::rholang::drive::{drive, Outcome, Step, Traversal};
 
 use crate::env::Env;
 use crate::error::EvalError;
@@ -33,9 +34,19 @@ pub fn eval(par: &Par, env: &Env<Par>) -> Result<Par, EvalError> {
 /// total and deterministic — see [`SpatialMatch`] for the contract this
 /// crate's own determinism guarantee rests on.
 pub fn eval_with(par: &Par, env: &Env<Par>, matcher: &dyn SpatialMatch) -> Result<Par, EvalError> {
-    eval_drive(EvWork::Eval { par, extract: false }, env, matcher).map(|v| match v {
+    let mut traversal = EvalTraversal { env, matcher };
+    let mut state = ();
+    drive(
+        &mut traversal,
+        &mut state,
+        Step::Descend(EvNode::Eval {
+            par,
+            extract: false,
+        }),
+    )
+    .map(|v| match v {
         EvVal::Par(p) => p,
-        EvVal::Inst(_) => unreachable!("eval_drive: a non-extracting root must yield a Par"),
+        EvVal::Inst(_) => unreachable!("eval_with: a non-extracting root must yield a Par"),
     })
 }
 
@@ -504,8 +515,21 @@ fn type_name(instance: &ExprInstance) -> &'static str {
 }
 
 // ===========================================================================
-// Leg-2 Stage E: the explicit-worklist machine for `eval_with`
+// Leg-2 Stage E / Stage F-1: `eval_with` as an instance of the SHARED driver
 // ===========================================================================
+//
+// ★ Stage F-1. This machine was originally a bespoke `eval_drive` loop with its
+// own copy of the deficit invariant. It is now an instance of
+// `models::rust::rholang::drive` — the one trampoline the `Par` family's
+// traversals share — and `eval_with` was chosen as the REHEARSAL SUBJECT for
+// that driver deliberately: it is the smallest member, it takes no budget
+// handle, and it has no consensus exposure, so the driver's ergonomics get
+// found here rather than on the sorter's canonical form.
+//
+// What moved out of this file: the LIFO loop, the value stack, the work stack,
+// the deficit invariant and the final-configuration assertion. What stayed: the
+// alphabet (`EvNode`, `EvKont`, `EvVal`), the per-arm descend and combine
+// halves, and every semantic note below.
 //
 // `eval_with` itself was already a loop over `par.exprs`; the Θ(depth)
 // recursion lived in `eval_expr_to_par`, which re-entered `eval_with` at
@@ -587,14 +611,17 @@ impl EvVal {
     }
 }
 
-/// A pending unit of work. Every reference borrows the input term (`'t`).
-enum EvWork<'t> {
+/// An input node. Every reference borrows the input term (`'t`).
+///
+/// `Copy`, as [`Traversal::Node`] requires: pushing a child is a reference move,
+/// never a `<Par as Clone>::clone`.
+#[derive(Clone, Copy)]
+enum EvNode<'t> {
     /// `eval_with(par)`, optionally followed immediately by
     /// `single_expr_instance` — the per-operand check the helpers interleave.
     Eval { par: &'t Par, extract: bool },
     /// `eval_expr_to_par(expr)`.
     Expr(&'t Expr),
-    Combine(EvKont<'t>),
 }
 
 /// Post-order continuation. Carries the borrowed shell and the operator, never
@@ -633,13 +660,83 @@ enum EvKont<'t> {
     Extract,
 }
 
-impl EvKont<'_> {
-    /// The number of values this continuation pops.
-    ///
+/// The visitor: `eval_with`'s immutable configuration.
+///
+/// The environment and the spatial-match oracle are read, never written, so
+/// they live on the visitor and [`Traversal::State`] is `()`. Nothing here is
+/// per-node state; the machine's entire mutable configuration is the driver's
+/// two stacks.
+struct EvalTraversal<'e> {
+    env: &'e Env<Par>,
+    matcher: &'e dyn SpatialMatch,
+}
+
+impl<'e> Traversal for EvalTraversal<'e> {
+    type Node<'t> = EvNode<'t>;
+    type Val = EvVal;
+    type Kont<'t> = EvKont<'t>;
+    type State = ();
+    type Err = EvalError;
+
+    /// ★ Every bounded part of a node runs straight-line here and the call
+    /// returns at the first descent — the contract `drive.rs`'s module docs
+    /// derive from `wire.rs` §A2's 1.7×-slower table interpretation. `descend`
+    /// is a direct, monomorphized call (the trait is not object-safe), so the
+    /// cost is one call per node per suspension, never one per field.
+    fn descend<'t>(
+        &mut self,
+        _state: &mut (),
+        node: EvNode<'t>,
+        work: &mut Vec<Step<'t, Self>>,
+        vals: &mut Vec<EvVal>,
+    ) -> Result<(), EvalError> {
+        match node {
+            // `eval_with`'s own body: a `ParK` continuation over the Par's
+            // exprs. `extract` rides on the continuation's RESULT, so it is
+            // applied when this whole sub-evaluation completes — which is the
+            // point the recursive helpers apply it. `Extract` is pushed FIRST
+            // so it pops LAST, after `ParK` has produced this sub-evaluation's
+            // `Par`.
+            //
+            // ⚠ This region is why `drive.rs`'s Invariant 1 is a right-to-left
+            // scan rather than the hand-written machines' "one `Combine` then
+            // exactly `arity` children": `[Extract, ParK{n}, child × n]` NESTS
+            // two continuations, and the narrower rule rejected it.
+            EvNode::Eval { par, extract } => {
+                if extract {
+                    work.push(Step::Combine(EvKont::Extract));
+                }
+                work.push(Step::Combine(EvKont::ParK {
+                    par,
+                    n: par.exprs.len(),
+                }));
+                for expr in par.exprs.iter().rev() {
+                    work.push(Step::Descend(EvNode::Expr(expr)));
+                }
+                Ok(())
+            }
+            EvNode::Expr(expr) => descend_ev_expr(expr, self.env, self.matcher, work, vals),
+        }
+    }
+
+    fn combine<'t>(
+        &mut self,
+        _state: &mut (),
+        kont: EvKont<'t>,
+        vals: &mut Vec<EvVal>,
+    ) -> Result<Outcome<EvVal>, EvalError> {
+        // ⚠ NO EARLY EXIT. `eval_with` computes a value rather than deciding a
+        // predicate: every continuation's result is a child of the next one, so
+        // there is no configuration in which a combine already holds the
+        // answer. `Outcome::Done` is for the comparison traversals, where it
+        // restores the short-circuit of the `&&` chain it replaces.
+        run_ev_combine(kont, self.matcher, vals).map(Outcome::Value)
+    }
+
     /// ★ Deliberately duplicates the pop counts in [`run_ev_combine`], so the
-    /// deficit invariant can cross-check them. Exhaustive, no `_` arm.
-    fn arity(&self) -> usize {
-        match self {
+    /// driver's deficit invariant can cross-check them. Exhaustive, no `_` arm.
+    fn arity(kont: &EvKont<'_>) -> usize {
+        match kont {
             EvKont::ParK { n, .. } => *n,
             EvKont::Not | EvKont::Neg => 1,
             EvKont::BoolK { .. } => 2,
@@ -664,8 +761,8 @@ fn require_par_ref(p: Option<&Par>) -> Result<&Par, EvalError> {
 
 /// Push the two operands of a binary arm so they are POPPED p1-then-p2, with
 /// the per-operand `single_expr_instance` check applied at each completion.
-fn push_binary<'t>(
-    work: &mut Vec<EvWork<'t>>,
+fn push_binary<'t, 'e>(
+    work: &mut Vec<Step<'t, EvalTraversal<'e>>>,
     kont: EvKont<'t>,
     p1: Option<&'t Par>,
     p2: Option<&'t Par>,
@@ -677,9 +774,9 @@ fn push_binary<'t>(
     // is touched. Evaluating p1's check first preserves which error surfaces.
     let a = require_par_ref(p1)?;
     let b = require_par_ref(p2)?;
-    work.push(EvWork::Combine(kont));
-    work.push(EvWork::Eval { par: b, extract });
-    work.push(EvWork::Eval { par: a, extract });
+    work.push(Step::Combine(kont));
+    work.push(Step::Descend(EvNode::Eval { par: b, extract }));
+    work.push(Step::Descend(EvNode::Eval { par: a, extract }));
     Ok(())
 }
 
@@ -771,11 +868,11 @@ fn combine_div_or_mod(
 
 /// Descend one `Expr`, pushing its continuation and then its operands in
 /// REVERSE so they pop in source order.
-fn descend_ev_expr<'t>(
+fn descend_ev_expr<'t, 'e>(
     expr: &'t Expr,
     env: &Env<Par>,
     matcher: &dyn SpatialMatch,
-    work: &mut Vec<EvWork<'t>>,
+    work: &mut Vec<Step<'t, EvalTraversal<'e>>>,
     vals: &mut Vec<EvVal>,
 ) -> Result<(), EvalError> {
     let instance = expr
@@ -823,21 +920,21 @@ fn descend_ev_expr<'t>(
 
         ExprInstance::ENotBody(ENot { p }) => {
             let inner = require_par_ref(p.as_ref())?;
-            work.push(EvWork::Combine(EvKont::Not));
-            work.push(EvWork::Eval {
+            work.push(Step::Combine(EvKont::Not));
+            work.push(Step::Descend(EvNode::Eval {
                 par: inner,
                 extract: true,
-            });
+            }));
             Ok(())
         }
 
         ExprInstance::ENegBody(ENeg { p }) => {
             let inner = require_par_ref(p.as_ref())?;
-            work.push(EvWork::Combine(EvKont::Neg));
-            work.push(EvWork::Eval {
+            work.push(Step::Combine(EvKont::Neg));
+            work.push(Step::Descend(EvNode::Eval {
                 par: inner,
                 extract: true,
-            });
+            }));
             Ok(())
         }
 
@@ -951,11 +1048,11 @@ fn descend_ev_expr<'t>(
             // instead of matching.
             let t = require_par_ref(target.as_ref())?;
             let pat = require_par_ref(pattern.as_ref())?;
-            work.push(EvWork::Combine(EvKont::MatchesK { pattern: pat }));
-            work.push(EvWork::Eval {
+            work.push(Step::Combine(EvKont::MatchesK { pattern: pat }));
+            work.push(Step::Descend(EvNode::Eval {
                 par: t,
                 extract: false,
-            });
+            }));
             Ok(())
         }
 
@@ -1054,97 +1151,24 @@ fn run_ev_combine(
     }
 }
 
-/// The single LIFO loop. Native stack is `O(1)`; the recursion lives in `work`.
-///
-/// A `?` abort discards `work` and `vals`, identical to the recursive form's
-/// `?`, which discards its pending frames. Nothing here charges, so there is no
-/// cost state to unwind.
-///
-/// The deficit invariant `|V| + D + C − Σ arity(k) == 1` is asserted at the head
-/// of every iteration, exactly as in the sorter's machine; see
-/// `models/src/rust/rholang/sorter/sort_drive.rs` for its derivation and for
-/// why the shorter-looking `|V| + D == 1 + Σ arity` is off by `C`.
-fn eval_drive(
-    root: EvWork<'_>,
-    env: &Env<Par>,
-    matcher: &dyn SpatialMatch,
-) -> Result<EvVal, EvalError> {
-    let mut work: Vec<EvWork<'_>> = Vec::with_capacity(32);
-    let mut vals: Vec<EvVal> = Vec::with_capacity(32);
-    work.push(root);
-
-    let mut descends: usize = 1;
-    let mut combines: usize = 0;
-    let mut sum_arity: usize = 0;
-
-    loop {
-        debug_assert_eq!(
-            vals.len() + descends + combines,
-            1 + sum_arity,
-            "eval_drive: DEFICIT INVARIANT VIOLATED (|vals|={}, descends={}, combines={}, \
-             Sum arity={})",
-            vals.len(),
-            descends,
-            combines,
-            sum_arity
-        );
-        let Some(w) = work.pop() else { break };
-        match w {
-            EvWork::Combine(kont) => {
-                combines -= 1;
-                sum_arity -= kont.arity();
-                let v = run_ev_combine(kont, matcher, &mut vals)?;
-                vals.push(v);
-            }
-            EvWork::Eval { par, extract } => {
-                descends -= 1;
-                // `eval_with`'s own body: a `ParK` continuation over the Par's
-                // exprs. `extract` rides on the continuation's RESULT, so it is
-                // applied when this whole sub-evaluation completes — which is
-                // the point the recursive helpers apply it.
-                // `Extract` is pushed FIRST so it pops LAST — after `ParK`
-                // has produced this sub-evaluation's `Par`.
-                if extract {
-                    work.push(EvWork::Combine(EvKont::Extract));
-                    combines += 1;
-                    sum_arity += 1;
-                }
-                work.push(EvWork::Combine(EvKont::ParK {
-                    par,
-                    n: par.exprs.len(),
-                }));
-                for expr in par.exprs.iter().rev() {
-                    work.push(EvWork::Expr(expr));
-                }
-                combines += 1;
-                sum_arity += par.exprs.len();
-                descends += par.exprs.len();
-            }
-            EvWork::Expr(expr) => {
-                descends -= 1;
-                let before_v = vals.len();
-                let before_w = work.len();
-                descend_ev_expr(expr, env, matcher, &mut work, &mut vals)?;
-                let pushed = work.len() - before_w;
-                if pushed > 0 {
-                    let arity = match &work[before_w] {
-                        EvWork::Combine(k) => k.arity(),
-                        _ => unreachable!("descend_ev_expr must push its Combine first"),
-                    };
-                    debug_assert_eq!(pushed - 1, arity);
-                    combines += 1;
-                    sum_arity += arity;
-                    descends += pushed - 1;
-                } else {
-                    debug_assert_eq!(vals.len(), before_v + 1, "a leaf must produce one value");
-                }
-            }
-        }
-    }
-
-    debug_assert_eq!(vals.len(), 1, "eval_drive: exactly one value must remain");
-    Ok(vals.pop().expect("eval_drive: exactly one value must remain"))
-}
+// ---------------------------------------------------------------------------
+// ★ THE LOOP IS NOT HERE
+//
+// It is `models::rust::rholang::drive::drive`, and this file's only remaining
+// obligation to it is the [`Traversal`] impl above. What used to sit here — the
+// LIFO loop, the two stacks, the deficit invariant `|V| + D + C - Sum arity == 1`
+// and the final-configuration assertion — moved there verbatim in Stage F-1,
+// where the sorter's and the codec's machines can share it. The invariant's
+// derivation, the two-invariant split and the reason the final configuration is
+// checked UNCONDITIONALLY are in that module's docs.
+//
+// One check genuinely CHANGED shape rather than moving, and it changed to
+// admit this file: the old local assertion was "`descend` pushes its `Combine`
+// first, then exactly `arity` children", which the `EvNode::Eval` arm's nested
+// `[Extract, ParK{n}, child x n]` region violates. The driver's Invariant 1 is
+// the right-to-left value-availability scan that accepts it and still rejects a
+// continuation pushed with fewer children than its `arity()` claims.
+// ---------------------------------------------------------------------------
 
 
 // ===========================================================================
@@ -1172,6 +1196,27 @@ mod differential_eval_with {
 
     use super::*;
     use models::rhoapi::{EDiv, EMod};
+
+    /// An **available** oracle, so `EMatchesBody` reaches its arm at all.
+    ///
+    /// ⚠ Without this the differential never exercised `EvKont::MatchesK`:
+    /// every case ran under [`NoSpatialMatch`], whose `is_available()` is
+    /// `false`, so both arms refused before touching either operand and the
+    /// continuation's `arity` was never cross-checked against its pops.
+    ///
+    /// The verdict is a structural equality rather than the production spatial
+    /// matcher — that matcher lives in `rholang`, which depends on this crate,
+    /// so calling it here would be a dependency cycle (see [`SpatialMatch`]'s
+    /// module docs). What the differential needs from an oracle is that BOTH
+    /// arms consult the SAME pure function on the SAME evaluated target, which
+    /// this satisfies; it is not a claim about what the real matcher decides.
+    struct StructuralMatch;
+
+    impl SpatialMatch for StructuralMatch {
+        fn matches(&self, target: &Par, pattern: &Par) -> bool {
+            target == pattern
+        }
+    }
 
     fn gint(i: i64) -> Par {
         par_with_int(i)
@@ -1249,6 +1294,106 @@ mod differential_eval_with {
         out
     }
 
+    // -----------------------------------------------------------------------
+    // ★ DEEP and WIDE shapes
+    //
+    // ⚠ The depths here are bounded by the ORACLE, not by the machine. The
+    // recursive twin costs ~21,584 bytes of native stack per level in debug, so
+    // a differential that reached the machine's real ceiling would abort in the
+    // arm it is comparing against. `DIFFERENTIAL_DEPTH` is chosen so the oracle
+    // survives on the smallest thread stack this suite can be run with; the
+    // claim that the machine has NO such ceiling is a different obligation and
+    // is discharged by a different guard — `depth_gate`, below, which drives
+    // both arms in child processes on an explicitly sized stack and requires
+    // the recursive one to FAIL where the driver succeeds.
+    // -----------------------------------------------------------------------
+
+    /// Nesting depth for the deep differential shapes.
+    ///
+    /// 32 levels x ~25 KiB/level (the oracle's debug frame) is ~800 KiB, which
+    /// clears a 2 MiB default thread stack with room for the harness. It is
+    /// deliberately NOT a claim about the machine's ceiling.
+    const DIFFERENTIAL_DEPTH: usize = 32;
+
+    /// Sibling count for the wide differential shapes.
+    ///
+    /// The width axis is a `for` loop in BOTH arms (`par.exprs` in the oracle,
+    /// the `ParK { n }` fold in the machine), so it is not stack-bounded on
+    /// either side and can be large.
+    const DIFFERENTIAL_WIDTH: usize = 256;
+
+    fn eplus(a: Par, b: Par) -> Par {
+        wrap(ExprInstance::EPlusBody(EPlus { p1: Some(a), p2: Some(b) }))
+    }
+    fn eminus(a: Par, b: Par) -> Par {
+        wrap(ExprInstance::EMinusBody(EMinus { p1: Some(a), p2: Some(b) }))
+    }
+    fn enot(inner: Par) -> Par {
+        wrap(ExprInstance::ENotBody(ENot { p: Some(inner) }))
+    }
+    fn ematches(target: Par, pattern: Par) -> Par {
+        wrap(ExprInstance::EMatchesBody(EMatches {
+            target: Some(target),
+            pattern: Some(pattern),
+        }))
+    }
+
+    /// `!(!(…(inner)…))`, `depth` levels, built ITERATIVELY so the builder is
+    /// never itself the constraint.
+    fn deep_nots(depth: usize, inner: Par) -> Par {
+        let mut p = inner;
+        for _ in 0..depth {
+            p = enot(p);
+        }
+        p
+    }
+
+    /// `(((leaf - arg) - arg) - arg)` — the chain hangs off `p1`.
+    ///
+    /// ★ The LEFT spine is the one that matters for the interleaving the
+    /// machine has to preserve: the recursive helpers run `p1`'s entire subtree
+    /// and apply `single_expr_instance` to it BEFORE `p2` is touched, so a
+    /// machine that evaluated both operands and then extracted would report
+    /// `p2`'s error where the oracle reports `p1`'s.
+    fn deep_left(depth: usize, leaf: Par, arg: Par) -> Par {
+        let mut p = leaf;
+        for _ in 0..depth {
+            p = eminus(p, arg.clone());
+        }
+        p
+    }
+
+    /// `(arg - (arg - (arg - leaf)))` — the chain hangs off `p2`.
+    fn deep_right(depth: usize, leaf: Par, arg: Par) -> Par {
+        let mut p = leaf;
+        for _ in 0..depth {
+            p = eminus(arg.clone(), p);
+        }
+        p
+    }
+
+    /// A Par whose `exprs` slot holds `width` expressions, so the `ParK` fold
+    /// over `concatenate` runs with `n = width`.
+    fn wide_par(width: usize) -> Par {
+        let mut exprs = Vec::with_capacity(width);
+        for i in 0..width {
+            exprs.push(Expr {
+                expr_instance: Some(ExprInstance::GInt(i as i64)),
+            });
+        }
+        Par { exprs, ..Par::default() }
+    }
+
+    /// A Par of `width` *operator* expressions, so the fold's children are
+    /// themselves suspensions rather than leaves.
+    fn wide_par_of_operators(width: usize) -> Par {
+        let mut exprs = Vec::with_capacity(width);
+        for i in 0..width {
+            exprs.extend(eplus(gint(i as i64), gint(1)).exprs);
+        }
+        Par { exprs, ..Par::default() }
+    }
+
     fn corpus() -> Vec<Par> {
         let mut out = unary_corpus();
         for (a, b) in operand_pairs() {
@@ -1266,35 +1411,151 @@ mod differential_eval_with {
             ],
             ..Par::default()
         });
+
+        // ---- DEEP ----
+        let d = DIFFERENTIAL_DEPTH;
+        // A deep unary chain that SUCCEEDS.
+        out.push(deep_nots(d, gbool(true)));
+        // A deep unary chain that FAILS at the very bottom: the same error must
+        // travel back up through `d` suspensions in both arms.
+        out.push(deep_nots(d, gint(1)));
+        // Deep left and right binary spines, succeeding.
+        out.push(deep_left(d, gint(0), gint(1)));
+        out.push(deep_right(d, gint(0), gint(1)));
+        // Deep left spine whose LEAF is the wrong type: the mismatch is raised
+        // at the innermost operand, `d` levels down.
+        out.push(deep_left(d, gbool(true), gint(1)));
+        // A deep p1 beside a wrong-typed p2 at the TOP: the oracle checks p1
+        // first, so the error that surfaces is p1's — a deep one — not this
+        // shallow one.
+        out.push(eminus(deep_left(d, gbool(true), gint(1)), gbool(false)));
+        // A deep chain under `!`, so `Extract` sits above `ParK` at every level.
+        out.push(enot(deep_left(d, gint(0), gint(1))));
+        // A deep chain inside an `EMatches` TARGET (the pattern is never
+        // evaluated, so it stays shallow).
+        out.push(ematches(deep_left(d, gint(0), gint(1)), gint(-(d as i64))));
+        out.push(ematches(deep_left(d, gint(0), gint(1)), gint(999)));
+
+        // ---- WIDE ----
+        let w = DIFFERENTIAL_WIDTH;
+        out.push(wide_par(w));
+        out.push(wide_par_of_operators(w));
+        // A wide Par as an OPERAND: it evaluates to `w` exprs, so
+        // `single_expr_instance` refuses it — the same refusal, at the same
+        // operand, in both arms.
+        out.push(eplus(wide_par(w), gint(1)));
+        out.push(eplus(gint(1), wide_par(w)));
+        // Wide AND deep: `w` siblings each carrying a `d`-deep chain.
+        let mut wide_deep = Vec::with_capacity(w);
+        for i in 0..w {
+            wide_deep.extend(deep_left(d, gint(i as i64), gint(1)).exprs);
+        }
+        out.push(Par { exprs: wide_deep, ..Par::default() });
+
+        // ---- EMatches, which only has an arm when an oracle is AVAILABLE ----
+        out.push(ematches(gint(1), gint(1)));
+        out.push(ematches(gint(1), gint(2)));
+        out.push(ematches(eplus(gint(1), gint(1)), gint(2)));
+        out.push(ematches(eplus(gint(1), gbool(true)), gint(2)));
+        out.push(enot(ematches(gint(1), gint(1))));
         out
+    }
+
+    /// Compare the two arms on one term under one oracle.
+    fn agree_on(i: usize, term: &Par, matcher: &dyn SpatialMatch, oracle_name: &str) {
+        let env: Env<Par> = Env::new();
+        let machine = eval_with(term, &env, matcher);
+        let oracle = eval_with_recursive(term, &env, matcher);
+        match (&machine, &oracle) {
+            (Ok(a), Ok(b)) => assert_eq!(
+                a, b,
+                "corpus[{i}] under {oracle_name}: the machine and the oracle produced \
+                 different VALUES"
+            ),
+            (Err(a), Err(b)) => assert_eq!(
+                format!("{a:?}"),
+                format!("{b:?}"),
+                "corpus[{i}] under {oracle_name}: the machine and the oracle produced \
+                 different ERRORS. The five binop helpers interleave `eval` and \
+                 `single_expr_instance` PER OPERAND, so a machine that evaluated both \
+                 children before checking either would report the second operand's error \
+                 where the recursive form reports the first's."
+            ),
+            _ => panic!(
+                "corpus[{i}] under {oracle_name}: one side succeeded and the other \
+                 failed.\n  machine = {machine:?}\n  oracle  = {oracle:?}"
+            ),
+        }
     }
 
     #[test]
     fn the_machine_agrees_with_the_recursive_oracle_on_every_term() {
-        let env: Env<Par> = Env::new();
         for (i, term) in corpus().iter().enumerate() {
-            let machine = eval_with(term, &env, &NoSpatialMatch);
-            let oracle = eval_with_recursive(term, &env, &NoSpatialMatch);
-            match (&machine, &oracle) {
-                (Ok(a), Ok(b)) => assert_eq!(
-                    a, b,
-                    "corpus[{i}]: the machine and the oracle produced different VALUES"
-                ),
-                (Err(a), Err(b)) => assert_eq!(
-                    format!("{a:?}"),
-                    format!("{b:?}"),
-                    "corpus[{i}]: the machine and the oracle produced different ERRORS. \
-                     The five binop helpers interleave `eval` and `single_expr_instance` \
-                     PER OPERAND, so a machine that evaluated both children before \
-                     checking either would report the second operand's error where the \
-                     recursive form reports the first's."
-                ),
-                _ => panic!(
-                    "corpus[{i}]: one side succeeded and the other failed.\n  machine = \
-                     {machine:?}\n  oracle  = {oracle:?}"
-                ),
+            agree_on(i, term, &NoSpatialMatch, "NoSpatialMatch");
+        }
+    }
+
+    /// ★ The same corpus with an **available** oracle, which is the only
+    /// configuration in which `EMatchesBody` has an arm at all.
+    ///
+    /// Under [`NoSpatialMatch`] both sides refuse before touching either
+    /// operand, so `EvKont::MatchesK` is never built and its `arity` is never
+    /// cross-checked against its pops. Running the corpus twice is what makes
+    /// that continuation covered.
+    #[test]
+    fn the_machine_agrees_with_the_recursive_oracle_under_an_available_oracle() {
+        for (i, term) in corpus().iter().enumerate() {
+            agree_on(i, term, &StructuralMatch, "StructuralMatch");
+        }
+    }
+
+    /// ★ ANTI-VACUITY FOR THE TEST ABOVE.
+    ///
+    /// `the_machine_agrees_…_under_an_available_oracle` would pass unchanged if
+    /// the available oracle happened never to be consulted. This asserts that
+    /// the corpus really does reach the `EMatches` arm and really does get
+    /// *both* verdicts out of it — so a `MatchesK` that popped the wrong number
+    /// of values, or consulted the wrong term, had somewhere to show up.
+    #[test]
+    fn the_available_oracle_is_actually_consulted_and_decides_both_ways() {
+        let env: Env<Par> = Env::new();
+        let mut trues = 0usize;
+        let mut falses = 0usize;
+        for term in corpus() {
+            let Ok(out) = eval_with(&term, &env, &StructuralMatch) else {
+                continue;
+            };
+            match single_expr_instance(&out) {
+                Ok(ExprInstance::GBool(true)) => trues += 1,
+                Ok(ExprInstance::GBool(false)) => falses += 1,
+                _ => {}
             }
         }
+        // `ematches(gint(1), gint(1))` is true, `ematches(gint(1), gint(2))` is
+        // false, and the `!`-wrapped one flips a true to a false — so both
+        // verdicts are produced by the `EMatches` arm specifically, not only by
+        // the comparison operators elsewhere in the corpus.
+        let by_matches_true = eval_with(&ematches(gint(1), gint(1)), &env, &StructuralMatch)
+            .and_then(|p| single_expr_instance(&p));
+        let by_matches_false = eval_with(&ematches(gint(1), gint(2)), &env, &StructuralMatch)
+            .and_then(|p| single_expr_instance(&p));
+        assert_eq!(
+            by_matches_true.expect("an available oracle decides `1 matches 1`"),
+            ExprInstance::GBool(true),
+            "VACUOUS: the `EMatches` arm did not produce a positive verdict, so the \
+             available-oracle differential proves nothing about `EvKont::MatchesK`."
+        );
+        assert_eq!(
+            by_matches_false.expect("an available oracle decides `1 matches 2`"),
+            ExprInstance::GBool(false),
+            "VACUOUS: the `EMatches` arm did not produce a negative verdict."
+        );
+        assert!(
+            trues > 0 && falses > 0,
+            "VACUOUS: the corpus produced {trues} true and {falses} false boolean results \
+             under the available oracle; both must occur for the differential to \
+             distinguish a verdict that was inverted or read off the wrong operand."
+        );
     }
 
     /// ★ THE ANTI-VACUITY GUARD FOR THE TEST ABOVE.
@@ -1328,21 +1589,215 @@ mod differential_eval_with {
         );
     }
 
-    /// The machine must survive an expression nesting the oracle could not.
+    /// The machine runs a nesting the oracle's per-level cost puts far out of
+    /// reach: 20,000 `ENot` levels is ~412 MiB at the measured 21,584 B/level.
+    ///
+    /// ⚠ This is a SMOKE TEST, not the depth guard. It runs on whatever stack
+    /// the harness gave it and it never drives the recursive arm, so on its own
+    /// it shows only that the machine got to the end — it could not distinguish
+    /// "heap-bounded" from "the harness happened to have enough stack". The
+    /// guard that *can* is [`super::depth_gate`], which fixes the stack size
+    /// explicitly and requires the recursive arm to FAIL at a depth the driver
+    /// survives.
     #[test]
     fn the_machine_survives_a_depth_the_oracle_could_not() {
-        // 20,000 `ENot` levels: at the measured 21,584 B/level the recursive
-        // form would need ~412 MiB.
-        let mut deep = gbool(true);
-        for _ in 0..20_000 {
-            deep = wrap(ExprInstance::ENotBody(ENot { p: Some(deep) }));
-        }
+        let deep = deep_nots(20_000, gbool(true));
         let env: Env<Par> = Env::new();
         let out = eval_with(&deep, &env, &NoSpatialMatch).expect("deep ENot chain evaluates");
         assert_eq!(
             single_expr_instance(&out).expect("a single value"),
             ExprInstance::GBool(true),
             "20,000 negations of `true` is `true`"
+        );
+        // ⚠ `drop_in_place::<Par>` is itself Θ(depth) (~470 B/level, debug), so
+        // letting a 20,000-deep term fall out of scope would abort the process
+        // in the DESTRUCTOR after the subject had already succeeded.
+        models::rust::rholang::par_children::dismantle(deep);
+    }
+}
+
+// ===========================================================================
+// The DEPTH guard: the driver survives what the oracle cannot
+// ===========================================================================
+
+#[cfg(test)]
+mod depth_gate {
+    //! ★ The property this whole conversion exists for, watched RED on every
+    //! run.
+    //!
+    //! ## Why it is a child process and not an assertion
+    //!
+    //! A stack overflow is a `SIGSEGV`, not a catchable error: there is no
+    //! `Result` to inspect and `catch_unwind` does not see it. And this
+    //! workspace forbids a test that *expects a panic* outright, because a
+    //! panic that fails to unwind aborts printing nothing. So the subject runs
+    //! in a **child process**, on a thread with an **explicit `stack_size`**,
+    //! and the parent reads the child's **exit status**. That is the same
+    //! mechanism `rholang/tests/stack_depth_gate.rs` uses for the whole
+    //! Θ(depth) family, and it is used here for the same reason.
+    //!
+    //! ## Why the stack size is explicit
+    //!
+    //! Neither `RUST_MIN_STACK` nor `ulimit -s` can then mask a regression: the
+    //! thread gets exactly [`GATE_STACK`] bytes whatever the environment says.
+    //!
+    //! ## What makes it non-vacuous
+    //!
+    //! Three assertions, not one. At [`SHALLOW`] **both** arms must survive on
+    //! the same stack — so a child that failed for a reason unrelated to depth
+    //! (a missing binary, a bad argument, a panic in the term builder) fails
+    //! the gate immediately and cannot be mistaken for the property. Only then
+    //! does the gate require the recursive arm to fail at [`DEEP`] and the
+    //! driver to survive it. The middle assertion is the RED one, and it is red
+    //! on purpose, permanently: a driver that silently reverted to recursion
+    //! would make it green and the gate would fail.
+
+    use super::*;
+    use models::rust::rholang::par_children::dismantle;
+    use std::process::{Command, Stdio};
+
+    /// Which implementation the child runs.
+    const GATE_ARM: &str = "RHO_PURE_EVAL_GATE_ARM";
+    /// `ENot` nesting levels.
+    const GATE_DEPTH: &str = "RHO_PURE_EVAL_GATE_DEPTH";
+    /// The child thread's stack, in bytes.
+    const GATE_STACK_VAR: &str = "RHO_PURE_EVAL_GATE_STACK";
+
+    /// The child entry point's full test path, as libtest's `--exact` wants it.
+    const CHILD: &str = "eval::depth_gate::gate_child";
+
+    /// 1 MiB. Large enough for the harness, the term builder and the driver's
+    /// own frame; far too small for `DEEP` levels of recursion in EITHER
+    /// profile (the oracle measures 21,584 B/level debug and 3,359 release, so
+    /// `DEEP` needs ~84 MiB / ~13 MiB).
+    const GATE_STACK: usize = 1024 * 1024;
+
+    /// The rung at which both arms must work — the gate's own control.
+    const SHALLOW: usize = 4;
+
+    /// The rung at which the recursive arm must fail and the driver must not.
+    ///
+    /// Chosen so the recursive requirement holds with more than an order of
+    /// magnitude to spare in the CHEAPER (release) profile, which is the
+    /// binding one: 4,096 x 3,359 B is ~13.1 MiB against a 1 MiB stack.
+    const DEEP: usize = 4_096;
+
+    fn nots(depth: usize) -> Par {
+        let mut p = par_with_bool(true);
+        for _ in 0..depth {
+            p = par_with_expr(Expr {
+                expr_instance: Some(ExprInstance::ENotBody(ENot { p: Some(p) })),
+            });
+        }
+        p
+    }
+
+    /// Run one arm at one depth, on whatever stack the caller set up.
+    fn run_arm(arm: &str, depth: usize) {
+        let deep = nots(depth);
+        let env: Env<Par> = Env::new();
+        let out = match arm {
+            "recursive" => eval_with_recursive(&deep, &env, &NoSpatialMatch),
+            "driver" => eval_with(&deep, &env, &NoSpatialMatch),
+            other => panic!("depth_gate: unknown {GATE_ARM}={other:?}"),
+        }
+        .expect("depth_gate: the chain evaluates");
+        assert_eq!(
+            single_expr_instance(&out).expect("depth_gate: a single value"),
+            // An even number of negations of `true` is `true`.
+            ExprInstance::GBool(depth % 2 == 0),
+            "depth_gate: {depth} negations of `true` under arm {arm:?}"
+        );
+        // ⚠ Tear the term down ITERATIVELY. `drop_in_place::<Par>` is itself a
+        // Θ(depth) recursive traversal (~470 B/level, debug), so letting a
+        // `DEEP` term fall out of scope on this deliberately small stack would
+        // abort the child in the DESTRUCTOR — the driver arm would then fail
+        // for a reason that is not the driver.
+        dismantle(deep);
+    }
+
+    /// The child entry point.
+    ///
+    /// ⚠ A NO-OP when its environment is absent. `cargo test --
+    /// --include-ignored` and `cargo nextest run --run-ignored all` execute
+    /// every `#[ignore]`d test, so a child that *required* its environment
+    /// would fail the suite for a reason unrelated to the property. Skipping is
+    /// correct here precisely because this test is a mechanism: the assertions
+    /// live in its caller.
+    #[test]
+    #[ignore = "child process of the eval depth gate; driven via RHO_PURE_EVAL_GATE_ARM"]
+    fn gate_child() {
+        let Ok(arm) = std::env::var(GATE_ARM) else {
+            println!("gate_child: no {GATE_ARM} — not a child invocation, nothing to do");
+            return;
+        };
+        let depth: usize = std::env::var(GATE_DEPTH)
+            .expect("GATE_DEPTH must accompany GATE_ARM")
+            .parse()
+            .expect("GATE_DEPTH must be an integer");
+        let stack: usize = std::env::var(GATE_STACK_VAR)
+            .expect("GATE_STACK must accompany GATE_ARM")
+            .parse()
+            .expect("GATE_STACK must be an integer");
+
+        std::thread::Builder::new()
+            .stack_size(stack)
+            .name("eval-depth-gate".to_string())
+            .spawn(move || run_arm(&arm, depth))
+            .expect("depth_gate: failed to spawn")
+            .join()
+            .expect("depth_gate: the subject panicked");
+    }
+
+    /// Run one probe point in a child process. `true` iff it survived.
+    fn runs_within(arm: &str, depth: usize, stack: usize) -> bool {
+        let exe = std::env::current_exe().expect("depth_gate: current_exe");
+        Command::new(exe)
+            .args(["--ignored", "--exact", CHILD])
+            .env(GATE_ARM, arm)
+            .env(GATE_DEPTH, depth.to_string())
+            .env(GATE_STACK_VAR, stack.to_string())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .expect("depth_gate: failed to run the child")
+            .success()
+    }
+
+    #[test]
+    fn the_driver_survives_a_depth_that_overflows_the_recursive_oracle() {
+        // ---- the control: at a shallow depth, the harness works for BOTH ----
+        assert!(
+            runs_within("recursive", SHALLOW, GATE_STACK),
+            "CONTROL FAILED: the recursive arm did not survive {SHALLOW} levels on a \
+             {GATE_STACK}-byte stack. Nothing below this line means anything until it \
+             does — the child is failing for a reason that is not depth."
+        );
+        assert!(
+            runs_within("driver", SHALLOW, GATE_STACK),
+            "CONTROL FAILED: the driver arm did not survive {SHALLOW} levels on a \
+             {GATE_STACK}-byte stack."
+        );
+
+        // ---- the RED half: the oracle must NOT survive ----
+        assert!(
+            !runs_within("recursive", DEEP, GATE_STACK),
+            "THE GUARD HAS GONE VACUOUS: the recursive oracle survived {DEEP} levels on a \
+             {GATE_STACK}-byte stack, so this gate is no longer distinguishing a \
+             heap-bounded machine from a stack-bounded one. Either the per-level cost \
+             collapsed (check `rholang/tests/stack_depth_gate.rs`'s measured constants) or \
+             the child stopped running the arm it was asked for."
+        );
+
+        // ---- the property ----
+        assert!(
+            runs_within("driver", DEEP, GATE_STACK),
+            "REGRESSION: `eval_with` did not survive {DEEP} levels on a {GATE_STACK}-byte \
+             stack. Its native stack must be O(1) in nesting depth — the recursion belongs \
+             in `drive`'s heap work stack. Something has re-introduced a native \
+             re-entry: check `descend_ev_expr`'s `EVarBody` arm (the one deliberate nested \
+             drive, bounded by the ENVIRONMENT rather than by the term) and any new arm \
+             that calls `eval_with` directly."
         );
     }
 }
